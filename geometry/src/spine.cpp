@@ -863,15 +863,7 @@ TopoDS_Shape oriented_solid(const TopoDS_Shape& shape, const char* what) {
   return solid;
 }
 
-namespace {
-
-// The loop swept along the spine (pipe_shell), with corners of the spine
-// made by `transition`.
-ShapePtr pipe_shell_with(const NamedWire& loop, const TopoDS_Wire& spine, const PipeMode& mode,
-                         const NameList& first, const NameList& last, double tolerance,
-                         BRepBuilderAPI_TransitionMode transition) {
-  BRepOffsetAPI_MakePipeShell pipe(spine);
-  pipe.SetTolerance(tolerance, tolerance, 1.0e-2);
+void set_mode(BRepOffsetAPI_MakePipeShell& pipe, const PipeMode& mode) {
   switch (mode.kind) {
   case PipeMode::Kind::CorrectedFrenet:
     pipe.SetMode(false);
@@ -889,10 +881,42 @@ ShapePtr pipe_shell_with(const NamedWire& loop, const TopoDS_Wire& spine, const 
     break;
   case PipeMode::Kind::Auxiliary:
     // The normal towards the curve beside the spine, met in the plane at
-    // right angles to the spine (`normal_spine` puts its points there).
-    pipe.SetMode(mode.auxiliary, false, BRepFill_NoContact);
+    // right angles to the spine (`normal_spine` puts its points there), or
+    // at the same fraction of its length (mitcad#539).
+    pipe.SetMode(mode.auxiliary, mode.curvilinear, BRepFill_NoContact);
+    break;
+  case PipeMode::Kind::Frenet:
+    pipe.SetMode(true);
     break;
   }
+}
+
+PipeMode frame_mode(bool frenet, const Path& auxiliary, bool curvilinear,
+                    const std::optional<gp_Dir>& constant_binormal, const PipeMode& fallback) {
+  PipeMode mode = fallback;
+  if (frenet) {
+    mode.kind = PipeMode::Kind::Frenet;
+  } else if (!auxiliary.empty()) {
+    mode.kind = PipeMode::Kind::Auxiliary;
+    mode.auxiliary = path_wire(auxiliary);
+    mode.curvilinear = curvilinear;
+  } else if (constant_binormal) {
+    mode.kind = PipeMode::Kind::Binormal;
+    mode.binormal = *constant_binormal;
+  }
+  return mode;
+}
+
+namespace {
+
+// The loop swept along the spine (pipe_shell), with corners of the spine
+// made by `transition`.
+ShapePtr pipe_shell_with(const NamedWire& loop, const TopoDS_Wire& spine, const PipeMode& mode,
+                         const NameList& first, const NameList& last, double tolerance,
+                         BRepBuilderAPI_TransitionMode transition) {
+  BRepOffsetAPI_MakePipeShell pipe(spine);
+  pipe.SetTolerance(tolerance, tolerance, 1.0e-2);
+  set_mode(pipe, mode);
   pipe.SetTransitionMode(transition);
   pipe.Add(loop.wire, false, false);
   detail::build(pipe);

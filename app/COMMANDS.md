@@ -88,6 +88,11 @@ Modifiers:
 - `withVisible(test)`: the row is shown only while `test(state)` holds;
   hidden inputs are not checked and not highlighted. A list's child gets
   its row's state (`state.row(list, i)`).
+- `withLabel(text)`: the row's label follows the state (`labelIn(state)`,
+  `label` without it; mitcad#545: a pattern's length row says Spacing or
+  Extent by its Distance Type). The Qt panel changes it as the state
+  changes and logs it (`Panel Rectangular Pattern label distance1:
+  Extent`), the value lines use it; the AppKit inspector shows `label`.
 - `withHeading(text)`: a bold heading row above the input, shown and
   hidden with it: the first input of a group (Thread's and Hole's Extra
   clearance: Radial clearance and Flank clearance, shown for modelled
@@ -416,6 +421,31 @@ References (`commands/CommandSupport`):
   point. OK undoes the roll-back and edits (one undo step); Cancel undoes
   it too. A feature type is edited by the command whose `featureType` it
   is (timeline double-click, the context menu's "Edit <feature>").
+- While the panel is open, the sketches the command uses are shown as if
+  their light bulbs were on (mitcad#546; `view/CommandSketches.hpp`,
+  `MainWindowVisibility.cpp`): an edit's are the edited feature's (the
+  `timeline` query's `sketches`: profiles, paths, rails, sections, hole
+  points, guide curves), a new command's are those of the profiles, sketch
+  curves and points its selection inputs start with (selected before it,
+  or its default, such as Extrude's newest free profile, which may lie in a
+  hidden sketch). Their curves and points are drawn and pickable, all
+  their regions too (also those a feature consumed, as for a sketch the
+  user showed), and their dimensions are offered as parameter labels. A
+  sketch shown only for the command (its light bulb off) is drawn a little
+  lighter. When the panel closes (OK, Cancel, Esc, another command) each
+  goes back to its light bulb: hidden again unless the user turned it on
+  meanwhile (that light bulb is a visibility change of its own, kept as
+  any light bulb during a command is). It is a view state of the window,
+  never `set_feature_visible`: nothing is saved and no undo step is made.
+  Picks during a new command show nothing more: the view picks from shown
+  sketches only, and a face picked as Extrude's profile stays a face.
+  Logs: `Sketch Sketch1 shown for the edit of Extrude1` (`shown for
+  Extrude` for a new command), `Sketch Sketch1 hidden again after the edit
+  of Extrude1`, `Sketch Sketch1 stays shown after the edit of Extrude1 (its
+  light bulb)`, and `Sketches shown: …`. Tests:
+  `tools/ui-edit-sketches-test.sh`, `tools/ui-windows-edit-sketches-test.ps1`
+  (ctest `app.ui-windows-edit-sketches`), `app/tests/command_sketches.cpp`
+  (`app.unit`).
 - The context menu offers the feature commands whose first selection
   input takes everything selected, "Edit <feature>" for an item a feature
   made, and Repeat; in sketch mode, model faces, edges and vertices get
@@ -1001,7 +1031,10 @@ computing`. Tests: `tools/ui-visibility-test.sh`,
   one undo step. The model decides what is shown (the `timeline` query's
   `visible`, `DocumentSnapshot::featureShown`): a sketch whose bulb was
   not set is hidden while a feature uses it. The view shows only what is
-  shown (`instances` leaves hidden bodies out). A fully constrained
+  shown (`instances` leaves hidden bodies out), and the sketches a
+  running command uses, for its time (mitcad#546, see [What the framework
+  does](#what-the-framework-does); the browser's light bulb stays the
+  model's). A fully constrained
   sketch's icon is `sketch-locked` (the `timeline` query's `dof`).
 - **Features under sketches** (mitcad#177): each feature that uses a
   sketch (the `timeline` query's `sketches`) has a row
@@ -2268,7 +2301,23 @@ timber`). The part picker's choice goes into the tool that asked for it
     side, at the middle, to Wall 1's side (butt), 2902 mm`, `Wall 2: from
     Wall 1's end A (butt corner)`, `Wall 2: an L corner at Wall 1's end B
     (lapped plates)`, `Wall 2: a T on Wall 1, 1551 mm from end B`) and the
-    length the model works out.
+    length the model works out. With Auto (mitcad#536) a line says what
+    the run ran to and the wall's length (`Length Auto: the run met a face
+    of Body2, the wall 7819 mm`, `Length Auto: the run met Wall 3's side,
+    the wall 3453 mm`, `Length Auto: the run met no wall or face, Length
+    3600 mm`), also when the preview is refused: the panel still names the
+    wall, its length as worked out and what its start and run met, the
+    reason in red (`Adds to: Wall 1 in Part1`, `Wall 1, wall 7819 x 7000
+    mm: 0 member(s)`). The run meets the body it starts on too beyond its
+    own face (a room modelled as one body: its far wall), along lines a
+    quarter, half and three quarters up and just under the wall's top, at
+    its centre line and its sides (commands.md, *The auto end*).
+    **Spliced plates** (mitcad#536): a plate longer than the timber's
+    longest is made of pieces butted end to end, each joint over a stud,
+    a second top plate's joints a stud spacing from the first's; the panel
+    lists them (`Spliced over studs, pieces up to 5400 mm: top plate at
+    5400 mm; top plate at 4800 mm; bottom plate at 5400 mm`), the preview
+    and the cut list show the pieces.
   - Floor / Roof's floor (`build.floor_roof`, Kind Floor or ceiling):
     Start and End two opposite corners (axis-aligned in the host),
     or Length and Width from the start (Width to the left of Direction);
@@ -2483,7 +2532,14 @@ mm, ...`, `... frame roof Roof 1, gable roof, ...`; `frame <kind> waiting:
 out; `...; Wall 2: from Wall 1's side, flush with end A (butt)` for a
 wall started on another wall's side or end; a wall's `; corner butt` or
 `; corner lapped`, mitcad#510; `; length auto` or `; length typed` for
-one started on another wall without an End, mitcad#515), `BUILD frame
+one started on another wall without an End, mitcad#515; then `; Length
+Auto: the run met a face of Body2, the wall 7819 mm` and `; spliced top
+plate 5400, top plate 4800, bottom plate 5400` (a plate's joints along
+the wall, mm), mitcad#536), `Frame preview refused: frame wall Wall 1,
+wall 7819 x 7000 mm, 0 member(s) (); ...; reason: <the reason>` (a
+refused preview's inspection, whose `Inspect Wall:` line has only the
+reason, mitcad#536), `Frame spliced: top plate 4200, bottom plate 4200`
+(after Place), `BUILD frame
 start click: From End A, Offset 0 mm (side)`, `BUILD frame offset typed:
 from End A`, `BUILD frame From Middle, Offset 0 mm: typed`, `BUILD frame
 length typed: Typed length` (mitcad#514, mitcad#515), `Placed frame Wall
@@ -2501,14 +2557,17 @@ refused until a click, mitcad#513; butting walls from its side near end
 A, flush with it, an Offset typed moving it once, and from its end B's
 face; a wall started on a wall's side whose run meets the wall opposite
 ends there, no End clicked; then Lapped plates' L corner and the choice
-remembered), `tools/ui-timber-floor-roof-test.sh` (Floor / Roof: a floor
+remembered; a start on another body's face; a wall across a long room
+modelled as one body, Auto to its far wall, the plates spliced, a refused
+preview still naming the wall, mitcad#536), `tools/ui-timber-floor-roof-test.sh` (Floor / Roof: a floor
 with blocking, Timber Frame showing its values; a roof on two walls from
 the view's context menu, the kind remembered), `tools/ui-windows-timber-test.ps1` (a wall, after Place no
 ghost and Enter refused, mitcad#513; butting walls from its side near
 end A, flush with it, an Offset typed moving it once, and from its end
 B's face; with Lapped plates an L wall from near its end and a T wall
 from mid-side, the choice remembered; the run meeting the wall
-opposite; a floor with Floor / Roof). The three Linux tests share
+opposite; a floor with Floor / Roof; a wall across a long room, Auto, its
+plates spliced, mitcad#536). The three Linux tests share
 `tools/ui-timber-lib.sh` (the synthetic library and the log helpers).
 
 Fasteners' logs (mitcad#497): `BUILD timber fasteners: set off; 2 x Wood
@@ -4521,16 +4580,54 @@ SVG at several sizes (`themeIcon`).
   `app/tests/move_face_text.cpp` (`app.unit`).
 - **Combine** (`solid.combine`, `MoveCommands.cpp`): a tool body picked
   in another occurrence than the target (a body of another component, in
-  an assembly context) goes in with a link, `tool_links` (`source` the
-  tool's occurrence path, `target` the target's when it has one;
-  commands.md, *combine*, mitcad#104, mitcad#105): the tool is read where
-  it was picked and follows when either occurrence moves. `load` gives
-  the picks back their occurrences from the links. Test:
-  `tools/ui-component-combine-test.sh`.
+  an assembly context) goes in as a body in that occurrence,
+  `{"body": "F2.b0", "occurrence": "O1"}` (`context` the target's
+  occurrence path when it has one; commands.md, *combine*, mitcad#104,
+  mitcad#105, mitcad#544): the tool is read where it was picked and
+  follows when either occurrence moves. Tool Bodies keeps a pick per
+  occurrence, so the same body picked where two occurrences show it (two
+  screws of one part) is two tools, each cutting, joining or intersecting
+  where it is; a tool in the target's own occurrence goes in as its id.
+  Once a tool is picked in another occurrence, the panel lists the tools
+  by name instead of their count: such a tool by its occurrence, `Part:1,
+  Part:2` (`Body1 (Part:1)` when the occurrence gives two), the others by
+  their bodies (`InputDef::itemsText`; logged `Combine Tool Bodies listed:
+  Part:1, Part:2`). `load` gives the picks back their occurrences, also
+  from the `tool_links` of earlier versions. Tests:
+  `tools/ui-component-combine-test.sh`,
+  `tools/ui-windows-component-combine-test.ps1` (ctest
+  `app.ui-windows-component-combine`).
 - **Patterns and Mirror** of features take fillets and chamfers among the
   features (the timeline or a face they made picks them, as other
   features); the model repeats them on the copies' edges (commands.md,
   *Fillets and chamfers among the features*, mitcad#105).
+- **Pattern options** (mitcad#545, `PatternCommands.cpp`,
+  `commands/PatternOptions`; commands.md, *Patterns*): Rectangular
+  Pattern has a Distance Type (Spacing or Extent: `distance_type`, one
+  for both directions as the model keeps it) above the directions, and
+  each direction a Direction Type (One Direction or Symmetric: its
+  `symmetric`, written only when Symmetric). The length rows' labels
+  follow the Distance Type ("Spacing", "Spacing 2" or "Extent", "Extent
+  2"). A symmetric direction hides its Flip and builds its distance as
+  typed: the copies lie on both sides, and only an even quantity's extra
+  copy follows the distance's sign, which an edited pattern shows as
+  stored. Pattern on Path has the same Distance Type and Direction Type
+  rows; its Flip stays, as the definition keeps `flip` (with Symmetric it
+  puts an even quantity's extra copy at the other side). Circular
+  Pattern's Symmetric check centres the angle on the originals (a full
+  turn is the same either way). The defaults stay one direction and
+  spacing; `load` shows an imported or saved pattern's stored values.
+  The added line carries the options (`Added rectangular pattern of 1
+  bodies: direction 1 symmetric, quantity 3, extent 40 mm; direction 2
+  one direction, quantity 3, extent 100 mm`, `Added circular pattern of 1
+  bodies: symmetric, quantity 3, angle 90 deg`), and a panel logs its
+  check boxes when it starts (`Panel Circular Pattern checks:
+  symmetric=on`). The sketch's Rectangular Pattern has a Direction Type
+  per direction too (`symmetric` [b1, b2] of `sketch.rectangular_pattern`,
+  an odd quantity; Flip hidden while symmetric). Tests:
+  `tools/ui-pattern-options-test.sh`, `tools/ui-windows-pattern-options-test.ps1`
+  (ctest `app.ui-windows-pattern-options`), `app/tests/pattern_options.cpp`
+  (`app.unit`).
 - **Extrude** chooses its operation until the user picks one (mitcad#289,
   `CommandDef::autoOperation`, `framework/CommandSessionAuto.cpp`): each
   preview asks the model for it (`auto_operation`, commands.md,
@@ -4600,8 +4697,9 @@ SVG at several sizes (`themeIcon`).
   runs along the face's outward normal (`frameOf`). Refused on the panel:
   a face beside profiles ("Select one planar face, or profiles of one
   sketch, not both."), Thin Extrude of a face, an extent to an object or
-  through all or a taper ("An extrusion of a face goes a distance,
-  without a taper."), a start object. Wrap Onto and Affected components
+  through all ("An extrusion of a face goes a distance."), a start
+  object. Each side's Taper Angle goes with the face (mitcad#547; the
+  model tapers a face's extrusion since mitcad#541). Wrap Onto and Affected components
   are hidden; a face's Cut works on the bodies of its own component
   (Objects). A face selected before the command that is not planar (a
   cylinder or cone goes to Wrap Onto) or a mesh body's goes to Profiles
@@ -4611,6 +4709,25 @@ SVG at several sizes (`themeIcon`).
   face … is no planar face, refused as the profile` and `Added extrude
   (Join), distance 5, of a face`. Tests: `tools/ui-extrude-face-test.sh`,
   `app.ui-windows-extrude-face`.
+- **Revolve of a body face** (`profile_face`, mitcad#543): Revolve's
+  Profiles also take one planar face of a body (`withAccepts` planar
+  faces, `withoutMeshes`), picked or selected before the command, and the
+  command is enabled in a design with bodies; the definition gets
+  `profile_face` instead of `profiles` (commands.md, *revolve*). Refused
+  on the panel: a face beside profiles, a mesh body's or a non-planar
+  face, To Object ("A revolution of a face turns by angles or a full
+  turn."), Project Axis. Editing loads the face, resolved again where the
+  feature finds it (`rolledBack`, as Extrude's). Logged `Revolve
+  Profiles: 1 face [face F2:side(…) of F2.b0]` and `Added revolve (New
+  Body), angle -90 deg, of a face`. Test: `tools/ui-revolve-face-test.sh`.
+- **Options the panels do not show, kept on edit** (mitcad#543): editing
+  an extrusion keeps its own `direction` (commands.md, *extrude*: the
+  imports' extrusions along a direction off the profile's normal) and a
+  sweep its `frame` and fixed `binormal` (while it stays perpendicular):
+  `load` stores them in the state (`kept`), `build` puts them back.
+  Logged `Extrude: keeps its direction [0,3,4]` and `Sweep: keeps
+  {"frame":…}`. A sweep of a body face (`profile_face`) opens no panel
+  (`canEdit`). Test: `tools/ui-kept-options-test.sh`.
 - **Plastic Feature** (`solid.plastic`, `PlasticCommands.cpp`,
   mitcad#459): one panel for the model's `boss`, `lip`, `groove`,
   `snap_fit`, `rest` and `plastic_rule` (commands.md, *Plastic part
@@ -4714,6 +4831,7 @@ next screenshot.
 | `View highlight places: face F2.b0/F2:side(c1) in O1 at 60.0,0.0,10.0; plane F4 in O1 at …` (`none`) | with `MITCAD_LOG_PICKS`: the highlighted faces, edges, vertices and datums changed: each with its occurrence and the middle of its bounding box in the design (mitcad#432: a loaded face of a placed component drawn where the view shows it) |
 | `Command <name> started`, `Editing F2 with <name>`, `Editing analysis Section1 with <name>`, `Command <name> cancelled` | |
 | `<command> <input>: 2 edges [edge E{…} of F2.b0; …]` | a selection input changed |
+| `<command> <input> listed: Part:1, Part:2` | the picks the panel lists by name instead of their count changed (`InputDef::itemsText`: Combine's tools in occurrences, mitcad#544) |
 | `<command> <input>: d1*2 = 120 mm`, `… is invalid: <reason>` | a value was evaluated |
 | `Extrude: automatic Operation = Join` (with `Extrude Local bodies: 1 body [body F2.b0]`), `Extrude: operation chosen by hand` | a new Extrude's operation and objects the model chose from its preview, and the user's own choice of either, which stays (mitcad#289) |
 | `<command>: <input> = <choice>` / `= on` | a choice or check changed |
@@ -4723,6 +4841,7 @@ next screenshot.
 | `Body Body1 (F2.b0): volume a -> b mm3`, `New body …`, `Removed body …` | the bodies OK, Undo or Redo changed, measured by the model (with `MITCAD_LOG_VOLUMES=1`, which the tests set: the first change after opening a large design would measure every body) |
 | `Cosmetic threads shown: 1` | the cosmetic threads drawn as rings changed |
 | `Sketches shown: F1, …` | the sketches the view shows |
+| `Sketch Sketch1 shown for the edit of Extrude1` (`for Extrude`), `Sketch Sketch1 hidden again after the edit of Extrude1`, `Sketch Sketch1 stays shown after … (its light bulb)` | a command started with a sketch it uses whose light bulb is off, and ended: the sketch shown for its time, then back to its light bulb (mitcad#546) |
 | `Timing refresh: 36.5 ms`, `Timing display: 1093 ms, 166 bodies, 166 new`, `Timing hover: …`, `Timing frame: …`, `Timing open: …` | with `MITCAD_LOG_TIMING=1` (`framework/Diagnostics.hpp`): how long the steps take, for `tools/perf-measure.sh` |
 | `Selected: 1 face [face F2:end(…) of F2.b0]`, `Context menu: A \| B` | outside commands |
 | `Context menu Solid: Press Pull \| Fillet \| More`, `Context menu Solid More: Draft \| Hole` (`BUILD`, `Construct`), `Context menu Delete: Delete Member \| Delete Body \| Delete Component`, `Deleted member <name>` (`spacing set of <name>`), `Deleted body Body1`, `Deleted component Component1:1` | the view's context menu's submenus (mitcad#494; [The view's context menu](#the-views-context-menu)) and what Delete did, one undo step each; `tools/ui-context-menu-test.sh` |
@@ -4812,7 +4931,7 @@ next screenshot.
 | `Export dialog: STEP AP214 (*.step) to <path>`, `Exported <path>: step, 1 body(ies), mm` (with occurrences `…, mm, design coordinates` or `component coordinates`), `Exported <path>: usdz, 1 body(ies), 1 material(s)`, `Exported <path>: dxf, 4 entities` | export |
 | `3D Print panel: 3 visible: Plate, Cube, Pin; format stl, refinement high, slicer Fake slicer (/path <files>); slicers None: … \| …` (`1 selected: Cube`), `3D Print Bodies: 2 bodies [body F1.b0; body F2.b0]` (the input, as every selection input logs), `3D Print: Format = 3MF, one object with parts`, `3D Print: left out Surface1 (a surface body)`, `3D Print: no solid or mesh bodies`, `3D Print: 3 bodies as stl (high) to <folder>: Plate.stl, Cube.stl, Pin.stl` (a body shown twice: `Pin (Pin_1).stl, Pin (Pin_2).stl`; 3MF: `parts.3mf`… per body `Plate 12 triangles, 1000.000 mm3`), `3D Print: started <program> <arguments>`, `3D Print: <slicer> did not start`, `3D Print: opened <folder>`, `Done 3D Print`, `Command 3D Print cancelled`, `Preferences: slicer <slicer>` (or `automatic`) | 3D Print (mitcad#234: the panel replaced the dialog, whose `3D Print dialog: …` and `3D Print cancelled` lines are gone) |
 | `Export dialog opened: unit mm (mm \| cm \| m \| in \| ft)` (with occurrences also `, coordinates design (design \| component)`), `Insert Mesh dialog opened: unit …`, `Insert DXF dialog opened: unit …`, `Units dialog opened: mm (…)`, `Add User Parameter dialog opened: unit mm`, `Grid settings dialog opened: automatic, fixed spacing 10 mm` | a dialog that offers units opened, with its default first |
-| `Panel Hole choices: placement=face, …, standard=iso_metric, size=6, designation=M6x1, class=6H`, `Panel Hole options size: 1 \| 1.1 \| …` | a panel's choices when it starts; the options of a `withChoices` input when they change |
+| `Panel Hole choices: placement=face, …, standard=iso_metric, size=6, designation=M6x1, class=6H`, `Panel Hole options size: 1 \| 1.1 \| …`, `Panel Circular Pattern checks: symmetric=on`, `Panel Rectangular Pattern label distance1: Extent` | a panel's choices and check boxes when it starts; the options of a `withChoices` input when they change; a `withLabel` input's label when it changes (mitcad#545) |
 | `Imported block.step as Base1: 1 body(ies)`, `Inserted drawing.dxf into Sketch2: 4 curves, 4 points, 0 texts, 1 profiles, 0 warnings`, `Inserted component block (linked) from block.mitcad` | import |
 | `Insert SVG dialog opened: 100 x 60 mm, 2 filled, 1 stroked, 1 texts`, `Insert SVG scale at x,y` (`x`, `y`, `bands`, `OK`), `Insert SVG: scale 1, lower left at (0, 0), bands on`, `Inserted logo.svg into Sketch1: 16 curves, 17 points, 1 texts, 8 profiles, 0 warnings, 3 filled, 1 bands` | the Insert SVG dialog (places in the main window's coordinates), what it chose and what came in (mitcad#473) |
 | `Insert DXF drawing: unit mm, layers Outline (4) \| Holes (1) off`, `Insert DXF place lower_left at x,y`, `Insert DXF x at …`, `Insert DXF layer Holes at …`, `Insert DXF OK at …`, `Insert DXF: lower left corner at (10, 5), layers Outline` | the Insert DXF dialog (places in the main window's coordinates) and what it chose |

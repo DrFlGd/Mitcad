@@ -1114,3 +1114,247 @@ fn a_helix_whose_boolean_fails_is_retried_with_shifted_seams() {
         .unwrap_or_else(|e| e.to_string());
     assert!(message.contains("piece shift"), "{message}");
 }
+
+#[test]
+fn a_sweep_follows_a_frenet_or_auxiliary_frame() {
+    // (mitcad#539) The frame reaches the kernel (an auxiliary curve as its
+    // curves) and round-trips through the definition; it is refused with
+    // the parallel orientation, a fixed binormal, a guide rail, a twist, a
+    // taper or an end scale.
+    let (mut b, _) = with_path();
+    let uid = add(
+        &mut b.doc,
+        sweep(&["c1", "c4", "c7"], json!({"frame": {"type": "frenet"}})),
+    )
+    .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path c1,c4,c7 extents 1 1 Perpendicular twist 0 taper 0 rail none frame frenet"
+    );
+    let auxiliary = json!({"frame": {"type": "auxiliary",
+        "curve": {"sketch": "F3", "curves": ["c7"]}, "curvilinear": true}});
+    b.doc
+        .edit_feature(uid, &def(sweep(&["c1"], auxiliary.clone())))
+        .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path c1 extents 1 1 Perpendicular twist 0 taper 0 rail none frame auxiliary c7 curvilinear"
+    );
+    let answer: Value = serde_json::from_str(
+        &b.doc
+            .query(&json!({"query": "feature", "uid": uid}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answer["def"]["frame"]["type"], "auxiliary");
+    assert_eq!(answer["def"]["frame"]["curvilinear"], true);
+    assert_eq!(answer["def"]["frame"]["curve"]["curves"], json!(["c7"]));
+    // The plane rule by default: `curvilinear` left out.
+    b.doc
+        .edit_feature(
+            uid,
+            &def(sweep(
+                &["c1"],
+                json!({"frame": {"type": "auxiliary", "curve": {"sketch": "F3", "curves": ["c7"]}}}),
+            )),
+        )
+        .unwrap();
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path c1 extents 1 1 Perpendicular twist 0 taper 0 rail none frame auxiliary c7"
+    );
+    // A constant binormal reaches the kernel as a unit vector.
+    b.doc
+        .edit_feature(
+            uid,
+            &def(sweep(
+                &["c1"],
+                json!({"frame": {"type": "constant_binormal", "binormal": [0, 0, 2]}}),
+            )),
+        )
+        .unwrap();
+    assert_eq!(
+        last_spec(&b.doc),
+        "sweep F5 path c1 extents 1 1 Perpendicular twist 0 taper 0 rail none frame constant binormal 0 0 1"
+    );
+    match b.doc.edit_feature(
+        uid,
+        &def(sweep(
+            &["c1"],
+            json!({"frame": {"type": "constant_binormal", "binormal": [0, 0, 0]}}),
+        )),
+    ) {
+        Err(e) => assert!(e.to_string().contains("of some length"), "{e}"),
+        Ok(_) => panic!("a constant binormal of no length was accepted"),
+    }
+    let frenet = json!({"type": "frenet"});
+    for (extra, expected) in [
+        (
+            json!({"frame": frenet, "orientation": "parallel"}),
+            "perpendicular orientation",
+        ),
+        (
+            json!({"frame": frenet, "binormal": [0, 0, 1]}),
+            "a fixed binormal",
+        ),
+        (
+            json!({"frame": frenet, "guide_rail": {"sketch": "F3", "curves": ["c7"]}}),
+            "a guide rail",
+        ),
+        (
+            json!({"frame": frenet, "twist_angle": 0.5}),
+            "a twist, a taper or an end scale",
+        ),
+        (
+            json!({"frame": frenet, "end_scale": 2}),
+            "a twist, a taper or an end scale",
+        ),
+        (
+            json!({"frame": {"type": "auxiliary", "curve": {"sketch": "F3", "curves": ["c99"]}}}),
+            "auxiliary curve",
+        ),
+    ] {
+        match b.doc.edit_feature(uid, &def(sweep(&["c1"], extra))) {
+            Err(e) => assert!(e.to_string().contains(expected), "{e}"),
+            Ok(_) => panic!("accepted; expected {expected}"),
+        }
+    }
+}
+
+/// The block's top face (Extrude1's end cap).
+const BLOCK_TOP: &str = "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})";
+
+#[test]
+fn a_body_face_sweeps_along_a_path() {
+    // (mitcad#543) The face reaches the kernel as found and as stored, the
+    // sweep's caps keyed by it; the definition keeps it; sketch profiles,
+    // rails and twists are refused beside it.
+    let (mut b, _) = with_path();
+    let face_sweep = |extra: Value| {
+        let mut value = json!({"type": "sweep",
+            "profile_face": {"body": "F2.b0", "face": BLOCK_TOP},
+            "path": {"sketch": "F3", "curves": ["c1"]}, "operation": "new_body"});
+        for (key, item) in extra.as_object().unwrap() {
+            value[key] = item.clone();
+        }
+        value
+    };
+    let uid = add(&mut b.doc, face_sweep(json!({}))).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        format!("face_sweep F5 {BLOCK_TOP} key {BLOCK_TOP} path c1 Perpendicular")
+    );
+    let shape = b.doc.body_shape(BodyUid::new(uid, 0)).unwrap();
+    let faces: Vec<String> = shape.faces.iter().map(ToString::to_string).collect();
+    assert!(
+        faces.contains(&format!("F5:start({BLOCK_TOP})")),
+        "{faces:?}"
+    );
+    let answer: Value = serde_json::from_str(
+        &b.doc
+            .query(&json!({"query": "feature", "uid": uid}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(answer["def"]["profile_face"]["face"], BLOCK_TOP);
+    assert!(answer["def"].get("profiles").is_none());
+    // A frame goes along.
+    b.doc
+        .edit_feature(uid, &def(face_sweep(json!({"frame": {"type": "frenet"}}))))
+        .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    for (extra, expected) in [
+        (
+            json!({"profiles": [{"sketch": "F4", "region": "r{c1}"}]}),
+            "takes no sketch profiles",
+        ),
+        (
+            json!({"guide_rail": {"sketch": "F3", "curves": ["c7"]}}),
+            "guide rails or guide surfaces",
+        ),
+        (
+            json!({"twist_angle": 0.5}),
+            "a twist, a taper or an end scale",
+        ),
+    ] {
+        match b.doc.edit_feature(uid, &def(face_sweep(extra))) {
+            Err(e) => assert!(e.to_string().contains(expected), "{e}"),
+            Ok(_) => panic!("accepted; expected {expected}"),
+        }
+    }
+}
+
+#[test]
+fn a_loft_along_its_centre_line_follows_a_frame() {
+    // (mitcad#543) A loft's frame reaches the kernel; without a centre line
+    // it is refused.
+    let (mut b, _) = with_path();
+    let loft = |extra: Value| {
+        let mut value = json!({"type": "loft", "sections": [
+                {"type": "profile", "sketch": "F4", "region": "r{c1}"},
+                {"type": "face", "body": "F2.b0", "face": BLOCK_TOP}],
+            "centerline": {"sketch": "F3", "curves": ["c1"]}, "operation": "new_body"});
+        for (key, item) in extra.as_object().unwrap() {
+            value[key] = item.clone();
+        }
+        value
+    };
+    let uid = add(
+        &mut b.doc,
+        loft(json!({"frame": {"type": "constant_binormal", "binormal": [0, 0, 3]}})),
+    )
+    .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&b.doc).ends_with("frame constant binormal 0 0 1"),
+        "{}",
+        last_spec(&b.doc)
+    );
+    let mut plain = loft(json!({"frame": {"type": "frenet"}}));
+    plain.as_object_mut().unwrap().remove("centerline");
+    match b.doc.edit_feature(uid, &def(plain)) {
+        Err(e) => assert!(e.to_string().contains("needs one"), "{e}"),
+        Ok(_) => panic!("a frame without a centre line was accepted"),
+    }
+}
+
+#[test]
+fn a_parallel_loft_moves_its_sections_along_the_centre_line() {
+    // (mitcad#547) The parallel orientation reaches the kernel; without a
+    // centre line, or with a frame, it is refused.
+    let (mut b, _) = with_path();
+    let loft = |extra: Value| {
+        let mut value = json!({"type": "loft", "sections": [
+                {"type": "profile", "sketch": "F4", "region": "r{c1}"},
+                {"type": "face", "body": "F2.b0", "face": BLOCK_TOP}],
+            "centerline": {"sketch": "F3", "curves": ["c1"]}, "operation": "new_body",
+            "orientation": "parallel"});
+        for (key, item) in extra.as_object().unwrap() {
+            value[key] = item.clone();
+        }
+        value
+    };
+    let uid = add(&mut b.doc, loft(json!({}))).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&b.doc).ends_with(" parallel"),
+        "{}",
+        last_spec(&b.doc)
+    );
+    let mut plain = loft(json!({}));
+    plain.as_object_mut().unwrap().remove("centerline");
+    match b.doc.edit_feature(uid, &def(plain)) {
+        Err(e) => assert!(e.to_string().contains("needs one"), "{e}"),
+        Ok(_) => panic!("a parallel loft without a centre line was accepted"),
+    }
+    match b
+        .doc
+        .edit_feature(uid, &def(loft(json!({"frame": {"type": "frenet"}}))))
+    {
+        Err(e) => assert!(e.to_string().contains("takes no frame"), "{e}"),
+        Ok(_) => panic!("a parallel loft with a frame was accepted"),
+    }
+}

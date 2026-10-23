@@ -239,11 +239,20 @@ pub struct ExtrudeDef<P = ParamId> {
     /// A planar face of a body as the profile instead of sketch regions
     /// (mitcad#535): its bounded area, holes kept, swept along its outward
     /// normal (reversed by `flip` or a negative distance), found by its
-    /// topological name on every recompute. Distances only, without a
-    /// taper; from the face or an offset from it; no thin walls, surface,
-    /// curves, wrap or `cut_scope`.
+    /// topological name on every recompute. Distances only, with their
+    /// tapers, along `direction` when given (mitcad#541; a curved face only
+    /// along a direction, without a taper or offset); from the face or an
+    /// offset from it; no thin walls, surface, curves, wrap or `cut_scope`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_face: Option<super::reference::FaceRef>,
+    /// The direction the profiles are extruded along instead of the sketch
+    /// normal (mitcad#539): a fixed vector of any length but zero, not in
+    /// the sketch plane, reversed by `flip`. Distances are measured along
+    /// it; a taper grows the profile in its plane by `d tan(taper)` at
+    /// distance `d`. Not with a start object or wrap; with a face profile
+    /// (mitcad#541) not in the face's plane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<[f64; 3]>,
 }
 
 type Mapper<'a, P, Q, E> = dyn FnMut(&str, &P) -> Result<Q, E> + 'a;
@@ -361,6 +370,7 @@ impl<P> ExtrudeDef<P> {
             curves: self.curves.clone(),
             wrap: self.wrap.clone(),
             profile_face: self.profile_face.clone(),
+            direction: self.direction,
         })
     }
 
@@ -703,6 +713,22 @@ impl FeatureInfo for ExtrudeDef {
                 }
             }
         }
+        // A direction of its own (mitcad#539).
+        if let Some(direction) = self.direction {
+            unit_direction(direction)?;
+            // A body face goes along it too (mitcad#541).
+            if self.wrap.is_some() {
+                return Err(
+                    "a wrapped extrusion goes along the face's normals, not a direction".to_owned(),
+                );
+            }
+            if matches!(self.start, Start::Object { .. }) {
+                return Err(
+                    "an extrusion along a direction starts at the sketch plane or offset from it"
+                        .to_owned(),
+                );
+            }
+        }
         for object in self.objects() {
             object.check(ctx)?;
         }
@@ -981,11 +1007,19 @@ impl ExtrudeDef {
     ) -> Result<K::Shape, String> {
         let frame = placement.apply_frame(&sketch.frame);
         let normal = frame.normal();
-        let mut direction = if self.flip {
-            normal.map(|v| -v)
-        } else {
-            normal
+        // The sketch normal, or a direction of its own (mitcad#539) moved
+        // with the profile.
+        let along = match self.direction {
+            Some(d) => {
+                let d = unit_direction(placement.apply_vector(d))?;
+                if dot(d, normal).abs() < 1e-6 {
+                    return Err("the extrusion direction lies in the sketch plane".to_owned());
+                }
+                d
+            }
+            None => normal,
         };
+        let mut direction = if self.flip { along.map(|v| -v) } else { along };
 
         let (start, start_offset) = match &self.start {
             Start::ProfilePlane => (ExtrudeStart::Offset(0.0), 0.0),
@@ -1188,8 +1222,9 @@ impl ExtrudeDef {
 // A planar body face as the profile (mitcad#535).
 
 /// What an extrusion of a body face goes: distances on one side, both
-/// sides alike or two sides, without a taper.
-const FACE_EXTENTS: &str = "an extrusion of a body face goes a distance (one side, symmetric or two sides), without a taper";
+/// sides alike or two sides, each with its taper (mitcad#541).
+const FACE_EXTENTS: &str =
+    "an extrusion of a body face goes a distance (one side, symmetric or two sides)";
 
 /// Checks an extrusion whose profile is a body face: nothing a sketch
 /// profile has besides it, distances only, the face's body and features
@@ -1217,9 +1252,9 @@ fn check_face_profile(
     if matches!(def.start, Start::Object { .. }) {
         return Err("an extrusion of a body face starts at the face or offset from it".to_owned());
     }
-    let distance = |side: &Side| matches!(side, Side::Distance { taper: None, .. });
+    let distance = |side: &Side| matches!(side, Side::Distance { .. });
     let by_distance = match &def.extent {
-        Extent::Distance { taper: None, .. } | Extent::Symmetric { taper: None, .. } => true,
+        Extent::Distance { .. } | Extent::Symmetric { .. } => true,
         Extent::TwoSides { side1, side2 } => distance(side1) && distance(side2),
         _ => false,
     };
@@ -1254,11 +1289,15 @@ impl ExtrudeDef {
             }
         };
         let mut reversed = self.flip;
-        let (side1, side2) = match &self.extent {
-            Extent::Distance {
-                distance,
-                taper: None,
-            } => {
+        // Each side's taper (mitcad#541), none when not given.
+        let taper = |ctx: &mut EvalContext<'_, K>, t: &Option<ParamId>| -> Result<f64, String> {
+            Ok(match *t {
+                Some(id) => ctx.param(id)?,
+                None => 0.0,
+            })
+        };
+        let (side1, side2, taper1, taper2) = match &self.extent {
+            Extent::Distance { distance, taper: t } => {
                 let d = ctx.param(*distance)?;
                 if d == 0.0 {
                     return Err(format!("{} must not be zero", ctx.param_name(*distance)));
@@ -1267,38 +1306,40 @@ impl ExtrudeDef {
                 if d < 0.0 {
                     reversed = !reversed;
                 }
-                (d.abs(), None)
+                (d.abs(), None, taper(ctx, t)?, 0.0)
             }
             Extent::Symmetric {
                 distance,
                 full_length,
-                taper: None,
+                taper: t,
             } => {
                 let d = ctx.positive(*distance)?;
                 let d = if *full_length { d / 2.0 } else { d };
-                (d, Some(d))
+                let t = taper(ctx, t)?;
+                (d, Some(d), t, t)
             }
             Extent::TwoSides {
                 side1:
                     Side::Distance {
                         distance: d1,
-                        taper: None,
+                        taper: t1,
                     },
                 side2:
                     Side::Distance {
                         distance: d2,
-                        taper: None,
+                        taper: t2,
                     },
             } => {
                 // Each side goes its own way by its distance's size, as a
                 // sketch profile's; a side of length zero leaves one side.
                 let (a, b) = (ctx.param(*d1)?.abs(), ctx.param(*d2)?.abs());
+                let (t1, t2) = (taper(ctx, t1)?, taper(ctx, t2)?);
                 match (a == 0.0, b == 0.0) {
-                    (false, false) => (a, Some(b)),
-                    (false, true) => (a, None),
+                    (false, false) => (a, Some(b), t1, t2),
+                    (false, true) => (a, None, t1, 0.0),
                     (true, false) => {
                         reversed = !reversed;
-                        (b, None)
+                        (b, None, t2, 0.0)
                     }
                     (true, true) => {
                         return Err(
@@ -1309,6 +1350,8 @@ impl ExtrudeDef {
             }
             _ => return Err(FACE_EXTENTS.to_owned()),
         };
+        // A direction of its own (mitcad#541), as a unit vector.
+        let direction = self.direction.map(unit_direction).transpose()?;
         let spec = FaceExtrudeSpec {
             feature,
             body: &body,
@@ -1318,6 +1361,9 @@ impl ExtrudeDef {
             start,
             side1,
             side2,
+            direction,
+            taper1,
+            taper2,
         };
         ctx.kernel
             .extrude_face(&spec)
@@ -1357,4 +1403,16 @@ fn through_all_length<K: Kernel>(
 /// False for zero, negative and NaN values.
 pub(crate) fn is_positive(value: f64) -> bool {
     value > 0.0
+}
+
+/// An extrusion's own direction (mitcad#539) as a unit vector: finite and
+/// of some length.
+fn unit_direction(direction: [f64; 3]) -> Result<[f64; 3], String> {
+    let length = dot(direction, direction).sqrt();
+    if !length.is_finite() || length < 1e-12 {
+        return Err(format!(
+            "the extrusion direction must be a vector of some length, got {direction:?}"
+        ));
+    }
+    Ok(direction.map(|v| v / length))
 }

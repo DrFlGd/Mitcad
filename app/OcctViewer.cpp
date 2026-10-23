@@ -275,17 +275,20 @@ Quantity_Color occtColor(const QColor& color) {
 // How far a line, point or plane outside the active component (mitcad#420)
 // is faded towards the background, and how see-through its faces are.
 constexpr double kInactiveFade = 0.65;
+// How far a sketch shown only for a command (mitcad#546) is faded: a
+// little, so it reads as the same sketch that hides again.
+constexpr double kTemporaryFade = 0.3;
 constexpr double kInactivePlaneTransparency = 0.9;
 constexpr double kInactiveProfileTransparency = 0.85;
 
 // A colour faded most of the way to `paper` (the background's middle):
 // pale, but still its own hue.
-Quantity_Color inactiveColor(const Quantity_Color& color, const QColor& paper) {
+Quantity_Color inactiveColor(const Quantity_Color& color, const QColor& paper, double fade = kInactiveFade) {
   double r = 0.0;
   double g = 0.0;
   double b = 0.0;
   color.Values(r, g, b, Quantity_TOC_sRGB);
-  const auto towards = [](double from, double to) { return from + (to - from) * kInactiveFade; };
+  const auto towards = [fade](double from, double to) { return from + (to - from) * fade; };
   return Quantity_Color(towards(r, paper.redF()), towards(g, paper.greenF()), towards(b, paper.blueF()),
                         Quantity_TOC_sRGB);
 }
@@ -1804,6 +1807,7 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
     look.centerline = entity.centerline;
     look.constrained = entity.constrained;
     look.reference = entity.reference;
+    look.temporary = entity.temporary;
     PickInfo info;
     info.item = {isPoint ? SelectKind::SketchPoint : SelectKind::SketchCurve, entity.sketch,
                  entity.id, entity.geometry};
@@ -1884,8 +1888,11 @@ void OcctViewer::styleSketchEntity(const occ::handle<AIS_Shape>& object, const S
                               : look.centerline   ? (m_backgroundDark ? kCenterlineColorDark : kCenterlineColor)
                               : look.constrained  ? (m_backgroundDark ? kConstrainedColorDark : kConstrainedColor)
                                                   : kSketchColor;
-  // Pale outside the active component (mitcad#420).
-  const Quantity_Color color = drawnInactive(object) ? inactiveColor(own, m_paper) : own;
+  // Pale outside the active component (mitcad#420); a little lighter when
+  // shown only for a command (mitcad#546).
+  const Quantity_Color color = drawnInactive(object) ? inactiveColor(own, m_paper)
+                               : look.temporary      ? inactiveColor(own, m_paper, kTemporaryFade)
+                                                     : own;
   if (look.point) {
     setPointStyle(object, color, Aspect_TOM_O_POINT, 1.0);
   } else {
@@ -3197,10 +3204,24 @@ void OcctViewer::logCamera() {
                                 .arg(step * height() / current->ViewDimensions().Y(), 0, 'f', 1);
     }
   }
+  // Where the camera looks from and how far it shows: a zoom or a pan keeps
+  // the direction (no new camera line) but moves the places listeners log
+  // (the datums' pick places), so it rests too.
+  const gp_Pnt eye = current->Eye();
+  const QString view = QStringLiteral("%1 %2 %3 %4")
+                           .arg(eye.X(), 0, 'g', 9)
+                           .arg(eye.Y(), 0, 'g', 9)
+                           .arg(eye.Z(), 0, 'g', 9)
+                           .arg(current->Scale(), 0, 'g', 9);
   if (text == m_loggedCamera) {
+    if (view != m_restedView) {
+      m_restedView = view;
+      emit cameraRested();
+    }
     return;
   }
   m_loggedCamera = text;
+  m_restedView = view;
   updateCubeArrows();
   // Only on request: every place of the cube's corner is tried. Before the
   // camera's line, so that the places are there when a test reads it. Not

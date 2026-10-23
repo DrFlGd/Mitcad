@@ -114,6 +114,13 @@
 #      on the wall's side face starts a wall square from it on the slab's
 #      top; on its end face a corner with Butt, in line with Straight (the
 #      Corner's icon buttons), placed in line.
+#  19. A wall across a long room (mitcad#536, the owner's case): the room's
+#      walls one body (mitcad-cli); a start on a long wall's inner face,
+#      Length Auto: it previews and is placed as wide as the room, ending at
+#      the opposite face of the same body, its plates longer than the
+#      timber's longest spliced over studs; the inspection names what the
+#      run met and the length, also when a height its studs cannot have
+#      refuses the preview.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-timber-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-timber-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
@@ -1842,6 +1849,66 @@ Ui-Mark
 Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
 Ui-ExpectNew 'Placed frame Wall 1 (wall, lead ' 'the wall placed in line with the solid wall' 60
 Ui-ExpectNew 'Frame junction: Wall 1: in line beyond the end face of ' 'placed in line beyond its end face'
+Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
+
+Write-Host '--- 19. The owner''s case of mitcad#536: across a long room, Length Auto, its plates spliced'
+# A slab (F1) and a room's walls as one body (F2): a box 10400 x 8219 x
+# 2700 with the room, 10000 x 7819 inside, cut out of it (F3). A start on
+# a long wall's inner face, Length Auto: the run meets the opposite wall,
+# a face of the same body, 7819 mm on; 7819 mm is longer than the timber's
+# longest (6000 mm), so each plate is three pieces of at most 3600 mm (its
+# longest stock length), the joints over the studs at 3600 and 7200.
+$roomJson = Join-Path $work 'long-room.json'
+$roomFile = Join-Path $work 'long-room.mitcad'
+Set-Content -Encoding ascii $roomJson @'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-700, -700],
+    "length": 11400, "width": 9219, "height": 200, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-200, -200],
+    "length": 10400, "width": 8219, "height": 2700, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [0, 0],
+    "length": 10000, "width": 7819, "height": 2800, "operation": "cut", "participants": ["F2.b0"]}}
+]
+'@
+Run-Cli 'run long-room' @('run', $roomJson, '--save', $roomFile)
+Ui-StartApp 'timber-long-room' @('--open', $roomFile)
+Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
+Ui-Mark
+Ui-Step 'Wall (F7)'                      { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Wall started' 'Wall started'
+# The faces of the room's body clicked in turn until one runs across the
+# room (a long wall's inner face; the others run 10000 mm or meet nothing).
+Solid-Face 'frame wall Wall 1, wall 7819 x 2400 mm' 'a wall from a long wall''s inner face, across the room'
+Expect-Inspect 'Wall' @('frame wall Wall 1, wall 7819 x 2400 mm', '3 bottom plate', '3 top plate', '; length auto',
+  '; Length Auto: the run met a face of ', ', the wall 7819 mm',
+  '; spliced top plate 3600 7200, bottom plate 3600 7200') `
+  'previewed across the room, the run''s end named, each plate three pieces over the studs at 3600 and 7200'
+Expect-Inspect 'Wall' @(', to a face of ', ', 7819 mm', ', base on ') 'the junction: to the opposite wall''s face, on the slab'
+# Refused (its studs 6904 mm, longer than the timber's longest): the panel
+# still names the wall, its length and what the run met.
+Ui-Mark
+Ui-Step '7000 mm high'                   { Ui-TypeIn 'Panel Wall input frame_height' '7000' }
+Ui-ExpectNew 'Frame preview refused: frame wall Wall 1, wall 7819 x 7000 mm, 0 member(s)' `
+  'the refused preview names the wall and the length worked out'
+$line = Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Frame preview refused: ') } |
+  Select-Object -Last 1
+if (-not "$line".Contains('; Length Auto: the run met a face of ')) { Ui-Fail "the refused preview without the run's end: $line" }
+if (-not "$line".Contains("longer than the part's longest")) { Ui-Fail "the refused preview without its reason: $line" }
+Write-Host 'ok   refused, with what the run met and why'
+Ui-Mark
+Ui-Step '2400 mm high again'             { Ui-TypeIn 'Panel Wall input frame_height' '2400' }
+Expect-Inspect 'Wall' @('frame wall Wall 1, wall 7819 x 2400 mm', '; spliced top plate 3600 7200, bottom plate 3600 7200') `
+  '2400 mm high again: previewed'
+Ui-Mark
+Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
+Ui-ExpectNew 'Placed frame Wall 1 (wall, lead ' 'the wall placed across the room' 60
+Ui-ExpectNew 'Frame spliced: top plate 3600 7200, bottom plate 3600 7200' 'placed with its plates spliced'
+$line = Ui-LogLines | Select-Object -Skip $script:UiMark |
+  Where-Object { $_.StartsWith('Frame junction: Wall 1: from a face of ') } | Select-Object -Last 1
+if (-not ("$line".Contains(', to a face of ') -and "$line".Contains(', 7819 mm'))) {
+  Ui-Fail "Wall 1 placed without the face its run met: $line"
+}
+Write-Host "ok   $line"
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 
 Ui-Finish 'UI Windows timber test'

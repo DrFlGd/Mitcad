@@ -215,5 +215,7 @@ void fillet_pierced_tests();
 void move_faces_tests();
 // A planar face of a body extruded as a profile (mitcad#535).
 void face_extrude_tests();
+// A planar face of a body revolved as a profile (mitcad#539).
+void face_revolve_tests();
 
 } // namespace test

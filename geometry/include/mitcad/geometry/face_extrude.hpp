@@ -7,6 +7,8 @@
 #include <optional>
 #include <string>
 
+#include <gp_Dir.hxx>
+
 #include "mitcad/geometry/shape.hpp"
 
 namespace mitcad::geometry {
@@ -17,6 +19,15 @@ namespace mitcad::geometry {
 // normal, `distance1` along the sweep and, with `distance2`, that much
 // against it (both > 0). The body is left as it is: the prism shares none
 // of its sub-shapes.
+//
+// mitcad#541: with `direction` the sweep goes along it (against it when
+// `reversed`) instead of the normal, the distances measured along it; it
+// may not lie in the face's plane. `taper1` and `taper2` (radians, each
+// side's) lean the sides as an extrusion's taper does: positive widens the
+// face away from it (its outside grows, its holes shrink), along a
+// direction by t tan(taper) in the face's plane at distance t. A face that
+// is not planar (a curved face) needs a direction, and takes no taper and
+// no start offset: its prism along the direction.
 //
 // Faces are named after `feature`, as an extrusion's:
 //   side(<edge>)   swept from an edge of the face, by the edge's name in
@@ -35,6 +46,9 @@ struct FaceExtrudeSpec {
   double start_offset = 0.0;
   double distance1 = 0.0;
   std::optional<double> distance2;
+  std::optional<gp_Dir> direction;
+  double taper1 = 0.0;
+  double taper2 = 0.0;
 };
 
 ShapePtr extrude_face(const Shape& body, const FaceExtrudeSpec& spec);

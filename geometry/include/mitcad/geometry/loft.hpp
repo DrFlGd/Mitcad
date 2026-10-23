@@ -6,9 +6,11 @@
 // conditions at the first and the last section. Lengths are millimetres,
 // angles radians.
 
+#include <optional>
 #include <string>
 #include <vector>
 
+#include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 
 #include "mitcad/geometry/path_sweep.hpp"
@@ -69,6 +71,18 @@ struct LoftSpec {
   std::vector<Path> rails;
   LoftEnd start;
   LoftEnd end;
+  // Along a centre line (mitcad#543): how the sections turn along it, as a
+  // sweep's frame (path_sweep.hpp, SweepSpec): the Frenet frame, towards an
+  // auxiliary curve (the fraction rule with `curvilinear`) or about a
+  // constant binormal; none: the sections keep their angle to the centre
+  // line. Framed lofts are approximated within 1e-7 mm.
+  bool frenet = false;
+  Path auxiliary;
+  bool curvilinear = false;
+  std::optional<gp_Dir> constant_binormal;
+  // Along a centre line (mitcad#547): the sections do not turn, they only
+  // move along it (a sweep's parallel orientation); not with a frame.
+  bool parallel = false;
 };
 
 ShapePtr loft(const LoftSpec& spec);

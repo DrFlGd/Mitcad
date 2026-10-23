@@ -41,6 +41,7 @@
 #include <GeomFill_LocationLaw.hxx>
 #include <NCollection_DataMap.hxx>
 #include <NCollection_HArray2.hxx>
+#include <NCollection_IndexedMap.hxx>
 #include <NCollection_Map.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS_Compound.hxx>
@@ -599,6 +600,12 @@ constexpr double kBesideGuide = 1.0;
 // The tolerance of the swept surfaces (`detail::pipe_shell`'s default), mm.
 constexpr double kPipeTolerance = 1.0e-4;
 
+// The tolerance of a sweep along a Frenet, auxiliary or constant binormal
+// frame (mitcad#539), mm: OCCT's confusion, as FreeCAD's pipes in those
+// modes are approximated (at 1e-4 a bar turned by an auxiliary spine
+// held 800.0015 of its 800 mm³, 1.9e-6 off FreeCAD's).
+constexpr double kFramedTolerance = 1.0e-7;
+
 // How far the surface a path sweeps along a fixed binormal reaches from
 // the path (mm; mitcad#397: only its normal along the path is used).
 constexpr double kBinormalReach = 10.0;
@@ -820,9 +827,66 @@ ShapePtr guided_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace
 
 } // namespace
 
-ShapePtr sweep(const SweepSpec& spec) {
-  if (spec.regions.empty()) {
+namespace {
+
+// A planar face of a body as a sweep's profile (mitcad#543): a copy of the
+// face (the sweep shares nothing with the body), its edges named after the
+// body's (an edge without a name by its index among the face's edges), its
+// caps keyed by the stored reference; `frame` becomes the face's plane, its
+// normal the face's outward one.
+detail::SweepFace profile_face_of(const SweepSpec& spec, Frame& frame) {
+  const Shape& body = *spec.profile_body;
+  const std::vector<int> found = body.find_faces(spec.profile_face);
+  if (found.empty()) {
+    throw std::invalid_argument("the body has no face " + spec.profile_face);
+  }
+  if (found.size() > 1) {
+    throw std::invalid_argument(spec.profile_face + " names " + std::to_string(found.size()) +
+                                " faces; a sweep takes one face");
+  }
+  const TopoDS_Face& face = body.face(found.front());
+  TopLoc_Location location;
+  if (BRep_Tool::Surface(face, location).IsNull()) {
+    throw std::invalid_argument("face " + spec.profile_face +
+                                " has no surface (a mesh body's triangles): a sweep takes a planar face");
+  }
+  const BRepAdaptor_Surface surface(face);
+  if (surface.GetType() != GeomAbs_Plane) {
+    throw std::invalid_argument("face " + spec.profile_face + " is not planar: a sweep takes a planar face");
+  }
+  const detail::InputCopy copy(face);
+  detail::SweepFace profile{TopoDS::Face(copy.shape()), {}, {spec.profile_key}};
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edges;
+  TopExp::MapShapes(face, TopAbs_EDGE, edges);
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    const TopoDS_Edge& edge = TopoDS::Edge(edges(i));
+    const std::optional<std::string> name = body.name_of_edge(edge);
+    profile.edges.emplace_back(TopoDS::Edge(copy.of(edge)),
+                               face_name(spec.feature, "side", name ? *name : std::to_string(i - 1)));
+  }
+  const gp_Pln plane = surface.Plane();
+  gp_Dir normal = plane.Axis().Direction();
+  if (face.Orientation() == TopAbs_REVERSED) {
+    normal.Reverse();
+  }
+  frame.origin = plane.Location();
+  frame.x_axis = plane.XAxis().Direction();
+  frame.y_axis = normal.Crossed(frame.x_axis);
+  return profile;
+}
+
+} // namespace
+
+ShapePtr sweep(const SweepSpec& requested) {
+  // (A body face as the profile, mitcad#543, sets the frame to its plane.)
+  SweepSpec spec = requested;
+  if (spec.regions.empty() && !spec.profile_body) {
     throw std::invalid_argument("no profiles to sweep");
+  }
+  if (spec.profile_body && (spec.twist != 0.0 || spec.taper != 0.0 || spec.scale != 1.0 || !spec.rail.empty() ||
+                            !spec.rail2.empty() || !spec.guide.empty())) {
+    throw std::invalid_argument(
+        "unsupported: a sweep of a body face with twists, tapers, end scales, guide rails or guide surfaces");
   }
   detail::require_finite("twist angle", spec.twist);
   detail::require_finite("taper angle", spec.taper);
@@ -834,7 +898,8 @@ ShapePtr sweep(const SweepSpec& spec) {
   }
   return detail::run("sweep", [&] {
     const std::vector<detail::SweepFace> faces =
-        detail::merged(detail::region_faces(spec.feature, spec.frame, spec.regions));
+        spec.profile_body ? std::vector<detail::SweepFace>{profile_face_of(spec, spec.frame)}
+                          : detail::merged(detail::region_faces(spec.feature, spec.frame, spec.regions));
     const Spine path(detail::path_wire(spec.path));
     const gp_Pln plane(spec.frame.origin, spec.frame.normal());
     double at = path.locate(plane, center_of(box_of(faces)));
@@ -877,6 +942,18 @@ ShapePtr sweep(const SweepSpec& spec) {
     if (spec.binormal && (varied || on_surface || spec.orientation == SweepOrientation::Parallel)) {
       throw std::invalid_argument(
           "unsupported: a fixed binormal with twists, tapers, guide rails, guide surfaces or parallel orientation");
+    }
+    // A Frenet or auxiliary frame (mitcad#539), likewise.
+    const int frames = int(spec.frenet) + int(!spec.auxiliary.empty()) + int(spec.constant_binormal.has_value());
+    const bool framed = frames > 0;
+    if (frames > 1) {
+      throw std::invalid_argument(
+          "a sweep follows the Frenet frame, an auxiliary curve or a constant binormal, not both");
+    }
+    if (framed && (varied || on_surface || spec.binormal || spec.orientation == SweepOrientation::Parallel)) {
+      throw std::invalid_argument(
+          "unsupported: a Frenet or auxiliary frame with twists, tapers, guide rails, guide surfaces, a fixed "
+          "binormal or parallel orientation");
     }
     // (The frame is the tangent, binormal x tangent and the binormal square
     // to the tangent: it has none where the path runs along the binormal.)
@@ -941,16 +1018,25 @@ ShapePtr sweep(const SweepSpec& spec) {
         if (spec.binormal) {
           mode.kind = PipeMode::Kind::Support;
           mode.support = binormal_support(part, *spec.binormal, spine);
+        } else if (spec.frenet) {
+          mode.kind = PipeMode::Kind::Frenet;
+        } else if (!spec.auxiliary.empty()) {
+          mode.kind = PipeMode::Kind::Auxiliary;
+          mode.auxiliary = detail::path_wire(spec.auxiliary);
+          mode.curvilinear = spec.curvilinear;
+        } else if (spec.constant_binormal) {
+          mode.kind = PipeMode::Kind::Binormal;
+          mode.binormal = *spec.constant_binormal;
         }
         std::vector<ShapePtr> parts;
         for (const detail::SweepFace& face : faces) {
           const auto [first, last] = cap_order(range, detail::cap_names(spec.feature, "start", face),
                                                detail::cap_names(spec.feature, "end", face));
           const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
-          const ShapePtr outer = detail::pipe_shell(loops.front(), spine, mode, first, last);
+          const ShapePtr outer = detail::pipe_shell(loops.front(), spine, mode, first, last, framed ? kFramedTolerance : kPipeTolerance);
           std::vector<ShapePtr> holes;
           for (std::size_t l = 1; l < loops.size(); ++l) {
-            holes.push_back(detail::pipe_shell(loops[l], spine, mode, {}, {}));
+            holes.push_back(detail::pipe_shell(loops[l], spine, mode, {}, {}, framed ? kFramedTolerance : kPipeTolerance));
           }
           parts.push_back(detail::with_holes(outer, holes, "the sweep"));
         }

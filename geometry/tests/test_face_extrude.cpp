@@ -202,6 +202,150 @@ void test_refusals() {
                     "must be greater than zero"));
 }
 
+// mitcad#541: tapers, directions and curved faces.
+
+// The volume of a 60 x 40 rectangle tapered by t = tan(taper) over the
+// height h: its sides grow by x t each at height x.
+double tapered_block(double h, double t) {
+  return 2400.0 * h + 100.0 * t * h * h + 4.0 / 3.0 * t * t * h * h * h;
+}
+
+// A 60 x 40 x 20 block's top extruded 5 with a taper of 5 degrees (wider
+// away from the top), then 5 at +5 degrees and 3 at -5 degrees to two
+// sides; the caps keep their names and the face between the sides goes.
+void test_tapered_face() {
+  const ShapePtr block = extrude("F2", {rectangle(1, 0, 0, 60, 40)}, 0, 20);
+  const std::string top = end_cap("F2", 1);
+  const std::string start = face_name("F3", "start", top);
+  const std::string end = face_name("F3", "end", top);
+  const double taper = 5.0 * kPi / 180.0;
+  const double t = std::tan(taper);
+  double x0, y0, z0, x1, y1, z1;
+
+  FaceExtrudeSpec one = spec_of(top, 5.0);
+  one.taper1 = taper;
+  const ShapePtr out = extrude_face(*block, one);
+  CHECK(BRepCheck_Analyzer(out->occt()).IsValid());
+  CHECK_NEAR_TOL(volume_of(*out), tapered_block(5.0, t), 1e-6);
+  bounds(out->occt(), x0, y0, z0, x1, y1, z1);
+  CHECK_NEAR_TOL(x0, -5.0 * t, 1e-7);
+  CHECK_NEAR_TOL(x1, 60.0 + 5.0 * t, 1e-7);
+  CHECK_NEAR_TOL(z0, 20.0, 1e-7);
+  CHECK_NEAR_TOL(z1, 25.0, 1e-7);
+  CHECK(faces_named(*out, start) == 1);
+  CHECK(faces_named(*out, end) == 1);
+  CHECK_NEAR_TOL(face_middle(*out, end).Z(), 25.0, 1e-7);
+
+  FaceExtrudeSpec two = spec_of(top, 5.0);
+  two.distance2 = 3.0;
+  two.taper1 = taper;
+  two.taper2 = -taper;
+  const ShapePtr both = extrude_face(*block, two);
+  CHECK(BRepCheck_Analyzer(both->occt()).IsValid());
+  CHECK_NEAR_TOL(volume_of(*both), tapered_block(5.0, t) + tapered_block(3.0, -t), 1e-6);
+  bounds(both->occt(), x0, y0, z0, x1, y1, z1);
+  CHECK_NEAR_TOL(z0, 17.0, 1e-7);
+  CHECK_NEAR_TOL(z1, 25.0, 1e-7);
+  CHECK_NEAR_TOL(face_middle(*both, start).Z(), 25.0, 1e-7);
+  CHECK_NEAR_TOL(face_middle(*both, end).Z(), 17.0, 1e-7);
+  CHECK(faces_named(*both, face_name("F3", "mid", top)) == 0);
+  CHECK(edge_names_unique(*both));
+
+  CHECK_NEAR(volume_of(*block), 60.0 * 40.0 * 20.0);
+}
+
+// The block's top extruded 5 along (0, 1, 1): a slanted prism of the
+// top's area times 5 cos 45 degrees, its centre 2.5 along the direction
+// from the top's middle; tapered along the direction, its top grows in
+// the top's plane by 5 tan(taper).
+void test_face_along_a_direction() {
+  const ShapePtr block = extrude("F2", {rectangle(1, 0, 0, 60, 40)}, 0, 20);
+  const std::string top = end_cap("F2", 1);
+  const gp_Dir along(0.0, 1.0, 1.0);
+  const double c = std::sqrt(0.5);
+  FaceExtrudeSpec slanted = spec_of(top, 5.0);
+  slanted.direction = along;
+  const ShapePtr out = extrude_face(*block, slanted);
+  CHECK(BRepCheck_Analyzer(out->occt()).IsValid());
+  CHECK_NEAR_TOL(volume_of(*out), 2400.0 * 5.0 * c, 1e-6);
+  const gp_Pnt middle(30.0, 20.0, 20.0);
+  CHECK(centre_of(*out).Distance(middle.Translated(gp_Vec(along) * 2.5)) < 1e-7);
+  CHECK(face_middle(*out, face_name("F3", "end", top)).Distance(middle.Translated(gp_Vec(along) * 5.0)) <
+        1e-7);
+
+  // Reversed: into the block along -(0, 1, 1).
+  FaceExtrudeSpec into = slanted;
+  into.reversed = true;
+  const ShapePtr in = extrude_face(*block, into);
+  CHECK(centre_of(*in).Distance(middle.Translated(gp_Vec(along) * -2.5)) < 1e-7);
+
+  // Tapered along the direction: the same height, the top grown in its
+  // plane by 5 tan(taper) (the volume of the upright taper over the
+  // height 5 c with the tangent over c).
+  const double taper = 5.0 * kPi / 180.0;
+  FaceExtrudeSpec tapered = slanted;
+  tapered.taper1 = taper;
+  const ShapePtr grown = extrude_face(*block, tapered);
+  CHECK(BRepCheck_Analyzer(grown->occt()).IsValid());
+  CHECK_NEAR_TOL(volume_of(*grown), tapered_block(5.0 * c, std::tan(taper) / c), 1e-6);
+  double x0, y0, z0, x1, y1, z1;
+  bounds(grown->occt(), x0, y0, z0, x1, y1, z1);
+  CHECK_NEAR_TOL(z1, 20.0 + 5.0 * c, 1e-7);
+  CHECK_NEAR_TOL(x1, 60.0 + 5.0 * std::tan(taper), 1e-7);
+
+  // A direction in the face's plane.
+  FaceExtrudeSpec flat = spec_of(top, 5.0);
+  flat.direction = gp_Dir(1.0, 0.0, 0.0);
+  CHECK(throws_with([&] { extrude_face(*block, flat); }, "lies in the plane"));
+}
+
+// A quarter of a disc of radius 5 extruded 10: its arc's side, a quarter
+// of a cylinder, extruded 5 along (1, 1, 0): a prism whose cross-section
+// across the direction is the arc's chord r sqrt(2) by 10. Without a
+// direction, or tapered, it is refused.
+void test_curved_face_along_a_direction() {
+  Region quarter;
+  quarter.name = "r{c1,c2,c3}";
+  Loop loop;
+  Segment a;
+  a.name = "c1";
+  a.kind = SegmentKind::Line;
+  a.start = gp_Pnt2d(0.0, 0.0);
+  a.end = gp_Pnt2d(5.0, 0.0);
+  Segment arc;
+  arc.name = "c2";
+  arc.kind = SegmentKind::Arc;
+  arc.start = gp_Pnt2d(5.0, 0.0);
+  arc.end = gp_Pnt2d(0.0, 5.0);
+  arc.center = gp_Pnt2d(0.0, 0.0);
+  arc.radius = 5.0;
+  arc.start_angle = 0.0;
+  arc.end_angle = kPi / 2.0;
+  Segment b;
+  b.name = "c3";
+  b.kind = SegmentKind::Line;
+  b.start = gp_Pnt2d(0.0, 5.0);
+  b.end = gp_Pnt2d(0.0, 0.0);
+  loop.segments = {a, arc, b};
+  quarter.loops = {loop};
+  const ShapePtr body = extrude("F2", {quarter}, 0, 10);
+  const std::string curved = face_name("F2", "side", "c2");
+  CHECK(faces_named(*body, curved) == 1);
+
+  FaceExtrudeSpec along = spec_of(curved, 5.0);
+  along.direction = gp_Dir(1.0, 1.0, 0.0);
+  const ShapePtr out = extrude_face(*body, along);
+  CHECK(BRepCheck_Analyzer(out->occt()).IsValid());
+  CHECK_NEAR_TOL(volume_of(*out), 5.0 * std::sqrt(2.0) * 10.0 * 5.0, 1e-6);
+  CHECK(faces_named(*out, face_name("F3", "start", curved)) == 1);
+  CHECK(faces_named(*out, face_name("F3", "end", curved)) == 1);
+
+  CHECK(throws_with([&] { extrude_face(*body, spec_of(curved, 5.0)); }, "is not planar"));
+  FaceExtrudeSpec tapered = along;
+  tapered.taper1 = 0.1;
+  CHECK(throws_with([&] { extrude_face(*body, tapered); }, "is not planar"));
+}
+
 } // namespace
 
 void face_extrude_tests() {
@@ -209,6 +353,9 @@ void face_extrude_tests() {
   guarded("test_annular_face_keeps_its_hole", test_annular_face_keeps_its_hole);
   guarded("test_oblique_face_uses_its_own_normal", test_oblique_face_uses_its_own_normal);
   guarded("test_refusals", test_refusals);
+  guarded("test_tapered_face", test_tapered_face);
+  guarded("test_face_along_a_direction", test_face_along_a_direction);
+  guarded("test_curved_face_along_a_direction", test_curved_face_along_a_direction);
 }
 
 } // namespace test

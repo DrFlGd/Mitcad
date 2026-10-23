@@ -407,7 +407,10 @@ design in a project.
   every recompute and `Kernel::extrude_face` sweeps a copy of it, holes
   kept, along its outward normal (`geometry/src/face_extrude.cpp`); the
   side faces are named after the face's edges, the caps after the face
-  ([commands.md](../core/model/src/api/commands.md), "extrude").
+  ([commands.md](../core/model/src/api/commands.md), "extrude"). A
+  revolution takes one the same way (mitcad#539, `features/revolve.rs`,
+  `Kernel::revolve_face`, `geometry/src/face_revolve.cpp`; the FreeCAD
+  import's face profiles), by angles only.
 - **BUILD** (mitcad#375, `core/model/src/build/`): the library parts the
   BUILD tab places are kept once as the design's **library sources**
   (`library_sources`: the library record, the design's text, inside a
@@ -456,7 +459,10 @@ design in a project.
   junction search reads a timber member's material as its box clipped by
   its end cuts (mitcad#521, `build/junctions.rs`), so cut ends meet sides
   by their cut faces and boxes overlapping where no material is make no
-  junction.
+  junction. A wall's plate longer than its timber's longest is laid out
+  as pieces over the studs (mitcad#536, `Splicing` in `frames.rs`): the
+  studs are planned first, the plates' joints chosen over them (a backing
+  stud added where none is in reach), and the pieces are ordinary members.
 - **Timber fastener seating** (mitcad#512, `build/wood.rs`): the library's
   `wood.seat` selects a head-top or bearing frame. Legacy axis-aligned
   wood screws and nails infer the head-top plane from evaluated body
@@ -1060,7 +1066,11 @@ not recompute.
   leaves them, a committed one is an undo step of its own after them;
   `CommandSession::runVisibility`, mitcad#295). Create Sketch shows the
   origin planes for its pick only while the design has no component but
-  the active one and a root without bodies (mitcad#294).
+  the active one and a root without bodies (mitcad#294). A command shows
+  the sketches it uses for its time, as if their light bulbs were on (an
+  edited feature's `sketches`, a new command's starting profiles; a view
+  state of the window, `view/CommandSketches.hpp`, never a model command:
+  mitcad#546).
   In the native macOS Browser, Return/Enter activates the selected row
   before document confirmation; a row's text editor keeps Return while
   renaming. Command-W dismisses command and timeline search popovers,

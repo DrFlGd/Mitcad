@@ -383,13 +383,6 @@ fn options_a_face_extrusion_has_not_are_refused() {
     let mut thin = base.clone();
     thin["thin"] = json!({"location": "side1", "thickness": 1});
     refused(&mut b.doc, thin, "no thin walls");
-    let tapered = face_extrusion(
-        b.body,
-        &top,
-        json!({"type": "distance", "distance": 5, "taper": 0.1}),
-        "join",
-    );
-    refused(&mut b.doc, tapered, "without a taper");
     let through = face_extrusion(b.body, &top, json!({"type": "through_all"}), "cut");
     refused(&mut b.doc, through, "goes a distance");
     let mut from_object = base.clone();
@@ -406,4 +399,83 @@ fn options_a_face_extrusion_has_not_are_refused() {
         "join",
     );
     assert!(b.doc.add_feature(&def(missing), None).is_err());
+}
+
+// Tapers and directions of a face's extrusion (mitcad#541).
+
+#[test]
+fn a_face_extrusion_tapers_and_goes_along_a_direction() {
+    let mut b = block();
+    let top = top(&b);
+    // Tapered on one side, then on two sides each by its own.
+    let uid = add(
+        &mut b.doc,
+        face_extrusion(
+            b.body,
+            &top,
+            json!({"type": "distance", "distance": 5, "taper": 0.1}),
+            "new_body",
+        ),
+    );
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        format!("extrude_face F3 {top} key {top} from 0: 5 taper 0.1 0")
+    );
+    let two = face_extrusion(
+        b.body,
+        &top,
+        json!({"type": "two_sides",
+               "side1": {"type": "distance", "distance": 5, "taper": 0.1},
+               "side2": {"type": "distance", "distance": 2, "taper": -0.05}}),
+        "new_body",
+    );
+    b.doc.edit_feature(uid, &def(two)).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        format!("extrude_face F3 {top} key {top} from 0: 5; 2 taper 0.1 -0.05")
+    );
+    // Along a direction of its own (a unit vector reaches the kernel),
+    // reversed by flip.
+    let mut along = face_extrusion(b.body, &top, distance(5.0), "new_body");
+    along["direction"] = json!([0.0, 0.0, 2.0]);
+    along["flip"] = json!(true);
+    b.doc.edit_feature(uid, &def(along)).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        format!("extrude_face F3 {top} key {top} reversed from 0: 5 along [0, 0, 1]")
+    );
+    // A direction without length is refused.
+    let mut zero = face_extrusion(b.body, &top, distance(5.0), "new_body");
+    zero["direction"] = json!([0.0, 0.0, 0.0]);
+    assert!(b.doc.edit_feature(uid, &def(zero)).is_err());
+}
+
+#[test]
+fn a_curved_face_extrudes_along_a_direction_only() {
+    let mut b = block();
+    let side = "F2:side(c1[c4,c2])";
+    b.doc.kernel().surfaces.borrow_mut().insert(
+        side.to_owned(),
+        SurfaceGeometry::Cylinder {
+            origin: [0.0, 0.0, 0.0],
+            axis: [0.0, 0.0, 1.0],
+            radius: 5.0,
+        },
+    );
+    let mut along = face_extrusion(b.body, side, distance(5.0), "new_body");
+    along["direction"] = json!([0.0, -1.0, 0.0]);
+    let uid = add(&mut b.doc, along.clone());
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        format!("extrude_face F3 {side} key {side} from 0: 5 along [0, -1, 0]")
+    );
+    // With a taper it is refused by the kernel.
+    along["extent"] = json!({"type": "distance", "distance": 5, "taper": 0.1});
+    b.doc.edit_feature(uid, &def(along)).unwrap();
+    let why = error(&b.doc, uid);
+    assert!(why.contains("is not planar"), "{why}");
 }

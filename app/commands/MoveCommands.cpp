@@ -99,6 +99,65 @@ QString occurrencePath(const QString& occurrence, const CommandContext& context)
   }
 }
 
+// The names of the occurrences by their paths ("O1/O4" → "Screw:1").
+QHash<QString, QString> occurrenceNames(const CommandContext& context) {
+  QHash<QString, QString> names;
+  std::function<void(const QJsonArray&, const QString&)> walk = [&](const QJsonArray& tree, const QString& prefix) {
+    for (const QJsonValue& value : tree) {
+      const QJsonObject node = value.toObject();
+      const QString uid = node.value(QStringLiteral("uid")).toString();
+      const QString path = prefix.isEmpty() ? uid : prefix + QLatin1Char('/') + uid;
+      names.insert(path, node.value(QStringLiteral("name")).toString(path));
+      walk(node.value(QStringLiteral("children")).toArray(), path);
+    }
+  };
+  try {
+    walk(context.queryObject({{QStringLiteral("query"), QStringLiteral("components")}})
+             .value(QStringLiteral("occurrences"))
+             .toArray(),
+         QString());
+  } catch (const std::exception&) {
+  }
+  return names;
+}
+
+// Combine's tools by name once one is picked in another occurrence than the
+// target: each such tool by its occurrence (two screws of one part,
+// "Screw:1, Screw:2"; with its body when the occurrence gives two tools),
+// the others by their bodies (mitcad#544). Empty otherwise: the panel
+// counts them.
+QString combineToolsText(const Selection& tools, const CommandState& state, const CommandContext& context) {
+  const Selection& targets = state.items(QStringLiteral("target"));
+  const QString here = targets.isEmpty() ? QString() : targets.first().occurrence;
+  const auto elsewhere = [&here](const SelectionItem& tool) {
+    return !tool.occurrence.isEmpty() && tool.occurrence != here;
+  };
+  if (std::none_of(tools.begin(), tools.end(), elsewhere)) {
+    return QString();
+  }
+  const QHash<QString, QString> occurrences = occurrenceNames(context);
+  const auto bodyName = [&context](const QString& uid) {
+    try {
+      return context.bodyName(uid);
+    } catch (const std::exception&) {
+      return uid;
+    }
+  };
+  QStringList names;
+  for (const SelectionItem& tool : tools) {
+    if (!elsewhere(tool)) {
+      names << bodyName(tool.owner);
+      continue;
+    }
+    const QString occurrence = occurrences.value(tool.occurrence, tool.occurrence);
+    const bool shared = std::count_if(tools.begin(), tools.end(), [&tool](const SelectionItem& other) {
+                          return other.occurrence == tool.occurrence;
+                        }) > 1;
+    names << (shared ? QStringLiteral("%1 (%2)").arg(bodyName(tool.owner), occurrence) : occurrence);
+  }
+  return names.join(QStringLiteral(", "));
+}
+
 // A free move's handles: an arrow along a model axis or a ring about it.
 std::function<std::optional<Manipulator>(const CommandState&, const CommandContext&)>
 freeHandle(int axis, bool turn) {
@@ -755,9 +814,14 @@ CommandDef combineCommand(const CommandContext& context) {
   def.pinned = true;
   def.keywords = {QStringLiteral("boolean"), QStringLiteral("union"), QStringLiteral("subtract")};
   def.featureType = QStringLiteral("combine");
+  // A pick per occurrence: two screws of one part are two tools, listed by
+  // their occurrences (mitcad#544).
+  InputDef toolsInput = selectionInput(QStringLiteral("tools"), QObject::tr("Tool Bodies"), SelectKind::Body, 1, 0);
+  toolsInput.withoutMeshes();
+  toolsInput.itemsText = combineToolsText;
   def.inputs = {
       selectionInput(QStringLiteral("target"), QObject::tr("Target Body"), SelectKind::Body, 1, 1).withoutMeshes(),
-      selectionInput(QStringLiteral("tools"), QObject::tr("Tool Bodies"), SelectKind::Body, 1, 0).withoutMeshes(),
+      toolsInput,
       choiceInput(QStringLiteral("operation"), QObject::tr("Operation"),
                   {{QStringLiteral("join"), QStringLiteral("Join")},
                    {QStringLiteral("cut"), QStringLiteral("Cut")},
@@ -772,28 +836,28 @@ CommandDef combineCommand(const CommandContext& context) {
     const SelectionItem& targetItem = state.items(QStringLiteral("target")).first();
     const QString target = targetItem.owner;
     // A tool picked in another occurrence than the target (a body of
-    // another component) is read where it was picked, through a link
-    // (commands.md, "combine", mitcad#104).
-    QJsonObject links;
+    // another component) is read where it was picked: a body in that
+    // occurrence, once per occurrence (commands.md, "combine", mitcad#104,
+    // mitcad#544).
+    QJsonArray tools;
     for (const SelectionItem& tool : state.items(QStringLiteral("tools"))) {
       if (tool.owner == target) {
         return Built::failure(QObject::tr("The target cannot be a tool too."), QStringLiteral("tools"));
       }
       if (tool.occurrence != targetItem.occurrence) {
-        QJsonObject link{{QStringLiteral("source"), tool.occurrence}};
+        QJsonObject entry{{QStringLiteral("body"), tool.owner}, {QStringLiteral("occurrence"), tool.occurrence}};
         if (!targetItem.occurrence.isEmpty()) {
-          link.insert(QStringLiteral("target"), targetItem.occurrence);
+          entry.insert(QStringLiteral("context"), targetItem.occurrence);
         }
-        links.insert(tool.owner, link);
+        tools.append(entry);
+      } else {
+        tools.append(tool.owner);
       }
     }
     result.def = {{QStringLiteral("type"), QStringLiteral("combine")},
                   {QStringLiteral("target"), target},
-                  {QStringLiteral("tools"), bodyUids(state.items(QStringLiteral("tools")))},
+                  {QStringLiteral("tools"), tools},
                   {QStringLiteral("operation"), state.choice(QStringLiteral("operation"))}};
-    if (!links.isEmpty()) {
-      result.def.insert(QStringLiteral("tool_links"), links);
-    }
     if (state.checked(QStringLiteral("keep_tools"))) {
       result.def.insert(QStringLiteral("keep_tools"), true);
     }
@@ -803,17 +867,31 @@ CommandDef combineCommand(const CommandContext& context) {
     return result;
   };
   def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext&) {
-    // Linked tools where they were picked, the target where the links
-    // see it.
+    // Tools in occurrences where they were picked, the target where they
+    // see it; a plain id linked by tool_links as earlier versions wrote it
+    // (mitcad#544).
     const QJsonObject links = feature.value(QStringLiteral("tool_links")).toObject();
     Selection target = bodiesOf({feature.value(QStringLiteral("target"))});
-    Selection tools = bodiesOf(feature.value(QStringLiteral("tools")).toArray());
-    for (SelectionItem& tool : tools) {
-      const QJsonObject link = links.value(tool.owner).toObject();
-      if (links.contains(tool.owner)) {
+    Selection tools;
+    for (const QJsonValue& value : feature.value(QStringLiteral("tools")).toArray()) {
+      SelectionItem tool{SelectKind::Body, value.toString(), QString(), QString()};
+      QJsonObject link;
+      bool linked = false;
+      if (value.isObject()) {
+        const QJsonObject entry = value.toObject();
+        tool.owner = str(entry, "body");
+        link = {{QStringLiteral("source"), str(entry, "occurrence")},
+                {QStringLiteral("target"), str(entry, "context")}};
+        linked = true;
+      } else if (links.contains(tool.owner)) {
+        link = links.value(tool.owner).toObject();
+        linked = true;
+      }
+      if (linked) {
         tool.occurrence = str(link, "source");
         target.first().occurrence = str(link, "target");
       }
+      tools.append(tool);
     }
     state.setItems(QStringLiteral("target"), target);
     state.setItems(QStringLiteral("tools"), tools);

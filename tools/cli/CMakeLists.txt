@@ -58,6 +58,9 @@ if(BUILD_TESTING)
                  pattern_at_points f4_pattern_face_copy f4_pattern_merging_join)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
+  # Copies of bodies joined to them, scale patterns and copies scaled
+  # about their own centres (mitcad#539).
+  add_test(NAME cli.f4_pattern_scaled COMMAND mitcad-cli run "${scripts}/f4_pattern_scaled.json")
 
   # Face operations (F2): the T0 models' volumes, names through edits, failures.
   foreach(script f2_fillet_chamfer f2_shell_draft f2_face_ops f2_names_follow_parameters f2_failures)

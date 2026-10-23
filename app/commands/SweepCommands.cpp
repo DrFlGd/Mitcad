@@ -4,9 +4,13 @@
 // Helix (mitcad#27; commands.md, "helix").
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <optional>
 
+#include <QDebug>
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
@@ -209,6 +213,17 @@ CommandDef sweepCommand(const CommandContext& context) {
       if (std::isfinite(scale) && scale != 1.0) {
         result.def.insert(QStringLiteral("end_scale"), countValue(state, QStringLiteral("end_scale")));
       }
+      // An edited sweep's frame and fixed binormal (mitcad#543: the
+      // imports' pipe modes), which the panel does not show, kept as they
+      // are while it stays perpendicular.
+      const QJsonObject kept = state.object(QStringLiteral("kept"));
+      if (state.choice(QStringLiteral("orientation")) == QStringLiteral("perpendicular")) {
+        for (const QString& key : {QStringLiteral("frame"), QStringLiteral("binormal")}) {
+          if (kept.contains(key)) {
+            result.def.insert(key, kept.value(key));
+          }
+        }
+      }
     }
     if (state.checked(QStringLiteral("flip"))) {
       result.def.insert(QStringLiteral("flip"), true);
@@ -253,6 +268,18 @@ CommandDef sweepCommand(const CommandContext& context) {
     loadPathExtent(feature.value(QStringLiteral("extent")).toObject(), state, feature, context);
     state.setChecked(QStringLiteral("flip"), feature.value(QStringLiteral("flip")).toBool());
     loadOperation(feature, state);
+    // The frame and the fixed binormal, kept for `build` (mitcad#543).
+    QJsonObject kept;
+    for (const QString& key : {QStringLiteral("frame"), QStringLiteral("binormal")}) {
+      if (feature.contains(key)) {
+        kept.insert(key, feature.value(key));
+      }
+    }
+    state.setObject(QStringLiteral("kept"), kept);
+    if (!kept.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Sweep: keeps %1")
+                                .arg(QString::fromUtf8(QJsonDocument(kept).toJson(QJsonDocument::Compact)));
+    }
   };
 
   // A rail with twist or taper (ignored by the model) and a chained path
@@ -260,6 +287,11 @@ CommandDef sweepCommand(const CommandContext& context) {
   def.canEdit = [](const QJsonObject& feature) {
     // A surface is the SURFACE group's to edit (mitcad#455).
     if (feature.value(QStringLiteral("surface")).toBool()) {
+      return false;
+    }
+    // A body face as the profile (mitcad#543, the imports') is not in the
+    // panel, whose profiles are a sketch's.
+    if (feature.contains(QStringLiteral("profile_face"))) {
       return false;
     }
     if (!pathEditable(feature.value(QStringLiteral("path")))) {
@@ -470,6 +502,15 @@ CommandDef loftCommand(const CommandContext& context) {
         return result;
       }
       result.def.insert(QStringLiteral("centerline"), line);
+      // An edited loft's frame and orientation along the centre line
+      // (mitcad#543, mitcad#547: the imports' pipe modes), which the panel
+      // does not show, kept as they are.
+      const QJsonObject kept = state.object(QStringLiteral("kept"));
+      for (const QString& key : {QStringLiteral("frame"), QStringLiteral("orientation")}) {
+        if (kept.contains(key)) {
+          result.def.insert(key, kept.value(key));
+        }
+      }
     }
     if (state.checked(QStringLiteral("closed"))) {
       result.def.insert(QStringLiteral("closed"), true);
@@ -529,6 +570,15 @@ CommandDef loftCommand(const CommandContext& context) {
     state.setChecked(QStringLiteral("closed"), feature.value(QStringLiteral("closed")).toBool());
     state.setChecked(QStringLiteral("ruled"), feature.value(QStringLiteral("ruled")).toBool());
     loadOperation(feature, state);
+    // The frame and the orientation along the centre line, kept for
+    // `build` (mitcad#547).
+    QJsonObject kept;
+    for (const QString& key : {QStringLiteral("frame"), QStringLiteral("orientation")}) {
+      if (feature.contains(key)) {
+        kept.insert(key, feature.value(key));
+      }
+    }
+    state.setObject(QStringLiteral("kept"), kept);
   };
 
   // Fixed points or paths, and rails chained and not (one Chain Selection

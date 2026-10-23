@@ -33,6 +33,11 @@ use crate::topo::FaceName;
 use super::geom_ref::PathRef;
 use crate::links::OccurrenceLink;
 use std::collections::BTreeMap;
+// Frenet and auxiliary frames (mitcad#539).
+use crate::sweeps::PathFrame;
+// Body faces as profiles (mitcad#543).
+use crate::profile::SketchFrame;
+use crate::sweeps::ProfileFace;
 
 /// How much of a path a sweep or a pipe covers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -222,6 +227,46 @@ pub struct SweepDef<P = ParamId> {
     /// the rail's length. Only with a guide rail.
     #[serde(default, skip_serializing_if = "is_fraction")]
     pub rail_point: RailPoint,
+    /// How the profile turns along the path instead of keeping its angle to
+    /// it (mitcad#539): the path's Frenet frame, or towards a curve beside
+    /// the path. Left out, the default. Perpendicular orientation only,
+    /// without twist, taper, end scale, guide rails, guide surfaces, a fixed
+    /// binormal or curves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<SweepFrame>,
+    /// A planar face of a body as the profile instead of sketch regions
+    /// (mitcad#543, as an extrusion's `profile_face`): its bounded area,
+    /// holes kept, swept along the path, found by its topological name on
+    /// every recompute. Perpendicular or parallel, with a frame or a fixed
+    /// binormal; no `profiles`, `curves`, `surface`, twist, taper, end
+    /// scale, guide rails or guide surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_face: Option<FaceRef>,
+}
+
+/// A sweep's frame along its path (mitcad#539; [`PathFrame`] in the
+/// kernel's terms).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SweepFrame {
+    /// The path's Frenet frame: the profile turns with the path's
+    /// curvature.
+    Frenet,
+    /// Towards a curve beside the path (an auxiliary spine): the profile
+    /// turns about the path as the direction from the path to the curve
+    /// does, the curve's point at the same fraction of its length as the
+    /// path's (`curvilinear`) or where it crosses the plane square to the
+    /// path. The curve runs the way the path runs (both reversed by
+    /// `flip`).
+    Auxiliary {
+        curve: CurvePath,
+        #[serde(default, skip_serializing_if = "is_false")]
+        curvilinear: bool,
+    },
+    /// About a constant binormal (any length but zero): the profile turns
+    /// only about this direction, its frame's normal `binormal × tangent`
+    /// (the pipe shell's constant binormal; FreeCAD's Binormal mode).
+    ConstantBinormal { binormal: [f64; 3] },
 }
 
 fn is_fraction(point: &RailPoint) -> bool {
@@ -276,6 +321,8 @@ impl<P> SweepDef<P> {
             surface: self.surface,
             curves: self.curves.clone(),
             rail_point: self.rail_point,
+            frame: self.frame.clone(),
+            profile_face: self.profile_face.clone(),
         })
     }
 }
@@ -324,6 +371,13 @@ impl FeatureInfo for SweepDef {
         for face in &self.guide_surfaces {
             face.add_references(&mut references);
         }
+        if let Some(SweepFrame::Auxiliary { curve, .. }) = &self.frame {
+            curve.add_references(&mut references);
+        }
+        // A body face as the profile (mitcad#543).
+        if let Some(face) = &self.profile_face {
+            face.add_references(&mut references);
+        }
         for body in &self.participants {
             references.body(*body);
         }
@@ -331,14 +385,33 @@ impl FeatureInfo for SweepDef {
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
-        surface_sweeps::check_inputs(
-            ctx,
-            self.surface,
-            self.operation,
-            &self.profiles,
-            self.curves.as_ref(),
-            "sweep",
-        )?;
+        if let Some(face) = &self.profile_face {
+            // A body face as the profile (mitcad#543).
+            if !self.profiles.is_empty() || self.curves.is_some() || self.surface {
+                return Err(
+                    "a sweep of a body face takes no sketch profiles, curves or surface".to_owned(),
+                );
+            }
+            if self.guide_rail.is_some()
+                || self.guide_rail2.is_some()
+                || !self.guide_surfaces.is_empty()
+            {
+                return Err(
+                    "a sweep of a body face is not taken with guide rails or guide surfaces"
+                        .to_owned(),
+                );
+            }
+            face.check(ctx)?;
+        } else {
+            surface_sweeps::check_inputs(
+                ctx,
+                self.surface,
+                self.operation,
+                &self.profiles,
+                self.curves.as_ref(),
+                "sweep",
+            )?;
+        }
         if self.curves.is_some()
             && (self.guide_rail.is_some()
                 || !self.guide_surfaces.is_empty()
@@ -400,6 +473,30 @@ impl FeatureInfo for SweepDef {
                 );
             }
         }
+        // A Frenet or auxiliary frame (mitcad#539).
+        if let Some(frame) = &self.frame {
+            if self.orientation == SweepOrientation::Parallel {
+                return Err("a sweep's frame needs the perpendicular orientation".to_owned());
+            }
+            if self.guide_rail.is_some()
+                || !self.guide_surfaces.is_empty()
+                || self.binormal.is_some()
+                || self.curves.is_some()
+            {
+                return Err(
+                    "a sweep's frame is not taken with a guide rail, guide surfaces, a fixed binormal or curves"
+                        .to_owned(),
+                );
+            }
+            if let SweepFrame::Auxiliary { curve, .. } = frame {
+                curve
+                    .check(ctx)
+                    .map_err(|e| format!("auxiliary curve: {e}"))?;
+            }
+            if let SweepFrame::ConstantBinormal { binormal } = frame {
+                check_binormal(*binormal)?;
+            }
+        }
         if let Some(body) = self.body_links.keys().find(|b| !self.linkable(**b)) {
             return Err(format!(
                 "body {body} is linked but neither the path's nor a guide surface's"
@@ -410,6 +507,20 @@ impl FeatureInfo for SweepDef {
 
     fn check_values(&self, value: &dyn Fn(ParamId) -> f64) -> Result<(), String> {
         self.extent.check_values(value)?;
+        // A body face's sweep (mitcad#543) neither twists nor scales.
+        if self.profile_face.is_some()
+            && (self
+                .twist_angle
+                .into_iter()
+                .chain(self.taper_angle)
+                .any(|v| value(v) != 0.0)
+                || self.end_scale.is_some_and(|v| value(v) != 1.0))
+        {
+            return Err(
+                "a sweep of a body face is not taken with a twist, a taper or an end scale"
+                    .to_owned(),
+            );
+        }
         if let Some(taper) = self.taper_angle {
             check_taper(value(taper))?;
         }
@@ -432,6 +543,20 @@ impl FeatureInfo for SweepDef {
             if self.binormal.is_some() && value(scale) != 1.0 {
                 return Err("a fixed binormal is not taken with an end scale".to_owned());
             }
+        }
+        // A Frenet or auxiliary frame decides the profile's turn alone
+        // (mitcad#539).
+        if self.frame.is_some()
+            && (self
+                .twist_angle
+                .into_iter()
+                .chain(self.taper_angle)
+                .any(|v| value(v) != 0.0)
+                || self.end_scale.is_some_and(|v| value(v) != 1.0))
+        {
+            return Err(
+                "a sweep's frame is not taken with a twist, a taper or an end scale".to_owned(),
+            );
         }
         Ok(())
     }
@@ -457,7 +582,7 @@ impl FeatureInfo for SweepDef {
 }
 
 /// A fixed binormal (mitcad#397): finite, of some length; its unit vector.
-fn check_binormal(binormal: [f64; 3]) -> Result<[f64; 3], String> {
+pub(crate) fn check_binormal(binormal: [f64; 3]) -> Result<[f64; 3], String> {
     let length = binormal.iter().map(|v| v * v).sum::<f64>().sqrt();
     if !length.is_finite() || length < 1e-12 {
         return Err(format!(
@@ -490,13 +615,28 @@ fn check_taper(taper: f64) -> Result<(), String> {
 
 impl<K: Kernel> Evaluate<K> for SweepDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
-        let (sketch, regions) = match (&self.curves, self.profiles.is_empty()) {
-            (Some(curves), true) => (ctx.sketch(curves.sketch)?, Vec::new()),
-            _ => profile_regions(ctx, &self.profiles)?,
+        // A body face as the profile (mitcad#543): found on its body now;
+        // the kernel takes the face's plane for the profile's.
+        let face_profile: Option<(K::Shape, FaceName)> = match &self.profile_face {
+            Some(face) => {
+                let body = ctx.surface_body(face.body)?;
+                let found = ctx.face_on(face.body, &body, &face.face)?;
+                Some((body, found))
+            }
+            None => None,
+        };
+        let (frame, regions) = if face_profile.is_some() {
+            (SketchFrame::XY, Vec::new())
+        } else {
+            let (sketch, regions) = match (&self.curves, self.profiles.is_empty()) {
+                (Some(curves), true) => (ctx.sketch(curves.sketch)?, Vec::new()),
+                _ => profile_regions(ctx, &self.profiles)?,
+            };
+            (sketch.frame, regions)
         };
         // A surface sweep's curves (mitcad#455).
         let chains = match (&self.curves, self.surface) {
-            (Some(curves), true) => Some(surface_sweeps::chains(ctx, curves, &sketch.frame)?),
+            (Some(curves), true) => Some(surface_sweeps::chains(ctx, curves, &frame)?),
             _ => None,
         };
         let participants = participant_bodies(ctx, self.operation, &self.participants)?;
@@ -525,6 +665,20 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             ),
             None => None,
         };
+        // An auxiliary curve (mitcad#539), run the way the path runs.
+        let auxiliary: Option<Vec<PathCurve>> = match &self.frame {
+            Some(SweepFrame::Auxiliary { curve, .. }) => {
+                let curve = curve
+                    .resolve(ctx)
+                    .map_err(|e| format!("auxiliary curve: {e}"))?;
+                Some(if self.flip {
+                    path::reversed_path(curve)
+                } else {
+                    curve
+                })
+            }
+            _ => None,
+        };
         // The guide surfaces' bodies, each face checked.
         let mut surfaces: Vec<(K::Shape, FaceName)> = Vec::new();
         for face in &self.guide_surfaces {
@@ -549,7 +703,7 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
         }
         let spec = SweepSpec {
             feature: ctx.uid,
-            frame: sketch.frame,
+            frame,
             regions: &regions,
             path: &path,
             extent1,
@@ -565,9 +719,27 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             }),
             binormal: self.binormal.map(check_binormal).transpose()?,
             end_scale,
+            path_frame: match &self.frame {
+                None => None,
+                Some(SweepFrame::Frenet) => Some(PathFrame::Frenet),
+                Some(SweepFrame::Auxiliary { curvilinear, .. }) => Some(PathFrame::Auxiliary {
+                    curve: auxiliary.as_deref().unwrap_or(&[]),
+                    curvilinear: *curvilinear,
+                }),
+                Some(SweepFrame::ConstantBinormal { binormal }) => {
+                    Some(PathFrame::ConstantBinormal(check_binormal(*binormal)?))
+                }
+            },
         };
         let solid = |ctx: &mut EvalContext<'_, K>, spec: &SweepSpec<'_>| {
-            if surfaces.is_empty() {
+            if let (Some((body, face)), Some(stored)) = (&face_profile, &self.profile_face) {
+                let profile = ProfileFace {
+                    body,
+                    face,
+                    key: &stored.face,
+                };
+                ctx.kernel.face_sweep(spec, &profile).map_err(kernel_error)
+            } else if surfaces.is_empty() {
                 ctx.kernel.sweep(spec).map_err(|e| e.to_string())
             } else {
                 let guide: Vec<GuideSurface<'_, K::Shape>> = surfaces

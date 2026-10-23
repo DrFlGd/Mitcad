@@ -280,7 +280,7 @@ impl Rewrite<'_> {
                 changed |= self.link(&mut t.link)?;
             }
             FeatureDef::Combine(c) => {
-                for link in c.tool_links.values_mut() {
+                for (_, link) in c.links_mut() {
                     changed |= self.link(link)?;
                 }
             }

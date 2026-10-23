@@ -847,6 +847,17 @@ if(BUILD_TESTING)
     set_tests_properties(app.render_texture_maps PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
+  # Material swaps in a running session (mitcad#538): a body's material
+  # changed to and from textured ones, back and forth, renders in it (not
+  # black), as a renderer that starts with it; an image that cannot be read
+  # any more when its material comes back is warned of.
+  add_test(NAME app.render_material_swap
+           COMMAND mitcad-render --swap-test "${CMAKE_CURRENT_BINARY_DIR}/render-material-swap")
+  set_tests_properties(app.render_material_swap PROPERTIES TIMEOUT 180 PASS_REGULAR_EXPRESSION "render-swap ok")
+  if(WIN32)
+    set_tests_properties(app.render_material_swap PROPERTIES
+      ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
 endif()
 
 if(APPLE)
@@ -1116,4 +1127,24 @@ if(BUILD_TESTING)
   # math.
   target_sources(test_app PRIVATE tests/chamfer_handles.cpp commands/ChamferHandles.cpp
                  commands/ChamferHandles.hpp)
+endif()
+# The patterns' Direction Type and Distance Type (mitcad#545): the panels'
+# choices as the definitions' `symmetric` and `distance_type`, the length
+# row's label, the options in the log.
+target_sources(mitcad PRIVATE
+  commands/PatternOptions.cpp
+  commands/PatternOptions.hpp)
+if(BUILD_TESTING)
+  # The mapping and the words: plain Qt Core.
+  target_sources(test_app PRIVATE tests/pattern_options.cpp commands/PatternOptions.cpp
+                 commands/PatternOptions.hpp)
+endif()
+
+# The sketches a command shows for its time (mitcad#546): an edited
+# feature's, as if their light bulbs were on, until its panel closes.
+target_sources(mitcad PRIVATE view/CommandSketches.hpp)
+if(BUILD_TESTING)
+  # Which sketches, which only for the command, what each goes back to:
+  # plain Qt Core.
+  target_sources(test_app PRIVATE tests/command_sketches.cpp view/CommandSketches.hpp)
 endif()

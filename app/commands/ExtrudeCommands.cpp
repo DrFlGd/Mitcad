@@ -450,18 +450,15 @@ CommandDef extrudeCommand(const CommandContext& context) {
     }
     const QString start = state.choice(QStringLiteral("start"));
     if (face != nullptr) {
-      // Distances along the face's normal, from it or an offset from it.
-      const auto plain = [](const QJsonObject& side) {
-        return str(side, "type") == kDistance && !side.contains(QStringLiteral("taper"));
-      };
+      // Distances along the face's normal, from it or an offset from it,
+      // each side with its taper (the model takes them since mitcad#541).
+      const auto plain = [](const QJsonObject& side) { return str(side, "type") == kDistance; };
       const QString type = str(extent, "type");
-      const bool distances =
-          type == kTwoSides ? plain(extent.value(QStringLiteral("side1")).toObject()) &&
-                                  plain(extent.value(QStringLiteral("side2")).toObject())
-                            : (type == kDistance || type == kSymmetric) && !extent.contains(QStringLiteral("taper"));
+      const bool distances = type == kTwoSides ? plain(extent.value(QStringLiteral("side1")).toObject()) &&
+                                                     plain(extent.value(QStringLiteral("side2")).toObject())
+                                               : type == kDistance || type == kSymmetric;
       if (!distances) {
-        return Built::failure(QObject::tr("An extrusion of a face goes a distance, without a taper."),
-                              QStringLiteral("extent"));
+        return Built::failure(QObject::tr("An extrusion of a face goes a distance."), QStringLiteral("extent"));
       }
       if (start == QStringLiteral("object")) {
         return Built::failure(QObject::tr("An extrusion of a face starts at the face or an offset from it."),
@@ -523,6 +520,13 @@ CommandDef extrudeCommand(const CommandContext& context) {
                               QStringLiteral("extent"));
       }
       result.def.insert(QStringLiteral("wrap"), wrap.first().reference());
+    }
+    // An edited extrusion's own direction (mitcad#543: the imports'
+    // extrusions along a direction off the profile's normal), which the
+    // panel does not show, kept as it is.
+    const QJsonObject kept = state.object(QStringLiteral("kept"));
+    if (kept.contains(QStringLiteral("direction"))) {
+      result.def.insert(QStringLiteral("direction"), kept.value(QStringLiteral("direction")));
     }
     addOperation(result.def, state);
     // A face's extrusion cuts the bodies of its own component (mitcad#535).
@@ -600,6 +604,15 @@ CommandDef extrudeCommand(const CommandContext& context) {
     }
     loadOperation(feature, state);
     state.setObject(QStringLiteral("cut_scope"), feature.value(QStringLiteral("cut_scope")).toObject());
+    // The extrusion's own direction, kept for `build` (mitcad#543).
+    QJsonObject kept;
+    if (feature.contains(QStringLiteral("direction"))) {
+      kept.insert(QStringLiteral("direction"), feature.value(QStringLiteral("direction")));
+      qDebug().noquote() << QStringLiteral("Extrude: keeps its direction %1")
+                                .arg(QString::fromUtf8(QJsonDocument(feature.value(QStringLiteral("direction")).toArray())
+                                                           .toJson(QJsonDocument::Compact)));
+    }
+    state.setObject(QStringLiteral("kept"), kept);
   };
 
   // The faces `load` took from the model after the edited extrusion (where
@@ -738,7 +751,13 @@ CommandDef revolveCommand(const CommandContext& context) {
     };
   };
   def.inputs = {
-      selectionInput(QStringLiteral("profiles"), QObject::tr("Profiles"), SelectKind::Profile, 1, 0),
+      // A planar body face is a profile too (mitcad#543, as Extrude's
+      // since mitcad#535).
+      selectionInput(QStringLiteral("profiles"), QObject::tr("Profiles"), SelectKind::Profile | SelectKind::Face, 1,
+                     0)
+          .withTooltip(QObject::tr("Profiles of one sketch, or one planar face"))
+          .withAccepts([](const SelectionItem& item) { return item.kind != SelectKind::Face || isPlanar(item); })
+          .withoutMeshes(),
       selectionInput(QStringLiteral("axis"), QObject::tr("Axis"),
                      SelectKind::SketchCurve | SelectKind::Axis | SelectKind::Edge | SelectKind::Face, 1, 1)
           .withTooltip(QObject::tr("A sketch line, an origin or construction axis, a straight "
@@ -769,13 +788,40 @@ CommandDef revolveCommand(const CommandContext& context) {
                         .withTooltip(QObject::tr("Revolve about the axis projected into the sketch plane")));
   def.inputs += operationInputs();
   def.init = newestProfile;
-  def.enabled = [&context] { return hasProfiles(context); };
+  def.enabled = [&context] { return hasProfiles(context) || hasBodies(context); };
 
   def.build = [](const CommandState& state, const CommandContext&) {
     Built result;
     const Selection& profiles = state.items(QStringLiteral("profiles"));
-    if (oneSketch(profiles, result, QStringLiteral("profiles")).isEmpty()) {
+    // A planar face of a body as the profile (mitcad#543), alone.
+    const SelectionItem* face = profileFace(profiles);
+    if (face != nullptr) {
+      if (profiles.size() > 1) {
+        return Built::failure(QObject::tr("Select one planar face, or profiles of one sketch, not both."),
+                              QStringLiteral("profiles"));
+      }
+      if (face->geometry == QStringLiteral("mesh")) {
+        return Built::failure(QObject::tr("Revolve takes a planar face of a solid or surface body; the "
+                                          "selected face is a mesh body's (triangles without surfaces)."),
+                              QStringLiteral("profiles"));
+      }
+      if (!face->geometry.isEmpty() && !isPlanar(*face)) {
+        return Built::failure(QObject::tr("Revolve takes a planar face; the selected face is not planar."),
+                              QStringLiteral("profiles"));
+      }
+      if (state.choice(QStringLiteral("type")) == kToObject) {
+        return Built::failure(QObject::tr("A revolution of a face turns by angles or a full turn."),
+                              QStringLiteral("type"));
+      }
+      if (state.checked(QStringLiteral("project_axis"))) {
+        return Built::failure(QObject::tr("A revolution of a face does not project its axis."),
+                              QStringLiteral("project_axis"));
+      }
+    } else if (oneSketch(profiles, result, QStringLiteral("profiles")).isEmpty()) {
       return result;
+    }
+    if (state.items(QStringLiteral("axis")).isEmpty()) {
+      return Built::failure(QObject::tr("Select the axis to turn about."), QStringLiteral("axis"));
     }
     const QString type = state.choice(QStringLiteral("type"));
     QJsonObject extent{{QStringLiteral("type"), type}};
@@ -796,9 +842,13 @@ CommandDef revolveCommand(const CommandContext& context) {
       extent.insert(QStringLiteral("object"), objectOf(state, QString()));
     }
     result.def = {{QStringLiteral("type"), QStringLiteral("revolve")},
-                  {QStringLiteral("profiles"), refsOf(profiles)},
                   {QStringLiteral("axis"), state.items(QStringLiteral("axis")).first().reference()},
                   {QStringLiteral("extent"), extent}};
+    if (face != nullptr) {
+      result.def.insert(QStringLiteral("profile_face"), face->reference());
+    } else {
+      result.def.insert(QStringLiteral("profiles"), refsOf(profiles));
+    }
     if (state.checked(QStringLiteral("project_axis"))) {
       result.def.insert(QStringLiteral("project_axis"), true);
     }
@@ -831,6 +881,25 @@ CommandDef revolveCommand(const CommandContext& context) {
     }
     state.setChecked(QStringLiteral("project_axis"), feature.value(QStringLiteral("project_axis")).toBool());
     loadOperation(feature, state);
+    // A body face as the profile (mitcad#543).
+    const SelectionItem face = itemOf(feature.value(QStringLiteral("profile_face")), context);
+    if (face.isValid()) {
+      state.setItems(QStringLiteral("profiles"), {face});
+    }
+  };
+
+  // The profile face `load` took after the edited revolution (where it is
+  // joined away) resolved again where the feature finds it, as Extrude's.
+  def.rolledBack = [](CommandState& state, const CommandContext& context) {
+    for (SelectionItem& item : state.items(QStringLiteral("profiles"))) {
+      if (item.kind != SelectKind::Face) {
+        continue;
+      }
+      const SelectionItem found = itemOf(item.reference(), context);
+      if (found.isValid() && !found.geometry.isEmpty()) {
+        item.geometry = found.geometry;
+      }
+    }
   };
 
   def.canEdit = [&context](const QJsonObject& feature) {
@@ -841,6 +910,11 @@ CommandDef revolveCommand(const CommandContext& context) {
     const QJsonObject extent = feature.value(QStringLiteral("extent")).toObject();
     const QString type = str(extent, "type");
     if (type == kToObject && !objectShowable(extent.value(QStringLiteral("object")).toObject(), context)) {
+      return false;
+    }
+    // The face that is the profile (mitcad#543).
+    const QJsonValue face = feature.value(QStringLiteral("profile_face"));
+    if (!face.isUndefined() && !face.isNull() && !isShowable(face, context)) {
       return false;
     }
     return isShowable(feature.value(QStringLiteral("axis")), context);
@@ -854,8 +928,9 @@ CommandDef revolveCommand(const CommandContext& context) {
     } else if (type == kToObject) {
       extent = QStringLiteral("to object");
     }
-    return QStringLiteral("Added revolve (%1), %2")
-        .arg(label(kOperations, state.choice(QStringLiteral("operation"))), extent);
+    const QString ofFace = hasProfileFace(state) ? QStringLiteral(", of a face") : QString();
+    return QStringLiteral("Added revolve (%1), %2%3")
+        .arg(label(kOperations, state.choice(QStringLiteral("operation"))), extent, ofFace);
   };
   return def;
 }

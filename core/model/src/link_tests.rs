@@ -499,12 +499,14 @@ fn copied_links(
     let combine = doc
         .features()
         .find_map(|f| match &f.def {
-            crate::features::FeatureDef::Combine(c) if c.tools[0] != original_tool => Some((f, c)),
+            crate::features::FeatureDef::Combine(c) if c.tools[0].body != original_tool => {
+                Some((f, c))
+            }
             _ => None,
         })
         .unwrap();
     let (entry, combine) = combine;
-    let tool = combine.tools[0];
+    let tool = combine.tools[0].body;
     let link = &combine.tool_links[&tool];
     assert_eq!(combine.tool_links.len(), 1);
     assert_ne!(tool, original_tool);
@@ -687,7 +689,7 @@ fn paste_new_preserves_links_to_external_geometry() {
     for feature in doc.features().filter(|f| f.component == copy) {
         match &feature.def {
             crate::features::FeatureDef::Combine(c) => {
-                assert_eq!(c.tools, [tool]);
+                assert_eq!(c.tools, [crate::features::CombineTool::own(tool)]);
                 assert_eq!(c.tool_links[&tool].source.0, [source_occurrence]);
                 assert_eq!(c.tool_links[&tool].target.0, [occurrence]);
             }
@@ -769,7 +771,7 @@ fn links_picked_in_another_instance_of_the_subassembly_stay_external() {
     for feature in doc.features().filter(|f| f.component == copied_b) {
         match &feature.def {
             crate::features::FeatureDef::Combine(c) => {
-                assert_eq!(c.tools, [tool]);
+                assert_eq!(c.tools, [crate::features::CombineTool::own(tool)]);
                 assert_eq!(c.tool_links[&tool].source, source);
                 assert_eq!(c.tool_links[&tool].target.0[0], copied_occurrence);
             }
@@ -1155,4 +1157,204 @@ fn a_sketch_on_a_face_of_a_turned_occurrence_lies_on_the_face_in_the_design() {
             );
         }
     }
+}
+
+/// Siblings with B's own block and a second occurrence of A, A:2 (O3) at
+/// (120, 0, 10): two screws of one part beside B's block (mitcad#544).
+fn two_occurrences() -> (Document<MockKernel>, BodyUid, BodyUid, OccurrenceUid) {
+    let (mut doc, tool, _, b) = siblings();
+    let (_, target, _) = block(&mut doc);
+    let second = doc
+        .add_occurrence(ComponentUid(1), ComponentUid::ROOT, shift(120.0, 0.0, 10.0))
+        .unwrap();
+    assert_eq!(doc.active_component(), b);
+    (doc, tool, target, second)
+}
+
+/// The combine's definition in the design file.
+fn saved_combine(doc: &Document<MockKernel>) -> Value {
+    let saved: Value = serde_json::from_str(&doc.to_json()).unwrap();
+    saved["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["type"] == "combine")
+        .cloned()
+        .unwrap()
+}
+
+#[test]
+fn a_combine_cuts_with_a_body_in_two_occurrences_each_where_it_is() {
+    let (mut doc, tool, target, second) = two_occurrences();
+    let tools = json!([{"body": tool, "occurrence": "O1"},
+                       {"body": tool, "occurrence": second.to_string()}]);
+    let combine = |tools: &Value, keep: bool| {
+        json!({"type": "combine", "target": target, "tools": tools, "operation": "cut",
+               "keep_tools": keep})
+    };
+    let added = command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": combine(&tools, true)}),
+    );
+    let uid: FeatureUid = added["uid"].as_str().unwrap().parse().unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    assert_eq!(doc.feature(uid).unwrap().component, ComponentUid(2));
+    // Two cuts: A's block moved into B from A:1, by (100, -50, 13), and
+    // from A:2, by (120, -50, 13).
+    let cut = doc.body_shape(target).unwrap().history.clone();
+    assert!(cut.starts_with("cut("), "{cut}");
+    assert!(cut.contains(",100,-50,13)"), "{cut}");
+    assert!(cut.contains(",120,-50,13)"), "{cut}");
+    // Each tool keeps its own occurrence; no tool_links.
+    let def = query(&doc, json!({"query": "feature", "uid": uid.to_string()}));
+    assert_eq!(def["def"]["tools"], tools, "{def}");
+    assert!(def["def"].get("tool_links").is_none(), "{def}");
+
+    // A:2 moves up 10: its cut follows, A:1's stays.
+    doc.set_occurrence_transform(second, shift(120.0, 0.0, 20.0), false)
+        .unwrap();
+    let cut = doc.body_shape(target).unwrap().history.clone();
+    assert!(cut.contains(",100,-50,13)"), "{cut}");
+    assert!(cut.contains(",120,-50,23)"), "{cut}");
+    assert!(!cut.contains(",120,-50,13)"), "{cut}");
+
+    // The design file keeps both tools with their occurrences.
+    assert_eq!(saved_combine(&doc)["tools"], tools);
+    let saved = doc.to_json();
+    let mut loaded = Document::from_json(&saved, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), saved);
+    loaded.recompute();
+    assert_eq!(loaded.body_shape(target).unwrap().history, cut);
+
+    // The same occurrence twice is refused.
+    let twice = json!([{"body": tool, "occurrence": "O1"}, {"body": tool, "occurrence": "O1"}]);
+    let error = rejected(
+        &mut doc,
+        json!({"cmd": "edit_feature", "uid": uid.to_string(), "def": combine(&twice, true)}),
+    );
+    assert!(
+        error.contains(&format!("body {tool} in O1 is listed more than once")),
+        "{error}"
+    );
+
+    // Consumed: the body leaves A, once for both tools.
+    command(
+        &mut doc,
+        json!({"cmd": "edit_feature", "uid": uid.to_string(), "def": combine(&tools, false)}),
+    );
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    assert_eq!(doc.body_component(tool), None);
+}
+
+#[test]
+fn a_combine_joins_a_body_in_two_occurrences() {
+    let (mut doc, tool, target, second) = two_occurrences();
+    let added = command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "combine", "target": target,
+               "tools": [{"body": tool, "occurrence": "O1"},
+                         {"body": tool, "occurrence": second.to_string()}],
+               "operation": "join", "keep_tools": true}}),
+    );
+    let uid: FeatureUid = added["uid"].as_str().unwrap().parse().unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    let joined = doc.body_shape(target).unwrap().history.clone();
+    assert!(joined.starts_with("unite("), "{joined}");
+    assert!(joined.contains(",100,-50,13)"), "{joined}");
+    assert!(joined.contains(",120,-50,13)"), "{joined}");
+    // Kept tools: A keeps its block.
+    assert_eq!(doc.body_component(tool), Some(ComponentUid(1)));
+}
+
+#[test]
+fn a_combine_of_an_earlier_version_with_tool_links_loads_and_recomputes_as_before() {
+    let (mut doc, tool, target, second) = two_occurrences();
+    // As files of earlier versions have it: the tool as an id, its link in
+    // tool_links.
+    let link = json!({tool.to_string(): {"source": "O1"}});
+    let legacy = json!({"type": "combine", "target": target, "tools": [tool],
+                        "operation": "cut", "keep_tools": true, "tool_links": link});
+    let added = command(&mut doc, json!({"cmd": "add_feature", "def": legacy}));
+    let uid: FeatureUid = added["uid"].as_str().unwrap().parse().unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    let cut = doc.body_shape(target).unwrap().history.clone();
+    assert!(cut.contains(",100,-50,13)"), "{cut}");
+    assert!(!cut.contains(",120,"), "only A:1 cuts: {cut}");
+    // Saved as it was written.
+    let combine = saved_combine(&doc);
+    assert_eq!(combine["tools"], json!([tool]));
+    assert_eq!(combine["tool_links"], link);
+    let saved = doc.to_json();
+    let mut loaded = Document::from_json(&saved, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), saved);
+    loaded.recompute();
+    assert!(loaded.status(uid).unwrap().is_ok());
+    assert_eq!(loaded.body_shape(target).unwrap().history, cut);
+
+    // A:2 beside it as a tool in its occurrence: both cut.
+    let mixed = json!({"type": "combine", "target": target,
+                       "tools": [tool, {"body": tool, "occurrence": second.to_string()}],
+                       "operation": "cut", "keep_tools": true, "tool_links": link});
+    command(
+        &mut doc,
+        json!({"cmd": "edit_feature", "uid": uid.to_string(), "def": mixed}),
+    );
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    let cut = doc.body_shape(target).unwrap().history.clone();
+    assert!(
+        cut.contains(",100,-50,13)") && cut.contains(",120,-50,13)"),
+        "{cut}"
+    );
+    // The linked id and the same body in A:1 are one tool twice.
+    let twice = json!({"type": "combine", "target": target,
+                       "tools": [tool, {"body": tool, "occurrence": "O1"}],
+                       "operation": "cut", "keep_tools": true, "tool_links": link});
+    let error = rejected(
+        &mut doc,
+        json!({"cmd": "edit_feature", "uid": uid.to_string(), "def": twice}),
+    );
+    assert!(error.contains("listed more than once"), "{error}");
+    // A tool_links entry for a body that is a tool only in occurrences is
+    // refused.
+    let stray = json!({"type": "combine", "target": target,
+                       "tools": [{"body": tool, "occurrence": second.to_string()}],
+                       "operation": "cut", "keep_tools": true, "tool_links": link});
+    let error = rejected(
+        &mut doc,
+        json!({"cmd": "edit_feature", "uid": uid.to_string(), "def": stray}),
+    );
+    assert!(error.contains("linked but not a tool"), "{error}");
+}
+
+/// Paste New of B with the combine keeps the tools in A's occurrences,
+/// which are outside the copy (mitcad#544).
+#[test]
+fn paste_new_keeps_a_combines_tools_in_occurrences() {
+    let (mut doc, tool, target, second) = two_occurrences();
+    let tools = json!([{"body": tool, "occurrence": "O1"},
+                       {"body": tool, "occurrence": second.to_string()}]);
+    command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "combine", "target": target,
+               "tools": tools, "operation": "cut", "keep_tools": true}}),
+    );
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let (copy, occurrence) = doc.paste_new(OccurrenceUid(2), None).unwrap();
+    let combine = doc
+        .features()
+        .find(|f| f.component == copy && f.def.type_name() == "combine")
+        .unwrap();
+    match &combine.def {
+        crate::features::FeatureDef::Combine(c) => {
+            assert_eq!(c.tools.len(), 2);
+            for (t, source) in c.tools.iter().zip([OccurrenceUid(1), second]) {
+                assert_eq!(t.body, tool);
+                let link = t.link.as_ref().unwrap();
+                assert_eq!(link.source.0, [source]);
+                assert_eq!(link.target.0, [occurrence]);
+            }
+        }
+        _ => panic!("not a combine"),
+    }
+    assert!(doc.status(combine.uid).unwrap().is_ok());
 }

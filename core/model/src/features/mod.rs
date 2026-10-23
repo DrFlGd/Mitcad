@@ -118,7 +118,7 @@ pub use thread::{ThreadDef, ThreadEnd, ThreadSize};
 pub use thread_table::{ThreadData, ThreadStandard};
 pub use {
     align::{AlignDef, AlignRef},
-    combine::{CombineDef, CombineOperation},
+    combine::{CombineDef, CombineOperation, CombineTool},
     mirror::MirrorDef,
     moves::{MoveDef, MoveSpec},
     pattern::{
@@ -257,6 +257,9 @@ mod gear_tests;
 // Faces moved by a rigid motion (mitcad#343).
 pub mod move_face;
 pub use move_face::MoveFaceDef;
+// Scale patterns: copies scaled where they are (mitcad#539).
+pub mod scale_pattern;
+pub use scale_pattern::ScalePatternDef;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -418,6 +421,8 @@ feature_types! {
     Gear(GearDef),
     // Faces moved by a rigid motion (mitcad#343).
     MoveFace(MoveFaceDef),
+    // Scale patterns: copies scaled where they are (mitcad#539).
+    ScalePattern(ScalePatternDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is

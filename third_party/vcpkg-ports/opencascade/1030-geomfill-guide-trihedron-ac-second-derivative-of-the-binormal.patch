@@ -1,0 +1,35 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Pipe shells along an auxiliary spine with curvilinear equivalence: the
+guide trihedron's second derivative of its binormal (mitcad#539).
+
+GeomFill_GuideTrihedronAC::D2 takes the binormal's second derivative as
+that of a unit vector b = u / |u| (u the tangent crossed with the normal),
+b'' = d2 - 2 (b.d) d + (3 (b.d)^2 - |d|^2 - b.d2) b with d = u' / |u| and
+d2 = u'' / |u|, as it does for the normal. For |d|^2 it used the square of
+b itself (TN after it is made a unit vector: 1), which adds -(1 - |d|^2) b
+to the result. The binormal's value and first derivative are right (D0,
+D1), so the sections of the pipe are where they belong, but the sweep's
+approximation, which takes the second derivatives, bends its surfaces
+between them: an 8 x 2 bar swept 50 along a line, turned a quarter turn by
+an auxiliary spine whose points correspond to the line's at the same
+fraction of the lengths, held 784.9 (775.9 at a tolerance of 1e-7) of its
+800 (every section is the bar: 800 by Cavalieri), its side faces up to
+0.27 off the turned bar between the sections. With |d|^2 the result is
+800, as by the plane rule (GuideTrihedronPlan) that turns the bar alike.
+
+diff --git a/src/ModelingAlgorithms/TKGeomAlgo/GeomFill/GeomFill_GuideTrihedronAC.cxx b/src/ModelingAlgorithms/TKGeomAlgo/GeomFill/GeomFill_GuideTrihedronAC.cxx
+--- a/src/ModelingAlgorithms/TKGeomAlgo/GeomFill/GeomFill_GuideTrihedronAC.cxx
++++ b/src/ModelingAlgorithms/TKGeomAlgo/GeomFill/GeomFill_GuideTrihedronAC.cxx
+@@ -244,7 +244,9 @@
+   gp_Vec DTDN = DTo.Crossed(DNormal);
+   (void)DTDN;
+ #endif
+-  double TN2 = TN.SquareMagnitude();
++  // The square of the unit binormal's first derivative (|d|^2 of the
++  // unit vector's second derivative, as dn's for the normal).
++  double TN2 = DTN.SquareMagnitude();
+
+   D2Normal.SetLinearForm(-2 * ndn, dn, 3 * ndn * ndn - (dn.SquareMagnitude() + n.Dot(d2n)), n, d2n);
+

@@ -7,7 +7,9 @@
 // (CommandDef::sketchCommand).
 #include "Commands.hpp"
 
+#include <array>
 #include <cmath>
+#include <cstddef>
 
 #include <QDir>
 #include <QFileInfo>
@@ -23,12 +25,16 @@
 #include "../sketch/SketchController.hpp"
 #include "../sketch/SketchTool.hpp"
 #include "CommandSupport.hpp"
+#include "PatternOptions.hpp"
 
 namespace mitcad {
 namespace {
 
+using cmd::flipApplies;
 using cmd::negated;
 using cmd::number;
+using cmd::oneDirection;
+using cmd::symmetricDirection;
 using sketch::SketchController;
 
 const QString kSketchTab = QStringLiteral("SKETCH");
@@ -236,15 +242,40 @@ void addCircularPattern(CommandRegistry& registry, SketchController& c) {
 
 // A rectangular pattern's spacings, signed (mitcad#447): a negative one
 // goes against its direction. The panels' Flip negates the spacing that is
-// built; Edit Pattern shows the stored signed spacings with Flip off.
+// built; Edit Pattern shows the stored signed spacings with Flip off. A
+// symmetric direction (mitcad#545) hides Flip: its copies lie on both
+// sides.
 QJsonArray signedSpacings(const CommandState& s) {
   QJsonArray spacings;
   for (const char* n : {"1", "2"}) {
     const QString suffix = QString::fromLatin1(n);
     const QString spacing = s.expression(QStringLiteral("distance") + suffix);
-    spacings.append(s.checked(QStringLiteral("flip") + suffix) ? negated(spacing) : spacing);
+    const bool flip = flipApplies(s.choice(QStringLiteral("direction_type") + suffix),
+                                  s.checked(QStringLiteral("flip") + suffix));
+    spacings.append(flip ? negated(spacing) : spacing);
   }
   return spacings;
+}
+
+// A direction's Direction Type (mitcad#545): One Direction, or Symmetric
+// with the originals as the middle instance of an odd quantity.
+InputDef sketchDirectionType(const QString& id, const QString& name) {
+  return choiceInput(id, name,
+                     {{oneDirection(), QStringLiteral("One Direction")}, {symmetricDirection(), QStringLiteral("Symmetric")}},
+                     oneDirection())
+      .withTooltip(QObject::tr("One Direction: copies along the direction; Symmetric: on both sides (an odd "
+                               "quantity)"));
+}
+
+std::function<bool(const CommandState&)> notSymmetric(const QString& type) {
+  return [type](const CommandState& s) { return s.choice(type) != symmetricDirection(); };
+}
+
+// The directions' Direction Types as the sketch pattern's `symmetric`
+// ([bool, bool]).
+std::array<bool, 2> symmetricDirections(const CommandState& s) {
+  return {s.choice(QStringLiteral("direction_type1")) == symmetricDirection(),
+          s.choice(QStringLiteral("direction_type2")) == symmetricDirection()};
 }
 
 void addRectangularPattern(CommandRegistry& registry, SketchController& c) {
@@ -258,19 +289,31 @@ void addRectangularPattern(CommandRegistry& registry, SketchController& c) {
           .withAccepts(ofSketch(c)),
       selectionInput(QStringLiteral("direction"), QObject::tr("Direction"), SelectKind::SketchCurve, 0, 1)
           .withAccepts(linesOf(c)),
+      sketchDirectionType(QStringLiteral("direction_type1"), QObject::tr("Direction Type")),
       valueInput(QStringLiteral("quantity1"), QObject::tr("Quantity"), ValueKind::Unitless, QStringLiteral("3")),
       valueInput(QStringLiteral("distance1"), QObject::tr("Spacing"), ValueKind::Length, QStringLiteral("10")),
-      flipInput(QStringLiteral("flip1"), QObject::tr("Flip")).withTooltip(QObject::tr("Copies against the direction")),
+      flipInput(QStringLiteral("flip1"), QObject::tr("Flip"))
+          .withTooltip(QObject::tr("Copies against the direction"))
+          .withVisible(notSymmetric(QStringLiteral("direction_type1"))),
+      sketchDirectionType(QStringLiteral("direction_type2"), QObject::tr("Direction Type 2")),
       valueInput(QStringLiteral("quantity2"), QObject::tr("Quantity 2"), ValueKind::Unitless, QStringLiteral("1")),
       valueInput(QStringLiteral("distance2"), QObject::tr("Spacing 2"), ValueKind::Length, QStringLiteral("10")),
       flipInput(QStringLiteral("flip2"), QObject::tr("Flip 2"))
-          .withTooltip(QObject::tr("Copies against the second direction")),
+          .withTooltip(QObject::tr("Copies against the second direction"))
+          .withVisible(notSymmetric(QStringLiteral("direction_type2"))),
   };
   def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
     const int n1 = static_cast<int>(std::lround(s.value(QStringLiteral("quantity1"))));
     const int n2 = static_cast<int>(std::lround(s.value(QStringLiteral("quantity2"))));
     if (n1 < 1 || n2 < 1 || n1 * n2 < 2) {
       return Built::failure(QObject::tr("The quantities make no copies."), QStringLiteral("quantity1"));
+    }
+    // The originals are a symmetric direction's middle instance: an odd
+    // quantity (commands.md, `patterns`).
+    const std::array<bool, 2> symmetric = symmetricDirections(s);
+    if ((symmetric[0] && n1 % 2 == 0) || (symmetric[1] && n2 % 2 == 0)) {
+      return Built::failure(QObject::tr("A symmetric direction needs an odd quantity."),
+                            symmetric[0] && n1 % 2 == 0 ? QStringLiteral("quantity1") : QStringLiteral("quantity2"));
     }
     QJsonArray direction{1.0, 0.0};
     const Selection& line = s.items(QStringLiteral("direction"));
@@ -285,13 +328,24 @@ void addRectangularPattern(CommandRegistry& registry, SketchController& c) {
     cmd.insert(QStringLiteral("direction"), direction);
     cmd.insert(QStringLiteral("count"), QJsonArray{n1, n2});
     cmd.insert(QStringLiteral("spacing"), signedSpacings(s));
+    if (symmetric[0] || symmetric[1]) {
+      cmd.insert(QStringLiteral("symmetric"), QJsonArray{symmetric[0], symmetric[1]});
+    }
     return Built::of(cmd);
   };
   def.describe = [](const CommandState& s, const CommandContext&) {
-    return QStringLiteral("Rectangular pattern of %1 object(s), %2 x %3")
+    const std::array<bool, 2> symmetric = symmetricDirections(s);
+    QStringList both;
+    for (int k = 0; k < 2; ++k) {
+      if (symmetric[static_cast<std::size_t>(k)]) {
+        both << QStringLiteral("direction %1 symmetric").arg(k + 1);
+      }
+    }
+    return QStringLiteral("Rectangular pattern of %1 object(s), %2 x %3%4")
         .arg(s.items(QStringLiteral("entities")).size())
         .arg(std::lround(s.value(QStringLiteral("quantity1"))))
-        .arg(std::lround(s.value(QStringLiteral("quantity2"))));
+        .arg(std::lround(s.value(QStringLiteral("quantity2"))))
+        .arg(both.isEmpty() ? QString() : QStringLiteral(", ") + both.join(QStringLiteral(", ")));
   };
   registry.add(def);
 }

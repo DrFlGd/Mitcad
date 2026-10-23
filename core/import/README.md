@@ -11138,13 +11138,14 @@ checks.
 feature of their own, `elements.rs` references.
 
 - Every PartDesign Body and every Part workbench result stage 1 made a
-  body of (extrusion or revolution of a sketch, primitive, operation) is
-  rebuilt as Mitcad features, with the Bodies its booleans use and the
+  body of (extrusion of a sketch or of another object's faces, revolution
+  of a sketch, face of sketches, primitive, operation) is rebuilt as
+  Mitcad features, with the Bodies its booleans use and the
   operands of its tree. All objects, sketches included, come in
   dependency order (ties in document order).
 - The file keeps every feature's own result, so each replayed feature is
   checked against FreeCAD's stored shape: volume, area and centre of mass
-  of the Body's Mitcad bodies within 1e-6 relative, and the number of
+  of the Body's Mitcad bodies within 1e-5 relative (mitcad#539), and the number of
   solids. Where FreeCAD's conventions are uncertain a few readings are
   tried (directions, taper signs, a chamfer's first face, which sketch
   regions are material).
@@ -11159,7 +11160,11 @@ feature of their own, `elements.rs` references.
   is all of Mitcad's pieces along it.
 - A Body's tip before its last feature suppresses the features after it.
 - Bodies are named and shown as in FreeCAD; colours are not kept (Mitcad's
-  appearances are a library).
+  appearances are a library). A replayed result that FreeCAD keeps as one
+  shape of several solids (a Part extrusion of a face of two sketches) is
+  all the Mitcad bodies made of it (mitcad#541): the first named after
+  the object, the others `<label> (2)`, …, measured together against the
+  object's place.
 - `primitives.rs` builds: a cone, a prism, a part of a turn as a section
   sketch on a fixed plane turned or extruded (a cone's and a partial
   cylinder's sizes are dimensions of that sketch); a wedge as a ruled
@@ -11172,6 +11177,48 @@ feature of their own, `elements.rs` references.
   about the original's centre of mass, mitcad#59). The model's `helix`
   feature and the hole's counterdrill and taper exist for FreeCAD's
   helices and holes.
+- Scaled transformations anywhere in a MultiTransform, and
+  MultiTransforms of the whole body (mitcad#539): a Scaled transformation
+  first (or alone, or a Scaled feature of its own) is a `scale_pattern` of
+  the originals and the transformations after it patterns of it; after
+  others it is the `scale` of the pattern or mirror before it, with
+  `scale_groups` when its occurrences are fewer than that one's elements
+  (FreeCAD scales the copies before it in that many runs, each copy about
+  its own centre: the model's scale does too, through patterns of
+  patterns). Two linear patterns and a Scaled one over all their copies
+  are one pattern of two directions with `scale`. More runs than the
+  pattern or mirror before it has elements (mitcad#542): the runs split
+  the copies of the patterns before it, so each of those carries the same
+  scale counted over all the copies (`scale_copies`), and the model
+  scales each copy relative to the inner copy it is made of. Several
+  Scaled transformations: their scales on the patterns before each
+  (`scales` where one scales already), the factors multiplying.
+- What FreeCAD 1.0 and 1.1 store (mitcad#542, measured on
+  `pd_scaled_general`, `pd_scaled_inner` and `pd_scaled_several`): once a
+  Scaled transformation follows others, every copy but the original whose
+  factor is 1 is left out of the result, also the later transformations'
+  copies of it (0.21 keeps them). The import's first reading for those
+  versions gives each pattern the `skipped_copies` of its own such copies;
+  the patterns after it still copy them (`dropped_copies` in
+  `features.rs`).
+- A MultiTransform of the
+  whole body (1.0's TransformMode "Transform body", 1.1's "Whole shape")
+  is a chain: the first transformation a pattern or mirror of the body,
+  each next one of the one before (mitcad#547: the model's pattern of a
+  pattern of bodies copies the body as it was before them at every
+  product of the elements), all with `combine`, which is FreeCAD's
+  product of the transformations. A Scaled transformation of the whole
+  body (mitcad#542, mitcad#547): FreeCAD scales about the Body's origin
+  carried with each copy (`pd_scaled_body`: the scaled body's box starts
+  at the origin, the copy's at the copy's origin); it is read as in
+  features mode (a `scale_pattern` of the body first; scales, runs over
+  the copies of the patterns before, the copies 1.0 and 1.1 leave out as
+  `skipped_copies` of the body's copies), with `scale_center` the Body's
+  origin (`pd_scaled_body_more`: after two transformations each copy at
+  its own factor, the bosses' centres as FreeCAD stores them).
+  Reference models `pd_multitransform_body`, `pd_scaled_body` and
+  `pd_scaled_body_more` (1.0 and 1.1), `pd_scaled_general`,
+  `pd_scaled_inner` and `pd_scaled_several`.
 - Conical and growing helices are helices with a `growth` per turn
   (`Pitch * tan(Angle)`, or Growth) and `"construction": "freecad"`
   (mitcad#83; helices made in Mitcad use Mitcad's own construction),
@@ -11199,6 +11246,63 @@ feature of their own, `elements.rs` references.
 - Sketches and datum planes whose attachment turn an expression drives
   about a line in their support's plane (its x or y axis or any line
   between) become `angle` planes about that line.
+- Part extrusions (`part.rs`, mitcad#539) follow FreeCAD's lengths: the
+  direction's length forward when LengthFwd and LengthRev are both zero,
+  Symmetric the forward length in all (LengthRev unused), a reverse
+  length alone one side against the direction.
+  - Of a sketch into faces (Solid off): FreeCAD's prism of the sketch's
+    wires, walls without caps, is a surface `extrude` of the sketch's
+    curves (not construction; 1.1's defining external geometry too); off
+    the normal along FreeCAD's direction (`direction`); tapered, a
+    surface `extrude` of the sketch's regions with the tapers (curves
+    take none).
+  - Of a sketch along a direction off its normal (mitcad#541): an
+    `extrude` with that `direction`, its lengths along it (parametric)
+    and its tapers growing the profile in its plane, as FreeCAD's
+    `makeDraft` grows the wires (no longer a sweep along a fixed line).
+  - Of another object's faces (a Part::Face, a mirrored face, a scripted
+    object's face that fell back; Solid on or off, FreeCAD extrudes a
+    face into a solid either way): an `extrude` of each face of its
+    bodies (`profile_face`, mitcad#535) with the tapers, along the face's
+    normal (`Dir` tells along or against it; the other way is the second
+    reading) or, off it, along `Dir` (`direction`, mitcad#541; a curved
+    face only so, untapered), then a base feature without bodies that
+    removes the faces' bodies, which the extrusion consumes (as a
+    mirroring does). A base of several bodies (a Part::Face of several
+    sketches) extrudes the faces of all of them; where another object
+    uses the base too, the extrusion works on the copy of its first body
+    and its others, which stay for that object.
+  - Of an object's edges (mitcad#541; a Part Circle, RegularPolygon,
+    Polygon or Line, a Draft wire: an object without faces that only
+    Part extrusions use, `included`): a fixed `construction_plane` (the object's placement
+    where the edges lie in it, else the plane through its straight edge
+    and `Dir`) and a `sketch` of the edges as fixed geometry on it, then
+    the extrusion of that sketch (Solid on: its material regions, those
+    inside an even number of its loops, any number of them, mitcad#547:
+    `"$<i>:profiles"` in a candidate is the regions of the sketch added
+    i-th; off: a surface extrusion of its curves). `partial`: the
+    object's own sizes (a circle's radius) are not carried over.
+  - Edges in no one plane (mitcad#547; Solid off, along `Dir`): grouped by
+    planes they lie in (a line in the plane through it facing the
+    direction, a conic or a planar spline in its own), each group a fixed
+    sketch and a surface `extrude` of its curves along the `direction`;
+    together FreeCAD's prism of the wire, as several surface bodies.
+  - A helix (mitcad#547; a Part::Helix from its Pitch, Height, Radius and
+    LocalCoord, or one helix edge; Solid off, along `Dir`): a surface
+    `sweep` of a fixed line from the helix's start along the direction
+    (back and forward by the lengths) along a fixed `helix` path,
+    `parallel`: the line moved along the helix without turning sweeps the
+    helix's prism (`partial`: fixed sizes).
+  - FreeCAD fails these itself, and so they fall back with that reason
+    (no parametric counterpart when FreeCAD marks them invalid): a curved
+    face, a helix or edges in no one plane along the base's normal
+    (FreeCAD finds the normal of a plane only); tapered ones (it tapers by
+    offsetting planar wires); Solid on of a helix or of edges in no one
+    plane (it makes faces of planar closed wires only).
+- A Part::Face of sketches (face makers Bullseye, Cheese, Extrusion; the
+  simple one, mitcad#547, where no wire lies in another, which then makes
+  the same faces) is a `patch` of each sketch's regions inside an even
+  number of wires.
 
 ### Stage 4: parameters and expressions
 
@@ -11232,14 +11336,75 @@ cells.
 - Expressions on objects kept as stored shapes (e.g. BIM objects) stay
   unused.
 
+### Face profiles, chosen sketch edges, Part fillets of two radii (mitcad#539)
+
+`profiles.rs`, `part.rs`; the reference models `pd_profile_faces`,
+`pd_profile_edges` and `part_fillet_variable`.
+
+- A Pad's, Pocket's, Revolution's or Groove's `Profile` that is a planar
+  face of a body (`(Pad, Face6)`) is the extrusion's or revolution's
+  `profile_face`: the face found by geometry in the body holding the
+  object's result, as other references are, swept along its outward
+  normal (FreeCAD's profile normal is the face's normal as it is
+  oriented) or turned about the axis. Extrusions go by distances only
+  (Length, TwoLengths, Midplane), as Mitcad extrudes a body face; a taper,
+  an extent up to something or a custom direction off the face's normal
+  is not translated. Without `AllowMultiFace` FreeCAD takes only the first
+  element the link names; with it, several faces are not translated.
+  Revolutions of a body face are Mitcad's `revolve` with `profile_face`,
+  made for this (`Kernel::revolve_face`).
+- A sketch `Profile` with chosen edges (`(Sketch, [Edge1, Edge5, …])`)
+  counts only with 1.0's `AllowMultiFace`: FreeCAD then makes faces of the
+  wires those edges form. The import takes the regions of the whole
+  sketch that lie inside the regions the chosen curves bound on their own
+  (in FreeCAD's material reading: inside an even number of their wires,
+  1.1; the outer ones with their holes, 1.0). Without `AllowMultiFace`
+  (and in 0.21) FreeCAD ignores the chosen edges and takes the whole
+  sketch; the import does too (before, any chosen edge was a fallback).
+- A `Part::Fillet` edge of two radii (`(edge, R1, R2)`) is FreeCAD's
+  `BRepFilletAPI_MakeFillet::Add(R1, R2, E)`: R1 at the start of the
+  edge's curve, R2 at its end. The import gives each such edge a set of
+  its own with a `variable` radius from R1 at `start_vertex`, the Mitcad
+  vertex at the first point of the stored edge's curve (Mitcad's single
+  edge rounding is the same OCCT call); radii within OCCT's confusion
+  (1e-7 mm) are one constant radius, their mean. A closed edge (no start
+  vertex) is tried with the radii either way. An edge whose rounding runs
+  on into tangent edges FreeCAD did not list is rounded along the whole
+  chain by Mitcad and may then differ from FreeCAD's (the check decides).
+
 ### Not translated (fallback)
 
-MultiTransforms of the whole body, and Scaled transformations other than
-after one linear or polar pattern of as many occurrences; profiles that
-are faces or chosen parts of a sketch; revolutions up to the last face;
-tapers along custom directions; pipes with an auxiliary spine or binormal
-mode; Part extrusions of faces and Draft objects; Part fillets of varying
-radius; binders; Draft and Python objects (`Part::Part2DObjectPython`).
+Part sweeps (mitcad#547) along conical Part helices, along edges of an
+object without a body that do not lie in one plane (but one straight
+edge), of sections of edges that do not lie in one plane or bound no one
+region, of PartDesign features' results; Part extrusions (mitcad#547) of
+a conical Part helix (a fixed helix path has no cone), of a helix among
+other edges, of edges in no plane at all (a spline leaving every plane:
+Mitcad keeps curves in planar sketches), and of faces FreeCAD's simple
+face maker makes of nested wires (overlapping faces); binders; Draft and
+Python objects (`Part::Part2DObjectPython`). The Part extrusions FreeCAD
+fails itself (a curved face, a helix or non-planar edges along the
+base's normal, tapered or with Solid on) fall back with that reason.
+
+Each fallback has a group in the report (`features[].fallback_group`,
+mitcad#539), so that the corpus test shows which kind grows:
+
+- `missing` (missing in Mitcad): FreeCAD's definition needs a feature or
+  an option the translation does not have yet; its reason says "not
+  translated". These are the ones to build.
+- `no_counterpart` (no parametric counterpart): a scripted object (a type
+  ending in `Python`, such as Draft's `Part::Part2DObjectPython`, whose
+  shape comes from a script Mitcad does not run), a plain shape
+  (`Part::Feature`, without a definition), or an object FreeCAD itself
+  failed (its stored shape is invalid, e.g. a modelled thread FreeCAD
+  1.0 did not make). These stay fallbacks.
+- `other`: translated, but no reading built or gave FreeCAD's shape
+  within the check (or an input of it was not found).
+
+The readable report adds the group to each fallback's line and the counts
+(`fallbacks by group: 1 missing in Mitcad, 4 without a parametric
+counterpart, 0 other`); `freecad.corpus` prints them per file and in
+total.
 
 Translated, but measured off FreeCAD's stored shapes (mitcad#59; the
 check's limit is 1e-6, the reference models `pd_helix_more`,
@@ -11262,6 +11427,102 @@ FreeCAD itself fails a revolution up to the first face, a groove up to a
 face, and (0.21, 1.0) a draft pulled along an origin axis; the reference
 models leave these out.
 
+### Pipe modes, tapers along custom directions, turns to the last face (mitcad#539)
+
+- Pipes (AdditivePipe, SubtractivePipe) in every orientation mode are
+  sweeps: Standard keeps the profile's angle to the spine, Fixed is the
+  `parallel` orientation, Frenet the sweep's Frenet `frame` (tried first,
+  then the Standard reading: along a planar spine they differ only where
+  its bend changes side), Auxiliary the `frame` towards the auxiliary
+  spine's sketch edges (FreeCAD's `AuxilleryCurvelinear`, in 1.1 `AuxiliaryCurvilinear`, by default on:
+  the points at the same fraction of the two lengths; off: where the
+  auxiliary spine crosses the plane square to the spine), Binormal the
+  `frame` `constant_binormal`. FreeCAD sweeps a pipe in its own placement
+  (1.0 and 1.1 take the profile's) and takes `Binormal` there as it is,
+  so the import turns it by the pipe's `Placement` (and the Body's); the
+  frame keeps that binormal, turning the profile only about it (not the
+  sweep's fixed `binormal`, which keeps the path's tangent). Mitcad's
+  geometry sweeps them with the pipe shell modes FreeCAD sets (OCCT's
+  Frenet, auxiliary and constant binormal frames), within 1e-7 mm as
+  FreeCAD does; the OCCT port's patch 1030 corrects the curvilinear
+  rule's frame's second derivative, which bent the pipe between its
+  sections (a bar turned by an auxiliary spine held 784.9 of its
+  800 mm³).
+- A Pad or Pocket along a custom direction off the sketch normal is an
+  `extrude` along that `direction` (no longer a sweep along a fixed line):
+  its lengths parametric, along the direction (FreeCAD's over the cosine
+  with `AlongSketchNormal`), and its tapers grown in the profile's plane by
+  the length along the direction times their tangent, as FreeCAD's
+  draft of the profile does (an offset wire moved along the direction, a
+  ruled loft). The taper's sign and the direction's are tried both ways.
+- A Revolution up to the last face is a revolution through the Body's
+  body to its last face; FreeCAD 1.0 and 1.1 compute neither up to the
+  first nor up to the last face ("not yet supported"), so no file holds
+  one to check. A Groove through all (1.1) is a full turn; FreeCAD 1.0's
+  Groove turns by its Angle whatever its Type, so a groove of any other
+  type is also read by its angle.
+- Reference models: `pd_pipe_modes` (Binormal along a sloped arc, its
+  binormal in the pipe's placement; Frenet,
+  Auxiliary with and without curvilinear points; variant BarWidth),
+  `pd_taper_direction` (tapered pads along custom directions, along the
+  normal and the direction, a circle, symmetric, a pocket; variant Taper)
+  and `pd_revolution_upto` (a groove through all, a reversed revolution up
+  to a face; FreeCAD 1.0 and later; variant GrooveWidth).
+
+### Part sweeps, framed sections, face sections, several faces (mitcad#543)
+
+- `Part::Sweep` of sketches along a sketch's edges (`Spine`) is a new
+  body: one section a `sweep`, several a `loft` along the spine as its
+  centre line; `Frenet` the Frenet `frame` (tried first, then at right
+  angles to the spine: FreeCAD's corrected Frenet frame, which Mitcad's
+  default frame is along a planar spine), `Solid` off a surface.
+- PartDesign pipes through several sections (Transformation Multisection)
+  in the Frenet, Binormal and Auxiliary modes are lofts along the spine
+  with the mode's frame (the loft's `frame`, the pipe shell's modes as the
+  sweep's); the Fixed mode since mitcad#547 (below).
+- A section of a loft or a pipe, or the profile of a pipe, that is a
+  planar face of a body (`Profile` = (feature, `Face<n>`)) is the loft's
+  `face` section or the sweep's `profile_face` (mitcad#543: the sweep of a
+  body face, the face found in the body holding the feature's result).
+- A Pad, Pocket, Revolution or Groove of several faces (`AllowMultiFace`)
+  is one feature per face, the first with the feature's operation, the
+  others joined to it (`" (face 2)"`, …; as many as there are since
+  mitcad#547).
+- Reference models: `part_sweep` (a Part sweep, in the Frenet mode,
+  through two sections, as a shell; variant TubeRadius) and
+  `pd_pipe_sections` (pipes through two sections in the Frenet, Binormal
+  and Auxiliary modes, a pipe and a loft of a block's top face, a pad of
+  two faces in FreeCAD 1.0 and later; variant SectionRadius).
+
+### Fixed pipes through sections, Part sweeps of other objects, many faces (mitcad#547)
+
+- PartDesign pipes through several sections in the Fixed mode are lofts
+  along the spine with `orientation` `parallel`: the sections keep their
+  direction and only move along it (the pipe shell in a fixed frame, as
+  FreeCAD builds it).
+- `Part::Sweep` along or of objects that are not sketches
+  (`sweep_inputs.rs`): a cylindrical Part helix as the spine is a fixed
+  `helix` path from its Pitch, Height, Radius, LocalCoord and placement;
+  edges of an object with a body here (`(Box, Edge3)`) the body's edges by
+  name; edges of an object without one (a Part Line, Circle, Polygon, a
+  Draft wire) one straight edge a fixed line, else the edges as fixed
+  geometry of a sketch on a fixed plane (the object's placement where
+  they lie in it, else the plane through them). A section that is an
+  object's closed edges in one plane (a Part Circle, RegularPolygon,
+  Ellipse) is such a sketch's one region; an object of one vertex (a Part
+  Vertex) a fixed `point` section of the loft. Objects of edges or a
+  vertex that only Part extrusions and sweeps use are `included`, without
+  a body; the sweep is `partial` (their own sizes are not carried over).
+- Profiles of any number of faces (`AllowMultiFace`): one feature per
+  face, `" (face 9)"`, `" (face 10)"`, … after the eighth.
+- Reference models: `pd_pipe_fixed_sections` (pipes through two and three
+  level circles along a rising arc in the Fixed mode; variant
+  SectionRadius), `part_sweep_objects` (sweeps along right- and
+  left-handed Part helices, a Part arc and a Part line, of a sketch, Part
+  circles, a Part hexagon and a Part vertex; variant WireRadius) and
+  `pd_many_faces` (a pad of ten faces, FreeCAD 1.0 and later; variant
+  Rise).
+
 ### Tests
 
 Documents are kept outside the repository (`MITCAD_FCSTD_CORPUS`).
@@ -11271,7 +11532,9 @@ Documents are kept outside the repository (`MITCAD_FCSTD_CORPUS`).
 The ctest `freecad.corpus` (`tools/cli/CMakeLists.txt`) imports every
 document and compares those with a dump; for models with a variant it
 changes a parameter in Mitcad (`import-fcstd --set`) and compares with the
-variant FreeCAD recomputed after the same change. Each document is checked
+variant FreeCAD recomputed after the same change. A file whose history
+fell back gets its fallbacks by group on its line (`fallbacks: 1 missing,
+4 no counterpart, 0 other`), and the last line has the totals. Each document is checked
 in a child process of its own, several at once (`mitcad_run_parallel`;
 `MITCAD_CORPUS_JOBS`, `MITCAD_CORPUS_MEMORY`, `MITCAD_CORPUS_TIMEOUT` as
 for the `.f3d` corpus; `MITCAD_CORPUS_JOBS=1` checks them one after

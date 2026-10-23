@@ -54,6 +54,22 @@ pub mod ffi {
         /// path, else at the path's fractions of their lengths
         /// (mitcad#469).
         rail_plane: bool,
+        /// The path's Frenet frame, or (non-empty) towards an auxiliary
+        /// curve, its point at the same fraction of its length with
+        /// `curvilinear` (mitcad#539, `mitcad_model::sweeps::PathFrame`).
+        frenet: bool,
+        auxiliary: Vec<SweepCurve>,
+        curvilinear: bool,
+        /// About a constant binormal when `constant_binormal`.
+        constant_binormal: bool,
+        constant_direction: [f64; 3],
+        /// A planar body face as the profile (mitcad#543): the face of the
+        /// body at index `profile_body` of the bodies passed along, its
+        /// caps keyed by `profile_key`.
+        has_profile_face: bool,
+        profile_body: usize,
+        profile_face: String,
+        profile_key: String,
     }
 
     /// A loft section: `kind` 0 a region (`index` into the frames and
@@ -83,6 +99,14 @@ pub mod ffi {
         end_kind: u8,
         end_angle: f64,
         end_weight: f64,
+        /// A frame along the centre line (mitcad#543), as `SweepInput`'s.
+        frenet: bool,
+        auxiliary: Vec<SweepCurve>,
+        curvilinear: bool,
+        constant_binormal: bool,
+        constant_direction: [f64; 3],
+        /// The sections only move along the centre line (mitcad#547).
+        parallel: bool,
     }
 
     /// `section` 0 circular, 1 square, 2 triangular; `thickness` 0 for a
@@ -193,6 +217,10 @@ use mitcad_model::{
 use mitcad_model::GuideSurface;
 // Sweeps' rail points (mitcad#469).
 use mitcad_model::RailPoint;
+// Frenet and auxiliary frames (mitcad#539).
+use mitcad_model::sweeps::PathFrame;
+// Body faces as profiles (mitcad#543).
+use mitcad_model::sweeps::ProfileFace;
 
 use super::shape::ffi::new_shape_list;
 use super::{Shape, failed, occt, profile};
@@ -293,6 +321,22 @@ pub fn surface_sweep(
     spec: &SweepSpec<'_>,
     surfaces: &[GuideSurface<'_, SharedPtr<Shape>>],
 ) -> Result<SharedPtr<Shape>, KernelError> {
+    sweep_with(spec, surfaces, None)
+}
+
+/// A sweep of a planar body face (mitcad#543).
+pub fn face_sweep(
+    spec: &SweepSpec<'_>,
+    face: &ProfileFace<'_, SharedPtr<Shape>>,
+) -> Result<SharedPtr<Shape>, KernelError> {
+    sweep_with(spec, &[], Some(face))
+}
+
+fn sweep_with(
+    spec: &SweepSpec<'_>,
+    surfaces: &[GuideSurface<'_, SharedPtr<Shape>>],
+    face: Option<&ProfileFace<'_, SharedPtr<Shape>>>,
+) -> Result<SharedPtr<Shape>, KernelError> {
     let mut bodies = new_shape_list();
     let mut guide_faces = Vec::new();
     let mut guide_bodies = Vec::new();
@@ -302,8 +346,19 @@ pub fn surface_sweep(
         guide_bodies.push(bodies.size());
         bodies.pin_mut().push(surface.body.clone());
     }
+    // A body face as the profile (mitcad#543): its body after the guide
+    // surfaces'.
+    let profile_body = bodies.size();
+    if let Some(face) = face {
+        occt(face.body)?;
+        bodies.pin_mut().push(face.body.clone());
+    }
     let regions: Vec<profile::ffi::Region> = spec.regions.iter().map(profile::region).collect();
     let input = ffi::SweepInput {
+        has_profile_face: face.is_some(),
+        profile_body,
+        profile_face: face.map(|f| f.face.to_string()).unwrap_or_default(),
+        profile_key: face.map(|f| f.key.to_string()).unwrap_or_default(),
         guide_faces,
         guide_bodies,
         path: curves(spec.path),
@@ -327,6 +382,23 @@ pub fn surface_sweep(
             .unwrap_or_default(),
         end_scale: spec.end_scale,
         rail_plane: spec.guide.is_some_and(|g| g.point == RailPoint::Plane),
+        frenet: spec.path_frame == Some(PathFrame::Frenet),
+        auxiliary: match spec.path_frame {
+            Some(PathFrame::Auxiliary { curve, .. }) => curves(curve),
+            _ => Vec::new(),
+        },
+        curvilinear: matches!(
+            spec.path_frame,
+            Some(PathFrame::Auxiliary {
+                curvilinear: true,
+                ..
+            })
+        ),
+        constant_binormal: matches!(spec.path_frame, Some(PathFrame::ConstantBinormal(_))),
+        constant_direction: match spec.path_frame {
+            Some(PathFrame::ConstantBinormal(b)) => b,
+            _ => [0.0, 0.0, 1.0],
+        },
     };
     ffi::sweep_solid(
         &spec.feature.to_string(),
@@ -396,6 +468,24 @@ pub fn loft(spec: &LoftSpec<'_, SharedPtr<Shape>>) -> Result<SharedPtr<Shape>, K
         end_kind: kind(spec.end),
         end_angle: spec.end.angle,
         end_weight: spec.end.weight,
+        frenet: spec.centerline_frame == Some(PathFrame::Frenet),
+        auxiliary: match spec.centerline_frame {
+            Some(PathFrame::Auxiliary { curve, .. }) => curves(curve),
+            _ => Vec::new(),
+        },
+        curvilinear: matches!(
+            spec.centerline_frame,
+            Some(PathFrame::Auxiliary {
+                curvilinear: true,
+                ..
+            })
+        ),
+        constant_binormal: matches!(spec.centerline_frame, Some(PathFrame::ConstantBinormal(_))),
+        constant_direction: match spec.centerline_frame {
+            Some(PathFrame::ConstantBinormal(b)) => b,
+            _ => [0.0, 0.0, 1.0],
+        },
+        parallel: spec.centerline_parallel,
     };
     ffi::loft_solid(
         &spec.feature.to_string(),

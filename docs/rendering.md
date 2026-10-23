@@ -273,9 +273,29 @@ A scene update (mitcad#49) sends what changed, not the whole scene:
   application); another placement only sets the object's transform; the
   same entry leaves it as it is. A Cycles mesh no body uses is deleted
   (its data stays until released); shaders are made once per material
-  (Cycles never deletes shaders). The shadow floor is made again only
+  and set of its images that can be read (Cycles never deletes shaders).
+  The shadow floor is made again only
   when the bodies' bounds change, and the render restarts only when
   something changed.
+- **Material swaps** (mitcad#538): a body whose material changes back to
+  one it had (an undo or redo of Set Appearance, a texture removed with
+  Edit Appearances and the removal undone, two appearances in turn) takes
+  the shader made for it before. Cycles compiles only the shaders a mesh
+  uses (`SVMCompiler::compile_type` skips a shader without references),
+  and compiles again only when a shader is added or tagged: a shader that
+  had no user at the last compile was compiled to nothing, and the body
+  rendered black until the worker started again (or until something else,
+  such as the ground made again, added a shader). `shaderOf` marks a
+  shader it takes again with Cycles' `Shader::tag_used`, which tags it for
+  compiling when it has no user yet (before the mesh references it), as
+  Blender's own scene sync does. Each time a Cycles mesh takes a material,
+  its images are checked again (once per file in a scene update): an image
+  that cannot be read any more (its file gone or no image now) gives the
+  worker's warning in that update, as at the start, and the material's
+  shader without it; images that could be read keep the shader made with
+  them. The images Cycles loaded stay loaded while a shader holds them
+  (Cycles never deletes shaders), so a texture that comes back is not
+  read again.
 - **The report**: the worker's `scene` event lists the bodies whose
   meshes came with the update (`received`), and those `added`,
   `changed`, `moved`, `removed` and `kept`, the meshes held and the bodies
@@ -424,7 +444,9 @@ the body and of its faces.
   missing, its base colour is shown)" (Render Image says so in its
   dialog, `mitcad-cli render` on stderr); one the worker cannot read
   (OpenImageIO) is reported by the worker as an `error` (a `warning` in
-  the batch mode) and renders in its base colour too.
+  the batch mode) and renders in its base colour too, also when a body
+  takes the material again later in the session and the image cannot be
+  read any more ([Scene updates](#scene-updates), "Material swaps").
 - **Texture maps** (mitcad#314): `resolveTextureMaps` finds the file of
   the base colour and of each map of the set the same way (an embedded
   map's data from `appearance_image` with its `map`, written once per
@@ -508,7 +530,14 @@ the body and of its faces.
   Appearances while rendering sends a new scene for a new colour and for
   a new roughness alone (without meshes; the worker changes only that
   body; assigning a copy that looks the same sends none), and renders in
-  its colour.
+  its colour. Then (mitcad#538) an appearance with an embedded texture
+  set (an orange checker for the base colour, a normal, a roughness and
+  an occlusion map, which `mitcad-render --write-test-images <folder>`
+  writes for the test) is assigned to the box while the view renders, the
+  assignment undone and redone, its texture removed in Edit Appearances
+  and the removal undone: after each change the box's pixels are the
+  texture's orange, the copy's teal or the appearance's own white, never
+  black.
 - `tools/ui-render-lights-test.sh` (mitcad#54): a red plastic block in
   the dark studio: Add on the Lights page puts a point light at the
   camera and the block is brighter; Aim at Face with a click on the block
@@ -556,6 +585,20 @@ the body and of its faces.
   (84, 74, 66) renders as the same colour without a texture (mitcad#386:
   read as sRGB once). The renders are kept there
   (`maps-<name>.png`).
+- `ctest` `app.render_material_swap` (mitcad#538, `mitcad-render
+  --swap-test <folder>`): the test block's material swapped within one
+  session on the CPU, as the application swaps a body's appearance:
+  untextured blue, textured (an orange checker with a normal, a roughness
+  and an occlusion map, 20 mm repeats), back and forth, another textured
+  one (green), the textured one without its texture (Edit Appearance's
+  `"texture": null`) and back. After each change the mean colour of the
+  block's pixels is within 15 % of what a renderer that starts with that
+  material renders, has the material's hue and is not black (before the
+  fix the first material that came back rendered black). Last, the base
+  colour image of a material shown earlier is overwritten with bytes that
+  are no image: when the block takes the material again, the update warns
+  `cannot read the texture image …; the base colour is shown` and the
+  block renders in the base colour.
 - `ctest` `cli.render_texture_maps` (mitcad#314,
   `tools/cli/render-texture-maps-test.cmake`): `mitcad-cli render` on the
   CPU, not denoised, of a box in appearances of

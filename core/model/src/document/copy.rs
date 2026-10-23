@@ -16,7 +16,9 @@ use super::{ComponentCopy, DocState, ModelError, invalid};
 use crate::appearance::{self, ImageData, Texture};
 use crate::assembly::{Assembly, Occurrence};
 use crate::expr::ParamSpec;
-use crate::features::{ChamferSizeDef, FeatureDef, FeatureEntry, FilletSizeDef, OccurrencePath};
+use crate::features::{
+    ChamferSizeDef, CombineTool, FeatureDef, FeatureEntry, FilletSizeDef, OccurrencePath,
+};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::library::{LibraryRequest, LinkResolver};
 use crate::links::OccurrenceLink;
@@ -769,11 +771,28 @@ impl CopyReferences<'_> {
                     tools.insert(*tool, mapped);
                     copy.tool_links.insert(mapped, link);
                 }
+                // Tools in occurrences (mitcad#544): each by its own link.
                 copy.tools = original
                     .tools
                     .iter()
-                    .map(|tool| tools.get(tool).copied().unwrap_or_else(|| self.body(*tool)))
-                    .collect();
+                    .map(|tool| match &tool.link {
+                        Some(link) => {
+                            let (link, internal) = self.link(link, component)?;
+                            let body = if internal {
+                                self.body(tool.body)
+                            } else {
+                                tool.body
+                            };
+                            Ok(CombineTool::linked(body, link))
+                        }
+                        None => Ok(CombineTool::own(
+                            tools
+                                .get(&tool.body)
+                                .copied()
+                                .unwrap_or_else(|| self.body(tool.body)),
+                        )),
+                    })
+                    .collect::<Result<Vec<_>, ModelError>>()?;
             }
             // A sweep's path and guide surfaces on other components' bodies
             // (mitcad#161): the bodies' references are copied as other

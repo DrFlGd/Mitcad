@@ -14,11 +14,12 @@
 namespace mitcad {
 
 std::vector<CommandHost::ShownSketch> MainWindow::shownSketches() const {
-  // As showSketches() shows them, without one sketch mode edits (it draws
-  // its own dimensions).
+  // As showSketches() shows them (also those a command shows for its time,
+  // mitcad#546), without one sketch mode edits (it draws its own
+  // dimensions).
   std::vector<ShownSketch> shown;
   for (const DocumentSnapshot::Feature& feature : std::as_const(m_snapshot.features)) {
-    if (!feature.isSketch() || !feature.succeeded() || !m_snapshot.isShown(feature.uid) ||
+    if (!feature.isSketch() || !feature.succeeded() || !sketchShown(feature.uid) ||
         (m_sketch->isActive() && feature.uid == m_sketch->uid())) {
       continue;
     }

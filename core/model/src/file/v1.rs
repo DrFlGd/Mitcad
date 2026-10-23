@@ -422,6 +422,7 @@ impl Converter<'_> {
                     curves: None,
                     wrap: None,
                     profile_face: None,
+                    direction: None,
                 })
             }
             FileFeature::Fillet {

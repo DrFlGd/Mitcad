@@ -691,19 +691,30 @@ fn patterns_of_patterns_repeat_the_originals_at_every_product() {
     b.doc.set_parameter("d6", 30.0).unwrap();
     assert!(b.doc.stats().evaluated.contains(&shifted));
     b.doc.undo();
-    // Patterns of bodies cannot be patterned.
+    // A pattern of a pattern of bodies (mitcad#547) copies the block as it
+    // was before the inner pattern at every product of the elements: the
+    // block and its copy at x = 100 mirrored to new bodies.
+    let block_box = bounds(&b.doc, "F2.b0");
     let bodies = add(&mut b.doc, x_pattern(2.0, 100.0, json!({})));
-    let error = b
-        .doc
-        .add_feature(
-            &def(
-                json!({"type": "mirror", "objects": {"type": "features", "features": [bodies]},
-                        "plane": "yz"}),
-            ),
-            None,
-        )
-        .unwrap_err();
-    assert!(error.to_string().contains("repeats bodies"), "{error}");
+    let mirror = add(
+        &mut b.doc,
+        json!({"type": "mirror", "objects": {"type": "features", "features": [bodies]},
+               "plane": "yz"}),
+    );
+    assert_eq!(status(&b.doc, mirror), FeatureStatus::Ok);
+    for shift in [0.0, 100.0] {
+        let min = [
+            -(block_box.max[0] + shift),
+            block_box.min[1],
+            block_box.min[2],
+        ];
+        let max = [
+            -(block_box.min[0] + shift),
+            block_box.max[1],
+            block_box.max[2],
+        ];
+        assert!(has_box(&b.doc, min, max), "{shift}: {min:?} .. {max:?}");
+    }
 }
 
 #[test]
@@ -1795,5 +1806,505 @@ fn copies_of_a_join_use_the_body_its_participants_went_into() {
             if m.contains(&format!("{other}.b0 of Extrude3 was consumed by Extrude3 itself"))),
         "{:?}",
         status(&b.doc, pattern)
+    );
+}
+
+// Copies joined to their bodies and scaled copies (mitcad#539).
+
+/// Whether a body has these bounds.
+fn has_box(doc: &Document<MockKernel>, min: [f64; 3], max: [f64; 3]) -> bool {
+    let near = |a: [f64; 3], e: [f64; 3]| (0..3).all(|i| (a[i] - e[i]).abs() < 1e-9);
+    doc.bodies().iter().any(|body| {
+        doc.body_shape(body.uid)
+            .and_then(|s| s.bounds)
+            .is_some_and(|b| near(b.min, min) && near(b.max, max))
+    })
+}
+
+/// A box moved by `by` and scaled by `s` about its own centre.
+fn moved_scaled(b: BoundingBox, by: [f64; 3], s: f64) -> ([f64; 3], [f64; 3]) {
+    let center: [f64; 3] = std::array::from_fn(|i| (b.min[i] + b.max[i]) / 2.0 + by[i]);
+    let half: [f64; 3] = std::array::from_fn(|i| (b.max[i] - b.min[i]) / 2.0 * s);
+    (
+        std::array::from_fn(|i| center[i] - half[i]),
+        std::array::from_fn(|i| center[i] + half[i]),
+    )
+}
+
+/// A peg of its own body: a circle at (100, 0) extruded 10 (Sketch2 F3,
+/// Extrude2 F4).
+fn peg(doc: &mut Document<MockKernel>) -> FeatureUid {
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_circle(sketch, [100.0, 0.0], &num(10.0))
+        .unwrap()
+        .region;
+    add(
+        doc,
+        json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+               "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}),
+    )
+}
+
+#[test]
+fn patterns_of_bodies_join_their_copies_with_combine() {
+    let mut b = block();
+    // Copies 30 apart overlap the 60 long block: all joined to it.
+    let row = add(&mut b.doc, x_pattern(3.0, 30.0, json!({"combine": true})));
+    assert_eq!(status(&b.doc, row), FeatureStatus::Ok);
+    assert_eq!(uids(&b.doc), ["F2.b0"]);
+    assert!(shape(&b.doc, "F2.b0").history.starts_with("join("));
+    // A pattern of the joined body copies the earlier copies too (the
+    // FreeCAD import's MultiTransform of the whole body).
+    let turn = add(
+        &mut b.doc,
+        json!({"type": "circular_pattern", "objects": {"type": "bodies", "bodies": ["F2.b0"]},
+               "axis": {"type": "origin", "axis": "z"}, "quantity": 2,
+               "angle": std::f64::consts::TAU, "combine": true}),
+    );
+    assert_eq!(status(&b.doc, turn), FeatureStatus::Ok);
+    assert_eq!(uids(&b.doc), ["F2.b0"]);
+    let history = shape(&b.doc, "F2.b0").history;
+    assert!(history.starts_with("join(join(join("), "{history}");
+    // A copy that touches nothing stays a body of its own.
+    *b.doc.kernel().touch.borrow_mut() = Some(vec![false]);
+    let apart = add(&mut b.doc, x_pattern(2.0, 500.0, json!({"combine": true})));
+    *b.doc.kernel().touch.borrow_mut() = None;
+    assert_eq!(status(&b.doc, apart), FeatureStatus::Ok);
+    assert_eq!(uids(&b.doc), ["F2.b0".to_owned(), format!("{apart}.b0")]);
+    // Features are not joined so.
+    let (cut, _) = hole(&mut b.doc);
+    let error = b
+        .doc
+        .add_feature(
+            &def(json!({"type": "rectangular_pattern",
+                       "objects": {"type": "features", "features": [cut]},
+                       "direction1": {"axis": "x", "quantity": 2, "distance": 20},
+                       "distance_type": "spacing", "combine": true})),
+            None,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("bodies only"), "{error}");
+}
+
+#[test]
+fn scale_groups_scale_runs_of_elements_alike() {
+    let mut b = block();
+    b.doc.kernel().measures.set(true);
+    // Four elements in two runs: elements 0 and 1 as they are, 2 and 3
+    // twice the size about their centres (the block is 60 x 40 x 20).
+    let uid = add(
+        &mut b.doc,
+        x_pattern(4.0, 100.0, json!({"scale": 2, "scale_groups": 2})),
+    );
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_bounds(&b.doc, "F3.b0", [100.0, 0.0, 0.0], [160.0, 40.0, 20.0]);
+    assert_bounds(&b.doc, "F3.b1", [170.0, -20.0, -10.0], [290.0, 60.0, 30.0]);
+    assert_bounds(&b.doc, "F3.b2", [270.0, -20.0, -10.0], [390.0, 60.0, 30.0]);
+    // Runs that do not divide the elements fail the pattern; groups need
+    // a scale and two runs at least.
+    b.doc
+        .edit_feature(
+            uid,
+            &def(x_pattern(
+                4.0,
+                100.0,
+                json!({"scale": 2, "scale_groups": 3}),
+            )),
+        )
+        .unwrap();
+    assert!(
+        matches!(status(&b.doc, uid), FeatureStatus::Failed(m) if m.contains("do not divide")),
+        "{:?}",
+        status(&b.doc, uid)
+    );
+    b.doc
+        .edit_feature(
+            uid,
+            &def(x_pattern(
+                4.0,
+                100.0,
+                json!({"scale": 2, "scale_groups": 5}),
+            )),
+        )
+        .unwrap();
+    assert!(matches!(status(&b.doc, uid), FeatureStatus::Failed(_)));
+    let error = b
+        .doc
+        .edit_feature(uid, &def(x_pattern(4.0, 100.0, json!({"scale_groups": 2}))))
+        .unwrap_err();
+    assert!(error.to_string().contains("need a scale"), "{error}");
+    let error = b
+        .doc
+        .edit_feature(
+            uid,
+            &def(x_pattern(
+                4.0,
+                100.0,
+                json!({"scale": 2, "scale_groups": 1}),
+            )),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("at least 2"), "{error}");
+}
+
+#[test]
+fn scaled_patterns_of_patterns_scale_each_copy_about_its_own_centre() {
+    let mut b = block();
+    b.doc.kernel().measures.set(true);
+    let peg = peg(&mut b.doc);
+    let original = bounds(&b.doc, &format!("{peg}.b0"));
+    let row = add(
+        &mut b.doc,
+        json!({"type": "rectangular_pattern", "objects": {"type": "features", "features": [peg]},
+               "direction1": {"axis": "x", "quantity": 2, "distance": 50},
+               "distance_type": "spacing", "compute": "identical"}),
+    );
+    // The row moved along y and scaled twice: the peg's copy and the copy
+    // of the row's copy, each about its own centre (FreeCAD's Scaled
+    // transformation after two patterns).
+    let grown = add(
+        &mut b.doc,
+        json!({"type": "rectangular_pattern", "objects": {"type": "features", "features": [row]},
+               "direction1": {"axis": "y", "quantity": 2, "distance": 50},
+               "distance_type": "spacing", "compute": "identical", "scale": 2}),
+    );
+    assert_eq!(status(&b.doc, grown), FeatureStatus::Ok);
+    for dx in [0.0, 50.0] {
+        let (min, max) = moved_scaled(original, [dx, 50.0, 0.0], 2.0);
+        assert!(has_box(&b.doc, min, max), "{dx}: {min:?} .. {max:?}");
+    }
+    // A pattern of the scaled pattern places those copies as they are.
+    let raised = add(
+        &mut b.doc,
+        json!({"type": "rectangular_pattern", "objects": {"type": "features", "features": [grown]},
+               "direction1": {"axis": "z", "quantity": 2, "distance": 100},
+               "distance_type": "spacing", "compute": "identical"}),
+    );
+    assert_eq!(status(&b.doc, raised), FeatureStatus::Ok);
+    for dx in [0.0, 50.0] {
+        let (min, max) = moved_scaled(original, [dx, 50.0, 100.0], 2.0);
+        assert!(has_box(&b.doc, min, max), "{dx}: {min:?} .. {max:?}");
+    }
+    let (min, max) = moved_scaled(original, [50.0, 0.0, 100.0], 1.0);
+    assert!(has_box(&b.doc, min, max));
+}
+
+#[test]
+fn scale_patterns_scale_copies_where_they_are() {
+    let mut b = block();
+    b.doc.kernel().measures.set(true);
+    let added = b
+        .doc
+        .add_feature(
+            &def(json!({"type": "scale_pattern",
+                        "objects": {"type": "bodies", "bodies": ["F2.b0"]},
+                        "quantity": 3, "scale": 2})),
+            None,
+        )
+        .unwrap();
+    assert_eq!(added.name, "ScalePattern1");
+    assert_eq!(status(&b.doc, added.uid), FeatureStatus::Ok);
+    assert_eq!(uids(&b.doc), ["F2.b0", "F3.b0", "F3.b1"]);
+    // 1.5 and 2 times about the block's centre (30, 20, 10).
+    assert_bounds(&b.doc, "F3.b0", [-15.0, -10.0, -5.0], [75.0, 50.0, 25.0]);
+    assert_bounds(&b.doc, "F3.b1", [-30.0, -20.0, -10.0], [90.0, 60.0, 30.0]);
+    let message = b
+        .doc
+        .edit_feature(
+            added.uid,
+            &def(json!({"type": "scale_pattern",
+                        "objects": {"type": "bodies", "bodies": ["F2.b0"]},
+                        "quantity": 3, "scale": 0})),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(message.contains("must be a positive factor"), "{message}");
+    b.doc.undo();
+
+    // Of a feature, and a pattern of it: the scaled copy moved (FreeCAD's
+    // Scaled transformation first in a MultiTransform).
+    let peg = peg(&mut b.doc);
+    let original = bounds(&b.doc, &format!("{peg}.b0"));
+    let shrunk = add(
+        &mut b.doc,
+        json!({"type": "scale_pattern", "objects": {"type": "features", "features": [peg]},
+               "quantity": 2, "scale": 0.5, "compute": "identical"}),
+    );
+    assert_eq!(status(&b.doc, shrunk), FeatureStatus::Ok);
+    let (min, max) = moved_scaled(original, [0.0; 3], 0.5);
+    assert!(has_box(&b.doc, min, max));
+    let row = add(
+        &mut b.doc,
+        json!({"type": "rectangular_pattern", "objects": {"type": "features", "features": [shrunk]},
+               "direction1": {"axis": "x", "quantity": 2, "distance": 50},
+               "distance_type": "spacing", "compute": "identical"}),
+    );
+    assert_eq!(status(&b.doc, row), FeatureStatus::Ok);
+    let (min, max) = moved_scaled(original, [50.0, 0.0, 0.0], 0.5);
+    assert!(has_box(&b.doc, min, max));
+    let (min, max) = moved_scaled(original, [50.0, 0.0, 0.0], 1.0);
+    assert!(has_box(&b.doc, min, max));
+}
+
+#[test]
+fn a_mirror_scales_its_image_about_the_image_s_centre() {
+    let mut b = block();
+    b.doc.kernel().measures.set(true);
+    let mirror = add(
+        &mut b.doc,
+        json!({"type": "mirror", "objects": {"type": "bodies", "bodies": ["F2.b0"]},
+               "plane": {"type": "origin", "plane": "yz"}, "scale": 0.5}),
+    );
+    assert_eq!(status(&b.doc, mirror), FeatureStatus::Ok);
+    // The image [-60, 0] x [0, 40] x [0, 20] halved about (-30, 20, 10).
+    assert_bounds(&b.doc, "F3.b0", [-45.0, 10.0, 5.0], [-15.0, 30.0, 15.0]);
+}
+
+// Scales counted over the copies of patterns of patterns, several scales,
+// a scale centre and skipped copies (mitcad#542).
+
+/// A rectangular pattern of features along an origin axis.
+fn row(features: Value, axis: &str, quantity: f64, distance: f64, extra: Value) -> Value {
+    let mut value = json!({"type": "rectangular_pattern", "objects": {"type": "features",
+                                                                      "features": features},
+        "direction1": {"axis": {"type": "origin", "axis": axis}, "quantity": quantity,
+                       "distance": distance},
+        "distance_type": "spacing", "compute": "identical"});
+    for (key, item) in extra.as_object().unwrap() {
+        value[key] = item.clone();
+    }
+    value
+}
+
+#[test]
+fn scale_runs_over_the_copies_of_patterns_of_patterns() {
+    let mut b = block();
+    b.doc.kernel().measures.set(true);
+    let peg = peg(&mut b.doc);
+    let original = bounds(&b.doc, &format!("{peg}.b0"));
+    // Four runs over the four copies of two patterns of two (FreeCAD's
+    // Scaled transformation of more occurrences than the last pattern has
+    // elements): the inner pattern scales its copy (j = 1) and the outer
+    // one each of its copies (j = 2, 3) to its run's factor, 1 to 2.
+    let runs = json!({"scale": 2, "scale_groups": 4, "scale_copies": 4});
+    let inner = add(&mut b.doc, row(json!([peg]), "x", 2.0, 50.0, runs.clone()));
+    let outer = add(&mut b.doc, row(json!([inner]), "y", 2.0, 50.0, runs));
+    assert_eq!(status(&b.doc, outer), FeatureStatus::Ok);
+    for (by, s) in [
+        ([50.0, 0.0, 0.0], 4.0 / 3.0),
+        ([0.0, 50.0, 0.0], 5.0 / 3.0),
+        ([50.0, 50.0, 0.0], 2.0),
+    ] {
+        let (min, max) = moved_scaled(original, by, s);
+        assert!(has_box(&b.doc, min, max), "{by:?} {s}: {min:?} .. {max:?}");
+    }
+    // The copies counted must hold the pattern's own.
+    b.doc
+        .edit_feature(
+            outer,
+            &def(row(
+                json!([inner]),
+                "y",
+                2.0,
+                50.0,
+                json!({"scale": 2, "scale_groups": 2, "scale_copies": 2}),
+            )),
+        )
+        .unwrap();
+    assert!(
+        matches!(status(&b.doc, outer), FeatureStatus::Failed(m) if m.contains("more than the")),
+        "{:?}",
+        status(&b.doc, outer)
+    );
+}
+
+#[test]
+fn several_scales_multiply_and_a_scale_centre_is_carried() {
+    let mut b = block();
+    b.doc.kernel().measures.set(true);
+    // Two scales of four elements: in two runs up to 2 (1, 1, 2, 2) and by
+    // element up to 1.5 (1, 7/6, 4/3, 3/2): element 1 is 7/6 the size.
+    let uid = add(
+        &mut b.doc,
+        x_pattern(
+            4.0,
+            100.0,
+            json!({"scale": 2, "scale_groups": 2, "scales": [{"scale": 1.5}]}),
+        ),
+    );
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    let block_box = bounds(&b.doc, "F2.b0");
+    let (min, max) = moved_scaled(block_box, [100.0, 0.0, 0.0], 7.0 / 6.0);
+    assert_bounds(&b.doc, "F3.b0", min, max);
+    let (min, max) = moved_scaled(block_box, [300.0, 0.0, 0.0], 3.0);
+    assert_bounds(&b.doc, "F3.b2", min, max);
+    let answer: Value = serde_json::from_str(
+        &b.doc
+            .query(&json!({"query": "feature", "uid": uid}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(answer["def"]["scales"][0]["scale"].is_string(), "{answer}");
+    b.doc.undo();
+    // About the origin carried to the copy (FreeCAD's whole body): the
+    // block at x = 100 twice the size from its corner (100, 0, 0).
+    let uid = add(
+        &mut b.doc,
+        x_pattern(
+            2.0,
+            100.0,
+            json!({"scale": 2, "scale_center": {"type": "origin"}}),
+        ),
+    );
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_bounds(&b.doc, "F3.b0", [100.0, 0.0, 0.0], [220.0, 80.0, 40.0]);
+    // A centre without a scale is refused.
+    let error = b
+        .doc
+        .edit_feature(
+            uid,
+            &def(x_pattern(
+                2.0,
+                100.0,
+                json!({"scale_center": {"type": "origin"}}),
+            )),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("needs a scale"), "{error}");
+}
+
+#[test]
+fn skipped_copies_are_not_made_but_patterns_of_the_pattern_place_them() {
+    let mut b = block();
+    let peg = peg(&mut b.doc);
+    let original = bounds(&b.doc, &format!("{peg}.b0"));
+    // Three along x without its copy 1, then that row along y: the row's
+    // copy 1 is made at y = 50 only.
+    let inner = add(
+        &mut b.doc,
+        row(json!([peg]), "x", 3.0, 50.0, json!({"skipped_copies": [1]})),
+    );
+    assert_eq!(status(&b.doc, inner), FeatureStatus::Ok);
+    let at = |by: [f64; 3]| moved_scaled(original, by, 1.0);
+    let (min, max) = at([50.0, 0.0, 0.0]);
+    assert!(!has_box(&b.doc, min, max));
+    let (min, max) = at([100.0, 0.0, 0.0]);
+    assert!(has_box(&b.doc, min, max));
+    let outer = add(&mut b.doc, row(json!([inner]), "y", 2.0, 50.0, json!({})));
+    assert_eq!(status(&b.doc, outer), FeatureStatus::Ok);
+    for by in [[0.0, 50.0, 0.0], [50.0, 50.0, 0.0], [100.0, 50.0, 0.0]] {
+        let (min, max) = at(by);
+        assert!(has_box(&b.doc, min, max), "{by:?}");
+    }
+    // The outer pattern skips copies by their numbers p + 3 e: copy 4 is
+    // the inner copy 1 at element 1.
+    b.doc
+        .edit_feature(
+            outer,
+            &def(row(
+                json!([inner]),
+                "y",
+                2.0,
+                50.0,
+                json!({"skipped_copies": [4]}),
+            )),
+        )
+        .unwrap();
+    assert_eq!(status(&b.doc, outer), FeatureStatus::Ok);
+    let (min, max) = at([50.0, 50.0, 0.0]);
+    assert!(!has_box(&b.doc, min, max));
+    let (min, max) = at([100.0, 50.0, 0.0]);
+    assert!(has_box(&b.doc, min, max));
+    // Copies of bodies too (mitcad#547): the body of element 1 is not
+    // made, element 2's keeps its id. Never the original.
+    let skipping = add(
+        &mut b.doc,
+        x_pattern(3.0, 100.0, json!({"skipped_copies": [1]})),
+    );
+    assert_eq!(status(&b.doc, skipping), FeatureStatus::Ok);
+    let ids = uids(&b.doc);
+    assert!(!ids.contains(&format!("{skipping}.b0")), "{ids:?}");
+    assert!(ids.contains(&format!("{skipping}.b1")), "{ids:?}");
+    let error = b
+        .doc
+        .edit_feature(
+            outer,
+            &def(row(
+                json!([inner]),
+                "y",
+                2.0,
+                50.0,
+                json!({"skipped_copies": [0]}),
+            )),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("the original"), "{error}");
+}
+
+#[test]
+fn patterns_of_patterns_of_bodies_copy_the_body_at_every_product() {
+    // mitcad#547 (FreeCAD's MultiTransform of the whole body): a row of the
+    // block joined to it, then a pattern of the row joining its copies of
+    // the block as it was before the row.
+    let mut b = block();
+    b.doc.kernel().measures.set(true);
+    let original = bounds(&b.doc, "F2.b0");
+    let row = add(&mut b.doc, x_pattern(2.0, 30.0, json!({"combine": true})));
+    let y_row = |extra: Value| {
+        let mut value = json!({"type": "rectangular_pattern",
+            "objects": {"type": "features", "features": [row]},
+            "direction1": {"axis": {"type": "origin", "axis": "y"}, "quantity": 2,
+                           "distance": 200},
+            "distance_type": "spacing"});
+        for (key, item) in extra.as_object().unwrap() {
+            value[key] = item.clone();
+        }
+        value
+    };
+    let grid = add(&mut b.doc, y_row(json!({"combine": true})));
+    assert_eq!(status(&b.doc, grid), FeatureStatus::Ok);
+    assert_eq!(uids(&b.doc), ["F2.b0"]);
+    assert!(shape(&b.doc, "F2.b0").history.starts_with("join("));
+    // Without combine: new bodies, the block at both places of the row.
+    b.doc.edit_feature(grid, &def(y_row(json!({})))).unwrap();
+    assert_eq!(status(&b.doc, grid), FeatureStatus::Ok);
+    for dx in [0.0, 30.0] {
+        let (min, max) = moved_scaled(original, [dx, 200.0, 0.0], 1.0);
+        assert!(has_box(&b.doc, min, max), "{dx}: {min:?} .. {max:?}");
+    }
+    // Scaled about the origin carried to each copy, the row's copy 1 at
+    // the element (copy 3) skipped: the block twice its size from its
+    // corner (0, 200, 0) only.
+    b.doc
+        .edit_feature(
+            grid,
+            &def(y_row(
+                json!({"scale": 2, "scale_center": {"type": "origin"},
+                              "skipped_copies": [3]}),
+            )),
+        )
+        .unwrap();
+    assert_eq!(status(&b.doc, grid), FeatureStatus::Ok);
+    let ids: Vec<String> = uids(&b.doc)
+        .into_iter()
+        .filter(|id| id.starts_with(&format!("{grid}.")))
+        .collect();
+    assert_eq!(ids.len(), 1, "{ids:?}");
+    assert!(has_box(&b.doc, [0.0, 200.0, 0.0], [120.0, 280.0, 40.0]));
+    // Patterns of bodies and features together are refused.
+    let (cut, _) = hole(&mut b.doc);
+    let mixed = add(
+        &mut b.doc,
+        json!({"type": "rectangular_pattern",
+               "objects": {"type": "features", "features": [row, cut]},
+               "direction1": {"axis": {"type": "origin", "axis": "y"}, "quantity": 2,
+                              "distance": 10},
+               "distance_type": "spacing"}),
+    );
+    assert!(
+        matches!(status(&b.doc, mixed), FeatureStatus::Failed(m) if m.contains("together")),
+        "{:?}",
+        status(&b.doc, mixed)
     );
 }

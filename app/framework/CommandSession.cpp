@@ -749,6 +749,7 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
       logSelection(slot.key);
     }
   }
+  listItems();
   const QVector<Slot> shown = slotsOf(true);
   m_selectionsComplete = selectionsSatisfied();
   for (const Slot& slot : shown) {
@@ -800,6 +801,18 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
   }
   if (!choices.isEmpty()) {
     qDebug().noquote() << QStringLiteral("Panel %1 choices: %2").arg(m_def.name, choices.join(QStringLiteral(", ")));
+  }
+  // The check boxes too: an edited feature's stored options as the panel
+  // shows them (mitcad#545: a symmetric circular pattern).
+  QStringList checks;
+  for (const InputDef& input : m_def.inputs) {
+    if (input.type == InputDef::Type::Check || input.type == InputDef::Type::Flip) {
+      checks << QStringLiteral("%1=%2").arg(input.id, m_state.checked(input.id) ? QStringLiteral("on")
+                                                                                 : QStringLiteral("off"));
+    }
+  }
+  if (!checks.isEmpty()) {
+    qDebug().noquote() << QStringLiteral("Panel %1 checks: %2").arg(m_def.name, checks.join(QStringLiteral(", ")));
   }
   // Once the panel is shown and laid out.
   TestSync::singleShot(100, this, [this] {
@@ -1093,8 +1106,41 @@ void CommandSession::advanceIfFull() {
 void CommandSession::selectionChanged(const QString& key) {
   autoOperationOverruled(key);
   logSelection(key);
+  listItems();
   updateHighlights();
   inputsChanged();
+}
+
+void CommandSession::listItems() {
+  const QVector<Slot> all = slotsOf(false);
+  if (std::none_of(all.begin(), all.end(), [](const Slot& slot) {
+        return slot.def->type == InputDef::Type::Selection && static_cast<bool>(slot.def->itemsText);
+      })) {
+    return;
+  }
+  if (m_host.modelBusy()) {
+    m_host.whenIdle(this, [this] {
+      if (!m_done) {
+        listItems();
+        if (m_presenter) {
+          m_presenter->refresh(m_state);
+        }
+      }
+    });
+    return;
+  }
+  for (const Slot& slot : all) {
+    if (slot.def->type != InputDef::Type::Selection || !slot.def->itemsText) {
+      continue;
+    }
+    const QString text = slot.def->itemsText(std::as_const(m_state).items(slot.key), scopeOf(slot), m_host);
+    if (text != m_state.itemsText(slot.key)) {
+      m_state.setItemsText(slot.key, text);
+      if (!text.isEmpty()) {
+        qDebug().noquote() << QStringLiteral("%1 %2 listed: %3").arg(m_def.name, slot.def->label, text);
+      }
+    }
+  }
 }
 
 void CommandSession::logSelection(const QString& key) const {
@@ -1233,7 +1279,7 @@ void CommandSession::evaluate(const QString& key) {
     m_presenter->setValueHint(key, hint);
   }
   qDebug().noquote() << QStringLiteral("%1 %2: %3 %4")
-                            .arg(m_def.name, input.label, text,
+                            .arg(m_def.name, input.labelIn(scopeOf(*slot)), text,
                                  problem.isEmpty() ? QStringLiteral("= %1").arg(shown)
                                                    : QStringLiteral("is invalid: %1").arg(problem));
 }

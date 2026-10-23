@@ -550,9 +550,40 @@ pub(crate) fn footprint<K: crate::kernel::Kernel>(
             bodies.extend(&d.participants);
             None
         }
-        F::RectangularPattern(d) => Some(&d.objects),
-        F::CircularPattern(d) => Some(&d.objects),
-        F::PathPattern(d) => Some(&d.objects),
+        // Patterns that join copies of bodies to them change those bodies
+        // (mitcad#539), as a mirror's `combine` does.
+        F::RectangularPattern(d) => {
+            if d.combine
+                && let PatternObjects::Bodies { bodies: selected } = &d.objects
+            {
+                bodies.extend(selected);
+            }
+            Some(&d.objects)
+        }
+        F::CircularPattern(d) => {
+            if d.combine
+                && let PatternObjects::Bodies { bodies: selected } = &d.objects
+            {
+                bodies.extend(selected);
+            }
+            Some(&d.objects)
+        }
+        F::PathPattern(d) => {
+            if d.combine
+                && let PatternObjects::Bodies { bodies: selected } = &d.objects
+            {
+                bodies.extend(selected);
+            }
+            Some(&d.objects)
+        }
+        F::ScalePattern(d) => {
+            if d.combine
+                && let PatternObjects::Bodies { bodies: selected } = &d.objects
+            {
+                bodies.extend(selected);
+            }
+            Some(&d.objects)
+        }
         F::Mirror(d) => {
             if d.combine
                 && let PatternObjects::Bodies { bodies: selected } = &d.objects

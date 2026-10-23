@@ -9,13 +9,20 @@
 
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepBuilderAPI_GTransform.hxx>
 #include <BRep_Builder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <Bnd_Box.hxx>
 #include <NCollection_List.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Shape.hxx>
+#include <gp_GTrsf.hxx>
+#include <gp_Mat.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Vec.hxx>
+#include <gp_XYZ.hxx>
 
+#include "canonical.hpp"
 #include "history.hpp"
 #include "sweep.hpp"
 #include "util.hpp"
@@ -81,19 +88,65 @@ std::vector<detail::SweepFace> profile_faces(const ExtrudeFeatureSpec& spec, con
   return merge ? detail::merged(faces) : faces;
 }
 
+// A tapered side along a direction off the face's normal (mitcad#539): the
+// profile grows in its plane by t tan(taper) at distance t along `along`,
+// each side face ruled from its edge to the edge's offset moved along the
+// direction. Built as the taper along the normal to the same height (the
+// distance times the cosine c of the direction's angle to the normal, the
+// taper's tangent over c) sheared along the direction: the shear keeps the
+// profile's plane and moves every plane parallel to it within itself, so
+// the planes and cones of the straight taper stay planes and cones.
+ShapePtr oblique_taper(const detail::SweepFace& face, double distance, double taper, const gp_Dir& along,
+                       const NameList& near, const NameList& far) {
+  const gp_Pln neutral = BRepAdaptor_Surface(face.face).Plane();
+  gp_Dir normal = neutral.Axis().Direction();
+  if (normal.Dot(along) < 0.0) {
+    normal.Reverse();
+  }
+  const double c = normal.Dot(along);
+  const ShapePtr straight = detail::named_prism(face, gp_Vec(normal) * (distance * c), near, far);
+  NameList caps = near;
+  caps.insert(caps.end(), far.begin(), far.end());
+  const ShapePtr upright = detail::tapered(*straight, neutral, normal, std::atan(std::tan(taper) / c), caps);
+  // x -> x + ((x - o) . n) (along / c - n), o on the profile's plane.
+  const gp_XYZ shift = along.XYZ() / c - normal.XYZ();
+  const gp_XYZ n = normal.XYZ();
+  gp_GTrsf shear;
+  shear.SetVectorialPart(gp_Mat(1.0 + shift.X() * n.X(), shift.X() * n.Y(), shift.X() * n.Z(),
+                                shift.Y() * n.X(), 1.0 + shift.Y() * n.Y(), shift.Y() * n.Z(),
+                                shift.Z() * n.X(), shift.Z() * n.Y(), 1.0 + shift.Z() * n.Z()));
+  shear.SetTranslationPart(shift * -neutral.Location().XYZ().Dot(n));
+  BRepBuilderAPI_GTransform operation(upright->occt(), shear, true);
+  if (!operation.IsDone()) {
+    throw std::runtime_error("the taper could not be turned along the extrusion direction");
+  }
+  detail::FaceNamer namer(operation.Shape());
+  for (int i = 0; i < upright->face_count(); ++i) {
+    const TopoDS_Shape image = operation.ModifiedShape(upright->face(i));
+    for (const std::string& name : upright->face_names(i)) {
+      namer.add(image, name);
+    }
+  }
+  detail::require_valid(namer.result(), "the tapered extrusion");
+  const ShapePtr sheared = namer.shape();
+  // (The shear makes every face a B-spline; its planes and cones back.)
+  if (ShapePtr analytic = detail::canonical_dressup(*upright, *sheared)) {
+    return analytic;
+  }
+  return sheared;
+}
+
 // One side swept from a face on a start plane parallel to the sketch.
 ShapePtr parallel_side(const std::string& feature, const detail::SweepFace& face,
                        const ExtrudeSide& side, const gp_Dir& along, const NameList& near,
                        const NameList& far) {
-  const gp_Pln neutral = BRepAdaptor_Surface(face.face).Plane();
   if (!side.target) {
-    const ShapePtr solid = detail::named_prism(face, gp_Vec(along) * side.distance, near, far);
-    if (side.taper == 0.0) {
-      return solid;
-    }
-    NameList caps = near;
-    caps.insert(caps.end(), far.begin(), far.end());
-    return detail::tapered(*solid, neutral, along, side.taper, caps);
+    return detail::distance_side(face, side.distance, side.taper, along, near, far);
+  }
+  const gp_Pln neutral = BRepAdaptor_Surface(face.face).Plane();
+  // A taper along a direction off the sketch normal (mitcad#539).
+  if (side.taper != 0.0 && std::abs(std::abs(neutral.Axis().Direction().Dot(along)) - 1.0) > 1.0e-12) {
+    throw std::invalid_argument("unsupported: a taper up to an object along a direction off the sketch normal");
   }
   // Past the target, then back to where it is reached.
   const std::string unreached = face_name(feature, "unreached", face.regions.front());
@@ -189,6 +242,26 @@ ShapePtr joined(const std::vector<ShapePtr>& parts) {
 }
 
 } // namespace
+
+namespace detail {
+
+ShapePtr distance_side(const SweepFace& face, double distance, double taper, const gp_Dir& along,
+                       const NameList& near, const NameList& far) {
+  const gp_Pln neutral = BRepAdaptor_Surface(face.face).Plane();
+  // A taper along a direction off the face's normal (mitcad#539).
+  if (taper != 0.0 && std::abs(std::abs(neutral.Axis().Direction().Dot(along)) - 1.0) > 1.0e-12) {
+    return oblique_taper(face, distance, taper, along, near, far);
+  }
+  const ShapePtr solid = named_prism(face, gp_Vec(along) * distance, near, far);
+  if (taper == 0.0) {
+    return solid;
+  }
+  NameList caps = near;
+  caps.insert(caps.end(), far.begin(), far.end());
+  return tapered(*solid, neutral, along, taper, caps);
+}
+
+} // namespace detail
 
 ShapePtr extrude_feature(const ExtrudeFeatureSpec& spec) {
   if (spec.regions.empty() && spec.chains.empty()) {

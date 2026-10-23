@@ -51,6 +51,41 @@ impl ObjectOutcome {
     }
 }
 
+/// Why a feature fell back, by the group of its cause (mitcad#539).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackGroup {
+    /// Missing in Mitcad: FreeCAD's definition needs a feature or an option
+    /// the translation does not have (its reason says "not translated").
+    Missing,
+    /// No parametric counterpart: a scripted object (`…Python`), a plain
+    /// shape (`Part::Feature`), or a result FreeCAD itself failed (its
+    /// stored shape is invalid).
+    NoCounterpart,
+    /// Translated, but its definition did not build or did not give
+    /// FreeCAD's shape (or an input of it was not found).
+    Other,
+}
+
+impl FallbackGroup {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::NoCounterpart => "no_counterpart",
+            Self::Other => "other",
+        }
+    }
+
+    /// The words of the readable report.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Missing => "missing in Mitcad",
+            Self::NoCounterpart => "no parametric counterpart",
+            Self::Other => "other",
+        }
+    }
+}
+
 /// A replayed feature's result against the shape FreeCAD stored for it
 /// (in the component's coordinates): the Mitcad bodies of its Body (or of
 /// a Part workbench object) together, and FreeCAD's.
@@ -83,6 +118,10 @@ pub struct FeatureReport {
     pub body: Option<String>,
     /// `parametric`, `partial`, `fallback` or `skipped`.
     pub outcome: ObjectOutcome,
+    /// A fallback's group: `missing` (in Mitcad), `no_counterpart`,
+    /// `other`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_group: Option<FallbackGroup>,
     /// The Mitcad features made of it (a definition, or the fallback's
     /// base feature).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -423,6 +462,21 @@ impl FcstdReport {
         counts
     }
 
+    /// The fallback features of the history by group: missing in Mitcad,
+    /// without a parametric counterpart, other.
+    pub fn fallback_groups(&self) -> [usize; 3] {
+        let mut groups = [0; 3];
+        for f in &self.features {
+            match f.fallback_group {
+                Some(FallbackGroup::Missing) => groups[0] += 1,
+                Some(FallbackGroup::NoCounterpart) => groups[1] += 1,
+                Some(FallbackGroup::Other) => groups[2] += 1,
+                None => {}
+            }
+        }
+        groups
+    }
+
     /// A readable summary.
     pub fn text(&self) -> String {
         let mut out = String::new();
@@ -476,6 +530,14 @@ impl FcstdReport {
                 )
             }
         );
+        if !self.features.is_empty() {
+            // The corpus test (tools/cli/fcstd-corpus.cmake) reads this line.
+            let [missing, none, other] = self.fallback_groups();
+            let _ = writeln!(
+                out,
+                "  fallbacks by group: {missing} missing in Mitcad, {none} without a parametric counterpart, {other} other"
+            );
+        }
         let types: Vec<String> = self
             .objects_by_type
             .iter()
@@ -551,7 +613,7 @@ impl FcstdReport {
         for f in &self.features {
             let _ = writeln!(
                 out,
-                "  feature {} ({}): {} {}{}{}",
+                "  feature {} ({}): {} {}{}{}{}",
                 f.label,
                 if f.features.is_empty() {
                     "-".to_owned()
@@ -565,6 +627,8 @@ impl FcstdReport {
                     format!("{} ", f.mitcad)
                 },
                 f.object_type,
+                f.fallback_group
+                    .map_or(String::new(), |g| format!(" ({})", g.describe())),
                 f.check.as_ref().map_or(String::new(), |c| format!(
                     ", volume {:.3} mm3 against FreeCAD's {:.3}, {} solids, off by {:.1e}{}",
                     c.volume,

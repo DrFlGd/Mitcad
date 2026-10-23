@@ -146,6 +146,26 @@ std::shared_ptr<geometry::Shape> sweep_solid(rust::Str feature, const Frame& fra
     }
     spec.guide.push_back({bodies.at(body), std::string(input.guide_faces[i])});
   }
+  // A Frenet or auxiliary frame (mitcad#539).
+  spec.frenet = input.frenet;
+  spec.auxiliary = path(input.auxiliary);
+  spec.curvilinear = input.curvilinear;
+  if (input.constant_binormal) {
+    const gp_Vec binormal(input.constant_direction[0], input.constant_direction[1], input.constant_direction[2]);
+    if (binormal.Magnitude() < 1.0e-12) {
+      throw std::invalid_argument("the constant binormal has no length");
+    }
+    spec.constant_binormal = gp_Dir(binormal);
+  }
+  // A body face as the profile (mitcad#543).
+  if (input.has_profile_face) {
+    if (input.profile_body >= bodies.size() || !bodies.at(input.profile_body)) {
+      throw std::invalid_argument("the profile face's body is missing");
+    }
+    spec.profile_body = bodies.at(input.profile_body);
+    spec.profile_face = std::string(input.profile_face);
+    spec.profile_key = std::string(input.profile_key);
+  }
   return geometry::sweep(spec);
 }
 
@@ -184,6 +204,19 @@ std::shared_ptr<geometry::Shape> loft_solid(rust::Str feature, const LoftInput& 
   spec.ruled = input.ruled;
   spec.closed = input.closed;
   spec.solid = input.solid;
+  // A frame along the centre line (mitcad#543).
+  spec.frenet = input.frenet;
+  spec.auxiliary = path(input.auxiliary);
+  spec.curvilinear = input.curvilinear;
+  if (input.constant_binormal) {
+    const gp_Vec binormal(input.constant_direction[0], input.constant_direction[1], input.constant_direction[2]);
+    if (binormal.Magnitude() < 1.0e-12) {
+      throw std::invalid_argument("the constant binormal has no length");
+    }
+    spec.constant_binormal = gp_Dir(binormal);
+  }
+  // Parallel along the centre line (mitcad#547).
+  spec.parallel = input.parallel;
   std::size_t at = 0;
   for (const std::size_t count : input.rails) {
     if (at + count > input.rail_curves.size()) {

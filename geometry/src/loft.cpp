@@ -26,6 +26,7 @@
 #include <Precision.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <gp_Ax2.hxx>
 
 #include "history.hpp"
 #include "loft_skin.hpp"
@@ -121,9 +122,10 @@ gp_Pnt center_of(const TopoDS_Shape& shape) {
 
 // Along a centre line: the sections swept along the part of it between the
 // first and the last section, at right angles to it.
-ShapePtr along_centerline(const std::vector<Prepared>& sections, const Path& centerline,
-                          const detail::NamedWire& named, const NameList& first, const NameList& last,
-                          bool solid) {
+ShapePtr along_centerline(const LoftSpec& spec, const std::vector<Prepared>& sections,
+                          const detail::NamedWire& named, const NameList& first, const NameList& last) {
+  const Path& centerline = spec.centerline;
+  const bool solid = spec.solid;
   const detail::Spine spine(detail::path_wire(centerline));
   double a = spine.nearest(center_of(sections.front().shape));
   double b = spine.nearest(center_of(sections.back().shape));
@@ -135,12 +137,29 @@ ShapePtr along_centerline(const std::vector<Prepared>& sections, const Path& cen
   }
   BRepOffsetAPI_MakePipeShell pipe(part);
   const detail::Spine along(part);
-  const detail::PipeMode mode = detail::perpendicular_mode(along);
-  if (mode.kind == detail::PipeMode::Kind::Binormal) {
-    pipe.SetMode(mode.binormal);
-  } else {
-    pipe.SetMode(false);
+  // The sections at right angles to the centre line, or as its frame turns
+  // them (mitcad#543), the frame's within OCCT's confusion as a framed
+  // sweep's.
+  const bool framed = spec.frenet || !spec.auxiliary.empty() || spec.constant_binormal.has_value();
+  if (int(spec.frenet) + int(!spec.auxiliary.empty()) + int(spec.constant_binormal.has_value()) > 1) {
+    throw std::invalid_argument(
+        "a loft follows the Frenet frame, an auxiliary curve or a constant binormal, not both");
   }
+  detail::PipeMode mode = detail::frame_mode(spec.frenet, spec.auxiliary, spec.curvilinear,
+                                             spec.constant_binormal, detail::perpendicular_mode(along));
+  // Parallel (mitcad#547): a constant frame, so the sections only move
+  // along the centre line, as a parallel sweep's profile does.
+  if (spec.parallel) {
+    if (framed) {
+      throw std::invalid_argument("a parallel loft along a centre line takes no frame");
+    }
+    mode.kind = detail::PipeMode::Kind::Fixed;
+    mode.fixed = gp_Ax2(along.point(0.0), along.tangent(0.0));
+  }
+  if (framed || spec.parallel) {
+    pipe.SetTolerance(1.0e-7, 1.0e-7, 1.0e-2);
+  }
+  detail::set_mode(pipe, mode);
   for (const Prepared& section : sections) {
     pipe.Add(section.shape, false, false);
   }
@@ -182,6 +201,12 @@ ShapePtr loft(const LoftSpec& spec) {
   }
   if (spec.closed && !spec.centerline.empty()) {
     throw std::invalid_argument("a closed loft has no centre line");
+  }
+  if ((spec.frenet || !spec.auxiliary.empty() || spec.constant_binormal) && spec.centerline.empty()) {
+    throw std::invalid_argument("a loft's frame turns its sections along a centre line: it needs one");
+  }
+  if (spec.parallel && spec.centerline.empty()) {
+    throw std::invalid_argument("a parallel loft moves its sections along a centre line: it needs one");
   }
   if (spec.closed && !spec.ruled && count < 3) {
     throw std::invalid_argument("a smooth closed loft needs three or more sections");
@@ -236,7 +261,7 @@ ShapePtr loft(const LoftSpec& spec) {
       result = detail::skinned_loft(skin, spec.start, spec.end, spec.rails, named->named, first, last, spec.closed,
                                     spec.solid);
     } else if (!spec.centerline.empty()) {
-      result = along_centerline(sections, spec.centerline, named->named, first, last, spec.solid);
+      result = along_centerline(spec, sections, named->named, first, last);
     } else {
       std::vector<TopoDS_Shape> shapes;
       for (const Prepared& section : sections) {

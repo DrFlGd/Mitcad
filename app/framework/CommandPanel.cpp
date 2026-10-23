@@ -888,10 +888,33 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
     row.field->setVisible(shown);
   }
   const QString& id = input.id;
+  // A label that follows other inputs (InputDef::labelFor, mitcad#545): a
+  // pattern's length row says Spacing or Extent, with the parameter it
+  // edits after it as below.
+  if (input.labelFor && row.label != nullptr && !input.disclosure) {
+    const bool valued = input.type == InputDef::Type::Value || input.type == InputDef::Type::Text;
+    const QString name = valued ? scope.parameterName(id) : QString();
+    const QString label = input.labelIn(scope);
+    const QString text = name.isEmpty() ? label : QStringLiteral("%1 (%2)").arg(label, name);
+    if (row.label->text() != text) {
+      row.label->setText(text);
+      qDebug().noquote() << QStringLiteral("Panel %1 label %2: %3").arg(m_def.name, row.key, text);
+    }
+  }
   switch (input.type) {
   case InputDef::Type::Selection: {
     const Selection& items = scope.items(id);
-    row.select->setText(countText(input, static_cast<int>(items.size())));
+    // The picks by name where the input lists them (Combine's tools in
+    // occurrences, mitcad#544), else their count.
+    const QString listed = items.isEmpty() ? QString() : scope.itemsText(id);
+    const QString tip = input.tooltip.isEmpty() ? tr("Click to pick %1").arg(input.label) : input.tooltip;
+    if (listed.isEmpty()) {
+      row.select->setText(countText(input, static_cast<int>(items.size())));
+      row.select->setToolTip(tip);
+    } else {
+      row.select->setText(row.select->fontMetrics().elidedText(listed, Qt::ElideRight, 220));
+      row.select->setToolTip(QStringLiteral("%1\n%2").arg(listed, tip));
+    }
     if (row.order != nullptr) {
       QStringList texts;
       for (int i = 0; i < items.size(); ++i) {
@@ -918,7 +941,7 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
     // The parameter the field edits, after its label: "Distance (d5)"
     // (mitcad#231).
     if (const QString name = scope.parameterName(id); row.label != nullptr && !name.isEmpty()) {
-      const QString text = QStringLiteral("%1 (%2)").arg(input.label, name);
+      const QString text = QStringLiteral("%1 (%2)").arg(input.labelIn(scope), name);
       if (row.label->text() != text) {
         row.label->setText(text);
         qDebug().noquote() << QStringLiteral("Panel %1 label: %2").arg(m_def.name, text);

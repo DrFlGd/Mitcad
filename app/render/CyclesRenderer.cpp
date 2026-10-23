@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -351,6 +352,9 @@ public:
     {
       const ccl::thread_scoped_lock lock(m_session->scene->mutex);
       ccl::Scene& scene = *m_session->scene;
+      // Texture images are checked again in each update that gives a body
+      // their material (mitcad#538, textureReadable).
+      m_textures.clear();
       for (const auto& [key, mesh] : update.meshes) {
         if (!mesh.indices.empty() && m_meshes.find(key) == m_meshes.end()) {
           m_meshes.emplace(key, MeshEntry{std::make_shared<const MeshData>(mesh), boundsOf(mesh)});
@@ -746,15 +750,61 @@ private:
     return bounds;
   }
 
-  // The shader of a material, made once and shared by the meshes that use
-  // it (Cycles never deletes shaders).
+  // Which images of a material's texture set can be read (textureReadable):
+  // a shader is made for a material with the images that can be read.
+  struct ImagesRead {
+    bool color = false;
+    bool normal = false;
+    bool roughness = false;
+    bool metalness = false;
+    bool occlusion = false;
+
+    bool any() const { return color || normal || roughness || metalness || occlusion; }
+    std::string key() const {
+      std::string text = "images ";
+      for (const bool found : {color, normal, roughness, metalness, occlusion}) {
+        text += found ? '1' : '0';
+      }
+      return text;
+    }
+  };
+
+  ImagesRead imagesRead(const MaterialData& m) {
+    ImagesRead found;
+    found.color = !m.texture.empty() && textureReadable(m.texture, false);
+    const auto mapImage = [this](const std::string& file) { return !file.empty() && textureReadable(file, true); };
+    found.normal = mapImage(m.normalMap);
+    found.roughness = mapImage(m.roughnessMap);
+    found.metalness = mapImage(m.metalnessMap);
+    found.occlusion = mapImage(m.occlusionMap);
+    return found;
+  }
+
+  // The shader of a material, shared by the meshes that use it; made once
+  // per material and set of images that can be read (Cycles never deletes
+  // shaders). The images are checked whenever a Cycles mesh takes the
+  // material (mitcad#538): one that cannot be read any more gives its
+  // warning, as at the start, and a shader without it, instead of the one
+  // made while it could be read.
+  //
+  // A shader made earlier may have had no user when Cycles last compiled
+  // the shaders (the body's material changed to another and now back: an
+  // undo, a texture removed and given back); Cycles compiles such a shader
+  // to nothing (SVMCompiler::compile_type skips a shader without
+  // references), so a mesh that takes it again rendered black until
+  // something else made Cycles compile all shaders (mitcad#538). Cycles'
+  // tag_used marks it for compiling when it has no user yet, before the
+  // mesh references it (set_used_shaders in geometryOf).
   ccl::Shader* shaderOf(ccl::Scene& scene, const MaterialData& material, const std::string& key) {
-    auto existing = m_shaders.find(key);
+    const ImagesRead found = imagesRead(material);
+    const std::string shaderKey = key + '\n' + found.key();
+    auto existing = m_shaders.find(shaderKey);
     if (existing != m_shaders.end()) {
+      existing->second->tag_used(&scene);
       return existing->second;
     }
-    ccl::Shader* shader = addMaterial(scene, material);
-    m_shaders.emplace(key, shader);
+    ccl::Shader* shader = addMaterial(scene, material, found);
+    m_shaders.emplace(shaderKey, shader);
     return shader;
   }
 
@@ -854,19 +904,18 @@ private:
   // normal map the shading normal (textureNormal), the roughness and
   // metalness maps their values (instead of the parameters), and the
   // occlusion map multiplies the base colour. Each map that cannot be
-  // read is left out alone.
-  ccl::Shader* addMaterial(ccl::Scene& scene, const MaterialData& m) {
+  // read (`found`, imagesRead) is left out alone.
+  ccl::Shader* addMaterial(ccl::Scene& scene, const MaterialData& m, const ImagesRead& found) {
     auto graph = std::make_unique<ccl::ShaderGraph>();
     ccl::PrincipledBsdfNode* bsdf = graph->create_node<ccl::PrincipledBsdfNode>();
     const ccl::float3 baseColor = ccl::make_float3(m.baseColor[0], m.baseColor[1], m.baseColor[2]);
     bsdf->set_base_color(baseColor);
-    const bool colorImage = !m.texture.empty() && textureReadable(m.texture, false);
-    const auto mapImage = [this](const std::string& file) { return !file.empty() && textureReadable(file, true); };
-    const bool normalImage = mapImage(m.normalMap);
-    const bool roughnessImage = mapImage(m.roughnessMap);
-    const bool metalnessImage = mapImage(m.metalnessMap);
-    const bool occlusionImage = mapImage(m.occlusionMap);
-    if (colorImage || normalImage || roughnessImage || metalnessImage || occlusionImage) {
+    const bool colorImage = found.color;
+    const bool normalImage = found.normal;
+    const bool roughnessImage = found.roughness;
+    const bool metalnessImage = found.metalness;
+    const bool occlusionImage = found.occlusion;
+    if (found.any()) {
       ccl::ShaderGraph& g = *graph;
       const Projection projection = projectionOf(g, m);
       // Grey maps are data: no colour transform.
@@ -922,9 +971,11 @@ private:
     return shader;
   }
 
-  // Whether the image of a texture can be read; once per file, with a
-  // warning when it cannot (the base colour is used instead, a map is
-  // left out).
+  // Whether the image of a texture can be read; once per file in a scene
+  // update (updateScene starts again), with a warning when it cannot (the
+  // base colour is used instead, a map is left out). An image read at the
+  // start of a session may be gone when a body takes its material again
+  // later (mitcad#538): the update that gives the material says so.
   bool textureReadable(const std::string& path, bool map) {
     auto known = m_textures.find(path);
     if (known == m_textures.end()) {
@@ -1852,8 +1903,9 @@ private:
   std::map<std::pair<std::string, std::string>, GeometryEntry> m_geometry;
   std::map<std::string, ccl::Shader*> m_shaders;
   std::map<std::string, BodyEntry> m_bodies;
-  // Texture images by path: whether they can be read; and the warnings of
-  // the scene update being made.
+  // Texture images by path: whether they can be read, in the scene update
+  // being made; and its warnings. Shaders are by material and the images
+  // of it that could be read (shaderOf).
   std::map<std::string, bool> m_textures;
   std::vector<std::string> m_warnings;
   // The environment's lights and the ground, rebuilt on their own.

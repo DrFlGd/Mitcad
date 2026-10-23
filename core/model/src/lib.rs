@@ -282,3 +282,7 @@ mod mount_tests;
 pub use kernel::FaceExtrudeSpec;
 #[cfg(test)]
 mod face_extrude_tests;
+// Revolve: a planar body face as the profile (mitcad#539).
+pub use kernel::FaceRevolveSpec;
+#[cfg(test)]
+mod face_revolve_tests;

@@ -355,6 +355,7 @@ QString featureIcon(const QString& type) {
       {QStringLiteral("move"), QStringLiteral("move")},
       {QStringLiteral("align"), QStringLiteral("align")},
       {QStringLiteral("scale"), QStringLiteral("scale")},
+      {QStringLiteral("scale_pattern"), QStringLiteral("scale")},
       {QStringLiteral("box"), QStringLiteral("box")},
       {QStringLiteral("cylinder"), QStringLiteral("cylinder")},
       {QStringLiteral("sphere"), QStringLiteral("sphere")},

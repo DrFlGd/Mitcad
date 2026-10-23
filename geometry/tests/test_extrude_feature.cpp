@@ -8,7 +8,11 @@
 #include <string>
 #include <utility>
 
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <GeomAbs_SurfaceType.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Pnt.hxx>
 
 #include "check.hpp"
 
@@ -639,8 +643,62 @@ void test_thin_open_chains() {
 
 } // namespace
 
+// Along a direction off the sketch normal (mitcad#539): a 20 x 10 rectangle
+// 10 along (1, 0, 2), its far cap at the height h = 10 cos (20 / sqrt 5)
+// moved 10 / sqrt 5 along x. Without a taper a slanted prism of the
+// profile's area times h. With a taper of 5 degrees the profile grows in
+// its plane by t tan 5 at t along the direction (each side face ruled from
+// its edge to the edge's offset moved along the direction): a prismatoid
+// of rectangles grown evenly with the height, whose faces stay planes. A
+// circle grows into an oblique cone whose sections are circles: the volume
+// of the upright frustum of the same radii and height.
+void test_oblique() {
+  const double root5 = std::sqrt(5.0);
+  const double h = 20 / root5;
+  const double five = 5.0 * kPi / 180.0;
+  const double grow = 10 * std::tan(five);
+  ExtrudeFeatureSpec spec = spec_of({rectangle(1, 0, 0, 20, 10)}, 10);
+  spec.direction = gp_Dir(1, 0, 2);
+  const ShapePtr slanted = extrude_feature(spec);
+  CHECK_NEAR(volume(*slanted), 200 * h);
+  CHECK(face_at_z(*slanted, end_cap("F2", 1), h));
+
+  spec.side1.taper = five;
+  const ShapePtr tapered = extrude_feature(spec);
+  const auto area = [](double g) { return (20 + 2 * g) * (10 + 2 * g); };
+  CHECK_NEAR(volume(*tapered), h / 6 * (area(0) + 4 * area(grow / 2) + area(grow)));
+  CHECK(face_at_z(*tapered, end_cap("F2", 1), h));
+  const std::vector<int> far = tapered->find_faces(end_cap("F2", 1));
+  CHECK(far.size() == 1);
+  if (far.size() == 1) {
+    const BoundingBox cap = bounding_box(Shape(tapered->face(far[0])));
+    CHECK(near(cap.min.X(), 10 / root5 - grow) && near(cap.max.X(), 20 + 10 / root5 + grow));
+    CHECK(near(cap.min.Y(), -grow) && near(cap.max.Y(), 10 + grow));
+  }
+  CHECK(faces_named(*tapered, side("F2", 1, 0)) == 1 && tapered->face_count() == 6);
+  CHECK(edge_names_unique(*tapered));
+  for (int i = 0; i < tapered->face_count(); ++i) {
+    CHECK(BRepAdaptor_Surface(tapered->face(i)).GetType() == GeomAbs_Plane);
+  }
+
+  spec.regions = {circle(1, 0, 0, 5)};
+  const double r1 = 5 + grow;
+  const ShapePtr cone = extrude_feature(spec);
+  CHECK_NEAR(volume(*cone), kPi * h / 3 * (25 + 5 * r1 + r1 * r1));
+  CHECK(faces_named(*cone, "F2:side(c1)") == 1 && faces_named(*cone, "F2:end(r{c1})") == 1);
+  CHECK(BRepCheck_Analyzer(cone->occt()).IsValid());
+
+  // Not up to an object.
+  Target plane;
+  plane.plane = gp_Pln(gp_Pnt(0, 0, 8), gp_Dir(0, 0, 1));
+  spec.side1.target = plane;
+  CHECK(throws_with([&] { extrude_feature(spec); }, "unsupported: a taper up to an object"));
+}
+
 void extrude_feature_tests() {
   guarded("test_two_sides_and_symmetric", test_two_sides_and_symmetric);
+  // Along a direction off the sketch normal (mitcad#539).
+  guarded("test_oblique", test_oblique);
   guarded("test_start", test_start);
   guarded("test_taper", test_taper);
   guarded("test_taper_closing_profile", test_taper_closing_profile);

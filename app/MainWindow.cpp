@@ -1519,6 +1519,12 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
   setSelection({});
   m_placementNote.clear(); // what this command places, it says (mitcad#292)
   m_mode = Mode::Command;
+  if (!m_commandInSketch && !editUid.isEmpty()) {
+    // The sketches the edited feature uses are shown for its time
+    // (mitcad#546): before the session starts, as its roll-back refreshes
+    // the scene.
+    beginCommandSketches(editUid, Selection(), def.name);
+  }
   auto* session = new CommandSession(def, *this, editUid, m_documentSession);
   if (!analysis.isEmpty()) {
     session->editAnalysis(analysis);
@@ -1541,9 +1547,12 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
         m_commandInSketch = false;
         endCommandScope();
         showError(error);
+        CommandSketches ended = std::exchange(m_commandSketches, CommandSketches());
         refreshScene();
+        endCommandSketches(std::move(ended));
         return;
       }
+      showStartingSketches(*guarded);
       m_nativeForm = createNativeCommandForm(*guarded);
       m_nativeWindow->showInspector(true);
       m_nativeWindow->setInspectorView(m_nativeForm->nativeView());
@@ -1564,9 +1573,12 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
     m_mode = m_commandInSketch ? Mode::Sketch : Mode::Idle;
     endCommandScope();
     showError(error);
+    CommandSketches ended = std::exchange(m_commandSketches, CommandSketches());
     refreshScene();
+    endCommandSketches(std::move(ended));
     return;
   }
+  showStartingSketches(*session);
   m_session = session;
   m_lastCommand = def.id;
   connect(session, &CommandSession::finished, this, &MainWindow::onCommandFinished);
@@ -1738,7 +1750,10 @@ void MainWindow::onCommandFinished(bool committed) {
   if (m_panelScroll) {
     m_panelScroll->deleteLater();
   }
+  // Its sketches go back to their light bulbs (mitcad#546).
+  CommandSketches sketches = std::exchange(m_commandSketches, CommandSketches());
   refreshScene();
+  endCommandSketches(std::move(sketches));
   m_viewer->setFocus();
   // A new component placed beside a part says so rather than "Done."
   // (mitcad#292).
@@ -2845,7 +2860,8 @@ void MainWindow::logBodyPlaces() {
 
 // A sketch's profiles are hidden once they have been extruded; the
 // sketch being edited shows all of them (unless the palette says not to),
-// and so does one the user showed. Hidden sketches show none.
+// and so do one the user showed and one a command shows for its time
+// (mitcad#546: an edited feature's). Hidden sketches show none.
 void MainWindow::showProfiles() {
   const QString active = m_sketch->isActive() ? m_sketch->uid() : QString();
   std::vector<std::pair<ProfileKey, TopoDS_Shape>> profiles;
@@ -2863,9 +2879,9 @@ void MainWindow::showProfiles() {
       }
     } else {
       const DocumentSnapshot::Feature* feature = m_snapshot.feature(sketch);
-      const bool shownByUser = feature != nullptr && feature->visibleSet && feature->visible;
-      if (!m_snapshot.isShown(sketch) ||
-          (!shownByUser && profile.value(QStringLiteral("consumed")).toBool())) {
+      const bool shownByUser = (feature != nullptr && feature->visibleSet && feature->visible) ||
+                               m_commandSketches.used().contains(sketch);
+      if (!sketchShown(sketch) || (!shownByUser && profile.value(QStringLiteral("consumed")).toBool())) {
         continue;
       }
     }
@@ -2961,7 +2977,9 @@ QString MainWindow::datumOccurrence(const QString& datum) const {
 }
 
 // The shown sketches (the browser's light bulbs, else the default rule:
-// DocumentSnapshot::featureShown), and the one being edited.
+// DocumentSnapshot::featureShown), the one being edited, and those a
+// command shows for its time (mitcad#546), drawn lighter while their light
+// bulbs are off.
 void MainWindow::showSketches() {
   QStringList sketches;
   if (m_sketch->isActive()) {
@@ -2969,7 +2987,7 @@ void MainWindow::showSketches() {
   }
   for (const DocumentSnapshot::Feature& feature : std::as_const(m_snapshot.features)) {
     if (feature.isSketch() && feature.succeeded() &&
-        m_snapshot.isShown(feature.uid) && !sketches.contains(feature.uid)) {
+        sketchShown(feature.uid) && !sketches.contains(feature.uid)) {
       sketches << feature.uid;
     }
   }
@@ -3000,9 +3018,16 @@ void MainWindow::showSketches() {
           }
         }
       }
+      // Shown only for a command (mitcad#546): lighter, as it hides again.
+      const bool temporary = !(m_sketch->isActive() && sketch == m_sketch->uid()) &&
+                             m_commandSketches.temporary(sketch, m_snapshot.isShown(sketch));
       // The signature also has how the entity is drawn and placed.
       for (SketchEntityDisplay& entity : some) {
-        entity.signature += QStringLiteral("|%1|%2").arg(entity.constrained ? 1 : 0).arg(placed);
+        entity.temporary = temporary;
+        entity.signature += QStringLiteral("|%1|%2|%3")
+                                .arg(entity.constrained ? 1 : 0)
+                                .arg(placed)
+                                .arg(temporary ? 1 : 0);
       }
       entities.insert(entities.end(), some.begin(), some.end());
       shown << sketch;
@@ -4917,6 +4942,7 @@ void MainWindow::resetCommandState() {
   if (m_session) {
     m_session->discard(); // nothing to restore in a document that goes
   }
+  m_commandSketches = CommandSketches(); // the old document's (mitcad#546)
   if (m_mode == Mode::Sketch) {
     leaveSketchMode();
   }

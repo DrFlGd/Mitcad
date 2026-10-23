@@ -1992,6 +1992,8 @@ int projectBrowserTests();
 int firstBodiesFitTests();
 int sectionWorkerTests();
 int chamferHandleTests();
+int patternOptionsTests();
+int commandSketchesTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2056,6 +2058,8 @@ int main(int argc, char* argv[]) {
     failures += firstBodiesFitTests();
     failures += sectionWorkerTests();
     failures += chamferHandleTests();
+    failures += patternOptionsTests();
+    failures += commandSketchesTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

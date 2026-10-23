@@ -6,13 +6,19 @@
 pub mod ffi {
     /// How far the face goes (see `FaceExtrudeSpec`): along its outward
     /// normal, against it with `reversed`, from `start` along the outward
-    /// normal; `side2` against the sweep with `two_sides`.
+    /// normal; `side2` against the sweep with `two_sides`; along
+    /// `direction` instead of the normal with `has_direction`, each side
+    /// tapered by its `taper` (radians; mitcad#541).
     struct FaceExtrusion {
         reversed: bool,
         start: f64,
         side1: f64,
         two_sides: bool,
         side2: f64,
+        has_direction: bool,
+        direction: [f64; 3],
+        taper1: f64,
+        taper2: f64,
     }
 
     unsafe extern "C++" {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
-//! Revolve: profiles of a sketch turned about an axis into a tool body,
-//! with the operations of an extrusion.
+//! Revolve: profiles of a sketch (or a planar face of a body, mitcad#539)
+//! turned about an axis into a tool body, with the operations of an
+//! extrusion.
 
 use serde::{Deserialize, Serialize};
 
@@ -16,7 +17,7 @@ use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, ToolUse, is_false,
 };
 use crate::ids::{BodyUid, FeatureUid};
-use crate::kernel::{Axis, Kernel, RevolveSpec, Target};
+use crate::kernel::{Axis, FaceRevolveSpec, Kernel, RevolveSpec, Target};
 use crate::parameters::ParamId;
 use crate::profile::{ProfileRegion, SketchFrame};
 
@@ -35,7 +36,9 @@ pub enum RevolveExtent<P = ParamId> {
     Symmetric { angle: P },
     /// `angle1` the positive way, `angle2` the other.
     TwoSides { angle1: P, angle2: P },
-    /// The positive way up to an object (first face reached).
+    /// The positive way up to an object: its first face reached, or
+    /// through a body (`through`, mitcad#539) to its last face, where the
+    /// turn leaves it.
     ToObject { object: Box<ExtentObject> },
 }
 
@@ -68,6 +71,13 @@ pub struct RevolveDef<P = ParamId> {
     /// profiles: open chains or closed loops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curves: Option<SketchCurves>,
+    /// A planar face of a body as the profile instead of sketch regions
+    /// (mitcad#539, as an extrusion's `profile_face`): its bounded area,
+    /// holes kept, turned about the axis, found by its topological name on
+    /// every recompute. By angles only (one side, full, symmetric, two
+    /// sides); no `profiles`, `surface`, `curves` or `project_axis`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_face: Option<super::reference::FaceRef>,
 }
 
 impl<P> RevolveDef<P> {
@@ -103,6 +113,7 @@ impl<P> RevolveDef<P> {
             participants: self.participants.clone(),
             surface: self.surface,
             curves: self.curves.clone(),
+            profile_face: self.profile_face.clone(),
         })
     }
 
@@ -129,10 +140,20 @@ impl FeatureInfo for RevolveDef {
         for body in &self.participants {
             references.body(*body);
         }
+        // A body face as the profile (mitcad#539): its body and the
+        // features its name refers to.
+        if let Some(face) = &self.profile_face {
+            face.add_references(&mut references);
+        }
         references
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+        if let Some(face) = &self.profile_face {
+            check_face_profile(self, ctx, face)?;
+            check_participants(ctx, self.operation, &self.participants)?;
+            return self.axis.check(ctx, Want::Line);
+        }
         surface_sweeps::check_inputs(
             ctx,
             self.surface,
@@ -212,6 +233,12 @@ fn check_angles(extent: &RevolveExtent, value: &dyn Fn(ParamId) -> f64) -> Resul
 
 impl<K: Kernel> Evaluate<K> for RevolveDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
+        if let Some(face) = &self.profile_face {
+            // A body face as the profile (mitcad#539).
+            let participants = participant_bodies(ctx, self.operation, &self.participants)?;
+            let tool = self.face_tool(ctx, face)?;
+            return apply_operation(ctx, self.operation, participants, tool, "revolution");
+        }
         let (sketch, regions) = match (&self.curves, self.profiles.is_empty()) {
             (Some(curves), true) => (ctx.sketch(curves.sketch)?, Vec::new()),
             _ => profile_regions(ctx, &self.profiles)?,
@@ -341,5 +368,104 @@ impl RevolveDef {
             RevolveExtent::TwoSides { angle1, angle2 } => vec![*angle1, *angle2],
             RevolveExtent::Full | RevolveExtent::ToObject { .. } => Vec::new(),
         }
+    }
+}
+
+// A planar body face as the profile (mitcad#539).
+
+/// How a revolution of a body face turns.
+const FACE_EXTENTS: &str =
+    "a revolution of a body face turns by angles (one side, full, symmetric or two sides)";
+
+/// Checks a revolution whose profile is a body face: nothing a sketch
+/// profile has besides it, angles only, the face's body and the features
+/// its name refers to before the feature.
+fn check_face_profile(
+    def: &RevolveDef,
+    ctx: &CheckContext<'_>,
+    face: &super::reference::FaceRef,
+) -> Result<(), String> {
+    if !def.profiles.is_empty() {
+        return Err("a revolution of a body face takes no sketch profiles".to_owned());
+    }
+    if def.surface || def.curves.is_some() {
+        return Err("a revolution of a body face has no surface or curves".to_owned());
+    }
+    if def.project_axis {
+        return Err("a revolution of a body face does not project its axis".to_owned());
+    }
+    if matches!(def.extent, RevolveExtent::ToObject { .. }) {
+        return Err(FACE_EXTENTS.to_owned());
+    }
+    face.check(ctx)
+}
+
+impl RevolveDef {
+    /// The tool of a revolution whose profile is a body face: the face as
+    /// found on its body now (a face a sketch change renamed is found
+    /// again, with a warning), turned by the kernel, its faces named after
+    /// the feature. The angles as a revolution of sketch profiles takes
+    /// them: a negative single angle turns the other way, a side of
+    /// nothing leaves one side. A face that is gone, not planar or of a
+    /// mesh body fails the feature; no other profile is taken instead.
+    fn face_tool<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        face: &super::reference::FaceRef,
+    ) -> Result<K::Shape, String> {
+        let body = ctx.surface_body(face.body)?;
+        let found = ctx.face_on(face.body, &body, &face.face)?;
+        let line = ctx.axis(&self.axis)?;
+        let mut axis = Axis {
+            origin: line.origin,
+            direction: line.direction,
+        };
+        let mut values = Vec::new();
+        for id in self.params_of_extent() {
+            values.push((id, ctx.param(id)?));
+        }
+        let value = |id: ParamId| {
+            values
+                .iter()
+                .find(|(p, _)| *p == id)
+                .map_or(f64::NAN, |(_, v)| *v)
+        };
+        check_angles(&self.extent, &value)?;
+        let reverse = |axis: &mut Axis| axis.direction = axis.direction.map(|v| -v);
+        let (angle1, angle2) = match &self.extent {
+            RevolveExtent::Angle { angle } => {
+                let a = value(*angle);
+                if a < 0.0 {
+                    reverse(&mut axis);
+                }
+                (a.abs().min(FULL_TURN), None)
+            }
+            RevolveExtent::Full => (FULL_TURN, None),
+            RevolveExtent::Symmetric { angle } => (value(*angle), Some(value(*angle))),
+            RevolveExtent::TwoSides { angle1, angle2 } => {
+                let (a, b) = (value(*angle1), value(*angle2));
+                if a == 0.0 {
+                    reverse(&mut axis);
+                    (b, None)
+                } else if b == 0.0 {
+                    (a, None)
+                } else {
+                    (a, Some(b))
+                }
+            }
+            RevolveExtent::ToObject { .. } => return Err(FACE_EXTENTS.to_owned()),
+        };
+        let spec = FaceRevolveSpec {
+            feature: ctx.uid,
+            body: &body,
+            face: &found,
+            key: &face.face,
+            axis,
+            angle1,
+            angle2,
+        };
+        ctx.kernel
+            .revolve_face(&spec)
+            .map_err(super::face_refs::kernel_error)
     }
 }

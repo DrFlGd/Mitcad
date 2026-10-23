@@ -15,7 +15,9 @@
 #      (F3.b0) and an unused square sketch (Sketch3, F4), whose square
 #      would be the newest profile:
 #      - the cube's side x = 20 selected, E: the side is the profile, not
-#        the square; New Body chosen by hand, 5 mm: a new body of 2000 mm3;
+#        the square; New Body chosen by hand, 5 mm with a taper of 5
+#        degrees (mitcad#547): a new body of 2000 + 1000 t + 500 t^2 / 3
+#        mm3 (t = tan 5 degrees: 2088.764 mm3);
 #      - the context menu on the cube's top offers Extrude in Solid; Solid >
 #        Extrude starts with the top, 5 mm into the cube is Cut, chosen
 #        automatically: 8000 -> 6000 mm3;
@@ -152,11 +154,16 @@ ui_step "New Body (one up from Join)"      ui_choose "Panel Extrude input operat
 ui_expect_new "Extrude: Operation = New Body" "New Body chosen"
 ui_step "distance 5"                       ui_type_in "Panel Extrude input distance" "5"
 ui_expect_new "Preview Extrude: ok" "previewed"
+ui_mark
+ui_step "taper 5 degrees"                  ui_type_in "Panel Extrude input taper" "5"
+ui_expect_new "Preview Extrude: ok" "the tapered face previewed"
+no_new "Panel Extrude error" "the face's taper is not refused"
 ui_focus_main
 ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added extrude (New Body), distance 5, of a face" "a new body of the side"
-ui_expect_volume "New body [^(]* (F5.b0): volume \([0-9.]*\) mm3" 2000 "20 x 20 x 5 beside the cube"
+ui_expect_volume "New body [^(]* (F5.b0): volume \([0-9.]*\) mm3" 2088.764375 \
+  "20 x 20 x 5 beside the cube, widening by 5 degrees"
 ui_step "clear the selection (Esc)"        ui_key Escape
 
 echo "--- The context menu on the top: Solid > Extrude, Cut"

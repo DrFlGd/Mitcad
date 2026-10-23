@@ -26,6 +26,11 @@ use crate::parameters::ParamId;
 use crate::profile::ProfileRegion;
 use crate::sweeps::{LoftEnd, LoftEndKind, LoftSection, LoftSpec, PathCurve};
 use crate::topo::{FaceName, RegionKey};
+// Frames along a centre line (mitcad#543).
+use super::sweep::SweepFrame;
+use crate::sweeps::PathFrame;
+// The parallel orientation along a centre line (mitcad#547).
+use crate::sweeps::SweepOrientation;
 
 /// A section of a loft.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -251,6 +256,22 @@ pub struct LoftDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// How the sections turn along the centre line instead of keeping
+    /// their angle to it (mitcad#543), as a sweep's `frame`: the Frenet
+    /// frame, towards an auxiliary curve, or about a constant binormal.
+    /// Only with a centre line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<SweepFrame>,
+    /// How the sections turn along the centre line (mitcad#547), as a
+    /// sweep's: perpendicular (left out) keeps their angle to it, parallel
+    /// keeps their direction, only moving them along it. Parallel only with
+    /// a centre line and without a frame.
+    #[serde(default, skip_serializing_if = "is_perpendicular")]
+    pub orientation: SweepOrientation,
+}
+
+fn is_perpendicular(orientation: &SweepOrientation) -> bool {
+    *orientation == SweepOrientation::Perpendicular
 }
 
 impl<P> LoftDef<P> {
@@ -280,6 +301,8 @@ impl<P> LoftDef<P> {
             surface: self.surface,
             operation: self.operation,
             participants: self.participants.clone(),
+            frame: self.frame.clone(),
+            orientation: self.orientation,
         })
     }
 }
@@ -304,6 +327,9 @@ impl FeatureInfo for LoftDef {
         }
         for path in self.centerline.iter().chain(&self.rails) {
             path.add_references(&mut references);
+        }
+        if let Some(SweepFrame::Auxiliary { curve, .. }) = &self.frame {
+            curve.add_references(&mut references);
         }
         for body in &self.participants {
             references.body(*body);
@@ -412,6 +438,38 @@ impl FeatureInfo for LoftDef {
         for path in self.centerline.iter().chain(&self.rails) {
             path.check(ctx)?;
         }
+        // A frame along the centre line (mitcad#543).
+        if let Some(frame) = &self.frame {
+            if self.centerline.is_none() {
+                return Err(
+                    "a loft's frame turns its sections along a centre line: it needs one"
+                        .to_owned(),
+                );
+            }
+            match frame {
+                SweepFrame::Frenet => {}
+                SweepFrame::Auxiliary { curve, .. } => {
+                    curve
+                        .check(ctx)
+                        .map_err(|e| format!("auxiliary curve: {e}"))?;
+                }
+                SweepFrame::ConstantBinormal { binormal } => {
+                    super::sweep::check_binormal(*binormal)?;
+                }
+            }
+        }
+        // The parallel orientation along the centre line (mitcad#547).
+        if self.orientation == SweepOrientation::Parallel {
+            if self.centerline.is_none() {
+                return Err(
+                    "a parallel loft moves its sections along a centre line: it needs one"
+                        .to_owned(),
+                );
+            }
+            if self.frame.is_some() {
+                return Err("a parallel loft along a centre line takes no frame".to_owned());
+            }
+        }
         Ok(())
     }
 
@@ -505,6 +563,26 @@ impl<K: Kernel> Evaluate<K> for LoftDef {
                     .map_err(|e| format!("rail {}: {e}", i + 1))?,
             );
         }
+        // A frame along the centre line (mitcad#543).
+        let auxiliary: Option<Vec<PathCurve>> = match &self.frame {
+            Some(SweepFrame::Auxiliary { curve, .. }) => Some(
+                curve
+                    .resolve(ctx)
+                    .map_err(|e| format!("auxiliary curve: {e}"))?,
+            ),
+            _ => None,
+        };
+        let centerline_frame = match &self.frame {
+            None => None,
+            Some(SweepFrame::Frenet) => Some(PathFrame::Frenet),
+            Some(SweepFrame::Auxiliary { curvilinear, .. }) => Some(PathFrame::Auxiliary {
+                curve: auxiliary.as_deref().unwrap_or(&[]),
+                curvilinear: *curvilinear,
+            }),
+            Some(SweepFrame::ConstantBinormal { binormal }) => Some(PathFrame::ConstantBinormal(
+                super::sweep::check_binormal(*binormal)?,
+            )),
+        };
         let sections = found
             .iter()
             .map(|f| match f {
@@ -526,6 +604,8 @@ impl<K: Kernel> Evaluate<K> for LoftDef {
             rails: rails.iter().map(Vec::as_slice).collect(),
             start: ends[0],
             end: ends[1],
+            centerline_frame,
+            centerline_parallel: self.orientation == SweepOrientation::Parallel,
         };
         let tool = ctx.kernel.loft(&spec).map_err(|e| e.to_string())?;
         if self.surface {

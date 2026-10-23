@@ -26,6 +26,7 @@
 //!   are replayed, then suppressed; FreeCAD's suppressed features (1.0) are
 //!   replayed and suppressed.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use mitcad_freecad::Object;
@@ -35,14 +36,16 @@ use mitcad_model::{
 };
 use serde_json::Value;
 
-use super::report::{FeatureCheck, FeatureReport, ObjectOutcome};
+use super::report::{FallbackGroup, FeatureCheck, FeatureReport, ObjectOutcome};
 use super::sketches::Placed;
 use super::{Importer, NOT_CONSUMING, measure};
 
 /// The largest distance (relative volume and area, centre over size) of a
 /// replayed feature from FreeCAD's stored shape: the same OCCT definitions
-/// built by another OCCT version.
-pub(super) const TOLERANCE: f64 = 1e-6;
+/// built by another OCCT version: a modelled thread or helix comes out up to
+/// 2e-6 apart (the owner agreed 1e-5 on 22.10.2026, mitcad#539; the readings
+/// it tells apart are millimetres off).
+pub(super) const TOLERANCE: f64 = 1e-5;
 
 /// A sketch the import made: its Mitcad feature and the entities of
 /// FreeCAD's geometry.
@@ -115,8 +118,9 @@ impl<S> Default for Replay<S> {
 pub(super) struct Candidate {
     pub defs: Vec<Value>,
     /// Per definition, what its name adds to the object's label (the main
-    /// one's is empty: it is named after the label).
-    pub suffixes: Vec<&'static str>,
+    /// one's is empty: it is named after the label); numbered ones made on
+    /// the way (mitcad#547: more faces than fixed suffixes) are owned.
+    pub suffixes: Vec<Cow<'static, str>>,
     pub notes: Vec<String>,
     /// Kept as `partial`: something of FreeCAD's definition is left out.
     pub partial: bool,
@@ -126,7 +130,7 @@ impl Candidate {
     pub fn new(def: Value) -> Self {
         Self {
             defs: vec![def],
-            suffixes: vec![""],
+            suffixes: vec![Cow::Borrowed("")],
             notes: Vec::new(),
             partial: false,
         }
@@ -134,6 +138,16 @@ impl Candidate {
 
     /// Several definitions with their name suffixes.
     pub fn several(defs: Vec<(Value, &'static str)>) -> Self {
+        Self::several_named(
+            defs.into_iter()
+                .map(|(def, suffix)| (def, Cow::Borrowed(suffix)))
+                .collect(),
+        )
+    }
+
+    /// Several definitions with suffixes made on the way (mitcad#547: as
+    /// many as there are faces or inputs, `" (face 12)"`).
+    pub fn several_named(defs: Vec<(Value, Cow<'static, str>)>) -> Self {
         let (defs, suffixes) = defs.into_iter().unzip();
         Self {
             defs,
@@ -146,7 +160,7 @@ impl Candidate {
     /// Adds a definition after the others.
     pub fn then(mut self, def: Value, suffix: &'static str) -> Self {
         self.defs.push(def);
-        self.suffixes.push(suffix);
+        self.suffixes.push(Cow::Borrowed(suffix));
         self
     }
 
@@ -256,20 +270,73 @@ pub(super) fn is_part_op(t: &str) -> bool {
             | "Part::Fillet"
             | "Part::Chamfer"
             | "Part::Mirroring"
+            | "Part::Face"
+            // Sweeps of sketches along a sketch (mitcad#543).
+            | "Part::Sweep"
     )
 }
 
+/// Why an object has no parametric counterpart in Mitcad, by its type (a
+/// fallback of group 2, mitcad#539): a scripted object, a plain shape; the
+/// reason names the type.
+pub(super) fn no_counterpart(type_name: &str) -> Option<String> {
+    if type_name.ends_with("Python") {
+        Some(format!(
+            "no parametric counterpart: a scripted object ({type_name}), whose shape comes \
+             from a script Mitcad does not run"
+        ))
+    } else if type_name == "Part::Feature" {
+        Some(format!(
+            "no parametric counterpart: a plain shape ({type_name}), without a definition"
+        ))
+    } else {
+        None
+    }
+}
+
 /// Whether a Part workbench result is worth replaying: a primitive with its
-/// sizes, an extrusion or revolution of a sketch into a solid, an
-/// operation on other objects. Others keep their stored shapes.
+/// sizes, an extrusion of a sketch or of another object's faces, a
+/// revolution of a sketch into a solid, a face of sketches, an operation on
+/// other objects. Others keep their stored shapes.
 fn replayable_root(o: &Object, doc: &mitcad_freecad::Document) -> bool {
     let needs: &[&str] = match o.type_name.as_str() {
-        "Part::Extrusion" | "Part::Revolution" => {
-            let profile = o.link("Base").or_else(|| o.link("Source"));
+        "Part::Extrusion" => {
+            // Into a solid or into faces; of a sketch, or of what another
+            // object stored (its faces, mitcad#539).
+            return o
+                .link("Base")
+                .and_then(|l| doc.object(&l.object))
+                .is_some_and(|p| super::is_sketch(&p.type_name) || p.shape().is_some());
+        }
+        "Part::Revolution" => {
             return o.bool("Solid") == Some(true)
-                && profile
+                && o.link("Source")
                     .and_then(|l| doc.object(&l.object))
                     .is_some_and(|p| super::is_sketch(&p.type_name));
+        }
+        "Part::Face" => {
+            let sources = o.links("Sources");
+            return !sources.is_empty()
+                && sources.iter().all(|l| {
+                    doc.object(&l.object)
+                        .is_some_and(|p| super::is_sketch(&p.type_name))
+                });
+        }
+        // A sweep of sketches along a sketch (mitcad#543), or of other
+        // objects' edges, faces or vertices, along a Part helix or other
+        // objects' edges (mitcad#547): not of PartDesign features (a
+        // Body's results stay in their Body).
+        "Part::Sweep" => {
+            let sketch = |l: &mitcad_freecad::LinkRef| {
+                doc.object(&l.object).is_some_and(|p| {
+                    super::is_sketch(&p.type_name)
+                        || (!p.type_name.starts_with("PartDesign::") && p.shape().is_some())
+                })
+            };
+            let sections = o.links("Sections");
+            return !sections.is_empty()
+                && sections.iter().all(sketch)
+                && o.link("Spine").is_some_and(sketch);
         }
         t => t
             .strip_prefix("Part::")
@@ -505,7 +572,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             let mut def = def.clone();
             self.substitute_regions(&mut def, &uids);
             substitute(&mut def, &uids);
-            let suffix = candidate.suffixes.get(i).copied().unwrap_or_default();
+            let suffix = candidate.suffixes.get(i).map_or("", |s| s.as_ref());
             let name = format!("{label}{suffix}");
             match self.add_named(&def, &name, component) {
                 Ok(uid) => {
@@ -540,6 +607,25 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     && let [region] = output.regions.as_slice()
                 {
                     *s = region.key.to_string();
+                }
+            }
+            // `"$<i>:profiles"` (mitcad#547): the profiles of the material
+            // regions of the sketch added i-th, those inside an even number
+            // of its loops (as FreeCAD's face makers fill them).
+            Value::String(s) if s.starts_with('$') && s.ends_with(":profiles") => {
+                if let Ok(i) = s[1..s.len() - ":profiles".len()].parse::<usize>()
+                    && let Some(uid) = uids.get(i)
+                    && let Some(output) = self.doc.sketch_output(*uid)
+                {
+                    let profiles: Vec<Value> =
+                        super::features::region_depths(&output.region_info)
+                            .into_iter()
+                            .filter(|(_, depth)| depth % 2 == 0)
+                            .map(|(key, _)| {
+                                serde_json::json!({"sketch": uid.to_string(), "region": key})
+                            })
+                            .collect();
+                    *def = Value::Array(profiles);
                 }
             }
             Value::Array(items) => items
@@ -757,6 +843,9 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let mut last = String::new();
         let mut first: Option<String> = None;
         let mut closest: Option<FeatureCheck> = None;
+        // A definition the translation does not have (its reason says
+        // "not translated"): a fallback of group 1 (mitcad#539).
+        let mut missing = false;
         match candidates {
             Ok(candidates) => {
                 for (tried, candidate) in candidates.iter().enumerate() {
@@ -838,7 +927,10 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     last = "nothing to try".to_owned();
                 }
             }
-            Err(why) => last = why,
+            Err(why) => {
+                missing = why.contains("not translated");
+                last = no_counterpart(&object.type_name).unwrap_or(why);
+            }
         }
         // The first reading's failure, and the last's when it differs.
         if let Some(first) = first.filter(|f| *f != last) {
@@ -867,6 +959,21 @@ impl<K: Kernel> Importer<'_, '_, K> {
             self.record(&object.name, &current);
             return (report, current);
         }
+        // The fallback's group: no parametric counterpart (by its type, or
+        // FreeCAD's own result invalid), missing in Mitcad, or other.
+        let group = if no_counterpart(&object.type_name).is_some() {
+            FallbackGroup::NoCounterpart
+        } else if missing {
+            FallbackGroup::Missing
+        } else if object.state.invalid || object.state.error.is_some() {
+            last = format!(
+                "no parametric counterpart: FreeCAD's own result is invalid (its recompute \
+                 failed), so no definition gives its stored shape; {last}"
+            );
+            FallbackGroup::NoCounterpart
+        } else {
+            FallbackGroup::Other
+        };
         report.notes.push(format!("not replayed: {last}"));
         if let Some(c) = closest {
             report.check = Some(c);
@@ -874,6 +981,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         match self.fallback(object, &target.place, &target.current) {
             Ok((uid, body)) => {
                 report.outcome = ObjectOutcome::Fallback;
+                report.fallback_group = Some(group);
                 report.features = vec![uid.to_string()];
                 report.mitcad = "base".to_owned();
                 self.replay.features.insert(object.name.clone(), vec![uid]);
@@ -1018,27 +1126,32 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     .insert(name.clone(), (ObjectOutcome::Skipped, Some(why)));
                 continue;
             };
-            if bodies.len() > 1 {
-                self.warn(format!(
-                    "{name}: the replay made {} bodies; the first stands for it",
-                    bodies.len()
-                ));
-            }
             let planned = &self.planned[index];
             let (label, visible, color) = (planned.name.clone(), planned.visible, planned.color);
+            // FreeCAD's one shape of several solids (a compound) is several
+            // Mitcad bodies: all of them stand for it (mitcad#541), the
+            // first named after the object, the others numbered.
             self.planned[index].body = Some(first);
-            if self.doc.body_name(first) != label
-                && let Err(e) = self.doc.rename_body(first, &label)
-            {
-                self.warn(format!("{label}: {e}"));
-            }
-            if !visible && let Err(e) = self.doc.set_body_visible(first, false) {
-                self.warn(format!("{label}: {e}"));
+            self.planned[index].more = bodies[1..].to_vec();
+            for (k, body) in bodies.iter().enumerate() {
+                let name = if k == 0 {
+                    label.clone()
+                } else {
+                    format!("{label} ({})", k + 1)
+                };
+                if self.doc.body_name(*body) != name
+                    && let Err(e) = self.doc.rename_body(*body, &name)
+                {
+                    self.warn(format!("{name}: {e}"));
+                }
+                if !visible && let Err(e) = self.doc.set_body_visible(*body, false) {
+                    self.warn(format!("{name}: {e}"));
+                }
+                self.replayed_bodies.insert(*body);
             }
             if color.is_some() {
                 colored.push(label);
             }
-            self.replayed_bodies.insert(first);
         }
         if !colored.is_empty() {
             self.warn(format!(

@@ -199,6 +199,11 @@ struct InputDef {
   // window selection stay what they are. A pick OK refuses stays as a
   // plain click leaves it.
   bool shiftClickApplies = false;
+  // Selection: the picks by name, which the panel shows instead of their
+  // count (Combine's tools in occurrences: "Screw:1, Screw:2", mitcad#544);
+  // empty: the count. Called with the picks, the state and the model
+  // whenever a selection changes.
+  std::function<QString(const Selection&, const CommandState&, const CommandContext&)> itemsText;
 
   // Value: an expression with units, as text.
   ValueKind valueKind = ValueKind::Length;
@@ -281,6 +286,12 @@ struct InputDef {
   // Shown only while this holds (for a list's input: of its row's state).
   std::function<bool(const CommandState&)> visible;
 
+  // The label in a state, where it follows other inputs (a pattern's length
+  // row says Spacing or Extent by its Distance Type, mitcad#545); `label`
+  // when unset. A frontend that builds its labels once (the AppKit
+  // inspector) shows `label`.
+  std::function<QString(const CommandState&)> labelFor;
+
   // A bold heading above the row, shown and hidden with it: the first
   // input of a group of inputs (a thread's Extra clearance).
   QString heading;
@@ -303,6 +314,10 @@ struct InputDef {
   }
   InputDef& withVisible(std::function<bool(const CommandState&)> shown) {
     visible = std::move(shown);
+    return *this;
+  }
+  InputDef& withLabel(std::function<QString(const CommandState&)> shown) {
+    labelFor = std::move(shown);
     return *this;
   }
   InputDef& withColor(const QColor& highlight) {
@@ -410,6 +425,8 @@ struct InputDef {
   QVector<QPair<QString, QString>> choicesIn(const CommandState& state) const {
     return choicesFor ? choicesFor(state) : choices;
   }
+  // The label shown in a state (labelFor).
+  QString labelIn(const CommandState& state) const { return labelFor ? labelFor(state) : label; }
   bool accepts(const SelectionItem& item) const;
   // What a selection input takes in a state (filterNow, testNow).
   SelectFilter filterIn(const CommandState& state) const;
@@ -471,6 +488,9 @@ public:
   // → 20 mm (Extrude1 distance)" (mitcad#250); empty while invalid.
   QString parameterTooltip(const QString& id) const { return m_parameterTips.value(key(id)); }
   void setParameterTooltip(const QString& id, const QString& text) { m_parameterTips[key(id)] = text; }
+  // A selection's picks by name (InputDef::itemsText); empty: their count.
+  QString itemsText(const QString& id) const { return m_itemsTexts.value(key(id)); }
+  void setItemsText(const QString& id, const QString& text) { m_itemsTexts[key(id)] = text; }
 
   QString choice(const QString& id) const { return m_choices.value(key(id)); }
   void setChoice(const QString& id, const QString& option) { m_choices[key(id)] = option; }
@@ -501,6 +521,7 @@ private:
   QHash<QString, double> m_values;
   QHash<QString, QString> m_parameters;
   QHash<QString, QString> m_parameterTips;
+  QHash<QString, QString> m_itemsTexts;
   QHash<QString, QString> m_choices;
   QHash<QString, bool> m_checks;
   QHash<QString, int> m_rows;

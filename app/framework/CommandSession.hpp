@@ -309,6 +309,9 @@ private:
   void advanceIfFull();
   void selectionChanged(const QString& key);
   void logSelection(const QString& key) const;
+  // The selections' picks by name where their inputs list them
+  // (InputDef::itemsText, mitcad#544), once the model is idle.
+  void listItems();
   void evaluate(const QString& key);
   void setDefaults(const InputDef& input, const QString& key);
   void setRowDefaults();

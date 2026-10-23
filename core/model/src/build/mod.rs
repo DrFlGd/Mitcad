@@ -93,6 +93,8 @@ mod timber_tests;
 mod two_points_tests;
 #[cfg(test)]
 mod wall_bearing_tests;
+#[cfg(test)]
+mod wall_splice_tests;
 
 use std::fmt;
 use std::str::FromStr;

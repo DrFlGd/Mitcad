@@ -17,12 +17,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <initializer_list>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <QByteArray>
@@ -975,6 +977,321 @@ int runMapsTest(const QString& folderPath) {
   return failures == 0 ? 0 : 1;
 }
 
+// The mean linear colour of the pixels a frame covers (alpha above one
+// half), the premultiplied alpha taken off, and how many those are; black
+// when it covers nothing.
+std::array<double, 3> coveredColor(const std::uint16_t* pixels, int width, int height, int& count) {
+  std::array<double, 3> sum{0.0, 0.0, 0.0};
+  count = 0;
+  const std::size_t size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  for (std::size_t i = 0; i < size; ++i) {
+    const std::uint16_t* pixel = pixels + i * 4;
+    const float alpha = render::halfValue(pixel[3]);
+    if (alpha > 0.5f) {
+      for (std::size_t c = 0; c < 3; ++c) {
+        sum[c] += render::halfValue(pixel[c]) / alpha;
+      }
+      ++count;
+    }
+  }
+  for (double& channel : sum) {
+    channel = count > 0 ? channel / count : 0.0;
+  }
+  return sum;
+}
+
+// A 64 x 64 test image, a colour per pixel, as a PNG file in the folder:
+// its absolute path, or empty when it cannot be written.
+constexpr int kTestImageSize = 64;
+std::string writeTestImage(const QDir& folder, const QString& name, const std::function<QRgb(int, int)>& pixel) {
+  QImage image(kTestImageSize, kTestImageSize, QImage::Format_RGB32);
+  for (int y = 0; y < kTestImageSize; ++y) {
+    for (int x = 0; x < kTestImageSize; ++x) {
+      image.setPixel(x, y, pixel(x, y));
+    }
+  }
+  const QString path = folder.absoluteFilePath(name);
+  return image.save(path, "PNG") ? path.toStdString() : std::string();
+}
+
+// Two shades of a colour in squares of 16 pixels.
+std::function<QRgb(int, int)> testChecker(QRgb a, QRgb b) {
+  return [a, b](int x, int y) { return ((x / 16 + y / 16) % 2 == 0) ? a : b; };
+}
+
+// --write-test-images <folder> (mitcad#538): the texture set of
+// tools/ui-render-materials-test.sh, so that the UI test needs no other
+// tool to make it: ply.png (an orange checker, the base colour),
+// ply_nor_gl.png (a flat normal map), ply_rough.png (mid grey) and
+// ply_ao.png (light grey occlusion), 64 x 64 PNGs. Prints their paths; 0
+// when all are written.
+int writeTestImages(const QString& folderPath) {
+  const QDir folder(folderPath);
+  if (!QDir().mkpath(folderPath)) {
+    std::fprintf(stderr, "render-failed cannot make the folder %s\n", qPrintable(folderPath));
+    return 3;
+  }
+  const std::pair<const char*, std::function<QRgb(int, int)>> images[] = {
+      {"ply.png", testChecker(qRgb(230, 130, 40), qRgb(200, 110, 30))},
+      {"ply_nor_gl.png", [](int, int) { return qRgb(128, 128, 255); }},
+      {"ply_rough.png", [](int, int) { return qRgb(140, 140, 140); }},
+      {"ply_ao.png", [](int, int) { return qRgb(225, 225, 225); }},
+  };
+  for (const auto& [name, pixel] : images) {
+    const std::string path = writeTestImage(folder, QLatin1String(name), pixel);
+    if (path.empty()) {
+      std::fprintf(stderr, "render-failed cannot write %s into %s\n", name, qPrintable(folderPath));
+      return 3;
+    }
+    std::printf("render-test-image %s\n", path.c_str());
+  }
+  return 0;
+}
+
+// --swap-test <folder> (mitcad#538): the test block's material swapped in
+// one renderer session as the application swaps a body's appearance while
+// the view renders (Set Appearance, Edit Appearance, Undo and Redo): from
+// an untextured material to a textured one (a base colour, a normal, a
+// roughness and an occlusion image, as the application writes an embedded
+// set for the worker), back and forth, to another textured one, to the
+// textured one's parameters without its texture (Edit Appearance with
+// "texture": null) and back (its undo). After every change the block's
+// pixels have the material's colours, as a renderer that starts with the
+// material renders them, and are not black (a shader Cycles had compiled
+// while no mesh used it rendered black). Last, an image that cannot be read
+// any more when its material comes back gives the warning, as at the
+// start, and the block renders in the material's base colour. The images
+// are generated into the folder. Prints a line per change; 0 when all hold.
+int runSwapTest(const QString& folderPath) {
+  QDir folder(folderPath);
+  if (!folder.mkpath(QStringLiteral("."))) {
+    std::fprintf(stderr, "render-failed cannot make the folder %s\n", qPrintable(folderPath));
+    return 3;
+  }
+  // The images: 64 x 64 pixels; the block's textures repeat every 20 mm.
+  static constexpr double kPi = 3.14159265358979323846;
+  const auto write = [&folder](const QString& name, const std::function<QRgb(int, int)>& pixel) {
+    return writeTestImage(folder, name, pixel);
+  };
+  const std::function<QRgb(int, int)> orangeChecker = testChecker(qRgb(230, 130, 40), qRgb(200, 110, 30));
+  const std::string orange = write(QStringLiteral("swap-orange.png"), orangeChecker);
+  const std::string green = write(QStringLiteral("swap-green.png"), testChecker(qRgb(60, 170, 70), qRgb(40, 140, 50)));
+  // Gentle ridges across u (OpenGL's convention: x along u, z out).
+  const std::string normal = write(QStringLiteral("swap-normal.png"), [](int x, int) {
+    const double lean = 0.3 * std::cos(2.0 * kPi * 4.0 * (x + 0.5) / kTestImageSize);
+    const double length = std::sqrt(lean * lean + 1.0);
+    const auto channel = [length](double c) { return static_cast<int>(std::lround((c / length * 0.5 + 0.5) * 255.0)); };
+    return qRgb(channel(lean), channel(0.0), channel(1.0));
+  });
+  const std::string roughness = write(QStringLiteral("swap-roughness.png"), [](int, int) { return qRgb(140, 140, 140); });
+  const std::string occlusion = write(QStringLiteral("swap-occlusion.png"), [](int, int) { return qRgb(225, 225, 225); });
+  // The image that cannot be read at the end (written again on every run).
+  const std::string vanishing = write(QStringLiteral("swap-vanishing.png"), orangeChecker);
+  for (const std::string* file : {&orange, &green, &normal, &roughness, &occlusion, &vanishing}) {
+    if (file->empty()) {
+      std::fprintf(stderr, "render-failed cannot write the test images into %s\n", qPrintable(folderPath));
+      return 3;
+    }
+  }
+
+  // The materials (linear colours): an untextured blue; the textured one,
+  // whose own base colour is a light grey; another textured one (green);
+  // the textured one without its texture; and one whose base colour image
+  // is the vanishing one, blue without it.
+  render::MaterialData plain;
+  plain.baseColor = {0.05f, 0.12f, 0.45f};
+  render::MaterialData textured;
+  textured.baseColor = {0.8f, 0.8f, 0.8f};
+  textured.texture = orange;
+  textured.textureSize = {20.0f, 20.0f};
+  textured.normalMap = normal;
+  textured.roughnessMap = roughness;
+  textured.occlusionMap = occlusion;
+  render::MaterialData other = textured;
+  other.texture = green;
+  render::MaterialData bare = textured;
+  bare.texture.clear();
+  bare.normalMap.clear();
+  bare.roughnessMap.clear();
+  bare.occlusionMap.clear();
+  render::MaterialData lost = plain;
+  lost.texture = vanishing;
+  lost.textureSize = {20.0f, 20.0f};
+  render::MaterialData lostBare = plain; // what `lost` renders without its image
+  // As the application keys materials: their JSON text.
+  const auto keyOf = [](const render::MaterialData& material) {
+    return QJsonDocument(render::materialJson(material)).toJson(QJsonDocument::Compact).toStdString();
+  };
+
+  static constexpr int kSamples = 16;
+  render::RendererOptions options; // on the CPU
+  options.interactive = true;
+  options.kernelFolder = kernelFolder();
+  render::ViewData view;
+  view.width = 160;
+  view.height = 120;
+  view.perspective = true;
+  view.eye = {90, -120, 110};
+  view.target = {0, 0, 10};
+  view.up = {0, 0, 1};
+  view.halfHeight = 40;
+  // The block alone, without the ground: what a frame covers is the block.
+  const auto sceneWith = [&keyOf](const render::MaterialData& material) {
+    render::SceneUpdate scene = render::testScene();
+    scene.ground = false;
+    scene.bodies.front().material = material;
+    scene.bodies.front().materialKey = keyOf(material);
+    return scene;
+  };
+
+  // The block's colour in a renderer that starts with the material, as a
+  // design opened with it (each in a session of its own).
+  struct Expected {
+    std::array<double, 3> color{0.0, 0.0, 0.0};
+    int pixels = 0;
+  };
+  std::map<std::string, Expected> expected;
+  const auto fromStart = [&](const char* name, const render::MaterialData& material) {
+    KeptFrame fresh;
+    std::string why;
+    const std::unique_ptr<render::Renderer> opened = render::makeCyclesRenderer(fresh, options, why);
+    if (!opened) {
+      std::fprintf(stderr, "render-failed %s\n", why.c_str());
+      return false;
+    }
+    opened->setSamples(kSamples);
+    opened->updateScene(sceneWith(material));
+    render::ViewData first = view;
+    first.sequence = 1;
+    opened->setView(first);
+    if (!fresh.waitDone(1) || fresh.pixels.empty()) {
+      std::fprintf(stderr, "render-failed %s did not render from the start\n", name);
+      return false;
+    }
+    Expected& entry = expected[name];
+    entry.color = coveredColor(fresh.pixels.data(), fresh.width_, fresh.height_, entry.pixels);
+    std::printf("render-swap %s from the start: colour %.3f %.3f %.3f over %d pixels\n", name, entry.color[0],
+                entry.color[1], entry.color[2], entry.pixels);
+    return true;
+  };
+  if (!fromStart("plain", plain) || !fromStart("textured", textured) || !fromStart("other", other) ||
+      !fromStart("bare", bare) || !fromStart("lost", lost) || !fromStart("lost-bare", lostBare)) {
+    return 3;
+  }
+
+  // One session: each change of the block's material, then a view (as the
+  // application's next frame), and the block's colour.
+  KeptFrame frame;
+  std::string error;
+  const std::unique_ptr<render::Renderer> renderer = render::makeCyclesRenderer(frame, options, error);
+  if (!renderer) {
+    std::fprintf(stderr, "render-failed %s\n", error.c_str());
+    return 3;
+  }
+  renderer->setSamples(kSamples);
+  int failures = 0;
+  std::uint64_t sequence = 0;
+  bool meshSent = false;
+  // The hue the material's colours have: the textured one orange (red far
+  // above blue), the other green, the untextured ones blue, the textured
+  // one's own base colour grey.
+  enum class Hue { Orange, Green, Blue, Grey };
+  const auto hueHolds = [](Hue hue, const std::array<double, 3>& c) {
+    switch (hue) {
+    case Hue::Orange:
+      return c[0] > 2.0 * c[2] && c[0] > c[1];
+    case Hue::Green:
+      return c[1] > 1.3 * c[0] && c[1] > 1.3 * c[2];
+    case Hue::Blue:
+      return c[2] > 1.5 * c[0];
+    case Hue::Grey:
+      return std::max({c[0], c[1], c[2]}) < 1.3 * std::min({c[0], c[1], c[2]});
+    }
+    return false;
+  };
+  // swapTo: the block in `material` (expected[name] from the start), and
+  // the warnings of the update.
+  const auto swapTo = [&](const char* step, const char* name, const render::MaterialData& material, Hue hue,
+                        std::vector<std::string>& warnings) {
+    render::SceneUpdate update = sceneWith(material);
+    if (meshSent) {
+      update.meshes.clear(); // the worker holds it
+    }
+    meshSent = true;
+    const render::SceneChanges changes = renderer->updateScene(update);
+    warnings = changes.warnings;
+    view.sequence = ++sequence;
+    renderer->setView(view);
+    if (!frame.waitDone(sequence) || frame.pixels.empty()) {
+      std::printf("render-swap %s: no frame FAILED\n", step);
+      ++failures;
+      return;
+    }
+    int pixels = 0;
+    const std::array<double, 3> color = coveredColor(frame.pixels.data(), frame.width_, frame.height_, pixels);
+    const Expected& wanted = expected[name];
+    bool alike = std::abs(pixels - wanted.pixels) <= wanted.pixels / 10 + 10;
+    for (std::size_t c = 0; c < 3; ++c) {
+      alike = alike && std::abs(color[c] - wanted.color[c]) <= 0.15 * wanted.color[c] + 0.01;
+    }
+    const double brightness = (color[0] + color[1] + color[2]) / 3.0;
+    const bool lit = brightness > 0.02;
+    const bool ok = alike && lit && hueHolds(hue, color);
+    failures += ok ? 0 : 1;
+    std::printf("render-swap %s: %s, colour %.3f %.3f %.3f over %d pixels; from the start %.3f %.3f %.3f over %d%s\n",
+                step, name, color[0], color[1], color[2], pixels, wanted.color[0], wanted.color[1], wanted.color[2],
+                wanted.pixels,
+                ok      ? ""
+                : !lit  ? " FAILED (black)"
+                : alike ? " FAILED (not the material's colours)"
+                        : " FAILED (not as from the start)");
+  };
+  // Each change gives no warning, but for the image that cannot be read.
+  const auto quiet = [&failures](const char* step, const std::vector<std::string>& warnings) {
+    for (const std::string& warning : warnings) {
+      std::printf("render-swap %s: unexpected warning %s FAILED\n", step, warning.c_str());
+      ++failures;
+    }
+  };
+  std::vector<std::string> warnings;
+  swapTo("untextured", "plain", plain, Hue::Blue, warnings);
+  quiet("untextured", warnings);
+  swapTo("textured", "textured", textured, Hue::Orange, warnings);
+  quiet("textured", warnings);
+  swapTo("untextured again", "plain", plain, Hue::Blue, warnings);
+  quiet("untextured again", warnings);
+  swapTo("textured again", "textured", textured, Hue::Orange, warnings);
+  quiet("textured again", warnings);
+  swapTo("another textured", "other", other, Hue::Green, warnings);
+  quiet("another textured", warnings);
+  swapTo("back to the first textured", "textured", textured, Hue::Orange, warnings);
+  quiet("back to the first textured", warnings);
+  swapTo("texture removed", "bare", bare, Hue::Grey, warnings);
+  quiet("texture removed", warnings);
+  swapTo("texture removal undone", "textured", textured, Hue::Orange, warnings);
+  quiet("texture removal undone", warnings);
+  swapTo("untextured once more", "plain", plain, Hue::Blue, warnings);
+  quiet("untextured once more", warnings);
+  swapTo("an image that is there", "lost", lost, Hue::Orange, warnings);
+  quiet("an image that is there", warnings);
+  swapTo("untextured before the image goes", "plain", plain, Hue::Blue, warnings);
+  quiet("untextured before the image goes", warnings);
+  // The image can no longer be read (its file is no image now).
+  QSaveFile broken(QString::fromStdString(vanishing));
+  if (!broken.open(QIODevice::WriteOnly) || broken.write("not an image\n") < 0 || !broken.commit()) {
+    std::fprintf(stderr, "render-failed cannot overwrite %s\n", vanishing.c_str());
+    return 3;
+  }
+  swapTo("the image gone", "lost-bare", lost, Hue::Blue, warnings);
+  const bool warned = warnings.size() == 1 && warnings.front().find("swap-vanishing.png") != std::string::npos &&
+                      warnings.front().find("the base colour is shown") != std::string::npos;
+  failures += warned ? 0 : 1;
+  std::printf("render-swap the image gone: %s\n",
+              warned ? "warned" : "no warning that the image cannot be read FAILED");
+  std::printf("render-swap %s\n", failures == 0 ? "ok" : "FAILED");
+  return failures == 0 ? 0 : 1;
+}
+
 // The options of --bench.
 struct Bench {
   QString size;
@@ -1609,6 +1926,15 @@ int main(int argc, char* argv[]) {
       QStringLiteral("maps-test"),
       QStringLiteral("Check that a texture's maps render as they should, with test images in this folder"),
       QStringLiteral("folder"));
+  const QCommandLineOption swapTest(
+      QStringLiteral("swap-test"),
+      QStringLiteral("Check that a body whose material changes while it renders, also to and from a texture, "
+                     "renders in it, with test images in this folder"),
+      QStringLiteral("folder"));
+  const QCommandLineOption writeImages(
+      QStringLiteral("write-test-images"),
+      QStringLiteral("Write the UI tests' texture set (64 x 64 PNGs) into this folder and end"),
+      QStringLiteral("folder"));
   const QCommandLineOption environment(
       QStringLiteral("environment"),
       QStringLiteral("--bench in this environment: the \"environment\" command's JSON (render settings)"),
@@ -1643,7 +1969,8 @@ int main(int argc, char* argv[]) {
       QStringLiteral("probe-denoiser"),
       QStringLiteral("Print whether Open Image Denoise creates its device on each GPU, or its error, and end"));
   parser.addOptions({channel, bench, samples, output, interactive, orthographic, environment, texture, trace, frameFiles, previews,
-                     updateTest, batch, control, device, compare, tolerance, listDevices, probeDenoiser, mapsTest});
+                     updateTest, batch, control, device, compare, tolerance, listDevices, probeDenoiser, mapsTest,
+                     swapTest, writeImages});
   parser.process(app);
   if (parser.isSet(probeDenoiser)) {
     // Diagnostics of GPU denoising (mitcad#202, docs/rendering.md "Devices").
@@ -1665,6 +1992,12 @@ int main(int argc, char* argv[]) {
   }
   if (parser.isSet(mapsTest)) {
     return runMapsTest(parser.value(mapsTest));
+  }
+  if (parser.isSet(swapTest)) {
+    return runSwapTest(parser.value(swapTest));
+  }
+  if (parser.isSet(writeImages)) {
+    return writeTestImages(parser.value(writeImages));
   }
   if (parser.isSet(batch)) {
     return runBatch(parser.value(batch), parser.isSet(control));

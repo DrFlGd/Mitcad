@@ -204,9 +204,8 @@ ShapePtr revolve(const RevolveSpec& spec) {
     throw std::invalid_argument("no profiles to revolve");
   }
   if (spec.target) {
-    if (spec.angle2 || spec.target->offset != 0.0 || spec.target->through) {
-      throw std::invalid_argument(
-          "a revolution up to an object has one side, no offset and stops at the first face");
+    if (spec.angle2 || spec.target->offset != 0.0) {
+      throw std::invalid_argument("a revolution up to an object has one side and no offset");
     }
   } else {
     detail::require_positive("revolve angle", spec.angle1);
@@ -246,8 +245,10 @@ ShapePtr revolve(const RevolveSpec& spec) {
         const ShapePtr sweep = named_revolution(face, spec.axis, total, start, {unreached});
         const TopoDS_Shape tool =
             detail::target_tool(*spec.target, spec.axis.Direction(), detail::bounds_of(sweep->occt()));
+        // (Through a body to its last face, mitcad#539: its pieces in the
+        // order of the turn.)
         parts.push_back(detail::trimmed(*sweep, *spec.target, tool, spec.axis.Direction(),
-                                        start.front(), end, unreached));
+                                        start.front(), end, unreached, false, &spec.axis));
       } else if (full) {
         parts.push_back(named_revolution(face, spec.axis, kTwoPi, start, end));
       } else {

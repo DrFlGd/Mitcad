@@ -50,9 +50,12 @@
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
+#include <gp_Ax1.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Cylinder.hxx>
 #include <gp_Lin.hxx>
+#include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
 #include <gp_XYZ.hxx>
 
 #include "face_select.hpp"
@@ -1551,11 +1554,41 @@ TopoDS_Compound start_walls(const Shape& sweep, const std::string& near, const T
   return walls;
 }
 
+// The angle (0 to 2 pi) of a point about `axis` from `reference`, right
+// handed about the axis direction (mitcad#539: the order of a
+// revolution's pieces).
+double angle_about(const gp_Ax1& axis, const gp_Pnt& reference, const gp_Pnt& point) {
+  const gp_Vec a(axis.Direction());
+  gp_Vec u(axis.Location(), reference);
+  u -= a * u.Dot(a);
+  gp_Vec v(axis.Location(), point);
+  v -= a * v.Dot(a);
+  if (u.Magnitude() <= Precision::Confusion() || v.Magnitude() <= Precision::Confusion()) {
+    return 0.0;
+  }
+  const double angle = std::atan2(u.Crossed(v).Dot(a), u.Dot(v));
+  return angle < 0.0 ? angle + kTwoPi : angle;
+}
+
+// The centre of the faces of the shape named `name`.
+gp_Pnt centre_of_named(const Shape& shape, const std::string& name) {
+  GProp_GProps all;
+  for (int i = 0; i < shape.face_count(); ++i) {
+    const NameList& names = shape.face_names(i);
+    if (std::find(names.begin(), names.end(), name) != names.end()) {
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(shape.face(i), props);
+      all.Add(props);
+    }
+  }
+  return all.CentreOfMass();
+}
+
 } // namespace
 
 ShapePtr trimmed(const Shape& sweep, const Target& target, const TopoDS_Shape& tool,
                  const gp_Dir& along, const std::string& near, const NameList& far,
-                 const std::string& unreached, bool straight) {
+                 const std::string& unreached, bool straight, const gp_Ax1* turn) {
   std::vector<ShapePtr> pieces = split_pieces(sweep, tool, far, "the sweep to its target");
   // The column of each piece: all in one unless a profile that starts inside
   // the target is parted.
@@ -1597,10 +1630,13 @@ ShapePtr trimmed(const Shape& sweep, const Target& target, const TopoDS_Shape& t
     BRepClass3d_SolidClassifier inside(tool);
     std::vector<double> last;
     std::vector<double> position;
+    // A revolution's pieces by their angles from its start (mitcad#539).
+    const gp_Pnt start = turn ? centre_of_named(sweep, near) : gp_Pnt();
     for (std::size_t i = 0; i < pieces.size(); ++i) {
       GProp_GProps props;
       BRepGProp::VolumeProperties(pieces[i]->occt(), props);
-      position.push_back(along_of(props.CentreOfMass(), along));
+      position.push_back(turn ? angle_about(*turn, start, props.CentreOfMass())
+                              : along_of(props.CentreOfMass(), along));
       if (last.size() <= column_of[i]) {
         last.resize(column_of[i] + 1, -std::numeric_limits<double>::infinity());
       }

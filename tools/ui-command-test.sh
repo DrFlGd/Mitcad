@@ -90,13 +90,14 @@ for entry in Fillet Chamfer; do
   echo "ok   '$entry' offered for a face"
 done
 # A planar face is a profile of Extrude (mitcad#535), which the face alone
-# completes: in Solid. Revolve takes sketch profiles only: not offered.
+# completes: in Solid. It is a profile of Revolve too (mitcad#543), which
+# needs an axis besides: offered in Solid More.
 grep "Context menu Solid: " "$UI_LOG" | tail -1 | grep -qE "[:|] Extrude( \||$)" ||
   ui_fail "no 'Extrude' in the Solid submenu of a planar face"
 echo "ok   'Extrude' offered for a planar face"
-grep -E "Context menu( Solid| Solid More)?: " "$UI_LOG" | tail -3 | grep -qE "[:|] Revolve( \||$)" &&
-  ui_fail "Revolve offered for a face"
-echo "ok   no 'Revolve' for a face"
+grep "Context menu Solid More: " "$UI_LOG" | tail -1 | grep -qE "[:|] Revolve( \||$)" ||
+  ui_fail "no 'Revolve' in the Solid More submenu of a planar face"
+echo "ok   'Revolve' offered for a planar face"
 ui_step "choose Solid > Fillet"            ui_menu_choose "Solid" "Fillet"
 ui_expect_log "Command Fillet started" "fillet started from the context menu"
 ui_expect_log "Fillet Edges: 1 face" "the selected face went to the edges input"

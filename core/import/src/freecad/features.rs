@@ -10,11 +10,18 @@
 //!   all, up to first, last, a face or a shape, symmetric (Midplane,
 //!   SideType), two lengths, taper. Pocket goes against the sketch normal,
 //!   `Reversed` turns either round. Along a custom direction off the
-//!   sketch's normal: a `sweep` along a fixed line, without turning.
+//!   sketch's normal: an `extrude` with that `direction`, tapers included
+//!   (mitcad#539).
 //! - Revolution, Groove → `revolve` join or cut about the reference axis
 //!   (a sketch axis line, a line of the sketch, an origin axis, a datum, an
 //!   edge); angle, full turn, Midplane (half each way), two angles, up to
-//!   a face, a shape or the first face; the sign is tried both ways.
+//!   a face, a shape, the first or the last face (through the body,
+//!   mitcad#539), a groove through all as a full turn; the sign is tried
+//!   both ways. FreeCAD 1.0's groove turns by its angle whatever its type:
+//!   that reading too.
+//! - Their profile a planar face of a body, or chosen edges of a sketch
+//!   ([`super::profiles`], mitcad#539): `profile_face` (by distances or
+//!   angles), or the sketch's regions inside the chosen edges.
 //! - Fillet, Chamfer → `fillet` and `chamfer` on the referenced edges and
 //!   faces (all edges with `UseAllEdges`); a chamfer's first distance on
 //!   either face is tried.
@@ -25,17 +32,27 @@
 //!   modelled one (ISO metric or Unified) cut as Mitcad cuts threads.
 //! - Mirrored, LinearPattern, PolarPattern → `mirror`,
 //!   `rectangular_pattern`, `circular_pattern` of the original features'
-//!   Mitcad features (or of the body, `TransformMode` whole shape);
-//!   MultiTransform → those of one transformation, of two linear patterns
-//!   (one pattern of two directions) or of two mirrors (and a half turn),
-//!   and for any sequence of mirrors and patterns each transformation a
-//!   pattern or mirror of the one before (patterns of patterns).
+//!   Mitcad features (or of the body joining its copies, `TransformMode`
+//!   whole shape); MultiTransform → those of one transformation, of two
+//!   linear patterns (one pattern of two directions) or of two mirrors
+//!   (and a half turn), and for any sequence of mirrors and patterns each
+//!   transformation a pattern or mirror of the one before (patterns of
+//!   patterns; of the whole body each one of the body with the copies
+//!   before); a Scaled transformation the `scale` (and `scale_groups`) of
+//!   the one before it, first or alone a `scale_pattern` (mitcad#539);
+//!   more runs than that one's elements, several Scaled transformations,
+//!   the copies FreeCAD 1.0 and 1.1 leave out and Scaled transformations
+//!   of the whole body (about the Body's origin) as in
+//!   `chained_candidates` (mitcad#542).
 //! - Boolean → `combine` with the other Bodies' bodies.
 //! - Draft → `draft` (a pull direction along the neutral plane's normal),
 //!   Thickness → `shell` (Pipe and RectoVerso as Skin), AdditiveLoft →
 //!   `loft`, AdditivePipe → `sweep` (with sections: a `loft` along the
-//!   spine), AdditiveHelix → `helix`; the additive and subtractive
-//!   primitives ([`super::primitives`]).
+//!   spine; the modes Standard, Fixed as the parallel orientation, Frenet,
+//!   Auxiliary and Binormal (a constant binormal turned by the pipe's
+//!   placement) as the sweep's `frame`, mitcad#539), AdditiveHelix →
+//!   `helix`; the additive and
+//!   subtractive primitives ([`super::primitives`]).
 //! - Datums → construction planes (offset from an origin plane or a face
 //!   when FreeCAD attaches them so), axes and points (fixed).
 //!
@@ -51,11 +68,97 @@ use super::Importer;
 use super::elements::sub_name;
 use super::history::{Candidate, SketchMade, Target};
 use super::params::{Kind, Q};
+use super::profiles::Swept;
 use super::sketches::Placed;
 use crate::geom::{add, cross, dot, norm, scale, sub, unit};
 
 fn uids(bodies: &[BodyUid]) -> Vec<String> {
     bodies.iter().map(ToString::to_string).collect()
+}
+
+/// The copies a transformation of a MultiTransform makes, the original's
+/// included (1.1's second direction of a linear pattern too).
+fn elements_of(step: &Object) -> i64 {
+    match step.type_name.trim_start_matches("PartDesign::") {
+        "Mirrored" => 2,
+        "LinearPattern" => {
+            step.i64("Occurrences").unwrap_or(1) * step.i64("Occurrences2").unwrap_or(1).max(1)
+        }
+        _ => step.i64("Occurrences").unwrap_or(1),
+    }
+}
+
+/// A scale on a pattern's, mirror's or scale pattern's definition: its
+/// `scale` (`scale_groups`, `scale_copies`), or one more of its `scales`
+/// when it scales already (mitcad#542).
+fn add_scale_rule(def: &mut Value, factor: Value, groups: Option<Value>, copies: Option<i64>) {
+    if def.get("scale").is_none() {
+        def["scale"] = factor;
+        if let Some(groups) = groups {
+            def["scale_groups"] = groups;
+        }
+        if let Some(copies) = copies {
+            def["scale_copies"] = json!(copies);
+        }
+        return;
+    }
+    let mut rule = json!({"scale": factor});
+    if let Some(groups) = groups {
+        rule["groups"] = groups;
+    }
+    if let Some(copies) = copies {
+        rule["copies"] = json!(copies);
+    }
+    match def.get_mut("scales").and_then(Value::as_array_mut) {
+        Some(rules) => rules.push(rule),
+        None => def["scales"] = json!([rule]),
+    }
+}
+
+/// The copies FreeCAD 1.0 and 1.1 leave out of a MultiTransform (their
+/// stored shapes lack them; 0.21's have them; mitcad#542): once a Scaled
+/// transformation follows others, every copy but the original whose
+/// factor is 1. Per reading of the chain (`counts` its elements), the
+/// numbers of its own copies, j = p + P · e (the first one's element
+/// turning fastest): the copies its `skipped_copies` leave out. `first`:
+/// a Scaled transformation first (its factor, the first reading's
+/// elements its occurrences); `scales`: those after others (factor,
+/// occurrences, the readings before them).
+fn dropped_copies(
+    counts: &[i64],
+    first: Option<f64>,
+    scales: &[(f64, i64, usize)],
+) -> Vec<Vec<i64>> {
+    let mut out = vec![Vec::new(); counts.len()];
+    let total: i64 = counts.iter().product();
+    if scales.is_empty() || total > 100_000 {
+        return out;
+    }
+    let factor = |j: i64| -> f64 {
+        let mut f = 1.0;
+        if let Some(f0) = first
+            && counts[0] > 1
+        {
+            let e = j % counts[0];
+            f *= 1.0 + (f0 - 1.0) * e as f64 / (counts[0] - 1) as f64;
+        }
+        for &(fs, m, at) in scales {
+            let n: i64 = counts[..at.min(counts.len())].iter().product();
+            if m < 2 || n < 1 {
+                continue;
+            }
+            let run = (j % n) * m / n;
+            f *= 1.0 + (fs - 1.0) * run as f64 / (m - 1) as f64;
+        }
+        f
+    };
+    let mut inner = 1;
+    for (level, &n) in counts.iter().enumerate() {
+        let own = inner * n.max(1);
+        out[level] = (inner..own).filter(|&j| factor(j) == 1.0).collect();
+        inner = own;
+    }
+    out
 }
 
 /// A reading of a datum: its definition, notes, the plane it must be when
@@ -97,6 +200,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             }
             "PartDesign::PolarPattern" => (self.polar_candidates(o, target), "circular_pattern"),
             "PartDesign::MultiTransform" => (self.multi_candidates(o, target), ""),
+            "PartDesign::Scaled" => (self.scaled_alone_candidates(o, target), "scale_pattern"),
             "PartDesign::Boolean" => (self.boolean_candidates(o, target), "combine"),
             "PartDesign::Draft" => (self.draft_candidates(o, target), "draft"),
             "PartDesign::Thickness" => (self.thickness_candidates(o, target), "shell"),
@@ -164,9 +268,12 @@ impl<K: Kernel> Importer<'_, '_, K> {
         Ok(made)
     }
 
-    /// A feature's profile: its sketch's material regions.
+    /// A feature's profile: its sketch's material regions, or those of the
+    /// sketch's edges the feature chose (FreeCAD 1.0's `AllowMultiFace`;
+    /// without it FreeCAD takes the whole sketch whatever parts the link
+    /// names).
     pub(super) fn profile(
-        &self,
+        &mut self,
         o: &Object,
         property: &str,
         component: ComponentUid,
@@ -184,10 +291,10 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 link.object
             ));
         }
-        if !link.subs.is_empty() {
-            return Err("a profile of chosen parts of a sketch is not translated yet".to_owned());
-        }
         let sketch = self.sketch_of(&link, component)?;
+        if !link.subs.is_empty() && o.bool("AllowMultiFace") == Some(true) {
+            return self.chosen_profile(&link, sketch, component);
+        }
         let output = self
             .doc
             .sketch_output(sketch.uid)
@@ -229,7 +336,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         pocket: bool,
     ) -> Result<Vec<Candidate>, String> {
         let component = target.place.component;
-        let profile = self.profile(o, "Profile", component)?;
+        let swept = self.swept(o, component)?;
         let (operation, participants) = self.operation(target, !pocket)?;
         let reversed = o.bool("Reversed").unwrap_or(false);
         let mut flip = reversed ^ pocket;
@@ -239,10 +346,12 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 .is_some_and(|l| !l.object.is_empty());
         if custom {
             let d = self.vector(o, "Direction").ok_or("no custom direction")?;
-            let n = profile.sketch.frame.normal();
+            let n = swept.normal();
             let d = target.place.transform.apply_vector(d);
             if norm(cross(d, n)) > 1e-9 * norm(d) {
-                return self.oblique_candidates(o, &profile, d, pocket, &operation, &participants);
+                // A sketch's regions or a body face (mitcad#547: the face's
+                // extrusion takes a direction since mitcad#541).
+                return self.oblique_candidates(o, &swept, d, pocket, &operation, &participants);
             }
             flip = dot(d, n) < 0.0;
         }
@@ -265,10 +374,9 @@ impl<K: Kernel> Importer<'_, '_, K> {
             variants.push((flip, 1.0, -1.0));
         }
         variants.push((!flip, 1.0, 1.0));
-        let regions: Vec<Vec<String>> = std::iter::once(profile.regions.clone())
-            .chain(profile.outer.clone())
-            .collect();
-        for regions in &regions {
+        // A face profile (mitcad#539): the face along its outward normal,
+        // as FreeCAD sweeps it, by distances only.
+        for (field, profile) in swept.readings() {
             for (flip, taper_sign, offset_sign) in &variants {
                 let extent = self.extent(
                     o,
@@ -279,104 +387,112 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     &taper2.signed(*taper_sign),
                     &offset.signed(*offset_sign),
                 )?;
-                let profiles: Vec<Value> = regions
-                    .iter()
-                    .map(|r| json!({"sketch": profile.sketch.uid.to_string(), "region": r}))
-                    .collect();
-                let mut def = json!({"type": "extrude", "profiles": profiles, "extent": extent,
+                if swept.is_face() {
+                    super::profiles::face_extrusion_extent(&extent)?;
+                }
+                let mut def = json!({"type": "extrude", "extent": extent,
                                      "flip": flip, "operation": operation});
+                def[field] = profile.clone();
                 if participants.as_array().is_some_and(|p| !p.is_empty()) {
                     def["participants"] = participants.clone();
                 }
-                out.push(Candidate::new(def));
+                out.push(swept.candidate(def));
             }
         }
         Ok(out)
     }
 
-    /// A Pad or Pocket along a direction off the sketch's normal: its
-    /// profile swept along a fixed line through the sketch's origin without
-    /// turning, the length along the direction, or along the normal with
-    /// `AlongSketchNormal`. One length, two, or symmetric; no taper.
+    /// A Pad or Pocket along a direction off the profile's normal
+    /// (mitcad#539; a body face's, mitcad#547): an `extrude` along that
+    /// direction, the lengths along it (FreeCAD's lengths along the
+    /// profile's normal over the cosine with `AlongSketchNormal`). One
+    /// length, two, or symmetric; tapers grow the profile in its plane by
+    /// the length along the direction times their tangent, as FreeCAD's do
+    /// (`extrude`'s `direction`).
     fn oblique_candidates(
         &mut self,
         o: &Object,
-        profile: &Profile,
+        swept: &Swept,
         direction: [f64; 3],
         pocket: bool,
         operation: &Value,
         participants: &Value,
     ) -> Result<Vec<Candidate>, String> {
         let d = unit(direction).ok_or("no custom direction")?;
-        let n = profile.sketch.frame.normal();
+        let n = swept.normal();
         let cos = dot(d, n).abs();
         if cos < 1e-9 {
-            return Err("a direction in the sketch's plane".to_owned());
-        }
-        for taper in ["TaperAngle", "TaperAngle2"] {
-            if o.f64(taper).is_some_and(|t| t != 0.0) {
-                return Err("a taper along a custom direction is not translated".to_owned());
-            }
+            return Err("a direction in the profile's plane".to_owned());
         }
         let along_normal = o.bool("AlongSketchNormal").unwrap_or(true);
-        let travel = |length: f64| -> [f64; 3] {
-            scale(d, if along_normal { length / cos } else { length })
-        };
+        let k = if along_normal { 1.0 / cos } else { 1.0 };
         let mode = self.side_mode(o);
-        let kind = self
-            .enum_text(o, "Type")
-            .unwrap_or_else(|| "Length".to_owned());
-        let kind2 = self
-            .enum_text(o, "Type2")
-            .unwrap_or_else(|| "Length".to_owned());
-        let why = "a sweep along a fixed line: the direction's length is FreeCAD's value";
-        let mut length = |name: &str| -> f64 {
-            let q = self.prop(o, name, Kind::Length, 0.0);
-            self.left_out(o, name, why);
-            q.value
+        let kind_of = |this: &Self, property: &str| {
+            this.enum_text(o, property)
+                .map(|t| t.trim_start_matches('?').to_owned())
+                .unwrap_or_else(|| "Length".to_owned())
         };
-        let (forward, backward) = match (mode.as_str(), kind.as_str(), kind2.as_str()) {
-            ("One side", "Length", _) => (travel(length("Length")), [0.0; 3]),
-            ("Symmetric", "Length" | "TwoLengths", _) => {
-                let half = travel(length("Length") / 2.0);
-                (half, half)
+        let kind = kind_of(self, "Type");
+        let kind2 = kind_of(self, "Type2");
+        let length = self.prop(o, "Length", Kind::Length, 0.0).scale(k);
+        let length2 = self.prop(o, "Length2", Kind::Length, 0.0).scale(k);
+        let taper = self.prop(o, "TaperAngle", Kind::Angle, 0.0);
+        let taper2 = self.prop(o, "TaperAngle2", Kind::Angle, 0.0);
+        let with_taper = |mut v: Value, t: &Q| {
+            if t.value != 0.0 {
+                v["taper"] = t.json();
             }
-            ("Two sides", "TwoLengths", _) | ("Two sides", "Length", "Length") => {
-                (travel(length("Length")), travel(length("Length2")))
-            }
-            (mode, kind, _) => {
-                return Err(format!(
+            v
+        };
+        let distance =
+            |q: &Q, t: &Q| with_taper(json!({"type": "distance", "distance": q.json()}), t);
+        // The extent with the tapers' signs (FreeCAD's sign is uncertain:
+        // both are tried).
+        let extent = |sign: f64| -> Result<Value, String> {
+            let (t1, t2) = (taper.signed(sign), taper2.signed(sign));
+            match (mode.as_str(), kind.as_str(), kind2.as_str()) {
+                ("One side", "Length", _) => Ok(distance(&length, &t1)),
+                // FreeCAD tapers the second half by its second angle when
+                // it has one: two sides of half the length.
+                ("Symmetric", "Length" | "TwoLengths", _) if taper2.value != 0.0 => {
+                    let half = length.scale(0.5);
+                    Ok(json!({"type": "two_sides", "side1": distance(&half, &t1),
+                              "side2": distance(&half, &t2)}))
+                }
+                ("Symmetric", "Length" | "TwoLengths", _) => Ok(with_taper(
+                    json!({"type": "symmetric", "distance": length.json(), "full_length": true}),
+                    &t1,
+                )),
+                ("Two sides", "TwoLengths", _) | ("Two sides", "Length", "Length") => {
+                    Ok(json!({"type": "two_sides", "side1": distance(&length, &t1),
+                           "side2": distance(&length2, &t2)}))
+                }
+                (mode, kind, _) => Err(format!(
                     "a {mode} {kind} extent along a custom direction is not translated"
-                ));
+                )),
             }
         };
-        let origin = profile.sketch.frame.origin;
-        let regions: Vec<Vec<String>> = std::iter::once(profile.regions.clone())
-            .chain(profile.outer.clone())
-            .collect();
+        let tapered = taper.value != 0.0 || taper2.value != 0.0;
+        let mut extents = vec![extent(1.0)?];
+        if tapered {
+            extents.push(extent(-1.0)?);
+        }
         // Along the direction, or against it (a pocket's into the
         // material, as Reversed says).
         let reversed = o.bool("Reversed").unwrap_or(false);
         let first = if pocket ^ reversed { -1.0 } else { 1.0 };
         let mut out = Vec::new();
-        for regions in &regions {
+        for (field, profile) in swept.readings() {
             for sign in [first, -first] {
-                let profiles: Vec<Value> = regions
-                    .iter()
-                    .map(|r| json!({"sketch": profile.sketch.uid.to_string(), "region": r}))
-                    .collect();
-                let start = sub(origin, scale(backward, sign));
-                let end = add(origin, scale(forward, sign));
-                let mut def = json!({"type": "sweep", "profiles": profiles,
-                    "path": {"start": start, "end": end}, "orientation": "parallel",
-                    "operation": operation});
-                if participants.as_array().is_some_and(|p| !p.is_empty()) {
-                    def["participants"] = participants.clone();
+                for extent in &extents {
+                    let mut def = json!({"type": "extrude", "extent": extent,
+                        "direction": scale(d, sign), "operation": operation});
+                    def[field] = profile.clone();
+                    if participants.as_array().is_some_and(|p| !p.is_empty()) {
+                        def["participants"] = participants.clone();
+                    }
+                    out.push(swept.candidate(def));
                 }
-                out.push(
-                    Candidate::new(def)
-                        .note("along FreeCAD's custom direction: a sweep along a fixed line"),
-                );
             }
         }
         Ok(out)
@@ -553,7 +669,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         groove: bool,
     ) -> Result<Vec<Candidate>, String> {
         let component = target.place.component;
-        let profile = self.profile(o, "Profile", component)?;
+        let swept = self.swept(o, component)?;
         let (operation, participants) = self.operation(target, !groove)?;
         let link = o.link("ReferenceAxis").ok_or("no axis")?.clone();
         let axis = self.axis_ref(&link, component)?;
@@ -567,15 +683,31 @@ impl<K: Kernel> Importer<'_, '_, K> {
         } else {
             1.0
         };
-        let extents: Vec<Value> = match kind.as_str() {
-            "Angle" if angle.value.to_degrees() >= 360.0 - 1e-9 => vec![json!({"type": "full"})],
-            "Angle" if o.bool("Midplane") == Some(true) => {
-                vec![json!({"type": "symmetric", "angle": angle.scale(0.5).json()})]
-            }
-            "Angle" => vec![
+        // By the angle (Angle, Midplane, Reversed).
+        let by_angle = if angle.value.to_degrees() >= 360.0 - 1e-9 {
+            vec![json!({"type": "full"})]
+        } else if o.bool("Midplane") == Some(true) {
+            vec![json!({"type": "symmetric", "angle": angle.scale(0.5).json()})]
+        } else {
+            vec![
                 json!({"type": "angle", "angle": angle.signed(sign).json()}),
                 json!({"type": "angle", "angle": angle.signed(-sign).json()}),
-            ],
+            ]
+        };
+        let mut extents: Vec<Value> = match kind.as_str() {
+            "Angle" => by_angle.clone(),
+            // A groove through all: a full turn (mitcad#539).
+            "ThroughAll" => vec![json!({"type": "full"})],
+            // Up to the last face: through the body (mitcad#539; FreeCAD
+            // itself has not computed one yet).
+            "UpToLast" => {
+                let body = target
+                    .current
+                    .first()
+                    .ok_or("up to the body: the Body has no solid yet")?;
+                vec![json!({"type": "to_object",
+                            "object": {"type": "body", "body": body.to_string(), "through": true}})]
+            }
             "TwoAngles" => vec![
                 json!({"type": "two_sides", "angle1": angle.json(), "angle2": angle2.json()}),
                 json!({"type": "two_sides", "angle1": angle2.json(), "angle2": angle.json()}),
@@ -594,6 +726,11 @@ impl<K: Kernel> Importer<'_, '_, K> {
             }
             other => return Err(format!("a revolution {other} is not translated yet")),
         };
+        // FreeCAD 1.0's groove turns by its angle whatever its type
+        // (mitcad#539): that reading after the type's.
+        if groove && kind != "Angle" {
+            extents.extend(by_angle);
+        }
         // Up to an object Mitcad turns the positive way about the axis:
         // FreeCAD's axis (`Base`, `Axis`) both ways too.
         let mut axes = vec![axis];
@@ -605,23 +742,21 @@ impl<K: Kernel> Importer<'_, '_, K> {
             axes.push(json!({"origin": base, "direction": direction}));
             axes.push(json!({"origin": base, "direction": scale(direction, -1.0)}));
         }
-        let regions: Vec<Vec<String>> = std::iter::once(profile.regions.clone())
-            .chain(profile.outer.clone())
-            .collect();
+        // A face profile (mitcad#539): the face turned by angles only.
+        if swept.is_face() && extents.iter().any(|e| e["type"] == "to_object") {
+            return Err("a face profile turned up to an object is not translated".to_owned());
+        }
         let mut out = Vec::new();
-        for regions in &regions {
+        for (field, profile) in swept.readings() {
             for axis in &axes {
                 for extent in &extents {
-                    let profiles: Vec<Value> = regions
-                        .iter()
-                        .map(|r| json!({"sketch": profile.sketch.uid.to_string(), "region": r}))
-                        .collect();
-                    let mut def = json!({"type": "revolve", "profiles": profiles, "axis": axis,
+                    let mut def = json!({"type": "revolve", "axis": axis,
                                          "extent": extent, "operation": operation});
+                    def[field] = profile.clone();
                     if participants.as_array().is_some_and(|p| !p.is_empty()) {
                         def["participants"] = participants.clone();
                     }
-                    out.push(Candidate::new(def));
+                    out.push(swept.candidate(def));
                 }
             }
         }
@@ -1236,13 +1371,13 @@ impl<K: Kernel> Importer<'_, '_, K> {
     /// both mirrors and the half turn about their planes' intersection;
     /// then, for any sequence of mirrors and linear and polar patterns,
     /// each transformation as a pattern or mirror of the one before
-    /// (patterns of patterns); a pattern and a Scaled transformation as a
-    /// pattern scaling its copies.
+    /// (patterns of patterns); a Scaled transformation as the `scale` of
+    /// the pattern or mirror before it, or first as a `scale_pattern`
+    /// ([`Self::chained_candidates`]). Of the whole body (`TransformMode`
+    /// whole shape): each transformation a pattern or mirror of the body
+    /// joining its copies to it.
     fn multi_candidates(&mut self, o: &Object, target: &Target) -> Result<Vec<Candidate>, String> {
         let objects = self.transformed(o, target)?;
-        if objects["type"] != "features" {
-            return Err("a MultiTransform of the whole body is not translated".to_owned());
-        }
         let component = target.place.component;
         let steps: Vec<Object> = o
             .links("Transformations")
@@ -1253,8 +1388,15 @@ impl<K: Kernel> Importer<'_, '_, K> {
             .iter()
             .map(|s| s.type_name.trim_start_matches("PartDesign::"))
             .collect();
-        if let Some(at) = kinds.iter().position(|k| *k == "Scaled") {
-            return self.scaled_candidates(&steps, at, &objects, component);
+        // The whole body: FreeCAD scales its copies about the Body's origin
+        // carried with each (mitcad#542, measured in 1.0 and 1.1).
+        if objects["type"] == "bodies" {
+            let origin = target.place.transform.apply_point([0.0; 3]);
+            let center = json!({"type": "fixed", "point": origin});
+            return self.chained_candidates(&steps, &objects, component, Some(&center));
+        }
+        if kinds.contains(&"Scaled") {
+            return self.scaled_candidates(&steps, &objects, component);
         }
         let candidates = |defs: Vec<Value>| defs.into_iter().map(Candidate::new).collect();
         let mut out = Vec::new();
@@ -1313,75 +1455,148 @@ impl<K: Kernel> Importer<'_, '_, K> {
             }
             _ => {}
         }
-        out.extend(self.chained_candidates(&steps, &objects, component)?);
+        out.extend(self.chained_candidates(&steps, &objects, component, None)?);
         Ok(out)
     }
 
-    /// A MultiTransform ending in a Scaled transformation: FreeCAD scales
-    /// the copies of the transformation before it (as many as the Scaled
-    /// one's occurrences, element by element) about the first original's
-    /// centre of mass carried with each copy, from 1 to its factor: a
-    /// linear or polar pattern with Mitcad's `scale`.
+    /// A MultiTransform with a Scaled transformation. FreeCAD scales the
+    /// copies the transformations before it made (the first one's turning
+    /// fastest), in as many runs of equal length as its occurrences, run g
+    /// by 1 + (Factor − 1) · g / (Occurrences − 1), each copy about the
+    /// first original's centre of mass carried with it; a Scaled
+    /// transformation first makes that many scaled copies of the originals.
+    /// Two linear patterns and a Scaled one: a pattern of two directions
+    /// with `scale` (and `scale_groups`); otherwise the chain
+    /// ([`Self::chained_candidates`]).
     fn scaled_candidates(
         &mut self,
         steps: &[Object],
-        at: usize,
         objects: &Value,
         component: ComponentUid,
     ) -> Result<Vec<Candidate>, String> {
-        let scaled = &steps[at];
-        if at != 1 || steps.len() != 2 {
-            return Err(
-                "a Scaled transformation other than after one linear or polar pattern (Mitcad \
-                 scales the copies of a single pattern)"
-                    .to_owned(),
-            );
-        }
-        let pattern = &steps[0];
-        let occurrences = scaled.i64("Occurrences").unwrap_or(0);
-        if pattern.i64("Occurrences") != Some(occurrences)
-            || pattern.i64("Occurrences2").unwrap_or(1) > 1
-        {
-            return Err(
-                "a Scaled transformation whose occurrences are not the pattern's (FreeCAD then \
-                 scales groups of copies alike)"
-                    .to_owned(),
-            );
-        }
-        let defs = match pattern.type_name.trim_start_matches("PartDesign::") {
-            "LinearPattern" => self.linear_defs(pattern, objects, component)?,
-            "PolarPattern" => self.polar_defs(pattern, objects, component)?,
-            other => {
-                return Err(format!(
-                    "a Scaled transformation after a {other} (Mitcad scales the copies of a \
-                     linear or polar pattern)"
+        let kinds: Vec<&str> = steps
+            .iter()
+            .map(|s| s.type_name.trim_start_matches("PartDesign::"))
+            .collect();
+        let mut out = Vec::new();
+        if kinds == ["LinearPattern", "LinearPattern", "Scaled"] {
+            let first = self.linear_defs(&steps[0], objects, component)?;
+            let second = self.linear_defs(&steps[1], objects, component)?;
+            let (factor, groups) = self.scaled_values(&steps[2]);
+            let copies = elements_of(&steps[0]) * elements_of(&steps[1]);
+            let m = steps[2].i64("Occurrences").unwrap_or(0);
+            let mut merged = Vec::new();
+            for a in &first {
+                for b in &second {
+                    if a.get("direction2").is_some()
+                        || b.get("direction2").is_some()
+                        || a["distance_type"] != b["distance_type"]
+                    {
+                        continue;
+                    }
+                    let mut def = a.clone();
+                    def["direction2"] = b["direction1"].clone();
+                    def["scale"] = factor.json();
+                    if groups.text.is_some() || groups.value != copies as f64 {
+                        def["scale_groups"] = groups.json();
+                    }
+                    merged.push(def);
+                }
+            }
+            // FreeCAD 1.0 and 1.1 leave out the copies the scale does not
+            // change ([`dropped_copies`]).
+            let dropped = dropped_copies(&[copies], None, &[(factor.value, m, 1)]);
+            let skipping: Vec<Value> = merged
+                .iter()
+                .filter(|_| !dropped[0].is_empty())
+                .map(|def| {
+                    let mut def = def.clone();
+                    def["skipped_copies"] = json!(dropped[0]);
+                    def
+                })
+                .collect();
+            let readings = if self.drops_unscaled_copies() {
+                skipping.into_iter().chain(merged).collect::<Vec<_>>()
+            } else {
+                merged.into_iter().chain(skipping).collect()
+            };
+            for def in readings {
+                out.push(Candidate::new(def).note(
+                    "a MultiTransform of two linear patterns and a Scaled transformation: a \
+                     pattern of two directions scaling its copies",
                 ));
             }
-        };
-        let factor = self.prop(scaled, "Factor", Kind::Number, 1.0);
-        Ok(defs
-            .into_iter()
-            .map(|mut def| {
-                def["scale"] = factor.json();
-                Candidate::new(def).note(
-                    "a MultiTransform of a pattern and a Scaled transformation: a pattern \
-                     scaling its copies",
-                )
-            })
-            .collect())
+        }
+        match self.chained_candidates(steps, objects, component, None) {
+            Ok(chained) => out.extend(chained),
+            Err(e) if out.is_empty() => return Err(e),
+            Err(_) => {}
+        }
+        Ok(out)
+    }
+
+    /// A Scaled transformation's factor and occurrences.
+    fn scaled_values(&mut self, scaled: &Object) -> (Q, Q) {
+        (
+            self.prop(scaled, "Factor", Kind::Number, 1.0),
+            self.prop(scaled, "Occurrences", Kind::Number, 2.0),
+        )
+    }
+
+    /// Whether the document's FreeCAD leaves out the copies a Scaled
+    /// transformation after others does not change (1.0 and 1.1; the
+    /// stored shapes lack them, 0.21's have them; mitcad#539, mitcad#542):
+    /// those readings come first.
+    fn drops_unscaled_copies(&self) -> bool {
+        self.sources[0].file.document.version().at_least(1, 0)
+    }
+
+    /// A Scaled transformation of its own (not in a MultiTransform): a
+    /// `scale_pattern` of its originals.
+    fn scaled_alone_candidates(
+        &mut self,
+        o: &Object,
+        target: &Target,
+    ) -> Result<Vec<Candidate>, String> {
+        let objects = self.transformed(o, target)?;
+        if objects["type"] != "features" {
+            return Err("a Scaled transformation of the whole body is not translated".to_owned());
+        }
+        let (factor, quantity) = self.scaled_values(o);
+        Ok(vec![Candidate::new(
+            json!({"type": "scale_pattern", "objects": objects,
+            "quantity": quantity.json(), "scale": factor.json(), "compute": "identical"}),
+        )])
     }
 
     /// A MultiTransform's transformations as a chain: the first a pattern
     /// or mirror of the originals, each next one of the one before (a
     /// pattern of a pattern repeats the originals at every product of the
-    /// elements, as FreeCAD's transformations multiply). The readings of
-    /// each step (FreeCAD's direction first) in every combination, the
-    /// first 16.
+    /// elements, as FreeCAD's transformations multiply). A Scaled
+    /// transformation first is a `scale_pattern` of the originals; after
+    /// others it scales the copies they made in runs (its occurrences),
+    /// each copy about its own centre ([`Self::add_scaled`]): the scale of
+    /// the pattern or mirror before it, and where its runs split the
+    /// copies of the patterns before that one (more runs than that one's
+    /// elements) the same scale, counted over all those copies, on those
+    /// patterns too; several Scaled transformations multiply (mitcad#542).
+    /// FreeCAD 1.0 and 1.1 leave out every copy whose factor is 1 once a
+    /// Scaled transformation follows another one: those readings skip
+    /// them (`skipped_copies`, [`dropped_copies`]).
+    /// Of the whole body the first transformation is a pattern or mirror of
+    /// the body, each next one of the one before (a pattern of patterns of
+    /// the body, mitcad#547), all joining their copies to it (`combine`):
+    /// the body as it was before them at every product of the elements,
+    /// FreeCAD's product of the transformations, each copy scaled and
+    /// skipped as above, about `center` (the Body's origin) carried. The
+    /// readings of each step (FreeCAD's direction first) in every
+    /// combination, the first 16.
     fn chained_candidates(
         &mut self,
         steps: &[Object],
         objects: &Value,
         component: ComponentUid,
+        center: Option<&Value>,
     ) -> Result<Vec<Candidate>, String> {
         const SUFFIXES: [&str; 8] = [
             " (transformation 1)",
@@ -1399,55 +1614,182 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 steps.len()
             ));
         }
+        let whole = objects["type"] == "bodies";
         let mut readings: Vec<Vec<Value>> = Vec::new();
-        for (i, step) in steps.iter().enumerate() {
-            let what = if i == 0 {
-                objects.clone()
-            } else {
-                json!({"type": "features", "features": [format!("${}", i - 1)]})
+        // The elements of each reading's feature.
+        let mut counts: Vec<i64> = Vec::new();
+        // A Scaled transformation first (its factor), and those after
+        // others (factor, occurrences, the readings before it).
+        let mut first: Option<f64> = None;
+        let mut scales: Vec<(f64, i64, usize)> = Vec::new();
+        for step in steps {
+            // Of the whole body too each one is a pattern of the one before
+            // (a pattern of a pattern of the body, mitcad#547): the body as
+            // it was at every product of the elements, joined to it.
+            let what = match readings.len() {
+                0 => objects.clone(),
+                n => json!({"type": "features", "features": [format!("${}", n - 1)]}),
             };
             let kind = step.type_name.trim_start_matches("PartDesign::");
+            if kind == "Scaled" {
+                let (factor, groups) = self.scaled_values(step);
+                let m = step.i64("Occurrences").unwrap_or(0);
+                if readings.is_empty() {
+                    let mut def = json!({"type": "scale_pattern", "objects": what,
+                        "quantity": groups.json(), "scale": factor.json(),
+                        "compute": "identical"});
+                    if let Some(center) = center {
+                        def["combine"] = json!(true);
+                        def["scale_center"] = center.clone();
+                    }
+                    readings.push(vec![def]);
+                    counts.push(m);
+                    first = Some(factor.value);
+                    continue;
+                }
+                self.add_scaled(&mut readings, &counts, &factor, &groups, m, center)?;
+                scales.push((factor.value, m, readings.len()));
+                continue;
+            }
             readings.push(match kind {
                 "Mirrored" => vec![self.mirror_def(step, &what, component)?],
                 "LinearPattern" => self.linear_defs(step, &what, component)?,
                 "PolarPattern" => self.polar_defs(step, &what, component)?,
                 other => return Err(format!("a {other} transformation is not translated")),
             });
-        }
-        let note = format!(
-            "a MultiTransform of {}: each transformation a pattern or mirror of the one before",
-            steps
-                .iter()
-                .map(|s| s.type_name.trim_start_matches("PartDesign::"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        // Every combination of the steps' readings, the first ones first.
-        let mut out = Vec::new();
-        let mut pick = vec![0usize; readings.len()];
-        'combinations: while out.len() < 16 {
-            let last = readings.len() - 1;
-            let defs: Vec<(Value, &'static str)> = pick
-                .iter()
-                .enumerate()
-                .map(|(i, &k)| {
-                    let suffix = if i == last { "" } else { SUFFIXES[i] };
-                    (readings[i][k].clone(), suffix)
-                })
-                .collect();
-            out.push(Candidate::several(defs).note(note.clone()));
-            // The next combination (the last step's reading turning
-            // fastest).
-            for i in (0..readings.len()).rev() {
-                pick[i] += 1;
-                if pick[i] < readings[i].len() {
-                    continue 'combinations;
+            if whole && let Some(defs) = readings.last_mut() {
+                for def in defs {
+                    def["combine"] = json!(true);
                 }
-                pick[i] = 0;
             }
-            break;
+            counts.push(elements_of(step));
+        }
+        if readings.is_empty() {
+            return Err("a MultiTransform without transformations".to_owned());
+        }
+        let scaled = first.is_some() || !scales.is_empty();
+        // FreeCAD 1.0 and 1.1 leave out the copies the scales do not change
+        // once a Scaled transformation follows others.
+        let dropped = dropped_copies(&counts, first, &scales);
+        let skipping: Vec<Vec<Value>> = readings
+            .iter()
+            .zip(&dropped)
+            .map(|(defs, list)| {
+                defs.iter()
+                    .map(|def| {
+                        let mut def = def.clone();
+                        if !list.is_empty() {
+                            def["skipped_copies"] = json!(list);
+                        }
+                        def
+                    })
+                    .collect()
+            })
+            .collect();
+        let families = if dropped.iter().all(Vec::is_empty) {
+            vec![readings]
+        } else if self.drops_unscaled_copies() {
+            vec![skipping, readings]
+        } else {
+            vec![readings, skipping]
+        };
+        let kinds = steps
+            .iter()
+            .map(|s| s.type_name.trim_start_matches("PartDesign::"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let note = if whole {
+            format!(
+                "a MultiTransform of the whole body ({kinds}): each transformation a pattern or \
+                 mirror of the one before, the body's copies joined to it"
+            )
+        } else {
+            format!(
+                "a MultiTransform of {kinds}: each transformation a pattern or mirror of the one \
+                 before{}",
+                if scaled {
+                    ", the Scaled ones scaling the copies before them"
+                } else {
+                    ""
+                }
+            )
+        };
+        let mut out = Vec::new();
+        for readings in &families {
+            // Every combination of the steps' readings, the first ones
+            // first.
+            let mut pick = vec![0usize; readings.len()];
+            let mut made = 0;
+            'combinations: while made < 16 {
+                let last = readings.len() - 1;
+                let defs: Vec<(Value, &'static str)> = pick
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &k)| {
+                        let suffix = if i == last { "" } else { SUFFIXES[i] };
+                        (readings[i][k].clone(), suffix)
+                    })
+                    .collect();
+                out.push(Candidate::several(defs).note(note.clone()));
+                made += 1;
+                // The next combination (the last step's reading turning
+                // fastest).
+                for i in (0..readings.len()).rev() {
+                    pick[i] += 1;
+                    if pick[i] < readings[i].len() {
+                        continue 'combinations;
+                    }
+                    pick[i] = 0;
+                }
+                break;
+            }
         }
         Ok(out)
+    }
+
+    /// A Scaled transformation after `readings`' transformations (`counts`
+    /// their elements): FreeCAD scales copy j of the N they made (the
+    /// first one's element turning fastest) by its run ⌊j · m / N⌋. The
+    /// scale of the last one, counted over its own copies (N), with
+    /// `scale_groups` when its runs are not its elements; more runs than
+    /// its elements split the copies of the ones before it, which then
+    /// scale their own copies by the same runs counted over all N
+    /// (`scale_copies` N, `scales` where they scale already). `center`: the
+    /// whole body's scale centre.
+    fn add_scaled(
+        &mut self,
+        readings: &mut [Vec<Value>],
+        counts: &[i64],
+        factor: &Q,
+        groups: &Q,
+        m: i64,
+        center: Option<&Value>,
+    ) -> Result<(), String> {
+        let total: i64 = counts.iter().product();
+        let n = counts.last().copied().unwrap_or(1);
+        if m < 2 || total % m != 0 {
+            return Err(format!(
+                "a Scaled transformation of {m} occurrences over {total} copies (FreeCAD needs \
+                 the occurrences to divide them)"
+            ));
+        }
+        let top = readings.len() - 1;
+        let split = m > n;
+        for (level, defs) in readings.iter_mut().enumerate() {
+            if level < top && !split {
+                continue;
+            }
+            for def in defs.iter_mut() {
+                let groups =
+                    (groups.text.is_some() || m != n || level < top).then(|| groups.json());
+                let copies = (split || level < top).then_some(total);
+                add_scale_rule(def, factor.json(), groups, copies);
+                if let Some(center) = center {
+                    def["scale_center"] = center.clone();
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Extent or spacing (1.0's `Mode` "length"/"offset", 1.1's
@@ -1512,6 +1854,10 @@ impl<K: Kernel> Importer<'_, '_, K> {
             def["direction2"] = json!({"axis": axis2, "quantity": quantity2.json(),
                                        "distance": distance2.signed(sign2).json()});
         }
+        // The whole body: its copies joined to it, as FreeCAD fuses them.
+        if objects["type"] == "bodies" {
+            def["combine"] = json!(true);
+        }
         let mut flipped = def.clone();
         flipped["direction1"]["distance"] = distance.signed(-sign).json();
         Ok(vec![def, flipped])
@@ -1554,10 +1900,12 @@ impl<K: Kernel> Importer<'_, '_, K> {
         } else {
             1.0
         };
+        // The whole body: its copies joined to it, as FreeCAD fuses them.
+        let combine = objects["type"] == "bodies";
         let def = |s: f64| {
             json!({"type": "circular_pattern", "objects": objects, "axis": axis,
                    "quantity": quantity.json(), "angle": angle.signed(s).json(),
-                   "compute": "identical"})
+                   "compute": "identical", "combine": combine})
         };
         Ok(vec![def(sign), def(-sign)])
     }
@@ -1742,10 +2090,10 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let (operation, participants) = self.operation(target, additive)?;
         let mut links = vec![o.link("Profile").ok_or("no profile")?.clone()];
         links.extend(o.links("Sections").iter().cloned());
+        // Sketch regions or planar faces of bodies (mitcad#543).
         let mut sections = Vec::new();
         for link in &links {
-            let (sketch, region) = self.one_region(link, component)?;
-            sections.push(json!({"type": "profile", "sketch": sketch, "region": region}));
+            sections.push(self.section_of(link, component)?);
         }
         let mut def = json!({"type": "loft", "sections": sections,
             "ruled": o.bool("Ruled").unwrap_or(false), "closed": o.bool("Closed").unwrap_or(false),
@@ -1764,75 +2112,204 @@ impl<K: Kernel> Importer<'_, '_, K> {
         if several && self.enum_text(o, "Transformation").as_deref() != Some("Multisection") {
             return Err("a pipe's sections without the Multisection transformation".to_owned());
         }
-        if o.link("AuxillerySpine").is_some() {
-            return Err("an auxiliary spine is not translated yet".to_owned());
-        }
-        let orientation = match self.enum_text(o, "Mode").as_deref().unwrap_or("Standard") {
-            "Standard" | "Frenet" => "perpendicular",
+        // How the profile turns (FreeCAD's Mode, OCCT's pipe shell modes):
+        // Standard keeps its angle to the spine, Fixed does not turn,
+        // Frenet follows the spine's Frenet frame, Binormal turns it only
+        // about a constant binormal, Auxiliary turns it towards an
+        // auxiliary spine (mitcad#539).
+        let mode = self
+            .enum_text(o, "Mode")
+            .unwrap_or_else(|| "Standard".to_owned());
+        let mut frames: Vec<Value> = Vec::new();
+        let orientation = match mode.as_str() {
+            "Standard" => "perpendicular",
             "Fixed" => "parallel",
+            "Frenet" => {
+                // Along a planar spine the Frenet frame is the standard one
+                // (but where the spine's bend changes side): both readings.
+                frames.push(json!({"type": "frenet"}));
+                "perpendicular"
+            }
+            "Binormal" => {
+                // FreeCAD sweeps the pipe in its own placement (the
+                // profile's) and takes the binormal there as it is: it
+                // turns with the pipe's placement. The pipe shell's frame
+                // keeps the binormal (a constant binormal frame).
+                let b = self.vector(o, "Binormal").ok_or("no binormal")?;
+                let b = match o.value("Placement") {
+                    Some(FcValue::Placement(p)) => {
+                        mitcad_freecad::placement::Placement::from_quaternion([0.0; 3], p.rotation)
+                            .apply(b)
+                    }
+                    _ => b,
+                };
+                let b = target.place.transform.apply_vector(b);
+                if norm(b) < 1e-12 {
+                    return Err("a binormal of no length".to_owned());
+                }
+                frames.push(json!({"type": "constant_binormal", "binormal": b}));
+                "perpendicular"
+            }
+            "Auxiliary" => {
+                // FreeCAD 1.1 renamed the properties (AuxiliarySpine,
+                // AuxiliaryCurvilinear); older files have the old names.
+                let link = ["AuxiliarySpine", "AuxillerySpine"]
+                    .into_iter()
+                    .find_map(|p| o.link(p).filter(|l| !l.object.is_empty()))
+                    .ok_or("no auxiliary spine")?
+                    .clone();
+                let curve = self
+                    .sketch_path(&link, component)
+                    .map_err(|e| format!("the auxiliary spine: {e}"))?;
+                // FreeCAD's default: the points at the same fraction of
+                // the lengths.
+                let curvilinear = o
+                    .bool("AuxiliaryCurvilinear")
+                    .or_else(|| o.bool("AuxilleryCurvelinear"))
+                    .unwrap_or(true);
+                frames
+                    .push(json!({"type": "auxiliary", "curve": curve, "curvilinear": curvilinear}));
+                "perpendicular"
+            }
             other => return Err(format!("a {other} pipe is not translated yet")),
         };
+        // The profile: a sketch's region or a planar face of a body
+        // (mitcad#543).
         let profile = o.link("Profile").ok_or("no profile")?.clone();
-        let (sketch, region) = self.one_region(&profile, component)?;
+        let section = self.section_of(&profile, component)?;
         let spine = o.link("Spine").ok_or("no spine")?.clone();
-        let spine_object = self.sources[0]
-            .object(&spine.object)
+        let path = self.sketch_path(&spine, component)?;
+        let mut def = if several {
+            // Several sections: a loft through them along the spine, at
+            // right angles to it or as the mode's frame turns them
+            // (mitcad#543); the Fixed mode's sections do not turn, they only
+            // move along it (the parallel orientation, mitcad#547).
+            let mut sections = vec![section];
+            for link in o.links("Sections").to_vec() {
+                sections.push(self.section_of(&link, component)?);
+            }
+            let mut def = json!({"type": "loft", "sections": sections, "centerline": path,
+                   "ruled": false, "closed": false, "operation": operation});
+            if orientation != "perpendicular" {
+                def["orientation"] = json!(orientation);
+            }
+            def
+        } else {
+            let mut def = json!({"type": "sweep", "path": path, "orientation": orientation,
+                                 "operation": operation});
+            if section["type"] == "face" {
+                def["profile_face"] = json!({"body": section["body"], "face": section["face"]});
+            } else {
+                def["profiles"] =
+                    json!([{"sketch": section["sketch"], "region": section["region"]}]);
+            }
+            def
+        };
+        if participants.as_array().is_some_and(|p| !p.is_empty()) {
+            def["participants"] = participants;
+        }
+        let note = |c: Candidate| {
+            if several {
+                c.note("a pipe through several sections: a loft along its spine")
+            } else {
+                c
+            }
+        };
+        // The mode's frame (mitcad#539); the Frenet mode also without it.
+        let mut out: Vec<Candidate> = frames
+            .iter()
+            .map(|frame| {
+                let mut framed = def.clone();
+                framed["frame"] = frame.clone();
+                note(Candidate::new(framed))
+            })
+            .collect();
+        if frames.is_empty() || mode == "Frenet" {
+            out.push(note(Candidate::new(def)));
+        }
+        Ok(out)
+    }
+
+    /// A loft's or pipe's section (mitcad#543): a sketch's one region, or a
+    /// planar face of a body (`Pad.Face6`) as a `face` section, the face
+    /// found in the body holding the object's result.
+    pub(super) fn section_of(
+        &mut self,
+        link: &LinkRef,
+        component: ComponentUid,
+    ) -> Result<Value, String> {
+        let object = self.sources[0]
+            .object(&link.object)
             .cloned()
-            .ok_or("no spine")?;
-        if !super::is_sketch(&spine_object.type_name) {
+            .ok_or_else(|| format!("no {}", link.object))?;
+        if super::is_sketch(&object.type_name) || link.subs.is_empty() {
+            let (sketch, region) = self.one_region(link, component)?;
+            return Ok(json!({"type": "profile", "sketch": sketch, "region": region}));
+        }
+        let [sub] = link.subs.as_slice() else {
+            return Err(format!(
+                "a section of {} elements of {} is not translated",
+                link.subs.len(),
+                link.object
+            ));
+        };
+        let name = sub_name(sub);
+        if !name.starts_with("Face") {
+            return Err(format!(
+                "a section of {}.{name} (not a face) is not translated",
+                link.object
+            ));
+        }
+        let (body, face) = self.element_name(&link.object, name)?;
+        if self.doc.body_component(body) != Some(component) {
+            return Err(format!(
+                "{}.{name} is a face of another component's body",
+                link.object
+            ));
+        }
+        Ok(json!({"type": "face", "body": body.to_string(), "face": face}))
+    }
+
+    /// A pipe's spine or auxiliary spine (mitcad#539): curves of a sketch,
+    /// all of its curves that are not construction lines, or the edges
+    /// listed.
+    pub(super) fn sketch_path(
+        &mut self,
+        link: &LinkRef,
+        component: ComponentUid,
+    ) -> Result<Value, String> {
+        let object = self.sources[0]
+            .object(&link.object)
+            .cloned()
+            .ok_or_else(|| format!("no {}", link.object))?;
+        if !super::is_sketch(&object.type_name) {
             return Err("a spine of edges of a body is not translated yet".to_owned());
         }
-        let made = self.sketch_of(&spine, component)?;
-        let curves: Vec<String> = if spine.subs.is_empty() {
+        let made = self.sketch_of(link, component)?;
+        let curves: Vec<String> = if link.subs.is_empty() {
             let mut all: Vec<(&i32, &u32)> = made.curves.iter().collect();
             all.sort();
-            let fc_sketch = fc::Sketch::of(&spine_object);
+            let fc_sketch = fc::Sketch::of(&object);
             all.into_iter()
                 .filter(|(g, _)| fc_sketch.geometry(**g).is_some_and(|x| !x.construction))
                 .map(|(_, id)| format!("c{id}"))
                 .collect()
         } else {
             let mut out = Vec::new();
-            for sub in &spine.subs {
+            for sub in &link.subs {
                 let name = sub_name(sub);
                 let geo = self
-                    .sketch_geometry(&spine_object, name, component)
-                    .ok_or_else(|| format!("{}.{name} was not found", spine.object))?;
+                    .sketch_geometry(&object, name, component)
+                    .ok_or_else(|| format!("{}.{name} was not found", link.object))?;
                 let id = made
                     .curves
                     .get(&geo)
-                    .ok_or_else(|| format!("{}.{name} was not imported", spine.object))?;
+                    .ok_or_else(|| format!("{}.{name} was not imported", link.object))?;
                 out.push(format!("c{id}"));
             }
             out
         };
-        let path = json!({"sketch": made.uid.to_string(), "curves": curves});
-        let mut def = if several {
-            // Several sections: a loft through them along the spine, at
-            // right angles to it.
-            if orientation != "perpendicular" {
-                return Err("a pipe through several sections without turning".to_owned());
-            }
-            let mut sections = vec![json!({"type": "profile", "sketch": sketch, "region": region})];
-            for link in o.links("Sections").to_vec() {
-                let (sketch, region) = self.one_region(&link, component)?;
-                sections.push(json!({"type": "profile", "sketch": sketch, "region": region}));
-            }
-            json!({"type": "loft", "sections": sections, "centerline": path,
-                   "ruled": false, "closed": false, "operation": operation})
-        } else {
-            json!({"type": "sweep", "profiles": [{"sketch": sketch, "region": region}],
-                   "path": path, "orientation": orientation, "operation": operation})
-        };
-        if participants.as_array().is_some_and(|p| !p.is_empty()) {
-            def["participants"] = participants;
-        }
-        let candidate = Candidate::new(def);
-        Ok(vec![if several {
-            candidate.note("a pipe through several sections: a loft along its spine")
-        } else {
-            candidate
-        }])
+        Ok(json!({"sketch": made.uid.to_string(), "curves": curves}))
     }
 
     // Helix.
@@ -2159,7 +2636,7 @@ pub(super) fn region_depths(
 
 /// A point strictly inside a region (not in its holes): the middle of the
 /// first stretch inside it along the line through its centroid.
-fn interior_point(r: &mitcad_model::sketch::regions::Region) -> Option<[f64; 2]> {
+pub(super) fn interior_point(r: &mitcad_model::sketch::regions::Region) -> Option<[f64; 2]> {
     let y = r.centroid[1];
     let mut xs = Vec::new();
     for poly in std::iter::once(&r.outline).chain(&r.holes) {
@@ -2177,7 +2654,7 @@ fn interior_point(r: &mitcad_model::sketch::regions::Region) -> Option<[f64; 2]>
 }
 
 /// Whether a point is inside a closed polygon (even-odd).
-fn in_polygon(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
+pub(super) fn in_polygon(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
     let mut inside = false;
     for k in 0..poly.len() {
         let (a, b) = (poly[k], poly[(k + 1) % poly.len()]);

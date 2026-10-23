@@ -47,6 +47,10 @@ mod reference;
 pub mod report;
 mod sketch;
 mod sketches;
+// Face profiles and chosen parts of sketches (mitcad#539).
+mod profiles;
+// Part sweeps' spines and sections that are not sketches (mitcad#547).
+mod sweep_inputs;
 #[cfg(test)]
 mod tests;
 
@@ -61,9 +65,9 @@ use mitcad_model::{
 };
 
 pub use report::{
-    BodyReport, DimensionSource, ExpressionOutcome, ExpressionReport, FcstdReport, FeatureCheck,
-    FeatureReport, ObjectOutcome, ObjectReport, ParameterReport, PlacedReport, ReferenceReport,
-    ShapeCheck, SketchReport,
+    BodyReport, DimensionSource, ExpressionOutcome, ExpressionReport, FallbackGroup, FcstdReport,
+    FeatureCheck, FeatureReport, ObjectOutcome, ObjectReport, ParameterReport, PlacedReport,
+    ReferenceReport, ShapeCheck, SketchReport,
 };
 
 /// Import settings.
@@ -406,6 +410,10 @@ struct Planned {
     visible: bool,
     /// Made (after the base features are added).
     body: Option<BodyUid>,
+    /// The other bodies of a replayed result that FreeCAD keeps as one
+    /// shape of several solids (mitcad#541); measured and reported with
+    /// `body`.
+    more: Vec<BodyUid>,
 }
 
 /// What a placed record measures.
@@ -827,6 +835,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             color,
             visible,
             body: None,
+            more: Vec::new(),
         });
         self.planned.len() - 1
     }
@@ -1218,10 +1227,13 @@ impl<K: Kernel> Importer<'_, '_, K> {
         }
         let mut bodies_of: HashMap<String, Vec<String>> = HashMap::new();
         let mut component_of: HashMap<String, String> = HashMap::new();
-        for p in &self.planned {
-            let Some(uid) = p.body else {
-                continue;
-            };
+        let made = self.planned.iter().flat_map(|p| {
+            p.body
+                .into_iter()
+                .chain(p.more.iter().copied())
+                .map(move |b| (p, b))
+        });
+        for (p, uid) in made {
             let kernel = self.doc.kernel();
             let shape = self.doc.body_shape(uid);
             let measured = shape.and_then(|s| measure(kernel, s));
@@ -1310,10 +1322,17 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let mut out = Vec::new();
         for place in &self.placed {
             let pieces: Vec<(BodyUid, Transform)> = match &place.what {
-                Measured::Body(index) => match self.planned[*index].body {
-                    Some(body) => vec![(body, self.doc.path_transform(&place.path))],
-                    None => continue,
-                },
+                Measured::Body(index) => {
+                    let p = &self.planned[*index];
+                    let Some(body) = p.body else {
+                        continue;
+                    };
+                    let t = self.doc.path_transform(&place.path);
+                    std::iter::once(body)
+                        .chain(p.more.iter().copied())
+                        .map(|b| (b, t))
+                        .collect()
+                }
                 Measured::Under => instances
                     .iter()
                     .filter(|i| i.path.starts_with(&place.path))

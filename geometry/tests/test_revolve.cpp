@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cmath>
+#include <vector>
 
 namespace test {
 namespace {
@@ -109,6 +110,31 @@ void test_to_object() {
   CHECK(faces_named(*quarter, start_cap("F3", 1)) == 1 && faces_named(*quarter, end_cap("F3", 1)) == 1);
   spec.target->offset = 1;
   CHECK(throws_with([&] { revolve(spec); }, "no offset"));
+
+  // Up to a body below z = -5 (mitcad#539): the turn (from +x towards -z)
+  // first meets it where r sin(a) = 5, and leaves it again at pi - a. Up
+  // to its first face the tube keeps what turns before the body, through
+  // it to its last face half the tube less what lies past the body's far
+  // side; both are the strip 0 <= |z| <= 5 of the half ring (x > 0 and
+  // x < 0 alike) times the tube's height.
+  const ShapePtr below = extrude("F9", {rectangle(1, -50, -5, 100, 45)}, -50, -5);
+  Target body;
+  body.kind = Target::Kind::Body;
+  body.body = below;
+  spec.target = body;
+  const auto strip = [](double a) { return 2.5 * std::sqrt(a * a - 25) + a * a / 2 * std::asin(5 / a); };
+  const double ends = 30 * (strip(20) - strip(10));
+  const ShapePtr first = revolve(spec);
+  CHECK_NEAR_TOL(volume(*first), ends, 1e-5);
+  spec.target->through = true;
+  const ShapePtr through = revolve(spec);
+  CHECK_NEAR_TOL(volume(*through), kTube / 2 - ends, 1e-5);
+  CHECK(faces_named(*through, start_cap("F3", 1)) == 1 && !through->find_faces(end_cap("F3", 1)).empty());
+  // Its far side, where the turn leaves the body, lies in z = -5 on the
+  // other side of the axis: the outer wall ends at x = -sqrt(20^2 - 5^2).
+  const BoundingBox box = bounding_box(*through);
+  CHECK(near(box.min.X(), -std::sqrt(375.0), 1e-5) && near(box.max.Z(), 0, 1e-5) &&
+        near(box.min.Z(), -20, 1e-5));
 }
 
 // A triangle c<first>..c<first+2> through the points (sketch coordinates).

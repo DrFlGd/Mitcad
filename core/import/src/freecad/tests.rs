@@ -1094,7 +1094,14 @@ fn a_body_s_features_are_replayed_in_dependency_order() {
     );
     let gear = feature(&report, "Gear");
     assert_eq!(gear.outcome, ObjectOutcome::Fallback, "{gear:?}");
-    assert!(gear.notes[0].contains("not translated"), "{gear:?}");
+    // A scripted feature: no parametric counterpart (mitcad#539), its
+    // type named.
+    assert_eq!(gear.fallback_group, Some(FallbackGroup::NoCounterpart));
+    assert!(
+        gear.notes[0].contains("no parametric counterpart: a scripted object")
+            && gear.notes[0].contains("PartDesign::FeaturePython"),
+        "{gear:?}"
+    );
     let base = def_of(&doc, &gear.features[0]);
     assert_eq!(base["replaces"], json!(["F2.b0"]));
     // The timeline says what the report says (mitcad#170).
@@ -2257,4 +2264,1641 @@ fn a_reference_constraints_parameter_is_its_dimensions_reference() {
     assert_eq!(references, 1);
     let width = params.find("width").unwrap();
     assert_eq!(params.get(width).unwrap().kind(), ParamKind::Model);
+}
+
+// Part extrusions of faces and into faces, and the fallbacks' groups
+// (mitcad#539).
+
+fn vector(name: &str, v: [f64; 3]) -> String {
+    prop(
+        name,
+        "App::PropertyVector",
+        &format!(
+            "<PropertyVector valueX=\"{}\" valueY=\"{}\" valueZ=\"{}\"/>",
+            v[0], v[1], v[2]
+        ),
+    )
+}
+
+/// A definition's value: a number, or its parameter's value.
+fn number(doc: &Document<MockKernel>, v: &serde_json::Value) -> f64 {
+    v.as_f64().unwrap_or_else(|| {
+        let name = v.as_str().unwrap_or_else(|| panic!("no value: {v}"));
+        let parameters = doc.parameters();
+        parameters
+            .find(name)
+            .and_then(|id| parameters.value(id))
+            .unwrap_or_else(|| panic!("no parameter {name}"))
+    })
+}
+
+/// An open polyline sketch of two lines.
+fn open_sketch() -> String {
+    format!(
+        "{}{}",
+        geometry(&[
+            segment([0.0, 0.0], [10.0, 0.0], false),
+            segment([10.0, 0.0], [15.0, 8.0], false),
+            segment([0.0, 0.0], [0.0, 5.0], true),
+        ]),
+        constraints(&[constrain(1, 0.0, &[(0, 2), (1, 1)], "", true)])
+    )
+}
+
+/// A Part::Extrusion of `base` (DirMode by index: 0 Custom, 2 Normal).
+fn part_extrusion(base: &str, solid: bool, mode: i64, dir: [f64; 3], extra: &str) -> String {
+    format!(
+        "{}{}{}{}{}{}",
+        link("Base", base),
+        flag("Solid", solid),
+        enumeration("DirMode", mode),
+        vector("Dir", dir),
+        extra,
+        shape(&format!("{base}Extrusion.brp"))
+    )
+}
+
+#[test]
+fn part_extrusions_of_faces_and_into_faces_become_features() {
+    let face_maker = prop(
+        "FaceMakerClass",
+        "App::PropertyString",
+        "<String value=\"Part::FaceMakerBullseye\"/>",
+    );
+    let xml = document(&[
+        // An open polyline extruded into faces (Solid off) 15 mm up.
+        ("Sketcher::SketchObject", "Open", open_sketch()),
+        (
+            "Part::Extrusion",
+            "Wall",
+            part_extrusion("Open", false, 0, [0.0, 0.0, 15.0], ""),
+        ),
+        // A face of a square sketch extruded 8 mm down and 3 up.
+        (
+            "Sketcher::SketchObject",
+            "Square",
+            rectangle_sketch(0.0, 0.0, 10.0, 10.0),
+        ),
+        (
+            "Part::Face",
+            "Face",
+            format!(
+                "{}{}{}",
+                links("Sources", "App::PropertyLinkList", &["Square"]),
+                face_maker,
+                shape("Face.brp")
+            ),
+        ),
+        (
+            "Part::Extrusion",
+            "Slab",
+            part_extrusion(
+                "Face",
+                false,
+                0,
+                [0.0, 0.0, -1.0],
+                &format!("{}{}", float("LengthFwd", 8.0), float("LengthRev", 3.0)),
+            ),
+        ),
+        // A scripted object's face (no counterpart) extruded 5 mm
+        // symmetric about it along its normal.
+        ("Part::Part2DObjectPython", "Bolt", shape("Bolt.brp")),
+        (
+            "Part::Extrusion",
+            "Bore",
+            part_extrusion(
+                "Bolt",
+                true,
+                2,
+                [0.0, 0.0, 1.0],
+                &format!("{}{}", float("LengthFwd", 5.0), flag("Symmetric", true)),
+            ),
+        ),
+        // A tapered extrusion of a face (mitcad#541), and a face made by a
+        // face maker Mitcad has not.
+        (
+            "Sketcher::SketchObject",
+            "Other",
+            rectangle_sketch(20.0, 0.0, 10.0, 10.0),
+        ),
+        (
+            "Part::Face",
+            "Face2",
+            format!(
+                "{}{}",
+                links("Sources", "App::PropertyLinkList", &["Other"]),
+                shape("Face2.brp")
+            ),
+        ),
+        (
+            "Part::Extrusion",
+            "Tapered",
+            part_extrusion(
+                "Face2",
+                true,
+                2,
+                [0.0, 0.0, 1.0],
+                &format!("{}{}", float("LengthFwd", 5.0), float("TaperAngle", 5.0)),
+            ),
+        ),
+        // Nested wires (a square with a circle in it): the simple face
+        // maker's overlapping faces are not translated (mitcad#547).
+        (
+            "Sketcher::SketchObject",
+            "Nested",
+            format!(
+                "{}{}",
+                geometry(&[
+                    segment([40.0, 0.0], [50.0, 0.0], false),
+                    segment([50.0, 0.0], [50.0, 10.0], false),
+                    segment([50.0, 10.0], [40.0, 10.0], false),
+                    segment([40.0, 10.0], [40.0, 0.0], false),
+                    round([45.0, 5.0], 2.0),
+                ]),
+                constraints(&[
+                    constrain(1, 0.0, &[(0, 2), (1, 1)], "", true),
+                    constrain(1, 0.0, &[(1, 2), (2, 1)], "", true),
+                    constrain(1, 0.0, &[(2, 2), (3, 1)], "", true),
+                    constrain(1, 0.0, &[(3, 2), (0, 1)], "", true),
+                ])
+            ),
+        ),
+        (
+            "Part::Face",
+            "Simple",
+            format!(
+                "{}{}{}",
+                links("Sources", "App::PropertyLinkList", &["Nested"]),
+                prop(
+                    "FaceMakerClass",
+                    "App::PropertyString",
+                    "<String value=\"Part::FaceMakerSimple\"/>",
+                ),
+                shape("Simple.brp")
+            ),
+        ),
+    ]);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("OpenExtrusion.brp", b"2 wall,sheet"),
+            ("Face.brp", b"1 face,sheet"),
+            ("FaceExtrusion.brp", b"6 slab"),
+            ("Bolt.brp", b"1 bolt,sheet"),
+            ("BoltExtrusion.brp", b"3 bore"),
+            ("Face2.brp", b"1 face2,sheet"),
+            ("Face2Extrusion.brp", b"6 tapered"),
+            ("Simple.brp", b"1 simple,sheet"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    // Into faces: a surface extrusion of the sketch's two lines (not its
+    // construction line), the direction's length.
+    let wall = feature(&report, "Wall");
+    assert_eq!(wall.outcome, ObjectOutcome::Parametric, "{wall:?}");
+    let def = def_of(&doc, &wall.features[0]);
+    assert_eq!(def["type"], "extrude", "{def}");
+    assert_eq!(def["surface"], true, "{def}");
+    assert_eq!(
+        def["curves"]["curves"].as_array().unwrap().len(),
+        2,
+        "{def}"
+    );
+    assert_eq!(def["extent"]["type"], "distance", "{def}");
+    assert_eq!(number(&doc, &def["extent"]["distance"]), 15.0);
+    // The face: a patch of the square's region.
+    let face = feature(&report, "Face");
+    assert_eq!(face.outcome, ObjectOutcome::Parametric, "{face:?}");
+    assert_eq!(face.mitcad, "patch");
+    let patch = face.features[0].clone();
+    // Its extrusion: the patch's face, both lengths, then the patch's body
+    // removed.
+    let slab = feature(&report, "Slab");
+    assert_eq!(slab.outcome, ObjectOutcome::Parametric, "{slab:?}");
+    let defs = defs_of(&doc, &report, "Slab");
+    assert_eq!(defs.len(), 2, "{defs:?}");
+    assert_eq!(defs[0]["type"], "extrude");
+    assert_eq!(defs[0]["profile_face"]["body"], format!("{patch}.b0"));
+    assert!(
+        defs[0]["profile_face"]["face"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{patch}:patch(")),
+        "{defs:?}"
+    );
+    let extent = &defs[0]["extent"];
+    assert_eq!(extent["type"], "two_sides", "{extent}");
+    assert_eq!(number(&doc, &extent["side1"]["distance"]), 8.0);
+    assert_eq!(number(&doc, &extent["side2"]["distance"]), 3.0);
+    assert_eq!(defs[1]["type"], "base");
+    assert_eq!(defs[1]["replaces"], json!([format!("{patch}.b0")]));
+    // The scripted object falls back without a counterpart; its face is
+    // extruded symmetric.
+    let bolt = feature(&report, "Bolt");
+    assert_eq!(bolt.outcome, ObjectOutcome::Fallback, "{bolt:?}");
+    assert_eq!(bolt.fallback_group, Some(FallbackGroup::NoCounterpart));
+    assert!(
+        bolt.notes.iter().any(|n| n.contains("scripted object")),
+        "{bolt:?}"
+    );
+    let base = bolt.features[0].clone();
+    let bore = feature(&report, "Bore");
+    assert_eq!(bore.outcome, ObjectOutcome::Parametric, "{bore:?}");
+    let defs = defs_of(&doc, &report, "Bore");
+    assert_eq!(defs[0]["profile_face"]["body"], format!("{base}.b0"));
+    assert_eq!(
+        defs[0]["profile_face"]["face"],
+        format!("{base}:import(0)"),
+        "{defs:?}"
+    );
+    let extent = &defs[0]["extent"];
+    assert_eq!(extent["type"], "symmetric", "{extent}");
+    assert_eq!(extent["full_length"], true, "{extent}");
+    assert_eq!(number(&doc, &extent["distance"]), 5.0);
+    // A tapered face (mitcad#541): its taper on the extrusion; a face of
+    // the simple face maker of nested wires (overlapping faces): missing
+    // in Mitcad (mitcad#547).
+    let tapered = feature(&report, "Tapered");
+    assert_eq!(tapered.outcome, ObjectOutcome::Parametric, "{tapered:?}");
+    let defs = defs_of(&doc, &report, "Tapered");
+    assert_eq!(defs[0]["extent"]["type"], "distance", "{defs:?}");
+    assert!((number(&doc, &defs[0]["extent"]["taper"]).abs() - 5f64.to_radians()).abs() < 1e-12);
+    let simple = feature(&report, "Simple");
+    assert_eq!(simple.outcome, ObjectOutcome::Fallback, "{simple:?}");
+    assert_eq!(simple.fallback_group, Some(FallbackGroup::Missing));
+    assert!(
+        simple.notes.iter().any(|n| n.contains("overlapping faces")),
+        "{simple:?}"
+    );
+    assert_eq!(report.fallback_groups(), [1, 1, 0]);
+    let text = report.text();
+    assert!(
+        text.contains(
+            "fallbacks by group: 1 missing in Mitcad, 1 without a parametric counterpart, 0 other"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("Part::Part2DObjectPython (no parametric counterpart)"),
+        "{text}"
+    );
+    // The faces' bodies are gone with their extrusions.
+    let names: Vec<String> = doc.bodies().iter().map(|b| b.name.clone()).collect();
+    for gone in ["Face", "Bolt"] {
+        assert!(!names.contains(&gone.to_owned()), "{names:?}");
+    }
+}
+
+/// mitcad#541: the faces of a base of two bodies along a direction off
+/// their normal, and an object of edges only (no faces) that only an
+/// extrusion uses.
+#[test]
+fn part_extrusions_of_several_bodies_along_a_direction_and_of_edges() {
+    let xml = document(&[
+        (
+            "Sketcher::SketchObject",
+            "Left",
+            rectangle_sketch(0.0, 0.0, 10.0, 10.0),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Right",
+            rectangle_sketch(20.0, 0.0, 10.0, 10.0),
+        ),
+        (
+            "Part::Face",
+            "Faces",
+            format!(
+                "{}{}",
+                links("Sources", "App::PropertyLinkList", &["Left", "Right"]),
+                shape("Faces.brp")
+            ),
+        ),
+        (
+            "Part::Extrusion",
+            "Pair",
+            part_extrusion("Faces", true, 0, [1.0, 0.0, 1.0], &float("LengthFwd", 4.0)),
+        ),
+        ("Part::Circle", "Ring", shape("Ring.brp")),
+        (
+            "Part::Extrusion",
+            "Tube",
+            part_extrusion("Ring", true, 2, [0.0, 0.0, 1.0], &float("LengthFwd", 4.0)),
+        ),
+    ]);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("Faces.brp", b"2 faces,sheet"),
+            ("FacesExtrusion.brp", b"12 pair"),
+            ("Ring.brp", b"0 ring"),
+            ("RingExtrusion.brp", b"3 tube"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    // Two patches; each face extruded along the direction, both bodies
+    // removed.
+    let faces = feature(&report, "Faces");
+    assert_eq!(faces.outcome, ObjectOutcome::Parametric, "{faces:?}");
+    assert_eq!(faces.features.len(), 2, "{faces:?}");
+    let pair = feature(&report, "Pair");
+    assert_eq!(pair.outcome, ObjectOutcome::Parametric, "{pair:?}");
+    let defs = defs_of(&doc, &report, "Pair");
+    assert_eq!(defs.len(), 3, "{defs:?}");
+    for def in &defs[..2] {
+        assert_eq!(def["type"], "extrude", "{def}");
+        assert_eq!(def["direction"], json!([1.0, 0.0, 1.0]), "{def}");
+        assert_eq!(number(&doc, &def["extent"]["distance"]), 4.0);
+    }
+    assert_ne!(
+        defs[0]["profile_face"]["body"],
+        defs[1]["profile_face"]["body"]
+    );
+    assert_eq!(defs[2]["type"], "base");
+    assert_eq!(
+        defs[2]["replaces"].as_array().map(Vec::len),
+        Some(2),
+        "{defs:?}"
+    );
+    // FreeCAD's one shape of two solids: both bodies stand for the object,
+    // in its item and its place (the second numbered).
+    assert_eq!(
+        item(&report, "Pair").bodies.len(),
+        2,
+        "{:?}",
+        item(&report, "Pair")
+    );
+    let place = report
+        .placed
+        .iter()
+        .find(|p| p.object == "Pair")
+        .expect("Pair's place");
+    assert_eq!(place.bodies, 2);
+    let names: Vec<String> = doc.bodies().iter().map(|b| b.name.clone()).collect();
+    assert!(
+        names.contains(&"Pair".to_owned()) && names.contains(&"Pair (2)".to_owned()),
+        "{names:?}"
+    );
+    // The circle has no faces: part of the extrusion's sketch, no body
+    // (the mock kernel gives its shape no edges, so the extrusion falls
+    // back to its stored shape).
+    let ring = feature(&report, "Ring");
+    assert_eq!(ring.outcome, ObjectOutcome::Included, "{ring:?}");
+    let tube = feature(&report, "Tube");
+    assert_eq!(tube.outcome, ObjectOutcome::Fallback, "{tube:?}");
+    assert!(
+        tube.notes
+            .iter()
+            .any(|n| n.contains("neither faces nor edges")),
+        "{tube:?}"
+    );
+}
+
+/// mitcad#547: FreeCAD's simple face maker makes the faces Mitcad's
+/// patches do where no wire lies in another; of nested wires (overlapping
+/// faces) it is not translated.
+#[test]
+fn simple_face_maker_faces_of_wires_apart() {
+    let simple = prop(
+        "FaceMakerClass",
+        "App::PropertyString",
+        "<String value=\"Part::FaceMakerSimple\"/>",
+    );
+    // Two squares apart; a square with a circle inside it.
+    let square = |x: f64| {
+        let p = [[x, 0.0], [x + 8.0, 0.0], [x + 8.0, 8.0], [x, 8.0]];
+        (0..4)
+            .map(|i| segment(p[i], p[(i + 1) % 4], false))
+            .collect::<Vec<_>>()
+    };
+    let corners = |first: i32| -> Vec<String> {
+        (0..4)
+            .map(|i| {
+                constrain(
+                    1,
+                    0.0,
+                    &[(first + i, 2), (first + (i + 1) % 4, 1)],
+                    "",
+                    true,
+                )
+            })
+            .collect()
+    };
+    let apart = format!(
+        "{}{}",
+        geometry(&[square(0.0), square(20.0)].concat()),
+        constraints(&[corners(0), corners(4)].concat())
+    );
+    let mut nested_geometry = square(0.0);
+    nested_geometry.push(round([4.0, 4.0], 2.0));
+    let nested = format!("{}{}", geometry(&nested_geometry), constraints(&corners(0)));
+    let xml = document(&[
+        ("Sketcher::SketchObject", "Apart", apart),
+        ("Sketcher::SketchObject", "Nested", nested),
+        (
+            "Part::Face",
+            "TwoFaces",
+            format!(
+                "{}{}{}",
+                links("Sources", "App::PropertyLinkList", &["Apart"]),
+                simple,
+                shape("TwoFaces.brp")
+            ),
+        ),
+        (
+            "Part::Face",
+            "Overlapping",
+            format!(
+                "{}{}{}",
+                links("Sources", "App::PropertyLinkList", &["Nested"]),
+                prop(
+                    "FaceMakerClass",
+                    "App::PropertyString",
+                    "<String value=\"Part::FaceMakerSimple\"/>",
+                ),
+                shape("Overlapping.brp")
+            ),
+        ),
+    ]);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("TwoFaces.brp", b"2 two,sheet"),
+            ("Overlapping.brp", b"2 overlapping,sheet"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    let two = feature(&report, "TwoFaces");
+    assert_eq!(two.outcome, ObjectOutcome::Parametric, "{two:?}");
+    let defs = defs_of(&doc, &report, "TwoFaces");
+    assert_eq!(defs[0]["type"], "patch", "{defs:?}");
+    assert_eq!(
+        defs[0]["profiles"].as_array().map(Vec::len),
+        Some(2),
+        "{defs:?}"
+    );
+    let overlapping = feature(&report, "Overlapping");
+    assert_eq!(
+        overlapping.outcome,
+        ObjectOutcome::Fallback,
+        "{overlapping:?}"
+    );
+    assert_eq!(overlapping.fallback_group, Some(FallbackGroup::Missing));
+    assert!(
+        overlapping
+            .notes
+            .iter()
+            .any(|n| n.contains("overlapping faces")),
+        "{overlapping:?}"
+    );
+}
+
+#[test]
+fn a_definition_that_does_not_build_falls_back_as_other() {
+    let xml = document(&[
+        (
+            "Sketcher::SketchObject",
+            "Square",
+            rectangle_sketch(0.0, 0.0, 10.0, 10.0),
+        ),
+        (
+            "Part::Extrusion",
+            "Post",
+            part_extrusion("Square", true, 2, [0.0, 0.0, 1.0], &float("LengthFwd", 5.0)),
+        ),
+    ]);
+    let file = fcstd(&xml, None, &[("SquareExtrusion.brp", b"6 post")]);
+    let kernel = MockKernel::default();
+    kernel.fail.borrow_mut().insert("extrude");
+    let (_, report) = import_with(file, Vec::new(), kernel, false);
+    let post = feature(&report, "Post");
+    assert_eq!(post.outcome, ObjectOutcome::Fallback, "{post:?}");
+    assert_eq!(post.fallback_group, Some(FallbackGroup::Other));
+    assert_eq!(report.fallback_groups(), [0, 0, 1]);
+}
+
+/// A MultiTransform of a Body: its transformations after it in the list.
+fn multi(
+    name: &str,
+    originals: &[&str],
+    steps: &[&str],
+    base: &str,
+    whole: bool,
+) -> (&'static str, String, String) {
+    (
+        "PartDesign::MultiTransform",
+        name.to_owned(),
+        format!(
+            "{}{}{}{}",
+            links("Originals", "App::PropertyLinkList", originals),
+            links("Transformations", "App::PropertyLinkList", steps),
+            link("BaseFeature", base),
+            if whole {
+                enumeration("TransformMode", 1)
+            } else {
+                String::new()
+            }
+        ),
+    )
+}
+
+fn linear(name: &str, axis: &str, length: f64, occurrences: i64) -> (&'static str, String, String) {
+    (
+        "PartDesign::LinearPattern",
+        name.to_owned(),
+        format!(
+            "{}{}{}",
+            link_sub("Direction", "PlateSketch", &[axis]),
+            float("Length", length),
+            integer("Occurrences", occurrences)
+        ),
+    )
+}
+
+fn polar(name: &str, occurrences: i64) -> (&'static str, String, String) {
+    (
+        "PartDesign::PolarPattern",
+        name.to_owned(),
+        format!(
+            "{}{}{}",
+            link_sub("Axis", "PlateSketch", &["N_Axis"]),
+            float("Angle", 360.0),
+            integer("Occurrences", occurrences)
+        ),
+    )
+}
+
+fn scaled(name: &str, factor: f64, occurrences: i64) -> (&'static str, String, String) {
+    (
+        "PartDesign::Scaled",
+        name.to_owned(),
+        format!(
+            "{}{}",
+            prop(
+                "Factor",
+                "App::PropertyFloat",
+                &format!("<Float value=\"{factor}\"/>")
+            ),
+            integer("Occurrences", occurrences)
+        ),
+    )
+}
+
+#[test]
+fn multi_transforms_of_the_whole_body_and_scaled_ones_become_features() {
+    // mitcad#539. The features have no stored shapes: with a mock kernel
+    // that measures (scaled copies need centres of mass) each is taken
+    // unchecked.
+    let mut objects: Vec<(&str, String, String)> = vec![
+        (
+            "PartDesign::Body",
+            "Plate".to_owned(),
+            format!(
+                "{}{}{}",
+                shape("Plate.brp"),
+                links(
+                    "Group",
+                    "App::PropertyLinkList",
+                    &[
+                        "PlateSketch",
+                        "PlatePad",
+                        "BossSketch",
+                        "Boss",
+                        "Whole",
+                        "WholeX",
+                        "WholeTurn",
+                        "First",
+                        "FirstScaled",
+                        "FirstX",
+                        "Runs",
+                        "RunsX",
+                        "RunsScaled",
+                        "After",
+                        "AfterTurn",
+                        "AfterY",
+                        "AfterScaled",
+                        "Many",
+                        "ManyTurn",
+                        "ManyY",
+                        "ManyScaled",
+                        "WholeGrown",
+                        "WholeGrownX",
+                        "WholeGrownScaled",
+                        "WholeTwo",
+                        "WholeTwoX",
+                        "WholeTwoY",
+                        "WholeTwoScaled",
+                        "WholeRuns",
+                        "WholeRunsX",
+                        "WholeRunsScaled",
+                    ]
+                ),
+                link("Tip", "WholeRuns")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "PlateSketch".to_owned(),
+            rectangle_sketch(0.0, 0.0, 60.0, 30.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "PlatePad".to_owned(),
+            format!(
+                "{}{}",
+                link_sub("Profile", "PlateSketch", &[]),
+                float("Length", 5.0)
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "BossSketch".to_owned(),
+            geometry(&[round([8.0, 8.0], 2.0)]),
+        ),
+        (
+            "PartDesign::Pad",
+            "Boss".to_owned(),
+            format!(
+                "{}{}{}",
+                link_sub("Profile", "BossSketch", &[]),
+                float("Length", 4.0),
+                link("BaseFeature", "PlatePad")
+            ),
+        ),
+    ];
+    // The whole body along x, then turned half round: patterns of the body
+    // joining their copies.
+    objects.push(multi("Whole", &[], &["WholeX", "WholeTurn"], "Boss", true));
+    objects.push(linear("WholeX", "H_Axis", 60.0, 2));
+    objects.push(polar("WholeTurn", 2));
+    // Scaled first: a scale pattern, then a pattern of it.
+    objects.push(multi(
+        "First",
+        &["Boss"],
+        &["FirstScaled", "FirstX"],
+        "Whole",
+        false,
+    ));
+    objects.push(scaled("FirstScaled", 1.5, 3));
+    objects.push(linear("FirstX", "H_Axis", 20.0, 2));
+    // Two runs of four copies.
+    objects.push(multi(
+        "Runs",
+        &["Boss"],
+        &["RunsX", "RunsScaled"],
+        "First",
+        false,
+    ));
+    objects.push(linear("RunsX", "H_Axis", 30.0, 4));
+    objects.push(scaled("RunsScaled", 2.0, 2));
+    // After two patterns, scaling the second one's copies.
+    objects.push(multi(
+        "After",
+        &["Boss"],
+        &["AfterTurn", "AfterY", "AfterScaled"],
+        "Runs",
+        false,
+    ));
+    objects.push(polar("AfterTurn", 4));
+    objects.push(linear("AfterY", "V_Axis", 10.0, 2));
+    objects.push(scaled("AfterScaled", 2.0, 2));
+    // More runs than the last pattern has copies: not translated.
+    objects.push(multi(
+        "Many",
+        &["Boss"],
+        &["ManyTurn", "ManyY", "ManyScaled"],
+        "After",
+        false,
+    ));
+    objects.push(polar("ManyTurn", 2));
+    objects.push(linear("ManyY", "V_Axis", 10.0, 2));
+    objects.push(scaled("ManyScaled", 2.0, 4));
+    // The whole body along x, the copy 1.25 times the size about the Body's
+    // origin carried with it (mitcad#542).
+    objects.push(multi(
+        "WholeGrown",
+        &[],
+        &["WholeGrownX", "WholeGrownScaled"],
+        "Many",
+        true,
+    ));
+    objects.push(linear("WholeGrownX", "H_Axis", 60.0, 2));
+    objects.push(scaled("WholeGrownScaled", 1.25, 2));
+    // The whole body along x, then along y, then each of the four copies
+    // scaled on its own (mitcad#547): a pattern of a pattern of the body.
+    objects.push(multi(
+        "WholeTwo",
+        &[],
+        &["WholeTwoX", "WholeTwoY", "WholeTwoScaled"],
+        "WholeGrown",
+        true,
+    ));
+    objects.push(linear("WholeTwoX", "H_Axis", 60.0, 2));
+    objects.push(linear("WholeTwoY", "V_Axis", 30.0, 2));
+    objects.push(scaled("WholeTwoScaled", 1.2, 4));
+    // The whole body 4 along x, scaled in two runs: FreeCAD 1.0 leaves the
+    // first run's copy out, which the pattern of the body skips.
+    objects.push(multi(
+        "WholeRuns",
+        &[],
+        &["WholeRunsX", "WholeRunsScaled"],
+        "WholeTwo",
+        true,
+    ));
+    objects.push(linear("WholeRunsX", "H_Axis", 90.0, 4));
+    objects.push(scaled("WholeRunsScaled", 1.2, 2));
+    // A transformation of the last one stored a shape: a Body is replayed
+    // when a feature of it did (the transformations themselves are not
+    // replayed, so nothing is compared with it).
+    if let Some(many) = objects.iter_mut().find(|(_, n, _)| n == "ManyScaled") {
+        many.2.push_str(&shape("Many.brp"));
+    }
+    let borrowed: Vec<(&str, &str, String)> = objects
+        .iter()
+        .map(|(t, n, p)| (*t, n.as_str(), p.clone()))
+        .collect();
+    let xml = document(&borrowed);
+    let file = fcstd(
+        &xml,
+        None,
+        &[("Plate.brp", b"6 plate"), ("Many.brp", b"6 many")],
+    );
+    let kernel = MockKernel::default();
+    kernel.measures.set(true);
+    let (doc, report) = import_with(file, Vec::new(), kernel, false);
+    let parameters = doc.parameters();
+    let value = |v: &serde_json::Value| {
+        v.as_f64().unwrap_or_else(|| {
+            let name = v.as_str().unwrap();
+            parameters
+                .find(name)
+                .and_then(|id| parameters.value(id))
+                .unwrap()
+        })
+    };
+    let boss = &feature(&report, "Boss").features[0];
+    // The whole body: each transformation a pattern of the body, joined.
+    let whole = feature(&report, "Whole");
+    assert_eq!(whole.outcome, ObjectOutcome::Parametric, "{whole:?}");
+    let defs = defs_of(&doc, &report, "Whole");
+    let types: Vec<&str> = defs.iter().map(|d| d["type"].as_str().unwrap()).collect();
+    assert_eq!(types, ["rectangular_pattern", "circular_pattern"]);
+    // The first a pattern of the body, the second a pattern of it (the
+    // body at every product of the elements, mitcad#547), both joining.
+    assert_eq!(defs[0]["objects"]["type"], "bodies", "{}", defs[0]);
+    assert_eq!(
+        defs[1]["objects"]["features"],
+        json!([whole.features[0]]),
+        "{}",
+        defs[1]
+    );
+    for def in &defs {
+        assert_eq!(def["combine"], true, "{def}");
+    }
+    assert_eq!(item(&report, "WholeX").outcome, ObjectOutcome::Included);
+    // Scaled first: a scale pattern of the boss, then a pattern of it.
+    let first = feature(&report, "First");
+    assert_eq!(first.outcome, ObjectOutcome::Parametric, "{first:?}");
+    let defs = defs_of(&doc, &report, "First");
+    assert_eq!(defs[0]["type"], "scale_pattern");
+    assert_eq!(defs[0]["objects"]["features"], json!([boss]));
+    assert_eq!(value(&defs[0]["quantity"]), 3.0);
+    assert_eq!(value(&defs[0]["scale"]), 1.5);
+    assert_eq!(defs[1]["type"], "rectangular_pattern");
+    assert_eq!(defs[1]["objects"]["features"], json!([first.features[0]]));
+    // Two runs of the pattern's four copies.
+    let runs = feature(&report, "Runs");
+    assert_eq!(runs.outcome, ObjectOutcome::Parametric, "{runs:?}");
+    let def = &defs_of(&doc, &report, "Runs")[0];
+    assert_eq!(def["type"], "rectangular_pattern");
+    assert_eq!(value(&def["scale"]), 2.0);
+    assert_eq!(value(&def["scale_groups"]), 2.0);
+    // A 1.0 document: first the reading without the first run's copy,
+    // which FreeCAD 1.0 and 1.1 leave out (mitcad#542).
+    assert_eq!(def["skipped_copies"], json!([1]), "{def}");
+    // After a polar and a linear pattern: the linear one scales its
+    // copies (of the polar one's too), one run per element.
+    let after = feature(&report, "After");
+    assert_eq!(after.outcome, ObjectOutcome::Parametric, "{after:?}");
+    let defs = defs_of(&doc, &report, "After");
+    assert_eq!(defs[0]["type"], "circular_pattern");
+    assert!(defs[0].get("scale").is_none(), "{}", defs[0]);
+    assert_eq!(defs[1]["type"], "rectangular_pattern");
+    assert_eq!(value(&defs[1]["scale"]), 2.0);
+    assert!(defs[1].get("scale_groups").is_none(), "{}", defs[1]);
+    // The polar pattern's copies are the first run, factor 1: FreeCAD 1.0
+    // leaves them out, the linear pattern still copies them.
+    assert_eq!(defs[0]["skipped_copies"], json!([1, 2, 3]), "{}", defs[0]);
+    assert!(defs[1].get("skipped_copies").is_none(), "{}", defs[1]);
+    // Four runs of the second pattern's two copies (mitcad#542): both
+    // patterns scale their copies, the runs counted over all four.
+    let many = feature(&report, "Many");
+    assert_eq!(many.outcome, ObjectOutcome::Parametric, "{many:?}");
+    let defs = defs_of(&doc, &report, "Many");
+    for def in &defs {
+        assert_eq!(value(&def["scale"]), 2.0, "{def}");
+        assert_eq!(value(&def["scale_groups"]), 4.0, "{def}");
+        assert_eq!(value(&def["scale_copies"]), 4.0, "{def}");
+        assert!(def.get("skipped_copies").is_none(), "{def}");
+    }
+    // The whole body scaled: a pattern of the body with its scale about the
+    // Body's origin.
+    let grown = feature(&report, "WholeGrown");
+    assert_eq!(grown.outcome, ObjectOutcome::Parametric, "{grown:?}");
+    let def = &defs_of(&doc, &report, "WholeGrown")[0];
+    assert_eq!(def["type"], "rectangular_pattern");
+    assert_eq!(def["combine"], true, "{def}");
+    assert_eq!(value(&def["scale"]), 1.25);
+    // A fixed point, as the model writes it back: its point alone.
+    let point = def["scale_center"]["point"].as_array().unwrap();
+    assert_eq!(point.len(), 3, "{def}");
+    assert!(point.iter().all(|c| c.as_f64() == Some(0.0)), "{def}");
+    // After two transformations: both patterns scale their copies of the
+    // body, the runs counted over all four, about the Body's origin.
+    let two = feature(&report, "WholeTwo");
+    assert_eq!(two.outcome, ObjectOutcome::Parametric, "{two:?}");
+    let defs = defs_of(&doc, &report, "WholeTwo");
+    assert_eq!(defs[0]["objects"]["type"], "bodies", "{}", defs[0]);
+    assert_eq!(defs[1]["objects"]["features"], json!([two.features[0]]));
+    for def in &defs {
+        assert_eq!(def["combine"], true, "{def}");
+        assert_eq!(value(&def["scale_groups"]), 4.0, "{def}");
+        assert_eq!(value(&def["scale_copies"]), 4.0, "{def}");
+        assert!(def["scale_center"]["point"].is_array(), "{def}");
+    }
+    // Two runs over four copies of the body: a 1.0 document's first reading
+    // skips the first run's copy.
+    let runs = feature(&report, "WholeRuns");
+    assert_eq!(runs.outcome, ObjectOutcome::Parametric, "{runs:?}");
+    let def = &defs_of(&doc, &report, "WholeRuns")[0];
+    assert_eq!(def["objects"]["type"], "bodies", "{def}");
+    assert_eq!(def["skipped_copies"], json!([1]), "{def}");
+}
+
+#[test]
+fn pipe_modes_slanted_tapers_and_turns_to_the_last_face_become_features() {
+    // (mitcad#539) Pipes in the Binormal, Auxiliary and Frenet modes; a pad
+    // tapered along a custom direction; a groove through all and a
+    // revolution up to the last face. FreeCAD 1.0's enumerations: Mode
+    // Standard, Fixed, Frenet, Auxiliary, Binormal; the groove's Type
+    // Angle, ThroughAll, …; the revolution's Angle, UpToLast, ….
+    let pipe = |name: &str, base: Option<&str>, mode: i64, extra: String| {
+        (
+            "PartDesign::AdditivePipe",
+            name.to_owned(),
+            format!(
+                "{}{}{}{}{}{}",
+                link_sub("Profile", "Ring", &[]),
+                link_sub("Spine", "Spine", &[]),
+                enumeration("Mode", mode),
+                base.map(|b| link("BaseFeature", b)).unwrap_or_default(),
+                extra,
+                shape(&format!("{name}.brp"))
+            ),
+        )
+    };
+    let upright = placement([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 90.0);
+    let banded = pipe("Banded", None, 4, vector("Binormal", [0.0, 1.0, 1.0]));
+    let guided = pipe(
+        "Guided",
+        Some("Banded"),
+        3,
+        format!(
+            "{}{}",
+            link_sub("AuxillerySpine", "Rail", &[]),
+            flag("AuxilleryCurvelinear", false)
+        ),
+    );
+    let frenet = pipe("Following", Some("Guided"), 2, String::new());
+    let objects = [
+        (
+            "PartDesign::Body",
+            "Piped".to_owned(),
+            format!(
+                "{}{}{}",
+                shape("Piped.brp"),
+                links(
+                    "Group",
+                    "App::PropertyLinkList",
+                    &["Ring", "Spine", "Rail", "Banded", "Guided", "Following"]
+                ),
+                link("Tip", "Following")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Ring".to_owned(),
+            geometry(&[round([0.0, 0.0], 2.0)]),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Spine".to_owned(),
+            format!(
+                "{}{upright}",
+                geometry(&[segment([0.0, 0.0], [0.0, 30.0], false)])
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Rail".to_owned(),
+            format!(
+                "{}{upright}",
+                geometry(&[segment([6.0, 0.0], [-6.0, 30.0], false)])
+            ),
+        ),
+        (banded.0, banded.1, banded.2),
+        (guided.0, guided.1, guided.2),
+        (frenet.0, frenet.1, frenet.2),
+        (
+            "PartDesign::Body",
+            "Slanted".to_owned(),
+            format!(
+                "{}{}{}",
+                shape("Slanted.brp"),
+                links("Group", "App::PropertyLinkList", &["SlantSketch", "Slant"]),
+                link("Tip", "Slant")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "SlantSketch".to_owned(),
+            rectangle_sketch(40.0, 0.0, 20.0, 10.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "Slant".to_owned(),
+            format!(
+                "{}{}{}{}{}{}",
+                link_sub("Profile", "SlantSketch", &[]),
+                float("Length", 10.0),
+                flag("UseCustomVector", true),
+                vector("Direction", [1.0, 0.0, 2.0]),
+                prop("TaperAngle", "App::PropertyAngle", "<Float value=\"5\"/>"),
+                shape("Slant.brp")
+            ),
+        ),
+        (
+            "PartDesign::Body",
+            "Turned".to_owned(),
+            format!(
+                "{}{}{}",
+                shape("Turned.brp"),
+                links(
+                    "Group",
+                    "App::PropertyLinkList",
+                    &[
+                        "Block",
+                        "BlockPad",
+                        "GrooveSketch",
+                        "Groove",
+                        "CollarSketch",
+                        "Collar"
+                    ]
+                ),
+                link("Tip", "Collar")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Block".to_owned(),
+            rectangle_sketch(0.0, 0.0, 20.0, 10.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "BlockPad".to_owned(),
+            format!(
+                "{}{}{}",
+                link_sub("Profile", "Block", &[]),
+                float("Length", 10.0),
+                shape("BlockPad.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "GrooveSketch".to_owned(),
+            rectangle_sketch(5.0, 2.0, 2.0, 2.0),
+        ),
+        (
+            "PartDesign::Groove",
+            "Groove".to_owned(),
+            format!(
+                "{}{}{}{}{}{}",
+                link_sub("Profile", "GrooveSketch", &[]),
+                link_sub("ReferenceAxis", "GrooveSketch", &["V_Axis"]),
+                link("BaseFeature", "BlockPad"),
+                prop("Angle", "App::PropertyAngle", "<Float value=\"90\"/>"),
+                enumeration("Type", 1),
+                shape("Groove.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "CollarSketch".to_owned(),
+            rectangle_sketch(12.0, 0.0, 2.0, 2.0),
+        ),
+        (
+            "PartDesign::Revolution",
+            "Collar".to_owned(),
+            format!(
+                "{}{}{}{}{}",
+                link_sub("Profile", "CollarSketch", &[]),
+                link_sub("ReferenceAxis", "CollarSketch", &["V_Axis"]),
+                link("BaseFeature", "Groove"),
+                enumeration("Type", 1),
+                shape("Collar.brp")
+            ),
+        ),
+    ];
+    let objects: Vec<(&str, &str, String)> = objects
+        .iter()
+        .map(|(t, n, p)| (*t, n.as_str(), p.clone()))
+        .collect();
+    let xml = document(&objects);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("Piped.brp", b"3 piped"),
+            ("Banded.brp", b"3 banded"),
+            ("Guided.brp", b"3 guided"),
+            ("Following.brp", b"3 following"),
+            ("Slanted.brp", b"6 slanted"),
+            ("Slant.brp", b"6 slant"),
+            ("Turned.brp", b"6 turned"),
+            ("BlockPad.brp", b"6 block"),
+            ("Groove.brp", b"10 groove"),
+            ("Collar.brp", b"14 collar"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    for name in ["Banded", "Guided", "Following", "Slant", "Groove", "Collar"] {
+        assert_eq!(
+            feature(&report, name).outcome,
+            ObjectOutcome::Parametric,
+            "{name}: {:?}",
+            feature(&report, name)
+        );
+    }
+    // Binormal: a constant binormal frame (the pipe has no placement of
+    // its own here, so the binormal is FreeCAD's).
+    let def = &defs_of(&doc, &report, "Banded")[0];
+    assert_eq!(def["type"], "sweep", "{def}");
+    assert_eq!(
+        def["frame"],
+        json!({"type": "constant_binormal", "binormal": [0.0, 1.0, 1.0]}),
+        "{def}"
+    );
+    assert!(def.get("binormal").is_none(), "{def}");
+    // Auxiliary: the rail's curve, its point where it crosses the plane
+    // square to the spine.
+    let def = &defs_of(&doc, &report, "Guided")[0];
+    assert_eq!(def["frame"]["type"], "auxiliary", "{def}");
+    assert!(def["frame"]["curve"]["sketch"].is_string(), "{def}");
+    assert_ne!(
+        def["frame"]["curve"]["sketch"], def["path"]["sketch"],
+        "{def}"
+    );
+    assert!(def["frame"].get("curvilinear").is_none(), "{def}");
+    assert_eq!(def["operation"], "join");
+    // Frenet: the Frenet frame first.
+    let def = &defs_of(&doc, &report, "Following")[0];
+    assert_eq!(def["frame"], json!({"type": "frenet"}), "{def}");
+    // The slanted pad: an extrusion along the unit direction, tapered.
+    let def = &defs_of(&doc, &report, "Slant")[0];
+    assert_eq!(def["type"], "extrude", "{def}");
+    let direction = def["direction"].as_array().unwrap();
+    assert!(
+        (direction[0].as_f64().unwrap() - 1.0 / 5f64.sqrt()).abs() < 1e-12,
+        "{def}"
+    );
+    assert!(
+        (direction[2].as_f64().unwrap() - 2.0 / 5f64.sqrt()).abs() < 1e-12,
+        "{def}"
+    );
+    assert_eq!(def["extent"]["type"], "distance", "{def}");
+    assert!(def["extent"].get("taper").is_some(), "{def}");
+    // The groove through all: a full turn, cut.
+    let def = &defs_of(&doc, &report, "Groove")[0];
+    assert_eq!(def["extent"], json!({"type": "full"}), "{def}");
+    assert_eq!(def["operation"], "cut");
+    // Up to the last face: through the Body's body.
+    let def = &defs_of(&doc, &report, "Collar")[0];
+    assert_eq!(def["extent"]["type"], "to_object", "{def}");
+    assert_eq!(def["extent"]["object"]["type"], "body", "{def}");
+    assert_eq!(def["extent"]["object"]["through"], true, "{def}");
+}
+
+// Part fillets of two radii, face profiles and chosen sketch edges
+// (mitcad#539).
+
+/// A parameter's value by the name a definition gives it.
+fn value_of(doc: &Document<MockKernel>, name: &serde_json::Value) -> Option<f64> {
+    let parameters = doc.parameters();
+    parameters
+        .find(name.as_str()?)
+        .and_then(|id| parameters.value(id))
+}
+
+#[test]
+fn part_fillets_of_two_radii_start_where_freecad_s_edge_starts() {
+    use mitcad_model::Curve3;
+    let kernel = MockKernel::default();
+    // Every edge of the mock's bodies is this line, from (0, 0, 10); its
+    // first vertex is the second the mock lists.
+    kernel.curves.borrow_mut().push(Curve3::Line {
+        start: [0.0, 0.0, 10.0],
+        end: [40.0, 0.0, 10.0],
+    });
+    let start = "V{F1:import(0)|F1:import(1)|F1:import(2)}";
+    kernel.vertices.borrow_mut().extend([
+        (
+            "V{F1:import(0)|F1:import(1)|F1:import(5)}".to_owned(),
+            [40.0, 0.0, 10.0],
+        ),
+        (start.to_owned(), [0.0, 0.0, 10.0]),
+    ]);
+    // Edge 1 radius 2, edge 2 from 1 to 3, edge 3 radii 2 and 2 + 1e-9
+    // (one radius for OCCT).
+    let mut edges = 3u32.to_le_bytes().to_vec();
+    for (edge, r1, r2) in [(1u32, 2.0f64, 2.0f64), (2, 1.0, 3.0), (3, 2.0, 2.0 + 1e-9)] {
+        edges.extend(edge.to_le_bytes());
+        edges.extend(r1.to_le_bytes());
+        edges.extend(r2.to_le_bytes());
+    }
+    let xml = document(&[
+        (
+            "Part::Box",
+            "Box",
+            format!(
+                "{}{}{}{}",
+                float("Length", 40.0),
+                float("Width", 20.0),
+                float("Height", 10.0),
+                shape("Box.brp")
+            ),
+        ),
+        (
+            "Part::Fillet",
+            "Rounded",
+            format!(
+                "{}{}{}",
+                link("Base", "Box"),
+                prop(
+                    "Edges",
+                    "Part::PropertyFilletEdges",
+                    "<FilletEdges file=\"Edges.bin\"/>"
+                ),
+                shape("Rounded.brp")
+            ),
+        ),
+    ]);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("Box.brp", b"6 box"),
+            ("Rounded.brp", b"9 rounded"),
+            ("Edges.bin", edges.as_slice()),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), kernel, false);
+    let fillet = feature(&report, "Rounded");
+    assert_eq!(fillet.outcome, ObjectOutcome::Parametric, "{fillet:?}");
+    assert_eq!(fillet.mitcad, "fillet");
+    assert!(
+        fillet.notes.iter().any(|n| n.contains("variable radius")),
+        "{fillet:?}"
+    );
+    let def = def_of(&doc, &fillet.features[0]);
+    let sets = def["sets"].as_array().unwrap();
+    assert_eq!(sets.len(), 2, "{def}");
+    // Edges 1 and 3 one constant radius.
+    assert_eq!(sets[0]["size"]["type"], "constant", "{def}");
+    assert_eq!(sets[0]["edges"].as_array().unwrap().len(), 2, "{def}");
+    let radius = value_of(&doc, &sets[0]["size"]["radius"]).unwrap();
+    assert!((radius - 2.0).abs() < 1e-7, "{radius}");
+    // Edge 2 from 1 at its start vertex to 3.
+    let size = &sets[1]["size"];
+    assert_eq!(size["type"], "variable", "{def}");
+    assert_eq!(size["start_vertex"], start, "{def}");
+    assert_eq!(value_of(&doc, &size["start"]), Some(1.0), "{def}");
+    assert_eq!(value_of(&doc, &size["end"]), Some(3.0), "{def}");
+    assert_eq!(sets[1]["edges"].as_array().unwrap().len(), 1, "{def}");
+}
+
+#[test]
+fn face_profiles_extrude_the_face_and_ignored_sketch_edges_take_the_sketch() {
+    // Pad2 pads the top of Pad (its Face2: the mock's end cap); Pad3 names
+    // an edge of its sketch without AllowMultiFace, which FreeCAD ignores.
+    let xml = document(&[
+        (
+            "PartDesign::Body",
+            "Block",
+            format!(
+                "{}{}{}",
+                shape("Block.brp"),
+                links(
+                    "Group",
+                    "App::PropertyLinkList",
+                    &["Sketch", "Pad", "Pad2", "Sketch2", "Pad3"]
+                ),
+                link("Tip", "Pad3")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Sketch",
+            rectangle_sketch(0.0, 0.0, 40.0, 30.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "Pad",
+            format!(
+                "{}{}{}",
+                link_sub("Profile", "Sketch", &[]),
+                float("Length", 10.0),
+                shape("Pad.brp")
+            ),
+        ),
+        (
+            "PartDesign::Pad",
+            "Pad2",
+            format!(
+                "{}{}{}{}",
+                link_sub("Profile", "Pad", &["Face2"]),
+                link("BaseFeature", "Pad"),
+                float("Length", 5.0),
+                shape("Pad2.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Sketch2",
+            rectangle_sketch(5.0, 5.0, 10.0, 10.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "Pad3",
+            format!(
+                "{}{}{}{}",
+                link_sub("Profile", "Sketch2", &["Edge1"]),
+                link("BaseFeature", "Pad2"),
+                float("Length", 2.0),
+                shape("Pad3.brp")
+            ),
+        ),
+    ]);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("Block.brp", b"10 block"),
+            ("Pad.brp", b"6 pad"),
+            ("Pad2.brp", b"10 pad2"),
+            ("Pad3.brp", b"14 pad3"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    for name in ["Pad", "Pad2", "Pad3"] {
+        let f = feature(&report, name);
+        assert_eq!(f.outcome, ObjectOutcome::Parametric, "{f:?}");
+        assert_eq!(f.mitcad, "extrude", "{f:?}");
+    }
+    let pad = def_of(&doc, &feature(&report, "Pad").features[0]);
+    let sketch = pad["profiles"][0]["sketch"].as_str().unwrap().to_owned();
+    let pad2 = def_of(&doc, &feature(&report, "Pad2").features[0]);
+    // The pad's body and its top, swept out of it, joined.
+    let face = &pad2["profile_face"];
+    assert!(pad2["profiles"].is_null(), "{pad2}");
+    assert_eq!(face["body"], pad2["participants"][0], "{pad2}");
+    assert!(face["face"].as_str().unwrap().contains(":end("), "{pad2}");
+    // Along the outward normal: the stored definition leaves out a false
+    // `flip`.
+    assert!(pad2["flip"].is_null(), "{pad2}");
+    assert_eq!(pad2["operation"], "join", "{pad2}");
+    assert_eq!(value_of(&doc, &pad2["extent"]["distance"]), Some(5.0));
+    // Pad3: the whole of its sketch.
+    let pad3 = def_of(&doc, &feature(&report, "Pad3").features[0]);
+    assert_eq!(pad3["profiles"].as_array().unwrap().len(), 1, "{pad3}");
+    assert_ne!(pad3["profiles"][0]["sketch"], sketch.as_str(), "{pad3}");
+    assert!(pad3["profile_face"].is_null(), "{pad3}");
+}
+
+#[test]
+fn part_sweeps_framed_sections_face_pipes_and_several_faces_become_features() {
+    // (mitcad#543) A Part sweep in the Frenet mode; a pipe of the block's
+    // top along a sketch line; a pipe through two sections in the Frenet
+    // mode (FreeCAD 1.0's Mode: Standard, Fixed, Frenet, …; Transformation:
+    // Constant, Multisection, …); a pad of two of the block's faces
+    // (AllowMultiFace).
+    let upright = placement([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 90.0);
+    let xml = document(&[
+        (
+            "PartDesign::Body",
+            "Block",
+            format!(
+                "{}{}{}",
+                shape("Block.brp"),
+                links(
+                    "Group",
+                    "App::PropertyLinkList",
+                    &[
+                        "Sketch", "Pad", "Line", "Tube", "Ring", "Ring2", "Sections", "Faces"
+                    ]
+                ),
+                link("Tip", "Faces")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Sketch",
+            rectangle_sketch(0.0, 0.0, 40.0, 30.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "Pad",
+            format!(
+                "{}{}{}",
+                link_sub("Profile", "Sketch", &[]),
+                float("Length", 10.0),
+                shape("Pad.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Line",
+            format!(
+                "{}{upright}",
+                geometry(&[segment([20.0, 10.0], [20.0, 40.0], false)])
+            ),
+        ),
+        (
+            "PartDesign::AdditivePipe",
+            "Tube",
+            format!(
+                "{}{}{}{}{}",
+                link_sub("Profile", "Pad", &["Face2"]),
+                link_sub("Spine", "Line", &[]),
+                enumeration("Mode", 0),
+                link("BaseFeature", "Pad"),
+                shape("Tube.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Ring",
+            geometry(&[round([60.0, 0.0], 2.0)]),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Ring2",
+            format!(
+                "{}{}",
+                geometry(&[round([60.0, 0.0], 3.0)]),
+                placement([0.0, 0.0, 30.0], [0.0, 0.0, 1.0], 0.0)
+            ),
+        ),
+        (
+            "PartDesign::AdditivePipe",
+            "Sections",
+            format!(
+                "{}{}{}{}{}{}{}",
+                link_sub("Profile", "Ring", &[]),
+                links("Sections", "App::PropertyLinkList", &["Ring2"]),
+                enumeration("Transformation", 1),
+                link_sub("Spine", "Line", &[]),
+                enumeration("Mode", 2),
+                link("BaseFeature", "Tube"),
+                shape("Sections.brp")
+            ),
+        ),
+        (
+            "PartDesign::Pad",
+            "Faces",
+            format!(
+                "{}{}{}{}{}",
+                link_sub("Profile", "Pad", &["Face1", "Face2"]),
+                flag("AllowMultiFace", true),
+                link("BaseFeature", "Sections"),
+                float("Length", 2.0),
+                shape("Faces.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Hoop",
+            geometry(&[round([0.0, 100.0], 2.0)]),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Track",
+            format!(
+                "{}{upright}",
+                geometry(&[segment([0.0, 0.0], [0.0, 30.0], false)])
+            ),
+        ),
+        (
+            "Part::Sweep",
+            "Swept",
+            format!(
+                "{}{}{}{}{}",
+                links("Sections", "App::PropertyLinkList", &["Hoop"]),
+                // The whole sketch: a sketch's Edge<n> is found by its
+                // stored shape, which these hand-made sketches have not.
+                link_sub("Spine", "Track", &[]),
+                flag("Solid", true),
+                flag("Frenet", true),
+                shape("Swept.brp")
+            ),
+        ),
+    ]);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("Block.brp", b"10 block"),
+            ("Pad.brp", b"6 pad"),
+            ("Tube.brp", b"10 tube"),
+            ("Sections.brp", b"12 sections"),
+            ("Faces.brp", b"14 faces"),
+            ("Swept.brp", b"3 swept"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    for name in ["Tube", "Sections", "Faces", "Swept"] {
+        let f = feature(&report, name);
+        assert_eq!(f.outcome, ObjectOutcome::Parametric, "{name}: {f:?}");
+    }
+    // The pipe of the block's top: a sweep of that face, joined.
+    let tube = def_of(&doc, &feature(&report, "Tube").features[0]);
+    assert_eq!(tube["type"], "sweep", "{tube}");
+    assert!(tube["profiles"].is_null(), "{tube}");
+    assert!(
+        tube["profile_face"]["face"]
+            .as_str()
+            .unwrap()
+            .contains(":end("),
+        "{tube}"
+    );
+    assert_eq!(tube["operation"], "join", "{tube}");
+    // Two sections in the Frenet mode: a loft along the line, framed.
+    let sections = def_of(&doc, &feature(&report, "Sections").features[0]);
+    assert_eq!(sections["type"], "loft", "{sections}");
+    assert_eq!(sections["frame"], json!({"type": "frenet"}), "{sections}");
+    assert_eq!(sections["sections"].as_array().unwrap().len(), 2);
+    // Two faces: an extrusion each, the second named apart.
+    let faces = defs_of(&doc, &report, "Faces");
+    assert_eq!(faces.len(), 2, "{faces:?}");
+    assert_ne!(faces[0]["profile_face"], faces[1]["profile_face"]);
+    assert!(faces.iter().all(|d| d["type"] == "extrude"), "{faces:?}");
+    // The Part sweep: a new body, in the Frenet frame first.
+    let swept = def_of(&doc, &feature(&report, "Swept").features[0]);
+    assert_eq!(swept["type"], "sweep", "{swept}");
+    assert_eq!(swept["frame"], json!({"type": "frenet"}), "{swept}");
+    assert_eq!(swept["operation"], "new_body", "{swept}");
+    assert!(swept.get("surface").is_none(), "{swept}");
+}
+
+#[test]
+fn fixed_pipes_part_helix_sweeps_and_many_faces_become_features() {
+    // (mitcad#547) A pipe through two sections in the Fixed mode: a loft
+    // along the spine, parallel. A Part sweep of a sketch along a Part
+    // helix (left-handed, moved): the helix part of the sweep (no body of
+    // its own), the sweep's path a fixed helix from its sizes.
+    let upright = placement([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], 90.0);
+    let xml = document(&[
+        (
+            "PartDesign::Body",
+            "Body",
+            format!(
+                "{}{}{}",
+                shape("Body.brp"),
+                links(
+                    "Group",
+                    "App::PropertyLinkList",
+                    &["Ring", "Ring2", "Line", "Pipe"]
+                ),
+                link("Tip", "Pipe")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Ring",
+            format!(
+                "{}{}",
+                geometry(&[round([20.0, 0.0], 2.0)]),
+                placement([0.0, 0.0, 10.0], [0.0, 0.0, 1.0], 0.0)
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Ring2",
+            format!(
+                "{}{}",
+                geometry(&[round([20.0, 0.0], 3.0)]),
+                placement([0.0, 0.0, 40.0], [0.0, 0.0, 1.0], 0.0)
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Line",
+            format!(
+                "{}{upright}",
+                geometry(&[segment([20.0, 10.0], [20.0, 40.0], false)])
+            ),
+        ),
+        (
+            "PartDesign::AdditivePipe",
+            "Pipe",
+            format!(
+                "{}{}{}{}{}{}",
+                link_sub("Profile", "Ring", &[]),
+                links("Sections", "App::PropertyLinkList", &["Ring2"]),
+                enumeration("Transformation", 1),
+                link_sub("Spine", "Line", &[]),
+                enumeration("Mode", 1),
+                shape("Pipe.brp")
+            ),
+        ),
+        (
+            "Part::Helix",
+            "Coil",
+            format!(
+                "{}{}{}{}{}{}{}",
+                float("Pitch", 5.0),
+                float("Height", 20.0),
+                float("Radius", 10.0),
+                float("Angle", 0.0),
+                enumeration("LocalCoord", 1),
+                placement([5.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.0),
+                shape("Coil.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Wire",
+            format!("{}{upright}", geometry(&[round([15.0, 0.0], 1.0)])),
+        ),
+        (
+            "Part::Sweep",
+            "Spring",
+            format!(
+                "{}{}{}{}{}",
+                links("Sections", "App::PropertyLinkList", &["Wire"]),
+                link_sub("Spine", "Coil", &[]),
+                flag("Solid", true),
+                flag("Frenet", true),
+                shape("Spring.brp")
+            ),
+        ),
+    ]);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("Body.brp", b"3 body"),
+            ("Pipe.brp", b"3 pipe"),
+            ("Coil.brp", b"0 coil"),
+            ("Spring.brp", b"3 spring"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    let pipe = feature(&report, "Pipe");
+    assert_eq!(pipe.outcome, ObjectOutcome::Parametric, "{pipe:?}");
+    // The sweep along the helix: partial, the helix's sizes are not
+    // carried over (a fixed helix path).
+    let swept = feature(&report, "Spring");
+    assert_eq!(swept.outcome, ObjectOutcome::Partial, "{swept:?}");
+    assert!(
+        swept
+            .notes
+            .iter()
+            .any(|n| n.contains("Coil's helix is a fixed helix path")),
+        "{swept:?}"
+    );
+    // The Fixed pipe: a loft along the line whose sections only move.
+    let pipe = def_of(&doc, &feature(&report, "Pipe").features[0]);
+    assert_eq!(pipe["type"], "loft", "{pipe}");
+    assert_eq!(pipe["orientation"], "parallel", "{pipe}");
+    assert!(pipe.get("frame").is_none(), "{pipe}");
+    // The helix: part of the sweep.
+    let coil = feature(&report, "Coil");
+    assert_eq!(coil.outcome, ObjectOutcome::Included, "{coil:?}");
+    // The sweep along a fixed helix: four turns clockwise, rising.
+    let spring = def_of(&doc, &feature(&report, "Spring").features[0]);
+    assert_eq!(spring["type"], "sweep", "{spring}");
+    assert_eq!(spring["frame"], json!({"type": "frenet"}), "{spring}");
+    let helix = &spring["path"]["helix"];
+    assert_eq!(helix["center"], json!([5.0, 0.0, 0.0]), "{spring}");
+    assert_eq!(helix["axis"], json!([0.0, 0.0, 1.0]), "{spring}");
+    assert_eq!(helix["radius"], 10.0, "{spring}");
+    assert_eq!(helix["pitch"], -5.0, "{spring}");
+    let end = helix["end_angle"].as_f64().unwrap();
+    assert!((end + 8.0 * std::f64::consts::PI).abs() < 1e-9, "{spring}");
+    // More faces than the eight fixed names (mitcad#547): numbered on.
+    assert_eq!(profiles::face_suffix(0), "");
+    assert_eq!(profiles::face_suffix(11), " (face 12)");
 }

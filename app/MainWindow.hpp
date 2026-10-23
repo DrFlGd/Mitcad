@@ -36,6 +36,7 @@
 #include "projects/ProjectPicker.hpp"
 #include "rust/cxx.h"
 #include "sketch/SketchController.hpp"
+#include "view/CommandSketches.hpp"
 
 class QAction;
 class QCloseEvent;
@@ -1101,6 +1102,23 @@ private:
   bool m_constructionHidden = false; // an input hides it (mitcad#394)
   std::vector<SketchEntityDisplay> m_sketchDisplay;
   QString m_loggedSketches; // the sketches whose curves are shown (UI tests)
+  // The sketches a command shows for its time (mitcad#546;
+  // view/CommandSketches.hpp): an edited feature's, as if their light bulbs
+  // were on; MainWindowVisibility.cpp.
+  CommandSketches m_commandSketches;
+  // A feature command starts (before its session: an edit's roll-back
+  // refreshes the scene with them); it ended: `ended` is what it showed,
+  // taken out of m_commandSketches before the scene's refresh, and this
+  // logs what each sketch went back to.
+  void beginCommandSketches(const QString& editUid, const Selection& items, const QString& command);
+  void endCommandSketches(CommandSketches ended);
+  // A session started: a new command's sketches are those of the profiles,
+  // curves and points its selection inputs start with (selected before it,
+  // or its default such as the newest profile); the view shows them.
+  void showStartingSketches(const CommandSession& session);
+  // Whether the view shows a sketch: its light bulb (the model's
+  // `visible`), or the running command uses it.
+  bool sketchShown(const QString& sketch) const;
   // The shown bodies' middles ("F3.b0 in O1"), and those of their shapes.
   QVector<QPair<QString, gp_Pnt>> m_bodyCenters;
   QHash<const void*, gp_Pnt> m_localCenters;

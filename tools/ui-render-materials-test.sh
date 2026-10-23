@@ -12,6 +12,13 @@
 #     while rendering: a change of its look sends the worker a new scene
 #     (also one of the roughness alone), and the box renders in the copy's
 #     colour.
+#   - mitcad#538: an embedded textured appearance (base colour, normal,
+#     roughness and occlusion images) swapped in and out while rendering,
+#     in one worker session: assigned (Edit Appearances), undone, redone,
+#     its texture removed (edit_appearance "texture": null) and that undone;
+#     after each change the box renders in the colours it should (the
+#     texture's orange, the copy's teal, the appearance's own white), never
+#     black.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-render-materials-test.sh [directory for screenshots]
@@ -28,16 +35,31 @@ WORK=$(mktemp -d /tmp/mitcad-ui-render-materials.XXXXXX)
 trap 'ui_cleanup; rm -rf "$WORK"' EXIT
 export MITCAD_RENDER_SAMPLES=16
 
+# The images of a textured appearance (mitcad#538): an orange checker for
+# the base colour, a flat normal map, a mid-grey roughness map and a light
+# grey occlusion map, 64 x 64 PNGs written by the build's worker.
+WORKER=$(dirname "$UI_APP")/mitcad-render
+"$WORKER" --write-test-images "$WORK" > "$WORK/images.log" 2>&1 ||
+  { cat "$WORK/images.log"; ui_fail "mitcad-render --write-test-images"; }
+embedded() { base64 -w0 "$WORK/$1"; }
+
 # A 50 x 50 x 40 box (F1.b0) left of the origin in red plastic, a sphere of
-# 50 mm diameter (F2.b0) right of it in chrome, both on the XY plane.
-cat > "$WORK/model.json" << 'EOF'
+# 50 mm diameter (F2.b0) right of it in chrome, both on the XY plane; and
+# the textured appearance (Test Ply, white plastic with the images
+# embedded, 20 mm repeats), not assigned yet.
+cat > "$WORK/model.json" << EOF
 [
   {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-70, -25],
     "length": 50, "width": 50, "height": 40, "operation": "new_body"}},
   {"cmd": "add_feature", "def": {"type": "sphere", "plane": "xy", "center": [45, 0],
     "diameter": 50, "operation": "new_body"}},
   {"cmd": "set_body_appearance", "uid": "F1.b0", "appearance": "plastic_red"},
-  {"cmd": "set_body_appearance", "uid": "F2.b0", "appearance": "chrome"}
+  {"cmd": "set_body_appearance", "uid": "F2.b0", "appearance": "chrome"},
+  {"cmd": "create_appearance", "id": "test_ply", "name": "Test Ply", "based_on": "plastic_white", "texture": {
+    "path": "ply.png", "size": [20, 20], "data": "$(embedded ply.png)",
+    "normal": {"path": "ply_nor_gl.png", "data": "$(embedded ply_nor_gl.png)"},
+    "roughness": {"path": "ply_rough.png", "data": "$(embedded ply_rough.png)"},
+    "occlusion": {"path": "ply_ao.png", "data": "$(embedded ply_ao.png)"}}}
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$WORK/bodies.mitcad" > "$WORK/cli.log" 2>&1 ||
@@ -198,5 +220,122 @@ import json, sys
 r, g, b = json.loads(sys.argv[1])["left"]["median"]
 sys.exit(0 if g > 1.5 * r and b > 1.5 * r else 1)' "$json" || ui_fail "the box is not teal: $json"
 echo "ok   the box renders in the new base colour"
+
+echo "--- The textured appearance swapped in and out while rendering (mitcad#538)"
+# expect_done_after description: after the mark (a change of the scene
+# restarts the same view), the worker rendered all samples again and the
+# view shows the last frame (no new frame for a second).
+expect_done_after() {
+  local frames last
+  for _ in $(seq 1 300); do
+    tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "^Render view [0-9]+: $MITCAD_RENDER_SAMPLES samples in" && break
+    ui_crashed && ui_fail "$1: the app crashed"
+    sleep 0.2
+  done
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "^Render view [0-9]+: $MITCAD_RENDER_SAMPLES samples in" ||
+    ui_fail "$1: the view did not get its $MITCAD_RENDER_SAMPLES samples again"
+  last=-1
+  for _ in $(seq 1 20); do
+    frames=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -c "^Render frame view ")
+    [ "$frames" = "$last" ] && break
+    last=$frames
+    sleep 1
+  done
+  echo "ok   $1"
+}
+# expect_box shot hue description: where the shaded view shows the box,
+# the shot's median colour has the hue: orange (the texture's), teal (the
+# copy's) or white (the textured appearance's own base colour); not black.
+expect_box() {
+  local json values verdict
+  json=$(colors shaded "$1")
+  echo "     colours: $json"
+  values=$(jq -r '.left | if . == null then "0 0 0 0" else "\(.pixels) \(.median | map(tostring) | join(" "))" end' <<< "$json") ||
+    ui_fail "$3: no colours: $json"
+  verdict=$(awk -v hue="$2" '{
+    n = $1; r = $2; g = $3; b = $4
+    hi = r; if (g > hi) hi = g; if (b > hi) hi = b
+    lo = r; if (g < lo) lo = g; if (b < lo) lo = b
+    if (n < 500) { print "the box is not found in the view"; exit }
+    if (hi < 40) { print "the box is black"; exit }
+    if (hue == "orange") ok = (r > 1.5 * b && r - b > 50 && r > g)
+    else if (hue == "teal") ok = (g > 1.5 * r && b > 1.5 * r)
+    else ok = (hi - lo < 40 && lo > 120)
+    print ok ? "ok" : "the box is not " hue
+  }' <<< "$values")
+  [ "$verdict" = "ok" ] || ui_fail "$3: $verdict: $json"
+  echo "ok   $3"
+}
+# swapped description: the worker changed only the box's material, and
+# rendered it again (after the mark).
+swapped() {
+  ui_expect_new "changed F1.b0; moved -; removed -; kept 1;" "$1: the worker changed the box's material"
+  expect_done_after "$1: rendered again"
+}
+ui_mark
+ui_step "right-click Body1"             ui_click_logged "Browser Root/Bodies/Body1" 3
+ui_step "choose Appearance..."          ui_menu_choose "Appearance..."
+ui_expect_new "Appearances for bodies: F1.b0 (custom1)" "the dialog shows the copy"
+ui_focus_dialog '^Appearances$'
+ui_step "click the search field"        ui_click_logged "Appearances search"
+ui_step "type Test Ply"                 xdotool type --delay 40 -- "Test Ply"
+ui_expect_new 'Appearances filtered "Test Ply" (All Categories): 1 shown' "the search lists the textured appearance"
+ui_expect_new "Appearances item test_ply at" "it is in sight"
+ui_step "select Test Ply"               ui_click_logged "Appearances item test_ply"
+ui_expect_new "Appearance selected: test_ply" "it is selected"
+ui_mark
+ui_step "Assign to Body1"               ui_click_logged "Appearances assign"
+ui_expect_new "Assigned appearance test_ply to F1.b0" "the box gets the textured appearance"
+ui_expect_new "Render body F1.b0: appearance test_ply" "the render gets it"
+ui_step "Close"                         ui_click_logged "Appearances close"
+ui_focus_main
+ui_step "Escape (clear the selection)"  ui_key Escape
+swapped "the textured appearance assigned"
+shot textured
+expect_box textured orange "the box renders with the texture's colours"
+
+ui_mark
+ui_step "undo (Ctrl+Z)"                 ui_key ctrl+z
+ui_expect_new "Undo: " "the assignment undone"
+ui_expect_new "Render body F1.b0: appearance custom1" "the render gets the copy again"
+swapped "the assignment undone"
+shot undone
+expect_box undone teal "the box renders in the copy's teal again, not black"
+
+ui_mark
+ui_step "redo (Ctrl+Y)"                 ui_key ctrl+y
+ui_expect_new "Redo: " "the assignment redone"
+ui_expect_new "Render body F1.b0: appearance test_ply" "the render gets the texture again"
+swapped "the assignment redone"
+shot redone
+expect_box redone orange "the box renders with the texture's colours again, not black"
+
+ui_mark
+ui_step "right-click Body1"             ui_click_logged "Browser Root/Bodies/Body1" 3
+ui_step "choose Appearance..."          ui_menu_choose "Appearance..."
+ui_expect_new "Appearances for bodies: F1.b0 (test_ply)" "the dialog shows the textured appearance"
+ui_focus_dialog '^Appearances$'
+ui_mark
+ui_step "Remove (the texture)"          ui_click_logged "Appearances field texture_remove"
+ui_expect_new "Appearance test_ply texture removed" "the texture is removed"
+ui_expect_new "Render body F1.b0: appearance test_ply" "the render gets the appearance without it"
+ui_step "Close"                         ui_click_logged "Appearances close"
+ui_focus_main
+ui_step "Escape (clear the selection)"  ui_key Escape
+swapped "the texture removed"
+shot bare
+expect_box bare white "the box renders in the appearance's own white"
+
+ui_mark
+ui_step "undo (Ctrl+Z)"                 ui_key ctrl+z
+ui_expect_new "Undo: Edit Appearance" "the removal undone"
+ui_expect_new "Render body F1.b0: appearance test_ply" "the render gets the texture back"
+swapped "the removal undone"
+shot given-back
+expect_box given-back orange "the box renders with the texture's colours, not black"
+if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "cannot read the texture image|a texture image is not drawn"; then
+  ui_fail "the embedded images are said to be missing"
+fi
+echo "ok   no image is said to be missing"
 
 ui_finish "appearances in the rendered view"

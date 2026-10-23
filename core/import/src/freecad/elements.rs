@@ -560,3 +560,18 @@ pub(super) fn same_curves(a: &[Curve3], b: &[Curve3]) -> bool {
         found.is_some()
     })
 }
+
+/// The first and last points of a model curve, along its parameter (a
+/// clamped spline's first and last poles); None for a point.
+pub(super) fn curve_ends(c: &Curve3) -> Option<([f64; 3], [f64; 3])> {
+    match c {
+        Curve3::Point(_) => None,
+        Curve3::Line { start, end } => Some((*start, *end)),
+        Curve3::BSpline { poles, .. } => Some((*poles.first()?, *poles.last()?)),
+        Curve3::Conic { .. } | Curve3::Helix { .. } => {
+            // Its key points: the centre, the start, the middle, the end.
+            let points = key_points(c);
+            Some((points[1], points[3]))
+        }
+    }
+}

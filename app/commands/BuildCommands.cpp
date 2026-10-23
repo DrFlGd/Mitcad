@@ -36,6 +36,8 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QMap>
 #include <QPointer>
 #include <QStringList>
@@ -3403,6 +3405,62 @@ QString junctionText(const QJsonValue& value, const QString& name) {
   return QObject::tr("%1: a T on %2, %3%4%5").arg(name, wall, place, toText, run);
 }
 
+// What Length Auto did (mitcad#536), from the answer's `junction` and the
+// wall's `length` as worked out: "Length Auto: the run met a face of Body3,
+// the wall 7819 mm", "Length Auto: the run met Wall 2's side, the wall 3453
+// mm", "Length Auto: the run met no wall or face, Length 3600 mm"; empty
+// without Auto.
+QString autoEndText(const QJsonObject& fields, const QJsonObject& answer) {
+  if (!fields.value(QStringLiteral("auto_end")).toBool()) {
+    return {};
+  }
+  const QJsonObject junction = answer.value(QStringLiteral("junction")).toObject();
+  const QJsonValue worked = answer.value(QStringLiteral("length"));
+  const double length = junction.contains(QStringLiteral("length")) ? junction.value(QStringLiteral("length")).toDouble()
+                        : worked.isDouble()                         ? worked.toDouble()
+                                                                    : kNaN;
+  const QString mm = std::isfinite(length) ? QObject::tr("%1 mm").arg(length, 0, 'f', 0) : QObject::tr("?");
+  const QJsonObject to = junction.value(QStringLiteral("to")).toObject();
+  if (to.value(QStringLiteral("auto")).toBool()) {
+    const QString met = to.value(QStringLiteral("face")).toBool()
+                            ? QObject::tr("a face of %1").arg(str(to, "wall"))
+                            : QObject::tr("%1's side").arg(str(to, "wall"));
+    return QObject::tr("Length Auto: the run met %1, the wall %2").arg(met, mm);
+  }
+  return QObject::tr("Length Auto: the run met no wall or face, Length %1").arg(mm);
+}
+
+// A wall's plates made of pieces (the answer's `splices`, mitcad#536):
+// "Spliced over studs, pieces up to 5400 mm: top plate at 5400 mm; top
+// plate at 4800 mm; bottom plate at 5400 mm"; empty without splices.
+// `logged` gets the log's form: "top plate 5400, top plate 4800, bottom
+// plate 5400".
+QString splicesText(const QJsonValue& value, QString* logged) {
+  QStringList parts;
+  QStringList logParts;
+  double longest = 0.0;
+  for (const QJsonValue& entry : value.toArray()) {
+    const QJsonObject splice = entry.toObject();
+    QStringList at;
+    for (const QJsonValue& joint : splice.value(QStringLiteral("at")).toArray()) {
+      at << QString::number(joint.toDouble(), 'f', 0);
+    }
+    const QString role = str(splice, "role");
+    parts << QObject::tr("%1 at %2 mm").arg(role, at.join(QStringLiteral(", ")));
+    logParts << QStringLiteral("%1 %2").arg(role, at.join(QStringLiteral(" ")));
+    longest = std::max(longest, splice.value(QStringLiteral("longest")).toDouble());
+  }
+  if (logged) {
+    *logged = logParts.join(QStringLiteral(", "));
+  }
+  if (parts.isEmpty()) {
+    return {};
+  }
+  return QObject::tr("Spliced over studs, pieces up to %1 mm: %2")
+      .arg(longest, 0, 'f', 0)
+      .arg(parts.join(QStringLiteral("; ")));
+}
+
 FramePlacement framePlacement(const Shared& shared, const CommandState& state, const CommandContext& context,
                               const Part& part) {
   FramePlacement result;
@@ -3722,8 +3780,20 @@ Inspection inspectFrame(const SharedPtr& shared, const CommandState& state, cons
   if (!joined.isEmpty()) {
     lines << joined.toHtmlEscaped();
   }
+  // What Length Auto ran to and the wall's length, also when the preview
+  // is refused (mitcad#536).
+  const QString autoEnd = autoEndText(placed.fields, preview.answer);
+  if (!autoEnd.isEmpty()) {
+    lines << autoEnd.toHtmlEscaped();
+  }
   if (!preview.counts.isEmpty()) {
     lines << preview.counts.toHtmlEscaped();
+  }
+  // Plates longer than their timber comes, spliced over studs (mitcad#536).
+  QString splicesLogged;
+  const QString spliced = splicesText(preview.answer.value(QStringLiteral("splices")), &splicesLogged);
+  if (!spliced.isEmpty()) {
+    lines << spliced.toHtmlEscaped();
   }
   // The openings by the wall's kind, marked in the view, and the sizes the
   // Openings window checks its rows against (mitcad#519).
@@ -3797,6 +3867,17 @@ Inspection inspectFrame(const SharedPtr& shared, const CommandState& state, cons
     // Without an End on a wall started on another (mitcad#515).
     result.log += placed.fields.value(QStringLiteral("auto_end")).toBool() ? QStringLiteral("; length auto")
                                                                          : QStringLiteral("; length typed");
+  }
+  if (!autoEnd.isEmpty()) {
+    result.log += QStringLiteral("; %1").arg(autoEnd); // mitcad#536
+  }
+  if (!splicesLogged.isEmpty()) {
+    result.log += QStringLiteral("; spliced %1").arg(splicesLogged); // mitcad#536
+  }
+  if (!result.error.isEmpty()) {
+    // A refused preview's inspection logs only its reason: what it still
+    // names, for UI tests (mitcad#536).
+    qInfo().noquote() << QStringLiteral("Frame preview refused: %1; reason: %2").arg(result.log, result.error);
   }
   if (fastened) {
     result.log += QStringLiteral("; fastener %1").arg(fastening); // mitcad#497
@@ -3878,6 +3959,11 @@ bool applyFrame(Shared& shared, DocumentHost& host, CommandState& state, const C
   }
   for (const QJsonValue& warning : result.value(QStringLiteral("warnings")).toArray()) {
     qInfo().noquote() << QStringLiteral("Frame warning: %1").arg(warning.toString());
+  }
+  // Its plates made of pieces over studs (mitcad#536).
+  QString splicesLogged;
+  if (!splicesText(result.value(QStringLiteral("splices")), &splicesLogged).isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Frame spliced: %1").arg(splicesLogged);
   }
   // Its own component in the host (mitcad#522).
   const QString component = str(result, "frame_component");

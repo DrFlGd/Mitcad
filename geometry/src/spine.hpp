@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <Geom_Curve.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
@@ -111,14 +112,18 @@ std::vector<NamedWire> face_loops(const TopoDS_Face& face,
 // normal of the faces of `support` the spine's edges lie on (each edge
 // carries its curve on one of them; see `on_faces`).
 // `Auxiliary` (mitcad#161): with the normal towards `auxiliary`, a curve
-// beside the spine (see `normal_spine`).
+// beside the spine (see `normal_spine`), its point where it crosses the
+// plane square to the spine, or with `curvilinear` (mitcad#539) at the same
+// fraction of its length as the spine's point. `Frenet` (mitcad#539): the
+// spine's Frenet frame.
 struct PipeMode {
-  enum class Kind { CorrectedFrenet, Binormal, Fixed, Support, Auxiliary };
+  enum class Kind { CorrectedFrenet, Binormal, Fixed, Support, Auxiliary, Frenet };
   Kind kind = Kind::CorrectedFrenet;
   gp_Dir binormal;
   gp_Ax2 fixed;
   TopoDS_Shape support;
   TopoDS_Wire auxiliary;
+  bool curvilinear = false;
 };
 
 // A copy of the wire whose edges each carry their curve on the first of
@@ -150,6 +155,18 @@ PipeMode perpendicular_mode(const Spine& spine);
 // helix's axis as the fixed binormal, so the section turns with the helix
 // about its axis (a screw motion) and keeps its angle to the axis.
 PipeMode perpendicular_mode(const Spine& spine, const Path& path);
+
+// Sets the pipe shell's mode (its trihedron) to `mode` (mitcad#543: shared
+// by sweeps and lofts along a centre line). Throws for a `Support` the
+// spine does not lie on.
+void set_mode(BRepOffsetAPI_MakePipeShell& pipe, const PipeMode& mode);
+
+// The mode of a frame of a sweep or of a loft along a centre line
+// (mitcad#539, mitcad#543): the Frenet frame, an auxiliary curve (by the
+// plane rule, or the fraction rule with `curvilinear`) or a constant
+// binormal; none of them set: `fallback`.
+PipeMode frame_mode(bool frenet, const Path& auxiliary, bool curvilinear,
+                    const std::optional<gp_Dir>& constant_binormal, const PipeMode& fallback);
 
 // The loop swept along the spine into a solid: sides named after its edges,
 // the cap at the spine's start `first` and at its end `last`. `tolerance`

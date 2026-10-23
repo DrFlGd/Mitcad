@@ -9,17 +9,24 @@
 //! kept. With `new_component` the result (the target) goes into a new
 //! component (F6).
 //!
-//! Tools may be bodies of another component (mitcad#104): `tool_links`
-//! names, per such tool, where it and the combine's component are seen
-//! ([`OccurrenceLink`], `links.rs`). The tool is read in its component and
-//! moved into the combine's coordinates by the placements at the combine's
-//! point of the timeline; a consumed tool leaves its own component.
+//! Tools may be bodies of another component (mitcad#104), each read where
+//! an occurrence shows it ([`OccurrenceLink`], `links.rs`): a tool entry
+//! `{"body": "F2.b0", "occurrence": "O1"}` (mitcad#544; the same body once
+//! per occurrence, two screws of one part as two tools), or, as files of
+//! earlier versions have them, a plain id with its link in `tool_links`.
+//! The tool is read in its component and moved into the combine's
+//! coordinates by the placements at the combine's point of the timeline;
+//! a consumed tool leaves its own component.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::marker::PhantomData;
 
+use serde::de::{self, Deserializer};
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
+use super::joint::OccurrencePath;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     is_false,
@@ -38,18 +45,112 @@ pub enum CombineOperation {
     Intersect,
 }
 
+/// A tool body: written as its id (`"F4.b0"`, a body of the combine's own
+/// component, or one `tool_links` links), or as a body where an occurrence
+/// shows it (`{"body": "F2.b0", "occurrence": "O1", "context": "O2"}`,
+/// mitcad#544): `occurrence` the path to the tool's component (an
+/// [`OccurrenceLink`]'s `source`), `context` the one to the combine's (its
+/// `target`; default the first path).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CombineTool {
+    pub body: BodyUid,
+    /// Where the tool is seen; none for a plain id.
+    pub link: Option<OccurrenceLink>,
+}
+
+impl CombineTool {
+    /// A body of the combine's own component (or one `tool_links` links).
+    pub fn own(body: BodyUid) -> Self {
+        Self { body, link: None }
+    }
+
+    /// A body where an occurrence shows it.
+    pub fn linked(body: BodyUid, link: OccurrenceLink) -> Self {
+        Self {
+            body,
+            link: Some(link),
+        }
+    }
+}
+
+impl fmt::Display for CombineTool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.link {
+            Some(link) if !link.source.is_empty() => write!(f, "{} in {}", self.body, link.source),
+            Some(_) => write!(f, "{} in the root", self.body),
+            None => write!(f, "{}", self.body),
+        }
+    }
+}
+
+/// A tool entry as written in files and commands.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OccurrenceTool {
+    body: BodyUid,
+    #[serde(default, skip_serializing_if = "OccurrencePath::is_empty")]
+    occurrence: OccurrencePath,
+    #[serde(default, skip_serializing_if = "OccurrencePath::is_empty")]
+    context: OccurrencePath,
+}
+
+impl Serialize for CombineTool {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match &self.link {
+            None => self.body.serialize(s),
+            Some(link) => OccurrenceTool {
+                body: self.body,
+                occurrence: link.source.clone(),
+                context: link.target.clone(),
+            }
+            .serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CombineTool {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'v> de::Visitor<'v> for Visitor {
+            type Value = CombineTool;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(
+                    "a body id like \"F3.b0\" or a body in an occurrence like \
+                     {\"body\": \"F3.b0\", \"occurrence\": \"O1\"}",
+                )
+            }
+            fn visit_str<E: de::Error>(self, text: &str) -> Result<CombineTool, E> {
+                text.parse().map(CombineTool::own).map_err(E::custom)
+            }
+            fn visit_map<A: de::MapAccess<'v>>(self, map: A) -> Result<CombineTool, A::Error> {
+                let tool = OccurrenceTool::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(CombineTool::linked(
+                    tool.body,
+                    OccurrenceLink {
+                        source: tool.occurrence,
+                        target: tool.context,
+                    },
+                ))
+            }
+        }
+        d.deserialize_any(Visitor)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CombineDef<P = ParamId> {
     pub target: BodyUid,
-    pub tools: Vec<BodyUid>,
+    pub tools: Vec<CombineTool>,
     pub operation: CombineOperation,
     #[serde(default, skip_serializing_if = "is_false")]
     pub keep_tools: bool,
     /// Puts the result into a new component (`isNewComponent` in .f3d imports).
     #[serde(default, skip_serializing_if = "is_false")]
     pub new_component: bool,
-    /// Tools of other components, by tool (mitcad#104).
+    /// Links of tools written as plain ids, by tool (mitcad#104; files of
+    /// earlier versions and imports). A tool in an occurrence carries its
+    /// own link instead.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tool_links: BTreeMap<BodyUid, OccurrenceLink>,
     #[serde(skip)]
@@ -74,14 +175,53 @@ impl<P> CombineDef<P> {
             marker: PhantomData,
         })
     }
+
+    /// The tool bodies, a body in two occurrences twice.
+    pub fn tool_bodies(&self) -> impl Iterator<Item = BodyUid> {
+        self.tools.iter().map(|t| t.body)
+    }
+
+    /// The link a tool is read through: its own, else its `tool_links`
+    /// entry; none for a body of the combine's own component.
+    pub fn link_of<'a>(&'a self, tool: &'a CombineTool) -> Option<&'a OccurrenceLink> {
+        tool.link
+            .as_ref()
+            .or_else(|| self.tool_links.get(&tool.body))
+    }
+
+    /// Every link of the tools, with its body: `tool_links`' and the tools
+    /// in occurrences'.
+    pub fn links(&self) -> impl Iterator<Item = (BodyUid, &OccurrenceLink)> {
+        self.tool_links.iter().map(|(b, l)| (*b, l)).chain(
+            self.tools
+                .iter()
+                .filter_map(|t| t.link.as_ref().map(|l| (t.body, l))),
+        )
+    }
+
+    /// The same, to change (occurrences moved, copied or reparented).
+    pub fn links_mut(&mut self) -> impl Iterator<Item = (BodyUid, &mut OccurrenceLink)> {
+        self.tool_links
+            .iter_mut()
+            .map(|(b, l)| (*b, l))
+            .chain(self.tools.iter_mut().filter_map(|t| {
+                let body = t.body;
+                t.link.as_mut().map(|l| (body, l))
+            }))
+    }
+
+    /// Whether a tool is read in another component.
+    pub fn has_links(&self) -> bool {
+        self.links().next().is_some()
+    }
 }
 
 impl FeatureInfo for CombineDef {
     fn references(&self) -> References {
         let mut references = References::default();
         references.body(self.target);
-        for tool in &self.tools {
-            references.body(*tool);
+        for tool in self.tool_bodies() {
+            references.body(tool);
         }
         references
     }
@@ -92,15 +232,25 @@ impl FeatureInfo for CombineDef {
             return Err("no tool bodies selected".to_owned());
         }
         for (i, tool) in self.tools.iter().enumerate() {
-            if *tool == self.target {
-                return Err(format!("body {tool} is both the target and a tool"));
+            if tool.body == self.target {
+                return Err(format!("body {} is both the target and a tool", tool.body));
             }
-            if self.tools[..i].contains(tool) {
+            // A body is a tool once where it is read: once per occurrence
+            // (mitcad#544).
+            let link = self.link_of(tool);
+            if self.tools[..i]
+                .iter()
+                .any(|t| t.body == tool.body && self.link_of(t) == link)
+            {
                 return Err(format!("body {tool} is listed more than once"));
             }
-            ctx.body(*tool)?;
+            ctx.body(tool.body)?;
         }
-        if let Some(other) = self.tool_links.keys().find(|b| !self.tools.contains(b)) {
+        if let Some(other) = self
+            .tool_links
+            .keys()
+            .find(|b| !self.tools.iter().any(|t| t.link.is_none() && t.body == **b))
+        {
             return Err(format!("body {other} is linked but not a tool"));
         }
         Ok(())
@@ -123,9 +273,9 @@ impl<K: Kernel> Evaluate<K> for CombineDef {
         let tools = self
             .tools
             .iter()
-            .map(|uid| match self.tool_links.get(uid) {
-                Some(link) => linked_tool(ctx, *uid, link),
-                None => ctx.surface_body(*uid),
+            .map(|tool| match self.link_of(tool) {
+                Some(link) => linked_tool(ctx, tool, link),
+                None => ctx.surface_body(tool.body),
             })
             .collect::<Result<Vec<_>, _>>()?;
         let kernel = ctx.kernel;
@@ -180,7 +330,14 @@ impl<K: Kernel> Evaluate<K> for CombineDef {
             }
         }
         if !self.keep_tools {
-            changes.extend(self.tools.iter().map(|uid| BodyChange::Remove(*uid)));
+            // A body that is a tool in two occurrences goes once.
+            let mut removed: Vec<BodyUid> = Vec::new();
+            for body in self.tool_bodies() {
+                if !removed.contains(&body) {
+                    removed.push(body);
+                    changes.push(BodyChange::Remove(body));
+                }
+            }
         }
         Ok(FeatureOutput {
             changes,
@@ -192,13 +349,14 @@ impl<K: Kernel> Evaluate<K> for CombineDef {
 /// A tool of another component, moved into the combine's coordinates.
 fn linked_tool<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
-    uid: BodyUid,
+    tool: &CombineTool,
     link: &OccurrenceLink,
 ) -> Result<K::Shape, String> {
-    let (component, transform) = ctx.linked(link).map_err(|e| format!("tool {uid}: {e}"))?;
+    let uid = tool.body;
+    let (component, transform) = ctx.linked(link).map_err(|e| format!("tool {tool}: {e}"))?;
     let shape = ctx.body_in(component, uid)?;
     ctx.require_surfaces(uid, &shape)?;
     ctx.kernel
         .transform_shape(&shape, &transform, None)
-        .map_err(|e| format!("tool {uid}: {e}"))
+        .map_err(|e| format!("tool {tool}: {e}"))
 }

@@ -1681,3 +1681,78 @@ fn thin_walls_along_curves_save_without_profiles() {
         .unwrap();
     assert_eq!(entry["sketches"], json!(["F3"]), "{entry}");
 }
+
+#[test]
+fn an_extrusion_goes_along_its_own_direction() {
+    // (mitcad#539) The direction reaches the kernel as a unit vector, with
+    // the taper; `flip` and a negative distance reverse it. It round-trips;
+    // it is refused in the sketch plane, of no length and with a start
+    // object.
+    let mut b = block();
+    let distance = json!({"type": "distance", "distance": 10, "taper": 0.1});
+    let (spec, status) = extrude_with(&mut b, distance.clone(), json!({"direction": [0, 3, 4]}));
+    assert!(
+        spec.ends_with("along [0.0, 0.6, 0.8] from offset 0: distance 10 taper 0.1"),
+        "{spec}"
+    );
+    assert_eq!(status, FeatureStatus::Ok);
+    let (spec, _) = extrude_with(
+        &mut b,
+        distance.clone(),
+        json!({"direction": [0, 3, 4], "flip": true}),
+    );
+    assert!(
+        spec.ends_with("along [-0.0, -0.6, -0.8] from offset 0: distance 10 taper 0.1"),
+        "{spec}"
+    );
+    let (spec, _) = extrude_with(
+        &mut b,
+        json!({"type": "symmetric", "distance": 6}),
+        json!({"direction": [0, 3, 4]}),
+    );
+    assert!(
+        spec.ends_with(
+            "along [0.0, 0.6, 0.8] from offset 0: distance 6 taper 0; distance 6 taper 0"
+        ),
+        "{spec}"
+    );
+    let (spec, _) = extrude_with(
+        &mut b,
+        json!({"type": "distance", "distance": -5}),
+        json!({"direction": [0, 3, 4]}),
+    );
+    assert!(spec.contains("along [-0.0, -0.6, -0.8]"), "{spec}");
+    // Kept as given.
+    let uid = b
+        .doc
+        .add_feature(
+            &extrude_def(distance.clone(), json!({"direction": [0, 3, 4]})),
+            None,
+        )
+        .unwrap()
+        .uid;
+    let def = query(&b.doc, json!({"query": "feature", "uid": uid}))["def"].clone();
+    assert_eq!(def["direction"], json!([0.0, 3.0, 4.0]), "{def}");
+    b.doc.undo();
+    // In the sketch plane: the extrusion fails.
+    let (_, status) = extrude_with(&mut b, distance.clone(), json!({"direction": [1, 0, 0]}));
+    assert_eq!(
+        status,
+        FeatureStatus::Failed("the extrusion direction lies in the sketch plane".to_owned())
+    );
+    for (extra, expected) in [
+        (json!({"direction": [0, 0, 0]}), "of some length"),
+        (
+            json!({"direction": [0, 3, 4],
+                   "start": {"type": "object", "object": {"type": "plane", "plane": "xz"}}}),
+            "starts at the sketch plane",
+        ),
+    ] {
+        let error = b
+            .doc
+            .add_feature(&extrude_def(distance.clone(), extra), None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "'{expected}' not in '{error}'");
+    }
+}

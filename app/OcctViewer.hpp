@@ -128,6 +128,9 @@ struct SketchEntityDisplay {
   bool constrained = false;
   bool centerline = false;
   bool reference = false;
+  // Shown only while a command uses its sketch (mitcad#546): drawn a little
+  // lighter, as it hides again when the command ends.
+  bool temporary = false;
   // The occurrence that places the sketch when it is a component's (the
   // shape is placed already); picks carry it.
   QString occurrence = QString();
@@ -696,6 +699,7 @@ private:
     bool centerline = false;
     bool constrained = false;
     bool reference = false;
+    bool temporary = false; // shown only for a command (mitcad#546)
   };
   void styleSketchEntity(const occ::handle<AIS_Shape>& object, const SketchEntityLook& look) const;
   // Whether the entity is drawn over a halo (mitcad#302): fully constrained
@@ -941,6 +945,7 @@ private:
   std::vector<std::pair<QString, QToolButton*>> m_cubeArrows;
   QTimer* m_restTimer = nullptr;
   QString m_loggedCamera;
+  QString m_restedView; // the eye and scale when the camera last rested
   double m_loggedGridStep = -1.0;
   QString m_restingCamera; // the camera when the rest timer started
   // What the mouse was last over, for hovered().

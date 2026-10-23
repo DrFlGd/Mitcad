@@ -76,6 +76,8 @@ pub mod gear;
 pub mod move_faces;
 // A planar face of a body extruded as a profile (mitcad#535).
 pub mod face_extrude;
+// A planar face of a body revolved as a profile (mitcad#539).
+pub mod face_revolve;
 
 use std::sync::Arc;
 
@@ -2345,6 +2347,10 @@ impl Kernel for OcctKernel {
             side1: spec.side1,
             two_sides: spec.side2.is_some(),
             side2: spec.side2.unwrap_or(0.0),
+            has_direction: spec.direction.is_some(),
+            direction: spec.direction.unwrap_or([0.0; 3]),
+            taper1: spec.taper1,
+            taper2: spec.taper2,
         };
         face_extrude::ffi::extrude_face(
             &spec.feature.to_string(),
@@ -2354,6 +2360,40 @@ impl Kernel for OcctKernel {
             &extrusion,
         )
         .map_err(failed)
+    }
+
+    // A planar face of a body revolved as a profile (mitcad#539;
+    // face_revolve.rs).
+
+    fn revolve_face(
+        &self,
+        spec: &mitcad_model::FaceRevolveSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        let revolution = face_revolve::ffi::FaceRevolution {
+            axis_origin: spec.axis.origin,
+            axis_direction: spec.axis.direction,
+            angle1: spec.angle1,
+            two_sides: spec.angle2.is_some(),
+            angle2: spec.angle2.unwrap_or(0.0),
+        };
+        face_revolve::ffi::revolve_face(
+            &spec.feature.to_string(),
+            occt(spec.body)?,
+            &spec.face.to_string(),
+            &spec.key.to_string(),
+            &revolution,
+        )
+        .map_err(failed)
+    }
+
+    // A planar face of a body swept along a path (mitcad#543; sweeps.rs).
+
+    fn face_sweep(
+        &self,
+        spec: &mitcad_model::SweepSpec<'_>,
+        face: &mitcad_model::sweeps::ProfileFace<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        sweeps::face_sweep(spec, face)
     }
 }
 

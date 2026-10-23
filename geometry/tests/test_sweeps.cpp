@@ -2108,8 +2108,152 @@ void test_fixed_binormal() {
   CHECK(throws_with([&] { sweep(spec); }, "runs along the sweep's binormal"));
 }
 
+// Frenet, auxiliary and constant binormal frames (mitcad#539). Along the sloped arc of
+// test_fixed_binormal the Frenet frame turns the profile with the arc, as
+// the default frame does there: the end cap stands tilted by the arc's 20
+// degrees. Along a straight path of 50 a curve 10 above it crossing from
+// y = 10 to y = -10 turns a profile 8 high and 2 wide a quarter turn about
+// the path (the direction from the path to the curve turns from 45 degrees
+// on one side to 45 on the other), by the plane rule and by the fraction
+// rule alike: the end cap is 8 wide and 2 high. Every section is the
+// profile, so the volume is its area times the length.
+void test_sweep_frames() {
+  const double tilt = kPi / 9;
+  const gp_Dir normal(0, -std::sin(tilt), std::cos(tilt));
+  const gp_Dir ahead(0, std::cos(tilt), std::sin(tilt));
+  const auto cap_box = [](const Shape& shape) {
+    const std::vector<int> caps = shape.find_faces(end_cap("F5", 1));
+    CHECK(caps.size() == 1);
+    return caps.size() == 1 ? bounding_box(Shape(shape.face(caps.front()))) : bounding_box(shape);
+  };
+  SweepSpec arc;
+  arc.feature = "F5";
+  arc.frame.origin = gp_Pnt(50, 0, 0);
+  arc.frame.x_axis = gp_Dir(1, 0, 0);
+  arc.frame.y_axis = ahead.Crossed(gp_Dir(1, 0, 0));
+  arc.regions = {rectangle(1, -10, -1, 20, 2)};
+  arc.path = {{"c1", arc3(gp_Pnt(0, 0, 0), normal, gp_Dir(1, 0, 0), 50, 0, kPi / 2)}};
+  arc.frenet = true;
+  const ShapePtr frenet = sweep(arc);
+  CHECK_NEAR_TOL(precise_volume(*frenet), 40 * 50 * kPi / 2, 1e-5);
+  const BoundingBox tilted = cap_box(*frenet);
+  CHECK_NEAR_TOL(tilted.max.Z() - tilted.min.Z(), 20 * std::sin(tilt) + 2 * std::cos(tilt), 1e-5);
+  CHECK(faces_named(*frenet, start_cap("F5", 1)) == 1 && faces_named(*frenet, side("F5", 1, 0)) == 1);
+
+  SweepSpec turned = circle_sweep(line_path(0, 50), 1);
+  turned.regions = {rectangle(1, -4, -1, 8, 2)};
+  turned.auxiliary = {{"c9", line3(gp_Pnt(0, 10, 10), gp_Pnt(50, -10, 10))}};
+  for (const bool curvilinear : {false, true}) {
+    turned.curvilinear = curvilinear;
+    const ShapePtr shape = sweep(turned);
+    // (The curvilinear rule's bar held 784.9 before the OCCT port's patch
+    // 1030: its surfaces bent between the sections.)
+    CHECK_NEAR_TOL(precise_volume(*shape), 16 * 50, 1e-7);
+    const BoundingBox box = cap_box(*shape);
+    CHECK_NEAR_TOL(box.max.Y() - box.min.Y(), 8, 1e-6);
+    CHECK_NEAR_TOL(box.max.Z() - box.min.Z(), 2, 1e-6);
+    CHECK(faces_named(*shape, start_cap("F5", 1)) == 1 && faces_named(*shape, side("F5", 1, 0)) == 1);
+  }
+  // A constant binormal: along the arc's axis the frame is the arc's own,
+  // as Frenet's; leaning 30 degrees from it towards the arc's start, (0,
+  // sin 50, cos 50), the band turns only about it. That band is the one the
+  // reference model pd_pipe_modes sweeps (its Binormal in the pipe's own
+  // placement): FreeCAD's stored pipe holds 2531.05987 mm³.
+  arc.frenet = false;
+  arc.constant_binormal = normal;
+  CHECK_NEAR_TOL(precise_volume(*sweep(arc)), 40 * 50 * kPi / 2, 1e-6);
+  arc.constant_binormal = gp_Dir(0, std::sin(5 * kPi / 18), std::cos(5 * kPi / 18));
+  const ShapePtr leaning = sweep(arc);
+  CHECK_NEAR_TOL(precise_volume(*leaning), 2531.059870978739, 1e-6);
+  CHECK(faces_named(*leaning, end_cap("F5", 1)) == 1 && edge_names_unique(*leaning));
+  arc.frenet = true;
+  CHECK(throws_with([&] { sweep(arc); }, "not both"));
+  // One frame at a time, and not with a twist or the parallel orientation.
+  turned.frenet = true;
+  CHECK(throws_with([&] { sweep(turned); }, "not both"));
+  turned.frenet = false;
+  turned.twist = 0.5;
+  CHECK(throws_with([&] { sweep(turned); }, "unsupported: a Frenet or auxiliary frame"));
+  turned.twist = 0;
+  turned.orientation = SweepOrientation::Parallel;
+  CHECK(throws_with([&] { sweep(turned); }, "unsupported: a Frenet or auxiliary frame"));
+}
+
+// A planar body face as a sweep's profile (mitcad#543): the 10 x 10 top of
+// a 10 x 10 x 5 block swept 20 up from its centre, and a quarter of a
+// circle of radius 30 round (Pappus: the face's area times the length its
+// centre runs); the block stays as it is, its edges name the sides.
+void test_face_sweep() {
+  const ShapePtr block = extrude("F2", {rectangle(1, 0, 0, 10, 10)}, 0, 5);
+  SweepSpec spec;
+  spec.feature = "F5";
+  spec.profile_body = block;
+  spec.profile_face = end_cap("F2", 1);
+  spec.profile_key = end_cap("F2", 1);
+  spec.path = {{"c1", line3(gp_Pnt(5, 5, 5), gp_Pnt(5, 5, 25))}};
+  const ShapePtr up = sweep(spec);
+  CHECK_NEAR(precise_volume(*up), 100 * 20);
+  CHECK_NEAR(precise_volume(*block), 500);
+  const std::string start = face_name("F5", "start", end_cap("F2", 1));
+  const std::string end = face_name("F5", "end", end_cap("F2", 1));
+  CHECK(faces_named(*up, start) == 1 && faces_named(*up, end) == 1);
+  CHECK(up->face_count() == 6 && edge_names_unique(*up));
+  const std::vector<int> top = up->find_faces(end);
+  CHECK(top.size() == 1 && near(bounding_box(Shape(up->face(top.front()))).min.Z(), 25, 1e-9));
+  // Round a quarter of a circle about the line x = 35, y = 5 in z (the
+  // face's centre 30 from it), in the XZ plane through it.
+  spec.path = {{"c1", arc3(gp_Pnt(35, 5, 5), gp_Dir(0, -1, 0), gp_Dir(-1, 0, 0), 30, 0, kPi / 2)}};
+  CHECK_NEAR_TOL(precise_volume(*sweep(spec)), 100 * 30 * kPi / 2, 1e-6);
+  // Not with a twist, nor of a face the body does not have.
+  spec.twist = 0.5;
+  CHECK(throws_with([&] { sweep(spec); }, "unsupported: a sweep of a body face"));
+  spec.twist = 0;
+  spec.profile_face = face_name("F2", "end", "r{c9}");
+  CHECK(throws_with([&] { sweep(spec); }, "has no face"));
+}
+
+// A parallel loft along a centre line (mitcad#547): two level circles of
+// radius 5, at the start and the end of an eighth of a circle of radius 30
+// rising from the origin in the XZ plane, only move along it: every level
+// slice is the circle, so the volume is its area times the rise, and the end
+// cap stays level (at right angles the arc would tilt it by 45 degrees).
+void test_parallel_loft() {
+  const double rise = 30 * std::sin(kPi / 4);
+  LoftSpec spec;
+  spec.feature = "F5";
+  LoftSection low;
+  low.frame = xy_at(0);
+  low.region = circle(1, 0, 0, 5);
+  LoftSection high = low;
+  high.frame.origin = gp_Pnt(30 - 30 * std::cos(kPi / 4), 0, rise);
+  spec.sections = {low, high};
+  spec.centerline = {{"c1", arc3(gp_Pnt(30, 0, 0), gp_Dir(0, 1, 0), gp_Dir(-1, 0, 0), 30, 0, kPi / 4)}};
+  spec.parallel = true;
+  const ShapePtr level = loft(spec);
+  CHECK_NEAR_TOL(precise_volume(*level), kPi * 25 * rise, 1e-5);
+  const std::vector<int> caps = level->find_faces("F5:end(r{c1})");
+  CHECK(caps.size() == 1);
+  if (caps.size() == 1) {
+    const BoundingBox box = bounding_box(Shape(level->face(caps.front())));
+    CHECK(box.max.Z() - box.min.Z() < 1e-6);
+  }
+  CHECK(faces_named(*level, "F5:start(r{c1})") == 1 && faces_named(*level, "F5:side(c1)") == 1);
+  // Not with a frame, nor without a centre line.
+  spec.frenet = true;
+  CHECK(throws_with([&] { loft(spec); }, "takes no frame"));
+  spec.frenet = false;
+  spec.centerline.clear();
+  CHECK(throws_with([&] { loft(spec); }, "it needs one"));
+}
+
 void sweeps_tests() {
+  // A parallel loft along a centre line (mitcad#547).
+  guarded("parallel loft", test_parallel_loft);
   guarded("sweeps", test_sweeps);
+  // A body face as the profile (mitcad#543).
+  guarded("face sweep", test_face_sweep);
+  // Frenet and auxiliary frames (mitcad#539).
+  guarded("sweep frames", test_sweep_frames);
   guarded("fixed binormal", test_fixed_binormal);
   guarded("backward sweeps", test_backward_sweeps);
   guarded("parallel turns", test_parallel_turns);

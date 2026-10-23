@@ -43,6 +43,13 @@
 #      on its end face a corner with Butt, in line with Straight (the
 #      Corner's icon buttons), placed in line. Sections 5 to 7 are case A
 #      (a Timber wall frame's side and end) as before.
+#   9. A wall across a long room (mitcad#536, the owner's case): the room's
+#      walls one body (mitcad-cli); a start on a long wall's inner face,
+#      Length Auto: it previews and is placed as wide as the room, ending at
+#      the opposite face of the same body, its plates longer than the
+#      timber's longest spliced over studs; the inspection names what the
+#      run met and the length, also when a height its studs cannot have
+#      refuses the preview.
 # Timber's loose members on a wall are tools/ui-timber-test.sh's, floors
 # and roofs tools/ui-timber-floor-roof-test.sh's.
 #
@@ -346,6 +353,59 @@ ui_mark
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed frame Wall 1 (wall, lead C" "the wall placed in line with the solid wall" 60
 ui_expect_new "Frame junction: Wall 1: in line beyond the end face of " "placed in line beyond its end face"
+ui_step "close Wall (Escape)"              ui_key Escape
+
+echo "--- 9. The owner's case of mitcad#536: across a long room, Length Auto, its plates spliced"
+# A slab (F1) and a room's walls as one body (F2): a box 10400 x 8219 x
+# 2700 with the room, 10000 x 7819 inside, cut out of it (F3). A start on
+# a long wall's inner face, Length Auto: the run meets the opposite wall,
+# a face of the same body, 7819 mm on; 7819 mm is longer than the timber's
+# longest (6000 mm), so each plate is two pieces of at most 4200 mm (its
+# longest stock length), the joint over the stud at 4200.
+ui_stop_app
+FILE=$WORK/long-room.mitcad
+cat > "$WORK/long-room.json" << 'EOF'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-700, -700],
+    "length": 11400, "width": 9219, "height": 200, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-200, -200],
+    "length": 10400, "width": 8219, "height": 2700, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [0, 0],
+    "length": 10000, "width": 7819, "height": 2800, "operation": "cut", "participants": ["F2.b0"]}}
+]
+EOF
+"$CLI" run "$WORK/long-room.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+ui_start_app --open "$FILE" --no-native-dialogs
+start_wall
+# The faces of the room's body clicked in turn until one runs across the
+# room (a long wall's inner face; the others run 10000 mm or meet nothing).
+solid_face "frame wall Wall 1, wall 7819 x 2400 mm" "a wall from a long wall's inner face, across the room"
+expect_inspect Wall "frame wall Wall 1, wall 7819 x 2400 mm" "2 bottom plate" "2 top plate" \
+  "; length auto" "; Length Auto: the run met a face of " ", the wall 7819 mm" \
+  "; spliced top plate 4200, bottom plate 4200" \
+  "previewed across the room, the run's end named, each plate two pieces over the stud at 4200"
+expect_inspect Wall ", to a face of " ", 7819 mm" ", base on " "the junction: to the opposite wall's face, on the slab"
+# Refused (its studs 6904 mm, longer than the timber's longest): the panel
+# still names the wall, its length and what the run met.
+ui_mark
+ui_step "7000 mm high"                     ui_type_in "Panel Wall input frame_height" 7000
+ui_expect_new "Frame preview refused: frame wall Wall 1, wall 7819 x 7000 mm, 0 member(s)" \
+  "the refused preview names the wall and the length worked out"
+line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "Frame preview refused: " | tail -1)
+[[ $line == *"; Length Auto: the run met a face of "* ]] || ui_fail "the refused preview without the run's end: $line"
+[[ $line == *"longer than the part's longest"* ]] || ui_fail "the refused preview without its reason: $line"
+echo "ok   refused, with what the run met and why"
+ui_mark
+ui_step "2400 mm high again"               ui_type_in "Panel Wall input frame_height" 2400
+expect_inspect Wall "frame wall Wall 1, wall 7819 x 2400 mm" "; spliced top plate 4200, bottom plate 4200" \
+  "2400 mm high again: previewed"
+ui_mark
+ui_step "Place (Enter)"                    ui_key Return
+ui_expect_new "Placed frame Wall 1 (wall, lead C" "the wall placed across the room" 60
+ui_expect_new "Frame spliced: top plate 4200, bottom plate 4200" "placed with its plates spliced"
+line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Frame junction: Wall 1: from a face of " | tail -1)
+[[ $line == *", to a face of "*", 7819 mm"* ]] || ui_fail "Wall 1 placed without the face its run met: $line"
+echo "ok   $line"
 ui_step "close Wall (Escape)"              ui_key Escape
 
 ui_finish "UI timber wall test"

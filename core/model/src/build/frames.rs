@@ -39,6 +39,11 @@ use crate::transform::Transform;
 /// Lengths within this are the same, mm.
 const EPS: f64 = 1e-6;
 
+/// A length for an answer: to a millionth of a millimetre.
+fn round6(v: f64) -> f64 {
+    (v * 1e6).round() / 1e6
+}
+
 /// What a frame is.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -384,6 +389,9 @@ pub struct Framed {
     /// The frame's own component in the host (mitcad#522); None for a
     /// flat frame saved before.
     pub component: Option<ComponentUid>,
+    /// A wall's plates made of pieces (mitcad#536), as the answer gives
+    /// them.
+    pub splices: Vec<Value>,
 }
 
 /// A frame made in a step: its lead, its members (component and place) and
@@ -567,6 +575,32 @@ impl FramePart {
             .and_then(|m| m.millimetres())
             .unwrap_or(0.0)
     }
+
+    /// Its longest, mm (mitcad#536): the library's `length.max`, else its
+    /// longest stock length; None when the library gives neither.
+    fn longest(&self) -> Option<f64> {
+        let length = self.source.meta.length.as_ref()?;
+        length
+            .max
+            .as_ref()
+            .and_then(|m| m.millimetres())
+            .or_else(|| length.stock_lengths().first().copied())
+            .filter(|l| *l > 0.0)
+    }
+
+    /// The longest piece a spliced plate is made of, mm (mitcad#536): its
+    /// longest stock length, at most its longest; its longest when the
+    /// library lists no stock.
+    fn longest_piece(&self) -> Option<f64> {
+        let longest = self.longest()?;
+        let stock = self
+            .source
+            .meta
+            .length
+            .as_ref()
+            .and_then(|l| l.stock_lengths().first().copied());
+        Some(stock.map_or(longest, |s| s.min(longest)))
+    }
 }
 
 /// A frame of the design (or the one being made, `lead` None).
@@ -611,6 +645,34 @@ impl Known {
 struct Layout {
     members: Vec<MemberSpec>,
     warnings: Vec<String>,
+    /// A wall's plates made of several pieces (mitcad#536).
+    splices: Vec<Splice>,
+}
+
+/// A wall's plate made of pieces butted end to end (mitcad#536): its first
+/// piece's place in the frame (`plate.top.0`, `plate.bottom.1`), its role,
+/// where the joints are (mm along the wall from its start, each over a
+/// stud's centre) and the longest piece its timber comes in.
+#[derive(Debug, Clone)]
+struct Splice {
+    key: String,
+    role: &'static str,
+    joints: Vec<f64>,
+    longest: f64,
+}
+
+impl Splice {
+    /// As `build_preview` and `build_frame` answer it: `{plate, role, at,
+    /// pieces, longest}`.
+    fn to_json(&self) -> Value {
+        json!({
+            "plate": self.key,
+            "role": self.role,
+            "at": self.joints.iter().map(|t| round6(*t)).collect::<Vec<_>>(),
+            "pieces": self.joints.len() + 1,
+            "longest": round6(self.longest),
+        })
+    }
 }
 
 impl Layout {
@@ -661,6 +723,8 @@ struct FramePlan {
     /// The members that stay, by their place.
     keep: BTreeMap<String, ComponentUid>,
     warnings: Vec<String>,
+    /// A wall's plates made of pieces (mitcad#536).
+    splices: Vec<Splice>,
 }
 
 // --- Plane geometry.
@@ -927,7 +991,7 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
     }
     let across = w.n;
     let stud_wide = across;
-    let mut studs: Vec<(String, &'static str, f64, f64, f64)> = Vec::new();
+    let mut studs: Vec<WallStud> = Vec::new();
     // The openings (their headers and sills after the plates and studs).
     let mut framing = Layout::default();
     let mut zones: Vec<WallZone> = Vec::new();
@@ -1099,60 +1163,6 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
         }
         (ends, notches)
     };
-    for j in 0..w.top {
-        let z = w.height - (j as f64 + 0.5) * tp;
-        let (ends, notches) = plate_run(true, j, z);
-        out.add(
-            format!("plate.top.{j}"),
-            "top plate",
-            Which::Plate,
-            [w.at(ends[0], z, 0.0), w.at(ends[1], z, 0.0)],
-            across,
-        );
-        if let Some(m) = out.members.last_mut() {
-            m.notches = notches;
-        }
-    }
-    doors.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for i in 0..w.bottom {
-        let z = (i as f64 + 0.5) * tp;
-        let (ends, notches) = plate_run(false, i, z);
-        let mut pieces = Vec::new();
-        let mut from = ends[0];
-        for (a, b) in &doors {
-            pieces.push((from, *a));
-            from = *b;
-        }
-        pieces.push((from, ends[1]));
-        let many = pieces.len() > 1;
-        for (k, (a, b)) in pieces.into_iter().enumerate() {
-            if b - a < 1.0 {
-                continue;
-            }
-            let key = if many {
-                format!("plate.bottom.{i}.{k}")
-            } else {
-                format!("plate.bottom.{i}")
-            };
-            out.add(
-                key,
-                "bottom plate",
-                Which::Plate,
-                [w.at(a, z, 0.0), w.at(b, z, 0.0)],
-                across,
-            );
-            // A piece takes the laps along it.
-            let along = |n: &Notch| dot(sub(n.origin, w.start), w.u);
-            let mine: Vec<Notch> = notches
-                .iter()
-                .filter(|n| along(n) < b - EPS && along(n) + n.size[0] > a + EPS)
-                .cloned()
-                .collect();
-            if let Some(m) = out.members.last_mut() {
-                m.notches = mine;
-            }
-        }
-    }
     // The studs: the ends, the junctions, the centre distance.
     studs.push(("stud.start".to_owned(), "stud", t0, zb, zt));
     studs.push(("stud.end".to_owned(), "stud", t1 - ts, zb, zt));
@@ -1216,6 +1226,145 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
             Some(_) => {}
         }
     }
+    // The plates, after the studs their joints lie over, made first (a top
+    // plate is the lead): the top ones through, the bottom ones cut at the
+    // doors. One longer than its timber's longest is spliced (mitcad#536):
+    // pieces butted end to end, each joint over the centre of a stud that
+    // bears on it (or a backing stud), a second plate's joints staggered
+    // from the first's by a stud spacing.
+    let splicing = w.plate.longest_piece().map(|longest| Splicing {
+        w,
+        longest,
+        over: w.plate.longest().unwrap_or(longest),
+        least: w.plate.least().max(2.0 * ts),
+        ends: [t0, t1],
+        heights: [zb, zt],
+        zones: &zones,
+    });
+    let mut staggered: Vec<f64> = Vec::new();
+    for j in 0..w.top {
+        let z = w.height - (j as f64 + 0.5) * tp;
+        let (ends, notches) = plate_run(true, j, z);
+        let key = format!("plate.top.{j}");
+        let joints = match &splicing {
+            Some(s) => s.joints(
+                ends,
+                true,
+                &staggered,
+                &mut studs,
+                &mut out.warnings,
+                "top plate",
+            )?,
+            None => Vec::new(),
+        };
+        let cuts: Vec<f64> = [ends[0]]
+            .into_iter()
+            .chain(joints.iter().copied())
+            .chain([ends[1]])
+            .collect();
+        for (k, piece) in cuts.windows(2).enumerate() {
+            // Its first piece keeps the plate's place: the lead stays.
+            let place = if k == 0 {
+                key.clone()
+            } else {
+                format!("{key}.{k}")
+            };
+            out.add(
+                place,
+                "top plate",
+                Which::Plate,
+                [w.at(piece[0], z, 0.0), w.at(piece[1], z, 0.0)],
+                across,
+            );
+            if let Some(m) = out.members.last_mut() {
+                m.notches = if joints.is_empty() {
+                    notches.clone()
+                } else {
+                    along_piece(w, &notches, piece[0], piece[1])
+                };
+            }
+        }
+        if let Some(s) = &splicing
+            && !joints.is_empty()
+        {
+            out.splices.push(Splice {
+                key,
+                role: "top plate",
+                joints: joints.clone(),
+                longest: s.longest,
+            });
+        }
+        staggered.extend(joints);
+    }
+    doors.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut staggered: Vec<f64> = Vec::new();
+    for i in 0..w.bottom {
+        let z = (i as f64 + 0.5) * tp;
+        let (ends, notches) = plate_run(false, i, z);
+        let mut runs = Vec::new();
+        let mut from = ends[0];
+        for (a, b) in &doors {
+            runs.push((from, *a));
+            from = *b;
+        }
+        runs.push((from, ends[1]));
+        // Each run between the doors spliced where it is too long.
+        let mut pieces = Vec::new();
+        let mut joints = Vec::new();
+        for (a, b) in runs {
+            let mine = match &splicing {
+                Some(s) if b - a >= 1.0 => s.joints(
+                    [a, b],
+                    false,
+                    &staggered,
+                    &mut studs,
+                    &mut out.warnings,
+                    "bottom plate",
+                )?,
+                _ => Vec::new(),
+            };
+            let mut at = a;
+            for j in &mine {
+                pieces.push((at, *j));
+                at = *j;
+            }
+            pieces.push((at, b));
+            joints.extend(mine);
+        }
+        let many = pieces.len() > 1;
+        for (k, (a, b)) in pieces.into_iter().enumerate() {
+            if b - a < 1.0 {
+                continue;
+            }
+            let key = if many {
+                format!("plate.bottom.{i}.{k}")
+            } else {
+                format!("plate.bottom.{i}")
+            };
+            out.add(
+                key,
+                "bottom plate",
+                Which::Plate,
+                [w.at(a, z, 0.0), w.at(b, z, 0.0)],
+                across,
+            );
+            // A piece takes the laps along it.
+            if let Some(m) = out.members.last_mut() {
+                m.notches = along_piece(w, &notches, a, b);
+            }
+        }
+        if let Some(s) = &splicing
+            && !joints.is_empty()
+        {
+            out.splices.push(Splice {
+                key: format!("plate.bottom.{i}"),
+                role: "bottom plate",
+                joints: joints.clone(),
+                longest: s.longest,
+            });
+        }
+        staggered.extend(joints);
+    }
     for (key, role, near, z0, z1) in studs {
         let c = near + ts / 2.0;
         out.add(
@@ -1228,6 +1377,191 @@ fn wall_layout(w: &WallGeo, span: &WallSpan) -> Result<Layout, ModelError> {
     }
     out.members.extend(framing.members);
     Ok(out)
+}
+
+/// A wall's stud before it is made: its place in the frame, its role, its
+/// near side along the wall and its foot's and top's heights above the
+/// base.
+type WallStud = (String, &'static str, f64, f64, f64);
+
+/// The notches of a plate's laps along a piece of it from `a` to `b`.
+fn along_piece(w: &WallGeo, notches: &[Notch], a: f64, b: f64) -> Vec<Notch> {
+    let along = |n: &Notch| dot(sub(n.origin, w.start), w.u);
+    notches
+        .iter()
+        .filter(|n| along(n) < b - EPS && along(n) + n.size[0] > a + EPS)
+        .cloned()
+        .collect()
+}
+
+/// How a wall's plates are spliced (mitcad#536): a plate longer than its
+/// timber's longest (`over`, the library's `length.max`) is made of pieces
+/// at most `longest` long (its longest stock length) and at least `least`;
+/// the studs stand between `ends` (the end studs' outer faces) and between
+/// `heights` (the top of the bottom plates and the underside of the top
+/// plates), out of the openings' framing (`zones`).
+struct Splicing<'a> {
+    w: &'a WallGeo,
+    longest: f64,
+    over: f64,
+    least: f64,
+    ends: [f64; 2],
+    heights: [f64; 2],
+    zones: &'a [WallZone],
+}
+
+impl Splicing<'_> {
+    /// Where a plate from `run[0]` to `run[1]` along the wall is spliced:
+    /// nowhere when it is no longer than its timber's longest; else the
+    /// joints [`splice_joints`] finds over the centres of the studs that bear
+    /// on it (`top`: those reaching the top plates, else those standing on
+    /// the bottom plates), a stud spacing from each of `apart` (the first
+    /// plate's joints) where the studs allow, else with a warning. Where no
+    /// stud is in reach a backing stud goes in (full height,
+    /// `stud.splice.<n>`, [`Splicing::backing`]); refused when even that
+    /// has no place.
+    fn joints(
+        &self,
+        run: [f64; 2],
+        top: bool,
+        apart: &[f64],
+        studs: &mut Vec<WallStud>,
+        warnings: &mut Vec<String>,
+        what: &str,
+    ) -> Result<Vec<f64>, ModelError> {
+        if run[1] - run[0] <= self.over + EPS {
+            return Ok(Vec::new());
+        }
+        let [zb, zt] = self.heights;
+        let ts = self.w.stud.thick();
+        let gap = self.w.spacing;
+        // Each round adds a backing stud in the piece that found none.
+        for _ in 0..1000 {
+            let seats: Vec<f64> = studs
+                .iter()
+                .filter(|s| {
+                    if top {
+                        s.4 >= zt - EPS
+                    } else {
+                        s.3 <= zb + EPS
+                    }
+                })
+                .map(|s| s.2 + ts / 2.0)
+                .collect();
+            let failed = match splice_joints(run, self.longest, self.least, &seats, apart, gap) {
+                Ok(joints) => return Ok(joints),
+                Err(from) => from,
+            };
+            if !apart.is_empty()
+                && let Ok(joints) = splice_joints(run, self.longest, self.least, &seats, &[], gap)
+            {
+                warnings.push(format!(
+                    "{}: the joints of its {what}s are less than a stud spacing apart",
+                    self.w.name
+                ));
+                return Ok(joints);
+            }
+            let Some(c) = self.backing(failed, run[1], studs, apart) else {
+                return Err(refuse(format!(
+                    "{}: its {what} from {} to {} mm is longer than its timber's longest, {} mm, and no stud can take a joint between {} and {} mm",
+                    self.w.name,
+                    round(run[0]),
+                    round(run[1]),
+                    round(self.over),
+                    round(failed + self.least),
+                    round((failed + self.longest).min(run[1] - self.least))
+                )));
+            };
+            let n = studs
+                .iter()
+                .filter(|s| s.0.starts_with("stud.splice."))
+                .count()
+                + 1;
+            studs.push((format!("stud.splice.{n}"), "stud", c - ts / 2.0, zb, zt));
+        }
+        Err(refuse(format!(
+            "{}: its {what} cannot be spliced over its studs",
+            self.w.name
+        )))
+    }
+
+    /// A backing stud's centre for the joint of a piece from `from` on its
+    /// way to `to`: as far along as the piece may run (its longest, the
+    /// rest at least the least piece), else just before an opening's
+    /// framing or a stud in the way; between the end studs, out of the
+    /// openings' framing and beside the other studs; a stud spacing from
+    /// each of `apart` where it can be. None: nowhere.
+    fn backing(&self, from: f64, to: f64, studs: &[WallStud], apart: &[f64]) -> Option<f64> {
+        let ts = self.w.stud.thick();
+        let (lo, hi) = (
+            from + self.least,
+            (from + self.longest).min(to - self.least),
+        );
+        if hi < lo - EPS {
+            return None;
+        }
+        let mut places = vec![hi];
+        places.extend(self.zones.iter().map(|z| z.lo - ts / 2.0));
+        places.extend(studs.iter().map(|s| s.2 - ts / 2.0));
+        let free = |c: f64| {
+            let near = c - ts / 2.0;
+            c >= lo - EPS
+                && c <= hi + EPS
+                && near >= self.ends[0] + ts - EPS
+                && near + ts <= self.ends[1] - ts + EPS
+                && !self
+                    .zones
+                    .iter()
+                    .any(|z| near < z.hi - EPS && near + ts > z.lo + EPS)
+                && !studs
+                    .iter()
+                    .any(|s| near < s.2 + ts - EPS && s.2 < near + ts - EPS)
+        };
+        let best = |stagger: bool| {
+            places
+                .iter()
+                .copied()
+                .filter(|c| free(*c))
+                .filter(|c| !stagger || apart.iter().all(|j| (c - j).abs() >= self.w.spacing - EPS))
+                .reduce(f64::max)
+        };
+        best(true).or_else(|| best(false))
+    }
+}
+
+/// The joints of a plate from `run[0]` to `run[1]` (mitcad#536): from its
+/// start, each over the farthest of `seats` that leaves the piece before it
+/// at most `longest` and at least `least` long and the rest at least
+/// `least`, at least `gap` from each of `apart`. Err: where the piece that
+/// finds no seat starts.
+fn splice_joints(
+    run: [f64; 2],
+    longest: f64,
+    least: f64,
+    seats: &[f64],
+    apart: &[f64],
+    gap: f64,
+) -> Result<Vec<f64>, f64> {
+    let mut joints = Vec::new();
+    let mut from = run[0];
+    while run[1] - from > longest + EPS {
+        let seat = seats
+            .iter()
+            .copied()
+            .filter(|c| {
+                *c >= from + least - EPS && *c <= from + longest + EPS && run[1] - *c >= least - EPS
+            })
+            .filter(|c| apart.iter().all(|j| (c - j).abs() >= gap - EPS))
+            .reduce(f64::max);
+        match seat {
+            Some(c) => {
+                joints.push(c);
+                from = c;
+            }
+            None => return Err(from),
+        }
+    }
+    Ok(joints)
 }
 
 // --- Floors.
@@ -2339,6 +2673,7 @@ impl<K: Kernel> Document<K> {
             members,
             keep,
             warnings,
+            splices: layout.splices,
         })
     }
 
@@ -2420,7 +2755,7 @@ impl<K: Kernel> Document<K> {
         let mut def = input.clone();
         def.kind = Some(kind);
         def.fastener = def.fastener.map(|f| self.kept_fastener(&f));
-        let junction = self.square_start(&mut def, &world)?;
+        // Named first, so that a refusal names it (mitcad#536).
         match &def.name {
             Some(name) if world.iter().any(|k| k.def.name.as_deref() == Some(name)) => {
                 return Err(refuse(format!("a frame is already named '{name}'")));
@@ -2428,6 +2763,7 @@ impl<K: Kernel> Document<K> {
             Some(_) => {}
             None => def.name = Some(self.free_frame_name(kind, &world)),
         }
+        let junction = self.square_start(&mut def, &world)?;
         // A roof's walls and a wall's joins are kept as the frames' leads.
         if let Some(walls) = &mut def.walls {
             for w in walls.iter_mut() {
@@ -2673,7 +3009,7 @@ impl<K: Kernel> Document<K> {
         // or another body's face nearer (mitcad#524).
         let height = self.mm(&def.height, 2400.0)?;
         let met = if def.end.is_none() && auto_end != Some(false) {
-            self.run_met(start, d, least, height, Some(lead), None, world)
+            self.run_met(start, d, (least, height, depth), Some(lead), None, world)
         } else {
             None
         };
@@ -2968,7 +3304,7 @@ impl<K: Kernel> Document<K> {
         // Its length: the end clicked, else what its run meets, else typed.
         let height = self.mm(&def.height, 2400.0)?;
         let met = if def.end.is_none() && auto_end != Some(false) {
-            self.run_met(start, d, least, height, None, Some(body), world)
+            self.run_met(start, d, (least, height, depth), None, Some(body), world)
         } else {
             None
         };
@@ -3044,18 +3380,17 @@ impl<K: Kernel> Document<K> {
     }
 
     /// The nearest a wall's run from `start` along `d` meets (mitcad#515,
-    /// mitcad#524): a wall frame (`wall_met`), or another body's face
-    /// (`face_met`) nearer than it; `skip` the wall it starts on, `skip_body`
-    /// the body it starts on.
-    #[allow(clippy::too_many_arguments)]
+    /// mitcad#524): a wall frame (`wall_met`), or a body's face (`face_met`)
+    /// nearer than it; `skip` the wall it starts on, `own` the body it
+    /// starts on (met only beyond its own face, mitcad#536), `depth` the
+    /// new wall's.
     fn run_met(
         &self,
         start: V3,
         d: V3,
-        least: f64,
-        height: f64,
+        (least, height, depth): (f64, f64, f64),
         skip: Option<ComponentUid>,
-        skip_body: Option<BodyUid>,
+        own: Option<BodyUid>,
         world: &[Known],
     ) -> Option<RunMet> {
         let wall = self
@@ -3065,7 +3400,7 @@ impl<K: Kernel> Document<K> {
                 name: w.name.clone(),
                 wall: w.lead,
             });
-        let face = self.face_met(start, d, least, height, skip_body);
+        let face = self.face_met(start, d, (least, height, depth), own);
         match (wall, face) {
             (Some(w), Some(f)) if f.at < w.at - EPS => Some(f),
             (Some(w), _) => Some(w),
@@ -3073,24 +3408,45 @@ impl<K: Kernel> Document<K> {
         }
     }
 
-    /// The nearest face of another body a wall's run meets (mitcad#524): the
+    /// The nearest face of a body a wall's run meets (mitcad#524): the
     /// bodies shown in the design other than timber frames' members (their
-    /// walls are `wall_met`'s) and `skip`, met along three lines of the run
-    /// (a quarter, half and three quarters of its height up) beyond `least`
-    /// from its start, where a line enters the body.
+    /// walls are `wall_met`'s), met beyond `least` from its start where a
+    /// line of the run enters the body. The lines (mitcad#536): a quarter,
+    /// half and three quarters of its height up and 10 mm under its top
+    /// (over a door in the wall ahead), each along its centre line and a
+    /// millimetre inside each of its sides (`depth` apart: a post or the
+    /// end of a wall only its side meets). The body it starts on (`own`)
+    /// counts beyond its own face (a millimetre on), so that the far wall
+    /// of a room modelled as one body ends it.
     fn face_met(
         &self,
         start: V3,
         d: V3,
-        least: f64,
-        height: f64,
-        skip: Option<BodyUid>,
+        (least, height, depth): (f64, f64, f64),
+        own: Option<BodyUid>,
     ) -> Option<RunMet> {
         const FAR: f64 = 1e5;
+        // Crossings of the body it starts on nearer than this are its own
+        // face's.
+        const OWN: f64 = 1.0;
         let to_host = inverse(&self.host_placement());
+        let across = cross(Z, d);
+        let side = (depth / 2.0 - 1.0).max(0.0);
+        let mut lines: Vec<V3> = Vec::new();
+        for z in [0.25 * height, 0.5 * height, 0.75 * height, height - 10.0] {
+            if z <= 0.0 {
+                continue;
+            }
+            for a in [0.0, side, -side] {
+                lines.push(add(
+                    add(add(start, scale(Z, z)), scale(across, a)),
+                    scale(d, least + EPS),
+                ));
+            }
+        }
         let mut best: Option<RunMet> = None;
         for instance in self.instances() {
-            if !instance.visible || Some(instance.body) == skip {
+            if !instance.visible {
                 continue;
             }
             let framed = self
@@ -3105,20 +3461,38 @@ impl<K: Kernel> Document<K> {
                 continue;
             };
             let to_body = inverse(&to_host.after(&instance.transform));
-            for k in [0.25, 0.5, 0.75] {
-                let from = add(add(start, scale(Z, k * height)), scale(d, least + EPS));
-                let to = add(from, scale(d, FAR));
-                let Ok(crossings) = self.kernel().segment_crossings(
-                    shape,
-                    to_body.apply_point(from),
-                    to_body.apply_point(to),
-                ) else {
+            let segments: Vec<(V3, V3)> = lines
+                .iter()
+                .map(|from| {
+                    (
+                        to_body.apply_point(*from),
+                        to_body.apply_point(add(*from, scale(d, FAR))),
+                    )
+                })
+                .collect();
+            // All the lines at once, else one by one.
+            let crossings = match self.kernel().segments_crossings(shape, &segments) {
+                Ok(all) => all,
+                Err(_) => segments
+                    .iter()
+                    .map(|(a, b)| {
+                        self.kernel()
+                            .segment_crossings(shape, *a, *b)
+                            .unwrap_or_default()
+                    })
+                    .collect(),
+            };
+            let skip = if Some(instance.body) == own { OWN } else { 0.0 };
+            for line in crossings {
+                let Some(at) = line
+                    .into_iter()
+                    .filter(|(_, enters)| *enters)
+                    .map(|(f, _)| f * FAR)
+                    .find(|at| *at >= skip)
+                else {
                     continue;
                 };
-                let Some((f, _)) = crossings.into_iter().find(|(_, enters)| *enters) else {
-                    continue;
-                };
-                let at = least + EPS + f * FAR;
+                let at = least + EPS + at;
                 if best.as_ref().is_none_or(|b| at < b.at) {
                     best = Some(RunMet {
                         at,
@@ -3265,29 +3639,55 @@ impl<K: Kernel> Document<K> {
             }
             None => {
                 let mut def = input.clone();
-                junction = self.square_start(&mut def, &world)?;
+                // Named first, so that a refusal names it (mitcad#536).
                 if def.name.is_none() {
                     def.name = Some(self.free_frame_name(def.kind(), &world));
                 }
+                junction = match self.square_start(&mut def, &world) {
+                    Ok(j) => j,
+                    Err(e) => return Ok(refused_preview(&def, &e, None, None, Vec::new())),
+                };
                 world.push(Known::new(def));
                 world.len() - 1
             }
         };
-        let plan = self.plan_frame(&world[target], &world)?;
+        // A wall's length as worked out (mitcad#536: the auto end's).
+        let length = if world[target].def.kind() == FrameKind::Wall {
+            self.wall_geo(&world[target]).ok().map(|g| round6(g.length))
+        } else {
+            None
+        };
+        let warnings: Vec<String> = junction
+            .iter()
+            .flat_map(|j| j.warnings.iter().cloned())
+            .collect();
+        let plan = match self.plan_frame(&world[target], &world) {
+            Ok(plan) => plan,
+            Err(e) => {
+                return Ok(refused_preview(
+                    &world[target].def,
+                    &e,
+                    junction.as_ref(),
+                    length,
+                    warnings,
+                ));
+            }
+        };
         let mut roles: BTreeMap<&str, usize> = BTreeMap::new();
         for m in &plan.members {
             *roles.entry(m.spec.role).or_default() += 1;
         }
         let host = self.host_placement();
-        let mut warnings = plan.warnings.clone();
-        if let Some(j) = &junction {
-            warnings.extend(j.warnings.iter().cloned());
-        }
+        let warnings: Vec<String> = plan.warnings.iter().cloned().chain(warnings).collect();
         Ok(json!({
             "place": "frame",
             "kind": plan.kind.as_str(),
             "name": plan.name,
             "count": plan.members.len(),
+            "length": length,
+            // A wall's plates made of pieces, each joint over a stud
+            // (mitcad#536): along the wall from its start.
+            "splices": plan.splices.iter().map(Splice::to_json).collect::<Vec<_>>(),
             "roles": roles,
             "members": plan.members.iter().map(|m| json!({
                 "member": m.spec.key,
@@ -3393,6 +3793,7 @@ impl<K: Kernel> Document<K> {
             changed,
             junction: None,
             component,
+            splices: first.splices.iter().map(Splice::to_json).collect(),
         })
     }
 
@@ -3457,6 +3858,31 @@ impl<K: Kernel> Document<K> {
         }
         done
     }
+}
+
+/// A frame's refused `build_preview` (mitcad#536): which frame it is, what
+/// its start and its auto end worked out (`junction`, a wall's `length`)
+/// and the reason (`problems`), no members.
+fn refused_preview(
+    def: &FrameInput,
+    problem: &ModelError,
+    junction: Option<&StartJunction>,
+    length: Option<f64>,
+    warnings: Vec<String>,
+) -> Value {
+    json!({
+        "place": "frame",
+        "kind": def.kind().as_str(),
+        "name": def.name,
+        "count": 0,
+        "roles": {},
+        "members": [],
+        "warnings": warnings,
+        "problems": [problem.to_string()],
+        "junction": junction.map(StartJunction::to_json),
+        "length": length,
+        "splices": [],
+    })
 }
 
 /// The cuts a frame makes in its members (laid out anew with it): a

@@ -11,7 +11,11 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use super::geom_ref::{GeomRef, Want};
-use super::pattern::{ComputeOption, Element, PatternObjects, repeat};
+use super::pattern::{
+    ComputeOption, Element, PatternObjects, ScaleRule, ScaleSpec, add_scale_references,
+    check_options, check_scale_values, map_scale, map_scale_copies, map_scale_groups, map_scales,
+    none, repeat, scale_elements,
+};
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, is_false,
 };
@@ -36,6 +40,28 @@ pub struct MirrorDef<P = ParamId> {
     /// participants, every body without them.
     #[serde(default, skip_serializing_if = "is_false")]
     pub original_bodies: bool,
+    /// Scales the image by this factor about its own centre, as a
+    /// pattern's `scale` with two elements (FreeCAD's Scaled
+    /// transformation after a mirror, mitcad#539).
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub scale: Option<P>,
+    /// As a pattern's `scale_groups` (2 at most: the original's and the
+    /// image's run, or one run over the copies of patterns among the
+    /// features).
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub scale_groups: Option<P>,
+    /// As a pattern's `scale_copies` (mitcad#542).
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub scale_copies: Option<P>,
+    /// As a pattern's `scales` (mitcad#542).
+    #[serde(default = "Vec::new", skip_serializing_if = "Vec::is_empty")]
+    pub scales: Vec<ScaleRule<P>>,
+    /// As a pattern's `scale_center` (mitcad#542).
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub scale_center: Option<GeomRef>,
+    /// As a pattern's `skipped_copies` (mitcad#542).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skipped_copies: Vec<u32>,
     #[serde(skip)]
     pub marker: PhantomData<P>,
 }
@@ -50,7 +76,7 @@ impl<P> MirrorDef<P> {
 
     pub fn map_params<Q, E>(
         &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
+        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
     ) -> Result<MirrorDef<Q>, E> {
         Ok(MirrorDef {
             objects: self.objects.clone(),
@@ -58,8 +84,27 @@ impl<P> MirrorDef<P> {
             combine: self.combine,
             compute: self.compute,
             original_bodies: self.original_bodies,
+            scale: map_scale(&self.scale, f)?,
+            scale_groups: map_scale_groups(&self.scale_groups, f)?,
+            scale_copies: map_scale_copies(&self.scale_copies, f)?,
+            scales: map_scales(&self.scales, f)?,
+            scale_center: self.scale_center.clone(),
+            skipped_copies: self.skipped_copies.clone(),
             marker: PhantomData,
         })
+    }
+}
+
+impl MirrorDef {
+    /// Its scale options together.
+    pub(super) fn scale_spec(&self) -> ScaleSpec<'_> {
+        ScaleSpec {
+            scale: self.scale,
+            groups: self.scale_groups,
+            copies: self.scale_copies,
+            more: &self.scales,
+            center: self.scale_center.as_ref(),
+        }
     }
 }
 
@@ -68,16 +113,24 @@ impl FeatureInfo for MirrorDef {
         let mut references = References::default();
         self.objects.add_references(&mut references);
         self.plane.add_to(&mut references);
+        add_scale_references(&self.scale_spec(), &mut references);
         references
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
         self.objects.check(ctx)?;
         self.plane.check(ctx, Want::Plane)?;
-        if self.combine && !matches!(self.objects, PatternObjects::Bodies { .. }) {
-            return Err("combine applies to mirrored bodies only".to_owned());
-        }
-        Ok(())
+        check_options(
+            ctx,
+            &self.objects,
+            self.combine,
+            &self.scale_spec(),
+            &self.skipped_copies,
+        )
+    }
+
+    fn check_values(&self, value: &dyn Fn(ParamId) -> f64) -> Result<(), String> {
+        check_scale_values(value, &self.scale_spec())
     }
 
     fn creates_bodies(&self) -> bool {
@@ -88,14 +141,20 @@ impl FeatureInfo for MirrorDef {
 impl<K: Kernel> Evaluate<K> for MirrorDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
         let frame = ctx.plane(&self.plane)?;
-        let transform = Transform::mirror(frame.origin, frame.normal())
+        let reflection = Transform::mirror(frame.origin, frame.normal())
             .ok_or("the mirror plane has no normal")?;
+        let (all, scaling) = scale_elements(
+            ctx,
+            &self.objects,
+            &self.scale_spec(),
+            vec![Transform::IDENTITY, reflection],
+        )?;
         let element = Element {
             index: 1,
-            transform,
+            transform: all[1],
         };
         // Its elements, for patterns of it (patterns of patterns).
-        ctx.elements = vec![Transform::IDENTITY, transform];
+        ctx.elements = all;
         repeat(
             ctx,
             &self.objects,
@@ -103,6 +162,8 @@ impl<K: Kernel> Evaluate<K> for MirrorDef {
             self.original_bodies,
             &[element],
             self.combine,
+            scaling.as_ref(),
+            &self.skipped_copies,
         )
     }
 }

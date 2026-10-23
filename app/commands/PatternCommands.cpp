@@ -11,6 +11,7 @@
 
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
+#include "PatternOptions.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -24,6 +25,32 @@ const Choices kComputes = {{QStringLiteral("adjust"), QStringLiteral("Adjust")},
                            {QStringLiteral("optimized"), QStringLiteral("Optimized")}};
 const Choices kSpacings = {{QStringLiteral("spacing"), QStringLiteral("Spacing")},
                            {QStringLiteral("extent"), QStringLiteral("Extent")}};
+const Choices kDirectionTypes = {{oneDirection(), QStringLiteral("One Direction")},
+                                 {symmetricDirection(), QStringLiteral("Symmetric")}};
+
+// The Direction Type and Distance Type rows (mitcad#545; commands.md,
+// "Patterns": `symmetric`, `distance_type`). The defaults are the
+// definition's: one direction, spacing.
+InputDef directionTypeInput(const QString& id, const QString& name) {
+  return choiceInput(id, name, kDirectionTypes, oneDirection())
+      .withTooltip(QObject::tr("One Direction: copies along the direction; Symmetric: on both sides of the "
+                               "original"));
+}
+
+InputDef distanceTypeInput() {
+  return choiceInput(QStringLiteral("distance_type"), QObject::tr("Distance Type"), kSpacings,
+                     QStringLiteral("spacing"))
+      .withTooltip(QObject::tr("Spacing: from one copy to the next; Extent: from the first copy to the last"));
+}
+
+// A length row whose label follows the Distance Type: "Spacing" or
+// "Extent" (with the direction's suffix).
+InputDef lengthInput(const QString& id, const QString& suffix) {
+  return valueInput(id, lengthLabel(QStringLiteral("spacing"), suffix), ValueKind::Length, QStringLiteral("20 mm"))
+      .withLabel([suffix](const CommandState& state) {
+        return lengthLabel(state.choice(QStringLiteral("distance_type")), suffix);
+      });
+}
 
 // The objects of a pattern or mirror: the Pattern Type and its pick.
 QVector<InputDef> patternObjects() {
@@ -173,11 +200,12 @@ void loadSuppressed(const QJsonObject& feature, CommandState& state) {
 }
 
 // An arrow from the objects' middle along an axis input, against it while
-// the check input `flip` is on. The value is signed: a handle dragged past
-// the middle gives a negative distance.
+// the check input `flip` is on and the direction is not symmetric (choice
+// input `type`). The value is signed: a handle dragged past the middle
+// gives a negative distance.
 std::function<std::optional<Manipulator>(const CommandState&, const CommandContext&)>
-alongAxis(const QString& axis, const QString& flip) {
-  return [axis, flip](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
+alongAxis(const QString& axis, const QString& flip, const QString& type) {
+  return [axis, flip, type](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
     const Selection& axisItems = state.items(axis);
     const auto center = centerOf(state.items(objectsKey(state)), model);
     if (axisItems.isEmpty() || !center) {
@@ -187,7 +215,8 @@ alongAxis(const QString& axis, const QString& flip) {
     if (!line) {
       return std::nullopt;
     }
-    return arrow(*center, state.checked(flip) ? line->second.Reversed() : line->second);
+    return arrow(*center,
+                 flipApplies(state.choice(type), state.checked(flip)) ? line->second.Reversed() : line->second);
   };
 }
 
@@ -197,11 +226,15 @@ InputDef lineInput(const QString& id, const QString& name, int min) {
       .withAccepts([](const SelectionItem& item) { return item.kind == SelectKind::Axis || isLine(item); });
 }
 
-QString describePattern(const char* kind, const CommandState& state) {
-  return QStringLiteral("Added %1 pattern of %2 %3")
+// "Added rectangular pattern of 1 bodies: <its options>" (mitcad#545: the
+// definition's Direction Types and Distance Type, for the log).
+QString describePattern(const char* kind, const CommandState& state, const Built& built) {
+  const QString options = built.error.isEmpty() ? patternOptionsText(built.def) : QString();
+  return QStringLiteral("Added %1 pattern of %2 %3%4")
       .arg(QString::fromLatin1(kind))
       .arg(state.items(objectsKey(state)).size())
-      .arg(state.choice(QStringLiteral("object_type")));
+      .arg(state.choice(QStringLiteral("object_type")),
+           options.isEmpty() ? QString() : QStringLiteral(": ") + options);
 }
 
 } // namespace
@@ -219,33 +252,45 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
   def.keywords = {QStringLiteral("array"), QStringLiteral("linear pattern"), QStringLiteral("copy")};
   def.featureType = QStringLiteral("rectangular_pattern");
   const auto second = [](const CommandState& s) { return !s.items(QStringLiteral("direction2")).isEmpty(); };
+  // Flip only for a direction of one way (mitcad#545): a symmetric one has
+  // copies on both sides.
+  const auto flipShown = [](const char* suffix) {
+    const QString type = QStringLiteral("direction_type") + QString::fromLatin1(suffix);
+    return [type](const CommandState& s) { return s.choice(type) != symmetricDirection(); };
+  };
   def.inputs = patternObjects();
   def.inputs += {
+      distanceTypeInput(),
       lineInput(QStringLiteral("direction1"), QObject::tr("Direction 1"), 1),
+      directionTypeInput(QStringLiteral("direction_type1"), QObject::tr("Direction Type")),
       valueInput(QStringLiteral("quantity1"), QObject::tr("Quantity"), ValueKind::Unitless, QStringLiteral("3")),
-      valueInput(QStringLiteral("distance1"), QObject::tr("Distance"), ValueKind::Length, QStringLiteral("20 mm"))
-          .withManipulator(alongAxis(QStringLiteral("direction1"), QStringLiteral("flip1"))),
-      flipInput(QStringLiteral("flip1"), QObject::tr("Flip")).withTooltip(QObject::tr("Copies against the direction")),
-      checkInput(QStringLiteral("symmetric1"), QObject::tr("Symmetric"), false),
+      lengthInput(QStringLiteral("distance1"), QString())
+          .withManipulator(alongAxis(QStringLiteral("direction1"), QStringLiteral("flip1"),
+                                     QStringLiteral("direction_type1"))),
+      flipInput(QStringLiteral("flip1"), QObject::tr("Flip"))
+          .withTooltip(QObject::tr("Copies against the direction"))
+          .withVisible(flipShown("1")),
       lineInput(QStringLiteral("direction2"), QObject::tr("Direction 2"), 0)
           .withTooltip(QObject::tr("A second direction; none: one row")),
+      directionTypeInput(QStringLiteral("direction_type2"), QObject::tr("Direction Type 2")).withVisible(second),
       valueInput(QStringLiteral("quantity2"), QObject::tr("Quantity 2"), ValueKind::Unitless, QStringLiteral("2"))
           .withVisible(second),
-      valueInput(QStringLiteral("distance2"), QObject::tr("Distance 2"), ValueKind::Length, QStringLiteral("20 mm"))
+      lengthInput(QStringLiteral("distance2"), QStringLiteral("2"))
           .withVisible(second)
-          .withManipulator(alongAxis(QStringLiteral("direction2"), QStringLiteral("flip2"))),
+          .withManipulator(alongAxis(QStringLiteral("direction2"), QStringLiteral("flip2"),
+                                     QStringLiteral("direction_type2"))),
       flipInput(QStringLiteral("flip2"), QObject::tr("Flip 2"))
           .withTooltip(QObject::tr("Copies against the second direction"))
-          .withVisible(second),
-      checkInput(QStringLiteral("symmetric2"), QObject::tr("Symmetric 2"), false).withVisible(second),
-      choiceInput(QStringLiteral("distance_type"), QObject::tr("Distance Type"), kSpacings, QStringLiteral("spacing")),
+          .withVisible([second, shown = flipShown("2")](const CommandState& s) { return second(s) && shown(s); }),
       suppressedInput(),
   };
   def.enabled = [&context] { return hasBodies(context); };
 
   // The model keeps one signed distance per direction (mitcad#447): Flip
   // negates the distance that is built, and a loaded pattern shows its
-  // stored signed distance with Flip off.
+  // stored signed distance with Flip off. A symmetric direction hides Flip
+  // and builds the distance as typed (mitcad#545): its copies lie on both
+  // sides, and only an even quantity's extra copy follows the sign.
   def.build = [](const CommandState& state, const CommandContext&) {
     Built result;
     const QJsonObject objects = objectsOf(state, result);
@@ -255,13 +300,12 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
     const auto direction = [&state](const char* suffix) {
       const QString n = QString::fromLatin1(suffix);
       const QString distance = state.expression(QStringLiteral("distance") + n);
+      const QString type = state.choice(QStringLiteral("direction_type") + n);
       QJsonObject d{{QStringLiteral("axis"), state.items(QStringLiteral("direction") + n).first().reference()},
                     {QStringLiteral("quantity"), countValue(state, QStringLiteral("quantity") + n)},
                     {QStringLiteral("distance"),
-                     state.checked(QStringLiteral("flip") + n) ? negated(distance) : distance}};
-      if (state.checked(QStringLiteral("symmetric") + n)) {
-        d.insert(QStringLiteral("symmetric"), true);
-      }
+                     flipApplies(type, state.checked(QStringLiteral("flip") + n)) ? negated(distance) : distance}};
+      setDirectionType(d, type);
       return d;
     };
     result.def = {{QStringLiteral("type"), QStringLiteral("rectangular_pattern")},
@@ -276,8 +320,12 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
     return result;
   };
 
+  // An imported or saved pattern shows its stored Direction Types and
+  // Distance Type (mitcad#545).
   def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
     loadObjects(feature, state, context);
+    state.setChoice(QStringLiteral("distance_type"),
+                    feature.value(QStringLiteral("distance_type")).toString(QStringLiteral("spacing")));
     for (const char* n : {"1", "2"}) {
       const QString suffix = QString::fromLatin1(n);
       const QJsonObject d = feature.value(QStringLiteral("direction") + suffix).toObject();
@@ -285,12 +333,11 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
         continue;
       }
       state.setItems(QStringLiteral("direction") + suffix, {itemOf(d.value(QStringLiteral("axis")), context)});
+      state.setChoice(QStringLiteral("direction_type") + suffix, directionTypeOf(d));
       loadCount(state, QStringLiteral("quantity") + suffix, d.value(QStringLiteral("quantity")), feature, context);
       loadValue(state, QStringLiteral("distance") + suffix, d.value(QStringLiteral("distance")), feature, context);
       state.setChecked(QStringLiteral("flip") + suffix, false);
-      state.setChecked(QStringLiteral("symmetric") + suffix, d.value(QStringLiteral("symmetric")).toBool());
     }
-    state.setChoice(QStringLiteral("distance_type"), str(feature, "distance_type"));
     loadSuppressed(feature, state);
   };
 
@@ -304,8 +351,8 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
     return true;
   };
 
-  def.describe = [](const CommandState& state, const CommandContext&) {
-    return describePattern("rectangular", state);
+  def.describe = [build = def.build](const CommandState& state, const CommandContext& model) {
+    return describePattern("rectangular", state, build(state, model));
   };
   return def;
 }
@@ -349,7 +396,10 @@ CommandDef circularPatternCommand(const CommandContext& context) {
             }
             return m;
           }),
-      checkInput(QStringLiteral("symmetric"), QObject::tr("Symmetric"), false),
+      // The angle centred on the originals (mitcad#545); a full turn is the
+      // same either way.
+      checkInput(QStringLiteral("symmetric"), QObject::tr("Symmetric"), false)
+          .withTooltip(QObject::tr("Copies on both sides of the original, the angle centred on it")),
       suppressedInput(),
   };
   def.enabled = [&context] { return hasBodies(context); };
@@ -386,7 +436,9 @@ CommandDef circularPatternCommand(const CommandContext& context) {
     return isShowable(feature.value(QStringLiteral("axis")), context);
   };
 
-  def.describe = [](const CommandState& state, const CommandContext&) { return describePattern("circular", state); };
+  def.describe = [build = def.build](const CommandState& state, const CommandContext& model) {
+    return describePattern("circular", state, build(state, model));
+  };
   return def;
 }
 
@@ -408,17 +460,19 @@ CommandDef pathPatternCommand(const CommandContext& context) {
       selectionInput(QStringLiteral("path"), QObject::tr("Path"), SelectKind::SketchCurve, 1, 0)
           .withTooltip(QObject::tr("A sketch line, arc or circle, or a chain of them in one sketch"))
           .withAccepts([](const SelectionItem& item) { return isLine(item) || isCircular(item); }),
+      distanceTypeInput(),
+      directionTypeInput(QStringLiteral("direction_type"), QObject::tr("Direction Type")),
       valueInput(QStringLiteral("quantity"), QObject::tr("Quantity"), ValueKind::Unitless, QStringLiteral("3")),
-      valueInput(QStringLiteral("distance"), QObject::tr("Distance"), ValueKind::Length, QStringLiteral("20 mm")),
-      choiceInput(QStringLiteral("distance_type"), QObject::tr("Distance Type"), kSpacings, QStringLiteral("spacing")),
+      lengthInput(QStringLiteral("distance"), QString()),
       valueInput(QStringLiteral("start"), QObject::tr("Start Point"), ValueKind::Unitless, QStringLiteral("0"))
           .withTooltip(QObject::tr("Where the original is on the path, 0 at its start and 1 at its end")),
       choiceInput(QStringLiteral("orientation"), QObject::tr("Orientation"),
                   {{QStringLiteral("identical"), QStringLiteral("Identical")},
                    {QStringLiteral("path"), QStringLiteral("Path Direction")}},
                   QStringLiteral("identical")),
-      flipInput(QStringLiteral("flip"), QObject::tr("Flip")),
-      checkInput(QStringLiteral("symmetric"), QObject::tr("Symmetric"), false),
+      // Flip stays while symmetric (mitcad#545): the definition keeps it, and
+      // it puts an even quantity's extra copy at the other side.
+      flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withTooltip(QObject::tr("Copies the other way along the path")),
       suppressedInput(),
   };
   def.enabled = [&context] { return hasBodies(context); };
@@ -450,9 +504,7 @@ CommandDef pathPatternCommand(const CommandContext& context) {
     if (state.choice(QStringLiteral("orientation")) == QStringLiteral("path")) {
       result.def.insert(QStringLiteral("along_path"), true);
     }
-    if (state.checked(QStringLiteral("symmetric"))) {
-      result.def.insert(QStringLiteral("symmetric"), true);
-    }
+    setDirectionType(result.def, state.choice(QStringLiteral("direction_type")));
     addCompute(result.def, state);
     addSuppressed(result.def, state);
     return result;
@@ -467,15 +519,16 @@ CommandDef pathPatternCommand(const CommandContext& context) {
     } else {
       state.setItems(QStringLiteral("path"), {itemOf(path, context)});
     }
+    state.setChoice(QStringLiteral("distance_type"),
+                    feature.value(QStringLiteral("distance_type")).toString(QStringLiteral("spacing")));
+    state.setChoice(QStringLiteral("direction_type"), directionTypeOf(feature));
     loadCount(state, QStringLiteral("quantity"), feature.value(QStringLiteral("quantity")), feature, context);
     loadValue(state, QStringLiteral("distance"), feature.value(QStringLiteral("distance")), feature, context);
-    state.setChoice(QStringLiteral("distance_type"), str(feature, "distance_type"));
     state.setText(QStringLiteral("start"), number(feature.value(QStringLiteral("start")).toDouble()));
     state.setChecked(QStringLiteral("flip"), feature.value(QStringLiteral("flip")).toBool());
     state.setChoice(QStringLiteral("orientation"), feature.value(QStringLiteral("along_path")).toBool()
                                                        ? QStringLiteral("path")
                                                        : QStringLiteral("identical"));
-    state.setChecked(QStringLiteral("symmetric"), feature.value(QStringLiteral("symmetric")).toBool());
   };
 
   // A fixed line as the path has no input.
@@ -483,7 +536,9 @@ CommandDef pathPatternCommand(const CommandContext& context) {
     return feature.value(QStringLiteral("path")).toObject().contains(QStringLiteral("sketch"));
   };
 
-  def.describe = [](const CommandState& state, const CommandContext&) { return describePattern("path", state); };
+  def.describe = [build = def.build](const CommandState& state, const CommandContext& model) {
+    return describePattern("path", state, build(state, model));
+  };
   return def;
 }
 

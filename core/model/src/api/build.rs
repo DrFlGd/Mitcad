@@ -94,6 +94,8 @@ fn framed_json(framed: &crate::build::frames::Framed) -> Value {
         "relaid": framed.relaid,
         "warnings": framed.warnings,
         "junction": framed.junction.as_ref().map(|j| j.to_json()),
+        // A wall's plates made of pieces (mitcad#536).
+        "splices": framed.splices,
     })
 }
 

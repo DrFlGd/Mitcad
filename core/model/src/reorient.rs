@@ -522,7 +522,25 @@ fn turn_fields(
         }
         FeatureDef::SplitBody(split) => some(&mut split.direction),
         FeatureDef::SplitFace(split) => some(&mut split.direction),
-        FeatureDef::Sweep(sweep) => some(&mut sweep.binormal),
+        // A loft's constant binormal frame along its centre line (mitcad#543).
+        FeatureDef::Loft(loft) => {
+            if let Some(crate::features::sweep::SweepFrame::ConstantBinormal { binormal }) =
+                &mut loft.frame
+            {
+                v(binormal);
+            }
+        }
+        FeatureDef::Sweep(sweep) => {
+            some(&mut sweep.binormal);
+            // A constant binormal frame (mitcad#539).
+            if let Some(crate::features::sweep::SweepFrame::ConstantBinormal { binormal }) =
+                &mut sweep.frame
+            {
+                v(binormal);
+            }
+        }
+        // An extrusion's own direction (mitcad#539).
+        FeatureDef::Extrude(extrude) => some(&mut extrude.direction),
         _ => {}
     }
     // Joint origins: geometry and frame overrides are in the component

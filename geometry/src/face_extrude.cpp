@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "mitcad/geometry/face_extrude.hpp"
 
+#include <cmath>
+#include <initializer_list>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -35,6 +37,15 @@ ShapePtr extrude_face(const Shape& body, const FaceExtrudeSpec& spec) {
     detail::require_positive("extrude distance 2", *spec.distance2);
   }
   detail::require_finite("start offset", spec.start_offset);
+  // As an extrusion's tapers: below 90 degrees by a margin (85 degrees
+  // itself allowed, with rounding).
+  constexpr double kMaxTaper = 85.0 * 3.14159265358979323846 / 180.0 + 1.0e-9;
+  for (const double taper : {spec.taper1, spec.taper2}) {
+    detail::require_finite("taper angle", taper);
+    if (std::abs(taper) > kMaxTaper) {
+      throw std::invalid_argument("the taper angle must be between -85 and 85 degrees");
+    }
+  }
   return detail::run("extrude face", [&] {
     const std::vector<int> found = body.find_faces(spec.face);
     if (found.empty()) {
@@ -52,15 +63,24 @@ ShapePtr extrude_face(const Shape& body, const FaceExtrudeSpec& spec) {
                                   "planar face");
     }
     const BRepAdaptor_Surface surface(face);
-    if (surface.GetType() != GeomAbs_Plane) {
-      throw std::invalid_argument("face " + spec.face + " is not planar: an extrusion takes a planar face");
+    const bool tapered = spec.taper1 != 0.0 || (spec.distance2 && spec.taper2 != 0.0);
+    const bool planar = surface.GetType() == GeomAbs_Plane;
+    if (!planar && (!spec.direction || tapered || spec.start_offset != 0.0)) {
+      throw std::invalid_argument("face " + spec.face +
+                                  " is not planar: an extrusion takes a planar face (a curved one only "
+                                  "along a direction, without a taper or a start offset)");
     }
-    // Out of the material: the plane's normal as the face is oriented.
-    gp_Dir normal = surface.Plane().Axis().Direction();
-    if (face.Orientation() == TopAbs_REVERSED) {
+    // Out of the material: the plane's normal as the face is oriented (a
+    // curved face goes along its direction).
+    gp_Dir normal = planar ? surface.Plane().Axis().Direction() : *spec.direction;
+    if (planar && face.Orientation() == TopAbs_REVERSED) {
       normal.Reverse();
     }
-    const gp_Dir along = spec.reversed ? normal.Reversed() : normal;
+    if (planar && spec.direction && std::abs(spec.direction->Dot(normal)) < 1.0e-6) {
+      throw std::invalid_argument("the extrusion direction lies in the plane of face " + spec.face);
+    }
+    const gp_Dir sweep_along = spec.direction ? *spec.direction : normal;
+    const gp_Dir along = spec.reversed ? sweep_along.Reversed() : sweep_along;
 
     // The face copied, so that the prism shares nothing with the body, its
     // edges named after the body's.
@@ -75,16 +95,33 @@ ShapePtr extrude_face(const Shape& body, const FaceExtrudeSpec& spec) {
       sweep.edges.emplace_back(TopoDS::Edge(copy.of(edge)), face_name(spec.feature, "side", key));
     }
 
-    // Both sides in one prism, from the far end of side two; with two
-    // sides the far cap of side one is the start and that of side two the
-    // end, as an extrusion of sketch profiles names them.
+    // With two sides the far cap of side one is the start and that of side
+    // two the end, as an extrusion of sketch profiles names them.
     const bool two = spec.distance2.has_value();
+    const NameList start{face_name(spec.feature, "start", spec.key)};
+    const NameList end{face_name(spec.feature, "end", spec.key)};
+    if (tapered) {
+      // Each side tapered on its own from the face (mitcad#541), as an
+      // extrusion of sketch profiles tapers them; with two sides the face
+      // between them is `mid(<key>)`.
+      gp_Trsf to_start;
+      to_start.SetTranslation(gp_Vec(normal) * spec.start_offset);
+      const detail::SweepFace at_start = detail::transformed(sweep, to_start);
+      const NameList mid{face_name(spec.feature, "mid", spec.key)};
+      std::vector<ShapePtr> parts;
+      parts.push_back(detail::distance_side(at_start, spec.distance1, spec.taper1, along, two ? mid : start,
+                                            two ? start : end));
+      if (two) {
+        parts.push_back(detail::distance_side(at_start, *spec.distance2, spec.taper2, along.Reversed(), mid, end));
+      }
+      const ShapePtr solid = parts.size() == 1 ? parts.front() : detail::fused(parts, "the extrusion of the face");
+      return detail::finished(*solid, "the extrusion of the face");
+    }
+    // Untapered: both sides in one prism, from the far end of side two.
     const double low = two ? -*spec.distance2 : 0.0;
     const double length = spec.distance1 - low;
     gp_Trsf place;
     place.SetTranslation(gp_Vec(normal) * spec.start_offset + gp_Vec(along) * low);
-    const NameList start{face_name(spec.feature, "start", spec.key)};
-    const NameList end{face_name(spec.feature, "end", spec.key)};
     const ShapePtr prism = detail::named_prism(detail::transformed(sweep, place), gp_Vec(along) * length,
                                                two ? end : start, two ? start : end);
     return detail::finished(*prism, "the extrusion of the face");

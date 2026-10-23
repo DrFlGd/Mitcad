@@ -609,13 +609,19 @@ parameters.
   so an upstream edit moves or resizes the extrusion with the face; the
   body is read in the feature's component, and the feature depends on it
   and on the features the name refers to. It takes an extent `distance`,
-  `symmetric` or `two_sides` of distances, without a taper, from the face
-  (`profile_plane`) or an `offset` along its outward normal; no
+  `symmetric` or `two_sides` of distances, each side with its `taper` as
+  for profiles (mitcad#541: the outside grows away from the face and its
+  holes shrink with a positive taper), from the face (`profile_plane`) or
+  an `offset` along its outward normal, and a `direction` of its own
+  (mitcad#541, not in the face's plane; the distances along it, a taper
+  growing the face in its plane by `d tan(taper)` at distance `d`); no
   `profiles`, `thin`, `surface`, `curves`, `wrap`, `cut_scope` or start
   object (refused: `an extrusion of a body face …`). A face that is gone,
-  not planar (`face F3:side0 is not planar: an extrusion takes a planar
-  face`), a mesh body's, or names several faces fails the feature; no
-  other profile is ever taken instead. Operations and participants as
+  not planar without a `direction` (`face F3:side0 is not planar: an
+  extrusion takes a planar face …`; a curved face goes along a
+  `direction` only, as its prism, without a taper or offset), a mesh
+  body's, or names several faces fails the feature; no other profile is
+  ever taken instead. Operations and participants as
   above (automatic operation too). Faces: `side(<edge>)` from each edge of
   the face, by the edge's name in the body (a surface body's free edge,
   which has none, by its index among the face's edges:
@@ -715,6 +721,31 @@ for no-target and unsupported-target evaluation errors; the ordinary preview
 status/error and `can_commit` control acceptance. A missing report means the
 tool or context could not be evaluated and the previous list must not be used.
 
+#### A direction of its own (mitcad#539)
+
+`"direction": [x, y, z]` (any length but zero; left out by default)
+extrudes the profiles along that fixed direction instead of the sketch
+normal; `flip` and a negative one-sided distance reverse it, and it turns
+with the profile in patterns and with Reorient Design. Distances are
+measured along it (a prism of the profile slanted by the direction), a
+start offset still along the sketch normal. A taper grows the profile in
+its plane: every loop moves outwards from the material by `t tan(taper)`
+at the distance `t` along the direction, each side face ruled from its
+edge to that edge's offset moved along the direction (as the FreeCAD
+import's pads along a custom direction are; along the normal it is the
+usual taper). The geometry builds it as the taper along the normal to the
+same height (the distance times the cosine c of the direction's angle to
+the normal, the taper's tangent over c) sheared along the direction,
+which keeps the planes parallel to the sketch, and gives the side faces
+back their planes; a circle's side is the oblique cone through the grown
+circles (`geometry/tests/test_extrude_feature.cpp`, `test_oblique`). A
+direction in the sketch plane fails the extrusion (`the extrusion
+direction lies in the sketch plane`); it is refused with a start object or
+a wrap, and a tapered side up to an object along it is `unsupported`. A
+body face as the profile (`profile_face`, mitcad#541) goes along it too,
+tapered alike (`the extrusion direction lies in the plane of face …` for
+one in the face's plane); a curved face goes only along a direction.
+
 ### Profile selections
 
 The `profiles` of extrude, revolve, sweep and helix select an area of
@@ -809,8 +840,29 @@ split. Reverting the edit restores the keys and removes the warning.
   way), `{"type": "full"}`, `{"type": "symmetric", "angle": a}` (a to each
   side, as .f3d designs measure it), `{"type": "two_sides", "angle1": a1,
   "angle2": a2}` or `{"type": "to_object", "object": <object>}` (the
-  positive way to the first face of the object reached).
+  positive way to the first face of the object reached; with a body's
+  `"through": true`, mitcad#539, through the body to its last face, where
+  the turn leaves it for the last time: the pieces of the turn are taken
+  in the order of their angles about the axis up to the last one inside
+  the body; `geometry/tests/test_revolve.cpp`, `test_to_object`).
 - `operation`, `participants`: as for extrude.
+- `profile_face` (optional, mitcad#539): `{"body": "F2.b0", "face":
+  "F2:side(c1[c4,c2])"}`, a planar face of a body as the profile instead
+  of `profiles`, as an extrusion's `profile_face`: its bounded area, holes
+  kept, turned about the axis by `Kernel::revolve_face`
+  (`geometry/src/face_revolve.cpp`). The face is found by its topological
+  name on every recompute; the feature depends on its body and on the
+  features the name refers to. Extents `angle`, `full`, `symmetric` and
+  `two_sides` (as for profiles: a negative single angle turns the other
+  way, a side of nothing leaves one side); no `profiles`, `surface`,
+  `curves`, `project_axis` or `to_object` (refused: `a revolution of a
+  body face …`). A face that is gone, not planar, a mesh body's, names
+  several faces, crosses the axis or has the axis through it fails the
+  feature; no other profile is taken instead. Faces: `side(<edge>)` from
+  each edge of the face off the axis (by the edge's name in the body, an
+  edge without one by its index among the face's edges), `start(<face>)`
+  and `end(<face>)` keyed by the stored face reference, as for profiles
+  below; a full turn has no caps.
 
 The profile may touch the axis. Regions that touch are united into one
 face before the turn (turned apart and fused, two parts of one surface
@@ -1509,6 +1561,62 @@ along the binormal, whose normals give the frames
 (`geometry/src/path_sweep.cpp`; `test_fixed_binormal` in
 `geometry/tests/test_sweeps.cpp`).
 
+#### A Frenet or auxiliary frame (mitcad#539)
+
+`"frame"` (left out by default) sets how a perpendicular sweep's profile
+turns along the path instead of keeping its angle to it:
+
+- `{"type": "frenet"}`: the path's Frenet frame (its tangent, its
+  principal normal towards the centre of its curvature, their binormal);
+  the profile turns with the path's curvature. Along a planar path it is
+  the default frame, except where the path's bend changes side.
+- `{"type": "auxiliary", "curve": <path>, "curvilinear": false}`: the
+  frame's normal points from the path to a curve beside it (an auxiliary
+  spine, a [path](#paths)), so the profile turns about the path as that
+  direction does; the curve's point is where it crosses the plane square
+  to the path there, or with `curvilinear` the point at the same fraction
+  of its length as the path's (the frame's normal then the direction to
+  it, its tangent square to that normal). The curve runs the way the path
+  runs (`flip` reverses both) and must stay apart from the path. Unlike a
+  guide rail it never sizes the profile.
+- `{"type": "constant_binormal", "binormal": [x, y, z]}` (any length but
+  zero): the frame keeps that binormal exactly, its normal `binormal ×
+  tangent` and its tangent the path's made square to the binormal, so the
+  profile turns only about the binormal. Unlike the fixed `binormal`
+  above (which keeps the path's tangent and makes the binormal square to
+  it), the profile leans with the path where the path leaves the plane
+  square to the binormal; where the path runs at right angles to it the
+  two agree.
+
+The geometry sweeps them as OCCT's pipe shell's Frenet, auxiliary and
+constant binormal modes, approximated within 1e-7 mm (`geometry/src/spine.cpp`,
+`geometry/src/path_sweep.cpp`; `test_sweep_frames` in
+`geometry/tests/test_sweeps.cpp`: along a straight path a curve crossing
+from one side above it to the other turns a bar a quarter turn, by either
+rule; the OCCT port's patch 1030 corrects the second derivative of the
+curvilinear rule's frame, which bent the pipe between its sections). A
+frame is refused with the `parallel` orientation, a guide rail, guide
+surfaces, a fixed binormal, curves, a twist, a taper or an end scale. The
+FreeCAD import's pipes in the Frenet, Auxiliary and Binormal modes are
+sweeps with these frames (the Binormal mode's binormal turned by the
+pipe's own placement, in which FreeCAD sweeps it).
+
+#### A body face as the profile (mitcad#543)
+
+`"profile_face": {"body": "F2.b0", "face": "F2:end(r{…})"}` instead of
+`profiles` sweeps a planar face of a body (as an extrusion's and a
+revolution's `profile_face`): its bounded area with its holes, found by
+its topological name on every recompute, its plane the profile's
+(`Kernel::face_sweep`); the body is left as it is. Faces: `side(<edge>)` by
+the edges' names in the body (an edge without a name by its index among
+the face's edges), the caps `start(<face>)` and `end(<face>)` keyed by
+the stored reference. Perpendicular or parallel, with a frame or a fixed
+binormal; refused with `profiles`, `curves`, `surface`, a twist, a taper,
+an end scale, guide rails or guide surfaces. A face that is gone, not
+planar or of a mesh body fails the sweep (`geometry/tests/test_sweeps.cpp`,
+`test_face_sweep`). The Sweep command does not open such a sweep (its
+profiles are a sketch's); the FreeCAD import's pipes of a face are these.
+
 ### loft
 
 ```json
@@ -1553,6 +1661,19 @@ along the binormal, whose normals give the frames
   modelling](#surface-modelling), mitcad#455).
 - `centerline`: a [path](#paths); keeps the sections at right angles to
   it on the way (the part of it between the first and the last section).
+- `frame` (mitcad#543, only with a `centerline`): how the sections turn
+  along it instead, as a sweep's [frame](#a-frenet-or-auxiliary-frame-mitcad539):
+  `{"type": "frenet"}`, `{"type": "auxiliary", "curve": <path>,
+  "curvilinear": false}` or `{"type": "constant_binormal", "binormal": [x,
+  y, z]}`; the pipe shell through the sections then follows that frame,
+  approximated within 1e-7 mm (the FreeCAD import's pipes through several
+  sections in the Frenet, Auxiliary and Binormal modes).
+- `orientation` (mitcad#547, only with a `centerline` and without a
+  `frame`): `perpendicular` (default, left out) keeps the sections' angle
+  to the centre line; `parallel` keeps their direction, as a sweep's
+  parallel orientation: they only move along it (a pipe shell of a fixed
+  frame, approximated within 1e-7 mm; the FreeCAD import's pipes through
+  several sections in the Fixed mode).
 - `start_condition`, `end_condition`: how the loft leaves its first
   section and reaches its last one. `free` (default) and `point_sharp` (a
   point section's default) impose nothing. The others set the takeoff:
@@ -1920,7 +2041,14 @@ Patterns, mirrors, combine, moves and primitives: modules `pattern.rs`,
   outer elements, the inner one applied first. A feature that the
   `features` reach at the same place more than once (a mirror of a
   feature and of a mirror or pattern whose original it is) is copied once
-  there. Patterns of bodies or faces cannot be patterned again.
+  there. A pattern or mirror of bodies among the `features` (mitcad#547)
+  stands for its bodies as they were before it, at each of its elements:
+  the copies of those bodies go to every product of the elements, new
+  bodies `<pattern>.b<k>` (k counting them in order) or, with `combine`,
+  joined to the body (as the patterns before left it) where they touch —
+  FreeCAD's MultiTransform of the whole body, each copy of the body
+  scaled and skipped on its own. Such patterns cannot be mixed with
+  features. Patterns of faces cannot be patterned again.
 - Quantities include the original. `distance_type`: `spacing` between
   neighbours or `extent` from the first element to the last. A negative
   distance or angle goes the other way. A full turn spaces a circular
@@ -1948,12 +2076,59 @@ Patterns, mirrors, combine, moves and primitives: modules `pattern.rs`,
   side). Zero is refused when there are copies. The panel's Flip of a
   direction negates the distance it builds (`-(expression)` for an
   expression); an edited pattern shows its stored signed distance with
-  Flip off. The arrows in the view follow the sign.
+  Flip off. The arrows in the view follow the sign. A direction the panel
+  makes Symmetric hides its Flip (mitcad#545, app/COMMANDS.md *Pattern
+  options*).
 - `scale` (optional, a factor; mitcad#59): the copies grow (or shrink)
   element by element up to that factor: element e of n is scaled by
   1 + (scale − 1) · e / (n − 1) about the centre of mass of the first
   object (a feature's tool, the first body; not for faces) carried to the
-  element (FreeCAD's Scaled transformation after a pattern).
+  copy (FreeCAD's Scaled transformation after a pattern). In a pattern of
+  patterns each copy of an inner pattern's copy is scaled about its own
+  centre: the first original's centre carried through the inner elements
+  too (mitcad#539). Not with fillets, chamfers or sheet features among the
+  features.
+- `scale_groups` (optional, with `scale`; mitcad#539): the copies of the
+  originals, numbered j = p + P · e (p the copy's number among the P
+  copies the patterns among the features make, the innermost pattern's
+  element turning fastest; e the element), fall into this many runs of
+  equal length: run g = ⌊j · groups / (P · n)⌋ is scaled by
+  1 + (scale − 1) · g / (groups − 1) (FreeCAD's Scaled transformation of
+  fewer occurrences than the copies before it). From 2 to n; the runs
+  must divide the P · n copies. Default n: each element a run.
+- `combine` (bodies, and patterns of bodies among the features,
+  mitcad#547; mitcad#539): each copy that touches its
+  original is joined to it, one after another (a copy that touches the
+  original joined with the copies before), as a [mirror](#mirror)'s
+  `combine`; the body keeps its id, a copy that touches nothing stays a
+  body of its own. A pattern of that body then copies it with the copies
+  joined to it (FreeCAD's MultiTransform of the whole body).
+- `scale_copies` (optional, with `scale`; mitcad#542): the N copies the
+  runs are counted over, run g = ⌊j · groups / N⌋ (default P · n, the
+  pattern's own copies; at least those): a pattern inside a pattern of
+  patterns whose runs an outer pattern's scale continues, so that runs
+  may split the copies of the patterns among the features (groups up to
+  N). Each copy of an inner copy is scaled relative to that copy: to the
+  factor of its run over the factor of the inner copy's run, so that it
+  ends up at its own run's factor whatever the inner pattern scaled it
+  by (with the default N and at most n groups the inner copies are the
+  first run, factor 1, and nothing changes).
+- `scales` (optional; mitcad#542): more scales, `[{"scale": f,
+  "groups": m, "copies": N}]` (groups and copies optional, as
+  `scale_groups` and `scale_copies`); the factors of all scales multiply
+  (FreeCAD's MultiTransform with several Scaled transformations).
+- `scale_center` (optional, a point reference; mitcad#542): the copies
+  are scaled about this point carried to each copy instead of the first
+  object's centre of mass (FreeCAD scales a whole body's copies about the
+  Body's origin).
+- `skipped_copies` (features and bodies, not faces; mitcad#542, bodies
+  mitcad#547: the body of a skipped element is not made, the others keep
+  their ids): copies the pattern does
+  not make, by their numbers j = p + P · e (as for `scale_groups`; never
+  0, the original). Unlike `suppressed_elements` a pattern of the pattern
+  still places the originals there: the inner pattern's copy left out at
+  its own element and copied at the outer ones (FreeCAD 1.0 and 1.1 leave
+  out the copies a Scaled transformation does not change).
 - Elements: element 0 is the original. Along a direction the positions
   are 0, 1, …, q − 1; when symmetric 0, 1, …, q − 1 − ⌊q / 2⌋, then −1,
   …, −⌊q / 2⌋ (q elements again); a rectangular pattern numbers
@@ -2152,7 +2327,9 @@ A pattern of one copy, element 1 (`<mirror>:inst1(<face>)`). Mirrored
 bodies are new bodies; `combine` joins each to its original when they
 touch. Mirrored features reflect their finished tool (never a rebuilt
 one); `original_bodies`, and fillets and chamfers among the features, as
-for patterns.
+for patterns. `scale` and `scale_groups` (mitcad#539) as for patterns
+with two elements: the image scaled by the factor about its own centre
+(FreeCAD's Scaled transformation after a mirror).
 
 The mirror image of a nearly symmetric body lies on the body almost
 everywhere, nearly but not exactly, and a boolean of the whole shapes
@@ -2185,22 +2362,49 @@ through the boolean. With `new_component` the target goes into a new
 component.
 
 The target is a body of the combine's component; a tool may be a body of
-another component when `tool_links` names where it is seen (mitcad#104):
+another component where an occurrence shows it (mitcad#104, mitcad#544):
+a tool entry `{"body": …, "occurrence": …}` instead of an id:
+
+```json
+{"type": "combine", "target": "F7.b0", "operation": "cut", "keep_tools": true,
+ "tools": [{"body": "F2.b0", "occurrence": "O1", "context": "O2"},
+           {"body": "F2.b0", "occurrence": "O3", "context": "O2"}]}
+```
+
+`occurrence` is the occurrence path to the tool's component, `context`
+the one to the combine's (default: its first path); the model keeps them
+as an `OccurrenceLink` ([Geometry of other
+components](#geometry-of-other-components)), `source` and `target`. The
+tool is read there and moved into the combine's coordinates by the
+occurrences' placements at the combine's point of the timeline, so the
+combine follows when either occurrence moves. A body is a tool once per
+occurrence: two occurrences of one component (two screws of one part)
+are two tools, each cutting (joining, intersecting) where it is and each
+following its own occurrence; the occurrences not listed do nothing. The
+same body in the same occurrence twice is refused (`body F2.b0 in O1 is
+listed more than once`). A consumed tool (without `keep_tools`) leaves
+its own component, once however many occurrences it was a tool in. The
+target stays a body of the combine's component: a cut changes that
+component's definition, so every occurrence of it shows the cut.
+
+A plain id is a body of the combine's own component, or, as files of
+earlier versions and imports write it, a body of another component whose
+link `tool_links` holds (saved and read as it was written):
 
 ```json
 {"type": "combine", "target": "F7.b0", "tools": ["F2.b0"], "operation": "cut",
  "keep_tools": true, "tool_links": {"F2.b0": {"source": "O1", "target": "O2"}}}
 ```
 
-Each link is an `OccurrenceLink` ([Geometry of other
-components](#geometry-of-other-components)): `source` the occurrence path
-to the tool's component, `target` the one to the combine's (default: its
-first path). The tool is read there and moved into the combine's
-coordinates by the occurrences' placements at the combine's point of the
-timeline, so the combine follows when either occurrence moves; a consumed
-tool (without `keep_tools`) leaves its own component. A link for a body
-that is not a tool is refused; a tool of another component without a link
-fails the combine (`body F2.b0 (from Extrude1) belongs to A; …`).
+A `tool_links` entry for a body that is not a plain-id tool is refused
+(`linked but not a tool`); a tool of another component without an
+occurrence or a link fails the combine (`body F2.b0 (from Extrude1)
+belongs to A; …`). Paste New, moves into components and occurrences
+moved into others carry both forms' links. Tests:
+`core/model/src/link_tests.rs` (`a_combine_cuts_with_a_body_in_two_occurrences_each_where_it_is`,
+`a_combine_joins_a_body_in_two_occurrences`,
+`a_combine_of_an_earlier_version_with_tool_links_loads_and_recomputes_as_before`,
+`paste_new_keeps_a_combines_tools_in_occurrences`).
 
 ### move, align, scale
 
@@ -4656,7 +4860,8 @@ What the document gets:
     are fixed reference geometry; non-defining external geometry is
     construction geometry.
 - History: every PartDesign Body and every Part workbench primitive,
-  extrusion or revolution of a sketch, or operation is rebuilt as
+  extrusion of a sketch or of another object's faces, revolution of a
+  sketch, face of sketches, or operation is rebuilt as
   features in dependency order (ties in document order), each checked
   against FreeCAD's stored shape of it; one that cannot be rebuilt is a
   base feature of the stored shape that `replaces` the Body's body
@@ -4668,29 +4873,49 @@ What the document gets:
 
 | FreeCAD | Mitcad | Readings tried |
 |---|---|---|
-| Pad, Pocket | `extrude` join / cut (the Body's first solid: `new_body`; participants the Body's bodies) on the profile sketch's material regions; Length → `distance`, ThroughAll → `through_all`, UpToFirst / UpToLast → `to_object` body (`through` for the last), UpToFace → `to_object` face or plane, UpToShape (1.0) → `to_object` of its one face or plane, of a whole object's body, or without shapes of the Body's body; `Offset` → `offset`; Midplane / SideType Symmetric → `symmetric` (`full_length`), TwoLengths / SideType Two sides → `two_sides` (1.1's `Type2`); TaperAngle(2) → `taper`; a custom direction (`UseCustomVector`, `ReferenceAxis`: FreeCAD's `Direction`) along the normal; off the normal → `sweep` of the regions along a fixed line through the sketch's origin, `parallel` (the length along the direction, or along the normal with `AlongSketchNormal`; one length, two or symmetric; no taper) | the regions inside an even number of wires (1.1), else the outer ones with their holes (1.0); the pocket against the normal (`Reversed` turns it), else the other way; the taper's and the offset's signs |
-| Revolution, Groove | `revolve` join / cut; the axis: a sketch's H or V axis (its axis line), `Axis<n>` (its n-th construction line), `Edge<n>` (that line), an origin axis, a datum line, a straight edge; 360° → `full`, Midplane → `symmetric` (half each way), TwoAngles → `two_sides`, UpToFace, UpToShape (one face, a plane, a body) and UpToFirst → `to_object` | the angle's sign; up to an object also about FreeCAD's axis (`Base`, `Axis`) either way |
+| Pad, Pocket | `extrude` join / cut (the Body's first solid: `new_body`; participants the Body's bodies) on the profile sketch's material regions; Length → `distance`, ThroughAll → `through_all`, UpToFirst / UpToLast → `to_object` body (`through` for the last), UpToFace → `to_object` face or plane, UpToShape (1.0) → `to_object` of its one face or plane, of a whole object's body, or without shapes of the Body's body; `Offset` → `offset`; Midplane / SideType Symmetric → `symmetric` (`full_length`), TwoLengths / SideType Two sides → `two_sides` (1.1's `Type2`); TaperAngle(2) → `taper`; a custom direction (`UseCustomVector`, `ReferenceAxis`: FreeCAD's `Direction`) along the normal; off the normal (mitcad#539) → `extrude` with that `direction` (the lengths along it: FreeCAD's over the cosine with `AlongSketchNormal`; one length, two or symmetric; TaperAngle(2) → `taper`, grown in the profile's plane as FreeCAD grows it) | the regions inside an even number of wires (1.1), else the outer ones with their holes (1.0); the pocket against the normal (`Reversed` turns it), else the other way; the taper's and the offset's signs |
+| Revolution, Groove | `revolve` join / cut; the axis: a sketch's H or V axis (its axis line), `Axis<n>` (its n-th construction line), `Edge<n>` (that line), an origin axis, a datum line, a straight edge; 360° → `full`, Midplane → `symmetric` (half each way), TwoAngles → `two_sides`, UpToFace, UpToShape (one face, a plane, a body) and UpToFirst → `to_object`, UpToLast → `to_object` of the Body's body `through` it (mitcad#539; FreeCAD has computed none), a groove's ThroughAll → `full` | the angle's sign; up to an object also about FreeCAD's axis (`Base`, `Axis`) either way; a groove of another type also by its angle (FreeCAD 1.0's grooves read only Angle, Midplane and Reversed) |
 | Fillet | `fillet`, constant radius, on the edges and faces (`UseAllEdges`: every edge) | |
 | Chamfer | `chamfer` `equal_distance`, `two_distances` (Size, Size2), `distance_angle` (Size, Angle) | `flip` both ways |
 | Hole | `hole` at the profile sketch's circles' and arcs' centres (`sketch_points`), Diameter, depth (DrillForDepth taken off) or through all, flat or angled point, counterbore, countersink, counterdrill, Tapered → `taper` (90° less TaperedAngle; FreeCAD's drill point is as high as the straight hole's: the tip angle from the wall's end that gives it); a cosmetic ISO metric, Unified (UNC, UNF, UNEF: `1/4-20 UNC`), Whitworth (BSW, BSF: `1/4-20 BSW`; BSP: `G 1/4`), NPT (`1/4-18 NPT`) or tyre valve (ISOTyre, `5V1`) thread over the hole's depth → a cosmetic `thread` on the walls (the size from the version's list for the thread type, `ThreadSize[ISOMetricProfile]` in `data/enums.json`; the hole keeps FreeCAD's diameter), other threads left out (`partial`); a modelled ISO metric or Unified thread → first as FreeCAD cuts it: per hole a fixed `construction_plane` through the axis, a `sketch` of the groove's section (60° flanks, the root P/8 wide at the major diameter plus the class's clearance; 1.1's quadrilateral, the older hexagon) and a `helix` cutting it from a pitch above the top as deep as FreeCAD's thread runs (through all: two pitches past the body), then the `hole`; then a modelled `thread` (Mitcad's basic profile cut from FreeCAD's bore); both stay 1.3e-6 to 2e-6 (the groove) off FreeCAD's thread, so these fall back; Whitworth and NPT ones and those FreeCAD did not model fall back at once, tyre valve ones (FreeCAD rounds their crests) after the thread is tried | `flip` both ways |
-| Mirrored, LinearPattern, PolarPattern | `mirror`, `rectangular_pattern` (1.1's second direction too), `circular_pattern` of the originals' Mitcad features (`identical`), or of the body (TransformMode whole shape: `combine` for the mirror); planes and axes as above (a sketch's V axis as a mirror plane: the plane through it along the normal); extent or spacing | the distance's or angle's sign |
-| MultiTransform | of the originals' features: one transformation as that feature; two LinearPatterns → one `rectangular_pattern` of two directions; two Mirrored → both `mirror`s, a `construction_axis` where their planes meet (`two_planes`) and a `circular_pattern` of 2 about it (the half turn); otherwise (any sequence of Mirrored, LinearPattern and PolarPattern) each transformation a `mirror` or pattern of the one before (patterns of patterns); a LinearPattern or PolarPattern and then a Scaled of as many occurrences → that pattern with `scale` (Factor); its transformations are no features of their own; other Scaled ones and the whole body fall back | the signs of the directions |
+| Mirrored, LinearPattern, PolarPattern | `mirror`, `rectangular_pattern` (1.1's second direction too), `circular_pattern` of the originals' Mitcad features (`identical`), or of the body (TransformMode whole shape: `combine`, the copies joined to it); planes and axes as above (a sketch's V axis as a mirror plane: the plane through it along the normal); extent or spacing | the distance's or angle's sign |
+| MultiTransform | of the originals' features: one transformation as that feature; two LinearPatterns → one `rectangular_pattern` of two directions; two Mirrored → both `mirror`s, a `construction_axis` where their planes meet (`two_planes`) and a `circular_pattern` of 2 about it (the half turn); otherwise (any sequence of Mirrored, LinearPattern and PolarPattern) each transformation a `mirror` or pattern of the one before (patterns of patterns). A Scaled transformation (mitcad#539): first (or alone) → a `scale_pattern` of the originals (Occurrences, Factor), the transformations after it patterns of it; after others → the `scale` (Factor) of the pattern or mirror before it, with `scale_groups` (Occurrences) unless it has as many elements: FreeCAD scales the copies before it in that many runs, each about its own centre; more runs than that one's elements (mitcad#542) → the same scale counted over all the copies before it (`scale_copies`) on that one and on the patterns before it (after two LinearPatterns also one `rectangular_pattern` of two directions with `scale`); several Scaled transformations → their scales on the patterns before each (`scales` where one scales already), the factors multiplying. FreeCAD 1.0 and 1.1 leave out every copy but the original whose factor is 1 once a Scaled transformation follows others (0.21 keeps them; mitcad#542, measured): those readings, first for 1.0 and 1.1, give each pattern the `skipped_copies` of its own such copies (the patterns after it still copy them). Of the whole body (TransformMode whole shape, 1.0 and 1.1; mitcad#539, mitcad#547) → the first transformation a `mirror` or pattern of the body, each next one of the one before (a pattern of patterns of the body: the body as it was at every product of the elements, FreeCAD's product of the transformations), all with `combine`; Scaled ones there as above (`scale_pattern` of the body first; scales, runs and `skipped_copies` of the body's copies), with `scale_center` the Body's origin (FreeCAD's centre in body mode, carried with each copy). Its transformations are no features of their own | the signs of the directions |
+| Scaled (alone, not in a MultiTransform) | `scale_pattern` of the originals' features (Occurrences, Factor) | |
 | Boolean | `combine` join / cut / intersect of the Body's body with the other Bodies' bodies | |
 | Draft | `draft` of the faces about the neutral plane (a pull direction taken as its normal) | `flip`, the angle's sign |
 | Thickness | `shell` (Skin; Pipe and RectoVerso as Skin, which FreeCAD's solids give) | inside or outside, rounded |
-| AdditiveLoft, SubtractiveLoft | `loft` of the profile and section sketches' regions, Ruled, Closed | |
-| AdditivePipe, SubtractivePipe | `sweep` along the spine sketch's edges, Standard / Frenet → `perpendicular`, Fixed → `parallel`; with sections (Transformation Multisection) → `loft` of the profile and the sections with the spine as its `centerline`; auxiliary spines fall back | |
+| AdditiveLoft, SubtractiveLoft | `loft` of the profile and section sketches' regions or planar faces of bodies (`face` sections, mitcad#543), Ruled, Closed | |
+| AdditivePipe, SubtractivePipe | `sweep` along the spine sketch's edges, Standard → `perpendicular`, Fixed → `parallel`, Frenet → `frame` `frenet`, Auxiliary → `frame` `auxiliary` along the auxiliary spine sketch's edges (`curvilinear` from AuxilleryCurvelinear, 1.1: AuxiliaryCurvilinear; the spine AuxillerySpine, 1.1: AuxiliarySpine), Binormal → `frame` `constant_binormal`, FreeCAD's `Binormal` turned by the pipe's Placement (mitcad#539); with sections (Transformation Multisection) → `loft` of the profile and the sections with the spine as its `centerline` and the mode's `frame` (mitcad#543), the Fixed mode a `loft` with `orientation` `parallel` (mitcad#547); a profile that is a planar face of a body → the sweep's `profile_face`, a section that is one → a `face` section (mitcad#543) | Frenet also as Standard |
 | AdditiveHelix, SubtractiveHelix | `helix` of the profile's regions about the reference axis: the pitch and the turns as the Mode gives them (Height / Pitch, Height / Turns), LeftHanded → `left_handed`, Reversed → `flip`; a cone's angle → `growth` `Pitch * tan(Angle)`, height-turns-growth's Growth → `growth`, both with `"construction": "freecad"`; a subtraction outside the profile (Outside) → `intersect` | the hand and the direction both ways |
 | Additive / Subtractive Box, Cylinder, Sphere, Torus, Cone, Prism, Wedge, Ellipsoid | `box`, `cylinder`, `sphere`, `torus` on a fixed plane at the placement; a cone and parts of a turn (Cylinder's and Cone's Angle, Sphere's latitudes and Angle3, Torus's section sector and Angle3): a section in a fixed plane through the axis turned about it (a construction plane, a sketch and a `revolve`); a prism: its polygon `extrude`d from a sketch on a fixed plane; skewed (FirstAngle, SecondAngle; a cylinder too) → `sweep` along the skew, `parallel`; a wedge: a ruled `loft` from its rectangle at Ymin to the one at Ymax (or a point); an ellipsoid: a `sphere` of Radius2 at the origin (a part of one: its section in the XZ plane turned about the z axis, Angle1 to Angle2 and Angle3 round), `scale` non-uniform (Radius3 / Radius2, Radius1 / Radius2), `move` to the placement and `combine` with the Body's body | |
 | Plane, Line, Point (datums) | `construction_plane` (`offset` from an origin plane or a planar face when attached flat with only a normal offset; attached flat to an origin plane and turned a quarter or not at all, `offset` from the origin plane parallel to it by the offset's coordinate along its normal; turned about a line in its support's plane through its origin (its x or y axis or between) by a bound angle, `angle` from the support about that line; else `fixed`), `construction_axis`, `construction_point` (`fixed` at the placement); coordinate systems are skipped | |
 | Part Box, Cylinder, Sphere, Torus, Cone, Prism, Wedge, Ellipsoid | the primitives as above, new bodies | |
-| Part Extrusion of a sketch | `extrude` new body: LengthFwd (else the direction's length), LengthRev → `two_sides`, Symmetric, Reversed, TaperAngle(Rev); along the normal or a custom direction along it; a custom direction or an edge's (DirMode Custom, Edge: `Dir`) off the normal → `sweep` along a fixed line, `parallel` (no taper) | the direction, the taper's sign |
+| Part Extrusion of a sketch | `extrude` new body: LengthFwd (else, when LengthRev is zero too, the direction's length), LengthRev → `two_sides` (alone: one side against the direction), Symmetric, Reversed, TaperAngle(Rev); along the normal or a custom direction along it; a custom direction or an edge's (DirMode Custom, Edge: `Dir`) off the normal → `extrude` with that `direction` (mitcad#541: the lengths along it, the tapers too); into faces (Solid off, mitcad#539) → a surface `extrude` (`surface`, `curves`: the sketch's curves that are not construction), off the normal along the `direction`, tapered a surface `extrude` of the regions | the direction, the taper's sign |
+| Part Extrusion of another object's faces (mitcad#539, mitcad#541) | per face of the base's bodies (all of them; where another object uses the base too, the copy of its first body and its others) an `extrude` new body with `profile_face`, the lengths and TaperAngle(Rev) as above, along the face's normal, or off it along `Dir` with `direction` (a curved face only so, untapered; Solid on or off: a solid, as FreeCAD makes it), then a base feature without bodies that removes the faces' bodies | the direction, the taper's sign |
+| Part Extrusion of an object's edges (mitcad#541) | an object without faces that only Part extrusions use (a Part Circle, RegularPolygon, Polygon or Line, a Draft wire; any type the import has no translation of) is `included`; each extrusion makes a `construction_plane` (`fixed`: the object's placement where its edges lie in it, else the plane through its straight edge and `Dir`) and a `sketch` of the edges as fixed geometry on it, extruded as a sketch is (Solid on: its material regions, any number of loops, mitcad#547; off: a surface extrusion of its curves); edges in no one plane (Solid off, mitcad#547) → per plane they lie in a fixed plane, a sketch and a surface `extrude` of its curves along `Dir` (`direction`); a helix (a Part Helix from its Pitch, Height, Radius, LocalCoord, or one helix edge; Solid off, mitcad#547) → a fixed plane, a sketch of a line from the helix's start along `Dir` and a surface `sweep` of it along a fixed `helix` path, `parallel`; `partial` (the object's own sizes are not carried over); what FreeCAD fails itself (a curved face, a helix or non-planar edges along the base's normal, tapered, or with Solid on) falls back with that reason | as for a sketch |
+| Part Face of sketches (mitcad#539) | `patch` of each sketch's regions inside an even number of wires (FaceMakerClass Bullseye, Cheese, Extrusion; Simple, mitcad#547, where no wire lies in another) | |
 | Part Revolution of a sketch | `revolve` new body about a fixed axis (Base, Axis); 360° → `full`, Symmetric | the angle's sign |
+| Part Sweep of sketches along a sketch (mitcad#543) | new body: one section → `sweep` along the spine's edges, several → `loft` with the spine as its `centerline`; Frenet → `frame` `frenet`; Solid off → `surface` | Frenet also at right angles to the spine |
+| Part Sweep along or of other objects (mitcad#547) | a cylindrical Part Helix spine → a fixed `helix` path (Pitch, Height, Radius, LocalCoord, the placement); edges of an object with a body → the body's `edges`; edges of an object without one → one straight edge a fixed line, else a `construction_plane` (`fixed`) and a `sketch` of the edges as fixed geometry, the path its curves; a section of an object's closed planar edges → such a sketch's region, of one vertex → a fixed `point` section; the objects of edges or a vertex only Part extrusions and sweeps use are `included`; `partial` | as for sketches |
+| Pad, Pocket, Revolution, Groove of several faces (`AllowMultiFace`, mitcad#543) | one `extrude` or `revolve` per face (`profile_face`), the first with the feature's operation, the others joined to it (named " (face 2)", …), as many as there are (mitcad#547) | as for one face |
 | Part Cut, Fuse, MultiFuse, Common, MultiCommon | `combine` (the first operand the target) | |
-| Part Fillet, Chamfer | `fillet` / `chamfer` of the edge list (constant sizes; unequal chamfer sizes `two_distances`) | `flip` both ways |
+| Part Fillet, Chamfer | `fillet` / `chamfer` of the edge list: a fillet's edges of one radius a `constant` set, each edge of two radii a `variable` set of its own from the first radius at the vertex where FreeCAD's edge starts (`start_vertex`) to the second (mitcad#539); unequal chamfer sizes `two_distances` | `flip` both ways; a fillet edge without a start vertex here (closed) its radii either way |
 | Part Mirroring | `mirror` of the source's body (plane Base, Normal or 1.0's MirrorPlane), then a base feature without bodies that removes the source's body | |
-| others (binders, Draft objects, plain shapes, …) | a base feature of the stored shape | |
+| others (binders, Draft objects, plain shapes, …) | a base feature of the stored shape (scripted objects and plain shapes: `fallback_group` `no_counterpart`) | |
 
+- Profiles of Pad, Pocket, Revolution and Groove that are not a whole
+  sketch (mitcad#539): a planar face of a body (`Profile` = (object,
+  `Face<n>`); FreeCAD takes the first element unless `AllowMultiFace`) →
+  the `extrude` or `revolve` of that face (`profile_face`), along its
+  outward normal by distances (Length, TwoLengths, Midplane; TaperAngle(2)
+  → `taper`, mitcad#541; a custom direction off the normal, mitcad#547,
+  → the face's `extrude` with that `direction`, the lengths along it as
+  for a sketch's) or by angles; chosen edges of a sketch
+  (`Profile` = (sketch, `Edge<n>`, …) with 1.0's `AllowMultiFace`) → the
+  sketch's regions inside the areas those edges bound (both readings as
+  for a whole sketch); without `AllowMultiFace` FreeCAD takes the whole
+  sketch whatever edges the link names, and so does the import. Several
+  faces, and faces of lofts and pipes, fall back.
 - An operand of the Part workbench that a later object uses too is
   copied (`move` with `copy`) for each earlier use.
 - The features of one FreeCAD object are named after its label, those
@@ -4774,8 +4999,13 @@ The result: `file`, `design` (the document's label), `items` (objects),
   `label`, `type`, `body` (its PartDesign Body), `outcome`, `features`
   (the Mitcad features made), `mitcad` (their type), `check` against the
   stored shape (`volume`, `area`, `center`, `solids` and FreeCAD's,
-  `distance`, `pass`) and `notes` (which reading was kept, or why it fell
-  back);
+  `distance`, `pass`), `notes` (which reading was kept, or why it fell
+  back) and a fallback's `fallback_group` (mitcad#539): `missing` (a
+  translation Mitcad does not have yet: the reason says "not
+  translated"), `no_counterpart` (a scripted object, a plain shape, or
+  one FreeCAD failed itself), `other` (translated, but it did not build or
+  give FreeCAD's shape); the readable report counts them (`fallbacks by
+  group: …`);
 - `parameters`: per parameter `name`, `source`, `object` and its `cell`,
   `property` or `constraint`, `describe`, FreeCAD's expression
   `freecad`, Mitcad's `expression`, `value`, `freecad_value`, `outcome`
@@ -6914,10 +7144,10 @@ both as an `OccurrenceLink` (`{"source": "O1", "target": "O2"}`):
   an occurrence of A shows it`).
 
 The `sketch` query shows `plane_link`. A combine's tools may be bodies of
-another component the same way (`tool_links`, [combine](#combine),
-mitcad#104), an extrusion's objects (`object_links`,
-[extrude](#extrude)) and a sweep's path and guide surfaces (`body_links`,
-[sweep](#sweep), mitcad#161). Tests: `core/model/src/link_tests.rs`,
+another component the same way (tools in occurrences or `tool_links`,
+[combine](#combine), mitcad#104, mitcad#544), an extrusion's objects
+(`object_links`, [extrude](#extrude)) and a sweep's path and guide
+surfaces (`body_links`, [sweep](#sweep), mitcad#161). Tests: `core/model/src/link_tests.rs`,
 `core/model/src/links.rs`.
 
 ### derive
@@ -8025,8 +8255,9 @@ and `assembly` presets are the stricter choices.
   being the first, and so breaks the policy, is a violation (refused by a
   command, listed and counted, never detached).
 - **References** are every other link to another owner's geometry: linked
-  projections, an extrusion's `object_links`, a combine's or split's
-  `tool_links`, a sweep's `body_links` and a construction plane's `links`.
+  projections, an extrusion's `object_links`, a combine's tools in
+  occurrences, a combine's or split's `tool_links`, a sweep's `body_links`
+  and a construction plane's `links`.
   The consumer's `reference_others` and the source's
   `references_from_others` must allow them. An unlinked projection
   (`"linked": false`) keeps no link and is never refused. Joints and
@@ -11080,6 +11311,38 @@ refused at is left as it is.
     across the wall: the wall's depth is the stud's larger size. The end
     studs stand flush with its ends; the others at `k × spacing` from its
     start (centres), one that would touch the end stud left out.
+  - **Spliced plates** (mitcad#536): a bottom or top plate longer than the
+    plate's timber's longest (its `length.max`, else its longest stock
+    length) is made of pieces butted end to end, from end A each as long as
+    the longest stock length allows (at most its longest), the last one the
+    remainder; each piece at least the timber's least length (and two stud
+    thicknesses). Each joint lies over the centre of a stud that bears on
+    the plate (one reaching the top plates for a top plate, one standing
+    on the bottom plates for a bottom plate: studs, king studs, junction
+    studs, trimmer and cripple studs), the farthest that keeps the piece
+    within the stock length; where no stud is in reach a **backing stud**
+    goes in (full height, `stud.splice.<n>`, as far along as the piece may
+    run, beside the openings' framing and the other studs). The joints of
+    a second plate (`plates.top: 2` or `plates.bottom: 2`) are at least a
+    stud spacing from the first's (else a warning, `Wall 1: the joints of
+    its top plates are less than a stud spacing apart`). A bottom plate is
+    cut at its doors first, each run spliced alone. A plate's first piece
+    keeps its place (`plate.top.0`, so a top plate still leads the frame),
+    the others `plate.top.0.1`, `plate.top.0.2`, ...; a bottom plate's
+    pieces are `plate.bottom.0.0`, `plate.bottom.0.1`, ... as at its doors.
+    The pieces are ordinary members: the cut list lists each, cut from the
+    stock. A frame's `fastener` goes at the junction of each piece with
+    the stud under the joint (each piece's end over half the stud); the
+    pieces' own butt joint is an `inline` junction, which takes no wood
+    fastener (`an inline joint takes a plate`), so it gets none. The wall is
+    refused only when a piece cannot be made at all (no stud and no room
+    for a backing stud within reach: `Wall 1: its top plate from 0 to
+    7819 mm is longer than its timber's longest, 6000 mm, and no stud can
+    take a joint between ...`) or another member is longer than its
+    timber (a stud taller than the stock: `Wall 1: the stud stud.start:
+    the length 6904 mm is longer than the part's longest, 6000 mm`).
+    Plates no longer than the timber's longest stay one piece, as before.
+    Tests: `core/model/src/build/wall_splice_tests.rs`.
   - An opening: king studs (full height) and trimmer studs (the bottom
     plate to the header) on each side; a header on edge between the king
     studs on the trimmers, of as many plies as the wall's depth takes
@@ -11247,10 +11510,15 @@ refused at is left as it is.
       `auto_end` is false) what its run meets first, else `length`. **The
       auto end** (mitcad#515, both cases) stops the run at a wall frame
       (as above) or at **any other body's face** it meets nearer (the
-      bodies shown other than timber frames' members and the body it
-      starts on, along three lines of the run a quarter, half and three
-      quarters of its height up), butting it (no link: `to.frame` null,
-      `to.face` true).
+      bodies shown other than timber frames' members), butting it (no
+      link: `to.frame` null, `to.face` true). The nearest face along the
+      run is taken (mitcad#536): it looks along lines a quarter, half and
+      three quarters of the wall's height up and 10 mm under its top (the
+      wall over a door in the wall ahead), each at its centre line and a
+      millimetre inside each of its sides (a post or a wall's end only its
+      side meets); the body it starts on counts too, beyond its own face
+      (a millimetre on), so a room modelled as one body ends it at its far
+      wall.
     - The definition keeps the `start` and `end` worked out (the start at
       the base's height), not `face`. The junction's `kind` is `face`,
       `face_end` or `face_straight`, `wall` the body's name, `frame` null,
@@ -11309,8 +11577,11 @@ The answer: `component` and `frame` (the lead), `frame_component` (the
 frame's own component, below), `name`, `kind`, `members`
 (`[{component, member}]`), `count`, `fasteners` (the junctions given
 fasteners), `relaid` (other frames laid out again with it), `warnings`
-(the frame's, the layout's, and the first ten fasteners' warnings);
-undo step `Place wall frame Wall 1`, one step with the fasteners.
+(the frame's, the layout's, and the first ten fasteners' warnings),
+`splices` (a wall's plates made of pieces, mitcad#536: `[{plate, role,
+at, pieces, longest}]`, `plate` the first piece's place, `at` the joints
+in mm along the wall from its start, `longest` the longest piece); undo
+step `Place wall frame Wall 1`, one step with the fasteners.
 
 **A frame is a component of its own** (mitcad#522). `build_frame` makes
 a component named after the frame (`Wall 1`, `Floor 1`, `Roof 1`; `Wall 1
@@ -11348,7 +11619,9 @@ frame's definition in its record (`framing`: `{frame, count}`, its parts
 as `{source, config}`, `joins` and `walls` as the frames' leads); every
 member's record has `frame` (the lead) and `member`, its place in the
 frame: `plate.top.0`, `plate.bottom.0` (`.0`, `.1`, ... when a door cuts
-it), `stud.start`, `stud.end`, `stud.<k>`, `junction.<wall>.<end>`,
+it or it is spliced; a spliced top plate's further pieces `plate.top.0.1`,
+..., mitcad#536), `stud.start`, `stud.end`, `stud.<k>`, `stud.splice.<n>`
+(a backing stud under a plate's joint), `junction.<wall>.<end>`,
 `opening.<n>.king.a`, `.trimmer.b`, `.header.<ply>`, `.sill`,
 `.cripple.top.<k>`, `.cripple.bottom.<k>`; `rim.<side>`, `joist.<k>`,
 `joist.<k>.tail.a`, `opening.<n>.trimmer.a.<i>`, `.header.b.<i>`,
@@ -11375,7 +11648,13 @@ Members of a frame are otherwise ordinary parts: a member edited alone
 frame edit's with `component`) answers `place: "frame"`, `kind`, `name`,
 `count`, `roles` (`{role: count}`), `members` (`[{member, role, start,
 end, length, x, section}]` in the design: the axis, the section's X and
-its `[W, T]`), `warnings`, `problems`.
+its `[W, T]`), `warnings`, `problems`, and for a wall `length` (as worked
+out: the auto end's, mm) and `splices` (as `build_frame`'s, mitcad#536).
+**A refused preview** (mitcad#536) still answers which frame it is and
+what its start and auto end worked out: `name` (the default name given
+first, `Wall 1`), `kind`, `junction`, `length`, `count: 0`, no members,
+and the reason in `problems` (the same as `build_frame`'s refusal, which
+names the frame too).
 
 **Removing.** `build_remove` with `"set": true` on a member removes the
 whole frame with its fasteners. A lead removed alone hands the frame to
@@ -11877,3 +12156,44 @@ Code: `core/model/src/features/move_face.rs`,
 vertices where they meet). Tests: `move_face_moves_faces_by_a_rigid_motion`
 (`core/model/src/features/f2_tests.rs`, mock kernel), `geometry`
 (`geometry/tests/test_move_faces.cpp`, OCCT).
+
+## Scale Pattern
+
+```json
+{"type": "scale_pattern", "objects": {"type": "features", "features": ["F4"]},
+ "quantity": 3, "scale": 1.5, "compute": "identical"}
+{"type": "scale_pattern", "objects": {"type": "bodies", "bodies": ["F2.b0"]},
+ "quantity": 2, "scale": 0.5, "combine": false}
+```
+
+Copies scaled where they are (mitcad#539; FreeCAD's Scaled transformation
+alone or first in a MultiTransform): element e of `quantity` is the
+objects scaled by 1 + (scale − 1) · e / (quantity − 1) about the centre
+of mass of the first object (a feature's tool, the first body); element 0
+is the original. Otherwise a [pattern](#patterns) whose elements do not
+move: `objects` (bodies, features; not faces, fillets, chamfers or sheet
+features), `compute`, `original_bodies`, `combine` (bodies) and
+`suppressed_elements` as there; copies of bodies are new bodies
+`<pattern>.b<k>`, faces `<pattern>:inst<e>(<face>)`. A pattern or mirror
+of it (patterns of patterns) places its scaled copies, so that a scale
+pattern and then a rectangular pattern of it give every scaled copy at
+every place. A factor must be positive. `scale_center`, `scales` (one
+run per element by default) and `skipped_copies` as for patterns
+(mitcad#542).
+
+The [patterns](#patterns)' and the [mirror](#mirror)'s `scale` scales the
+copies they make instead of adding scaled ones: each copy (of an inner
+pattern's copies too) about its own centre by its element's (or its
+run's, `scale_groups`, over `scale_copies`) factor; `scales` multiply.
+
+Code: `core/model/src/features/scale_pattern.rs`, the scaling in
+`pattern.rs` (`Scaling`). Tests (mock kernel, `f4_tests.rs`):
+`scale_patterns_scale_copies_where_they_are`,
+`scale_groups_scale_runs_of_elements_alike`,
+`scaled_patterns_of_patterns_scale_each_copy_about_its_own_centre`,
+`a_mirror_scales_its_image_about_the_image_s_centre`,
+`patterns_of_bodies_join_their_copies_with_combine`,
+`scale_runs_over_the_copies_of_patterns_of_patterns`,
+`several_scales_multiply_and_a_scale_centre_is_carried`,
+`skipped_copies_are_not_made_but_patterns_of_the_pattern_place_them`; OCCT:
+`tools/cli/tests/f4_pattern_scaled.json` (`cli.f4_pattern_scaled`).

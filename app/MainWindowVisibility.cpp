@@ -120,4 +120,72 @@ void MainWindow::refusePlanePick(const SelectionItem& item) {
   qInfo().noquote() << QStringLiteral("Create Sketch: refused pick %1: %2").arg(item.describe(), reason);
 }
 
+// The sketches a command shows for its time (mitcad#546,
+// view/CommandSketches.hpp): an edited feature's (the `timeline` query's
+// `sketches`, the same before and after its roll-back), else those of the
+// profiles, curves and points a new command starts with (`items`). A view
+// state: showSketches, showProfiles and the parameter labels show them as
+// if their light bulbs were on; nothing goes to the model.
+void MainWindow::beginCommandSketches(const QString& editUid, const Selection& items,
+                                      const QString& command) {
+  QStringList edited;
+  QString label = command;
+  if (!editUid.isEmpty()) {
+    const DocumentSnapshot::Feature* feature = m_snapshot.feature(editUid);
+    if (feature != nullptr) {
+      edited = feature->sketches;
+    }
+    label = QStringLiteral("the edit of %1").arg(feature != nullptr ? feature->name : editUid);
+  }
+  const QStringList used = CommandSketches::usedBy(edited, editUid.isEmpty() ? items : Selection());
+  const QStringList shown = m_commandSketches.begin(
+      used, [this](const QString& sketch) { return m_snapshot.isShown(sketch); }, label);
+  for (const QString& sketch : shown) {
+    const DocumentSnapshot::Feature* feature = m_snapshot.feature(sketch);
+    qDebug().noquote() << QStringLiteral("Sketch %1 shown for %2")
+                              .arg(feature != nullptr ? feature->name : sketch, label);
+  }
+}
+
+void MainWindow::endCommandSketches(CommandSketches ended) {
+  const QString label = ended.label();
+  for (const CommandSketches::Ended& sketch :
+       ended.end([this](const QString& uid) { return m_snapshot.isShown(uid); })) {
+    const DocumentSnapshot::Feature* feature = m_snapshot.feature(sketch.sketch);
+    if (feature == nullptr) {
+      continue; // no longer in the design (an undo during the command)
+    }
+    qDebug().noquote() << (sketch.staysShown
+                               ? QStringLiteral("Sketch %1 stays shown after %2 (its light bulb)")
+                               : QStringLiteral("Sketch %1 hidden again after %2"))
+                              .arg(feature->name, label);
+  }
+}
+
+void MainWindow::showStartingSketches(const CommandSession& session) {
+  if (!m_commandInSketch && !session.isEditing()) {
+    // A new command (or an analysis' edit): the sketches of the profiles,
+    // curves and points it starts with, a hidden sketch's free region taken
+    // as the newest profile among them. Picks in the view come from shown
+    // sketches only; what a pick adds later shows nothing more.
+    Selection items;
+    for (const InputDef& input : session.def().inputs) {
+      if (input.type == InputDef::Type::Selection) {
+        items += session.state().items(input.id);
+      }
+    }
+    beginCommandSketches(QString(), items, session.def().name);
+  }
+  if (!m_commandSketches.used().isEmpty()) {
+    // Also when no roll-back refreshed the scene (a new command, a feature
+    // after the marker): before the panel's first input logs its picks.
+    showProfiles();
+    showSketches();
+  }
+}
+
+bool MainWindow::sketchShown(const QString& sketch) const {
+  return m_commandSketches.shows(sketch, m_snapshot.isShown(sketch));
+}
+
 } // namespace mitcad

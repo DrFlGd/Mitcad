@@ -457,7 +457,7 @@ fn relocate_links(
                 }
             }
             FeatureDef::Combine(combine) => {
-                for (body, link) in &mut combine.tool_links {
+                for (body, link) in combine.links_mut() {
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
             }

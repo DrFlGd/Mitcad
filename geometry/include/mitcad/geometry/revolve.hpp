@@ -17,9 +17,10 @@ namespace mitcad::geometry {
 
 // The regions turned about `axis`: side one by `angle1` (radians, the right
 // hand turn about the axis direction), side two by `angle2` the other way,
-// or side one up to `target` (a plane, face or body; no offset, not
-// through). Together the angles make at most a full turn. The profile must
-// not cross the axis; it may touch it.
+// or side one up to `target` (a plane, face or body; no offset): to the
+// first face reached, or with a body's `through` (mitcad#539) through it to
+// the last face where the turn leaves it. Together the angles make at most
+// a full turn. The profile must not cross the axis; it may touch it.
 //
 // Faces are named after `feature` as an extrusion's: side(<segment>) from
 // the segments off the axis; with one side start(<region>) at the profile

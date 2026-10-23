@@ -465,6 +465,8 @@ impl<K: Kernel> Evaluate<K> for PointPatternDef {
             false,
             &elements[1..],
             false,
+            None,
+            &[],
         )
     }
 }

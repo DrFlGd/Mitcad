@@ -1655,6 +1655,27 @@ impl Kernel for MockKernel {
             {
                 last.push_str(" rail point plane");
             }
+            // A Frenet or auxiliary frame (mitcad#539).
+            match spec.path_frame {
+                Some(crate::sweeps::PathFrame::Frenet) => last.push_str(" frame frenet"),
+                Some(crate::sweeps::PathFrame::Auxiliary { curve, curvilinear }) => {
+                    let names: Vec<&str> = curve.iter().map(|p| p.name.as_str()).collect();
+                    last.push_str(&format!(
+                        " frame auxiliary {}{}",
+                        names.join(","),
+                        if curvilinear { " curvilinear" } else { "" }
+                    ));
+                }
+                Some(crate::sweeps::PathFrame::ConstantBinormal(b)) => {
+                    last.push_str(&format!(
+                        " frame constant binormal {} {} {}",
+                        number(b[0]),
+                        number(b[1]),
+                        number(b[2])
+                    ));
+                }
+                None => {}
+            }
         }
         let around = crate::features::path::is_closed(spec.path)
             && spec.extent1 + spec.extent2 >= 1.0 - 1e-9;
@@ -1751,6 +1772,30 @@ impl Kernel for MockKernel {
                     end.kind, end.angle, end.weight
                 );
             }
+        }
+        // A frame along the centre line (mitcad#543).
+        match spec.centerline_frame {
+            Some(crate::sweeps::PathFrame::Frenet) => text += " frame frenet",
+            Some(crate::sweeps::PathFrame::Auxiliary { curve, curvilinear }) => {
+                text += &format!(
+                    " frame auxiliary {}{}",
+                    names(curve),
+                    if curvilinear { " curvilinear" } else { "" }
+                );
+            }
+            Some(crate::sweeps::PathFrame::ConstantBinormal(b)) => {
+                text += &format!(
+                    " frame constant binormal {} {} {}",
+                    number(b[0]),
+                    number(b[1]),
+                    number(b[2])
+                );
+            }
+            None => {}
+        }
+        // The parallel orientation along the centre line (mitcad#547).
+        if spec.centerline_parallel {
+            text += " parallel";
         }
         self.specs.borrow_mut().push(text);
         let key = |section: &LoftSection<'_, MockShape>| match section {
@@ -3694,8 +3739,12 @@ impl Kernel for MockKernel {
                 "face {face} has no surface (a mesh body's triangles)"
             )));
         }
+        // A curved face only along a direction, without a taper or a start
+        // offset (mitcad#541).
+        let tapered = spec.taper1 != 0.0 || (spec.side2.is_some() && spec.taper2 != 0.0);
         if let Some(surface) = self.surfaces.borrow().get(&face.to_string())
             && !matches!(surface, SurfaceGeometry::Plane { .. })
+            && (spec.direction.is_none() || tapered || spec.start != 0.0)
         {
             return Err(KernelError::failed(format!(
                 "face {face} is not planar: an extrusion takes a planar face"
@@ -3706,7 +3755,7 @@ impl Kernel for MockKernel {
             None => (0.0, spec.side1),
         };
         self.specs.borrow_mut().push(format!(
-            "extrude_face {} {face} key {} {}from {}: {}{}",
+            "extrude_face {} {face} key {} {}from {}: {}{}{}{}",
             spec.feature,
             spec.key,
             if spec.reversed { "reversed " } else { "" },
@@ -3714,7 +3763,19 @@ impl Kernel for MockKernel {
             number(spec.side1),
             spec.side2
                 .map(|d| format!("; {}", number(d)))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            spec.direction
+                .map(|d| format!(" along [{}]", d.map(|v| number(round(v))).join(", ")))
+                .unwrap_or_default(),
+            if tapered {
+                format!(
+                    " taper {} {}",
+                    number(round(spec.taper1)),
+                    number(round(spec.taper2))
+                )
+            } else {
+                String::new()
+            }
         ));
         let key = || Some(RoleKey::Face(Box::new(spec.key.clone())));
         let start = FaceName::new(spec.feature, "start", key());
@@ -3762,6 +3823,142 @@ impl Kernel for MockKernel {
             faces,
             edges,
             bounds,
+            parts: Vec::new(),
+        })
+    }
+
+    // Revolutions of a planar body face (mitcad#539).
+
+    /// A revolution of the face, `face_revolution(<feature>:<face>:<angle1>)`
+    /// (`<angle1>+<angle2>` with two sides), its sides named after the
+    /// body's edges of the face and, short of a full turn, its caps after
+    /// the key; the body's bounds. A face with a surface other than a plane
+    /// in `surfaces` is not planar; a mesh body's face has no surface.
+    fn revolve_face(
+        &self,
+        spec: &crate::kernel::FaceRevolveSpec<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("revolve_face")?;
+        let body = spec.body;
+        let face = spec.face;
+        let matching: Vec<&FaceName> = body.faces.iter().filter(|f| f.matches(face)).collect();
+        if matching.is_empty() {
+            return Err(KernelError::failed(format!("the body has no face {face}")));
+        }
+        if matching.len() > 1 {
+            return Err(KernelError::failed(format!(
+                "{face} names {} faces; a revolution takes one face",
+                matching.len()
+            )));
+        }
+        if matches!(self.body_kind(body), Ok(BodyKind::Mesh)) {
+            return Err(KernelError::failed(format!(
+                "face {face} has no surface (a mesh body's triangles)"
+            )));
+        }
+        if let Some(surface) = self.surfaces.borrow().get(&face.to_string())
+            && !matches!(surface, SurfaceGeometry::Plane { .. })
+        {
+            return Err(KernelError::failed(format!(
+                "face {face} is not planar: a revolution takes a planar face"
+            )));
+        }
+        self.specs.borrow_mut().push(format!(
+            "revolve_face {} {face} key {} axis {:?} {:?} angles {} {:?}",
+            spec.feature,
+            spec.key,
+            spec.axis.origin,
+            spec.axis.direction,
+            number(spec.angle1),
+            spec.angle2
+        ));
+        let full = spec.angle1 + spec.angle2.unwrap_or(0.0) >= std::f64::consts::TAU - 1e-9;
+        let key = || Some(RoleKey::Face(Box::new(spec.key.clone())));
+        let start = FaceName::new(spec.feature, "start", key());
+        let end = FaceName::new(spec.feature, "end", key());
+        let sides: Vec<FaceName> = body
+            .edges
+            .iter()
+            .filter(|(a, b)| a.matches(face) || b.matches(face))
+            .map(|(a, b)| {
+                let edge = EdgeName::new(a.clone(), b.clone());
+                FaceName::new(spec.feature, "side", Some(RoleKey::Edge(Box::new(edge))))
+            })
+            .collect();
+        let mut edges = Vec::new();
+        for (i, side) in sides.iter().enumerate() {
+            edges.push((side.clone(), sides[(i + 1) % sides.len()].clone()));
+            if !full {
+                edges.push((side.clone(), start.clone()));
+                edges.push((side.clone(), end.clone()));
+            }
+        }
+        let mut faces = if full { Vec::new() } else { vec![start, end] };
+        faces.extend(sides);
+        Ok(MockShape {
+            history: format!(
+                "face_revolution({}:{face}:{}{})",
+                spec.feature,
+                number(spec.angle1),
+                spec.angle2
+                    .map(|a| format!("+{}", number(a)))
+                    .unwrap_or_default()
+            ),
+            faces,
+            edges,
+            bounds: body.bounds,
+            parts: Vec::new(),
+        })
+    }
+
+    // Sweeps of a planar body face (mitcad#543).
+
+    fn face_sweep(
+        &self,
+        spec: &SweepSpec<'_>,
+        profile: &crate::sweeps::ProfileFace<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
+        self.call("face_sweep")?;
+        let (body, face) = (profile.body, profile.face);
+        let matching = body.faces.iter().filter(|f| f.matches(face)).count();
+        if matching != 1 {
+            return Err(KernelError::failed(format!(
+                "{face} names {matching} faces; a sweep takes one face"
+            )));
+        }
+        let names: Vec<&str> = spec.path.iter().map(|p| p.name.as_str()).collect();
+        self.specs.borrow_mut().push(format!(
+            "face_sweep {} {face} key {} path {} {:?}",
+            spec.feature,
+            profile.key,
+            names.join(","),
+            spec.orientation
+        ));
+        let key = || Some(RoleKey::Face(Box::new(profile.key.clone())));
+        let start = FaceName::new(spec.feature, "start", key());
+        let end = FaceName::new(spec.feature, "end", key());
+        let sides: Vec<FaceName> = body
+            .edges
+            .iter()
+            .filter(|(a, b)| a.matches(face) || b.matches(face))
+            .map(|(a, b)| {
+                let edge = EdgeName::new(a.clone(), b.clone());
+                FaceName::new(spec.feature, "side", Some(RoleKey::Edge(Box::new(edge))))
+            })
+            .collect();
+        let mut edges = Vec::new();
+        for (i, side) in sides.iter().enumerate() {
+            edges.push((side.clone(), sides[(i + 1) % sides.len()].clone()));
+            edges.push((side.clone(), start.clone()));
+            edges.push((side.clone(), end.clone()));
+        }
+        let mut faces = vec![start, end];
+        faces.extend(sides);
+        Ok(MockShape {
+            history: format!("face_sweep({}:{face})", spec.feature),
+            faces,
+            edges,
+            bounds: None,
             parts: Vec::new(),
         })
     }

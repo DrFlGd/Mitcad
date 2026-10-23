@@ -10,7 +10,10 @@
 # <expression>" lines and a variant <name>_changed (the same change made
 # in FreeCAD) is imported again with those parameters changed
 # (import-fcstd --set) and compared with the variant's dump. Prints a line
-# per file; skipped without the corpus.
+# per file; skipped without the corpus. A file whose history fell back
+# says how many fallbacks of each group (mitcad#539: missing in Mitcad, no
+# parametric counterpart, other; the report's `fallback_group`), and the
+# last line has the totals, so that a regression shows.
 #
 # cmake -DCLI=<mitcad-cli> -DWORK=<folder> [-DRUNNER=<mitcad_run_parallel>]
 #       -P fcstd-corpus.cmake
@@ -41,6 +44,14 @@ function(check_file file)
   execute_process(COMMAND "${CLI}" ${arguments} RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE err)
   string(REGEX MATCH "[0-9]+ objects: [0-9]+ bodies[^\n]*" summary "${out}")
   string(REGEX MATCH "reference: [^\n]*" reference "${out}")
+  # The fallbacks by group (the report's line "fallbacks by group: …").
+  set(groups "")
+  if(out MATCHES "fallbacks by group: ([0-9]+) missing in Mitcad, ([0-9]+) without a parametric counterpart, ([0-9]+) other")
+    if(NOT "${CMAKE_MATCH_1}${CMAKE_MATCH_2}${CMAKE_MATCH_3}" STREQUAL "000")
+      set(groups "; fallbacks: ${CMAKE_MATCH_1} missing, ${CMAKE_MATCH_2} no counterpart, ${CMAKE_MATCH_3} other")
+    endif()
+  endif()
+  set(file_groups "${groups}" PARENT_SCOPE)
   # The model's expectation of the history.
   set(script "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../freecad-export/models/${stem}.py")
   if(status EQUAL 0 AND EXISTS "${script}")
@@ -79,13 +90,30 @@ function(check_file file)
     endif()
   endif()
   if(status EQUAL 0)
-    message("ok     ${parent}/${stem}: ${summary}; ${reference}")
+    message("ok     ${parent}/${stem}: ${summary}${groups}; ${reference}")
     set(file_failed FALSE PARENT_SCOPE)
   else()
     string(REGEX MATCHALL "\n    [^\n]*" differences "${out}")
-    message("FAILED ${parent}/${stem}: ${summary}; ${reference}${err}${differences}")
+    message("FAILED ${parent}/${stem}: ${summary}${groups}; ${reference}${err}${differences}")
     set(file_failed TRUE PARENT_SCOPE)
   endif()
+endfunction()
+
+# Adds the fallbacks by group of the files' lines in `text` to the totals.
+function(add_groups text)
+  string(REGEX MATCHALL "fallbacks: [0-9]+ missing, [0-9]+ no counterpart, [0-9]+ other" found "${text}")
+  foreach(line IN LISTS found)
+    string(REGEX MATCH "^fallbacks: ([0-9]+) missing, ([0-9]+) no counterpart, ([0-9]+) other$" parsed "${line}")
+    math(EXPR missing "${total_missing} + ${CMAKE_MATCH_1}")
+    math(EXPR none "${total_none} + ${CMAKE_MATCH_2}")
+    math(EXPR other "${total_other} + ${CMAKE_MATCH_3}")
+    set(total_missing ${missing})
+    set(total_none ${none})
+    set(total_other ${other})
+  endforeach()
+  set(total_missing ${total_missing} PARENT_SCOPE)
+  set(total_none ${total_none} PARENT_SCOPE)
+  set(total_other ${total_other} PARENT_SCOPE)
 endfunction()
 
 # A child of the parallel run: one file.
@@ -116,6 +144,9 @@ file(REMOVE_RECURSE "${WORK}")
 file(MAKE_DIRECTORY "${WORK}")
 set(failed)
 set(compared 0)
+set(total_missing 0)
+set(total_none 0)
+set(total_other 0)
 list(LENGTH files count)
 set(jobs "$ENV{MITCAD_CORPUS_JOBS}")
 if(DEFINED RUNNER AND NOT jobs STREQUAL "1")
@@ -138,6 +169,7 @@ if(DEFINED RUNNER AND NOT jobs STREQUAL "1")
   endif()
   string(REGEX REPLACE "\n$" "" shown "${out}")
   message("${shown}")
+  add_groups("${out}")
   string(REGEX MATCHALL "(^|\n)FAILED [^:\n]*:" lines "${out}")
   foreach(line IN LISTS lines)
     string(REGEX REPLACE "^\n?FAILED ([^:\n]*):$" "\\1" name "${line}")
@@ -155,13 +187,16 @@ else()
       math(EXPR compared "${compared} + 1")
     endif()
     check_file("${file}")
+    add_groups("${file_groups}")
     if(file_failed)
       list(APPEND failed "${parent}/${stem}")
     endif()
   endforeach()
 endif()
 list(LENGTH failed failures)
-message("FreeCAD corpus: ${count} files, ${compared} with a dump, ${failures} failed")
+message("FreeCAD corpus: ${count} files, ${compared} with a dump, ${failures} failed; "
+        "fallbacks: ${total_missing} missing in Mitcad, ${total_none} without a parametric "
+        "counterpart, ${total_other} other")
 if(failed)
   message(FATAL_ERROR "failed: ${failed}")
 endif()

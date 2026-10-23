@@ -15,6 +15,7 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Ax1.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
@@ -82,6 +83,14 @@ ShapePtr with_swept_names(const Shape& solid,
 ShapePtr tapered(const Shape& solid, const gp_Pln& neutral, const gp_Dir& pull, double angle,
                  const NameList& caps);
 
+// One side of an extrusion by a distance (extrude.cpp): the planar face's
+// prism along `along`, tapered by `taper` (see ExtrudeSide::taper; along
+// a direction off the face's normal the face grows in its plane by
+// t tan(taper) at distance t, mitcad#539), the cap at the face `near` and
+// the far one `far`.
+ShapePtr distance_side(const SweepFace& face, double distance, double taper, const gp_Dir& along,
+                       const NameList& near, const NameList& far);
+
 // The plane of a plane target or of a planar face target, offset, with its
 // normal turned along `along`.
 gp_Pln target_plane(const Target& target, const gp_Dir& along);
@@ -111,9 +120,12 @@ TopoDS_Face plane_tool(const gp_Pln& plane, const Bnd_Box& around);
 // `straight` (along `along`, as an extrusion) and the target is a body's
 // first face or a curved face: then each part of the profile (one starting
 // inside the body or on its faces) is swept up to the first face beyond it.
+// `turn` (mitcad#539): the sweep turns about this axis (a revolution), and
+// its pieces come in the order of their angles from the face named `near`
+// about it instead of along `along`.
 ShapePtr trimmed(const Shape& sweep, const Target& target, const TopoDS_Shape& tool,
                  const gp_Dir& along, const std::string& near, const NameList& far,
-                 const std::string& unreached, bool straight = false);
+                 const std::string& unreached, bool straight = false, const gp_Ax1* turn = nullptr);
 
 // Splits the solid with a tool and keeps the pieces for which `keep` is
 // true; tool faces in them are named `tool_names`. Unfinished names.

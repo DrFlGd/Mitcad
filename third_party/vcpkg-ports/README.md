@@ -364,6 +364,10 @@ the piece before (a drafted peg's corners rounded down to a block whose
 walls go on from the peg's sides at slight creases and whose corners are
 rounded with less, the walls and corners cutting the rounding at the
 creases instead of 0980's turn about both creases at once, mitcad#343).
+1030 corrects the second derivative of the binormal of the guide trihedron
+by curvilinear equivalence (`GeomFill_GuideTrihedronAC::D2`), which bent a
+pipe shell's surfaces along an auxiliary spine between its sections
+(mitcad#539).
 
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
@@ -3587,6 +3591,26 @@ corner below them gone.
   valid, the material taken 0.931662 against the stored 0.932227 mm³,
   every face of the result within 1.4e-4 mm of the stored body after the
   item and the stored body's within 8.2e-5 mm of the result.
+
+The patch 1030 comes from mitcad#539 (the FreeCAD import's pipes along an
+auxiliary spine): an 8 x 2 bar swept 50 along a line and turned a quarter
+turn by an auxiliary spine 10 above it, crossing from one side to the
+other, the spine's points at the same fraction of the lengths as the
+line's (the sweep's auxiliary `frame` with `curvilinear`; the reference
+model `pd_pipe_modes`, whose stored pipe holds 800 mm³: every section is
+the bar).
+
+- `1030-geomfill-guide-trihedron-ac-second-derivative-of-the-binormal.patch`:
+  the trihedron's values and first derivatives were right (checked against
+  differences of D0 and D1), and so were the pipe's sections (`Simulate`)
+  and its surfaces at the approximation's sections, but its side faces lay
+  up to 0.27 off the turned bar between them: the pipe held 784.9 mm³
+  (775.9 at a tolerance of 1e-7). `D2` took the binormal's second
+  derivative as a unit vector's with the square of the binormal itself (1)
+  where the square of its first derivative belongs, which added `-(1 -
+  |d|^2) b`; the binormal's second derivative was off by about the
+  binormal. With the square of the first derivative (as the normal's
+  second derivative has it) the pipe holds 800 mm³, as by the plane rule.
 
 The patches 0961 and 0962 come from mitcad#343 (round 18): the same bar's
 outline rounded with 0.3 on both sides (22 edges, the item before that

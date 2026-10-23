@@ -944,7 +944,7 @@ fn follow_references(
             FeatureDef::Sketch(s) => {
                 s.plane_link.is_some() || s.projections.iter().any(|p| p.link.is_some())
             }
-            FeatureDef::Combine(c) => !c.tool_links.is_empty(),
+            FeatureDef::Combine(c) => c.has_links(),
             FeatureDef::Sweep(s) => !s.body_links.is_empty(),
             FeatureDef::SplitBody(s) => !s.tool_links.is_empty(),
             FeatureDef::Extrude(x) => !x.object_links.is_empty(),
@@ -974,7 +974,7 @@ fn follow_references(
                 }
             }
             FeatureDef::Combine(combine) => {
-                for (tool, link) in &mut combine.tool_links {
+                for (tool, link) in combine.links_mut() {
                     follow(link, &BTreeSet::from([tool.feature]), own);
                 }
             }

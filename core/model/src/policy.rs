@@ -287,7 +287,7 @@ fn links(def: &FeatureDef) -> Vec<(LinkKind, &OccurrenceLink)> {
             .iter()
             .filter_map(|p| p.link.as_ref())
             .collect(),
-        FeatureDef::Combine(c) => c.tool_links.values().collect(),
+        FeatureDef::Combine(c) => c.links().map(|(_, link)| link).collect(),
         FeatureDef::Sweep(s) => s.body_links.values().collect(),
         FeatureDef::SplitBody(s) => s.tool_links.values().collect(),
         FeatureDef::Extrude(x) => x.object_links.values().collect(),

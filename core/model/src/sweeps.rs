@@ -115,6 +115,52 @@ pub struct SweepSpec<'a> {
     /// 1 at the profile in proportion to the length run, about the path; 1
     /// for none, never with a guide rail.
     pub end_scale: f64,
+    /// How a plain perpendicular sweep's profile turns along the path
+    /// instead of keeping its angle to it (mitcad#539): the path's Frenet
+    /// frame, or towards a curve beside the path. `None`: the default.
+    pub path_frame: Option<PathFrame<'a>>,
+}
+
+/// A sweep's frame along its path (mitcad#539, [`SweepSpec::path_frame`]). Only
+/// with the perpendicular orientation, without twist, taper, end scale, a
+/// guide rail, guide surfaces or a fixed binormal.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PathFrame<'a> {
+    /// The path's Frenet frame: its tangent, its principal normal (towards
+    /// the centre of its curvature) and their binormal. The profile turns
+    /// with the path's curvature; along a planar path it is the default
+    /// frame (except where the path's bend changes side).
+    Frenet,
+    /// Towards a curve beside the path (an auxiliary spine): the frame's
+    /// normal points from the path's point to the curve's point, at the
+    /// same fraction of each one's length (`curvilinear`; the normal is
+    /// then the direction to that point, the frame's tangent square to it)
+    /// or where the curve crosses the plane square to the path. The
+    /// profile turns about the path as that direction does; the curve must
+    /// stay apart from the path.
+    Auxiliary {
+        curve: &'a [PathCurve],
+        curvilinear: bool,
+    },
+    /// About a constant binormal (a unit vector): the frame keeps that
+    /// binormal exactly, its normal `binormal × tangent` and its tangent
+    /// the path's made square to the binormal, so the profile only turns
+    /// about the binormal (OCCT's constant binormal). Unlike the sweep's
+    /// fixed `binormal`, whose frame keeps the path's tangent and makes the
+    /// binormal square to it, the profile leans with the path where the
+    /// path leaves the plane square to the binormal.
+    ConstantBinormal([f64; 3]),
+}
+
+/// A planar face of a body as a sweep's profile (mitcad#543), for
+/// [`crate::Kernel::face_sweep`].
+#[derive(Debug, Clone, Copy)]
+pub struct ProfileFace<'a, S> {
+    pub body: &'a S,
+    /// The face's name in the body: the reference as it is found there.
+    pub face: &'a FaceName,
+    /// The name the caps are keyed by: the reference the feature stores.
+    pub key: &'a FaceName,
 }
 
 /// A face of a sweep's guide surfaces (mitcad#157), for
@@ -210,6 +256,14 @@ pub struct LoftSpec<'a, S> {
     pub rails: Vec<&'a [PathCurve]>,
     pub start: LoftEnd,
     pub end: LoftEnd,
+    /// How the sections turn along the centre line (mitcad#543), as a
+    /// sweep's [`SweepSpec::path_frame`]; `None`: at right angles to it.
+    /// Only with a centre line.
+    pub centerline_frame: Option<PathFrame<'a>>,
+    /// The sections keep their direction along the centre line, only moving
+    /// along it (mitcad#547), as a sweep's parallel orientation. Only with a
+    /// centre line and without a frame.
+    pub centerline_parallel: bool,
 }
 
 /// The section of a pipe: a circle of diameter `size`, or a square or an

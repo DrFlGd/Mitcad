@@ -58,6 +58,8 @@ public:
   explicit OpeningsWindow(QWidget* parent = nullptr);
   ~OpeningsWindow() override;
 
+  using QDialog::open;
+
   // Shows the target's rows, beside the panel.
   void open(const Target& target);
   // The command's openings changed elsewhere (live MCP, Timber Frame's

@@ -1582,6 +1582,37 @@ pub trait Kernel {
     ) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("extrusions of body faces"))
     }
+
+    // Revolutions of a planar body face (mitcad#539; `features::revolve`).
+
+    /// A planar face of a body turned as a revolution's profile (see
+    /// [`FaceRevolveSpec`]); the body is left as it is. A face that is not
+    /// planar, has no surface (a mesh body's), is not one face, crosses
+    /// the axis or has the axis through it is an error.
+    fn revolve_face(
+        &self,
+        _spec: &FaceRevolveSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("revolutions of body faces"))
+    }
+
+    // Sweeps of a planar body face (mitcad#543; `features::sweep`).
+
+    /// A planar face of a body swept along a path as a sweep's profile:
+    /// `spec` without regions (its frame unused: the face's plane is the
+    /// profile's), the face as [`crate::sweeps::ProfileFace`] gives it; the
+    /// body is left as it is. Faces are named as a sweep's: `side(<edge>)`
+    /// by the edge's name in the body (an edge without one by its index
+    /// among the face's edges), the caps `start(<key>)` and `end(<key>)`. A
+    /// face that is not planar, has no surface or is not one face is an
+    /// error.
+    fn face_sweep(
+        &self,
+        _spec: &SweepSpec<'_>,
+        _face: &crate::sweeps::ProfileFace<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("sweeps of body faces"))
+    }
 }
 
 /// A conical face ([`Kernel::face_cone`], mitcad#473).
@@ -2207,8 +2238,9 @@ pub struct ExtrudeFeatureSpec<'a, S> {
 
 /// Input of [`Kernel::revolve`]: side one turns by `angle1` radians (right
 /// hand about the axis direction), side two by `angle2` the other way, or
-/// side one up to `target`; at most a full turn in total. Faces are named
-/// as an extrusion's; a full turn has no caps.
+/// side one up to `target` (a body's first face, or through it to its last
+/// face, mitcad#539); at most a full turn in total. Faces are named as an
+/// extrusion's; a full turn has no caps.
 #[derive(Debug, Clone)]
 pub struct RevolveSpec<'a, S> {
     pub feature: FeatureUid,
@@ -2492,4 +2524,39 @@ pub struct FaceExtrudeSpec<'a, S> {
     pub start: f64,
     pub side1: f64,
     pub side2: Option<f64>,
+    /// A direction of its own (mitcad#541), not in the face's plane: the
+    /// sweep goes along it (against it with `reversed`) instead of the
+    /// normal, the distances measured along it. A face that is not planar
+    /// needs one, and takes no taper and no start offset.
+    pub direction: Option<[f64; 3]>,
+    /// Each side's taper (radians), as an extrusion's: positive widens the
+    /// face away from it (its outside grows, its holes shrink); along a
+    /// direction by `t tan(taper)` in the face's plane at distance `t`.
+    pub taper1: f64,
+    pub taper2: f64,
+}
+
+// Revolutions of a planar body face (mitcad#539).
+
+/// Input of [`Kernel::revolve_face`]: the planar face `face` of `body`, its
+/// bounded area with its holes, turned about `axis` by `angle1` (radians,
+/// positive, the right hand way about the axis direction) and, with `angle2`,
+/// that much the other way (>= 0); together at most a full turn. Faces are
+/// named after `feature` as a revolution's: `side(<edge>)` from each edge
+/// of the face off the axis, by the edge's name in the body (an edge
+/// without one by its index among the face's edges), and the caps
+/// `start(<key>)` and `end(<key>)`: with one side the face where it is and
+/// the far end, with two sides the ends of side one and of side two; a
+/// full turn has none.
+#[derive(Debug, Clone)]
+pub struct FaceRevolveSpec<'a, S> {
+    pub feature: FeatureUid,
+    pub body: &'a S,
+    /// The face's name in the body: the reference as it is found there.
+    pub face: &'a FaceName,
+    /// The name the caps are keyed by: the reference the feature stores.
+    pub key: &'a FaceName,
+    pub axis: Axis,
+    pub angle1: f64,
+    pub angle2: Option<f64>,
 }

@@ -434,6 +434,39 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-extrude-face"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-extrude-face PROPERTIES TIMEOUT 300)
+    # Combine with the same body in two occurrences as tools (mitcad#544):
+    # Part's block picked where Part:1 and where Part:2 show it, listed
+    # "Part:1, Part:2", both cut from the root's block; the design file
+    # keeps a tool in each occurrence and an edit takes both back.
+    add_test(NAME app.ui-windows-component-combine
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-component-combine-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-component-combine"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-component-combine PROPERTIES TIMEOUT 300)
+
+    # The patterns' Direction Type and Distance Type (mitcad#545): a
+    # rectangular pattern symmetric along X and by extent along Y, a
+    # circular one symmetric, the stored definitions and the copies' places,
+    # the panels of the reopened patterns showing their options.
+    add_test(NAME app.ui-windows-pattern-options
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-pattern-options-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-pattern-options"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-pattern-options PROPERTIES TIMEOUT 300)
+
+    # The sketches a command shows for its time (mitcad#546): an edited
+    # Extrude's hidden sketch shown, its square picked, hidden again after
+    # OK and Cancel; a sketch shown by its light bulb stays; the saved
+    # design without a visibility change; a new Extrude's profile of a
+    # hidden sketch; the light bulb turned on during the edit.
+    add_test(NAME app.ui-windows-edit-sketches
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-edit-sketches-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-edit-sketches"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-edit-sketches PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

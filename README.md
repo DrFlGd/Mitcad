@@ -1,25 +1,28 @@
 # Mitcad
 
-Mitcad is an open-source parametric desktop CAD application for Windows,
-Linux and macOS (Apple Silicon, macOS 14.4 or newer), licensed under the
-[MIT licence](LICENSE).
+Mitcad is an open-source parametric desktop CAD application. It runs on
+Windows, Linux and macOS (Apple Silicon, macOS 14.4 or newer). Its licence
+is the [MIT licence](LICENSE).
 
-- **Parametric modelling with a history:** sketches with constraints and
-  dimensions, features on a timeline, and parameters with expressions.
-  Change a dimension or edit a feature and the model is rebuilt.
-- **Visual workflow:** a tabbed toolbar, command panels with live preview
-  and drag handles, a model browser, a timeline and command search.
-- **Support for multiple CAD formats:** FreeCAD, `.f3d` and SolidCraft
-  designs and `.ipt` parts open with their history, IFC and `.rvt` building models with their
-  storeys and elements, DWG drawings with their 3D solids and blocks;
-  STEP, IGES, BRep, STL, OBJ, DXF and 3MF import and
-  export; SVG import; USDZ, web page and drawing (PDF, SVG) export
-  ([the table below](#support-for-multiple-cad-formats)).
-- **3D printing:** bodies straight to a slicer (Bambu Studio, OrcaSlicer,
-  PrusaSlicer, UltiMaker Cura).
+- **Parametric modelling with a history.** You draw sketches with
+  constraints and dimensions. Features go on a timeline. Parameters hold
+  expressions. When you change a dimension or edit a feature, Mitcad
+  rebuilds the model.
+- **Visual workflow.** The window has a tabbed toolbar, command panels
+  with a live preview and drag handles, a model browser, a timeline and a
+  command search.
+- **Many CAD formats.** FreeCAD, `.f3d`, SolidCraft and `.ipt` files open
+  with their history. IFC and `.rvt` building models open with their
+  storeys and elements. DWG drawings open with their 3D solids and
+  blocks. Mitcad imports and exports STEP, IGES, BRep, STL, OBJ, DXF and
+  3MF, imports SVG, and exports USDZ, web pages and drawings (PDF, SVG).
+  The full table is in the user guide:
+  [File formats](docs/user-guide.md#file-formats).
+- **3D printing.** Mitcad sends bodies directly to a slicer (Bambu
+  Studio, OrcaSlicer, PrusaSlicer, UltiMaker Cura).
 
-How to use it: [docs/user-guide.md](docs/user-guide.md).
-Website: [mitcad.org](https://mitcad.org/); downloads:
+How to install and use Mitcad: [the user guide](docs/user-guide.md).
+Website: [mitcad.org](https://mitcad.org/). Downloads:
 [the releases](https://github.com/mitcad/Mitcad/releases).
 
 [![A pillow block modelled in Mitcad from an empty design, then a dimension changed: watch the demo on mitcad.org](https://mitcad.org/assets/video/mitcad-demo-poster.webp)](https://mitcad.org/#showcase)
@@ -31,61 +34,37 @@ Website: [mitcad.org](https://mitcad.org/); downloads:
     <td><img src="https://mitcad.org/assets/shots/rendered-view.webp" alt="The rendered view: the assembly path traced with soft shadows inside the application"></td>
   </tr>
   <tr>
-    <td><b>Sketch.</b> Constraints and driving dimensions, solved as you draw.</td>
-    <td><b>Edit.</b> Roll back the timeline, change a feature, watch the model follow.</td>
-    <td><b>Render.</b> A path-traced view of the design, right in the window.</td>
+    <td><b>Sketch.</b> Mitcad solves constraints and driving dimensions as you draw.</td>
+    <td><b>Edit.</b> Roll back the timeline and change a feature. The model follows.</td>
+    <td><b>Render.</b> A path-traced view of the design, in the window.</td>
   </tr>
 </table>
 
 ## Why
 
-Mitcad was started because the world still lacked a CAD application that
-is easy to use, imports a wide range of file formats and runs on Linux as
-well. It is free to use, change and share under the MIT licence.
+The world did not have a CAD application that is easy to use, imports
+many file formats and also runs on Linux. Mitcad was started to be that
+application. It is free to use, change and share under the MIT licence.
 
-## Support for multiple CAD formats
-
-| Format | Import | Export | Design history |
-|---|---|---|---|
-| Mitcad design (`.mitcad`) | Open, Insert Component | Save | Yes |
-| FreeCAD (`.FCStd`) | Open, Import | – | Features, sketches and parameters |
-| `.f3d`, `.f3z` | Open, Import | – | Features, sketches and parameters |
-| `.ipt` (parts) | Open, Import | – | Features, sketches and parameters; a feature that cannot be replayed comes in as the bodies the file stored after it |
-| IFC (`.ifc`, `.ifczip`) | Open, Import: storeys as components, elements as features, bodies and meshes | – | Swept solids and their cuts as features |
-| `.rvt` (projects) | Open: levels as components, elements as bodies and meshes | – | Walls, floors, roofs, ceilings, columns, beams and stair runs as features |
-| SolidCraft (`.solidcraft`) | Open, Import (every file format version) | – | Features, sketches, parameters, components and joints; sheet metal |
-| DWG (`.dwg`, R13 to R2018) | Open, Import: 3D solids as bodies, 3D faces and meshes as mesh bodies, blocks as components with their occurrences | – | – (a drawing keeps none) |
-| STEP (`.step`, `.stp`) | Bodies | Bodies (AP214 or AP242) | – |
-| IGES (`.iges`, `.igs`) | Bodies | Bodies | – |
-| BRep (`.brep`, `.brp`) | Bodies | Bodies | – |
-| STL | Meshes | Meshes | – |
-| OBJ | Meshes | Meshes | – |
-| DXF | Into a sketch | From a sketch; a drawing | – |
-| SVG | Into a sketch: paths, shapes and texts, filled regions by their fill rule, strokes as bands | – | – |
-| 3MF | – | For slicers | – |
-| USDZ | – | For AR and 3D viewers: meshes with appearances, components kept | – |
-| Web page (`.html`) | – | The design in one HTML file with its viewer, for any browser | – |
-| Drawing (PDF, SVG, DXF) | – | Views with hidden lines removed, sizes, hole diameters, a hole table and a title block | – |
-
-If a file does not import as it should, please
+If a file does not import correctly, please
 [open an issue](https://github.com/mitcad/Mitcad/issues).
 
 ## Status
 
-Mitcad is under active development. Version 0.1.0 is the first release,
-with a Windows installer and a Linux AppImage; on macOS a script makes a
-disk image. Part modelling, sketching, assemblies with joints that move
-their components, analysis, the formats above and version history of
-projects work.
+Mitcad is under active development. Each release has a Windows installer,
+a Linux AppImage and a macOS disk image. Part modelling, sketches,
+assemblies with joints that move their components, analysis, the file
+formats of the user guide and the version history of projects work.
 
 Known gaps: direct modelling without a history, and some loft
 combinations.
 
 ## Updates
 
-Mitcad checks once a day for a signed release and offers to install it
-(Windows installer, per-user AppImage); checks can be turned off by the
-user or an administrator ([docs/updates.md](docs/updates.md)).
+Once a day, Mitcad checks for a signed release and offers to install it
+(the Windows installation, a per-user AppImage, the macOS application).
+The user or an administrator can set the checks to off
+([docs/updates.md](docs/updates.md)).
 
 ## Building
 
@@ -236,32 +215,32 @@ these conditions:
 
 ## FAQ
 
-### Can we get faster RTX? Can we get OptiX?
+### Can RTX cards render faster? Can Mitcad use OptiX?
 
-NO because "Fuck you NVIDIA!"
-
-The renderer reaches the ray tracing cores of NVIDIA's RTX cards only
-through NVIDIA OptiX, and OptiX's licence does not fit open source
-software. Its SDK headers would be compiled into Mitcad's renderer, and
-NVIDIA's licence allows such a program to be distributed only in binary
-form, only for use on NVIDIA hardware, and only if every recipient is
-bound by an enforceable agreement to NVIDIA's terms. Open source software
-that anyone may download, build, change and pass on cannot meet that, so
-Mitcad neither builds nor ships OptiX. NVIDIA cards render with Cycles'
-CUDA device instead, which needs no such terms; it does not use the RT
-cores, so RTX cards render slower than they could
+No. The renderer can use the ray tracing cores of NVIDIA's RTX cards
+only through NVIDIA OptiX, and the OptiX licence does not fit open source
+software. The OptiX SDK headers would be compiled into Mitcad's renderer.
+NVIDIA's licence permits the distribution of such a program only in
+binary form, only for NVIDIA hardware, and only when an enforceable
+agreement binds every recipient to NVIDIA's terms. Open source software
+that anyone can download, build, change and pass on cannot meet those
+terms. Thus Mitcad does not build or ship OptiX. NVIDIA cards render with
+Cycles' CUDA device, which needs no such terms. The CUDA device does not
+use the RT cores, so RTX cards render slower than they could
 ([docs/rendering.md](docs/rendering.md#devices)).
 
 ## Licence
 
-MIT ([LICENSE](LICENSE)). Qt and OCCT are LGPL and linked dynamically;
-licence policy: [docs/development.md](docs/development.md#licence-policy).
+MIT ([LICENSE](LICENSE)). Qt and OCCT are LGPL and linked dynamically.
+Licence policy: [docs/development.md](docs/development.md#licence-policy).
 
 ## Model Context Protocol
 
 `mitcad-cli mcp --workspace /absolute/path/to/designs` starts a headless
-MCP server over stdio for a local AI client. It can create and open
-documents, run native modeling commands and queries, save editable
+MCP server over stdio for a local AI client. The server can make and open
+documents, run native modelling commands and queries, save editable
 `.mitcad` files, and export geometry inside the workspace. Add
-`--read-only` to inspect existing designs. Client setup, a modeling
-example, error semantics and current limits: [docs/mcp.md](docs/mcp.md).
+`--read-only` to inspect existing designs. `mitcad-cli mcp --connect`
+connects an agent to the open desktop application instead. Client setup,
+a modelling example, the error rules and the current limits:
+[docs/mcp.md](docs/mcp.md).

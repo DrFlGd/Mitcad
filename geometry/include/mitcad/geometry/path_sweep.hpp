@@ -107,6 +107,34 @@ struct SweepSpec {
   // the binormal. None: the profile keeps its angle to the path without
   // twisting about it.
   std::optional<gp_Dir> binormal;
+  // How a plain perpendicular sweep's profile turns instead (mitcad#539):
+  // with `frenet` the path's Frenet frame (its tangent, principal normal
+  // and binormal; the profile turns with the path's curvature), or along a
+  // non-empty `auxiliary` curve the frame whose normal points from the path
+  // to the curve: to its point at the same fraction of its length with
+  // `curvilinear` (the frame's tangent then square to that normal), else
+  // where it crosses the plane square to the path. Not with twist, taper,
+  // an end scale, guide rails, guide surfaces, a fixed binormal or parallel
+  // orientation (`unsupported: …`).
+  bool frenet = false;
+  Path auxiliary;
+  bool curvilinear = false;
+  // Or about a constant binormal (the pipe shell's constant binormal): the
+  // frame keeps this binormal, its normal binormal x tangent and its tangent
+  // the path's made square to the binormal, so the profile turns only about
+  // it. (`binormal` above keeps the path's tangent instead.)
+  std::optional<gp_Dir> constant_binormal;
+  // A planar face of a body as the profile instead of `regions`
+  // (mitcad#543): the face `profile_face` (one face, planar) of
+  // `profile_body`, its bounded area with its holes; `frame` is then the
+  // face's plane (its value is not used). The body is left as it is. Its
+  // side faces are named side(<edge>) by the edges' names in the body (an
+  // edge without one by its index among the face's edges), its caps
+  // start(<profile_key>) and end(<profile_key>). Not with twist, taper, an
+  // end scale, guide rails or guide surfaces.
+  ShapePtr profile_body;
+  std::string profile_face;
+  std::string profile_key;
 };
 
 ShapePtr sweep(const SweepSpec& spec);

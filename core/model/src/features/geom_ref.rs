@@ -116,7 +116,8 @@ pub enum GeomRef {
 /// direction (a circle starts on its sketch x axis and runs
 /// counter-clockwise), several lines and arcs of one sketch joined end to
 /// end (the path runs from the free end of the first listed curve, as
-/// the paths of sweeps do: `path.rs`), or a fixed straight line.
+/// the paths of sweeps do: `path.rs`), a fixed straight line, a fixed
+/// helix, or fixed curves (mitcad#548).
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathRef {
     Edges {
@@ -138,6 +139,249 @@ pub enum PathRef {
     },
     /// A fixed helix (mitcad#385).
     Helix(HelixPath),
+    /// Fixed curves in model space joined end to end (mitcad#548): lines,
+    /// circle and ellipse arcs, B-splines (an imported object's edges that
+    /// no sketch holds, a conical helix as its file stores it).
+    Fixed(Vec<FixedCurve>),
+}
+
+/// A curve of a fixed path (mitcad#548), as [`crate::kernel::Curve3`]
+/// holds it: `{"type": "line", "start", "end"}`, `{"type": "conic",
+/// "center", "normal", "x_axis", "major", "minor", "start", "end",
+/// "closed"}` (a circle when `major == minor`) or `{"type": "spline",
+/// "degree", "poles", "weights" (empty: not rational), "knots"}` (the full
+/// knot vector, `poles + degree + 1` knots).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FixedCurve {
+    Line {
+        start: Vec3,
+        end: Vec3,
+    },
+    Conic {
+        center: Vec3,
+        normal: Vec3,
+        x_axis: Vec3,
+        major: f64,
+        minor: f64,
+        start: f64,
+        end: f64,
+        #[serde(default)]
+        closed: bool,
+    },
+    Spline {
+        degree: u32,
+        poles: Vec<Vec3>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        weights: Vec<f64>,
+        knots: Vec<f64>,
+    },
+}
+
+impl FixedCurve {
+    /// The fixed counterpart of a kernel curve: None for a point or a
+    /// helix (a helix has its own path, [`HelixPath`]).
+    pub fn of(curve: &crate::kernel::Curve3) -> Option<Self> {
+        use crate::kernel::Curve3;
+        Some(match curve {
+            Curve3::Line { start, end } => Self::Line {
+                start: *start,
+                end: *end,
+            },
+            Curve3::Conic {
+                center,
+                normal,
+                x_axis,
+                major,
+                minor,
+                start,
+                end,
+                closed,
+            } => Self::Conic {
+                center: *center,
+                normal: *normal,
+                x_axis: *x_axis,
+                major: *major,
+                minor: *minor,
+                start: *start,
+                end: *end,
+                closed: *closed,
+            },
+            Curve3::BSpline {
+                degree,
+                poles,
+                weights,
+                knots,
+            } => Self::Spline {
+                degree: *degree,
+                poles: poles.clone(),
+                weights: weights.clone(),
+                knots: knots.clone(),
+            },
+            Curve3::Point(_) | Curve3::Helix { .. } => return None,
+        })
+    }
+
+    /// The kernel curve.
+    pub fn curve(&self) -> crate::kernel::Curve3 {
+        use crate::kernel::Curve3;
+        match self {
+            Self::Line { start, end } => Curve3::Line {
+                start: *start,
+                end: *end,
+            },
+            Self::Conic {
+                center,
+                normal,
+                x_axis,
+                major,
+                minor,
+                start,
+                end,
+                closed,
+            } => Curve3::Conic {
+                center: *center,
+                normal: *normal,
+                x_axis: *x_axis,
+                major: *major,
+                minor: *minor,
+                start: *start,
+                end: *end,
+                closed: *closed,
+            },
+            Self::Spline {
+                degree,
+                poles,
+                weights,
+                knots,
+            } => Curve3::BSpline {
+                degree: *degree,
+                poles: poles.clone(),
+                weights: weights.clone(),
+                knots: knots.clone(),
+            },
+        }
+    }
+
+    /// The curve with its points and directions mapped (a turn).
+    pub fn mapped(&self, f: &dyn Fn(Vec3) -> Vec3) -> Self {
+        match self {
+            Self::Line { start, end } => Self::Line {
+                start: f(*start),
+                end: f(*end),
+            },
+            Self::Conic {
+                center,
+                normal,
+                x_axis,
+                major,
+                minor,
+                start,
+                end,
+                closed,
+            } => Self::Conic {
+                center: f(*center),
+                normal: f(*normal),
+                x_axis: f(*x_axis),
+                major: *major,
+                minor: *minor,
+                start: *start,
+                end: *end,
+                closed: *closed,
+            },
+            Self::Spline {
+                degree,
+                poles,
+                weights,
+                knots,
+            } => Self::Spline {
+                degree: *degree,
+                poles: poles.iter().map(|p| f(*p)).collect(),
+                weights: weights.clone(),
+                knots: knots.clone(),
+            },
+        }
+    }
+
+    pub fn check(&self) -> Result<(), String> {
+        match self {
+            Self::Line { start, end } => {
+                finite("fixed line", &[*start, *end].concat())?;
+                if norm(sub(*end, *start)) <= LINEAR {
+                    return Err("a fixed line has no length".to_owned());
+                }
+            }
+            Self::Conic {
+                center,
+                normal,
+                x_axis,
+                major,
+                minor,
+                start,
+                end,
+                closed,
+            } => {
+                finite(
+                    "fixed conic",
+                    &[
+                        &center[..],
+                        &normal[..],
+                        &x_axis[..],
+                        &[*major, *minor, *start, *end],
+                    ]
+                    .concat(),
+                )?;
+                let n = unit(*normal).ok_or("a fixed conic's normal has no length")?;
+                if unit(sub(*x_axis, scale(n, dot(*x_axis, n)))).is_none() {
+                    return Err("a fixed conic's x axis runs along its normal".to_owned());
+                }
+                if *major <= LINEAR || *minor <= LINEAR {
+                    return Err("a fixed conic's radii must be positive".to_owned());
+                }
+                if !closed && end <= start {
+                    return Err("a fixed conic arc must end after it starts".to_owned());
+                }
+            }
+            Self::Spline {
+                degree,
+                poles,
+                weights,
+                knots,
+            } => {
+                let flat: Vec<f64> = poles.iter().flatten().copied().collect();
+                finite(
+                    "fixed spline",
+                    &[&flat[..], &weights[..], &knots[..]].concat(),
+                )?;
+                let degree = *degree as usize;
+                if degree == 0 || poles.len() < degree + 1 {
+                    return Err(format!(
+                        "a fixed spline of degree {degree} needs at least {} poles",
+                        degree + 1
+                    ));
+                }
+                if knots.len() != poles.len() + degree + 1 {
+                    return Err(format!(
+                        "a fixed spline of {} poles and degree {degree} needs {} knots, got {}",
+                        poles.len(),
+                        poles.len() + degree + 1,
+                        knots.len()
+                    ));
+                }
+                if knots.windows(2).any(|k| k[1] < k[0]) {
+                    return Err("a fixed spline's knots must not decrease".to_owned());
+                }
+                if !weights.is_empty()
+                    && (weights.len() != poles.len() || weights.iter().any(|w| *w <= 0.0))
+                {
+                    return Err(
+                        "a fixed spline's weights are one positive weight per pole".to_owned()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A fixed helical path (mitcad#385): the points `center + radius (cos t
@@ -573,7 +817,7 @@ impl PathRef {
             Self::SketchCurve { sketch, .. } | Self::SketchCurves { sketch, .. } => {
                 references.features.insert(*sketch);
             }
-            Self::Line { .. } | Self::Helix(_) => {}
+            Self::Line { .. } | Self::Helix(_) | Self::Fixed(_) => {}
         }
     }
 
@@ -629,6 +873,18 @@ impl PathRef {
                 }
             }
             Self::Helix(helix) => helix.check(),
+            // Fixed curves (mitcad#548).
+            Self::Fixed(curves) => {
+                if curves.is_empty() {
+                    return Err("a fixed path needs a curve".to_owned());
+                }
+                for (i, curve) in curves.iter().enumerate() {
+                    curve
+                        .check()
+                        .map_err(|e| format!("fixed curve {}: {e}", i + 1))?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -1090,6 +1346,9 @@ pub(crate) fn path_curve(r: &mut impl Resolver, path: &PathRef) -> Result<PathCu
         }
         PathRef::SketchCurves { .. } => {
             return Err("a path of several curves is not one curve".to_owned());
+        }
+        PathRef::Fixed(_) => {
+            return Err("a path of fixed curves has no analytic curve".to_owned());
         }
     };
     let output = r.sketch(sketch)?;
@@ -1628,6 +1887,12 @@ impl PathRef {
                     serde_json::to_value(helix).map_err(serde::ser::Error::custom)?,
                 );
             }
+            Self::Fixed(curves) => {
+                map.insert(
+                    "fixed_curves".to_owned(),
+                    serde_json::to_value(curves).map_err(serde::ser::Error::custom)?,
+                );
+            }
         }
         map.serialize(serializer)
     }
@@ -1872,8 +2137,8 @@ impl PathRef {
         let Value::Object(map) = value else {
             return Err(format!(
                 "invalid path {value}: expected {{\"body\": ..., \"edges\": [...]}}, \
-                 {{\"sketch\": ..., \"curve\": ...}}, {{\"start\": [...], \"end\": [...]}} \
-                 or {{\"helix\": {{...}}}}"
+                 {{\"sketch\": ..., \"curve\": ...}}, {{\"start\": [...], \"end\": [...]}}, \
+                 {{\"helix\": {{...}}}} or {{\"fixed_curves\": [...]}}"
             ));
         };
         let mut f = Fields(map);
@@ -1892,6 +2157,9 @@ impl PathRef {
             },
             None if f.has("sketch") => Self::sketch_curve(&mut f)?,
             None if f.has("helix") => Self::Helix(f.need("helix", "a helix path")?),
+            None if f.has("fixed_curves") => {
+                Self::Fixed(f.need("fixed_curves", "a path of fixed curves")?)
+            }
             None => Self::line(&mut f)?,
         };
         f.done(path)
@@ -2082,6 +2350,49 @@ mod tests {
             "x_axis": [1.0, 0.0, 0.0], "radius": 10.0, "pitch": 5.0,
             "start_angle": 0.0, "end_angle": 1.0, "turns": 2}});
         assert!(serde_json::from_value::<PathRef>(bad).is_err());
+    }
+
+    #[test]
+    fn a_path_of_fixed_curves_round_trips_and_is_checked() {
+        // (mitcad#548) A line, then a quadratic spline on from its end.
+        let value = json!({"fixed_curves": [
+            {"type": "line", "start": [0.0, 0.0, 0.0], "end": [10.0, 0.0, 0.0]},
+            {"type": "spline", "degree": 2,
+             "poles": [[10.0, 0.0, 0.0], [15.0, 0.0, 0.0], [15.0, 5.0, 5.0]],
+             "knots": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]}]});
+        let path: PathRef = serde_json::from_value(value.clone()).unwrap();
+        let PathRef::Fixed(curves) = &path else {
+            panic!("not fixed curves: {path:?}");
+        };
+        assert_eq!(curves.len(), 2);
+        assert!(curves.iter().all(|c| c.check().is_ok()));
+        assert_eq!(serde_json::to_value(&path).unwrap(), value);
+        // The kernel curve and back.
+        let spline = curves[1].curve();
+        assert!(matches!(
+            &spline,
+            crate::kernel::Curve3::BSpline { degree: 2, .. }
+        ));
+        assert_eq!(FixedCurve::of(&spline).as_ref(), Some(&curves[1]));
+        // A spline short of knots, a conic of no radius.
+        let short = FixedCurve::Spline {
+            degree: 2,
+            poles: vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            weights: Vec::new(),
+            knots: vec![0.0, 0.0, 1.0, 1.0],
+        };
+        assert!(short.check().unwrap_err().contains("needs 6 knots"));
+        let flat = FixedCurve::Conic {
+            center: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+            x_axis: [1.0, 0.0, 0.0],
+            major: 0.0,
+            minor: 0.0,
+            start: 0.0,
+            end: 1.0,
+            closed: false,
+        };
+        assert!(flat.check().is_err());
     }
 
     #[test]

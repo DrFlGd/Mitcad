@@ -33,6 +33,7 @@
 #include "mcp/AgentFolders.hpp"
 #include "mcp/LiveServer.hpp"
 #include "mcp/LogRing.hpp"
+#include "platform/MacChrome.hpp"
 #include "report/CrashHandler.hpp"
 #include "report/ReportCenter.hpp"
 
@@ -311,6 +312,10 @@ int main(int argc, char* argv[]) {
   if (parser.isSet(qtDialogsOption)) {
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
   }
+
+  // Explicit QoS on OCCT's default pool before windows start model and
+  // section workers. Starts the same pool first used by parallel meshing.
+  mitcad::mac::initializeComputeThreads();
 
   // The file to open: --open or the positional argument, not both.
   const QStringList positional = parser.positionalArguments();

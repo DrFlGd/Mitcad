@@ -13,6 +13,8 @@
 #include <QSaveFile>
 #include <QThreadPool>
 
+#include "platform/MacChrome.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -366,6 +368,7 @@ void FolderTextureSource::whenScanned(std::function<void()> then) {
   const QStringList folders = m_folders;
   const QPointer<QObject> self(this);
   QThreadPool::globalInstance()->start([self, folders, generation] {
+    const mac::ThreadQualityScope quality(mac::ThreadQuality::Utility);
     QVector<FolderMaterial> materials = scanTextureFolders(folders);
     deliver(self, [self, generation, materials = std::move(materials)] {
       auto* source = static_cast<FolderTextureSource*>(self.data());

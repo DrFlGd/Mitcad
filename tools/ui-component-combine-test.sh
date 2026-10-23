@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands app/browser app/framework core/model/src/features/combine.rs
+# check-all sources: app/OcctViewer.cpp
 # Combine with a tool of another component, through the real UI
 # (mitcad#104, mitcad#105, mitcad#544): a block in the root, a block of
 # Part:1 beside it and Part:2 on its other side, both overlapping it.
 #   - Combine with the root's block as the target and Part's block, picked
 #     where Part:1 shows it, as the tool: the tool comes in as a body in
-#     its occurrence and joins the target.
+#     its occurrence and joins the target. Consumed, it leaves Part: the
+#     preview draws it where Part:2 shows it as a tool overlay, and the
+#     panel says it is also gone from Part:2 (mitcad#561).
 #   - Edited to a cut: the panel takes the tool back where it was picked.
-#   - Edited again, Part's block where Part:2 shows it added: the same body
-#     in two occurrences is two tools, listed "Part:1, Part:2", and the
-#     target has both cuts.
+#   - Edited again, Keep Tools still off, Part's block picked on its tool
+#     overlay where Part:2 shows it (mitcad#561): the same body in two
+#     occurrences is two tools, listed "Part:1, Part:2", and the target
+#     has both cuts.
 #   - The project file keeps each tool with its occurrence.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
@@ -79,6 +83,8 @@ ui_step "pick Part's block"              ui_click_logged "Body F2.b0 in O1"
 ui_expect_new "Combine Tool Bodies: 1 body [body F2.b0 in O1]" "the tool picked where Part:1 shows it"
 ui_expect_new "Combine Tool Bodies listed: Part:1" "the tool listed by its occurrence"
 ui_expect_new "Preview Combine: ok" "previewed"
+ui_expect_new "F2.b0 in O2 at 30,0,0 tool" "Part's block drawn as a tool where Part:2 shows it"
+ui_expect_new "leaves Part: it is also gone from Part:2." "the panel says the tool is also gone from Part:2"
 [ -n "$SHOT" ] && ui_capture "$SHOT"
 ui_step "OK (Enter)"                     ui_key Return
 # 6000 + 6000 - 2000 mm3.
@@ -109,14 +115,14 @@ ui_mark
 ui_step "double-click Combine1"          ui_double_click_logged "Timeline Combine1"
 ui_expect_new "Editing F5 with Combine" "editing the combine again"
 ui_expect_new "Preview Combine: ok" "previewed"
-# Keep Tools on first: a consumed tool leaves its own component
-# (mitcad#104), so with Part:1's block a tool the preview draws no block
-# where Part:2 shows Part, and nothing is there to pick.
+ui_expect_new "leaves Part: it is also gone from Part:2." "the edit says the tool is also gone from Part:2"
+# Keep Tools stays off: a consumed tool leaves its own component
+# (mitcad#104), so with Part:1's block a tool the preview has Part's block
+# in no occurrence; with Tool Bodies active it draws it where Part:2 shows
+# it as a tool overlay, which a click picks (mitcad#561).
 ui_mark
-ui_step "Keep Tools"                     ui_click_logged "Panel Combine input keep_tools"
-ui_expect_new "Combine: Keep Tools = on" "the tools kept"
-ui_expect_new "Preview Combine: ok" "previewed with the tools kept"
 ui_step "Tool Bodies"                    ui_click_logged "Panel Combine input tools"
+ui_expect_new "F2.b0 in O2 at 30,0,0 tool" "Part's block drawn as a tool where Part:2 shows it"
 ui_mark
 ui_step "pick Part:2's block"            ui_click_logged "Body F2.b0 in O2"
 ui_expect_new "Combine Tool Bodies: 2 bodies [body F2.b0 in O1; body F2.b0 in O2]" \

@@ -46,6 +46,7 @@ class QDropEvent;
 class QElapsedTimer;
 class QLabel;
 class QMenu;
+class QResizeEvent;
 class QStackedWidget;
 
 namespace mitcad {
@@ -256,9 +257,14 @@ protected:
   // Files dropped on the window are opened or imported (U6).
   void dragEnterEvent(QDragEnterEvent* event) override;
   void dropEvent(QDropEvent* event) override;
+  // A window whose size changes once it shows logs its layout again
+  // ("Window layout: ...", mitcad#560): UI tests check that what the docks
+  // show never makes the window grow.
+  void resizeEvent(QResizeEvent* event) override;
 
 private:
   bool m_nativeUi = false;
+  mutable QSize m_loggedWindowSize; // the size the last "Window layout:" line gave (logLayout)
 #ifdef MITCAD_MACOS_NATIVE_UI
   void createNativeWindow();
   void refreshNativeWindow();

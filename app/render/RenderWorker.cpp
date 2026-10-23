@@ -41,6 +41,7 @@
 #include <QSaveFile>
 #include <QString>
 
+#include "platform/MacChrome.hpp"
 #include "render/FrameMemory.hpp"
 #include "render/RenderDevices.hpp"
 #include "render/RenderImage.hpp"
@@ -1062,7 +1063,18 @@ int writeTestImages(const QString& folderPath) {
 // any more when its material comes back gives the warning, as at the
 // start, and the block renders in the material's base colour. The images
 // are generated into the folder. Prints a line per change; 0 when all hold.
-int runSwapTest(const QString& folderPath) {
+int runSwapTest(const QString& folderPath, const QString& choice, bool requireMetal) {
+  std::string missing;
+  const render::DeviceInfo selected = render::chooseDevice(
+      choice.toStdString(), render::cyclesDevices(kernelFolder()), missing);
+  if (!missing.empty()) {
+    std::fprintf(stderr, "%s %s\n", requireMetal ? "render-failed" : "render-skip", missing.c_str());
+    return requireMetal ? 3 : 77;
+  }
+  if (requireMetal && selected.type != "METAL") {
+    std::fprintf(stderr, "render-failed Required Metal device is unavailable for %s\n", qPrintable(choice));
+    return 3;
+  }
   QDir folder(folderPath);
   if (!folder.mkpath(QStringLiteral("."))) {
     std::fprintf(stderr, "render-failed cannot make the folder %s\n", qPrintable(folderPath));
@@ -1124,9 +1136,27 @@ int runSwapTest(const QString& folderPath) {
   };
 
   static constexpr int kSamples = 16;
-  render::RendererOptions options; // on the CPU
+  render::RendererOptions options;
+  options.device = selected;
   options.interactive = true;
   options.kernelFolder = kernelFolder();
+  const auto checkDevice = [&](const render::Renderer& renderer) {
+    const render::DeviceInfo actual = renderer.device();
+    std::printf("render-swap-device %s %s, MetalRT %s\n", actual.type.c_str(), actual.name.c_str(),
+                actual.metalRT ? "on" : "off");
+    std::string failure = renderer.deviceError();
+    if (failure.empty() && actual.id != selected.id) {
+      failure = "Material swap did not execute on the selected device";
+    }
+    if (failure.empty() && requireMetal) {
+      failure = render::requiredMetalError(actual, false);
+    }
+    if (!failure.empty()) {
+      std::fprintf(stderr, "render-failed %s\n", failure.c_str());
+      return false;
+    }
+    return true;
+  };
   render::ViewData view;
   view.width = 160;
   view.height = 120;
@@ -1166,6 +1196,9 @@ int runSwapTest(const QString& folderPath) {
     opened->setView(first);
     if (!fresh.waitDone(1) || fresh.pixels.empty()) {
       std::fprintf(stderr, "render-failed %s did not render from the start\n", name);
+      return false;
+    }
+    if (!checkDevice(*opened)) {
       return false;
     }
     Expected& entry = expected[name];
@@ -1224,6 +1257,10 @@ int runSwapTest(const QString& folderPath) {
     renderer->setView(view);
     if (!frame.waitDone(sequence) || frame.pixels.empty()) {
       std::printf("render-swap %s: no frame FAILED\n", step);
+      ++failures;
+      return;
+    }
+    if (!checkDevice(*renderer)) {
       ++failures;
       return;
     }
@@ -1300,6 +1337,7 @@ struct Bench {
   bool interactive = false;
   bool orthographic = false;
   bool trace = false;
+  bool requireMetal = false;
   QString frames; // a folder for every frame shown (implies trace)
   QString output;
   QString environment;
@@ -1319,6 +1357,7 @@ struct BenchRun {
   int samples = 0;
   double seconds = 0.0;
   render::DeviceInfo device;
+  bool fellBack = false;
   std::map<QString, QImage> denoisedFrames;
 };
 
@@ -1339,7 +1378,9 @@ int benchOnce(const Bench& bench, const QString& choice, const std::vector<rende
   frame.frameFolder = bench.frames;
   frame.captureDenoised = interactive && !bench.compare.isEmpty();
   std::string error;
-  const auto fellBack = [](const render::DeviceInfo& device, const std::string& message) {
+  std::atomic<bool> recovered{false};
+  const auto fellBack = [&recovered](const render::DeviceInfo& device, const std::string& message) {
+    recovered.store(true);
     std::printf("render-fallback %s\n", message.c_str());
     std::printf("render-backend %s, MetalRT %s\n", device.type.c_str(), device.metalRT ? "on" : "off");
     std::fflush(stdout);
@@ -1457,6 +1498,7 @@ int benchOnce(const Bench& bench, const QString& choice, const std::vector<rende
                 qPrintable(firstDenoised(frame, last, stopped)), millisecondsBetween(stopped, frame.done[last]) / 1000.0);
   }
   run.device = renderer->device();
+  run.fellBack = recovered.load();
   std::printf("render-device %s %s\n", run.device.type.c_str(), run.device.name.c_str());
   std::printf("render-denoiser %s %s, executed %s\n", run.device.denoiser.type.c_str(),
               run.device.denoiser.name.c_str(), run.device.denoiser.executed ? "yes" : "no");
@@ -1512,10 +1554,26 @@ std::pair<double, int> imageDifference(const QImage& a, const QImage& b) {
 // differences). Exit status 77 (a skipped test) when --compare is given and
 // there is no device of the --device choice.
 int runBenchmark(const Bench& bench) {
+  if (bench.requireMetal) {
+    const QStringList limits = bench.tolerance.split(QLatin1Char(':'));
+    bool meanValid = false;
+    bool percentileValid = false;
+    const double mean = limits.value(0).toDouble(&meanValid);
+    const int percentile = limits.value(1).toInt(&percentileValid);
+    if (bench.compare.isEmpty() || limits.size() != 2 || !meanValid || !percentileValid ||
+        !std::isfinite(mean) || mean < 0 || percentile < 0 || percentile > 255) {
+      std::fprintf(stderr, "render-failed --require-metal needs --compare and a valid --tolerance mean:p99\n");
+      return 2;
+    }
+  }
   const std::vector<render::DeviceInfo> devices = render::cyclesDevices(kernelFolder());
   if (!bench.compare.isEmpty()) {
     std::string missing;
     const render::DeviceInfo device = render::chooseDevice(bench.device.toStdString(), devices, missing);
+    if (bench.requireMetal && (!missing.empty() || device.type != "METAL")) {
+      std::fprintf(stderr, "render-failed Required Metal device is unavailable for %s\n", qPrintable(bench.device));
+      return 3;
+    }
     if (!missing.empty() || (device.type == "CPU" && bench.device.compare(QLatin1String(render::kDeviceCpu),
                                                                           Qt::CaseInsensitive) != 0)) {
       std::printf("render-skip no %s device\n", qPrintable(bench.device.isEmpty() ? QStringLiteral("GPU") : bench.device));
@@ -1525,6 +1583,13 @@ int runBenchmark(const Bench& bench) {
   BenchRun run;
   if (const int status = benchOnce(bench, bench.device, devices, run); status != 0) {
     return status;
+  }
+  if (bench.requireMetal) {
+    const std::string failure = render::requiredMetalError(run.device, run.fellBack);
+    if (!failure.empty()) {
+      std::fprintf(stderr, "render-failed %s\n", failure.c_str());
+      return 3;
+    }
   }
   if (!bench.output.isEmpty() && !benchImage(run).save(bench.output)) {
     std::fprintf(stderr, "render-failed cannot write %s\n", qPrintable(bench.output));
@@ -1549,6 +1614,15 @@ int runBenchmark(const Bench& bench) {
   }
   if (comparisonStatus != 0) {
     return comparisonStatus;
+  }
+  if (bench.requireMetal) {
+    const std::string failure = other.device.type == "METAL" ?
+        render::requiredMetalError(other.device, other.fellBack) :
+        (other.fellBack ? "Required Metal comparison encountered a fallback" : "");
+    if (!failure.empty()) {
+      std::fprintf(stderr, "render-failed %s\n", failure.c_str());
+      return 3;
+    }
   }
   const QImage a = benchImage(run).convertToFormat(QImage::Format_RGB32);
   const QImage b = benchImage(other).convertToFormat(QImage::Format_RGB32);
@@ -1951,7 +2025,7 @@ int main(int argc, char* argv[]) {
                                    QStringLiteral("--batch reads stdin: \"stop\" or its end cancels the render"));
   const QCommandLineOption device(
       QStringLiteral("device"),
-      QStringLiteral("--bench on this device: auto (the best GPU, else the CPU), cpu, a device's id or type"),
+      QStringLiteral("--bench/--swap-test on this device: auto, cpu, a device's id or type"),
       QStringLiteral("device"), QLatin1String(render::kDeviceAutomatic));
   const QCommandLineOption compare(
       QStringLiteral("compare"),
@@ -1963,15 +2037,24 @@ int main(int argc, char* argv[]) {
       QStringLiteral("--compare fails (exit status 4) when the images differ more: the mean and the 99th "
                      "percentile of the 8-bit channels' differences, as mean:p99"),
       QStringLiteral("limits"));
+  const QCommandLineOption requireMetal(
+      QStringLiteral("require-metal"),
+      QStringLiteral("Require Metal and automatic MetalRT policy for --bench comparisons or --swap-test"));
   const QCommandLineOption listDevices(QStringLiteral("list-devices"),
                                        QStringLiteral("Print the render devices as JSON and end"));
   const QCommandLineOption probeDenoiser(
       QStringLiteral("probe-denoiser"),
       QStringLiteral("Print whether Open Image Denoise creates its device on each GPU, or its error, and end"));
   parser.addOptions({channel, bench, samples, output, interactive, orthographic, environment, texture, trace, frameFiles, previews,
-                     updateTest, batch, control, device, compare, tolerance, listDevices, probeDenoiser, mapsTest,
+                     updateTest, batch, control, device, compare, tolerance, requireMetal, listDevices, probeDenoiser, mapsTest,
                      swapTest, writeImages});
   parser.process(app);
+  const QByteArray required = qgetenv("MITCAD_RENDER_REQUIRE_METAL");
+  const bool requireMetalExecution = parser.isSet(requireMetal) || (!required.isEmpty() && required != "0");
+  if (parser.isSet(requireMetal) && !parser.isSet(bench) && !parser.isSet(swapTest)) {
+    std::fprintf(stderr, "render-failed --require-metal needs --bench or --swap-test\n");
+    return 2;
+  }
   if (parser.isSet(probeDenoiser)) {
     // Diagnostics of GPU denoising (mitcad#202, docs/rendering.md "Devices").
     for (const std::string& line : render::probeDenoisers(kernelFolder())) {
@@ -1987,6 +2070,14 @@ int main(int argc, char* argv[]) {
     std::fwrite(line.constData(), 1, static_cast<std::size_t>(line.size()), stdout);
     return 0;
   }
+  if (parser.isSet(writeImages)) {
+    return writeTestImages(parser.value(writeImages));
+  }
+  // This windowless process must remain active while its renderer runs.
+  // The guard precedes all rendering modes and is destroyed after their
+  // sessions, also on a device failure, stdin ending or a cancelled job.
+  mac::setThreadQuality(mac::ThreadQuality::UserInitiated);
+  const mac::ProcessActivity activity("Rendering");
   if (parser.isSet(updateTest)) {
     return runUpdateTest();
   }
@@ -1994,10 +2085,8 @@ int main(int argc, char* argv[]) {
     return runMapsTest(parser.value(mapsTest));
   }
   if (parser.isSet(swapTest)) {
-    return runSwapTest(parser.value(swapTest));
-  }
-  if (parser.isSet(writeImages)) {
-    return writeTestImages(parser.value(writeImages));
+    return runSwapTest(parser.value(swapTest), parser.isSet(device) ? parser.value(device) : QStringLiteral("cpu"),
+                       requireMetalExecution);
   }
   if (parser.isSet(batch)) {
     return runBatch(parser.value(batch), parser.isSet(control));
@@ -2019,6 +2108,7 @@ int main(int argc, char* argv[]) {
     options.device = parser.value(device);
     options.compare = parser.value(compare);
     options.tolerance = parser.value(tolerance);
+    options.requireMetal = requireMetalExecution;
     return runBenchmark(options);
   }
 

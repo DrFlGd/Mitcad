@@ -16,6 +16,7 @@
 #include "Json.hpp"
 #include "mitcad/geometry/persist.hpp"
 #include "mitcad_bridge/lib.h"
+#include "platform/MacChrome.hpp"
 
 namespace mitcad {
 namespace {
@@ -95,6 +96,7 @@ void collectResultStoreGarbage() {
   const QByteArray path = dir.toUtf8();
   const auto budget = static_cast<std::uint64_t>(CacheSettings::load().diskMegabytes);
   QThreadPool::globalInstance()->start([path, budget] {
+    const mac::ThreadQualityScope quality(mac::ThreadQuality::Utility);
     const QJsonObject report = parseObject(result_store_gc(rustStr(path), budget));
     const qint64 removed = report.value(QStringLiteral("removed")).toInteger();
     if (removed > 0) {

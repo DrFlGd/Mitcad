@@ -544,6 +544,13 @@ occ::handle<AIS_Shape> makeBody(const geometry::Shape& named, BodyDisplay::Style
     body->SetTransparency(0.5);
     return body;
   }
+  if (style == BodyDisplay::Style::Tool || style == BodyDisplay::Style::CutTool) {
+    // As the command's tool preview (setPreview), but pickable (mitcad#561).
+    occ::handle<AIS_Shape> body = new AIS_Shape(shape);
+    body->SetColor(style == BodyDisplay::Style::CutTool ? kCutPreviewColor : kPreviewColor);
+    body->SetTransparency(0.5);
+    return body;
+  }
   if (style == BodyDisplay::Style::Ghost) {
     // Faint enough to see and pick what lies behind (mitcad#147).
     occ::handle<AIS_Shape> body = new AIS_Shape(shape);
@@ -1660,7 +1667,10 @@ void OcctViewer::showBody(BodyEntry& entry) {
   info.body = entry.shape;
   const bool normal = entry.style == BodyDisplay::Style::Normal;
   const bool wire = normal && !inactive && m_visualStyle == VisualStyle::Wireframe;
-  display(entry.object, wire ? AIS_WireFrame : AIS_Shaded, std::move(info), normal);
+  // A consumed tool where another occurrence shows it is picked there
+  // (mitcad#561).
+  const bool tool = entry.style == BodyDisplay::Style::Tool || entry.style == BodyDisplay::Style::CutTool;
+  display(entry.object, wire ? AIS_WireFrame : AIS_Shaded, std::move(info), normal || tool);
   entry.hiddenEdges.Nullify();
   entry.visibleEdges.Nullify();
   if (!normal || inactive || !drawsHiddenEdges(m_visualStyle)) {

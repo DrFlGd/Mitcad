@@ -64,4 +64,12 @@ struct PreviewBody {
 // none for a report whose status is not "ok".
 std::vector<PreviewBody> previewBodies(const QJsonObject& report, const std::vector<ShownBody>& shown);
 
+// The shown bodies a successful preview no longer has (mitcad#561: a tool
+// the command consumes, gone from every occurrence of its component): the
+// indices in `shown` of each such occurrence/body pair; none for a report
+// whose status is not "ok". A command that consumes tools draws them as
+// tool overlays where they are not picked, so that they can be picked
+// there too.
+std::vector<int> removedShownBodies(const QJsonObject& report, const std::vector<ShownBody>& shown);
+
 } // namespace mitcad

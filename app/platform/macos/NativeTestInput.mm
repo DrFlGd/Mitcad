@@ -85,6 +85,7 @@ namespace mitcad::mac::test {
 namespace {
 
 NSWindow* __weak focusedWindow = nil;
+NSWindow* __weak keyEventWindow = nil;
 NSView* __weak draggedHistoryMarker = nil;
 NSPoint historyDragPoint = NSZeroPoint;
 
@@ -1867,14 +1868,34 @@ void focusMain() {
   if (canvas) [window makeFirstResponder:canvas];
 }
 
+void requestKeyEventFocus() {
+  keyEventWindow = nil;
+  if (!active()) return;
+  // Whole-event checks require actual AppKit activation, not just the Qt
+  // state exercised by applicationDelegate(). Only activate our test app;
+  // do not alter other applications or synthesize activation notifications.
+  keyEventWindow = targetWindow();
+  [NSApp activateIgnoringOtherApps:YES];
+  [keyEventWindow makeKeyAndOrderFront:nil];
+}
+
+bool keyEventFocusReady() {
+  return active() && keyEventWindow != nil && NSApp.active &&
+         NSApp.keyWindow == keyEventWindow && targetWindow() == keyEventWindow;
+}
+
 namespace {
 bool sendNativeKey(int key, Qt::KeyboardModifiers modifiers, const QString& text, bool applicationEvent) {
   if (applicationEvent ? !active() : !nativeFocused()) return false;
-  NSWindow* window = targetWindow();
+  NSWindow* window = applicationEvent ? keyEventWindow : targetWindow();
   // Menu equivalents route to NSApp.keyWindow. Synchronize that public
   // AppKit focus with the script's native target after a child sheet closes.
-  [NSApp activate];
-  [window makeKeyWindow];
+  if (applicationEvent) {
+    if (!keyEventFocusReady()) return false;
+  } else {
+    [NSApp activate];
+    [window makeKeyWindow];
+  }
   if (applicationEvent) {
     qInfo().noquote() << QStringLiteral("Native application key event: key=%1 target=%2 keyWindow=%3 active=%4 responder=%5")
         .arg(key).arg(qlonglong(window.windowNumber)).arg(qlonglong(NSApp.keyWindow.windowNumber))

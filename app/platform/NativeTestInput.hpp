@@ -61,6 +61,8 @@ bool replaceFileName(const QString& name, QString& error);
 bool setFileDirectory(const QString& directory, QString& error);
 bool cancelFilePanel(QString& error);
 void focusMain();
+void requestKeyEventFocus();
+bool keyEventFocusReady();
 bool sendKey(int key, Qt::KeyboardModifiers modifiers, const QString& text);
 bool sendKeyEvent(int key, Qt::KeyboardModifiers modifiers, const QString& text);
 bool sendText(const QString& text);
@@ -107,6 +109,8 @@ inline bool replaceFileName(const QString&, QString&) { return false; }
 inline bool setFileDirectory(const QString&, QString&) { return false; }
 inline bool cancelFilePanel(QString&) { return false; }
 inline void focusMain() {}
+inline void requestKeyEventFocus() {}
+inline bool keyEventFocusReady() { return false; }
 inline bool sendKey(int, Qt::KeyboardModifiers, const QString&) { return false; }
 inline bool sendKeyEvent(int, Qt::KeyboardModifiers, const QString&) { return false; }
 inline bool sendText(const QString&) { return false; }

@@ -87,6 +87,12 @@ struct BodyDisplay {
     // setActiveScope() draws inactive components with the same look, but
     // pickable (mitcad#420).
     Ghost,
+    // A body the previewed command consumes as a tool, drawn where another
+    // occurrence shows it (mitcad#561): see-through like the command's
+    // tool preview (blue; red for a cut, CutTool), and pickable, so that
+    // the body can be picked there too.
+    Tool,
+    CutTool,
   };
   std::string uid;
   std::shared_ptr<geometry::Shape> shape;

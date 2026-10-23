@@ -355,6 +355,7 @@ bool FinalRender::start(const QString& worker, const QJsonObject& job, const QSt
     m_lastError = tr("the render process could not start: %1").arg(process->errorString());
     ended(-1, false);
   });
+  m_activity.start("Rendering an image");
   m_process->start(worker, {QStringLiteral("--batch"), jobPath, QStringLiteral("--control")});
   return true;
 }
@@ -439,6 +440,7 @@ void FinalRender::handle(const QJsonObject& event) {
     emit warning(event.value(QStringLiteral("message")).toString());
   } else if (name == QLatin1String("done")) {
     m_done = true;
+    m_activity.stop();
     const QJsonArray size = event.value(QStringLiteral("size")).toArray();
     emit finished(event.value(QStringLiteral("path")).toString(), QSize(size.at(0).toInt(), size.at(1).toInt()),
                   event.value(QStringLiteral("samples")).toInt(), event.value(QStringLiteral("seconds")).toDouble());
@@ -451,6 +453,7 @@ void FinalRender::handle(const QJsonObject& event) {
 
 void FinalRender::ended(int exitCode, bool crashed) {
   readOutput();
+  m_activity.stop();
   m_killTimer->stop();
   if (m_process != nullptr) {
     m_process->deleteLater();

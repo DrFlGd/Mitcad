@@ -13,7 +13,7 @@ endif()
 include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.21.0
+  VERSION 0.22.0
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 
@@ -35,14 +35,49 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # writes the debug information into the object files (/Z7): ccache cannot
 # cache compiles that share a target's PDB file (/Zi); the linker still
 # makes the executables' PDB files.
-option(MITCAD_COMPILER_CACHE "Compile C++ through ccache when it is installed" ON)
-if(MITCAD_COMPILER_CACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
+option(MITCAD_COMPILER_CACHE "Compile C++ and Objective-C++ through ccache when it is installed" ON)
+if(MITCAD_COMPILER_CACHE)
   find_program(MITCAD_CCACHE ccache)
   if(MITCAD_CCACHE)
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${MITCAD_CCACHE}" "base_dir=${CMAKE_SOURCE_DIR}" "hash_dir=false")
-    if(MSVC)
-      set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
+    foreach(language CXX OBJCXX)
+      if((language STREQUAL "CXX" OR APPLE) AND NOT CMAKE_${language}_COMPILER_LAUNCHER)
+        set(CMAKE_${language}_COMPILER_LAUNCHER "${MITCAD_CCACHE}" "base_dir=${CMAKE_SOURCE_DIR}" "hash_dir=false")
+        if(language STREQUAL "CXX" AND MSVC)
+          set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
+        endif()
+      endif()
+    endforeach()
+  endif()
+endif()
+
+# sccache requires non-incremental Rust compilation. Keep other platforms'
+# incremental development default, while prepared Macs use the pinned tool.
+# Apply this same environment to Corrosion and the Cargo test fixtures below.
+option(MITCAD_RUST_COMPILER_CACHE "Compile Rust through sccache when it is installed" ${APPLE})
+set(MITCAD_RUST_CACHE_ENVIRONMENT)
+if(MITCAD_RUST_COMPILER_CACHE)
+  find_program(MITCAD_SCCACHE sccache)
+  if(MITCAD_SCCACHE)
+    if(DEFINED ENV{RUSTC_WRAPPER} AND NOT "$ENV{RUSTC_WRAPPER}" STREQUAL ""
+       AND NOT "$ENV{RUSTC_WRAPPER}" STREQUAL "${MITCAD_SCCACHE}"
+       AND NOT "$ENV{RUSTC_WRAPPER}" STREQUAL "sccache")
+      message(FATAL_ERROR "MITCAD_RUST_COMPILER_CACHE conflicts with RUSTC_WRAPPER; unset it or disable the option")
     endif()
+    if(WIN32)
+      set(MITCAD_SCCACHE_DIR "$ENV{LOCALAPPDATA}/Mozilla/sccache")
+    elseif(APPLE)
+      set(MITCAD_SCCACHE_DIR "$ENV{HOME}/Library/Caches/Mozilla.sccache")
+    else()
+      set(MITCAD_SCCACHE_DIR "$ENV{HOME}/.cache/sccache")
+    endif()
+    # Do not allow an inherited failover setting to hide a broken cache
+    # server. Unsupported crate kinds still compile normally through sccache.
+    set(MITCAD_RUST_CACHE_ENVIRONMENT
+      "RUSTC_WRAPPER=${MITCAD_SCCACHE}" "CARGO_INCREMENTAL=0"
+      "SCCACHE_DIR=${MITCAD_SCCACHE_DIR}" "SCCACHE_IGNORE_SERVER_IO_ERROR=0")
+    message(STATUS "Rust compiler cache: ${MITCAD_SCCACHE} (${MITCAD_SCCACHE_DIR}; incremental compilation off)")
+  else()
+    message(STATUS "Rust compiler cache: sccache not found; install it with setup-macos.sh or disable MITCAD_RUST_COMPILER_CACHE")
   endif()
 endif()
 

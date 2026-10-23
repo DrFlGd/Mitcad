@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cycles 5.2.0: test-only single-sample updates for matched denoiser previews.
+# Original: https://projects.blender.org/blender/cycles/src/tag/v5.2.0/src/integrator/
+# Copyright 2011-2022 Blender Foundation. Modification by Mitcad contributors.
+--- a/src/integrator/render_scheduler.h
++++ b/src/integrator/render_scheduler.h
+@@ -498,6 +498,9 @@
+   /* If the number of samples per rendering progression should be limited because of path guiding
+    * being activated or is still inside its training phase */
+   int limit_samples_per_update_ = 0;
++
++  /* Test-only deterministic batches for equal-sample denoiser comparisons. */
++  bool test_single_sample_updates_ = false;
+ };
+ 
+ int calculate_resolution_divider_for_resolution(const int width,
+--- a/src/integrator/render_scheduler.cpp
++++ b/src/integrator/render_scheduler.cpp
+@@ -3,6 +3,9 @@
+  * SPDX-License-Identifier: Apache-2.0 */
+ 
+ #include "integrator/render_scheduler.h"
++
++#include <cstdlib>
++#include <cstring>
+ 
+ #include "scene/integrator.h"
+ 
+@@ -26,6 +29,8 @@
+       default_start_resolution_divider_(params.use_resolution_divider ? pixel_size_ * 8 : 0)
+ {
+   use_progressive_noise_floor_ = !background_;
++  const char *test_updates = std::getenv("CYCLES_TEST_SINGLE_SAMPLE_UPDATES");
++  test_single_sample_updates_ = test_updates && std::strcmp(test_updates, "1") == 0;
+ }
+ 
+ void RenderScheduler::set_need_schedule_cryptomatte(bool need_schedule_cryptomatte)
+@@ -960,6 +965,9 @@
+ 
+   if (limit_samples_per_update_) {
+     num_samples_to_render = min(limit_samples_per_update_, num_samples_to_render);
++  }
++  if (test_single_sample_updates_) {
++    num_samples_to_render = min(1, num_samples_to_render);
+   }
+ 
+   /* If adaptive sampling is not use, render as many samples per update as possible, keeping

@@ -137,8 +137,11 @@ BUILDER_SHA256=$(shasum -a 256 "$0" | cut -d ' ' -f 1)
 CYCLES_PATCH=$REPO/third_party/cycles/metal-resource-usage.patch
 CYCLES_DIAGNOSTICS_PATCH=$REPO/third_party/cycles/denoiser-diagnostics.patch
 CYCLES_PIPELINE_PATCH=$REPO/third_party/cycles/metal-pipeline-failure.patch
+CYCLES_CANCELLATION_PATCH=$REPO/third_party/cycles/metal-cancellation-diagnostic.patch
+CYCLES_PREVIEW_BATCH_PATCH=$REPO/third_party/cycles/denoiser-preview-batches.patch
 RENDER_INPUT_SHA256=$(shasum -a 256 "$REPO/vcpkg.json" "$REPO/triplets/$TRIPLET.cmake" \
   "$OIDN_PATCH" "$CYCLES_PATCH" "$CYCLES_DIAGNOSTICS_PATCH" "$CYCLES_PIPELINE_PATCH" \
+  "$CYCLES_CANCELLATION_PATCH" "$CYCLES_PREVIEW_BATCH_PATCH" \
   | cut -d ' ' -f 1 | shasum -a 256 | cut -d ' ' -f 1)
 RENDER_BUILD_KEY=$({
   printf '%s\n' "$CYCLES_VERSION" "$CYCLES_COMMIT" "$OIDN_VERSION" "$OIDN_SRC_SHA256" \
@@ -196,7 +199,8 @@ fi
 # The diagnostics accessor lets the worker report the actual selected denoiser.
 # Failed/cancelled Metal pipelines must stop waiting and report a device error.
 # Check both directions so rerunning is safe, without trusting a stale marker.
-for cycles_patch in "$CYCLES_PATCH" "$CYCLES_DIAGNOSTICS_PATCH" "$CYCLES_PIPELINE_PATCH"; do
+for cycles_patch in "$CYCLES_PATCH" "$CYCLES_DIAGNOSTICS_PATCH" "$CYCLES_PIPELINE_PATCH" \
+                    "$CYCLES_CANCELLATION_PATCH" "$CYCLES_PREVIEW_BATCH_PATCH"; do
   if git -C "$CYCLES_SRC" apply --check "$cycles_patch" >/dev/null 2>&1; then
     git -C "$CYCLES_SRC" apply "$cycles_patch"
   elif ! git -C "$CYCLES_SRC" apply --reverse --check "$cycles_patch" >/dev/null 2>&1; then

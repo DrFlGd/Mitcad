@@ -1986,11 +1986,19 @@ void initCycles(const std::string& kernelFolder) {
     ccl::log_init(nullptr);
     ccl::path_init(kernelFolder);
 #ifdef WITH_METAL
-    // Cycles still compiles on its shader threads. Use the blocking Metal
-    // API there: asynchronous pipeline callbacks can stall on virtual GPUs,
-    // and this separate worker process owns cancellation and shutdown.
-    if (std::getenv("CYCLES_METAL_ASYNC_PSO_CREATION") == nullptr) {
-      ccl::DebugFlags().metal.use_async_pso_creation = false;
+    // This Cycles flag is process-wide. Set it before any session starts
+    // and leave it unchanged while shader threads may read it. A host
+    // exposing both physical and paravirtual devices stays conservative.
+    std::vector<DeviceInfo> metalDevices;
+    for (const ccl::DeviceInfo& info : ccl::Device::available_devices(ccl::DEVICE_MASK_METAL)) {
+      metalDevices.push_back(deviceInfoOf(info));
+    }
+    if (!metalDevices.empty()) {
+      const char* overrideValue = std::getenv("CYCLES_METAL_ASYNC_PSO_CREATION");
+      const bool asynchronous = metalAsyncPipelineCreation(metalDevices, overrideValue);
+      ccl::DebugFlags().metal.use_async_pso_creation = asynchronous;
+      std::fprintf(stderr, "Metal pipeline creation: %s (%s)\n", asynchronous ? "asynchronous" : "synchronous",
+                   overrideValue != nullptr ? "environment override" : "device policy");
     }
 #endif
   });

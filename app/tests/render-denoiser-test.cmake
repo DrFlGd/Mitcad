@@ -7,7 +7,8 @@ endif()
 set(environment "MITCAD_RENDER_TEST_DENOISER=cpu"
                 "MITCAD_RENDER_TEST_COMPARE_DENOISER="
                 "MITCAD_RENDER_TEST_DENOISER_FAILURE="
-                "MITCAD_RENDER_TEST_DEVICE_FAILURE=")
+                "MITCAD_RENDER_TEST_DEVICE_FAILURE="
+                "CYCLES_TEST_SINGLE_SAMPLE_UPDATES=")
 set(arguments --bench 160x120 --samples 16 --device cpu)
 set(failure_mode FALSE)
 set(cpu_preview_mode FALSE)
@@ -28,6 +29,11 @@ elseif(MODE STREQUAL "metal" OR MODE STREQUAL "previews")
                           "MITCAD_RENDER_TEST_COMPARE_DENOISER=cpu")
   set(arguments --bench 320x240 --samples 64 --device metal --compare metal --tolerance 2:24)
   if(MODE STREQUAL "previews")
+    # Independent denoisers have different adaptive batch timings. Use a
+    # test-only scheduler cap so both runs deliver identical sample counts;
+    # the application's normal scheduler and image tolerances stay unchanged.
+    list(REMOVE_ITEM environment "CYCLES_TEST_SINGLE_SAMPLE_UPDATES=")
+    list(APPEND environment "CYCLES_TEST_SINGLE_SAMPLE_UPDATES=1")
     list(APPEND arguments --interactive --previews 4,16 --trace)
   endif()
 elseif(NOT MODE STREQUAL "cpu" AND NOT cpu_preview_mode)
@@ -135,24 +141,26 @@ if(metal_mode)
     message(FATAL_ERROR "Metal denoising was not executed and compared: ${out}${err}")
   endif()
   if(MODE STREQUAL "previews")
-    # The worker compares only equal dimensions and sample counts. Adaptive
-    # batches need not land on exactly 4 or 16, but at least one intermediate
-    # and the final full-resolution image must be compared for each view.
+    # With deterministic test batches, require both scheduled full-resolution
+    # previews and the final frame at matching samples for each stable view.
     foreach(view 1 2)
-      set(intermediate_frame FALSE)
+      set(preview_4 FALSE)
+      set(preview_16 FALSE)
       set(final_frame FALSE)
       string(REGEX MATCHALL "render-compare-denoised view-${view}-320x240-samples-[0-9]+ [^\r\n]*"
              frames "${out}")
       foreach(frame IN LISTS frames)
         string(REGEX REPLACE ".*-samples-([0-9]+) .*" "\\1" samples "${frame}")
-        if(samples GREATER 1 AND samples LESS 64)
-          set(intermediate_frame TRUE)
+        if(samples EQUAL 4)
+          set(preview_4 TRUE)
+        elseif(samples EQUAL 16)
+          set(preview_16 TRUE)
         elseif(samples EQUAL 64)
           set(final_frame TRUE)
         endif()
       endforeach()
-      if(NOT intermediate_frame OR NOT final_frame)
-        message(FATAL_ERROR "Metal/CPU view ${view} has no matched intermediate and final denoised images: ${out}${err}")
+      if(NOT preview_4 OR NOT preview_16 OR NOT final_frame)
+        message(FATAL_ERROR "Metal/CPU view ${view} has no matched 4/16-sample previews and final denoised images: ${out}${err}")
       endif()
     endforeach()
   endif()

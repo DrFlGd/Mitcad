@@ -137,6 +137,7 @@ const StepSpec kSpecs[] = {
     {"native-file-directory", 1, 1, kInputOfTarget},
     {"native-file-cancel", 0, 0, kInputOfTarget},
     {"native-resize", 2, 2, kInputOfMain},
+    {"window-resize", 2, 2, kInputOfMain},
     {"native-move", 2, 2, kInputOfMain},
     {"native-appearance", 1, 1, kInputOfMain},
     {"native-pinch", 3, 3, kInputOfMain},
@@ -1673,18 +1674,26 @@ void TestDriver::run(const Step& step) {
         }
       }
     });
-  } else if (name == QLatin1String("native-resize")) {
-    if (!mac::test::active()) { fail(line, QStringLiteral("native-resize requires the native macOS UI")); return; }
+  } else if (name == QLatin1String("native-resize") || name == QLatin1String("window-resize")) {
+    if (name == QLatin1String("native-resize") && !mac::test::active()) {
+      fail(line, QStringLiteral("native-resize requires the native macOS UI")); return;
+    }
     double width = 0;
     double height = 0;
     if (!toNumber(a.at(0), width) || !toNumber(a.at(1), height) || width < 820 || height < 520 ||
         width > 10000 || height > 10000) {
-      fail(line, QStringLiteral("native-resize expects width 820..10000 and height 520..10000"));
+      fail(line, QStringLiteral("%1 expects width 820..10000 and height 520..10000").arg(name));
       return;
     }
     queue([this, width, height, line] {
-      QString error;
-      if (!mac::test::resizeDocument(int(width), int(height), error)) fail(line, error);
+      if (mac::test::active()) {
+        QString error;
+        if (!mac::test::resizeDocument(int(width), int(height), error)) fail(line, error);
+      } else if (m_main) {
+        m_main->resize(int(width), int(height));
+      } else {
+        fail(line, QStringLiteral("window-resize requires a main window"));
+      }
     });
     m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
   } else if (name == QLatin1String("native-move")) {
@@ -1832,16 +1841,25 @@ void TestDriver::run(const Step& step) {
       }
       presses.push_back(press);
     }
-    for (const KeyPress& press : presses) {
-      queue([this, press, name, line] {
-        if (name == QLatin1String("native-key-event")) {
-          if (!mac::test::sendKeyEvent(press.key, press.modifiers, press.text)) {
-            fail(line, QStringLiteral("native application key event could not dispatch"));
-          }
-        } else {
-          sendKey(press);
+    if (name == QLatin1String("native-key-event")) {
+      mac::test::requestKeyEventFocus();
+      // AppKit activation is asynchronous. Posting while inactive can use
+      // menu fallback instead of the document's guarded shortcut dispatch.
+      whenReady([] { return mac::test::keyEventFocusReady(); }, 6,
+                QStringLiteral("native application did not activate its key-event target"),
+                [this, presses, line] {
+        for (const KeyPress& press : presses) {
+          queue([this, press, line] {
+            if (!mac::test::sendKeyEvent(press.key, press.modifiers, press.text)) {
+              fail(line, QStringLiteral("native application key event lost its active target"));
+            }
+          });
         }
       });
+    } else {
+      for (const KeyPress& press : presses) {
+        queue([this, press] { sendKey(press); });
+      }
     }
   } else if (name == QLatin1String("type")) {
     const QString text = a.join(QLatin1Char(' '));

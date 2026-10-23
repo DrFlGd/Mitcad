@@ -52,7 +52,9 @@ if(APPLE)
                 third_party/oidn/respect-macos-deployment-target.patch
                 third_party/cycles/metal-resource-usage.patch
                 third_party/cycles/denoiser-diagnostics.patch
-                third_party/cycles/metal-pipeline-failure.patch)
+                third_party/cycles/metal-pipeline-failure.patch
+                third_party/cycles/metal-cancellation-diagnostic.patch
+                third_party/cycles/denoiser-preview-batches.patch)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/${input}")
     file(SHA256 "${PROJECT_SOURCE_DIR}/${input}" mitcad_render_input_sha256)
     string(APPEND mitcad_render_input_hashes "${mitcad_render_input_sha256}\n")

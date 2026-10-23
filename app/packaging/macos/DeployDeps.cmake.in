@@ -174,5 +174,12 @@ endforeach()
 # Not fatal here: tools/check-bundle-macos.sh checks that every library the
 # bundle refers to is in it.
 foreach(mitcad_dep IN LISTS mitcad_unresolved)
+  # An executable can miss an @rpath that another executable or OIDN module
+  # resolves. It is no longer missing after that exact library was bundled.
+  get_filename_component(mitcad_dep_name "${mitcad_dep}" NAME)
+  if(mitcad_dep STREQUAL "@rpath/${mitcad_dep_name}" AND
+     EXISTS "${mitcad_frameworks}/${mitcad_dep_name}")
+    continue()
+  endif()
   message(WARNING "Not found, not bundled: ${mitcad_dep}")
 endforeach()

@@ -11,6 +11,7 @@
 #include <QString>
 
 #include "render/RenderProtocol.hpp"
+#include "platform/MacChrome.hpp"
 
 class QProcess;
 
@@ -87,6 +88,7 @@ private:
   void handle(const QJsonObject& event);
 
   QProcess* m_process = nullptr;
+  mac::ProcessActivity m_activity;
   std::unique_ptr<FrameMemory> m_memory;
 #ifndef _WIN32
   std::unique_ptr<FrameChannel> m_channel; // carries the memory to the worker

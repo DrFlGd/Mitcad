@@ -870,8 +870,12 @@ void CommandSession::activate(const QString& key) {
     m_activeFilter = SelectFilter();
     m_host.setConstructionHidden(false);
     m_host.inputActivated(SelectFilter());
+    followToolOverlays();
     return;
   }
+  // A consumed tool's other occurrences drawn for its input (mitcad#561),
+  // before the pick filter makes them pickable.
+  followToolOverlays();
   applyPickFilter(input);
   // Before the input logs its pick places: the ghosts let picks through.
   updateGhosts();
@@ -1785,6 +1789,12 @@ CommandSession::Preview CommandSession::previewFromReport(
       }
       preview.bodies.push_back(std::move(display));
     }
+    // What it removes where the view shows it: a consumed tool's
+    // occurrences, drawn as tool overlays while its input is active
+    // (mitcad#561).
+    for (const int index : removedShownBodies(preview.report, shown)) {
+      preview.removed.push_back(displays[static_cast<std::size_t>(index)]);
+    }
     if (const auto tool = m_host.previewToolShape()) {
       preview.tool = tool->occt();
     } else if (preview.report.contains(QStringLiteral("datum"))) {
@@ -1874,12 +1884,20 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
 
 void CommandSession::showPreview(const Preview& preview, const QString& operation) {
   OcctViewer& viewer = m_host.viewer();
-  viewer.setBodies(preview.bodies);
+  m_shownOperation = operation;
+  const InputDef* active = activeInput();
+  m_toolOverlaysShown = active != nullptr && active->toolOverlays;
+  std::vector<BodyDisplay> bodies = preview.bodies;
+  for (BodyDisplay& overlay : toolOverlays(preview, operation)) {
+    bodies.push_back(std::move(overlay));
+  }
+  viewer.setBodies(bodies);
   // What the preview draws (mitcad#266), for UI tests: each body with its
-  // occurrence, its placement's translation into the design and "new" for
-  // what the command makes, as "Bodies shown" lists the normal view's.
+  // occurrence, its placement's translation into the design, "new" for
+  // what the command makes and "tool" for a consumed tool's overlay
+  // (mitcad#561), as "Bodies shown" lists the normal view's.
   QStringList drawn;
-  for (const BodyDisplay& body : preview.bodies) {
+  for (const BodyDisplay& body : bodies) {
     if (!body.shape) {
       continue;
     }
@@ -1888,11 +1906,16 @@ void CommandSession::showPreview(const Preview& preview, const QString& operatio
       return QString::number(std::abs(value) < 1e-9 ? 0.0 : value, 'g', 10);
     };
     const QString occurrence = QString::fromStdString(body.occurrence);
+    QString look;
+    if (body.style == BodyDisplay::Style::New) {
+      look = QStringLiteral(" new");
+    } else if (body.style == BodyDisplay::Style::Tool || body.style == BodyDisplay::Style::CutTool) {
+      look = QStringLiteral(" tool");
+    }
     drawn << QStringLiteral("%1%2 at %3,%4,%5%6")
                  .arg(QString::fromStdString(body.uid),
                       occurrence.isEmpty() ? QString() : QStringLiteral(" in ") + occurrence,
-                      coordinate(at.X()), coordinate(at.Y()), coordinate(at.Z()),
-                      body.style == BodyDisplay::Style::New ? QStringLiteral(" new") : QString());
+                      coordinate(at.X()), coordinate(at.Y()), coordinate(at.Z()), look);
   }
   const QString logged = drawn.isEmpty() ? QStringLiteral("none") : drawn.join(QStringLiteral("; "));
   if (logged != m_loggedPreviewBodies) {
@@ -1911,6 +1934,52 @@ void CommandSession::showPreview(const Preview& preview, const QString& operatio
     viewer.setPreview(preview.tool, OcctViewer::PreviewStyle::Datum);
   } else {
     viewer.setPreview(preview.tool, OcctViewer::PreviewStyle::Add);
+  }
+}
+
+std::vector<BodyDisplay> CommandSession::toolOverlays(const Preview& preview, const QString& operation) const {
+  std::vector<BodyDisplay> overlays;
+  const InputDef* input = activeInput();
+  if (input == nullptr || !input->toolOverlays || preview.removed.empty()) {
+    return overlays;
+  }
+  // A consumed tool leaves its own component (mitcad#104), so the preview
+  // has it in none of the component's occurrences: where it is not picked,
+  // it stays drawn and pickable, as the tool it would be there. Where it is
+  // picked, its highlight shows it.
+  const Selection& picked = m_state.items(m_active);
+  for (const BodyDisplay& body : preview.removed) {
+    const QString uid = QString::fromStdString(body.uid);
+    const QString occurrence = QString::fromStdString(body.occurrence);
+    bool tool = false;
+    bool here = false;
+    for (const SelectionItem& item : picked) {
+      if (item.kind == SelectKind::Body && item.owner == uid) {
+        tool = true;
+        here = here || item.occurrence == occurrence;
+      }
+    }
+    if (!tool || here) {
+      continue;
+    }
+    BodyDisplay overlay = body;
+    overlay.style = operation == QStringLiteral("cut") ? BodyDisplay::Style::CutTool : BodyDisplay::Style::Tool;
+    overlays.push_back(std::move(overlay));
+  }
+  return overlays;
+}
+
+void CommandSession::followToolOverlays() {
+  if (m_done || !m_previewOk || m_previewCancelled) {
+    return;
+  }
+  const InputDef* input = activeInput();
+  if ((input != nullptr && input->toolOverlays) == m_toolOverlaysShown) {
+    return;
+  }
+  const auto shown = m_cache.constFind(m_shownKey);
+  if (shown != m_cache.cend()) {
+    showPreview(shown.value(), m_shownOperation);
   }
 }
 

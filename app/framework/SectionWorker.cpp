@@ -11,6 +11,7 @@
 
 #include "mitcad/geometry/cancel.hpp"
 #include "mitcad/geometry/guard.hpp"
+#include "platform/MacChrome.hpp"
 
 namespace mitcad {
 namespace {
@@ -182,6 +183,7 @@ void SectionWorker::ended(const Current& round, bool cancelled) const {
 }
 
 void SectionWorker::loop() {
+  mac::setThreadQuality(mac::ThreadQuality::UserInitiated);
   // On Windows OCCT's handlers are per thread; a crash inside OCCT is then
   // the round's error (mitcad#392), as on the model's worker.
   geometry::catch_occt_crashes();
@@ -197,6 +199,7 @@ void SectionWorker::loop() {
     lock.unlock();
     QString error;
     try {
+      const mac::ProcessActivity activity("Computing sections");
       const geometry::CancelScope scope(*round.stop);
       round.work(*round.stop);
     } catch (const std::exception& failure) {

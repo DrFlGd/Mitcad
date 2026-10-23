@@ -135,7 +135,8 @@
 //   native-type-now <id> <text> native edit without waiting for idleness;
 //                           these exercise preview cancellation and races
 //   native-key-now <key>... key input without waiting for model idleness
-//   native-key-event <key>... send key down/up through NSApp's event dispatch
+//   native-key-event <key>... await actual AppKit activation/key focus, then
+//                            send key down/up through NSApp's event dispatch
 //   expect-native-application-delegate check Qt activation signals, deactivate
 //                           events, Dock reopen and secure state restoration
 //   native-file-name <name> edit the real native save filename value
@@ -144,6 +145,7 @@
 //                           AppKit requires actual user acceptance of its
 //                           separate-process chooser; no accept verb exists.
 //   native-resize <w> <h>   resize the native document content in points
+//   window-resize <w> <h>   resize this test's Qt or native main window
 //   native-move <x> <y>     frame origin relative to the main screen's visible
 //                           origin; native.window.origin and native.window.size
 //                           expose the frame origin and content size as text

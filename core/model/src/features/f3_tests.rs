@@ -1358,3 +1358,62 @@ fn a_parallel_loft_moves_its_sections_along_the_centre_line() {
         Ok(_) => panic!("a parallel loft with a frame was accepted"),
     }
 }
+
+#[test]
+fn a_sweep_follows_a_path_of_fixed_curves() {
+    // (mitcad#548) A line along x, then a quadratic spline rising out of
+    // the plane: the kernel gets both, named by their places; a spline
+    // short of knots is refused.
+    let (mut b, _) = with_path();
+    let spline = |knots: Value| {
+        json!({"fixed_curves": [
+            {"type": "line", "start": [0, 0, 0], "end": [20, 0, 0]},
+            {"type": "spline", "degree": 2,
+             "poles": [[20, 0, 0], [30, 0, 0], [30, 10, 5]], "knots": knots}]})
+    };
+    let mut value = sweep(&["c1"], json!({}));
+    value["path"] = spline(json!([0, 0, 0, 1, 1, 1]));
+    let uid = add(&mut b.doc, value.clone()).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&b.doc).starts_with("sweep F5 path fixed1,fixed2 "),
+        "{}",
+        last_spec(&b.doc)
+    );
+    value["path"] = spline(json!([0, 0, 1, 1]));
+    match b.doc.edit_feature(uid, &def(value)) {
+        Err(e) => assert!(e.to_string().contains("knots"), "{e}"),
+        Ok(_) => panic!("a spline short of knots was accepted"),
+    }
+}
+
+#[test]
+fn a_surface_sweep_takes_fixed_curves_in_no_plane() {
+    // (mitcad#548) Three lines that lie in no plane, at the start of the
+    // path: one chain of a surface sweep; not with sketch profiles, nor
+    // in a solid sweep.
+    let (mut b, _) = with_path();
+    let mut value = json!({"type": "sweep", "surface": true,
+        "fixed_curves": [
+            {"type": "line", "start": [0, 0, 0], "end": [0, 10, 0]},
+            {"type": "line", "start": [0, 10, 0], "end": [0, 10, 10]},
+            {"type": "line", "start": [0, 10, 10], "end": [5, 10, 10]}],
+        "path": {"sketch": "F3", "curves": ["c1"]}, "operation": "new_body"});
+    let uid = add(&mut b.doc, value.clone()).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    let spec = last_spec(&b.doc);
+    assert!(spec.starts_with("sweep_sheet(F5: "), "{spec}");
+    assert!(
+        spec.contains("fixed1") && spec.contains("fixed2") && spec.contains("fixed3"),
+        "{spec}"
+    );
+    assert!(spec.contains(" path c1 "), "{spec}");
+    value["profiles"] = json!([{"sketch": "F4", "region": "r{c1}"}]);
+    match b.doc.edit_feature(uid, &def(value.clone())) {
+        Err(e) => assert!(e.to_string().contains("alone"), "{e}"),
+        Ok(_) => panic!("fixed curves with profiles were accepted"),
+    }
+    value.as_object_mut().unwrap().remove("profiles");
+    value["surface"] = json!(false);
+    assert!(b.doc.edit_feature(uid, &def(value)).is_err());
+}

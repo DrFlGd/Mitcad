@@ -228,6 +228,18 @@ Modifiers:
   constraints, mitcad#148). The ghosts of components that are not active
   (mitcad#420, "Inactive components as ghosts" under The view) look the
   same but stay pickable; a body ghosted by both is the command's ghost.
+- `withToolOverlays()`: a selection of bodies the command consumes
+  (Combine's Tool Bodies, mitcad#561). A consumed body leaves its
+  component, so the preview has it in none of the component's
+  occurrences; while the input is active, the session draws each
+  occurrence of a picked body that the preview removes, where it is not
+  picked itself, as a tool overlay (`BodyDisplay::Style::Tool`, `CutTool`
+  for a cut: see-through like the tool preview, blue or red, and
+  pickable), so that a click picks the body there too. The session finds
+  them with `removedShownBodies` (`framework/PreviewBodies.hpp`) and
+  draws the shown preview again when the input is activated or left;
+  `Preview bodies:` lists the overlays with ` tool`
+  (`F2.b0 in O2 at 30,0,0 tool`).
 - `withHoverChain(kinds, check)`: while the check input `check` (a
   top-level one) is on, the hover over an edge or face of a body of
   `kinds` shows its whole tangent chain, what the operation takes with
@@ -4593,7 +4605,17 @@ SVG at several sizes (`themeIcon`).
   Part:2` (`Body1 (Part:1)` when the occurrence gives two), the others by
   their bodies (`InputDef::itemsText`; logged `Combine Tool Bodies listed:
   Part:1, Part:2`). `load` gives the picks back their occurrences, also
-  from the `tool_links` of earlier versions. Tests:
+  from the `tool_links` of earlier versions. Without Keep Tools a
+  consumed tool leaves its own component (mitcad#104), so the preview has
+  it in no occurrence of that component: while Tool Bodies is active its
+  other occurrences are drawn as tool overlays (`withToolOverlays`,
+  see-through, red for a cut), and a click there adds the same body as
+  another tool (mitcad#561); OK removes the body once, as before. The
+  panel's note says what else it takes away, when a consumed tool lies in
+  another component that has occurrences where it is not a tool:
+  `Body1 leaves Part: it is also gone from Part:2.` (logged `Panel
+  Combine note: …`; none with Keep Tools), also while an existing Combine
+  is edited. Tests:
   `tools/ui-component-combine-test.sh`,
   `tools/ui-windows-component-combine-test.ps1` (ctest
   `app.ui-windows-component-combine`).
@@ -4821,7 +4843,7 @@ next screenshot.
 |---|---|
 | `View area x y w h` | the 3D view's place in the window (`ui_view_click`) |
 | `Ribbon SOLID/CREATE at x,y`, `Ribbon tab BUILD at x,y` | group menus and the workspace tabs (wherever the tab bar is: the ribbon's, the title bar's), when the ribbon or its tab bar is shown, moves or is resized (`PlaceWatcher`, when the places changed), and when another tab is shown (`ui_click_logged`) |
-| `Window layout: window 1280x800, minimum 484x315; menu 6,0 1268x22; central 252,126 716x593; QStatusBar 6,771 1268x29; browserDock 6,126 240x593; commandDock 974,126 300x593; ribbonToolbar 6,22 1268x104; timelineDock 6,725 1268x46` | the main window's size and minimum size and the geometry of its menu bar, central widget (the 3D view) and visible docks, toolbars and status bar (by object name, else class), once the window shows (not with the native UI); `tools/ui-layout.sh` prints it and `tools/check-all.sh` reruns every UI test when it changes (mitcad#412) |
+| `Window layout: window 1280x800, minimum 484x315; menu 6,0 1268x22; central 252,126 716x593; QStatusBar 6,771 1268x29; browserDock 6,126 240x593; commandDock 974,126 300x593; ribbonToolbar 6,22 1268x104; timelineDock 6,725 1268x46` | the main window's size and minimum size and the geometry of its menu bar, central widget (the 3D view) and visible docks, toolbars and status bar (by object name, else class), once the window shows and again whenever its size changes after that (mitcad#560: the docks' content never makes the window grow; `tools/ui-docked-height-test.sh`, `app.ui-windows-docked-height`; not with the native UI); `tools/ui-layout.sh` prints it and `tools/check-all.sh` reruns every UI test when it changes (mitcad#412) |
 | `Ribbon split SKETCH/CREATE/Circles at x,y`, `Ribbon split SKETCH/CREATE/Circles arrow at x,y` | a subgroup's split button: the part that starts its default, the arrow that opens the submenu (mitcad#222; logged with the group menus) |
 | `Ribbon menu SKETCH/CREATE: Line \| Rectangles > [2-Point Rectangle \| …] \| … \| Sketch Dimension`, `Ribbon menu SKETCH/CREATE/Circles: Center Diameter Circle \| …` | a group menu or a subgroup's submenu as it opens (`-` a separator, a submenu as `Name > [its entries]`) |
 | `Panel <command> input <id> at x,y [(hidden)]`, `Panel <command> OK at x,y` | a panel opened; again whenever its places move (mitcad#528: the panel, a row's field or a widget it is in moved or was resized, a tile's picture read, the dock laid out again: 50 ms after it settles, a timer the sync waits for, only when a place differs from those logged last), so the last line logged is where the input is; the part picker's places likewise when its window moves or is resized; the in-process test driver's `click-logged` (macOS) waits for these timers (`TestSync::settling`, up to 5 s) before it reads a place |

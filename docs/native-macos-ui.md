@@ -104,10 +104,15 @@ Text editors keep their normal editing keys; document shortcuts do not
 intercept input in an attached modal sheet. In Save with Description,
 Command+Return saves and plain Return inserts a newline.
 
-The #187 keyboard changes were integrated without executing builds or tests
-at the owner's request. The validation history below predates those changes;
-it is not runtime evidence for the keyboard changes. The outstanding manual
-scenarios are also listed in [the macOS checklist](macos-trackpad-checklist.md).
+The #187 keyboard changes were initially integrated without executing builds
+or tests at the owner's request. On 2026-10-23, the physical M1 Max native
+workflow passed whole AppKit Undo/Redo events, cancellation preserving the
+redo history, search dismissal and the existing command/form scenarios.
+The whole-event test bridge now waits for actual application activation and
+its own key window before posting events; simulated delegate notifications
+alone do not establish AppKit keyboard focus (mitcad#559). This scoped run
+does not complete the full keyboard matrix. Outstanding manual scenarios
+remain in [the macOS checklist](macos-trackpad-checklist.md).
 
 ## Validation
 

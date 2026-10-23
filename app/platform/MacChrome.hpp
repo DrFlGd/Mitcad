@@ -10,10 +10,52 @@ class QWidget;
 
 // The macOS-only parts of the interface that need AppKit. Portable code calls
 // these functions without #ifdefs: on other platforms they are inline stubs
-// that do nothing. The macOS implementation is platform/macos/MacChrome.mm.
+// that do nothing. Implementations are in platform/macos/ (MacChrome.mm
+// for the interface, MacWork.mm for scheduling and process activities).
 namespace mitcad::mac {
 
+enum class ThreadQuality { UserInitiated, Utility };
+
+// Thread-local scheduling and process activity for work the user waits for.
+// Activities own their native token and always end it, including on exceptions.
+class ProcessActivity {
+public:
+  ProcessActivity() = default;
+  explicit ProcessActivity(const char* reason) { start(reason); }
+  ~ProcessActivity() { stop(); }
+  ProcessActivity(const ProcessActivity&) = delete;
+  ProcessActivity& operator=(const ProcessActivity&) = delete;
+  void start(const char* reason);
+  void stop();
+
+private:
 #ifdef Q_OS_MACOS
+  void* m_token = nullptr;
+#endif
+};
+
+// A shared pool's utility job must restore the thread's previous quality.
+class ThreadQualityScope {
+public:
+  explicit ThreadQualityScope(ThreadQuality quality);
+  ~ThreadQualityScope();
+  ThreadQualityScope(const ThreadQualityScope&) = delete;
+  ThreadQualityScope& operator=(const ThreadQualityScope&) = delete;
+
+private:
+#ifdef Q_OS_MACOS
+  unsigned m_previous = 0;
+  int m_priority = 0;
+  bool m_changed = false;
+#endif
+};
+
+#ifdef Q_OS_MACOS
+
+void setThreadQuality(ThreadQuality quality);
+// Before model/section workers start: sets each default OCCT pool thread's
+// quality explicitly. Does not change the caller's quality or the pool size.
+void initializeComputeThreads();
 
 // An SF Symbol (e.g. "arrow.uturn.backward") as an icon: a template image
 // drawn in the application palette's ButtonText colour (the palette's
@@ -68,6 +110,13 @@ void setGlassCornerRadius(QWidget* card, qreal cornerRadius);
 bool captureOwnWindows(const QString& path);
 
 #else
+
+inline void setThreadQuality(ThreadQuality) {}
+inline void initializeComputeThreads() {}
+inline void ProcessActivity::start(const char*) {}
+inline void ProcessActivity::stop() {}
+inline ThreadQualityScope::ThreadQualityScope(ThreadQuality) {}
+inline ThreadQualityScope::~ThreadQualityScope() = default;
 
 inline bool glassAvailable() { return false; }
 inline void attachGlassWindow(QWidget*, QWidget*, qreal) {}

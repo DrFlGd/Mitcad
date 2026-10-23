@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "mitcad/geometry/guard.hpp"
+#include "platform/MacChrome.hpp"
 
 namespace mitcad {
 namespace {
@@ -54,6 +55,7 @@ std::exception_ptr ModelWorker::take() {
 }
 
 void ModelWorker::run() {
+  mac::setThreadQuality(mac::ThreadQuality::UserInitiated);
   // On Windows OCCT's handlers are per thread (main installs them on the UI
   // thread); on Linux and macOS they are the process's.
   geometry::catch_occt_crashes();
@@ -67,6 +69,7 @@ void ModelWorker::run() {
     lock.unlock();
     std::exception_ptr error;
     try {
+      const mac::ProcessActivity activity("Computing the model");
       job();
     } catch (...) {
       error = std::current_exception();

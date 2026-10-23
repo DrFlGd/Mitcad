@@ -6,6 +6,7 @@
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -352,6 +353,15 @@ private:
 };
 
 } // namespace
+
+bool metalAsyncPipelineCreation(const std::vector<DeviceInfo>& devices, const char* overrideValue) {
+  if (overrideValue != nullptr) {
+    return std::atoi(overrideValue) != 0;
+  }
+  return std::none_of(devices.begin(), devices.end(), [](const DeviceInfo& device) {
+    return device.type == "METAL" && device.name.find("Apple Paravirtual device") != std::string::npos;
+  });
+}
 
 DeviceInfo chooseDevice(const std::string& choice, const std::vector<DeviceInfo>& devices, std::string& message) {
   message.clear();

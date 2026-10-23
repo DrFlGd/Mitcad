@@ -121,6 +121,8 @@ expect-near ${edited} 10000
 
 # Whole AppKit key events must run Undo and Redo exactly once, without the
 # test bridge offering key equivalents directly to the document window.
+# The whole-event bridge waits for real AppKit activation/key focus; the
+# application-delegate regression above only changes Qt's activation state.
 focus-main
 capture-undo-depth beforeShortcutUndo
 mark
@@ -132,6 +134,8 @@ expect-log 'Editing F1 with Box'
 expect-native-text input_height '^20(?:\.0*)?(?: mm)?$'
 native-click commandCancel
 expect-log 'Command Box cancelled' 30
+expect-undo-depth ${beforeShortcutUndo} -1
+expect-model-bodies 1 20000
 focus-main
 mark
 native-key-event Ctrl+Shift+z

@@ -19,6 +19,15 @@ CMAKE_VERSION=3.31.6
 CMAKE_MACOS_SHA256=330b9514f5112e5ed4fb08b8b05803b776fd9b539a6ae12927d14dcc0ee2ba8d
 NINJA_VERSION=1.13.2
 NINJA_MAC_SHA256=c99048673aa765960a99cf10c6ddb9f1fad506099ff0a0e137ad8960a88f321b
+# macOS compiler caches (build tools only). Digests published for these
+# assets by the upstream release APIs, also checked against the archives:
+# https://api.github.com/repos/ccache/ccache/releases/tags/v4.14.2
+# https://api.github.com/repos/mozilla/sccache/releases/tags/v0.18.0
+# The Darwin ccache archive is universal (includes arm64).
+CCACHE_MACOS_VERSION=4.14.2
+CCACHE_MACOS_SHA256=cf240009630b605b775c7c5c7b7105a3b196c79f31af322c1557969aa28003fc
+SCCACHE_MACOS_VERSION=0.18.0
+SCCACHE_MACOS_ARM64_SHA256=308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e
 # A standalone CPython for aqtinstall (python-build-standalone), since the
 # Command Line Tools' python3 is too old; the digest is GitHub's for the asset.
 PYTHON_VERSION=3.12.15

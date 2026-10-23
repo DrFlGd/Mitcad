@@ -2,14 +2,18 @@
 # check-all sources: app/commands/MoveCommands.cpp app/framework/Command.hpp
 # check-all sources: app/framework/CommandSession.cpp app/framework/CommandPanel.cpp
 # check-all sources: core/model/src/features/combine.rs tools/cli
+# check-all sources: app/OcctViewer.cpp app/framework/PreviewBodies.cpp
 # Input-driven Windows UI test of Combine with the same body in two
 # occurrences as tools (mitcad#544) in the build VM (tools/ui-windows-lib.ps1
 # says how the input is posted), as the last part of
 # tools/ui-component-combine-test.sh on Linux: a block in the root (F4.b0,
 # 6000 mm3), Part:1's block overlapping it on one side and Part:2's on the
 # other, 2000 mm3 each.
-#   1. Combine, the root's block the target, Part's block picked where
-#      Part:1 and where Part:2 show it: two tools, listed "Part:1, Part:2";
+#   1. Combine, the root's block the target, Keep Tools off, Part's block
+#      picked where Part:1 shows it: the consumed tool leaves Part, so the
+#      preview draws it where Part:2 shows it as a tool to pick there
+#      (mitcad#561), and the panel says it is also gone from Part:2; then
+#      picked where Part:2 shows it: two tools, listed "Part:1, Part:2";
 #      Cut, OK: both cut away, 2000 mm3 left.
 #   2. The design file keeps a tool in each occurrence.
 #   3. Edited: the panel takes both tools back where they were picked.
@@ -73,17 +77,19 @@ Ui-ExpectNew 'Command Combine started' 'Combine started'
 $root = Ui-LoggedAt 'Body F4.b0'
 Ui-Step "pick the root's block"          { Ui-Click ($root[0] - 20) $root[1] }
 Ui-ExpectNew 'Combine Target Body: 1 body [body F4.b0]' 'the target picked'
-# Keep Tools on first: a consumed tool leaves its own component
-# (mitcad#104), so once Part:1's block is a tool the preview drops Part's
-# block from Part:2 too and nothing is left to pick there.
-Ui-Mark
-Ui-Step 'Keep Tools'                     { Ui-ClickLogged 'Panel Combine input keep_tools' }
-Ui-ExpectNew 'Combine: Keep Tools = on' 'the tools kept'
+# Keep Tools stays off: a consumed tool leaves its own component
+# (mitcad#104), so once Part:1's block is a tool the preview has Part's
+# block in no occurrence; it draws it where Part:2 shows it as a tool
+# overlay, which a click picks (mitcad#561).
 Ui-Step 'Tool Bodies'                    { Ui-ClickLogged 'Panel Combine input tools' }
 Ui-Mark
 Ui-Step "pick Part:1's block"            { Ui-ClickLogged 'Body F2.b0 in O1' }
 Ui-ExpectNew 'Combine Tool Bodies: 1 body [body F2.b0 in O1]' 'the tool picked where Part:1 shows it'
 Ui-ExpectNew 'Combine Tool Bodies listed: Part:1' 'listed by its occurrence'
+Ui-ExpectNew 'Preview Combine: ok' 'previewed with the tool consumed' 30
+Ui-ExpectNew 'F2.b0 in O2 at 30,0,0 tool' "Part's block drawn as a tool where Part:2 shows it"
+Ui-ExpectNew 'Panel Combine note: ' 'the panel notes where the tool goes'
+Ui-ExpectNew 'leaves Part: it is also gone from Part:2.' 'the tool also gone from Part:2'
 Ui-Mark
 Ui-Step "pick Part:2's block"            { Ui-ClickLogged 'Body F2.b0 in O2' }
 Ui-ExpectNew 'Combine Tool Bodies: 2 bodies [body F2.b0 in O1; body F2.b0 in O2]' 'the same body picked where Part:2 shows it'

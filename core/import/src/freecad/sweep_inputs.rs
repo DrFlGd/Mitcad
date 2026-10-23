@@ -14,6 +14,13 @@
 //!   Part Circle, Polygon, RegularPolygon, Ellipse, a Draft wire): a
 //!   sketch of them as fixed geometry on a fixed plane, its one region.
 //!
+//! Since mitcad#548: a conical Part helix and edges in no plane are paths
+//! of fixed curves ([`super::fixed_paths`]); a section of an open wire is
+//! a surface sweep of its sketch's curves (`curves` sections), of a wire in
+//! no plane one of `fixed_curves`; PartDesign features' results are found
+//! in their Body's body; the spine and sections only read their objects
+//! ([`reads_only`]).
+//!
 //! The objects of edges or vertices that only Part extrusions and sweeps
 //! use have no body of their own ([`Importer::part_item`]); the sweep
 //! makes the planes and sketches as definitions before its own (`$<i>`),
@@ -88,6 +95,14 @@ pub(super) fn sweep_uses(user: &Object, name: &str) -> bool {
             || user.links("Sections").iter().any(|l| l.object == name))
 }
 
+/// Whether `o`'s link `property` only reads the linked object's edges,
+/// faces or vertices without using up its body (mitcad#548): a Part
+/// sweep's spine and sections. Such a link makes no copy of the body and
+/// counts as no use of it.
+pub(super) fn reads_only(o: &Object, property: &str) -> bool {
+    o.type_name == "Part::Sweep" && matches!(property, "Spine" | "Sections")
+}
+
 impl<K: Kernel> Importer<'_, '_, K> {
     /// A Part sweep's spine as a path; planes and sketches it needs go to
     /// `made`.
@@ -105,13 +120,12 @@ impl<K: Kernel> Importer<'_, '_, K> {
         if super::is_sketch(&object.type_name) {
             return self.sketch_path(link, component);
         }
+        // A Part helix: a fixed helix path, or a conical one's stored
+        // curves (mitcad#548).
         if object.type_name == "Part::Helix" && link.subs.is_empty() {
-            let path = self.helix_spine(&object, target)?;
-            made.notes.push(format!(
-                "{}'s helix is a fixed helix path (FreeCAD's sizes are not carried over)",
-                link.object
-            ));
-            return Ok(json!({"helix": path}));
+            let helix = self.part_helix(&object, target)?;
+            made.notes.push(helix.note);
+            return Ok(helix.path);
         }
         // Edges of a body here: the body's edges by name.
         if let Some(body) = self.body_of_object(&link.object) {
@@ -164,12 +178,15 @@ impl<K: Kernel> Importer<'_, '_, K> {
                         link.object
                     ));
                 }
-                let frame = self.plane_of(&object, &curves, target).ok_or_else(|| {
-                    format!(
-                        "the spine's edges of {} do not lie in one plane (not translated)",
+                // Edges in no plane (mitcad#548): a path of fixed curves.
+                let Some(frame) = self.plane_of(&object, &curves, target) else {
+                    made.notes.push(format!(
+                        "{}'s edges in no plane are a path of fixed curves (FreeCAD's object is \
+                         not carried over)",
                         link.object
-                    )
-                })?;
+                    ));
+                    return super::fixed_paths::fixed_curves(&curves);
+                };
                 let (sketch, curves) = made.fixed_sketch(&curves, &frame, "spine");
                 made.notes.push(format!(
                     "{}'s edges are fixed geometry of a sketch (FreeCAD's object keeps no sketch \
@@ -236,54 +253,40 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 link.object
             ));
         }
-        let frame = self.plane_of(&object, &curves, target).ok_or_else(|| {
-            format!(
-                "the section's edges of {} do not lie in one plane (not translated)",
+        // One wire (mitcad#548): FreeCAD sweeps a section's one wire.
+        let wires = wires_of(&curves);
+        if wires.len() != 1 {
+            return Err(format!(
+                "a section of {} separate wires of {} is not translated: a Part sweep's section \
+                 is one wire",
+                wires.len(),
                 link.object
-            )
-        })?;
+            ));
+        }
+        let closed = wires[0];
+        // Edges in no plane (mitcad#548): fixed curves, swept into a
+        // surface (FreeCAD makes no caps of them).
+        let Some(frame) = self.plane_of(&object, &curves, target) else {
+            made.notes.push(format!(
+                "{}'s edges in no plane are fixed curves (FreeCAD's object is not carried over)",
+                link.object
+            ));
+            let fixed = super::fixed_paths::fixed_curves(&curves)?;
+            return Ok(json!({"type": "fixed_curves", "fixed_curves": fixed["fixed_curves"]}));
+        };
         let what = format!("section {number}");
-        let (sketch, _) = made.fixed_sketch(&curves, &frame, &what);
+        let (sketch, ids) = made.fixed_sketch(&curves, &frame, &what);
         made.notes.push(format!(
             "{}'s edges are fixed geometry of a sketch (FreeCAD's object keeps no sketch of them)",
             link.object
         ));
+        if !closed {
+            // An open wire (mitcad#548): its curves, swept into a surface
+            // (FreeCAD makes no caps of an open wire).
+            return Ok(json!({"type": "curves", "sketch": format!("${sketch}"), "curves": ids}));
+        }
         Ok(json!({"type": "profile", "sketch": format!("${sketch}"),
                   "region": format!("${sketch}:region")}))
-    }
-
-    /// A cylindrical Part helix as a fixed helix path (the `helix` of a
-    /// path): FreeCAD's helix starts at (Radius, 0, 0) in its placement and
-    /// rises along its z axis by Height, Pitch a turn, counter-clockwise
-    /// about it (`LocalCoord` Right-handed) or clockwise (Left-handed).
-    fn helix_spine(&self, h: &Object, target: &Target) -> Result<Value, String> {
-        if h.f64("Angle").is_some_and(|a| a != 0.0) {
-            return Err(
-                "a sweep along a conical Part helix is not translated (a fixed helix path has \
-                 no cone)"
-                    .to_owned(),
-            );
-        }
-        let (pitch, height, radius) = (
-            h.f64("Pitch").ok_or("no pitch")?,
-            h.f64("Height").ok_or("no height")?,
-            h.f64("Radius").ok_or("no radius")?,
-        );
-        if pitch <= 0.0 || height <= 0.0 || radius <= 0.0 {
-            return Err("a helix without a pitch, a height or a radius".to_owned());
-        }
-        let left = self
-            .enum_text(h, "LocalCoord")
-            .is_some_and(|t| t.starts_with("Left"));
-        let frame = super::sketches::frame_of(&target.place.transform, &super::placement_of(h));
-        let axis = unit(frame.normal()).ok_or("the helix has no axis")?;
-        let x = unit(frame.x_axis).ok_or("the helix has no axes")?;
-        let turn = std::f64::consts::TAU * height / pitch;
-        let (pitch, end) = if left { (-pitch, -turn) } else { (pitch, turn) };
-        Ok(
-            json!({"center": frame.origin, "axis": axis, "x_axis": x, "radius": radius,
-                  "pitch": pitch, "start_angle": 0.0, "end_angle": end}),
-        )
     }
 
     /// The curves of an object's stored shape in the component: of the
@@ -339,6 +342,96 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let frame = plane_through(curves)?;
         super::part::lies_in(curves, &frame).then_some(frame)
     }
+}
+
+/// A curve's start and end (None for a closed one or a point): a clamped
+/// B-spline's ends are its first and last poles.
+fn curve_ends(c: &Curve3) -> Option<([f64; 3], [f64; 3])> {
+    match c {
+        Curve3::Line { start, end } => Some((*start, *end)),
+        Curve3::Conic { closed: true, .. } | Curve3::Point(_) => None,
+        Curve3::Conic {
+            center,
+            normal,
+            x_axis,
+            major,
+            minor,
+            start,
+            end,
+            ..
+        } => {
+            let y = cross(*normal, *x_axis);
+            let at = |t: f64| -> [f64; 3] {
+                std::array::from_fn(|i| {
+                    center[i] + major * t.cos() * x_axis[i] + minor * t.sin() * y[i]
+                })
+            };
+            Some((at(*start), at(*end)))
+        }
+        Curve3::BSpline { poles, .. } => Some((*poles.first()?, *poles.last()?)),
+        Curve3::Helix { .. } => None,
+    }
+}
+
+/// The wires the curves make, joined where their ends meet (within 1e-6
+/// of their size; mitcad#548): whether each is closed (a closed curve
+/// alone, or every end met by one other).
+pub(super) fn wires_of(curves: &[Curve3]) -> Vec<bool> {
+    let size = curves
+        .iter()
+        .flat_map(super::elements::key_points)
+        .map(norm)
+        .fold(1.0, f64::max);
+    let tolerance = 1e-6 * size;
+    let mut nodes: Vec<[f64; 3]> = Vec::new();
+    let mut node_of = |p: [f64; 3]| -> usize {
+        if let Some(i) = nodes.iter().position(|q| norm(sub(*q, p)) <= tolerance) {
+            return i;
+        }
+        nodes.push(p);
+        nodes.len() - 1
+    };
+    let links: Vec<Option<(usize, usize)>> = curves
+        .iter()
+        .map(|c| curve_ends(c).map(|(a, b)| (node_of(a), node_of(b))))
+        .collect();
+    let count = nodes.len();
+    // Curves joined through shared nodes.
+    let mut group: Vec<usize> = (0..curves.len()).collect();
+    fn root(group: &mut [usize], mut i: usize) -> usize {
+        while group[i] != i {
+            group[i] = group[group[i]];
+            i = group[i];
+        }
+        i
+    }
+    let mut degree = vec![0usize; count];
+    for (i, link) in links.iter().enumerate() {
+        let Some((a, b)) = *link else { continue };
+        degree[a] += 1;
+        degree[b] += 1;
+        for (j, other) in links.iter().enumerate().take(i) {
+            if let Some((c, d)) = *other
+                && (a == c || a == d || b == c || b == d)
+            {
+                let (ri, rj) = (root(&mut group, i), root(&mut group, j));
+                group[ri] = rj;
+            }
+        }
+    }
+    let mut wires: Vec<(usize, bool)> = Vec::new();
+    for (i, link) in links.iter().enumerate() {
+        let r = root(&mut group, i);
+        let closed = match *link {
+            None => true,
+            Some((a, b)) => degree[a] == 2 && degree[b] == 2,
+        };
+        match wires.iter_mut().find(|(w, _)| *w == r) {
+            Some((_, all)) => *all &= closed,
+            None => wires.push((r, closed)),
+        }
+    }
+    wires.into_iter().map(|(_, closed)| closed).collect()
 }
 
 /// A plane through the curves: a conic's own, else through their first

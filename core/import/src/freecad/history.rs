@@ -324,14 +324,12 @@ fn replayable_root(o: &Object, doc: &mitcad_freecad::Document) -> bool {
         }
         // A sweep of sketches along a sketch (mitcad#543), or of other
         // objects' edges, faces or vertices, along a Part helix or other
-        // objects' edges (mitcad#547): not of PartDesign features (a
-        // Body's results stay in their Body).
+        // objects' edges (mitcad#547), also of PartDesign features' results
+        // (mitcad#548: their Bodies are replayed for them).
         "Part::Sweep" => {
             let sketch = |l: &mitcad_freecad::LinkRef| {
-                doc.object(&l.object).is_some_and(|p| {
-                    super::is_sketch(&p.type_name)
-                        || (!p.type_name.starts_with("PartDesign::") && p.shape().is_some())
-                })
+                doc.object(&l.object)
+                    .is_some_and(|p| super::is_sketch(&p.type_name) || p.shape().is_some())
             };
             let sections = o.links("Sections");
             return !sections.is_empty()
@@ -401,7 +399,15 @@ impl<K: Kernel> Importer<'_, '_, K> {
                             x.shape().is_some() && !super::is_construction(&x.type_name)
                         })
                     {
-                        stack.push(link.object.clone());
+                        // A PartDesign feature's result (mitcad#548): its
+                        // Body is replayed, the feature with it.
+                        let feature = doc
+                            .object(&link.object)
+                            .is_some_and(|x| is_solid_feature(&x.type_name));
+                        match source.body_of(&link.object).filter(|_| feature) {
+                            Some(body) => stack.push(body.to_owned()),
+                            None => stack.push(link.object.clone()),
+                        }
                     }
                 }
             }
@@ -425,6 +431,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             let mut seen = BTreeSet::new();
             for (property, link) in o.references() {
                 if !NOT_CONSUMING.contains(&property)
+                    && !super::sweep_inputs::reads_only(o, property)
                     && replayed.contains(&link.object)
                     && seen.insert(link.object.clone())
                 {

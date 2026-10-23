@@ -2402,7 +2402,7 @@ fn part_extrusions_of_faces_and_into_faces_become_features() {
             ),
         ),
         // Nested wires (a square with a circle in it): the simple face
-        // maker's overlapping faces are not translated (mitcad#547).
+        // maker's overlapping faces, one filling each wire (mitcad#548).
         (
             "Sketcher::SketchObject",
             "Nested",
@@ -2437,6 +2437,14 @@ fn part_extrusions_of_faces_and_into_faces_become_features() {
                 shape("Simple.brp")
             ),
         ),
+        // A plane primitive Mitcad has no translation of, extruded: the
+        // plane falls back (missing), its face extruded.
+        ("Part::Plane", "Sheet", shape("Sheet.brp")),
+        (
+            "Part::Extrusion",
+            "Sheeted",
+            part_extrusion("Sheet", true, 2, [0.0, 0.0, 1.0], &float("LengthFwd", 2.0)),
+        ),
     ]);
     let file = fcstd(
         &xml,
@@ -2450,6 +2458,8 @@ fn part_extrusions_of_faces_and_into_faces_become_features() {
             ("Face2.brp", b"1 face2,sheet"),
             ("Face2Extrusion.brp", b"6 tapered"),
             ("Simple.brp", b"1 simple,sheet"),
+            ("Sheet.brp", b"1 sheet,sheet"),
+            ("SheetExtrusion.brp", b"6 sheeted"),
         ],
     );
     let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
@@ -2517,20 +2527,20 @@ fn part_extrusions_of_faces_and_into_faces_become_features() {
     assert_eq!(extent["full_length"], true, "{extent}");
     assert_eq!(number(&doc, &extent["distance"]), 5.0);
     // A tapered face (mitcad#541): its taper on the extrusion; a face of
-    // the simple face maker of nested wires (overlapping faces): missing
-    // in Mitcad (mitcad#547).
+    // the simple face maker of nested wires: a face filling each wire
+    // (mitcad#548); a plane primitive: missing in Mitcad.
     let tapered = feature(&report, "Tapered");
     assert_eq!(tapered.outcome, ObjectOutcome::Parametric, "{tapered:?}");
     let defs = defs_of(&doc, &report, "Tapered");
     assert_eq!(defs[0]["extent"]["type"], "distance", "{defs:?}");
     assert!((number(&doc, &defs[0]["extent"]["taper"]).abs() - 5f64.to_radians()).abs() < 1e-12);
     let simple = feature(&report, "Simple");
-    assert_eq!(simple.outcome, ObjectOutcome::Fallback, "{simple:?}");
-    assert_eq!(simple.fallback_group, Some(FallbackGroup::Missing));
-    assert!(
-        simple.notes.iter().any(|n| n.contains("overlapping faces")),
-        "{simple:?}"
-    );
+    assert_eq!(simple.outcome, ObjectOutcome::Parametric, "{simple:?}");
+    let sheet = feature(&report, "Sheet");
+    assert_eq!(sheet.outcome, ObjectOutcome::Fallback, "{sheet:?}");
+    assert_eq!(sheet.fallback_group, Some(FallbackGroup::Missing));
+    let sheeted = feature(&report, "Sheeted");
+    assert_eq!(sheeted.outcome, ObjectOutcome::Parametric, "{sheeted:?}");
     assert_eq!(report.fallback_groups(), [1, 1, 0]);
     let text = report.text();
     assert!(
@@ -2657,8 +2667,8 @@ fn part_extrusions_of_several_bodies_along_a_direction_and_of_edges() {
 }
 
 /// mitcad#547: FreeCAD's simple face maker makes the faces Mitcad's
-/// patches do where no wire lies in another; of nested wires (overlapping
-/// faces) it is not translated.
+/// patches do where no wire lies in another; of nested wires (mitcad#548)
+/// its overlapping faces, one filling each wire.
 #[test]
 fn simple_face_maker_faces_of_wires_apart() {
     let simple = prop(
@@ -2740,20 +2750,48 @@ fn simple_face_maker_faces_of_wires_apart() {
         Some(2),
         "{defs:?}"
     );
+    // Nested (mitcad#548): the circle's region is its wire's face; the
+    // square's region (a ring) is patched, its outer opening patched (the
+    // square's face, over the circle's) and the ring's patch removed.
     let overlapping = feature(&report, "Overlapping");
     assert_eq!(
         overlapping.outcome,
-        ObjectOutcome::Fallback,
+        ObjectOutcome::Parametric,
         "{overlapping:?}"
     );
-    assert_eq!(overlapping.fallback_group, Some(FallbackGroup::Missing));
+    let defs = defs_of(&doc, &report, "Overlapping");
+    let types: Vec<&str> = defs.iter().filter_map(|d| d["type"].as_str()).collect();
+    assert_eq!(
+        types.iter().filter(|t| **t == "patch").count(),
+        3,
+        "{defs:?}"
+    );
+    assert_eq!(
+        types.iter().filter(|t| **t == "base").count(),
+        1,
+        "{defs:?}"
+    );
     assert!(
-        overlapping
-            .notes
-            .iter()
-            .any(|n| n.contains("overlapping faces")),
-        "{overlapping:?}"
+        defs.iter().any(|d| d.get("boundary").is_some()),
+        "the outer wire's opening patched: {defs:?}"
     );
+    let ring = defs
+        .iter()
+        .position(|d| d.get("boundary").is_some())
+        .and_then(|i| i.checked_sub(1))
+        .map(|i| report_feature_uid(&report, "Overlapping", i))
+        .expect("the ring's patch");
+    let removed = defs.iter().find(|d| d["type"] == "base").expect("removed");
+    assert_eq!(
+        removed["replaces"],
+        json!([format!("{ring}.b0")]),
+        "{defs:?}"
+    );
+}
+
+/// The uid of the `i`-th Mitcad feature made of an object.
+fn report_feature_uid(report: &FcstdReport, name: &str, i: usize) -> String {
+    feature(report, name).features[i].clone()
 }
 
 #[test]
@@ -3901,4 +3939,58 @@ fn fixed_pipes_part_helix_sweeps_and_many_faces_become_features() {
     // More faces than the eight fixed names (mitcad#547): numbered on.
     assert_eq!(profiles::face_suffix(0), "");
     assert_eq!(profiles::face_suffix(11), " (face 12)");
+}
+
+#[test]
+fn fixed_curves_and_the_wires_of_sweep_sections() {
+    // (mitcad#548) Curves in no plane as a path of fixed curves: a line and
+    // a spline; a helix among them has none.
+    use mitcad_model::Curve3;
+    let line = |a: [f64; 3], b: [f64; 3]| Curve3::Line { start: a, end: b };
+    let spline = Curve3::BSpline {
+        degree: 2,
+        poles: vec![[10.0, 0.0, 0.0], [15.0, 0.0, 0.0], [15.0, 5.0, 5.0]],
+        weights: Vec::new(),
+        knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+    };
+    let path =
+        fixed_paths::fixed_curves(&[line([0.0; 3], [10.0, 0.0, 0.0]), spline.clone()]).unwrap();
+    let curves = path["fixed_curves"].as_array().unwrap();
+    assert_eq!(curves.len(), 2, "{path}");
+    assert_eq!(curves[0]["type"], "line", "{path}");
+    assert_eq!(curves[1]["type"], "spline", "{path}");
+    assert_eq!(curves[1]["degree"], 2, "{path}");
+    assert!(curves[1].get("weights").is_none(), "{path}");
+    let helix = Curve3::Helix {
+        center: [0.0; 3],
+        axis: [0.0, 0.0, 1.0],
+        x_axis: [1.0, 0.0, 0.0],
+        radius: 5.0,
+        pitch: 2.0,
+        start: 0.0,
+        end: 1.0,
+    };
+    assert!(fixed_paths::fixed_curves(&[spline, helix]).is_err());
+    // A square is one closed wire, three of its sides one open wire, a
+    // circle beside it another closed one.
+    let square = [
+        line([0.0; 3], [10.0, 0.0, 0.0]),
+        line([10.0, 0.0, 0.0], [10.0, 10.0, 0.0]),
+        line([10.0, 10.0, 0.0], [0.0, 10.0, 0.0]),
+        line([0.0, 10.0, 0.0], [0.0; 3]),
+    ];
+    assert_eq!(sweep_inputs::wires_of(&square), [true]);
+    assert_eq!(sweep_inputs::wires_of(&square[..3]), [false]);
+    let mut two = square.to_vec();
+    two.push(Curve3::Conic {
+        center: [30.0, 0.0, 0.0],
+        normal: [0.0, 0.0, 1.0],
+        x_axis: [1.0, 0.0, 0.0],
+        major: 3.0,
+        minor: 3.0,
+        start: 0.0,
+        end: std::f64::consts::TAU,
+        closed: true,
+    });
+    assert_eq!(sweep_inputs::wires_of(&two), [true, true]);
 }

@@ -11293,6 +11293,15 @@ feature of their own, `elements.rs` references.
     (back and forward by the lengths) along a fixed `helix` path,
     `parallel`: the line moved along the helix without turning sweeps the
     helix's prism (`partial`: fixed sizes).
+  - A conical Part::Helix, a helix among other edges, a spline in no
+    plane (mitcad#548; Solid off, along `Dir`): with the walls of the
+    edges in planes as above, each curve in no plane swept the same way
+    by a line along a fixed path of its own: a helix edge's `helix`, a
+    spline's (the curve the file stores) a `fixed_curves` path; a conical
+    Part::Helix is its stored curves as a `fixed_curves` path (the one
+    Part helix reader, `fixed_paths.rs`, shared with Part sweeps). A
+    spline that does not start at its first pole (not clamped) falls
+    back.
   - FreeCAD fails these itself, and so they fall back with that reason
     (no parametric counterpart when FreeCAD marks them invalid): a curved
     face, a helix or edges in no one plane along the base's normal
@@ -11302,7 +11311,13 @@ feature of their own, `elements.rs` references.
 - A Part::Face of sketches (face makers Bullseye, Cheese, Extrusion; the
   simple one, mitcad#547, where no wire lies in another, which then makes
   the same faces) is a `patch` of each sketch's regions inside an even
-  number of wires.
+  number of wires. The simple face maker's faces of nested wires
+  (mitcad#548), overlapping, one filling each wire: a region without
+  holes is its wire's face; a region with holes is patched, the opening
+  of its outer wire patched (`patch` `boundary.opening`: the loop's
+  plane) and the region's patch removed by a base feature without bodies
+  (which opening is the outer one is the kernel's geometric order: the
+  first, else the last reading).
 
 ### Stage 4: parameters and expressions
 
@@ -11374,14 +11389,11 @@ cells.
 
 ### Not translated (fallback)
 
-Part sweeps (mitcad#547) along conical Part helices, along edges of an
-object without a body that do not lie in one plane (but one straight
-edge), of sections of edges that do not lie in one plane or bound no one
-region, of PartDesign features' results; Part extrusions (mitcad#547) of
-a conical Part helix (a fixed helix path has no cone), of a helix among
-other edges, of edges in no plane at all (a spline leaving every plane:
-Mitcad keeps curves in planar sketches), and of faces FreeCAD's simple
-face maker makes of nested wires (overlapping faces); binders; Draft and
+Part sweeps (mitcad#548) through several sections of which one is an
+open wire or a wire in no plane (Mitcad's loft of curve sections takes no
+centre line), and of a section of several wires; Part extrusions
+(mitcad#548) of a spline in no plane that does not start at its first
+pole (a swept line needs the path's start); binders; Draft and
 Python objects (`Part::Part2DObjectPython`). The Part extrusions FreeCAD
 fails itself (a curved face, a helix or non-planar edges along the
 base's normal, tapered or with Solid on) fall back with that reason.
@@ -11522,6 +11534,33 @@ models leave these out.
   circles, a Part hexagon and a Part vertex; variant WireRadius) and
   `pd_many_faces` (a pad of ten faces, FreeCAD 1.0 and later; variant
   Rise).
+
+### Part sweeps: conical helices, edges and sections in no plane, open sections, PartDesign results (mitcad#548)
+
+- One reader of Part helices for extrusions and sweeps
+  (`fixed_paths.rs`, `Importer::part_helix`): a cylindrical helix is a
+  fixed `helix` path from its sizes; a conical one (Angle) has no fixed
+  helix path, so its stored edges (FreeCAD's B-splines of it) are a path
+  of `fixed_curves` (a model path of fixed lines, arcs and B-splines).
+- A spine of edges in no plane of an object without a body (a plain
+  shape's spline, a Draft wire leaving its plane) is a `fixed_curves`
+  path.
+- One section of an open wire (a Part arc) is a surface sweep of its
+  fixed sketch's curves, one of a wire in no plane (a warped Part polygon)
+  a surface sweep of `fixed_curves`: FreeCAD makes no caps of either, a
+  shell whatever Solid says. Several sections of which one is such a wire
+  fall back (Mitcad's loft of curve sections takes no centre line), as
+  does a section of several wires.
+- Spines and sections of PartDesign features' results (`(Pad, Edge<n>)`,
+  `(Pad, Face<n>)`): the Body is replayed for them (a Part object's
+  operand that is a PartDesign feature replays its Body), the edges and
+  faces found in the Body's body. A Part sweep's spine and sections only
+  read their objects: they make no copy of a body and use none up (the
+  objects stay for the others).
+- Reference model `part_sweep_more` (a sweep along a conical Part helix,
+  along a spline in no plane, of an open Part arc and a warped Part
+  polygon into surfaces, along a PartDesign block's top edge; variant
+  WireRadius).
 
 ### Tests
 

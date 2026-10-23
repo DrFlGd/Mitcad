@@ -204,6 +204,12 @@ struct InputDef {
   // empty: the count. Called with the picks, the state and the model
   // whenever a selection changes.
   std::function<QString(const Selection&, const CommandState&, const CommandContext&)> itemsText;
+  // Selection of bodies the command consumes (Combine's tools without Keep
+  // Tools, mitcad#561): while the input is active, a picked body that the
+  // preview removes stays drawn where other occurrences show it, as a tool
+  // overlay (BodyDisplay::Style::Tool, CutTool for a cut) that a click
+  // picks, so that the same body can be picked in another occurrence.
+  bool toolOverlays = false;
 
   // Value: an expression with units, as text.
   ValueKind valueKind = ValueKind::Length;
@@ -310,6 +316,10 @@ struct InputDef {
   }
   InputDef& withoutMeshes() {
     refusesMeshes = true;
+    return *this;
+  }
+  InputDef& withToolOverlays() {
+    toolOverlays = true;
     return *this;
   }
   InputDef& withVisible(std::function<bool(const CommandState&)> shown) {

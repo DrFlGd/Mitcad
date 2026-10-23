@@ -283,7 +283,7 @@ impl Turn {
         }
     }
 
-    /// The turned counterpart of a path: fixed lines and helices turn,
+    /// The turned counterpart of a path: fixed lines, helices and curves turn,
     /// edges and sketch curves stay.
     pub fn path(&self, path: &PathRef) -> PathRef {
         match path {
@@ -298,6 +298,13 @@ impl Turn {
                 turned.x_axis = self.vector(helix.x_axis);
                 PathRef::Helix(turned)
             }
+            // Fixed curves (mitcad#548): their points and directions.
+            PathRef::Fixed(curves) => PathRef::Fixed(
+                curves
+                    .iter()
+                    .map(|c| c.mapped(&|v| self.vector(v)))
+                    .collect(),
+            ),
             PathRef::Edges { .. } | PathRef::SketchCurve { .. } | PathRef::SketchCurves { .. } => {
                 path.clone()
             }
@@ -537,6 +544,10 @@ fn turn_fields(
                 &mut sweep.frame
             {
                 v(binormal);
+            }
+            // Fixed curves (mitcad#548).
+            for curve in &mut sweep.fixed_curves {
+                *curve = curve.mapped(&|p| turn.vector(p));
             }
         }
         // An extrusion's own direction (mitcad#539).

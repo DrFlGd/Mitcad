@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <vector>
 
 #include <QHash>
 #include <QJsonArray>
@@ -156,6 +157,93 @@ QString combineToolsText(const Selection& tools, const CommandState& state, cons
     names << (shared ? QStringLiteral("%1 (%2)").arg(bodyName(tool.owner), occurrence) : occurrence);
   }
   return names.join(QStringLiteral(", "));
+}
+
+// What a consumed tool of another component takes away besides itself
+// (mitcad#561): it leaves its own component (mitcad#104), so it is gone
+// from every occurrence of that component, also where it is not a tool:
+// "Body1 leaves Part: it is also gone from Part:2." Empty with Keep Tools,
+// or when every occurrence of it is a tool.
+QString combineNote(const CommandState& state, const CommandContext& context) {
+  if (state.checked(QStringLiteral("keep_tools"))) {
+    return QString();
+  }
+  const Selection& targets = state.items(QStringLiteral("target"));
+  const QString here = targets.isEmpty() ? QString() : targets.first().occurrence;
+  const Selection& tools = state.items(QStringLiteral("tools"));
+  const auto elsewhere = [&here](const SelectionItem& tool) {
+    return !tool.occurrence.isEmpty() && tool.occurrence != here;
+  };
+  if (std::none_of(tools.begin(), tools.end(), elsewhere)) {
+    return QString();
+  }
+  // Every occurrence by its path of uids, with its name and component.
+  struct Occurrence {
+    QString path;
+    QString name;
+    QString component;
+  };
+  std::vector<Occurrence> occurrences;
+  QHash<QString, QString> componentNames;
+  std::function<void(const QJsonArray&, const QString&)> walk = [&](const QJsonArray& tree, const QString& prefix) {
+    for (const QJsonValue& value : tree) {
+      const QJsonObject node = value.toObject();
+      const QString uid = node.value(QStringLiteral("uid")).toString();
+      const QString path = prefix.isEmpty() ? uid : prefix + QLatin1Char('/') + uid;
+      occurrences.push_back({path, node.value(QStringLiteral("name")).toString(path), str(node, "component")});
+      walk(node.value(QStringLiteral("children")).toArray(), path);
+    }
+  };
+  try {
+    const QJsonObject answer = context.queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
+    for (const QJsonValue& value : answer.value(QStringLiteral("components")).toArray()) {
+      const QJsonObject component = value.toObject();
+      componentNames.insert(str(component, "uid"), str(component, "name"));
+    }
+    walk(answer.value(QStringLiteral("occurrences")).toArray(), QString());
+  } catch (const std::exception&) {
+    return QString();
+  }
+  const auto bodyName = [&context](const QString& uid) {
+    try {
+      return context.bodyName(uid);
+    } catch (const std::exception&) {
+      return uid;
+    }
+  };
+  QStringList lines;
+  QStringList told; // body@component
+  for (const SelectionItem& tool : tools) {
+    if (!elsewhere(tool)) {
+      continue;
+    }
+    const auto at = std::find_if(occurrences.begin(), occurrences.end(),
+                                 [&tool](const Occurrence& o) { return o.path == tool.occurrence; });
+    if (at == occurrences.end() || at->component.isEmpty()) {
+      continue;
+    }
+    const QString component = at->component;
+    const QString key = tool.owner + QLatin1Char('@') + component;
+    if (told.contains(key)) {
+      continue;
+    }
+    told << key;
+    QStringList others;
+    for (const Occurrence& occurrence : occurrences) {
+      const bool picked = std::any_of(tools.begin(), tools.end(), [&](const SelectionItem& other) {
+        return other.owner == tool.owner && other.occurrence == occurrence.path;
+      });
+      if (occurrence.component == component && !picked) {
+        others << occurrence.name;
+      }
+    }
+    if (!others.isEmpty()) {
+      lines << QObject::tr("%1 leaves %2: it is also gone from %3.")
+                   .arg(bodyName(tool.owner), componentNames.value(component, component),
+                        others.join(QStringLiteral(", ")));
+    }
+  }
+  return lines.join(QLatin1Char('\n'));
 }
 
 // A free move's handles: an arrow along a model axis or a ring about it.
@@ -819,6 +907,11 @@ CommandDef combineCommand(const CommandContext& context) {
   InputDef toolsInput = selectionInput(QStringLiteral("tools"), QObject::tr("Tool Bodies"), SelectKind::Body, 1, 0);
   toolsInput.withoutMeshes();
   toolsInput.itemsText = combineToolsText;
+  // A consumed tool leaves every occurrence of its component in the
+  // preview: while Tool Bodies is active its other occurrences stay drawn
+  // as tools to pick there too, and the panel says where it goes
+  // (mitcad#561).
+  toolsInput.withToolOverlays();
   def.inputs = {
       selectionInput(QStringLiteral("target"), QObject::tr("Target Body"), SelectKind::Body, 1, 1).withoutMeshes(),
       toolsInput,
@@ -899,6 +992,7 @@ CommandDef combineCommand(const CommandContext& context) {
     state.setChecked(QStringLiteral("keep_tools"), feature.value(QStringLiteral("keep_tools")).toBool());
     state.setChecked(QStringLiteral("new_component"), feature.value(QStringLiteral("new_component")).toBool());
   };
+  def.note = combineNote;
   def.describe = [](const CommandState& state, const CommandContext&) {
     return QStringLiteral("Added combine (%1) of %2 tool(s)")
         .arg(state.choice(QStringLiteral("operation")))

@@ -118,7 +118,7 @@ ssh -i ~/.ssh/mitcad_mac $MITCAD_MAC "cd ~/src/mitcad && cmake --preset dev && c
 | Script | Use |
 |---|---|
 | `sync-to-mac.sh [user@host] [dir]` | Like `sync-to-vm.sh`. Defaults: `MITCAD_MAC`, `MITCAD_MAC_DIR` (`~/src/mitcad`), `MITCAD_MAC_KEY` (`~/.ssh/mitcad_mac`). Clears the target except `build` and `CMakeUserPresets.json` first; no `._*` files or extended attributes. |
-| `setup-macos.sh` | CMake and Ninja release archives into `~/.local` (not Homebrew), the pinned Rust toolchain, cargo-deny, vcpkg at `vcpkg.json`'s baseline, Qt via aqtinstall (`~/Qt/<version>/macos`), the render worker's libraries (`build-cycles-macos.sh`, once); writes `CMakeUserPresets.json` (`dev` = `macos-debug`). Downloads are checked against the SHA-256 pins in `versions.sh`; an empty pin stops it unless `MITCAD_SKIP_HASH=1`. |
+| `setup-macos.sh [--compiler-caches-only]` | CMake, Ninja, ccache (universal) and sccache (arm64) release archives into `~/.local` (not Homebrew), the pinned Rust toolchain, cargo-deny, vcpkg at `vcpkg.json`'s baseline, Qt via aqtinstall (`~/Qt/<version>/macos`), the render worker's libraries (`build-cycles-macos.sh`, once); writes `CMakeUserPresets.json` (`dev` = `macos-debug`). Downloads are checked against the SHA-256 pins in `versions.sh`; an empty pin stops it unless `MITCAD_SKIP_HASH=1`. The optional flag installs only the two compiler caches, leaving other dependencies, shell files and presets alone. |
 
 `tools/dev-env/versions.sh` holds the pins `setup-user.sh` and
 `setup-macos.sh` share; the Windows script mirrors them by hand. The
@@ -126,6 +126,36 @@ presets `macos-debug` and `macos-release` build for arm64 with deployment
 target 14.4 (the Qt 6.12 minimum) and the overlay triplet
 `triplets/arm64-osx-dynamic.cmake` (OCCT as dylibs, the same deployment
 target for vcpkg's libraries).
+
+Compiler caches persist outside checkouts and build folders. ccache uses
+`~/Library/Caches/ccache` by default (`ccache --show-config` shows any user
+override); CMake enables its launcher for both C++ and Objective-C++,
+including the macOS sources built with `-fobjc-arc`, unless that language
+already has a launcher. `MITCAD_COMPILER_CACHE=OFF` disables these automatic
+launchers. Linking, bundle assembly and hardened-runtime signing still run
+normally; no cache executable is installed into the application bundle.
+
+`MITCAD_RUST_COMPILER_CACHE` defaults to `ON` on macOS and `OFF` elsewhere.
+When sccache is found, both Corrosion's Rust targets and the Cargo test-build
+fixtures (debug and release, plus doctests) use it through `RUSTC_WRAPPER`,
+with `CARGO_INCREMENTAL=0` and the cache in
+`~/Library/Caches/Mozilla.sccache`. A missing tool is reported at configure;
+a wrapper/server failure fails the build, even if the shell sets
+`SCCACHE_IGNORE_SERVER_IO_ERROR=1`. A different explicit `RUSTC_WRAPPER`
+requires disabling the option. Direct `cargo` commands retain the shell's
+configuration. After changing a running sccache server's cache directory,
+stop it once with `sccache --stop-server` before the next build.
+
+Use `ccache --show-stats` and `sccache --show-stats` to inspect cache use.
+sccache caches eligible library compilations; binaries, test harnesses,
+procedural macros and other compilations that call the linker still run.
+The pinned sccache's Rust keys also include the working directory and
+Cargo's manifest paths: workspace crates in a different checkout may miss
+even when registry dependencies hit. Its `SCCACHE_BASEDIRS` setting does
+not normalize those Rust keys. Cache hits across checkouts therefore need
+actual validation and are not guaranteed for every crate; see upstream's
+[Rust limitations](https://github.com/mozilla/sccache/blob/v0.18.0/docs/Rust.md)
+and [Rust key implementation](https://github.com/mozilla/sccache/blob/v0.18.0/src/compiler/rust.rs).
 
 ## macOS: bundle and native UI
 
@@ -189,6 +219,8 @@ shipped.
 | Tool | Script, folder | Release asset | SHA-256 |
 |---|---|---|---|
 | ccache 4.14.1 for Windows | `setup-ccache-windows.ps1`, `C:\dev\ccache` | https://github.com/ccache/ccache/releases/download/v4.14.1/ccache-4.14.1-windows-x86_64.zip | `6219f3865ca59aec41ee4b678df171d5d35855ecb2b6dbbbd20690b3a68af7b4` |
+| ccache 4.14.2 for macOS (universal) | `setup-macos.sh`, `~/.local/bin` | https://github.com/ccache/ccache/releases/download/v4.14.2/ccache-4.14.2-darwin.tar.gz | `cf240009630b605b775c7c5c7b7105a3b196c79f31af322c1557969aa28003fc` |
+| sccache 0.18.0 for Apple Silicon | `setup-macos.sh`, `~/.local/bin` | https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-aarch64-apple-darwin.tar.gz | `308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e` |
 | linuxdeploy 1-alpha-20251107-1 | `install-appimage-tools.sh`, `~/appimage-tools` | https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage | `c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d` |
 | linuxdeploy-plugin-qt, continuous build of 22 August 2026 | `install-appimage-tools.sh`, `~/appimage-tools` | https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage | `cfc1055b2b9dbc08412b579f20990b7b41a17b61beaa5847dc9477c96c9e9617` |
 | appimagetool 1.9.1 | `install-appimage-tools.sh`, `~/appimage-tools` | https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage | `ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0` |
@@ -888,11 +920,13 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   where debug and release runtimes don't mix). Set it `OFF` to step into
   OCCT. Cargo's dev profile optimises dependencies at `opt-level = 2` and
   Mitcad crates at 1 (`core/Cargo.toml`).
-- C++ goes through ccache when installed (`MITCAD_COMPILER_CACHE`, default
+- C++ and macOS Objective-C++ go through ccache when installed (`MITCAD_COMPILER_CACHE`, default
   on). Paths are hashed relative to the checkout, so side-by-side
   checkouts share the cache. MSVC uses `/Z7` (CMP0141) because ccache
-  can't cache shared PDBs. Rust is not cached (sccache needs identical
-  absolute build paths).
+  can't cache shared PDBs. Rust can use sccache with
+  `MITCAD_RUST_COMPILER_CACHE` (default on for macOS, off elsewhere),
+  disabling incremental compilation only while that cache is active;
+  see the [macOS cache setup and limitations](#macos-the-build-vm).
 - OCCT comes from the overlay port in `third_party/vcpkg-ports` (patched:
   speed-ups of booleans and the checker, and the fillet's edge overflow,
   mitcad#121, which changes results; see its README), so vcpkg builds it
@@ -960,6 +994,9 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
 - If GPL components are ever included, the distribution becomes
   GPL-3.0-or-later; keep such components behind replaceable interfaces.
 - Rust dependencies are checked by cargo-deny (`core/deny.toml`).
+- ccache (GPL-3.0-or-later) and sccache (MPL-2.0) are development tools
+  invoked as separate processes. Neither is linked into or shipped with
+  Mitcad, and neither adds a Cargo or native library dependency.
 - Native libraries built from source and linked statically: QtKeychain
   (BSD-3-Clause, `cmake/Keychain.cmake`); its licence text goes into the
   packages and the third-party notices name it. `tools/check-dependencies.sh`

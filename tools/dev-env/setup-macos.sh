@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Installs the per-user Mitcad toolchain with pinned versions on macOS:
-# CMake, Ninja, Rust, cargo-deny, vcpkg and Qt, builds the render worker's
-# libraries (build-cycles-macos.sh) and writes CMakeUserPresets.json for
+# CMake, Ninja, ccache, sccache, Rust, cargo-deny, vcpkg and Qt, builds the
+# render worker's libraries (build-cycles-macos.sh) and writes CMakeUserPresets.json for
 # this checkout. Meant for the isolated macOS
 # arm64 build VM (UTM or lume on Apple's Virtualization.framework); never run
 # it on the host. Run as the developer, not as root, after
 # tools/dev-env/sync-to-mac.sh has copied the working tree.
+# Use --compiler-caches-only to install just ccache and sccache, without
+# bootstrapping the remaining toolchain or changing shell files and presets.
 #
-# CMake and Ninja come from the upstream release archives into ~/.local, not
-# from Homebrew. The archives are checked against the SHA-256 pins in
+# CMake, Ninja and the compiler caches come from upstream release archives
+# into ~/.local, not from Homebrew. The archives are checked against the SHA-256 pins in
 # versions.sh; while a pin is empty the script stops, unless MITCAD_SKIP_HASH=1
 # accepts the unverified download.
 #
@@ -23,6 +25,17 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 REPO=$(cd "$SCRIPT_DIR/../.." && pwd)
 
+# Install only the pinned cache tools without touching other dependencies,
+# presets, the shell configuration or the render-worker libraries.
+COMPILER_CACHES_ONLY=0
+if [ "$#" -gt 0 ]; then
+  if [ "$#" -ne 1 ] || [ "$1" != --compiler-caches-only ]; then
+    echo "Usage: $0 [--compiler-caches-only]" >&2
+    exit 2
+  fi
+  COMPILER_CACHES_ONLY=1
+fi
+
 if [ "$(id -u)" = 0 ]; then
   echo "Run as the developer user, not root." >&2
   exit 1
@@ -35,16 +48,6 @@ if [ "$(uname -m)" != arm64 ]; then
   echo "This script is for Apple Silicon (arm64) guests; found $(uname -m)." >&2
   exit 1
 fi
-
-echo "== Xcode Command Line Tools"
-if ! xcode-select -p > /dev/null 2>&1 || ! xcrun --find clang > /dev/null 2>&1; then
-  echo "The Xcode Command Line Tools are missing. Install them in the guest with" >&2
-  echo "  xcode-select --install" >&2
-  echo "and run this script again." >&2
-  exit 1
-fi
-xcode-select -p
-clang --version | head -n 1
 
 # Downloads and intermediates stay under $HOME (not /tmp).
 WORK="$HOME/.cache/mitcad-setup"
@@ -76,6 +79,51 @@ download() {
   printf '%s\n' "$file"
 }
 
+install_compiler_caches() {
+  local archive
+  echo "== ccache $CCACHE_MACOS_VERSION"
+  if [ "$("$HOME/.local/bin/ccache" --version 2> /dev/null | sed -n '1p' || true)" != "ccache version $CCACHE_MACOS_VERSION" ]; then
+    archive=$(download \
+      "https://github.com/ccache/ccache/releases/download/v$CCACHE_MACOS_VERSION/ccache-$CCACHE_MACOS_VERSION-darwin.tar.gz" \
+      "$CCACHE_MACOS_SHA256")
+    rm -rf "$WORK/ccache-extract"
+    mkdir -p "$WORK/ccache-extract"
+    tar -xzf "$archive" -C "$WORK/ccache-extract"
+    install -m 755 "$WORK/ccache-extract/ccache-$CCACHE_MACOS_VERSION-darwin/ccache" "$HOME/.local/bin/ccache"
+    rm -rf "$WORK/ccache-extract" "$archive"
+  fi
+  ccache --version | sed -n '1p'
+
+  echo "== sccache $SCCACHE_MACOS_VERSION"
+  if [ "$("$HOME/.local/bin/sccache" --version 2> /dev/null || true)" != "sccache $SCCACHE_MACOS_VERSION" ]; then
+    archive=$(download \
+      "https://github.com/mozilla/sccache/releases/download/v$SCCACHE_MACOS_VERSION/sccache-v$SCCACHE_MACOS_VERSION-aarch64-apple-darwin.tar.gz" \
+      "$SCCACHE_MACOS_ARM64_SHA256")
+    rm -rf "$WORK/sccache-extract"
+    mkdir -p "$WORK/sccache-extract"
+    tar -xzf "$archive" -C "$WORK/sccache-extract"
+    install -m 755 "$WORK/sccache-extract/sccache-v$SCCACHE_MACOS_VERSION-aarch64-apple-darwin/sccache" "$HOME/.local/bin/sccache"
+    rm -rf "$WORK/sccache-extract" "$archive"
+  fi
+  sccache --version
+}
+
+if [ "$COMPILER_CACHES_ONLY" = 1 ]; then
+  install_compiler_caches
+  echo "Done. Compiler caches installed in $HOME/.local/bin; keep it on PATH."
+  exit 0
+fi
+
+echo "== Xcode Command Line Tools"
+if ! xcode-select -p > /dev/null 2>&1 || ! xcrun --find clang > /dev/null 2>&1; then
+  echo "The Xcode Command Line Tools are missing. Install them in the guest with" >&2
+  echo "  xcode-select --install" >&2
+  echo "and run this script again." >&2
+  exit 1
+fi
+xcode-select -p
+clang --version | head -n 1
+
 echo "== CMake $CMAKE_VERSION"
 if ! cmake --version 2> /dev/null | head -n 1 | grep -q "$CMAKE_VERSION"; then
   archive=$(download \
@@ -104,6 +152,8 @@ if [ "$(ninja --version 2> /dev/null || true)" != "$NINJA_VERSION" ]; then
   rm -rf "$WORK/ninja-extract" "$archive"
 fi
 echo "ninja $(ninja --version)"
+
+install_compiler_caches
 
 # vcpkg's ports fix up their .pc files with a pkg-config from the system,
 # which macOS lacks: pkgconf, built from its release archive.

@@ -51,6 +51,8 @@ mod sketches;
 mod profiles;
 // Part sweeps' spines and sections that are not sketches (mitcad#547).
 mod sweep_inputs;
+// Fixed paths: Part helices, curves in no plane (mitcad#548).
+mod fixed_paths;
 #[cfg(test)]
 mod tests;
 

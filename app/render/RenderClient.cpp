@@ -68,6 +68,7 @@ void RenderClient::start() {
     const bool asked = m_stopping;
     m_process->deleteLater();
     m_process = nullptr;
+    m_activity.stop();
     m_memory.reset();
 #ifndef _WIN32
     m_channel.reset();
@@ -92,6 +93,7 @@ void RenderClient::start() {
     m_lastError = tr("the render process could not start: %1").arg(m_process->errorString());
     m_process->deleteLater();
     m_process = nullptr;
+    m_activity.stop();
     m_memory.reset();
 #ifndef _WIN32
     m_channel.reset();
@@ -116,6 +118,7 @@ void RenderClient::start() {
     QMetaObject::invokeMethod(this, [this, reason] { emit failed(reason); }, Qt::QueuedConnection);
     return;
   }
+  m_activity.start("Rendering the view");
   m_process->start(program, arguments);
 #ifndef _WIN32
   if (m_channel) { // gone when the process could not start

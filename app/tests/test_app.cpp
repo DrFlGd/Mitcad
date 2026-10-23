@@ -643,6 +643,30 @@ void renderDeviceChoiceTests() {
   CHECK(automaticRayTracing("METAL", true, true));
   CHECK(automaticRayTracing("OPTIX", true, false));
   CHECK(!automaticRayTracing("CPU", false, true));
+  // The virtual-GPU workaround must not disable asynchronous compilation
+  // on physical Macs, and explicit diagnostics must override either case.
+  using mitcad::render::metalAsyncPipelineCreation;
+  const DeviceInfo virtualMetal{"METAL_VIRTUAL", "METAL", "Apple Paravirtual device (GPU)", false};
+  CHECK(metalAsyncPipelineCreation({cpu, metal, metalRT}, nullptr));
+  CHECK(!metalAsyncPipelineCreation({cpu, virtualMetal}, nullptr));
+  CHECK(!metalAsyncPipelineCreation({metal, virtualMetal}, nullptr));
+  CHECK(metalAsyncPipelineCreation({virtualMetal}, "1"));
+  CHECK(!metalAsyncPipelineCreation({metal}, "0"));
+  CHECK(!metalAsyncPipelineCreation({metal}, ""));
+  CHECK(metalAsyncPipelineCreation({}, nullptr));
+  // A usable CPU image or recovered Metal session is not hardware acceptance.
+  using mitcad::render::requiredMetalError;
+  CHECK(!requiredMetalError(cpu, false).empty());
+  CHECK(!requiredMetalError(cuda, false).empty());
+  CHECK(requiredMetalError(metal, false).empty());
+  CHECK(requiredMetalError(metalRT, false).empty());
+  CHECK(!requiredMetalError(metal, true).empty());
+  DeviceInfo wrongPolicy = metal;
+  wrongPolicy.metalRT = true;
+  CHECK(!requiredMetalError(wrongPolicy, false).empty());
+  wrongPolicy = metalRT;
+  wrongPolicy.metalRT = false;
+  CHECK(!requiredMetalError(wrongPolicy, false).empty());
   // Without a list (none known yet) the CPU still is the choice.
   CHECK(chooseDevice("auto", {}, message).type == "CPU");
 }

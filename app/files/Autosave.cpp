@@ -18,6 +18,7 @@
 
 #include "../framework/AppSettings.hpp"
 #include "../framework/Diagnostics.hpp"
+#include "platform/MacChrome.hpp"
 
 namespace mitcad {
 namespace {
@@ -157,6 +158,7 @@ void AutosaveManager::tick() {
   const quint64 revision = now.revision;
   m_pool.start([this, generation, revision, directory = m_directory, session = m_session, name = taken.name,
                 data = std::move(taken.design), about = std::move(about)]() mutable {
+    const mac::ThreadQualityScope quality(mac::ThreadQuality::Utility);
     QString error;
     const bool ok = publishAutosave(directory, session, data, std::move(about), error);
     if (ok) {

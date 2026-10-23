@@ -1378,12 +1378,39 @@ build and installed bundles both copy that runtime root to
 `Contents/Resources/cycles`; the worker resolves it relative to its own
 executable, so moving the bundle does not require the source or dependency
 prefix. The first Metal render compiles kernels and can take longer than
-later renders that use the driver's cache. The worker uses synchronous
-Metal pipeline creation on Cycles' shader threads: the asynchronous
-completion path stalled on the validated paravirtual GPU. Compilation
-remains outside the application process, whose worker shutdown does not
-depend on that callback. `CYCLES_METAL_ASYNC_PSO_CREATION` remains an
-explicit upstream diagnostic override.
+later renders that use the driver's cache. On physical Metal devices the
+worker retains Cycles' asynchronous pipeline creation. It uses synchronous
+creation when enumeration includes `Apple Paravirtual device`, whose
+asynchronous completion path stalled in the validated guest. Cycles' switch
+is process-wide, so a host exposing both kinds conservatively uses the
+virtual-device policy. The decision is made once before any shader threads
+start. `CYCLES_METAL_ASYNC_PSO_CREATION=0|1` remains an explicit diagnostic
+override, and worker diagnostics report the effective policy. Compilation
+stays outside the application process.
+
+The pinned Cycles already persists Metal binary archives on macOS 15.4
+and newer, under `$XDG_CACHE_HOME/cycles/kernels` or
+`$HOME/.cache/cycles/kernels`. Its key includes the compiled source and
+specialization constants, OS version/build, device name and threadgroup
+size. Generic pipelines are archived; MetalRT intersection pipelines are
+excluded upstream. Existing archives load through Metal's synchronous API
+even with asynchronous creation enabled; missing archives are compiled
+and saved. Older supported systems retain the driver's own cache.
+`CYCLES_METAL_DISABLE_BINARY_ARCHIVES=1` is the upstream diagnostic opt-out.
+An additional application archive would duplicate this cache. A restart
+and a fresh-cache run are still needed to quantify genuinely cold startup;
+an already populated cache does not establish that measurement.
+
+On 2026-10-23, the physical Apple M1 Max on macOS 27.0.1 (26A434)
+passed the required-Metal worker, denoiser, paired-preview and material
+checks with the asynchronous device policy. Qt and opt-in AppKit GPU
+navigation, resize and clean shutdown passed too. In the warm Qt run the
+first denoised frame arrived after 655 ms, then 424/408/551 ms after
+orbit/zoom/resize; the AppKit initial frame took 1122 ms. The existing
+archive set had 85 entries: all were marked used across these checks and
+two more were saved. These are correctness runs under the current machine
+load, with a populated cache and no restart; cold-start latency and
+foreground/background scheduling gains remain separate acceptance work.
 
 The worker is built beside `mitcad` in the build bundle's `Contents/MacOS`
 and installed there too. Bundle deployment discovers the dependencies of
@@ -1448,7 +1475,7 @@ hardware speedup. Asynchronous pipeline creation initially stalled; the
 worker's synchronous pipeline default passed the final checks. Physical
 M1/M2 and M3-or-newer generation behaviour, hardware MetalRT, representative
 performance, minimum-OS runtime coverage and native/Qt rendered-view
-acceptance remain mitcad#185. Metal denoising remains mitcad#184.
+acceptance remain mitcad#185. Physical Metal-denoising results are recorded below.
 
 The OIDN Metal integration (mitcad#184) builds both CPU/BNNS and Metal
 modules, but the same guest cannot validate GPU denoising: OIDN 2.5.1
@@ -1457,8 +1484,8 @@ of at least 1024. Its paravirtual GPU reports neither required family.
 The Metal module loads successfully and OIDN rejects the unsupported
 device; the worker continues Metal rendering with confirmed CPU denoising.
 This is fallback coverage, not evidence that Metal denoising executed.
-Actual execution and image comparisons on a supported GPU remain required
-before mitcad#184 can be closed.
+These guest results alone do not establish execution or image correctness on
+a supported physical GPU; see the physical validation below.
 
 The scoped `app.render_denoiser_*` tests check CPU execution, recovery from
 a denoiser error, and interactive previews with camera changes and
@@ -1472,7 +1499,16 @@ and switch only the denoiser. Final and matching intermediate preview
 images allow a mean absolute RGB difference of 2 and a 99th-percentile
 difference of 24 on displayed 8-bit values (`--tolerance 2:24`).
 Preview comparisons require matching resolution and sample counts; the
-adaptive scheduler need not stop at exactly the requested 4 and 16 samples.
+production scheduler need not stop at exactly the requested 4 and 16 samples.
+Independent Metal and CPU denoising can therefore produce disjoint adaptive
+sample counts even when their final images agree. The paired-preview test
+uses the narrow `denoiser-preview-batches.patch` and sets
+`CYCLES_TEST_SINGLE_SAMPLE_UPDATES=1` for those two runs only. Both stable
+views must then compare full-resolution previews at exactly 4 and 16
+samples, plus the 64-sample final image, with the same `2:24` tolerance.
+Other tests and the application retain the normal scheduler. Timings with
+this test hook are correctness evidence, not representative performance
+measurements.
 
 The scoped guest validation passed 13 tests, with the two unsupported
 Metal-denoiser tests skipped. The installed and relocated bundle passed
@@ -1492,14 +1528,121 @@ compilations finish: a specialized pipeline may still provide the requested
 kernel. The cache scan and completion decision share the cache lock, so a
 pipeline that finishes during the check cannot be missed. Cancellation still
 ends the wait immediately.
+The companion `metal-cancellation-diagnostic.patch` checks cancellation
+under the device registry lock before reporting a failed enqueue. A
+cancelled wait ends without a false pipeline-activation error; a real
+compilation error is retained rather than overwritten by that generic
+message. A separate synthetic shader-compilation failure still completed
+CPU recovery and failed required-Metal acceptance on the physical M1 Max.
 
 On Metal devices below the Apple6 family, the patch also preserves explicit
 `ccl_device_noinline` boundaries. In the macOS virtual GPU, aggressively
 inlined shaders can stall pipeline creation and trigger a driver command
 timeout even when a separate GPU comparison passes. The bounded functions
 keep rendering on Metal; Apple6 and later devices retain upstream inlining.
-Validation includes the rendering tests in parallel and a check that no new
+Guest validation includes the rendering tests in parallel and a check that no new
 GPU command timeout or device-detach failure appears in the guest kernel log.
+
+### Physical Apple Silicon denoising validation
+
+On 2026-10-22, the native arm64 build ran on a physical Apple M1 Max
+(10 CPU cores, 32 GPU cores, 32 GiB RAM), macOS 27.0.1, SDK 27.0 and
+Xcode 27.1 with the offline Metal toolchain. The deployment target stayed
+14.4 and Qt remained the default (`MITCAD_MACOS_NATIVE_UI=OFF`). This is
+separate evidence from the paravirtual device above, not an inference from
+its limitations.
+
+The physical device reports MetalRT available, default off and actual off,
+matching pinned Cycles' policy for this chip. Metal API capability does not
+establish a hardware RT accelerator. OIDN 2.5.1 enumerates both the physical
+Metal and CPU devices. Its generic per-device creation probe covers CUDA
+and HIP only; a Metal "not probed" line is not a failed denoising run.
+Successful `render-denoiser METAL ... executed yes` diagnostics and image
+comparisons establish actual execution instead.
+
+The setup checks used the existing synthetic scene and unchanged `2:24`
+tolerance. An explicit Metal/CPU path-tracer comparison at 320 x 240 and
+64 samples passed with mean absolute RGB difference 0.07 and p99 1.
+The initial Metal run took 100.375 s including first-use compilation; the
+already-required warm GPU test took 1.210 s, against CPU 1.193 s. These
+small-scene timings do not establish a general speedup.
+
+Both denoiser comparison runs used the same Metal path tracer, changing
+only OIDN's device. Final and matched preview images had mean differences
+at most 0.12 and p99 1. CPU denoising and injected-error recovery passed,
+including progressive previews and camera changes; no selected case was
+skipped. One initial `app.render_denoiser_previews` invocation failed:
+adaptive batches reached 7/23 samples with Metal denoising and 4/16 with
+CPU denoising, so there was no matching full-resolution intermediate frame
+for the first view. Its unchanged focused rerun passed, including matched
+intermediate and final images for both views. This scheduling sensitivity
+remains recorded; the image tolerance and production scheduler were unchanged.
+The later paired-preview test uses the test-only batch schedule described
+above to require matching 4/16/final frames without retrying adaptive runs.
+
+The Qt in-process driver also required the physical Apple M1 Max OpenGL
+renderer, explicit Metal path tracing and confirmed Metal OIDN execution.
+It checked rendered-view entry/exit, fresh images after held-button orbit
+and zoom, camera direction, and worker shutdown. First useful denoised
+frames arrived after 1151 ms initially, 464 ms after orbit and 438 ms after
+zoom; full-resolution 16-sample frames took 8.25/7.40/7.45 s. The viewport
+images were 2560 x 1340 on a 3840 x 2160 backing display. This automated
+navigation check is not a manual trackpad or display-configuration campaign.
+
+At the original validation baseline, turning Rendered off after the
+completed Qt image could print
+`Could not activate pipeline for film_convert_combined_half_rgba` before
+normal worker exit. The pipeline wait returned null on cancellation,
+and the enqueue path reported an activation error. No failed image or CPU
+render fallback was observed in that path. The later
+`metal-cancellation-diagnostic.patch` removes this false cancellation error;
+both frontend checks below now require clean shutdown while real shader
+compiler errors remain visible.
+
+The installed app was signed ad hoc, relocated outside the source checkout,
+and checked: 89 arm64 Mach-O files, 961 library references, complete Cycles
+source hashes and both signed OIDN modules, with zero bundle problems.
+Strict deep signature verification passed before and after execution.
+The app, CLI and worker ran under a process-local `sandbox-exec` profile
+denying reads of the source/build, renderer prefix, Qt, vcpkg, standalone
+tools, Rust and Xcode/CLT development trees. Denial was checked against
+existing source and library files; the original trees were not renamed or
+modified. Under that profile:
+
+- All six existing denoiser modes (`cpu`, `failure`, `cpu_previews`,
+  `failure_previews`, `metal`, `previews`) passed with
+  `MITCAD_RENDER_REQUIRE_GPU=1`, including matched full-resolution
+  intermediate and final Metal/CPU denoiser comparisons for both views.
+- Explicit Metal/CPU path tracing passed again (mean 0.07, p99 1;
+  Metal 1.177 s, CPU 1.278 s). The same Qt Metal navigation driver passed;
+  first denoised frames arrived after 8462/482/411 ms, with final frames
+  after 14.99/6.82/6.74 s. Keep these first relocated-run timings distinct
+  from the earlier build-tree observations, without claiming acceleration.
+- The existing CLI render test passed: named/standard views, PNG, 16-bit
+  transparent PNG, JPEG and EXR, invalid-view rejection, device listing and
+  intentional unavailable-device CPU fallback.
+- An injected Metal denoiser failure switched only denoising to the CPU;
+  path tracing remained Metal and completed camera changes/navigation.
+  A separate re-signed copy without the Metal OIDN module completed an
+  explicit Metal-denoiser request with confirmed CPU denoising and the
+  explanatory unavailable-module diagnostic.
+
+Use `tools/package-macos.sh` to prepare the local signed bundle (no release
+or notarisation is needed), then relocate it before runtime checks. A bare
+`cmake --install` still needs the packager's absolute-rpath cleanup and
+signing steps. Pass the relocated worker to
+`app/tests/render-denoiser-test.cmake` as `WORKER`, selecting each `MODE`
+above; a wrapper can apply the deny profile to each worker invocation.
+Keep the harness, synthetic CLI fixture and outputs outside the denied
+source tree. For the explicit image check, run that worker with
+`--bench 320x240 --samples 64 --device metal --compare cpu --tolerance 2:24`.
+Verify the actual backend/denoiser diagnostics and absence of unexpected
+fallback, not only the exit code or enumerated capability.
+
+The broader matrix remains mitcad#185: M3-or-newer hardware and its MetalRT
+policy, representative acceleration/memory measurements, native AppKit
+rendered-view acceptance, and minimum-OS runtime coverage. Neither M2 nor
+M3-or-newer nor macOS 14.4 was tested by this physical-M1 validation.
 
 ### AppImage
 
@@ -1666,6 +1809,106 @@ the render ran on the GPU (tested with the build of `--cuda` on the GTX
   default). `mitcad-render --version`
   prints its version.
 
+For required Metal hardware acceptance (mitcad#185), add `--require-metal`
+to the existing comparison, or set `MITCAD_RENDER_REQUIRE_METAL=1` for its
+CTest invocation:
+
+```sh
+MITCAD_RENDER_REQUIRE_METAL=1 ctest --preset dev -R '^app\.render_worker_gpu$' --output-on-failure
+```
+
+The benchmark mode requires `--compare` and a valid numeric `--tolerance mean:p99`.
+It fails instead of returning skip status 77 when the selected Metal device
+is absent, rejects any rendering or denoising fallback in either run, and
+checks the completed Metal session's actual MetalRT state against pinned
+Cycles' automatic capability/default policy. Enumeration alone cannot pass
+it. Explicit CPU comparison remains allowed; generic GPU tests keep their
+existing skip behaviour when this opt-in mode is absent. The mode does not
+change device selection, the production fallback or the automatic MetalRT
+policy, and overrides that force another MetalRT state fail acceptance.
+Use `MITCAD_RENDER_REQUIRE_GPU=1` separately for the existing Metal OIDN
+tests; requiring Metal tracing does not imply a Metal denoiser executed.
+This guard is preparation for #185, not completion of its multi-generation,
+frontend, image-scene, installed-bundle or minimum-OS validation matrix.
+`app.render_required_metal_contract` checks the real worker's refusal of
+CPU/absent devices and invalid comparison arguments, including the
+environment switch and preservation of optional skip status 77. It needs
+no Metal device and does not count as hardware execution evidence.
+
+`app.render_material_swap_metal` reuses the running-session texture-swap
+test with explicit Metal selection (`--swap-test <folder> --device metal`).
+It checks the actual device after every fresh reference render and every
+material change, including all four texture maps, changes between textured
+materials, texture removal/restoration and a missing image's warned base-colour
+fallback. The existing `app.render_material_swap` keeps its CPU default.
+`--require-metal` or `MITCAD_RENDER_REQUIRE_METAL=1` also applies here: absence
+is a failure rather than the optional test's skip, and actual MetalRT must
+match the automatic policy. Both CPU and Metal cases passed on the M1 Max;
+Metal OIDN execution was confirmed during the Metal case.
+
+`app.ui-macos-render-metal` and the opt-in `app.ui-macos-native-render-metal`
+use the existing macOS in-process driver and isolated test settings to
+select Metal in Qt and AppKit respectively. They require confirmed Metal
+OIDN execution, compare the actual MetalRT state with the automatic policy,
+check held-button orbit batching and fresh rendered images after orbit
+and zoom, then resize only the test's own window and require a fresh
+GPU image at the new framebuffer size. Shutdown must complete without
+fallback or pipeline errors. Image checks require a visible body as well
+as nonblank output. The tests skip
+only known missing Metal/OIDN capability or a missing GUI session; use both
+required switches and `MITCAD_UI_REQUIRE_GUI=1` for hardware acceptance:
+
+```sh
+MITCAD_RENDER_REQUIRE_METAL=1 MITCAD_RENDER_REQUIRE_GPU=1 MITCAD_UI_REQUIRE_GUI=1 \
+  ctest --preset dev -R '^app\.ui-macos-render-metal$' --output-on-failure
+```
+
+Qt remains the default. The AppKit case is registered only in an explicit
+opt-in test build; use a separate build directory and test bundle identifier:
+
+```sh
+cmake --preset dev -B build/native-metal -DMITCAD_MACOS_NATIVE_UI=ON \
+  -DMITCAD_BUNDLE_ID=org.mitcad.tests.metal \
+  -DVCPKG_INSTALLED_DIR="$PWD/build/dev/vcpkg_installed"
+cmake --build build/native-metal --target mitcad mitcad-render
+MITCAD_RENDER_REQUIRE_METAL=1 MITCAD_RENDER_REQUIRE_GPU=1 MITCAD_UI_REQUIRE_GUI=1 \
+  ctest --test-dir build/native-metal -R '^app\.ui-macos-native-render-metal$' --output-on-failure
+```
+
+Both frontends passed on the physical M1 Max, with the Apple GPU driving
+OpenGL and confirmed Metal tracing/denoising. At 2x backing scale, Qt's
+framebuffer changed from 2560 x 1340 to 2880 x 1540; AppKit's changed from
+2560 x 1448 to 2880 x 1648. The fixture first establishes a known window
+size and removes only its own previous shots: an initial AppKit rerun had
+restored the already-requested size from macOS state, causing a no-op
+resize and a missing fresh frame. That failed run was preserved, and the
+fixed fixture passed without changing thresholds or timeouts.
+Fresh ad hoc signed Qt and opt-in AppKit packages also passed these
+navigation checks after relocation, with source/build, dependency, Qt,
+vcpkg and developer-tool reads denied to the application and worker.
+Each bundle passed all 89 Mach-O and 961 library-reference checks and
+strict signature verification before and after execution. Both packaged
+workers passed required Metal/CPU comparison (mean RGB difference 0.07,
+p99 1) and matching Metal/CPU-denoiser previews at 4 and 16 samples plus
+the 64-sample final image for both views. No fallback or capability skip
+occurred. The paired-preview scheduler hook was unset for GUI navigation.
+Scene/material/device switching and failure recovery in both UIs, overlays
+and picking, display-scale transitions, the full final-image scene matrix
+and the other hardware/OS combinations remain separate #185 acceptance
+work. This basic navigation/resize check does not close that matrix.
+
+A required-Metal comparison on the M1 Max at 1920 x 1080, 64 samples,
+with the production scheduler and already-populated shader cache, completed
+in 6.734 s on Metal and 31.618 s on CPU (4.70x for this synthetic scene and
+quality). Mean RGB difference was 0.09, p99 1, within the unchanged 2:24
+limits. Diagnostics confirmed Metal OIDN for the GPU and CPU OIDN for the
+CPU; MetalRT stayed off under this chip's policy. Darwin `time -l` around
+that same correctness check reported maximum process RSS 2,075,394,048
+bytes (1.93 GiB), aggregated across its sequential GPU and CPU runs, not a
+separate GPU-allocation peak. There were no extra warm-up or timing rounds.
+This single warmed test establishes acceleration for the specified scene,
+not a general speed multiplier or M3 hardware-RT evidence.
+
 On an AMD Ryzen 9 5950X (16 cores, 32 threads), the test scene at 1920 x
 1080 with 64 samples: 11.1 s as a non-interactive render; 12.8 s
 interactively (the first, low-resolution frame after 185 ms); after a
@@ -1685,6 +1928,8 @@ about 3 s.
 | `MITCAD_RENDER_TEST_DENOISER` | Test-only OIDN selection: `cpu` or `metal`, independently of the render device. Automatic selection remains the product behaviour. |
 | `MITCAD_RENDER_TEST_COMPARE_DENOISER` | Test-only OIDN selection for the second run of the worker's `--compare` benchmark. |
 | `MITCAD_RENDER_TEST_DENOISER_FAILURE` | Inject a denoiser error after its first successful denoise; the CPU retry ignores this hook and any Metal override. |
+| `MITCAD_RENDER_REQUIRE_METAL=1` | The worker's `--bench` comparison or `--swap-test` requires actual Metal, default MetalRT policy and no fallback or skip, as with `--require-metal`. |
+| `MITCAD_RENDER_REQUIRE_GPU=1` | The Metal OIDN tests fail instead of skipping when the denoising capability is absent. |
 | `MITCAD_RENDER_WORKER` | The render worker's executable instead of `mitcad-render` next to the application or `mitcad-cli` (tests); a missing file means no rendered view and no final render. |
 
 ## Licences
@@ -1740,7 +1985,8 @@ GPU devices (mitcad#50; also in [development.md](development.md#licence-policy))
 - GPU devices (mitcad#50): HIP and oneAPI built and tested on their
   hardware; Open Image Denoise's CUDA device on Linux (built with CUDA 13)
   and tested on Turing or newer on Linux and Windows; several GPUs at
-  once. Metal denoising on macOS remains mitcad#184.
+  once. Metal denoising on macOS is implemented and physically validated
+  (mitcad#184); broader Apple Silicon hardware/UI acceptance remains mitcad#185.
 - Roughness and normal maps, textures in the shaded view, OCCT's PBR shading from the same
   parameters ([Materials](#materials)).
 - Lights ([Lights](#lights)): a rotation of area lights about their

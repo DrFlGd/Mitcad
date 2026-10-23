@@ -20,6 +20,9 @@ set_target_properties(mitcad-cli PROPERTIES AUTOMOC ON)
 target_include_directories(mitcad-cli PRIVATE "${app}")
 target_include_directories(mitcad-cli SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
 target_link_libraries(mitcad-cli PRIVATE Qt6::Gui TKMesh TKFillet TKPrim TKTopAlgo TKGeomBase TKG3d TKBRep)
+if(APPLE)
+  target_link_libraries(mitcad-cli PRIVATE mitcad_mac_work)
+endif()
 
 # The imports, which the import corpus tests run, apart from the other
 # commands (tools/check-all.sh runs the corpus again when they change).

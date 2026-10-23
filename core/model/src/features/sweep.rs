@@ -38,6 +38,8 @@ use crate::sweeps::PathFrame;
 // Body faces as profiles (mitcad#543).
 use crate::profile::SketchFrame;
 use crate::sweeps::ProfileFace;
+// Surface sweeps of fixed curves (mitcad#548).
+use super::geom_ref::FixedCurve;
 
 /// How much of a path a sweep or a pipe covers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -242,6 +244,15 @@ pub struct SweepDef<P = ParamId> {
     /// scale, guide rails or guide surfaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile_face: Option<FaceRef>,
+    /// Fixed curves a surface sweep sweeps instead of a sketch's
+    /// (mitcad#548): curves in model space that lie in no plane (an
+    /// imported object's edges no sketch can hold), as a path's
+    /// `fixed_curves`. Only a surface sweep, without profiles, sketch
+    /// curves, a body face, twist, taper, guide rails, guide surfaces or a
+    /// frame; it starts where the path meets the plane through the curves'
+    /// first point square to the path's start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixed_curves: Vec<FixedCurve>,
 }
 
 /// A sweep's frame along its path (mitcad#539; [`PathFrame`] in the
@@ -323,6 +334,7 @@ impl<P> SweepDef<P> {
             rail_point: self.rail_point,
             frame: self.frame.clone(),
             profile_face: self.profile_face.clone(),
+            fixed_curves: self.fixed_curves.clone(),
         })
     }
 }
@@ -385,7 +397,40 @@ impl FeatureInfo for SweepDef {
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
-        if let Some(face) = &self.profile_face {
+        if !self.fixed_curves.is_empty() {
+            // Fixed curves (mitcad#548).
+            if !self.surface
+                || !self.profiles.is_empty()
+                || self.curves.is_some()
+                || self.profile_face.is_some()
+            {
+                return Err(
+                    "fixed curves are a surface sweep's alone: no profiles, sketch curves or body \
+                     face"
+                        .to_owned(),
+                );
+            }
+            if !self.operation.makes_bodies() {
+                return Err("a surface sweep is a new body or a new component".to_owned());
+            }
+            if self.guide_rail.is_some()
+                || !self.guide_surfaces.is_empty()
+                || self.twist_angle.is_some()
+                || self.taper_angle.is_some()
+                || self.frame.is_some()
+            {
+                return Err(
+                    "a surface sweep of fixed curves takes no twist, taper, guide rail, guide \
+                     surfaces or frame"
+                        .to_owned(),
+                );
+            }
+            for (i, curve) in self.fixed_curves.iter().enumerate() {
+                curve
+                    .check()
+                    .map_err(|e| format!("fixed curve {}: {e}", i + 1))?;
+            }
+        } else if let Some(face) = &self.profile_face {
             // A body face as the profile (mitcad#543).
             if !self.profiles.is_empty() || self.curves.is_some() || self.surface {
                 return Err(
@@ -625,7 +670,8 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             }
             None => None,
         };
-        let (frame, regions) = if face_profile.is_some() {
+        let fixed = !self.fixed_curves.is_empty();
+        let (mut frame, regions) = if face_profile.is_some() || fixed {
             (SketchFrame::XY, Vec::new())
         } else {
             let (sketch, regions) = match (&self.curves, self.profiles.is_empty()) {
@@ -635,7 +681,7 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             (sketch.frame, regions)
         };
         // A surface sweep's curves (mitcad#455).
-        let chains = match (&self.curves, self.surface) {
+        let mut chains = match (&self.curves, self.surface) {
             (Some(curves), true) => Some(surface_sweeps::chains(ctx, curves, &frame)?),
             _ => None,
         };
@@ -652,6 +698,21 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
         .map_err(|e| format!("path: {e}"))?;
         if self.flip {
             path = path::reversed_path(path);
+        }
+        // Fixed curves (mitcad#548): their chains, from the plane square to
+        // the path at its start through their first point.
+        if fixed {
+            let pieces: Vec<PathCurve> = self
+                .fixed_curves
+                .iter()
+                .enumerate()
+                .map(|(i, c)| PathCurve {
+                    name: format!("fixed{}", i + 1),
+                    curve: c.curve(),
+                })
+                .collect();
+            frame = path::plane_at_start(&path, &pieces)?;
+            chains = Some(path::wall_chains(pieces, &frame)?);
         }
         let (extent1, extent2) = self.extent.fractions(ctx, path::is_closed(&path))?;
         let rail: Option<Vec<PathCurve>> = match &self.guide_rail {

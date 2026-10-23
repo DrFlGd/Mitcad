@@ -22,6 +22,28 @@ inline bool automaticRayTracing(const std::string& backend, bool available, bool
   return available && (backend != "METAL" || metalDefault);
 }
 
+// Cycles' pipeline switch is process-wide: decide once, before shader
+// threads start. A paravirtual Metal device needs synchronous callbacks;
+// physical-only hosts retain upstream asynchronous creation. A diagnostic
+// override uses Cycles' numeric environment-variable convention.
+bool metalAsyncPipelineCreation(const std::vector<DeviceInfo>& devices, const char* overrideValue);
+
+// Hardware acceptance uses the completed session's device, not enumeration.
+// A recovered render is useful product behaviour, but cannot prove the
+// requested GPU path worked without fallback.
+inline std::string requiredMetalError(const DeviceInfo& device, bool fellBack) {
+  if (fellBack) {
+    return "Required Metal validation encountered a rendering or denoising fallback";
+  }
+  if (device.type != "METAL") {
+    return "Required Metal validation executed on " + device.type + " instead of METAL";
+  }
+  if (device.metalRT != automaticRayTracing("METAL", device.metalRTAvailable, device.metalRTDefault)) {
+    return "Required Metal validation did not use the automatic MetalRT policy";
+  }
+  return {};
+}
+
 // The choices besides a device's id.
 constexpr const char* kDeviceAutomatic = "auto"; // the best GPU, else the CPU
 constexpr const char* kDeviceCpu = "cpu";

@@ -90,7 +90,11 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let mut seen = std::collections::BTreeSet::new();
         let consumed: Vec<String> = o
             .references()
-            .filter(|(p, l)| !NOT_CONSUMING.contains(p) && l.file.is_none())
+            .filter(|(p, l)| {
+                !NOT_CONSUMING.contains(p)
+                    && !super::sweep_inputs::reads_only(o, p)
+                    && l.file.is_none()
+            })
             .map(|(_, l)| l.object.clone())
             .filter(|n| self.replay.replayed.contains(n))
             .collect();
@@ -651,10 +655,11 @@ impl<K: Kernel> Importer<'_, '_, K> {
             .object(base)
             .cloned()
             .ok_or_else(|| format!("{base} is not in the document"))?;
-        // A Part helix (mitcad#547): its own helix, from its sizes.
+        // A Part helix (mitcad#547): its own helix, from its sizes (a
+        // conical one its stored curves, mitcad#548).
         if base_object.type_name == "Part::Helix" {
-            let (path, start) = self.part_helix(&base_object, target)?;
-            return self.helix_extrusion(o, target, base, path, start, consumed);
+            let helix = self.part_helix(&base_object, target)?;
+            return self.helix_extrusion(o, target, base, helix.path, helix.start, consumed);
         }
         let shape = self
             .stored_in(base, &target.place.transform)
@@ -679,12 +684,8 @@ impl<K: Kernel> Importer<'_, '_, K> {
             let (path, start) = helix_path(helix).ok_or("no helix")?;
             return self.helix_extrusion(o, target, base, path, start, consumed);
         }
-        if curves.iter().any(|c| matches!(c, Curve3::Helix { .. })) {
-            return Err(
-                "an extrusion of a helix among other edges is not translated (one helix is)"
-                    .to_owned(),
-            );
-        }
+        // A helix among other edges (mitcad#548): its walls in pieces
+        // (below: no one plane).
         // The plane: the object's placement, else through the edges and
         // FreeCAD's direction (a straight edge).
         let placed =
@@ -763,58 +764,13 @@ impl<K: Kernel> Importer<'_, '_, K> {
             .collect())
     }
 
-    /// A Part helix (mitcad#547) as a fixed `helix` path in the component,
-    /// from its sizes (Pitch, Height, Radius, LocalCoord; FreeCAD's helix
-    /// starts at Radius along its placement's x axis and rises along its z
-    /// axis), and its start point. A conical one (Angle) has no fixed
-    /// helix path.
-    fn part_helix(&self, h: &Object, target: &Target) -> Result<(Value, [f64; 3]), String> {
-        if h.f64("Angle").is_some_and(|a| a != 0.0) {
-            return Err(
-                "an extrusion of a conical helix is not translated (a fixed helix path has no \
-                 cone)"
-                    .to_owned(),
-            );
-        }
-        let (pitch, height, radius) = (
-            h.f64("Pitch").ok_or("no pitch")?,
-            h.f64("Height").ok_or("no height")?,
-            h.f64("Radius").ok_or("no radius")?,
-        );
-        if pitch == 0.0 || radius <= 0.0 {
-            return Err("a helix without a pitch or a radius".to_owned());
-        }
-        let left = self
-            .enum_text(h, "LocalCoord")
-            .is_some_and(|t| t.starts_with("Left"));
-        let p = target
-            .place
-            .transform
-            .after(&super::transform(&super::placement_of(h)));
-        let column = |c: usize| [p.linear[0][c], p.linear[1][c], p.linear[2][c]];
-        let (x, z) = (
-            unit(column(0)).ok_or("no helix axes")?,
-            unit(column(2)).ok_or("no helix axes")?,
-        );
-        let turns = height / pitch;
-        let (pitch, end) = if left {
-            (-pitch, -std::f64::consts::TAU * turns)
-        } else {
-            (pitch, std::f64::consts::TAU * turns)
-        };
-        let center = p.translation;
-        let path = json!({"center": center, "axis": z, "x_axis": x, "radius": radius,
-                          "pitch": pitch, "start_angle": 0.0, "end_angle": end});
-        let start = std::array::from_fn(|i| center[i] + radius * x[i]);
-        Ok((path, start))
-    }
-
     /// An extrusion of a helix (mitcad#547): FreeCAD's prism of the helix
     /// along its direction, walls without caps (Solid off: FreeCAD makes
     /// no face of an open wire), as a surface `sweep` of a straight line
     /// from the helix's start along the direction (the lengths: back and
-    /// forward) along the `helix` path, `parallel` (the line moved along
-    /// the helix without turning sweeps the prism). No taper.
+    /// forward) along the helix's `path` (a `helix` path, or a conical
+    /// helix's fixed curves: [`super::fixed_paths`]), `parallel` (the line
+    /// moved along the helix without turning sweeps the prism). No taper.
     fn helix_extrusion(
         &mut self,
         o: &Object,
@@ -878,7 +834,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 {"id": "p2", "type": "point", "at": [b, 0.0], "fixed": true},
                 {"id": "c3", "type": "line", "start": "p1", "end": "p2"}]});
             let sweep = json!({"type": "sweep", "surface": true,
-                "curves": {"sketch": "$1", "curves": ["c3"]}, "path": {"helix": path},
+                "curves": {"sketch": "$1", "curves": ["c3"]}, "path": path,
                 "orientation": "parallel", "operation": "new_body"});
             let mut defs = vec![
                 (plane.clone(), " (plane)"),
@@ -934,10 +890,18 @@ impl<K: Kernel> Importer<'_, '_, K> {
             );
         }
         let mut groups: Vec<(SketchFrame, Vec<Curve3>)> = Vec::new();
+        // Curves in no plane (mitcad#548: a helix, a spline leaving every
+        // plane): their fixed paths (`{"helix": …}`, `{"spline": …}`) and
+        // start points, each swept by a line along the direction.
+        let mut swept: Vec<(Value, [f64; 3])> = Vec::new();
         for curve in curves {
             let one = std::slice::from_ref(curve);
             if let Some((_, members)) = groups.iter_mut().find(|(f, _)| lies_in(one, f)) {
                 members.push(curve.clone());
+                continue;
+            }
+            if let Some(path) = fixed_path(curve) {
+                swept.push(path?);
                 continue;
             }
             let frame = match curve {
@@ -983,9 +947,8 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     }
                     frame
                 }
-                Curve3::Helix { .. } => {
-                    return Err("a helix among other edges is not translated".to_owned());
-                }
+                // (`fixed_path` took it.)
+                Curve3::Helix { .. } => continue,
             };
             if !lies_in(one, &frame) {
                 return Err(format!(
@@ -995,13 +958,24 @@ impl<K: Kernel> Importer<'_, '_, K> {
             }
             groups.push((frame, vec![curve.clone()]));
         }
-        if groups.is_empty() {
+        if groups.is_empty() && swept.is_empty() {
             return Err(format!("{base} has no edges that make walls"));
         }
         let (forward, reverse) = self.extrusion_lengths(o, dir);
         let symmetric = o.bool("Symmetric") == Some(true);
         let (extent, against) = part_extent(&forward, &reverse, symmetric, None);
         let reversed = o.bool("Reversed") == Some(true);
+        // The swept lines' lengths: FreeCAD's values (a fixed line).
+        let (line_forward, line_reverse) = if symmetric {
+            (forward.value / 2.0, forward.value / 2.0)
+        } else {
+            (forward.value, reverse.value)
+        };
+        if !swept.is_empty() {
+            let why = "a sweep of a line along a fixed curve: the line's length is FreeCAD's value";
+            self.left_out(o, "LengthFwd", why);
+            self.left_out(o, "LengthRev", why);
+        }
         let mut out = Vec::new();
         for turn in [false, true] {
             let mut defs: Vec<(Value, &'static str)> = Vec::new();
@@ -1039,6 +1013,21 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     WALL_SUFFIXES.get(k).copied().unwrap_or(" (more walls)"),
                 ));
             }
+            // The curves in no plane (mitcad#548): a line from each one's
+            // start along the direction, swept along it without turning.
+            let s = if reversed ^ turn { -1.0 } else { 1.0 };
+            for (j, (path, start)) in swept.iter().enumerate() {
+                let first = defs.len();
+                let main = groups.is_empty() && j == 0;
+                defs.extend(line_sweep(
+                    *start,
+                    d,
+                    (-s * line_reverse, s * line_forward),
+                    path,
+                    first,
+                    main,
+                )?);
+            }
             if let Some(b) = consumed {
                 defs.push((
                     json!({"type": "base", "bodies": [], "replaces": [b.to_string()]}),
@@ -1049,8 +1038,9 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 Candidate::several(defs)
                     .note(format!(
                         "walls of edges in {} planes, each a surface extrusion along the \
-                         direction",
-                        groups.len()
+                         direction, and of {} curves in no plane, each a line swept along it",
+                        groups.len(),
+                        swept.len()
                     ))
                     .partial(format!(
                         "{base}'s edges are fixed geometry of sketches (FreeCAD's object keeps \
@@ -1089,6 +1079,9 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let simple = o.str("FaceMakerClass") == Some("Part::FaceMakerSimple");
         let component = target.place.component;
         let mut defs: Vec<(Value, &'static str)> = Vec::new();
+        // Nested wires with the simple face maker (mitcad#548): per sketch
+        // its uid and its regions' keys with their holes' counts.
+        let mut nested: Vec<(String, Vec<(String, usize)>)> = Vec::new();
         for (i, link) in o.links("Sources").to_vec().iter().enumerate() {
             let is_sketch = self.sources[0]
                 .object(&link.object)
@@ -1109,12 +1102,15 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 .ok_or("the sketch did not solve")?;
             let depths = super::features::region_depths(&output.region_info);
             if simple && depths.iter().any(|(_, depth)| *depth > 0) {
-                return Err(format!(
-                    "a face made by FreeCAD's simple face maker of nested wires ({}): it makes \
-                     overlapping faces, one of each wire, and Mitcad's faces of sketch regions \
-                     do not overlap: not translated",
-                    link.object
-                ));
+                // FreeCAD's overlapping faces, one filling each wire: each
+                // region's outline filled (below).
+                let regions = output
+                    .region_info
+                    .iter()
+                    .map(|r| (r.profile.key.to_string(), r.holes.len()))
+                    .collect();
+                nested.push((sketch.uid.to_string(), regions));
+                continue;
             }
             let profiles: Vec<Value> = depths
                 .into_iter()
@@ -1132,10 +1128,54 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     .unwrap_or(" (more sketches)"),
             ));
         }
-        if defs.is_empty() {
-            return Err("no sources".to_owned());
+        if nested.is_empty() {
+            if defs.is_empty() {
+                return Err("no sources".to_owned());
+            }
+            return Ok(vec![Candidate::several(defs)]);
         }
-        Ok(vec![Candidate::several(defs)])
+        // Each wire's face, overlapping as FreeCAD's simple face maker
+        // makes them (mitcad#548): a region without holes is its wire's
+        // face; a region with holes is patched, the opening of its outer
+        // wire filled (a `patch` of the loop: its plane) and the region's
+        // patch removed. Which opening is the outer one is the kernel's
+        // geometric order: the first, else the last.
+        let mut out = Vec::new();
+        for last in [false, true] {
+            let mut all = defs.clone();
+            for (uid, regions) in &nested {
+                for (key, holes) in regions {
+                    let main = all.is_empty();
+                    let region = json!({"sketch": uid, "region": key});
+                    if *holes == 0 {
+                        all.push((
+                            json!({"type": "patch", "profiles": [region]}),
+                            if main { "" } else { WIRE_SUFFIX },
+                        ));
+                        continue;
+                    }
+                    let k = all.len();
+                    all.push((json!({"type": "patch", "profiles": [region]}), " (region)"));
+                    let index = if last { *holes } else { 0 };
+                    all.push((
+                        json!({"type": "patch", "boundary": {"body": format!("${k}.b0"),
+                               "opening": {"faces": [format!("${k}:patch({key})")],
+                                           "index": index}}}),
+                        if main { "" } else { WIRE_SUFFIX },
+                    ));
+                    all.push((
+                        json!({"type": "base", "bodies": [], "replaces": [format!("${k}.b0")]}),
+                        " (region removed)",
+                    ));
+                }
+            }
+            out.push(Candidate::several(all).note(
+                "FreeCAD's simple face maker of nested wires: a face filling each wire, \
+                 overlapping (a region's patch, its outer wire's opening patched, the \
+                 region's patch removed)",
+            ));
+        }
+        Ok(out)
     }
 
     /// A revolution of a sketch about a fixed axis.
@@ -1410,10 +1450,32 @@ impl<K: Kernel> Importer<'_, '_, K> {
             sections.push(self.sweep_section(link, target, i + 1, &mut made)?);
         }
         let solid = o.bool("Solid").unwrap_or(false);
+        // Open wires and wires in no plane (mitcad#548): FreeCAD makes no
+        // caps of them, a surface; one is a surface sweep of its curves.
+        let open = |s: &Value| s["type"] == "curves" || s["type"] == "fixed_curves";
+        let mut surface = !solid;
         let mut def = match sections.as_slice() {
             [] => return Err("no sections".to_owned()),
             [section] if section["type"] == "point" => {
                 return Err("a sweep of one point".to_owned());
+            }
+            [section] if section["type"] == "curves" => {
+                surface = true;
+                json!({"type": "sweep",
+                    "curves": {"sketch": section["sketch"], "curves": section["curves"]},
+                    "path": path, "operation": "new_body"})
+            }
+            [section] if section["type"] == "fixed_curves" => {
+                surface = true;
+                json!({"type": "sweep", "fixed_curves": section["fixed_curves"],
+                    "path": path, "operation": "new_body"})
+            }
+            several if several.iter().any(open) => {
+                return Err(
+                    "a Part sweep through several sections of open wires or wires in no plane is \
+                     not translated: Mitcad's loft of curve sections takes no centre line"
+                        .to_owned(),
+                );
             }
             [section] if section["type"] == "face" => json!({"type": "sweep",
                 "profile_face": {"body": section["body"], "face": section["face"]},
@@ -1424,7 +1486,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             _ => json!({"type": "loft", "sections": sections, "centerline": path,
                         "ruled": false, "closed": false, "operation": "new_body"}),
         };
-        if !solid {
+        if surface {
             def["surface"] = json!(true);
         }
         let candidate = |def: Value| {
@@ -1437,7 +1499,9 @@ impl<K: Kernel> Importer<'_, '_, K> {
             c
         };
         let mut out = Vec::new();
-        if o.bool("Frenet") == Some(true) {
+        // (A surface sweep of curves takes no frame: the plain reading.)
+        let curves = def.get("curves").is_some() || def.get("fixed_curves").is_some();
+        if o.bool("Frenet") == Some(true) && !curves {
             let mut framed = def.clone();
             framed["frame"] = json!({"type": "frenet"});
             out.push(candidate(framed));
@@ -1546,6 +1610,9 @@ pub(super) fn lies_in(curves: &[Curve3], frame: &SketchFrame) -> bool {
         .all(|p| dot(sub(*p, frame.origin), n).abs() <= 1e-6 * size);
     flat && curves.iter().all(|c| match c {
         Curve3::Conic { normal, .. } => unit(*normal).is_some_and(|m| norm(cross(m, n)) <= 1e-9),
+        // Never in a plane (its key points may be: a turn's ends above each
+        // other, mitcad#548).
+        Curve3::Helix { .. } => false,
         _ => true,
     })
 }
@@ -1563,6 +1630,74 @@ const WALL_SUFFIXES: [&str; 9] = [
     " (wall 8)",
     " (wall 9)",
 ];
+
+/// The name suffix of the sweeps of curves in no plane (mitcad#548).
+const CURVE_SUFFIX: &str = " (curve)";
+
+/// The name suffix of the faces of the simple face maker's nested wires
+/// after the first (mitcad#548).
+const WIRE_SUFFIX: &str = " (wire)";
+
+/// A curve that lies in no plane (mitcad#548) as a fixed path, with its
+/// start point: a helix as its `helix` path, a spline whose poles leave
+/// every plane as a `fixed_curves` path of it (shared with Part sweeps,
+/// [`super::fixed_paths::fixed_curves`]); None for a curve in a plane.
+fn fixed_path(c: &Curve3) -> Option<Result<(Value, [f64; 3]), String>> {
+    match c {
+        Curve3::Helix { .. } => {
+            Some(helix_path(c).ok_or_else(|| "a helix without its axes".to_owned()))
+        }
+        Curve3::BSpline { poles, .. } => {
+            if plane_of(poles).is_some_and(|f| lies_in(std::slice::from_ref(c), &f)) {
+                return None;
+            }
+            let Some(start) = super::fixed_paths::spline_start(c) else {
+                return Some(Err(
+                    "a spline in no plane that does not start at its first pole is not \
+                     translated (the line swept along it starts there)"
+                        .to_owned(),
+                ));
+            };
+            Some(super::fixed_paths::fixed_curves(std::slice::from_ref(c)).map(|p| (p, start)))
+        }
+        _ => None,
+    }
+}
+
+/// A straight line from `start` along `d` (from `ends.0` to `ends.1`
+/// along it) in a fixed sketch, swept along a fixed `path` without turning
+/// (mitcad#548): the prism of the path's curve along `d`. The plane and
+/// the sketch are the candidate's definitions `first` and `first + 1`;
+/// `main`: the sweep is the candidate's main definition.
+fn line_sweep(
+    start: [f64; 3],
+    d: [f64; 3],
+    ends: (f64, f64),
+    path: &Value,
+    first: usize,
+    main: bool,
+) -> Result<Vec<(Value, &'static str)>, String> {
+    let other = if d[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let y = unit(cross(cross(d, other), d)).ok_or("no plane for the line")?;
+    let plane = json!({"type": "construction_plane", "definition": {"type": "fixed",
+        "origin": start, "x_axis": d, "y_axis": y}});
+    let sketch = json!({"type": "sketch", "plane": format!("${first}"), "entities": [
+        {"id": "p1", "type": "point", "at": [ends.0, 0.0], "fixed": true},
+        {"id": "p2", "type": "point", "at": [ends.1, 0.0], "fixed": true},
+        {"id": "c3", "type": "line", "start": "p1", "end": "p2"}]});
+    let sweep = json!({"type": "sweep", "surface": true,
+        "curves": {"sketch": format!("${}", first + 1), "curves": ["c3"]}, "path": path,
+        "orientation": "parallel", "operation": "new_body"});
+    Ok(vec![
+        (plane, " (plane)"),
+        (sketch, " (line)"),
+        (sweep, if main { "" } else { CURVE_SUFFIX }),
+    ])
+}
 
 /// A plane through points (a spline's poles): through the first, the
 /// first point away from it and the first one off their line.
@@ -1612,8 +1747,8 @@ fn helix_path(c: &Curve3) -> Option<(Value, [f64; 3])> {
             + radius * (start.cos() * x[i] + start.sin() * y[i])
             + pitch * start / std::f64::consts::TAU * z[i]
     });
-    let path = json!({"center": center, "axis": z, "x_axis": x, "radius": radius,
-                      "pitch": pitch, "start_angle": start, "end_angle": end});
+    let path = json!({"helix": {"center": center, "axis": z, "x_axis": x, "radius": radius,
+                      "pitch": pitch, "start_angle": start, "end_angle": end}});
     Some((path, at))
 }
 

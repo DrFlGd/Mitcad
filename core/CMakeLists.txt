@@ -2,6 +2,10 @@
 # The bridge, and the release tool mitcad-release of the automatic updates
 # (mitcad#9, docs/updates.md).
 corrosion_import_crate(MANIFEST_PATH Cargo.toml CRATES mitcad-ffi mitcad-update)
+if(MITCAD_RUST_CACHE_ENVIRONMENT)
+  corrosion_set_env_vars(mitcad_ffi ${MITCAD_RUST_CACHE_ENVIRONMENT})
+  corrosion_set_env_vars(mitcad-release ${MITCAD_RUST_CACHE_ENVIRONMENT})
+endif()
 # Live updates (mitcad#89): TLS in the bridge (rustls with ring) takes
 # random numbers from the system (bcrypt on Windows) and reads the system's
 # root certificates (the Security framework on macOS). Corrosion links what
@@ -321,7 +325,8 @@ if(BUILD_TESTING)
   if(Rust_TOOLCHAIN)
     list(APPEND cargo_test_environment "RUSTUP_TOOLCHAIN=${Rust_TOOLCHAIN}")
   endif()
-  set(cargo_build_environment "CARGO_TARGET_DIR=${CMAKE_CURRENT_BINARY_DIR}/cargo-test" ${cargo_test_environment})
+  set(cargo_build_environment "CARGO_TARGET_DIR=${CMAKE_CURRENT_BINARY_DIR}/cargo-test"
+    ${cargo_test_environment} ${MITCAD_RUST_CACHE_ENVIRONMENT})
 
   # The crates' tests (mitcad#101). A fixture per profile builds the test
   # binaries of every crate in one cargo run, core.cargo_build (debug) and

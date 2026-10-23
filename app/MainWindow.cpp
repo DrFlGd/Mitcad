@@ -26,6 +26,7 @@
 #include <QMessageBox>
 #include <QPair>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
@@ -639,7 +640,21 @@ void MainWindow::logLayout() const {
   }
   bars.sort();
   parts << bars;
+  m_loggedWindowSize = size();
   qDebug().noquote() << QStringLiteral("Window layout: ") + parts.join(QStringLiteral("; "));
+}
+
+void MainWindow::resizeEvent(QResizeEvent* event) {
+  QMainWindow::resizeEvent(event);
+  // Only after the first line (main.cpp logs it once the window shows), and
+  // once the resizes in a row are done.
+  if (!m_nativeUi && m_loggedWindowSize.isValid() && size() != m_loggedWindowSize) {
+    TestSync::singleShot(0, this, [this] {
+      if (size() != m_loggedWindowSize) {
+        logLayout();
+      }
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,7 +1370,13 @@ void MainWindow::createIdlePage() {
       updateIdleView();
     }
   });
-  if (!m_nativeUi && chromeStyle() == ChromeStyle::Floating) {
+  // The page scrolls when the selection's lines are longer than its place,
+  // in the floating command card and in the docked command panel: in a
+  // dock, the page's minimum height was the dock's, and a selection of
+  // many bodies (8 measured lines) made the window taller than the screen
+  // (mitcad#560), as the palette's rows did (mitcad#412). Transparent: the
+  // card's glass or the dock's surface shows through, as before.
+  if (!m_nativeUi) {
     auto* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);

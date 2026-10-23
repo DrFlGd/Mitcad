@@ -98,5 +98,17 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
       set_tests_properties(app.ui-macos-native app.ui-macos-native-cancel app.ui-macos-native-secondary app.ui-macos-native-sketch app.ui-macos-native-panels app.ui-macos-native-gestures app.ui-macos-native-history app.ui-macos-native-context-menus app.ui-macos-native-replacement app.ui-macos-native-autoselect app.ui-macos-native-point-pattern app.ui-macos-native-toolbar
         PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     endif()
+    add_test(NAME app.ui-macos-render-metal
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-render-metal-test.sh"
+              "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-render-metal")
+    set_tests_properties(app.ui-macos-render-metal PROPERTIES
+      TIMEOUT 480 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    if(MITCAD_MACOS_NATIVE_UI)
+      add_test(NAME app.ui-macos-native-render-metal
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-render-metal-test.sh"
+                "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-native-render-metal" native)
+      set_tests_properties(app.ui-macos-native-render-metal PROPERTIES
+        TIMEOUT 480 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endif()
   endif()
 endif()

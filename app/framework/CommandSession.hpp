@@ -282,6 +282,9 @@ private:
     QJsonObject report;
     std::vector<BodyDisplay> bodies;
     TopoDS_Shape tool;
+    // The bodies shown now that the preview removes, where they are shown
+    // (removedShownBodies): a consumed tool's occurrences (mitcad#561).
+    std::vector<BodyDisplay> removed;
   };
 
   // Every input (shown only: those shown now) in the panel's order.
@@ -346,6 +349,13 @@ private:
   void runPreview();
   bool previewReady(QString& message, bool& error);
   void showPreview(const Preview& preview, const QString& operation);
+  // The tool overlays the preview draws while an input of consumed tools
+  // is active (InputDef::toolOverlays, mitcad#561): each occurrence of a
+  // picked body the preview removes where it is not picked itself.
+  std::vector<BodyDisplay> toolOverlays(const Preview& preview, const QString& operation) const;
+  // The shown preview again when the active input starts or stops drawing
+  // tool overlays.
+  void followToolOverlays();
   // The preview's computation was cancelled (P7): nothing is shown, and OK
   // computes the command itself; a change of an input previews again.
   void showCancelledPreview(const QByteArray& key);
@@ -441,6 +451,8 @@ private:
   bool m_previewOk = false;
   QJsonObject m_shownReport; // the report of the preview shown (toggles)
   QString m_loggedPreviewBodies; // the bodies the last preview logged (mitcad#266)
+  QString m_shownOperation; // the operation of the preview shown (its tool's look)
+  bool m_toolOverlaysShown = false; // drawn with the active input's tool overlays (mitcad#561)
   bool m_failed = false; // the model could not compute the preview
   QByteArray m_shownKey; // the command whose preview is shown
   bool m_previewCancelled = false; // ... or whose preview was cancelled

@@ -99,4 +99,24 @@ std::vector<PreviewBody> previewBodies(const QJsonObject& report, const std::vec
   return bodies;
 }
 
+std::vector<int> removedShownBodies(const QJsonObject& report, const std::vector<ShownBody>& shown) {
+  std::vector<int> removed;
+  if (report.value(QStringLiteral("status")).toString() != QStringLiteral("ok")) {
+    return removed;
+  }
+  QSet<QString> after;
+  for (const QJsonValue& value : report.value(QStringLiteral("bodies")).toArray()) {
+    after.insert(value.toObject().value(QStringLiteral("uid")).toString());
+  }
+  QSet<QString> listed;
+  for (std::size_t i = 0; i < shown.size(); ++i) {
+    const QString key = pairKey(shown[i].uid, shown[i].occurrence);
+    if (!after.contains(shown[i].uid) && !listed.contains(key)) {
+      listed.insert(key);
+      removed.push_back(static_cast<int>(i));
+    }
+  }
+  return removed;
+}
+
 } // namespace mitcad

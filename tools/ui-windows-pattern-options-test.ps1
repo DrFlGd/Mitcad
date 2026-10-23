@@ -191,23 +191,13 @@ if ($LASTEXITCODE -ne 0) { Ui-Fail "the saved design: $($checked -join ' / ')" }
 Write-Host 'ok   stored: direction 1 symmetric, extent; the circular pattern symmetric; the copies on both sides'
 
 Write-Host '--- 4. Opened again: the panels show the stored options'
-# Edit-Timeline "Timeline <name>": the cell clicked once and the layout let
-# settle before the double-click. In the docked layout the click selects
-# the pattern's bodies, the Browser opens its Bodies folder for them and
-# the window grows (the timeline from y 698 to 916 in session 0), so a
-# double-click's second press landed beside the cell.
-function Edit-Timeline([string]$Text) {
-  Ui-ClickLogged $Text
-  Ui-WaitIdle
-  Start-Sleep -Milliseconds 500
-  Ui-Sync
-  Ui-DoubleClickLogged $Text
-}
-
+# A plain double-click on the cell: its first click selects the pattern's
+# bodies, and the window keeps its size (mitcad#560: it grew, and the
+# second press landed beside the cell).
 Ui-StartApp 'pattern-options-reopened' @('--open', $design)
 Ui-ExpectLog 'pattern-options.mitcad' 'the design opened again'
 Ui-Mark
-Ui-Step 'edit RectangularPattern1'       { Edit-Timeline 'Timeline RectangularPattern1' }
+Ui-Step 'edit RectangularPattern1'       { Ui-DoubleClickLogged 'Timeline RectangularPattern1' }
 Ui-ExpectNew 'Editing F3 with Rectangular Pattern' 'editing the pattern'
 Ui-ExpectNew 'Panel Rectangular Pattern choices: object_type=bodies, compute=adjust, distance_type=extent, direction_type1=symmetric, direction_type2=one' 'Extent and Symmetric shown'
 Ui-ExpectNew 'Panel Rectangular Pattern label distance1: Extent' 'the length row says Extent'
@@ -216,7 +206,7 @@ Ui-Mark
 Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
 Ui-ExpectNew 'Command Rectangular Pattern cancelled' 'left as it was'
 Ui-Mark
-Ui-Step 'edit CircularPattern1'          { Edit-Timeline 'Timeline CircularPattern1' }
+Ui-Step 'edit CircularPattern1'          { Ui-DoubleClickLogged 'Timeline CircularPattern1' }
 Ui-ExpectNew 'Editing F4 with Circular Pattern' 'editing the circular pattern'
 Ui-ExpectNew 'Panel Circular Pattern checks: symmetric=on' 'Symmetric checked'
 Ui-ExpectNew 'Preview Circular Pattern: ok' 'previewed' 30

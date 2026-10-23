@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cycles 5.2.0: distinguish cancelled Metal pipeline waits from activation errors.
+# Original: https://projects.blender.org/blender/cycles/src/tag/v5.2.0/src/device/metal/
+# Copyright 2021-2022 Blender Foundation. Modification by Mitcad contributors.
+--- a/src/device/metal/device_impl.h
++++ b/src/device/metal/device_impl.h
+@@ -117,6 +117,8 @@
+ 
+   static bool is_device_cancelled(const int device_id);
+ 
++  bool is_cancelled() const;
++
+   static MetalDevice *get_device_by_ID(const int device_idID,
+                                        thread_scoped_lock &existing_devices_mutex_lock);
+ 
+--- a/src/device/metal/device_impl.mm
++++ b/src/device/metal/device_impl.mm
+@@ -900,6 +900,12 @@
+   /* METAL_WIP - revive if necessary */
+   assert(0);
+   return 0;
++}
++
++bool MetalDevice::is_cancelled() const
++{
++  thread_scoped_lock lock(existing_devices_mutex);
++  return device_id == 0;
+ }
+ 
+ void MetalDevice::cancel()
+--- a/src/device/metal/queue.mm
++++ b/src/device/metal/queue.mm
+@@ -462,8 +462,12 @@
+     }
+ 
+     if (!active_pipelines_[kernel].update(metal_device_, kernel)) {
+-      metal_device_->set_error(
+-          string_printf("Could not activate pipeline for %s\n", device_kernel_as_string(kernel)));
++      /* A cancelled pipeline wait is expected during shutdown. Keep an existing
++       * compilation error instead of replacing it with a generic activation error. */
++      if (!metal_device_->is_cancelled() && !metal_device_->have_error()) {
++        metal_device_->set_error(
++            string_printf("Could not activate pipeline for %s\n", device_kernel_as_string(kernel)));
++      }
+       return false;
+     }
+     MetalDispatchPipeline &active_pipeline = active_pipelines_[kernel];

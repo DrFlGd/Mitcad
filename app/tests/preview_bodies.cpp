@@ -225,6 +225,26 @@ void occurrenceTests() {
   CHECK(previewBodies(failed, shown).empty());
 }
 
+// A consumed tool (mitcad#561): Board's F4.b0, a tool where Board:1 shows
+// it, leaves Board, so the preview has it in neither occurrence; both
+// shown pairs are what the preview removes, for the command to draw the
+// one it is not picked in as a tool. A body the preview keeps, a hidden
+// body and a failed preview give none.
+void removedShownTests() {
+  const std::vector<ShownBody> shown = shownBodies();
+  const auto removed = removedShownBodies(report({bodyRow("F2.b0", true), bodyRow("F5.b0", false),
+                                                  bodyRow("F7.b0", false), bodyRow("F8.b0", false)}),
+                                          shown);
+  CHECK(removed.size() == 2);
+  CHECK(removed.size() == 2 && removed[0] == 1 && removed[1] == 2);
+  CHECK(removedShownBodies(report({bodyRow("F2.b0", true), bodyRow("F4.b0", false), bodyRow("F8.b0", false)}),
+                           shown)
+            .empty());
+  QJsonObject failed = report({bodyRow("F2.b0", true)});
+  failed.insert(QStringLiteral("status"), QStringLiteral("failed"));
+  CHECK(removedShownBodies(failed, shown).empty());
+}
+
 } // namespace
 
 int previewBodiesTests() {
@@ -233,5 +253,6 @@ int previewBodiesTests() {
   hiddenChangedTests();
   componentNewBodyTests();
   occurrenceTests();
+  removedShownTests();
   return failures;
 }

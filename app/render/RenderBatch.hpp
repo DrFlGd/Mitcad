@@ -23,6 +23,7 @@
 #include <gp_Trsf.hxx>
 
 #include "framework/Appearances.hpp"
+#include "platform/MacChrome.hpp"
 #include "render/Renderer.hpp"
 
 class QProcess;
@@ -165,6 +166,7 @@ private:
   void ended(int exitCode, bool crashed);
 
   QProcess* m_process = nullptr;
+  mac::ProcessActivity m_activity;
   QTimer* m_killTimer;
   QByteArray m_pending;
   QString m_lastError;

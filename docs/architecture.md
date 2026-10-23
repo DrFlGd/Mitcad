@@ -1036,7 +1036,9 @@ not recompute.
   command's result (`app/framework/PreviewBodies.hpp`, mitcad#266): shown
   bodies keep their occurrences' placements, what the command makes comes
   at the placements the report's `instances` give, and a body the view
-  hides stays hidden.
+  hides stays hidden. A body the command consumes as a tool stays drawn,
+  see-through and pickable, where other occurrences show it while its
+  input is active (`InputDef::toolOverlays`, mitcad#561).
 - **Sketch mode** (`app/sketch/`): the app keeps the sketch in the form of
   the `sketch` query and does snapping, inference and hit testing itself;
   every change is a `sketch.*` command, one undo step per user action.
@@ -1103,6 +1105,29 @@ not recompute.
   at a time, a design of many small bodies used a core or two) and a face
   that bodies share is meshed once; should that throw, the bodies are
   meshed one by one and one OCCT fails on is left to the view.
+- **macOS computation scheduling** (`app/platform/macos/MacWork.mm`,
+  through `MacChrome.hpp`, mitcad#556): model and section workers set
+  `QOS_CLASS_USER_INITIATED` on entering their thread loops. Before either
+  worker starts, the application explicitly sets that class on every
+  thread of OCCT's default pool through a launcher job, so display meshing
+  and parallel sections use it too. This starts the existing pool earlier,
+  without changing its size or the calling UI thread's class; it does not
+  depend on pthread QoS inheritance. Autosave writes, texture-folder scans
+  and result-store garbage collection use `QOS_CLASS_UTILITY` for each
+  task, restoring the shared thread's class when the task returns or
+  throws. Result-store writes remain synchronous model work, with the
+  model worker's class.
+  Each model job and section round holds an `NSProcessInfo` activity;
+  rendered-view and final-render clients hold one while their render
+  session runs, and the windowless render worker holds its own until its
+  renderer is destroyed. RAII and process-exit/error handlers end them on
+  completion, cancellation and worker failure. The activity option is
+  `NSActivityUserInitiatedAllowingIdleSystemSleep`: it prevents App Nap
+  while permitting normal system idle sleep. `NSActivityLatencyCritical`
+  is deliberately omitted because it requests high-priority I/O intended
+  for audio/video recording, without evidence rendering needs it. Native
+  tokens and scheduling calls stay in `platform/macos/`; other platforms
+  use inline no-ops. Qt remains the default macOS UI.
 - **Section Analysis off the UI thread** (`app/framework/SectionWorker`,
   `app/MainWindowSection.cpp`, mitcad#438): the clips of the bodies shown,
   their meshes for the view and the panel's area and length run as rounds
@@ -1376,6 +1401,12 @@ active page independently of the hidden sketch palette. The palette sits in
 a scroll area in both layouts: in the floating command card it keeps its
 rows at their size hint and scrolls when the card (limited by the view's
 height) is shorter, instead of being squeezed below its hint (mitcad#470).
+The idle page (the selection's card, the Autoselect rows) scrolls the same
+way in both layouts: in the Docked layout a dock's minimum height is its
+content's, so content that grows with the selection or with rows would make
+the main window taller, up to past the screen (mitcad#412, mitcad#560). No
+dock's content may raise its minimum height with what it shows; the window
+logs its layout again whenever its size changes after it shows.
 
 With `MITCAD_MACOS_NATIVE_UI=ON`, macOS starts the AppKit frontend by
 default. `--ui=qt` selects the retained Qt frontend; `--chrome` also selects

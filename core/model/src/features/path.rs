@@ -284,6 +284,15 @@ impl CurvePath {
                 name: "helix".to_owned(),
                 curve: helix.curve()?,
             }],
+            // Fixed curves (mitcad#548), named by their place in the list.
+            Self::Path(PathRef::Fixed(curves)) => curves
+                .iter()
+                .enumerate()
+                .map(|(i, c)| PathCurve {
+                    name: format!("fixed{}", i + 1),
+                    curve: c.curve(),
+                })
+                .collect(),
         };
         chain(pieces)
     }
@@ -957,6 +966,42 @@ fn samples(curve: &Curve3) -> Vec<[f64; 3]> {
             *end,
         ),
     }
+}
+
+/// The plane through the first point of `curves` square to the path at
+/// its start (mitcad#548: where a surface sweep of fixed curves, which lie
+/// in no plane of their own, starts along the path).
+pub(crate) fn plane_at_start(
+    path: &[PathCurve],
+    curves: &[PathCurve],
+) -> Result<SketchFrame, String> {
+    let along = path.first().map(|p| samples(&p.curve)).unwrap_or_default();
+    let tangent = along
+        .windows(2)
+        .find_map(|w| {
+            let d = [w[1][0] - w[0][0], w[1][1] - w[0][1], w[1][2] - w[0][2]];
+            let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            (length > 1e-12).then(|| [d[0] / length, d[1] / length, d[2] / length])
+        })
+        .ok_or("the path has no direction at its start")?;
+    let origin = curves
+        .first()
+        .and_then(|c| samples(&c.curve).first().copied())
+        .ok_or("no curves to sweep")?;
+    // Any direction square to the tangent as the plane's x axis.
+    let other = if tangent[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let x = crate::profile::cross(tangent, other);
+    let length = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
+    let x = [x[0] / length, x[1] / length, x[2] / length];
+    Ok(SketchFrame {
+        origin,
+        x_axis: x,
+        y_axis: crate::profile::cross(tangent, x),
+    })
 }
 
 #[cfg(test)]

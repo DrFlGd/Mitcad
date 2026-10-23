@@ -1,6 +1,15 @@
 # SPDX-License-Identifier: MIT
 find_package(Qt6 REQUIRED COMPONENTS Svg Network)
 
+# Scheduling/activity support also serves the windowless render worker and
+# CLI. Keep it independent of the QWidget-based native chrome.
+if(APPLE)
+  add_library(mitcad_mac_work STATIC platform/MacChrome.hpp platform/macos/MacWork.mm)
+  target_include_directories(mitcad_mac_work PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(mitcad_mac_work PUBLIC Qt6::Gui PRIVATE TKernel "-framework Foundation" mitcad_warnings)
+  set_source_files_properties(platform/macos/MacWork.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+endif()
+
 qt_add_executable(mitcad
   main.cpp
   MainWindow.cpp
@@ -431,6 +440,7 @@ endif()
 
 if(APPLE)
   # Native macOS parts (SF Symbols, menu images) in Objective-C++.
+  target_link_libraries(mitcad PRIVATE mitcad_mac_work)
   target_sources(mitcad PRIVATE platform/MacChrome.hpp platform/macos/MacChrome.mm)
   set_source_files_properties(platform/macos/MacChrome.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
   target_link_libraries(mitcad PRIVATE "-framework AppKit")
@@ -647,6 +657,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
+  if(APPLE)
+    target_link_libraries(test_app PRIVATE mitcad_mac_work)
+  endif()
   add_test(NAME app.unit COMMAND test_app)
   add_executable(test_view_tessellation tests/view_tessellation.cpp)
   target_include_directories(test_view_tessellation PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -738,6 +751,7 @@ target_link_libraries(mitcad-render PRIVATE
 # Built with the application. On macOS the worker lives in Contents/MacOS
 # in the build bundle too, where the application's ordinary lookup finds it.
 if(APPLE)
+  target_link_libraries(mitcad-render PRIVATE mitcad_mac_work)
   set_target_properties(mitcad-render PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:mitcad>"
     INSTALL_RPATH "@executable_path/../Frameworks")
@@ -814,6 +828,10 @@ if(BUILD_TESTING)
                    --output "${CMAKE_CURRENT_BINARY_DIR}/render-worker-gpu-test.png")
   set_tests_properties(app.render_worker_gpu PROPERTIES SKIP_RETURN_CODE 77
     PASS_REGULAR_EXPRESSION "render-compare (CUDA|OPTIX|HIP|METAL|ONEAPI) ")
+  add_test(NAME app.render_required_metal_contract
+    COMMAND "${CMAKE_COMMAND}" "-DWORKER=$<TARGET_FILE:mitcad-render>"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/render-required-metal-test.cmake")
+  set_tests_properties(app.render_required_metal_contract PROPERTIES TIMEOUT 60)
   # Check completed denoising independently of render-device capabilities.
   if(APPLE)
     foreach(mode cpu failure cpu_previews failure_previews metal previews)
@@ -834,7 +852,7 @@ if(BUILD_TESTING)
   if(WIN32)
     set_tests_properties(app.render_worker app.render_updates app.render_worker_environment
                          app.render_worker_fallback app.render_worker_device_failure app.render_worker_gpu
-                         app.render_worker_probe_denoiser
+                         app.render_worker_probe_denoiser app.render_required_metal_contract
       PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
   # The maps of a texture set (mitcad#314): generated normal, roughness,
@@ -854,6 +872,12 @@ if(BUILD_TESTING)
   add_test(NAME app.render_material_swap
            COMMAND mitcad-render --swap-test "${CMAKE_CURRENT_BINARY_DIR}/render-material-swap")
   set_tests_properties(app.render_material_swap PROPERTIES TIMEOUT 180 PASS_REGULAR_EXPRESSION "render-swap ok")
+  if(APPLE)
+    add_test(NAME app.render_material_swap_metal
+      COMMAND mitcad-render --swap-test "${CMAKE_CURRENT_BINARY_DIR}/render-material-swap-metal" --device metal)
+    set_tests_properties(app.render_material_swap_metal PROPERTIES
+      TIMEOUT 180 SKIP_RETURN_CODE 77 PASS_REGULAR_EXPRESSION "render-swap ok")
+  endif()
   if(WIN32)
     set_tests_properties(app.render_material_swap PROPERTIES
       ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
@@ -1116,6 +1140,18 @@ if(BUILD_TESTING)
   # and the geometry's cancel.
   target_sources(test_app PRIVATE tests/section_worker.cpp framework/SectionWorker.cpp
                  framework/SectionWorker.hpp)
+endif()
+
+# Native scheduling, pool initialization and exception-safe QoS restoration
+# (mitcad#556). No windows or renderer performance campaign.
+if(APPLE AND BUILD_TESTING)
+  add_executable(test_mac_work tests/mac_work.cpp
+    framework/ModelWorker.cpp framework/ModelWorker.hpp
+    framework/SectionWorker.cpp framework/SectionWorker.hpp)
+  set_target_properties(test_mac_work PROPERTIES AUTOMOC ON)
+  target_link_libraries(test_mac_work PRIVATE mitcad_mac_work mitcad_ffi mitcad_geometry mitcad_warnings)
+  add_test(NAME app.macos_work COMMAND test_mac_work)
+  set_tests_properties(app.macos_work PROPERTIES TIMEOUT 60)
 endif()
 # Fillet's and Chamfer's handles (mitcad#534): where the arrows of a
 # rounding's radius and of a bevel's distances stand on an edge.

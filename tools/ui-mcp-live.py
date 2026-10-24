@@ -84,7 +84,13 @@ def design_script():
             "constraints": [
                 {"id": "k12", "type": "coincident", "point": "p9", "entity": "c3"},
                 {"id": "k13", "type": "coincident", "point": "p10", "entity": "c7"}],
-            "projections": [{"source": "F2:start(" + RECT + ")", "entities": PROJECTED}]}},
+            "projections": [{"source": "F2:start(" + RECT + ")", "entities": PROJECTED}],
+            # Valid stored outlines need no file. A remote text/style edit
+            # must not silently read the metadata's missing font path.
+            "texts": [{"id": "t14", "text": "A", "at": [0, -10], "height": 5,
+                       "font": "MCP Synthetic",
+                       "font_file": {"path": "mcp-missing-font.ttf"},
+                       "glyphs": {"text": "A", "font": "MCP Synthetic", "glyphs": [{}]}}]}},
         {"cmd": "add_feature", "def": {
             "type": "extrude", "profiles": [{"sketch": "F4", "region": "r{c3[c11,c5],c5[c3,c7],c7[c5,c11],c11[c3,c7]}"}],
             "extent": {"type": "distance", "distance": 5}, "operation": "new_body"}},
@@ -101,7 +107,41 @@ def make_design(cli, directory, env=None):
                           timeout=TIMEOUT)
     check(made.returncode == 0 and design.exists(),
           "mitcad-cli: " + made.stdout.decode("utf-8", "replace") + made.stderr.decode("utf-8", "replace"))
+    make_linked_font_fixture(cli, directory, env)
     return design
+
+
+def make_linked_font_fixture(cli, directory, env=None):
+    """A safe saved root with embedded linked bodies; its child then changes
+    both geometry and a font path. Opening the root through MCP must use the
+    saved bodies without reading/recomputing that child."""
+    child = directory / "mcp-linked-child.mitcad"
+    root = directory / "mcp-linked-root.mitcad"
+    fixtures = (
+        (child, [{"cmd": "add_feature", "def": {"type": "box",
+            "plane": {"type": "origin", "plane": "xy"}, "corner": [0, 0],
+            "length": 10, "width": 10, "height": 10, "operation": "new_body"}}]),
+        (root, [{"cmd": "insert_component", "path": str(child), "link": True,
+                 "name": "Linked cube"}]),
+    )
+    for destination, commands in fixtures:
+        script = destination.with_suffix(".json")
+        script.write_text(json.dumps(commands), encoding="utf-8")
+        made = subprocess.run([cli, "run", str(script), "--save", str(destination)],
+                              env=env, capture_output=True, timeout=TIMEOUT)
+        check(made.returncode == 0 and destination.exists(),
+              "linked fixture: " + made.stdout.decode("utf-8", "replace")
+              + made.stderr.decode("utf-8", "replace"))
+    body = json.loads(child.read_text(encoding="utf-8"))
+    height = body["features"][0]["height"]
+    parameter = next(p for p in body["parameters"] if p["name"] == height)
+    parameter["expression"], parameter["value"] = "20 mm", 20
+    font = directory / "mcp-linked-blocked-font.ttf"
+    font.write_bytes(b"this file must not be read as a font by an MCP open")
+    body["features"].append({"uid": "F2", "name": "File font", "type": "sketch", "plane": "xy",
+        "texts": [{"id": "t1", "text": "A", "at": [0, 0], "height": 5,
+                   "font_file": {"path": str(font)}}]})
+    child.write_text(json.dumps(body), encoding="utf-8")
 
 
 class Bridge:
@@ -226,9 +266,48 @@ def run_flow(bridge, design, say=print):
     check(names == LIVE_TOOLS, "Live catalog: " + repr(sorted(names)))
     document = bridge.tool("document_list", {})["documents"][0]["document"]
 
+    # Refusals must preserve the complete live camera, including FOV. The
+    # new eye/FOV would previously be applied before framing was checked.
+    bridge.tool("ui_select", {"document": document, "items": []})
+    before_camera = bridge.tool("ui_camera", {})["camera"]
+    for framing in ({"frame": "selection"},
+                    {"frame": "shown", "box": {"min": [0, 0, 0], "max": [10, 10, 10]}}):
+        refused = bridge.tool("ui_camera", {"eye": [100, 100, 100], "target": [0, 0, 0],
+                                            "fov": 90, **framing}, error=True)
+        check(refused.get("error"), "Invalid framing was not refused: " + repr(refused))
+        after_camera = bridge.tool("ui_camera", {})["camera"]
+        check(after_camera == before_camera,
+              "A refused ui_camera changed the camera: " + repr((before_camera, after_camera)))
+    say("ok   refused camera framing preserves eye, target, up, height, projection and FOV")
+
     def sketch_query():
         return bridge.tool("model_query", {"document": document,
                                            "query": {"query": "sketch", "uid": "F4"}})["result"]
+
+    unsafe = json.loads(Path(design).read_text(encoding="utf-8"))
+    for feature in unsafe["features"]:
+        for text in feature.get("texts", []):
+            text.pop("glyphs", None)
+    unsafe_path = Path(design).with_name("mcp-file-font.mitcad")
+    unsafe_path.write_text(json.dumps(unsafe), encoding="utf-8")
+    refused = bridge.tool("document_open", {"path": str(unsafe_path), "discard": True}, error=True)
+    check("not available through MCP" in refused["error"],
+          "Opening a design with a font path was not refused: " + repr(refused))
+    check(bridge.tool("document_list", {})["documents"][0]["document"] == document,
+          "A refused file-font open replaced the live document")
+    for command in ("add_feature", "edit_feature"):
+        refused = bridge.tool("model_command", {"document": document, "command": {
+            "cmd": command, "uid": "F4", "def": {"type": "sketch", "texts": [{
+                "id": "t1", "text": "A", "at": [0, 0], "height": 5,
+                "font_file": {"path": "mcp-missing-font.ttf"}}]}}}, error=True)
+        check(not refused.get("applied") and "not available through MCP" in refused["error"],
+              "A file-backed feature definition was not refused: " + repr(refused))
+    for fields in ({"text": "B"}, {"bold": True}, {"italic": True}):
+        refused = bridge.tool("model_command", {"document": document, "command": {
+            "cmd": "sketch.edit_text", "sketch": "F4", "id": "t14", **fields}}, error=True)
+        check(not refused.get("applied") and "stored font file" in refused["error"],
+              "An implicit font file read was not refused: " + repr(refused))
+    say("ok   file-backed definitions and implicit live text font reads refused")
 
     edited = bridge.tool("ui_command", {"document": document, "edit": "F4"})
     check(edited["mode"] == "sketch" and edited["sketch"] == "F4", "Sketch F4 was not opened: " + repr(edited))
@@ -319,6 +398,30 @@ def run_flow(bridge, design, say=print):
     later = bridge.tool("ui_log", {"since": last})
     check(all(line["seq"] > last for line in later["lines"]), "ui_log's since")
     say("ok   ui_log shows the commands' lines")
+
+    # A linked child is not covered by a root-only feature audit. The root
+    # embeds a 1000 mm3 cube; the changed child would produce 2000 mm3 and
+    # read an unembedded font if an ordinary update_links ran on MCP open.
+    root = Path(design).parent / "mcp-linked-root.mitcad"
+    original = json.loads(root.read_text(encoding="utf-8"))
+    digests = {component["uid"]: component["link"]["digest"]
+               for component in original["components"] if component.get("link")}
+    check(bool(digests), "The linked regression root has no external component")
+    opened = bridge.tool("document_open", {"path": str(root), "discard": True})
+    linked = opened["document"]
+    bodies = bridge.tool("model_query", {"document": linked,
+        "query": {"query": "bodies", "properties": True}})["result"]
+    check(len(bodies) == 1 and abs(bodies[0]["volume"] - 1000) <= 1e-6,
+          "MCP open refreshed the changed linked child: " + repr(bodies))
+    bridge.tool("document_save", {"document": linked})
+    saved = json.loads(root.read_text(encoding="utf-8"))
+    check({component["uid"]: component["link"]["digest"]
+           for component in saved["components"] if component.get("link")} == digests,
+          "MCP open followed a linked child instead of retaining its saved bodies")
+    later = bridge.tool("ui_log", {"since": last, "limit": 2000})
+    check(not any("mcp-linked-blocked-font.ttf" in line["text"] for line in later["lines"]),
+          "Opening the root evaluated the linked child's font path")
+    say("ok   MCP open retains embedded linked bodies without reading a changed child's font")
 
 
 def main():

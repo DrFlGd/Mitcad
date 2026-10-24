@@ -15,6 +15,7 @@ expect-log 'Native application delegate: activation, deactivation, reopen and se
 # Same-labelled command and secondary-dialog options retain their distinct
 # feature UIDs and native menu items across unchanged refreshes.
 expect-native-duplicate-choices
+expect-log 'Native Settings red close: pending cache budget committed and dialog cancellation preserved'
 
 # The canvas keeps the entire window width behind floating native cards.
 # Check geometry and AppKit pointer routing with each card shown/hidden,

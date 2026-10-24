@@ -18,6 +18,11 @@
 #      rectangle in the constrained colour, the line blue, in the main mode
 #      and in its edit alike (mitcad#286), placed by the occurrence in both
 #      (mitcad#505).
+#   7. A design (mitcad-cli) with a block and a sketch on its top face with
+#      three dimensions: each is drawn over a halo in the background's tone,
+#      dark on the dark background and light on the light one, read from
+#      the log ("Sketch dimension halos:"; mitcad#633; the pixels are
+#      checked by tools/ui-sketch-view-test.sh).
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-sketch-view-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -207,5 +212,56 @@ Ui-ExpectNew 'Sketch finished' 'sketch finished'
 Ui-WaitIdle
 Expect-Colours 'F1 in O1' { param($c, $u) $c -eq $placed[0] -and $u -eq $placed[1] } `
   'placed by Part:1 again, the same colours' | Out-Null
+
+Write-Host "--- Dimensions over a body's face have a halo in the background's tone (mitcad#633)"
+# mitcad-cli builds a 60 x 40 x 30 mm block, a sketch on its top face (F2)
+# with a circle (a diameter dimension) and a free line with a driven length
+# dimension: three dimensions, each drawn over a halo (the pixels are
+# checked by tools/ui-sketch-view-test.sh; this test reads the log).
+$faceScript = Join-Path $work 'face.json'
+$faceDesign = Join-Path $work 'face.mitcad'
+Set-Content -Encoding ascii $faceScript @'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-30, -20],
+    "length": 60, "width": 40, "height": 30, "operation": "new_body"}},
+  {"cmd": "sketch.create", "plane": {"face": "F1:top", "body": "F1.b0"}},
+  {"cmd": "sketch.add_line", "sketch": "F2", "start": [-28, 10], "end": [-4, 10]},
+  {"cmd": "sketch.add_dimension", "sketch": "F2", "dimension": {"type": "length", "line": "c1"},
+   "driven": true, "text": [12, 16]},
+  {"cmd": "sketch.add_circle", "sketch": "F2", "center": [10, 0], "diameter": 16},
+  {"cmd": "sketch.add_circle", "sketch": "F2", "center": [50, 0], "diameter": 16}
+]
+'@
+$made = & $cli run $faceScript --save $faceDesign
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $faceDesign)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+
+Ui-StartApp 'sketch-view-face' @('--open', $faceDesign)
+Ui-ExpectLog 'face.mitcad' 'the design opened'
+Ui-ExpectLog 'Sketches shown: F2' "the face's sketch is shown"
+Ui-ExpectLog 'Timeline Sketch1 at' 'the timeline is laid out'
+Ui-Mark
+Ui-Step 'edit Sketch1 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch1' }
+Ui-ExpectNew 'Editing sketch F2 (Sketch1)' "the face's sketch is edited" 30
+Ui-WaitIdle
+
+# Expect-DimensionHalos "dark|light": within six seconds the last "Sketch
+# dimension halos:" line says the three dimensions have a halo of that tone.
+function Expect-DimensionHalos([string]$Tone) {
+  $last = $null
+  for ($i = 0; $i -lt 30; $i++) {
+    $last = Ui-LastMatch 'Sketch dimension halos: (\d+ (?:dark|light))$'
+    if ($last -eq "3 $Tone") {
+      Write-Host "ok   dimension halos: $last"
+      return
+    }
+    Start-Sleep -Milliseconds 200
+  }
+  Ui-Fail "dimension halos: the last line is '$last', expected '3 $Tone'"
+}
+
+Ui-Step 'dark background (F8)'           { Ui-Key 'F8' }
+Expect-DimensionHalos 'dark'
+Ui-Step 'light background (F9)'          { Ui-Key 'F9' }
+Expect-DimensionHalos 'light'
 
 Ui-Finish 'UI Windows sketch view test'

@@ -221,6 +221,7 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
           .withTooltip(QObject::tr("Also the mating gear, placed to mesh"))
           .withVisible([](const CommandState& s) { return kindOf(s) == QStringLiteral("bevel"); }),
       valueInput(QStringLiteral("backlash"), QObject::tr("Backlash"), ValueKind::Length, QStringLiteral("0 mm"))
+          .withPrintedFit(QStringLiteral("gear"))
           .withTooltip(QObject::tr("Each tooth is thinner by half of it: two gears with the same value mesh with it"))
           .withHeading(QObject::tr("Profile")),
       valueInput(QStringLiteral("profile_shift"), QObject::tr("Profile Shift"), ValueKind::Unitless, QStringLiteral("0"))
@@ -253,7 +254,10 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
     while (at < def.inputs.size() && def.inputs.at(at).id != QStringLiteral("plane")) {
       ++at;
     }
-    for (const InputDef& input : seatInputList) {
+    for (InputDef input : seatInputList) {
+      if (input.id == QStringLiteral("bore_clearance")) {
+        input.withPrintedFit(QStringLiteral("gear"));
+      }
       def.inputs.insert(at++, input);
     }
   }
@@ -342,7 +346,7 @@ CommandDef gearCommand(const CommandContext& context, DocumentHost& host) {
         gear.insert(QStringLiteral("pair"), true);
       }
     }
-    if (nonZero(state, QStringLiteral("backlash"))) {
+    if (std::isfinite(state.value(QStringLiteral("backlash")))) {
       gear.insert(QStringLiteral("backlash"), state.expression(QStringLiteral("backlash")));
     }
     if (nonZero(state, QStringLiteral("profile_shift"))) {

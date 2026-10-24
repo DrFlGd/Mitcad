@@ -370,9 +370,17 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   m_result->setObjectName(QStringLiteral("commandResult"));
   m_result->setWordWrap(true);
   m_result->setTextFormat(Qt::RichText);
-  m_result->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  m_result->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
   m_result->setFrameShape(QFrame::StyledPanel);
   m_result->setMargin(4);
+  // A link in the result (Print Analysis' thinnest wall, mitcad#620) shows
+  // what it points at.
+  connect(m_result, &QLabel::linkActivated, this, [this](const QString& link) {
+    const auto call = CommandPresenter::actions().resultLinkActivated;
+    if (call) {
+      call(link);
+    }
+  });
   layout->addWidget(m_result);
   m_result->setVisible(static_cast<bool>(def.inspect));
 

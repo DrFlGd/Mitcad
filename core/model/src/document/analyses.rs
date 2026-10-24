@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
-//! Analyses kept in the document (mitcad#41): section analyses, listed in
-//! the browser's Analysis folder and saved in the design file. They
-//! change no geometry: adding, editing, renaming, showing, hiding and
-//! deleting one is an undo step that recomputes nothing.
+//! Analyses kept in the document (mitcad#41): section analyses and print
+//! analyses (mitcad#620), listed in the browser's Analysis folder and
+//! saved in the design file. They change no geometry: adding, editing,
+//! renaming, showing, hiding and deleting one is an undo step that
+//! recomputes nothing.
 //!
-//! An analysis refers to geometry as features do (a plane reference), so
-//! a face reference follows the model by its topological name; it is
-//! resolved at the timeline marker whenever it is asked for, and an
-//! analysis whose plane is gone says why instead of a plane.
+//! An analysis refers to geometry as features do (a plane reference, a
+//! bed face), so a face reference follows the model by its topological
+//! name; it is resolved at the timeline marker whenever it is asked for,
+//! and an analysis whose plane, body or bed face is gone says why instead.
 //!
 //! At most one analysis is shown: showing one (adding it, or editing it
 //! shown) hides the others, so the bodies are cut by one plane.
@@ -16,12 +17,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{Document, ModelError, invalid};
+use crate::analysis;
 use crate::datum::{DatumPlane, Vec3};
 use crate::features::geom_ref::GeomRef;
 use crate::features::{OccurrencePath, is_false};
-use crate::ids::ComponentUid;
+use crate::ids::{BodyUid, ComponentUid};
 use crate::joints::path_component;
 use crate::kernel::Kernel;
+use crate::print_analysis;
+use crate::transform::Transform;
 
 /// An analysis kept in the document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,15 +52,221 @@ fn is_shown(visible: &bool) -> bool {
 pub enum AnalysisDef {
     /// The bodies cut at a plane.
     Section(SectionAnalysis),
+    /// Where bodies will print badly and what they will take (mitcad#620).
+    Print(PrintAnalysis),
 }
 
 impl AnalysisDef {
-    /// The first part of default names (`Section1`).
+    /// The first part of default names (`Section1`, `Print1`).
     fn name_stem(&self) -> &'static str {
         match self {
             Self::Section(_) => "Section",
+            Self::Print(_) => "Print",
         }
     }
+}
+
+/// A Print Analysis (mitcad#620): the overhangs, thin walls and print
+/// estimate of bodies, printed in the direction the bed face gives (its
+/// outward normal pointing down), or along the design's −Z on a bed at
+/// each body's lowest point without one. The bed face only sets the
+/// analysis' direction: no body moves. Fields left out take the defaults
+/// of `print_analysis`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrintAnalysis {
+    pub bodies: Vec<BodyUid>,
+    /// A planar face of one of the bodies, lying on the bed; follows the
+    /// model by its topological name.
+    #[serde(default)]
+    pub bed_face: Option<GeomRef>,
+    #[serde(default)]
+    pub overhang: OverhangCheck,
+    #[serde(default)]
+    pub thin_wall: ThinWallCheck,
+    #[serde(default)]
+    pub estimate: EstimateCheck,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn default_angle() -> f64 {
+    print_analysis::DEFAULT_ANGLE
+}
+
+fn default_minimum() -> f64 {
+    print_analysis::DEFAULT_MINIMUM
+}
+
+/// Overhangs: faces steeper than `angle` degrees from the vertical.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OverhangCheck {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default = "default_angle")]
+    pub angle: f64,
+}
+
+impl Default for OverhangCheck {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            angle: print_analysis::DEFAULT_ANGLE,
+        }
+    }
+}
+
+/// Thin walls: walls thinner than `minimum` mm.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThinWallCheck {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default = "default_minimum")]
+    pub minimum: f64,
+}
+
+impl Default for ThinWallCheck {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            minimum: print_analysis::DEFAULT_MINIMUM,
+        }
+    }
+}
+
+fn default_line_width() -> f64 {
+    print_analysis::DEFAULT_LINE_WIDTH
+}
+
+fn default_walls() -> u32 {
+    print_analysis::DEFAULT_WALLS
+}
+
+fn default_layer_height() -> f64 {
+    print_analysis::DEFAULT_LAYER_HEIGHT
+}
+
+fn default_top_bottom_layers() -> u32 {
+    print_analysis::DEFAULT_TOP_BOTTOM_LAYERS
+}
+
+fn default_infill() -> f64 {
+    print_analysis::DEFAULT_INFILL
+}
+
+fn default_filament_diameter() -> f64 {
+    print_analysis::DEFAULT_FILAMENT_DIAMETER
+}
+
+/// The print estimate: the material (a material id; null for each body's
+/// own, else PLA), the slicer's settings and a price per kilogram (null:
+/// no cost).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EstimateCheck {
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub material: Option<String>,
+    #[serde(default = "default_line_width")]
+    pub line_width: f64,
+    #[serde(default = "default_walls")]
+    pub walls: u32,
+    #[serde(default = "default_layer_height")]
+    pub layer_height: f64,
+    #[serde(default = "default_top_bottom_layers")]
+    pub top_bottom_layers: u32,
+    #[serde(default = "default_infill")]
+    pub infill: f64,
+    #[serde(default = "default_filament_diameter")]
+    pub filament_diameter: f64,
+    #[serde(default)]
+    pub price_per_kg: Option<f64>,
+}
+
+impl Default for EstimateCheck {
+    fn default() -> Self {
+        let defaults = print_analysis::EstimateSettings::default();
+        Self {
+            enabled: true,
+            material: None,
+            line_width: defaults.line_width,
+            walls: defaults.walls,
+            layer_height: defaults.layer_height,
+            top_bottom_layers: defaults.top_bottom_layers,
+            infill: defaults.infill,
+            filament_diameter: defaults.filament_diameter,
+            price_per_kg: defaults.price_per_kg,
+        }
+    }
+}
+
+impl EstimateCheck {
+    /// The numbers of the estimate.
+    pub fn settings(&self) -> print_analysis::EstimateSettings {
+        print_analysis::EstimateSettings {
+            line_width: self.line_width,
+            walls: self.walls,
+            layer_height: self.layer_height,
+            top_bottom_layers: self.top_bottom_layers,
+            infill: self.infill,
+            filament_diameter: self.filament_diameter,
+            price_per_kg: self.price_per_kg,
+        }
+    }
+}
+
+impl PrintAnalysis {
+    /// Why the settings cannot be kept, if they cannot (not the geometry).
+    fn check(&self) -> Result<(), String> {
+        if self.bodies.is_empty() {
+            return Err("the print analysis needs a body".to_owned());
+        }
+        check_overhang_angle(self.overhang.angle)?;
+        check_minimum_wall(self.thin_wall.minimum)?;
+        self.estimate.settings().check()?;
+        if let Some(material) = &self.estimate.material {
+            print_material(material)?;
+        }
+        Ok(())
+    }
+}
+
+/// Why an overhang angle (degrees from the vertical) is not one.
+pub(crate) fn check_overhang_angle(angle: f64) -> Result<(), String> {
+    if (0.0..=90.0).contains(&angle) {
+        Ok(())
+    } else {
+        Err(format!(
+            "the overhang angle must be from 0 to 90 degrees, got {angle}"
+        ))
+    }
+}
+
+/// Why a minimum wall (mm) is not one.
+pub(crate) fn check_minimum_wall(minimum: f64) -> Result<(), String> {
+    if minimum > 0.0 && minimum.is_finite() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the minimum wall must be greater than zero, got {minimum}"
+        ))
+    }
+}
+
+/// A material of the library by its id (`pla`) or name (`PLA Plastic`).
+pub(crate) fn print_material(material: &str) -> Result<&'static analysis::Material, String> {
+    analysis::material(material)
+        .or_else(|| {
+            analysis::MATERIALS
+                .iter()
+                .find(|m| m.name.eq_ignore_ascii_case(material))
+        })
+        .ok_or_else(|| format!("there is no material '{material}'"))
 }
 
 /// The bodies shown cut at a plane: the half-space on the side the
@@ -103,6 +313,9 @@ impl Analysis {
                 if !section.offset.is_finite() {
                     return Err(format!("{}: the offset must be a finite length", self.name));
                 }
+            }
+            AnalysisDef::Print(print) => {
+                print.check().map_err(|e| format!("{}: {e}", self.name))?;
             }
         }
         Ok(())
@@ -200,6 +413,12 @@ impl<K: Kernel> Document<K> {
                             }
                             Err(error) => value["error"] = json!(error),
                         },
+                        // The print direction at the marker, or why a body
+                        // or the bed face is not there.
+                        AnalysisDef::Print(print) => match self.print_direction(print) {
+                            Ok(down) => value["down"] = json!(down),
+                            Err(error) => value["error"] = json!(error),
+                        },
                     }
                     value
                 })
@@ -215,8 +434,68 @@ impl<K: Kernel> Document<K> {
                 self.section_plane(section)
                     .map_err(|e| invalid(format!("the section's plane: {e}")))?;
             }
+            AnalysisDef::Print(print) => {
+                self.print_direction(print)
+                    .map_err(|e| invalid(format!("the print analysis: {e}")))?;
+            }
         }
         Ok(())
+    }
+
+    /// Where each body is printed from: its first shown placement in the
+    /// design, else its first, else its own coordinates (mitcad#620).
+    pub(crate) fn print_placements(&self, bodies: &[BodyUid]) -> Vec<Transform> {
+        let instances = self.instances();
+        bodies
+            .iter()
+            .map(|body| {
+                let mut placed = instances.iter().filter(|i| i.body == *body);
+                let first = placed.clone().next();
+                placed
+                    .find(|i| i.visible)
+                    .or(first)
+                    .map_or(Transform::IDENTITY, |i| i.transform)
+            })
+            .collect()
+    }
+
+    /// The print direction (unit, towards the bed) and a point of the bed
+    /// that a bed face gives, in design coordinates: the face's outward
+    /// normal and its plane, where its body is printed from.
+    pub(crate) fn print_bed(&self, bed_face: &GeomRef) -> Result<(Vec3, Vec3), String> {
+        let GeomRef::Face { body, .. } = bed_face else {
+            return Err("the bed face must be a planar face of a body".to_owned());
+        };
+        let plane = self
+            .resolve_plane(bed_face)
+            .map_err(|e| format!("the bed face: {e}"))?;
+        let placement = self.print_placements(&[*body])[0];
+        let down = mitcad_vec3::unit(placement.apply_vector(plane.normal()))
+            .ok_or_else(|| "the bed face has no normal".to_owned())?;
+        Ok((down, placement.apply_point(plane.origin)))
+    }
+
+    /// A print analysis' direction at the marker, or why its bodies or bed
+    /// face are not there.
+    pub fn print_direction(&self, print: &PrintAnalysis) -> Result<Vec3, String> {
+        for body in &print.bodies {
+            if self.body_shape(*body).is_none() {
+                return Err(format!("body {body} does not exist at the timeline marker"));
+            }
+        }
+        match &print.bed_face {
+            None => Ok([0.0, 0.0, -1.0]),
+            Some(face) => {
+                if let GeomRef::Face { body, .. } = face
+                    && !print.bodies.contains(body)
+                {
+                    return Err(format!(
+                        "the bed face is on body {body}, which the analysis does not include"
+                    ));
+                }
+                self.print_bed(face).map(|(down, _)| down)
+            }
+        }
     }
 
     /// Adds an analysis, shown, and hides the others. Without a name it is

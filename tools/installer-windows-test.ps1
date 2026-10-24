@@ -12,7 +12,9 @@
 #      test runs with administrator rights).
 #   1. just for the current user, the installer's files: executables, Qt
 #      and OCCT DLLs, the Qt platform plugin, the Visual C++ runtime, the
-#      licences; no Mesa, no PDB files.
+#      licences; no Mesa, no PDB files. The installed mitcad-updater does
+#      not run an installer whose SHA-256 is not the one it is given, or
+#      without one, and logs the reason as its last line (mitcad#603).
 #   2. mitcad-cli runs a script of the repository; with the toolchain (Qt,
 #      vcpkg, Rust, Visual Studio) removed from PATH from here on.
 #   3. mitcad.exe --version loads Qt with its plugins. The render worker
@@ -35,8 +37,9 @@
 #      test (openssl), which only its update requests trust
 #      (MITCAD_UPDATE_TEST_CA). Just for the current user also: the
 #      administrator's policy turns checks off, and a tampered download is
-#      refused and deleted. Then Install downloads and verifies the
-#      release, the changed design is saved when asked, Mitcad quits,
+#      refused and deleted. Then Install downloads the release into a
+#      private folder of a random name and verifies it, the changed design
+#      is saved when asked, Mitcad quits,
 #      mitcad-updater runs the installer silently over the installation in
 #      its scope and starts Mitcad again, which records the update as
 #      installed; the installation is still registered in its scope only.
@@ -305,6 +308,51 @@ function Test-Programs([string]$Install) {
   }
 }
 
+# 1b. The installed mitcad-updater checks the installer again right before
+# it runs it (mitcad#603): given a SHA-256 that is not the installer's, one
+# not written as the manifest writes it, or none, it does not run it (the
+# installation folder it is given is never made) and logs why.
+function Test-UpdaterCheck([string]$Install, [string]$Work) {
+  New-Item -ItemType Directory -Force $Work | Out-Null
+  $updater = Join-Path $Work 'mitcad-updater.exe'
+  $copy = Join-Path $Work $installer.Name
+  Copy-Item (Join-Path $Install 'bin\mitcad-updater.exe') $updater
+  Copy-Item $installer.FullName $copy
+  $target = Join-Path $Work 'never'
+  $restart = Join-Path $Work 'none.exe'
+  $log = Join-Path $Work 'updater.log'
+  $hash = (Get-FileHash -Algorithm SHA256 $copy).Hash.ToLowerInvariant()
+  $wrong = $(if ($hash.StartsWith('0')) { '1' } else { '0' }) + $hash.Substring(1)
+  $cases = @(
+    @{ Name = "a SHA-256 that is not the installer's"; Hash = @('--sha256', $wrong); Code = 1
+       Text = 'The installer is not the verified download' },
+    @{ Name = 'an upper-case SHA-256'; Hash = @('--sha256', $hash.ToUpperInvariant()); Code = 2; Text = 'No SHA-256' },
+    @{ Name = 'no SHA-256'; Hash = @(); Code = 2; Text = 'No SHA-256' })
+  foreach ($case in $cases) {
+    Remove-Item $log -ErrorAction SilentlyContinue
+    $arguments = @('--installer', "`"$copy`"") + $case.Hash +
+                 @('--dir', "`"$target`"", '--scope', 'user', '--restart', "`"$restart`"", '--log', "`"$log`"")
+    $proc = Start-Process -FilePath $updater -ArgumentList $arguments -Wait -PassThru
+    $text = Get-Content $log -Raw -ErrorAction SilentlyContinue
+    if ($proc.ExitCode -eq $case.Code -and $text -and $text.Contains($case.Text) -and -not (Test-Path $target)) {
+      Pass "mitcad-updater does not run the installer with $($case.Name)"
+    } else {
+      Fail "mitcad-updater with $($case.Name): exit code $($proc.ExitCode), installed: $(Test-Path $target), log: $text"
+    }
+  }
+  # The reason is the log's last line, which the next start reports (here a
+  # program that starts and ends at once stands for Mitcad, in a folder
+  # that exists, so that the start succeeds).
+  Remove-Item $log -ErrorAction SilentlyContinue
+  $stand = Join-Path $env:SystemRoot 'System32\hostname.exe'
+  $proc = Start-Process -FilePath $updater -Wait -PassThru -ArgumentList (
+    @('--installer', "`"$copy`"", '--sha256', $wrong, '--dir', "`"$Work`"", '--scope', 'user',
+      '--restart', "`"$stand`"", '--log', "`"$log`""))
+  $last = @(Get-Content $log -ErrorAction SilentlyContinue) | Where-Object { $_.Trim() } | Select-Object -Last 1
+  if ($last -and $last.StartsWith('The installer is not the verified download')) { Pass 'the reason is the last line' }
+  else { Fail "the log's last line is '$last'" }
+}
+
 # 5. The automatic update of the installation in $Install, installed in
 # scope $In (the app's window is driven with tools/ui-windows-lib.ps1).
 # -Full adds the administrator's policy and a tampered download.
@@ -370,7 +418,6 @@ function Test-Update([string]$In, [string]$Install, [string]$Work, [switch]$Full
     $env:MITCAD_UPDATE_TEST_KEY = $public
     $env:MITCAD_UPDATE_TEST_CA = $cert
     $env:MITCAD_TEST_VERSION = '0.0.0'
-    $download = Join-Path $env:TEMP "mitcad-update\$($installer.Name)"
     $requests = Join-Path $Work 'requests.log'
 
     if ($Full) {
@@ -406,7 +453,11 @@ function Test-Update([string]$In, [string]$Install, [string]$Work, [switch]$Full
       Ui-Step 'install (click)' { Ui-ClickLogged 'Update notice Install' }
       Ui-ExpectLog "Update rejected: the download is not the release's: its SHA-256 differs from the release's" `
         'a tampered download is refused' 120
-      if (Test-Path $download) { Fail 'the tampered download is left' } else { Pass 'and deleted' }
+      # The download's private folder (mitcad#603) is named in the log.
+      $download = Ui-LastMatch '^.*Update rejected: .*\(deleted (.+)\)\s*$'
+      if (-not $download) { Fail 'the log does not name the deleted download' }
+      elseif (Test-Path $download) { Fail "the tampered download is left: $download" }
+      else { Pass 'and deleted' }
       Ui-StopApp
     }
 
@@ -440,6 +491,12 @@ function Test-Update([string]$In, [string]$Install, [string]$Work, [switch]$Full
     $hidden = Ui-Windows '^Mitcad$'
     Ui-ClickLogged 'Update notice Install'
     Ui-ExpectLog 'Update verified: ' 'the download is verified' 120
+    # A private folder of a random name (mitcad#603), not the fixed
+    # %TEMP%\mitcad-update of earlier releases.
+    $verified = Ui-LastMatch '^.*Update verified: (.+?)\s*$'
+    $folder = if ($verified) { Split-Path -Leaf (Split-Path -Parent $verified) } else { '' }
+    if ($folder -match '^mitcad-update-.+$') { Pass "the download is in a private folder ($folder)" }
+    else { Fail "the download is not in a private folder: '$verified'" }
     Ui-ExpectLog "Update staged: 0.0.0 -> $version" 'the update waits for Mitcad to quit'
     Ui-FocusDialog '^Mitcad$' -Except $hidden
     Ui-Key 'Return' # Save, the default
@@ -518,6 +575,7 @@ function Test-Scope([string]$In) {
 
   if ($In -eq 'user') {
     Test-Programs $install
+    Test-UpdaterCheck $install (Join-Path $root 'updater-check')
   } else {
     # What an earlier release's updater runs: /S /D=<its folder>, no scope.
     $proc = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$install" -Wait -PassThru

@@ -188,6 +188,9 @@ impl<'a> Tokenizer<'a> {
             0x14 => Token::Vector(self.triple()?),
             0x15 => Token::Enum(self.int(isz)?),
             0x16 => Token::Pair([self.double()?, self.double()?]),
+            // An 8-byte integer whatever the file's integer width (an
+            // `int64_attrib`'s value, seen in a drawing of ASM 223).
+            0x17 => Token::Int(self.int(8)?),
             other => {
                 return Err(TokenError {
                     offset: start,
@@ -252,6 +255,18 @@ mod tests {
         assert_eq!(t.next_token().unwrap(), Token::Pair([0.25, -0.5]));
         assert_eq!(t.next_token().unwrap(), Token::End);
         assert_eq!(Token::Pair([0.25, -0.5]).to_string(), "U(0.25 -0.5)");
+    }
+
+    #[test]
+    fn reads_tagged_8_byte_integers_with_4_byte_integers() {
+        // An int64 attribute's value (tag 0x17) in a file of 4-byte
+        // integers, then the record's end.
+        let mut data = vec![0x17];
+        data.extend_from_slice(&(1i64 << 40).to_le_bytes());
+        data.push(0x11);
+        let mut t = Tokenizer::new(&data, 0, 4);
+        assert_eq!(t.next_token().unwrap(), Token::Int(1 << 40));
+        assert_eq!(t.next_token().unwrap(), Token::End);
     }
 
     #[test]

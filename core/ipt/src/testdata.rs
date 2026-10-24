@@ -243,3 +243,38 @@ pub fn test_part_with_design() -> Vec<u8> {
         design: Some((25, crate::testdesign::cube_design(25))),
     })
 }
+
+/// The designed cube with a result-list entry that keeps it hidden. Its
+/// box also matches a cube that already exists in the receiving document,
+/// so import tests can check that hiding is confined to imported bodies.
+pub fn test_part_with_hidden_design_body() -> Vec<u8> {
+    use crate::result::{RESULT_BODIES, RESULT_SEGMENT, ResultBody, write};
+    let bodies = [ResultBody {
+        node: 2,
+        features: vec![3],
+        visible: false,
+        solid: true,
+        kind: 2,
+        members: Vec::new(),
+        range: [[0.0; 3], [1.0; 3]],
+    }];
+    let (m, b) = rse::write_segment(
+        RESULT_SEGMENT,
+        [0x45; 16],
+        &[[0x31; 16], RESULT_BODIES],
+        &[(1, write(&bodies)), (0, vec![0; 8])],
+    );
+    part_file_with_streams(
+        &TestPart {
+            bodies: vec![mitcad_f3d::testdata::cube_blob()],
+            part_number: "MITCAD-TEST-HIDDEN-DESIGN",
+            material: "Steel",
+            length_unit: 11269,
+            design: Some((25, crate::testdesign::cube_design(25))),
+        },
+        &[
+            ("RSeStorage/Mtestresultsegment", m),
+            ("RSeStorage/Btestresultsegment", b),
+        ],
+    )
+}

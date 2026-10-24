@@ -270,12 +270,16 @@ impl ProjectRepo {
         let present: BTreeSet<String> = self.brep_files(prepared.base)?.into_iter().collect();
         for sha256 in &referenced {
             let path = brep_path(sha256);
+            let full = self.root.join(&path);
+            crate::transaction::check_destination(&self.root, &full)?;
             if present.contains(&path) {
                 continue;
             }
-            let full = self.root.join(&path);
             match fs::read(&full) {
                 Ok(data) => {
+                    mitcad_model::features::Brep::check_stored(sha256, &data).map_err(|error| {
+                        VcsError::File(format!("the B-rep file {path} is invalid: {error}"))
+                    })?;
                     let id = self.repo.write_blob(&data)?.detach();
                     editor.upsert(path.as_str(), EntryKind::Blob, id)?;
                     prepared.written.push(path.clone());

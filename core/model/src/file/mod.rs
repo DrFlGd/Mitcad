@@ -121,7 +121,9 @@
 //! `up`, `height`, `"perspective": true`).
 //!
 //! Analyses (mitcad#41), when there are any: `analyses` (`name`,
-//! `"visible": false`, `type`: `section` with `plane`, `offset`, `flip`).
+//! `"visible": false`, `type`: `section` with `plane`, `offset`, `flip`;
+//! `print` with `bodies`, `bed_face`, `overhang`, `thin_wall`, `estimate`,
+//! mitcad#620).
 //!
 //! Motion studies and contact sets (mitcad#454), when there are any:
 //! `motion_studies` (`name`, `steps`, `keys`: `joint`, `motion`, `points`

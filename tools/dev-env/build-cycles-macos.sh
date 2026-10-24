@@ -139,9 +139,12 @@ CYCLES_DIAGNOSTICS_PATCH=$REPO/third_party/cycles/denoiser-diagnostics.patch
 CYCLES_PIPELINE_PATCH=$REPO/third_party/cycles/metal-pipeline-failure.patch
 CYCLES_CANCELLATION_PATCH=$REPO/third_party/cycles/metal-cancellation-diagnostic.patch
 CYCLES_PREVIEW_BATCH_PATCH=$REPO/third_party/cycles/denoiser-preview-batches.patch
+CYCLES_EXTERNAL_BUFFER_PATCH=$REPO/third_party/cycles/metal-external-buffer-usage.patch
+CYCLES_NATIVE_DISPLAY_PATCH=$REPO/third_party/cycles/native-display-passes.patch
 RENDER_INPUT_SHA256=$(shasum -a 256 "$REPO/vcpkg.json" "$REPO/triplets/$TRIPLET.cmake" \
   "$OIDN_PATCH" "$CYCLES_PATCH" "$CYCLES_DIAGNOSTICS_PATCH" "$CYCLES_PIPELINE_PATCH" \
-  "$CYCLES_CANCELLATION_PATCH" "$CYCLES_PREVIEW_BATCH_PATCH" \
+  "$CYCLES_CANCELLATION_PATCH" "$CYCLES_PREVIEW_BATCH_PATCH" "$CYCLES_EXTERNAL_BUFFER_PATCH" \
+  "$CYCLES_NATIVE_DISPLAY_PATCH" \
   | cut -d ' ' -f 1 | shasum -a 256 | cut -d ' ' -f 1)
 RENDER_BUILD_KEY=$({
   printf '%s\n' "$CYCLES_VERSION" "$CYCLES_COMMIT" "$OIDN_VERSION" "$OIDN_SRC_SHA256" \
@@ -200,7 +203,8 @@ fi
 # Failed/cancelled Metal pipelines must stop waiting and report a device error.
 # Check both directions so rerunning is safe, without trusting a stale marker.
 for cycles_patch in "$CYCLES_PATCH" "$CYCLES_DIAGNOSTICS_PATCH" "$CYCLES_PIPELINE_PATCH" \
-                    "$CYCLES_CANCELLATION_PATCH" "$CYCLES_PREVIEW_BATCH_PATCH"; do
+                    "$CYCLES_CANCELLATION_PATCH" "$CYCLES_PREVIEW_BATCH_PATCH" "$CYCLES_EXTERNAL_BUFFER_PATCH" \
+                    "$CYCLES_NATIVE_DISPLAY_PATCH"; do
   if git -C "$CYCLES_SRC" apply --check "$cycles_patch" >/dev/null 2>&1; then
     git -C "$CYCLES_SRC" apply "$cycles_patch"
   elif ! git -C "$CYCLES_SRC" apply --reverse --check "$cycles_patch" >/dev/null 2>&1; then
@@ -299,6 +303,7 @@ if "WITH_SSE2NEON" not in define_names:
 if "WITH_METAL" not in define_names:
     raise SystemExit("Cycles was not built with Metal; remove its completion stamp and rebuild")
 defines.append("MITCAD_CYCLES_DENOISER_DIAGNOSTICS")
+defines.append("MITCAD_CYCLES_NATIVE_DISPLAY_PASSES")
 for resource in ("source/kernel/device/metal/kernel.metal", "source/util/types.h", "source.sha256"):
     if not pathlib.Path(out, "runtime", resource).is_file():
         raise SystemExit("Incomplete Cycles Metal runtime resources: " + resource)

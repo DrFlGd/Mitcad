@@ -103,6 +103,8 @@ qt_add_executable(mitcad
   framework/Dialogs.hpp
   framework/DialogFolders.cpp
   framework/DialogFolders.hpp
+  framework/FitToScreen.cpp
+  framework/FitToScreen.hpp
   framework/Theme.cpp
   framework/Theme.hpp
   framework/TitleBar.cpp
@@ -257,6 +259,7 @@ qt_add_executable(mitcad
   update/UpdatePreferences.hpp
   update/UpdateSettings.cpp
   update/UpdateSettings.hpp
+  update/UpdaterChecks.hpp
   # 3D Print: bodies to a slicer (mitcad#13).
   files/MainWindowPrint.cpp
   files/Print3d.cpp
@@ -298,6 +301,7 @@ qt_add_executable(mitcad
   # Component libraries and the community library (mitcad#64, mitcad#63).
   files/Libraries.cpp
   files/Libraries.hpp
+  files/LibraryPaths.cpp
   files/LibraryDialogs.cpp
   files/LibraryDialogs.hpp
   files/MainWindowLibraries.cpp
@@ -553,10 +557,12 @@ target_link_libraries(mitcad PRIVATE qt6keychain)
 
 if(WIN32)
   # Runs the installer once Mitcad has quit (update/UpdaterWindows.cpp): no
-  # Qt, the C++ runtime linked in, so that it runs from the temp folder.
-  add_executable(mitcad-updater WIN32 update/UpdaterWindows.cpp)
+  # Qt, the C++ runtime linked in, so that it runs from the temp folder. It
+  # hashes the installer with the system's CNG (bcrypt) before it runs it
+  # (mitcad#603).
+  add_executable(mitcad-updater WIN32 update/UpdaterWindows.cpp update/UpdaterChecks.hpp)
   set_target_properties(mitcad-updater PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-  target_link_libraries(mitcad-updater PRIVATE shell32 advapi32 mitcad_warnings)
+  target_link_libraries(mitcad-updater PRIVATE shell32 advapi32 bcrypt mitcad_warnings)
   add_dependencies(mitcad mitcad-updater)
 endif()
 
@@ -673,6 +679,9 @@ if(BUILD_TESTING)
   # Qt Core and Widgets.
   target_sources(test_app PRIVATE tests/decimal_align.cpp browser/DecimalAlign.cpp browser/DecimalAlign.hpp
                  browser/DecimalAlignDelegate.cpp browser/DecimalAlignDelegate.hpp)
+  # A scroll area as tall as its contents and a dialog sized to them within
+  # the screen (mitcad#631): plain Qt Widgets.
+  target_sources(test_app PRIVATE tests/fit_to_screen.cpp framework/FitToScreen.cpp framework/FitToScreen.hpp)
   target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
@@ -680,9 +689,20 @@ if(BUILD_TESTING)
     target_link_libraries(test_app PRIVATE mitcad_mac_work)
   endif()
   add_test(NAME app.unit COMMAND test_app)
+  add_test(NAME app.default_shortcuts COMMAND mitcad --ui=qt --no-recovery --no-mcp)
+  set_tests_properties(app.default_shortcuts PROPERTIES TIMEOUT 90
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;MITCAD_TEST_DEFAULT_SHORTCUTS=1;MITCAD_SETTINGS_DIR=${CMAKE_CURRENT_BINARY_DIR}/default-shortcuts-settings;MITCAD_AUTOSAVE_DIR=${CMAKE_CURRENT_BINARY_DIR}/default-shortcuts-autosave;MITCAD_RESULT_STORE=off"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  # Verify the shared Rust/GUI cache path against the platform's actual Qt path.
+  add_executable(test_library_paths tests/library_paths.cpp files/LibraryPaths.cpp)
+  target_include_directories(test_library_paths PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(test_library_paths PRIVATE mitcad_ffi Qt6::Core mitcad_warnings)
+  add_test(NAME app.library_paths COMMAND test_library_paths)
+  set_tests_properties(app.library_paths PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   add_executable(test_view_tessellation tests/view_tessellation.cpp)
   target_include_directories(test_view_tessellation PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_link_libraries(test_view_tessellation PRIVATE mitcad_geometry_io TKV3d TKPrim TKBO mitcad_warnings)
+  target_link_libraries(test_view_tessellation PRIVATE mitcad_geometry_io mitcad_geometry TKV3d TKPrim TKBO mitcad_warnings)
   add_test(NAME app.view_tessellation COMMAND test_view_tessellation
     "${CMAKE_CURRENT_BINARY_DIR}/view-tessellation-files")
   # Check renderer device policy and fallback independently of UI helpers.
@@ -732,6 +752,19 @@ target_sources(mitcad PRIVATE
   framework/CommandSessionVisibility.cpp
   MainWindowVisibility.cpp)
 
+# A same-process IOSurface display prerequisite. The production frame
+# protocol and the interactive worker still use shared memory.
+if(APPLE AND BUILD_TESTING)
+  add_executable(test_mac_frame_surface tests/mac_frame_surface.cpp
+    render/MacFrameSurface.cpp render/MacFrameDisplay.cpp render/RenderImage.cpp render/FrameMemory.cpp)
+  target_include_directories(test_mac_frame_surface PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_compile_definitions(test_mac_frame_surface PRIVATE GL_SILENCE_DEPRECATION)
+  target_link_libraries(test_mac_frame_surface PRIVATE Qt6::Gui Qt6::OpenGL TKOpenGl
+    "-framework IOSurface" "-framework OpenGL" mitcad_warnings)
+  add_test(NAME app.render_surface_macos COMMAND test_mac_frame_surface)
+  set_tests_properties(app.render_surface_macos PROPERTIES RUN_SERIAL TRUE)
+endif()
+
 # The worker: no windows, Qt Core and Gui (QImage for --bench --output),
 # OCCT for the test scene, the renderer.
 add_executable(mitcad-render
@@ -777,6 +810,96 @@ if(APPLE)
   target_link_options(mitcad-render PRIVATE LINKER:-headerpad_max_install_names)
 endif()
 add_dependencies(mitcad mitcad-render)
+if(APPLE)
+  get_target_property(mitcad_frame_sources mitcad-render SOURCES)
+  get_target_property(mitcad_frame_libraries mitcad-render LINK_LIBRARIES)
+  get_target_property(mitcad_frame_includes mitcad-render INCLUDE_DIRECTORIES)
+  get_target_property(mitcad_frame_definitions mitcad-render COMPILE_DEFINITIONS)
+  add_executable(mitcad-render-service ${mitcad_frame_sources}
+    render/MacRenderService.mm render/MacFrameSurface.cpp render/MacFrameMetal.mm render/MacCommandPayload.cpp)
+  target_include_directories(mitcad-render-service PRIVATE ${mitcad_frame_includes})
+  target_include_directories(mitcad-render-service SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
+  target_compile_definitions(mitcad-render-service PRIVATE ${mitcad_frame_definitions}
+    MITCAD_RENDER_RUNTIME_ENTRY MITCAD_RENDER_XPC_ENTRY)
+  target_link_libraries(mitcad-render-service PRIVATE ${mitcad_frame_libraries}
+    "-framework IOSurface" "-framework Foundation" "-framework Security" "-framework Metal")
+  set(mitcad_render_service_dir "$<TARGET_FILE_DIR:mitcad>/../XPCServices/org.mitcad.renderer.xpc")
+  set_target_properties(mitcad-render-service PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${mitcad_render_service_dir}/Contents/MacOS"
+    INSTALL_RPATH "@executable_path/../../../../Frameworks")
+  target_link_options(mitcad-render-service PRIVATE LINKER:-headerpad_max_install_names)
+  configure_file(packaging/macos/RenderService.plist.in RenderService.plist @ONLY)
+  add_custom_command(TARGET mitcad-render-service POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_BINARY_DIR}/RenderService.plist"
+            "${mitcad_render_service_dir}/Contents/Info.plist"
+    COMMAND /usr/bin/codesign --force --sign - "${mitcad_render_service_dir}" VERBATIM)
+  target_sources(mitcad PRIVATE render/MacRenderClient.mm render/MacFrameSurface.cpp render/MacFrameDisplay.cpp render/MacCommandPayload.cpp)
+  target_link_libraries(mitcad PRIVATE "-framework IOSurface" "-framework OpenGL" "-framework Security")
+  set_source_files_properties(render/MacRenderService.mm render/MacRenderClient.mm render/MacFrameMetal.mm
+    PROPERTIES COMPILE_OPTIONS -fblocks)
+  add_dependencies(mitcad mitcad-render-service)
+  set_property(TARGET mitcad APPEND PROPERTY LINK_DEPENDS "$<TARGET_FILE:mitcad-render-service>")
+  # Packaging replaces this development signature with its selected identity.
+  add_custom_command(TARGET mitcad POST_BUILD
+    COMMAND /usr/bin/codesign --force --sign - "$<TARGET_BUNDLE_DIR:mitcad>" VERBATIM)
+  include("${PROJECT_SOURCE_DIR}/cmake/MacRenderServiceTests.cmake")
+  include("${PROJECT_SOURCE_DIR}/cmake/MacCommandPayloadTests.cmake")
+  include("${PROJECT_SOURCE_DIR}/cmake/MacFrameMetalGlTest.cmake")
+  if(BUILD_TESTING)
+    add_executable(test_mac_frame_metal tests/mac_frame_metal.mm render/MacFrameMetal.mm)
+    target_include_directories(test_mac_frame_metal PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_options(test_mac_frame_metal PRIVATE -fblocks)
+    target_link_libraries(test_mac_frame_metal PRIVATE "-framework IOSurface" "-framework Foundation"
+      "-framework Metal" mitcad_warnings)
+    add_test(NAME app.render_surface_metal_macos COMMAND test_mac_frame_metal)
+    set_tests_properties(app.render_surface_metal_macos PROPERTIES TIMEOUT 20 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+  endif()
+endif()
+if(APPLE AND BUILD_TESTING)
+  # The renderer itself is the private embedded XPC service. Its normal
+  # Qt/Cycles dependencies initialize with an untouched launchd bootstrap.
+  get_target_property(mitcad_frame_probe_sources mitcad-render SOURCES)
+  get_target_property(mitcad_frame_probe_libraries mitcad-render LINK_LIBRARIES)
+  get_target_property(mitcad_frame_probe_includes mitcad-render INCLUDE_DIRECTORIES)
+  get_target_property(mitcad_frame_probe_definitions mitcad-render COMPILE_DEFINITIONS)
+  add_executable(mitcad-render-xpc-probe ${mitcad_frame_probe_sources} render/MacFrameXpcProbeService.mm)
+  target_include_directories(mitcad-render-xpc-probe PRIVATE ${mitcad_frame_probe_includes})
+  target_include_directories(mitcad-render-xpc-probe SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
+  target_compile_definitions(mitcad-render-xpc-probe PRIVATE ${mitcad_frame_probe_definitions}
+    MITCAD_RENDER_RUNTIME_ENTRY)
+  target_link_libraries(mitcad-render-xpc-probe PRIVATE ${mitcad_frame_probe_libraries}
+    "-framework IOSurface" "-framework Metal" "-framework Foundation" "-framework Security")
+  # Retain the actual worker call graph under release ThinLTO as well; this
+  # prerequisite must not reduce to a tiny Qt/Metal-only executable.
+  target_link_options(mitcad-render-xpc-probe PRIVATE "LINKER:-u,_mitcad_render_runtime_main")
+  set(mitcad_frame_xpc_app "${CMAKE_CURRENT_BINARY_DIR}/frame-xpc-probe.app")
+  set(mitcad_frame_xpc_service "${mitcad_frame_xpc_app}/Contents/XPCServices/org.mitcad.renderer.probe.xpc")
+  set_target_properties(mitcad-render-xpc-probe PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${mitcad_frame_xpc_service}/Contents/MacOS"
+    INSTALL_RPATH "@executable_path/../../../../Frameworks")
+  configure_file(packaging/macos/FrameXpcProbeService.plist.in FrameXpcProbeService.plist @ONLY)
+  add_custom_command(TARGET mitcad-render-xpc-probe POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_BINARY_DIR}/FrameXpcProbeService.plist"
+            "${mitcad_frame_xpc_service}/Contents/Info.plist"
+    COMMAND /usr/bin/codesign --force --sign - "${mitcad_frame_xpc_service}" VERBATIM)
+  add_executable(test_mac_frame_xpc MACOSX_BUNDLE tests/mac_frame_xpc.mm render/MacFrameSurface.cpp render/FrameMemory.cpp)
+  set_source_files_properties(render/MacFrameXpcProbeService.mm tests/mac_frame_xpc.mm
+    PROPERTIES COMPILE_OPTIONS -fblocks)
+  target_include_directories(test_mac_frame_xpc PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(test_mac_frame_xpc PRIVATE Qt6::Core
+    "-framework IOSurface" "-framework Foundation" "-framework Security" mitcad_warnings)
+  configure_file(packaging/macos/FrameXpcProbeApp.plist.in FrameXpcProbeApp.plist @ONLY)
+  set_target_properties(test_mac_frame_xpc PROPERTIES OUTPUT_NAME frame-xpc-probe
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/FrameXpcProbeApp.plist")
+  add_dependencies(test_mac_frame_xpc mitcad-render-xpc-probe)
+  # A changed nested executable invalidates the outer seal even if the client
+  # source is unchanged. Relink then sign the complete development bundle.
+  set_property(TARGET test_mac_frame_xpc APPEND PROPERTY LINK_DEPENDS "$<TARGET_FILE:mitcad-render-xpc-probe>")
+  add_custom_command(TARGET test_mac_frame_xpc POST_BUILD
+    COMMAND /usr/bin/codesign --force --sign - "${mitcad_frame_xpc_app}" VERBATIM)
+  add_test(NAME app.render_surface_xpc_macos COMMAND test_mac_frame_xpc)
+  set_tests_properties(app.render_surface_xpc_macos PROPERTIES TIMEOUT 45 RUN_SERIAL TRUE)
+endif()
 # The GPU devices' kernels (mitcad#50, build-cycles.sh --cuda and the
 # like) where the worker looks for them in a build folder: cycles/lib
 # next to it.
@@ -1253,4 +1376,42 @@ target_sources(mitcad PRIVATE
 if(BUILD_TESTING)
   # The settings' round trip, with and without the key: plain Qt Core.
   target_sources(test_app PRIVATE tests/library_settings.cpp files/LibrarySettings.cpp files/Libraries.hpp)
+endif()
+
+# The selection card's Create row (mitcad#619, app/COMMANDS.md "What the
+# framework does"): up to four CREATE commands that fit the selection,
+# Extrude first, under the selection's text.
+target_sources(mitcad PRIVATE
+  framework/SelectionCreate.cpp
+  framework/SelectionCreate.hpp
+  MainWindowSelectionCreate.cpp)
+if(BUILD_TESTING)
+  # Kinds of selection to the buttons, the commands' first inputs, the
+  # row's buttons changed in place: Qt Widgets on the offscreen platform.
+  target_sources(test_app PRIVATE tests/selection_create.cpp framework/SelectionCreate.cpp
+                 framework/SelectionCreate.hpp framework/Command.cpp framework/Command.hpp)
+endif()
+
+# Updates (mitcad#603): the private download folder on every platform, the
+# Windows updater's command line and its SHA-256 check of the installer:
+# plain Qt Core and plain C++.
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/update_installer.cpp update/UpdateInstaller.cpp update/UpdateInstaller.hpp
+                 update/UpdaterChecks.hpp)
+endif()
+
+# Print Analysis (mitcad#620, app/COMMANDS.md "Print Analysis"): the panel's
+# settings (group print_analysis), the definition, the queries and their
+# answers in words; the shown analysis' overlay in the window and the view.
+target_sources(mitcad PRIVATE
+  MainWindowPrintAnalysis.cpp
+  commands/PrintAnalysis.cpp
+  commands/PrintAnalysis.hpp
+  view/PrintOverlay.cpp
+  view/PrintOverlay.hpp)
+if(BUILD_TESTING)
+  # Settings, definition, queries, log line, words and overlay data: plain
+  # Qt Core and Gui.
+  target_sources(test_app PRIVATE tests/print_analysis.cpp commands/PrintAnalysis.cpp
+                 commands/PrintAnalysis.hpp)
 endif()

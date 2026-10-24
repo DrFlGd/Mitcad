@@ -40,7 +40,9 @@ fn main() {
         return;
     }
     // A B-rep record (as MITCAD_DWG_DUMP_DIR writes them) record by record.
-    if args.len() == 2 && args[0] == "--asm" {
+    // (An optional third argument: how long a record's text may get.)
+    if (args.len() == 2 || args.len() == 3) && args[0] == "--asm" {
+        let max = args.get(2).and_then(|m| m.parse().ok()).unwrap_or(400);
         let bytes = std::fs::read(&args[1]).unwrap_or_default();
         let form = if args[1].ends_with(".txt") {
             solid::Form::Text
@@ -51,7 +53,7 @@ fn main() {
             Ok(asm) => {
                 println!("{:?}", asm.header);
                 for i in 0..asm.records.len() {
-                    println!("{}", asm.record_text(i, 400));
+                    println!("{}", asm.record_text(i, max));
                 }
             }
             Err(e) => eprintln!("{e}"),

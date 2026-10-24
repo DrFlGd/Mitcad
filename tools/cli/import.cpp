@@ -676,14 +676,16 @@ int import_solidcraft(const std::vector<std::string>& args) {
 int import_dwg(const std::vector<std::string>& args) {
   Arguments a;
   std::string problem;
-  if (!parse_arguments(args, {"--save", "--report", "--write-test", "--version", "--expect"}, {"--json", "--check"}, a,
-                       problem)) {
+  if (!parse_arguments(args, {"--save", "--report", "--write-test", "--version", "--case", "--expect"},
+                       {"--json", "--check"}, a, problem)) {
     return usage(problem);
   }
-  // The reader's test drawing, for the tests.
+  // The reader's test drawing, for the tests, with a case added.
   if (const std::string* path = a.option("--write-test")) {
     const std::string* version = a.option("--version");
-    mitcad::dwg_write_test_file(*path, version != nullptr ? *version : std::string("R2018"));
+    const std::string* test_case = a.option("--case");
+    mitcad::dwg_write_test_file(*path, version != nullptr ? *version : std::string("R2018"),
+                                test_case != nullptr ? *test_case : std::string());
     return 0;
   }
   if (a.positional.size() != 1) {

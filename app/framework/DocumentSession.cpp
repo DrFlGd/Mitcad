@@ -61,7 +61,11 @@ DocumentSession::DocumentSession(bool demo, QObject* parent)
     emit jobProgress(m_job->stage(), static_cast<quint64>(progress.position),
                      static_cast<quint64>(progress.total), m_async->clock.elapsed());
   });
-  m_worker->start();
+  QString startupError;
+  if (!m_worker->ensureStarted(startupError)) {
+    m_state.lastError = startupError;
+    qWarning().noquote() << startupError;
+  }
   notifyChanged();
 }
 
@@ -134,6 +138,12 @@ DocumentSession::Snapshot DocumentSession::snapshot() const {
 bool DocumentSession::runJob(const QString& label, const QString& stage, const Job& job, JobLog log) {
   if (busy()) {
     throw ModelBusy();
+  }
+  QString startupError;
+  if (!computeInline() && !m_worker->ensureStarted(startupError)) {
+    m_state.lastError = startupError;
+    notifyChanged();
+    throw std::runtime_error(startupError.toStdString());
   }
   if (m_beforeJob) {
     m_beforeJob();
@@ -338,6 +348,19 @@ bool DocumentSession::startAsync(const QString& label, const QString& stage, Job
                                  std::shared_ptr<AsyncResult> result, QObject* context, Completion completion) {
   if (busy()) {
     return false;
+  }
+  QString startupError;
+  if (!m_worker->ensureStarted(startupError)) {
+    result->error = startupError;
+    m_state.lastError = startupError;
+    notifyChanged();
+    // Complete the refused request normally, without entering the busy
+    // state or leaving the frontend waiting for a nonexistent worker.
+    QMetaObject::invokeMethod(this,
+        [context = QPointer<QObject>(context), completion = std::move(completion), result] {
+          if (context && completion) { completion(*result); }
+        }, Qt::QueuedConnection);
+    return true;
   }
   if (m_beforeJob) {
     m_beforeJob();

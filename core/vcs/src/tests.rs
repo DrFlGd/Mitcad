@@ -310,6 +310,61 @@ fn a_version_has_the_saved_paths_and_their_brep_files() {
 }
 
 #[test]
+fn recording_a_version_refuses_store_content_with_a_wrong_hash_or_invalid_zlib() {
+    for wrong in [
+        Brep::new(b"different data".to_vec()).stored().unwrap(),
+        b"not zlib".to_vec(),
+    ] {
+        let scratch = Scratch::new("invalid-store");
+        let (repo, _, part) = project(&scratch);
+        let before = repo.head_commit().unwrap();
+        fs::write(repo.root().join(brep_file("6 bolt")), wrong).unwrap();
+        let error = repo
+            .commit(&[part], "Invalid store", &author())
+            .unwrap_err();
+        assert!(matches!(error, VcsError::File(_)), "{error}");
+        assert!(error.to_string().contains("is invalid"), "{error}");
+        assert_eq!(repo.head_commit().unwrap(), before);
+        assert!(
+            !tree_files(&repo)
+                .iter()
+                .any(|p| p.starts_with(".mitcad/brep/"))
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn recording_a_version_does_not_follow_store_file_or_directory_links() {
+    use std::os::unix::fs::symlink;
+    for level in ["file", "shard", "store"] {
+        let scratch = Scratch::new("linked-store");
+        let (repo, _, part) = project(&scratch);
+        let before = repo.head_commit().unwrap();
+        let file = repo.root().join(brep_file("6 bolt"));
+        let link = match level {
+            "file" => file,
+            "shard" => file.parent().unwrap().to_path_buf(),
+            _ => repo.root().join(".mitcad/brep"),
+        };
+        let outside = scratch.join("outside");
+        fs::rename(&link, &outside).unwrap();
+        symlink(&outside, &link).unwrap();
+        let error = repo.commit(&[part], "Linked store", &author()).unwrap_err();
+        assert!(
+            matches!(error, VcsError::InvalidPath(_)),
+            "{level}: {error}"
+        );
+        assert_eq!(repo.head_commit().unwrap(), before);
+        assert!(
+            !tree_files(&repo)
+                .iter()
+                .any(|p| p.starts_with(".mitcad/brep/"))
+        );
+    }
+}
+
+#[test]
 fn older_versions_open_with_their_bodies() {
     let scratch = Scratch::new("older");
     let (repo, mut doc, part) = project(&scratch);

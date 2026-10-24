@@ -68,6 +68,7 @@ class LiveController;
 class ModeBanner;
 class Ribbon;
 class SelectionFilterPanel;
+class SelectionCreatePanel;
 class TitleBar;
 class UpdateController;
 class ReportCenter;
@@ -166,14 +167,15 @@ public:
   bool modelBusy() const override { return m_documentSession->busy(); }
   void whenIdle(QObject* context, std::function<void()> call) override;
   bool lastCancelled() const override { return m_lastCancelled; }
+  bool asynchronousPreviews() const override { return true; }
+  bool modelPreviewAsync(const QByteArray& request, const QString& name, QObject* context,
+                         AsyncCompletion completion) override;
+  void cancelModelJob() override { m_documentSession->cancelJob(); }
 #ifdef MITCAD_MACOS_NATIVE_UI
   bool asynchronousCommands() const override { return m_nativeUi; }
   bool modelCommandAsync(const QJsonObject& request, QObject* context, AsyncCompletion completion) override;
-  bool modelPreviewAsync(const QByteArray& request, const QString& name, QObject* context,
-                         AsyncCompletion completion) override;
   bool modelInspectionAsync(const QString& name, QObject* context, InspectionTask task,
                             InspectionCompletion completion) override;
-  void cancelModelJob() override { m_documentSession->cancelJob(); }
 #endif
 
   // CommandHost
@@ -199,6 +201,10 @@ public:
   std::vector<BodyDisplay> modelBodies() const override;
   void showSection(const QJsonValue& plane) override;
   QJsonValue section() const override { return m_section; }
+  // Print Analysis (mitcad#620; MainWindowPrintAnalysis.cpp): the panel's
+  // overlay, and its long queries as model jobs.
+  void showPrintAnalysis(const QJsonObject& overlay) override;
+  QJsonObject jobQuery(const QJsonObject& query, const QString& stage) override;
   // After the view shows the section's clipped bodies, off the UI thread
   // (MainWindowSection.cpp, mitcad#438).
   void measureLater(const QJsonObject& query, QObject* context, Measured done) override;
@@ -466,6 +472,9 @@ private:
   // Selection outside commands.
   void onPicked(const Selection& items, Qt::KeyboardModifiers modifiers, bool window);
   void updateIdleView();
+  // The selection card's Create row (mitcad#619, MainWindowSelectionCreate.cpp):
+  // the CREATE commands that fit the selection, Extrude first.
+  void updateSelectionCreate();
   SelectFilter idleFilter() const;
   void showContextMenu(const QPoint& globalPosition, const SelectionItem& item);
   // The menu outside sketches and commands (mitcad#494,
@@ -550,9 +559,24 @@ private:
   // The analysis shown (mitcad#41): its side cut away swapped, or hidden.
   void flipSection();
   void removeSection();
-  // The bodies cut where the model's shown analysis says (mitcad#41),
-  // unless an inspection's panel shows its own section.
+  // The bodies cut where the model's shown analysis says (mitcad#41), or
+  // coloured where a shown Print Analysis says (mitcad#620), unless an
+  // inspection's panel shows its own.
   void followAnalyses();
+  // Whether the analysis shown is a section (Flip and Remove Section
+  // Analysis).
+  bool sectionShown() const;
+  // Print Analysis kept in the document (mitcad#620,
+  // MainWindowPrintAnalysis.cpp): the shown one's overhangs and thin walls
+  // over the bodies, computed again when it, its bodies or the design
+  // change (the model keeps the results by the bodies' content and the
+  // settings), soon after the refresh; overhangs and walls as model jobs.
+  void followPrintAnalysis();
+  void computePrintAnalysis(quint64 generation);
+  void presentPrintAnalysis(const QString& name, const Inspection& result, const QString& error);
+  void showPrintOverlay(const QJsonObject& overlay);
+  QByteArray m_printKey;       // what the overlay shows: the analysis, the design, its bodies' shapes
+  quint64 m_printGeneration = 0; // a newer one drops a computation that waits
   // Sets the plane the bodies are cut at, logging a change; showSection
   // also redraws.
   bool setSection(const QJsonValue& plane);
@@ -1094,6 +1118,8 @@ private:
   QWidget* m_idlePage = nullptr;
   AutoselectPanel* m_autoselect = nullptr;
   Selection m_autoselectPreview; // hover only; never part of the actual selection
+  SelectionCreatePanel* m_selectionCreate = nullptr; // the card's Create row (mitcad#619)
+  QString m_loggedSelectionCreate = QStringLiteral("none"); // its log line last logged (UI tests)
   QLabel* m_statusLabel = nullptr;
   QLabel* m_rendererLabel = nullptr;
   FloatingLayout* m_floating = nullptr; // the central widget in Floating chrome

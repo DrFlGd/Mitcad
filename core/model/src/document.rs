@@ -103,6 +103,8 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 pub use analyses::{Analysis, AnalysisDef, SectionAnalysis, SectionPlane};
+pub use analyses::{EstimateCheck, OverhangCheck, PrintAnalysis, ThinWallCheck};
+pub(crate) use analyses::{check_minimum_wall, check_overhang_angle, print_material};
 pub use appearances::DeletedAppearance;
 pub use bodies::{BodyAttributes, FaceAppearance};
 pub use components::{InsertOptions, InstanceView};
@@ -410,6 +412,11 @@ impl DocState {
         let mut created = Vec::new();
         let params = &mut self.parameters;
         let mut resolved = def.map_params(&mut |slot, value| -> Result<ParamId, ModelError> {
+            if let ValueInput::Name(expression) = value {
+                let expression =
+                    split_named(expression).map_or(expression.as_str(), |(_, rest)| rest);
+                created.extend(crate::print_fits::ensure(params, expression)?);
+            }
             let comment = format!("{owner_name} {}", slot_label(slot));
             let (id, new) =
                 resolve_value(params, slot, value, owner, &comment, old_slots.get(slot))?;
@@ -1235,6 +1242,9 @@ pub struct Document<K: Kernel> {
     source_directory: RwLock<Option<PathBuf>>,
     /// Flat Pattern evaluations (mitcad#208), separate from modelling results.
     flat_cache: flat_patterns::FlatCache<K::Shape>,
+    /// Print Analysis meshes and results (mitcad#620), separate from
+    /// modelling results.
+    print_cache: crate::print_analysis::PrintCache,
     /// The components an import filled from other documents, by the
     /// document's name for them, with their sub-components
     /// ([`Document::set_import_scopes`]). Runtime context only.
@@ -1286,6 +1296,7 @@ impl<K: Kernel> Document<K> {
             resolver: None,
             source_directory: RwLock::new(None),
             flat_cache: Default::default(),
+            print_cache: Default::default(),
             import_scopes: Vec::new(),
             import_focus: Default::default(),
             policy_checks: false,
@@ -1528,6 +1539,7 @@ impl<K: Kernel> Document<K> {
             resolver: self.resolver.clone(),
             source_directory: RwLock::new(self.source_directory()),
             flat_cache: Default::default(),
+            print_cache: Default::default(),
             import_scopes: self.import_scopes.clone(),
             import_focus: self.import_focus.clone(),
             policy_checks: false,
@@ -1566,6 +1578,11 @@ impl<K: Kernel> Document<K> {
 
     pub(crate) fn last_result(&self) -> &Recomputed<K::Shape> {
         &self.result
+    }
+
+    /// The Print Analysis meshes and results kept (mitcad#620).
+    pub(crate) fn print_cache(&self) -> &crate::print_analysis::PrintCache {
+        &self.print_cache
     }
 
     /// Writes to the result store the results of the last recompute that
@@ -2478,9 +2495,10 @@ impl<K: Kernel> Document<K> {
             .flatten()
     }
 
-    /// The cylinder of a tapped hole's wall on a body that the hole's
-    /// modelled thread left no piece of, as the hole measured it before the
-    /// thread (mitcad#436); none for any other wall.
+    /// The cylinder of a tapped hole's wall on a body whose modelled thread
+    /// has its crest off it (leaving no piece of it, or only pieces outside
+    /// the thread's part), as the hole measured it before the thread
+    /// (mitcad#436, mitcad#628); none for any other wall.
     pub(crate) fn threaded_wall(
         &self,
         uid: FeatureUid,
@@ -2902,6 +2920,14 @@ impl<K: Kernel> Document<K> {
 
     pub fn undo_label(&self) -> Option<&str> {
         self.undo.last().map(|step| step.label.as_str())
+    }
+
+    /// The definitions a history command would restore, for file-read
+    /// auditing before an external client asks to recompute that state.
+    pub(crate) fn history_state(&self, back: bool) -> Option<&DocState> {
+        (if back { &self.undo } else { &self.redo })
+            .last()
+            .map(|step| &step.state)
     }
 
     /// The number of steps that can be undone.

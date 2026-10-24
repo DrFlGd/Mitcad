@@ -212,6 +212,21 @@ struct FrameBuffers {
   std::uint16_t* catcher = nullptr;
 };
 
+// An optional transport-owned display buffer. Cycles can fill this allocation
+// directly, then publish it once the batch's sample/denoising metadata is known.
+// Destruction without publication discards the write and releases its locks.
+class DirectFrame {
+public:
+  virtual ~DirectFrame() = default;
+  virtual FrameBuffers buffers() const = 0;
+  virtual void publish(std::uint64_t view, int samples, bool denoised, bool catcher) = 0;
+  virtual void discard() {}
+  virtual void* nativeMetalBuffer() const { return nullptr; }
+  virtual std::size_t nativeMetalBufferSize() const { return 0; }
+  virtual void* nativeCatcherMetalBuffer() const { return nullptr; }
+  virtual std::size_t nativeCatcherMetalBufferSize() const { return 0; }
+};
+
 struct DeviceInfo;
 
 // Where the renderer's frames go. Called from the renderer's own thread.
@@ -229,6 +244,13 @@ public:
   virtual void finished(std::uint64_t view, int samples, double seconds) = 0;
   // The actual denoising device, after its first successful frame.
   virtual void denoisingDevice(const DeviceInfo&) {}
+  virtual bool directDisplayBuffers() const { return false; }
+  virtual std::shared_ptr<DirectFrame> beginDisplayFrame(int, int, int, int) { return {}; }
+  virtual bool metalDisplayBuffers() const { return false; }
+  virtual void displayInteropUsed() {}
+  // Evidence from the completed native auxiliary conversion, not a capability.
+  virtual void auxiliaryNativeUsed(bool, bool) {}
+  virtual void auxiliaryNativeCompared(unsigned, bool) {}
 };
 
 struct DenoiserInfo {
@@ -304,6 +326,7 @@ struct RendererOptions {
   // Test-only, independent of the render device: empty/auto, cpu or metal.
   std::string denoisingDevice;
   std::string testDenoisingFailure;
+  bool testNativePassComparison = false;
   bool cpuDenoisingFallback = false; // Retries ignore GPU overrides and test failures.
 };
 

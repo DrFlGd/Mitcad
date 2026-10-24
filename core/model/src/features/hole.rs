@@ -34,11 +34,12 @@ use crate::topo::{EdgeName, FaceName};
 /// The default drill point, 118 degrees.
 pub const DEFAULT_TIP_ANGLE: f64 = 118.0 * std::f64::consts::PI / 180.0;
 
-/// A wall of a tapped hole that its modelled thread left no piece of (the
-/// crest off the wall: a radial clearance), as the wall was before the
-/// thread was cut into it (mitcad#436). The hole makes the wall and threads
-/// it in one step, so no body before the hole has it; the threads query
-/// measures the thread on this.
+/// A wall of a tapped hole whose modelled thread has its crest off the wall
+/// (a radial clearance), as the wall was before the thread was cut into it
+/// (mitcad#436). Such a thread leaves no piece of the wall, or only pieces
+/// outside its part (mitcad#628). The hole makes the wall and threads it in
+/// one step, so no body before the hole has it; the threads query measures
+/// the thread on this.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ThreadedWall {
     pub body: BodyUid,
@@ -872,11 +873,16 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
                 .kernel
                 .modeled_thread(shape, &spec)
                 .map_err(|e| e.to_string())?;
-            // The walls the thread left no piece of, as they were.
+            // The walls the thread left no piece of, or only pieces outside
+            // its part (the crest off the wall: what is left does not show
+            // where the thread runs, mitcad#628), as they were.
             for wall in &faces {
-                if ctx.kernel.count_faces(&cut, wall).is_ok_and(|n| n == 0)
-                    && let Ok(cylinder) = ctx.kernel.face_cylinder(shape, wall)
-                {
+                let Ok(cylinder) = ctx.kernel.face_cylinder(shape, wall) else {
+                    continue;
+                };
+                let crest_off = (data.minor / 2.0 + radial_clearance - cylinder.radius).abs()
+                    > super::thread::CREST_ON_FACE;
+                if crest_off || ctx.kernel.count_faces(&cut, wall).is_ok_and(|n| n == 0) {
                     threaded.push(ThreadedWall {
                         body: *body,
                         wall: wall.clone(),

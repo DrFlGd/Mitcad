@@ -230,7 +230,11 @@ any window size. The parts of the Floating layout are:
   `--no-glass`, or on older systems, they are translucent panels.
 - **Settings** (Mitcad › Settings, Cmd+,) is a window with the same
   pages as Preferences elsewhere, as panes. Changes apply at once. There
-  is no OK. The background can follow the system's appearance.
+  is no OK. Typed cache budgets apply when editing finishes; arrow buttons
+  apply immediately. Camera and background controls follow changes made
+  through View while Settings is open. Cmd+W closes the active tool window;
+  in the document window it closes the design. The background can follow
+  the system's appearance.
 - **Sheets:** questions and dialogs about the document hang from the
   window's title bar.
 
@@ -299,6 +303,24 @@ in front of it hides the highlight.
 
 The right mouse button opens the commands that fit the selection.
 Refer to [The context menu](#the-context-menu).
+
+The selection card also shows a Create row under the selection's text.
+The row has up to four buttons. Each button starts its command with the
+selection as its input, as the ribbon does. Extrude is always the first button when it
+can take the selection. The other buttons depend on what you select:
+
+| Selection | Buttons |
+|---|---|
+| Profiles | Extrude, Revolve, Sweep, Loft (two or more profiles only) |
+| A planar face | Extrude, Create Sketch, Hole |
+| A cylindrical face | Thread, Pulley, Gear, Bearing |
+| Sketch curves or edges | Pipe |
+| Bodies | Rectangular Pattern, Circular Pattern, Mirror, Combine (one body only) |
+| A plane | Create Sketch |
+
+A command is shown only when it can use all of the selection. When no
+command can use it, for example a mix of a face and a profile, the row
+is hidden.
 
 ### Command panels
 
@@ -489,9 +511,10 @@ sets](#motion-studies-and-contact-sets), [Motion links](#motion-links)):
 - Points: at a vertex, through two edges, through three planes, at the
   centre of a circle or sphere, at an edge and a plane, along a path
 
-**INSPECT:** Measure, Interference, Section Analysis, Physical
-Properties ([Inspect: Measure and Section
-Analysis](#inspect-measure-and-section-analysis)).
+**INSPECT:** Measure, Interference, Section Analysis, Print Analysis,
+Physical Properties ([Inspect: Measure and Section
+Analysis](#inspect-measure-and-section-analysis), [Print
+Analysis](#print-analysis)).
 
 **INSERT:** Insert Mesh, Insert DXF, Import.
 
@@ -4265,9 +4288,20 @@ computer. Then the design keeps the saved bodies of its parts and says
 so. **Get Missing Libraries** in **Library Parts** shows the addresses of
 the libraries, then fetches them.
 
-Mitcad keeps fetched libraries as bare clones in the `libraries` folder
-of your local data folder. Each URL has one clone. The environment
-variable `MITCAD_LIBRARIES_DIR` sets a different folder. Mitcad makes and
+Mitcad and `mitcad-cli` share one default cache of fetched libraries:
+
+| Platform | Default library cache |
+|---|---|
+| Windows | `%LOCALAPPDATA%\Mitcad\Mitcad\libraries` |
+| macOS | `~/Library/Application Support/Mitcad/Mitcad/libraries` |
+| Linux | `$XDG_DATA_HOME/Mitcad/Mitcad/libraries`, or `~/.local/share/Mitcad/Mitcad/libraries` |
+
+Each URL has one clone. The environment variable `MITCAD_LIBRARIES_DIR`
+sets a different folder for both, and the CLI's `--libraries` overrides it
+for that command. Earlier CLI caches in the data folder's `mitcad/libraries`
+remain readable with the default configuration; new fetches use the shared
+cache. Explicit cache overrides read only the selected folder.
+Mitcad makes and
 updates the clones with the git program of the system, and only when you
 ask with one of these commands:
 
@@ -5050,6 +5084,31 @@ viewers, a drawing on a sheet, and web pages for people without Mitcad.
 
 ### 3D printing
 
+#### Tuning printed fits
+
+New Thread, Gear, Pulley and Bearing panels suggest parameter names in
+their clearance fields. The ordinary user parameters are created when
+you accept a feature that uses them. Cancel leaves the parameter list
+unchanged, and one Undo removes both a new feature and its new parameters.
+
+Open **Change Parameters** to tune fits for your printer. Use
+`thread_radial_clearance` (0.1 mm) for dimensional accuracy and
+`thread_flank_clearance` (0.1 mm) for overhang quality;
+`shaft_bore_clearance` (0.2 mm) for gears and pulleys seated on shafts;
+and `gear_backlash` (0.2 mm) for the space between mating gear teeth.
+Printable bearings use `bearing_radial_clearance` (0.4 mm),
+`bearing_axial_clearance` (0.4 mm), `bearing_element_gap` (0.6 mm) and
+`bearing_fit_clearance` (0.5 mm). Their comments explain which printer
+quality affects each fit; bearing gaps are especially sensitive to circle
+accuracy and ringing.
+
+Changing one parameter updates the features that use it. A parameter
+already in the design keeps its value, unit and comment. You can replace
+any suggested name with a number or another expression in the panel.
+Existing features and imported numeric values keep their stored values.
+
+#### Sending bodies to a slicer
+
 **3D Print** sends bodies to a slicer. The slicer can be Bambu Studio,
 OrcaSlicer, PrusaSlicer, UltiMaker Cura or any program that opens files
 given on its command line.
@@ -5101,6 +5160,43 @@ Mitcad finds slicers in these places:
 | Windows  | The usual install folders and the list of installed programs |
 | macOS    | The Applications folders. An application gets the files through `open -a`. |
 | Linux    | `PATH`, Flatpaks and desktop files                        |
+
+#### Print Analysis
+
+**Print Analysis** (INSPECT) shows where a part will print badly before
+you send it to a slicer. It also estimates the weight, the filament and
+the cost. It changes no body, no feature and no export.
+
+The panel starts with the selected bodies, or with every visible solid
+body and mesh body. These are the options:
+
+- **Bed face:** optional. Select a planar face of a body. The face lies
+  on the bed, so it sets the print direction. The body does not move.
+  Without a bed face, down is the -Z direction of the design.
+- **Overhangs** and **Angle** (45 degrees from the vertical): faces that
+  face down more steeply than the angle need support. Faces on the bed
+  are not overhangs.
+- **Thin walls** and **Minimum wall** (0.8 mm): walls thinner than the
+  printer can make.
+- **Estimate:** the material (the material of the bodies, else PLA), the
+  line width, the walls, the layer height, the top and bottom layers,
+  the infill, the filament diameter and the price per kg. If the price
+  is empty, Mitcad shows no cost.
+
+The panel shows the overhang area for each body, and its share of the
+area. It shows the thinnest wall and the number of thin regions. Click
+the thinnest wall to zoom to it. The estimate looks like
+`41.5 g · 13.9 m · 1.04 €`. It is only an estimate: the slicer decides.
+
+In the view, the overhangs have the warning colour and the thin walls
+have the error colour. A marker shows the thinnest point. A legend in
+the lower left corner shows the colours, the angle and the minimum wall.
+
+**OK** keeps the analysis in the **Analysis** folder of the browser as
+`Print1`. Mitcad remembers the numbers for the next analysis. Use the
+light bulb to show or hide the analysis. Double-click it to edit it. You
+can rename and delete it like a section analysis. If a body or the bed
+face is gone, the analysis is red and its tooltip tells why.
 
 ### USDZ for AR and 3D viewers
 
@@ -5492,7 +5588,9 @@ Install works for the Windows installation and for a Linux AppImage in
 a folder of your own. Windows can ask to permit the installer. The
 portable `.zip`, other Linux installations and builds of your own get
 the release page instead. If a download's signature does not match,
-Mitcad deletes the download. Mitcad never runs it.
+Mitcad deletes the download. Mitcad never runs it. On Windows, the
+download goes to a private folder, and the updater checks the installer
+again right before it runs it.
 
 The Updates page of Tools › Preferences sets the automatic check on or
 off, and if pre-releases are offered. With the setting off, Mitcad

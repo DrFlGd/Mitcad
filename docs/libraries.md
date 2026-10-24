@@ -1468,8 +1468,14 @@ Mitcad's one library of parts. Mitcad fetches it when you ask.
 
 ## Where libraries are kept
 
-Fetched libraries are bare clones in your local data folder
-(`libraries`). `MITCAD_LIBRARIES_DIR` replaces that folder. There is
+The application and CLI share fetched bare clones in the platform's data
+folder under `Mitcad/Mitcad/libraries`: `%LOCALAPPDATA%` on Windows,
+`~/Library/Application Support` on macOS, and `$XDG_DATA_HOME` (or
+`~/.local/share`) on Linux. `MITCAD_LIBRARIES_DIR` replaces that folder.
+The default configuration also reads the earlier CLI cache under
+`mitcad/libraries`, preserving versions already fetched there without moving
+or deleting them; new fetches use the shared folder. Explicit overrides do
+not add this legacy cache. There is
 one clone for each URL. Mitcad makes and updates the clones with the
 system's git only when you ask, or at start-up for a source with
 Auto-update (the check box in Libraries). These commands ask for it:

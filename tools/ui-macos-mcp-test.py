@@ -254,18 +254,20 @@ def run(app, cli, out, ui):
         script = "expect-ever 'View area'\n"
         if ui == "native":
             script += "expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'\nmenu 'View/Show History'\nexpect-native-layout\n"
+        # #619 adds a content-sized Create row; retain the measurements caps
+        # and account only for that row when it is visible.
         if ui == "qt":
             script += "expect-file '${MITCAD_MCP_TEST_WORK}/face' 60\n"
-            script += "expect-selection-info 'Area: (200|300|600) mm²' 200\n"
+            script += "expect-selection-info 'Area: (200|300|600) mm²' 200 with-create-row\n"
             script += "command view.fit\nscreenshot '${MITCAD_MCP_TEST_OUT}/selection-face.png'\n"
             script += "expect-file '${MITCAD_MCP_TEST_WORK}/measure' 60\n"
             script += "screenshot '${MITCAD_MCP_TEST_OUT}/measure-panel.png'\nkey Escape\n"
             script += "expect-file '${MITCAD_MCP_TEST_WORK}/edge' 60\n"
-            script += "expect-selection-info 'Length: (10|20|30) mm' 200\n"
+            script += "expect-selection-info 'Length: (10|20|30) mm' 200 with-create-row\n"
             script += "screenshot '${MITCAD_MCP_TEST_OUT}/selection-edge.png'\n"
         script += "expect-file '${MITCAD_MCP_TEST_WORK}/create' 60\nexpect-model-bodies 1 6000\n"
         if ui == "qt":
-            script += "expect-selection-info 'Volume: 6000 mm³' 240\n"
+            script += "expect-selection-info 'Volume: 6000 mm³' 240 with-create-row\n"
         if ui == "native":
             script += "expect-native-history\n"
         script += "command view.fit\nscreenshot-view '${MITCAD_MCP_TEST_OUT}/created.png'\n"
@@ -278,7 +280,7 @@ def run(app, cli, out, ui):
             script += "expect-view-orientation ${pan_direction} unchanged\nsleep 300\nexpect-view-buttons none\n"
         script += "expect-file '${MITCAD_MCP_TEST_WORK}/edit' 60\nexpect-model-bodies 1 9000\n"
         if ui == "qt":
-            script += "expect-selection-info 'Volume: 9000 mm³' 240\n"
+            script += "expect-selection-info 'Volume: 9000 mm³' 240 with-create-row\n"
         if ui == "native":
             script += "expect-native-history\n"
         script += "command view.fit\nscreenshot-view '${MITCAD_MCP_TEST_OUT}/edited.png'\n"
@@ -287,7 +289,7 @@ def run(app, cli, out, ui):
         script += "screenshot-view '${MITCAD_MCP_TEST_OUT}/replaced.png'\n"
         if ui == "qt":
             script += "expect-selection-info '^$'\nexpect-file '${MITCAD_MCP_TEST_WORK}/circle' 60\n"
-            script += "expect-selection-info 'Radius: 5 mm' 240\nexpect-selection-info 'Diameter: 10 mm'\n"
+            script += "expect-selection-info 'Radius: 5 mm' 240 with-create-row\nexpect-selection-info 'Diameter: 10 mm'\n"
             script += "command view.fit\nscreenshot '${MITCAD_MCP_TEST_OUT}/selection-circle.png'\n"
         script += "expect-file '${MITCAD_MCP_TEST_WORK}/finish' 60\nquit\n"
         try:
@@ -526,7 +528,8 @@ def run(app, cli, out, ui):
             debug.mkdir()
             design = LIVE.make_design(cli, debug, env)
             debug_script = "expect-ever 'View area'\nexpect-file '${MITCAD_MCP_TEST_WORK}/debug-finish' 300\nquit\n"
-            debugger = Gui(app, env, out, "debug", debug_script, ui, ("--open", str(design)))
+            debugger = Gui(app, env, out, "debug", debug_script, ui,
+                           ("--mcp-folder", str(debug), "--open", str(design)))
             guis.append(debugger)
             wait_for(lambda: len(public_instances(cli, env)) == 1, "the debugging GUI's discovery", debugger)
             live = LIVE.Bridge(cli, env, out / "debug-bridge.stderr.log")

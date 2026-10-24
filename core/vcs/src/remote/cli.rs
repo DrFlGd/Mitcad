@@ -6,7 +6,9 @@
 //! The program is `MITCAD_GIT` when set (the application sets it from
 //! Preferences), else the first `git` on `PATH` (absolute folders only, so
 //! a project's own folder never provides one), and on Windows also Git for
-//! Windows where it installs itself. It runs without prompts: stdin is
+//! Windows where it installs itself, or macOS package-manager folders.
+//! Apple's git launcher is used only with installed developer tools, so it
+//! cannot start the system's installer dialog. It runs without prompts: stdin is
 //! closed, `GIT_TERMINAL_PROMPT=0`, on Windows without a console window,
 //! and elsewhere in a session of its own, without the terminal Mitcad may
 //! have been started from (ssh asks for a key's passphrase or a host key on
@@ -477,20 +479,71 @@ pub(crate) fn progress_of(line: &str) -> Option<(String, Option<u8>)> {
 
 /// Finds the git program: `setting` (`MITCAD_GIT`) when given, else the
 /// first `git` in the absolute folders of `path`, else (Windows) Git for
-/// Windows in its usual places.
+/// Windows/macOS in their usual installation folders.
 pub(crate) fn locate(
     setting: Option<OsString>,
     path: Option<OsString>,
 ) -> Result<PathBuf, RemoteError> {
+    let mut extra = Vec::new();
+    if cfg!(windows) {
+        for (variable, folder) in [
+            ("ProgramFiles", "Git\\cmd"),
+            ("ProgramW6432", "Git\\cmd"),
+            ("LOCALAPPDATA", "Programs\\Git\\cmd"),
+        ] {
+            if let Some(base) = std::env::var_os(variable) {
+                extra.push(PathBuf::from(base).join(folder));
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let apple_git = {
+        extra.extend(["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"].map(PathBuf::from));
+        // xcode-select -p only reads the selected directory; unlike the
+        // /usr/bin/git launcher it never offers to install developer tools.
+        let installed = Command::new("/usr/bin/xcode-select")
+            .arg("-p")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .is_some_and(|output| {
+                Path::new(String::from_utf8_lossy(&output.stdout).trim())
+                    .join("usr/bin/git")
+                    .is_file()
+            });
+        Some((Path::new("/usr/bin/git"), installed))
+    };
+    #[cfg(not(target_os = "macos"))]
+    let apple_git = None;
+    locate_in(setting, path, &extra, apple_git)
+}
+
+// File-system locations are explicit so lookup and the Apple-launcher
+// refusal can be tested with a fake layout without running any git program.
+pub(crate) fn locate_in(
+    setting: Option<OsString>,
+    path: Option<OsString>,
+    extra: &[PathBuf],
+    apple_git: Option<(&Path, bool)>,
+) -> Result<PathBuf, RemoteError> {
+    let usable = |program: &Path| {
+        program.is_file()
+            && apple_git.is_none_or(|(launcher, installed)| {
+                installed
+                    || (program != launcher
+                        && program.canonicalize().ok() != launcher.canonicalize().ok())
+            })
+    };
     if let Some(setting) = setting.filter(|s| !s.is_empty()) {
         let program = PathBuf::from(&setting);
-        return if program.is_file() {
+        return if usable(&program) {
             Ok(program)
         } else {
             Err(RemoteError::new(
                 ErrorClass::GitMissing,
                 format!(
-                    "the git program set for Mitcad (MITCAD_GIT) is not there: {}",
+                    "the git program set for Mitcad (MITCAD_GIT) is unavailable: {} \
+                     (Apple's launcher requires installed Command Line Tools or Xcode)",
                     program.display()
                 ),
             ))
@@ -500,27 +553,18 @@ pub(crate) fn locate(
     let mut candidates: Vec<PathBuf> = path
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
-    if cfg!(windows) {
-        for (variable, folder) in [
-            ("ProgramFiles", "Git\\cmd"),
-            ("ProgramW6432", "Git\\cmd"),
-            ("LOCALAPPDATA", "Programs\\Git\\cmd"),
-        ] {
-            if let Some(base) = std::env::var_os(variable) {
-                candidates.push(PathBuf::from(base).join(folder));
-            }
-        }
-    }
+    candidates.extend_from_slice(extra);
     candidates
         .into_iter()
         .filter(|folder| folder.is_absolute())
         .map(|folder| folder.join(name))
-        .find(|program| program.is_file())
+        .find(|program| usable(program))
         .ok_or_else(|| {
             RemoteError::new(
                 ErrorClass::GitMissing,
                 "git is not installed: remote repositories need the git program (on Windows, \
-                 Git for Windows from https://git-scm.com). Set its path in MITCAD_GIT when it \
+                 Git for Windows from https://git-scm.com; on macOS, Homebrew or MacPorts git, \
+                 or Apple's Command Line Tools). Set its path in MITCAD_GIT when it \
                  is not on PATH. The local version history works without it.",
             )
         })

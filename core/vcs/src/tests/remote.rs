@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::*;
-use crate::remote::cli::{locate, progress_of};
+use crate::remote::cli::{locate, locate_in, progress_of};
 use crate::remote::{
     CONFIGURE_MESSAGE, Control, ErrorClass, GitCli, GitVersion, check_url, classify, clone_project,
     git_info, redact,
@@ -317,7 +317,7 @@ fn git_is_found_with_its_version_and_progress() {
     if !cfg!(windows) {
         // Relative folders on PATH (the project's own) are not searched.
         let path = std::env::join_paths([Path::new("."), Path::new("relative")]).unwrap();
-        assert!(locate(None, Some(path)).is_err());
+        assert!(locate_in(None, Some(path), &[], None).is_err());
     }
     let Some(cli) = system_git() else {
         return;
@@ -327,6 +327,64 @@ fn git_is_found_with_its_version_and_progress() {
     assert!(info.version.is_some() && info.path.is_some());
     let text = api::git_info(true);
     assert!(text.starts_with("git "), "{text}");
+}
+
+#[test]
+fn mac_git_lookup_skips_installer_and_finds_package_manager_folders() {
+    let scratch = Scratch::new("mac-git-locations");
+    let name = if cfg!(windows) { "git.exe" } else { "git" };
+    let system = scratch.join("usr/bin");
+    let folders = [
+        scratch.join("opt/homebrew/bin"),
+        scratch.join("usr/local/bin"),
+        scratch.join("opt/local/bin"),
+    ];
+    fs::create_dir_all(&system).unwrap();
+    let launcher = system.join(name);
+    fs::write(&launcher, "must never execute an installer launcher").unwrap();
+    let path = std::env::join_paths([&system]).unwrap();
+    let absent =
+        locate_in(None, Some(path.clone()), &folders, Some((&launcher, false))).unwrap_err();
+    assert_eq!(absent.class, ErrorClass::GitMissing);
+    assert!(absent.message.contains("Homebrew") && absent.message.contains("MacPorts"));
+    assert!(
+        locate_in(
+            Some(launcher.clone().into_os_string()),
+            Some(path.clone()),
+            &folders,
+            Some((&launcher, false))
+        )
+        .is_err()
+    );
+    for folder in &folders {
+        fs::create_dir_all(folder).unwrap();
+        let git = folder.join(name);
+        fs::write(&git, "a standalone git program").unwrap();
+        assert_eq!(
+            locate_in(None, Some(path.clone()), &folders, Some((&launcher, false))).unwrap(),
+            git
+        );
+        fs::remove_file(git).unwrap();
+    }
+    assert_eq!(
+        locate_in(None, Some(path), &folders, Some((&launcher, true))).unwrap(),
+        launcher
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn mac_git_lookup_does_not_accept_a_symlink_to_the_installer_launcher() {
+    let scratch = Scratch::new("mac-git-launcher-link");
+    let system = scratch.join("system");
+    let extra = scratch.join("extra");
+    fs::create_dir_all(&system).unwrap();
+    fs::create_dir_all(&extra).unwrap();
+    let launcher = system.join("git");
+    fs::write(&launcher, "installer launcher").unwrap();
+    std::os::unix::fs::symlink(&launcher, extra.join("git")).unwrap();
+    let path = std::env::join_paths([&extra]).unwrap();
+    assert!(locate_in(None, Some(path), &[], Some((&launcher, false))).is_err());
 }
 
 /// Connecting to an empty remote pushes the history (10.1, 1): the remote
@@ -450,6 +508,48 @@ fn a_project_connects_to_an_empty_remote() {
     assert_eq!(
         repo.command_text(r#"{"cmd": "remote_remove"}"#).unwrap(),
         "No remote origin\n"
+    );
+}
+
+#[test]
+fn a_push_accepts_gitlinks_without_the_submodules_commit_objects() {
+    let Some(cli) = system_git() else { return };
+    let scratch = Scratch::new("push-gitlink");
+    let remote = bare(&scratch, "remote.git");
+    git(&scratch.0, &["init", "-q", "module"]).unwrap();
+    let module = scratch.join("module");
+    fs::write(module.join("note.txt"), "a submodule's file").unwrap();
+    git(&module, &["add", "note.txt"]).unwrap();
+    git(&module, &["commit", "-q", "-m", "Module version"]).unwrap();
+    let module_commit = tip(&module, "HEAD");
+    let (repo, _, part) = project(&scratch);
+    repo.commit(&[part], "First", &author()).unwrap();
+    git(
+        repo.root(),
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{module_commit},module"),
+        ],
+    )
+    .unwrap();
+    git(repo.root(), &["commit", "-q", "-m", "Add a submodule"]).unwrap();
+    let id = ObjectId::from_hex(module_commit.as_bytes()).unwrap();
+    assert!(
+        repo.repo.find_header(id).is_err(),
+        "the gitlink is not a local object"
+    );
+    repo.set_git(cli);
+    let answer = run(
+        &repo,
+        json!({"cmd": "connect", "url": remote, "author": AUTHOR}),
+    );
+    assert_eq!(answer["error"], Value::Null, "{answer}");
+    assert_eq!(answer["push"]["pushed"], true, "{answer}");
+    assert_eq!(
+        tip(&remote, "refs/heads/main"),
+        repo.head_commit().unwrap().unwrap().to_string()
     );
 }
 
@@ -850,6 +950,61 @@ fn only_projects_are_opened_from_a_remote() {
     assert_eq!(error_class(&answer), "invalid_url");
     assert!(!answer.to_string().contains("s3cret"), "{answer}");
     assert!(!scratch.join("y").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn cloned_projects_keep_store_symlinks_as_text_and_never_record_their_targets() {
+    use std::os::unix::fs::symlink;
+    let Some(cli) = system_git() else { return };
+    let scratch = Scratch::new("clone-store-link");
+    let (source, _, part) = project(&scratch);
+    let path = brep_file("6 bolt");
+    let file = source.root().join(&path);
+    fs::remove_file(&file).unwrap();
+    let outside = scratch.join("outside.txt");
+    fs::write(&outside, b"private bytes outside the project").unwrap();
+    symlink(&outside, &file).unwrap();
+    git(source.root(), &["add", "-A"]).unwrap();
+    git(source.root(), &["commit", "-q", "-m", "A store link"]).unwrap();
+    assert!(part.is_file());
+    let target = scratch.join("clone");
+    clone_project(
+        &slashes(source.root()),
+        &target,
+        Some(&cli),
+        None,
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let cloned_file = target.join(&path);
+    assert!(
+        !fs::symlink_metadata(&cloned_file)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::read_to_string(&cloned_file).unwrap(),
+        outside.to_string_lossy()
+    );
+    assert_eq!(
+        git(&target, &["config", "--get", "core.symlinks"])
+            .unwrap()
+            .trim(),
+        "false"
+    );
+    let cloned = ProjectRepo::open(&target).unwrap();
+    let before = cloned.head_commit().unwrap();
+    let error = cloned
+        .commit(&[target.join("part.mitcad")], "Save", &author())
+        .unwrap_err();
+    assert!(error.to_string().contains("is invalid"), "{error}");
+    assert_eq!(cloned.head_commit().unwrap(), before);
+    assert_eq!(
+        fs::read(outside).unwrap(),
+        b"private bytes outside the project"
+    );
 }
 
 fn git_run(root: &Path, args: &[&str]) {

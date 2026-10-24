@@ -10,6 +10,7 @@ mark
 click-logged '^Panel Extrude input operation at '
 key Home Return
 expect-log 'Extrude: operation chosen by hand'
+focus-main
 mark
 focus-widget input_distance
 key ctrl+a
@@ -27,6 +28,7 @@ mark
 button '^✕$' clear_objects
 expect-log 'Extrude: operation chosen by hand'
 expect-log '^Extrude Local bodies: nothing$'
+focus-main
 mark
 focus-widget input_distance
 key ctrl+a

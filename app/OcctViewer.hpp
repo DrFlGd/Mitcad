@@ -16,6 +16,7 @@
 #include <QElapsedTimer>
 #include <QImage>
 #include <QMargins>
+#include <QMetaObject>
 #include <QOpenGLWidget>
 #include <QPoint>
 #include <QRectF>
@@ -60,7 +61,18 @@ class QWheelEvent;
 
 namespace mitcad {
 
+#ifdef __APPLE__
+namespace render {
+class MacFrameLease;
+class MacFrameDisplay;
+struct FrameInfo;
+struct Look;
+}
+#endif
+
 class ViewCubeHomeButton;
+class PrintOverlayLabels;
+struct PrintOverlay;
 
 #ifdef Q_OS_MACOS
 // The OpenGL format of every context Qt creates on macOS, the viewport's and
@@ -286,9 +298,17 @@ public:
   // Cosmetic threads: rings on the threaded faces, drawn over the bodies
   // and not pickable; null clears them.
   void setThreads(const TopoDS_Shape& rings);
+  // Print Analysis (mitcad#620, view/PrintOverlay.cpp): the overhang and
+  // thin-wall triangles drawn over the bodies in their colours, not
+  // pickable, a marker and a label at the thinnest point and the legend in
+  // the lower left corner; an empty overlay clears them. Logs "Print
+  // overlay: …" when it changes.
+  void setPrintOverlay(const PrintOverlay& overlay);
 
   // The camera (named views, U5).
   CameraState camera() const;
+  // The camera after a pending animation/fit, without applying either.
+  CameraState pendingCamera() const;
   // Moves the camera there, smoothly when the navigation settings say so.
   void setCamera(const CameraState& camera);
   void setPerspective(bool perspective);
@@ -403,8 +423,17 @@ public:
   // set: once either changes, the view draws the bodies again before its
   // next frame (no image of an old camera over a moved view, mitcad#214).
   void setRenderedImage(const QImage& image, const QString& timingDetail = QString());
+#ifdef __APPLE__
+  void setRenderedSurface(std::shared_ptr<render::MacFrameLease> frame, const render::FrameInfo& info,
+                          const QColor& top, const QColor& bottom, const render::Look& look);
+#endif
   void setRenderedMode(bool on);
-  bool showsRenderedImage() const { return !m_renderedImage.isNull(); }
+  bool showsRenderedImage() const {
+#ifdef __APPLE__
+    if (m_renderedSurface) return true;
+#endif
+    return !m_renderedImage.isNull();
+  }
   // The camera the view draws with, for the renderer to follow.
   const occ::handle<Graphic3d_Camera>& viewCamera() const { return m_view->Camera(); }
   // Whether the user is navigating the view (a button held, a wheel burst
@@ -416,6 +445,11 @@ public:
   void backgroundColors(QColor& top, QColor& bottom) const;
   // Whether the background is dark (what is drawn over it needs light lines).
   bool backgroundDark() const { return m_backgroundDark; }
+  // The tone of the sketch halos (mitcad#302) as an sRGB colour: dark on a
+  // dark background, light on a light one. The geometry's halos and the
+  // dimensions' (painted by `SketchOverlay`, mitcad#633) take it from here
+  // so that they cannot drift apart.
+  QColor sketchHaloColor() const;
   // Replaces the visible sketch profiles (planar faces, placed already);
   // `occurrences` are those that place the sketches of components.
   void setProfiles(const std::vector<std::pair<ProfileKey, TopoDS_Shape>>& profiles,
@@ -581,6 +615,9 @@ signals:
   // The application's palette changed (a dark or light mode): what depends
   // on it outside the view follows.
   void themeChanged();
+  // The background turned from light to dark or back (backgroundDark()):
+  // drawings over the view that log their tone follow (mitcad#633).
+  void backgroundToneChanged();
   // setBodies() changed what is shown.
   void bodiesChanged();
   // Shift went down or up while a selection scope is set (setPickScope).
@@ -746,6 +783,9 @@ private:
   // fits the view (its camera or size changed), or nothing.
   ViewPose viewPose() const;
   QString renderedImageStale() const;
+#ifdef __APPLE__
+  void releaseRenderedSurfaceContext();
+#endif
   // Rebuilds the grid's lines when the zoom changes their step or the view
   // nears their edge (or always with `force`).
   void updateGrid(bool force = false);
@@ -909,6 +949,11 @@ private:
   QString m_loggedSectionLook;
   void logSectionCaps();
   occ::handle<AIS_Shape> m_threads;
+  // Print Analysis' triangles, and its marker, label and legend over the
+  // view (setPrintOverlay, mitcad#620).
+  occ::handle<AIS_InteractiveObject> m_printTriangles;
+  PrintOverlayLabels* m_printLabels = nullptr;
+  QString m_loggedPrintOverlay = QStringLiteral("Print overlay: none");
   QColor m_paper = QColor(0xd8, 0xdc, 0xe2); // the hidden-line style's faces
   bool m_gridShown = true;
   double m_gridStep = 0.0; // mm; 0: follows the zoom
@@ -925,6 +970,11 @@ private:
   // The rendered view: the image, the pixels OCCT reads from it, and the
   // background texture that shows them.
   QImage m_renderedImage;
+#ifdef __APPLE__
+  std::shared_ptr<render::MacFrameLease> m_renderedSurface;
+  std::shared_ptr<render::MacFrameDisplay> m_renderedSurfaceDisplay;
+  QMetaObject::Connection m_renderedContextCleanup;
+#endif
   occ::handle<Image_PixMap> m_renderedPixels;
   occ::handle<Graphic3d_Texture2D> m_renderedTexture;
   bool m_renderedMode = false;

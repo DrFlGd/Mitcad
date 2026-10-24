@@ -727,6 +727,8 @@ pub(crate) fn turn_analysis(def: &mut AnalysisDef, ctx: &Turned<'_>) -> bool {
             section.plane = turned;
             changed
         }
+        // A bed face is a face by its name, which a turn keeps.
+        AnalysisDef::Print(_) => false,
     }
 }
 

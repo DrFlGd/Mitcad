@@ -217,12 +217,69 @@ and is not evidence of sustained 120 Hz output or a guarantee for other
 designs. These results do not justify lowering resting line quality or
 adding a navigation-dependent policy.
 
-No actual 1× display/mode was available. The corresponding comparison and
-the issue's complete measurement acceptance remain open; no Qt scale
-override was used as a substitute. Raster FXAA is unavailable through the
-suggested OCCT flag, as described above. Moving between physical 1× and 2×
-displays remains a hardware validation gap, with the existing four-sample
-policy unchanged at either scale.
+No actual 1× display/mode was available at this checkpoint; no Qt scale
+override was used as a substitute. The owner subsequently selected a real
+non-HiDPI mode, allowing the remaining measurement below. Raster FXAA is
+unavailable through the suggested OCCT flag, as described above. Moving
+between physical displays remains a separate hardware validation gap.
+
+### Physical 1× result, 2026-10-24
+
+The owner switched the built-in panel to its native 3456 × 2234 non-HiDPI
+mode. AppKit reported a 3456 × 2234 logical screen and
+`backingScaleFactor=1.0`; CoreGraphics independently reported both logical
+and pixel dimensions as 3456 × 2234 at 120 Hz. The panel's marketing
+"Retina" label in system metadata does not describe its current backing
+scale. No Qt scale override was used.
+
+The physical Apple M1 Max (32 GPU cores), macOS 27.0.1 build 26A434 and
+OpenGL `4.1 Metal - 91.7` match the earlier hardware. This run used the
+validated arm64 Qt RelWithDebInfo build with C++/Objective-C++ ThinLTO from
+`ffe13896`; the earlier 2× checkpoint used a Debug profiling build.
+Consequently these are separate within-build mode comparisons: differences
+between their absolute times cannot be attributed solely to backing scale.
+The harness and synthetic dome fixture are byte-identical to the 2× run.
+
+Each of the four modes completed 30 warmup and 60 measured pointer moves
+in both unfenced and fenced runs. Every measured paint recorded scale 1,
+a 1280 × 690 backing viewport and the expected GPU-sync setting. Each mode
+provided 60 paint and 60 frame-swap samples. The initial environment line
+reported 1280 × 670 before the harness resize. The renderer was Apple M1 Max
+and `GL_MAX_SAMPLES` was four; configured sample counts retain the
+request-versus-allocation limitation described above.
+
+Unfenced results, in milliseconds (median / maximum):
+
+| Configured mode | Paint | Qt frame-swap interval |
+| --- | ---: | ---: |
+| MSAA 4 | 1.33 / 3.92 | 17.86 / 31.52 |
+| MSAA 2 | 1.33 / 3.43 | 18.19 / 29.33 |
+| MSAA off | 0.90 / 2.83 | 18.24 / 29.31 |
+| Ray-tracer AA flag, MSAA off | 1.28 / 2.84 | 18.46 / 31.13 |
+
+Separate `MITCAD_VIEWPORT_SYNC=1` results, in milliseconds (median / maximum):
+
+| Configured mode | Paint with GL completion wait | Qt frame-swap interval |
+| --- | ---: | ---: |
+| MSAA 4 | 2.22 / 4.19 | 18.07 / 28.86 |
+| MSAA 2 | 2.55 / 4.13 | 18.21 / 30.14 |
+| MSAA off | 2.23 / 4.80 | 18.08 / 30.54 |
+| Ray-tracer AA flag, MSAA off | 2.02 / 3.93 | 18.38 / 31.40 |
+
+Retain MSAA 4 at 1× as well. MSAA 2 did not lower the unfenced paint median
+and its completion-inclusive median was higher in this bounded run. The
+small maximum differences and input-paced swap intervals do not justify
+lowering line quality. Resting MSAA 4/off captures were visually reviewed;
+the four-sample image retains the smooth dome outline and grid lines.
+These single runs are not a repeatability estimate, physical scanout or
+input-latency measurement, and the ray-tracer control is not raster FXAA.
+
+The real 1× acceptance gap for #552 is now covered. Combined with the
+earlier physical 2× result, no adaptive sample policy is justified: normal
+MSAA 4 remains unchanged. No application code, user preference or display
+mode was changed by the measurement harness. Live moves between different
+physical displays remain untested; no new scale-dependent behaviour needs
+that transition for this decision.
 
 ## Validation
 
@@ -459,7 +516,8 @@ single-GPU Apple Silicon configuration.
 | Hardware Metal rendered-view navigation, resizing and worker shutdown | Dedicated render-metal test | Dedicated native-render-metal test | Covered separately by the [Metal acceptance matrix](rendering.md#physical-metal-acceptance-tools) (#185), outside #558 |
 | ProMotion orbit pacing | Opt-in physical-test timing sample | Same optional sample | Both reported 120 Hz and about 121 swap callbacks/s in the unlocked session; see samples below; physical presentation/input latency remains unmeasured |
 | Sleep/wake, physical trackpad/Magic Mouse input, Natural scrolling and momentum | Untested | Untested | Requires manual hardware interaction; no system sleep or input preference changes performed |
-| Real 1x display, display moves, backing-scale changes and multiple-display arrangements | Untested | Untested | No external non-Retina display attached; forcing a Qt scale is not a display transition |
+| Actual 1x non-HiDPI display mode | Four-mode physical AA comparison on 24 October 2026 | Native frontend not exercised in this mode | AppKit scale 1.0 and CoreGraphics logical/pixel size both 3456x2234; Qt measured backing viewport 1280x690; see the 1x result above |
+| Live display moves, backing-scale transitions and multiple-display arrangements | Untested | Untested | One built-in panel; the owner changed its actual mode before the run, rather than forcing a Qt scale or moving a live window between displays |
 | Increased contrast, reduced transparency/motion and VoiceOver navigation | Untested | Untested | Global accessibility preferences are not changed by the unattended harness |
 | Native chooser acceptance, overwrite prompts, native colour acceptance/cancellation, Finder dispatch and Quit variants | Untested where not exercised by the workflows | Untested where not exercised by the workflows | Native save acceptance is in a separate system process; no permission-dependent input injection |
 | Oldest supported macOS runtime | Untested | Untested | macOS 14.4 runtime unavailable; SDK/deployment target 14.4 does not provide that coverage |

@@ -182,6 +182,7 @@ impl LibraryRepo {
     /// default branch.
     pub fn resolve(&self, rev: &str) -> Result<ObjectId, VcsError> {
         let rev = rev.trim();
+        check_revision(rev)?;
         let missing = || not_found(format!("the library has no version '{rev}'"));
         if rev.is_empty() || rev.eq_ignore_ascii_case("HEAD") {
             return self.head()?.ok_or_else(missing);
@@ -474,6 +475,20 @@ pub struct LibraryCache {
     pub extra: Vec<PathBuf>,
 }
 
+impl Default for LibraryCache {
+    fn default() -> Self {
+        let mut cache = Self::new(Self::default_root());
+        if Self::environment_root().is_none() {
+            // Older CLI versions used a different folder. Keep their fetched
+            // revisions readable; future fetches use the shared application cache.
+            cache
+                .extra
+                .push(Self::data_root().join("mitcad").join("libraries"));
+        }
+        cache
+    }
+}
+
 /// The outcome of a fetch.
 #[derive(Debug, Clone, Serialize)]
 pub struct Fetched {
@@ -498,11 +513,23 @@ impl LibraryCache {
     }
 
     /// `MITCAD_LIBRARIES_DIR`, else `libraries` in the user's data folder
-    /// for Mitcad.
+    /// for Mitcad, shared by the application and command-line tools.
     pub fn default_root() -> PathBuf {
-        if let Some(dir) = std::env::var_os("MITCAD_LIBRARIES_DIR").filter(|d| !d.is_empty()) {
-            return PathBuf::from(dir);
-        }
+        Self::environment_root().unwrap_or_else(|| {
+            Self::data_root()
+                .join("Mitcad")
+                .join("Mitcad")
+                .join("libraries")
+        })
+    }
+
+    fn environment_root() -> Option<PathBuf> {
+        std::env::var_os("MITCAD_LIBRARIES_DIR")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+    }
+
+    fn data_root() -> PathBuf {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let base = if cfg!(windows) {
             std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
@@ -515,8 +542,6 @@ impl LibraryCache {
                 .or_else(|| home.map(|h| h.join(".local").join("share")))
         };
         base.unwrap_or_else(std::env::temp_dir)
-            .join("mitcad")
-            .join("libraries")
     }
 
     /// The folder a URL's clone has: `<name>-<8 hex digits>.git`.
@@ -592,6 +617,7 @@ impl LibraryCache {
         url: &str,
         rev: &str,
     ) -> Result<(LibraryRepo, ObjectId), VcsError> {
+        check_revision(rev.trim())?;
         let mut candidates = Vec::new();
         if let Some(repo) = self.open_url(url) {
             candidates.push(repo);
@@ -754,11 +780,25 @@ fn normal_url(url: &str) -> String {
 }
 
 fn short(rev: &str) -> String {
-    if rev.len() == 40 {
+    if rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()) {
         rev[..7].to_owned()
     } else {
         rev.to_owned()
     }
+}
+
+/// Revisions accept commit ids and names, never revision expressions or paths.
+fn check_revision(rev: &str) -> Result<(), VcsError> {
+    if rev.is_empty() || rev.eq_ignore_ascii_case("HEAD") {
+        return Ok(());
+    }
+    let name = format!("refs/tags/{rev}");
+    gix::validate::reference::name(name.as_bytes().as_bstr()).map_err(|_| {
+        VcsError::InvalidPath(format!(
+            "'{rev}' is not a library version (a commit id, tag or branch name)"
+        ))
+    })?;
+    Ok(())
 }
 
 /// The bytes of the files in a folder (not following links).

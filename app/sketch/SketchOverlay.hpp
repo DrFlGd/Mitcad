@@ -93,6 +93,11 @@ public:
   // document's unit and its comment ("d3 = d1 / 2 → 20 mm (Sketch1
   // distance)", mitcad#231).
   QString dimensionTooltip(const DimensionData& dimension) const;
+  // Logs "Sketch dimension halos: <count> dark|light" when it changes, for
+  // the UI tests (mitcad#633). Called when the overlay paints, when the
+  // background's tone changes and when the sketch's edit starts: a session
+  // without a desktop (Windows session 0) may never paint it.
+  void logDimensionHalos();
 
 protected:
   void paintEvent(QPaintEvent* event) override;
@@ -119,6 +124,12 @@ private:
   // origin's place when the sketch's origin is elsewhere (mitcad#254).
   void paintAxes(QPainter& painter) const;
   void paintGlyph(QPainter& painter, const Glyph& glyph, bool selected, bool hovered) const;
+  // The halo under a dimension's lines, arcs and arrowheads (mitcad#633):
+  // wider strokes in `halo`, the opposite tone of the lines, so that they
+  // show over a body's face of their own tone. Painted for all dimensions
+  // before any `paintDimension`, so that a halo never cuts another
+  // dimension's line.
+  void paintDimensionHalo(QPainter& painter, const DimensionShape& shape, const QColor& halo) const;
   // `color`: the value's text; `lines`: the dimension and extension lines
   // and arrows, light on a dark background.
   void paintDimension(QPainter& painter, const DimensionShape& shape, const QRectF& textRect,
@@ -131,6 +142,8 @@ private:
   bool isSelected(const QString& kind, const QString& id) const;
 
   SketchController& m_c;
+  // The last "Sketch dimension halos:" line logged (for UI tests).
+  QString m_loggedDimensionHalos;
 };
 
 } // namespace mitcad::sketch

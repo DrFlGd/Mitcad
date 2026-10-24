@@ -2078,6 +2078,14 @@ bool nativeWindowRefreshContract(void* nativeWindow, QString& error) {
   }
   auto& state = *window->state;
   const QList<NativeMacAction> snapshot = state.actions;
+  NSArray<NSToolbarItemIdentifier>* allowed = [window.toolbar.delegate toolbarAllowedItemIdentifiers:window.toolbar];
+  for (const auto& action : snapshot) {
+    NSString* identifier = ns(QStringLiteral("command.") + action.id);
+    if (!action.submenu.isEmpty() && [allowed containsObject:identifier]) {
+      error = QStringLiteral("Native toolbar palette offered a popup without a standalone menu control");
+      return false;
+    }
+  }
   state.setActions(snapshot);
   MITCADCommandButton* button = state.ribbonButtons.allValues.firstObject;
   if (!button || !button.image) {
@@ -2674,7 +2682,11 @@ using namespace mitcad::mac;
     NSToolbarFlexibleSpaceItemIdentifier, NSToolbarSpaceItemIdentifier
   ]];
   if (state) for (const auto& item : state->actions) {
-    if (!item.separator && !item.id.isEmpty()) [identifiers addObject:ns(QStringLiteral("command.") + item.id)];
+    // Popup parents need their ribbon view to present a menu; the palette
+    // offers only actions that work as standalone toolbar commands.
+    if (!item.separator && !item.id.isEmpty() && item.submenu.isEmpty()) {
+      [identifiers addObject:ns(QStringLiteral("command.") + item.id)];
+    }
   }
   return identifiers;
 }
@@ -2721,7 +2733,7 @@ using namespace mitcad::mac;
     const QString key = qt(identifier);
     if (!key.startsWith(QStringLiteral("command."))) return nil;
     const auto* action = state->action(key.mid(8));
-    if (!action) return nil;
+    if (!action || !action->submenu.isEmpty()) return nil;
     NSToolbarItem* item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
     item.label = ns(action->label);
     item.paletteLabel = item.label;

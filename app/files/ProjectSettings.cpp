@@ -35,6 +35,7 @@
 
 #include "../framework/AppSettings.hpp"
 #include "../framework/Dialogs.hpp"
+#include "../framework/FitToScreen.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/Theme.hpp"
 #include "CloudAddress.hpp"
@@ -492,7 +493,7 @@ void ProjectSettingsDialog::showKind() {
       m_fields->m_locksNote->setVisible(!accepted);
     });
   }
-  adjustSize();
+  fitWindowToContents(this);
 }
 
 void ProjectSettingsDialog::logState() const {
@@ -563,7 +564,7 @@ void ProjectSettingsDialog::storageChosen() {
       }
       m_section->recheck();
     }
-    adjustSize();
+    fitWindowToContents(this);
     return;
   }
   if (!cloud) {

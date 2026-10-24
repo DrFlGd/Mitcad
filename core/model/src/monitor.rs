@@ -182,6 +182,20 @@ impl RecomputeMonitor {
         self.delay_ms.store(ms, Ordering::Relaxed);
     }
 
+    /// For tests: waits the test delay (`set_test_delay`), or until a
+    /// cancel, where a job that evaluates no features does a step of its
+    /// work (an item of a `.dwg` import, mitcad#589), so that a test can
+    /// cancel it while it runs.
+    pub fn test_pause(&self) {
+        let delay = Duration::from_millis(u64::from(self.delay_ms.load(Ordering::Relaxed)));
+        let mut slept = Duration::ZERO;
+        while slept < delay && !self.is_cancelled() {
+            let step = DELAY_STEP.min(delay - slept);
+            thread::sleep(step);
+            slept += step;
+        }
+    }
+
     /// For tests: cancel as soon as `evaluations` evaluations were kept in
     /// the cache, as a user who cancels between two features.
     pub fn cancel_after(&self, evaluations: usize) {

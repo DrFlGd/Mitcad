@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <QApplication>
+#include <QBuffer>
 #include <QColor>
 #include <QCursor>
 #include <QDir>
@@ -24,6 +25,8 @@
 #include <QJsonObject>
 #include <QPixmap>
 #include <QSettings>
+#include <QSemaphore>
+#include <QStandardItemModel>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -32,13 +35,17 @@
 #include "files/CloudAddress.hpp"
 #include "files/Print3d.hpp"
 #include "framework/Cursors.hpp"
+#include "framework/AtomicCopy.hpp"
+#include "framework/WorkerThreadStart.hpp"
 #include "framework/DesktopEntry.hpp"
 #include "framework/Numbers.hpp"
 #include "framework/Selection.hpp"
 #include "framework/ShortcutBindings.hpp"
 #include "render/RenderCamera.hpp"
+#include "projects/ProjectRowDrag.hpp"
 #include "render/RenderDevices.hpp"
 #include "render/RenderImage.hpp"
+#include "render/RenderWorkerFailure.hpp"
 #include "report/ReportText.hpp"
 #include "sketch/AutoConstraint.hpp"
 #include "view/ViewMatch.hpp"
@@ -56,6 +63,124 @@ void check(bool condition, const char* expression, int line) {
 }
 
 #define CHECK(expr) check((expr), #expr, __LINE__)
+
+void atomicCopyTests() {
+  QTemporaryDir directory;
+  CHECK(directory.isValid());
+  const QString path = directory.filePath(QStringLiteral("render.png"));
+  QFile destination(path);
+  CHECK(destination.open(QIODevice::WriteOnly));
+  CHECK(destination.write("old image") == 9);
+  destination.close();
+
+  class FailingSource : public QIODevice {
+  public:
+    FailingSource() { open(QIODevice::ReadOnly | QIODevice::Unbuffered); }
+    bool isSequential() const override { return true; }
+  protected:
+    qint64 readData(char* data, qint64 size) override {
+      if (m_read || size <= 0) {
+        setErrorString(QStringLiteral("synthetic image read failure"));
+        return -1;
+      }
+      data[0] = 'x';
+      m_read = true;
+      return 1;
+    }
+    qint64 writeData(const char*, qint64) override { return -1; }
+  private:
+    bool m_read = false;
+  } broken;
+  QString error;
+  CHECK(!mitcad::copyToFileAtomically(broken, path, error));
+  CHECK(error.contains(QStringLiteral("synthetic image read failure")));
+  CHECK(destination.open(QIODevice::ReadOnly));
+  CHECK(destination.readAll() == QByteArray("old image"));
+  destination.close();
+  CHECK(QDir(directory.path()).entryList(QDir::Files).size() == 1);
+
+  QByteArray bytes("replacement image");
+  QBuffer source(&bytes);
+  CHECK(source.open(QIODevice::ReadOnly));
+  CHECK(mitcad::copyToFileAtomically(source, path, error));
+  CHECK(destination.open(QIODevice::ReadOnly));
+  CHECK(destination.readAll() == bytes);
+  destination.close();
+  source.seek(0);
+  CHECK(!mitcad::copyToFileAtomically(source, directory.filePath(QStringLiteral("missing/render.png")), error));
+  CHECK(!error.isEmpty());
+}
+
+void projectRowDragTests() {
+  QStandardItemModel rows;
+  rows.appendRow(new QStandardItem(QStringLiteral("original")));
+  mitcad::ProjectRowDrag drag;
+  drag.press(rows.index(0, 0), QPoint(5, 5));
+  CHECK(!drag.move(QPoint(7, 5), 10));
+  // The async read completes between press and the first drag movement.
+  rows.clear();
+  rows.appendRow(new QStandardItem(QStringLiteral("replacement")));
+  CHECK(!drag.item().isValid());
+  CHECK(!drag.move(QPoint(40, 5), 10));
+  CHECK(!drag.dragging());
+  // A fresh press can drag; inserting another row preserves its identity.
+  drag.press(rows.index(0, 0), QPoint(5, 5));
+  rows.insertRow(0, new QStandardItem(QStringLiteral("inserted")));
+  CHECK(drag.move(QPoint(20, 5), 10));
+  CHECK(drag.item().data().toString() == QStringLiteral("replacement"));
+  rows.removeRow(1);
+  CHECK(!drag.dragging());
+  CHECK(!drag.move(QPoint(40, 5), 10));
+  drag.press(rows.index(0, 0), QPoint());
+  CHECK(drag.move(QPoint(30, 0), 10));
+  drag.clear();
+  CHECK(!drag.item().isValid() && !drag.dragging());
+}
+
+void renderWorkerFailureTests() {
+  using mitcad::render::workerExitReason;
+  const QString stale = QStringLiteral("cannot read the texture image");
+  const QString crash = workerExitReason(stale, 9, true, false);
+  CHECK(crash.contains(QStringLiteral("crashed")));
+  CHECK(crash.contains(QStringLiteral("exit code 9")));
+  CHECK(!crash.contains(stale));
+  CHECK(workerExitReason(QString(), 0, false, false).contains(QStringLiteral("exit code 0")));
+  const QString failed = workerExitReason(QStringLiteral("cannot create renderer"), 2, false, false);
+  CHECK(failed.contains(QStringLiteral("cannot create renderer")));
+  CHECK(failed.contains(QStringLiteral("exit code 2")));
+  const QString mismatch = workerExitReason(QStringLiteral("protocol mismatch"), 9, true, true);
+  CHECK(mismatch.contains(QStringLiteral("protocol mismatch")));
+  CHECK(mismatch.contains(QStringLiteral("exit code 9")));
+}
+
+void workerThreadStartTests() {
+  class HeldThread : public QThread {
+  public:
+    ~HeldThread() override { m_release.release(); wait(); }
+  protected:
+    void run() override { m_release.acquire(); }
+  private:
+    QSemaphore m_release;
+  } worker;
+  worker.setStackSize(256u << 20);
+  QList<unsigned> attempted;
+  QString error;
+  CHECK(mitcad::startWorkerThread(worker, error, [&](QThread& thread) {
+    attempted.append(thread.stackSize());
+    if (attempted.size() == 3) { thread.start(); }
+  }));
+  CHECK(error.isEmpty());
+  CHECK(worker.isRunning());
+  CHECK(attempted == QList<unsigned>({256u << 20, 128u << 20, 64u << 20}));
+  // Success does not require handling a started signal on the UI thread.
+  CHECK(mitcad::startWorkerThread(worker, error, [&](QThread&) { CHECK(false); }));
+
+  HeldThread unavailable;
+  CHECK(!mitcad::startWorkerThread(unavailable, error, [](QThread&) {}));
+  CHECK(!unavailable.isRunning());
+  CHECK(error.contains(QStringLiteral("no computation was queued")));
+  CHECK(unavailable.stackSize() == (256u << 20));
+}
 
 // Contexts, default-only alternatives and legacy settings (mitcad#187).
 void shortcutBindingTests() {
@@ -686,6 +811,15 @@ public:
   void setView(const mitcad::render::ViewData& view) override {
     camera = view;
     sequence = view.sequence;
+    if (m_sink.directDisplayBuffers()) {
+      if (auto frame = m_sink.beginDisplayFrame(1, 1, 1, 1)) {
+        frame->buffers().light[0] = 0;
+        if (m_device.type != "CPU" && m_sink.metalDisplayBuffers() && frame->nativeMetalBuffer()) m_sink.displayInteropUsed();
+        frame->publish(view.sequence, 1, false, false);
+        frame->publish(view.sequence, 1, false, false); // A retained callback cannot publish it twice.
+      }
+      return;
+    }
     // A frame of the view.
     if (std::uint16_t* pixels = m_sink.beginFrame(1, 1, 1, 1, false).light) {
       pixels[0] = 0;
@@ -744,6 +878,87 @@ public:
 private:
   std::uint16_t m_pixel = 0;
 };
+
+class DirectCountingSink : public mitcad::render::FrameSink {
+  class Frame final : public mitcad::render::DirectFrame {
+  public:
+    explicit Frame(DirectCountingSink& owner) : m_owner(owner) {}
+    mitcad::render::FrameBuffers buffers() const override { return {m_pixels.data(), nullptr}; }
+    void* nativeMetalBuffer() const override { return m_pixels.data(); }
+    std::size_t nativeMetalBufferSize() const override { return sizeof(m_pixels); }
+    void* nativeCatcherMetalBuffer() const override { return m_pixels.data() + 1; }
+    std::size_t nativeCatcherMetalBufferSize() const override { return sizeof(m_pixels); }
+    void publish(std::uint64_t, int, bool, bool) override { ++m_owner.frames; }
+    void discard() override { ++m_owner.discards; }
+  private:
+    DirectCountingSink& m_owner;
+    mutable std::array<std::uint16_t, 4> m_pixels{};
+  };
+public:
+  mitcad::render::FrameBuffers beginFrame(int, int, int, int, bool) override { CHECK(false); return {}; }
+  void endFrame(std::uint64_t, int, bool) override { CHECK(false); }
+  void finished(std::uint64_t, int, double) override {}
+  bool directDisplayBuffers() const override { return true; }
+  bool metalDisplayBuffers() const override { return true; }
+  void displayInteropUsed() override { ++interop; }
+  void auxiliaryNativeUsed(bool graphics, bool composite) override { auxiliary += graphics && composite ? 1 : 100; }
+  std::shared_ptr<mitcad::render::DirectFrame> beginDisplayFrame(int, int, int, int) override {
+    return std::make_shared<Frame>(*this);
+  }
+  int frames = 0;
+  int discards = 0;
+  int interop = 0;
+  int auxiliary = 0;
+};
+
+void renderDirectFallbackTests() {
+  using namespace mitcad::render;
+  DirectCountingSink sink;
+  std::shared_ptr<DirectFrame> retiredFrame;
+  FrameSink* first = nullptr;
+  FrameSink* latest = nullptr;
+  const auto factory = [&](FrameSink& target, const DeviceInfo& device, bool,
+                            std::string&) -> std::unique_ptr<Renderer> {
+    latest = &target;
+    if (!first) {
+      first = &target;
+      retiredFrame = target.beginDisplayFrame(1, 1, 1, 1);
+    }
+    const DeviceInfo selected = device.id.empty() ? DeviceInfo{"CPU", "CPU", "A processor", false} : device;
+    return std::make_unique<FakeRenderer>(target, selected, std::string());
+  };
+  std::string error;
+  auto renderer = makeDeviceRenderer(sink, DeviceInfo{"METAL_GPU", "METAL", "A GPU", false}, factory,
+      [](const DeviceInfo&, const std::string&) {}, "simulated", error);
+  CHECK(renderer && retiredFrame && first->directDisplayBuffers() && first->metalDisplayBuffers());
+  if (!renderer || !retiredFrame) return;
+  CHECK(retiredFrame->nativeMetalBuffer() == retiredFrame->buffers().light && retiredFrame->nativeMetalBufferSize() == 8);
+  CHECK(retiredFrame->nativeCatcherMetalBuffer() == retiredFrame->buffers().light + 1 &&
+        retiredFrame->nativeCatcherMetalBufferSize() == 8);
+  first->auxiliaryNativeUsed(true, true);
+  CHECK(sink.auxiliary == 1);
+  ViewData view;
+  view.sequence = 5;
+  renderer->setView(view);
+  renderer->wait();
+  CHECK(renderer->device().type == "CPU" && sink.frames == 2 && sink.interop == 1 && sink.discards == 0);
+  CHECK(first->directDisplayBuffers() && first->metalDisplayBuffers() && !first->beginDisplayFrame(1, 1, 1, 1));
+  first->displayInteropUsed();
+  first->auxiliaryNativeUsed(true, true);
+  CHECK(sink.auxiliary == 1);
+  retiredFrame->publish(99, 2, true, false);
+  retiredFrame->publish(99, 2, true, false);
+  retiredFrame->discard();
+  CHECK(sink.frames == 2 && sink.discards == 1 && sink.interop == 1);
+  auto stoppedFrame = latest->beginDisplayFrame(1, 1, 1, 1);
+  CHECK(stoppedFrame != nullptr);
+  renderer.reset();
+  if (stoppedFrame) {
+    stoppedFrame->publish(100, 2, true, false);
+    stoppedFrame->discard();
+  }
+  CHECK(sink.frames == 2 && sink.discards == 2);
+}
 
 // The CPU takes over from a device that cannot start or fails while it
 // renders, with what the device had (mitcad#50).
@@ -2023,6 +2238,10 @@ int parameterEditsTests();
 int decimalAlignTests();
 int parameterSuggestTests();
 int librarySettingsTests();
+int selectionCreateTests();
+int updateInstallerTests();
+int printAnalysisTests();
+int fitToScreenTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2030,7 +2249,12 @@ int main(int argc, char* argv[]) {
   if (renderDevicesOnly) {
     renderDeviceChoiceTests();
     renderFallbackTests();
+    renderDirectFallbackTests();
   } else {
+    atomicCopyTests();
+    projectRowDragTests();
+    renderWorkerFailureTests();
+    workerThreadStartTests();
     shortcutBindingTests();
     numberTests();
     cursorTests();
@@ -2041,6 +2265,7 @@ int main(int argc, char* argv[]) {
     renderCatcherTests();
     renderDeviceChoiceTests();
     renderFallbackTests();
+    renderDirectFallbackTests();
     reportMaskTests();
     reportCrashTests();
     reportLinkTests();
@@ -2094,6 +2319,10 @@ int main(int argc, char* argv[]) {
     failures += decimalAlignTests();
     failures += parameterSuggestTests();
     failures += librarySettingsTests();
+    failures += selectionCreateTests();
+    failures += updateInstallerTests();
+    failures += printAnalysisTests();
+    failures += fitToScreenTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

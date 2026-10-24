@@ -18,9 +18,11 @@
 #      give the nearest one (202 mm). OK makes F2.b0.
 #   4. On a shaft (mitcad#578), in a design mitcad-cli makes (an 8 mm
 #      cylinder 30 high, Cylinder1, F1.b0): Pulley with Shaft the
-#      cylinder's top edge: the note shows the bore the shaft gives (8 mm);
-#      an offset of 2 mm and a bore clearance of 0.2 mm make it 8.2 mm; OK
-#      makes the pulley on the shaft (F2.b0).
+#      cylinder's top edge: the Bore Clearance starts as the printed-fit
+#      parameter shaft_bore_clearance (0.2 mm, mitcad#623), so the note
+#      shows the bore the shaft gives as 8.2 mm; an offset of 2 mm and a
+#      typed bore clearance of 0.3 mm make it 8.3 mm; OK makes the pulley
+#      on the shaft (F2.b0).
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-pulley-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -126,13 +128,13 @@ Ui-ExpectNew 'Pick places:' 'the picks are logged'
 Ui-ExpectNew 'Pick edge F1.b0/E{F1:side0|F1:top} at' "the shaft's top edge can be picked"
 Ui-Mark
 Ui-Step "click the shaft's top edge"     { Ui-ClickPick 'edge F1.b0/E{F1:side0|F1:top} at' }
-Ui-ExpectNew 'bore 8 mm (shaft 8 mm)' 'the bore the shaft gives' 30
+Ui-ExpectNew 'bore 8.2 mm (shaft 8 mm)' 'the bore the shaft gives, with the printed fit' 30
 Ui-Mark
 Ui-Step 'offset 2'                       { Ui-TypeIn 'Panel Pulley input seat_offset' '2' }
 Ui-ExpectNew 'Preview Pulley: ok' '2 mm down the shaft previewed' 30
 Ui-Mark
-Ui-Step 'bore clearance 0.2'             { Ui-TypeIn 'Panel Pulley input bore_clearance' '0.2' }
-Ui-ExpectNew 'bore 8.2 mm (shaft 8 mm)' 'the clearance widens the bore' 30
+Ui-Step 'bore clearance 0.3'             { Ui-TypeIn 'Panel Pulley input bore_clearance' '0.3' }
+Ui-ExpectNew 'bore 8.3 mm (shaft 8 mm)' 'a typed clearance replaces the parameter' 30
 $note = Ui-LastMatch '(Panel Pulley note: .*)'
 Write-Host "     $note"
 Ui-Mark

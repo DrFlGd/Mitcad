@@ -291,6 +291,8 @@ LockController::LockController(QMainWindow& window, RemoteController& remote, Pr
     showDetails();
   });
   m_lastActivity = QDateTime::currentDateTimeUtc();
+  connect(&m_remote, &RemoteController::stateChanged, this, &LockController::finishSavedTransition,
+          Qt::QueuedConnection);
 }
 
 LockController::~LockController() {
@@ -543,6 +545,7 @@ void LockController::resetDesign() {
   m_why = Why::HeldByOther;
   m_root.clear();
   m_path.clear();
+  m_pendingSaved.clear();
   m_relative.clear();
   m_fileId.clear();
   m_myName.clear();
@@ -665,6 +668,13 @@ bool LockController::designClosing(const QString& next, bool readOnly) {
 
 void LockController::designSaved(const QString& path) {
   if (samePath(path, m_path)) {
+    // Save As may have returned to the still-held original after a
+    // cancelled sync. The latest saved name supersedes that pending move.
+    if (!m_pendingSaved.isEmpty()) {
+      qInfo().noquote() << QStringLiteral("Edit lock: Save As returned to %1, cancelling pending transfer to %2")
+                               .arg(fileName(), QFileInfo(m_pendingSaved).fileName());
+      m_pendingSaved.clear();
+    }
     if (m_mode == Mode::Holding) {
       // Its base is the version just recorded.
       const QString head =
@@ -677,8 +687,35 @@ void LockController::designSaved(const QString& path) {
   if (!m_path.isEmpty()) {
     qInfo().noquote() << QStringLiteral("Edit lock: %1 saved as %2").arg(fileName(), QFileInfo(path).fileName());
   }
-  designClosing(path, false);
+  if (!designClosing(path, false)) {
+    // The window has already saved under its new name. Resolve Sync kept
+    // the original design's lock alive; do not reset that controller and
+    // abandon its refresh/poll timers before the conflict is resolved.
+    m_pendingSaved = path;
+    qInfo().noquote() << QStringLiteral("Edit lock: keeping %1 until sync completes for Save As %2")
+                             .arg(fileName(), QFileInfo(path).fileName());
+    return;
+  }
   designOpened(path, false);
+}
+
+void LockController::finishSavedTransition() {
+  if (m_pendingSaved.isEmpty() || !sameFolderPath(m_host.project().root, m_root)) {
+    return;
+  }
+  const ProjectIndicator::Remote remote = m_remote.indicatorState();
+  if (!remote.busy.isEmpty() || remote.conflict || !remote.problem.isEmpty() ||
+      remote.ahead != 0 || remote.behind != 0) {
+    return;
+  }
+  if (m_blocking > 0 || m_host.busy() || QApplication::activeModalWidget() != nullptr) {
+    QTimer::singleShot(100, this, &LockController::finishSavedTransition);
+    return;
+  }
+  const QString saved = m_pendingSaved;
+  qInfo().noquote() << QStringLiteral("Edit lock: sync complete, finishing Save As %1")
+                           .arg(QFileInfo(saved).fileName());
+  designSaved(saved);
 }
 
 void LockController::projectChanged() {

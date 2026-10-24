@@ -249,6 +249,11 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/face_revolve.cpp
   include/mitcad/geometry/face_revolve.hpp)
+# Blend surfaces of imported bodies stored without their approximation,
+# made with OCCT's blend walking (mitcad#621).
+target_sources(mitcad_geometry PRIVATE
+  src/blend_surfaces.cpp
+  src/blend_surfaces.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -530,6 +535,11 @@ if(BUILD_TESTING)
   add_executable(test_fillet_crease_into_end_walls tests/test_fillet_crease_into_end_walls.cpp)
   target_link_libraries(test_fillet_crease_into_end_walls PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.fillet_crease_into_end_walls COMMAND test_fillet_crease_into_end_walls)
+  # Rolling-ball blends of imported bodies stored without their
+  # approximation, walked by OCCT (mitcad#621).
+  add_executable(test_blend_surfaces tests/test_blend_surfaces.cpp)
+  target_link_libraries(test_blend_surfaces PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.blend_surfaces COMMAND test_blend_surfaces)
 endif()
 
 # Data exchange and analysis services, separate libraries on top of OCCT.

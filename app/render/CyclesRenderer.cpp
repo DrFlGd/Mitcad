@@ -68,19 +68,46 @@ using Clock = std::chrono::steady_clock;
 // CyclesRenderer::publishFrame).
 class SinkDisplayDriver : public ccl::DisplayDriver {
 public:
-  SinkDisplayDriver(std::function<std::uint16_t*(int, int, int, int)> begin, std::function<void()> end)
-      : m_begin(std::move(begin)), m_end(std::move(end)) {}
+  SinkDisplayDriver(std::function<std::uint16_t*(int, int, int, int)> begin, std::function<void()> end,
+                    std::function<std::shared_ptr<DirectFrame>()> direct, bool metal, std::function<void()> used)
+      : m_begin(std::move(begin)), m_end(std::move(end)), m_direct(std::move(direct)),
+        m_metal(metal), m_used(std::move(used)) {}
 
   void next_tile_begin() override {}
 
   bool update_begin(const Params& params, const int width, const int height) override {
     m_pixels = m_begin(width, height, params.full_size.x, params.full_size.y);
+    m_update = m_direct();
+    if (m_pixels && m_metal && (!m_update || m_update->nativeMetalBuffer() == nullptr)) {
+      if (m_update) m_update->discard();
+      m_update.reset();
+      m_pixels = nullptr;
+    }
     return m_pixels != nullptr;
   }
 
   void update_end() override {
     m_pixels = nullptr;
     m_end();
+    // Cycles has replaced the old raw interop handle and synchronized its film
+    // conversion queue before update_end. The previous allocation may now go.
+    m_previous.reset();
+    m_update.reset();
+  }
+
+  ccl::GraphicsInteropDevice graphics_interop_get_device() override {
+    ccl::GraphicsInteropDevice result;
+    if (m_metal) result.type = ccl::GraphicsInteropDevice::METAL;
+    return result;
+  }
+  void graphics_interop_update_buffer() override {
+    if (!m_update || !m_update->nativeMetalBuffer()) { graphics_interop_buffer_.clear(); return; }
+    m_previous = m_current;
+    m_current = m_update;
+    graphics_interop_buffer_.assign(ccl::GraphicsInteropDevice::METAL,
+        static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(m_current->nativeMetalBuffer())),
+        m_current->nativeMetalBufferSize());
+    m_used();
   }
 
   ccl::half4* map_texture_buffer() override { return reinterpret_cast<ccl::half4*>(m_pixels); }
@@ -91,6 +118,12 @@ public:
 private:
   std::function<std::uint16_t*(int, int, int, int)> m_begin;
   std::function<void()> m_end;
+  std::function<std::shared_ptr<DirectFrame>()> m_direct;
+  bool m_metal = false;
+  std::function<void()> m_used;
+  // The driver owns the external handles even after frame publication. Cycles'
+  // device interop object removes residency before destroying this driver.
+  std::shared_ptr<DirectFrame> m_update, m_current, m_previous;
   std::uint16_t* m_pixels = nullptr;
 };
 
@@ -103,12 +136,23 @@ class TileOutputDriver : public ccl::OutputDriver {
 public:
   using Deliver = std::function<bool(const Tile& tile, bool last)>;
   explicit TileOutputDriver(Deliver deliver) : m_deliver(std::move(deliver)) {}
+#ifdef MITCAD_CYCLES_NATIVE_DISPLAY_PASSES
+  using Display = std::function<void(const Tile&, const DisplayInfo&)>;
+  TileOutputDriver(Deliver deliver, Display display)
+      : m_deliver(std::move(deliver)), m_display(std::move(display)) {}
+  void update_display_tile(const Tile& tile, const DisplayInfo& display) override {
+    if (m_display) m_display(tile, display);
+  }
+#endif
 
   void write_render_tile(const Tile& tile) override { m_deliver(tile, true); }
   bool update_render_tile(const Tile& tile) override { return m_deliver(tile, false); }
 
 private:
   Deliver m_deliver;
+#ifdef MITCAD_CYCLES_NATIVE_DISPLAY_PASSES
+  Display m_display;
+#endif
 };
 
 // Float pixels (4 channels) as the half floats of a frame; in parallel (a
@@ -255,6 +299,7 @@ public:
       m_session->cancel(true);
       m_session.reset();
     }
+    m_frame.direct.reset();
   }
 
   bool start(std::string& error) {
@@ -329,11 +374,24 @@ public:
           [this] {
             const std::lock_guard<std::mutex> frame(m_frameMutex);
             m_frame.pending = true;
-          }));
+          }, [this] { const std::lock_guard<std::mutex> frame(m_frameMutex); return m_frame.direct; },
+          m_params.device.type == ccl::DEVICE_METAL && m_sink.metalDisplayBuffers(),
+          [this] { m_sink.displayInteropUsed(); }));
       // The passes the display driver does not carry, read just before
       // each display update.
       m_session->set_output_driver(std::make_unique<TileOutputDriver>(
-          [this](const ccl::OutputDriver::Tile& tile, bool last) { return !last && readPasses(tile); }));
+          [this](const ccl::OutputDriver::Tile& tile, bool last) {
+#ifdef MITCAD_CYCLES_NATIVE_DISPLAY_PASSES
+            if (m_sink.directDisplayBuffers()) return !last;
+#endif
+            return !last && readPasses(tile);
+          }
+#ifdef MITCAD_CYCLES_NATIVE_DISPLAY_PASSES
+          , [this](const ccl::OutputDriver::Tile& tile, const ccl::OutputDriver::DisplayInfo& display) {
+            if (m_sink.directDisplayBuffers()) readNativePasses(tile, display);
+          }
+#endif
+          ));
     } else {
       m_session->set_output_driver(std::make_unique<TileOutputDriver>(
           [this](const ccl::OutputDriver::Tile& tile, bool last) { return deliver(tile, last); }));
@@ -1670,6 +1728,111 @@ private:
     return true;
   }
 
+#ifdef MITCAD_CYCLES_NATIVE_DISPLAY_PASSES
+  bool nativePassReference(const ccl::OutputDriver::Tile& tile,
+                           const ccl::OutputDriver::DisplayInfo& display, bool composite,
+                           std::vector<std::uint16_t>& result) {
+    const auto count = static_cast<std::size_t>(display.size.x) * display.size.y * 4;
+    const auto sourceCount = static_cast<std::size_t>(tile.size.x) * tile.size.y * 4;
+    // This diagnostic is intentionally limited to small controlled regressions.
+    if (sourceCount > 16 * 1024 * 1024 || count > sourceCount) return false;
+    std::vector<float> catcher(sourceCount);
+    if (!tile.get_pass_pixels(display.denoised ? kCatcherDenoised : kCatcherNoisy, 4, catcher.data())) return false;
+    result.resize(count);
+    if (!composite) {
+      toHalf(catcher.data(), count, result.data());
+      return true;
+    }
+    std::vector<float> background(sourceCount);
+    if (!tile.get_pass_pixels(kBackground, 4, background.data())) return false;
+    std::vector<float> light(count);
+    const auto beauty = m_frame.direct->buffers().light;
+    for (std::size_t index = 0; index < count; ++index) light[index] = ccl::half_to_float(ccl::half(beauty[index]));
+    compositeOverEnvironment(light.data(), catcher.data(), background.data(), count / 4);
+    toHalf(light.data(), count, result.data());
+    return true;
+  }
+
+  // This callback runs after the beauty's film conversion/GPU synchronization,
+  // while the batch's auxiliary passes remain stable. Keep the write lease until
+  // both conversions finish; a concurrent progress callback must not publish it.
+  void readNativePasses(const ccl::OutputDriver::Tile& tile,
+                        const ccl::OutputDriver::DisplayInfo& display) {
+    const std::lock_guard<std::mutex> frame(m_frameMutex);
+    if (!m_frame.direct) return; // No writable transport slot for this update.
+    m_frame.denoised = display.denoised;
+    m_frame.nativeCatcher = false;
+    const bool ground = m_hasGround.load();
+    const bool composite = ground && m_seesEnvironment.load();
+    bool accepted = display.size.x == m_frame.width && display.size.y == m_frame.height &&
+                    recordDenoising(display.denoised);
+    if (accepted && ground) {
+      const auto buffers = m_frame.direct->buffers();
+      ccl::OutputDriver::NativePassDestination target;
+      target.size = display.size;
+      target.pixels = reinterpret_cast<ccl::half4*>(composite ? buffers.light : buffers.catcher);
+      target.size_bytes = static_cast<std::size_t>(display.size.x) * display.size.y * sizeof(ccl::half4);
+      target.composite_over_environment = composite;
+      ccl::GraphicsInteropBuffer interop;
+      if (m_params.device.type == ccl::DEVICE_METAL && m_sink.metalDisplayBuffers()) {
+        void* handle = composite ? m_frame.direct->nativeMetalBuffer() : m_frame.direct->nativeCatcherMetalBuffer();
+        const auto bytes = composite ? m_frame.direct->nativeMetalBufferSize() : m_frame.direct->nativeCatcherMetalBufferSize();
+        if (handle && bytes >= target.size_bytes) {
+          interop.assign(ccl::GraphicsInteropDevice::METAL,
+              static_cast<std::int64_t>(reinterpret_cast<std::intptr_t>(handle)), bytes);
+          target.graphics_interop = &interop;
+          target.size_bytes = bytes;
+        } else accepted = false;
+      }
+      // Explicit test mode only: compare against the old float accessor using
+      // this exact batch. In production no full-plane reference is allocated or
+      // read back, and no float getter is called on the native display path.
+      std::vector<std::uint16_t> reference;
+      if (accepted && m_options.testNativePassComparison) {
+        accepted = nativePassReference(tile, display, composite, reference);
+      }
+      bool graphics = false;
+      target.used_graphics_interop = &graphics;
+      accepted = accepted && target.pixels && tile.get_pass_pixels_native(
+          display.denoised ? kCatcherDenoised : kCatcherNoisy, target);
+      if (accepted && m_options.testNativePassComparison) {
+        unsigned maximum = 0;
+        for (std::size_t index = 0; index < reference.size(); ++index) {
+          // Catcher alpha is unused by the compositor; RGB is the contract.
+          // Environment output is beauty RGBA, including its opaque alpha.
+          if (!composite && index % 4 == 3) continue;
+          const auto actual = reinterpret_cast<const std::uint16_t*>(target.pixels)[index];
+          const auto expected = reference[index];
+          if (!std::isfinite(ccl::half_to_float(ccl::half(actual))) ||
+              !std::isfinite(ccl::half_to_float(ccl::half(expected)))) { accepted = false; break; }
+          const auto ordered = [](std::uint16_t bits) -> unsigned {
+            return (bits & 0x8000u) ? unsigned(0xffffu - bits) : unsigned(bits | 0x8000u);
+          };
+          const auto left = ordered(actual), right = ordered(expected);
+          maximum = std::max(maximum, left > right ? left - right : right - left);
+        }
+        // CPU uses the same converter and must match bit for bit. GPU film
+        // arithmetic may contract float multiply/add: permit one half ULP, and
+        // report the observed maximum rather than changing this bound on failure.
+        accepted = accepted && maximum <= (graphics ? 1u : 0u);
+        m_sink.auxiliaryNativeCompared(maximum, composite);
+      }
+      if (accepted) {
+        m_frame.nativeCatcher = !composite;
+        m_sink.auxiliaryNativeUsed(graphics, composite);
+      }
+    }
+    if (!accepted) {
+      m_frame.direct->discard();
+      m_frame.direct.reset();
+      m_frame.pending = false;
+      m_session->device->set_error("native auxiliary display conversion failed (dimensions, pass or device unsupported)");
+      return;
+    }
+    m_frame.nativeReady = true;
+  }
+#endif
+
   // A tile of a non-interactive render (the final render, benchmarks): the
   // image so far, or the finished one (`last`, denoised), with the ground's
   // catcher factors, to the sink.
@@ -1727,6 +1890,14 @@ private:
     m_frame.fullWidth = fullWidth;
     m_frame.fullHeight = fullHeight;
     m_frame.pending = false;
+    m_frame.nativeReady = false;
+    m_frame.nativeCatcher = false;
+    if (m_frame.direct) m_frame.direct->discard();
+    m_frame.direct.reset();
+    if (m_sink.directDisplayBuffers()) {
+      m_frame.direct = m_sink.beginDisplayFrame(width, height, fullWidth, fullHeight);
+      return m_frame.direct ? m_frame.direct->buffers().light : nullptr;
+    }
     m_frame.pixels.resize(static_cast<std::size_t>(width) * height * 4);
     return m_frame.pixels.data();
   }
@@ -1744,6 +1915,9 @@ private:
     if (!m_frame.pending) {
       return;
     }
+#ifdef MITCAD_CYCLES_NATIVE_DISPLAY_PASSES
+    if (m_frame.direct && !m_frame.nativeReady) return;
+#endif
     m_frame.pending = false;
     const int samples = m_session->progress.get_current_sample();
     const bool lowResolution = m_frame.width < m_frame.fullWidth;
@@ -1753,6 +1927,9 @@ private:
       const std::lock_guard<std::mutex> schedule(m_scheduleMutex);
       const int from = m_denoiseAt[m_stage];
       denoised = m_denoise && (lowResolution ? from <= 1 : samples >= from) && m_frame.denoised;
+#ifdef MITCAD_CYCLES_NATIVE_DISPLAY_PASSES
+      if (m_frame.direct) denoised = m_frame.denoised;
+#endif
       shown = denoised || !m_shownDenoised;
       if (denoised) {
         // Noisy frames still follow the denoised first frame (at a lower
@@ -1766,12 +1943,26 @@ private:
     }
     applyStageChange();
     if (!shown) {
+      if (m_frame.direct) m_frame.direct->discard();
+      m_frame.direct.reset();
       return;
     }
+#ifdef MITCAD_CYCLES_NATIVE_DISPLAY_PASSES
+    if (m_frame.direct) {
+      const std::uint64_t view = m_view.load();
+      m_frame.direct->publish(view, samples, denoised, m_frame.nativeCatcher);
+      m_frame.direct.reset();
+      if (denoised && !lowResolution && samples >= m_samples && m_reported.exchange(view) != view) {
+        const double seconds = std::chrono::duration<double>(Clock::now() - m_started.load()).count();
+        m_sink.finished(view, samples, seconds);
+      }
+      return;
+    }
+#endif
     // The ground's catcher factors of the same batch (readPasses): their
     // first pixels are the frame's, also at a lower resolution (Cycles'
     // buffers keep the frame's pixels first, row after row).
-    const std::size_t count = m_frame.pixels.size();
+    const std::size_t count = m_frame.direct ? static_cast<std::size_t>(m_frame.width) * m_frame.height * 4 : m_frame.pixels.size();
     const std::vector<float>* catcher = nullptr;
     if (m_frame.passes) {
       catcher = denoised && !m_frame.catcherDenoised.empty() ? &m_frame.catcherDenoised : &m_frame.catcherNoisy;
@@ -1780,12 +1971,27 @@ private:
       }
     }
     const bool composite = catcher != nullptr && m_frame.environment && m_frame.background.size() >= count;
-    const FrameBuffers target = m_sink.beginFrame(m_frame.width, m_frame.height, m_frame.fullWidth,
-                                                  m_frame.fullHeight, catcher != nullptr && !composite);
+    const FrameBuffers target = m_frame.direct ? m_frame.direct->buffers() :
+        m_sink.beginFrame(m_frame.width, m_frame.height, m_frame.fullWidth, m_frame.fullHeight, catcher != nullptr && !composite);
     if (target.light == nullptr) {
       return;
     }
-    if (composite) {
+    if (m_frame.direct && composite) {
+      // The display driver already wrote the light into its final surface.
+      // Composite in place using the same float/half operations as the retained
+      // path, without allocating or copying another full light plane.
+      for (std::size_t pixel = 0; pixel < count / 4; ++pixel) {
+        const auto base = pixel * 4;
+        const float rest = 1.0f - std::clamp(ccl::half_to_float(ccl::half(target.light[base + 3])), 0.0f, 1.0f);
+        for (int channel = 0; channel < 3; ++channel) {
+          const auto index = base + channel;
+          const float value = ccl::half_to_float(ccl::half(target.light[index])) +
+              rest * (*catcher)[index] * m_frame.background[index];
+          target.light[index] = static_cast<std::uint16_t>(ccl::float_to_half_display(value));
+        }
+        target.light[base + 3] = static_cast<std::uint16_t>(ccl::float_to_half_display(1.0f));
+      }
+    } else if (composite) {
       std::vector<float> light(count);
       for (std::size_t i = 0; i < count; ++i) {
         light[i] = ccl::half_to_float(ccl::half(m_frame.pixels[i]));
@@ -1793,13 +1999,16 @@ private:
       compositeOverEnvironment(light.data(), catcher->data(), m_frame.background.data(), count / 4);
       toHalf(light.data(), count, target.light);
     } else {
-      std::memcpy(target.light, m_frame.pixels.data(), count * sizeof(std::uint16_t));
+      if (!m_frame.direct) std::memcpy(target.light, m_frame.pixels.data(), count * sizeof(std::uint16_t));
       if (target.catcher != nullptr && catcher != nullptr) {
         toHalf(catcher->data(), count, target.catcher);
       }
     }
     const std::uint64_t view = m_view.load();
-    m_sink.endFrame(view, samples, denoised);
+    if (m_frame.direct) {
+      m_frame.direct->publish(view, samples, denoised, catcher != nullptr && !composite);
+      m_frame.direct.reset();
+    } else m_sink.endFrame(view, samples, denoised);
     if (denoised && !lowResolution && samples >= m_samples && m_reported.exchange(view) != view) {
       const double seconds = std::chrono::duration<double>(Clock::now() - m_started.load()).count();
       m_sink.finished(view, samples, seconds);
@@ -1947,7 +2156,10 @@ private:
   // The frame Cycles displayed last, until publishFrame passes it on.
   struct DisplayedFrame {
     std::vector<std::uint16_t> pixels;
+    std::shared_ptr<DirectFrame> direct;
     // The batch's other passes (readPasses), floats of the whole view.
+    bool nativeReady = false; // post-display auxiliary conversion completed
+    bool nativeCatcher = false;
     bool passes = false;
     bool denoised = false; // captured on the render thread alongside the passes
     bool environment = false; // composite the ground over the background pass

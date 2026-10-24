@@ -16,7 +16,8 @@
 // the worker's stdin ({"cmd": "device" | "memory" | "scene" | "environment" |
 // "view" | "samples" | "stop", ...}); the worker answers on stdout
 // ({"event": "hello" | "ready" | "device" | "scene" | "frame" | "done" |
-// "status" | "error", ...}). A scene names its bodies with their meshes'
+// "status" | "warning" | "error", ...}). Warnings are recoverable and
+// do not describe why a process later stopped. A scene names its bodies with their meshes'
 // content hashes and brings only the meshes the worker does not hold
 // (RenderScene.hpp). Its first line is "hello" with its kProtocolVersion;
 // the application stops a worker of another version. End of stdin also

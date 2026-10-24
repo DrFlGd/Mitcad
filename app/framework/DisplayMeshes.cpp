@@ -91,20 +91,33 @@ DisplayMeshing meshForDisplay(const DisplayShapes& shapes, ModelJob& job) {
   // the faces of all of them over the cores (mitcad#438); one at a time,
   // a design of many small bodies used a core or two.
   std::vector<TopoDS_Shape> pending;
+  std::vector<const geometry::Shape*> owners;
   for (const std::shared_ptr<geometry::Shape>& shape : shapes) {
     const TopoDS_Shape& occt = shape->occt();
-    if (!io::has_triangulation(occt) && !io::is_mesh(occt)) {
+    if (!io::has_triangulation(occt) && !io::is_mesh(occt) && !shape->display_meshed()) {
       pending.push_back(occt);
+      owners.push_back(shape.get());
     }
   }
   if (!pending.empty() && !job.control().is_cancelled()) {
     job.setStage(QCoreApplication::translate("DisplayMeshes", "Meshing the bodies for display"));
     const occ::handle<JobBreak> progress = new JobBreak(job);
     try {
-      // A body OCCT fails on is left to the view, which meshes it when it
-      // draws it, as before.
       meshing.bodies = io::mesh_all_in_place(pending, viewMeshOptions(), progress->Start());
+      // Meshed to the end: a face still without a triangulation is one
+      // OCCT's mesher fails on. The view draws the others and does not
+      // mesh the body again on the UI thread, where meshing such a face
+      // again could hold the window without end (mitcad#589).
+      if (!job.control().is_cancelled() && meshing.bodies == pending.size()) {
+        for (std::size_t i = 0; i < pending.size(); ++i) {
+          owners[i]->set_display_meshed();
+          if (!io::has_triangulation(pending[i])) {
+            ++meshing.incomplete;
+          }
+        }
+      }
     } catch (const Standard_Failure&) {
+      // The view meshes them when it draws them, as before.
     } catch (const std::exception&) {
     }
   }
@@ -118,6 +131,12 @@ void logDisplayMeshing(const DisplayMeshing& meshing, const QString& label) {
                               .arg(label)
                               .arg(static_cast<qulonglong>(meshing.bodies))
                               .arg(meshing.milliseconds);
+  }
+  if (meshing.incomplete > 0) {
+    qWarning().noquote() << QStringLiteral("Display meshes of %1: %2 bodies with faces that could not be meshed "
+                                           "(not drawn)")
+                                .arg(label)
+                                .arg(static_cast<qulonglong>(meshing.incomplete));
   }
 }
 

@@ -14,6 +14,7 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
     // Candidate translation needs only the imported feature identities;
     // no geometry is evaluated or selected in this test.
     let mut importer = Importer {
+        body_scope: body_scope::Scope::capture(&doc).enter(&doc),
         oracle,
         doc: &mut doc,
         dump: &dump,

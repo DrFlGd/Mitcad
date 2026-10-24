@@ -17,7 +17,7 @@
 //! import-ipt`; with `reference`, the solids are compared with a STEP file
 //! of the same part (volume and area of each solid).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -701,6 +701,8 @@ impl Document {
         let mut geometry = crate::ipt_history::IptGeometry::new(stored.states.clone());
         let record_reports = &stored.records;
         let empty = self.0.features().next().is_none();
+        let previous_bodies: HashSet<BodyUid> =
+            self.0.bodies().iter().map(|body| body.uid).collect();
         let depth = self.0.undo_depth();
         let label = format!("Import {file}");
         let units = self.apply_part_units(info, empty, &mut warnings)?;
@@ -758,13 +760,20 @@ impl Document {
             part_properties(info, mitcad_model::ComponentUid::ROOT),
         );
         let material = info.material.as_deref().and_then(mitcad_material);
+        // Attributes from the imported part belong only to its new bodies;
+        // a history replay into an existing document also sees old bodies.
+        let candidates: Vec<BodyUid> = self
+            .0
+            .bodies()
+            .iter()
+            .map(|body| body.uid)
+            .filter(|uid| !previous_bodies.contains(uid))
+            .collect();
         if let Some(id) = material {
-            let bodies: Vec<BodyUid> = self.0.bodies().iter().map(|b| b.uid).collect();
-            for uid in bodies {
+            for &uid in &candidates {
                 self.0.set_body_material(uid, Some(id))?;
             }
         }
-        let candidates: Vec<BodyUid> = self.0.bodies().iter().map(|b| b.uid).collect();
         let hidden = self.hide_stored_hidden(&info.hidden_bodies, &candidates, &mut warnings)?;
         self.0.merge_undo(depth, &label);
         report
@@ -774,10 +783,16 @@ impl Document {
             .warnings
             .extend(design.notes.iter().map(|l| format!("not decoded: {l}")));
 
-        // The document's bodies, measured.
+        // Only this import's bodies, measured; receiving bodies are not
+        // products of the part even when their geometry is identical.
         let kernel = self.0.kernel();
         let mut found = Vec::new();
-        for body in self.0.bodies() {
+        for body in self
+            .0
+            .bodies()
+            .into_iter()
+            .filter(|body| !previous_bodies.contains(&body.uid))
+        {
             let props = kernel.mass_properties(body.shape).ok();
             let kind = kernel.body_kind(body.shape).ok();
             let solid = kind == Some(mitcad_model::BodyKind::Solid);

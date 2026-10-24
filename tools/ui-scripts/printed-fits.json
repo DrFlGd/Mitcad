@@ -1,0 +1,3 @@
+[
+  {"cmd":"add_feature","def":{"type":"cylinder","plane":"xy","diameter":30,"height":12,"operation":"new_body"}}
+]

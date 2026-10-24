@@ -1162,7 +1162,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let step = points.len().div_ceil(256).max(1);
         let kernel = self.doc.kernel();
         let mut points_on = |c: &FaceCandidate| -> usize {
-            let Some(shape) = self.doc.body_shape(c.body) else {
+            let Some(shape) = crate::body_scope::shape(self.doc, c.body) else {
                 return 0;
             };
             let back = inverse(&into.after(&self.doc.path_transform(&c.path)));
@@ -1217,7 +1217,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 return Some(edges.clone());
             }
             crate::tick();
-            let edges = kernel.edge_geometries(self.doc.body_shape(body)?).ok()?;
+            let edges = kernel
+                .edge_geometries(crate::body_scope::shape(self.doc, body)?)
+                .ok()?;
             edges_of.insert(body, edges.clone());
             Some(edges)
         };
@@ -1261,7 +1263,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 continue;
             }
             let t = into.after(&instance.transform);
-            let Some(shape) = self.doc.body_shape(instance.body) else {
+            let Some(shape) = crate::body_scope::shape(self.doc, instance.body) else {
                 continue;
             };
             if !comes_near(shape, &t) {
@@ -1290,7 +1292,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         target: &[OccurrenceUid],
     ) -> Option<Vec<Curve3>> {
         let name: TopoName = source.edge.parse().ok()?;
-        let shape = self.doc.body_shape(source.body)?;
+        let shape = crate::body_scope::shape(self.doc, source.body)?;
         let curves = self.doc.kernel().curves_of(shape, &name).ok()?;
         if curves.len() != 1 {
             return None;

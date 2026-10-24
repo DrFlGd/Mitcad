@@ -44,7 +44,10 @@ impl<K: Kernel> Importer<'_, K> {
             .into_iter()
             .chain(report.features.iter().filter_map(|f| f.parse().ok()))
             .collect();
-        let mut current: Vec<BodyUid> = self.doc.bodies().iter().map(|b| b.uid).collect();
+        let mut current: Vec<BodyUid> = crate::body_scope::bodies(self.doc)
+            .iter()
+            .map(|b| b.uid)
+            .collect();
         current.sort();
         let mut out = Vec::new();
         let mut own_features = true;
@@ -125,9 +128,7 @@ impl<K: Kernel> Importer<'_, K> {
             let made: Vec<String> = made
                 .iter()
                 .map(|b| {
-                    let volume = self
-                        .doc
-                        .body_shape(*b)
+                    let volume = crate::body_scope::shape(self.doc, *b)
                         .and_then(|s| Sig::of(kernel, s))
                         .map_or(-1.0, |s| s.volume);
                     format!("{b} ({volume:.1} mm3)")
@@ -138,7 +139,7 @@ impl<K: Kernel> Importer<'_, K> {
                 f3d.body_index
             );
         }
-        let live = |b: &BodyUid| self.doc.body_shape(*b).is_some();
+        let live = |b: &BodyUid| crate::body_scope::shape(self.doc, *b).is_some();
         if own && let [only] = made[..] {
             return live(&only).then_some(only);
         }
@@ -193,7 +194,7 @@ impl<K: Kernel> Importer<'_, K> {
         };
         let (made, _) = self.made_by(producer);
         made.into_iter()
-            .filter(|b| self.doc.body_shape(*b).is_some())
+            .filter(|b| crate::body_scope::shape(self.doc, *b).is_some())
             .collect()
     }
 
@@ -249,7 +250,9 @@ impl<K: Kernel> Importer<'_, K> {
             })
             .or(found.first())
             .copied()?;
-        self.doc.body_shape(body).is_some().then_some(body)
+        crate::body_scope::shape(self.doc, body)
+            .is_some()
+            .then_some(body)
     }
 
     /// The bodies of decoded references, every one found (once each), or
@@ -356,7 +359,7 @@ impl<K: Kernel> Importer<'_, K> {
         let kernel = self.doc.kernel();
         let Some(sigs) = tools
             .iter()
-            .map(|t| Sig::of(kernel, self.doc.body_shape(*t)?))
+            .map(|t| Sig::of(kernel, crate::body_scope::shape(self.doc, *t)?))
             .collect::<Option<Vec<Sig>>>()
         else {
             return;

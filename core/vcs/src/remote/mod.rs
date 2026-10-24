@@ -1215,6 +1215,10 @@ impl ProjectRepo {
                 None => None,
             };
             for difference in self.differences(parent, Some(tree))? {
+                // A gitlink names a commit in another repository, not a local file.
+                if difference.mode.is_some_and(|mode| mode.is_commit()) {
+                    continue;
+                }
                 let Some(id) = difference.new.filter(|id| seen.insert(*id)) else {
                     continue;
                 };
@@ -1486,6 +1490,8 @@ pub(crate) fn clone_repository(
         parent,
         &[
             "clone",
+            "--config",
+            "core.symlinks=false",
             "--origin",
             DEFAULT_REMOTE,
             "--progress",

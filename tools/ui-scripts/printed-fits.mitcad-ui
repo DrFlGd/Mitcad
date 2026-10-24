@@ -1,0 +1,103 @@
+# SPDX-License-Identifier: MIT
+# Shared actual-control workflow for Qt and AppKit, on printed-fits.json.
+expect-ever 'View area'
+window-resize 1280 900
+key F6
+sleep 600
+capture-undo-depth initial
+
+# Reports and field values must work while these user parameters do not exist.
+command solid.gear
+expect-log 'Command Gear started'
+expect-input-text backlash '^gear_backlash$'
+expect-log 'Gear Backlash: gear_backlash = 0.2 mm'
+type-in 'Panel Gear input backlash at' '0.37 mm'
+expect-input-text backlash '^0.37 mm$'
+key Escape
+expect-log 'Command Gear cancelled'
+expect-model-parameter gear_backlash absent
+
+command solid.pulley
+expect-log 'Command Pulley started'
+click-logged 'Panel Pulley input shaft at'
+click-pick 'face F1\.b0/F1:side0'
+expect-input-text bore_clearance '^shaft_bore_clearance$'
+key Escape
+expect-log 'Command Pulley cancelled'
+expect-model-parameter shaft_bore_clearance absent
+
+command solid.bearing
+expect-log 'Command Bearing started'
+expect-input-text radial_clearance '^bearing_radial_clearance$'
+expect-input-text axial_clearance '^bearing_axial_clearance$'
+expect-input-text element_gap '^bearing_element_gap$'
+click-logged 'Panel Bearing input shaft at'
+click-pick 'face F1\.b0/F1:side0'
+expect-input-text fit_clearance '^bearing_fit_clearance$'
+key Escape
+expect-log 'Command Bearing cancelled'
+expect-model-parameter bearing_radial_clearance absent
+expect-model-parameter bearing_fit_clearance absent
+
+# Editing or clearing a field must survive refresh, without a default reset.
+command solid.thread
+click-logged 'Panel Thread input modeled at'
+expect-input-text radial_clearance '^thread_radial_clearance$'
+expect-input-text flank_clearance '^thread_flank_clearance$'
+type-in 'Panel Thread input radial_clearance at' '0.25 mm'
+expect-input-text radial_clearance '^0.25 mm$'
+key ctrl+a Backspace
+expect-input-text radial_clearance '^$'
+click-logged 'Panel Thread input modeled at'
+click-logged 'Panel Thread input modeled at'
+expect-input-text radial_clearance '^$'
+key Escape
+expect-model-parameter thread_radial_clearance absent
+expect-model-parameter thread_flank_clearance absent
+expect-undo-depth ${initial} 0
+
+# OK installs both defaults together. A canceled preview installed neither.
+# The M30 coarse pitch supports both the default and edited flank gaps.
+mark
+command solid.thread
+click-logged 'Panel Thread input modeled at'
+click-logged 'Panel Thread input faces at'
+click-pick 'face F1\.b0/F1:side0'
+expect-input-text radial_clearance '^thread_radial_clearance$'
+expect-input-text flank_clearance '^thread_flank_clearance$'
+wait-idle 60
+expect-model-parameter thread_radial_clearance absent
+button '^OK$'
+expect-log 'Added Thread as F2' 60
+expect-log 'Created user parameter thread_radial_clearance = 0.1 mm'
+expect-log 'Created user parameter thread_flank_clearance = 0.1 mm'
+expect-model-parameter thread_radial_clearance 0.1
+expect-model-parameter thread_flank_clearance 0.1
+expect-undo-depth ${initial} 1
+
+command solid.parameters
+focus-dialog '^Parameters$'
+expect-parameter-cell thread_radial_clearance 4 '^Printed thread fit, radial; depends on dimensional accuracy$' visible
+expect-parameter-cell thread_flank_clearance 4 '^Printed thread fit, flanks; depends on overhang quality$' visible
+click-parameter thread_flank_clearance 2
+key F2
+key ctrl+a
+type '0.15 mm'
+key Return
+expect-log 'Parameter thread_flank_clearance expression: 0.15 mm = 0.15 mm' 60
+expect-parameter-cell thread_flank_clearance 3 '^0.15 mm$' visible
+button '^OK$'
+focus-main
+expect-model-parameter thread_flank_clearance 0.15
+
+command edit.undo
+expect-model-parameter thread_flank_clearance 0.1
+command edit.undo
+expect-model-parameter thread_radial_clearance absent
+expect-model-parameter thread_flank_clearance absent
+expect-undo-depth ${initial} 0
+command edit.redo
+expect-model-parameter thread_radial_clearance 0.1
+expect-model-parameter thread_flank_clearance 0.1
+expect-undo-depth ${initial} 1
+expect-never 'The document was read while a job computes it|OCCT view event failed'

@@ -17,6 +17,7 @@
 
 #include "mitcad_bridge/lib.h"
 #include "rust/cxx.h"
+#include "WorkerThreadStart.hpp"
 
 namespace mitcad {
 
@@ -83,9 +84,13 @@ class ModelWorker : public QThread {
   Q_OBJECT
 
 public:
-  explicit ModelWorker(QObject* parent = nullptr);
+  explicit ModelWorker(QObject* parent = nullptr, WorkerThreadStarter starter = {});
   // Waits for a running job (cancel it first), then ends the thread.
   ~ModelWorker() override;
+
+  // Starts with the preferred stack, then smaller stacks if allocation
+  // fails. False leaves the worker idle, with no job queued.
+  bool ensureStarted(QString& error);
 
   // Starts a job; the one before must have been taken.
   void post(std::function<void()> job);
@@ -110,6 +115,7 @@ private:
   bool m_busy = false; // posted and not taken
   bool m_done = false;
   bool m_stop = false;
+  WorkerThreadStarter m_starter;
 };
 
 } // namespace mitcad

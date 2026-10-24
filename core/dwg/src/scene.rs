@@ -251,6 +251,9 @@ pub struct Scene {
     pub blocks: BTreeMap<u64, Block>,
     pub model_space: u64,
     pub account: Account,
+    /// The blocks the paper space's own inserts insert (paper space is not
+    /// imported; the plan's warnings say so of their blocks).
+    pub paper_inserts: BTreeSet<u64>,
 }
 
 /// 2D entities: drawn, not modelled.
@@ -390,6 +393,7 @@ impl Scene {
         }
         // 3D faces merge by block, layer and colour.
         let mut faces: BTreeMap<(u64, Option<u64>, String), MergedFaces> = BTreeMap::new();
+        let mut paper_inserts = BTreeSet::new();
 
         for o in file.objects.values() {
             let Kind::Entity(common, data) = &o.kind else {
@@ -415,6 +419,9 @@ impl Scene {
                 2 => model_space,
                 1 => {
                     account.paper_space += 1;
+                    if let EntityData::Insert(insert) = data {
+                        paper_inserts.insert(insert.block);
+                    }
                     continue;
                 }
                 _ => match common.owner {
@@ -598,6 +605,7 @@ impl Scene {
             blocks,
             model_space,
             account,
+            paper_inserts,
         }
     }
 
@@ -663,9 +671,42 @@ impl Scene {
             &mut by_block,
             &mut stack,
         );
-        // Blocks with bodies that nothing inserts: definitions only.
+        // Blocks with bodies that model space does not insert: definitions
+        // only, or a layout's content (paper space is not imported).
+        let paper = |b: &Block| b.name.to_ascii_lowercase().starts_with("*paper_space");
+        let reached = self.inserted_from(vec![self.model_space]);
+        let in_paper = self.inserted_from(
+            self.blocks
+                .values()
+                .filter(|b| paper(b))
+                .map(|b| b.handle)
+                .chain(self.paper_inserts.iter().copied())
+                .collect(),
+        );
+        for b in self.blocks.values() {
+            let bodies = b
+                .items
+                .iter()
+                .filter(|i| !matches!(i.kind, ItemKind::Insert { .. }))
+                .count();
+            if bodies > 0 && !reached.contains(&b.handle) && !paper(b) {
+                let where_ = if in_paper.contains(&b.handle) {
+                    "inserted only in paper space (a layout)"
+                } else {
+                    "inserted nowhere"
+                };
+                plan.warnings.push(format!(
+                    "the block {} ({bodies} bodies or meshes) is {where_}: not imported",
+                    b.name
+                ));
+            }
+        }
+        plan
+    }
+
+    /// The blocks `from` and those their inserts insert, at any depth.
+    fn inserted_from(&self, mut todo: Vec<u64>) -> BTreeSet<u64> {
         let mut reached = BTreeSet::new();
-        let mut todo = vec![self.model_space];
         while let Some(b) = todo.pop() {
             if !reached.insert(b) {
                 continue;
@@ -676,23 +717,7 @@ impl Scene {
                 }
             }
         }
-        for b in self.blocks.values() {
-            let bodies = b
-                .items
-                .iter()
-                .filter(|i| !matches!(i.kind, ItemKind::Insert { .. }))
-                .count();
-            if bodies > 0
-                && !reached.contains(&b.handle)
-                && !b.name.to_ascii_lowercase().starts_with("*paper_space")
-            {
-                plan.warnings.push(format!(
-                    "the block {} ({bodies} bodies or meshes) is inserted nowhere: not imported",
-                    b.name
-                ));
-            }
-        }
-        plan
+        reached
     }
 
     /// Adds a block's items to node `node`, moved by `at` (identity unless
@@ -1036,6 +1061,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn blocks_model_space_does_not_insert_are_named_in_the_warnings() {
+        // Two copies of the Brace block: one inserted by paper space's own
+        // insert, one by nothing (a public sample drawing's 3D content was
+        // inserted only from its layouts, which the warning called
+        // "inserted nowhere").
+        let file =
+            crate::read(&testfile::write(&testfile::test_drawing(), Version::R2018)).unwrap();
+        let mut scene = Scene::of(&file);
+        let brace = scene.blocks[&testfile::BRACE].clone();
+        for (handle, name) in [(0x501, "Sheet"), (0x502, "Spare")] {
+            scene.blocks.insert(
+                handle,
+                Block {
+                    handle,
+                    name: name.into(),
+                    ..brace.clone()
+                },
+            );
+        }
+        scene.paper_inserts.insert(0x501);
+        let warnings = scene.plan().warnings;
+        assert!(
+            warnings.contains(&"the block Sheet (1 bodies or meshes) is inserted only in paper space (a layout): not imported".to_owned()),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.contains(
+                &"the block Spare (1 bodies or meshes) is inserted nowhere: not imported"
+                    .to_owned()
+            ),
+            "{warnings:?}"
+        );
     }
 
     #[test]

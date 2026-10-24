@@ -539,7 +539,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// the centre is in the material (the cut did not remove it: a ring).
     fn copies_in_material(&mut self, centre: Vec3, sets: &[Vec<Vec3>]) -> Option<Vec<f64>> {
         let kernel = self.doc.kernel();
-        let bodies: Vec<&K::Shape> = self.doc.bodies().iter().map(|b| b.shape).collect();
+        let bodies: Vec<&K::Shape> = crate::body_scope::bodies(self.doc)
+            .iter()
+            .map(|b| b.shape)
+            .collect();
         let mut faces = 0;
         let mut boxes = Vec::new();
         for body in &bodies {
@@ -604,9 +607,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             None => vec![json!("yz"), json!("xz"), json!("xy")],
         };
         let kernel = self.doc.kernel();
-        let bodies: Vec<(BodyUid, Sig)> = self
-            .doc
-            .bodies()
+        let bodies: Vec<(BodyUid, Sig)> = crate::body_scope::bodies(self.doc)
             .iter()
             .filter(|b| self.doc.body_component(b.uid) == Some(self.component))
             .filter_map(|b| Some((b.uid, Sig::of(kernel, b.shape)?)))
@@ -2312,9 +2313,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 options.push((body, found));
                 continue;
             }
-            let Some(shape) = self
-                .doc
-                .bodies()
+            let Some(shape) = crate::body_scope::bodies(self.doc)
                 .iter()
                 .find(|b| b.uid == body)
                 .map(|b| b.shape.clone())
@@ -2411,7 +2410,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         groups.iter().map(|(b, _, _)| b.to_string()).collect();
                     own.sort();
                     own.dedup();
-                    if self.doc.bodies().len() > own.len() && defs[0].get("participants").is_none()
+                    if crate::body_scope::bodies(self.doc).len() > own.len()
+                        && defs[0].get("participants").is_none()
                     {
                         sets.push(
                             defs.into_iter()
@@ -2463,9 +2463,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let kernel = self.doc.kernel();
         let state: Vec<(crate::StoredBody<K::Shape>, Sig)> =
             self.oracle.state(kernel, next)?.to_vec();
-        let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = self
-            .doc
-            .bodies()
+        let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = crate::body_scope::bodies(self.doc)
             .iter()
             .map(|b| {
                 let sig = stored.get(&b.uid).copied();
@@ -2716,10 +2714,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 .face_input(fp)
                 .or_else(|| refs::resolve_cylinder_through(self.doc, fp))
                 .ok_or("a threaded face was not found")?;
-            let shape = self
-                .doc
-                .body_shape(body)
-                .ok_or("a threaded face was not found")?;
+            let shape =
+                crate::body_scope::shape(self.doc, body).ok_or("a threaded face was not found")?;
             let cylinder = self
                 .doc
                 .kernel()
@@ -3249,9 +3245,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // exactly where the combine leaves it alone (mitcad#285).
         let stored = self.stored_counterparts();
         let kernel = self.doc.kernel();
-        let current: Vec<(BodyUid, Option<Sig>)> = self
-            .doc
-            .bodies()
+        let current: Vec<(BodyUid, Option<Sig>)> = crate::body_scope::bodies(self.doc)
             .iter()
             .map(|b| {
                 let sig = stored.get(&b.uid).copied();
@@ -3383,9 +3377,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 if faces.iter().any(|(x, _)| x != b) {
                     return Err("target faces of several bodies".to_owned());
                 }
-                let shape = self
-                    .doc
-                    .body_shape(*b)
+                let shape = crate::body_scope::shape(self.doc, *b)
                     .ok_or("the target body was not found")?;
                 let all = self.doc.kernel().face_count(shape).ok();
                 if all != Some(faces.len()) {
@@ -3438,9 +3430,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // (Bodies kept within the tolerance as their stored ones, mitcad#285.)
         let stored = self.stored_counterparts();
         let kernel = self.doc.kernel();
-        let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = self
-            .doc
-            .bodies()
+        let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = crate::body_scope::bodies(self.doc)
             .iter()
             .map(|b| {
                 let sig = stored.get(&b.uid).copied();
@@ -3605,9 +3595,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // (Bodies kept within the tolerance as their stored ones, mitcad#285.)
         let stored = self.stored_counterparts();
         let kernel = self.doc.kernel();
-        let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = self
-            .doc
-            .bodies()
+        let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = crate::body_scope::bodies(self.doc)
             .iter()
             .filter(|b| only.is_none_or(|o| o == b.uid))
             .map(|b| {
@@ -3727,9 +3715,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             return None;
         }
         let kernel = self.doc.kernel();
-        let solids: Vec<BodyUid> = self
-            .doc
-            .bodies()
+        let solids: Vec<BodyUid> = crate::body_scope::bodies(self.doc)
             .iter()
             .filter(|b| matches!(kernel.body_kind(b.shape), Ok(mitcad_model::BodyKind::Solid)))
             .map(|b| b.uid)
@@ -3747,9 +3733,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if !self.oracle.enabled {
             return Err("its faces were not decoded (no history to find them)".to_owned());
         }
-        let shape = self
-            .doc
-            .body_shape(body)
+        let shape = crate::body_scope::shape(self.doc, body)
             .ok_or("the shelled body was not found")?
             .clone();
         let mut candidates: Vec<Candidate> = Vec::new();

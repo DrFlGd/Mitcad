@@ -82,7 +82,8 @@ impl<K: Kernel> Document<K> {
         &self,
         def: &PrintableBearingDef<ValueInput>,
     ) -> Result<PrintableBearingDef<f64>, ApiError> {
-        let params = self.parameters();
+        let params = crate::print_fits::evaluation_parameters(self.parameters())
+            .map_err(|e| ApiError(e.to_string()))?;
         let context = params.context();
         def.map_params(&mut |slot, value| match value {
             ValueInput::Number(n) => Ok(*n),

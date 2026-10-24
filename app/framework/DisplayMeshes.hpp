@@ -39,18 +39,25 @@ DisplayShapes previewShapes(const Document& document, const QJsonObject& report)
 // What meshForDisplay did.
 struct DisplayMeshing {
   std::size_t bodies = 0; // shapes meshed
+  std::size_t incomplete = 0; // of them, shapes with faces OCCT's mesher failed on
   qint64 milliseconds = 0;
 };
 
 // Meshes the shapes that have faces without a triangulation as the view
 // does, in the job (its stage says so; its cancel stops the meshing), all
 // of them together, so that their faces are meshed in parallel on every
-// core (io::mesh_all_in_place, mitcad#438). A shape OCCT fails on is left
-// to the view.
+// core (io::mesh_all_in_place, mitcad#438). A shape meshed to the end is
+// marked so (geometry::Shape::display_meshed): a face OCCT's mesher failed
+// on is not drawn, and neither this nor the view meshes it again
+// (mitcad#589: meshing such a face again took without end, on the UI
+// thread). A shape left when the meshing stopped or threw is left to the
+// view, as before.
 DisplayMeshing meshForDisplay(const DisplayShapes& shapes, ModelJob& job);
 
 // On the UI thread after the job: "Display meshes of <label>: 2 bodies in
-// 85 ms on the model's thread", when it meshed any.
+// 85 ms on the model's thread", when it meshed any, and "Display meshes of
+// <label>: 1 bodies with faces that could not be meshed (not drawn)" when
+// some faces failed.
 void logDisplayMeshing(const DisplayMeshing& meshing, const QString& label);
 
 } // namespace mitcad

@@ -33,6 +33,9 @@ public:
     std::function<void(const QString&, bool)> valueFocused;
     // The button beside a choice was clicked (InputDef::onButton).
     std::function<void(const QString&)> buttonClicked;
+    // A link in an inspection's result was clicked ("point:x,y,z": Print
+    // Analysis' thinnest wall, mitcad#620).
+    std::function<void(const QString&)> resultLinkActivated;
   };
 
   virtual ~CommandPresenter() {

@@ -4,6 +4,8 @@
 Usage: python3 mcp-test.py /absolute/path/mitcad-cli /build/test/directory
 """
 
+import base64
+import copy
 import json
 import os
 from pathlib import Path
@@ -610,6 +612,110 @@ class McpTest(unittest.TestCase):
             self.assertEqual(client.request("server/discover")["error"]["code"], -32601)
             client.initialize("2024-11-05")
             self.assertIn("result", client.request("ping"))
+            client.finish()
+
+    def test_font_files_in_definitions_and_opened_designs_are_refused(self):
+        with tempfile.TemporaryDirectory(prefix="outside-font-", dir=WORK) as outside:
+            font = Path(outside) / "font.ttf"
+            font.write_bytes(b"must not be parsed as a font")
+            text = {"id": "t1", "text": "A", "at": [0, 0], "height": 10,
+                    "font_file": {"path": str(font), "index": 0, "licence": ""}}
+            definition = {"type": "sketch", "plane": "xy", "texts": [text]}
+            with Session(self.workspace) as client:
+                client.initialize()
+                document = client.tool("document_create", {})["document"]
+                client.tool("model_command", {"document": document,
+                            "command": {"cmd": "sketch.create"}})
+                for command in ("add_feature", "edit_feature"):
+                    refused = client.tool("model_command", {"document": document,
+                        "command": {"cmd": command, "uid": "F1", "def": definition}}, error=True)
+                    self.assertNotIn("applied", refused)
+                    self.assertIn("not available through MCP", refused["error"])
+                timeline = client.tool("model_query", {"document": document,
+                    "query": {"query": "timeline"}})["result"]
+                self.assertEqual(len(timeline["features"]), 1)
+                self.assertNotIn("texts", timeline["features"][0].get("def", {}))
+                fixture = {"format": "mitcad", "version": 2, "parameters": [],
+                           "features": [{**definition, "uid": "F1", "name": "Sketch1"}]}
+                for stored in (False, True):
+                    if stored:
+                        text["glyphs"] = {"text": "A", "font": "", "glyphs": [{}]}
+                    (self.workspace / "font.mitcad").write_text(json.dumps(fixture), encoding="utf-8")
+                    refused = client.tool("document_open", {"path": "font.mitcad"}, error=True)
+                    self.assertIn("not available through MCP", refused["error"])
+                self.assertEqual(len(client.tool("document_list", {})["documents"]), 1)
+                self.assertEqual(font.read_bytes(), b"must not be parsed as a font")
+                client.finish()
+
+    def test_usdz_never_reads_external_texture_files(self):
+        image = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l1sAAAAASUVORK5CYII=")
+        with tempfile.TemporaryDirectory(prefix="outside-image-", dir=WORK) as outside:
+            texture = Path(outside) / "texture.png"
+            texture.write_bytes(image)
+            with Session(self.workspace) as client:
+                client.initialize()
+                document = client.tool("document_create", {})["document"]
+                client.tool("model_command", {"document": document, "command": BOX})
+                client.tool("document_save", {"document": document, "path": "plain.mitcad"})
+                fixture = json.loads((self.workspace / "plain.mitcad").read_text(encoding="utf-8"))
+                fixture["appearances"] = [{"id": "external", "name": "External texture",
+                                           "texture": {"path": str(texture)}}]
+                attrs = fixture.setdefault("bodies", [])
+                existing = next((body for body in attrs if body["uid"] == "F1.b0"), None)
+                if existing is None:
+                    attrs.append({"uid": "F1.b0", "name": "Body1", "appearance": "external"})
+                else:
+                    existing["appearance"] = "external"
+                for name, path in (("absolute", str(texture)), ("parent", "../" + texture.parent.name + "/texture.png")):
+                    fixture["appearances"][0]["texture"]["path"] = path
+                    (self.workspace / "texture.mitcad").write_text(json.dumps(fixture), encoding="utf-8")
+                    opened = client.tool("document_open", {"path": "texture.mitcad"})["document"]
+                    refused = client.tool("model_export", {"document": opened,
+                        "path": name + ".usdz", "format": "usdz"}, error=True)
+                    self.assertIn("embedded texture", refused["error"])
+                    self.assertFalse((self.workspace / (name + ".usdz")).exists())
+                    client.tool("document_close", {"document": opened})
+                fixture["appearances"][0]["texture"]["data"] = base64.b64encode(image).decode("ascii")
+                (self.workspace / "embedded.mitcad").write_text(json.dumps(fixture), encoding="utf-8")
+                opened = client.tool("document_open", {"path": "embedded.mitcad"})["document"]
+                client.tool("model_export", {"document": opened, "path": "embedded.usdz", "format": "usdz"})
+                self.assertTrue((self.workspace / "embedded.usdz").is_file())
+                self.assertEqual(texture.read_bytes(), image)
+                client.finish()
+
+    def test_every_drawing_output_is_checked_before_any_write(self):
+        with Session(self.workspace) as client:
+            client.initialize()
+            document = client.tool("document_create", {})["document"]
+            client.tool("model_command", {"document": document, "command": BOX})
+            second = copy.deepcopy(BOX)
+            second["def"]["corner"] = [50, 0]
+            client.tool("model_command", {"document": document, "command": second})
+            for format in ("svg", "dxf"):
+                following = self.workspace / ("drawing-2." + format)
+                following.write_bytes(b"existing drawing")
+                client.tool("model_export", {"document": document, "path": "drawing." + format,
+                    "format": format, "drawing": {"per_body": True, "views": ["front"]}}, error=True)
+                self.assertEqual(following.read_bytes(), b"existing drawing")
+                self.assertFalse((self.workspace / ("drawing." + format)).exists())
+                following.unlink()
+            with tempfile.TemporaryDirectory(prefix="outside-drawing-", dir=WORK) as outside:
+                target = Path(outside) / "untouched.svg"
+                target.write_bytes(b"outside drawing")
+                try:
+                    os.symlink(target, self.workspace / "drawing-2.svg")
+                except (OSError, NotImplementedError) as error:
+                    self.skipTest("file symlinks unavailable: " + str(error))
+                client.tool("model_export", {"document": document, "path": "drawing.svg",
+                    "format": "svg", "drawing": {"per_body": True, "views": ["front"]}}, error=True)
+                self.assertEqual(target.read_bytes(), b"outside drawing")
+                self.assertFalse((self.workspace / "drawing.svg").exists())
+                (self.workspace / "drawing-2.svg").unlink()
+            result = client.tool("model_export", {"document": document, "path": "drawing.svg",
+                "format": "svg", "drawing": {"per_body": True, "views": ["front"]}})["result"]
+            self.assertEqual(result["sheets"], 2)
+            self.assertEqual(len(result["files"]), 2)
             client.finish()
 
 

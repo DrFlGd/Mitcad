@@ -160,6 +160,31 @@ impl<K: Kernel> Document<K> {
         &self,
         command: ExportDrawingCommand,
     ) -> Result<Value, ApiError> {
+        self.export_drawing_command_checked(command, |_| Ok(()))
+    }
+
+    /// Exports a drawing after the caller has checked every output path.
+    /// All paths are checked before the first write, including the numbered
+    /// files of a per-body SVG or DXF drawing. Ordinary API exports retain
+    /// their existing overwrite behavior.
+    pub fn export_drawing_checked(
+        &self,
+        request: &str,
+        check: impl Fn(&str) -> Result<(), String>,
+    ) -> Result<Value, ApiError> {
+        let command =
+            serde_json::from_str::<super::Command>(request).map_err(|e| ApiError(e.to_string()))?;
+        let super::Command::ExportDrawing(command) = command else {
+            return Err(ApiError("expected export_drawing".to_owned()));
+        };
+        self.export_drawing_command_checked(command, check)
+    }
+
+    fn export_drawing_command_checked(
+        &self,
+        command: ExportDrawingCommand,
+        check: impl Fn(&str) -> Result<(), String>,
+    ) -> Result<Value, ApiError> {
         let extension = std::path::Path::new(&command.path)
             .extension()
             .and_then(|e| e.to_str())
@@ -269,7 +294,9 @@ impl<K: Kernel> Document<K> {
                     .iter()
                     .find(|a| &a.name == analysis)
                     .ok_or_else(|| ApiError(format!("there is no analysis '{analysis}'")))?;
-                let crate::AnalysisDef::Section(def) = &found.def;
+                let crate::AnalysisDef::Section(def) = &found.def else {
+                    return Err(ApiError(format!("'{analysis}' is not a section analysis")));
+                };
                 let plane = self
                     .section_plane(def)
                     .map_err(|e| ApiError(format!("{analysis}: {e}")))?;
@@ -365,6 +392,22 @@ impl<K: Kernel> Document<K> {
 
         // The files: a PDF of every sheet, an SVG or DXF file per sheet
         // (the second and later named <name>-2.svg, …).
+        let paths: Vec<String> = (0..if format == Format::Pdf {
+            1
+        } else {
+            composed.len()
+        })
+            .map(|i| {
+                if i == 0 {
+                    command.path.clone()
+                } else {
+                    numbered(&command.path, i + 1)
+                }
+            })
+            .collect();
+        for path in &paths {
+            check(path).map_err(ApiError)?;
+        }
         let mut files = Vec::new();
         let write = |path: &str, bytes: &[u8]| {
             std::fs::write(path, bytes).map_err(|e| ApiError(format!("cannot write {path}: {e}")))
@@ -377,11 +420,7 @@ impl<K: Kernel> Document<K> {
             }
             Format::Svg | Format::Dxf => {
                 for (i, c) in composed.iter().enumerate() {
-                    let path = if i == 0 {
-                        command.path.clone()
-                    } else {
-                        numbered(&command.path, i + 1)
-                    };
+                    let path = paths[i].clone();
                     let bytes = if format == Format::Svg {
                         svg::write(&c.sheet).into_bytes()
                     } else {

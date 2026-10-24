@@ -9,6 +9,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFileInfo>
@@ -408,9 +409,21 @@ void MainWindow::refreshNativeActions() {
       return; // AppKit's Quit action passes through the native close policy.
     }
     mac::NativeMacAction item;
-    item.id = action->objectName().startsWith(QStringLiteral("command_"))
-                  ? action->objectName().mid(8)
-                  : QStringLiteral("native.action.%1").arg(reinterpret_cast<quintptr>(action), 0, 16);
+    if (action->objectName().startsWith(QStringLiteral("command_"))) {
+      item.id = action->objectName().mid(8);
+    } else {
+      item.id = action->property("mitcadNativeActionId").toString();
+      if (item.id.isEmpty()) {
+        const QString key = !action->objectName().isEmpty()
+                                ? QStringLiteral("named/") + action->objectName()
+                                : menu + QLatin1Char('/') + menuLabel(action->text());
+        item.id = QStringLiteral("native.menu.") + QString::fromLatin1(
+            QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha256).toHex());
+        // A changing presentation (for example Undo's caption) must not
+        // change an action's identity during this process either.
+        action->setProperty("mitcadNativeActionId", item.id);
+      }
+    }
     item.label = menuLabel(action->text());
     item.menu = menu;
     const bool fileMenu = menu == QStringLiteral("File") || menu.startsWith(QStringLiteral("File/"));
@@ -688,17 +701,6 @@ bool MainWindow::modelCommandAsync(const QJsonObject& request, QObject* context,
       showHint(tr("Computation cancelled."));
       qInfo().noquote() << QStringLiteral("Command %1 cancelled").arg(name);
     }
-    completion({result.answer, result.error, result.cancelled});
-  });
-}
-
-bool MainWindow::modelPreviewAsync(const QByteArray& request, const QString& name, QObject* context,
-                                  AsyncCompletion completion) {
-  if (!m_nativeUi) {
-    return false;
-  }
-  return m_documentSession->previewAsync(request, name, context, [completion = std::move(completion)](
-                                                                       const DocumentSession::AsyncResult& result) {
     completion({result.answer, result.error, result.cancelled});
   });
 }

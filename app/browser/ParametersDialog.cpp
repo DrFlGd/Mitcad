@@ -251,6 +251,8 @@ QTreeWidgetItem* ParametersDialog::addRow(QTreeWidgetItem* parent, const QJsonOb
     const bool editable = column == kName || (column == kExpression && !reference) || column == kComment ||
                           (column == kUnit && user);
     row->setData(column, NativeEditableRole, editable);
+    row->setData(column, NativeControlIdentifierRole,
+                 QStringLiteral("parameter.%1.%2").arg(name).arg(column));
   }
   if (reference) {
     row->setToolTip(kExpression, tr("Measured by a driven dimension; make it driving to set it"));

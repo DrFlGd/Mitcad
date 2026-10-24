@@ -19,6 +19,76 @@ use mitcad_model::{InsertOptions, LibraryChange, LibraryPart};
 /// A PNG file's signature and a little more: enough to be taken for one.
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n preview";
 
+#[test]
+fn missing_library_revisions_handle_unicode_and_reject_revision_expressions() {
+    let scratch = Scratch::new("library-revision");
+    let cache = LibraryCache::new(scratch.join("cache"));
+    // Forty bytes, with byte seven inside a UTF-8 character.
+    let unicode = "\u{e9}".repeat(20);
+    assert_eq!(unicode.len(), 40);
+    let error = cache
+        .find("missing", "https://example.invalid/parts.git", &unicode)
+        .unwrap_err();
+    assert!(matches!(error, VcsError::NotFound(_)), "{error}");
+    assert!(error.to_string().contains(&unicode), "{error}");
+    for rev in [
+        "release branch",
+        "main~1",
+        "../main",
+        "v1..v2",
+        "tag.lock",
+        "tag\\name",
+    ] {
+        let error = cache
+            .find("missing", "https://example.invalid/parts.git", rev)
+            .unwrap_err();
+        assert!(matches!(error, VcsError::InvalidPath(_)), "{rev}: {error}");
+        assert!(error.to_string().contains("not a library version"));
+    }
+    let hash = "0123456789abcdef0123456789abcdef01234567";
+    let error = cache
+        .find("missing", "https://example.invalid/parts.git", hash)
+        .unwrap_err();
+    assert!(error.to_string().contains("at 0123456 is not"), "{error}");
+
+    if has_git() {
+        let dir = make_library(&scratch, &cache);
+        git(&dir, &["branch", &unicode]).unwrap();
+        let tag = format!("release/{unicode}");
+        git(&dir, &["tag", &tag]).unwrap();
+        let repo = LibraryRepo::open(&dir).unwrap();
+        let head = repo.head().unwrap().unwrap();
+        assert_eq!(repo.resolve(&unicode).unwrap(), head);
+        assert_eq!(repo.resolve(&tag).unwrap(), head);
+        assert!(matches!(
+            repo.resolve("main~1"),
+            Err(VcsError::InvalidPath(_))
+        ));
+    }
+}
+
+#[test]
+fn default_cache_preserves_the_application_root_and_legacy_cli_revisions() {
+    let cache = LibraryCache::default();
+    assert_eq!(cache.root, LibraryCache::default_root());
+    if let Some(root) = std::env::var_os("MITCAD_LIBRARIES_DIR").filter(|d| !d.is_empty()) {
+        assert_eq!(cache.root, PathBuf::from(root));
+        assert!(cache.extra.is_empty());
+    } else {
+        assert!(cache.root.ends_with("Mitcad/Mitcad/libraries"));
+        let base = cache
+            .root
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        assert_eq!(cache.extra, [base.join("mitcad/libraries")]);
+    }
+    assert!(LibraryCache::new("explicit-cache").extra.is_empty());
+}
+
 fn library_command(cache: &LibraryCache, git: Option<&GitCli>, command: Value) -> Value {
     serde_json::from_str(&api::command(&command.to_string(), cache, git, None).unwrap()).unwrap()
 }

@@ -24,6 +24,7 @@
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
+#include "face_select.hpp"
 #include "history.hpp"
 #include "mitcad/geometry/naming.hpp"
 #include "sweep.hpp"
@@ -72,10 +73,7 @@ ShapePtr extrude_face(const Shape& body, const FaceExtrudeSpec& spec) {
     }
     // Out of the material: the plane's normal as the face is oriented (a
     // curved face goes along its direction).
-    gp_Dir normal = planar ? surface.Plane().Axis().Direction() : *spec.direction;
-    if (planar && face.Orientation() == TopAbs_REVERSED) {
-      normal.Reverse();
-    }
+    const gp_Dir normal = planar ? detail::planar_normal(face, surface.Plane()) : *spec.direction;
     if (planar && spec.direction && std::abs(spec.direction->Dot(normal)) < 1.0e-6) {
       throw std::invalid_argument("the extrusion direction lies in the plane of face " + spec.face);
     }

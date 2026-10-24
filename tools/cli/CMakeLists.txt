@@ -37,7 +37,8 @@ if(BUILD_TESTING)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
   # Profile features (F1), with the volumes of the T0 reference models.
-  foreach(script f1_extrude f1_revolve f1_hole f1_thread f1_thread_chamfer f1_failures f1_tapped_hole_threads)
+  foreach(script f1_extrude f1_revolve f1_hole f1_thread f1_thread_chamfer f1_failures f1_tapped_hole_threads
+                 f1_thread_part_chamfer)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
   # A design saved before a modelled thread's pieces were numbered along
@@ -597,6 +598,16 @@ if(BUILD_TESTING)
     set_tests_properties(cli.import_dwg_${version} PROPERTIES FIXTURES_REQUIRED cli_dwg_${version} PASS_REGULAR_EXPRESSION
       "Imported test-${version}\\.dwg \\(dwg ${version} \\(AC[0-9]+\\)\\): 6 bodies \\(3 solids, 3 meshes; 6 valid\\), 2 components.*Component Segment: 1 bodies, 2 occurrences \\(2 placements\\).*Component Brace: 1 bodies, 8 occurrences \\(10 placements\\).*Left out: 1 LINE.*Checks: 11 of 11 pass")
   endforeach()
+  # A solid none of whose faces can be built (its point records hold no
+  # positions, so every loop is lost) is left out as not built, and the
+  # drawing's other bodies come in (mitcad#589: such a body ended the whole
+  # import, or came in as a solid of infinite planes).
+  add_test(NAME cli.dwg_file_empty_solid
+    COMMAND mitcad-cli import-dwg --write-test "${dwg}/empty-solid.dwg" --case empty-solid)
+  set_tests_properties(cli.dwg_file_empty_solid PROPERTIES FIXTURES_SETUP cli_dwg_empty_solid)
+  add_test(NAME cli.import_dwg_empty_solid COMMAND mitcad-cli import-dwg "${dwg}/empty-solid.dwg")
+  set_tests_properties(cli.import_dwg_empty_solid PROPERTIES FIXTURES_REQUIRED cli_dwg_empty_solid PASS_REGULAR_EXPRESSION
+    "Imported empty-solid\\.dwg \\(dwg R2018 \\(AC1032\\)\\): 6 bodies \\(3 solids, 3 meshes; 6 valid\\), 2 components.*Not built: 3DSOLID 64: its B-rep record holds no body with faces.*Check every body built: FAIL")
   add_test(NAME dwg.corpus
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/dwg-corpus"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/dwg-corpus.cmake")

@@ -53,13 +53,17 @@ bool CommandSession::probeAutoOperation() {
   const quint64 generation = m_generation;
   m_presenter->setMessage(tr("Computing preview…"), false);
   m_presenter->setOkEnabled(false);
-  if (m_host.asynchronousCommands()) {
+  if (m_host.asynchronousPreviews()) {
     m_asyncPending = true;
     const bool started = m_host.modelPreviewAsync(key, m_def.name, this,
         [this, key, generation](const CommandHost::AsyncResult& result) {
           if (!asyncPresenterAvailable()) return;
           m_asyncPending = false;
-          if (m_cancelRequested) { finishAsyncCancel(); return; }
+          if (m_cancelRequested) {
+            if (m_host.asynchronousCommands()) { finishAsyncCancel(); }
+            else { cancel(); }
+            return;
+          }
           if (result.cancelled) {
             // An input cancels old work before it is applied. Retry the
             // same stored baseline after that input, never its new geometry.
@@ -70,7 +74,7 @@ bool CommandSession::probeAutoOperation() {
           resolveAutoOperationProbe(result.succeeded() ? result.answer : QJsonObject());
           // A changed input may still be queued behind the model job. The
           // normal preview follows after it and alone updates the controls.
-          schedulePreview();
+          schedulePreview(0);
         });
     if (!started) { m_asyncPending = false; schedulePreview(); }
     return true;

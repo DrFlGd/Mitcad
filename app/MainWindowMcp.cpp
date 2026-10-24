@@ -141,7 +141,7 @@ QJsonObject MainWindow::mcpCommand(const QJsonObject& request) {
   }
   // By class: file IO, remote and internal checkpoint commands stay
   // unavailable (mitcad#265, core/model/src/api/classes.rs).
-  validate_mcp_command(rustStr(compactJson(request)));
+  idleDocument().validate_mcp_document_command(rustStr(compactJson(request)));
   const QScopedValueRollback<bool> active(m_mcpRequestActive, true);
   if (m_mode == Mode::Sketch) {
     return mcpSketchCommand(request);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files
+# check-all sources: app/files app/framework
 # The Cloud section of New Project takes a git address first (mitcad#381):
 # an address typed into its Repository address field gives the service,
 # server, owner, repository and way to connect (the log's "Cloud address:"
@@ -8,7 +8,9 @@
 # git@host:owner/repo.git, ssh://, the address of the repository's page in a
 # browser. The Details fields stay editable and make the address again. A
 # malformed address is refused with a message before git is asked. Hosts are
-# the reserved .invalid ones: nothing is reached.
+# the reserved .invalid ones: nothing is reached. On a tall screen
+# (UI_SCREEN_HEIGHT) the dialog with Cloud chosen and the Details open shows
+# all its contents without a vertical scroll bar (mitcad#631).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh); Qt's own file dialogs
 # (--no-native-dialogs). The paste into the Server, Owner and Repository
@@ -44,6 +46,9 @@ address() {
   ui_expect_new "$2" "$3" 20
 }
 
+# A tall screen: with Cloud chosen and the Details open the New Project
+# dialog holds its whole contents without a scroll bar (mitcad#631).
+UI_SCREEN_HEIGHT=1500
 ui_start_display
 ui_start_app --no-native-dialogs
 ui_mark
@@ -78,6 +83,10 @@ ui_step "to Details (Tab)"               ui_key Tab
 ui_step "show them (Space)"              ui_key space
 ui_expect_new "Cloud section: details shown (service Forgejo / Gitea, server git.example.invalid, owner team, repository parts)" \
   "the fields show what the address gave" 10
+# The dialog took the height of its contents (mitcad#631): no scroll bar
+# although Cloud is chosen and the Details are open.
+ui_expect_new "New Project dialog: layout storage cloud, details open, vertical scroll bar hidden" \
+  "the dialog shows all of its contents with Cloud and Details open, no scroll bar" 10
 ui_mark
 ui_step "the owner field (Tab x3)"       ui_key Tab Tab Tab
 ui_step "type another owner"             ui_type_text "club"

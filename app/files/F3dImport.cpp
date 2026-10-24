@@ -321,9 +321,12 @@ int runImportWorker(int argc, char* argv[]) {
   rust::Box<Document> document = new_document();
   // Stop (T1e): import_f3d takes the cancel of the document's job as a
   // request to stop early. For tests, the job's delay slows down the
-  // definitions it tries (MITCAD_TEST_RECOMPUTE_DELAY_MS=import_f3d=<ms>).
+  // definitions it tries (MITCAD_TEST_RECOMPUTE_DELAY_MS=import_f3d=<ms>),
+  // or each item of a drawing (import_dwg=<ms>, mitcad#589).
   const auto control = std::make_shared<rust::Box<JobControl>>(new_job_control());
-  if (const int delay = testRecomputeDelay(QStringLiteral("import_f3d")); delay > 0) {
+  if (const int delay = testRecomputeDelay(isDwgFile(QString::fromUtf8(path)) ? QStringLiteral("import_dwg")
+                                                                                : QStringLiteral("import_f3d"));
+      delay > 0) {
     (*control)->set_test_delay(static_cast<std::uint32_t>(delay));
   }
   std::thread([control] { readRequests(control); }).detach();

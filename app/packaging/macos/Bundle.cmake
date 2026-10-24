@@ -104,6 +104,11 @@ endif()
 # --- Install: the bundle, its libraries, the licence texts ----------------------
 install(TARGETS mitcad BUNDLE DESTINATION .)
 install(TARGETS mitcad-render RUNTIME DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
+install(TARGETS mitcad-render-service RUNTIME DESTINATION
+  "${MITCAD_BUNDLE_DIR}/Contents/XPCServices/org.mitcad.renderer.xpc/Contents/MacOS")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/RenderService.plist" DESTINATION
+  "${MITCAD_BUNDLE_DIR}/Contents/XPCServices/org.mitcad.renderer.xpc/Contents" RENAME Info.plist)
+install(CODE "set(MITCAD_BUILD_RENDER_SERVICE_EXECUTABLE [[$<TARGET_FILE:mitcad-render-service>]])")
 install(TARGETS mitcad-updater RUNTIME DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
 install(DIRECTORY "${MITCAD_CYCLES_RUNTIME}/"
         DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/Resources/cycles")
@@ -289,6 +294,7 @@ if(MITCAD_MACOS_DEPLOY)
     CONTENT "qt_deploy_runtime_dependencies(
       EXECUTABLE \"${MITCAD_BUNDLE_DIR}\"
       ADDITIONAL_EXECUTABLES \"${MITCAD_BUNDLE_DIR}/Contents/MacOS/$<TARGET_FILE_NAME:mitcad-render>\"
+                            \"${MITCAD_BUNDLE_DIR}/Contents/XPCServices/org.mitcad.renderer.xpc/Contents/MacOS/$<TARGET_FILE_NAME:mitcad-render-service>\"
                             \"${MITCAD_BUNDLE_DIR}/Contents/MacOS/$<TARGET_FILE_NAME:mitcad-cli>\"
       ADDITIONAL_LIBRARIES ${mitcad_render_deploy_modules}
       DEPLOY_TOOL_OPTIONS ${mitcad_render_deploy_options})")

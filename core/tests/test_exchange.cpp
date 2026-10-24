@@ -63,6 +63,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <regex>
 #include <map>
 #include <string>
 #include <vector>
@@ -379,6 +380,53 @@ void test_ipt_import(const fs::path& dir) {
   CHECK(contains(into, "warning: the part's length unit (in) is not applied to a document that has features"));
   CHECK(contains(std::string(existing->query(R"({"query": "document"})")), R"("length":"mm")"));
   CHECK(near(volume(*existing, "F4.b0"), 1000.0, 1e-9));
+
+  // A history import must not repaint or hide an existing matching body
+  // (mitcad#608, #624). Verified replay and unchecked replay both create a
+  // separate cube; only that new body inherits Steel and the hidden flag.
+  const fs::path hiddenDesign = dir / "hidden-design.ipt";
+  mitcad::bridge::ipt_write_test_hidden_design_file(hiddenDesign.string());
+  for (bool uncheckedReplay : {false, true}) {
+    auto seeded = mitcad::new_document();
+    run(*seeded, R"({"cmd":"add_feature","def":{"type":"box",
+      "plane":{"type":"origin","plane":"xy"},"corner":[0,0],
+      "length":10,"width":10,"height":10,"operation":"new_body"}})");
+    run(*seeded, R"({"cmd":"set_body_material","uid":"F1.b0","material":"aluminum"})");
+    seeded->run_script(R"([{"expect":{"bodies":1,"instances":1,
+      "query":{"query":"bodies"},"result":[{"uid":"F1.b0","material":"aluminum"}]}}])");
+    const std::string original(seeded->query(R"({"query":"bodies"})"));
+    const char* options = uncheckedReplay ? R"({"no_verify":true,"no_fallback":true})" : "{}";
+    const std::string importReport(seeded->import_ipt(hiddenDesign.string(), options));
+    const char* expected = R"([{"expect":{"bodies":2,"instances":1,
+      "query":{"query":"bodies","volumes":true},"result":[
+        {"uid":"F1.b0","material":"aluminum","volume":1000},
+        {"material":"steel","visible":false,"volume":1000}]}}])";
+    const auto diagnostic = [&] {
+      std::fprintf(stderr, "IPT coincident-body attribute import options: %s\nreport: %s\nbodies: %s\ntimeline: %s\n",
+                   options, importReport.c_str(),
+                   std::string(seeded->query(R"({"query":"bodies","properties":true})")).c_str(),
+                   std::string(seeded->query(R"({"query":"timeline"})")).c_str());
+    };
+    const auto verifyImported = [&] {
+      const int before = failures;
+      CHECK(!std::regex_search(importReport, std::regex(R"re("uid"\s*:\s*"F1\.b0")re")));
+      CHECK(std::regex_search(importReport, std::regex(R"re("hidden"\s*:\s*true)re")));
+      CHECK(near(volume(*seeded, "F1.b0"), 1000.0, 1e-6));
+      CHECK(contains(std::string(seeded->query(R"({"query":"bodies"})")), original.substr(1, original.size() - 2)));
+      try {
+        seeded->run_script(expected);
+      } catch (const rust::Error& error) {
+        std::fprintf(stderr, "IPT attribute expectation failed: %s\n", error.what());
+        ++failures;
+      }
+      if (failures != before) { diagnostic(); }
+    };
+    verifyImported();
+    run(*seeded, R"({"cmd":"undo"})");
+    CHECK(std::string(seeded->query(R"({"query":"bodies"})")) == original);
+    run(*seeded, R"({"cmd":"redo"})");
+    verifyImported();
+  }
 
   // Not part files.
   const fs::path f3d = dir / "bodies.f3d";

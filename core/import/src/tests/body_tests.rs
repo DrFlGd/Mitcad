@@ -425,6 +425,7 @@ fn a_split_in_two_operations_made_the_new_bodies_of_both() {
     let dump = timeline_dump(items);
     let options = Options::default();
     let mut importer = Importer {
+        body_scope: body_scope::Scope::capture(&doc).enter(&doc),
         oracle: Oracle::new(&mut geometry),
         doc: &mut doc,
         dump: &dump,
@@ -540,6 +541,7 @@ fn named_participants_alone_when_the_history_changed_only_them() {
         let dump = timeline_dump(items.clone());
         let options = Options::default();
         let mut importer = Importer {
+            body_scope: body_scope::Scope::capture(&doc).enter(&doc),
             oracle: Oracle::new(&mut geometry),
             doc: &mut doc,
             dump: &dump,

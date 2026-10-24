@@ -191,6 +191,12 @@ design in a project.
   mismatches are errors. Internal units are mm and radians. Input accepts
   a decimal comma (`core/model/src/expr/mod.rs`); stored expressions
   always use points.
+  Printed fit suggestions (`print_fits.rs`) are a table of ordinary user
+  parameters, created only by explicit feature-field references during
+  definition-state resolution. They share the feature's transaction and
+  undo step. The UI reads their names from the model; expression hints
+  and generator reports evaluate prospective defaults on parameter copies,
+  while previews use the usual private definition-state copy.
 - **Construction geometry:** planes, axes and points are features that
   make a datum, not bodies. Features refer to geometry through `GeomRef`
   (origin datum, construction feature, or a body face/edge/vertex) and to
@@ -237,7 +243,14 @@ design in a project.
   `analyses` query), so a face's section follows the model by its name.
   One is shown at a time, so one plane cuts the bodies; the app cuts the
   view where the shown one says (`MainWindow::followAnalyses`), except
-  while Section Analysis' panel previews its own.
+  while Section Analysis' panel previews its own. Print analyses
+  (mitcad#620) are kept the same way with their bodies, a bed face and
+  their settings; their overhangs, thin walls and estimate are worked out
+  in Rust (`core/model/src/print_analysis.rs`, the `print_*` queries) on
+  the bodies' `Kernel::triangle_mesh` and `physical_properties`, with a
+  bounding volume hierarchy of their own for the wall rays, no kernel
+  method of their own; the results are kept in memory by the bodies'
+  shape versions and the settings.
 - **Components** (`core/model/src/assembly.rs`): structure is in the
   definition state, not on the timeline, though features can create
   components. Occurrences belong to a component, so sub-assemblies are
@@ -1138,7 +1151,7 @@ not recompute.
   panel preview is a job. The document belongs to one thread at a time.
   The view keeps drawing what it built earlier but must not read or
   triangulate shapes while a job runs (OCCT writes flags and
-  triangulations into shared sub-shapes). The caller stays synchronous:
+  triangulations into shared sub-shapes). Explicit Qt commands stay synchronous:
   50 ms blocked, then input queued, after 400 ms a modal progress dialog
   whose Cancel goes to the job's `RecomputeMonitor` (`JobControl` in the
   bridge). The wait cursor is a guard of the wait
@@ -1147,7 +1160,18 @@ not recompute.
   Queries run on the UI thread between jobs; reads during a job
   are refused (`ModelBusy`), and deferred work waits for idle
   (`MainWindow::whenIdle`). `MITCAD_COMPUTE_INLINE=1` runs jobs on the UI
-  thread for debugging. The jobs that change what the view draws
+  thread for debugging. Feature previews use asynchronous jobs on both
+  frontends (mitcad#634), without modal progress. The first pending input
+  starts a bounded 150 ms timer; further input does not restart it. While
+  a job owns the document, numeric edits replace one pending action per
+  field, evaluated only on idle. Structural edits form ordering barriers
+  and invalidate/cancel old work. A completed numeric preview may display
+  intermediate geometry, but only the latest input's result may update
+  operation/target controls or enable OK. Pending values drain before the
+  next job, without another debounce delay; release requests an immediate
+  preview and OK waits for the latest exact result. `MITCAD_LOG_TIMING=1`
+  also logs numeric queue replacement/drain counts and solid installation
+  during a drag. The jobs that change what the view draws
   (opening, model commands but a sketch's own, previews) end with the
   view's meshes of the shown bodies, the previewed ones and the tool
   (`app/framework/DisplayMeshes`, mitcad#398): made on the worker as the
@@ -1719,6 +1743,11 @@ in the crate's API. JSON commands: [commands.md](../core/model/src/api/commands.
   entries change, so the user's staged changes survive and `git status`
   stays clean. No commit when nothing changed, HEAD is detached, or a
   merge/rebase is in progress.
+- Store reads and version recording refuse symbolic links in the metadata
+  directory, store, shard directories and files. Before adding a store file,
+  recording checks its complete zlib stream and SHA-256 of the uncompressed
+  data with bounded streaming memory. Project clones persist
+  `core.symlinks=false` before checkout, so remote links become plain text.
 - Author: the repository's own `user.name` and `user.email` (New Project
   and Project Settings write them), else git's configured user, else
   Preferences' default author. Messages end with trailers
@@ -2167,6 +2196,9 @@ expressions). Formats: [libraries.md](libraries.md).
   inserting it; `update_links` reads that commit, never a newer one, and
   only `update_library_parts` (an undo step) moves a part to another
   version or row. Nothing checks for newer versions on its own.
+  Revision names follow Git's tag/branch naming rules, including Unicode;
+  invalid names are reported as errors. Only full hexadecimal commit ids
+  are shortened in missing-version messages.
 - **Cache** (`core/vcs/src/library/`): bare clones in the user's data
   folder, one per URL (`<name>-<8 hex of the URL's SHA-256>.git`), made
   and updated by the system's git (`clone --bare`, `fetch` of branches
@@ -2177,6 +2209,11 @@ expressions). Formats: [libraries.md](libraries.md).
   content is data: no hooks or filters run, manifests and files have
   size limits, paths stay inside the repository, symbolic links are
   refused.
+  The application and CLI share `LibraryCache::default_root()` through the
+  bridge: `Mitcad/Mitcad/libraries` in the platform's data folder. Defaults
+  also read the older CLI `mitcad/libraries` cache as an extra source;
+  explicit root overrides do not. Existing caches are never moved or deleted
+  during configuration.
 - **Community index:** a repository with `mitcad-index.json` and an entry
   per library (URL, licence, components, reviewed versions); search runs
   over the fetched indexes and libraries locally, with a licence filter;

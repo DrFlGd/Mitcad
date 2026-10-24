@@ -189,11 +189,20 @@ public:
   std::optional<bool> checked_valid() const { return m_valid.get(); }
   void set_checked_valid(bool valid) const { m_valid.set(valid); }
 
+  // Whether a meshing of every face for display ran to its end on another
+  // thread (the view's meshes, made at the end of a job, mitcad#398). A
+  // face it left without a triangulation is one OCCT's mesher fails on;
+  // the view then draws the faces that have one and never meshes the shape
+  // again itself: meshing such a face again can take without end, and the
+  // view would do it on the UI thread (mitcad#589).
+  bool display_meshed() const { return m_displayMeshed.get().value_or(false); }
+  void set_display_meshed() const { m_displayMeshed.set(true); }
+
   // Takes what was worked out of `other`, a Shape of the same B-rep (the
   // same TopoDS_Shape, with other face names), that does not depend on
   // face names: the measures, the box, the face measures and boxes, the
-  // edges' curves, the boundary index and the checker's verdict
-  // (mitcad#244). Edge middles and the face index carry names; they are
+  // edges' curves, the boundary index, the checker's verdict (mitcad#244)
+  // and whether it was meshed for display. Edge middles and the face index carry names; they are
   // worked out anew.
   void keep_measures_of(const Shape& other) const;
 
@@ -234,6 +243,7 @@ private:
   LazyValue<std::shared_ptr<const void>> m_edgeCurves;
   LazyValue<std::shared_ptr<const FaceBoxes>> m_faceBoxes;
   LazyValue<bool> m_valid;
+  LazyValue<bool> m_displayMeshed;
   // A large shape's faces by each reference that matches one of their
   // names (naming.hpp: the name, or the name before a "#k"), made the
   // first time a face is looked for (mitcad#181: finding faces one by one

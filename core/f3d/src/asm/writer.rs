@@ -27,6 +27,14 @@ impl Writer {
         self.data.extend_from_slice(s.as_bytes());
         self
     }
+    /// A text literal (tag 0x12, a 4-byte length).
+    pub fn literal(&mut self, s: &str) -> &mut Self {
+        self.data.push(0x12);
+        self.data
+            .extend_from_slice(&u32::try_from(s.len()).unwrap_or(u32::MAX).to_le_bytes());
+        self.data.extend_from_slice(s.as_bytes());
+        self
+    }
     pub fn ident(&mut self, s: &str) -> &mut Self {
         self.data.push(0x0d);
         self.data.push(s.len() as u8);

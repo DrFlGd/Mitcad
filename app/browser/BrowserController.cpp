@@ -1064,6 +1064,12 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
         m_host.startCommand(QStringLiteral("inspect.section"), {}, nullptr);
       }
     });
+    // mitcad#620
+    menu.add(QStringLiteral("print-analysis"), tr("New Print Analysis"), [this] {
+      if (canChange()) {
+        m_host.startCommand(QStringLiteral("inspect.print_analysis"), {}, nullptr);
+      }
+    });
     break;
   case BrowserNode::Type::Joints:
     // Joints (mitcad#55): in the component the folder is in, when active.
@@ -1111,7 +1117,9 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     break;
   }
   case BrowserNode::Type::Analysis:
-    menu.add(QStringLiteral("edit"), tr("Edit Section Analysis"), [this, node] { m_host.editAnalysis(node.uid); });
+    menu.add(QStringLiteral("edit"),
+             node.featureType == QStringLiteral("print") ? tr("Edit Print Analysis") : tr("Edit Section Analysis"),
+             [this, node] { m_host.editAnalysis(node.uid); });
     menu.separator();
     visibility();
     renameEntry();

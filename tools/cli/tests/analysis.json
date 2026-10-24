@@ -40,5 +40,31 @@
     {"uid": "F2.b0", "name": "Body1", "visible": false},
     {"uid": "F4.b0", "name": "Body2", "material": "aluminum"}]}},
   {"expect": {"query": {"query": "measure", "a": "origin", "b": "Body2"},
-    "result": {"a": {"kind": "vertex", "point": [0, 0, 0]}, "between": {"distance": 58.309518948453004}}}}
+    "result": {"a": {"kind": "vertex", "point": [0, 0, 0]}, "between": {"distance": 58.309518948453004}}}},
+
+  {"comment": "Print Analysis (mitcad#620) on the kernel's meshes: Body2 on its bottom and on its top as the bed face prints without overhangs, its walls are 20 mm, and the estimate of a 20 mm cube in PLA with the defaults."},
+  {"expect": {"query": {"query": "print_overhangs", "bodies": ["F4.b0"]},
+    "result": {"down": [0, 0, -1], "overhang_area": 0, "area": 2400,
+      "bodies": [{"body": "F4.b0", "name": "Body2", "share": 0, "triangles": []}]}}},
+  {"expect": {"query": {"query": "print_overhangs", "bodies": ["F4.b0"],
+      "bed_face": {"body": "F4.b0", "face": "F4:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"}},
+    "result": {"down": [0, 0, 1], "overhang_area": 0}}},
+  {"expect": {"query": {"query": "print_thickness", "bodies": ["F4.b0"]},
+    "result": {"thinnest": 20, "bodies": [{"body": "F4.b0", "regions": 0, "triangles": []}]}}},
+  {"expect": {"query": {"query": "print_estimate", "bodies": ["F4.b0"], "material": "pla"},
+    "result": {"volume": 8000, "area": 2400, "shell_volume": 1920, "infill_volume": 912,
+      "filament_volume": 2832, "mass": 3.51168, "material": "PLA Plastic", "density": 1.24, "cost": null}}},
+  {"expect": {"query": {"query": "print_estimate", "bodies": ["F4.b0"], "material": "pla"},
+    "result": {"length": 1.17741}, "tolerance": 1e-4}},
+
+  {"comment": "A sphere of 20 mm on its lowest point: the cap within 45 degrees of straight down overhangs, (1 - sin 45°) / 2 of its area, to the mesh's accuracy; its walls are its diameter."},
+  {"cmd": "add_feature", "def": {"type": "sphere", "plane": "xy", "center": [100, 0], "diameter": 20, "operation": "new_body"}},
+  {"expect": {"query": {"query": "print_overhangs", "bodies": ["F6.b0"], "deviation": 0.01},
+    "result": {"share": 0.1464}, "tolerance": 0.02}},
+  {"comment": "Its walls along the surface's normal: a ray from a facet through the centre to the facet opposite, both within the 0.01 mm deviation inside the sphere, so 20 mm less 0.02 mm and the little a ray misses the centre by (a chord d beside it is d² / 10 mm short): 0.0025 of 20 mm, 0.05 mm. Along the facets' own normals, skewed facets of the sphere's mesh gave chords beside the centre, 19.74 mm."},
+  {"expect": {"query": {"query": "print_thickness", "bodies": ["F6.b0"], "deviation": 0.01},
+    "result": {"thinnest": 20, "bodies": [{"regions": 0}]}, "tolerance": 0.0025}},
+  {"expect": {"query": {"query": "print_estimate", "bodies": ["F6.b0"], "material": "pla"},
+    "result": {"volume": 4188.790204786391, "area": 1256.6370614359173,
+      "filament_volume": 1482.8317324943824, "mass": 1.8387113482930342}, "tolerance": 1e-5}}
 ]

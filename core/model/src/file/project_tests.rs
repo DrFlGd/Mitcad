@@ -382,6 +382,46 @@ fn the_folder_store_writes_a_file_once() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(unix)]
+#[test]
+fn the_folder_store_refuses_links_in_files_shards_and_project_metadata() {
+    use std::os::unix::fs::symlink;
+    for level in ["file", "shard", "store", "metadata"] {
+        let dir = scratch("store-links");
+        let root = dir.join("project");
+        Project::init(&root).unwrap();
+        let store = Project::open(&root).unwrap().store();
+        let sha = Sha256::of(b"data");
+        store.put(&sha, b"original").unwrap();
+        let path = store.path(&sha);
+        let link = match level {
+            "file" => path,
+            "shard" => path.parent().unwrap().to_path_buf(),
+            "store" => store.dir().to_path_buf(),
+            _ => root.join(".mitcad"),
+        };
+        let outside = dir.join("outside");
+        std::fs::rename(&link, &outside).unwrap();
+        symlink(&outside, &link).unwrap();
+        for error in [
+            store.get(&sha).unwrap_err(),
+            store.contains(&sha).unwrap_err(),
+            store.put(&sha, b"changed").unwrap_err(),
+        ] {
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData,
+                "{level}: {error}"
+            );
+            assert!(error.to_string().contains("not a regular file or folder"));
+        }
+        if level == "file" {
+            assert_eq!(std::fs::read(&outside).unwrap(), b"original");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 #[test]
 fn linked_components_read_their_data_from_their_project() {
     let dir = scratch("link");

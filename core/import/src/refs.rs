@@ -33,11 +33,13 @@ pub fn bodies_for<'d, K: Kernel>(
         .and_then(|f| f.object_id)
         .and_then(|o| doc.import_focus(o))
     {
-        return doc.bodies_of_components(components);
+        return crate::body_scope::filter(doc, doc.bodies_of_components(components));
     }
     match fp.f3d.as_ref().and_then(|f| f.document.as_deref()) {
-        Some(guid) if !doc.import_scope(guid).is_empty() => doc.scope_bodies(guid),
-        _ => doc.bodies(),
+        Some(guid) if !doc.import_scope(guid).is_empty() => {
+            crate::body_scope::filter(doc, doc.scope_bodies(guid))
+        }
+        _ => crate::body_scope::bodies(doc),
     }
 }
 
@@ -46,7 +48,7 @@ pub fn bodies_for<'d, K: Kernel>(
 pub fn planar_faces<K: Kernel>(doc: &Document<K>) -> Vec<(BodyUid, FaceName, Plane)> {
     let kernel = doc.kernel();
     let mut out = Vec::new();
-    for body in doc.bodies() {
+    for body in crate::body_scope::bodies(doc) {
         // Large bodies have thousands of faces, a kernel call each
         // (mitcad#82: the watchdog's progress).
         crate::tick();
@@ -702,7 +704,7 @@ pub struct PieceIndex {
 
 impl PieceIndex {
     pub fn new<K: Kernel>(doc: &Document<K>, body: BodyUid) -> Option<Self> {
-        let shape = doc.body_shape(body)?;
+        let shape = crate::body_scope::shape(doc, body)?;
         let kernel = doc.kernel();
         let faces = kernel.faces(shape).ok()?;
         let boxes = face_boxes(kernel, shape, faces.len());
@@ -745,7 +747,7 @@ pub fn face_pieces_in<K: Kernel>(
     fp: &Fingerprint,
     index: &PieceIndex,
 ) -> Vec<FaceName> {
-    let Some(shape) = doc.body_shape(body) else {
+    let Some(shape) = crate::body_scope::shape(doc, body) else {
         return Vec::new();
     };
     let surface = fp
@@ -1747,8 +1749,7 @@ pub fn compare_bodies<K: Kernel>(
     tick: &dyn Fn(),
 ) -> Vec<BodyReport> {
     let kernel = doc.kernel();
-    let bodies: Vec<_> = doc
-        .bodies()
+    let bodies: Vec<_> = crate::body_scope::bodies(doc)
         .into_iter()
         .filter_map(|b| {
             Some((
@@ -1920,7 +1921,7 @@ impl ReplayEdges {
         let kernel = doc.kernel();
         let mut out = Vec::new();
         let mut ends = Vec::new();
-        for body in doc.bodies() {
+        for body in crate::body_scope::bodies(doc) {
             crate::tick();
             // Kept by the body's version (mitcad#119).
             let edges = match doc.body_version(body.uid) {

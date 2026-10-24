@@ -37,7 +37,6 @@
 #include "../framework/Dialogs.hpp"
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/Json.hpp"
-#include "../framework/SettingsWindow.hpp"
 #include "../framework/WaitCursor.hpp"
 #include "../web/WebPage.hpp"
 #include "Autosave.hpp"
@@ -479,12 +478,13 @@ void MainWindow::closeDocument() {
   if (deferForNativeCommand([this] { closeDocument(); })) {
     return;
   }
-  // Cmd+W in the Settings window (macOS) closes the window; the menu's Close
-  // may get the key before the window's own shortcut does.
-  if (auto* settings = qobject_cast<SettingsWindow*>(QApplication::activeWindow())) {
-    settings->close();
+#ifdef Q_OS_MACOS
+  // The native menu receives Cmd+W even while a non-modal tool window is key.
+  if (QWidget* active = QApplication::activeWindow(); active != nullptr && active != this && !active->isModal()) {
+    active->close();
     return;
   }
+#endif
   if (!maybeSave()) {
     return;
   }

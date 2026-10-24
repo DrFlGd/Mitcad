@@ -169,6 +169,15 @@ QJsonObject MainWindow::modelPreview(const QByteArray& command, const QString& n
   return m_documentSession->preview(command, name);
 }
 
+bool MainWindow::modelPreviewAsync(const QByteArray& request, const QString& name, QObject* context,
+                                  AsyncCompletion completion) {
+  Q_ASSERT(!m_viewer->isPainting());
+  return m_documentSession->previewAsync(request, name, context, [completion = std::move(completion)](
+                                                                       const DocumentSession::AsyncResult& result) {
+    completion({result.answer, result.error, result.cancelled});
+  });
+}
+
 // ---------------------------------------------------------------------------
 // The wait cursor's idle recovery (mitcad#268)
 

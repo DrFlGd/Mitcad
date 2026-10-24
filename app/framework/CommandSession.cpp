@@ -8,6 +8,7 @@
 #include <utility>
 
 #include <BRepBuilderAPI_Copy.hxx>
+#include <Bnd_Box.hxx>
 
 #include <QApplication>
 #include <QEvent>
@@ -32,7 +33,7 @@
 namespace mitcad {
 namespace {
 
-// Previews wait for this long after the last change.
+// At most this long from the first pending input, even during a held drag.
 constexpr int kPreviewDelayMs = 150;
 // Previews kept per command.
 constexpr int kCachedPreviews = 24;
@@ -220,7 +221,18 @@ void CommandSession::setDefaults(const InputDef& input, const QString& key) {
   case InputDef::Type::Value:
   case InputDef::Type::Text:
     if (!m_state.hasText(key)) {
-      m_state.setText(key, input.defaultText);
+      QString initial = input.defaultText;
+      if (!isEditing() && !input.printedFitFeature.isEmpty()) {
+        for (const QJsonValue& value : m_host.queryArray(QStringLiteral("printed_fit_parameters"))) {
+          const QJsonObject fit = value.toObject();
+          if (fit.value(QStringLiteral("field")).toString() == input.id &&
+              fit.value(QStringLiteral("features")).toArray().contains(input.printedFitFeature)) {
+            initial = fit.value(QStringLiteral("name")).toString();
+            break;
+          }
+        }
+      }
+      m_state.setText(key, initial);
     }
     break;
   case InputDef::Type::Choice:
@@ -664,18 +676,29 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
   actions.accepted = [this] { commit(); };
   actions.rejected = [this] { cancel(); };
 
-  // AppKit can deliver edits while a worker computes. Keep their values
-  // queued until the model is idle, and invalidate the preview immediately.
+  // Both frontends can deliver edits while a preview computes. Numeric
+  // motion replaces the pending value without cancelling useful work.
   {
     auto action = actions.textEdited;
     actions.textEdited = [this, action](const QString& key, const QString& value) {
-      inputAction([action, key, value] { action(key, value); });
+      const auto slot = slotOf(key);
+      if (slot && slot->def->type == InputDef::Type::Value) {
+        numericInputAction(key, [action, key, value] { action(key, value); });
+      } else {
+        inputAction([action, key, value] { action(key, value); });
+      }
     };
   }
   {
     auto action = actions.valueCommitted;
     actions.valueCommitted = [this, action](const QString& key) {
-      inputAction([action, key] { action(key); }, false);
+      // Normalize the latest pending text, never a superseded expression.
+      if (const auto pending = m_pendingNumbers.value(key)) {
+        auto edited = std::move(*pending);
+        *pending = [edited = std::move(edited), action, key] { edited(); action(key); };
+      } else {
+        inputAction([action, key] { action(key); }, false);
+      }
     };
   }
   {
@@ -747,6 +770,28 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
         false);
   };
   actions.detached = [this] { presenterDetached(); };
+  // A link of an inspection's result ("point:x,y,z", Print Analysis'
+  // thinnest wall, mitcad#620): the view shows that point of the design,
+  // 20 mm across.
+  actions.resultLinkActivated = [this](const QString& link) {
+    const QStringList numbers = link.startsWith(QStringLiteral("point:")) ? link.mid(6).split(QLatin1Char(','))
+                                                                           : QStringList();
+    if (numbers.size() != 3) {
+      return;
+    }
+    double at[3] = {0.0, 0.0, 0.0};
+    for (int i = 0; i < 3; ++i) {
+      bool ok = false;
+      at[i] = numbers.at(i).toDouble(&ok);
+      if (!ok || !std::isfinite(at[i])) {
+        return;
+      }
+    }
+    Bnd_Box box;
+    box.Update(at[0] - 10.0, at[1] - 10.0, at[2] - 10.0, at[0] + 10.0, at[1] + 10.0, at[2] + 10.0);
+    m_host.viewer().frameBox(box);
+    qDebug().noquote() << QStringLiteral("%1: shows %2").arg(m_def.name, link);
+  };
   presenter.setActions(std::move(actions));
 
   for (const Slot& slot : slotsOf(false)) {
@@ -777,6 +822,7 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     m_manipulators = new ManipulatorOverlay(m_host.viewer(), m_def.name);
     connect(m_manipulators, &ManipulatorOverlay::dragged, this,
             &CommandSession::manipulatorDragged);
+    connect(m_manipulators, &ManipulatorOverlay::dragFinished, this, [this] { schedulePreview(0); });
     connect(m_manipulators, &ManipulatorOverlay::toggled, this, &CommandSession::toggleElement);
   }
   // Tab steps a choice with a cycle wherever the window has the keyboard
@@ -1268,6 +1314,7 @@ void CommandSession::evaluate(const QString& key) {
     try {
       const QJsonObject answer = m_host.queryObject({{QStringLiteral("query"), QStringLiteral("evaluate")},
                                                      {QStringLiteral("expression"), text},
+                                                     {QStringLiteral("printed_fits"), !input.printedFitFeature.isEmpty()},
                                                      {QStringLiteral("kind"), kindKey(input.valueKind)}});
       m_state.setValue(key, answer.value(QStringLiteral("value")).toDouble());
       shown = answer.value(QStringLiteral("text")).toString();
@@ -1388,7 +1435,7 @@ void CommandSession::updateManipulators() {
 void CommandSession::manipulatorDragged(const QString& key, double value) {
   if (m_presenter && !m_presenter->inputEnabled(key)) { return; }
   if (m_host.modelBusy()) {
-    inputAction([this, key, value] { manipulatorDragged(key, value); });
+    numericInputAction(key, [this, key, value] { manipulatorDragged(key, value); });
     return;
   }
   ++m_generation;
@@ -1457,9 +1504,13 @@ void CommandSession::toggleElement(const QString& key, int element) {
   inputsChanged();
 }
 
-void CommandSession::schedulePreview() {
-  if (!m_done) {
-    m_previewTimer.start(kPreviewDelayMs);
+void CommandSession::schedulePreview(int delay) {
+  if (!m_done && !m_cancelRequested && !m_committing) {
+    // Throttle from the first change; continuous input must not postpone
+    // the timer forever. A completed job drains its latest input at once.
+    if (!m_previewTimer.isActive() || m_previewTimer.remainingTime() > delay) {
+      m_previewTimer.start(delay);
+    }
   }
 }
 
@@ -1487,6 +1538,9 @@ void CommandSession::runInspection() {
     m_presenter->setResult(QString());
     m_presenter->setMessage(message, error);
     m_host.viewer().setPreview(TopoDS_Shape());
+    if (m_def.keepsSection) {
+      m_host.showPrintAnalysis(QJsonObject()); // nothing to analyse yet (mitcad#620)
+    }
     if (m_manipulators) {
       m_manipulators->setHint(QString());
     }
@@ -1547,6 +1601,9 @@ void CommandSession::runInspection() {
             m_presenter->setMessage(tr("Inspection cancelled; change an input to try again."), false);
             m_presenter->setOkEnabled(true);
             m_host.viewer().setPreview(TopoDS_Shape());
+            if (m_def.keepsSection) {
+              m_host.showPrintAnalysis(QJsonObject());
+            }
             qDebug().noquote() << QStringLiteral("Inspect %1: cancelled").arg(m_def.name);
           } else {
             Inspection shown = result;
@@ -1579,6 +1636,11 @@ void CommandSession::acceptInspection(const Inspection& result) {
                                                       : OcctViewer::PreviewStyle::Add);
   if (m_def.keepsSection || !result.section.isNull()) {
     m_host.showSection(result.section);
+  }
+  // Print Analysis' overhangs and thin walls (mitcad#620); an analysis
+  // panel without them shows none while it is open.
+  if (m_def.keepsSection || !result.printOverlay.isEmpty()) {
+    m_host.showPrintAnalysis(result.printOverlay);
   }
   qDebug().noquote() << QStringLiteral("Inspect %1: %2")
                             .arg(m_def.name, m_failed ? QStringLiteral("failed: ") + result.error
@@ -1634,9 +1696,13 @@ void CommandSession::runPreview() {
     return;
   }
   if (m_host.modelBusy()) {
-    // The timer ran out while a job computes the model (the caller of the
-    // job waits in an event loop): after it.
-    m_previewTimer.start(kPreviewDelayMs);
+    if (!m_previewWaiting) {
+      m_previewWaiting = true;
+      m_host.whenIdle(this, [this] {
+        m_previewWaiting = false;
+        schedulePreview(0);
+      });
+    }
     return;
   }
   if (probeAutoOperation()) {
@@ -1667,6 +1733,7 @@ void CommandSession::runPreview() {
     }
   }
   if (!message.isEmpty()) {
+    m_commitRequested = false;
     clearPreview();
     m_shownKey.clear();
     m_previewOk = false;
@@ -1718,6 +1785,7 @@ void CommandSession::runPreview() {
     if (m_previewOk && m_def.note && m_def.note(m_state, m_host) != m_shownNote) {
       m_presenter->setMessage(okMessage(cached.value().report), false);
     }
+    resumePendingCommit();
     return; // already shown
   }
   m_previewCancelled = false;
@@ -1726,21 +1794,33 @@ void CommandSession::runPreview() {
     resumePendingCommit();
     return;
   }
-  if (m_host.asynchronousCommands()) {
+  if (m_host.asynchronousPreviews()) {
     const quint64 generation = m_generation;
+    const quint64 structure = m_structureGeneration;
     m_asyncPending = true;
     m_presenter->setMessage(tr("Computing preview…"), false);
     m_presenter->setOkEnabled(false);
     const bool started = m_host.modelPreviewAsync(key, m_def.name, this,
-        [this, generation, key, built](const CommandHost::AsyncResult& result) {
+        [this, generation, structure, key, built](const CommandHost::AsyncResult& result) {
           if (!asyncPresenterAvailable()) { return; }
           m_asyncPending = false;
           if (m_cancelRequested) {
-            finishAsyncCancel();
+            if (m_host.asynchronousCommands()) { finishAsyncCancel(); }
+            else { cancel(); }
             return;
           }
           if (generation != m_generation) {
-            schedulePreview();
+            // Only numeric motion may present an older useful result.
+            // Its report must not replace the latest operation, targets,
+            // values or commit identity. Structural changes discard it.
+            if (structure == m_structureGeneration && result.succeeded() &&
+                result.answer.value(QStringLiteral("status")) == QStringLiteral("ok")) {
+              const QString operation = result.answer.value(QStringLiteral("auto_operation")).toObject()
+                  .value(QStringLiteral("operation")).toString(built.def.value(QStringLiteral("operation")).toString());
+              showPreview(previewFromReport(result.answer), operation);
+              qDebug().noquote() << QStringLiteral("Preview %1: intermediate numeric result").arg(m_def.name);
+            }
+            schedulePreview(0);
             return;
           }
           if (result.cancelled) {
@@ -1916,6 +1996,10 @@ void CommandSession::showPreview(const Preview& preview, const QString& operatio
     bodies.push_back(std::move(overlay));
   }
   viewer.setBodies(bodies);
+  if (timingLogged()) {
+    qDebug().noquote() << QStringLiteral("Preview installed: %1, dragging=%2")
+        .arg(m_def.name).arg(m_manipulators && m_manipulators->isDragging());
+  }
   // What the preview draws (mitcad#266), for UI tests: each body with its
   // occurrence, its placement's translation into the design, "new" for
   // what the command makes and "tool" for a consumed tool's overlay
@@ -2174,6 +2258,20 @@ QJsonObject CommandSession::bodyVolumes() const {
   return volumes;
 }
 
+void CommandSession::logCreatedParameters(const QJsonObject& result) const {
+  const QJsonArray created = result.value(QStringLiteral("parameters")).toArray();
+  if (created.isEmpty()) { return; }
+  for (const QJsonValue& value : m_host.queryArray(QStringLiteral("parameters"))) {
+    const QJsonObject parameter = value.toObject();
+    const QString name = parameter.value(QStringLiteral("name")).toString();
+    if (parameter.value(QStringLiteral("kind")).toString() == QStringLiteral("user") && created.contains(name)) {
+      qDebug().noquote() << QStringLiteral("Created user parameter %1 = %2 (%3)")
+          .arg(name, parameter.value(QStringLiteral("text")).toString(),
+               parameter.value(QStringLiteral("comment")).toString());
+    }
+  }
+}
+
 void CommandSession::logVolumes(const QJsonObject& before) const {
   if (!volumesLogged()) {
     return;
@@ -2216,10 +2314,14 @@ void CommandSession::inputAction(std::function<void()> action, bool invalidatesP
   }
   if (invalidatesPreview) {
     ++m_generation;
+    ++m_structureGeneration;
+    // Preserve ordering across a structural edit: earlier numeric slots
+    // still drain first, later edits get new slots after this barrier.
+    m_pendingNumbers.clear();
     m_commitRequested = false;
   }
   if (m_host.modelBusy()) {
-    if (invalidatesPreview && m_host.asynchronousCommands() && m_asyncPending) {
+    if (invalidatesPreview && m_host.asynchronousPreviews() && m_asyncPending) {
       m_host.cancelModelJob();
     }
     m_host.whenIdle(this, [this, action = std::move(action), rejected = std::move(rejected)] {
@@ -2232,6 +2334,34 @@ void CommandSession::inputAction(std::function<void()> action, bool invalidatesP
     return;
   }
   action();
+}
+
+void CommandSession::numericInputAction(const QString& key, std::function<void()> action) {
+  if (m_done || m_cancelRequested || m_committing) { return; }
+  ++m_generation;
+  if (m_presenter) {
+    m_presenter->setOkEnabled(false);
+    m_presenter->setPreviewReport({});
+  }
+  if (!m_host.modelBusy()) {
+    action();
+    return;
+  }
+  if (const auto pending = m_pendingNumbers.value(key)) {
+    *pending = std::move(action);
+    if (timingLogged()) { qDebug() << "Preview numeric replaced:" << key << "pending=" << m_pendingNumbers.size(); }
+    return;
+  }
+  auto pending = std::make_shared<std::function<void()>>(std::move(action));
+  m_pendingNumbers.insert(key, pending);
+  if (timingLogged()) { qDebug() << "Preview numeric queued:" << key << "pending=" << m_pendingNumbers.size(); }
+  m_host.whenIdle(this, [this, key, pending] {
+    if (m_pendingNumbers.value(key) == pending) { m_pendingNumbers.remove(key); }
+    if (m_done || m_cancelRequested || m_committing) { return; }
+    if (timingLogged()) { qDebug() << "Preview numeric drained:" << key; }
+    (*pending)();
+    schedulePreview(0);
+  });
 }
 
 void CommandSession::structuralInputAction(const QString& key, std::function<void()> action) {
@@ -2251,10 +2381,10 @@ void CommandSession::presenterDetached() {
   m_presenter = nullptr;
   m_previewTimer.stop();
   ++m_generation;
-  if (!m_done && m_host.asynchronousCommands()) {
+  if (!m_done && m_host.asynchronousPreviews()) {
     // A frontend may disappear while its worker still owns the document.
     // Keep the session alive until cancellation restores its checkpoint.
-    cancelAsync();
+    cancel();
   }
 }
 
@@ -2264,7 +2394,8 @@ bool CommandSession::asyncPresenterAvailable() {
   m_asyncPending = false;
   m_cancelRequested = true;
   m_commitRequested = false;
-  finishAsyncCancel();
+  if (m_host.asynchronousCommands()) { finishAsyncCancel(); }
+  else { cancel(); }
   return false;
 }
 
@@ -2273,7 +2404,7 @@ void CommandSession::resumePendingCommit() {
     m_commitRequested = false;
     const quint64 generation = m_generation;
     TestSync::singleShot(0, this, [this, generation] {
-      if (generation == m_generation && !m_done && !m_cancelRequested) { commitAsync(); }
+      if (generation == m_generation && !m_done && !m_cancelRequested) { commit(); }
     });
   }
 }
@@ -2739,6 +2870,7 @@ bool CommandSession::commitAsync() {
       }
       qDebug().noquote() << (isEditing() ? QStringLiteral("Edited %1").arg(m_editUid)
           : QStringLiteral("Added %1 as %2").arg(m_def.name, result.answer.value(QStringLiteral("uid")).toString()));
+      logCreatedParameters(result.answer);
       logVolumes(before);
       finish(true);
     });
@@ -2818,8 +2950,19 @@ bool CommandSession::commit() {
   if (m_done) {
     return false;
   }
+  if (m_asyncPending || m_host.modelBusy()) {
+    if (!m_commitRequested) {
+      m_commitRequested = true;
+      m_host.whenIdle(this, [this] { resumePendingCommit(); });
+    }
+    return true;
+  }
   if (m_previewTimer.isActive() || m_shownKey.isEmpty()) {
     runPreview();
+    if (m_asyncPending || m_host.modelBusy()) {
+      m_commitRequested = true;
+      return true;
+    }
   }
   if (m_def.apply) {
     return applyCommand(); // mitcad#375
@@ -2929,6 +3072,7 @@ bool CommandSession::commit() {
                              ? QStringLiteral("Edited %1").arg(m_editUid)
                              : QStringLiteral("Added %1 as %2")
                                    .arg(m_def.name, result.value(QStringLiteral("uid")).toString()));
+  logCreatedParameters(result);
   logVolumes(before);
   finish(true);
   return true;
@@ -3248,6 +3392,19 @@ void CommandSession::cancel() {
   if (m_done) {
     return;
   }
+  if (m_host.modelBusy()) {
+    if (!m_cancelRequested) {
+      m_cancelRequested = true;
+      m_commitRequested = false;
+      ++m_generation;
+      ++m_structureGeneration;
+      m_pendingNumbers.clear();
+      m_previewTimer.stop();
+      m_host.cancelModelJob();
+      m_host.whenIdle(this, [this] { cancel(); });
+    }
+    return;
+  }
   m_cancelRequested = true;
   settleVisibility(); // they stay as the user set them (mitcad#295)
   if (!rollForward()) {
@@ -3270,7 +3427,7 @@ void CommandSession::cancel() {
 }
 
 void CommandSession::discard() {
-  if (m_host.asynchronousCommands() && m_host.modelBusy()) {
+  if (m_host.modelBusy()) {
     m_host.cancelModelJob();
     m_host.whenIdle(this, [this] { discard(); });
     return;
@@ -3392,6 +3549,7 @@ void CommandSession::finish(bool committed) {
     return;
   }
   m_done = true;
+  m_pendingNumbers.clear();
   m_previewTimer.stop();
   if (auto* application = QCoreApplication::instance()) {
     application->removeEventFilter(this); // a Tab cycle's (mitcad#375)

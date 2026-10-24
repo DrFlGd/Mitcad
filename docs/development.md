@@ -117,7 +117,7 @@ ssh -i ~/.ssh/mitcad_mac $MITCAD_MAC "cd ~/src/mitcad && cmake --preset dev && c
 
 | Script | Use |
 |---|---|
-| `sync-to-mac.sh [user@host] [dir]` | Like `sync-to-vm.sh`. Defaults: `MITCAD_MAC`, `MITCAD_MAC_DIR` (`~/src/mitcad`), `MITCAD_MAC_KEY` (`~/.ssh/mitcad_mac`). Clears the target except `build` and `CMakeUserPresets.json` first; no `._*` files or extended attributes. |
+| `sync-to-mac.sh [user@host] [dir]` | Like `sync-to-vm.sh`: stages the archive, compares contents and replaces only changed files with the sync time; unchanged files keep their times, and deleted files disappear. Keeps `build/` and `CMakeUserPresets.json`; no `._*` files or extended attributes. Defaults: `MITCAD_MAC`, `MITCAD_MAC_DIR` (`~/src/mitcad`), `MITCAD_MAC_KEY` (`~/.ssh/mitcad_mac`). |
 | `setup-macos.sh [--compiler-caches-only]` | CMake, Ninja, ccache (universal) and sccache (arm64) release archives into `~/.local` (not Homebrew), the pinned Rust toolchain, cargo-deny, vcpkg at `vcpkg.json`'s baseline, Qt via aqtinstall (`~/Qt/<version>/macos`), the render worker's libraries (`build-cycles-macos.sh`, once); writes `CMakeUserPresets.json` (`dev` = `macos-debug`). Downloads are checked against the SHA-256 pins in `versions.sh`; an empty pin stops it unless `MITCAD_SKIP_HASH=1`. The optional flag installs only the two compiler caches, leaving other dependencies, shell files and presets alone. |
 
 `tools/dev-env/versions.sh` holds the pins `setup-user.sh` and
@@ -126,6 +126,67 @@ presets `macos-debug` and `macos-release` build for arm64 with deployment
 target 14.4 (the Qt 6.12 minimum) and the overlay triplet
 `triplets/arm64-osx-dynamic.cmake` (OCCT as dylibs, the same deployment
 target for vcpkg's libraries).
+
+The Darwin arm64 target of AppleClang 21.0.0 and Rust 1.99.0 (LLVM 23.1.1)
+already selects `apple-m1`. The former's driver command and the latter's
+target specification were inspected with a macOS 14.4 deployment target;
+Rust also enables `dotprod`, `fp16` and `lse`. An absent explicit `-mcpu`
+or `target-cpu` flag therefore does not imply generic AArch64 code in
+this toolchain. OCCT and the renderer use the same AppleClang arm64
+default. Adding the same flag would not change that CPU baseline and
+does not justify rebuilding the dependency prefix. Never use `native`
+for shipped binaries; recheck the compiler defaults when changing tools.
+
+`MITCAD_MACOS_THIN_LTO` defaults to `ON` for arm64-only Mac builds and
+affects their Release and RelWithDebInfo configurations. CMake IPO uses
+ThinLTO for C++; explicit release-only compile/link options cover
+Objective-C++, since CMake 3.31 does not emit IPO flags for its objects.
+The option requires a successful C++ IPO link probe and both languages'
+ThinLTO support; an unsupported compiler stops configuration instead of
+silently dropping LTO. Set `MITCAD_MACOS_THIN_LTO=OFF` to disable it.
+Debug, Rust profiles, Linux and Windows remain unchanged. Neither vcpkg
+nor the Cycles/OIDN build inputs change, so the existing compatible
+dependency prefix remains usable. Inspect generated compile commands,
+including Objective-C++, when changing this configuration.
+
+A controlled release comparison on the physical M1 Max with the toolchain
+above used one synthetic 17-feature design and the CPU renderer's built-in
+640 x 360, 32-sample scene. Five alternating CLI/render observations per
+configuration gave these medians:
+
+| Workload | Baseline | ThinLTO candidate |
+|---|---:|---:|
+| CLI recompute | 551.9 ms | 551.8 ms |
+| CLI process wall time | 0.71 s | 0.71 s |
+| CPU render, including denoising | 1.804 s | 1.758 s |
+| Render-worker process wall time | 1.93 s | 1.89 s |
+
+The candidate included an experimental Rust release profile with ThinLTO
+and four codegen units. It did not improve this geometry-dominated CLI
+fixture, so that Rust change was rejected. The render worker does not link
+Rust: its 2.55% render-time improvement supports retaining C++/Objective-C++
+ThinLTO independently. This is a narrow CPU result, not a general CAD or
+Metal speedup. Repeated C++ and Objective-C++ compiler commands hit ccache.
+The combined experimental rebuild took 518.85 s plus 11.17 s for the
+explicit Objective-C++ correction; those include the discarded Rust
+experiment and are not a clean build-time comparison of the retained setting.
+The candidate geometry CTest passed in 194.27 s. Application and packaging
+acceptance are separate checks; this measurement alone does not establish
+them.
+
+Final validation of the retained C++/Objective-C++ setting used a
+warning-free native arm64 Qt Release-configuration application build with
+the original Rust profile restored. Its render-worker SHA-256 stayed
+identical to the measured candidate, confirming that the renderer gain
+does not depend on the rejected Rust experiment. The geometry binary
+also stayed identical to the one that passed the geometry CTest.
+Application unit tests, CLI rendering, the 36-case IOSurface shader test,
+SPDX checks and the complete Qt modelling/version-history workflow passed.
+Required physical-Metal/OIDN preview, orbit, zoom, picking, resize and
+shutdown passed without fallback or capability skips. Generated Debug
+commands contain no LTO flags and no Cargo profile override; Qt remains
+the default frontend. This scoped validation does not claim a new signed
+release or package acceptance.
 
 Compiler caches persist outside checkouts and build folders. ccache uses
 `~/Library/Caches/ccache` by default (`ccache --show-config` shows any user
@@ -156,6 +217,91 @@ not normalize those Rust keys. Cache hits across checkouts therefore need
 actual validation and are not guaranteed for every crate; see upstream's
 [Rust limitations](https://github.com/mozilla/sccache/blob/v0.18.0/docs/Rust.md)
 and [Rust key implementation](https://github.com/mozilla/sccache/blob/v0.18.0/src/compiler/rust.rs).
+
+### macOS allocator experiments
+
+The pinned OCCT 8.0.1 defaults to `USE_MMGR_TYPE=NATIVE`. In this build,
+`Standard::Allocate` calls `calloc`, and `Standard::AllocateOptimal` calls
+`malloc`; `MMGT_OPT` does **not** select an allocator. Its environment
+variable is read only when OCCT is compiled with `USE_MMGR_TYPE=FLEXIBLE`.
+That configuration maps `MMGT_OPT=0` to the system allocator, `1` to OCCT's
+pool and `2` to the scalable allocator. The last option requires `USE_TBB`:
+without it, OCCT's scalable-allocation calls fall back to the system
+allocator. Inspect the actual build cache and
+[`Standard.cxx`](https://github.com/Open-Cascade-SAS/OCCT/blob/V8_0_1/src/FoundationClasses/TKernel/Standard/Standard.cxx)
+before comparing settings. A changed environment variable alone is not
+evidence that the allocator changed.
+
+Keep experimental libraries in a separate prefix. Verify the loaded
+`TKernel` and `Standard::GetAllocatorType()` after the first OCCT allocation.
+A process-wide malloc replacement is a different experiment: inspect
+`malloc_zone_from_ptr`/`malloc_get_zone_name` on ordinary and OCCT allocations
+as well as the loaded libraries. For mimalloc, also check heap membership
+with `mi_is_in_heap_region`. Its upstream
+[macOS override instructions](https://github.com/microsoft/mimalloc/blob/v3.5.3/readme.md#dynamic-override-on-macos)
+use a shared library; loading it successfully alone does not prove that
+allocations reached it.
+
+Use a fixed optimized CLI and one synthetic design, for example the saved
+`tools/cli/tests/perf_join_pattern.json` fixture. Run each candidate in a
+fresh process with `info <design> --timings`, without a result store. Report
+the feature recompute times separately from process wall time and peak
+resident memory (`/usr/bin/time -l` on macOS reports the latter in bytes).
+The CLI's `--timings` report does not measure viewport meshing or display.
+`MITCAD_TEST_ONLY` selects `guarded` geometry tests by a name substring.
+Legacy groups that call their cases directly still run, so inspect the
+test entry point before treating a filtered invocation as one isolated
+case. Keep workload, compiler flags, thread
+limits and successful assertions equal across candidates. No allocator is
+adopted merely from these setup checks; timings, memory and allocation
+failure handling decide whether a replacement is worth shipping.
+
+The bounded comparison on 24 October 2026 used a physical M1 Max
+(10 CPU cores, 32 GiB), macOS 27.0.1 (26A434), AppleClang 21.0.0 and
+the optimized 0.26.0 CLI/geometry binaries at `378aec0c`. Each row is the
+median of five fresh processes; the candidate order rotated between
+repetitions and no build ran concurrently. The design was the synthetic
+90-pin join fixture above. The geometry workload was `test_geometry` with
+`MITCAD_TEST_ONLY=test_the_check_where_changed_gives_the_whole_checks_answer`:
+the perforated-plate case from `test_large_bodies.cpp` plus the legacy
+groups that do not use `guarded` (996 input-checked operations in total).
+Its time and RSS include those groups, not just the plate. RSS is the median of
+each process's maximum resident size, in MiB.
+
+| Allocator | Recompute ms | CLI wall s | CLI RSS MiB | Geometry wall s | Geometry RSS MiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Shipped native/system | 547.9 | 0.71 | 75.38 | 7.02 | 185.48 |
+| Native + mimalloc 3.5.3 override | 526.0 | 0.70 | 77.98 | 6.74 | 190.34 |
+| FLEXIBLE, system (`0`) | 562.0 | 0.73 | 77.41 | 7.07 | 185.41 |
+| FLEXIBLE, OCCT pool (`1`) | 855.9 | 1.04 | 91.47 | 11.04 | 217.27 |
+| FLEXIBLE, TBB (`2`) | 553.2 | 0.72 | 79.84 | 7.06 | 182.59 |
+
+The separate FLEXIBLE TKernel used the same patched OCCT 8.0.1 source,
+arm64, deployment target 14.4 and `-O3`, with TBB 2023.1.0 enabled.
+Only that uninstalled TKernel was substituted; the three FLEXIBLE rows
+share the identical binary. Enabling TBB also changes OCCT's parallel
+runtime, so comparisons with the shipped non-TBB binary are not solely
+allocator comparisons. Loaded-library and allocator-type probes verified
+all three selections. The mimalloc override was pinned to the existing
+vcpkg baseline and its source hash; probes of ordinary, aligned and OCCT
+allocations verified the mimalloc zone and heap membership in the actual
+CLI process. Diagnostic probes were absent from the timed runs.
+
+The pinned TBB malloc proxy loaded and registered a `tbbmalloc` zone on
+this OS, but ordinary and OCCT allocations still used `DefaultMallocZone`.
+That ineffective process-wide override is excluded from the table; it is
+different from the verified FLEXIBLE/TBB row.
+
+Decision: retain the system allocator. The pool is slower and larger;
+TBB brings no speed gain here. Mimalloc improves feature recompute and
+the geometry case by about 4%, but CLI wall time changes by only 0.01 s
+and median RSS increases in both workloads. The geometry maximum RSS
+across the five runs rises from 187.95 to 200.28 MiB. This narrow benefit
+does not justify adding a process-wide shipped allocator and its
+packaging/failure-handling obligations. All 50 timed workload invocations
+completed successfully. No dependency, allocator, out-of-memory policy
+or package signature was changed. These are synthetic workload results,
+not a corpus, viewport-meshing or rendering speedup claim.
 
 ## macOS: bundle and native UI
 
@@ -329,7 +475,9 @@ folder of the test's own and checks the scope's registration (uninstall
 entry, `installation.ini`, file type, Start menu shortcut, nothing in the
 other scope). Just for the current user it checks the files, runs
 `mitcad-cli`, `mitcad.exe --version` and the render worker (a test render,
-`--list-devices`; the build's GPU kernels installed) with a system-only `PATH` and,
+`--list-devices`; the build's GPU kernels installed) with a system-only `PATH`,
+checks that the installed `mitcad-updater.exe` does not run an installer
+whose SHA-256 is not the given `--sha256`, or without one (mitcad#603), and,
 with `-MesaDir`, renders a screenshot; for all users it reinstalls with
 only `/D=` as an earlier release's updater does. With `-MesaDir` it tests
 the automatic update in both scopes ([updates.md](updates.md#tests);
@@ -547,6 +695,8 @@ visibly on a desktop in use.
 - No network: update checks are off (`MITCAD_NO_UPDATE_CHECK=1`);
   `ui-update-test.sh` uses its own local HTTPS server.
 - Xvfb runs with `-noreset` so a restarted app finds the display at once.
+  The screen is 1600 x 1000 logical pixels; a test of a tall dialog sets
+  `UI_SCREEN_HEIGHT` before `ui_start_display`.
 - The app runs without gdb: gdb loads the debug build's symbols (about
   1 GB) at every start, and the app's crash handler logs a crash's signal
   and stack itself. `UI_GDB=1` starts it under gdb for gdb's backtrace.
@@ -971,7 +1121,22 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   counts. The detail goes into the [user guide](user-guide.md). The ctest
   `repo.tooltips` (`tools/tooltip-check`) checks the texts in `app/`.
 - Metric defaults everywhere ([architecture](architecture.md#units)).
+- A dialog that holds its form in a scroll area uses `FittingScrollArea`
+  and sizes itself with `fitWindowToContents`
+  (`app/framework/FitToScreen.hpp`): `QScrollArea`'s own size hint stops
+  at 24 text lines and `QWidget::adjustSize` at two thirds of the screen,
+  so the dialog would scroll although the screen has room. The scroll bar
+  is for a screen too low for the form.
 - Vector arithmetic on `[f64; 3]` comes from `core/vec3` (`mitcad_vec3::{add, sub, dot, cross, norm, unit, …}`), never from a private copy in a module; where a caller must keep a cut-off or a division by the length it has always had, use the named variant (`unit_above`, `unit_div`, `unit_div_above`). The same holds for `[f64; 2]` with `mitcad_vec3::vec2` (`perp`, `lerp` and a scalar `cross` besides; the 2D length is `hypot`). The order of the floating-point operations there is part of the contract.
+- Rust first for new code of our own: new logic we write ourselves goes
+  in Rust (`core/`), on what the `Kernel` already gives (meshes, faces,
+  edges, distances), rather than as new C++ code. Mesh analyses,
+  classification, arithmetic and bookkeeping over shapes belong in Rust.
+  What OCCT already provides (exact B-rep construction, booleans,
+  fillets and blend surfaces, sweeps, exact intersections) is called
+  through the C++ facade, not reimplemented in Rust; existing C++ is not
+  rewritten just because it is C++. A port patch to OCCT
+  (`third_party/vcpkg-ports/opencascade`) only when nothing else works.
 - New geometry operation: a `Kernel` method with a default
   `Err(Unsupported)` in `core/model/src/kernel.rs`, grouped by family;
   bridges per family (`core/ffi/src/kernel/<family>.rs`,

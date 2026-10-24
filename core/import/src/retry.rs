@@ -341,7 +341,7 @@ impl<K: ImportKernel> Importer<'_, K> {
             });
             for i in near {
                 let uid = current[i].0;
-                let Some(shape) = self.doc.body_shape(uid) else {
+                let Some(shape) = crate::body_scope::shape(self.doc, uid) else {
                     continue;
                 };
                 match geometric::body_distance(kernel, shape, &body.shape) {
@@ -446,8 +446,7 @@ impl<K: ImportKernel> Importer<'_, K> {
         // a base feature replaces keeps its uid: they are told apart here.)
         let solids: Vec<(BodyUid, String)> = {
             let kernel = self.doc.kernel();
-            self.doc
-                .bodies()
+            crate::body_scope::bodies(self.doc)
                 .iter()
                 .filter(|b| Sig::of(kernel, b.shape).is_some())
                 .map(|b| (b.uid, b.name.clone()))

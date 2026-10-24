@@ -658,7 +658,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     ) -> Vec<mitcad_model::datum::CurveGeometry> {
         let kernel = self.doc.kernel();
         let mut out = Vec::new();
-        for body in self.doc.bodies() {
+        for body in crate::body_scope::bodies(self.doc) {
             if component.is_some_and(|c| self.doc.body_component(body.uid) != Some(c)) {
                 continue;
             }
@@ -737,7 +737,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if self.doc.body_component(body) != Some(self.component) {
             return Vec::new();
         }
-        let Some(shape) = self.doc.body_shape(body) else {
+        let Some(shape) = crate::body_scope::shape(self.doc, body) else {
             return Vec::new();
         };
         let Ok(curves) = self
@@ -1343,7 +1343,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     "import: a vertex input at {:?} mm is not in the replay",
                     fp.point.map(geom::mm3)
                 );
-                for body in self.doc.bodies() {
+                for body in crate::body_scope::bodies(self.doc) {
                     eprintln!(
                         "import:   body {} box {:?}",
                         body.uid,
@@ -2262,9 +2262,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
             Some(counts)
         };
-        let current: Vec<(K::Shape, Option<Sig>)> = self
-            .doc
-            .bodies()
+        let current: Vec<(K::Shape, Option<Sig>)> = crate::body_scope::bodies(self.doc)
             .iter()
             .map(|b| (b.shape.clone(), Sig::of(kernel, b.shape)))
             .collect();
@@ -3375,7 +3373,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             let resolved = refs::resolve_face_where(self.doc, fp, &|b| participants.contains(&b))
                 .or_else(|| refs::resolve_face(self.doc, fp));
             let found = resolved.and_then(|(body, face)| {
-                let shape = self.doc.bodies().into_iter().find(|b| b.uid == body)?.shape;
+                let shape = crate::body_scope::bodies(self.doc)
+                    .into_iter()
+                    .find(|b| b.uid == body)?
+                    .shape;
                 let area = kernel
                     .faces(shape)
                     .ok()?
@@ -3500,9 +3501,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let kernel = self.doc.kernel();
         let mut on_faces = Vec::new();
         for (body, face, _) in faces {
-            let shape = self
-                .doc
-                .bodies()
+            let shape = crate::body_scope::bodies(self.doc)
                 .into_iter()
                 .find(|b| b.uid == *body)?
                 .shape;
@@ -3621,7 +3620,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // Up to the first face of a body of the component it reaches (an
         // object that is not a planar face parallel to the sketch: the next
         // face, a curved one).
-        let bodies: Vec<BodyUid> = self.doc.bodies().iter().map(|b| b.uid).collect();
+        let bodies: Vec<BodyUid> = crate::body_scope::bodies(self.doc)
+            .iter()
+            .map(|b| b.uid)
+            .collect();
         for body in bodies {
             if self.doc.body_component(body) != own {
                 continue;
@@ -3992,7 +3994,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let kernel = self.doc.kernel();
         // Faces by how close their prism comes to the change.
         let mut faces: Vec<(f64, BodyUid, FaceName, f64)> = Vec::new();
-        for body in self.doc.bodies() {
+        for body in crate::body_scope::bodies(self.doc) {
             if self.doc.body_component(body.uid) != Some(self.component) {
                 continue;
             }
@@ -5175,9 +5177,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // as their stored ones, mitcad#285.)
         let stored = self.stored_counterparts();
         let kernel = self.doc.kernel();
-        let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = self
-            .doc
-            .bodies()
+        let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = crate::body_scope::bodies(self.doc)
             .iter()
             .map(|b| {
                 let sig = stored.get(&b.uid).copied();
@@ -5646,9 +5646,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if def["type"] != "chamfer" || found.iter().all(|e| e.direction.is_none()) {
             return;
         }
-        let Some(shape) = self
-            .doc
-            .bodies()
+        let Some(shape) = crate::body_scope::bodies(self.doc)
             .iter()
             .find(|b| b.uid == body)
             .map(|b| b.shape.clone())
@@ -5741,9 +5739,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let mut defs = Vec::new();
         for def in &c.defs {
             let body = def["body"].as_str()?;
-            let shape = self
-                .doc
-                .bodies()
+            let shape = crate::body_scope::bodies(self.doc)
                 .iter()
                 .find(|b| b.uid.to_string() == body)?
                 .shape
@@ -5787,9 +5783,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let mut added = 0;
         for def in &mut defs {
             let body = def["body"].as_str()?.to_owned();
-            let shape = self
-                .doc
-                .bodies()
+            let shape = crate::body_scope::bodies(self.doc)
                 .iter()
                 .find(|b| b.uid.to_string() == body)?
                 .shape

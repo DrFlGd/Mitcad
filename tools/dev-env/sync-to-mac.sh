@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: MIT
 # Mirrors this working tree (tracked and untracked files that git does not
 # ignore) into the macOS build VM over SSH. The copy goes one way only; the
-# VM's build directory and CMakeUserPresets.json are kept, and file times are
-# preserved so unchanged files are not rebuilt.
+# VM's build directory and CMakeUserPresets.json are kept. Content checks
+# preserve unchanged files' times; changed files get the sync time so a
+# build from another checkout cannot hide an older changed source file.
 #
 # Usage: tools/dev-env/sync-to-mac.sh [user@host] [dir]
 # Defaults come from MITCAD_MAC (no default), MITCAD_MAC_DIR (~/src/mitcad on
@@ -35,10 +36,12 @@ for opt in --no-mac-metadata --no-xattrs; do
   fi
 done
 
-# Remove what is not kept, so files deleted here disappear there too.
-"${SSH[@]}" "d=\"$DIR\"; mkdir -p \"\$d\" && find \"\$d\" -mindepth 1 -maxdepth 1 ! -name build ! -name CMakeUserPresets.json -exec rm -rf {} +"
-
+# Stage the archive before comparing content. Do not pass rsync -t: changed
+# files must get the sync time rather than the source archive's old time.
 git ls-files -z --cached --others --exclude-standard |
   tar ${TAR_OPTS[@]+"${TAR_OPTS[@]}"} --null -T - -cf - |
-  "${SSH[@]}" "d=\"$DIR\"; tar -xf - -C \"\$d\""
+  "${SSH[@]}" "set -e; d=\"$DIR\"; mkdir -p \"\$d\"; stage=\$(mktemp -d); \
+    trap 'rm -rf \"\$stage\"' EXIT HUP INT TERM; \
+    tar -xf - -C \"\$stage\"; \
+    rsync -rlpc --delete --exclude=/build --exclude=/CMakeUserPresets.json \"\$stage/\" \"\$d/\""
 echo "Synced to $HOST:$DIR"

@@ -1,0 +1,699 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cycles 5.2.0: synchronous native auxiliary display pass destinations.
+# Original: https://projects.blender.org/blender/cycles/src/commit/3b97e190c5ff1a2ed2160d879ad5bf95bea7b8ba/src/integrator/path_trace.cpp
+# Copyright 2011-2026 Blender Foundation. Modification by Mitcad contributors.
+#
+# Optional post-display callback and CPU/Metal half pass destinations. Existing
+# float output stays unchanged. Native environment compositing reads the completed
+# beauty half and unrounded float catcher/background in the conversion kernel.
+# No public version or dependency pin change; all Cycles/kernel users must rebuild.
+--- a/src/session/output_driver.h
++++ b/src/session/output_driver.h
+@@ -3,6 +3,8 @@
+  * SPDX-License-Identifier: Apache-2.0 */
+
+ #pragma once
++
++#include "session/display_driver.h"
+
+ #include "util/math.h"
+ #include "util/string.h"
+@@ -21,6 +23,30 @@
+  public:
+   OutputDriver() = default;
+   virtual ~OutputDriver() = default;
++
++  /* Actual display dimensions, including progressive resolution. The ordinary
++   * Tile::size remains the full tile size for existing float output drivers. */
++  struct DisplayInfo {
++    int2 size;
++    bool denoised;
++  };
++
++  struct NativePassDestination {
++    /* Packed RGBA half pixels. CPU rendering uses pixels; Metal rendering uses
++     * graphics_interop. The caller retains both resources for the entire call.
++     * No pointer or graphics handle is cached after this synchronous operation.
++     * A graphics destination must contain a fresh assign()ed handle per call;
++     * the callee consumes its new-handle state, but never owns a Metal retain. */
++    half4 *pixels = nullptr;
++    GraphicsInteropBuffer *graphics_interop = nullptr;
++    size_t size_bytes = 0;
++    int2 size = make_int2(0, 0);
++    /* The destination already contains the completed beauty half pixels.
++     * Composite float catcher/background values over those pixels in place. */
++    bool composite_over_environment = false;
++    /* Optional evidence that the native GPU route actually executed. */
++    bool *used_graphics_interop = nullptr;
++  };
+
+   class Tile {
+    public:
+@@ -43,6 +69,14 @@
+     virtual bool get_pass_pixels(const string_view pass_name,
+                                  const int num_channels,
+                                  float *pixels) const = 0;
++    /* Optional synchronous native output. Unsupported devices/dimensions return
++     * false without falling back to a float host copy. */
++    virtual bool get_pass_pixels_native(const string_view /* pass_name */,
++                                        const NativePassDestination & /* destination */) const
++    {
++      return false;
++    }
++
+     virtual bool set_pass_pixels(const string_view pass_name,
+                                  const int num_channels,
+                                  const float *pixels) const = 0;
+@@ -58,6 +92,15 @@
+     return false;
+   }
+
++  /* Called after display update_end(), while this batch's render buffers are
++   * still stable and before progress callbacks may publish the display frame.
++   * Native output drivers can finish auxiliary pixels in their retained frame.
++   * The Tile reference is borrowed for this call only. */
++  virtual void update_display_tile(const Tile & /* tile */,
++                                   const DisplayInfo & /* display */)
++  {
++  }
++
+   /* For baking, read render pass PASS_BAKE_PRIMITIVE/SEED/DIFFERENTIAL
+    * to determine which shading points to use for baking at each pixel. Return
+    * true if any data was read. */
+--- a/src/integrator/path_trace_tile.h
++++ b/src/integrator/path_trace_tile.h
+@@ -21,6 +21,8 @@
+   bool get_pass_pixels(const string_view pass_name,
+                        const int num_channels,
+                        float *pixels) const override;
++  bool get_pass_pixels_native(const string_view pass_name,
++                              const OutputDriver::NativePassDestination &destination) const override;
+   bool set_pass_pixels(const string_view pass_name,
+                        const int num_channels,
+                        const float *pixels) const override;
+--- a/src/integrator/path_trace_tile.cpp
++++ b/src/integrator/path_trace_tile.cpp
+@@ -73,6 +73,47 @@
+   return path_trace_.get_render_tile_pixels(pass_accessor, destination);
+ }
+
++bool PathTraceTile::get_pass_pixels_native(
++    const string_view pass_name,
++    const OutputDriver::NativePassDestination &destination) const
++{
++  if (destination.used_graphics_interop) {
++    *destination.used_graphics_interop = false;
++  }
++  /* Match get_pass_pixels()'s pass resolution and noisy fallback exactly, but
++   * never download the render buffer to make this operation work. */
++  const BufferParams &params = path_trace_.get_render_tile_params();
++  const BufferPass *pass = params.find_pass(pass_name);
++  if (!pass) {
++    return false;
++  }
++  if (pass->mode == PassMode::DENOISED && !path_trace_.has_denoised_result() &&
++      !is_volume_guiding_pass(pass->type))
++  {
++    pass = params.find_pass(pass->type);
++    if (!pass) {
++      return false;
++    }
++  }
++  pass = params.get_actual_display_pass(pass);
++  if (!pass || pass->offset == PASS_UNUSED) {
++    return false;
++  }
++  if (destination.composite_over_environment &&
++      (pass->type != PASS_SHADOW_CATCHER ||
++       params.get_pass_offset(PASS_BACKGROUND) == PASS_UNUSED))
++  {
++    return false;
++  }
++  PassAccessor::PassAccessInfo access(*pass);
++  access.use_approximate_shadow_catcher = params.use_approximate_shadow_catcher;
++  access.use_approximate_shadow_catcher_background =
++      access.use_approximate_shadow_catcher && !params.use_transparent_background;
++  access.native_composite_over_environment = destination.composite_over_environment;
++  return path_trace_.get_render_tile_pixels_native(
++      access, params.exposure, path_trace_.get_num_render_tile_samples(), destination);
++}
++
+ bool PathTraceTile::set_pass_pixels(const string_view pass_name,
+                                     const int num_channels,
+                                     const float *pixels) const
+--- a/src/integrator/pass_accessor.h
++++ b/src/integrator/pass_accessor.h
+@@ -41,6 +41,11 @@
+     bool use_approximate_shadow_catcher_background = false;
+
+     bool show_active_pixels = false;
++
++    /* Native half output only: composite this float catcher and float
++     * background over the existing beauty half destination, preserving the
++     * application's established rounding and colored-reflection semantics. */
++    bool native_composite_over_environment = false;
+   };
+
+   class Destination {
+--- a/src/integrator/path_trace_work.h
++++ b/src/integrator/path_trace_work.h
+@@ -7,6 +7,7 @@
+ #include "integrator/pass_accessor.h"
+ #include "scene/pass.h"
+ #include "session/buffers.h"
++#include "session/output_driver.h"
+ #include "util/unique_ptr.h"
+
+ CCL_NAMESPACE_BEGIN
+@@ -121,6 +122,20 @@
+   bool get_render_tile_pixels(const PassAccessor &pass_accessor,
+                               const PassAccessor::Destination &destination);
+
++  PassMode display_pass_mode(PassMode requested) const
++  {
++    return get_display_pass_access_info(requested).mode;
++  }
++
++  virtual bool get_render_tile_pixels_native(
++      const PassAccessor::PassAccessInfo & /* access */,
++      const float /* exposure */,
++      const int /* num_samples */,
++      const OutputDriver::NativePassDestination & /* destination */)
++  {
++    return false;
++  }
++
+   /* Set pass data for baking. */
+   bool set_render_tile_pixels(PassAccessor &pass_accessor, const PassAccessor::Source &source);
+
+@@ -166,6 +181,12 @@
+                 const bool *cancel_requested_flag);
+
+   PassAccessor::PassAccessInfo get_display_pass_access_info(PassMode pass_mode) const;
++
++  /* Strict single-work native output bounds, checked before any map/kernel. */
++  bool native_pass_parameters(PassMode mode,
++                              const OutputDriver::NativePassDestination &destination,
++                              BufferParams &params,
++                              PassAccessor::Destination &pixels) const;
+
+   /* Get destination which offset and stride are configured so that writing to it will write to a
+    * proper location of GPU display texture, taking current tile and device slice into account. */
+--- a/src/integrator/path_trace_work.cpp
++++ b/src/integrator/path_trace_work.cpp
+@@ -6,6 +6,8 @@
+
+ #include "integrator/path_trace_display.h"
+ #include "integrator/path_trace_work.h"
++
++#include <limits>
+ #include "integrator/path_trace_work_cpu.h"
+ #include "integrator/path_trace_work_gpu.h"
+
+@@ -156,6 +158,88 @@
+   return pass_accessor.set_render_tile_pixels(buffers_.get(), slice_source);
+ }
+
++bool PathTraceWork::native_pass_parameters(
++    const PassMode mode,
++    const OutputDriver::NativePassDestination &destination,
++    BufferParams &params,
++    PassAccessor::Destination &pixels) const
++{
++  if (!buffers_ || destination.size.x <= 0 || destination.size.y <= 0) {
++    return false;
++  }
++  /* No native resampling yet: denoised upscaling changes the sample-count
++   * and noisy background layout, so reject it before selecting either mode. */
++  if (effective_denoised_buffer_params_.width != effective_buffer_params_.width ||
++      effective_denoised_buffer_params_.height != effective_buffer_params_.height ||
++      effective_denoised_buffer_params_.window_width != effective_buffer_params_.window_width ||
++      effective_denoised_buffer_params_.window_height != effective_buffer_params_.window_height ||
++      effective_denoised_big_tile_params_.width != effective_big_tile_params_.width ||
++      effective_denoised_big_tile_params_.height != effective_big_tile_params_.height ||
++      effective_denoised_big_tile_params_.window_width != effective_big_tile_params_.window_width ||
++      effective_denoised_big_tile_params_.window_height != effective_big_tile_params_.window_height)
++  {
++    return false;
++  }
++  const size_t width = size_t(destination.size.x);
++  const size_t height = size_t(destination.size.y);
++  if (width > std::numeric_limits<size_t>::max() / sizeof(half4) / height ||
++      destination.size_bytes < width * height * sizeof(half4) ||
++      width > size_t(std::numeric_limits<int>::max()) / height)
++  {
++    return false;
++  }
++  const BufferParams &effective = mode == PassMode::DENOISED ?
++                                      effective_denoised_buffer_params_ : effective_buffer_params_;
++  const BufferParams &big = mode == PassMode::DENOISED ?
++                                effective_denoised_big_tile_params_ : effective_big_tile_params_;
++  /* Native output is intentionally limited to one complete device window.
++   * Multi-device and offline/full-buffer output retain the original API. */
++  if (effective.window_width != destination.size.x ||
++      effective.window_height != destination.size.y ||
++      big.window_width != destination.size.x || big.window_height != destination.size.y ||
++      int64_t(effective.full_x) + effective.window_x != int64_t(big.full_x) + big.window_x ||
++      int64_t(effective.full_y) + effective.window_y != int64_t(big.full_y) + big.window_y ||
++      effective.window_x < 0 || effective.window_y < 0 || effective.stride <= 0 ||
++      effective.pass_stride <= 0 ||
++      size_t(effective.window_x) + width > size_t(effective.stride))
++  {
++    return false;
++  }
++  const size_t stride = size_t(effective.stride);
++  const size_t pass_stride = size_t(effective.pass_stride);
++  const size_t max_int = size_t(std::numeric_limits<int>::max());
++  /* Existing accessors form the source row stride and starting float offset
++   * with signed-int arithmetic. Bound those expressions, not the whole extent. */
++  if (stride > max_int / pass_stride) {
++    return false;
++  }
++  const size_t row_stride = stride * pass_stride;
++  if (size_t(effective.window_y) > max_int / row_stride ||
++      size_t(effective.window_x) >
++          (max_int - size_t(effective.window_y) * row_stride) / pass_stride)
++  {
++    return false;
++  }
++  const size_t last_y = size_t(effective.window_y) + height - 1;
++  const size_t row_end = size_t(effective.window_x) + width;
++  const size_t max_size = std::numeric_limits<size_t>::max();
++  if (last_y > (max_size - row_end) / stride) {
++    return false;
++  }
++  const size_t end = last_y * stride + row_end;
++  if (end > buffers_->buffer.size() / size_t(effective.pass_stride)) {
++    return false;
++  }
++  params = effective;
++  /* pad_pixels() visits params.width * params.height; limit that post-pass
++   * to the packed destination, while preserving source stride/window offsets. */
++  params.width = destination.size.x;
++  params.height = destination.size.y;
++  pixels.num_components = 4;
++  pixels.stride = destination.size.x;
++  return true;
++}
++
+ PassAccessor::PassAccessInfo PathTraceWork::get_display_pass_access_info(PassMode pass_mode) const
+ {
+   const KernelFilm &kfilm = device_scene_->data.film;
+--- a/src/integrator/path_trace.h
++++ b/src/integrator/path_trace.h
+@@ -152,6 +152,12 @@
+   bool get_render_tile_pixels(const PassAccessor &pass_accessor,
+                               const PassAccessor::Destination &destination);
+
++  bool get_render_tile_pixels_native(
++      const PassAccessor::PassAccessInfo &access,
++      float exposure,
++      int num_samples,
++      const OutputDriver::NativePassDestination &destination);
++
+   /* Set pass data for baking. */
+   bool set_render_tile_pixels(PassAccessor &pass_accessor, const PassAccessor::Source &source);
+
+--- a/src/integrator/path_trace.cpp
++++ b/src/integrator/path_trace.cpp
+@@ -799,6 +799,18 @@
+     }
+
+     display_->update_end();
++    if (output_driver_) {
++      const PathTraceTile tile(*this);
++      const PathTraceWork *display_work =
++          (big_tile_denoise_work_ && render_state_.has_denoised_result) ?
++              big_tile_denoise_work_.get() :
++              (path_trace_works_.size() == 1 ? path_trace_works_.front().get() : nullptr);
++      const bool actual_denoised = display_work ?
++          display_work->display_pass_mode(pass_mode) == PassMode::DENOISED : show_denoised;
++      const OutputDriver::DisplayInfo info = {
++          make_int2(texture_width, texture_height), actual_denoised};
++      output_driver_->update_display_tile(tile, info);
++    }
+   }
+
+   render_scheduler_.report_display_update_time(render_work, time_dt() - start_time);
+@@ -1189,6 +1201,25 @@
+   });
+
+   return success;
++}
++
++bool PathTrace::get_render_tile_pixels_native(
++    const PassAccessor::PassAccessInfo &access,
++    const float exposure,
++    const int num_samples,
++    const OutputDriver::NativePassDestination &destination)
++{
++  if (full_frame_state_.render_buffers || path_trace_works_.size() != 1) {
++    return false;
++  }
++  if (big_tile_denoise_work_ && render_state_.has_denoised_result &&
++      access.mode == PassMode::DENOISED)
++  {
++    return big_tile_denoise_work_->get_render_tile_pixels_native(
++        access, exposure, num_samples, destination);
++  }
++  return path_trace_works_.front()->get_render_tile_pixels_native(
++      access, exposure, num_samples, destination);
+ }
+
+ bool PathTrace::set_render_tile_pixels(PassAccessor &pass_accessor,
+--- a/src/integrator/path_trace_work_cpu.h
++++ b/src/integrator/path_trace_work_cpu.h
+@@ -46,6 +46,12 @@
+                        const int num_samples) override;
+   void destroy_gpu_resources(PathTraceDisplay *display) override;
+
++  bool get_render_tile_pixels_native(
++      const PassAccessor::PassAccessInfo &access,
++      float exposure,
++      int num_samples,
++      const OutputDriver::NativePassDestination &destination) override;
++
+   bool copy_render_buffers_from_device() override;
+   bool copy_render_buffers_to_device() override;
+   bool zero_render_buffers() override;
+--- a/src/integrator/path_trace_work_gpu.h
++++ b/src/integrator/path_trace_work_gpu.h
+@@ -41,6 +41,12 @@
+                        PassMode pass_mode,
+                        const int num_samples) override;
+   void destroy_gpu_resources(PathTraceDisplay *display) override;
++
++  bool get_render_tile_pixels_native(
++      const PassAccessor::PassAccessInfo &access,
++      float exposure,
++      int num_samples,
++      const OutputDriver::NativePassDestination &destination) override;
+
+   bool copy_render_buffers_from_device() override;
+   bool copy_render_buffers_to_device() override;
+--- a/src/integrator/path_trace_work_cpu.cpp
++++ b/src/integrator/path_trace_work_cpu.cpp
+@@ -230,6 +230,25 @@
+   display->unmap_texture_buffer();
+ }
+
++bool PathTraceWorkCPU::get_render_tile_pixels_native(
++    const PassAccessor::PassAccessInfo &access,
++    const float exposure,
++    const int num_samples,
++    const OutputDriver::NativePassDestination &destination)
++{
++  BufferParams params;
++  PassAccessor::Destination pixels;
++  if (!destination.pixels || !native_pass_parameters(access.mode, destination, params, pixels)) {
++    return false;
++  }
++  pixels.pixels_half_rgba = destination.pixels;
++  const PassAccessorCPU accessor(access, exposure, num_samples);
++  tbb::task_arena arena = local_tbb_arena_create(device_);
++  bool success = false;
++  arena.execute([&]() { success = accessor.get_render_tile_pixels(buffers_.get(), params, pixels); });
++  return success && !device_->have_error();
++}
++
+ void PathTraceWorkCPU::destroy_gpu_resources(PathTraceDisplay * /*display*/) {}
+
+ bool PathTraceWorkCPU::copy_render_buffers_from_device()
+--- a/src/integrator/path_trace_work_gpu.cpp
++++ b/src/integrator/path_trace_work_gpu.cpp
+@@ -1097,6 +1097,49 @@
+   return true;
+ }
+
++bool PathTraceWorkGPU::get_render_tile_pixels_native(
++    const PassAccessor::PassAccessInfo &access,
++    const float exposure,
++    const int num_samples,
++    const OutputDriver::NativePassDestination &destination)
++{
++  BufferParams params;
++  PassAccessor::Destination pixels;
++  if (device_->info.type != DEVICE_METAL || !destination.graphics_interop ||
++      destination.graphics_interop->is_empty() ||
++      !destination.graphics_interop->has_new_handle() ||
++      destination.graphics_interop->get_type() != GraphicsInteropDevice::METAL ||
++      destination.graphics_interop->get_size() < destination.size_bytes ||
++      !native_pass_parameters(access.mode, destination, params, pixels))
++  {
++    return false;
++  }
++  if (destination.composite_over_environment && destination.graphics_interop->take_zero()) {
++    /* Clearing this input would destroy the already completed beauty. */
++    return false;
++  }
++  /* The borrowed buffer remains owned by the caller. This local adapter owns
++   * only its device residency reference, removed after queue completion. */
++  unique_ptr<DeviceGraphicsInterop> interop = queue_->graphics_interop_create();
++  if (!interop) {
++    return false;
++  }
++  interop->set_buffer(*destination.graphics_interop);
++  pixels.d_pixels_half_rgba = interop->map();
++  if (!pixels.d_pixels_half_rgba) {
++    return false;
++  }
++  const PassAccessorGPU accessor(queue_.get(), access, exposure, num_samples);
++  const bool success = accessor.get_render_tile_pixels(buffers_.get(), params, pixels);
++  const bool completed = queue_->synchronize();
++  interop->unmap();
++  const bool result = success && completed && !device_->have_error();
++  if (destination.used_graphics_interop) {
++    *destination.used_graphics_interop = result;
++  }
++  return result;
++}
++
+ void PathTraceWorkGPU::destroy_gpu_resources(PathTraceDisplay *display)
+ {
+   if (!device_graphics_interop_) {
+--- a/src/kernel/types.h
++++ b/src/kernel/types.h
+@@ -1284,9 +1284,11 @@
+   int pixel_stride;
+
+   int is_denoised;
+-
++  int native_composite_over_environment;
++
++  float native_background_exposure;
+   /* Padding. */
+-  int pad1;
++  int pad[3];
+ };
+ static_assert_align(KernelFilmConvert, 16);
+
+--- a/src/integrator/pass_accessor.cpp
++++ b/src/integrator/pass_accessor.cpp
+@@ -295,6 +295,9 @@
+                                                            destination.num_components;
+
+   kfilm_convert->is_denoised = (mode == PassMode::DENOISED);
++  kfilm_convert->native_composite_over_environment =
++      pass_access_info_.native_composite_over_environment;
++  kfilm_convert->native_background_exposure = exposure_;
+ }
+
+ bool PassAccessor::set_render_tile_pixels(RenderBuffers *render_buffers, const Source &source)
+--- a/src/kernel/film/read.h
++++ b/src/kernel/film/read.h
+@@ -11,6 +11,7 @@
+ #include "kernel/types.h"
+
+ #include "util/color.h"
++#include "util/half.h"
+
+ CCL_NAMESPACE_BEGIN
+
+@@ -573,6 +574,27 @@
+   if (kfilm_convert->num_components == 4) {
+     pixel[3] = pixel_value.w;
+   }
++}
++
++/* The native destination already contains the established display-half
++ * beauty. Keep catcher/background at full float precision until the final
++ * half store, exactly as the host's previous environment composite did. */
++ccl_device_inline void film_apply_native_environment_composite(
++    const ccl_global KernelFilmConvert *ccl_restrict kfilm_convert,
++    const ccl_global float *ccl_restrict buffer,
++    const half4 beauty_half,
++    ccl_private float *ccl_restrict catcher)
++{
++  kernel_assert(kfilm_convert->pass_background != PASS_UNUSED);
++  const float4 beauty = half4_to_float4(beauty_half);
++  const float rest = 1.0f - saturatef(beauty.w);
++  const float background_scale = film_get_scale(kfilm_convert, buffer) *
++                                 kfilm_convert->native_background_exposure;
++  const ccl_global float *background = buffer + kfilm_convert->pass_background;
++  catcher[0] = beauty.x + rest * catcher[0] * (background[0] * background_scale);
++  catcher[1] = beauty.y + rest * catcher[1] * (background[1] * background_scale);
++  catcher[2] = beauty.z + rest * catcher[2] * (background[2] * background_scale);
++  catcher[3] = 1.0f;
+ }
+
+ /* --------------------------------------------------------------------
+--- a/src/kernel/device/cpu/kernel_arch_impl.h
++++ b/src/kernel/device/cpu/kernel_arch_impl.h
+@@ -364,6 +364,9 @@
+           pixel_rgba[2] = pixel_rgba[0]; \
+         } \
+         film_apply_pass_pixel_overlays_rgba(kfilm_convert, buffer, pixel_rgba); \
++        if (kfilm_convert->native_composite_over_environment) { \
++          film_apply_native_environment_composite(kfilm_convert, buffer, *pixel, pixel_rgba); \
++        } \
+         *pixel = float4_to_half4_display( \
+             make_float4(pixel_rgba[0], pixel_rgba[1], pixel_rgba[2], pixel_rgba[3])); \
+       } \
+--- a/src/kernel/device/gpu/kernel.h
++++ b/src/kernel/device/gpu/kernel.h
+@@ -917,7 +917,7 @@
+     ccl_global const float *buffer = render_buffer + offset + \
+                                      buffer_pixel_index * kfilm_convert.pass_stride; \
+ \
+-    float pixel[4]; \
++    float pixel[4] = {0.0f, 0.0f, 0.0f, 1.0f}; \
+     film_get_pass_pixel_##variant(&kfilm_convert, buffer, pixel); \
+ \
+     if (input_channel_count == 1) { \
+@@ -928,6 +928,11 @@
+     } \
+ \
+     film_apply_pass_pixel_overlays_rgba(&kfilm_convert, buffer, pixel); \
++    if (kfilm_convert.native_composite_over_environment) { \
++      const ccl_global half4 *existing = (ccl_global half4 *)rgba; \
++      const half4 beauty = existing[rgba_offset + y * rgba_stride + x]; \
++      film_apply_native_environment_composite(&kfilm_convert, buffer, beauty, pixel); \
++    } \
+ \
+     const half4 half_pixel = float4_to_half4_display( \
+         make_float4(pixel[0], pixel[1], pixel[2], pixel[3])); \
+--- a/src/device/metal/device_impl.h
++++ b/src/device/metal/device_impl.h
+@@ -8,6 +8,7 @@
+
+ #  include <atomic>
+ #  include <memory>
++#  include <map>
+
+ #  include "bvh/bvh.h"
+ #  include "device/device.h"
+@@ -74,6 +75,9 @@
+   bool mtlResidencySet_dirty = false;
+   /* Guards mtlResidencySet mutations (may be reached from multiple threads). */
+   std::mutex mtlResidencySet_mutex;
++  /* Several interop adapters may temporarily share one externally owned
++   * allocation. Track registrations, without retaining the Metal object. */
++  std::map<id<MTLResource>, size_t> mtlResidencySet_users;
+ #  endif
+
+   uint kernel_features = 0;
+--- a/src/device/metal/device_impl.mm
++++ b/src/device/metal/device_impl.mm
+@@ -256,8 +256,11 @@
+   if (@available(macos 15.0, *)) {
+     if (allocation && mtlResidencySet) {
+       std::lock_guard<std::mutex> residency_lock(mtlResidencySet_mutex);
+-      [mtlResidencySet addAllocation:allocation];
+-      mtlResidencySet_dirty = true;
++      size_t &users = mtlResidencySet_users[allocation];
++      if (users++ == 0) {
++        [mtlResidencySet addAllocation:allocation];
++        mtlResidencySet_dirty = true;
++      }
+     }
+   }
+ #  endif
+@@ -269,8 +272,12 @@
+   if (@available(macos 15.0, *)) {
+     if (allocation && mtlResidencySet) {
+       std::lock_guard<std::mutex> residency_lock(mtlResidencySet_mutex);
+-      [mtlResidencySet removeAllocation:allocation];
+-      mtlResidencySet_dirty = true;
++      const auto users = mtlResidencySet_users.find(allocation);
++      if (users != mtlResidencySet_users.end() && --users->second == 0) {
++        [mtlResidencySet removeAllocation:allocation];
++        mtlResidencySet_users.erase(users);
++        mtlResidencySet_dirty = true;
++      }
+     }
+   }
+ #  endif
+--- a/src/test/CMakeLists.txt
++++ b/src/test/CMakeLists.txt
+@@ -31,6 +31,7 @@
+   integrator_render_scheduler_test.cpp
+   integrator_tile_test.cpp
+   kernel_camera_projection_test.cpp
++  kernel_native_display_test.cpp
+   render_graph_finalize_test.cpp
+   util_aligned_malloc_test.cpp
+   util_boundbox_test.cpp
+--- /dev/null
++++ b/src/test/kernel_native_display_test.cpp
+@@ -0,0 +1,61 @@
++/* SPDX-FileCopyrightText: 2026 Mitcad contributors
++ *
++ * SPDX-License-Identifier: Apache-2.0 */
++
++#include <gtest/gtest.h>
++
++#include <algorithm>
++
++#include "util/math.h"
++#include "kernel/film/read.h"
++
++CCL_NAMESPACE_BEGIN
++
++TEST(KernelNativeDisplay, EnvironmentKeepsFloatFactorsAndCompletedHalfBeauty)
++{
++  KernelFilmConvert convert = {};
++  convert.pass_sample_count = PASS_UNUSED;
++  convert.pass_background = 0;
++  convert.scale = 0.25f;
++  convert.native_background_exposure = 2.3f;
++  const float background[] = {1024.3f, 33.1234f, 0.000123456f};
++  const float factors[] = {1.0004f, 0.012345f, 4.12345f};
++  for (const float alpha : {-0.25f, 0.0f, 0.333f, 1.0f, 1.25f}) {
++    const half4 completed = float4_to_half4_display(make_float4(0.123456f, 1.23456f, 9.8765f, alpha));
++    const float4 light = half4_to_float4(completed);
++    const float light_values[] = {light.x, light.y, light.z};
++    float result[] = {factors[0], factors[1], factors[2], 1.0f};
++    film_apply_native_environment_composite(&convert, background, completed, result);
++    const float rest = 1.0f - std::clamp(light.w, 0.0f, 1.0f);
++    for (int channel = 0; channel < 3; ++channel) {
++      /* The legacy float pass scales background before the host composite.
++       * Do not half-round either auxiliary input before this multiplication. */
++      const float pass_background = background[channel] *
++                                    (convert.scale * convert.native_background_exposure);
++      const float expected = light_values[channel] + rest * factors[channel] * pass_background;
++      EXPECT_EQ(uint16_t(float_to_half_display(result[channel])),
++                uint16_t(float_to_half_display(expected))) << channel << ": " << alpha;
++    }
++    EXPECT_EQ(result[3], 1.0f);
++  }
++}
++
++TEST(KernelNativeDisplay, EnvironmentUsesPerPixelSampleCount)
++{
++  KernelFilmConvert convert = {};
++  convert.pass_sample_count = 3;
++  convert.pass_use_filter = true;
++  convert.pass_background = 0;
++  convert.scale = 1.0f;
++  convert.native_background_exposure = 0.5f;
++  float background[] = {12.3f, 4.5f, 6.7f, __uint_as_float(4u)};
++  const half4 beauty = float4_to_half4_display(make_float4(0.25f, 0.5f, 0.75f, 0.5f));
++  float result[] = {0.4f, 0.6f, 0.8f, 1.0f};
++  film_apply_native_environment_composite(&convert, background, beauty, result);
++  EXPECT_FLOAT_EQ(result[0], 0.25f + 0.5f * 0.4f * (12.3f * 0.125f));
++  EXPECT_FLOAT_EQ(result[1], 0.5f + 0.5f * 0.6f * (4.5f * 0.125f));
++  EXPECT_FLOAT_EQ(result[2], 0.75f + 0.5f * 0.8f * (6.7f * 0.125f));
++  EXPECT_EQ(result[3], 1.0f);
++}
++
++CCL_NAMESPACE_END

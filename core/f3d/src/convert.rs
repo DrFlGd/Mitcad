@@ -6,12 +6,12 @@ use std::collections::HashMap;
 
 use crate::asm::file::AsmFile;
 use crate::asm::geom::{
-    self, AsmCurve, AsmSurface, Bs3Curve, Bs3Surface, Cursor, GeomError, HelixCircle, HelixLine,
-    IntGeom, SplineGeom,
+    self, AsmCurve, AsmSurface, BlendSide, Bs2Curve, Bs3Curve, Bs3Surface, Chart, Cursor,
+    GeomError, HelixCircle, HelixLine, IntGeom, RollingBall, SplineGeom,
 };
 use crate::brep::{
-    self, BSplineCurve, BSplineSurface, Body, CheckReport, Coedge, Curve, Edge, Face, Lump, P3,
-    Shell, Surface, Transform, Vertex,
+    self, BSplineCurve, BSplineCurve2d, BSplineSurface, BlendSupport, Body, CheckReport, Coedge,
+    Curve, Edge, Face, Lump, P3, Shell, Surface, Transform, Vertex,
 };
 
 /// A converted body with what could not be converted.
@@ -397,6 +397,55 @@ fn cone_half_angle(sin: f64, cos: f64) -> f64 {
     }
 }
 
+/// The curve moved by `by`.
+fn translated(c: &Curve, by: P3) -> Result<Curve, GeomError> {
+    let mut out = c.clone();
+    match &mut out {
+        Curve::Line { origin, .. } => *origin = brep::add(*origin, by),
+        Curve::Ellipse { center, .. } => *center = brep::add(*center, by),
+        Curve::BSpline(b) => b.poles.iter_mut().for_each(|p| *p = brep::add(*p, by)),
+        Curve::Interpolated { points, .. } => {
+            points.iter_mut().for_each(|p| *p = brep::add(*p, by))
+        }
+        Curve::OnSurface { .. } => {
+            return Err(GeomError(
+                "a curve on a surface the builder makes, moved".into(),
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// An ASM B-spline curve (end knots of multiplicity `degree`) as a neutral
+/// one, its poles scaled by `s`.
+fn bspline_curve_scaled(b: &Bs3Curve, s: f64) -> Result<BSplineCurve, GeomError> {
+    let mut mults = b.mults.clone();
+    let n = mults.len();
+    if n == 0 {
+        return Err(GeomError("invalid B-spline curve".into()));
+    }
+    mults[0] += 1;
+    mults[n - 1] += 1;
+    let poles = b
+        .ctrl
+        .iter()
+        .map(|c| [c[0] * s, c[1] * s, c[2] * s])
+        .collect();
+    let weights = b.rational.then(|| b.ctrl.iter().map(|c| c[3]).collect());
+    let out = BSplineCurve {
+        degree: b.degree,
+        knots: b.knots.clone(),
+        mults,
+        poles,
+        weights,
+        periodic: b.closure == 2,
+    };
+    if !out.is_valid() {
+        return Err(GeomError("invalid B-spline curve".into()));
+    }
+    Ok(out)
+}
+
 impl<'a> Ctx<'a> {
     fn issue(&mut self, msg: String) {
         if self.issues.len() < 200 {
@@ -471,29 +520,7 @@ impl<'a> Ctx<'a> {
     }
 
     fn bspline_curve(&self, b: &Bs3Curve) -> Result<BSplineCurve, GeomError> {
-        let s = self.opt.scale;
-        let mut mults = b.mults.clone();
-        let n = mults.len();
-        mults[0] += 1;
-        mults[n - 1] += 1;
-        let poles = b
-            .ctrl
-            .iter()
-            .map(|c| [c[0] * s, c[1] * s, c[2] * s])
-            .collect();
-        let weights = b.rational.then(|| b.ctrl.iter().map(|c| c[3]).collect());
-        let out = BSplineCurve {
-            degree: b.degree,
-            knots: b.knots.clone(),
-            mults,
-            poles,
-            weights,
-            periodic: b.closure == 2,
-        };
-        if !out.is_valid() {
-            return Err(GeomError("invalid B-spline curve".into()));
-        }
-        Ok(out)
+        bspline_curve_scaled(b, self.opt.scale)
     }
 
     fn bspline_surface(&self, b: &Bs3Surface) -> Result<BSplineSurface, GeomError> {
@@ -631,10 +658,140 @@ impl<'a> Ctx<'a> {
                         }
                         Ok((Curve::Interpolated { params, points }, k))
                     }
+                    IntGeom::OnSurface {
+                        chart,
+                        pcurve,
+                        params,
+                    } => Ok((self.curve_on_surface(chart, pcurve, params)?, k)),
                     IntGeom::Unsupported(why) => Err(GeomError(format!("{subtype}: {why}"))),
                 }
             }
         }
+    }
+
+    /// A surface curve stored without its approximation: its support
+    /// surface along its parameter curve, at the parameter curve's
+    /// parameter. On a plane the B-spline of the parameter curve's poles
+    /// carried onto the plane (exact); on other surfaces the curve through
+    /// its points at the approximation's knots (else the parameter curve's)
+    /// and 16 more in each span, as the approximation was made
+    /// (mitcad#589).
+    fn curve_on_surface(
+        &self,
+        chart: &Chart,
+        pcurve: &Bs2Curve,
+        params: &[f64],
+    ) -> Result<Curve, GeomError> {
+        let s = self.opt.scale;
+        if let Chart::Procedural(surface) = chart {
+            // A surface the builder makes: passed on with the parameter
+            // curve, its v carried as the surface's (a rolling ball's v is
+            // its spine's, `k` times the file's).
+            // The surface is made over the v the curve spans.
+            let (surface, k) = match &**surface {
+                AsmSurface::Spline {
+                    geom: SplineGeom::RollingBall(rb),
+                    ..
+                } => {
+                    let vs = pcurve.ctrl.iter().map(|p| p[1]);
+                    let lo = vs.clone().fold(f64::INFINITY, f64::min);
+                    let hi = vs.fold(f64::NEG_INFINITY, f64::max);
+                    self.rolling_ball(rb, Some([lo, hi]))?
+                }
+                surface => (self.surface_geom(surface)?.0, 1.0),
+            };
+            let mut mults = pcurve.mults.clone();
+            let n = mults.len();
+            mults[0] += 1;
+            mults[n - 1] += 1;
+            let pcurve = BSplineCurve2d {
+                degree: pcurve.degree,
+                knots: pcurve.knots.clone(),
+                mults,
+                poles: pcurve.ctrl.iter().map(|p| [p[0], k * p[1]]).collect(),
+                weights: pcurve
+                    .rational
+                    .then(|| pcurve.ctrl.iter().map(|p| p[2]).collect()),
+            };
+            if !pcurve.is_valid() {
+                return Err(GeomError("invalid parameter curve".into()));
+            }
+            return Ok(Curve::OnSurface {
+                surface: Box::new(surface),
+                pcurve,
+            });
+        }
+        let as_3d = |f: &dyn Fn(f64, f64) -> P3| Bs3Curve {
+            degree: pcurve.degree,
+            rational: pcurve.rational,
+            closure: pcurve.closure,
+            knots: pcurve.knots.clone(),
+            mults: pcurve.mults.clone(),
+            ctrl: pcurve
+                .ctrl
+                .iter()
+                .map(|p| {
+                    let q = f(p[0], p[1]);
+                    [q[0], q[1], q[2], p[2]]
+                })
+                .collect(),
+        };
+        if let Chart::Plane { .. } = chart {
+            let on_plane = as_3d(&|u, v| chart.eval(u, v).unwrap_or([0.0; 3]));
+            return Ok(Curve::BSpline(self.bspline_curve(&on_plane)?));
+        }
+        // The parameter curve itself, unscaled.
+        let mut uv = bspline_curve_scaled(&as_3d(&|u, v| [u, v, 0.0]), 1.0)?;
+        uv.periodic = false;
+        let surface = match chart {
+            Chart::Spline(b) => Some(self.bspline_surface(b)?),
+            _ => None,
+        };
+        let (a, b) = uv.range();
+        let mut knots: Vec<f64> = params
+            .iter()
+            .copied()
+            .filter(|t| *t >= a && *t <= b)
+            .collect();
+        if knots.len() < 2 {
+            knots = pcurve
+                .knots
+                .iter()
+                .copied()
+                .filter(|t| *t >= a && *t <= b)
+                .collect();
+        }
+        knots.sort_by(f64::total_cmp);
+        knots.dedup();
+        if knots.first() != Some(&a) {
+            knots.insert(0, a);
+        }
+        if knots.last() != Some(&b) {
+            knots.push(b);
+        }
+        let per_span = (16usize).min(20_000 / knots.len().max(1)).max(2);
+        let mut ts = Vec::with_capacity(knots.len() * per_span + 1);
+        for w in knots.windows(2) {
+            for i in 0..per_span {
+                ts.push(w[0] + (w[1] - w[0]) * i as f64 / per_span as f64);
+            }
+        }
+        ts.push(b);
+        let mut points = Vec::with_capacity(ts.len());
+        for &t in &ts {
+            let p = uv.eval(t);
+            let q = match &surface {
+                Some(bs) => bs.eval(p[0], p[1]),
+                None => brep::scale(
+                    chart
+                        .eval(p[0], p[1])
+                        .ok_or_else(|| GeomError("a surface curve's support".into()))?,
+                    s,
+                ),
+            };
+            points.push(q);
+        }
+        Ok(Curve::Interpolated { params: ts, points })
     }
 
     fn edge(&mut self, record: usize) -> Result<EdgeRef, GeomError> {
@@ -860,8 +1017,24 @@ impl<'a> Ctx<'a> {
                 SplineGeom::Revolution {
                     approx: Some(a), ..
                 } => Ok((Surface::BSpline(self.bspline_surface(a)?), *reversed)),
-                SplineGeom::Revolution { .. } => {
-                    Err(GeomError(format!("{subtype} without approximation")))
+                SplineGeom::Revolution {
+                    curve, root, axis, ..
+                } => {
+                    // Without its approximation: the exact surface of
+                    // revolution of its profile (u the profile's
+                    // parameter, v the angle about the axis), whose
+                    // neutral natural normal, d(angle) x d(profile), runs
+                    // against the file's du x dv for a profile of the same
+                    // direction.
+                    let (c, kc) = self.curve(curve)?;
+                    Ok((
+                        Surface::Revolution {
+                            curve: c,
+                            origin: brep::scale(*root, k),
+                            axis: unit(*axis),
+                        },
+                        *reversed != (kc > 0.0),
+                    ))
                 }
                 SplineGeom::HelixLine(h) => {
                     Ok((helix_line_surface(h, ranges, &self.opt)?, *reversed))
@@ -869,9 +1042,160 @@ impl<'a> Ctx<'a> {
                 SplineGeom::HelixCircle(h) => {
                     Ok((helix_circle_surface(h, ranges, &self.opt)?, *reversed))
                 }
+                SplineGeom::RollingBall(rb) => {
+                    // Made over the face's v range where the record gives
+                    // it. A spine running against its definition runs v
+                    // backwards, and du x dv with it.
+                    let needed = match ranges[1] {
+                        [Some(a), Some(b)] => Some([a, b]),
+                        _ => None,
+                    };
+                    let (surface, k) = self.rolling_ball(rb, needed)?;
+                    Ok((surface, *reversed != (k < 0.0)))
+                }
+                SplineGeom::Sum { curves, origin } => {
+                    let (surface, flip) = self.sum_surface(curves, *origin)?;
+                    Ok((surface, *reversed != flip))
+                }
                 SplineGeom::Unsupported(why) => Err(GeomError(format!("{subtype}: {why}"))),
             },
         }
+    }
+
+    /// A sum surface stored without its approximation, `S(u, v) = a(u) +
+    /// b(v) - origin` (mitcad#621), exactly: the other curve's line swept
+    /// along a curve (an extrusion), or of two B-splines the B-spline whose
+    /// poles are the sums of theirs (weights multiplied). With `true` its
+    /// natural normal runs against the file's `du x dv`.
+    fn sum_surface(
+        &self,
+        curves: &[AsmCurve; 2],
+        origin: P3,
+    ) -> Result<(Surface, bool), GeomError> {
+        let (a, ka) = self.curve(&curves[0])?;
+        let (b, kb) = self.curve(&curves[1])?;
+        let origin = brep::scale(origin, self.opt.scale);
+        match (&a, &b) {
+            // a(u) + b(v) - origin with b a line: a moved by b's root less
+            // the origin, swept along b (u along a, v along the line: the
+            // natural normal a' x b' as du x dv when a runs as stored).
+            (_, Curve::Line { origin: root, dir }) => Ok((
+                Surface::Extrusion {
+                    curve: translated(&a, brep::sub(*root, origin))?,
+                    dir: *dir,
+                },
+                ka < 0.0,
+            )),
+            // The same with a the line: b' x a' = -(du x dv).
+            (Curve::Line { origin: root, dir }, _) => Ok((
+                Surface::Extrusion {
+                    curve: translated(&b, brep::sub(*root, origin))?,
+                    dir: *dir,
+                },
+                kb > 0.0,
+            )),
+            (Curve::BSpline(a), Curve::BSpline(b)) => {
+                let mut poles = Vec::with_capacity(a.poles.len() * b.poles.len());
+                let mut weights = Vec::with_capacity(poles.capacity());
+                for (i, pa) in a.poles.iter().enumerate() {
+                    for (j, pb) in b.poles.iter().enumerate() {
+                        poles.push(brep::sub(brep::add(*pa, *pb), origin));
+                        let wa = a.weights.as_ref().map_or(1.0, |w| w[i]);
+                        let wb = b.weights.as_ref().map_or(1.0, |w| w[j]);
+                        weights.push(wa * wb);
+                    }
+                }
+                let surface = BSplineSurface {
+                    u_degree: a.degree,
+                    v_degree: b.degree,
+                    u_knots: a.knots.clone(),
+                    u_mults: a.mults.clone(),
+                    v_knots: b.knots.clone(),
+                    v_mults: b.mults.clone(),
+                    nu: a.poles.len(),
+                    nv: b.poles.len(),
+                    poles,
+                    weights: (a.weights.is_some() || b.weights.is_some()).then_some(weights),
+                    u_periodic: a.periodic,
+                    v_periodic: b.periodic,
+                    u_closed: false,
+                    v_closed: false,
+                };
+                if !surface.is_valid() {
+                    return Err(GeomError("sum_spl_sur: invalid B-spline".into()));
+                }
+                Ok((Surface::BSpline(surface), (ka < 0.0) != (kb < 0.0)))
+            }
+            _ => Err(GeomError(format!(
+                "sum_spl_sur of a {} and a {}",
+                a.kind(),
+                b.kind()
+            ))),
+        }
+    }
+
+    /// A rolling-ball blend stored without its approximation, for the
+    /// builder to make (mitcad#621), and the factor `k` of its spine: the
+    /// surface's v is `k` times the file's. `needed` is the v range (the
+    /// file's) a face or a curve on it spans, else the whole surface's:
+    /// the builder walks the ball over it and a little more where the
+    /// surface goes on (the whole surface's range may reach where the ball
+    /// no longer touches both supports).
+    fn rolling_ball(
+        &self,
+        rb: &RollingBall,
+        needed: Option<[f64; 2]>,
+    ) -> Result<(Surface, f64), GeomError> {
+        let [a, b] = rb.offsets.map(f64::abs);
+        if a == 0.0 || (a - b).abs() > 1e-9 * a.max(b) {
+            return Err(GeomError(format!(
+                "rb_blend_spl_sur of offsets {} and {}: not a constant radius",
+                rb.offsets[0], rb.offsets[1]
+            )));
+        }
+        let support = |side: &BlendSide| -> Result<BlendSupport, GeomError> {
+            Ok(match &side.support {
+                geom::BlendSupport::Surface(s) => BlendSupport::Surface(self.surface_geom(s)?.0),
+                geom::BlendSupport::Curve(c) => BlendSupport::Curve(self.curve(c)?.0),
+            })
+        };
+        let supports = Box::new([support(&rb.sides[0])?, support(&rb.sides[1])?]);
+        let (spine, k) = self.curve(&rb.spine)?;
+        let whole = [
+            rb.v_range[0].min(rb.v_range[1]),
+            rb.v_range[0].max(rb.v_range[1]),
+        ];
+        // On a closed spine the surface goes on round it: a face may span
+        // its parameter's seam (beyond the stored interval's end).
+        let periodic = match &spine {
+            Curve::BSpline(b) => b.periodic,
+            Curve::Ellipse { .. } => true,
+            _ => false,
+        };
+        let within = |t: f64| {
+            if periodic {
+                t
+            } else {
+                t.clamp(whole[0], whole[1])
+            }
+        };
+        let needed = match needed {
+            Some([a, b]) if a.max(b) > a.min(b) => [within(a.min(b)), within(a.max(b))],
+            _ => whole,
+        };
+        let margin = 0.02 * (needed[1] - needed[0]);
+        let range = [within(needed[0] - margin), within(needed[1] + margin)];
+        let scaled = |[a, b]: [f64; 2]| [(k * a).min(k * b), (k * a).max(k * b)];
+        Ok((
+            Surface::RollingBall {
+                supports,
+                spine,
+                range: scaled(range),
+                needed: scaled(needed),
+                radius: a * self.opt.scale,
+            },
+            k,
+        ))
     }
 
     fn surface(&mut self, record: usize) -> Result<Option<(usize, bool)>, GeomError> {
@@ -973,6 +1297,16 @@ impl<'a> Ctx<'a> {
             }
             lp = ptr_index(self.file, next);
         }
+        // A face whose loops were all lost (none of their edges could be
+        // read) would be its whole surface, unbounded on a plane or a
+        // cylinder (mitcad#589: a body of such faces came in as a solid of
+        // infinite planes). A face the file stores without loops is its
+        // whole (closed) surface, as before.
+        if ptr_index(self.file, first_loop).is_some() && loops.is_empty() && point_loops.is_empty()
+        {
+            self.issue(format!("face {record}: none of its loops could be read"));
+            return Ok(None);
+        }
         self.body.faces.push(Face {
             surface,
             reversed: sense_reversed != flip,
@@ -1018,11 +1352,26 @@ impl<'a> Ctx<'a> {
         let mut c = Cursor::new(&self.file.tokens, self.file.records[data].fields.start);
         c.ptr()?;
         c.int()?;
-        let a = c.point()?;
-        let b = c.point()?;
-        let d = c.point()?;
-        let t = c.point()?;
-        let scale = c.double()?;
+        let (a, b, d, t, scale) = match c.peek() {
+            // Some writers store the values as one text literal: the three
+            // rows, the translation and the scale, then the flags
+            // (`no_rotate no_reflect no_shear`).
+            Some(crate::asm::Token::Literal(text)) => {
+                let numbers: Vec<f64> = text
+                    .split_whitespace()
+                    .map_while(|w| w.parse().ok())
+                    .collect();
+                if numbers.len() < 13 {
+                    return Err(GeomError(format!(
+                        "transform {record}: a literal of {} numbers",
+                        numbers.len()
+                    )));
+                }
+                let p = |i: usize| [numbers[i], numbers[i + 1], numbers[i + 2]];
+                (p(0), p(3), p(6), p(9), numbers[12])
+            }
+            _ => (c.point()?, c.point()?, c.point()?, c.point()?, c.double()?),
+        };
         // Rows are the images of the x, y and z axes (row-vector form).
         let m = [
             [a[0] * scale, b[0] * scale, d[0] * scale],
@@ -1588,6 +1937,398 @@ mod tests {
             loops,
             vec![vec![forward(0), forward(1), forward(2)], vec![forward(4)]]
         );
+    }
+
+    #[test]
+    fn revolutions_without_approximation_are_exact() {
+        // A rot_spl_sur stored without its approximation (a public sample
+        // drawing: 27 faces lost): its profile revolved. A line at x = 1
+        // along z about the z axis: a cylinder whose file normal (du x dv,
+        // u along the line, v round the axis) points inwards, against the
+        // neutral natural normal (d(angle) x d(profile), outwards).
+        let file = AsmFile::parse(&crate::asm::writer::Writer::new(1, 2).finish()).unwrap();
+        let ctx = Ctx {
+            file: &file,
+            view: None,
+            opt: Options {
+                scale: 10.0,
+                ..Options::default()
+            },
+            body: Body::default(),
+            issues: Vec::new(),
+            vertex_map: IdMap::default(),
+            edge_map: IdMap::default(),
+            degenerate_edges: 0,
+            tidied: LoopTidy::default(),
+            surface_map: IdMap::default(),
+        };
+        let revolution = |reversed| AsmSurface::Spline {
+            reversed,
+            subtype: "rot_spl_sur".into(),
+            geom: SplineGeom::Revolution {
+                curve: Box::new(AsmCurve::Straight {
+                    root: [1.0, 0.0, 0.0],
+                    dir: [0.0, 0.0, 1.0],
+                }),
+                root: [0.0; 3],
+                axis: [0.0, 0.0, 2.0],
+                approx: None,
+            },
+            ranges: [[None; 2]; 2],
+        };
+        let (surface, flip) = ctx.surface_geom(&revolution(false)).unwrap();
+        assert_eq!(
+            surface,
+            Surface::Revolution {
+                curve: Curve::Line {
+                    origin: [10.0, 0.0, 0.0],
+                    dir: [0.0, 0.0, 1.0],
+                },
+                origin: [0.0; 3],
+                axis: [0.0, 0.0, 1.0],
+            }
+        );
+        assert!(flip);
+        assert!(!ctx.surface_geom(&revolution(true)).unwrap().1);
+    }
+
+    /// A context on an empty file (scale 10: model units are centimetres).
+    fn empty_ctx(file: &AsmFile) -> Ctx<'_> {
+        Ctx {
+            file,
+            view: None,
+            opt: Options {
+                scale: 10.0,
+                ..Options::default()
+            },
+            body: Body::default(),
+            issues: Vec::new(),
+            vertex_map: IdMap::default(),
+            edge_map: IdMap::default(),
+            degenerate_edges: 0,
+            tidied: LoopTidy::default(),
+            surface_map: IdMap::default(),
+        }
+    }
+
+    /// A rolling ball between the floor z = 0 and the wall x = 0, its
+    /// centre on x = z = 2 along y (reversed: against the line), radius 2,
+    /// over the spine's [0, 10] (mitcad#621).
+    fn rolling_ball(spine_reversed: bool) -> RollingBall {
+        let plane = |normal: P3, u_dir: P3| geom::BlendSide {
+            support: geom::BlendSupport::Surface(AsmSurface::Plane {
+                root: [0.0; 3],
+                normal,
+                u_dir,
+            }),
+            contact: None,
+        };
+        RollingBall {
+            sides: [
+                plane([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+                plane([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            ],
+            spine: AsmCurve::Int {
+                reversed: spine_reversed,
+                subtype: "off_int_cur".into(),
+                geom: IntGeom::BSpline(Bs3Curve {
+                    degree: 1,
+                    rational: false,
+                    closure: 0,
+                    knots: vec![0.0, 10.0],
+                    mults: vec![1, 1],
+                    ctrl: vec![[2.0, 0.0, 2.0, 1.0], [2.0, 10.0, 2.0, 1.0]],
+                }),
+            },
+            offsets: [-2.0, -2.0],
+            v_range: [0.0, 10.0],
+        }
+    }
+
+    #[test]
+    fn rolling_balls_without_approximation_go_to_the_builder() {
+        let file = AsmFile::parse(&crate::asm::writer::Writer::new(1, 2).finish()).unwrap();
+        let ctx = empty_ctx(&file);
+        let blend = |rb: RollingBall, face: [[Option<f64>; 2]; 2]| AsmSurface::Spline {
+            reversed: false,
+            subtype: "rb_blend_spl_sur".into(),
+            geom: SplineGeom::RollingBall(Box::new(rb)),
+            ranges: face,
+        };
+        // Over the face's v range and 2 % of it more each side, in mm.
+        let (surface, flip) = ctx
+            .surface_geom(&blend(
+                rolling_ball(false),
+                [[Some(0.0), Some(1.0)], [Some(2.0), Some(7.0)]],
+            ))
+            .unwrap();
+        assert!(!flip);
+        let Surface::RollingBall {
+            supports,
+            spine,
+            range,
+            needed,
+            radius,
+        } = &surface
+        else {
+            panic!("{surface:?}")
+        };
+        assert_eq!(*radius, 20.0);
+        assert_eq!(*needed, [2.0, 7.0]);
+        assert!((range[0] - 1.9).abs() < 1e-12 && (range[1] - 7.1).abs() < 1e-12);
+        assert!(
+            matches!(&supports[0], BlendSupport::Surface(Surface::Plane { normal, .. }) if *normal == [0.0, 0.0, 1.0])
+        );
+        assert!(matches!(spine, Curve::BSpline(b) if b.poles[0] == [20.0, 0.0, 20.0]));
+        // Without the face's range: the whole surface. A spine running
+        // against its definition runs v backwards: the parameters negated,
+        // the normal flipped.
+        let (surface, flip) = ctx
+            .surface_geom(&blend(rolling_ball(true), [[None; 2]; 2]))
+            .unwrap();
+        assert!(flip);
+        assert!(
+            matches!(surface, Surface::RollingBall { range, needed, .. } if range == [-10.0, -0.0] && needed == range)
+        );
+        // Offsets of different size are a varying radius: not this.
+        let mut uneven = rolling_ball(false);
+        uneven.offsets = [-2.0, -3.0];
+        assert!(ctx.surface_geom(&blend(uneven, [[None; 2]; 2])).is_err());
+
+        // A contact track on it (u = 1 over v in [3, 6]): the surface
+        // along it, made over the v the curve spans.
+        let track = AsmCurve::Int {
+            reversed: false,
+            subtype: "blend_int_cur".into(),
+            geom: IntGeom::OnSurface {
+                chart: Chart::Procedural(Box::new(blend(rolling_ball(true), [[None; 2]; 2]))),
+                pcurve: Bs2Curve {
+                    degree: 1,
+                    rational: false,
+                    closure: 0,
+                    knots: vec![3.0, 6.0],
+                    mults: vec![1, 1],
+                    ctrl: vec![[1.0, 3.0, 1.0], [1.0, 6.0, 1.0]],
+                },
+                params: Vec::new(),
+            },
+        };
+        let (curve, k) = ctx.curve(&track).unwrap();
+        assert_eq!(k, 1.0);
+        let Curve::OnSurface { surface, pcurve } = &curve else {
+            panic!("{curve:?}")
+        };
+        // The reversed spine: v negated in the parameter curve too.
+        assert_eq!(pcurve.poles, vec![[1.0, -3.0], [1.0, -6.0]]);
+        assert_eq!(pcurve.mults, vec![2, 2]);
+        assert!(
+            matches!(&**surface, Surface::RollingBall { needed, .. } if *needed == [-6.0, -3.0])
+        );
+        assert_eq!(curve.range(), Some((3.0, 6.0)));
+        assert!(curve.eval(4.0)[0].is_nan());
+    }
+
+    #[test]
+    fn sum_surfaces_without_approximation_are_exact() {
+        let file = AsmFile::parse(&crate::asm::writer::Writer::new(1, 2).finish()).unwrap();
+        let ctx = empty_ctx(&file);
+        let parabola = |reversed| AsmCurve::Int {
+            reversed,
+            subtype: "exact_int_cur".into(),
+            geom: IntGeom::BSpline(Bs3Curve {
+                degree: 2,
+                rational: false,
+                closure: 0,
+                knots: vec![0.0, 1.0],
+                mults: vec![2, 2],
+                ctrl: vec![
+                    [0.0, 0.0, 0.0, 1.0],
+                    [1.0, 1.0, 0.0, 1.0],
+                    [2.0, 0.0, 0.0, 1.0],
+                ],
+            }),
+        };
+        let line = AsmCurve::Straight {
+            root: [0.0, 0.0, 5.0],
+            dir: [0.0, 0.0, 2.0],
+        };
+        let sum = |curves: [AsmCurve; 2]| AsmSurface::Spline {
+            reversed: false,
+            subtype: "sum_spl_sur".into(),
+            geom: SplineGeom::Sum {
+                curves: Box::new(curves),
+                origin: [0.0, 0.0, 5.0],
+            },
+            ranges: [[None; 2]; 2],
+        };
+        // A curve and a line: the curve moved by the line's root less the
+        // origin (here none), swept along the line.
+        let (surface, flip) = ctx
+            .surface_geom(&sum([parabola(false), line.clone()]))
+            .unwrap();
+        assert!(!flip);
+        let Surface::Extrusion { curve, dir } = &surface else {
+            panic!("{surface:?}")
+        };
+        assert_eq!(*dir, [0.0, 0.0, 1.0]);
+        assert!(matches!(curve, Curve::BSpline(b) if b.poles[1] == [10.0, 10.0, 0.0]));
+        // Reversed profile, or the line first: du x dv against the
+        // extrusion's natural normal.
+        assert!(
+            ctx.surface_geom(&sum([parabola(true), line.clone()]))
+                .unwrap()
+                .1
+        );
+        assert!(ctx.surface_geom(&sum([line, parabola(false)])).unwrap().1);
+        // Two B-splines: poles summed less the origin.
+        let (surface, flip) = ctx
+            .surface_geom(&sum([parabola(false), parabola(false)]))
+            .unwrap();
+        assert!(!flip);
+        let Surface::BSpline(b) = &surface else {
+            panic!("{surface:?}")
+        };
+        assert_eq!((b.nu, b.nv), (3, 3));
+        let p = b.eval(0.5, 0.25);
+        let a = |t: f64| [20.0 * t, 20.0 * t * (1.0 - t), 0.0];
+        let want = brep::sub(brep::add(a(0.5), a(0.25)), [0.0, 0.0, 50.0]);
+        for (got, want) in p.iter().zip(want) {
+            assert!((got - want).abs() < 1e-9, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn transforms_stored_as_one_literal_are_read() {
+        // Some writers store a transform's values as one text literal; a
+        // body placed so came in nowhere (a public sample drawing).
+        let mut w = crate::asm::writer::Writer::new(1, 2);
+        w.record("asmheader")
+            .ptr(-1)
+            .int(-1)
+            .str("231.6.3.65535")
+            .end();
+        w.record("transform")
+            .ptr(-1)
+            .int(-1)
+            .literal("0 1 0 -1 0 0 0 0 1 -3335.5 80.25 0 2 rotate no_reflect no_shear ")
+            .end();
+        w.record("transform")
+            .ptr(-1)
+            .int(-1)
+            .literal("1 0 0 0 1")
+            .end();
+        let file = AsmFile::parse(&w.finish()).unwrap();
+        let ctx = Ctx {
+            file: &file,
+            view: None,
+            opt: Options {
+                scale: 10.0,
+                ..Options::default()
+            },
+            body: Body::default(),
+            issues: Vec::new(),
+            vertex_map: IdMap::default(),
+            edge_map: IdMap::default(),
+            degenerate_edges: 0,
+            tidied: LoopTidy::default(),
+            surface_map: IdMap::default(),
+        };
+        let t = ctx.transform(1).unwrap();
+        // x goes to y, y to -x, scaled by 2; the translation in mm.
+        assert_eq!(t.m, [[0.0, -2.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 2.0]]);
+        assert_eq!(t.t, [-33355.0, 802.5, 0.0]);
+        assert!(ctx.transform(2).is_err());
+    }
+
+    #[test]
+    fn surface_curves_without_approximation_follow_their_parameter_curve() {
+        // mitcad#589: a surface curve stored in the summary form is its
+        // support along its parameter curve.
+        let mut w = crate::asm::writer::Writer::new(1, 2);
+        w.record("asmheader")
+            .ptr(-1)
+            .int(-1)
+            .str("231.6.3.65535")
+            .end();
+        let file = AsmFile::parse(&w.finish()).unwrap();
+        let ctx = Ctx {
+            file: &file,
+            view: None,
+            opt: Options {
+                scale: 10.0,
+                ..Options::default()
+            },
+            body: Body::default(),
+            issues: Vec::new(),
+            vertex_map: IdMap::default(),
+            edge_map: IdMap::default(),
+            degenerate_edges: 0,
+            tidied: LoopTidy::default(),
+            surface_map: IdMap::default(),
+        };
+        // From (1, 2) to (3, 2), degree 1.
+        let pcurve = Bs2Curve {
+            degree: 1,
+            rational: false,
+            closure: 0,
+            knots: vec![0.0, 1.0],
+            mults: vec![1, 1],
+            ctrl: vec![[1.0, 2.0, 1.0], [3.0, 2.0, 1.0]],
+        };
+        let on = |chart| AsmCurve::Int {
+            reversed: false,
+            subtype: "par_int_cur".into(),
+            geom: IntGeom::OnSurface {
+                chart,
+                pcurve: pcurve.clone(),
+                params: vec![0.0, 0.5, 1.0],
+            },
+        };
+        // On a plane: the parameter curve's poles on the plane, exactly.
+        let plane = Chart::Plane {
+            root: [10.0, 0.0, 0.0],
+            u_dir: [1.0, 0.0, 0.0],
+            v_dir: [0.0, -1.0, 0.0],
+        };
+        let (curve, k) = ctx.curve(&on(plane)).unwrap();
+        assert_eq!(k, 1.0);
+        let Curve::BSpline(b) = &curve else {
+            panic!("{curve:?}")
+        };
+        assert_eq!(b.poles, vec![[110.0, -20.0, 0.0], [130.0, -20.0, 0.0]]);
+        // On a spline (z = u v): its points, 16 in each span between the
+        // approximation's knots.
+        let bilinear = Bs3Surface {
+            u_degree: 1,
+            v_degree: 1,
+            rational: false,
+            u_closure: 0,
+            v_closure: 0,
+            u_knots: vec![0.0, 4.0],
+            u_mults: vec![1, 1],
+            v_knots: vec![0.0, 4.0],
+            v_mults: vec![1, 1],
+            nu: 2,
+            nv: 2,
+            ctrl: vec![
+                [0.0, 0.0, 0.0, 1.0],
+                [4.0, 0.0, 0.0, 1.0],
+                [0.0, 4.0, 0.0, 1.0],
+                [4.0, 4.0, 16.0, 1.0],
+            ],
+        };
+        let (curve, _) = ctx.curve(&on(Chart::Spline(Box::new(bilinear)))).unwrap();
+        let Curve::Interpolated { params, points } = &curve else {
+            panic!("{curve:?}")
+        };
+        assert_eq!(params.len(), 33);
+        for (t, p) in params.iter().zip(points) {
+            let (u, v) = (1.0 + 2.0 * t, 2.0);
+            let want = [u * 10.0, v * 10.0, u * v * 10.0];
+            for (got, want) in p.iter().zip(want) {
+                assert!((got - want).abs() < 1e-9, "{t}: {p:?}");
+            }
+        }
     }
 
     #[test]

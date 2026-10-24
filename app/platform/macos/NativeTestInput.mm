@@ -7,6 +7,7 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QDialog>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QEventLoop>
@@ -14,17 +15,20 @@
 #include <QMenu>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStandardItemModel>
 #include <QTableView>
 #include <QTreeView>
+#include <QTimer>
 #include <QRegularExpression>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QItemSelectionModel>
+#include <QIntValidator>
 #include <QOpenGLWidget>
 #include <QPainter>
 #include <QPalette>
@@ -44,9 +48,11 @@
 #include "platform/NativeForms.hpp"
 #include "platform/NativeMacWindow.hpp"
 #include "browser/DocumentSnapshot.hpp"
+#include "framework/CachePreferences.hpp"
 #include "framework/CommandSession.hpp"
 #include "framework/CommandRegistry.hpp"
 #include "framework/Icons.hpp"
+#include "framework/SettingsWindow.hpp"
 #include "MainWindow.hpp"
 
 // Public selectors on the same feature controls used by pointer input.
@@ -166,7 +172,7 @@ NSMenuItem* findAction(NSMenu* menu, const QString& identifier);
 QString commandIdentifier(QAction* action) {
   return action->objectName().startsWith(QStringLiteral("command_"))
       ? action->objectName().mid(8)
-      : QStringLiteral("native.action.%1").arg(reinterpret_cast<quintptr>(action), 0, 16);
+      : action->property("mitcadNativeActionId").toString();
 }
 
 QMenu* retainedRibbonMenu(const QString& workspace, const QString& group) {
@@ -701,6 +707,12 @@ bool configureToolbarItem(const QString& identifier, const QString& operation, Q
   }
   NSString* itemID = identifier.toNSString();
   if (operation == QStringLiteral("palette")) {
+    for (NSString* allowed in [toolbar.delegate toolbarAllowedItemIdentifiers:toolbar]) {
+      if ([allowed hasPrefix:@"command.native.action."]) {
+        error = QStringLiteral("toolbar customization offered an identifier tied to a QAction pointer");
+        return false;
+      }
+    }
     // Customization asks for samples that are never inserted. Keep one
     // alive until the next event-loop turn to expose accidental tracking.
     NSToolbarItem* sample = [toolbar.delegate toolbar:toolbar itemForItemIdentifier:itemID willBeInsertedIntoToolbar:NO];
@@ -1128,6 +1140,9 @@ bool clickImmediately(const QString& identifier, QString& error) {
 bool click(const QString& identifier, QString& error) {
   NSView* view = findControl(identifier);
   if (!view) { error = QStringLiteral("no native control '%1'").arg(identifier); return false; }
+  if ([view isKindOfClass:NSTableCellView.class] && ((NSTableCellView*)view).textField) {
+    view = ((NSTableCellView*)view).textField;
+  }
   [view scrollRectToVisible:view.bounds];
   [view.window makeKeyAndOrderFront:nil];
   if ([view isKindOfClass:NSButton.class]) {
@@ -1385,6 +1400,272 @@ bool disclosureLayout(QString& error) {
   return true;
 }
 
+bool stepperLimitsContract(QString& error) {
+  QWidget presenter;
+  presenter.setAttribute(Qt::WA_DontShowOnScreen);
+  auto* layout = new QVBoxLayout(&presenter);
+  auto* integer = new QSpinBox;
+  integer->setObjectName(QStringLiteral("limits.integer"));
+  integer->setRange(1, 65536);
+  auto* decimal = new QDoubleSpinBox;
+  decimal->setObjectName(QStringLiteral("limits.decimal"));
+  decimal->setRange(0.5, 10);
+  decimal->setSingleStep(0.5);
+  layout->addWidget(integer);
+  layout->addWidget(decimal);
+  auto view = createNativeWidgetView(&presenter);
+  view->refresh();
+  NSView* root = (__bridge NSView*)view->nativeView();
+  NSWindow* fixture = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 420, 160)
+                                                styleMask:NSWindowStyleMaskBorderless
+                                                  backing:NSBackingStoreBuffered defer:NO];
+  fixture.releasedWhenClosed = NO;
+  fixture.contentView = root;
+  [root layoutSubtreeIfNeeded];
+  const auto stepperIn = [](NSView* parent, const auto& self) -> NSStepper* {
+    if ([parent isKindOfClass:NSStepper.class]) { return (NSStepper*)parent; }
+    for (NSView* child in parent.subviews) {
+      if (NSStepper* found = self(child, self)) { return found; }
+    }
+    return nil;
+  };
+  const auto press = [fixture](NSStepper* stepper, bool up) {
+    const CGFloat y = NSMinY(stepper.bounds) + stepper.bounds.size.height * (up ? 0.75 : 0.25);
+    const NSPoint point = [stepper convertPoint:NSMakePoint(NSMidX(stepper.bounds), y) toView:nil];
+    const NSTimeInterval timestamp = NSProcessInfo.processInfo.systemUptime;
+    NSEvent* down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:point modifierFlags:0
+        timestamp:timestamp windowNumber:fixture.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+    NSEvent* release = [NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:point modifierFlags:0
+        timestamp:timestamp + 0.01 windowNumber:fixture.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0];
+    [NSApp postEvent:release atStart:YES];
+    [stepper mouseDown:down];
+  };
+  bool passed = true;
+  for (QAbstractSpinBox* spin : {static_cast<QAbstractSpinBox*>(integer), static_cast<QAbstractSpinBox*>(decimal)}) {
+    // Composite spin controls identify their editable field. The stepper is
+    // its sibling in the same row, not a descendant of the field.
+    NSView* field = identifiedView(root, spin->objectName());
+    NSStepper* native = stepperIn(field.superview, stepperIn);
+    if (native == nil || native.valueWraps || !native.autorepeat) { passed = false; break; }
+    const bool integral = spin == integer;
+    if (integral) { integer->setValue(integer->minimum()); }
+    else { decimal->setValue(decimal->minimum()); }
+    view->refresh();
+    press(native, false);
+    if ((integral ? integer->value() : decimal->value()) != (integral ? integer->minimum() : decimal->minimum())) {
+      passed = false; break;
+    }
+    if (integral) { integer->setValue(integer->maximum()); }
+    else { decimal->setValue(decimal->maximum()); }
+    view->refresh();
+    press(native, true);
+    if ((integral ? integer->value() : decimal->value()) != (integral ? integer->maximum() : decimal->maximum())) {
+      passed = false; break;
+    }
+    spin->setWrapping(true);
+    view->refresh();
+    if (!native.valueWraps) { passed = false; break; }
+  }
+  [fixture close];
+  if (!passed) { error = QStringLiteral("native spin boxes did not preserve range limits, wrapping or autorepeat"); }
+  return passed;
+}
+
+bool labelTextContract(QString& error) {
+  QWidget presenter;
+  presenter.setAttribute(Qt::WA_DontShowOnScreen);
+  auto* layout = new QVBoxLayout(&presenter);
+  auto* literal = new QLabel(QStringLiteral("R&D.iam"));
+  auto* mnemonic = new QLabel(QStringLiteral("&Name && value"));
+  auto* buddy = new QLineEdit;
+  mnemonic->setBuddy(buddy);
+  const QString markup = QStringLiteral("<a href=\"https://example.invalid/?a=1&amp;b=2\">R&amp;D</a>");
+  auto* plain = new QLabel(markup);
+  plain->setTextFormat(Qt::PlainText);
+  auto* rich = new QLabel(markup);
+  rich->setTextFormat(Qt::RichText);
+  QString activated;
+  QObject::connect(rich, &QLabel::linkActivated, &presenter, [&activated](const QString& url) { activated = url; });
+  for (auto* caption : {literal, mnemonic, plain, rich}) {
+    caption->setObjectName(QStringLiteral("label.%1").arg(layout->count()));
+    layout->addWidget(caption);
+  }
+  layout->addWidget(buddy);
+  auto view = createNativeWidgetView(&presenter);
+  view->refresh();
+  NSView* root = (__bridge NSView*)view->nativeView();
+  const auto field = [root](const QLabel* caption) -> NSTextField* {
+    return (NSTextField*)identifiedView(root, caption->objectName());
+  };
+  const auto textViewIn = [](NSView* parent, const auto& self) -> NSTextView* {
+    if ([parent isKindOfClass:NSTextView.class]) { return (NSTextView*)parent; }
+    for (NSView* child in parent.subviews) {
+      if (NSTextView* found = self(child, self)) { return found; }
+    }
+    return nil;
+  };
+  if (qt(field(literal).stringValue) != QStringLiteral("R&D.iam") ||
+      qt(field(mnemonic).stringValue) != QStringLiteral("Name & value") ||
+      qt(field(plain).stringValue) != markup) {
+    error = QStringLiteral("native labels stripped literal ampersands or parsed PlainText as HTML");
+    return false;
+  }
+  // The link's displayed entity and destination survive HTML decoding.
+  NSTextField* richField = field(rich);
+  NSTextView* links = textViewIn(richField.superview, textViewIn);
+  if (links == nil || qt(links.string) != QStringLiteral("R&D")) {
+    error = QStringLiteral("native rich label lost escaped ampersands");
+    return false;
+  }
+  id destination = [links.textStorage attribute:NSLinkAttributeName atIndex:0 effectiveRange:nullptr];
+  if (destination == nil || ![links.delegate textView:links clickedOnLink:destination atIndex:0] ||
+      activated != QStringLiteral("https://example.invalid/?a=1&b=2")) {
+    error = QStringLiteral("native rich label did not preserve its linkActivated destination");
+    return false;
+  }
+  rich->setTextFormat(Qt::PlainText);
+  literal->setBuddy(buddy);
+  view->refresh();
+  if (!links.hidden || richField.hidden || qt(richField.stringValue) != markup ||
+      qt(field(literal).stringValue) != QStringLiteral("RD.iam")) {
+    error = QStringLiteral("native label refresh ignored text format or buddy changes");
+    return false;
+  }
+  rich->setTextFormat(Qt::RichText);
+  literal->setBuddy(nullptr);
+  view->refresh();
+  if (links.hidden || qt(field(literal).stringValue) != QStringLiteral("R&D.iam")) {
+    error = QStringLiteral("native label refresh did not restore links and literal ampersands");
+    return false;
+  }
+  return true;
+}
+
+bool settingsCloseContract(QString& error) {
+  QPointer<SettingsWindow> settings = new SettingsWindow(nullptr);
+  settings->setWindowTitle(QStringLiteral("Native cache close regression"));
+  auto* cache = new CachePreferencesBox({});
+  settings->addPane(QStringLiteral("Cache"), {}, cache);
+  settings->showPane(0);
+  QSpinBox* disk = nullptr;
+  QSpinBox* memory = nullptr;
+  for (QSpinBox* spin : cache->findChildren<QSpinBox*>()) {
+    // Keep an actual cache edit pending without applying budgets to the
+    // model or disk store in this focused native close regression.
+    spin->setKeyboardTracking(false);
+    if (spin->minimum() == CacheSettings::kMinDiskGigabytes) { disk = spin; }
+    else { memory = spin; }
+  }
+  const auto fail = [&](const QString& message) {
+    error = message;
+    delete settings.data();
+    QCoreApplication::processEvents(QEventLoop::AllEvents);
+    return false;
+  };
+  if (disk == nullptr || memory == nullptr) { return fail(QStringLiteral("cache close fixture has no budget controls")); }
+  disk->setObjectName(QStringLiteral("close.cache.disk"));
+  cache->findChild<QCheckBox*>()->setChecked(true);
+  disk->setValue(6);
+  memory->setFocus(); // Qt focus intentionally differs from native editing.
+  qint64 appliedBudget = cache->chosen().diskMegabytes;
+  int changes = 0;
+  QObject::connect(cache, &CachePreferencesBox::changed, settings, [&] {
+    appliedBudget = cache->chosen().diskMegabytes;
+    ++changes;
+  });
+  settings->setClosedHandler([settings] {
+    if (settings && settings->focusWidget()) { settings->focusWidget()->clearFocus(); }
+  });
+  showNativeWidget(settings);
+  if (!replaceText(disk->objectName(), QStringLiteral("20"), error)) {
+    const QString detail = error;
+    return fail(detail);
+  }
+  if (disk->value() != 6 || changes != 0 || appliedBudget != 6 * 1024) {
+    return fail(QStringLiteral("native cache budget applied before editing finished"));
+  }
+  NSView* field = findControl(disk->objectName());
+  NSWindow* window = field.window;
+  NSButton* close = [window standardWindowButton:NSWindowCloseButton];
+  if (close == nil || !close.enabled) { return fail(QStringLiteral("cache close fixture has no red close button")); }
+  [close performClick:nil];
+  const bool committed = (!settings || !settings->isVisible()) && changes == 1 && appliedBudget == 20 * 1024;
+  delete settings.data();
+  QCoreApplication::processEvents(QEventLoop::AllEvents);
+  if (!committed) { error = QStringLiteral("red close discarded the pending native cache budget"); return false; }
+
+  // Closing a dialog is cancellation, even with an incomplete field that
+  // would prevent an accepting action from ending native editing.
+  QDialog cancelled;
+  cancelled.setWindowTitle(QStringLiteral("Native cancel validation regression"));
+  auto* layout = new QVBoxLayout(&cancelled);
+  auto* value = new QLineEdit(QStringLiteral("3"));
+  value->setObjectName(QStringLiteral("close.cancel.value"));
+  value->setValidator(new QIntValidator(1, 9, value));
+  layout->addWidget(value);
+  cancelled.setResult(QDialog::Accepted);
+  showNativeWidget(&cancelled);
+  if (!replaceText(value->objectName(), QString(), error)) { cancelled.reject(); return false; }
+  field = findControl(value->objectName());
+  window = field.window;
+  close = [window standardWindowButton:NSWindowCloseButton];
+  [close performClick:nil];
+  const bool rejected = !cancelled.isVisible() && cancelled.result() == QDialog::Rejected;
+  cancelled.reject();
+  QCoreApplication::processEvents(QEventLoop::AllEvents);
+  if (!rejected) { error = QStringLiteral("red close failed to cancel a dialog with an incomplete editor"); return false; }
+  qDebug() << "Native Settings red close: pending cache budget committed and dialog cancellation preserved";
+  return true;
+}
+
+bool messageDetailsContract(QString& error) {
+  QMessageBox presenter(QMessageBox::Warning, QStringLiteral("Native details regression"),
+                       QStringLiteral("Synthetic diagnostic message"), QMessageBox::Ok);
+  presenter.setDetailedText(QStringLiteral("Diagnostic R&D\n<plain details>"));
+  presenter.setDefaultButton(QMessageBox::Ok);
+  QTimer inspect;
+  inspect.setInterval(10);
+  QElapsedTimer elapsed;
+  elapsed.start();
+  bool checked = false;
+  bool passed = false;
+  QObject::connect(&inspect, &QTimer::timeout, &presenter, [&] {
+    NSWindow* window = documentWindow().attachedSheet;
+    NSButton* toggle = (NSButton*)identifiedView(window.contentView, QStringLiteral("native.alert.details.toggle"));
+    NSView* details = identifiedView(window.contentView, QStringLiteral("native.alert.details.text"));
+    NSButton* response = (NSButton*)identifiedView(window.contentView, QStringLiteral("native.alert.response.0"));
+    if (toggle == nil || details == nil || response == nil) {
+      if (elapsed.elapsed() < 5000) { return; }
+      inspect.stop();
+      error = QStringLiteral("native message box details fixture did not appear");
+      if (window.sheetParent != nil) { [window.sheetParent endSheet:window returnCode:NSModalResponseCancel]; }
+      else { [NSApp abortModal]; }
+      return;
+    }
+    inspect.stop();
+    checked = true;
+    passed = details.hidden && presenter.clickedButton() == nullptr &&
+             identifiedView(window.contentView, QStringLiteral("native.alert.response.1")) == nil;
+    [toggle performClick:nil];
+    passed = passed && !details.hidden && window.sheetParent != nil && presenter.clickedButton() == nullptr;
+    NSTextView* diagnostic = (NSTextView*)((NSScrollView*)details).documentView;
+    passed = passed && qt(diagnostic.string) == presenter.detailedText();
+    [toggle performClick:nil];
+    passed = passed && details.hidden && window.sheetParent != nil && presenter.clickedButton() == nullptr;
+    if (!passed) { error = QStringLiteral("native details disclosure dismissed the alert or changed its response"); }
+    [response performClick:nil];
+  });
+  inspect.start();
+  const int result = execNativeDialog(&presenter);
+  inspect.stop();
+  if (!checked || !passed) { return false; }
+  if (result != QMessageBox::Ok || presenter.standardButton(presenter.clickedButton()) != QMessageBox::Ok) {
+    error = QStringLiteral("native alert response no longer matches its QMessageBox button");
+    return false;
+  }
+  return true;
+}
+
 bool widgetRefreshContract(QString& error) {
   QWidget presenter;
   presenter.setAttribute(Qt::WA_DontShowOnScreen);
@@ -1510,7 +1791,10 @@ bool widgetRefreshContract(QString& error) {
 }
 
 bool duplicateChoices(CommandHost& host, QString& error) {
-  if (!mac::nativeWindowRefreshContract((__bridge void*)documentWindow(), error) || !widgetRefreshContract(error)) { return false; }
+  if (!mac::nativeWindowRefreshContract((__bridge void*)documentWindow(), error) ||
+      !stepperLimitsContract(error) || !labelTextContract(error) || !settingsCloseContract(error) ||
+      !messageDetailsContract(error) ||
+      !widgetRefreshContract(error)) { return false; }
   // Exercise the real presenters with synthetic feature UIDs, independently
   // of the geometry needed to produce two identically named features.
   const auto popupIn = [](NSView* root, const auto& self) -> NSPopUpButton* {

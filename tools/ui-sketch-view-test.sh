@@ -23,7 +23,11 @@
 #     with dark pixels of their halo beside them, in the light theme dark
 #     with white ones; the circle over the empty background shows in both
 #     (pixels of a screen dump; mitcad#302). Every background change also
-#     restyles the halos ("Sketch halos:").
+#     restyles the halos ("Sketch halos:"). A free line on the face with a
+#     driven length dimension: its dimension line on the face is a row in
+#     the line's own tone between rows of its halo, dark ones in the dark
+#     theme and light ones in the light theme, its dimensions' halos tone
+#     logged ("Sketch dimension halos:"; mitcad#633).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-view-test.sh [screenshot.png]
@@ -217,12 +221,18 @@ echo "--- Fully constrained curves and a centre line over a body's face (mitcad#
 # origin over the design's) a fully constrained circle on the face, one
 # beside the block over the empty background, and a centre line on the
 # face. Each is drawn over a halo in the background's tone, which keeps it
-# readable over the face in both themes.
+# readable over the face in both themes. A free line (c1, first in the
+# sketch) on the face has a driven length dimension whose value is placed
+# beyond the line's end: its dimension line (y 16 mm, x -28 to -4 mm, and
+# on to the value at x 12 mm) is painted over a halo too (mitcad#633).
 cat > "$WORK/face.json" << 'EOF'
 [
   {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-30, -20],
     "length": 60, "width": 40, "height": 30, "operation": "new_body"}},
   {"cmd": "sketch.create", "plane": {"face": "F1:top", "body": "F1.b0"}},
+  {"cmd": "sketch.add_line", "sketch": "F2", "start": [-28, 10], "end": [-4, 10]},
+  {"cmd": "sketch.add_dimension", "sketch": "F2", "dimension": {"type": "length", "line": "c1"},
+   "driven": true, "text": [12, 16]},
   {"cmd": "sketch.add_circle", "sketch": "F2", "center": [10, 0], "diameter": 16},
   {"cmd": "sketch.add_circle", "sketch": "F2", "center": [50, 0], "diameter": 16},
   {"cmd": "sketch.add_line", "sketch": "F2", "start": [-25, -12], "end": [25, -12], "centerline": true}
@@ -251,6 +261,18 @@ expect_halos() {
     sleep 0.2
   done
   ui_fail "halos: the last line is '$(grep "Sketch halos: " "$UI_LOG" | tail -1)', expected '$1'"
+}
+
+# expect_dimension_halos dark|light: within six seconds the last "Sketch
+# dimension halos:" line says the dimensions (the two circles' diameters and
+# the line's length, three) are drawn over a halo of that tone (mitcad#633).
+expect_dimension_halos() {
+  for _ in $(seq 1 30); do
+    [ "$(grep "Sketch dimension halos: " "$UI_LOG" | tail -1 | sed 's/.*Sketch dimension halos: //')" = "3 $1" ] &&
+      { echo "ok   dimension halos: 3 $1"; return; }
+    sleep 0.2
+  done
+  ui_fail "dimension halos: the last line is '$(grep "Sketch dimension halos: " "$UI_LOG" | tail -1)', expected '3 $1'"
 }
 
 # tones name x y "w h": the pixels of the region centred on screen point
@@ -290,6 +312,38 @@ check() {
 # its dashes are in it).
 ACROSS="25 5"
 ALONG="41 17"
+# A strip across the free line's dimension line: 21 px along it, 9 across.
+# The 1 px line over its 3 px halo is painted on whole pixel rows
+# (mitcad#633), so that the line's own row lies between rows of its halo.
+DIMENSION="21 9"
+
+# line_in_halo name sketch-x sketch-y "w h" "line" "halo" description: the
+# mean luminance of each pixel row of the region (top to bottom) has a row
+# passing the awk condition "line" on l, with a row passing "halo" on l
+# among the two rows above it and among the two below it: a level line in
+# its own tone with its halo on both sides.
+line_in_halo() {
+  local px py rows
+  read -r px py <<< "$(ui_sketch_at "$2" "$3")"
+  local w=${4% *} h=${4#* }
+  rows=$(convert "$WORK/$1.xwd" -crop "${w}x${h}+$((px - w / 2))+$((py - h / 2))" +repage -depth 8 txt:- |
+    sed -n 's/^[0-9]*,\([0-9]*\): *(\([0-9.]*\),\([0-9.]*\),\([0-9.]*\).*/\1 \2 \3 \4/p' |
+    awk '{ sum[$1] += 0.299 * $2 + 0.587 * $3 + 0.114 * $4; n[$1]++ }
+      END { for (r = 0; r in n; r++) printf "%d ", sum[r] / n[r] }')
+  [ -n "$rows" ] || ui_fail "$7: no pixels at ($px, $py)"
+  echo "     $1: the rows across $7 at ($px, $py): $rows"
+  awk -v rows="$rows" "
+    function line(l) { return $5 }
+    function halo(l) { return $6 }
+    BEGIN {
+      n = split(rows, l, \" \")
+      for (r = 3; r <= n - 2; r++)
+        if (line(l[r]) && (halo(l[r - 1]) || halo(l[r - 2])) && (halo(l[r + 1]) || halo(l[r + 2])))
+          exit 0
+      exit 1 }" ||
+    ui_fail "$1: $7 is not a line in its tone between rows of its halo (rows $rows)"
+  echo "ok   $1: $7 is a line in its tone between rows of its halo"
+}
 
 ui_step "dark background (search)"       ui_command "Dark Background"
 expect_halos "3 dark"
@@ -303,6 +357,11 @@ region dark -10 -12 "$ALONG" "dark: the centre line on the face"
 check dark "D >= 2 && MAX >= 140" "the centre line on the face is light over a dark halo"
 region dark 58 0 "$ACROSS" "dark: the circle beside the block"
 check dark "L >= 2" "the circle over the dark background is light"
+# The driven dimension's line on the face (about 167, the driven tone for a
+# dark background, 0xa0 0xa8 0xb4) between rows of its dark halo (about
+# 36), on the face's light grey (about 223).
+expect_dimension_halos dark
+line_in_halo dark -16 16 "$DIMENSION" "l >= 140" "l <= 70" "the dimension line on the face"
 
 ui_step "light background (search)"      ui_command "Light Background"
 expect_halos "3 light"
@@ -316,5 +375,10 @@ region light -10 -12 "$ALONG" "light: the centre line on the face"
 check light "W >= 2 && MIN <= 160" "the centre line on the face is darker over a light halo"
 region light 58 0 "$ACROSS" "light: the circle beside the block"
 check light "MIN <= 110" "the circle over the light background is dark"
+# The driven dimension's line on the face (about 117, the driven grey
+# 0x70 0x76 0x80) between rows of its light halo (about 250), on the
+# face's light grey (about 223).
+expect_dimension_halos light
+line_in_halo light -16 16 "$DIMENSION" "l <= 150" "l >= 240" "the dimension line on the face"
 
 ui_finish "UI sketch view test"

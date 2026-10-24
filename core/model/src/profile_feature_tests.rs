@@ -1452,17 +1452,182 @@ fn modelled_tapped_holes_that_take_their_whole_wall_are_listed() {
     b.doc.undo();
     assert_eq!(query(&b.doc, json!({"query": "threads"})), listed);
 
-    // A part of the wall keeps the rest of it: measured there, as before.
+    // A part 14 long from the start: without a clearance the crest lies on
+    // the wall, pieces of which stay along the whole wall; the threads
+    // query measures a hole's part from the low end of the wall's axis.
+    b.doc
+        .edit_feature(uid, &tapped(json!({"length": 14, "offset": 0})))
+        .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    let part = query(&b.doc, json!({"query": "threads"}));
+    assert_eq!(part.as_array().map(Vec::len), Some(1), "{part}");
+    assert!(at(&part[0]["start"], [30.0, 20.0, 0.0]), "{part}");
+    assert!(at(&part[0]["end"], [30.0, 20.0, 14.0]), "{part}");
+    // With the clearance the crest lies off the wall: the thread takes all
+    // of it along the part and leaves only the 6 mm outside it, which does
+    // not show where the thread runs (mitcad#628). The thread is listed on
+    // the wall as the hole measured it before the thread, as without the
+    // clearance.
     b.doc
         .edit_feature(
             uid,
-            &tapped(json!({"radial_clearance": 0.1, "length": 8, "offset": 1})),
+            &tapped(json!({"radial_clearance": 0.1, "length": 14, "offset": 0})),
         )
         .unwrap();
     assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
     assert!(has(&b.doc, "F3:hole0.wall"));
-    let threads = query(&b.doc, json!({"query": "threads"}));
-    assert_eq!(threads.as_array().map(Vec::len), Some(1), "{threads}");
+    assert_eq!(query(&b.doc, json!({"query": "threads"})), part);
+}
+
+/// A rod 26 long along z from 0 (Sketch1 F1, Extrude1 F2), `diameter`
+/// across, bored through along its axis when `bore` is given (Hole1 F3,
+/// whose wall `F3:hole0.wall` is an internal cylinder along z).
+fn bored_rod(diameter: f64, bore: Option<f64>) -> Document<MockKernel> {
+    let mut doc = Document::new(MockKernel::default());
+    let sketch = doc
+        .add_sketch(crate::features::SketchPlane::Xy)
+        .unwrap()
+        .uid;
+    let region = doc
+        .add_circle(sketch, [0.0, 0.0], &crate::ValueInput::Number(diameter))
+        .unwrap()
+        .region;
+    doc.add_feature(
+        &def(
+            json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                    "extent": {"type": "distance", "distance": 26}, "operation": "new_body"}),
+        ),
+        None,
+    )
+    .unwrap();
+    if let Some(bore) = bore {
+        let on_plane = json!({"type": "plane", "plane": "xy", "points": [[0, 0, 0]]});
+        let uid = doc
+            .add_feature(
+                &hole_def(
+                    on_plane,
+                    json!({"diameter": bore, "flip": true,
+                           "extent": {"type": "distance", "depth": 26}}),
+                ),
+                None,
+            )
+            .unwrap()
+            .uid;
+        assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    }
+    doc
+}
+
+#[test]
+fn modelled_threads_with_a_part_end_where_their_chamfer_meets_the_crest() {
+    // mitcad#628: a modelled M48x5 thread 22.888 long, 3.112 from one end
+    // of a face 26 long, with an end chamfer at 45 degrees where the part
+    // reaches the face's other end. The mock's faces run along +z from
+    // z = 0, so `low_end` measures from z = 0 and `high_end` from z = 26;
+    // `chamfer: end` is the end away from `location`.
+    //
+    // Internal: the bore of Ø42.266 (Hole1), the class's diameters with
+    // the minor one on the bore, the chamfer Ø45. Without a clearance the
+    // crest lies on the bore (radius 21.133), pieces of which stay, and
+    // the cone reaches it 22.5 - 21.133 = 1.367 from the end. A radial
+    // clearance of 0.05 puts the crest at 21.183, off the bore: the thread
+    // takes all of the bore along its part and leaves only the 3.112 mm
+    // outside it, which must not be taken for the thread's extent. The
+    // cone meets that crest 22.5 - 21.183 = 1.317 from the end.
+    //
+    // The design in the ticket is the internal `low_end` case upside
+    // down: its bore's axis points down from z = 73.432, so its z is
+    // 73.432 - z here: the start 3.112 is its 70.32, the end 26 - 1.317 =
+    // 24.683 its 48.749 (with the clearances), 26 - 1.367 = 24.633 its
+    // 48.799 (without).
+    //
+    // External: the basic M48x5 6g on a rod of Ø48 (radius 24, the major
+    // diameter's: the crest on the face), the chamfer Ø42: the cone
+    // reaches the face 24 - 21 = 3 from the end; with the radial clearance
+    // the crest at 24 - 0.05 = 23.95, 23.95 - 21 = 2.95 from it.
+    let (bore_cone, bore_cone_clear) = (22.5 - 21.133, 22.5 - 21.183);
+    let (rod_cone, rod_cone_clear) = (24.0 - 21.0, 23.95 - 21.0);
+    let near = |point: &Value, z: f64| {
+        let p: Vec<f64> = point
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        p.len() == 3 && p[0].abs() < 1e-9 && p[1].abs() < 1e-9 && (p[2] - z).abs() < 1e-9
+    };
+    // (internal, location, clearances, start z, end z)
+    let cases = [
+        (true, "low_end", false, 3.112, 26.0 - bore_cone),
+        (true, "low_end", true, 3.112, 26.0 - bore_cone_clear),
+        (true, "high_end", false, bore_cone, 22.888),
+        (true, "high_end", true, bore_cone_clear, 22.888),
+        (false, "low_end", false, 3.112, 26.0 - rod_cone),
+        (false, "low_end", true, 3.112, 26.0 - rod_cone_clear),
+        (false, "high_end", false, rod_cone, 22.888),
+        (false, "high_end", true, rod_cone_clear, 22.888),
+    ];
+    for (internal, location, clearances, start, end) in cases {
+        let case = format!(
+            "{} {location} {}",
+            if internal { "internal" } else { "external" },
+            if clearances {
+                "with clearances"
+            } else {
+                "without"
+            }
+        );
+        let (mut doc, mut value) = if internal {
+            (
+                bored_rod(60.0, Some(42.266)),
+                json!({"type": "thread", "faces": [{"body": "F2.b0", "face": "F3:hole0.wall"}],
+                       "thread": {"designation": "M48x5", "class": "6H"}, "modeled": true,
+                       "diameters": {"major": 47.92, "minor": 42.266, "pitch": 45.14},
+                       "chamfer_diameter": 45}),
+            )
+        } else {
+            (
+                bored_rod(48.0, None),
+                json!({"type": "thread", "faces": [{"body": "F2.b0", "face": "F2:side(c1)"}],
+                       "thread": {"designation": "M48x5", "class": "6g"}, "modeled": true,
+                       "chamfer_diameter": 42}),
+            )
+        };
+        for (key, field) in [
+            ("location", json!(location)),
+            ("offset", json!(3.112)),
+            ("length", json!(22.888)),
+            ("chamfer", json!("end")),
+            ("angle", json!("31.1 deg")),
+        ] {
+            value[key] = field;
+        }
+        if clearances {
+            value["radial_clearance"] = json!(0.05);
+            value["flank_clearance"] = json!(0.05);
+        }
+        let uid = doc.add_feature(&def(value), None).unwrap().uid;
+        assert_eq!(status(&doc, uid), FeatureStatus::Ok, "{case}");
+        let threads = query(&doc, json!({"query": "threads"}));
+        assert_eq!(
+            threads.as_array().map(Vec::len),
+            Some(1),
+            "{case}: {threads}"
+        );
+        let thread = &threads[0];
+        assert_eq!(thread["internal"], internal, "{case}: {threads}");
+        let radius = if internal { 21.133 } else { 24.0 };
+        assert!(
+            thread["radius"]
+                .as_f64()
+                .is_some_and(|r| (r - radius).abs() < 1e-9),
+            "{case}: {threads}"
+        );
+        assert!(
+            near(&thread["start"], start) && near(&thread["end"], end),
+            "{case}: expected z {start} to {end}, got {threads}"
+        );
+    }
 }
 
 // Thin walls along sketch curves (mitcad#463).

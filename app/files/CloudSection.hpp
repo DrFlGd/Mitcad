@@ -88,8 +88,13 @@ public:
   void stopCheck();
   // The first field to type into: the repository address.
   QWidget* firstField() const;
+  // The fields under Details are shown.
+  bool detailsOpen() const { return m_detailsOpen; }
 
 signals:
+  // Details were opened or closed, after the section sized its window to
+  // the new contents (fitWindowToContents).
+  void detailsToggled(bool open);
   // The address changed (typed, or a field of it).
   void addressChanged(const QString& url);
   // A check's answer came (also a failure), after the status line shows it.

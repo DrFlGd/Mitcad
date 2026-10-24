@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cycles 5.2.0: declare external display buffers when residency sets are unavailable.
+# Original: https://projects.blender.org/blender/cycles/src/commit/3b97e190c5ff1a2ed2160d879ad5bf95bea7b8ba/src/device/metal/queue.mm
+# Copyright 2021-2025 Blender Foundation. Modification by Mitcad contributors.
+--- a/src/device/metal/queue.mm
++++ b/src/device/metal/queue.mm
+@@ -482,7 +482,15 @@
+       dynamic_bytes_written = round_up(dynamic_bytes_written, size_in_bytes);
+       memcpy(dynamic_args + dynamic_bytes_written, args.values[i], size_in_bytes);
+       if (args.types[i] == DeviceKernelArguments::POINTER) {
+-        patch_resource(dynamic_args + dynamic_bytes_written);
++        id<MTLBuffer> resource = patch_resource(dynamic_args + dynamic_bytes_written);
++        if (resource && !metal_device_->mtlResidencySet_enabled) {
++          /* Display interop buffers are externally owned and absent from
++           * metal_mem_map. Declare pointer arguments explicitly as well as
++           * prepare_resources()'s ordinary allocations, including on macOS
++           * 14.4 where residency sets do not exist. */
++          [mtlComputeCommandEncoder useResource:resource
++                                         usage:MTLResourceUsageRead | MTLResourceUsageWrite];
++        }
+       }
+       dynamic_bytes_written += size_in_bytes;
+     }

@@ -231,6 +231,7 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("document", Model),
     ("timeline", Model),
     ("evaluate", Model),
+    ("printed_fit_parameters", Model),
     ("parameters", Model),
     ("bodies", Model),
     ("profiles", Model),
@@ -325,6 +326,10 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("bearing_sizes", Model),
     // Seats on shafts (mitcad#578).
     ("seat_frame", Model),
+    // Print Analysis (mitcad#620).
+    ("print_overhangs", Model),
+    ("print_thickness", Model),
+    ("print_estimate", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {
@@ -370,7 +375,8 @@ fn texture_path(texture: Option<&serde_json::Value>) -> Option<String> {
 
 /// The file a call would read, when its class depends on it (mitcad#383):
 /// the texture path of `create_appearance` and `edit_appearance` (an image
-/// not embedded) and the `environment.image` path of `set_render_settings`.
+/// not embedded), the `environment.image` path of `set_render_settings`,
+/// and sketch font files, including those inside feature definitions.
 /// None for every other call, and for these when they name no file.
 pub fn file_path_read(request: &serde_json::Value) -> Option<String> {
     match request.get("cmd")?.as_str()? {
@@ -378,6 +384,12 @@ pub fn file_path_read(request: &serde_json::Value) -> Option<String> {
         "set_render_settings" => request
             .pointer("/environment/image")?
             .as_str()
+            .map(str::to_owned),
+        "add_feature" | "edit_feature" => feature_file_path(request.get("def")?),
+        "sketch.add_text" | "sketch.edit_text" => request
+            .get("font_file")?
+            .as_str()
+            .filter(|path| !path.is_empty())
             .map(str::to_owned),
         _ => None,
     }
@@ -393,22 +405,19 @@ pub fn command_class_with(request: &serde_json::Value) -> Option<ApiClass> {
     let name = request.get("cmd")?.as_str()?;
     if matches!(
         name,
-        "create_appearance" | "edit_appearance" | "set_render_settings"
+        "create_appearance"
+            | "edit_appearance"
+            | "set_render_settings"
+            | "add_feature"
+            | "edit_feature"
+            | "sketch.add_text"
+            | "sketch.edit_text"
     ) {
         return Some(if file_path_read(request).is_some() {
             FileIo
         } else {
             Model
         });
-    }
-    // A text's font read from a file by its path (mitcad#473).
-    if matches!(name, "sketch.add_text" | "sketch.edit_text")
-        && request
-            .get("font_file")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|f| !f.is_empty())
-    {
-        return Some(FileIo);
     }
     if matches!(name, "build_place" | "build_connect" | "build_panel")
         && request
@@ -458,12 +467,136 @@ pub fn query_class(name: &str) -> Option<ApiClass> {
     class_in(QUERIES, name)
 }
 
-/// The class of a feature type: every feature evaluates on the document's
-/// geometry and the bytes it embeds (a base feature's B-rep, a text's
-/// installed fonts); none reads files or the network. A feature type that
-/// comes to do so gets its own class here.
+/// The default class of a feature type. Sketch text may read a font file:
+/// callers accepting definitions must also check [`feature_class_with`].
+/// Base B-reps are embedded; geometric paths and occurrence links name
+/// document geometry, not filesystem paths. External components are
+/// refreshed only by separately classified file/remote commands.
 pub fn feature_class(_type_name: &str) -> ApiClass {
     Model
+}
+
+/// A file path in a feature definition that its evaluation may read.
+/// Font-file metadata is refused even with stored outlines: a later text
+/// edit can invalidate those outlines and read the file again.
+pub fn feature_file_path(definition: &serde_json::Value) -> Option<String> {
+    if definition.get("type")?.as_str()? != "sketch" {
+        return None;
+    }
+    definition
+        .get("texts")?
+        .as_array()?
+        .iter()
+        .find_map(|text| {
+            text.get("font_file")?
+                .as_object()?
+                .get("path")?
+                .as_str()
+                .map(str::to_owned)
+        })
+}
+
+/// The class of a feature with its fields, including sketch font files.
+pub fn feature_class_with(definition: &serde_json::Value) -> ApiClass {
+    if feature_file_path(definition).is_some() {
+        FileIo
+    } else {
+        feature_class(
+            definition
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default(),
+        )
+    }
+}
+
+/// The same audit on an already parsed feature, without evaluating it.
+pub fn feature_class_of<P>(definition: &crate::features::FeatureDef<P>) -> ApiClass {
+    if let crate::features::FeatureDef::Sketch(sketch) = definition
+        && sketch.texts.iter().any(|text| text.font_file.is_some())
+    {
+        FileIo
+    } else {
+        feature_class(definition.type_name())
+    }
+}
+
+/// Includes implicit font-file reads from a text already in a live
+/// document. Changing its string or style can invalidate stored outlines,
+/// even when the command does not repeat the font path.
+pub fn command_class_in<K: crate::kernel::Kernel>(
+    document: &crate::document::Document<K>,
+    request: &serde_json::Value,
+) -> Option<ApiClass> {
+    let class = command_class_with(request)?;
+    if class != Model {
+        return Some(class);
+    }
+    let unstored_font = |definition: &crate::features::FeatureDef| {
+        if let crate::features::FeatureDef::Sketch(sketch) = definition {
+            sketch.texts.iter().any(|text| {
+                text.font_file.is_some() && !text.glyphs.as_ref().is_some_and(|g| g.fit(text))
+            })
+        } else {
+            false
+        }
+    };
+    if matches!(request["cmd"].as_str(), Some("undo" | "redo"))
+        && document
+            .history_state(request["cmd"] == "undo")
+            .is_some_and(|state| {
+                state
+                    .features
+                    .iter()
+                    .any(|feature| unstored_font(&feature.def))
+            })
+    {
+        return Some(FileIo);
+    }
+    for feature in document.features() {
+        let crate::features::FeatureDef::Sketch(sketch) = &feature.def else {
+            continue;
+        };
+        for text in &sketch.texts {
+            if text.font_file.is_none() {
+                continue;
+            }
+            if !text.glyphs.as_ref().is_some_and(|g| g.fit(text)) {
+                return Some(FileIo);
+            }
+            let target = request["sketch"].as_str();
+            if request["cmd"] != "sketch.edit_text"
+                || (target != Some(feature.uid.to_string().as_str())
+                    && target != Some(feature.name.as_str()))
+                || request["id"].as_str() != Some(format!("t{}", text.id.0).as_str())
+            {
+                continue;
+            }
+            // The ordinary edit leaves the file for an explicitly chosen
+            // different family, or for font_file: "".
+            if request["font_file"] == ""
+                || request["font"]
+                    .as_str()
+                    .is_some_and(|font| font != text.font)
+            {
+                continue;
+            }
+            let mut edited = text.clone();
+            if let Some(value) = request["text"].as_str() {
+                edited.text = value.to_owned();
+            }
+            if let Some(value) = request["bold"].as_bool() {
+                edited.bold = value;
+            }
+            if let Some(value) = request["italic"].as_bool() {
+                edited.italic = value;
+            }
+            if !edited.glyphs.as_ref().is_some_and(|g| g.fit(&edited)) {
+                return Some(FileIo);
+            }
+        }
+    }
+    Some(Model)
 }
 
 /// Whether an external client may run a command: one of the model's own
@@ -634,6 +767,98 @@ mod tests {
             "environment": {"preset": "image", "image": "/env/sky.hdr"}});
         assert_eq!(class_of(request.clone()), Some(FileIo));
         assert_eq!(file_path_read(&request).as_deref(), Some("/env/sky.hdr"));
+    }
+
+    #[test]
+    fn sketch_definitions_with_font_files_are_file_io() {
+        let mut definition = json!({"type": "sketch", "texts": [{
+            "id": "t1", "text": "A", "at": [0, 0], "height": 10,
+            "font_file": {"path": "outside/font.ttf", "index": 0, "licence": ""}
+        }]});
+        for stored in [false, true] {
+            if stored {
+                definition["texts"][0]["glyphs"] = json!({
+                    "text": "A", "font": "", "glyphs": [{}]});
+            }
+            assert_eq!(feature_class_with(&definition), FileIo);
+            for command in ["add_feature", "edit_feature"] {
+                let request = json!({"cmd": command, "def": definition});
+                assert_eq!(command_class_with(&request), Some(FileIo));
+                assert_eq!(
+                    file_path_read(&request).as_deref(),
+                    Some("outside/font.ttf")
+                );
+            }
+        }
+        definition["texts"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("font_file");
+        assert_eq!(feature_class_with(&definition), Model);
+    }
+
+    #[test]
+    fn editing_a_stored_file_font_cannot_implicitly_read_it_through_mcp() {
+        let text = json!({"id": "t1", "text": "A", "at": [0, 0], "height": 10,
+            "font": "Synthetic", "font_file": {"path": "missing.ttf", "index": 0, "licence": ""},
+            "glyphs": {"text": "A", "font": "Synthetic", "glyphs": [{}]}});
+        let fixture = json!({"format": "mitcad", "version": 2,
+            "parameters": [],
+            "features": [{"uid": "F1", "name": "Sketch1", "type": "sketch", "plane": "xy", "texts": [text]}]});
+        let document = Document::from_json(&fixture.to_string(), MockKernel::default()).unwrap();
+        let feature = document.features().next().unwrap();
+        assert_eq!(feature_class_of(&feature.def), FileIo);
+        let base =
+            json!({"cmd": "sketch.edit_text", "sketch": feature.uid.to_string(), "id": "t1"});
+        for (key, value) in [
+            ("text", json!("B")),
+            ("bold", json!(true)),
+            ("italic", json!(true)),
+        ] {
+            let mut request = base.clone();
+            request[key] = value;
+            assert_eq!(command_class_with(&request), Some(Model));
+            assert_eq!(command_class_in(&document, &request), Some(FileIo));
+        }
+        for (key, value) in [
+            ("height", json!(20)),
+            ("text", json!("A")),
+            ("font", json!("Installed")),
+            ("font_file", json!("")),
+        ] {
+            let mut request = base.clone();
+            request[key] = value;
+            assert_eq!(command_class_in(&document, &request), Some(Model));
+        }
+        assert_eq!(
+            command_class_in(&document, &json!({"cmd": "recompute"})),
+            Some(Model)
+        );
+        let mut by_name = base.clone();
+        by_name["sketch"] = json!(feature.name);
+        by_name["italic"] = json!(true);
+        assert_eq!(command_class_in(&document, &by_name), Some(FileIo));
+
+        let mut stale = fixture.clone();
+        stale["features"][0]["texts"][0]["text"] = json!("B");
+        let mut document = Document::from_json(&stale.to_string(), MockKernel::default()).unwrap();
+        assert_eq!(
+            command_class_in(&document, &json!({"cmd": "recompute"})),
+            Some(FileIo)
+        );
+        assert_eq!(
+            command_class_in(&document, &json!({"cmd": "set_marker", "index": 0})),
+            Some(FileIo)
+        );
+        let uid = document.features().next().unwrap().uid.to_string();
+        document
+            .command(&json!({"cmd": "delete_feature", "uid": uid}).to_string())
+            .unwrap();
+        assert!(document.features().next().is_none());
+        assert_eq!(
+            command_class_in(&document, &json!({"cmd": "undo"})),
+            Some(FileIo)
+        );
     }
 
     #[test]

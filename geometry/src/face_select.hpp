@@ -135,6 +135,10 @@ std::vector<int> tangent_closure(
     const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
         ancestors);
 
+// The plane's normal out of the face's material: the plane's handedness
+// and the face's orientation both apply.
+gp_Dir planar_normal(const TopoDS_Face& face, const gp_Pln& plane);
+
 // The plane of a planar face with its normal pointing out of the material;
 // null for other surfaces.
 std::optional<gp_Pln> face_plane(const TopoDS_Face& face);

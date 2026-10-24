@@ -22,7 +22,12 @@ fn cache() -> LibraryCache {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone()
-        .unwrap_or_else(|| LibraryCache::new(LibraryCache::default_root()))
+        .unwrap_or_default()
+}
+
+/// The shared default cache folder, including the environment override.
+pub fn default_libraries_directory() -> String {
+    LibraryCache::default_root().to_string_lossy().into_owned()
 }
 
 /// Sets where fetched libraries are kept (`root`; "" or left out:
@@ -38,19 +43,20 @@ pub fn configure_libraries(json: &str) -> Result<String, VcsError> {
     let root = value
         .get("root")
         .and_then(Value::as_str)
-        .filter(|r| !r.trim().is_empty())
-        .map_or_else(LibraryCache::default_root, PathBuf::from);
-    let mut cache = LibraryCache::new(root);
-    cache.extra = value
-        .get("extra")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(PathBuf::from)
-                .collect()
-        })
-        .unwrap_or_default();
+        .filter(|r| !r.trim().is_empty());
+    let mut cache = root.map_or_else(LibraryCache::default, LibraryCache::new);
+    cache.extra.extend(
+        value
+            .get("extra")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    );
     LibraryResolver::install(cache.clone());
     let answer = json!({"root": cache.root.to_string_lossy(),
                         "extra": cache.extra.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()});

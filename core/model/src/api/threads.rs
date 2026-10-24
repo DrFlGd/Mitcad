@@ -11,11 +11,13 @@ use serde_json::{Value, json};
 use super::ApiError;
 use crate::document::Document;
 use crate::features::hole::hole_face;
-use crate::features::thread::{DEFAULT_CHAMFER_ANGLE, default_chamfer_diameter};
+use crate::features::thread::{CREST_ON_FACE, DEFAULT_CHAMFER_ANGLE, default_chamfer_diameter};
 use crate::features::thread_table;
-use crate::features::{FeatureDef, FeatureEntry, ThreadEnd, ThreadSize, ThreadStandard};
+use crate::features::{
+    FeatureDef, FeatureEntry, ThreadData, ThreadEnd, ThreadSize, ThreadStandard,
+};
 use crate::ids::BodyUid;
-use crate::kernel::Kernel;
+use crate::kernel::{Cylinder, Kernel};
 use crate::parameters::ParamId;
 use crate::recompute::FeatureStatus;
 use crate::topo::{FaceName, RoleKey};
@@ -170,47 +172,41 @@ impl<K: Kernel> Document<K> {
         let shape = self.body_shape(body)?;
         let kernel = self.kernel();
         let entry = of.entry;
-        // The face the thread is on, its cylinder, and whether that face
-        // lost the ends the chamfers took (measured on the body at the
-        // marker) or not (as it was before the thread).
-        let (face, cylinder, trimmed) = match find_face(kernel, shape, face) {
-            Some(found) => {
-                let cylinder = kernel.face_cylinder(shape, &found).ok();
-                (found, cylinder, true)
-            }
-            None if of.on_input => {
-                // A modelled thread whose crest is off its face (a class's
-                // diameters, a radial clearance) leaves no piece of the
-                // face. The faces the feature made from it stand in its
-                // place; the face is measured on the body before the
-                // feature.
-                let before = self.body_before(entry.uid, body)?;
-                let found = find_face(kernel, before, face)?;
-                let made = ["thread", "thread_chamfer_low", "thread_chamfer_high"]
-                    .into_iter()
-                    .any(|role| has_face(kernel, shape, &derived(entry, role, &found)));
-                if !made {
-                    return None;
-                }
-                let cylinder = kernel.face_cylinder(before, &found).ok();
-                (found, cylinder, false)
-            }
-            None => {
-                // A tapped hole's modelled thread whose crest is off the
-                // wall (a radial clearance) leaves no piece of the wall,
-                // which the hole made in the same step, so no body before
-                // the hole has it: the hole measured it before the thread
-                // (mitcad#436). Its thread faces stand in its place.
-                let cylinder = *self.threaded_wall(entry.uid, body, face)?;
-                if !has_face(kernel, shape, &derived(entry, "thread", face)) {
-                    return None;
-                }
-                (face.clone(), Some(cylinder), false)
-            }
-        };
-        let face = &face;
         let size = &of.size;
         let data = size.data().ok()?;
+        // The face on the body at the marker. It shows where the thread
+        // runs (less the cones of its end chamfers) when pieces of it stay
+        // between the grooves: a cosmetic thread's face, or a modelled
+        // thread's whose crest lies on it. A modelled thread whose crest
+        // lies off its face (a class's diameters, a radial clearance) cuts
+        // away, or covers, all of the face along the thread: what is left
+        // of it lies outside the thread's part only (nothing for a thread
+        // over the whole face), so it is measured as it was before the
+        // thread instead (mitcad#628), as is a modelled thread's face whose
+        // pieces at the marker are no one cylinder.
+        let at_marker = find_face(kernel, shape, face).map(|found| {
+            let cylinder = kernel.face_cylinder(shape, &found).ok();
+            (found, cylinder)
+        });
+        let spans = at_marker.as_ref().is_some_and(|(_, cylinder)| {
+            !of.modeled || cylinder.as_ref().is_some_and(|c| !crest_off(of, &data, c))
+        });
+        // The face the thread is on, its cylinder, and whether that face
+        // lost the ends the chamfers took (measured on the body at the
+        // marker) or not (as it was before the thread). Without the face as
+        // it was (a result stored before mitcad#628 has no wall of a part),
+        // the face at the marker is measured.
+        let before = if spans {
+            None
+        } else {
+            self.face_before(of, body, face)
+        };
+        let (face, cylinder, trimmed) = match (before, at_marker) {
+            (Some((found, cylinder)), _) => (found, cylinder, false),
+            (None, Some((found, cylinder))) => (found, cylinder, true),
+            (None, None) => return None,
+        };
+        let face = &face;
         let mut thread = json!({
             "feature": entry.uid,
             "name": entry.name,
@@ -229,21 +225,18 @@ impl<K: Kernel> Document<K> {
             // The cones of end chamfers take `low` and `high` off the face's
             // ends, and the thread starts where a cone meets the cylinder.
             // On the face at the marker that is a cosmetic thread's face
-            // (what a modelled thread leaves of its face ends at the cones
-            // already); the part is measured on the face as it was.
+            // (what a modelled thread whose crest lies on its face leaves of
+            // it ends at the cones already); the part is measured on the
+            // face as it was. On the face as it was before a modelled
+            // thread, the cones are measured to its crest (mitcad#433,
+            // mitcad#628).
             let chamfer = of.chamfer.filter(|_| !trimmed || !of.modeled);
             let (low, high) = match chamfer {
                 Some((angle, diameter)) => {
                     let depth = if of.modeled {
                         // From the chamfer's diameter at the end to the
                         // crest, which the cut profile leaves.
-                        let (diameters, radial) = of.profile;
-                        let (major, minor) = diameters.unwrap_or((data.major, data.minor));
-                        let (crest, root) = if cylinder.internal {
-                            (minor + 2.0 * radial, major + 2.0 * radial)
-                        } else {
-                            (major - 2.0 * radial, minor - 2.0 * radial)
-                        };
+                        let (crest, root) = profile_diameters(of, &data, cylinder.internal);
                         let diameter = diameter.unwrap_or_else(|| {
                             default_chamfer_diameter(&data, cylinder.internal, Some(root))
                         });
@@ -287,6 +280,66 @@ impl<K: Kernel> Document<K> {
         }
         Some(thread)
     }
+
+    /// The face a modelled thread is on as it was before the thread, with
+    /// its cylinder, while the faces the thread made from it are on the
+    /// body at the marker.
+    fn face_before(
+        &self,
+        of: &ThreadOf<'_>,
+        body: BodyUid,
+        face: &FaceName,
+    ) -> Option<(FaceName, Option<Cylinder>)> {
+        let shape = self.body_shape(body)?;
+        let kernel = self.kernel();
+        let entry = of.entry;
+        if of.on_input {
+            // A thread feature's face is on the body before the feature
+            // (mitcad#433); the faces the feature made from it stand in its
+            // place.
+            let before = self.body_before(entry.uid, body)?;
+            let found = find_face(kernel, before, face)?;
+            let made = ["thread", "thread_chamfer_low", "thread_chamfer_high"]
+                .into_iter()
+                .any(|role| has_face(kernel, shape, &derived(entry, role, &found)));
+            if !made {
+                return None;
+            }
+            let cylinder = kernel.face_cylinder(before, &found).ok();
+            Some((found, cylinder))
+        } else {
+            // A tapped hole makes its wall in the same step as the thread,
+            // so no body before the hole has it: the hole measured it
+            // before cutting the thread (mitcad#436, mitcad#628). Its
+            // thread faces stand in its place.
+            let cylinder = *self.threaded_wall(entry.uid, body, face)?;
+            if !has_face(kernel, shape, &derived(entry, "thread", face)) {
+                return None;
+            }
+            Some((face.clone(), Some(cylinder)))
+        }
+    }
+}
+
+/// A modelled thread's crest and root diameters on a face (internal or
+/// external): the size's major and minor diameters or the class's given
+/// ones, moved by the radial clearance.
+fn profile_diameters(of: &ThreadOf<'_>, data: &ThreadData, internal: bool) -> (f64, f64) {
+    let (diameters, radial) = of.profile;
+    let (major, minor) = diameters.unwrap_or((data.major, data.minor));
+    if internal {
+        (minor + 2.0 * radial, major + 2.0 * radial)
+    } else {
+        (major - 2.0 * radial, minor - 2.0 * radial)
+    }
+}
+
+/// Whether a modelled thread's crest lies off the face's cylinder (by more
+/// than the kernel's 1e-6 mm), so that the thread takes or covers all of
+/// the face along its part (mitcad#628).
+fn crest_off(of: &ThreadOf<'_>, data: &ThreadData, cylinder: &Cylinder) -> bool {
+    let (crest, _) = profile_diameters(of, data, cylinder.internal);
+    (crest / 2.0 - cylinder.radius).abs() > CREST_ON_FACE
 }
 
 /// A face of a shape by its name, or the face a sketch change renamed, as

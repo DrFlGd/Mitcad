@@ -416,6 +416,8 @@ fn rewrite_references(
                     }
                 }
             }
+            // Bodies and a bed face by uid and name: no occurrence path.
+            AnalysisDef::Print(_) => {}
         }
     }
     for (i, item) in state.display.isolated.iter().enumerate() {
@@ -956,6 +958,7 @@ fn take(state: &mut DocState, plan: &ReparentPlan) {
     for (i, path) in &plan.changes.analyses {
         match &mut state.analyses[*i].def {
             AnalysisDef::Section(section) => section.occurrence = Some(path.clone()),
+            AnalysisDef::Print(_) => {}
         }
     }
     for (i, text) in &plan.changes.isolated {

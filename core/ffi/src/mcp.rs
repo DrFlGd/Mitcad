@@ -77,7 +77,7 @@ fn validate_command(request: &Value) -> Result<(), String> {
         Some(ApiClass::FileIo) if classes::file_path_read(request).is_some() => {
             let path = classes::file_path_read(request).unwrap_or_default();
             return Err(format!(
-                "command '{kind}' is not available through MCP: it would read the file '{path}'; embed the image with \"data\" (base64) or leave the file out"
+                "command '{kind}' is not available through MCP: it would read the file '{path}'; use embedded image data, stored text outlines or an installed font instead"
             ));
         }
         Some(class) => {
@@ -91,13 +91,42 @@ fn validate_command(request: &Value) -> Result<(), String> {
     if matches!(kind, "add_feature" | "edit_feature") {
         let definition = object(request, "def")?;
         let feature = string(definition, "type")?;
-        if classes::feature_class(feature) != ApiClass::Model {
+        if classes::feature_class_with(definition) != ApiClass::Model {
             return Err(format!(
                 "feature type '{feature}' is not available through MCP"
             ));
         }
     }
     Ok(())
+}
+
+impl Document {
+    /// Audit the actual parsed model before any MCP-open recompute.
+    pub fn validate_mcp_features(&self) -> Result<(), crate::ApiError> {
+        for feature in self.0.features() {
+            if classes::feature_class_of(&feature.def) != ApiClass::Model {
+                return Err(crate::ApiError(format!(
+                    "feature type '{}' is not available through MCP: remove its font file metadata or use an installed font",
+                    feature.def.type_name()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The live document can already hold a text whose stored font file
+    /// would be read again by an otherwise model-only edit.
+    pub fn validate_mcp_document_command(&self, request: &str) -> Result<(), crate::ApiError> {
+        let request: Value = serde_json::from_str(request)
+            .map_err(|error| crate::ApiError(format!("invalid MCP command JSON: {error}")))?;
+        validate_command(&request).map_err(crate::ApiError)?;
+        if classes::command_class_in(&self.0, &request) != Some(ApiClass::Model) {
+            return Err(crate::ApiError(
+                "command is not available through MCP: it would read a stored font file; use an installed font or stored outlines".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn validate_query(request: &Value) -> Result<(), String> {
@@ -243,7 +272,7 @@ impl CadBackend {
         // added definitions. Existing links remain stored metadata and
         // their embedded base bodies; none are refreshed here.
         for feature in model.features() {
-            if classes::feature_class(feature.def.type_name()) != ApiClass::Model {
+            if classes::feature_class_of(&feature.def) != ApiClass::Model {
                 return Err(format!(
                     "feature type '{}' is not available through MCP",
                     feature.def.type_name()
@@ -315,6 +344,10 @@ impl Backend for CadBackend {
                 let request = object(arguments, "command")?;
                 validate_command(request)?;
                 let opened = self.document_mut(id)?;
+                opened
+                    .document
+                    .validate_mcp_document_command(&request.to_string())
+                    .map_err(|e| e.to_string())?;
                 let result = opened
                     .document
                     .command(&request.to_string())
@@ -456,7 +489,7 @@ impl Backend for CadBackend {
                 if let Some(bodies) = bodies {
                     command["bodies"] = bodies.clone();
                 }
-                let opened = self.document_mut(id)?;
+                let opened = self.document(id)?;
                 // A drawing's title block names the design by its file.
                 if command["cmd"] == "export_drawing" && command.get("title").is_none() {
                     let title = opened
@@ -474,12 +507,32 @@ impl Backend for CadBackend {
                 {
                     command["design_folder"] = json!(path_text(folder)?);
                 }
+                if format == "usdz" {
+                    for appearance in opened.document.0.custom_appearances() {
+                        if let Some(texture) = &appearance.texture
+                            && texture.slots().any(|(_, _, data)| data.is_none())
+                        {
+                            return Err("USDZ export through MCP requires embedded texture images; external texture files are not read".to_owned());
+                        }
+                    }
+                }
                 if geometry_failed(&snapshot(&opened.document)?) {
                     return Err(
                         "document has failed features; inspect and fix them before export"
                             .to_owned(),
                     );
                 }
+                if command["cmd"] == "export_drawing" {
+                    let result = opened
+                        .document
+                        .0
+                        .export_drawing_checked(&command.to_string(), |output| {
+                            self.workspace.write_path(output, false).map(|_| ())
+                        })
+                        .map_err(|e| e.to_string())?;
+                    return success(json!({"document": id, "path": path, "result": result}));
+                }
+                let opened = self.document_mut(id)?;
                 let result = opened
                     .document
                     .command(&command.to_string())

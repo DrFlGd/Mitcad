@@ -381,7 +381,14 @@ Three other kinds of panels:
   `analyses` query's entry). While an inspection's panel is open it shows
   its own section (`CommandHost::showSection`); otherwise
   `MainWindow::m_section` follows the model's shown analysis
-  (`MainWindow::followAnalyses` in `refreshScene`). Inspections draw with
+  (`MainWindow::followAnalyses` in `refreshScene`). Print Analysis
+  (mitcad#620) keeps its analysis the same way; its `Inspection::printOverlay`
+  goes to `CommandHost::showPrintAnalysis` (every `keepsSection` panel's
+  inspection: an empty one draws nothing), and a long query of an
+  inspection goes through `CommandHost::jobQuery`, a model job with the
+  progress and its Cancel. A link `point:x,y,z` in an inspection's result
+  frames the view 20 mm around that point (`resultLinkActivated`, logged
+  `<command>: shows point:…`). Inspections draw with
   `setPreview`, so a command started during one ends it. An inspection's
   `highlights` are drawn orange besides the inputs' (a Component item: the
   bodies of its occurrence), and its `report` goes to the definition's
@@ -446,6 +453,51 @@ References (`commands/CommandSupport`):
   next command as normal preselection. Hover is a separate highlight list.
   Scene refresh clears that preview, replaces the groups and removes idle
   profile selections whose exact keys no longer occur in `profiles`.
+- The test driver's `expect-selection-info <text-regex> [maximum-card-height]
+  [with-create-row]` checks measurements and compact card sizing. The optional
+  `with-create-row` adds only the visible Create row's size hint and layout
+  gap to the existing height budget; hidden rows add nothing. This lets the
+  MCP UI test retain its measurements budget after the row added by #619.
+- The card's Create row (mitcad#619, `framework/SelectionCreate.cpp`,
+  `MainWindowSelectionCreate.cpp`) is under the selection's text and
+  above Autoselect. It shows up to four buttons, each with the command's
+  icon and name. The rule is in `selectionCreateCandidates`: one list per
+  kind of selection, Extrude first in each. Every item must be of the
+  kind; a mixed selection has no list.
+
+  | Selection | Buttons, in this order |
+  |---|---|
+  | profiles | Extrude, Revolve, Sweep, Loft (2 or more profiles only) |
+  | planar faces | Extrude, Create Sketch, Hole, Emboss |
+  | cylindrical faces, circular edges | Extrude, Thread, Pulley, Gear, Bearing |
+  | sketch points | Extrude, Hole, Pattern at Points |
+  | sketch curves, edges | Extrude, Sweep, Pipe, Pattern on Path |
+  | bodies | Extrude, Rectangular Pattern, Circular Pattern, Mirror, Combine |
+  | construction or origin planes | Extrude, Create Sketch |
+
+  A command is shown only when its action is enabled and it can use the
+  whole selection (`takesWholeSelection`): its first selection input is
+  shown in the command's start state, takes every item in that state (as
+  preselection does: Extrude takes sketch curves only as a thin
+  extrusion, which is not its default), has room for all of them (`max`),
+  and `offeredFor` holds. Create Sketch takes one plane or planar face.
+  The first four that apply are shown. Some listed commands do not show
+  now, because their first selection input takes other items: Emboss
+  (profiles) for a face; Hole (a face) and Pattern at Points (bodies) for
+  sketch points; Sweep (profiles) and Pattern on Path (bodies) for a path;
+  Thread, Pulley, Gear and Bearing (faces) for a circular edge. When none applies, the row is hidden.
+  A click starts the command as the ribbon does (`trigger`): the
+  selection goes to its inputs as preselection. The buttons are made once
+  and changed in place when the selection changes. The Docked panel gives
+  the row a section title, as Autoselect. The native macOS inspector
+  mirrors the idle page's widgets, the row too. Logs:
+  `Selection card create: Extrude | Revolve | Sweep` (or `none`) when the
+  row changes, `Selection card create Extrude at x,y` for each button, and
+  `Selection card create chose Extrude` on a click. Tests:
+  `app/tests/selection_create.cpp` (`app.unit`),
+  `tools/ui-selection-create-test.sh` (Docked and Floating),
+  `tools/ui-windows-selection-create-test.ps1` (ctest
+  `app.ui-windows-selection-create`).
 - Pre-selection goes to the first input that takes each item. The first
   selection still needed is active (else the first); a click toggles an
   item in the active input, a one-item input takes the new one, and a
@@ -1421,11 +1473,16 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   as one section cuts the bodies at a time. Double-click and Edit Section
   Analysis open its panel with its plane, offset and flip
   (`DocumentHost::editAnalysis`); Rename, Delete (`rename_analysis`,
-  `delete_analysis`); the folder's menu starts a new Section Analysis. An
+  `delete_analysis`); the folder's menu starts a new Section Analysis or
+  a new Print Analysis. An
   analysis whose plane cannot be found at the marker is red with the
   reason in its tooltip, and cuts nothing. Remove Section Analysis hides
-  the shown analysis (it stays in the folder); Flip Section Analysis edits
-  it with `flip` toggled.
+  the shown section (it stays in the folder); Flip Section Analysis edits
+  it with `flip` toggled; neither is offered while a Print Analysis is
+  the one shown. A Print Analysis (mitcad#620) is a row `Print1` with
+  its own icon (`print-analysis`), edited with Edit Print Analysis (the
+  row's `featureType` is the analysis' `type`); one whose bodies or bed
+  face are gone is red with the model's reason and draws nothing.
 - **Section coordinates** (mitcad#204): preview, the manipulator and saved
   analyses share the model's `section_plane` resolver. A selected component
   face or construction plane keeps its occurrence path, including when an
@@ -3173,7 +3230,9 @@ UI thread.
 | `commands/FaceCommands.cpp` | Shell, Draft, Offset Face, Replace Face, Split Face, Split Body, Delete Face |
 | `commands/MoveCommands.cpp` | Scale, Combine, Move/Copy, Move Face (its summary in `commands/MoveFaceText`), Align, Physical Material, Appearance |
 | `commands/ConstructCommands.cpp` | `registerConstructCommands`: every construction plane, axis and point, from a table |
-| `commands/InspectCommands.cpp` | `registerInspectCommands`: Measure, Interference, Section Analysis, Physical Properties |
+| `commands/InspectCommands.cpp` | `registerInspectCommands`: Measure, Interference, Section Analysis, Print Analysis, Physical Properties |
+| `commands/PrintAnalysis.cpp` | Print Analysis (mitcad#620): the settings group `print_analysis`, the `print` definition, its three queries, the answers in words and in the log, the overlay's data |
+| `MainWindowPrintAnalysis.cpp`, `view/PrintOverlay.cpp` | the shown Print Analysis followed and computed as model jobs; its triangles, marker and legend in the view |
 | `commands/JointCommands.cpp` | `registerAssembleCommands`: the ASSEMBLE group: Joint, As-Built Joint, Joint Origin, Rigid Group, Drive Joint (mitcad#55), Constraint (mitcad#148), Contact Set (mitcad#454), Motion Link (mitcad#466); New Component (`PrimitiveCommands.cpp`) leads the group, Animate Joint, Insert Component and Insert from Library (the main window) end it |
 | `MainWindowJoints.cpp` | dragging components the joints move, Animate Joint |
 | `commands/SheetCommands.cpp` | `registerSheetMetalCommands`: the SHEET METAL group (mitcad#210): Face, Flange, Bend, Fold, Corner Round, Corner Chamfer, Sheet Cut, Corner Relief, Unfold, Refold, Flat Pattern, Sheet Rules |
@@ -3215,7 +3274,7 @@ UI thread.
 | `projects/` | the Projects panel (mitcad#145, [below](#projects-panel)): `ProjectsPanel` (the tree, names typed in place, drags), `ProjectsTree` (the projects read with `project_tree`, their names), `ProjectRowText` (the rows' marks and the middle elision, mitcad#529), `MainWindowProjectsPanel.cpp` (its dock or card, View › Projects, File › New Design, what the panel asks for); the [project picker](#project-picker) (`ProjectPicker`) and File › Open from Project's [project browser](#project-browser) (`ProjectBrowser`, `ProjectBrowserData`, mitcad#530) |
 | `files/Remote*.*` | the current Cloud project's remote: sync, check for newer versions, open in browser, sending versions, Resolve Sync Conflicts, Preferences' Cloud page; `RemoteTask` runs one operation (a project's or a projects command) on a thread of its own |
 | `files/Print3d.*`, `files/MainWindowPrint.cpp` | 3D Print: slicers found, settings, file names, the start bodies and the Slicer row's choices, the Preferences group; the command's panel (`print3dCommand`) and its send (`sendToSlicer`) |
-| `update/` | automatic updates ([docs/updates.md](../docs/updates.md)); on macOS, verified disk image, read-only mount, signature-preserving copy, atomic bundle exchange after quit, rollback and Launch Services relaunch |
+| `update/` | automatic updates ([docs/updates.md](../docs/updates.md)); the download in a private, random-named temp folder on Windows and macOS; on Windows, `mitcad-updater.exe` hashes the installer again through a handle without write or delete sharing and runs it only when it matches `--sha256` from the verified manifest (mitcad#603, `UpdaterChecks.hpp`); on macOS, verified disk image, read-only mount, signature-preserving copy, atomic bundle exchange after quit, rollback and Launch Services relaunch |
 | `report/` | feedback and error reports ([below](#feedback-and-error-reports)): `ReportCenter` (Help › Send Feedback, the offers, the delivery), `ReportDialogs` (the form, the screenshot's crop, the preview), `ReportText` (masking, crash files, duplicate keys, the issue form's address; Qt Core, `app.unit`), `CrashHandler` (the signal and exception handlers, plain C++, also in `mitcad-render`) |
 | `MainWindow.*` | the host: document, modes (idle, picking a sketch plane, sketch, command), selection, context menu, actions |
 | `OcctViewer.*` | the 3D view: bodies in the visual style, previews, highlights, picking, camera, orientation cube, navigation |
@@ -3271,7 +3330,9 @@ the worker cancels its job, which `import_f3d` takes as a stop request
 nothing of it is kept. The window then loads the design unsaved (`*`)
 and shows the import report. For tests,
 `MITCAD_TEST_RECOMPUTE_DELAY_MS=import_f3d=<ms>` slows every definition
-the worker tries.
+the worker tries, `import_dwg=<ms>` every item of a drawing it reads
+(`tools/ui-dwg-import-test.sh`, mitcad#589: Cancel while the drawing is
+read, and while the window reads the imported design).
 
 **Keep the imported bodies?** (mitcad#283) The worker runs `import_f3d`
 with `retry_bodies` `ask`: the first time an item is to be tried again on
@@ -4112,8 +4173,11 @@ SOLID tab's ASSEMBLE group.
 | `tools.publish_library` Publish to Library... | `PublishLibraryDialog`: the open design (a single file) added to a library folder of one's own (made when new), an image of the view as its preview, recorded as a version of the folder's project, pushed (`connect` with a remote URL, else `push`), and the index entry (copied) | `library_init`, `library_add`, the project's `commit`, `connect`/`push`, `index_entry` |
 
 - Where fetched libraries are kept: `MITCAD_LIBRARIES_DIR`, else
-  `libraries` in the local app data; `configureLibraries()` tells the
-  bridge at start (`configure_libraries`).
+  `libraries` in the local app data (`Mitcad/Mitcad` in the platform's
+  data folder). `librariesDirectory()` asks the bridge for its shared
+  default; `configureLibraries()` uses the same default configuration as
+  the CLI (`configure_libraries`), including read access to earlier CLI
+  caches. Explicit overrides are isolated.
 - Fetches run as `RemoteTask::library` on a thread of their own with a
   progress dialog whose Cancel ends git; when the user asks, and at
   start-up for the sources with Auto-update (below). The other library
@@ -4974,7 +5038,7 @@ SVG at several sizes (`themeIcon`).
   can sit on a shaft instead of the plane: the seat's inputs (*Seats on
   shafts* below) before Plane; on a shaft Plane, Center X and Y hide, Bore
   Diameter hides (a Plain bore, or None, is the shaft's) and the note adds
-  `bore 8.2 mm (shaft 8 mm)`. Test: `app.ui-windows-gear`
+  `bore 8.2 mm (shaft 8 mm)`. Tests: `tools/ui-gear-test.sh` and `app.ui-windows-gear`
   (`tools/ui-windows-gear-test.ps1`: a spur gear, then a rack meshing it,
   then a spur gear on a shaft's top edge with an offset).
 - **Pulley** (`solid.pulley`, `PulleyCommands.cpp`, mitcad#562; registered
@@ -5136,6 +5200,61 @@ SVG at several sizes (`themeIcon`).
   Tests: `tools/ui-parameter-suggest-test.sh`,
   `tools/ui-parameter-create-test.sh`, the unit test
   `app/tests/parameter_suggest.cpp`.
+- **Print Analysis** (`inspect.print_analysis`, INSPECT after Section
+  Analysis, `InspectCommands.cpp` and `PrintAnalysis.cpp`, mitcad#620;
+  commands.md, *Print analysis*): where a part prints badly and what it
+  takes, before it goes to a slicer. It changes no body, feature,
+  timeline or export; 3D Print stays as it is. An inspection with
+  `keepsSection` and `build`, as Section Analysis:
+  - **Bodies** (`SelectKind::Body`, any number; solids and mesh bodies
+    only, as 3D Print's `withAccepts`): what the selection stands for (a
+    face, edge or vertex its body, an occurrence the bodies shown in it,
+    `printStartBodies`), else every shown body; each body once.
+  - **Bed face** (optional, one planar face of a chosen body): the face
+    that lies on the bed, its outward normal pointing down. Without one
+    the design's -Z is down (`down: [0, 0, -1]`) and the bed is at each
+    body's lowest point. The bodies do not move.
+  - **Overhangs** (on) with **Angle** (45 deg, from the vertical);
+    **Thin walls** (on) with **Minimum wall** (0.8 mm); **Estimate** (on)
+    with **Material** (the bodies' own, else PLA; or a physical
+    material), **Line width** 0.4 mm, **Walls** 2, **Layer height**
+    0.2 mm, **Top/bottom layers** 4, **Infill %** 15, **Filament
+    diameter** 1.75 mm, **Price €/kg** (a text: empty, no cost). The
+    rows of a part switched off are hidden and not checked.
+  - The result area: per body (and in total for several) the overhang
+    area in mm² with its share of the area, the thinnest wall as a link
+    that frames the view around it, the thin regions; then the estimate
+    `41.5 g · 13.9 m · 1.04 €` with the material, its density and the
+    filament's volume, labelled as an estimate. Overhangs and walls are
+    `CommandHost::jobQuery` jobs on the model's worker (the progress
+    dialog's Cancel stops them; the panel then shows the cancel as its
+    error), the estimate a plain query; in the native macOS window the
+    whole inspection already runs on the worker.
+  - A new panel starts with the settings group `print_analysis`
+    (`PrintAnalysisSettings`); OK keeps the analysis (`add_analysis`, the
+    model names it `Print1`, `Print2`, …; `edit_analysis` for one edited)
+    and saves its numbers in the group. Each analysis keeps its own in
+    its `def` (`load` fills the panel from the `analyses` entry).
+  - **In the view** while the panel is open or the analysis is shown
+    (`OcctViewer::setPrintOverlay`, `view/PrintOverlay.cpp`): the
+    overhang triangles in the theme's warning colour, the thin-wall
+    triangles in its error colour, flat and over the bodies' own faces
+    (raised 0.05 and 0.08 mm along their normals, with a polygon offset,
+    as the analysis' mesh and the view's differ on curved faces), not
+    pickable; a marker and a label `Thinnest 0.50 mm` at the thinnest
+    point, over everything; a legend in the lower left corner with the
+    analysis' name, the colours, the angle and the minimum wall
+    (`PrintOverlayLabels`, a child of the view that lets the mouse
+    through). One analysis is shown at a time; a shown Print Analysis is
+    computed again (`MainWindow::followPrintAnalysis`, after the refresh)
+    when it, the design or its bodies' shapes change; the model keeps
+    the results by the bodies' content and the settings, so showing it
+    again costs only the answer.
+  Tests: `tools/ui-print-analysis-test.sh` (panel, Print1 kept, light
+  bulb, edit with a bed face and a minimum wall, save with the STL
+  export unchanged, delete and undo), the unit test
+  `app/tests/print_analysis.cpp`; the model's tests in
+  `core/model` (commands.md).
 
 ## Known limitations
 
@@ -5227,6 +5346,7 @@ next screenshot.
 | `Sketch Sketch1: 2 DOF`, `… 0 DOF, fully constrained`, `…, conflicts k3+k5` | the sketch's status changed |
 | `Sketch entities recoloured for a dark background: 8 fully constrained, 1 centre lines` (`light`) | the view's background turned dark or light while sketch entities are shown: fully constrained geometry and centre lines take the background's colours (mitcad#253), their halos too (mitcad#302) |
 | `Sketch halos: 5 dark` (`light`) | the halos shown changed in number or tone: fully constrained curves and centre lines are drawn over a wider line in the background's tone (`OcctViewer::styleSketchHalo`), dark on a dark background and light on a light one, so that they stay readable over a body's face; points, construction and projected geometry and unconstrained curves have none (mitcad#302) |
+| `Sketch dimension halos: 3 dark` (`light`) | the dimensions shown in sketch mode changed in number or the halo's tone: every dimension (normal, driven, hovered, selected, and the tool preview's) is painted over a halo under its dimension and extension lines, angle arcs and arrowheads (`SketchOverlay::paintDimensionHalo`: 3 px strokes under the 1 px lines, a 2 px outline round the arrowheads, all halos before any line; the values' boxes unchanged), in the same tone as the geometry's halo (`OcctViewer::sketchHaloColor`, the background's tone, the opposite of the lines'), so that the lines stay readable over a body's face of their own tone (mitcad#633). The lines and arrow tips are moved by less than a device pixel onto whole device pixels, so that a level or upright line is one sharp row in its own tone between whole rows of its halo instead of two half-tone rows blurred into it; `tools/ui-sketch-view-test.sh` also reads the pixels |
 | `Sketch colours: F1 8 fully constrained, 0 unconstrained; F3 in O1 4 fully constrained, 3 unconstrained` (`none`) | the shown sketches changed how they are coloured, in sketch mode and outside it: per sketch (with the occurrence that places a component's sketch) the entities drawn in the fully constrained colour of the background and those in the unconstrained blue; construction, centre lines and projected geometry are not counted (mitcad#286) |
 | `Sketch tool Line`, `Added line c2 from (0, 0) to (40, 0) (horizontal)`, `Line chain closed`, `Added rectangle 40 x 25 mm at (0, 0) [c1, …]`, `Added circle, diameter 20 mm at (x, y) [c5]`, `Added arc …`, `Added polygon (6 sides) …`, `Added slot, width 12 mm …`, `Added ellipse …`, `Added spline c9 through 3 points`, `Added point p4 at …`, `Added text t7 "…" at …` (or `in a frame from (x, y) to (x, y)`), `Trimmed c3 at (x, y)`, `Extended c1 at (x, y)` (with ` (joined p5)` when the end joined an existing point, mitcad#259) | the tools |
 | `Sketch cursor: bitmap 32x32, hot spot 10,10, ratio 1, icon line`, `Sketch cursor: arrow` | the view's pointer when a sketch tool starts or ends, or the screen's ratio changes (logical pixels) |
@@ -5250,6 +5370,7 @@ next screenshot.
 | `Timeline colours: dark, marker #c8d0da, buttons #f0f0f0, window #1f2024, handle #5aa2ff` (`light, marker #2b3a4a, buttons the style's, …`), `Asking the platform for the dark colour scheme` | the timeline's palette colours at start and when the theme changes (the marker's handle: the Docked window's accent colour, orange in the Floating chrome); the switch of `MITCAD_TEST_COLOR_SCHEME` |
 | `Window style: dark, window #141518, panels #1f2024, accent #5aa2ff, font Segoe UI Variable Text` (`light, …`; `font the platform's`), `Window frame: Windows 11 caption colour, Mica, rounded corners` (`skipped (Windows build 19045)`, `not applied (DWM error 0x…)`) | the Docked window's style at start and when the theme changes (mitcad#251, `framework/WindowStyle`); on Windows what the window frame got, when the window shows and at each change of theme |
 | `Feature faces highlighted: F3 1, F4 2` / `none` | the faces of the features selected on the timeline (uid and number of faces), when they change |
+| `Selection card create: Extrude \| Revolve \| Sweep` / `none`, `Selection card create Extrude at x,y`, `Selection card create chose Extrude` | the selection card's Create row changed, where each of its buttons is (300 ms after the change), and a click on one (mitcad#619) |
 | `Timeline group Group1 at x,y` (its band, or its folded cell), `Timeline group Group1 collapsed` / `expanded`, `Timeline selected: F1, F2, F4` (a Shift+click run, or what the browser's rows selected; `nothing`), `Grouped Sketch1, Extrude1 as Group1`, `Renamed group Group1 to Body`, `Ungrouped Body` | timeline groups |
 | `Timeline tooltip: Fillet2: <error>`, `Marker at 2 of 4`, `Moved Plane1 to 0 in the timeline`, `Move of Fillet1 refused: <reason>`, `Suppressed Fillet1`, `Renamed Plane1 to Datum`, `Delete Sketch1: also Extrude1, Fillet1?`, `Deleted Sketch1, Extrude1, Fillet1`, `Delete Sketch1 cancelled` | timeline actions |
 | `Browser width 240` (`, scrolls sideways` with a horizontal scroll bar), `Browser Root/Bodies/Body1 at x,y` (its name), `Browser eye <path> at x,y`, `Browser radio <path> at x,y`, `Browser linked Root/Sketches/Sketch1/Extrude2 to Component1` (a feature row whose result is in another component) | the browser's width and the rows in sight (names from the root; a row whose middle is in the view), when they changed, also when the tree scrolls or the panel moves in the window; a place logged before whose row has left sight (scrolled away, folded, gone) is logged once more as `Browser <path> out of sight` (also `Browser eye <path>`, `Browser radio <path>`), so that a test never clicks a place that is not valid; `tools/ui-test-lib.sh` scrolls such a row back into sight before it clicks it (`ui_browser_reveal`) |
@@ -5282,6 +5403,8 @@ next screenshot.
 | `Inspect <command>: <log>`, `Closed <command>` | an inspection's result (Measure: `area 2400, distance 45, angle 90 deg`, of a circle or arc `length 31.416, radius 5, diameter 10`; Interference: `Body1 x Body2: <volume>` or `none`; Section Analysis: `measuring`, then `area …, length …` once measured after the view's update, mitcad#438) |
 | `Computing section view started`, `Computing section view done in 12 ms` (`cancelled after`; `measure`), `Section clips at {"plane":…} off the UI thread (section worker): 3 bodies, 3 new, 3 meshed in 40 ms`, `Section measured off the UI thread (section worker)`, `Section view ready at {"plane":…}: 3 bodies from the section worker`, `Section round view superseded`, `Section round view replaced` | Section Analysis' rounds off the UI thread (mitcad#438, `framework/SectionWorker.hpp`): started and ended, what the worker's thread clipped and meshed, the view about to show them, a running round stopped by a newer one, a waiting one dropped |
 | `Kept Section Analysis as Section1`, `Edited analysis Section1`, `Deleted analysis Section1`, `Section analysis at {"plane":{"normal":[1,0,0],"origin":[10,0,0]}}`, `Section analysis off` | Section Analysis kept in the document (mitcad#41); the plane the bodies are cut at changed |
+| `Inspect Print Analysis: Body1 overhang 412.5 mm^2 (6.2 %), thinnest 0.50 mm, 3 thin region(s), estimate 41.5 g 13.9 m` (`, cost 1.04` with a price; bodies separated by `; `), `Kept Print Analysis as Print1`, `Print analysis Print1: <the same words>` (`failed: <reason>`, `cancelled`) | Print Analysis (mitcad#620): the panel's result, and the shown analysis computed again (after OK, a light bulb, an edit, a change of its bodies) |
+| `Print overlay: 12 overhang triangle(s) #rrggbb, 4 thin triangle(s) #rrggbb, marker Thinnest 0.50 mm at (x, y, z); legend Print1: #rrggbb Overhang, angle 45° \| #rrggbb Thin wall, under 0.8 mm`, `Print overlay: none` | what the view draws of a Print Analysis, when it changes (`no marker` without thin walls) |
 | `Physical properties: Body1 volume … mass … center (…)` | the Properties dialog opened |
 | `Done <command>` | a model command panel's OK |
 | `Camera direction -0.577 0.577 -0.577 up … (orthographic)` | the camera came to rest after it moved (direction from the eye to the model) |
@@ -5313,6 +5436,7 @@ next screenshot.
 | `Computing part.mitcad started`, `Computing part.mitcad: 57 of 196, Extrude6` (when the feature changes, at most 5 a second, after the first 50 ms), `Progress dialog shown: part.mitcad`, `Computing part.mitcad: cancel requested after <ms> ms`, `Computing part.mitcad cancelled after <ms> ms`, `Computing part.mitcad done in <ms> ms (<n> evaluated)`, `Opening part.mitcad cancelled` | a job on the model's worker thread (opening a design, an imported design, New, Close) |
 | `Computing set_parameter started` … `Computing set_parameter done in <ms> ms (<n> evaluated)` (a model command's job is named by its `cmd` and logged only when it takes over 50 ms; `Computing preview …` for a panel's preview), `Command set_parameter cancelled`, `Command undo refused: the model is busy computing`, `Preview Extrude: cancelled`, `Extrude: OK cancelled`, `Extrude: OK not done`, `Parameter d1 expression: 70 cancelled`, `Finish Sketch cancelled: Sketch1 stays open`, `Command Extrude: the timeline stays rolled back`, `Drag of p3 ended by a dialog`, `Manipulator Extrude distance dragged to 25 (ended by a dialog)`, `Context menu dropped: the model is computing` | commands and previews as jobs: a cancel, a call that came while a job ran (refused, or waiting until it is done), a drag the progress dialog ended |
 | `Display meshes of part.mitcad: 2 bodies in <ms> ms on the model's thread` (also `of <cmd>`, `of preview`; only when it meshed any) | the view's meshes of the shown, previewed and tool bodies made at the end of the job (`framework/DisplayMeshes`, mitcad#398; the job's stage reads "Meshing the bodies for display") |
+| `Display meshes of 2.dwg: 4 bodies with faces that could not be meshed (not drawn)` (a warning) | bodies with faces OCCT's mesher failed on when the job meshed them for display: those faces are not drawn, and neither the job nor the view meshes those bodies again (meshing such a face again took without end, on the UI thread, mitcad#589; `viewMeshes` in `view/ViewTessellation.hpp`) |
 | `Autosave every 300 s to <folder>`, `Autosave off`, `Autosaved block.mitcad: 2865 bytes to <folder>`, `Autosave removed for block.mitcad`, `Autosave skipped: busy` (or `previewing`), `Autosave of block.mitcad failed: <reason>` | autosave: the timer set at start and by Preferences, a write, the session's files removed, a write put off (`MITCAD_TEST_AUTOSAVE_SECONDS` for tests; `tools/ui-autosave-test.sh`) |
 | `Recovery: none`, `Recovery: 2 document(s) found`, `Recoverable block.mitcad: /path/block.mitcad, autosaved 2026-10-05T03:12:00Z, 2865 bytes` (`never saved`; `, the file has changed since`, `, the file is gone`, `, damaged: <why>`), `Recovery: removed the lock of session <id>`, `Recovery: later, 1 document(s) kept`, `Discarded recovery of block.mitcad`, `Recovered block.mitcad from autosave of 2026-10-05T03:12:00Z`, `Recovered session <id> removed`, `Recovering block.mitcad cancelled`, `Recovery of block.mitcad failed: <reason>`, `Save conflict: <path> changed since it was opened`, `Save conflict: overwrite` (`save as`, `cancelled`) | recovery: what was found, each session, the dialog's choices, the earlier session's files removed once this session wrote the document, and Save over a recovered document's changed file |
 | `Result store: restored 4, evaluated 2; stored 0 (0 bytes) in 0.1 ms`, `Result store: <error>`, `Result store: removed 12 old results (310.5 MB), 4800.0 MB kept`, `Result store cleared: 4 files, 0.2 MB`, `Import stored 17 results`, `Preferences: results on disk on, at most 5120 MB; in memory at most 7726 MB` | the result store: an open's job (restored from the store, evaluated, written) and a Save's, a write that failed, the clean-up beyond the size, Preferences' Clear, the `.f3d` import's worker, the Cache settings saved |
@@ -5427,6 +5551,11 @@ sync works: [docs/development.md](../docs/development.md)).
   is logged: the main window focused while the modal dialog is still open
   is left without Qt's activation when the dialog closes, and its
   shortcuts (S) do not work.
+- `ui_focus_replace "Save As"`: Qt's own file dialog asks before saving
+  over an existing file in a message box with the file dialog's own
+  title (not "Confirm Save As", a native dialog's), so
+  `ui_focus_dialog` cannot tell the two apart; this focuses the newer of
+  the two windows (Alt+Y replaces).
 - `ui_mark` and `ui_expect_new "text" [seconds]` (only lines logged since
   the mark).
 - `ui_click_pick "face F2.b0/F2:end"` (clicks where the last `Pick
@@ -5470,3 +5599,25 @@ test's settings (`Ui-Init ... @{'sketch.create' = 'F7'}`), since popups
 close at once in session 0; a panel's drop-down changes with the wheel
 (`Ui-WheelLogged "Panel 3D Print input format" -1`: the next entry). `tools/ui-windows-workflow-test.ps1` (ctest
 `app.ui-windows-workflow`, with `MITCAD_MESA_DIR`) is the workflow test.
+
+## Printed fit fields
+
+New Thread, Gear, Pulley and Bearing panels pre-fill their fit fields with
+the ordinary user-parameter names in the model's
+[`Printed fit parameters`](../core/model/src/api/commands.md#printed-fit-parameters)
+table. Thread offers radial and flank clearance, Gear backlash, a seated
+Gear or Pulley bore clearance, and Bearing radial clearance, axial
+clearance, element gap and the fit clearance used when seated.
+
+The expression field shows the value even before the parameter exists.
+Typing a number or another expression replaces the suggestion; clearing
+or changing a field keeps that text across refreshes. Editing an existing
+feature loads its stored values and expressions. OK creates missing
+referenced fit parameters with their comments in the feature's undo step;
+Cancel creates none. Change Parameters lists these normal user parameters
+and their printer-related comments. A parameter already present is used
+without resetting it. The plain Hole panel keeps its existing fields.
+In the Bearing panel a typed number 0 in Element Gap or Element Diameter
+still leaves the model's choice (the field is left out of the
+definition); an expression naming a parameter stays in it even when the
+parameter is zero.

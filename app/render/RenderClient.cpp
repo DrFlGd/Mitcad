@@ -14,8 +14,12 @@
 #include <QtLogging>
 
 #include "render/FrameMemory.hpp"
+#ifdef __APPLE__
+#include "render/MacRenderClient.hpp"
+#endif
 #include "render/RenderBatch.hpp"
 #include "render/RenderDevice.hpp"
+#include "render/RenderWorkerFailure.hpp"
 #include "framework/Diagnostics.hpp"
 
 namespace mitcad::render {
@@ -36,6 +40,24 @@ void RenderClient::start() {
   m_lastError.clear();
   m_pending.clear();
   m_memory.reset();
+  m_frameWaiting = false;
+#ifdef __APPLE__
+  m_native.reset();
+  // Explicit worker overrides keep their existing POSIX process semantics.
+  if (qEnvironmentVariableIsEmpty("MITCAD_RENDER_WORKER")) {
+    m_native = std::make_unique<MacRenderClient>(this);
+    m_activity.start("Rendering the view");
+    if (!m_native->start([this](const QJsonObject& event) { handle(event); }, [this](const QString& reason) {
+          m_activity.stop();
+          qWarning().noquote() << QStringLiteral("Render worker stopped: %1").arg(reason);
+          if (!m_stopping) emit failed(reason);
+        })) {
+      m_activity.stop();
+      QMetaObject::invokeMethod(this, [this] { emit failed(tr("the render service could not start")); }, Qt::QueuedConnection);
+    }
+    return;
+  }
+#endif
   const QString program = workerPath();
   QStringList arguments;
 #ifndef _WIN32
@@ -78,11 +100,7 @@ void RenderClient::start() {
       qInfo().noquote() << QStringLiteral("Render worker ended");
       return;
     }
-    QString reason = m_lastError;
-    if (reason.isEmpty()) {
-      reason = status == QProcess::CrashExit ? tr("the render process crashed")
-                                             : tr("the render process ended (exit code %1)").arg(exitCode);
-    }
+    const QString reason = workerExitReason(m_lastError, exitCode, status == QProcess::CrashExit, m_incompatible);
     qWarning().noquote() << QStringLiteral("Render worker stopped: %1").arg(reason);
     emit failed(reason);
   });
@@ -137,6 +155,9 @@ void RenderClient::stop() {
     return;
   }
   m_stopping = true;
+#ifdef __APPLE__
+  if (m_native) { m_native->stop(); m_activity.stop(); qInfo().noquote() << QStringLiteral("Render worker ended"); return; }
+#endif
   m_process->write("{\"cmd\":\"stop\"}\n");
   m_process->closeWriteChannel();
   // Cycles stops between samples; a frame of a large view can take a while.
@@ -146,11 +167,24 @@ void RenderClient::stop() {
   }
 }
 
-bool RenderClient::isRunning() const { return m_process != nullptr && m_process->state() != QProcess::NotRunning; }
+bool RenderClient::isRunning() const {
+#ifdef __APPLE__
+  if (m_native) return m_native->isRunning();
+#endif
+  return m_process != nullptr && m_process->state() != QProcess::NotRunning;
+}
 
-qint64 RenderClient::processId() const { return m_process != nullptr ? m_process->processId() : 0; }
+qint64 RenderClient::processId() const {
+#ifdef __APPLE__
+  if (m_native) return m_native->processId();
+#endif
+  return m_process != nullptr ? m_process->processId() : 0;
+}
 
 void RenderClient::reserve(int width, int height) {
+#ifdef __APPLE__
+  if (m_native) { m_native->reserve(width, height); return; }
+#endif
   if (!isRunning() || width <= 0 || height <= 0) {
     return;
   }
@@ -197,6 +231,9 @@ void RenderClient::reserve(int width, int height) {
 }
 
 void RenderClient::send(const QJsonObject& command) {
+#ifdef __APPLE__
+  if (m_native) { m_native->send(command); return; }
+#endif
   if (!isRunning()) {
     return;
   }
@@ -204,6 +241,9 @@ void RenderClient::send(const QJsonObject& command) {
 }
 
 bool RenderClient::takeFrame(Frame& frame) {
+#ifdef __APPLE__
+  if (m_native) { m_frameWaiting = false; return m_native->takeFrame(frame); }
+#endif
   if (!m_memory || !m_frameWaiting) {
     return false;
   }
@@ -228,6 +268,9 @@ bool RenderClient::takeFrame(Frame& frame) {
     return false;
   }
   frame.info = header->frames[slot];
+#ifdef __APPLE__
+  frame.surface.reset();
+#endif
   const std::size_t count = std::size_t(frame.info.width) * frame.info.height * 4;
   QString detail;
   if (timingLogged()) {
@@ -286,6 +329,9 @@ void RenderClient::handle(const QJsonObject& event) {
     const int version = event.value(QStringLiteral("protocol")).toInt(0);
     if (name == QLatin1String("hello") && version == static_cast<int>(kProtocolVersion)) {
       m_greeted = true;
+#ifdef __APPLE__
+      if (m_native) qInfo().noquote() << QStringLiteral("Render worker started (pid %1): embedded XPC renderer").arg(m_native->processId());
+#endif
       // The first command chooses the device the renderer starts on.
       send({{QStringLiteral("cmd"), QStringLiteral("device")}, {QStringLiteral("id"), m_device}});
       return;
@@ -300,11 +346,28 @@ void RenderClient::handle(const QJsonObject& event) {
                         .arg(version)
                         .arg(kProtocolVersion);
       qWarning().noquote() << QStringLiteral("Render worker error: %1").arg(m_lastError);
+#ifdef __APPLE__
+      if (m_native) m_native->stop();
+      else
+#endif
       m_process->kill();
       return;
     }
   }
-  if (name == QLatin1String("frame")) {
+  if (name == QLatin1String("transport")) {
+    if (event.value(QStringLiteral("kind")).toString() == QLatin1String("metal-buffer"))
+      qInfo().noquote() << QStringLiteral("Render frame transport: Metal buffer interop");
+    else if (event.value(QStringLiteral("kind")).toString() == QLatin1String("native-auxiliary"))
+      qInfo().noquote() << QStringLiteral("Render frame transport: native auxiliary %1, composite %2")
+          .arg(event.value(QStringLiteral("graphics")).toBool() ? QStringLiteral("GPU") : QStringLiteral("CPU"))
+          .arg(event.value(QStringLiteral("composite")).toBool() ? 1 : 0);
+  } else if (name == QLatin1String("frame")) {
+#ifdef __APPLE__
+    if (m_native) {
+      if (!m_frameWaiting) { m_frameWaiting = true; emit frameAvailable(); }
+      return;
+    }
+#endif
     // Frames published in a memory the application has replaced are gone.
     if (event.value(QStringLiteral("memory")).toInt(m_memoryId) == m_memoryId && !m_frameWaiting) {
       m_frameWaiting = true;
@@ -342,6 +405,10 @@ void RenderClient::handle(const QJsonObject& event) {
     m_lastError = event.value(QStringLiteral("message")).toString();
     qWarning().noquote() << QStringLiteral("Render worker error: %1").arg(m_lastError);
     emit message(m_lastError);
+  } else if (name == QLatin1String("warning")) {
+    const QString text = event.value(QStringLiteral("message")).toString();
+    qWarning().noquote() << QStringLiteral("Render worker warning: %1").arg(text);
+    emit message(text);
   } else if (name == QLatin1String("status")) {
     qDebug().noquote() << QStringLiteral("Render worker: %1").arg(event.value(QStringLiteral("text")).toString());
   }

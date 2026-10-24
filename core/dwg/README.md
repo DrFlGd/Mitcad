@@ -37,9 +37,23 @@ with a test that writes the layout found field by field:
   vertices have no end integer either.
 - **Extents never computed** are stored empty (minimum 1e20, maximum
   -1e20).
+- **Surface curves without their approximation** (mitcad#589, an R2007
+  drawing of ASM 21200): `par_int_cur` and `blend_int_cur` records in
+  the summary form keep only the knots and fit tolerance of their
+  approximation, then their support surfaces and parameter curves. The
+  ASM reader (`mitcad_f3d::asm::geom`, `IntGeom::OnSurface`) takes such a
+  curve as its support along its parameter curve. Rolling-ball blend
+  surfaces (`rb_blend_spl_sur`) in the summary form, or stored with no
+  approximation at all, are made from their definition (mitcad#621): the
+  ball of the offset's radius whose centre runs along the slice curve
+  touching both supports (surfaces, or an edge's curve), walked by OCCT's
+  blend machinery and approximated to a B-spline
+  (`geometry/src/blend_surfaces.cpp`); the curves on such a blend are the
+  blend along their parameter curves.
 
-Not met in the trial drawings, so still as the specification reads: the
-R2007 container and compression, the BLL width, entity colours with RGB
+The R2007 container and compression were met later, in drawings of user
+reports (mitcad#563, mitcad#589). Not met in the trial drawings, so still
+as the specification reads: the BLL width, entity colours with RGB
 or colour book flags, `MESH` entities, polyface and polygon meshes,
 surfaces, and the text form of R2004-R2010 drawings.
 
@@ -167,6 +181,10 @@ inserting entity's.
 - `asm::text` in `core.f3d`: Mitcad's ASM test bodies written in the text
   form convert exactly as their binary form.
 - `cli.import_dwg_<version>`: the test drawing imported through OCCT.
+- `tools/ui-dwg-import-test.sh`: the test drawing opened in the
+  application: Cancel while the import process reads it and while the
+  window reads the imported design, the window answering throughout
+  (mitcad#589).
 - `dwg.corpus`: the trial models under `MITCAD_DWG_CORPUS`
   ([development.md](../../docs/development.md#dwg-corpus)).
 

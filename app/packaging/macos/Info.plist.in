@@ -9,14 +9,13 @@
   (core/model/src/file), so its UTI conforms to public.json. Every format
   that app/files/FileFormats.cpp can import is offered as a Viewer with
   Alternate rank: Mitcad shows up in "Open With" but never takes over the
-  files of other programs. macOS has no system types for .f3d, STEP, IGES,
-  BRep and DXF, so they are declared as imported types, which an exporting
-  program's own declaration overrides. The identifiers are guesses, and
-  .f3d and DXF have ids of Mitcad's own (@MITCAD_BUNDLE_ID@.f3d, .dxf);
-  other CAD programs declare their own ids per extension, so the document
-  types also list the extensions. All of this is unverified on a release build. STL and OBJ have
+  files of other programs. CAD types without a system UTI are declared as
+  imported types, which an exporting program's own declaration overrides.
+  Format-specific identifiers under the bundle id are fallbacks; document
+  types also list the extensions so other programs' type ids still match.
+  STL, OBJ and SVG have
   system types (public.standard-tesselated-geometry-format and
-  public.geometry-definition-format; yes, with that spelling).
+  public.geometry-definition-format; yes, with that spelling; public.svg-image).
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -63,6 +62,10 @@
       <string>Editor</string>
       <key>LSHandlerRank</key>
       <string>Owner</string>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>mitcad</string>
+      </array>
       <key>LSItemContentTypes</key>
       <array>
         <string>@MITCAD_BUNDLE_ID@.project</string>
@@ -184,6 +187,124 @@
       <key>CFBundleTypeExtensions</key>
       <array>
         <string>dxf</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>FCStd Design</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>@MITCAD_BUNDLE_ID@.fcstd</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>fcstd</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>IPT and IAM Design</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>@MITCAD_BUNDLE_ID@.ipt</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>ipt</string>
+        <string>iam</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>IFC Model</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>@MITCAD_BUNDLE_ID@.ifc</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>ifc</string>
+        <string>ifczip</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>RVT and RFA Model</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>@MITCAD_BUNDLE_ID@.rvt</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>rvt</string>
+        <string>rfa</string>
+        <string>rte</string>
+        <string>rft</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>SolidCraft Design</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>@MITCAD_BUNDLE_ID@.solidcraft</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>solidcraft</string>
+        <string>solvecraft</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>DWG Drawing</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>@MITCAD_BUNDLE_ID@.dwg</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>dwg</string>
+      </array>
+    </dict>
+    <dict>
+      <key>CFBundleTypeName</key>
+      <string>SVG Drawing</string>
+      <key>CFBundleTypeRole</key>
+      <string>Viewer</string>
+      <key>LSHandlerRank</key>
+      <string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.svg-image</string>
+      </array>
+      <key>CFBundleTypeExtensions</key>
+      <array>
+        <string>svg</string>
       </array>
     </dict>
   </array>
@@ -314,6 +435,114 @@
         <key>public.mime-type</key>
         <array>
           <string>image/vnd.dxf</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>@MITCAD_BUNDLE_ID@.fcstd</string>
+      <key>UTTypeDescription</key>
+      <string>FCStd Design</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>fcstd</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>@MITCAD_BUNDLE_ID@.ipt</string>
+      <key>UTTypeDescription</key>
+      <string>IPT and IAM Design</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>ipt</string>
+          <string>iam</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>@MITCAD_BUNDLE_ID@.ifc</string>
+      <key>UTTypeDescription</key>
+      <string>IFC Model</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>ifc</string>
+          <string>ifczip</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>@MITCAD_BUNDLE_ID@.rvt</string>
+      <key>UTTypeDescription</key>
+      <string>RVT and RFA Model</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>rvt</string>
+          <string>rfa</string>
+          <string>rte</string>
+          <string>rft</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>@MITCAD_BUNDLE_ID@.solidcraft</string>
+      <key>UTTypeDescription</key>
+      <string>SolidCraft Design</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>solidcraft</string>
+          <string>solvecraft</string>
+        </array>
+      </dict>
+    </dict>
+    <dict>
+      <key>UTTypeIdentifier</key>
+      <string>@MITCAD_BUNDLE_ID@.dwg</string>
+      <key>UTTypeDescription</key>
+      <string>DWG Drawing</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.data</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key>
+        <array>
+          <string>dwg</string>
         </array>
       </dict>
     </dict>

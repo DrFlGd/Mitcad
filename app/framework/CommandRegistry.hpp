@@ -54,6 +54,8 @@ public:
   QList<QKeySequence> effectiveShortcuts(const QString& id) const;
   QList<QKeySequence> effectiveShortcuts(const QString& id, const QKeySequence& primary) const;
   QList<ShortcutConflict> shortcutConflicts(const QHash<QString, QKeySequence>& proposed = {}) const;
+  // Registered defaults, independent of any saved user overrides.
+  QList<ShortcutConflict> defaultShortcutConflicts() const;
   const QStringList& shortcutWarnings() const { return m_shortcutWarnings; }
   QString shortcutHint(const QString& id) const;
   // Applies one complete proposal so swaps do not create intermediate conflicts.

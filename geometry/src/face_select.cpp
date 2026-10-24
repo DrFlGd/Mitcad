@@ -318,18 +318,21 @@ std::vector<int> tangent_closure(
   return faces;
 }
 
+gp_Dir planar_normal(const TopoDS_Face& face, const gp_Pln& plane) {
+  gp_Dir normal = plane.Axis().Direction();
+  if (plane.Direct() == (face.Orientation() == TopAbs_REVERSED)) {
+    normal.Reverse();
+  }
+  return normal;
+}
+
 std::optional<gp_Pln> face_plane(const TopoDS_Face& face) {
   const BRepAdaptor_Surface surface(face, false);
   if (surface.GetType() != GeomAbs_Plane) {
     return std::nullopt;
   }
-  gp_Pln plane = surface.Plane();
-  if (face.Orientation() == TopAbs_REVERSED) {
-    gp_Ax3 axes = plane.Position();
-    axes.ZReverse();
-    plane.SetPosition(axes);
-  }
-  return plane;
+  const gp_Pln plane = surface.Plane();
+  return gp_Pln(gp_Ax3(plane.Location(), planar_normal(face, plane), plane.XAxis().Direction()));
 }
 
 Bnd_Box box_of(const TopoDS_Shape& shape) {

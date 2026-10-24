@@ -25,10 +25,27 @@ skip a version, Mitcad does not announce that version again
 automatically.
 
 **Install on Windows (NSIS installation):** Mitcad downloads the
-installer to `%TEMP%\mitcad-update` and verifies it. Then the window
+installer to a private folder with a random name in the temp folder,
+`%TEMP%\mitcad-update-<random>`, and verifies it. Then the window
 closes. Mitcad asks you to save your work first. After Mitcad has quit,
 the installer runs silently into the same folder and scope as the
 current installation. Then Mitcad starts again.
+
+The installer runs only after a second check. Mitcad passes the SHA-256
+of the verified manifest to `mitcad-updater.exe` on its command line
+(`--sha256`). Right before the installer runs, the updater opens the
+installer with read sharing only. While that handle is open, no other
+program can write to the file, rename it or delete it. The updater
+computes the SHA-256 through that handle (Windows CNG). It runs the
+installer only if the hash matches. It runs the installer by the final
+path of the open file, with links and junctions resolved. The handle
+stays open until the installer has ended. Thus a program that replaces
+the file between the first check and the start (for example, at the
+UAC prompt of an installation for all users) cannot get its own file
+run. If the check fails, the updater does not run the installer. It
+starts Mitcad again, and Mitcad reports the reason from the last line
+of the updater's log. The next start of Mitcad removes the folder
+(`updates/downloadFolders` lists it until then).
 
 The scope comes from the `installation.ini` of the installation (refer
 to [development.md](development.md#windows-installer)). An installation
@@ -132,6 +149,7 @@ Mitcad stores the settings under these keys:
 | `updates/lastCheck` | the time of the last check (UTC) |
 | `updates/hintShown` | |
 | `updates/installing`, `updates/installingFrom`, `updates/installLog` | set during an update |
+| `updates/downloadFolders` | Windows: the private download folders that the next start removes |
 | `updates/lastResult` | the result after an update: `installed 0.1.0 -> 0.2.0`, or `failed ...: <reason>` |
 
 With the setting off, Mitcad makes no request at start-up. *Check for
@@ -335,6 +353,14 @@ Then installations can move to the new key.
 
 No test contacts any host but the machine itself. The tests are:
 
+- `app.unit` (`app/tests/update_installer.cpp`, every platform): the
+  private download folder of Windows and macOS (a random name in the
+  temp folder, owner-only on Linux and macOS, a new one after removal,
+  nothing else removed as a leftover). It also checks the updater's
+  command line with `--sha256`, which Mitcad writes and the updater
+  reads (`app/update/UpdaterChecks.hpp`). The updater refuses a missing
+  or malformed hash. The hash comparison of a file tells a changed file
+  apart.
 - `core.update` (ctest, `cargo test -p mitcad-update`): manifests and
   downloads signed with keys that the tests make. The test covers valid
   manifests and downloads, and tampered manifests and downloads. It
@@ -368,8 +394,11 @@ No test contacts any host but the machine itself. The tests are:
 - `tools/installer-windows-test.ps1 -MesaDir ...`, and the ctest
   `app.installer-windows` (configured with `MITCAD_MESA_DIR`): the ctest
   runs once `package` has made the installer of the build, and is
-  skipped otherwise. An installation just for the current user refuses
-  a tampered download. Then it updates itself from a local manifest
+  skipped otherwise. The installed `mitcad-updater.exe` does not run an
+  installer with a SHA-256 that is not the given one, or without one,
+  and it logs the reason as its last line. An installation just for the
+  current user refuses a tampered download. The download goes to a
+  private folder. Then the installation updates itself from a local manifest
   served over HTTPS, as an installation for all users also does. It
   saves the changed design, starts again as the new version and stays
   registered in its scope only.

@@ -831,6 +831,24 @@ fn corpus_designs_match_the_reference_decoder() {
         .and_then(|d| std::fs::read_dir(d).ok())
         .map(|rd| rd.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
+    // Each reference names its design (`source.file`); it is paired by that
+    // name, not by the number in its file name, which shifts when a design
+    // is added to the corpus.
+    let mut ref_by_design: HashMap<String, (PathBuf, String)> = HashMap::new();
+    for file in ref_files
+        .iter()
+        .filter(|f| f.extension().is_some_and(|e| e == "json"))
+    {
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let Ok(r) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if let Some(name) = r["source"]["file"].as_str() {
+            ref_by_design.insert(name.to_string(), (file.clone(), text));
+        }
+    }
     let mut agreement = Agreement::default();
     let mut exprs = ExprCheck::default();
     let (mut designs, mut compared, mut segments_parsed) = (0usize, 0usize, 0usize);
@@ -842,7 +860,6 @@ fn corpus_designs_match_the_reference_decoder() {
     let mut bulbs = 0usize;
     for path in corpus_files(&corpus) {
         for (label, doc) in design::documents(&path).unwrap() {
-            let n = designs;
             designs += 1;
             let Some(s) = design::find_design_streams(&doc).unwrap() else {
                 continue;
@@ -887,15 +904,10 @@ fn corpus_designs_match_the_reference_decoder() {
                 "{label}: round trip"
             );
 
-            let prefix = format!("{n:02}_");
-            let Some(file) = ref_files.iter().find(|f| {
-                f.file_name()
-                    .is_some_and(|x| x.to_string_lossy().starts_with(&prefix))
-            }) else {
+            let Some((file, text)) = ref_by_design.get(label.as_str()) else {
                 continue;
             };
-            let text = std::fs::read_to_string(file).unwrap();
-            let r: Value = serde_json::from_str(&text).unwrap();
+            let r: Value = serde_json::from_str(text).unwrap();
             assert_eq!(
                 r["source"]["file"],
                 Value::from(label.as_str()),
@@ -903,7 +915,7 @@ fn corpus_designs_match_the_reference_decoder() {
                 file.display()
             );
             // The reference reads into the IR as well.
-            let rd = ir::Dump::from_json(&text).unwrap();
+            let rd = ir::Dump::from_json(text).unwrap();
             assert_eq!(
                 serde_json::to_value(&rd).unwrap(),
                 r,

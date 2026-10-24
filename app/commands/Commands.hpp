@@ -41,8 +41,9 @@ void registerConstructCommands(CommandRegistry& registry, const CommandContext& 
 // Drive Joint. New Component comes first (registerCreateCommands); Animate
 // Joint, Insert Component and Insert from Library last (the main window).
 void registerAssembleCommands(CommandRegistry& registry, const CommandContext& context);
-// INSPECT: Measure, Interference, Section Analysis and Physical
-// Properties (a dialog over `window` for the bodies `selection` gives).
+// INSPECT: Measure, Interference, Section Analysis, Print Analysis
+// (mitcad#620) and Physical Properties (a dialog over `window` for the
+// bodies `selection` gives).
 void registerInspectCommands(CommandRegistry& registry, const CommandContext& context,
                              QWidget* window, std::function<Selection()> selection);
 

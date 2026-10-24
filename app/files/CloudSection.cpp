@@ -28,6 +28,7 @@
 #include <QtLogging>
 
 #include "../framework/Dialogs.hpp"
+#include "../framework/FitToScreen.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "../report/ReportCenter.hpp"
@@ -241,9 +242,10 @@ void CloudSection::build() {
     qInfo().noquote() << QStringLiteral("Cloud section: details %1 (service %2, server %3, owner %4, repository %5)")
                              .arg(open ? QStringLiteral("shown") : QStringLiteral("hidden"), m_service->currentText(),
                                   m_server->text(), m_owner->text(), m_repository->text());
-    if (QWidget* top = window()) {
-      top->adjustSize();
-    }
+    // The window as tall as its contents now need, within the screen
+    // (adjustSize would stop at two thirds of the screen).
+    fitWindowToContents(window());
+    emit detailsToggled(open);
   });
   connect(m_https, &QRadioButton::toggled, this, [this] {
     if (!m_updating) {

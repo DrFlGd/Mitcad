@@ -11,12 +11,14 @@
 // along it (in a hole: how deep), and picks the size whose bore fits the
 // shaft (whose outside diameter fits the hole) within the Fit Clearance;
 // another size may be chosen after.
+#include <cmath>
 #include <memory>
 
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QObject>
+#include <QRegularExpression>
 #include <QString>
 #include <QStringList>
 
@@ -51,6 +53,21 @@ bool isChoice(const Choices& choices, const QString& value) {
 bool grooved(const CommandState& state) { return !state.items(QStringLiteral("groove")).isEmpty(); }
 bool custom(const CommandState& state) { return state.choice(QStringLiteral("size")) == kCustom; }
 bool flanged(const CommandState& state) { return state.checked(QStringLiteral("flange")); }
+
+// A number with an optional unit ("0", "0 mm"), not an expression naming a
+// parameter.
+bool literalNumber(const QString& text) {
+  static const QRegularExpression number(
+      QStringLiteral(R"(^\s*[-+]?(\d+[.,]?\d*|[.,]\d+)([eE][-+]?\d+)?\s*[A-Za-z]*\s*$)"));
+  return number.match(text).hasMatch();
+}
+
+// Zero leaves the model's choice (the default gap, the largest element),
+// but only when typed as a number: a printed-fit parameter that is zero
+// stays referenced, so a later change of the parameter reaches the bearing.
+bool modelChoice(const CommandState& state, const QString& key) {
+  return !std::isfinite(state.value(key)) || (state.value(key) == 0.0 && literalNumber(state.text(key)));
+}
 
 // On a shaft or in a hole (mitcad#578): not with Groove Into; no bore
 // clearance (the size's bore is the bore).
@@ -187,12 +204,15 @@ CommandDef bearingCommand(const CommandContext& context) {
           .withVisible(flanged),
       valueInput(QStringLiteral("radial_clearance"), QObject::tr("Radial Clearance"), ValueKind::Length,
                  QStringLiteral("0.4 mm"))
+          .withPrintedFit(QStringLiteral("printable_bearing"))
           .withTooltip(QObject::tr("The gap across the round faces between the elements and the races"))
           .withHeading(QObject::tr("Printing")),
       valueInput(QStringLiteral("axial_clearance"), QObject::tr("Axial Clearance"), ValueKind::Length,
                  QStringLiteral("0.4 mm"))
+          .withPrintedFit(QStringLiteral("printable_bearing"))
           .withTooltip(QObject::tr("The gap along the axis at the sloped faces")),
       valueInput(QStringLiteral("element_gap"), QObject::tr("Element Gap"), ValueKind::Length, QStringLiteral("0 mm"))
+          .withPrintedFit(QStringLiteral("printable_bearing"))
           .withTooltip(QObject::tr("The least gap between two elements; 0: 0.6 mm, with airsoft balls room for "
                                    "the cage")),
       valueInput(QStringLiteral("element_count"), QObject::tr("Elements"), ValueKind::Unitless, QStringLiteral("0"))
@@ -232,6 +252,7 @@ CommandDef bearingCommand(const CommandContext& context) {
     }
     seatInputList.append(valueInput(QStringLiteral("fit_clearance"), QObject::tr("Fit Clearance"), ValueKind::Length,
                                     QStringLiteral("0.5 mm"))
+                             .withPrintedFit(QStringLiteral("printable_bearing"))
                              .withTooltip(QObject::tr("Allowed difference between the standard bearing "
                                                       "and the shaft or hole diameter"))
                              .withVisible(onSeat));
@@ -296,7 +317,7 @@ CommandDef bearingCommand(const CommandContext& context) {
     // Zero leaves the model's choice: the default gap, the most elements,
     // the largest element.
     for (const char* key : {"element_gap", "element_diameter"}) {
-      if (nonZero(state, QLatin1String(key))) {
+      if (!modelChoice(state, QLatin1String(key))) {
         bearing.insert(QLatin1String(key), state.expression(QLatin1String(key)));
       }
     }

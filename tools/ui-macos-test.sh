@@ -8,8 +8,9 @@
 #   2. --open of a project file with a fillet: recomputed and drawn.
 #   3. the same file with --set d3=35: the block is drawn taller.
 #   4. the result store (P7d): the first open stores, the second restores.
-#   5. View > Rendered (mitcad#51): the bundled CPU worker sends progressive
-#      frames through macOS shared memory, and the view draws the block.
+#   5. View > Rendered (mitcad#51, #551): the embedded CPU renderer sends
+#      progressive frames through its private XPC/IOSurface session, and the
+#      view draws the block.
 # The app renders into an offscreen framebuffer and --screenshot reads it
 # back, so nothing is clicked and no Accessibility or Screen Recording
 # permission is needed; the window still opens, so a window server is
@@ -125,7 +126,7 @@ if [ "$low_ok" = 1 ] && [ "$UI_SHOT_OK" = 1 ] && [ "$UI_SHOT_SHADES" = "$low_sha
   ui_pass 'the stored block is drawn as the computed one'
 fi
 
-echo '--- CPU rendered view and shared-memory frames'
+echo '--- CPU rendered view and private IOSurface frames'
 worker=$(dirname "$UI_APP")/mitcad-render
 if [ ! -x "$worker" ]; then
   ui_fail "View > Rendered: no render worker $worker next to the app"
@@ -146,8 +147,8 @@ command view.rendered
 expect-log 'Rendered view off'
 wait-log 'Render worker ended' 10
 EOF
-  # A displayed final frame has crossed the actual shm_open/SCM_RIGHTS
-  # channel between the application and worker, rather than a fake worker.
+  # A displayed final frame crosses the embedded service's private XPC and
+  # IOSurface transport. The standalone worker remains available for CLI jobs.
   MITCAD_TEST_INPUT=$script MITCAD_TEST_RENDER_SHOT=$UI_OUT/rendered.png \
     MITCAD_RENDER_SAMPLES=16 UI_TIMEOUT=150 \
     ui_run_app rendered --ui=qt --no-recovery --demo
@@ -161,13 +162,16 @@ EOF
     'View > Rendered: denoising ran on the CPU'
   ui_expect_no_log 'Render worker stopped:' 'View > Rendered: no worker failed'
   started_worker=$(ui_log_value 'Render worker started (pid [0-9]*): *\(.*\)')
-  if [ "$started_worker" = "$worker" ]; then
-    ui_pass 'View > Rendered: the app started its bundled worker'
+  service=$(dirname "$(dirname "$(dirname "$UI_APP")")")/Contents/XPCServices/org.mitcad.renderer.xpc
+  if [ "$started_worker" = 'embedded XPC renderer' ] && [ -x "$service/Contents/MacOS/mitcad-render-service" ]; then
+    ui_pass 'View > Rendered: the app started its embedded renderer service'
   else
-    ui_fail "View > Rendered: worker '$started_worker', expected '$worker'"
+    ui_fail "View > Rendered: worker '$started_worker', expected the embedded renderer service at '$service'"
   fi
+  ui_expect_log 'Render transport: IOSurface, private XPC session' \
+    'View > Rendered: the private IOSurface transport is active'
   ui_expect_log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' \
-    'View > Rendered: the view displayed the final shared-memory frame'
+    'View > Rendered: the view displayed the final IOSurface frame'
   frames=$(grep -Ec 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples ' "$UI_LOG_FILE" || true)
   if [ "$frames" -ge 2 ]; then
     ui_pass "View > Rendered: the view refined in $frames frames"

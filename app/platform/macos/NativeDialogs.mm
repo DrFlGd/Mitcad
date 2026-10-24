@@ -61,6 +61,7 @@
 #include <QTabWidget>
 #include <QTableView>
 #include <QTextDocument>
+#include <QTextCursor>
 #include <QTextBlock>
 #include <QTextFragment>
 #include <QTextEdit>
@@ -104,6 +105,17 @@ class NativeMenuPopup;
 }
 @end
 @implementation MitcadNativeComboItem
+@end
+
+@interface MitcadNativeAlertDetails : NSObject {
+@public
+  NSAlert* alert;
+  NSView* details;
+  NSButton* disclosure;
+  NSString* showTitle;
+  NSString* hideTitle;
+}
+- (void)toggle:(id)sender;
 @end
 
 @interface MitcadNativeWidgetTarget : NSObject <NSTextFieldDelegate, NSComboBoxDelegate, NSTextViewDelegate, NSTabViewDelegate,
@@ -239,6 +251,19 @@ QString plain(const QString& text) {
   document.setHtml(text);
   return document.toPlainText();
 }
+bool richLabelText(const QLabel* caption) {
+  return caption->textFormat() == Qt::RichText ||
+         (caption->textFormat() == Qt::AutoText && Qt::mightBeRichText(caption->text()));
+}
+QString labelText(const QLabel* caption) {
+  QString text = caption->text();
+  if (richLabelText(caption)) {
+    QTextDocument document;
+    document.setHtml(text);
+    text = document.toPlainText();
+  }
+  return caption->buddy() != nullptr ? title(text) : text;
+}
 NSImage* image(const QPixmap& pixmap) {
   if (pixmap.isNull()) {
     return nil;
@@ -259,8 +284,8 @@ NSStackView* stack(bool horizontal = false) {
   result.translatesAutoresizingMaskIntoConstraints = NO;
   return result;
 }
-NSTextField* label(const QString& text) {
-  NSTextField* result = [NSTextField wrappingLabelWithString:ns(plain(text))];
+NSTextField* label(const QString& text, bool interpretRichText = true) {
+  NSTextField* result = [NSTextField wrappingLabelWithString:ns(interpretRichText ? plain(text) : text)];
   result.font = [NSFont systemFontOfSize:NSFont.systemFontSize];
   result.selectable = YES;
   result.translatesAutoresizingMaskIntoConstraints = NO;
@@ -514,22 +539,43 @@ public:
         binding.dirty = false;
       } else if (auto* text = qobject_cast<QLabel*>(widget)) {
         const QPixmap pixmap = text->pixmap();
+        const bool links = richLabelText(text) && text->text().contains(QStringLiteral("<a"), Qt::CaseInsensitive) &&
+                           (text->textInteractionFlags() & (Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard));
+        if (links && binding.linkText == nil) {
+          NSTextView* native = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 440, 55)];
+          native.editable = NO;
+          native.selectable = YES;
+          native.drawsBackground = NO;
+          native.delegate = m_target;
+          native.identifier = ns(QString::number(i));
+          native.autoresizingMask = NSViewWidthSizable;
+          native.textContainer.widthTracksTextView = YES;
+          [native.heightAnchor constraintGreaterThanOrEqualToConstant:55].active = YES;
+          add((NSStackView*)binding.view, native);
+          binding.linkText = native;
+          binding.presentationInitialized = false;
+        }
         NATIVE_SET(binding.image, hidden, pixmap.isNull());
-        NATIVE_SET(binding.control, hidden, binding.linkText != nil || !pixmap.isNull());
+        NATIVE_SET(binding.control, hidden, links || !pixmap.isNull());
         if (binding.pixmapKey != pixmap.cacheKey()) {
           binding.image.image = image(pixmap);
           ++g_widgetPropertyWrites;
           binding.pixmapKey = pixmap.cacheKey();
         }
-        if (!binding.presentationInitialized || binding.labelText != text->text()) {
+        if (!binding.presentationInitialized || binding.labelText != text->text() ||
+            binding.labelFormat != text->textFormat() || binding.labelBuddy != (text->buddy() != nullptr) ||
+            binding.labelInteraction != text->textInteractionFlags()) {
           binding.labelText = text->text();
+          binding.labelFormat = text->textFormat();
+          binding.labelBuddy = text->buddy() != nullptr;
+          binding.labelInteraction = text->textInteractionFlags();
           binding.presentationInitialized = true;
-          if (binding.linkText != nil) {
-            [binding.linkText.textStorage setAttributedString:richLabel(text->text())];
+          if (links) {
+            [binding.linkText.textStorage setAttributedString:richLabel(text->text(), text->buddy() != nullptr)];
             ++g_widgetPropertyWrites;
-          } else { NATIVE_STRING(((NSTextField*)binding.control), stringValue, plain(title(text->text()))); }
+          } else { NATIVE_STRING(((NSTextField*)binding.control), stringValue, labelText(text)); }
         }
-        if (binding.linkText != nil) { NATIVE_SET(binding.linkText, hidden, !pixmap.isNull()); }
+        if (binding.linkText != nil) { NATIVE_SET(binding.linkText, hidden, !links || !pixmap.isNull()); }
       } else if (auto* group = qobject_cast<QGroupBox*>(widget)) {
         if (group->isCheckable() && binding.control != nil) {
           if (!binding.presentationInitialized || binding.labelText != group->title()) {
@@ -543,6 +589,8 @@ public:
         NATIVE_SET(binding.stepper, minValue, spin->minimum());
         NATIVE_SET(binding.stepper, maxValue, spin->maximum());
         NATIVE_SET(binding.stepper, increment, spin->singleStep());
+        NATIVE_SET(binding.stepper, valueWraps, spin->wrapping());
+        NATIVE_SET(binding.stepper, autorepeat, YES);
         NATIVE_SET(binding.stepper, doubleValue, spin->value());
         NATIVE_SET(binding.stepper, enabled, spin->isEnabled() && !spin->isReadOnly());
         NSTextField* field = (NSTextField*)binding.control;
@@ -552,6 +600,8 @@ public:
         NATIVE_SET(binding.stepper, minValue, spin->minimum());
         NATIVE_SET(binding.stepper, maxValue, spin->maximum());
         NATIVE_SET(binding.stepper, increment, spin->singleStep());
+        NATIVE_SET(binding.stepper, valueWraps, spin->wrapping());
+        NATIVE_SET(binding.stepper, autorepeat, YES);
         NATIVE_SET(binding.stepper, doubleValue, spin->value());
         NATIVE_SET(binding.stepper, enabled, spin->isEnabled() && !spin->isReadOnly());
         NSTextField* field = (NSTextField*)binding.control;
@@ -996,6 +1046,9 @@ private:
     QKeySequence keySequence;
     int buttonStyle = -1;
     int textRevision = -1;
+    int labelFormat = -1;
+    bool labelBuddy = false;
+    Qt::TextInteractionFlags labelInteraction;
     quint64 presentation = 0;
     qint64 pixmapKey = 0;
     qint64 iconKey = 0;
@@ -1212,8 +1265,10 @@ private:
     }
     if (auto* text = qobject_cast<QLabel*>(widget)) {
       NSStackView* contents = stack();
-      NSTextField* caption = label(title(text->text()));
-      if (text->text().contains(QStringLiteral("<b>"))) { caption.font = [NSFont systemFontOfSize:NSFont.systemFontSize weight:NSFontWeightSemibold]; }
+      NSTextField* caption = label(labelText(text), false);
+      if (richLabelText(text) && text->text().contains(QStringLiteral("<b>"))) {
+        caption.font = [NSFont systemFontOfSize:NSFont.systemFontSize weight:NSFontWeightSemibold];
+      }
       NSImageView* preview = [NSImageView new];
       preview.imageScaling = NSImageScaleProportionallyUpOrDown;
       preview.hidden = text->pixmap().isNull();
@@ -1223,20 +1278,6 @@ private:
       [preview.heightAnchor constraintGreaterThanOrEqualToConstant:std::max(80, std::min(240, text->minimumHeight()))].active = YES;
       const int id = bind(widget, contents, caption);
       m_bindings[static_cast<std::size_t>(id)].image = preview;
-      if (text->text().contains(QStringLiteral("<a"), Qt::CaseInsensitive)) {
-        caption.hidden = YES;
-        NSTextView* links = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 440, 55)];
-        links.editable = NO;
-        links.selectable = YES;
-        links.drawsBackground = NO;
-        links.delegate = m_target;
-        links.identifier = ns(QString::number(id));
-        links.autoresizingMask = NSViewWidthSizable;
-        links.textContainer.widthTracksTextView = YES;
-        [links.heightAnchor constraintGreaterThanOrEqualToConstant:55].active = YES;
-        add(contents, links);
-        m_bindings[static_cast<std::size_t>(id)].linkText = links;
-      }
       return contents;
     }
     if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
@@ -1415,9 +1456,25 @@ private:
     bind(widget, view);
     return view;
   }
-  NSAttributedString* richLabel(const QString& html) {
+  NSAttributedString* richLabel(const QString& html, bool mnemonic) {
     QTextDocument document;
     document.setHtml(html);
+    if (mnemonic) {
+      const QString text = document.toPlainText();
+      std::vector<int> markers;
+      for (qsizetype i = 0; i < text.size(); ++i) {
+        if (text.at(i) == QLatin1Char('&')) {
+          markers.push_back(static_cast<int>(i));
+          if (i + 1 < text.size() && text.at(i + 1) == QLatin1Char('&')) { ++i; }
+        }
+      }
+      for (auto i = markers.rbegin(); i != markers.rend(); ++i) {
+        QTextCursor cursor(&document);
+        cursor.setPosition(*i);
+        cursor.setPosition(*i + 1, QTextCursor::KeepAnchor);
+        cursor.removeSelectedText();
+      }
+    }
     NSMutableAttributedString* result = [[NSMutableAttributedString alloc] initWithString:ns(document.toPlainText())
       attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:NSFont.systemFontSize], NSForegroundColorAttributeName:NSColor.labelColor}];
     for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
@@ -1668,6 +1725,14 @@ public:
     return true;
   }
   bool closeRequested() {
+    if (qobject_cast<SettingsWindow*>(m_widget) != nullptr) {
+      // Settings applies edits as they finish. Its hidden Qt focus does not
+      // follow AppKit's field editor, including when the red close button
+      // bypasses the shortcut path. A rejected edit keeps this live window
+      // open; dialog cancellation below must remain possible without it.
+      QPointer<NativeDialogController> alive(this);
+      if (![m_window makeFirstResponder:nil] || alive == nullptr || m_widget == nullptr) { return NO; }
+    }
     m_restoreHost = m_restoreHost || m_window.isKeyWindow;
     if (qobject_cast<QProgressDialog*>(m_widget) != nullptr) { m_widget->close(); }
     else if (auto* dialog = qobject_cast<QDialog*>(m_widget)) { dialog->reject(); }
@@ -1759,13 +1824,22 @@ int messageBox(QMessageBox* box) {
   alert.informativeText = ns(plain(box->informativeText()));
   alert.alertStyle = box->icon() == QMessageBox::Critical ? NSAlertStyleCritical
                     : box->icon() == QMessageBox::Warning ? NSAlertStyleWarning : NSAlertStyleInformational;
-  const auto buttons = box->buttons();
+  QList<QAbstractButton*> buttons;
   NSButton* implicitDefault = nil;
   bool hasDefault = false;
-  for (QAbstractButton* button : buttons) {
-    NSButton* native = [alert addButtonWithTitle:ns(title(button->text()))];
-    native.enabled = button->isEnabled();
+  for (QAbstractButton* button : box->buttons()) {
     const auto role = box->buttonRole(button);
+    // QMessageBox adds its own ActionRole details toggle. It is a
+    // disclosure in the accessory, never a response that ends NSAlert.
+    if (!box->detailedText().isEmpty() && role == QMessageBox::ActionRole &&
+        (title(button->text()) == title(QMessageBox::tr("Show Details...")) ||
+         title(button->text()) == title(QMessageBox::tr("Hide Details...")))) {
+      continue;
+    }
+    NSButton* native = [alert addButtonWithTitle:ns(title(button->text()))];
+    native.accessibilityIdentifier = ns(QStringLiteral("native.alert.response.%1").arg(buttons.size()));
+    buttons.append(button);
+    native.enabled = button->isEnabled();
     if (implicitDefault == nil && (role == QMessageBox::AcceptRole || role == QMessageBox::YesRole)) { implicitDefault = native; }
     if (button == box->defaultButton()) { native.keyEquivalent = @"\r"; hasDefault = true; }
     else if (button == box->escapeButton() || box->standardButton(button) == QMessageBox::Cancel) { native.keyEquivalent = @"\033"; }
@@ -1774,7 +1848,30 @@ int messageBox(QMessageBox* box) {
   if (!hasDefault && implicitDefault != nil) { implicitDefault.keyEquivalent = @"\r"; }
   std::unique_ptr<NativeWidgetView> check;
   NSStackView* accessories = stack();
-  if (!box->detailedText().isEmpty()) { add(accessories, label(box->detailedText())); }
+  MitcadNativeAlertDetails* detailsTarget = nil;
+  if (!box->detailedText().isEmpty()) {
+    detailsTarget = [MitcadNativeAlertDetails new];
+    detailsTarget->alert = alert;
+    detailsTarget->showTitle = ns(QMessageBox::tr("Show Details..."));
+    detailsTarget->hideTitle = ns(QMessageBox::tr("Hide Details..."));
+    NSButton* disclosure = [NSButton checkboxWithTitle:detailsTarget->showTitle
+                                              target:detailsTarget action:@selector(toggle:)];
+    disclosure.buttonType = NSButtonTypePushOnPushOff;
+    disclosure.bezelStyle = NSBezelStyleRecessed;
+    disclosure.accessibilityIdentifier = @"native.alert.details.toggle";
+    detailsTarget->disclosure = disclosure;
+    add(accessories, disclosure);
+    NSTextView* diagnostic = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 420, 180)];
+    diagnostic.editable = NO;
+    diagnostic.selectable = YES;
+    diagnostic.string = ns(box->detailedText());
+    diagnostic.font = [NSFont monospacedSystemFontOfSize:NSFont.smallSystemFontSize weight:NSFontWeightRegular];
+    NSScrollView* details = scroll(diagnostic, 180);
+    details.accessibilityIdentifier = @"native.alert.details.text";
+    details.hidden = YES;
+    detailsTarget->details = details;
+    add(accessories, details);
+  }
   if (box->checkBox() != nullptr) {
     check = createNativeWidgetView(box->checkBox());
     add(accessories, (__bridge NSView*)check->nativeView());
@@ -1801,6 +1898,7 @@ int messageBox(QMessageBox* box) {
     pumpNativeEvents([completion] { return completion->done; });
     g_modalWindows.pop_back();
   } else { completion->response = [alert runModal]; }
+  if (detailsTarget != nil) { detailsTarget->disclosure.target = nil; }
   QObject::disconnect(destroyed);
   if (presenter == nullptr) { return QDialog::Rejected; }
   const NSInteger index = completion->response - NSAlertFirstButtonReturn;
@@ -2303,6 +2401,18 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 - (BOOL)validateMenuItem:(NSMenuItem*)item { return owner && owner->enabled(item); }
 - (void)menuNeedsUpdate:(NSMenu*)menu { if (owner) owner->update(menu); }
 - (void)menuDidClose:(NSMenu*)menu { if (owner) owner->close(menu); }
+@end
+
+@implementation MitcadNativeAlertDetails
+- (void)toggle:(id)sender {
+  (void)sender;
+  const BOOL expanded = disclosure.state == NSControlStateValueOn;
+  details.hidden = !expanded;
+  disclosure.title = expanded ? hideTitle : showTitle;
+  [alert.accessoryView layoutSubtreeIfNeeded];
+  alert.accessoryView.frame = NSMakeRect(0, 0, 420, alert.accessoryView.fittingSize.height);
+  [alert layout];
+}
 @end
 
 @implementation MitcadNativeWidgetTarget

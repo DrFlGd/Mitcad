@@ -119,6 +119,10 @@ public:
   // image's default name).
   void setDocumentName(const QString& name) { m_documentName = name; }
 
+signals:
+  // Camera/background changed outside the non-modal Settings window.
+  void displaySettingsChanged();
+
 private:
   void apply();
   void setStyle(VisualStyle style);

@@ -248,6 +248,7 @@ const char* const kUsage = R"(usage:
   mitcad-cli import-dwg <file.dwg> [--save <out.mitcad>] [--report <report.json>] [--json]
                         [--expect name=value,...] [--check]
   mitcad-cli import-dwg --write-test <out.dwg> [--version R13|R14|R2000|R2004|R2007|R2010|R2013|R2018]
+                        [--case empty-solid]
       Imports a .dwg drawing's 3D content (R13 to R2018): its 3D solids,
       bodies, regions and surfaces with B-rep data as bodies, its 3D faces,
       polyface, polygon and subdivision meshes as mesh bodies; each named
@@ -264,7 +265,8 @@ const char* const kUsage = R"(usage:
       tube_diameter_mm, tube_wall_mm, mass_kg, density_kg_m3, volume_mm3,
       solids, components); --check
       exits with 1 when a check fails. --write-test writes the reader's
-      test drawing in a version.
+      test drawing in a version; --case adds a case of an import test
+      (empty-solid: a solid none of whose faces can be built).
   mitcad-cli export <file.mitcad> <out> [--bodies <b>,...] [--schema ap214|ap242]
                     [--unit mm|cm|m|in|ft] [--refinement low|medium|high]
                     [--deviation MM --angle DEG] [--ascii]

@@ -76,7 +76,10 @@ use remote::{
     SyncControl, clone_project, describe_remote, git_info, git_info_at, new_sync_control,
 };
 // Component libraries (mitcad#64).
-use libraries::{configure_libraries, describe_library, describe_parts, library_command};
+use libraries::{
+    configure_libraries, default_libraries_directory, describe_library, describe_parts,
+    library_command,
+};
 // Import threads the hang watchdog gave up (mitcad#82).
 use f3d_import::abandoned_imports;
 // Local and Cloud projects (mitcad#89).
@@ -114,6 +117,8 @@ mod ffi {
         /// Complete the pending tool without changing protocol ownership.
         fn finish_mcp(self: &mut LiveMcpSession, value: &str, is_error: bool) -> Result<String>;
         fn validate_mcp_command(request: &str) -> Result<()>;
+        fn validate_mcp_features(self: &Document) -> Result<()>;
+        fn validate_mcp_document_command(self: &Document, request: &str) -> Result<()>;
         fn validate_mcp_query(request: &str) -> Result<()>;
 
         fn new_document() -> Box<Document>;
@@ -258,8 +263,9 @@ mod ffi {
         /// report as JSON, or text with `{"text": true}`.
         fn import_dwg(self: &mut Document, path: &str, json: &str) -> Result<String>;
         /// Writes the .dwg reader's test drawing in a version (`R2000`,
-        /// `R2018`, ...) (tests).
-        fn dwg_write_test_file(path: &str, version: &str) -> Result<()>;
+        /// `R2018`, ...), with a test case added (`empty-solid`; empty
+        /// for none) (tests).
+        fn dwg_write_test_file(path: &str, version: &str, test_case: &str) -> Result<()>;
         /// The text form of an `import_dwg` report given as JSON.
         fn dwg_report_text(json: &str) -> String;
         /// Whether an `import_dwg` report given as JSON passes its checks.
@@ -474,6 +480,9 @@ mod ffi {
     // libraries").
 
     extern "Rust" {
+        /// The cache directory shared by the application and CLI, including
+        /// MITCAD_LIBRARIES_DIR when set.
+        fn default_libraries_directory() -> String;
         /// Sets where fetched libraries are kept (JSON {"root", "extra"};
         /// "" for the default: MITCAD_LIBRARIES_DIR, else the user's data
         /// folder) and lets documents read library parts from there.

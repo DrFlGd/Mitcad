@@ -113,6 +113,12 @@ impl ThreadChamferEnds {
 /// (an internal thread's countersink of 90 degrees).
 pub const DEFAULT_CHAMFER_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
 
+/// How far (mm) a modelled thread's crest may lie from its face and still
+/// be on it, as the OCCT facade tells them apart (`kSame` in
+/// `geometry/src/thread.cpp`). A crest off its face takes or covers all of
+/// the face along the thread's part (mitcad#628).
+pub(crate) const CREST_ON_FACE: f64 = 1e-6;
+
 /// The default diameter of a thread's end chamfer at the end (mitcad#304):
 /// a tenth of a pitch below the minor diameter of the size for an external
 /// thread, above its major diameter for an internal one, and past the

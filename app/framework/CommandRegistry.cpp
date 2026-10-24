@@ -135,6 +135,12 @@ QList<ShortcutConflict> CommandRegistry::shortcutConflicts(const QHash<QString, 
   return mitcad::shortcutConflicts(bindings);
 }
 
+QList<ShortcutConflict> CommandRegistry::defaultShortcutConflicts() const {
+  QHash<QString, QKeySequence> defaults;
+  for (const auto& def : m_commands) defaults.insert(def->id, def->shortcut);
+  return shortcutConflicts(defaults);
+}
+
 void CommandRegistry::setShortcut(const QString& id, const QKeySequence& sequence) {
   setShortcuts({{id, sequence}});
 }

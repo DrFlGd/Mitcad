@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
@@ -21,6 +22,7 @@
 #include <gp_Ax3.hxx>
 
 #include "check.hpp"
+#include "mitcad/geometry/face_extrude.hpp"
 
 namespace test {
 namespace {
@@ -542,6 +544,101 @@ void test_replace_curved_targets() {
   CHECK(edge_names_unique(*taller));
 }
 
+struct PlanarCase {
+  ShapePtr body;
+  std::string cap;
+  std::string wall;
+  gp_Dir outward;
+  double area;
+};
+
+// Both ends exercise the face orientation as well as the planes' handedness.
+std::vector<PlanarCase> left_handed_cases() {
+  Affine mirror;
+  mirror.linear = {{{-1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+  const ShapePtr mirrored = transform_shape(*block(), mirror);
+  RevolveSpec spec;
+  spec.feature = "F3";
+  spec.regions = {rectangle(1, 0, 0, 20, 30)};
+  spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0));
+  spec.angle1 = 2 * kPi;
+  const ShapePtr revolved = revolve(spec);
+  return {{mirrored, start_cap("F2", 1), side("F2", 1, 0), gp_Dir(0, 0, -1), 60.0 * 40.0},
+          {mirrored, end_cap("F2", 1), side("F2", 1, 0), gp_Dir(0, 0, 1), 60.0 * 40.0},
+          {revolved, side("F3", 1, 0), side("F3", 1, 1), gp_Dir(0, -1, 0), kPi * 400},
+          {revolved, side("F3", 1, 2), side("F3", 1, 1), gp_Dir(0, 1, 0), kPi * 400}};
+}
+
+void test_left_handed_face_extrusion() {
+  bool indirect = false;
+  for (const PlanarCase& sample : left_handed_cases()) {
+    const TopoDS_Face& face = sample.body->face(sample.body->find_faces(sample.cap).at(0));
+    indirect = indirect || !BRepAdaptor_Surface(face).Plane().Direct();
+    const gp_Pln cap = face_plane(*sample.body, sample.cap);
+    CHECK(cap.Axis().Direction().Dot(sample.outward) > 1 - 1e-6);
+    FaceExtrudeSpec spec;
+    spec.feature = "F7";
+    spec.face = sample.cap;
+    spec.key = sample.cap;
+    spec.distance1 = 5;
+    spec.start_offset = 2;
+    const ShapePtr prism = extrude_face(*sample.body, spec);
+    CHECK_NEAR(volume(*prism), sample.area * 5);
+    CHECK_NEAR(gp_Vec(cap.Location(), mass_properties(*prism).center).Dot(gp_Vec(sample.outward)), 4.5);
+    spec.reversed = true;
+    const ShapePtr inward = extrude_face(*sample.body, spec);
+    CHECK_NEAR(gp_Vec(cap.Location(), mass_properties(*inward).center).Dot(gp_Vec(sample.outward)), -0.5);
+  }
+  CHECK(indirect);
+}
+
+void test_left_handed_face_replacement() {
+  for (const PlanarCase& sample : left_handed_cases()) {
+    const gp_Pln cap = face_plane(*sample.body, sample.cap);
+    const gp_Pnt target = cap.Location().Translated(gp_Vec(sample.outward) * 5);
+    const ShapePtr taller = replace_faces("F7", *sample.body, {sample.cap},
+                                         Tool::of_plane(gp_Pln(target, sample.outward)));
+    CHECK_NEAR(volume(*taller), volume(*sample.body) + sample.area * 5);
+    const gp_Pln made = face_plane(*taller, face_name("F7", "replace", sample.cap));
+    CHECK_NEAR(gp_Vec(cap.Location(), made.Location()).Dot(gp_Vec(sample.outward)), 5);
+  }
+}
+
+void test_left_handed_face_draft() {
+  for (const PlanarCase& sample : left_handed_cases()) {
+    const gp_Pln cap = face_plane(*sample.body, sample.cap);
+    DraftSpec spec;
+    spec.faces = {sample.wall};
+    spec.plane = Tool::of_face(sample.body, sample.cap);
+    spec.angle = 5 * kPi / 180;
+    const ShapePtr from_face = draft("F7", *sample.body, spec);
+    CHECK(volume(*from_face) < volume(*sample.body) - 1e-6);
+    spec.plane = Tool::of_plane(gp_Pln(cap.Location(), sample.outward.Reversed()));
+    const ShapePtr from_plane = draft("F7", *sample.body, spec);
+    CHECK_NEAR(volume(*from_face), volume(*from_plane));
+    CHECK(mass_properties(*from_face).center.Distance(mass_properties(*from_plane).center) < 1e-6);
+  }
+}
+
+void test_left_handed_face_split_order() {
+  for (const PlanarCase& sample : left_handed_cases()) {
+    const gp_Pln cap = face_plane(*sample.body, sample.cap);
+    const ShapePtr cube = extrude("F8", {rectangle(1, -5, -5, 10, 10)}, -5, 5);
+    Affine move;
+    move.translation = {cap.Location().X(), cap.Location().Y(), cap.Location().Z()};
+    const ShapePtr across = transform_shape(*cube, move);
+    const auto pieces = split_body("F7", *across, Tool::of_face(sample.body, sample.cap), true);
+    CHECK(pieces.size() == 2);
+    if (pieces.size() != 2) {
+      continue;
+    }
+    CHECK_NEAR(volume(*pieces[0]), 500);
+    CHECK_NEAR(volume(*pieces[1]), 500);
+    CHECK_NEAR(gp_Vec(cap.Location(), mass_properties(*pieces[0]).center).Dot(gp_Vec(sample.outward)), -2.5);
+    CHECK_NEAR(gp_Vec(cap.Location(), mass_properties(*pieces[1]).center).Dot(gp_Vec(sample.outward)), 2.5);
+  }
+}
+
 } // namespace
 
 void faceops_tests() {
@@ -552,6 +649,10 @@ void faceops_tests() {
   guarded("test_replace_faces", test_replace_faces);
   guarded("test_replace_curved_faces", test_replace_curved_faces);
   guarded("test_replace_curved_targets", test_replace_curved_targets);
+  guarded("test_left_handed_face_extrusion", test_left_handed_face_extrusion);
+  guarded("test_left_handed_face_replacement", test_left_handed_face_replacement);
+  guarded("test_left_handed_face_draft", test_left_handed_face_draft);
+  guarded("test_left_handed_face_split_order", test_left_handed_face_split_order);
 }
 
 } // namespace test

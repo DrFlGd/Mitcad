@@ -614,9 +614,10 @@ pub struct FeatureOutput<S> {
     /// The values of reference parameters the feature measured (a bound
     /// length, mitcad#375): the features after it use them.
     pub measured: Vec<(ParamId, f64)>,
-    /// A tapped hole's walls that its modelled thread left no piece of, as
-    /// they were before the thread (mitcad#436): the threads query lists
-    /// the thread from them.
+    /// A tapped hole's walls whose modelled thread has its crest off them
+    /// (leaving no piece of them, or only pieces outside the thread's
+    /// part), as they were before the thread (mitcad#436, mitcad#628): the
+    /// threads query lists the thread from them.
     pub threaded_walls: Vec<hole::ThreadedWall>,
 }
 

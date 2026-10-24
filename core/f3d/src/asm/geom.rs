@@ -392,7 +392,85 @@ pub enum IntGeom {
         pitch: P3,
         taper: f64,
     },
+    /// A curve stored without its approximation: in the summary form (the
+    /// approximation's knots and fit tolerance only) or with none (form 2).
+    /// It is then its support surface along its parameter curve,
+    /// `S(p(t))`, at the parameter curve's parameter (`par_int_cur`,
+    /// `blend_int_cur` and the other surface curves, mitcad#589).
+    OnSurface {
+        chart: Chart,
+        pcurve: Bs2Curve,
+        /// The approximation's knots (summary form; empty otherwise).
+        params: Vec<f64>,
+    },
     Unsupported(String),
+}
+
+/// A support surface in the parameters its parameter curves use (model
+/// units).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Chart {
+    /// `root + u u_dir + v v_dir`: `v_dir` is `normal x u_dir`, negated
+    /// when the plane's `reverse_v` is set.
+    Plane { root: P3, u_dir: P3, v_dir: P3 },
+    /// `u` the generator distance normalised by `u_scale`, `v` the angle
+    /// from `major` towards `minor`: at the axial distance `d = u dir cos
+    /// u_scale` (`dir` -1 when `sin cos < 0`) the base ellipse scaled by
+    /// `1 + d sin / (cos |major|)`, moved by `d axis`.
+    Cone {
+        center: P3,
+        axis: P3,
+        major: P3,
+        minor: P3,
+        sin: f64,
+        cos: f64,
+        u_scale: f64,
+    },
+    /// A spline surface's B-spline (exact or its stored approximation), in
+    /// its own parameters.
+    Spline(Box<Bs3Surface>),
+    /// A procedural surface stored without its approximation, which the
+    /// builder makes (a rolling-ball blend, mitcad#621): curves on it are
+    /// passed on as the surface along their parameter curve.
+    Procedural(Box<AsmSurface>),
+}
+
+impl Chart {
+    /// The point at surface parameters `(u, v)` (model units) of an
+    /// analytic chart; `None` for a spline, whose B-spline the converter
+    /// evaluates.
+    pub fn eval(&self, u: f64, v: f64) -> Option<P3> {
+        Some(match self {
+            Chart::Plane { root, u_dir, v_dir } => [
+                root[0] + u * u_dir[0] + v * v_dir[0],
+                root[1] + u * u_dir[1] + v * v_dir[1],
+                root[2] + u * u_dir[2] + v * v_dir[2],
+            ],
+            Chart::Cone {
+                center,
+                axis,
+                major,
+                minor,
+                sin,
+                cos,
+                u_scale,
+            } => {
+                let dir = if sin * cos < 0.0 { -1.0 } else { 1.0 };
+                let d = u * dir * cos * u_scale;
+                let r = (major[0] * major[0] + major[1] * major[1] + major[2] * major[2]).sqrt();
+                let grow = if r > 0.0 {
+                    1.0 + d * sin / (cos * r)
+                } else {
+                    1.0
+                };
+                let (s, c) = v.sin_cos();
+                std::array::from_fn(|k| {
+                    center[k] + d * axis[k] + grow * (major[k] * c + minor[k] * s)
+                })
+            }
+            Chart::Spline(_) | Chart::Procedural(_) => return None,
+        })
+    }
 }
 
 /// Analytic or procedural surface.
@@ -507,7 +585,49 @@ pub enum SplineGeom {
     HelixLine(Box<HelixLine>),
     /// `helix_spl_circ`: a circular arc swept along a helix.
     HelixCircle(Box<HelixCircle>),
+    /// `rb_blend_spl_sur` stored without its approximation: the rolling
+    /// ball's definition (mitcad#621).
+    RollingBall(Box<RollingBall>),
+    /// `sum_spl_sur` stored without its approximation: `S(u, v) = a(u) +
+    /// b(v) - origin` (mitcad#621).
+    Sum {
+        curves: Box<[AsmCurve; 2]>,
+        origin: P3,
+    },
     Unsupported(String),
+}
+
+/// What a rolling ball rolls on, on one side.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlendSupport {
+    /// `blend_support_surface`: the ball touches the surface.
+    Surface(AsmSurface),
+    /// `blend_support_curve`: the ball touches the curve (an edge).
+    Curve(AsmCurve),
+}
+
+/// One side of a rolling-ball blend: its support and, when stored, the
+/// contact track as a parameter curve in the support surface's chart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlendSide {
+    pub support: BlendSupport,
+    pub contact: Option<Bs2Curve>,
+}
+
+/// `rb_blend_spl_sur` (revision-gated layout) without its approximation:
+/// a ball of radius `|offsets[0]|` whose centre runs along the `spine` (the
+/// slice curve) touching both supports. The surface's `u` runs across the
+/// section from the first side's contact (0) to the second's (1), its `v`
+/// is the spine's parameter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RollingBall {
+    pub sides: [BlendSide; 2],
+    pub spine: AsmCurve,
+    /// The two signed offsets (the radius on each side).
+    pub offsets: [f64; 2],
+    /// The spine parameters the surface spans: the summary's v knots, or
+    /// the v interval of a record stored with neither (tail form 2).
+    pub v_range: [f64; 2],
 }
 
 /// Upper bound for nested `ref` and embedded definitions.
@@ -609,20 +729,332 @@ pub fn int_curve_subtype(file: &AsmFile, pos: usize, depth: usize) -> Result<(St
             }
         }
         _ => {
-            skip_version(&mut c);
-            match c.peek() {
-                Some(Token::Ident(k)) if k == "nubs" || k == "nurbs" => match bs3_curve(&mut c)? {
-                    Some(b) => IntGeom::BSpline(b),
-                    None => IntGeom::Unsupported(format!("{name} without a B-spline")),
-                },
-                Some(Token::Ident(k)) if k == "nullbs" => {
+            // An optional serializer revision, then the approximation's
+            // form: 0 the B-spline and its fit tolerance, 1 the summary
+            // (the B-spline's knots and fit tolerance, and its closure),
+            // 2 none (the parameter interval and the closure).
+            if let Some(Token::Int(_)) = c.peek() {
+                c.pos += 1;
+            }
+            let form = match c.peek() {
+                Some(Token::Enum(e)) => {
+                    c.pos += 1;
+                    Some(*e)
+                }
+                _ => None,
+            };
+            match (form, c.peek()) {
+                (_, Some(Token::Ident(k))) if k == "nubs" || k == "nurbs" => {
+                    match bs3_curve(&mut c)? {
+                        Some(b) => IntGeom::BSpline(b),
+                        None => IntGeom::Unsupported(format!("{name} without a B-spline")),
+                    }
+                }
+                (_, Some(Token::Ident(k))) if k == "nullbs" => {
                     IntGeom::Unsupported(format!("{name} without a B-spline"))
+                }
+                (Some(1), _) => {
+                    let n = usize::try_from(c.int()?)
+                        .ok()
+                        .filter(|&n| n <= 1_000_000)
+                        .ok_or_else(|| GeomError(format!("{name}: bad knot count")))?;
+                    let params = (0..n).map(|_| c.double()).collect::<Result<Vec<f64>>>()?;
+                    c.double()?; // fit tolerance
+                    c.enumeration()?; // closure
+                    curve_on_surface(file, &mut c, depth, &name, params)?
+                }
+                (Some(2), _) => {
+                    c.interval()?;
+                    c.enumeration()?; // closure
+                    curve_on_surface(file, &mut c, depth, &name, Vec::new())?
                 }
                 _ => IntGeom::Unsupported(format!("{name}: unknown layout")),
             }
         }
     };
     Ok((name, geom))
+}
+
+/// The support surfaces and parameter curves of a surface curve stored
+/// without its approximation: the curve is the first support along its
+/// parameter curve (a `par_int_cur` has one of them, in either slot).
+fn curve_on_surface(
+    file: &AsmFile,
+    c: &mut Cursor,
+    depth: usize,
+    name: &str,
+    params: Vec<f64>,
+) -> Result<IntGeom> {
+    let s1 = embedded_surface(file, c, depth + 1)?;
+    let s2 = embedded_surface(file, c, depth + 1)?;
+    let p1 = bs2_curve(c)?;
+    let p2 = bs2_curve(c)?;
+    let pair = match (s1, p1, s2, p2) {
+        (Some(s), Some(p), _, _) | (_, _, Some(s), Some(p)) => Some((s, p)),
+        _ => None,
+    };
+    Ok(match pair {
+        Some((Ok(chart), pcurve)) => IntGeom::OnSurface {
+            chart,
+            pcurve,
+            params,
+        },
+        Some((Err(why), _)) => IntGeom::Unsupported(format!("{name} on {why}")),
+        None => IntGeom::Unsupported(format!(
+            "{name} without an approximation, a support surface and its parameter curve"
+        )),
+    })
+}
+
+fn unit3(v: P3) -> P3 {
+    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if n > 0.0 {
+        [v[0] / n, v[1] / n, v[2] / n]
+    } else {
+        v
+    }
+}
+
+fn cross3(a: P3, b: P3) -> P3 {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Reads a support surface written inside a curve's subtype: `None` for
+/// `null_surface`, else its chart, or why it has none the reader can
+/// evaluate. Analytic surfaces end with their `reverse_v` flag and their
+/// u and v ranges, splines with their ranges.
+fn embedded_surface(
+    file: &AsmFile,
+    c: &mut Cursor,
+    depth: usize,
+) -> Result<Option<std::result::Result<Chart, String>>> {
+    Ok(embedded_surface_with_chart(file, c, depth)?.map(|(_, chart)| chart))
+}
+
+/// [`embedded_surface`] with the surface itself (as a surface record
+/// decodes) beside its chart.
+fn embedded_surface_with_chart(
+    file: &AsmFile,
+    c: &mut Cursor,
+    depth: usize,
+) -> Result<Option<(AsmSurface, std::result::Result<Chart, String>)>> {
+    if depth > MAX_DEPTH {
+        return err("embedded geometry nests too deeply");
+    }
+    let kind = c.ident()?;
+    let (surface, chart) = match kind {
+        "null_surface" => return Ok(None),
+        "plane" => {
+            let root = c.point()?;
+            let normal = c.point()?;
+            let u_dir = c.point()?;
+            let reverse_v = c.boolean()?;
+            let v = cross3(unit3(normal), u_dir);
+            (
+                AsmSurface::Plane {
+                    root,
+                    normal,
+                    u_dir,
+                },
+                Ok(Chart::Plane {
+                    root,
+                    u_dir,
+                    v_dir: if reverse_v { v.map(|x| -x) } else { v },
+                }),
+            )
+        }
+        "cone" => {
+            let center = c.point()?;
+            let normal = c.point()?;
+            let major = c.point()?;
+            let ratio = c.double()?;
+            c.interval()?;
+            let sin = c.double()?;
+            let cos = c.double()?;
+            let u_scale = c.double()?;
+            c.boolean()?;
+            let axis = unit3(normal);
+            (
+                AsmSurface::Cone {
+                    center,
+                    normal,
+                    major,
+                    ratio,
+                    sin,
+                    cos,
+                },
+                Ok(Chart::Cone {
+                    center,
+                    axis,
+                    major,
+                    minor: cross3(axis, major).map(|x| x * ratio),
+                    sin,
+                    cos,
+                    u_scale,
+                }),
+            )
+        }
+        "sphere" => {
+            let center = c.point()?;
+            let radius = c.double()?;
+            let u_dir = c.point()?;
+            let pole = c.point()?;
+            c.boolean()?;
+            (
+                AsmSurface::Sphere {
+                    center,
+                    radius,
+                    u_dir,
+                    pole,
+                },
+                Err("a sphere".to_string()),
+            )
+        }
+        "torus" => {
+            let center = c.point()?;
+            let normal = c.point()?;
+            let major = c.double()?;
+            let minor = c.double()?;
+            let u_dir = c.point()?;
+            c.boolean()?;
+            (
+                AsmSurface::Torus {
+                    center,
+                    normal,
+                    major,
+                    minor,
+                    u_dir,
+                },
+                Err("a torus".to_string()),
+            )
+        }
+        "spline" => {
+            let reversed = c.boolean()?;
+            let (subtype, geom) = spline_surface_subtype(file, c.pos, depth + 1)?;
+            c.skip_subtype()?;
+            let chart = match &geom {
+                SplineGeom::BSpline { surface, .. }
+                | SplineGeom::Revolution {
+                    approx: Some(surface),
+                    ..
+                } => Ok(Chart::Spline(surface.clone())),
+                _ => Err(format!("a {subtype} without a B-spline")),
+            };
+            let ranges = [c.interval()?, c.interval()?];
+            let surface = AsmSurface::Spline {
+                reversed,
+                subtype,
+                geom,
+                ranges,
+            };
+            let chart = match (chart, &surface) {
+                (
+                    Err(_),
+                    AsmSurface::Spline {
+                        geom: SplineGeom::RollingBall(_),
+                        ..
+                    },
+                ) => Ok(Chart::Procedural(Box::new(surface.clone()))),
+                (chart, _) => chart,
+            };
+            return Ok(Some((surface, chart)));
+        }
+        other => return err(format!("unknown embedded surface {other}")),
+    };
+    c.interval()?;
+    c.interval()?;
+    Ok(Some((surface, chart)))
+}
+
+/// Reads a revision-gated `sum_spl_sur` after its revision integer: the two
+/// curves (each with its parameter interval), the origin and the shared
+/// surface tail. `None` when it stores its approximation (tail form 0).
+fn sum_surface(file: &AsmFile, c: &mut Cursor, depth: usize) -> Result<Option<SplineGeom>> {
+    let a = embedded_curve(file, c, depth + 1)?;
+    let b = embedded_curve(file, c, depth + 1)?;
+    let origin = c.point()?;
+    match (c.enumeration()?, a, b) {
+        (0, ..) => Ok(None),
+        (_, Some(a), Some(b)) => Ok(Some(SplineGeom::Sum {
+            curves: Box::new([a, b]),
+            origin,
+        })),
+        _ => err("sum_spl_sur without its curves"),
+    }
+}
+
+/// Reads a revision-gated `rb_blend_spl_sur` after its revision integer
+/// (the layout of the published format notes): two sides, the slice
+/// (spine) curve, the two offsets, the radius selector, the u and v
+/// ranges, the shape fields and the shared surface tail. `None` when it
+/// stores its approximation (tail form 0), which is then the surface.
+fn rolling_ball(file: &AsmFile, c: &mut Cursor, depth: usize) -> Result<Option<RollingBall>> {
+    let side = |c: &mut Cursor| -> Result<BlendSide> {
+        let kind = c.string()?.to_string();
+        let surface = embedded_surface_with_chart(file, c, depth + 1)?;
+        let curve = embedded_curve(file, c, depth + 1)?;
+        let contact = bs2_curve(c)?;
+        c.point()?; // location
+        bs2_curve(c)?;
+        if let Some(Token::Int(_)) = c.peek() {
+            c.int()?;
+            bs2_curve(c)?;
+        }
+        let support = match (kind.as_str(), surface, curve) {
+            ("blend_support_surface", Some((s, _)), _) => BlendSupport::Surface(s),
+            ("blend_support_curve", _, Some(curve)) => BlendSupport::Curve(curve),
+            (kind, ..) => return err(format!("a rolling-ball side of {kind} without its support")),
+        };
+        Ok(BlendSide { support, contact })
+    };
+    let first = side(c)?;
+    let second = side(c)?;
+    let spine = embedded_curve(file, c, depth + 1)?
+        .ok_or_else(|| GeomError("a rolling-ball blend without its slice curve".into()))?;
+    let offsets = [c.double()?, c.double()?];
+    // The radius selector: enum -1 (none) or a double.
+    c.next_token()?;
+    c.interval()?; // u range
+    c.interval()?; // v range
+    c.int()?;
+    c.double()?;
+    c.double()?;
+    c.int()?;
+    let v_range = match c.enumeration()? {
+        0 => return Ok(None),
+        // The summary: the approximation's u and v knots, its fit
+        // tolerance, closures and singularities.
+        1 => {
+            let knots = |c: &mut Cursor| -> Result<Vec<f64>> {
+                let n = usize::try_from(c.int()?)
+                    .ok()
+                    .filter(|&n| (2..=1_000_000).contains(&n))
+                    .ok_or_else(|| GeomError("rb_blend_spl_sur: bad knot count".into()))?;
+                (0..n).map(|_| c.double()).collect()
+            };
+            knots(c)?;
+            let v = knots(c)?;
+            [v[0], v[v.len() - 1]]
+        }
+        2 => {
+            c.interval()?;
+            match c.interval()? {
+                [Some(a), Some(b)] => [a, b],
+                _ => return err("rb_blend_spl_sur: an unbounded v interval"),
+            }
+        }
+        form => return err(format!("rb_blend_spl_sur: unknown tail form {form}")),
+    };
+    Ok(Some(RollingBall {
+        sides: [first, second],
+        spine,
+        offsets,
+        v_range,
+    }))
 }
 
 /// Reads an embedded curve (`intcurve`, `straight`, `ellipse`, `null_curve`)
@@ -803,13 +1235,38 @@ pub fn spline_surface_subtype(
                 _ => SplineGeom::Unsupported("helix_spl_circ: unknown layout".into()),
             }
         }
-        _ => match find_bs3_surface(file, def)? {
-            Some(s) => SplineGeom::BSpline {
-                surface: Box::new(s),
-                exact: false,
-            },
-            None => SplineGeom::Unsupported(format!("{name} without a stored approximation")),
-        },
+        _ => {
+            // A rolling ball stored without its approximation (revision-
+            // gated layout): its definition (mitcad#621).
+            let mut definition = Ok(None);
+            if let Some(Token::Int(_)) = c.peek() {
+                match name.as_str() {
+                    "rb_blend_spl_sur" | "rbblnsur" => {
+                        c.pos += 1;
+                        definition = rolling_ball(file, &mut c, depth)
+                            .map(|rb| rb.map(|rb| SplineGeom::RollingBall(Box::new(rb))));
+                    }
+                    "sum_spl_sur" | "sumsur" => {
+                        c.pos += 1;
+                        definition = sum_surface(file, &mut c, depth);
+                    }
+                    _ => {}
+                }
+            }
+            match (definition, find_bs3_surface(file, def)?) {
+                (Ok(Some(geom)), _) => geom,
+                (_, Some(s)) => SplineGeom::BSpline {
+                    surface: Box::new(s),
+                    exact: false,
+                },
+                (Err(e), None) => {
+                    SplineGeom::Unsupported(format!("{name} without a stored approximation: {e}"))
+                }
+                (Ok(None), None) => {
+                    SplineGeom::Unsupported(format!("{name} without a stored approximation"))
+                }
+            }
+        }
     };
     Ok((name, geom))
 }
@@ -1211,5 +1668,337 @@ mod tests {
         assert!(!exact);
         assert_eq!(surface.ctrl[0], [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(surface.nu * surface.nv, 4);
+    }
+
+    /// A `par_int_cur` in the summary form (mitcad#589): the knots of its
+    /// approximation, the fit tolerance and the closure instead of the
+    /// B-spline, then a plane (with `reverse_v`), no second surface, the
+    /// plane's parameter curve (a straight 2D B-spline) and none for the
+    /// second, and the tail.
+    fn summary_par_int_cur(w: &mut Writer, support: impl FnOnce(&mut Writer)) {
+        w.record("intcurve-curve")
+            .head()
+            .bool(false)
+            .sub_start()
+            .ident("par_int_cur")
+            .en(1)
+            .int(3)
+            .dbl(0.0)
+            .dbl(0.5)
+            .dbl(1.0)
+            .dbl(1e-6)
+            .en(0);
+        support(w);
+        w.ident("null_surface");
+        // nubs, degree 1, open, knots 0 (1), 1 (1): (1, 2) to (3, 2).
+        w.ident("nubs")
+            .int(1)
+            .en(0)
+            .int(2)
+            .dbl(0.0)
+            .int(1)
+            .dbl(1.0)
+            .int(1);
+        w.dbl(1.0).dbl(2.0).dbl(3.0).dbl(2.0);
+        w.ident("nullbs")
+            .bool(false)
+            .bool(false)
+            .int(0)
+            .int(0)
+            .int(0)
+            .int(0)
+            .bool(true);
+        w.sub_end().bool(false).bool(false).end();
+    }
+
+    #[test]
+    fn decodes_surface_curves_stored_without_their_approximation() {
+        let f = file_with(|w| {
+            summary_par_int_cur(w, |w| {
+                w.ident("plane")
+                    .pos([10.0, 0.0, 0.0])
+                    .vec([0.0, 0.0, 1.0])
+                    .vec([1.0, 0.0, 0.0])
+                    .bool(true)
+                    .bool(false)
+                    .bool(false)
+                    .bool(false)
+                    .bool(false);
+            });
+        });
+        let c = curve_record(&f, 1).unwrap();
+        let AsmCurve::Int {
+            subtype,
+            geom:
+                IntGeom::OnSurface {
+                    chart,
+                    pcurve,
+                    params,
+                },
+            ..
+        } = c
+        else {
+            panic!("{c:?}")
+        };
+        assert_eq!(subtype, "par_int_cur");
+        assert_eq!(params, vec![0.0, 0.5, 1.0]);
+        assert_eq!(pcurve.ctrl, vec![[1.0, 2.0, 1.0], [3.0, 2.0, 1.0]]);
+        // v runs against normal x u_dir (+y) with reverse_v.
+        assert_eq!(
+            chart,
+            Chart::Plane {
+                root: [10.0, 0.0, 0.0],
+                u_dir: [1.0, 0.0, 0.0],
+                v_dir: [0.0, -1.0, 0.0],
+            }
+        );
+        assert_eq!(chart.eval(1.0, 2.0), Some([11.0, -2.0, 0.0]));
+        // On a support the reader cannot evaluate: said so.
+        let f = file_with(|w| {
+            summary_par_int_cur(w, |w| {
+                w.ident("torus")
+                    .pos([0.0; 3])
+                    .vec([0.0, 0.0, 1.0])
+                    .dbl(5.0)
+                    .dbl(1.0)
+                    .vec([1.0, 0.0, 0.0])
+                    .bool(false)
+                    .bool(false)
+                    .bool(false)
+                    .bool(false)
+                    .bool(false);
+            });
+        });
+        let c = curve_record(&f, 1).unwrap();
+        assert!(
+            matches!(&c, AsmCurve::Int { geom: IntGeom::Unsupported(why), .. } if why == "par_int_cur on a torus"),
+            "{c:?}"
+        );
+    }
+
+    /// An embedded plane support: root, normal, u direction, `reverse_v`
+    /// and the two unbounded ranges.
+    fn embedded_plane(w: &mut Writer, root: P3, normal: P3, u_dir: P3) {
+        w.ident("plane")
+            .pos(root)
+            .vec(normal)
+            .vec(u_dir)
+            .bool(false);
+        w.bool(false).bool(false).bool(false).bool(false);
+    }
+
+    /// One side of a rolling-ball record (revision-gated layout): the kind,
+    /// the support, no contact pcurve, the location, no secondary pcurve,
+    /// the extension integer and no tertiary pcurve.
+    fn rolling_ball_side(w: &mut Writer, support: impl FnOnce(&mut Writer)) {
+        support(w);
+        w.ident("nullbs")
+            .pos([0.0; 3])
+            .ident("nullbs")
+            .int(0)
+            .ident("nullbs");
+    }
+
+    /// A `rb_blend_spl_sur` stored without its approximation (as user
+    /// drawings of mitcad#621 store them): two plane supports (the
+    /// floor z = 0 and the wall x = 0), the slice x = z = 2 along y, offsets
+    /// -2 and -2, no radius selector, the u and v ranges, the shape fields
+    /// and the tail in the given form (1 the summary, 2 none), then the
+    /// face's ranges.
+    fn summary_rolling_ball(w: &mut Writer, form: i32, first_side: impl FnOnce(&mut Writer)) {
+        w.record("spline-surface")
+            .head()
+            .bool(false)
+            .sub_start()
+            .ident("rb_blend_spl_sur")
+            .int(20900);
+        rolling_ball_side(w, first_side);
+        rolling_ball_side(w, |w| {
+            w.str("blend_support_surface");
+            embedded_plane(w, [0.0; 3], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+            w.ident("null_curve");
+        });
+        w.ident("straight")
+            .pos([2.0, 0.0, 2.0])
+            .vec([0.0, 1.0, 0.0])
+            .bool(false)
+            .bool(false);
+        w.dbl(-2.0).dbl(-2.0).en(-1);
+        w.bool(true)
+            .dbl(0.0)
+            .bool(true)
+            .dbl(1.0)
+            .bool(false)
+            .bool(false);
+        w.int(1).dbl(0.05).dbl(0.01).int(1).en(form);
+        if form == 1 {
+            w.int(3).dbl(0.0).dbl(0.5).dbl(1.0);
+            w.int(3).dbl(0.0).dbl(5.0).dbl(10.0);
+            w.dbl(0.01);
+        } else {
+            w.bool(true).dbl(0.0).bool(true).dbl(1.0);
+            w.bool(true).dbl(0.0).bool(true).dbl(10.0);
+        }
+        w.en(0).en(0).en(0).en(0);
+        for _ in 0..6 {
+            w.int(0);
+        }
+        w.bool(false).int(0).int(0).int(0).sub_end();
+        w.bool(true).dbl(0.0).bool(true).dbl(1.0);
+        w.bool(true).dbl(2.0).bool(true).dbl(7.0);
+        w.bool(false).bool(false).bool(false).end();
+    }
+
+    #[test]
+    fn decodes_rolling_balls_stored_without_their_approximation() {
+        for form in [1, 2] {
+            let f = file_with(|w| {
+                summary_rolling_ball(w, form, |w| {
+                    w.str("blend_support_surface");
+                    embedded_plane(w, [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+                    w.ident("null_curve");
+                });
+            });
+            let s = surface_record(&f, 1).unwrap();
+            let AsmSurface::Spline {
+                subtype,
+                geom: SplineGeom::RollingBall(rb),
+                ranges,
+                ..
+            } = s
+            else {
+                panic!("{s:?}")
+            };
+            assert_eq!(subtype, "rb_blend_spl_sur");
+            assert_eq!(ranges, [[Some(0.0), Some(1.0)], [Some(2.0), Some(7.0)]]);
+            assert_eq!(rb.offsets, [-2.0, -2.0]);
+            assert_eq!(rb.v_range, [0.0, 10.0]);
+            assert_eq!(
+                rb.spine,
+                AsmCurve::Straight {
+                    root: [2.0, 0.0, 2.0],
+                    dir: [0.0, 1.0, 0.0]
+                }
+            );
+            assert!(matches!(
+                &rb.sides[0].support,
+                BlendSupport::Surface(AsmSurface::Plane { normal, .. }) if *normal == [0.0, 0.0, 1.0]
+            ));
+            assert!(matches!(
+                &rb.sides[1].support,
+                BlendSupport::Surface(AsmSurface::Plane { normal, .. }) if *normal == [1.0, 0.0, 0.0]
+            ));
+            assert!(rb.sides.iter().all(|s| s.contact.is_none()));
+        }
+        // A ball rolling on an edge (a circle) on its first side.
+        let f = file_with(|w| {
+            summary_rolling_ball(w, 1, |w| {
+                w.str("blend_support_curve").ident("null_surface");
+                w.ident("ellipse")
+                    .pos([0.0, 0.0, 3.0])
+                    .vec([0.0, 0.0, 1.0])
+                    .vec([10.0, 0.0, 0.0])
+                    .dbl(1.0)
+                    .bool(false)
+                    .bool(false);
+            });
+        });
+        let s = surface_record(&f, 1).unwrap();
+        let AsmSurface::Spline {
+            geom: SplineGeom::RollingBall(rb),
+            ..
+        } = s
+        else {
+            panic!("{s:?}")
+        };
+        assert!(matches!(
+            &rb.sides[0].support,
+            BlendSupport::Curve(AsmCurve::Ellipse { ratio, .. }) if *ratio == 1.0
+        ));
+    }
+
+    #[test]
+    fn decodes_sum_surfaces_stored_without_their_approximation() {
+        // sum_spl_sur (revision-gated): two curves with their intervals, the
+        // origin and the tail without the approximation (form 2).
+        let f = file_with(|w| {
+            w.record("spline-surface")
+                .head()
+                .bool(false)
+                .sub_start()
+                .ident("sum_spl_sur")
+                .int(20900);
+            w.ident("straight")
+                .pos([0.0, 0.0, 0.0])
+                .vec([1.0, 0.0, 0.0])
+                .bool(false)
+                .bool(false);
+            w.ident("straight")
+                .pos([0.0, 5.0, 0.0])
+                .vec([0.0, 0.0, 2.0])
+                .bool(false)
+                .bool(false);
+            w.pos([0.0, 5.0, 0.0]).en(2);
+            w.bool(true).dbl(0.0).bool(true).dbl(1.0);
+            w.bool(true).dbl(0.0).bool(true).dbl(1.0);
+            w.en(0).en(0).en(0).en(0);
+            for _ in 0..6 {
+                w.int(0);
+            }
+            w.bool(false).sub_end();
+            w.bool(false).bool(false).bool(false).bool(false).end();
+        });
+        let s = surface_record(&f, 1).unwrap();
+        let AsmSurface::Spline {
+            geom: SplineGeom::Sum { curves, origin },
+            ..
+        } = s
+        else {
+            panic!("{s:?}")
+        };
+        assert_eq!(origin, [0.0, 5.0, 0.0]);
+        assert_eq!(
+            curves[1],
+            AsmCurve::Straight {
+                root: [0.0, 5.0, 0.0],
+                dir: [0.0, 0.0, 2.0]
+            }
+        );
+    }
+
+    #[test]
+    fn cone_charts_follow_the_generator_and_the_angle() {
+        // A cone of base radius 2 opening at 45 degrees along +z, u scaled
+        // by 2: u = 1 is 2 cos(45) along the axis, where the radius is
+        // 2 + 2 cos(45) tan(45).
+        let (s, c) = std::f64::consts::FRAC_PI_4.sin_cos();
+        let cone = Chart::Cone {
+            center: [0.0; 3],
+            axis: [0.0, 0.0, 1.0],
+            major: [2.0, 0.0, 0.0],
+            minor: [0.0, 2.0, 0.0],
+            sin: s,
+            cos: c,
+            u_scale: 2.0,
+        };
+        let d = 2.0 * c;
+        let p = cone.eval(1.0, std::f64::consts::FRAC_PI_2).unwrap();
+        for (got, want) in p.iter().zip([0.0, 2.0 + d, d]) {
+            assert!((got - want).abs() < 1e-12, "{p:?}");
+        }
+        // A cylinder: u in radii along the axis.
+        let cylinder = Chart::Cone {
+            center: [0.0; 3],
+            axis: [0.0, 0.0, 1.0],
+            major: [2.0, 0.0, 0.0],
+            minor: [0.0, 2.0, 0.0],
+            sin: 0.0,
+            cos: 1.0,
+            u_scale: 2.0,
+        };
+        let p = cylinder.eval(0.5, 0.0).unwrap();
+        for (got, want) in p.iter().zip([2.0, 0.0, 1.0]) {
+            assert!((got - want).abs() < 1e-12, "{p:?}");
+        }
     }
 }

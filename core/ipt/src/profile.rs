@@ -670,7 +670,7 @@ fn outline_edge(
                 weights,
             })
         }
-        Curve::Interpolated { .. } => None,
+        Curve::Interpolated { .. } | Curve::OnSurface { .. } => None,
     }
 }
 

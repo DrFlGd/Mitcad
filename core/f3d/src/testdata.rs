@@ -85,8 +85,21 @@ fn cube(named: bool) -> Vec<u8> {
     cube_writer(named).finish()
 }
 
+/// The cube of [`cube_blob`] whose point records hold no position, as when
+/// a reader loses the end of a body: its faces have their surfaces, but
+/// none of its vertices, edges or loops can be read, so no face can be
+/// built (a DWG import went on without such a body, mitcad#589).
+pub fn cube_without_points_blob() -> Vec<u8> {
+    cube_writer_with(false, false).finish()
+}
+
 /// The cube's records written, before the end of the data.
 fn cube_writer(named: bool) -> Writer {
+    cube_writer_with(named, true)
+}
+
+/// [`cube_writer`], with or without the points' positions.
+fn cube_writer_with(named: bool, positions: bool) -> Writer {
     // Record layout: 0 asmheader, 1 body, 2 lump, 3 shell,
     // faces 4..10, loops 10..16, coedges 16..40, edges 40..52,
     // vertices 52..60, points 60..68, curves 68..80, surfaces 80..86.
@@ -238,7 +251,11 @@ fn cube_writer(named: bool) -> Writer {
             .end();
     }
     for p in corners {
-        w.record("point").head().pos(p).end();
+        w.record("point").head();
+        if positions {
+            w.pos(p);
+        }
+        w.end();
     }
     for &(a, b) in &edges {
         let d = brep::sub(corners[b], corners[a]);

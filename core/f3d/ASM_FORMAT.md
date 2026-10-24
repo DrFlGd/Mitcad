@@ -228,7 +228,7 @@ a keyword followed by the record's fields (without the header): `plane`,
 | `exact_spl_sur` | version, enum, bs3 surface | exact B-spline |
 | `cyl_spl_sur` | version, profile (`intcurve ...` + range), direction vector, point, approximation level enum (0: bs3 surface follows; 2: none), ... | exact: linear extrusion `C(u) + v dir` |
 | `rot_spl_sur` | version, profile, axis point, axis direction, enum, bs3 approximation | approximation |
-| `rb_blend_spl_sur` | version, support surfaces/curves with their spines and offsets, radius data, then enum and bs3 approximation | approximation |
+| `rb_blend_spl_sur` | version, two sides (support kind text, support surface with its ranges or `null_surface`, support curve or `null_curve`, contact bs2 pcurve, location, bs2 pcurve, extension integer, bs2 pcurve), the slice (spine) curve with its range, two offsets, radius selector, u and v ranges, shape fields, then the tail enum: 0 bs3 approximation, 1 its knots only (summary), 2 none (the u and v intervals) | approximation; without it the rolling ball the builder walks along the spine (see below) |
 | `loft_spl_sur` | version, section curves, ..., bs3 approximation | approximation |
 | `helix_spl_line` | version, three ranges, helix data as in `helix_int_cur`, two `null_surface`, two `nullbs`, line vector; no approximation | exact up to the sampling (see below) |
 | `helix_spl_circ` | version, two ranges, a phase, a range, helix data as in `helix_int_cur`, two `null_surface`, two `nullbs`, the arc's radius; no approximation | exact up to the sampling (see below) |
@@ -239,6 +239,29 @@ level 2 (built exactly anyway), carry a B-spline approximation directly in their
 object (not in a nested one). The approximation is used where no exact
 construction is implemented; its parameterisation is that of the
 definition.
+
+**`rb_blend_spl_sur` without its approximation** (mitcad#621, records of
+serializer revision 20900): tail form 1 keeps only the approximation's knots, form 2
+nothing. The definition is the ball of radius `|offset|` (both offsets
+equal: a constant radius) whose centre runs along the slice curve touching
+both supports: surfaces (`blend_support_surface`) or a curve
+(`blend_support_curve`, an edge the ball rolls on). `u` runs across the
+section from the first side's contact (0) to the second's (1), `v` is the
+slice's parameter. The records seen store no contact pcurves on surface
+sides (one stores it on one side). The converter passes the definition on
+(`Surface::RollingBall`) over the face's v range, and the curves on the
+blend (`blend_int_cur` with the blend as its support) as the blend along
+their pcurve (`Curve::OnSurface`); the builder walks OCCT's rolling ball
+(`geometry/src/blend_surfaces.cpp`). On a closed slice (periodic) the
+face's v range may cross the slice's seam.
+
+**`sum_spl_sur` without its approximation** (mitcad#621): version, the two
+curves (each with its range), the origin, then the tail enum (0 bs3
+approximation; 1 or 2 none). `S(u, v) = a(u) + b(v) - origin`, built
+exactly: with a line among the curves the other curve moved by the line's
+root less the origin and extruded along it, of two B-splines the
+B-spline whose poles are the sums of theirs less the origin (weights
+multiplied).
 
 **`helix_spl_line`** (thread flanks) *(verified)*: a straight line swept
 along a helix. Layout: version (22601), three intervals (the line's range,

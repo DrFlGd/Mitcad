@@ -381,7 +381,11 @@ impl<K: ImportKernel> Importer<'_, K> {
                 .collect()
         };
         let ours_before = measured(&mut before.iter().map(|(_, s)| s.clone()));
-        let ours_after = measured(&mut self.doc.bodies().iter().map(|b| b.shape.clone()));
+        let ours_after = measured(
+            &mut crate::body_scope::bodies(self.doc)
+                .iter()
+                .map(|b| b.shape.clone()),
+        );
         let mut state = |q: usize| -> Option<Vec<(Sig, K::Shape)>> {
             let bodies = self.oracle.state(kernel, q).ok()?;
             Some(
@@ -706,7 +710,7 @@ impl<K: ImportKernel> Importer<'_, K> {
         const ON: f64 = 1e-3;
         let kernel = self.doc.kernel();
         let mut out: Vec<DeviatingFace> = Vec::new();
-        for body in self.doc.bodies() {
+        for body in crate::body_scope::bodies(self.doc) {
             if self
                 .doc
                 .body_component(body.uid)

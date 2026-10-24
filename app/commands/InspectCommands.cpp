@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 // The INSPECT group of the SOLID tab (U4): Measure, Interference, Section
-// Analysis and Physical Properties, on the model's analysis queries
-// (commands.md, "Analysis queries").
-// They show answers; only Section Analysis leaves something behind: OK
-// keeps it in the document as an analysis (the browser's Analysis folder,
-// mitcad#41), and the bodies stay cut at its plane while it is shown.
+// Analysis, Print Analysis and Physical Properties, on the model's
+// analysis queries (commands.md, "Analysis queries", "Print analysis").
+// They show answers; only Section Analysis and Print Analysis leave
+// something behind: OK keeps them in the document as analyses (the
+// browser's Analysis folder, mitcad#41, mitcad#620), and while one is shown
+// the bodies stay cut at its plane, or its overhangs and thin walls stay
+// coloured over them.
 #include "Commands.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <optional>
 
 #include <QDialog>
@@ -17,8 +20,11 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QScrollArea>
+#include <QSettings>
+#include <QStringList>
 #include <QVBoxLayout>
 #include <QtLogging>
+#include <QtMath>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -31,12 +37,18 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 
+#include "../files/Print3d.hpp"
+#include "../framework/Appearances.hpp"
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/CommandSession.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/ModelShapes.hpp"
+#include "../framework/Numbers.hpp"
 #include "CommandSupport.hpp"
+#include "PrintAnalysis.hpp"
+#include "mitcad/geometry/import.hpp"
+#include "mitcad/geometry/shape.hpp"
 
 namespace mitcad {
 namespace {
@@ -465,6 +477,281 @@ CommandDef sectionCommand() {
 }
 
 // ---------------------------------------------------------------------------
+// Print Analysis (mitcad#620)
+
+// Solids and mesh bodies can be printed (as 3D Print takes them); sheet and
+// empty bodies cannot.
+bool printable(const std::shared_ptr<geometry::Shape>& shape) {
+  const geometry::BodyKind kind = shape ? geometry::body_kind(shape->occt()) : geometry::BodyKind::Empty;
+  return kind == geometry::BodyKind::Solid || kind == geometry::BodyKind::Mesh;
+}
+
+// The Material row: the bodies' own (PLA for a body without one), or one
+// of the physical materials.
+QVector<QPair<QString, QString>> printMaterials() {
+  QVector<QPair<QString, QString>> choices{{QStringLiteral("bodies"), QObject::tr("The bodies' material (else PLA)")}};
+  choices += physicalMaterials();
+  return choices;
+}
+
+// The panel's inputs from settings: the settings group's (a new analysis)
+// or an analysis' own (its definition).
+void setPrintSettings(CommandState& state, const PrintAnalysisSettings& s, const CommandContext& context) {
+  state.setChecked(QStringLiteral("overhang"), s.overhang);
+  state.setText(QStringLiteral("angle"), QStringLiteral("%1 deg").arg(n(s.angle)));
+  state.setChecked(QStringLiteral("thin_wall"), s.thinWall);
+  state.setText(QStringLiteral("minimum"), lengthText(s.minimum, context));
+  state.setChecked(QStringLiteral("estimate"), s.estimate);
+  state.setChoice(QStringLiteral("material"), s.material.isEmpty() ? QStringLiteral("bodies") : s.material);
+  state.setText(QStringLiteral("line_width"), lengthText(s.lineWidth, context));
+  state.setText(QStringLiteral("walls"), QString::number(s.walls));
+  state.setText(QStringLiteral("layer_height"), lengthText(s.layerHeight, context));
+  state.setText(QStringLiteral("top_bottom_layers"), QString::number(s.topBottomLayers));
+  state.setText(QStringLiteral("infill"), n(s.infill * 100.0));
+  state.setText(QStringLiteral("filament_diameter"), lengthText(s.filamentDiameter, context));
+  state.setText(QStringLiteral("price"), s.pricePerKg ? n(*s.pricePerKg, 2) : QString());
+}
+
+// The panel's values as an analysis' definition, or what is wrong (and in
+// which input). Values of a part switched off are not checked: they keep
+// the defaults when they cannot be read.
+Built printDefinition(const CommandState& state) {
+  PrintAnalysisSettings s;
+  const auto valueOf = [&state](const char* key) { return state.value(QLatin1String(key)); };
+  const auto whole = [](double value) { return value >= 0.0 && value <= 1000.0 && std::floor(value) == value; };
+  s.overhang = state.checked(QStringLiteral("overhang"));
+  if (s.overhang) {
+    const double angle = qRadiansToDegrees(valueOf("angle"));
+    if (!(angle >= 0.0 && angle <= 90.0)) {
+      return Built::failure(QObject::tr("Angle: between 0 and 90 deg."), QStringLiteral("angle"));
+    }
+    s.angle = angle;
+  }
+  s.thinWall = state.checked(QStringLiteral("thin_wall"));
+  if (s.thinWall) {
+    const double minimum = valueOf("minimum");
+    if (!(minimum > 0.0 && minimum <= 100.0)) {
+      return Built::failure(QObject::tr("Minimum wall: more than 0 mm."), QStringLiteral("minimum"));
+    }
+    s.minimum = minimum;
+  }
+  s.estimate = state.checked(QStringLiteral("estimate"));
+  if (s.estimate) {
+    const QString material = state.choice(QStringLiteral("material"));
+    s.material = material == QStringLiteral("bodies") ? QString() : material;
+    const double lineWidth = valueOf("line_width");
+    if (!(lineWidth > 0.0 && lineWidth <= 100.0)) {
+      return Built::failure(QObject::tr("Line width: more than 0 mm."), QStringLiteral("line_width"));
+    }
+    s.lineWidth = lineWidth;
+    const double walls = valueOf("walls");
+    if (!whole(walls)) {
+      return Built::failure(QObject::tr("Walls: a whole number, 0 or more."), QStringLiteral("walls"));
+    }
+    s.walls = static_cast<int>(walls);
+    const double layerHeight = valueOf("layer_height");
+    if (!(layerHeight > 0.0 && layerHeight <= 100.0)) {
+      return Built::failure(QObject::tr("Layer height: more than 0 mm."), QStringLiteral("layer_height"));
+    }
+    s.layerHeight = layerHeight;
+    const double layers = valueOf("top_bottom_layers");
+    if (!whole(layers)) {
+      return Built::failure(QObject::tr("Top/bottom layers: a whole number, 0 or more."),
+                            QStringLiteral("top_bottom_layers"));
+    }
+    s.topBottomLayers = static_cast<int>(layers);
+    const double infill = valueOf("infill");
+    if (!(infill >= 0.0 && infill <= 100.0)) {
+      return Built::failure(QObject::tr("Infill: between 0 and 100 %."), QStringLiteral("infill"));
+    }
+    s.infill = infill / 100.0;
+    const double diameter = valueOf("filament_diameter");
+    if (!(diameter > 0.0 && diameter <= 100.0)) {
+      return Built::failure(QObject::tr("Filament diameter: more than 0 mm."), QStringLiteral("filament_diameter"));
+    }
+    s.filamentDiameter = diameter;
+    const QString price = state.text(QStringLiteral("price")).trimmed();
+    if (!price.isEmpty()) {
+      const std::optional<double> perKg = parsePlainNumber(price);
+      if (!perKg || !std::isfinite(*perKg) || *perKg < 0.0) {
+        return Built::failure(QObject::tr("Price: a number, or empty for no cost."), QStringLiteral("price"));
+      }
+      s.pricePerKg = *perKg;
+    }
+  }
+  // Each body once, in the order picked (a body shown more than once is
+  // one body of the analysis).
+  QJsonArray bodies;
+  for (const SelectionItem& item : state.items(QStringLiteral("bodies"))) {
+    if (!bodies.contains(item.owner)) {
+      bodies.append(item.owner);
+    }
+  }
+  if (bodies.isEmpty()) {
+    return Built::failure(QObject::tr("Select the bodies."), QStringLiteral("bodies"));
+  }
+  const Selection& bed = state.items(QStringLiteral("bed_face"));
+  if (!bed.isEmpty() && !bodies.contains(bed.first().owner)) {
+    return Built::failure(QObject::tr("The bed face is not a face of the bodies."), QStringLiteral("bed_face"));
+  }
+  return Built::of(s.def(bodies, bed.isEmpty() ? QJsonValue() : bed.first().reference()));
+}
+
+// What a long query's progress says.
+QString printStage(const QJsonObject& request) {
+  return request.value(QStringLiteral("query")).toString() == QStringLiteral("print_thickness")
+             ? QObject::tr("Measuring the walls")
+             : QObject::tr("Finding the overhangs");
+}
+
+// Overhangs and thickness, which may take long on large meshes: in the
+// window as a model job on the model's worker, with the progress and its
+// Cancel (CommandHost::jobQuery); an inspection of the native window runs on
+// the worker already and asks the document as it is.
+QJsonObject printQuery(const CommandContext& context, const QJsonObject& request, bool slow) {
+  if (slow) {
+    if (const auto* host = dynamic_cast<const CommandHost*>(&context)) {
+      return const_cast<CommandHost*>(host)->jobQuery(request, printStage(request));
+    }
+  }
+  return context.queryObject(request);
+}
+
+CommandDef printAnalysisCommand(const CommandContext& model) {
+  CommandDef def;
+  def.id = QStringLiteral("inspect.print_analysis");
+  def.name = QObject::tr("Print Analysis");
+  def.icon = QStringLiteral("print-analysis");
+  def.tooltip = QObject::tr("Overhangs, thin walls and an estimate of weight, filament and cost");
+  def.group = QStringLiteral("INSPECT");
+  def.keywords = {QStringLiteral("3d print"), QStringLiteral("overhang"), QStringLiteral("thin wall"),
+                  QStringLiteral("filament"), QStringLiteral("weight"), QStringLiteral("support"),
+                  QStringLiteral("print estimate")};
+  // OK keeps it in the document as an analysis, shown (mitcad#41).
+  def.keepsSection = true;
+  const auto checked = [](const QString& key) {
+    return [key](const CommandState& state) { return state.checked(key); };
+  };
+  const auto overhang = checked(QStringLiteral("overhang"));
+  const auto thin = checked(QStringLiteral("thin_wall"));
+  const auto estimate = checked(QStringLiteral("estimate"));
+  def.inputs = {
+      selectionInput(QStringLiteral("bodies"), QObject::tr("Bodies"), SelectKind::Body, 1, 0)
+          .withAccepts([&model](const SelectionItem& item) { return printable(model.bodyShape(item.owner)); })
+          .withTooltip(QObject::tr("The bodies to check: a click on a body adds or removes it")),
+      selectionInput(QStringLiteral("bed_face"), QObject::tr("Bed face"), SelectKind::Face, 0, 1)
+          .withAccepts(isPlanar)
+          .withTooltip(QObject::tr("The planar face that lies on the bed; none: -Z is down")),
+      checkInput(QStringLiteral("overhang"), QObject::tr("Overhangs"), true)
+          .withTooltip(QObject::tr("Faces that face down more steeply than the angle need support")),
+      valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("45 deg"))
+          .withVisible(overhang)
+          .withTooltip(QObject::tr("The steepest overhang the printer makes without support, from the vertical")),
+      checkInput(QStringLiteral("thin_wall"), QObject::tr("Thin walls"), true)
+          .withTooltip(QObject::tr("Walls thinner than the printer can make")),
+      valueInput(QStringLiteral("minimum"), QObject::tr("Minimum wall"), ValueKind::Length, QStringLiteral("0.8 mm"))
+          .withVisible(thin)
+          .withTooltip(QObject::tr("The thinnest wall the printer makes: about twice the line width")),
+      checkInput(QStringLiteral("estimate"), QObject::tr("Estimate"), true)
+          .withTooltip(QObject::tr("About the weight, filament length and cost of the print")),
+      choiceInput(QStringLiteral("material"), QObject::tr("Material"), printMaterials(), QStringLiteral("bodies"))
+          .withVisible(estimate),
+      valueInput(QStringLiteral("line_width"), QObject::tr("Line width"), ValueKind::Length, QStringLiteral("0.4 mm"))
+          .withVisible(estimate),
+      valueInput(QStringLiteral("walls"), QObject::tr("Walls"), ValueKind::Unitless, QStringLiteral("2"))
+          .withVisible(estimate)
+          .withTooltip(QObject::tr("The perimeters around each layer")),
+      valueInput(QStringLiteral("layer_height"), QObject::tr("Layer height"), ValueKind::Length,
+                 QStringLiteral("0.2 mm"))
+          .withVisible(estimate),
+      valueInput(QStringLiteral("top_bottom_layers"), QObject::tr("Top/bottom layers"), ValueKind::Unitless,
+                 QStringLiteral("4"))
+          .withVisible(estimate),
+      valueInput(QStringLiteral("infill"), QObject::tr("Infill %"), ValueKind::Unitless, QStringLiteral("15"))
+          .withVisible(estimate)
+          .withTooltip(QObject::tr("How much of the inside is filled, in per cent")),
+      valueInput(QStringLiteral("filament_diameter"), QObject::tr("Filament diameter"), ValueKind::Length,
+                 QStringLiteral("1.75 mm"))
+          .withVisible(estimate),
+      textInput(QStringLiteral("price"), QObject::tr("Price €/kg"))
+          .withVisible(estimate)
+          .withTooltip(QObject::tr("The filament's price per kilogram; empty: no cost")),
+  };
+  for (InputDef& input : def.inputs) {
+    input.showsOrigin = false;
+  }
+  // What the selection stands for (a face, edge or vertex its body, an
+  // occurrence the bodies shown in it), else every shown body; each body
+  // once, sheets and empty bodies left out (as 3D Print starts).
+  def.preselect = [](const Selection& before, CommandState& state, const CommandContext& context) {
+    bool selected = false;
+    const Selection start = printStartBodies(before, context.queryArray(QStringLiteral("instances")), &selected);
+    Selection bodies;
+    QStringList seen;
+    for (const SelectionItem& item : start) {
+      if (seen.contains(item.owner)) {
+        continue;
+      }
+      seen << item.owner;
+      if (printable(context.bodyShape(item.owner))) {
+        bodies.append(item);
+      }
+    }
+    state.setItems(QStringLiteral("bodies"), bodies);
+  };
+  // A new analysis starts with the settings group's numbers.
+  def.init = [](CommandState& state, const CommandContext& context) {
+    QSettings settings;
+    setPrintSettings(state, PrintAnalysisSettings::load(settings), context);
+  };
+  def.inspect = [](const CommandState& state, const CommandContext& context) {
+    Inspection result;
+    const Built built = printDefinition(state);
+    if (!built.error.isEmpty()) {
+      result.error = built.error;
+      return result;
+    }
+    PrintAnswers answers;
+    const QString error = runPrintAnalysis(
+        built.def,
+        [&context](const QJsonObject& request, bool slow) { return printQuery(context, request, slow); }, answers);
+    if (!error.isEmpty()) {
+      result.error = error;
+      return result;
+    }
+    const BodyNames name = [&context](const QString& uid) { return context.bodyName(uid); };
+    result.text = printAnalysisText(answers, name);
+    result.log = printAnalysisLog(answers, name);
+    // Drawn over the bodies (CommandHost::showPrintAnalysis).
+    result.printOverlay = printOverlayJson(built.def, answers, QObject::tr("Print Analysis"));
+    return result;
+  };
+  // OK keeps it (add_analysis, or edit_analysis of the one edited), and the
+  // numbers become the settings group's for the next one. An inspection's
+  // `build` runs only then (CommandSession::keepAnalysis).
+  def.build = [](const CommandState& state, const CommandContext&) {
+    const Built built = printDefinition(state);
+    if (built.error.isEmpty()) {
+      QSettings settings;
+      PrintAnalysisSettings::fromDef(built.def).save(settings);
+    }
+    return built;
+  };
+  def.load = [](const QJsonObject& analysis, CommandState& state, const CommandContext& context) {
+    state.setItems(QStringLiteral("bodies"), bodiesOf(analysis.value(QStringLiteral("bodies")).toArray()));
+    const QJsonValue bed = analysis.value(QStringLiteral("bed_face"));
+    if (bed.isObject() || bed.isString()) {
+      const SelectionItem face = itemOf(bed, context);
+      if (face.isValid()) {
+        state.items(QStringLiteral("bed_face")) = {face};
+      }
+    }
+    setPrintSettings(state, PrintAnalysisSettings::fromDef(analysis), context);
+  };
+  return def;
+}
+
+// ---------------------------------------------------------------------------
 // Physical Properties
 
 Inspection propertiesInspection(const QJsonObject& answer) {
@@ -566,6 +853,7 @@ void registerInspectCommands(CommandRegistry& registry, const CommandContext& co
   registry.add(measureCommand());
   registry.add(interferenceCommand(context));
   registry.add(sectionCommand());
+  registry.add(printAnalysisCommand(context));
 
   CommandDef properties;
   properties.id = QStringLiteral("inspect.properties");

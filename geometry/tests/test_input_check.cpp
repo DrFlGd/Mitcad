@@ -5,6 +5,7 @@
 
 #include <exception>
 
+#include <BRepBuilderAPI_NurbsConvert.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Geom2d_Curve.hxx>
@@ -346,6 +347,60 @@ void test_offsets_and_lofts_leave_inputs() {
   check_kept("a loft from a face", {base}, [&] { loft(loft_spec); });
 }
 
+// Imported bodies can have edge tolerances larger than their vertices'.
+// Moving one face must not let OCCT propagate new
+// tolerances or p-curves into the other, cached faces (mitcad#618).
+void test_face_offsets_leave_tolerant_inputs() {
+  const ShapePtr base = block();
+  const detail::InputCopy copy(base->occt());
+  const TopoDS_Shape converted = copy.shape();
+  BRep_Builder builder;
+  for (TopExp_Explorer it(converted, TopAbs_EDGE); it.More(); it.Next()) {
+    builder.UpdateEdge(TopoDS::Edge(it.Current()), 1e-3);
+  }
+  std::vector<Shape::NamedFace> named;
+  for (int i = 0; i < base->face_count(); ++i) {
+    named.push_back({copy.of(base->face(i)), base->face_names(i)});
+  }
+  const ShapePtr tolerant = std::make_shared<Shape>(converted, named);
+  const std::string top = end_cap("F2", 1);
+  const std::string front = side("F2", 1, 0);
+  check_kept("an offset face on a tolerant body", {tolerant}, [&] {
+    const ShapePtr taller = offset_faces("F7", *tolerant, {top}, 5);
+    CHECK_NEAR(volume(*taller), 60.0 * 40 * 25);
+    CHECK(faces_named(*taller, top) == 1);
+    CHECK(faces_named(*taller, front) == 1);
+  });
+  check_kept("a replaced face on a tolerant body", {tolerant}, [&] {
+    const ShapePtr taller = replace_faces(
+        "F7", *tolerant, {top}, Tool::of_plane(gp_Pln(gp_Pnt(0, 0, 25), gp_Dir(0, 0, 1))));
+    CHECK_NEAR(volume(*taller), 60.0 * 40 * 25);
+    CHECK(faces_named(*taller, "F7:replace(" + top + ")") == 1);
+    CHECK(faces_named(*taller, front) == 1);
+  });
+}
+
+// The offset of a periodic B-spline can fail after OCCT has worked on its
+// input. A refused operation must leave cached geometry intact as well.
+void test_failed_face_offsets_leave_spline_inputs() {
+  const ShapePtr pin = extrude("F2", {circle(5, 0, 0, 10)}, 0, 20);
+  BRepBuilderAPI_NurbsConvert nurbs(pin->occt(), true);
+  const TopoDS_Shape converted = nurbs.Shape();
+  BRep_Builder builder;
+  for (TopExp_Explorer it(converted, TopAbs_EDGE); it.More(); it.Next()) {
+    builder.UpdateEdge(TopoDS::Edge(it.Current()), 1e-3);
+  }
+  std::vector<Shape::NamedFace> named;
+  for (int i = 0; i < pin->face_count(); ++i) {
+    named.push_back({nurbs.ModifiedShape(pin->face(i)), pin->face_names(i)});
+  }
+  const ShapePtr spline = std::make_shared<Shape>(converted, named);
+  check_kept("a failed offset face on a tolerant spline body", {spline}, [&] {
+    CHECK(throws_with([&] { offset_faces("F7", *spline, {"F2:end(r{c5})"}, 5); },
+                      "the neighbouring faces cannot follow the moved faces"));
+  });
+}
+
 void test_dressups_leave_inputs() {
   const ShapePtr base = block();
   const std::string corner = edge(side("F2", 1, 0), side("F2", 1, 1));
@@ -413,6 +468,8 @@ void input_check_tests() {
   guarded("test_dressups_leave_inputs", test_dressups_leave_inputs);
   guarded("test_analyses_leave_inputs", test_analyses_leave_inputs);
   guarded("test_offsets_and_lofts_leave_inputs", test_offsets_and_lofts_leave_inputs);
+  guarded("test_face_offsets_leave_tolerant_inputs", test_face_offsets_leave_tolerant_inputs);
+  guarded("test_failed_face_offsets_leave_spline_inputs", test_failed_face_offsets_leave_spline_inputs);
   guarded("test_join_same_after_other_operations", test_join_same_after_other_operations);
 }
 

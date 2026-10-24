@@ -3,6 +3,15 @@
 
 #include "check.hpp"
 
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepTools.hxx>
+#include <TopoDS.hxx>
+#include <gp_Ax3.hxx>
+#include <gp_Cone.hxx>
+
+#include "../src/face_select.hpp"
+
 namespace test {
 namespace {
 
@@ -107,11 +116,52 @@ void test_split_faces() {
                     "does not cross face"));
 }
 
+// A short curved face cannot split the block until extended. Its extended
+// bounds must stay finite: the unrestricted cylinder and cone have infinite V.
+void test_split_extended_curved_faces_have_finite_bounds() {
+  const ShapePtr target = block();
+  const ShapePtr cylinder = extrude("F8", {circle(5, 30, 20, 5)}, 5, 15);
+  const TopoDS_Face conical =
+      BRepBuilderAPI_MakeFace(gp_Cone(gp_Ax3(gp_Pnt(30, 20, 5), gp_Dir(0, 0, 1)), kPi / 12, 5),
+                              0, 2 * kPi, 0, 10).Face();
+  const ShapePtr cone = std::make_shared<Shape>(
+      conical, std::vector<Shape::NamedFace>{{conical, {"F8:cone"}}});
+  for (const Tool& tool : {Tool::of_face(cylinder, "F8:side(c5)"), Tool::of_face(cone, "F8:cone")}) {
+    const detail::Cutter cutter = detail::make_cutter(tool, detail::box_of(target->occt()), true);
+    CHECK(cutter.faces.size() == 1);
+    if (cutter.faces.size() != 1) {
+      continue;
+    }
+    const TopoDS_Face face = TopoDS::Face(cutter.faces.front());
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    BRepTools::UVBounds(face, u0, u1, v0, v1);
+    CHECK(std::isfinite(v0) && std::isfinite(v1) && v0 > -1000 && v1 < 1000);
+    const BRepAdaptor_Surface surface(face);
+    const double first_z = surface.Value(0, v0).Z();
+    const double last_z = surface.Value(0, v1).Z();
+    CHECK(std::min(first_z, last_z) < -1e-6);
+    CHECK(std::max(first_z, last_z) > 20 + 1e-6);
+    CHECK(throws_with([&] { split_body("F9", *target, tool, false); }, "does not divide"));
+    const std::vector<ShapePtr> pieces = split_body("F9", *target, tool, true);
+    CHECK(pieces.size() == 2);
+    double total = 0;
+    for (const ShapePtr& piece : pieces) {
+      total += volume(*piece);
+    }
+    CHECK_NEAR(total, kBlock);
+    if (tool.shape == cylinder && pieces.size() == 2) {
+      CHECK_NEAR(std::min(volume(*pieces[0]), volume(*pieces[1])), kPi * 25 * 20);
+    }
+  }
+}
+
 } // namespace
 
 void split_tests() {
   guarded("test_split_body", test_split_body);
   guarded("test_split_faces", test_split_faces);
+  guarded("test_split_extended_curved_faces_have_finite_bounds",
+          test_split_extended_curved_faces_have_finite_bounds);
 }
 
 } // namespace test

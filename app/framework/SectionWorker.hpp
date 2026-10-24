@@ -46,6 +46,8 @@
 #include <QObject>
 #include <QString>
 
+#include "WorkerThreadStart.hpp"
+
 class QThread;
 
 namespace mitcad {
@@ -75,7 +77,7 @@ public:
     bool measure = false;
   };
 
-  explicit SectionWorker(QObject* parent = nullptr);
+  explicit SectionWorker(QObject* parent = nullptr, WorkerThreadStarter starter = {});
   // Stops the running round, waits for it and ends the thread.
   ~SectionWorker() override;
   SectionWorker(const SectionWorker&) = delete;
@@ -105,7 +107,7 @@ private:
     Done done;
     std::shared_ptr<geometry::CancelFlag> stop;
   };
-  // A round handed to the thread, as the UI thread knows it.
+  // The active round, including a startup error waiting for UI delivery.
   struct Current {
     std::uint64_t id = 0;
     Kind kind = Kind::View;
@@ -134,6 +136,7 @@ private:
   bool m_quit = false;
 
   QThread* m_thread = nullptr;
+  WorkerThreadStarter m_starter;
 };
 
 } // namespace mitcad

@@ -15,7 +15,12 @@
 //   curve 2 bspline       ints: degree n_knots n_poles rational periodic mults...
 //                         reals: knots... poles(3 each)... weights...
 //   curve 3 interpolated  ints: n_points; reals: params... points(3 each)...
-//   surface 0 plane       reals: origin(3) normal(3) u_dir(3)
+//   curve 4 on surface    ints: surface_kind surface_ints... degree n_knots
+//                               n_poles rational mults...;
+//                         reals: surface_reals... knots... poles(2 each)...
+//                                weights...
+//                         the surface along the 2D B-spline in its parameters
+//   surface 0 plane      reals: origin(3) normal(3) u_dir(3)
 //   surface 1 cone        reals: origin(3) axis(3) ref_dir(3) radius half_angle
 //                         (cylinder when half_angle is 0)
 //   surface 2 sphere      reals: center(3) axis(3) ref_dir(3) radius
@@ -37,6 +42,14 @@
 //                         in [0, 1], one arc per two spans) whose control
 //                         points are the n curves' points at v, all
 //                         interpolated at the same parameters
+//   surface 9 rolling ball  ints: (is_curve kind ints...) twice,
+//                               spine_kind spine_ints...;
+//                         reals: radius v0 v1 (support reals...) twice,
+//                                spine_reals...;
+//                         the ball of the radius whose centre runs along
+//                         the spine over [v0, v1] touching both supports
+//                         (surfaces, or curves where is_curve), walked by
+//                         OCCT and approximated (blend_surfaces.hpp)
 //
 // A face's point loops (Body::point_loops[first_point_loop ...]) are
 // vertices where the face closes up at a singular point of its surface

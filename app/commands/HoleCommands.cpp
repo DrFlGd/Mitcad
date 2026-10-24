@@ -289,10 +289,10 @@ QVector<InputDef> clearanceInputs(const std::function<bool(const CommandState&)>
   };
 }
 
-// Puts the clearances that are not zero into a thread's definition.
+// Keep zero-valued expressions too: their parameter may change later.
 void insertClearance(const CommandState& state, QJsonObject& def) {
   for (const QString& key : {kRadialClearance, kFlankClearance}) {
-    if (nonZero(state, key)) {
+    if (std::isfinite(state.value(key))) {
       def.insert(key, state.expression(key));
     }
   }
@@ -792,6 +792,11 @@ CommandDef threadCommand(const CommandContext& context) {
           .withTooltip(QObject::tr("Cut the thread into the geometry; otherwise only listed")),
   };
   def.inputs += clearanceInputs([](const CommandState& s) { return s.checked(QStringLiteral("modeled")); });
+  for (InputDef& input : def.inputs) {
+    if (input.id == kRadialClearance || input.id == kFlankClearance) {
+      input.withPrintedFit(QStringLiteral("thread"));
+    }
+  }
   def.inputs += {
       checkInput(QStringLiteral("full_length"), QObject::tr("Full Length"), true),
       valueInput(QStringLiteral("length"), QObject::tr("Length"), ValueKind::Length, QStringLiteral("10 mm"))

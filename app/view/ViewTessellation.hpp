@@ -5,6 +5,7 @@
 
 #include <Prs3d_Drawer.hxx>
 
+#include "mitcad/geometry/shape.hpp"
 #include "mitcad/io/mesh.hpp"
 
 namespace mitcad {
@@ -37,6 +38,16 @@ inline void setViewTessellation(const occ::handle<Prs3d_Drawer>& drawer) {
   drawer->SetTypeOfDeflection(Aspect_TOD_ABSOLUTE);
   drawer->SetMaximalChordialDeviation(kViewDeviation);
   drawer->SetDeviationAngle(kViewAngle);
+}
+
+// Whether the view may mesh a shape it draws (its presentations' and
+// selection's auto-triangulation): not when the job meshed it for display
+// to the end (DisplayMeshes) and faces were left without a triangulation.
+// Those are faces OCCT's mesher fails on, and meshing them again can take
+// without end; the view would do it on the UI thread (mitcad#589). The
+// view then draws the faces that have a triangulation.
+inline bool viewMeshes(const geometry::Shape& shape) {
+  return !shape.display_meshed() || io::has_triangulation(shape.occt());
 }
 
 // Makes every presentation mesh with the view's face bound (the meshing

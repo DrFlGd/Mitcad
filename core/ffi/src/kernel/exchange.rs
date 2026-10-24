@@ -238,6 +238,8 @@ pub mod ffi {
         /// (`mitcad_ipt::testdata::test_part_with_design`): the 10 mm cube
         /// and the parameter, sketch and extrusion that make it, mm.
         fn ipt_write_test_design_file(path: &str) -> Result<()>;
+        /// The designed cube kept hidden by its result-list entry.
+        fn ipt_write_test_hidden_design_file(path: &str) -> Result<()>;
         /// Writes .ipt part files without B-rep bodies for tests: with a
         /// mesh feature's tetrahedron (`mitcad_ipt::testdata::test_mesh_part`),
         /// or empty (`test_empty_part`).
@@ -399,6 +401,14 @@ fn ipt_write_test_file(path: &str) -> Result<(), String> {
 fn ipt_write_test_design_file(path: &str) -> Result<(), String> {
     std::fs::write(path, mitcad_ipt::testdata::test_part_with_design())
         .map_err(|e| format!("{path}: {e}"))
+}
+
+fn ipt_write_test_hidden_design_file(path: &str) -> Result<(), String> {
+    std::fs::write(
+        path,
+        mitcad_ipt::testdata::test_part_with_hidden_design_body(),
+    )
+    .map_err(|e| format!("{path}: {e}"))
 }
 
 /// The part of [`ffi::ipt_write_test_mesh_file`].

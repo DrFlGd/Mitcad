@@ -3,11 +3,9 @@
 
 #include <exception>
 
-#include <QDir>
 #include <QJsonArray>
 #include <QProgressDialog>
 #include <QPointer>
-#include <QStandardPaths>
 #include <QtLogging>
 
 #include "../framework/Dialogs.hpp"
@@ -28,18 +26,9 @@ QJsonObject failed(const QString& message) {
 
 // The settings (LibrarySettings, the defaults) are in LibrarySettings.cpp.
 
-QString librariesDirectory() {
-  const QString dir = qEnvironmentVariable("MITCAD_LIBRARIES_DIR");
-  if (!dir.isEmpty()) {
-    return dir;
-  }
-  return QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) + QStringLiteral("/libraries");
-}
-
 void configureLibraries() {
-  const QJsonObject config{{QStringLiteral("root"), QDir::toNativeSeparators(librariesDirectory())}};
   try {
-    const QJsonObject answer = parseObject(configure_libraries(rustStr(compactJson(config))));
+    const QJsonObject answer = parseObject(configure_libraries(""));
     qDebug().noquote() << QStringLiteral("Libraries in %1").arg(answer.value(QStringLiteral("root")).toString());
   } catch (const std::exception& e) {
     qWarning().noquote() << QStringLiteral("Libraries not set up: %1").arg(errorText(e));

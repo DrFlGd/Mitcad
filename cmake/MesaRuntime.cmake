@@ -335,6 +335,12 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-bearing"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-bearing PROPERTIES TIMEOUT 300)
+    add_test(NAME app.ui-windows-print-fits
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-print-fits-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-print-fits" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-print-fits PROPERTIES TIMEOUT 360)
     # The file dialogs' folders per group (mitcad#498): Import, Export and
     # Open each start in their own last folder, also after a restart.
     add_test(NAME app.ui-windows-dialog-folders
@@ -495,6 +501,17 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-docked-height"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-docked-height PROPERTIES TIMEOUT 300)
+
+    # The selection card's Create row (mitcad#619): a profile selected
+    # offers Extrude, Revolve and Sweep, the card's Extrude starts with
+    # the profile, a cylinder's round face offers Thread first, a cleared
+    # selection nothing.
+    add_test(NAME app.ui-windows-selection-create
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-selection-create-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-selection-create"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-selection-create PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

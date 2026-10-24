@@ -22,6 +22,7 @@ pub mod file;
 mod ids;
 mod kernel;
 mod parameters;
+mod print_fits;
 mod profile;
 mod recompute;
 pub mod sheet;
@@ -289,3 +290,9 @@ mod face_revolve_tests;
 // Local replay of modern scoped Extrude Cuts (mitcad#569).
 #[cfg(test)]
 mod scoped_cut_replay_tests;
+// Print Analysis: overhangs, thin walls and a print estimate on the
+// bodies' triangle meshes (mitcad#620).
+pub mod print_analysis;
+pub use document::{EstimateCheck, OverhangCheck, PrintAnalysis, ThinWallCheck};
+#[cfg(test)]
+mod print_analysis_tests;

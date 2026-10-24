@@ -49,6 +49,10 @@
 #      New Design (named in the Projects panel) and Close. Its geometry,
 #      revision, filename and recovery data stay; allowing the next Open
 #      imports into a new untitled design.
+#  12. Save As during a sync conflict keeps refreshing the original lock
+#      after Resolve Sync is canceled, then releases it and takes the saved
+#      file's lock once a subsequent sync succeeds. Saving back to the
+#      original name cancels the pending transfer before a later sync.
 #
 # git's configuration and HOME are the test's own. Runs headless on Xvfb
 # (see ui-test-lib.sh); Qt's own file dialogs (--no-native-dialogs).
@@ -803,5 +807,102 @@ EOF
 cmp -s "$WORK/replacement-file-before.mitcad" "$CA/part.mitcad" || ui_fail "successful Open changed the original file"
 ui_stop_app
 unset MITCAD_AUTOSAVE_DIR MITCAD_TEST_AUTOSAVE_SECONDS
+
+echo "--- 12. Save As retains or reverses its pending lock transfer (mitcad#614)"
+for save_as_case in transfer reverse; do
+SAVEAS=$WORK/save-as-$save_as_case.git
+make_project "$SAVEAS" 5 60
+SA=$WORK/ada/save-as-$save_as_case
+SB=$WORK/sam/save-as-$save_as_case
+clone "$SAVEAS" "$SA" "Ada Tester" ada@example.invalid
+cp "$SOURCE" "$SA/other.mitcad"
+in_git "$SA" add other.mitcad
+in_git "$SA" commit -qm "Add another design"
+in_git "$SA" push -q origin main || ui_fail "publish another design"
+clone "$SAVEAS" "$SB" "Sam Other" sam@example.invalid
+mkdir -p "$SA/.mitcad/local"
+printf '{"send_at_once": false}\n' > "$SA/.mitcad/local/sync.json"
+start ada 60 "$SA/part.mitcad" --set d3=27
+ui_expect_new "Edit lock taken: part.mitcad" "Save As starts with the original lock" 20
+for folder in "$SA" "$SB"; do
+  python3 - "$folder/other.mitcad" "$folder" "$SA" << 'EOF'
+import json, sys
+path, folder, local = sys.argv[1:]
+doc = json.load(open(path))
+next(p for p in doc['parameters'] if p['name'] == 'd3')['value'] = 31 if folder == local else 32
+with open(path, 'w') as f:
+    f.write(json.dumps(doc, indent=2) + '\n')
+EOF
+  in_git "$folder" add other.mitcad
+  in_git "$folder" commit -qm "Change another design" || ui_fail "record another divergent version"
+done
+in_git "$SB" push -q origin main || ui_fail "publish another user's version"
+ui_mark
+ui_step "save under another name" ui_key ctrl+shift+s
+ui_focus_dialog '^Save in a Project$'
+ui_step "the saved name" ui_type_text "saved"
+ui_expect_new "/saved.mitcad: free" "the new name is free"
+ui_step "save the new file" ui_key Return
+ui_expect_new "Saved $SA/saved.mitcad" "Save As wrote the new file" 20
+ui_expect_new "needs a choice before the release: asked" "the original lock needs sync resolution" 30
+ui_focus_dialog '^Edit Lock$'
+ui_step "resolve before releasing" ui_key alt+r
+ui_expect_new "Edit lock: keeping part.mitcad until sync completes for Save As saved.mitcad" \
+  "the original lock controller was retained" 20
+ui_focus_dialog '^Resolve Sync Conflicts$'
+ui_step "cancel the resolution" ui_key Escape
+ui_focus_main
+ui_expect_new "Resolve Sync Conflicts cancelled" "resolution remains pending"
+expect_holder "$SAVEAS" ada@example.invalid "the original lock stays owned"
+ui_expect_new "Edit lock idle: part.mitcad kept, marked idle (sync: conflict)" \
+  "the original lock's timer still runs" 30
+ui_expect_new "Edit lock refreshed: part.mitcad (idle)" "the original lock is still refreshed" 20
+[ "$(lock_refs "$SAVEAS")" = 1 ] || ui_fail "Save As abandoned or duplicated its original lock"
+
+if [ "$save_as_case" = reverse ]; then
+  ui_mark
+  ui_step "save back to the original name" ui_key ctrl+shift+s
+  ui_focus_dialog '^Save in a Project$'
+  # The original file already exists: the ordinary file dialog permits
+  # the explicit overwrite that the project picker's new-name field refuses.
+  # Qt's own file dialog asks first in a box titled like itself.
+  ui_step "choose an existing file" ui_key alt+a
+  ui_step "the original filename" ui_type_path "Save As" "$SA/part.mitcad"
+  ui_focus_replace "Save As"
+  ui_step "overwrite the original" ui_key alt+y
+  ui_focus_main
+  ui_expect_new "Saved $SA/part.mitcad" "Save As returned to the original file" 20
+  ui_expect_new "Edit lock: Save As returned to part.mitcad, cancelling pending transfer to saved.mitcad" \
+    "the obsolete transfer was cancelled" 20
+  expect_holder "$SAVEAS" ada@example.invalid "the original lock survives the reversal"
+fi
+
+ui_mark
+ui_step "resolve the pending sync" ui_key ctrl+alt+y
+ui_focus_dialog '^Resolve Sync Conflicts$'
+ui_mark # Only the resolution's outcome, not the preceding conflict result.
+ui_step "keep both versions with the default" ui_key Return
+ui_focus_main
+if [ "$save_as_case" = transfer ]; then
+  ui_expect_new "Edit lock: sync complete, finishing Save As saved.mitcad" "the pending transfer resumes" 30
+  ui_expect_new "Edit lock released: part.mitcad" "the original lock is released" 20
+  ui_expect_new "Edit lock taken: saved.mitcad" "the saved file gets its lock" 20
+  expected_lock=saved.mitcad
+else
+  ui_expect_new "Sync: " "the sync completed after reversing Save As" 30
+  ui_wait_idle
+  ui_sync
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE \
+    'finishing Save As saved.mitcad|Edit lock released: part.mitcad|Edit lock taken: saved.mitcad' &&
+    ui_fail "sync revived the cancelled Save As lock transfer"
+  expected_lock=part.mitcad
+fi
+[ "$(lock_refs "$SAVEAS")" = 1 ] || ui_fail "the transfer left an extra lock"
+ref=$(git --git-dir="$SAVEAS" for-each-ref --format='%(refname)' refs/mitcad/locks/ | head -1)
+git --git-dir="$SAVEAS" show "$ref:lock.json" |
+  python3 -c 'import json, sys; assert json.load(sys.stdin)["path"] == sys.argv[1]' "$expected_lock" ||
+  ui_fail "the remaining lock does not belong to the saved design"
+quit ada
+done
 
 ui_finish "UI locks test"

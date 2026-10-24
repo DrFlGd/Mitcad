@@ -199,9 +199,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
         }
         let body = body.ok_or_else(|| "it has no edges".to_owned())?;
-        let shape = self
-            .doc
-            .bodies()
+        let shape = crate::body_scope::bodies(self.doc)
             .into_iter()
             .find(|b| b.uid == body)
             .map(|b| b.shape)
@@ -313,7 +311,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let kernel = self.doc.kernel();
         for point in points.map(crate::geom::mm3) {
             let mut nearest: Option<(f64, String)> = None;
-            for body in self.doc.bodies().iter().filter(|b| keep(b.uid)) {
+            for body in crate::body_scope::bodies(self.doc)
+                .iter()
+                .filter(|b| keep(b.uid))
+            {
                 for face in kernel.faces(body.shape).unwrap_or_default() {
                     let Some(name) = face.names.first().and_then(|n| n.parse().ok()) else {
                         continue;
@@ -367,7 +368,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             fp.length.map(crate::geom::mm)
         );
         let kernel = self.doc.kernel();
-        for body in self.doc.bodies().iter().filter(|b| keep(b.uid)) {
+        for body in crate::body_scope::bodies(self.doc)
+            .iter()
+            .filter(|b| keep(b.uid))
+        {
             let middles = kernel.edge_middles(body.shape).unwrap_or_default();
             for (name, curve) in kernel.edge_geometries(body.shape).unwrap_or_default() {
                 let (a, b) = match &curve {

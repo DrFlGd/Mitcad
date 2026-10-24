@@ -591,17 +591,31 @@ QJsonObject MainWindow::mcpCamera(const QJsonObject& arguments) {
     if (array.size() != 3 || !array[0].isDouble() || !array[1].isDouble() || !array[2].isDouble()) {
       refuse(tr("%1 must be three numbers (x, y, z in mm).").arg(key));
     }
+    if (!std::isfinite(array[0].toDouble()) || !std::isfinite(array[1].toDouble()) ||
+        !std::isfinite(array[2].toDouble())) {
+      refuse(tr("%1 must contain finite numbers.").arg(key));
+    }
     return gp_XYZ(array[0].toDouble(), array[1].toDouble(), array[2].toDouble());
   };
-  // Where the view is going, as the starting point.
-  m_viewer->settleCamera();
-  CameraState camera = m_viewer->camera();
+  // Stage the camera where the view is going. Even settling an animation
+  // changes the viewer, so defer it until every argument has been checked.
+  CameraState camera = m_viewer->pendingCamera();
+  const bool hasFov = arguments.contains(QStringLiteral("fov"));
+  const double fov = hasFov ? arguments.value(QStringLiteral("fov")).toDouble()
+                            : m_viewer->fieldOfView();
+  if (hasFov && (!std::isfinite(fov) || fov < 1.0 || fov > 170.0)) {
+    refuse(tr("fov must be between 1 and 170 degrees."));
+  }
   const bool hasEye = arguments.contains(QStringLiteral("eye"));
   const bool hasTarget = arguments.contains(QStringLiteral("target"));
   const bool hasHeight = arguments.contains(QStringLiteral("height"));
   bool set = false;
   if (arguments.contains(QStringLiteral("projection"))) {
-    camera.perspective = arguments.value(QStringLiteral("projection")).toString() == QStringLiteral("perspective");
+    const QString projection = arguments.value(QStringLiteral("projection")).toString();
+    if (projection != QStringLiteral("orthographic") && projection != QStringLiteral("perspective")) {
+      refuse(tr("projection must be orthographic or perspective."));
+    }
+    camera.perspective = projection == QStringLiteral("perspective");
     set = true;
   }
   if (hasEye) {
@@ -610,13 +624,14 @@ QJsonObject MainWindow::mcpCamera(const QJsonObject& arguments) {
   if (hasTarget) {
     camera.target = gp_Pnt(pointOf(QStringLiteral("target"), arguments.value(QStringLiteral("target"))));
   }
-  if (camera.eye.Distance(camera.target) <= Precision::Confusion()) {
+  if (!std::isfinite(camera.eye.Distance(camera.target)) || camera.eye.Distance(camera.target) <= Precision::Confusion()) {
     refuse(tr("The eye and the target must be apart."));
   }
   if (arguments.contains(QStringLiteral("up"))) {
     const gp_XYZ up = pointOf(QStringLiteral("up"), arguments.value(QStringLiteral("up")));
     const gp_XYZ direction = camera.target.XYZ() - camera.eye.XYZ();
-    if (up.Modulus() <= Precision::Confusion() || up.Crossed(direction).Modulus() <= 1e-9 * up.Modulus() * direction.Modulus()) {
+    if (!std::isfinite(up.Modulus()) || !std::isfinite(up.Crossed(direction).Modulus()) ||
+        up.Modulus() <= Precision::Confusion() || up.Crossed(direction).Modulus() <= 1e-9 * up.Modulus() * direction.Modulus()) {
       refuse(tr("up must be a vector across the view direction."));
     }
     camera.up = gp_Dir(up);
@@ -627,28 +642,21 @@ QJsonObject MainWindow::mcpCamera(const QJsonObject& arguments) {
     const gp_Dir direction(gp_Vec(camera.eye, camera.target));
     camera.up = std::abs(direction.Z()) < 0.9 ? gp_Dir(0, 0, 1) : gp_Dir(0, 1, 0);
   }
-  if (arguments.contains(QStringLiteral("fov"))) {
-    // Before the height: a perspective camera's height sets its distance
-    // through the field of view.
-    m_viewer->setFieldOfView(arguments.value(QStringLiteral("fov")).toDouble());
-    set = true;
-  }
   if (hasHeight) {
     const double height = arguments.value(QStringLiteral("height")).toDouble();
-    if (!(height > 0.0)) {
+    if (!std::isfinite(height) || !(height > 0.0)) {
       refuse(tr("height must be more than 0 mm."));
     }
     camera.height = height;
   } else if (camera.perspective && (hasEye || hasTarget)) {
     // The eye given stays where it is: the height follows from its distance.
-    camera.height = 2.0 * camera.eye.Distance(camera.target) * std::tan(m_viewer->fieldOfView() * kPi / 360.0);
+    camera.height = 2.0 * camera.eye.Distance(camera.target) * std::tan(fov * kPi / 360.0);
   }
-  set = set || hasEye || hasTarget || hasHeight;
-  if (set) {
-    m_viewer->setCamera(camera);
-    m_viewer->settleCamera();
+  if (!std::isfinite(camera.height) || !(camera.height > 0.0)) {
+    refuse(tr("The resulting camera height must be finite and more than 0 mm."));
   }
-  // Then what to frame, along the view direction now.
+  set = set || hasEye || hasTarget || hasHeight || hasFov;
+  // Resolve framing before changing the camera or its field of view.
   QString framed = QStringLiteral("none");
   Bnd_Box box;
   const QString frame = arguments.value(QStringLiteral("frame")).toString(QStringLiteral("none"));
@@ -676,6 +684,17 @@ QJsonObject MainWindow::mcpCamera(const QJsonObject& arguments) {
       box.Add(corner);
     }
     framed = frame;
+  } else if (frame != QStringLiteral("none")) {
+    refuse(tr("frame must be none, shown or selection."));
+  }
+  // All refusals above leave the live viewer (including animation) alone.
+  m_viewer->settleCamera();
+  if (hasFov) {
+    m_viewer->setFieldOfView(fov);
+  }
+  if (set) {
+    m_viewer->setCamera(camera);
+    m_viewer->settleCamera();
   }
   if (!box.IsVoid()) {
     m_viewer->frameBox(box);

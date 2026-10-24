@@ -191,7 +191,7 @@ impl Drop for FileTransaction {
 }
 
 /// Reject directories and symlinks before taking backups or publishing.
-fn check_destination(root: &Path, path: &Path) -> Result<(), VcsError> {
+pub(crate) fn check_destination(root: &Path, path: &Path) -> Result<(), VcsError> {
     let relative = path.strip_prefix(root).map_err(|_| {
         VcsError::InvalidPath(format!("{} is outside {}", path.display(), root.display()))
     })?;

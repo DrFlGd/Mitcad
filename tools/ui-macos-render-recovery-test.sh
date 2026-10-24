@@ -26,6 +26,7 @@ capability=$?
 unset QT_QPA_PLATFORM QT_OPENGL LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER
 unset MITCAD_RENDER_REQUIRE_METAL MITCAD_RENDER_TEST_DEVICE_FAILURE
 unset MITCAD_RENDER_TEST_DENOISER MITCAD_RENDER_TEST_DENOISER_FAILURE CYCLES_TEST_SINGLE_SAMPLE_UPDATES
+unset MITCAD_RENDER_TEST_NATIVE_PASS_COMPARE MITCAD_RENDER_TEST_COMMAND_TRACE
 mkdir -p "$MITCAD_SETTINGS_DIR/nocodo.fi"
 for scenario in missing failure crash; do
   choice=auto
@@ -77,10 +78,20 @@ wait-log 'Render worker ended' 15
 DRIVER
   watcher=""
   if [ "$scenario" = crash ]; then
-    # Read the PID from this app's own log, never select by process name.
-    python3 - "$UI_OUT/crash.log" > "$UI_OUT/crash-injection.log" 2>&1 <<'PY' &
-import os, pathlib, re, signal, sys, time
+    # Clear old evidence before the watcher starts. Verify the executable path
+    # and UID as well as the fresh PID logged by this isolated application.
+    rm -f "$UI_OUT/crash.log"
+    crash_worker=$worker
+    if [ -z "${MITCAD_RENDER_WORKER:-}" ]; then
+      crash_worker=$(dirname "$UI_APP")/../XPCServices/org.mitcad.renderer.xpc/Contents/MacOS/mitcad-render-service
+    fi
+    python3 - "$UI_OUT/crash.log" "$crash_worker" > "$UI_OUT/crash-injection.log" 2>&1 <<'PY' &
+import ctypes, os, pathlib, re, signal, subprocess, sys, time
 path = pathlib.Path(sys.argv[1])
+expected = pathlib.Path(sys.argv[2]).resolve(strict=True)
+libproc = ctypes.CDLL('/usr/lib/libproc.dylib')
+libproc.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+libproc.proc_pidpath.restype = ctypes.c_int
 deadline = time.monotonic() + 150
 while time.monotonic() < deadline:
     text = path.read_text(errors='replace') if path.exists() else ''
@@ -88,6 +99,13 @@ while time.monotonic() < deadline:
     frame = re.search(r'^Render frame view \d+ \d+x\d+ samples 8 ', text, re.M)
     if started and frame:
         pid = int(started[1])
+        executable = ctypes.create_string_buffer(4096)
+        if pid <= 1 or libproc.proc_pidpath(pid, executable, len(executable)) <= 0:
+            sys.exit('cannot verify the owned renderer executable')
+        actual = pathlib.Path(os.fsdecode(executable.value)).resolve(strict=True)
+        uid = int(subprocess.check_output(['ps', '-p', str(pid), '-o', 'uid=']).strip())
+        if actual != expected or uid != os.geteuid():
+            sys.exit('renderer identity does not match the fresh owned test bundle')
         os.kill(pid, signal.SIGKILL)
         print(f'Injected worker crash into own PID {pid}', flush=True)
         break
@@ -110,6 +128,22 @@ PY
   ui_expect_log 'TestDriver: done' "$scenario: recovery script completed"
   ui_expect_no_log 'TestDriver: FAIL' "$scenario: all assertions passed"
   ui_expect_no_log 'Recompute failed' "$scenario: model stayed usable"
+  if [ -z "${MITCAD_RENDER_WORKER:-}" ] || [ "${MITCAD_RENDER_REQUIRE_IOSURFACE:-0}" = 1 ]; then
+    ui_expect_log 'Render transport: IOSurface, private XPC session' "$scenario: private native surface transport"
+    if [ "$scenario" = crash ]; then
+      if ! python3 - "$UI_LOG_FILE" <<'PROOF'
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+for proof in ('Render transport: IOSurface, private XPC session',
+              'Render frame transport: Metal buffer interop',
+              'Render frame transport: native auxiliary GPU, composite '):
+    assert text.count(proof) >= 2, 'native GPU transport did not restart: ' + proof
+PROOF
+      then ui_fail 'crash: native light and auxiliary transport did not restart'; fi
+    else
+      ui_expect_log 'Render frame transport: native auxiliary CPU, composite [01]' "$scenario: native CPU fallback output"
+    fi
+  fi
   [ "$UI_FAILURES" = 0 ] || exit 1
 done
 echo "PASS: $frontend missing device, actual Metal failure/CPU recovery and worker crash/restart"

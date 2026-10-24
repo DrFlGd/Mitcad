@@ -232,6 +232,12 @@ No new implementation follow-up is selected by this recommendation.
 
 ## Design
 
+The diagram and pixel-copy description below cover the retained process
+transport used by Linux/Windows, the standalone worker and explicit worker
+overrides. The macOS interactive GUI uses the same renderer/client interfaces
+with an embedded XPC service and leased IOSurfaces instead; see
+[Private renderer transport integration](#private-renderer-transport-integration).
+
 ```
  mitcad (Qt, C++17)                                mitcad-render
  ┌──────────────────────────────┐  stdin: JSON     ┌──────────────────────────┐
@@ -1549,30 +1555,352 @@ The installer grew from 112 MB to 142 MB.
 
 ### macOS
 
-Frames currently use the unlinked POSIX shared-memory transport described
+The default Qt GUI and opt-in AppKit frontend use an embedded XPC renderer
+with leased RGBA-half IOSurfaces. CPU rendering writes the final mapped
+planes; Metal writes buffers wrapping those same allocations. The OCCT image
+layer samples them directly, without the intermediate CPU half-plane copy,
+RGB32 image or texture upload of the retained path. The display shader keeps
+exposure, view transforms, sRGB encoding and ground/background processing.
+
+The standalone worker's interactive path keeps the unlinked POSIX transport
 in [Design](#design), with the same three-slot ownership handshake as Linux.
-Apple Silicon's shared CPU/GPU memory does not remove the application's
-linear-light compositing, view transform, sRGB encoding or Qt detachment.
-An IOSurface carrying the worker's raw half-float plane would still require
-equivalent colour/ground processing in a display shader before it could
-replace the RGB32 quad; merely binding that plane would change the image.
+CLI batch image output and explicit worker overrides are unchanged.
+
+#### IOSurface display prerequisite (2026-10-24)
+
+`app.render_surface_macos` exercises a same-process display adapter in
+`MacFrameSurface` and `MacFrameDisplay`. It binds raw RGBA half-float
+IOSurfaces as rectangle textures and applies the existing exposure,
+Standard/Filmic/Neutral transform, premultiplied coverage, background gradient
+and ground factors in a shader. It matches `displayImage`'s finite-half
+handling and 4096-step/8-bit rounding, then filters the decoded colours as
+OCCT's existing sRGB texture does. Preview rows remain packed at the frame's
+width even when the backing surface has a wider capacity.
+
+The focused test compares the shader against the existing CPU conversion
+for all three transforms, three exposures, ground factors on/off and two
+output sizes (36 comparisons). It also checks restoration of GL state,
+independent readers of one slot and retention of a replaced allocation
+until the display finishes reading it. The adapter conservatively finishes
+GPU sampling before releasing its frame lease. Reader counts are local
+prerequisites; they are not an interprocess ownership protocol.
+
+Validation on the physical M1 Max, macOS 27.0.1 (26A434), reported
+`Apple M1 Max`, OpenGL `4.1 Metal - 91.7`, context 4.1. The focused
+native Mac Debug and Release-configuration builds completed without
+compiler warnings and both CTest runs passed all 36 comparisons with
+maximum channel difference zero, without
+a capability skip. Sampler-state queries use the active texture unit,
+as required by this OpenGL 4.1 implementation; the test separately checks
+setup and draw errors so an invalid test query cannot masquerade as
+viewport-state corruption.
+
+At this checkpoint the adapter was built only by the Mac test target, and
+the application still used shared-memory pixels and its existing image quad.
+The later transport integration below must pass its own acceptance; the
+same-process comparison establishes no application speedup by itself.
+
+Minimal physical-Mac transport probes found that `IOSurfaceLookup` by ID
+could not attach an ordinary private surface after `exec`. Registered Mach
+ports were unavailable in a sibling started through `QProcess`, despite
+saving/restoring the parent task's registrations. An embedded application
+XPC broker also gave the application and its sibling separate service
+instances; a surface offered to one instance could not be acquired from
+the other. The successful signatures in that broker probe establish package
+integrity, not a working cross-process frame transport. No global surfaces,
+deprecated service registration or task-port mutation is shipped here.
+
+The next implementation needs a supported private Mach-right exchange, or
+an embedded XPC rendering service using the same renderer. A service design
+must explicitly support concurrent documents and per-session command/event
+streams, bounded startup/shutdown, worker crashes/restarts, surface replacement
+and ownership through GPU completion. It must preserve the CLI and non-Mac
+paths, carry the current colour/ground behaviour into the actual viewport,
+and pass relocated-bundle/signature and CPU/Metal application checks before
+replacing the existing transport. These requirements are not met by a
+same-process texture test or by forwarding surface IDs.
+
+#### Private bootstrap experiments and embedded renderer prerequisite
+
+The direct child-bootstrap experiment with the actual Qt-linked worker failed
+before its C++ entry point. A bounded sample showed a QtCore initializer
+reading the operating-system version through CoreFoundation and notification
+registration, which issued a bootstrap lookup. The parent correctly refused
+the unexpected RPC; increasing a receive timeout cannot fix that initializer
+ordering. A subsequent minimal C starter linked only libSystem and libbsm.
+The public
+[`posix_spawnattr_setspecialport_np` API](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/posix_spawnattr_setexceptionports_np.3.html)
+set a child-only rendezvous port, with no parent mutation. The C entry and
+audited private handshake succeeded, but a real bootstrap lookup after task
+and global-port restoration failed with `KERN_FAILURE`; an unexpected RPC
+still reached the rendezvous. This is consistent with libSystem/libxpc
+retaining its original bootstrap connection before C main. Kernel readback
+alone did not prove that framework initialization could proceed. No private
+cache-reset API, bootstrap proxy, unrelated task-security port or global
+surface registry is used to work around that result. Both failed probes
+have been removed from the build; their code remains in Git history.
+
+`app.render_surface_xpc_macos` instead embeds the renderer itself in a private
+XPC service, as described by Apple's
+[Creating XPC Services](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPSystemStartup/Chapters/CreatingXPCServices.html).
+The service compiles the actual worker sources and links its Qt/Cycles
+dependency graph, with ordinary main renamed. Its own entry initializes Qt
+and the actual Metal device under an untouched bootstrap. The containing
+test application connects directly to this renderer: it passes each private
+surface using `IOSurfaceCreateXPCObject`, and the renderer imports it using
+`IOSurfaceLookupFromXPCObject`. There is no independently discovered sibling
+broker. Both endpoints require the peer's designated code-signing requirement
+using public Security and XPC APIs, also for ad-hoc development signatures.
+
+Two concurrent connections retain separate generations and exactly six
+half-float planes each. The test verifies shared writes, rejects stale
+generations and incorrect plane counts, replaces one connection's allocation
+while retaining its old local allocation, and closes it without affecting the
+other. Import checks bound dimensions, capacity, pixel format and distinct
+allocations. State belongs to the connection, with at most eight connections
+per service process; a single resettable ten-second idle timer and connection
+invalidation release retained surfaces. Client replies have five-second
+deadlines. The test builds and ad-hoc signs its own nested service bundle;
+The orchestrator's native build was warning-free, and the actual embedded
+renderer prerequisite passed in 1.52 seconds. This validates that private
+surface exchange and the real dependency initializers work together; it
+does not by itself validate application rendering or a performance gain.
+
+#### Private renderer transport integration
+
+The macOS GUI now selects `Contents/XPCServices/org.mitcad.renderer.xpc`
+for interactive rendering. Qt remains the default frontend; Qt and the
+separate AppKit chrome use the same `RenderClient` and OCCT viewport path.
+The CLI, batch rendering, non-Mac frontends and explicit test executable
+overrides keep the original worker, POSIX pixel mapping and protocol v8.
+The app links no Cycles dependency; the embedded service contains the same
+renderer implementation and resource tree as the standalone worker.
+
+Each XPC connection owns a `RenderSession`, serialized command queue,
+`FrameSink` and allocation generation. Commands and events retain the
+existing JSON meanings, but travel directly between the GUI and renderer.
+Peers derive designated signing requirements from the actual embedded
+bundle at connection time, after development or package signing. Neither
+an old build hash nor a process-wide bootstrap mutation is used. Existing
+test device/denoiser choices are explicit session-local factory inputs,
+because a launchd-managed service does not inherit the GUI's environment.
+
+The client first sends one no-reply `activity` message. The service retains
+it while the connection owns asynchronous Cycles work, then releases it
+after stopping the renderer on disconnect or watchdog expiry. This keeps
+the XPC transaction and the requesting application's priority boost alive
+after individual command-acceptance replies; otherwise CPU rendering can
+be throttled as idle service work despite its process activity token.
+Duplicate activity messages or messages with additional fields close the
+connection, so the retained request has a fixed size and bounded lifetime.
+
+`FrameMemory` carries only a separate `MacFrameControl` header on this path.
+Its own magic/version, dimensions, generation, published slot, reader mask
+and `FrameInfo` records do not change the POSIX v8 layout. An allocation
+contains three slots with light/catcher RGhA surfaces. The GUI passes their
+XPC objects and the anonymous control descriptor; the renderer checks the
+descriptor's fixed-header size through at most one Darwin-rounded VM page,
+monotonic generation, bounded dimensions, unique
+planes, pixel format, row layout and capacity before replacing its owner.
+
+The display driver can map a transport-owned staging frame instead of an
+intermediate half-float vector. The CPU device converts its film directly
+into the mapped light plane. The stage keeps its original allocation alive
+until sample/denoising metadata is known, then unlocks and publishes it;
+discarded previews release the stage without publication. The optional pinned
+Cycles `native-display-passes.patch` adds a synchronous post-display callback
+and a native half destination to its existing CPU/GPU pass accessors. This
+callback completes the catcher directly in the second final plane, or composites
+the environment directly into the final light plane. It reads the completed
+beauty as half and keeps catcher/background factors as float until that final
+conversion, matching the retained path's rounding order. No float pass vectors,
+extra background plane or CPU half-plane copy are used on this path. Actual
+pass mode and dimensions come from the display batch. Unsupported resampling
+or dimensions fail explicitly instead of silently taking a copying path.
+
+The frame remains private until this callback has completed, including GPU
+queue synchronization. A concurrent progress callback cannot publish a stage
+while its auxiliary kernel is running. Native auxiliary interop uses a fresh
+borrowed handle per call, and the allocation outlives the local interop object's
+residency removal. A reference count balances overlapping primary and auxiliary
+Metal residency owners. This patch changes kernel parameter layout: its build
+input hash requires rebuilding all Cycles libraries and runtime kernel sources.
+The Mac export enables the adapter explicitly; unchanged Linux/Windows exports
+and CLI/final-render float output keep the existing path.
+
+`native_pass_compare` is an explicit session-local test option, false by default.
+The real service regression enables it to build the old float-pass reference
+from that same stable batch. It snapshots half beauty before in-place environment
+composition, applies the original float formula, and compares the final native
+half plane. CPU output must match bit for bit; native GPU output permits one
+half ULP for contracted float arithmetic and reports the observed maximum.
+Reference allocations/readbacks are limited to controlled small tests, are
+absent when the option is false, and must be disabled during measurements.
+
+The isolated Metal-buffer prerequisite has passed on Apple M1 Max: a GPU
+compute kernel wrote the same private IOSurface allocation, including after
+the original CF owner and wrapper were released. `MacFrameMetalBuffer` uses
+Apple's public
+[`newBufferWithBytesNoCopy`](https://developer.apple.com/documentation/metal/mtldevice/makebuffer(bytesnocopy:length:options:deallocator:)?language=objc)
+and checks the page-aligned pointer and exact allocation length, a single
+readable/writable VM region, unified memory and the device's buffer limit.
+Its deallocator owns a CF reference through the Metal buffer's last GPU
+retain. It never substitutes a copying buffer when wrapping fails.
+
+Cycles' Metal display interop accepts this external `MTLBuffer`. Its film
+conversion queue synchronizes before `DisplayDriver::update_end`; the display
+driver must additionally retain the previous external buffer until the next
+`set_buffer` has removed its residency reference. The pinned dependency needs
+the repository-owned `metal-external-buffer-usage.patch`: when residency sets
+are unavailable, including macOS 14.4, pointer arguments are declared through
+the existing public `useResource` fallback even when the buffer was not
+allocated through Cycles' internal memory map. The version and dependency
+choice stay unchanged. The low-level wrapper proof does not establish actual
+Cycles interop, older-OS execution or complete application acceptance. The real
+embedded-renderer regression subsequently passed both CPU and Metal sessions,
+including resize, retained frames, identical-metadata publication and normal
+application destruction. Its Metal run required actual `metal-buffer` evidence
+and forced the public residency-set fallback used on 14.4. This was executed on
+the current host OS, not an actual 14.4 machine. The separate Metal-to-OpenGL
+regression reused the same two surface IDs for two different GPU writes:
+144 display/reference comparisons had maximum channel difference one, and
+preserved GL state.
+
+After the native auxiliary patch and full dependency/kernel rebuild, the actual
+CPU service test and all six scoped CTests passed. The actual Metal service test
+also completed normally, including a GPU auxiliary conversion, plain catcher,
+environment composition, resize/retained allocations and same-metadata ACK
+regressions. Both CPU and Metal same-batch float-reference comparisons observed
+maximum half-ULP difference **zero**. The first Metal run compiled new kernels
+and included diagnostic sampling; its elapsed time is not a performance result.
+GUI, relocated package and matched-frame measurement acceptance are recorded
+below.
+
+A local lease claims a stable published slot before reading metadata and
+pixels, and coalesces repeated readers of that slot. Its last owner clears
+only that slot's reader bit. Both the surface allocation and the old control
+mapping stay alive through resize and worker loss. Writers skip published
+and retained slots; when all slots are held they drop the frame. The OCCT
+rendered-image layer invokes the existing surface shader and holds the lease
+through `glFinish()`. Background, exposure, ground, overlays and camera-stale
+handling use the same viewport path as the retained image quad. Context
+destruction releases native texture/VAO/program resources and reconstructs
+them in the replacement Qt context.
+
+Backpressure is explicit: one unacknowledged frame notification, one
+in-flight client allocation with coalesced newest resize/view wishes, at
+most two queued service allocations, 16 MiB per inline control message,
+32 MiB of pending inline commands and eight connections per renderer process.
+A scene can legitimately exceed the inline limit: larger JSON documents travel
+through a completed, unlinked, read-only file descriptor, never a filesystem
+path. A private 0700 temporary directory and 0600 file protect construction;
+the only writer closes before the descriptor is exposed. The receiver checks
+file type, owner, permissions, link count, read-only access and exact size before
+and after a bounded `pread` into owned storage. A concurrent truncation reports
+an error instead of faulting a mapped page. This preserves an int-sized Qt JSON
+document (up to 2 GiB minus one byte), rather than imposing the 16 MiB control
+limit on CAD designs.
+
+Each client has one bulk command in flight and at most 4 GiB minus two bytes
+of pending bulk file contents, under the existing 1024-request bound. Ordinary
+commands remain FIFO behind a bulk upload. Only adjacent queued views coalesce;
+incremental scene uploads and their individual mesh-file acknowledgements never
+coalesce. Heartbeats and frame acknowledgements bypass that mutation queue, so a
+large scene does not expire an otherwise live connection or block frame leases.
+The service independently accepts at most one pending bulk read per connection.
+Stop, failure and stale callback gates release all queued descriptor owners.
+Every client request has a cancellable 120-second deadline. Five-second heartbeats
+bound an abandoned connection to 30 seconds, while a separate service
+watchdog terminates a command or renderer teardown that remains stuck for
+over 120 seconds. Renderer destruction runs on its command queue, including
+after connection invalidation; a Cycles callback never destroys its own
+renderer thread. A service crash fails its connections while GUI-held frame
+leases remain owned, and each document can start a fresh connection.
+
+#### Physical Mac integration acceptance (2026-10-24)
+
+The integrated default Qt and opt-in AppKit builds compiled without compiler
+warnings on the physical Apple M1 Max (32 GPU cores, 32 GiB), macOS 27.0.1 and
+SDK 27.0, targeting macOS 14.4. The eight scoped integration tests passed. The
+actual embedded service passed CPU and Metal sessions with two independent
+streams, resize and restart, retained allocations, identical-metadata
+publication/ACK coalescing and strict malformed control/payload rejection.
+Two genuine scene commands exceeding 16 MiB crossed the production FIFO;
+per-scene acknowledgements and an intervening view survived a pending
+allocation. The separate owned-payload test checked descriptor validation,
+read-only ownership, bounds and close-on-every-path behaviour.
+
+Both actual devices completed the native plain catcher and environment
+composite with maximum same-batch reference error **zero half ULPs**. The Metal
+run required evidence of both the primary external buffer and native GPU
+auxiliary conversion. It forced the public residency-set fallback used on
+14.4 while executing on the current OS. The reused-surface Metal/OpenGL test
+made 144 display/reference comparisons over looks, exposures, packed/frame
+sizes and 1x/2x test targets, with maximum difference one 8-bit channel value
+and preserved GL state. Its 2x target is a controlled GPU test, not evidence
+that this session changed the physical display mode.
+
+The actual Qt Metal/OIDN preview, orbit, zoom, resize, face picking and clean
+shutdown passed with required IOSurface/native GPU evidence. The opt-in
+AppKit acceptance completed 115 driver steps, including CPU/Metal switching,
+geometry and undo, clear-glass assignment and undo, Render Image completion
+and cancellation. Both frontends passed missing-device CPU fallback,
+injected mid-render Metal failure/CPU recovery, and an owned renderer kill
+followed by a new native session. Crash injection checked the fresh logged
+PID, executable path and UID; the model and picking remained usable.
+The existing POSIX worker also passed its six CPU regressions and three
+required Metal/OIDN/preview regressions.
+
+The local ad hoc Qt package was relocated outside the checkout and passed
+strict deep signatures, both OIDN module checks and the Cycles runtime source
+manifest. The final clean inventory is **90 arm64 Mach-O files, 1004 library
+references and zero problems**. Incremental bundle inspection found two obsolete
+bootstrap-prototype build artifacts; they were removed, the package regenerated,
+and `check-bundle-macos.sh` now rejects those names. The complete relocated Qt
+workflow passed; the clean package subsequently completed actual CPU and Metal
+frames, with strict signature verification passing again after execution.
+Runtime requirements come from the final signed peers, so relocation and package
+signing do not depend on development code hashes. Both frontend recovery suites
+passed again after the CPU renderer stopped requiring a Metal-buffer wrapper.
+
+This validation used the physical host only. No macOS guest, actual 14.4
+runtime, M2/M3-or-newer hardware, Linux or Windows build/run was performed
+for this change. The legacy POSIX v8 transport and CLI behaviour remain in
+place; those platform boundaries are not inferred from physical-Mac results.
+Qt remains the default frontend. No Developer ID signing, notarisation or
+release publication is implied by the local ad hoc package.
+
+#### Frame-transport measurement harness
 
 Use the narrow synthetic scene harness for a measurement that includes the
-real application's conversion and OCCT upload, instead of the worker-only
+real application's display and transport, instead of the worker-only
 `--bench` path. It uses the existing macOS UI isolation/driver helpers,
-renders one stable view with production scheduling, and checks an actual
-Retina screenshot of at least 2560 x 1600 pixels, the selected device,
-absence of rendering fallback and all final-frame timing stages. Run CPU
-and Metal serially in a physical Mac's logged-in window-server session:
+renders one stable view with production scheduling, and checks the actual
+screenshot, selected device, absence of rendering fallback and all final-frame
+timing stages. It records raw display configuration, requested window points,
+actual frame pixels, source revision and build mode. It never changes the
+physical display mode or treats Qt scaling as physical Retina evidence.
+`MITCAD_TRANSPORT_WINDOW_WIDTH/HEIGHT` select only the test window;
+`MITCAD_TRANSPORT_MIN_WIDTH/HEIGHT` require actual frame minima. A relocated
+bundle requires `MITCAD_TRANSPORT_BUILD_MODE` when its CMake cache is absent.
+Reference-copy diagnostics and command tracing are explicitly disabled.
+Run CPU and Metal serially with the same window in a physical Mac's logged-in
+window-server session:
 
 ```sh
-MITCAD_UI_REQUIRE_GUI=1 MITCAD_RENDER_TEST_SYNC_UPLOAD=1 \
+MITCAD_UI_REQUIRE_GUI=1 \
   bash tools/ui-macos-render-transport-measure.sh \
   build/dev/app/mitcad.app/Contents/MacOS/mitcad build/transport-cpu cpu
-MITCAD_UI_REQUIRE_GUI=1 MITCAD_RENDER_TEST_SYNC_UPLOAD=1 \
+MITCAD_UI_REQUIRE_GUI=1 \
   bash tools/ui-macos-render-transport-measure.sh \
   build/dev/app/mitcad.app/Contents/MacOS/mitcad build/transport-metal metal
 ```
+
+The native path logs surface claim/display/draw, diagnostics and delivery,
+with no CPU half-plane copy, RGB32 conversion, texture preparation or texture
+upload stage. Its draw retains the lease through GPU completion. The following
+upload-fence option applies to an explicitly selected retained POSIX baseline,
+not to native IOSurface drawing.
 
 `MITCAD_RENDER_TEST_SYNC_UPLOAD=1` is an opt-in measurement aid, effective
 only with `MITCAD_LOG_TIMING`. It calls `glFinish` before the first texture
@@ -1597,6 +1925,53 @@ bottleneck. Preserve shared-memory transport until that evidence supports
 the replacement; an eventual implementation must also preserve ground,
 exposure/view-transform/background changes and slot lifetime through
 worker exit, with the existing CLI/non-macOS paths unchanged.
+
+#### Native frame-transport observations (2026-10-24)
+
+The final local ad hoc Qt package used the compiled code at `f4622208`,
+including the CPU device guard; `741890b1` added only the package checker.
+The app was relocated to a path containing spaces. One CPU render and one Metal
+render ran serially at **1440 x 890 actual pixels**, 16 samples, denoised,
+with the existing synthetic block/ground scene and hardware Apple M1 Max OpenGL.
+The normal **Debug** build had no temporary per-file `-O2` options. The physical
+display stayed at **1x**; no display mode or Qt scale was changed. Existing
+caches were retained. Native-pass reference copies and command tracing were off.
+Both runs completed normally and the bundle's strict signature remained valid.
+
+Each device produced exactly one matching final-frame record for every stage
+below. These are individual observations in milliseconds, not medians,
+percentiles, a frame-rate measurement or a cold-start result.
+
+| Stage | CPU render | Metal render |
+|---|---:|---:|
+| Surface lease/metadata claim | 0.06 | 0.06 |
+| Surface display update | 0.01 | 0.01 |
+| Coverage/brightness diagnostics | 11.43 | 10.44 |
+| Total synchronous frame delivery | 11.58 | 10.58 |
+| Separate GL surface draw, through GPU completion | 3.09 | 2.41 |
+
+The delivery total includes claim, display update and CPU diagnostics. The GL
+draw occurs in the later paint and must not be added as though it were another
+stage inside that synchronous total. The two packed RGBA-half planes represent
+**20,505,600 bytes** at this frame size; the native path shares their allocation
+instead of copying them into application vectors. Neither final log contained
+CPU plane-copy, RGB32-conversion, texture-preparation or texture-upload-submission
+timing stages. The CPU diagnostic scans remain and dominate this Debug delivery
+observation; they are not a hidden frame-copy stage.
+
+The first large request was 2880 x 1910 window points, but the window manager
+clamped it to 2880 x 1647, giving **2880 x 1517 actual frame pixels**. Its CPU
+run reached a denoised four-sample frame, then hit the fixed 240-second wait for
+the 16-sample final frame; no final screenshot or final performance result was
+produced. That failed attempt was preserved. The subsequent bounded smaller
+pair above is the accepted observation, not a claimed large-frame result.
+
+The earlier baseline below used 2880 x 1780 pixels, physical 2x and temporarily
+optimized C++ translation units. Both its payload and build/display conditions
+differ from these final observations. No before/after speedup ratio or physical
+Retina claim is inferred from them. The implementation and functional comparisons
+establish the removed copies and matching colour processing; the measured stage
+values describe only this explicit workload and configuration.
 
 #### Physical frame-transport measurement (2026-10-23)
 

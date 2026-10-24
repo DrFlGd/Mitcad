@@ -42,6 +42,12 @@ and [docs/development.md](docs/development.md) before larger changes.
 
 - `core/model` has no OCCT dependency: geometry goes through the `Kernel`
   trait (`core/model/src/kernel.rs`); model tests use a mock kernel.
+- Rust first for new code of our own: logic we write ourselves goes in
+  Rust rather than new C++ when Rust does it well. What OCCT already
+  does (fillets and blends, booleans, sweeps, exact intersections) is
+  called, not reimplemented in Rust, and existing C++ is not rewritten
+  just because it is C++
+  ([code conventions](docs/development.md#code-conventions)).
 - The app talks to the model only through JSON commands and queries
   ([commands.md](core/model/src/api/commands.md)); UI commands are
   declarative definitions ([app/COMMANDS.md](app/COMMANDS.md)).

@@ -26,6 +26,51 @@ const INITIAL: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
+/// Incremental hashing for compressed store files without retaining their output.
+pub(crate) struct Hasher {
+    state: [u32; 8],
+    tail: [u8; 64],
+    used: usize,
+    length: u64,
+}
+
+impl Hasher {
+    pub(crate) fn new() -> Self {
+        Self {
+            state: INITIAL,
+            tail: [0; 64],
+            used: 0,
+            length: 0,
+        }
+    }
+
+    pub(crate) fn update(&mut self, mut data: &[u8]) {
+        self.length = self.length.wrapping_add(data.len() as u64);
+        if self.used > 0 {
+            let count = (64 - self.used).min(data.len());
+            self.tail[self.used..self.used + count].copy_from_slice(&data[..count]);
+            self.used += count;
+            data = &data[count..];
+            if self.used == 64 {
+                compress(&mut self.state, &self.tail);
+                self.used = 0;
+            } else {
+                return;
+            }
+        }
+        let (blocks, rest) = data.as_chunks::<64>();
+        for block in blocks {
+            compress(&mut self.state, block);
+        }
+        self.tail[..rest.len()].copy_from_slice(rest);
+        self.used = rest.len();
+    }
+
+    pub(crate) fn finish(self) -> Sha256 {
+        finish(self.state, &self.tail[..self.used], self.length)
+    }
+}
+
 /// One 64-byte block into the state.
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
@@ -74,22 +119,26 @@ impl Sha256 {
         for block in blocks {
             compress(&mut state, block);
         }
-        // The rest, a 1 bit, zeros and the length in bits: one or two blocks.
-        let mut tail = [0u8; 128];
-        tail[..rest.len()].copy_from_slice(rest);
-        tail[rest.len()] = 0x80;
-        let tail_len = if rest.len() < 56 { 64 } else { 128 };
-        let bits = (data.len() as u64).wrapping_mul(8);
-        tail[tail_len - 8..tail_len].copy_from_slice(&bits.to_be_bytes());
-        for block in tail[..tail_len].as_chunks::<64>().0 {
-            compress(&mut state, block);
-        }
-        let mut digest = [0u8; 32];
-        for (bytes, word) in digest.as_chunks_mut::<4>().0.iter_mut().zip(state) {
-            *bytes = word.to_be_bytes();
-        }
-        Self(digest)
+        finish(state, rest, data.len() as u64)
     }
+}
+
+fn finish(mut state: [u32; 8], rest: &[u8], length: u64) -> Sha256 {
+    // The rest, a 1 bit, zeros and the length in bits: one or two blocks.
+    let mut tail = [0u8; 128];
+    tail[..rest.len()].copy_from_slice(rest);
+    tail[rest.len()] = 0x80;
+    let tail_len = if rest.len() < 56 { 64 } else { 128 };
+    let bits = length.wrapping_mul(8);
+    tail[tail_len - 8..tail_len].copy_from_slice(&bits.to_be_bytes());
+    for block in tail[..tail_len].as_chunks::<64>().0 {
+        compress(&mut state, block);
+    }
+    let mut digest = [0u8; 32];
+    for (bytes, word) in digest.as_chunks_mut::<4>().0.iter_mut().zip(state) {
+        *bytes = word.to_be_bytes();
+    }
+    Sha256(digest)
 }
 
 impl fmt::Display for Sha256 {
@@ -163,6 +212,25 @@ mod tests {
             hex(&vec![b'a'; 1_000_000]),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+    }
+
+    #[test]
+    fn incremental_hashes_match_standard_vectors_across_chunk_boundaries() {
+        let data = vec![b'a'; 1_000_000];
+        for length in [0, 1, 55, 56, 63, 64, 65, 129, data.len()] {
+            for chunk in [1, 7, 63, 64, 65, 4096] {
+                let mut hasher = Hasher::new();
+                for part in data[..length].chunks(chunk) {
+                    hasher.update(part);
+                    hasher.update(&[]);
+                }
+                assert_eq!(
+                    hasher.finish(),
+                    Sha256::of(&data[..length]),
+                    "{length}/{chunk}"
+                );
+            }
+        }
     }
 
     #[test]

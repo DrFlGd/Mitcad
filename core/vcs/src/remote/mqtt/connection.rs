@@ -210,13 +210,13 @@ impl Tracked {
         session: Option<&str>,
         present: bool,
     ) -> Result<(), &'static str> {
-        let entries = self.files.entry(file.to_owned()).or_default();
-        let had = match session {
+        let entries = self.files.get(file);
+        let had = entries.is_some_and(|entries| match session {
             None => entries.lock,
             Some(session) => entries.open.contains(session),
-        };
+        });
         if present && !had {
-            if entries.len() >= MAX_RETAINED_PER_FILE {
+            if entries.is_some_and(|entries| entries.len() >= MAX_RETAINED_PER_FILE) {
                 return Err("more than 64 retained messages for one file");
             }
             if self.entries >= MAX_RETAINED_PER_PROJECT {
@@ -225,7 +225,10 @@ impl Tracked {
             self.entries += 1;
         } else if !present && had {
             self.entries -= 1;
+        } else if !present {
+            return Ok(());
         }
+        let entries = self.files.entry(file.to_owned()).or_default();
         match session {
             None => entries.lock = present,
             Some(session) if present => {
@@ -1513,5 +1516,34 @@ pub fn read_packet(
             Err(e) if is_timeout(&e) => {}
             Err(e) => return Err(io_error("the connection to the broker broke", &e)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tracked_tests {
+    use super::*;
+
+    #[test]
+    fn refused_retained_messages_leave_no_empty_file_entries() {
+        let mut tracked = Tracked::default();
+        for index in 0..MAX_RETAINED_PER_PROJECT {
+            tracked.set(&format!("file-{index}"), None, true).unwrap();
+        }
+        assert_eq!(tracked.files.len(), MAX_RETAINED_PER_PROJECT);
+        for index in 0..100 {
+            let file = format!("refused-{index}");
+            assert!(tracked.set(&file, None, true).is_err());
+            assert!(tracked.set(&file, Some("session"), true).is_err());
+            assert!(!tracked.files.contains_key(&file));
+            tracked.set(&file, None, false).unwrap();
+            assert_eq!(tracked.files.len(), MAX_RETAINED_PER_PROJECT);
+            assert_eq!(tracked.entries, MAX_RETAINED_PER_PROJECT);
+        }
+        tracked.set("file-0", None, true).unwrap();
+        tracked.set("file-0", None, false).unwrap();
+        tracked.set("new-file", Some("session"), true).unwrap();
+        assert_eq!(tracked.files.len(), MAX_RETAINED_PER_PROJECT);
+        assert!(tracked.has_open("new-file", "session"));
+        assert!(tracked.files.values().all(|entries| entries.len() > 0));
     }
 }

@@ -57,7 +57,8 @@ impl<K: Kernel> Document<K> {
     /// A definition's values: numbers as they are (mm, radians), names and
     /// expressions evaluated in the slot's unit.
     fn pulley_values_in(&self, def: &PulleyDef<ValueInput>) -> Result<PulleyDef<f64>, ApiError> {
-        let params = self.parameters();
+        let params = crate::print_fits::evaluation_parameters(self.parameters())
+            .map_err(|e| ApiError(e.to_string()))?;
         let context = params.context();
         def.map_params(&mut |slot, value| match value {
             ValueInput::Number(n) => Ok(*n),

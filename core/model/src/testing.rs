@@ -168,6 +168,13 @@ pub struct MockKernel {
     /// `face_cylinder` gives such a wall (half the bounds' width otherwise;
     /// mitcad#436).
     pub hole_radii: RefCell<BTreeMap<String, f64>>,
+    /// What a modelled thread leaves of each face it threads, by the
+    /// threaded shape's history and the face's name: the span (from, to)
+    /// along the face's axis (from its low end) that `face_cylinder` gives
+    /// it instead of the bounds' height (mitcad#628). As the OCCT facade: a
+    /// crest on the face leaves it between the cones of the end chamfers, a
+    /// crest off it only what lies outside the thread's part.
+    pub face_spans: RefCell<BTreeMap<(String, String), (f64, f64)>>,
     /// A cut by a box primitive takes the box as the half-space beyond its
     /// bottom face and clips the target's bounds by that plane (a derived
     /// part's end cuts, mitcad#443); the box planes are kept by history.
@@ -194,6 +201,10 @@ pub struct MockKernel {
     /// piece's name: `face_boxes` gives a piece the box of its point (and
     /// other faces the shape's bounds) when `box_faces` is off.
     pub piece_points: RefCell<Vec<(BoundingBox, String, [f64; 3])>>,
+    /// `physical_properties` of the bounding box (its volume and area, the
+    /// mass by the density; the print estimate, mitcad#620); otherwise the
+    /// kernel has none.
+    pub physical: Cell<bool>,
 }
 
 /// The bounds of what of `b` lies on or below the plane through `point`
@@ -958,6 +969,32 @@ impl Kernel for MockKernel {
         })
     }
 
+    /// The bounding box's volume, area and mass (kg, by the density in
+    /// g/cm³), when [`MockKernel::physical`].
+    fn physical_properties(
+        &self,
+        shape: &MockShape,
+        density: f64,
+    ) -> Result<crate::analysis::PhysicalProperties, KernelError> {
+        if !self.physical.get() {
+            return Err(KernelError::Unsupported("physical properties"));
+        }
+        let b = shape.bounds.ok_or(KernelError::Unsupported(
+            "physical properties without bounds",
+        ))?;
+        let size: [f64; 3] = std::array::from_fn(|i| b.max[i] - b.min[i]);
+        let volume = size[0] * size[1] * size[2];
+        Ok(crate::analysis::PhysicalProperties {
+            volume,
+            area: 2.0 * (size[0] * size[1] + size[1] * size[2] + size[2] * size[0]),
+            mass: volume / 1e6 * density,
+            center_of_mass: std::array::from_fn(|i| (b.min[i] + b.max[i]) / 2.0),
+            inertia: [[0.0; 3]; 3],
+            principal_moments: [0.0; 3],
+            principal_axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        })
+    }
+
     fn curves_of(
         &self,
         shape: &MockShape,
@@ -1412,26 +1449,59 @@ impl Kernel for MockKernel {
                     Some(RoleKey::Face(Box::new(face.clone()))),
                 )
             };
+            let ends = spec.chamfer.as_ref().and_then(|c| c.ends.get(i).copied());
+            let (low, high) = ends.unwrap_or((false, false));
             if spec.groove {
                 shape.faces.push(named("thread"));
-                // As the OCCT facade: a profile over the whole face whose
-                // crest is off the face (a class's diameter, a radial
-                // clearance) leaves no piece of it (mitcad#433).
-                if spec.part.is_none()
-                    && let Ok(cylinder) = self.face_cylinder(body, face)
-                {
+                if let Ok(cylinder) = self.face_cylinder(body, face) {
                     let crest = if cylinder.internal {
                         spec.minor / 2.0 + spec.radial_clearance
                     } else {
                         spec.major / 2.0 - spec.radial_clearance
                     };
-                    if (crest - cylinder.radius).abs() > 1e-7 {
-                        shape.faces.retain(|f| f != face);
+                    let length = cylinder.length;
+                    let (from, to) = match spec.part {
+                        None => (0.0, length),
+                        Some((l, offset, true)) => (length - offset - l, length - offset),
+                        Some((l, offset, false)) => (offset, offset + l),
+                    };
+                    let span = if (crest - cylinder.radius).abs() > 1e-7 {
+                        // As the OCCT facade: a crest off the face (a
+                        // class's diameter, a radial clearance) takes all
+                        // of it along the part (mitcad#433): what lies
+                        // outside the part is left (mitcad#628).
+                        match (from > 1e-9, to < length - 1e-9) {
+                            (true, true) => Some((0.0, length)),
+                            (true, false) => Some((0.0, from)),
+                            (false, true) => Some((to, length)),
+                            (false, false) => None,
+                        }
+                    } else {
+                        // A crest on the face leaves it between the cones
+                        // of the end chamfers, which reach it.
+                        let depth = spec.chamfer.as_ref().map_or(0.0, |c| {
+                            (cylinder.radius - c.diameter / 2.0).abs() / c.angle.tan()
+                        });
+                        Some((
+                            if low { depth } else { 0.0 },
+                            length - if high { depth } else { 0.0 },
+                        ))
+                    };
+                    // Kept from the bounds' bottom, as `face_cylinder`
+                    // reads it (the face may be what an earlier thread
+                    // left).
+                    let base = cylinder.axis.origin[2] - body.bounds.map_or(0.0, |b| b.min[2]);
+                    match span {
+                        Some((a, b)) => {
+                            self.face_spans.borrow_mut().insert(
+                                (shape.history.clone(), face.to_string()),
+                                (base + a, base + b),
+                            );
+                        }
+                        None => shape.faces.retain(|f| f != face),
                     }
                 }
             }
-            let ends = spec.chamfer.as_ref().and_then(|c| c.ends.get(i).copied());
-            let (low, high) = ends.unwrap_or((false, false));
             if low {
                 shape.faces.push(named("thread_chamfer_low"));
             }
@@ -1580,12 +1650,20 @@ impl Kernel for MockKernel {
             min: [0.0; 3],
             max: [10.0; 3],
         });
+        // What a modelled thread left of the face (mitcad#628), else the
+        // bounds' height.
+        let (from, to) = self
+            .face_spans
+            .borrow()
+            .get(&(shape.history.clone(), face.to_string()))
+            .copied()
+            .unwrap_or((0.0, bounds.max[2] - bounds.min[2]));
         Ok(Cylinder {
             axis: Axis {
                 origin: [
                     (bounds.min[0] + bounds.max[0]) / 2.0,
                     (bounds.min[1] + bounds.max[1]) / 2.0,
-                    bounds.min[2],
+                    bounds.min[2] + from,
                 ],
                 direction: [0.0, 0.0, 1.0],
             },
@@ -1595,7 +1673,7 @@ impl Kernel for MockKernel {
                 .get(&face.to_string())
                 .copied()
                 .unwrap_or((bounds.max[0] - bounds.min[0]) / 2.0),
-            length: bounds.max[2] - bounds.min[2],
+            length: to - from,
             internal,
         })
     }
@@ -2274,6 +2352,7 @@ impl Kernel for MockKernel {
             middles: self.middles.clone(),
             vertices: self.vertices.clone(),
             hole_radii: self.hole_radii.clone(),
+            face_spans: self.face_spans.clone(),
             ..MockKernel::default()
         })
     }

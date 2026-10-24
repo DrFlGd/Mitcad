@@ -113,7 +113,7 @@ impl<K: ImportKernel> Importer<'_, K> {
             return;
         }
         let kernel = self.doc.kernel();
-        for (k, b) in self.doc.bodies().iter().enumerate() {
+        for (k, b) in crate::body_scope::bodies(self.doc).iter().enumerate() {
             if let Ok(bytes) = kernel.shape_bytes(b.shape) {
                 let _ = std::fs::write(
                     dir.join(format!("{design}/I{index}-replay-{k}.shape")),
@@ -206,9 +206,7 @@ impl<K: ImportKernel> Importer<'_, K> {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
         let n = COUNT.fetch_add(1, Ordering::Relaxed);
         let kernel = self.doc.kernel();
-        let input = self
-            .doc
-            .bodies()
+        let input = crate::body_scope::bodies(self.doc)
             .iter()
             .find(|b| b.uid.to_string() == body)
             .map(|b| b.shape);

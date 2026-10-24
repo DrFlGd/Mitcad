@@ -54,6 +54,9 @@ public:
   // Native presentation starts worker jobs and resumes on the UI thread.
   // Legacy hosts keep their existing synchronous command path.
   virtual bool asynchronousCommands() const { return false; }
+  // Feature previews can run without blocking even when explicit commands
+  // retain their synchronous progress/cancellation presentation.
+  virtual bool asynchronousPreviews() const { return asynchronousCommands(); }
   virtual bool modelCommandAsync(const QJsonObject&, QObject*, AsyncCompletion) { return false; }
   virtual bool modelPreviewAsync(const QByteArray&, const QString&, QObject*, AsyncCompletion) { return false; }
   virtual bool modelInspectionAsync(const QString&, QObject*, InspectionTask, InspectionCompletion) { return false; }
@@ -106,6 +109,20 @@ public:
   // or whole (null).
   virtual void showSection(const QJsonValue& plane) = 0;
   virtual QJsonValue section() const = 0;
+  // Print Analysis (mitcad#620): what an inspection draws over the bodies
+  // (Inspection::printOverlay), the panel's own while it is open; an empty
+  // object draws nothing. Once the panel closes the view shows the
+  // analysis shown in the document again.
+  virtual void showPrintAnalysis(const QJsonObject& overlay) { Q_UNUSED(overlay); }
+  // A query that may take long (Print Analysis' overhangs and walls on a
+  // large mesh, mitcad#620) as a model job: on the model's worker, with the
+  // progress and its Cancel (`stage` says what it does). Throws
+  // ComputationCancelled when it is cancelled, and as queryObject does
+  // otherwise. The default answers at once, as a query.
+  virtual QJsonObject jobQuery(const QJsonObject& query, const QString& stage) {
+    Q_UNUSED(stage);
+    return queryObject(query);
+  }
   // A measurement for an inspection's panel (Inspection::laterQuery),
   // answered once the view shows what the inspection showed (Section
   // Analysis' area and length, mitcad#438): `done` gets the query's answer,
@@ -159,13 +176,14 @@ public:
 // A feature command from start to OK or Cancel: its inputs' state and
 // panel, the selections in the view, previews and the commit.
 //
-// Previews run a short while after the last change and are cached by the
+// Previews run at bounded intervals while inputs change and are cached by the
 // definition, so going back to an earlier value shows its shapes at once;
 // the model caches the results too, so OK does not compute them again.
-// Previews and OK compute on the model's worker thread (P7): a preview
-// cancelled in the progress dialog shows nothing, and OK then computes the
-// command itself; OK cancelled leaves the panel open and the model as it
-// was.
+// Previews compute without blocking input on the model's worker (P7).
+// Numeric motion retains only the latest pending input; a useful older
+// result may update geometry while its metadata waits for the latest one.
+// Explicit commands retain their progress/cancellation presentation; OK
+// cancelled leaves the panel open and the model as it was.
 //
 // Editing rolls the timeline back to just before the feature: the view
 // then shows what the feature starts from, and the preview adds the edited
@@ -334,6 +352,7 @@ private:
   void setDefaults(const InputDef& input, const QString& key);
   void setRowDefaults();
   void inputsChanged();
+  void numericInputAction(const QString& key, std::function<void()> action);
   void inputAction(std::function<void()> action, bool invalidatesPreview = true,
                    std::function<void()> rejected = {});
   void structuralInputAction(const QString& key, std::function<void()> action);
@@ -362,7 +381,7 @@ private:
   // A toggle in the view was clicked: its element's number goes in or out
   // of the text input (P9: a pattern's suppressed instances).
   void toggleElement(const QString& key, int element);
-  void schedulePreview();
+  void schedulePreview(int delay = 150);
   void runPreview();
   bool previewReady(QString& message, bool& error);
   void showPreview(const Preview& preview, const QString& operation);
@@ -436,6 +455,7 @@ private:
   QJsonObject addFeatureCommand(const Built& built) const;
   QJsonObject bodyVolumes() const;
   void logVolumes(const QJsonObject& before) const;
+  void logCreatedParameters(const QJsonObject& result) const;
   // Sketch commands: applied for the preview, taken back on a change.
   void showSketchPreview(const Built& built);
   void takeBackSketchPreview();
@@ -479,6 +499,11 @@ private:
   QList<QByteArray> m_cacheOrder;
   bool m_done = false;
   quint64 m_generation = 0;
+  quint64 m_structureGeneration = 0;
+  // One replaceable action per numeric field between structural barriers.
+  // Actions evaluate expressions only after the document worker releases it.
+  QHash<QString, std::shared_ptr<std::function<void()>>> m_pendingNumbers;
+  bool m_previewWaiting = false;
   bool m_asyncPending = false;
   bool m_commitRequested = false;
   bool m_committing = false;

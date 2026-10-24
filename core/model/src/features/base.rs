@@ -534,6 +534,38 @@ impl Brep {
         Ok(brep)
     }
 
+    /// Checks a store file against its content id without keeping its decoded data.
+    /// The model's usual decoded-size limit also applies to version recording.
+    pub fn check_stored(sha256: &Sha256, mut stored: &[u8]) -> Result<(), String> {
+        use miniz_oxide::{DataFormat, MZFlush, MZStatus, inflate::stream};
+        let mut state = stream::InflateState::new_boxed(DataFormat::Zlib);
+        let mut output = [0u8; 64 * 1024];
+        let mut hasher = crate::sha256::Hasher::new();
+        let mut size = 0u64;
+        loop {
+            let result = stream::inflate(&mut state, stored, &mut output, MZFlush::None);
+            stored = &stored[result.bytes_consumed..];
+            size += result.bytes_written as u64;
+            if size > MAX_SIZE {
+                return Err(format!("its decoded data exceeds {MAX_SIZE} bytes"));
+            }
+            hasher.update(&output[..result.bytes_written]);
+            match result.status {
+                Ok(MZStatus::StreamEnd) => break,
+                Ok(MZStatus::Ok) if result.bytes_consumed > 0 || result.bytes_written > 0 => {}
+                _ => return Err("it does not decompress as complete zlib data".to_owned()),
+            }
+        }
+        if !stored.is_empty() {
+            return Err("it has extra bytes after its zlib data".to_owned());
+        }
+        let actual = hasher.finish();
+        if actual != *sha256 {
+            return Err(format!("its data has the SHA-256 {actual}"));
+        }
+        Ok(())
+    }
+
     /// The fingerprint of the data, worked out once.
     pub(crate) fn fingerprint(&self) -> u128 {
         *self.0.fingerprint.get_or_init(|| match self.data() {
@@ -691,6 +723,36 @@ mod tests {
 
     use super::*;
     use crate::features::FeatureDef;
+
+    #[test]
+    fn stored_content_checks_hash_and_complete_zlib_without_retaining_output() {
+        for data in [Vec::new(), vec![b'a'; 150_000]] {
+            let brep = Brep::new(data);
+            let stored = brep.stored().unwrap();
+            assert!(Brep::check_stored(&brep.sha256(), &stored).is_ok());
+            assert!(
+                Brep::check_stored(&Sha256::of(b"wrong"), &stored)
+                    .unwrap_err()
+                    .contains("SHA-256")
+            );
+            for end in [0, 1, stored.len() - 1] {
+                assert!(
+                    Brep::check_stored(&brep.sha256(), &stored[..end]).is_err(),
+                    "{end}"
+                );
+            }
+            let mut damaged = stored;
+            let mut extra = damaged.clone();
+            extra.extend_from_slice(b"unrelated bytes");
+            assert!(
+                Brep::check_stored(&brep.sha256(), &extra)
+                    .unwrap_err()
+                    .contains("extra bytes")
+            );
+            *damaged.last_mut().unwrap() ^= 1;
+            assert!(Brep::check_stored(&brep.sha256(), &damaged).is_err());
+        }
+    }
 
     #[test]
     fn breps_round_trip_compressed() {

@@ -523,12 +523,15 @@ The export formats are `step`, `iges`, `brep`, `stl`, `obj`, `3mf`,
 `usdz` and `dxf`. DXF must have a `sketch` name or UID and excludes
 `bodies`. The other formats accept `bodies` and exclude `sketch`. An
 export must have a new output path. OBJ can also write the adjacent
-`.mtl` file. That file must also be a new path in the workspace.
+`.mtl` file. That file must also be a new path in the workspace. Per-body
+SVG and DXF drawings write numbered files such as `part-2.svg`; every
+output is checked before the first file is written.
 
 STEP, IGES and BRep keep exact geometry. STL, OBJ, 3MF and USDZ
-tessellate it. USDZ includes the appearances. Texture paths are relative
-to the folder of the document when the document was saved to or opened
-from a file. A document save always writes a single self-contained
+tessellate it. USDZ includes the appearances. Headless USDZ export
+requires embedded texture images, including the maps of a texture set;
+it refuses appearances with external image paths before export.
+A document save always writes a single self-contained
 `.mitcad` file, also in a project with a B-rep store.
 
 The command reference is available through `resources/list` and
@@ -710,7 +713,16 @@ B-rep store in that root.
 An open does not refresh linked components, does not read per-user
 display state and does not configure the global library resolver.
 Embedded bodies stay usable. Mitcad can use installed fonts when it
-evaluates sketch text. Workspace path checks are intended for a local
+evaluates sketch text. MCP refuses sketch feature definitions and designs
+opened through MCP with `font_file` metadata. In a live document, existing
+file-backed text can keep using its stored outlines; an edit that would
+read its font file again is refused. Recompute and history commands are
+also checked for missing or stale stored outlines. Use an installed font
+or text with stored outlines and no file path instead.
+Live opens through MCP also retain the saved embedded bodies of linked
+components; they do not refresh linked files or libraries. Ordinary
+application opens continue to refresh them.
+Workspace path checks are intended for a local
 client. They do not isolate the process from concurrent filesystem
 changes. They do not apply operating-system resource limits.
 

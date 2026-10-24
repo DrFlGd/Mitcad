@@ -114,6 +114,67 @@ int sectionWorkerTests() {
   g_previous = qInstallMessageHandler(collect);
   QThread* ui = QThread::currentThread();
   {
+    bool reject = true;
+    int attempts = 0;
+    SectionWorker worker(nullptr, [&](QThread& thread) {
+      ++attempts;
+      if (!reject) { thread.start(); }
+    });
+    bool ran = false;
+    bool delivered = false;
+    worker.start(SectionWorker::Kind::View, QStringLiteral("unavailable"),
+        [&](const mitcad::geometry::CancelSource&) { ran = true; },
+        [&](const QString& error) {
+          CHECK(error.contains(QStringLiteral("could not start")));
+          delivered = true;
+        });
+    CHECK(!worker.idle());
+    CHECK(worker.busyWith(SectionWorker::Kind::View));
+    CHECK(waitUntil([&] { return delivered; }));
+    CHECK(!ran);
+    CHECK(attempts > 1);
+    worker.stop();
+    // A later retry can recover when native thread creation works again.
+    reject = false;
+    delivered = false;
+    worker.start(SectionWorker::Kind::View, QStringLiteral("available"),
+        [&](const mitcad::geometry::CancelSource&) { ran = true; },
+        [&](const QString& error) { CHECK(error.isEmpty()); delivered = true; });
+    CHECK(waitUntil([&] { return delivered; }));
+    CHECK(ran && worker.idle());
+  }
+  for (int action = 0; action < 3; ++action) {
+    SectionWorker worker(nullptr, [](QThread&) {});
+    bool staleError = false;
+    bool replacementError = false;
+    worker.start(SectionWorker::Kind::View, QStringLiteral("failed-start"),
+        [](const mitcad::geometry::CancelSource&) { CHECK(false); },
+        [&](const QString&) { staleError = true; });
+    CHECK(worker.busyWith(SectionWorker::Kind::View));
+    if (action == 0) {
+      // A document job cancels sections before accessing the document;
+      // an already queued startup failure must not call its View callback.
+      const auto stopped = worker.cancel();
+      CHECK(stopped.view && !stopped.measure);
+      CHECK(!worker.busyWith(SectionWorker::Kind::View));
+    } else if (action == 1) {
+      const auto stopped = worker.stop();
+      CHECK(stopped.view && !stopped.measure);
+      CHECK(worker.idle());
+    } else {
+      worker.start(SectionWorker::Kind::View, QStringLiteral("replacement-start"),
+          [](const mitcad::geometry::CancelSource&) { CHECK(false); },
+          [&](const QString& error) {
+            CHECK(error.contains(QStringLiteral("could not start")));
+            replacementError = true;
+          });
+      CHECK(waitUntil([&] { return replacementError; }));
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents);
+    CHECK(!staleError);
+    CHECK(worker.idle());
+  }
+  {
     SectionWorker worker;
     CHECK(worker.idle());
 

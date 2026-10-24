@@ -57,11 +57,64 @@ std::string denoiserNameOf(const DeviceInfo& device) {
 
 // The renderer's sink as one renderer sees it: once that renderer is
 // replaced, its frames no longer reach the sink.
-class DeviceSink : public FrameSink {
+class DeviceSink : public FrameSink, public std::enable_shared_from_this<DeviceSink> {
+  class ForwardedFrame final : public DirectFrame {
+  public:
+    ForwardedFrame(std::shared_ptr<DeviceSink> owner, std::shared_ptr<DirectFrame> frame)
+        : m_owner(std::move(owner)), m_frame(std::move(frame)) {}
+    ~ForwardedFrame() override { discard(); }
+    FrameBuffers buffers() const override { return m_frame->buffers(); }
+    void* nativeMetalBuffer() const override { return m_frame->nativeMetalBuffer(); }
+    std::size_t nativeMetalBufferSize() const override { return m_frame->nativeMetalBufferSize(); }
+    void* nativeCatcherMetalBuffer() const override { return m_frame->nativeCatcherMetalBuffer(); }
+    std::size_t nativeCatcherMetalBufferSize() const override { return m_frame->nativeCatcherMetalBufferSize(); }
+    void publish(std::uint64_t view, int samples, bool denoised, bool catcher) override {
+      const std::lock_guard<std::mutex> lock(m_owner->m_publicationMutex);
+      if (m_complete) return;
+      m_complete = true;
+      if (m_owner->m_active.load()) {
+        m_frame->publish(view, samples, denoised, catcher);
+        m_owner->firstFrame();
+      } else m_frame->discard();
+    }
+    void discard() override {
+      const std::lock_guard<std::mutex> lock(m_owner->m_publicationMutex);
+      if (m_complete) return;
+      m_complete = true;
+      m_frame->discard();
+    }
+  private:
+    std::shared_ptr<DeviceSink> m_owner;
+    std::shared_ptr<DirectFrame> m_frame;
+    bool m_complete = false;
+  };
 public:
   DeviceSink(FrameSink& sink, std::function<void()> firstFrame) : m_sink(sink), m_firstFrame(std::move(firstFrame)) {}
 
-  void retire() { m_active = false; }
+  void retire() {
+    const std::lock_guard<std::mutex> lock(m_publicationMutex);
+    m_active = false;
+  }
+
+  // Capabilities stay stable through retirement. An inactive renderer gets
+  // no new direct frame rather than switching a cached GPU interop path to
+  // an incompatible host buffer while it finishes cancellation.
+  bool directDisplayBuffers() const override { return m_sink.directDisplayBuffers(); }
+  bool metalDisplayBuffers() const override { return m_sink.metalDisplayBuffers(); }
+  void displayInteropUsed() override { if (m_active.load()) m_sink.displayInteropUsed(); }
+  void auxiliaryNativeUsed(bool graphics, bool composite) override {
+    if (m_active.load()) m_sink.auxiliaryNativeUsed(graphics, composite);
+  }
+  void auxiliaryNativeCompared(unsigned maxHalfUlps, bool composite) override {
+    if (m_active.load()) m_sink.auxiliaryNativeCompared(maxHalfUlps, composite);
+  }
+  std::shared_ptr<DirectFrame> beginDisplayFrame(int width, int height, int fullWidth, int fullHeight) override {
+    if (!m_active.load()) return {};
+    auto frame = m_sink.beginDisplayFrame(width, height, fullWidth, fullHeight);
+    if (!frame) return {};
+    if (!m_active.load()) { frame->discard(); return {}; }
+    return std::make_shared<ForwardedFrame>(shared_from_this(), std::move(frame));
+  }
 
   FrameBuffers beginFrame(int width, int height, int fullWidth, int fullHeight, bool withCatcher) override {
     m_forwarding = m_active.load();
@@ -71,9 +124,7 @@ public:
     if (m_forwarding) {
       m_sink.endFrame(view, samples, denoised);
     }
-    if (m_firstFrame && !m_framed.exchange(true)) {
-      m_firstFrame();
-    }
+    firstFrame();
   }
   void finished(std::uint64_t view, int samples, double seconds) override {
     if (m_active) {
@@ -87,10 +138,17 @@ public:
   }
 
 private:
+  void firstFrame() {
+    // This callback only sets the fallback's atomic failure marker and wakes
+    // its watcher; it never acquires the fallback mutex. Direct publication
+    // keeps it inside retire()'s lifetime barrier, avoiding a lock inversion.
+    if (m_firstFrame && !m_framed.exchange(true)) m_firstFrame();
+  }
   FrameSink& m_sink;
   std::function<void()> m_firstFrame;
   std::atomic<bool> m_active{true};
   std::atomic<bool> m_framed{false};
+  std::mutex m_publicationMutex;
   bool m_forwarding = false; // the renderer's thread only
 };
 
@@ -104,6 +162,7 @@ public:
     {
       const std::lock_guard<std::mutex> lock(m_mutex);
       m_stop = true;
+      if (m_innerSink) m_innerSink->retire();
     }
     m_changed.notify_all();
     if (m_watcher.joinable()) {

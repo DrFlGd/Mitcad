@@ -635,7 +635,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// edge of a body, where the kernel measures it.
     fn distance_to(&self, body: mitcad_model::BodyUid, name: &TopoName, p: Vec3) -> Option<f64> {
         let kernel = self.doc.kernel();
-        let shape = self.doc.body_shape(body)?;
+        let shape = crate::body_scope::shape(self.doc, body)?;
         let point = kernel
             .datum_shape(&Datum::Point(DatumPoint { point: p }), 0.0)
             .ok()?;

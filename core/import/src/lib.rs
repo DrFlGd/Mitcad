@@ -69,6 +69,8 @@ pub mod learn;
 mod profiles;
 // Bodies by the item that made them, consumed combine tools (mitcad#96).
 mod producers;
+// Pre-existing bodies of a receiving document are outside this replay.
+mod body_scope;
 // Assembly relationships as constraint sets (mitcad#155).
 mod relationships;
 // Linked sketch curves on the edges they project.
@@ -727,6 +729,7 @@ enum Before {
 
 pub(crate) struct Importer<'a, K: Kernel> {
     doc: &'a mut Document<K>,
+    body_scope: body_scope::Guard,
     dump: &'a Dump,
     options: &'a Options,
     oracle: Oracle<'a, K::Shape>,
@@ -847,7 +850,9 @@ impl<'a, K: Kernel> Importer<'a, K> {
         oracle: Oracle<'a, K::Shape>,
         report: DesignReport,
     ) -> Self {
+        let body_scope = body_scope::Scope::capture(doc).enter(doc);
         Importer {
+            body_scope,
             oracle,
             doc,
             dump,
@@ -4778,8 +4783,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             .iter()
             .filter(|(uid, sig)| !before.get(uid).is_some_and(|s| s.same(sig)))
             .find(|(uid, _)| {
-                self.doc
-                    .body_shape(*uid)
+                crate::body_scope::shape(self.doc, *uid)
                     .is_some_and(|s| matches!(self.doc.kernel().is_valid(s), Ok(false)))
             })
             .map(|(uid, _)| *uid)
@@ -4797,8 +4801,8 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             Some(reason) => Err(reason),
             None => self.translate(index, item),
         };
-        let had_bodies = !self.doc.bodies().is_empty();
-        let body_count = self.doc.bodies().len();
+        let had_bodies = !crate::body_scope::bodies(self.doc).is_empty();
+        let body_count = crate::body_scope::bodies(self.doc).len();
         let mut last = match candidates {
             Ok(candidates) => {
                 let ordered = candidates
@@ -4812,7 +4816,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         // Unchecked, a definition that takes every body
                         // away is not kept: the file's part has bodies
                         // after it.
-                        Ok(_) if had_bodies && self.doc.bodies().is_empty() => {
+                        Ok(_) if had_bodies && crate::body_scope::bodies(self.doc).is_empty() => {
                             self.undo_to(depth);
                             last = "it would leave no bodies".to_owned();
                         }
@@ -4821,7 +4825,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         Ok(_)
                             if c.defs.last().is_some_and(|d| {
                                 d["type"] == "helix" && d["operation"] == "cut"
-                            }) && self.doc.bodies().len() > body_count =>
+                            }) && crate::body_scope::bodies(self.doc).len() > body_count =>
                         {
                             self.undo_to(depth);
                             last = "its cut would split a body".to_owned();
@@ -5159,8 +5163,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// components.
     fn current_sheets(&self) -> Vec<(BodyUid, SheetSig, ComponentUid)> {
         let kernel = self.doc.kernel();
-        self.doc
-            .bodies()
+        crate::body_scope::bodies(self.doc)
             .iter()
             .filter_map(|b| {
                 let sig = SheetSig::of(kernel, b.shape)?;
@@ -5602,7 +5605,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         ) || self.components_differ(&finals);
         let sheets_differ = self.sheets_differ(&sheets);
         if (solids_differ || sheets_differ) && self.options.fallback && !self.at_final {
-            let replayed = self.doc.bodies().len();
+            let replayed = crate::body_scope::bodies(self.doc).len();
             match self.replace_bodies(&finals, &sheets, Some("Stored bodies"), "stored design") {
                 Ok(Some(uid)) if replayed == 0 => self.base_warning(
                     uid,
@@ -5650,9 +5653,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             .collect();
         // Sheets are not compared: they are the file's stored ones.
         let kernel = self.doc.kernel();
-        self.report.extra_bodies = self
-            .doc
-            .bodies()
+        self.report.extra_bodies = crate::body_scope::bodies(self.doc)
             .iter()
             .filter(|b| !matched.iter().any(|m| m.starts_with(&b.uid.to_string())))
             .filter(|b| SheetSig::of(kernel, b.shape).is_none())
@@ -5726,7 +5727,7 @@ fn add<K: Kernel>(
 ) -> Result<FeatureUid, String> {
     let target = def_component(doc, def, adding.component);
     let mut def = def.clone();
-    solid_participants(doc, &mut def, target);
+    solid_participants(doc, &mut def, target)?;
     add_in(doc, &def, name, target, adding)
 }
 
@@ -5771,6 +5772,10 @@ fn add_in<K: Kernel>(
             return Err(e);
         }
     };
+    if let Err(error) = body_scope::unchanged(doc) {
+        doc.undo();
+        return Err(error);
+    }
     match doc.status(added.uid).and_then(|s| s.error()) {
         None => Ok(added.uid),
         Some(error) => {
@@ -5785,9 +5790,14 @@ fn add_in<K: Kernel>(
 /// A join, cut or intersection without participants works on every
 /// body of its component, the file's sheets brought in as stored bodies
 /// too ([`Importer::replace_bodies`]), while the file's solid operations
-/// leave sheets alone: where the component holds sheets, its solids
-/// become the participants (mitcad#35).
-fn solid_participants<K: Kernel>(doc: &Document<K>, def: &mut Value, component: ComponentUid) {
+/// leave sheets alone: where the component holds sheets or pre-existing
+/// bodies outside this import, its imported solids become the participants
+/// (mitcad#35, #624).
+fn solid_participants<K: Kernel>(
+    doc: &Document<K>,
+    def: &mut Value,
+    component: ComponentUid,
+) -> Result<(), String> {
     let kind = def["type"].as_str().unwrap_or_default();
     let combines = match kind {
         "hole" | "rib" | "web" => true,
@@ -5801,12 +5811,12 @@ fn solid_participants<K: Kernel>(doc: &Document<K>, def: &mut Value, component: 
         _ => false,
     };
     if !combines || def.get("participants").is_some() {
-        return;
+        return Ok(());
     }
     let kernel = doc.kernel();
     let mut solids = Vec::new();
     let mut sheets = false;
-    for b in doc.bodies() {
+    for b in crate::body_scope::bodies(doc) {
         if doc.body_component(b.uid).unwrap_or(ComponentUid::ROOT) != component {
             continue;
         }
@@ -5816,9 +5826,19 @@ fn solid_participants<K: Kernel>(doc: &Document<K>, def: &mut Value, component: 
             solids.push(b.uid.to_string());
         }
     }
-    if sheets && !solids.is_empty() {
+    let protected = body_scope::protected_in(doc, component);
+    if protected && solids.is_empty() {
+        // An initial Join with no imported target is a new body. An empty
+        // participants array would mean every body, including the receiver's.
+        if def["operation"] == "join" {
+            def["operation"] = serde_json::json!("new_body");
+        } else {
+            return Err("the operation has no solid body in this import".to_owned());
+        }
+    } else if (sheets || protected) && !solids.is_empty() {
         def["participants"] = serde_json::json!(solids);
     }
+    Ok(())
 }
 
 /// The component a definition goes into: that of the bodies, sketches
@@ -5992,7 +6012,7 @@ fn add_all<K: Kernel>(
 /// The solids of the document at the marker, with their signatures.
 fn bodies_of<K: Kernel>(doc: &Document<K>) -> Vec<(BodyUid, Sig)> {
     let kernel = doc.kernel();
-    doc.bodies()
+    crate::body_scope::bodies(doc)
         .iter()
         .filter_map(|b| Some((b.uid, Sig::of(kernel, b.shape)?)))
         .collect()

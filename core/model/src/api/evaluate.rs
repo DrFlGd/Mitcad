@@ -29,6 +29,8 @@ pub(super) struct EvaluateQuery {
     expression: String,
     #[serde(default)]
     kind: ValueKind,
+    #[serde(default)]
+    printed_fits: bool,
 }
 
 impl<K: Kernel> Document<K> {
@@ -37,7 +39,14 @@ impl<K: Kernel> Document<K> {
     /// with decimal points (as a parameter would keep it); an expression
     /// that does not evaluate to the kind rejects the query.
     pub(super) fn evaluate_json(&self, query: &EvaluateQuery) -> Result<Value, ApiError> {
-        let params = self.parameters();
+        let virtual_params;
+        let params = if query.printed_fits {
+            virtual_params = crate::print_fits::evaluation_parameters(self.parameters())
+                .map_err(|e| ApiError(e.to_string()))?;
+            &virtual_params
+        } else {
+            self.parameters()
+        };
         let context = params.context();
         let dims = match query.kind {
             ValueKind::Length => Dims::LENGTH,

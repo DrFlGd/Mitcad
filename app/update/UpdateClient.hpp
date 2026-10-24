@@ -35,6 +35,10 @@ struct UpdateOffer {
   bool hasDownload = false;
   QString url;
   qint64 size = 0;
+  // The download's SHA-256 (64 lower-case hex digits) from the verified
+  // manifest; the Windows updater checks the installer against it again
+  // right before it runs it (mitcad#603).
+  QString sha256;
   // The manifest as received, verified again with the download.
   QByteArray manifest;
 };

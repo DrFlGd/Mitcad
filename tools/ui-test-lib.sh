@@ -62,6 +62,9 @@ UI_SCALE=${UI_SCALE:-1}
 if [ "$UI_SCALE" != 1 ]; then
   export QT_SCALE_FACTOR=$UI_SCALE
 fi
+# The test screen's logical height (UI_SCREEN_HEIGHT, default 1000): a test
+# of a tall dialog that must not scroll sets a larger one before
+# ui_start_display.
 # No update checks (mitcad#9): the tests make no network requests;
 # tools/ui-update-test.sh checks against a local server of its own.
 export MITCAD_NO_UPDATE_CHECK=1
@@ -199,7 +202,7 @@ ui_start_display() {
   for display in $(seq 90 189); do
     owner=$(ui_lock_owner "$display")
     [ -n "$owner" ] && kill -0 "$owner" 2> /dev/null && continue
-    Xvfb ":$display" -screen 0 $((1600 * UI_SCALE))x$((1000 * UI_SCALE))x24 -nolisten tcp -noreset \
+    Xvfb ":$display" -screen 0 $((1600 * UI_SCALE))x$((${UI_SCREEN_HEIGHT:-1000} * UI_SCALE))x24 -nolisten tcp -noreset \
       > /dev/null 2>&1 &
     UI_XVFB_PID=$!
     # Up to 30 s: competing servers retry their lock every 2 s.
@@ -722,6 +725,32 @@ ui_focus_dialog() {
   ui_sync "$dialog"
   xdotool windowfocus --sync "$dialog" 2> /dev/null
   ui_sync "$dialog"
+}
+# ui_focus_replace "file dialog title": Qt's own file dialog (Linux; a
+# native one asks in its own words) asks before saving over an existing
+# file in a message box with the file dialog's own title ("<name> already
+# exists. Do you want to replace it?"). Waits for that box, the second
+# visible window of that title (the newer, so the higher window id), and
+# gives it the keyboard: Alt+Y replaces the file, Escape returns to the
+# file dialog.
+ui_focus_replace() {
+  local title windows box=""
+  title=$(ui_title_regex "$1")
+  for _ in $(seq 1 50); do
+    if [ -n "$UI_INSTANCES" ] && [ -n "$UI_RUNNER" ]; then
+      windows=$(xdotool search --all --pid "$(ui_app_pid)" --onlyvisible --name "$title" 2> /dev/null)
+    else
+      windows=$(xdotool search --onlyvisible --name "$title" 2> /dev/null)
+    fi
+    [ "$(printf '%s\n' "$windows" | grep -c .)" -ge 2 ] &&
+      box=$(printf '%s\n' "$windows" | sort -n | tail -1) && break
+    sleep 0.2
+  done
+  [ -n "$box" ] || ui_fail "no question in '$1' before replacing an existing file"
+  UI_DIALOG_TITLE=$1
+  ui_sync "$box"
+  xdotool windowfocus --sync "$box" 2> /dev/null
+  ui_sync "$box"
 }
 ui_focus_main() {
   ui_sync

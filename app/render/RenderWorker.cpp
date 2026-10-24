@@ -49,6 +49,9 @@
 #include "render/RenderProtocol.hpp"
 #include "render/RenderScene.hpp"
 #include "render/Renderer.hpp"
+#ifdef MITCAD_RENDER_XPC_ENTRY
+#include "render/RenderSession.hpp"
+#endif
 #include "report/CrashHandler.hpp"
 
 namespace mitcad {
@@ -80,6 +83,9 @@ void emitError(const QString& message) {
 std::string kernelFolder() {
   const QDir executable(QCoreApplication::applicationDirPath());
   for (const QString& candidate : {QStringLiteral("../Resources/cycles"), QStringLiteral("../lib/mitcad/cycles"),
+#ifdef __APPLE__
+                                    QStringLiteral("../../../../Resources/cycles"),
+#endif
                                     QStringLiteral("cycles")}) {
     if (QDir(executable.filePath(candidate)).exists()) {
       return QDir::cleanPath(executable.filePath(candidate)).toStdString();
@@ -121,16 +127,20 @@ QJsonArray devicesJson(const std::vector<render::DeviceInfo>& devices) {
 // MITCAD_RENDER_TEST_DEVICE_FAILURE makes the first device fail (tests).
 std::unique_ptr<render::Renderer> makeRenderer(render::FrameSink& sink, bool interactive, const QString& choice,
                                                const std::vector<render::DeviceInfo>& devices,
-                                               const render::DeviceReport& fellBack, std::string& error) {
+                                               const render::DeviceReport& fellBack, std::string& error,
+                                               const QJsonObject* configuration = nullptr) {
   std::string message;
   const render::DeviceInfo device = render::chooseDevice(choice.toStdString(), devices, message);
   if (!message.empty()) {
     fellBack(device, message);
   }
   const std::string folder = kernelFolder();
-  const std::string denoising = qEnvironmentVariable("MITCAD_RENDER_TEST_DENOISER").toLower().toStdString();
-  const std::string denoisingFailure = qEnvironmentVariable("MITCAD_RENDER_TEST_DENOISER_FAILURE").toStdString();
-  const auto factory = [interactive, folder, denoising, denoisingFailure](render::FrameSink& target,
+  const std::string denoising = (configuration ? configuration->value(QStringLiteral("denoiser")).toString() :
+      qEnvironmentVariable("MITCAD_RENDER_TEST_DENOISER")).toLower().toStdString();
+  const std::string denoisingFailure = (configuration ? configuration->value(QStringLiteral("denoiser_failure")).toString() :
+      qEnvironmentVariable("MITCAD_RENDER_TEST_DENOISER_FAILURE")).toStdString();
+  const bool nativePassComparison = configuration && configuration->value(QStringLiteral("native_pass_compare")).toBool();
+  const auto factory = [interactive, folder, denoising, denoisingFailure, nativePassComparison](render::FrameSink& target,
                                              const render::DeviceInfo& on, bool cpuDenoising,
                                              std::string& why) {
     render::RendererOptions options;
@@ -139,11 +149,13 @@ std::unique_ptr<render::Renderer> makeRenderer(render::FrameSink& sink, bool int
     options.kernelFolder = folder;
     options.denoisingDevice = denoising;
     options.testDenoisingFailure = denoisingFailure;
+    options.testNativePassComparison = nativePassComparison;
     options.cpuDenoisingFallback = cpuDenoising;
     return render::makeCyclesRenderer(target, options, why);
   };
   return render::makeDeviceRenderer(sink, device, factory, fellBack,
-                                    qEnvironmentVariable("MITCAD_RENDER_TEST_DEVICE_FAILURE").toStdString(), error);
+                                    (configuration ? configuration->value(QStringLiteral("device_failure")).toString() :
+                                      qEnvironmentVariable("MITCAD_RENDER_TEST_DEVICE_FAILURE")).toStdString(), error);
 }
 
 // Frames into the application's shared memory (RenderProtocol.hpp).
@@ -342,8 +354,8 @@ QJsonArray stringsOf(const std::vector<std::string>& strings) {
 // What a "scene" command changed: the bodies whose meshes came with it
 // ("received"), and the bodies added, changed (another mesh or material),
 // moved and removed.
-void emitSceneEvent(int sequence, const render::SceneUpdate& update, const render::SceneChanges& changes,
-                    double milliseconds) {
+QJsonObject sceneEvent(int sequence, const render::SceneUpdate& update, const render::SceneChanges& changes,
+                       double milliseconds) {
   std::vector<std::string> received;
   for (const render::BodyData& body : update.bodies) {
     for (const auto& [key, mesh] : update.meshes) {
@@ -353,7 +365,7 @@ void emitSceneEvent(int sequence, const render::SceneUpdate& update, const rende
       }
     }
   }
-  emitEvent({{QStringLiteral("event"), QStringLiteral("scene")},
+  return {{QStringLiteral("event"), QStringLiteral("scene")},
              {QStringLiteral("sequence"), sequence},
              {QStringLiteral("bodies"), static_cast<int>(update.bodies.size())},
              {QStringLiteral("received"), stringsOf(received)},
@@ -366,7 +378,12 @@ void emitSceneEvent(int sequence, const render::SceneUpdate& update, const rende
              {QStringLiteral("meshes"), changes.meshes},
              {QStringLiteral("instanced"), changes.instanced},
              {QStringLiteral("restarted"), changes.restarted},
-             {QStringLiteral("milliseconds"), milliseconds}});
+             {QStringLiteral("milliseconds"), milliseconds}};
+}
+
+void emitSceneEvent(int sequence, const render::SceneUpdate& update, const render::SceneChanges& changes,
+                    double milliseconds) {
+  emitEvent(sceneEvent(sequence, update, changes, milliseconds));
 }
 
 std::array<double, 3> vectorOf(const QJsonValue& value) {
@@ -1955,9 +1972,89 @@ int runBatch(const QString& jobPath, bool control) {
 
 } // namespace
 
+#ifdef MITCAD_RENDER_XPC_ENTRY
+namespace render {
+QJsonObject renderDeviceJson(const DeviceInfo& device) { return deviceJson(device); }
+struct RenderSession::Impl {
+  FrameSink& sink;
+  Event event;
+  QJsonObject configuration;
+  std::unique_ptr<Renderer> renderer;
+  Impl(FrameSink& target, Event output, QJsonObject config) : sink(target), event(std::move(output)), configuration(std::move(config)) {}
+  void error(const QString& text) { event({{QStringLiteral("event"), QStringLiteral("error")},
+                                          {QStringLiteral("message"), text}}); }
+};
+RenderSession::RenderSession(FrameSink& sink, Event event, const QJsonObject& configuration)
+    : m_impl(std::make_unique<Impl>(sink, std::move(event), configuration)) {}
+RenderSession::~RenderSession() = default;
+void RenderSession::hello() {
+  m_impl->event({{QStringLiteral("event"), QStringLiteral("hello")},
+                 {QStringLiteral("protocol"), static_cast<int>(kProtocolVersion)},
+                 {QStringLiteral("version"), QStringLiteral(MITCAD_VERSION)},
+                 {QStringLiteral("transport"), QStringLiteral("iosurface")}});
+}
+bool RenderSession::command(const QJsonObject& command) {
+  auto& state = *m_impl;
+  const QString name = command.value(QStringLiteral("cmd")).toString();
+  if (name == QLatin1String("stop")) { state.renderer.reset(); return false; }
+  std::string error;
+  if (!state.renderer) {
+    if (name != QLatin1String("device")) { state.error(QStringLiteral("the first command must choose a device")); return false; }
+    const auto devices = cyclesDevices(kernelFolder());
+    const auto output = state.event;
+    const auto fallback = [output](const DeviceInfo& device, const std::string& reason) {
+      output({{QStringLiteral("event"), QStringLiteral("device")},
+               {QStringLiteral("device"), deviceJson(device)},
+               {QStringLiteral("message"), QString::fromStdString(reason)}});
+    };
+    state.renderer = makeRenderer(state.sink, true, command.value(QStringLiteral("id")).toString(QLatin1String(kDeviceAutomatic)),
+                                  devices, fallback, error, &state.configuration);
+    if (!state.renderer) { state.error(QString::fromStdString(error)); return false; }
+    state.event({{QStringLiteral("event"), QStringLiteral("ready")},
+                  {QStringLiteral("protocol"), static_cast<int>(kProtocolVersion)},
+                  {QStringLiteral("renderer"), QString::fromStdString(state.renderer->description())},
+                  {QStringLiteral("device"), deviceJson(state.renderer->device())},
+                  {QStringLiteral("devices"), devicesJson(devices)}});
+  } else if (name == QLatin1String("scene")) {
+    const auto started = KeptFrame::Clock::now();
+    SceneUpdate update;
+    if (command.value(QStringLiteral("test")).toBool()) {
+      update = testScene();
+      update.ground = command.value(QStringLiteral("ground")).toBool(true);
+    } else if (!sceneUpdateOf(command, update, error)) { state.error(QString::fromStdString(error)); return true; }
+    const auto changes = state.renderer->updateScene(update);
+    state.event(sceneEvent(command.value(QStringLiteral("sequence")).toInt(), update, changes,
+                           millisecondsBetween(started, KeptFrame::Clock::now())));
+    for (const auto& warning : changes.warnings) state.event({{QStringLiteral("event"), QStringLiteral("warning")},
+                                                            {QStringLiteral("message"), QString::fromStdString(warning)}});
+  } else if (name == QLatin1String("environment")) {
+    const auto warning = state.renderer->setEnvironment(environmentOf(command));
+    if (!warning.empty()) state.event({{QStringLiteral("event"), QStringLiteral("warning")},
+                                       {QStringLiteral("message"), QString::fromStdString(warning)}});
+  } else if (name == QLatin1String("view")) state.renderer->setView(viewOf(command));
+  else if (name == QLatin1String("samples")) {
+    std::vector<int> previews;
+    for (const auto& at : command.value(QStringLiteral("previews")).toArray()) previews.push_back(at.toInt());
+    state.renderer->setPreviews(previews);
+    state.renderer->setSamples(command.value(QStringLiteral("count")).toInt());
+  } else state.error(QStringLiteral("unknown command %1").arg(name));
+  // Explicit regression instrumentation records applied mutation order on the
+  // same service stream as scene acknowledgements. Production emits no trace.
+  if (state.configuration.value(QStringLiteral("command_trace")).toBool())
+    state.event({{QStringLiteral("event"), QStringLiteral("command_applied")},
+                 {QStringLiteral("cmd"), name}, {QStringLiteral("sequence"), command.value(QStringLiteral("sequence"))}});
+  return true;
+}
+} // namespace render
+#endif
+
 } // namespace mitcad
 
+#ifdef MITCAD_RENDER_RUNTIME_ENTRY
+extern "C" int mitcad_render_runtime_main(int argc, char* argv[]) {
+#else
 int main(int argc, char* argv[]) {
+#endif
   using namespace mitcad;
   // Crash reports (mitcad#62): into the application's folder
   // (MITCAD_CRASH_DIR), which it offers then.
@@ -2193,13 +2290,15 @@ int main(int argc, char* argv[]) {
                      millisecondsBetween(started, KeptFrame::Clock::now()));
       // A texture image that cannot be read (mitcad#53).
       for (const std::string& warning : changes.warnings) {
-        emitError(QString::fromStdString(warning));
+        emitEvent({{QStringLiteral("event"), QStringLiteral("warning")},
+                   {QStringLiteral("message"), QString::fromStdString(warning)}});
       }
     } else if (name == QLatin1String("environment")) {
       // The render settings' environment, background and ground (mitcad#47).
       const std::string warning = renderer->setEnvironment(environmentOf(command));
       if (!warning.empty()) {
-        emitError(QString::fromStdString(warning));
+        emitEvent({{QStringLiteral("event"), QStringLiteral("warning")},
+                   {QStringLiteral("message"), QString::fromStdString(warning)}});
       }
       emitEvent({{QStringLiteral("event"), QStringLiteral("status")},
                  {QStringLiteral("text"),

@@ -36,6 +36,7 @@
 
 #include "OcctViewer.hpp"
 #include "browser/DocumentHost.hpp"
+#include "framework/AtomicCopy.hpp"
 #include "framework/DialogFolders.hpp"
 #include "framework/Icons.hpp"
 #include "framework/TestSync.hpp"
@@ -684,12 +685,12 @@ void RenderImageDialog::save() {
   if (QFileInfo(path).suffix().isEmpty()) {
     path += QLatin1Char('.') + extension;
   }
-  if (QFileInfo::exists(path)) {
-    QFile::remove(path); // the dialog asked before replacing it
-  }
-  if (!QFile::copy(m_image, path)) {
+  QFile source(m_image);
+  QString error;
+  if (!source.open(QIODevice::ReadOnly) || !copyToFileAtomically(source, path, error)) {
     m_message->setText(tr("The image cannot be saved as %1.").arg(QDir::toNativeSeparators(path)));
-    qWarning().noquote() << QStringLiteral("Render image not saved: %1").arg(path);
+    qWarning().noquote() << QStringLiteral("Render image not saved: %1: %2")
+                               .arg(path, error.isEmpty() ? source.errorString() : error);
     return;
   }
   m_message->clear();

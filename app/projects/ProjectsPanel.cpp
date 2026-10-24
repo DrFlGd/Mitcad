@@ -42,6 +42,7 @@
 #include "../framework/TestSync.hpp"
 #include "../framework/WindowStyle.hpp"
 #include "ProjectRowText.hpp"
+#include "ProjectRowDrag.hpp"
 
 namespace mitcad {
 namespace {
@@ -206,7 +207,7 @@ public:
   explicit ProjectsTreeWidget(ProjectsPanel& panel) : QTreeWidget(&panel), m_panel(panel) {}
 
   bool editing() const { return state() == QAbstractItemView::EditingState; }
-  bool dragging() const { return m_dragging; }
+  bool dragging() const { return m_drag.dragging(); }
 
   // The text a row's cell shows as it is painted (a name elided in the
   // middle, mitcad#529); "" for a row in a folded folder.
@@ -289,27 +290,27 @@ protected:
   // (its folder) of the same project moves it there. Done here rather than
   // with the system's drag and drop: nothing leaves the panel.
   void mousePressEvent(QMouseEvent* event) override {
-    m_dragged = nullptr;
-    m_dragging = false;
+    m_drag.clear();
     if (event->button() == Qt::LeftButton && !editing()) {
-      m_pressed = event->position().toPoint();
-      QTreeWidgetItem* item = itemAt(m_pressed);
+      const QPoint pressed = event->position().toPoint();
+      QTreeWidgetItem* item = itemAt(pressed);
       const ProjectsPanel::RowType type = m_panel.typeOf(item);
       if (item != nullptr && (type == ProjectsPanel::RowType::Design || type == ProjectsPanel::RowType::Folder)) {
-        m_dragged = item;
+        m_drag.press(indexFromItem(item), pressed);
       }
     }
     QTreeWidget::mousePressEvent(event);
   }
 
   void mouseMoveEvent(QMouseEvent* event) override {
-    if (m_dragged != nullptr && (event->buttons() & Qt::LeftButton) != 0) {
+    if (m_drag.item().isValid() && (event->buttons() & Qt::LeftButton) != 0) {
       const QPoint at = event->position().toPoint();
-      if (!m_dragging && (at - m_pressed).manhattanLength() >= QApplication::startDragDistance()) {
-        m_dragging = true;
-        qInfo().noquote() << QStringLiteral("Projects panel: dragging %1").arg(m_panel.keyOf(m_dragged));
-      }
-      if (m_dragging) {
+      const bool wasDragging = m_drag.dragging();
+      if (m_drag.move(at, QApplication::startDragDistance())) {
+        if (!wasDragging) {
+          qInfo().noquote() << QStringLiteral("Projects panel: dragging %1")
+                                  .arg(m_panel.keyOf(itemFromIndex(m_drag.item())));
+        }
         setOver(itemAt(at));
         return;
       }
@@ -318,53 +319,52 @@ protected:
   }
 
   void mouseReleaseEvent(QMouseEvent* event) override {
-    if (m_dragging) {
-      QTreeWidgetItem* dragged = m_dragged;
+    if (m_drag.dragging()) {
+      QTreeWidgetItem* dragged = itemFromIndex(m_drag.item());
       QTreeWidgetItem* over = itemAt(event->position().toPoint());
       setOver(nullptr);
       unsetCursor();
-      m_dragging = false;
-      m_dragged = nullptr;
+      m_drag.clear();
       if (event->button() == Qt::LeftButton) {
         m_panel.dropped(dragged, over);
       }
       m_panel.applyWaitingRows();
       return;
     }
-    m_dragged = nullptr;
+    m_drag.clear();
+    unsetCursor();
     QTreeWidget::mouseReleaseEvent(event);
   }
 
 private:
   void setOver(QTreeWidgetItem* item) {
-    if (item == m_over) {
+    QTreeWidgetItem* over = itemFromIndex(m_over);
+    if (item == over) {
       return;
     }
-    if (m_over != nullptr) {
+    if (over != nullptr) {
       for (int column = 0; column < columnCount(); ++column) {
-        m_over->setData(column, Qt::BackgroundRole, QVariant());
+        over->setData(column, Qt::BackgroundRole, QVariant());
       }
     }
-    m_over = nullptr;
+    m_over = QPersistentModelIndex();
     QString folder;
-    if (item != nullptr && m_panel.dropTarget(m_dragged, item, &folder)) {
-      m_over = item;
+    if (item != nullptr && m_panel.dropTarget(itemFromIndex(m_drag.item()), item, &folder)) {
+      m_over = indexFromItem(item);
       QColor color = palette().color(QPalette::Highlight);
       color.setAlpha(80);
       for (int column = 0; column < columnCount(); ++column) {
-        m_over->setBackground(column, color);
+        item->setBackground(column, color);
       }
       setCursor(Qt::DragMoveCursor);
-    } else if (m_dragging) {
+    } else if (m_drag.dragging()) {
       setCursor(Qt::ForbiddenCursor);
     }
   }
 
   ProjectsPanel& m_panel;
-  QPoint m_pressed;
-  QTreeWidgetItem* m_dragged = nullptr;
-  QTreeWidgetItem* m_over = nullptr;
-  bool m_dragging = false;
+  ProjectRowDrag m_drag;
+  QPersistentModelIndex m_over;
 };
 
 // ---------------------------------------------------------------------------

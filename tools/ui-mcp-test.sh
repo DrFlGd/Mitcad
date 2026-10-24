@@ -34,7 +34,7 @@ spec.loader.exec_module(live)
 print(live.make_design(sys.argv[2], sys.argv[3]))' "$LIVE" "$CLI" "$WORK") || ui_fail "mitcad-cli did not make the design"
 
 ui_start_display
-ui_start_app --open "$FILE"
+ui_start_app --mcp-folder "$WORK" --open "$FILE"
 ui_expect_log "MCP live instance:" "the application's MCP listener is up"
 ui_expect_log "Timeline Sketch2 at" "the design is open"
 

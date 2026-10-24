@@ -254,6 +254,7 @@ pub(crate) struct Adding<'p> {
 #[allow(clippy::too_many_arguments)]
 fn evaluate_on<K: Kernel>(
     mut doc: Document<K>,
+    scope: crate::body_scope::Scope,
     candidate: &Candidate,
     name: Option<&str>,
     component: ComponentUid,
@@ -262,6 +263,7 @@ fn evaluate_on<K: Kernel>(
     share: Option<f64>,
     progress: Option<Arc<Progress>>,
 ) -> Done<K> {
+    let _scope = scope.enter(&doc);
     // Its ticks are the import's (the watchdog's), its kernel calls too.
     let _ticking = Ticking::new(progress.clone());
     let clock = Instant::now();
@@ -359,6 +361,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             );
             let (sender, done) = mpsc::channel();
             let candidate = candidates[j].clone();
+            let scope = self.body_scope.scope();
             let started = Instant::now();
             let own = candidate_seconds(&candidate).map(|s| started + seconds(s));
             let owned_name = name.map(str::to_owned);
@@ -376,6 +379,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 let _tolerance = crate::refs::GeometricTolerance::set(tolerance);
                 let done = evaluate_on(
                     doc,
+                    scope,
                     &candidate,
                     owned_name.as_deref(),
                     component,

@@ -31,6 +31,7 @@
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
+#include "face_select.hpp"
 #include "mitcad/geometry/boolean.hpp"
 #include "mitcad/geometry/pattern.hpp"
 #include "mitcad/geometry/query.hpp"
@@ -103,10 +104,7 @@ std::vector<Planar> planar_faces(const Shape& body) {
     Planar planar;
     planar.face = face;
     planar.plane = surface.Plane();
-    planar.normal = planar.plane.Axis().Direction();
-    if (face.Orientation() == TopAbs_REVERSED) {
-      planar.normal.Reverse();
-    }
+    planar.normal = detail::planar_normal(face, planar.plane);
     BRepBndLib::Add(face, planar.box);
     if (planar.box.IsVoid()) {
       continue;
@@ -169,10 +167,7 @@ ShapePtr seam_of(const Shape& solid, const std::vector<Planar>& before) {
     if (surface.GetType() != GeomAbs_Plane) {
       continue;
     }
-    gp_Dir normal = surface.Plane().Axis().Direction();
-    if (face.Orientation() == TopAbs_REVERSED) {
-      normal.Reverse();
-    }
+    const gp_Dir normal = detail::planar_normal(face, surface.Plane());
     const std::vector<gp_Pnt> points = interior_points(face, 9);
     if (points.empty()) {
       continue;
@@ -293,10 +288,7 @@ std::vector<ShapePtr> supported_copies(const Shape& body, const std::vector<Shap
           bare_all = false;
           continue;
         }
-        gp_Dir normal = surface.Plane().Axis().Direction();
-        if (face.Orientation() == TopAbs_REVERSED) {
-          normal.Reverse();
-        }
+        const gp_Dir normal = detail::planar_normal(face, surface.Plane());
         const gp_Pnt origin = surface.Plane().Location();
         Bnd_Box box;
         BRepBndLib::Add(face, box);

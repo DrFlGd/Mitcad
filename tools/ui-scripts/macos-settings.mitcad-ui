@@ -1,0 +1,112 @@
+# SPDX-License-Identifier: MIT
+# Actual Qt macOS Settings, native menu shortcuts and non-modal tool windows.
+wait-idle
+expect-model-bodies 1 48000
+expect-never 'Conflicting saved shortcuts are disabled'
+command view.orthographic
+command view.environment.gradient
+focus-main
+key ctrl+,
+focus-dialog '^Settings$'
+command tools.preferences.display
+focus-dialog '^Settings$'
+expect-widget-property preferencesCamera currentIndex 0
+expect-widget-property preferencesBackground currentIndex 0
+
+# Menu changes while Settings remains open must update the existing controls.
+focus-main
+command view.perspective
+command view.environment.dark
+focus-dialog '^Settings$'
+expect-widget-property preferencesCamera currentIndex 1
+expect-widget-property preferencesBackground currentIndex 3
+expect-setting view/perspective true
+expect-setting view/background 3
+command tools.preferences.navigation
+focus-dialog '^Settings$'
+focus-widget preferencesReverseZoom
+key Space
+expect-setting view/perspective true
+expect-setting view/background 3
+
+# Closing an unchanged window must not commit a stale snapshot or reapply settings.
+focus-main
+command view.orthographic
+command view.environment.white
+focus-dialog '^Settings$'
+mark
+key ctrl+w
+expect-dialog-gone '^Settings$'
+expect-no-log '^Preferences:'
+expect-setting view/perspective false
+expect-setting view/background 2
+focus-main
+key ctrl+,
+focus-dialog '^Settings$'
+command tools.preferences.display
+focus-dialog '^Settings$'
+expect-widget-property preferencesCamera currentIndex 0
+expect-widget-property preferencesBackground currentIndex 2
+focus-widget preferencesCamera
+key End
+expect-setting view/perspective true
+focus-widget preferencesBackground
+key Home
+expect-setting view/background 0
+key ctrl+w
+expect-dialog-gone '^Settings$'
+
+# Typed cache budgets commit after the complete edit, arrows commit immediately.
+command tools.preferences.cache
+focus-dialog '^Settings$'
+focus-widget cacheDiskGigabytes
+key ctrl+a
+type 6
+key Return
+expect-setting cache/diskMegabytes 6144
+key ctrl+a
+type 2
+expect-widget-property cacheDiskGigabytes value 6
+expect-setting cache/diskMegabytes 6144
+type 0
+expect-widget-property cacheDiskGigabytes value 6
+expect-setting cache/diskMegabytes 6144
+key Return
+expect-widget-property cacheDiskGigabytes value 20
+expect-setting cache/diskMegabytes 20480
+key Up
+expect-setting cache/diskMegabytes 21504
+key Down
+expect-setting cache/diskMegabytes 20480
+focus-widget cacheMemoryMegabytes
+key ctrl+a
+type 1024
+key Return
+expect-setting cache/memoryMegabytes 1024
+key ctrl+a
+type 2
+expect-widget-property cacheMemoryMegabytes value 1024
+expect-setting cache/memoryMegabytes 1024
+type 048
+expect-widget-property cacheMemoryMegabytes value 1024
+key Return
+expect-setting cache/memoryMegabytes 2048
+focus-widget cacheDiskGigabytes
+key ctrl+a
+type 22
+key ctrl+w
+expect-dialog-gone '^Settings$'
+expect-setting cache/diskMegabytes 22528
+
+# Cmd+W from the global menu must close Parameters without replacing the design.
+focus-main
+command solid.parameters
+focus-dialog '^Parameters$'
+key ctrl+w
+expect-dialog-gone '^Parameters$'
+expect-model-bodies 1 48000
+focus-main
+mark
+key ctrl+w
+expect-log '^Document closed$'
+expect-model-bodies 0 0

@@ -2896,12 +2896,13 @@ named `Home` is the document's home view.
 
 ### Analyses
 
-Section analyses kept in the document (mitcad#41,
-`core/model/src/document/analyses.rs`): the browser's Analysis folder.
+Section analyses (mitcad#41) and print analyses (mitcad#620) kept in the
+document (`core/model/src/document/analyses.rs`): the browser's Analysis
+folder.
 
 | Command | Fields | Result |
 |---|---|---|
-| `add_analysis` | `def`, `name` (the next free `Section<n>` when left out) | `name`; undo step `Add Section1`. It is shown and the others are hidden |
+| `add_analysis` | `def`, `name` (the next free `Section<n>`, or `Print<n>` for a print analysis, when left out) | `name`; undo step `Add Section1`. It is shown and the others are hidden |
 | `edit_analysis` | `name`, `def`, `visible` (optional: true shows it and hides the others, false hides it; as it was when left out) | undo step `Edit Section1` unless nothing changes |
 | `set_analysis_visible` | `name`, `visible` | undo step `Show Section1` / `Hide Section1` unless nothing changes; showing hides the others |
 | `rename_analysis` | `name`, `new_name` | undo step `Rename Section1` |
@@ -2937,6 +2938,11 @@ origin is the plane's origin, see [References to
 geometry](#references-to-geometry)), or `error` when the plane cannot be
 found there (a face of a body that is gone or rolled back). A face
 reference follows the model by its topological name, as features' do.
+
+A `def` of `"type": "print"` is a [print analysis](#print-analysis): its
+bodies, bed face and settings, and in the `analyses` query `down` (the
+print direction at the marker) or `error` (a body or the bed face is
+gone).
 
 - At most one analysis is shown at a time: one section cuts the bodies.
   Showing one hides the others, also in a file read with several shown
@@ -3251,7 +3257,7 @@ timeline marker.
 | `dependents` | `uid` | `dependents`: `uid`, `name` of the features that refer to it, directly or through others, in timeline order (what `delete_feature` with `dependents` deletes too) |
 | `can_reorder` | `uid`, `index` | `ok`, and `error` (the reason `reorder_feature` would give) when not |
 | `sketch` | `uid` | see [Sketch commands](#sketch-commands) |
-| `threads` | | threads on the bodies (thread features and tapped holes): `feature`, `name`, `body`, `face`, `standard`, `designation`, `class`, `right_handed`, `modeled`, `major_diameter`, `minor_diameter`, `pitch`, and from the face `internal`, `radius`, `start`, `end` (points on the axis where the thread begins and ends; a cosmetic thread's end chamfers move them to where their cones meet the cylinder). A modelled thread feature that leaves no piece of its face (its crest inside the face: a class's diameters, a radial clearance) is still listed, with the face measured on the body before the feature, as long as the faces it made from it are on the body; its end chamfers then move `start` and `end` to where their cones meet the crest (mitcad#433). A tapped hole's modelled thread that leaves no piece of its wall (a radial clearance puts the crest off it) is listed on the wall as the hole measured it before cutting the thread, as long as the thread's faces made from it are on the body (mitcad#436) |
+| `threads` | | threads on the bodies (thread features and tapped holes): `feature`, `name`, `body`, `face`, `standard`, `designation`, `class`, `right_handed`, `modeled`, `major_diameter`, `minor_diameter`, `pitch`, and from the face `internal`, `radius`, `start`, `end` (points on the axis where the thread begins and ends; a cosmetic thread's end chamfers move them to where their cones meet the cylinder). A modelled thread whose crest lies on its face leaves pieces of the face between its grooves, and the face at the marker is measured. A modelled thread feature whose crest lies off its face (a class's diameters, a radial clearance) takes or covers all of the face along its part, leaving nothing of it (over the whole face) or only what lies outside the part, which does not show where the thread runs: it is listed with the face measured on the body before the feature, as long as the faces it made from it are on the body, and its end chamfers move `start` and `end` to where their cones meet the crest (mitcad#433, mitcad#628). A tapped hole's modelled thread whose crest lies off its wall (a radial clearance) is listed on the wall as the hole measured it before cutting the thread, as long as the thread's faces made from it are on the body (mitcad#436, mitcad#628); a result stored before mitcad#628 keeps only the walls left without any piece, and a part's wall in it is measured at the marker |
 | `thread_sizes` | `standard` (`iso_metric`, `unified`, `whitworth`, `npt`, `tyre_valve`, `forming_screw` or `trapezoidal`; all when left out) | `standards`, ISO metric first, then Unified, Whitworth (bolt sizes, then the pipe sizes `G 1/4`), NPT, tyre valve, forming screw and trapezoidal threads (`Tr8x1.5`, the preferred pitch first): `standard`, `title` (the thread type's name), `default` (true for ISO metric), `sizes` (smallest first: `size` as the table names it, `10`, `1/4`, `#10`; `major_diameter` mm; `designations`, the coarse pitch or UNC first, each one `thread` and `hole` accept), `classes_external`, `classes_internal`, `default_class_external` (6g, 2A, Medium, Standard, 7e), `default_class_internal` (6H, 2B, Medium, Standard, 7H) |
 | `thread_chamfer` | `designation`, `standard` (`iso_metric` when left out), `internal` (false when left out) | the size's default end chamfer ([thread](#thread), mitcad#304): `diameter` (mm, from the size table), `angle` (45, degrees to the axis) |
 | `named_views` | | in the order added: `name`, `eye`, `target`, `up`, `perspective` (when true), `height` |
@@ -11250,7 +11256,7 @@ involute teeth from parameters. The application's Gear panel makes them
 ([app/COMMANDS.md](../../../../app/COMMANDS.md#notes-on-particular-commands)).
 Tests: `features::gear_profile` and `features::gear_tests`,
 `features::seat_tests` (seated on shafts), `tools/cli/tests/gears.json`,
-`tools/cli/tests/gears_link.json`, `tools/ui-windows-gear-test.ps1`.
+`tools/cli/tests/gears_link.json`, `tools/ui-gear-test.sh`, `tools/ui-windows-gear-test.ps1`.
 
 ```json
 {"type": "gear", "kind": "helical", "plane": "xy", "center": [0, 0], "module": 2, "teeth": 20,
@@ -12567,4 +12573,159 @@ bore, and a [printable bearing](#printable-bearings) (mitcad#577) take a
 (the frame), `features::seat_tests` (pulleys and gears on the mock
 kernel), `tools/cli/tests/pulleys.json`, `tools/cli/tests/gears.json`,
 `tools/ui-pulley-test.sh`, `tools/ui-windows-pulley-test.ps1`,
-`tools/ui-windows-gear-test.ps1`.
+`tools/ui-gear-test.sh`, `tools/ui-windows-gear-test.ps1`.
+
+## Printed fit parameters
+
+The Thread, Gear, Pulley and Bearing panels offer ordinary user parameters
+for different printed fits. Their names, defaults, fields and comments
+come from one table in `core/model/src/print_fits.rs`:
+
+| Parameter | Panel field | Default |
+|---|---|---|
+| `thread_radial_clearance` | modelled thread `radial_clearance` | 0.1 mm |
+| `thread_flank_clearance` | modelled thread `flank_clearance` | 0.1 mm |
+| `shaft_bore_clearance` | seated gear or pulley `bore_clearance` | 0.2 mm |
+| `gear_backlash` | gear `backlash` | 0.2 mm |
+| `bearing_radial_clearance` | printable bearing `radial_clearance` | 0.4 mm |
+| `bearing_axial_clearance` | printable bearing `axial_clearance` | 0.4 mm |
+| `bearing_element_gap` | printable bearing `element_gap` | 0.6 mm |
+| `bearing_fit_clearance` | printable bearing `fit_clearance` | 0.5 mm |
+
+An explicit feature-field expression referencing one of these names
+creates the missing user parameter with its default, unit and a comment
+describing the fit and the printer quality that affects it. Creation and
+`add_feature` or `edit_feature` share one undo step: undo removes both,
+redo restores both, and a rejected command leaves neither behind.
+Previews use a private definition-state copy; canceling a panel adds no
+parameters. An applied feature with a geometry error keeps the parameters
+its definition uses, like other applied features.
+
+An existing parameter always wins: its value, unit and comment stay as
+they are. Features bind parameter IDs, so renaming keeps their references;
+the next explicit use of the old default name creates a new parameter.
+Deleting an in-use parameter is refused as for any other user parameter.
+
+Omitted fields keep their existing JSON API defaults. Numeric definitions,
+old files and imports acquire no fit parameters merely by opening or
+recomputing. Plain Hole has no new clearance field.
+
+`{"query":"printed_fit_parameters"}` returns the table as an array of
+`name`, `field`, `features`, `value` (millimetres), `unit` and `comment`.
+The panel's `evaluate` query can pass `"printed_fits":true` to evaluate
+not-yet-created fit names against a temporary parameter copy. Without
+that opt-in, unknown names remain errors. Definition-based `gear_values`,
+`pulley_values` and `bearing_values` also understand these prospective
+defaults; none of these queries changes the document.
+
+Tests: `print_fits::tests`, the shared `tools/ui-scripts/printed-fits.mitcad-ui`
+workflow, `ui-print-fits-test.sh`, `app.ui-windows-print-fits`,
+`app.ui-macos-print-fits` and `app.ui-macos-native-print-fits`.
+
+## Print analysis
+
+Where bodies will print badly and what they will take, before they go to
+a slicer (mitcad#620): overhangs, walls thinner than the printer makes,
+and an estimate of the filament, its mass and its cost. It is an analysis
+only: no body, feature, timeline or export changes, and the bed face only
+sets the analysis' print direction (no body moves; 3D Print's files stay
+as they are). The work is done in Rust (`core/model/src/print_analysis.rs`,
+the queries in `api/print.rs`) on what the kernel already gives: each
+body's `Kernel::triangle_mesh` (the 3MF export's mesh, the one a slicer
+gets) and `Kernel::physical_properties`.
+
+A print analysis is kept in the document as an [analysis](#analyses) with
+`"type": "print"` (default name `Print1`, `Print2`, …):
+
+```json
+{"type": "print", "bodies": ["F2.b0"], "bed_face": null,
+ "overhang": {"enabled": true, "angle": 45},
+ "thin_wall": {"enabled": true, "minimum": 0.8},
+ "estimate": {"enabled": true, "material": null, "line_width": 0.4, "walls": 2,
+              "layer_height": 0.2, "top_bottom_layers": 4, "infill": 0.15,
+              "filament_diameter": 1.75, "price_per_kg": null}}
+```
+
+| Field | Value |
+|---|---|
+| `bodies` | body uids, at least one: solids and mesh bodies |
+| `bed_face` | a planar face of one of the bodies ([face reference](#references-to-geometry)) lying on the bed: its outward normal is the print direction (down). It follows the model by its topological name, as a section's plane does. `null` (the default): the design's −Z is down and each body lies on its lowest point |
+| `overhang` | `enabled`, `angle` (degrees from the vertical, 0 to 90; 45 by default) |
+| `thin_wall` | `enabled`, `minimum` (mm, greater than zero; 0.8 by default, two line widths) |
+| `estimate` | `enabled`, `material` (a material id or name, [Visibility and display](#visibility-and-display) lists them; `null`: each body's own material, PLA for a body without one), `line_width` (mm, 0.4), `walls` (a whole number, 2), `layer_height` (mm, 0.2), `top_bottom_layers` (a whole number, 4), `infill` (a fraction from 0 to 1, 0.15), `filament_diameter` (mm, 1.75), `price_per_kg` (a number in any currency, `null` for no cost) |
+
+Fields left out take these defaults, also inside `overhang`, `thin_wall`
+and `estimate`; other fields are refused, in commands and in design files.
+`add_analysis` and `edit_analysis` refuse settings out of range, an
+unknown material, a body that is not there at the marker and a bed face
+that is not a planar face of one of the analysis' bodies. The `analyses`
+query gives each print analysis its file form with `down` (the unit print
+direction in design coordinates at the marker) or `error` (why a body or
+the bed face is not there; the analysis stays and the application shows
+it red with the reason). `enabled` is the application's: the queries
+below are asked for the parts that are on.
+
+Three queries do the work; the application asks them with a definition's
+settings. All take `bodies` (body uids; all bodies at the marker when
+empty or left out). A body is analysed where it is shown in the design:
+moved by its first shown occurrence (else its first one; a mirroring
+placement keeps its triangles facing out), so triangles and points are in
+design coordinates.
+
+| Query | Fields | Result |
+|---|---|---|
+| `print_overhangs` | `bodies`, `down` ([x, y, z], any length) or `bed_face` (a face reference; not both; neither: [0, 0, −1]), `angle` (45), `deviation` (mm; the 3MF export's 0.03 when left out) | `down` (unit), `angle`, `bodies`: [{`body`, `name`, `area` (mm²), `overhang_area` (mm²), `share` (0 to 1), `triangles`: [[x, y, z, x, y, z, x, y, z], …]}], `overhang_area`, `area` and `share` of all of them |
+| `print_thickness` | `bodies`, `minimum` (0.8), `deviation` | `minimum`, `bodies`: [{`body`, `name`, `thinnest` (mm, or `null` when no ray met the other side: an open mesh), `at` (the point of the thinnest wall on the surface, or `null`), `to` (the point on its other side), `regions` (connected groups of thin triangles), `triangles` (those of walls under the minimum, as above)}], `thinnest`, `at` and `regions` of all of them |
+| `print_estimate` | `bodies`, the `estimate` fields (`enabled` taken and ignored) | `volume`, `area` (mm³, mm²), `shell_volume`, `infill_volume`, `filament_volume` (mm³), `mass` (g), `length` (m of filament), `cost` (or `null` without a price), `material` (its name; the names of several, comma-separated), `material_id` (`null` for several), `density` (g/cm³; of several, the filament's mean), and `bodies`: the same per body with `body` and `name` |
+
+- **Overhangs:** a triangle of the body's mesh whose outward normal is
+  within `90° − angle` of straight down (`normal · down > sin(angle)`)
+  overhangs; a face exactly at the angle prints. Triangles facing down
+  with every corner within the mesh's deviation of the bed lie on the bed
+  and do not overhang: the bed is the bed face's plane, or the body's
+  lowest point along `down` without one. Curved faces are flagged where
+  they are steep, not as a whole.
+- **Thin walls:** from sample points on each triangle (its centroid; on a
+  triangle longer than 2 mm the centroids of an even subdivision, up to 8
+  per edge) a ray along the surface's inward normal to the first
+  triangle of the same mesh where it leaves the material (a bounding
+  volume hierarchy written in Rust); the triangle's wall is its shortest
+  ray. The surface's normal at a sample is interpolated from the normals
+  at the triangle's corners: there, the triangles that meet at the vertex
+  and face within 40° of the triangle, their area normals added up (a
+  triangle's own normal would miss the centre of a curved wall by the
+  triangle's tilt). On planar walls the value is exact (next to a tangent
+  blend within the blend's facet angle); on curved ones it is within the
+  mesh's deviation. A wall under `minimum` (by more than 0.000 001 mm) is thin;
+  thin triangles that share a corner, and the two sides of one wall, are
+  one region. The rays run on all cores.
+- **Estimate:** `volume` and `area` from `physical_properties`; shell =
+  area × walls × line width (the top and bottom layers counted in it, at
+  most the volume), infill = (volume − shell) × infill, filament = shell +
+  infill, mass = filament × density, length = filament / (π × (diameter /
+  2)²), cost = mass × price per kilogram. `layer_height` and
+  `top_bottom_layers` are kept with the settings and do not enter these
+  formulas.
+- **Errors:** a body that is not there at the marker, a bed face that does
+  not resolve to a planar face, or a mesh or volume the kernel cannot make
+  answer `{"error": "..."}` with the reason; settings out of range,
+  unknown fields and an unknown material are refused as other queries'
+  inputs are.
+- **Cancellation:** run inside a model job (`Document::attach_job`, the
+  job's `RecomputeMonitor`, [Progress and
+  cancellation](#progress-and-cancellation)), `print_overhangs` and
+  `print_thickness` check the job between bodies and the rays check it
+  every 256 triangles; a cancelled one is rejected with `the computation
+  was cancelled` and keeps nothing. Without a job (`mitcad-cli`) they run
+  to the end.
+- **Cache:** the meshes and results are kept in memory (the last 8 meshes
+  and 32 results) by the body, its shape's version, its placement, the
+  mesh tolerance and the settings, so showing an analysis again computes
+  nothing; a body that changes is meshed again.
+
+Tests: `print_analysis_tests` (the functions on meshes built in the test:
+a box, a bridge, a T, a tilted box, a sphere against the analytic share, a
+lying cylinder, a plate, a shelled box, the estimate of a 20 mm cube),
+`api::print_tests` (the definition, the queries on the mock kernel, the
+cache, cancellation, no change to bodies and the 3MF file),
+`tools/cli/tests/analysis.json` (a box and a sphere on the OCCT kernel).

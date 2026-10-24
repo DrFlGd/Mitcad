@@ -16,6 +16,7 @@
 #include <gp_Cone.hxx>
 #include <gp_Cylinder.hxx>
 
+#include "face_select.hpp"
 #include "util.hpp"
 
 namespace mitcad::geometry {
@@ -56,13 +57,7 @@ gp_Pln face_plane(const Shape& shape, const std::string& face) {
     if (surface.GetType() != GeomAbs_Plane) {
       throw std::invalid_argument("face " + face + " is not planar");
     }
-    // The outward normal: the surface's normal (x × y of its position,
-    // against the axis of a left-handed one, as revolutions make), turned
-    // for a reversed face.
-    gp_Dir normal = surface.Plane().Axis().Direction();
-    if (surface.Plane().Direct() == (faces.front().Orientation() == TopAbs_REVERSED)) {
-      normal.Reverse();
-    }
+    const gp_Dir normal = detail::planar_normal(faces.front(), surface.Plane());
     GProp_GProps props;
     for (const TopoDS_Face& piece : faces) {
       GProp_GProps own;

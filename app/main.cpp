@@ -17,6 +17,7 @@
 #include <optional>
 
 #include "MainWindow.hpp"
+#include "framework/CommandRegistry.hpp"
 #include "OcctViewer.hpp"
 #include "files/F3dImport.hpp"
 #include "files/FileOpenFilter.hpp"
@@ -357,6 +358,16 @@ int main(int argc, char* argv[]) {
     return 2;
   }
   mitcad::MainWindow& window = *ownedWindow;
+  // Check the actual registered defaults before showing a window or creating GL.
+  if (qEnvironmentVariableIntValue("MITCAD_TEST_DEFAULT_SHORTCUTS") == 1) {
+    const auto* registry = window.findChild<mitcad::CommandRegistry*>();
+    if (registry == nullptr) return 1;
+    const auto conflicts = registry->defaultShortcutConflicts();
+    for (const auto& conflict : conflicts) qCritical().noquote() << conflict.description();
+    if (!conflicts.isEmpty()) return 1;
+    qInfo() << "Registered default shortcuts have no conflicts";
+    return 0;
+  }
   if (!nativeUiRequested) {
     window.resize(1280, 800);
   }

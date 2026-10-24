@@ -162,6 +162,16 @@ impl BSplineCurve2d {
             && self.knots.len() >= 2
             && self.mults.iter().sum::<usize>() == self.poles.len() + self.degree + 1
             && self.knots.windows(2).all(|w| w[0] < w[1])
+            && self
+                .weights
+                .as_ref()
+                .is_none_or(|w| w.len() == self.poles.len())
+    }
+
+    /// Parameter range where the curve is defined.
+    pub fn range(&self) -> (f64, f64) {
+        let flat = full_knots(&self.knots, &self.mults);
+        (flat[self.degree], flat[flat.len() - 1 - self.degree])
     }
 }
 
@@ -252,6 +262,14 @@ pub enum Curve {
         params: Vec<f64>,
         points: Vec<P3>,
     },
+    /// A surface along a curve in its parameter space, at the parameter
+    /// curve's parameter: for curves on surfaces only the builder makes (a
+    /// rolling-ball blend's contact tracks, mitcad#621). Not evaluated
+    /// here: [`Curve::eval`] gives NaN.
+    OnSurface {
+        surface: Box<Surface>,
+        pcurve: BSplineCurve2d,
+    },
 }
 
 impl Curve {
@@ -301,6 +319,7 @@ impl Curve {
                 }
                 p
             }
+            Curve::OnSurface { .. } => [f64::NAN; 3],
         }
     }
 
@@ -309,6 +328,7 @@ impl Curve {
         match self {
             Curve::BSpline(b) => Some(b.range()),
             Curve::Interpolated { params, .. } => Some((*params.first()?, *params.last()?)),
+            Curve::OnSurface { pcurve, .. } => Some(pcurve.range()),
             _ => None,
         }
     }
@@ -322,6 +342,7 @@ impl Curve {
             Curve::Ellipse { .. } => "ellipse",
             Curve::BSpline(_) => "bspline",
             Curve::Interpolated { .. } => "interpolated",
+            Curve::OnSurface { .. } => "on surface",
         }
     }
 }
@@ -339,6 +360,8 @@ impl Curve {
 /// - `Ruled`: du x dv of `S(u, v) = (1 - u) from(v) + u to(v)`, `u` in
 ///   [0, 1].
 /// - `ArcSweep`: du x dv, `u` in [0, 1] along the arcs.
+/// - `RollingBall`: du x dv, `u` across the section from the first
+///   support's contact, `v` along the spine.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Surface {
     Plane {
@@ -393,11 +416,33 @@ pub enum Surface {
         sections: Vec<Curve>,
         weights: Vec<f64>,
     },
+    /// The surface a ball of `radius` sweeps while its centre runs along
+    /// `spine` over `range` touching both supports (a rolling-ball blend
+    /// stored without its approximation, mitcad#621). The builder makes it
+    /// with OCCT's blend walking: `u` in [0, 1] across the section from the
+    /// first support's contact to the second's, `v` the spine's parameter.
+    RollingBall {
+        supports: Box<[BlendSupport; 2]>,
+        spine: Curve,
+        range: [f64; 2],
+        /// The part of `range` the surface must cover (a face's, a curve's):
+        /// the ball may leave a support in the rest.
+        needed: [f64; 2],
+        radius: f64,
+    },
+}
+
+/// What a rolling ball touches on one side.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BlendSupport {
+    Surface(Surface),
+    Curve(Curve),
 }
 
 impl Surface {
     pub fn kind(&self) -> &'static str {
         match self {
+            Surface::RollingBall { .. } => "rolling-ball blend",
             Surface::Ruled { .. } => "ruled",
             Surface::ArcSweep { .. } => "arc sweep",
             Surface::Plane { .. } => "plane",

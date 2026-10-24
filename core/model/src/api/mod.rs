@@ -55,6 +55,8 @@ mod seats;
 // The enums of commands and queries with their names, and the table of
 // command families (mitcad#585).
 mod dispatch;
+// Print Analysis: overhangs, thin walls and a print estimate (mitcad#620).
+mod print;
 // Section Analysis worked out without the document, off the UI thread
 // (mitcad#438).
 pub use analysis::{PreparedClips, PreparedQuery};
@@ -409,6 +411,7 @@ named_enum! {
         // Value inputs of command panels (U1, `evaluate.rs`).
         "evaluate" => Evaluate(evaluate::EvaluateQuery),
         "parameters" => Parameters,
+        "printed_fit_parameters" => PrintedFitParameters,
         "bodies" => Bodies {
             #[serde(default)]
             properties: bool,
@@ -617,6 +620,10 @@ named_enum! {
         "bearing_sizes" => BearingSizes(bearings::BearingSizesQuery),
         // Seats on shafts (mitcad#578, `seats.rs`).
         "seat_frame" => SeatFrame(seats::SeatFrameQuery),
+        // Print Analysis (mitcad#620, `print.rs`).
+        "print_overhangs" => PrintOverhangs(print::OverhangsQuery),
+        "print_thickness" => PrintThickness(print::ThicknessQuery),
+        "print_estimate" => PrintEstimate(print::EstimateQuery),
     }
 }
 
@@ -1158,6 +1165,7 @@ impl<K: Kernel> Document<K> {
             Query::Timeline => self.timeline_json(),
             // Value inputs of command panels (U1, `evaluate.rs`).
             Query::Evaluate(query) => self.evaluate_json(&query)?,
+            Query::PrintedFitParameters => crate::print_fits::json(),
             Query::Parameters => {
                 let params = self.parameters();
                 Value::Array(
@@ -1423,6 +1431,10 @@ impl<K: Kernel> Document<K> {
             Query::BearingSizes(query) => self.bearing_sizes_json(&query)?,
             // Seats on shafts (mitcad#578).
             Query::SeatFrame(query) => self.seat_frame_json(&query)?,
+            // Print Analysis (mitcad#620).
+            Query::PrintOverhangs(query) => self.print_overhangs_json(&query)?,
+            Query::PrintThickness(query) => self.print_thickness_json(&query)?,
+            Query::PrintEstimate(query) => self.print_estimate_json(&query)?,
         };
         Ok(result.to_string())
     }
@@ -1784,6 +1796,9 @@ mod sketch_text_473_tests;
 // The sketch's own axes and origin as entities (mitcad#500).
 #[cfg(test)]
 mod sketch_axes_tests;
+// Print Analysis kept in the document and its queries (mitcad#620).
+#[cfg(test)]
+mod print_tests;
 
 /// The feature a command edits by name (mitcad#401): `edit_feature`,
 /// `suppress_feature` and `reorder_feature` its `uid`, a sketch command

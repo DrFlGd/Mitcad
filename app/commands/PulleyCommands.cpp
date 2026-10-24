@@ -247,7 +247,10 @@ CommandDef pulleyCommand(const CommandContext& context) {
     while (at < def.inputs.size() && def.inputs.at(at).id != QStringLiteral("plane")) {
       ++at;
     }
-    for (const InputDef& input : seatInputList) {
+    for (InputDef input : seatInputList) {
+      if (input.id == QStringLiteral("bore_clearance")) {
+        input.withPrintedFit(QStringLiteral("pulley"));
+      }
       def.inputs.insert(at++, input);
     }
   }

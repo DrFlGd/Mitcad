@@ -35,6 +35,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QTimer>
@@ -552,6 +553,7 @@ void ViewController::registerCommands() {
   // setting is.
   for (const PreferencePage& entry : kPreferencePages) {
     CommandDef page = preferences;
+    page.shortcut = QKeySequence();
     const QString id = QLatin1String(entry.id);
     const QString name = QCoreApplication::translate("View", entry.name);
     page.id = QStringLiteral("tools.preferences.%1").arg(id);
@@ -695,6 +697,7 @@ void ViewController::setPerspective(bool perspective) {
   m_settings.save();
   m_viewer.setPerspective(perspective);
   syncChecks();
+  emit displaySettingsChanged();
   qDebug().noquote() << (perspective ? QStringLiteral("Camera perspective")
                                      : QStringLiteral("Camera orthographic"));
 }
@@ -702,6 +705,7 @@ void ViewController::setPerspective(bool perspective) {
 void ViewController::setBackground(ViewSettings::Background background) {
   m_settings.background = background;
   m_settings.save();
+  emit displaySettingsChanged();
   QColor top;
   QColor bottom;
   bool gradient = true;
@@ -1102,6 +1106,7 @@ void ViewController::showPreferences(const QString& page) {
   auto* zoomToCursor = new QCheckBox(tr("Zoom about the cursor"));
   zoomToCursor->setChecked(m_settings.navigation.zoomToCursor);
   auto* reverseZoom = new QCheckBox(tr("Reverse the zoom direction"));
+  reverseZoom->setObjectName(QStringLiteral("preferencesReverseZoom"));
   reverseZoom->setChecked(m_settings.navigation.reverseZoom);
   auto* constrained = new QCheckBox(tr("Constrained orbit (Z stays up)"));
   constrained->setChecked(m_settings.navigation.constrainedOrbit);
@@ -1115,10 +1120,12 @@ void ViewController::showPreferences(const QString& page) {
   QWidget* displayBox = section(tr("Display"));
   auto* display = new QFormLayout(displayBox);
   auto* camera = new QComboBox;
+  camera->setObjectName(QStringLiteral("preferencesCamera"));
   camera->addItems({tr("Orthographic"), tr("Perspective")});
   camera->setCurrentIndex(m_settings.perspective ? 1 : 0);
   display->addRow(tr("Camera:"), camera);
   auto* background = new QComboBox;
+  background->setObjectName(QStringLiteral("preferencesBackground"));
   for (const BackgroundEntry& entry : kBackgrounds) {
     QString name = QCoreApplication::translate("View", entry.name);
     if (window != nullptr && entry.background == ViewSettings::Background::Automatic) {
@@ -1150,6 +1157,24 @@ void ViewController::showPreferences(const QString& page) {
   };
   auto* topButton = colorButton(top, tr("Top Colour"));
   auto* bottomButton = colorButton(bottom, tr("Bottom Colour"));
+  if (window != nullptr) {
+    connect(this, &ViewController::displaySettingsChanged, host,
+            [this, camera, background, top, bottom, topButton, bottomButton] {
+      const QSignalBlocker cameraSignals(camera);
+      const QSignalBlocker backgroundSignals(background);
+      camera->setCurrentIndex(m_settings.perspective ? 1 : 0);
+      background->setCurrentIndex(int(m_settings.background));
+      *top = m_settings.top;
+      *bottom = m_settings.bottom;
+      topButton->setIcon(swatchIcon(*top));
+      topButton->setText(top->name());
+      bottomButton->setIcon(swatchIcon(*bottom));
+      bottomButton->setText(bottom->name());
+      const bool custom = m_settings.background == ViewSettings::Background::Custom;
+      topButton->setEnabled(custom);
+      bottomButton->setEnabled(custom);
+    });
+  }
   display->addRow(tr("Custom top:"), topButton);
   display->addRow(tr("Custom bottom:"), bottomButton);
   const auto enableCustom = [background, topButton, bottomButton] {
@@ -1507,7 +1532,10 @@ void ViewController::showPreferences(const QString& page) {
         connect(edit, &QLineEdit::editingFinished, host, changed);
       }
     }
-    window->setClosedHandler(changed);
+    window->setClosedHandler([window] {
+      // Flush only an unfinished editor; closing an unchanged window commits nothing.
+      if (QWidget* editor = window->focusWidget()) editor->clearFocus();
+    });
     window->setWindowTitle(tr("Settings"));
     window->showPane(wantedIndex);
     showDialog(window);

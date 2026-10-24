@@ -522,3 +522,22 @@ points off a wavy spline of many knot spans and off its prism's extruded
 sides, in two calls: every distance OCCT's query's within 1e-6, and the
 query itself not run (`analysis_whole_face_searches`).
 
+## Import into a document with existing bodies
+
+History replay records the receiving document's body UIDs and shape versions
+before importing (`src/body_scope.rs`, mitcad#624). Those solids and sheets
+are outside this import: references, candidate signatures, geometric shape
+checks, fallback replacement and the final report see only replayed bodies.
+Identical geometry cannot make an existing body stand for an imported one.
+The same scope follows candidate workers' document copies. Its guard is tied
+to the actual document and restores the preceding scope when dropped, so
+nested imports and separate documents with the same UIDs remain independent.
+
+Implicit boolean participants are restricted to imported solids. An initial
+join without an imported target creates a new body, and a candidate that
+would change or remove a receiving body is undone and rejected. The `.ipt`
+wrapper also limits its measured imported-body report to new UIDs. The mock
+tests cover matching and different existing solids, existing sheets, verified
+and fallback replay, worker copies and undo/redo; `core.exchange` checks the
+same case with the synthetic hidden steel cube and an existing aluminum cube.
+

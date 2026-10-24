@@ -31,6 +31,8 @@ CachePreferencesBox::CachePreferencesBox(std::function<void()> diagnostics, QWid
       m_settings(CacheSettings::load()) {
   auto* form = new QFormLayout(this);
   m_memorySize = new QSpinBox;
+  m_memorySize->setObjectName(QStringLiteral("cacheMemoryMegabytes"));
+  m_memorySize->setKeyboardTracking(false);
   m_memorySize->setRange(CacheSettings::kMinMemoryMegabytes,
                          static_cast<int>(std::max<qint64>(CacheSettings::kMinMemoryMegabytes,
                                                            CacheSettings::physicalMegabytes())));
@@ -54,6 +56,8 @@ CachePreferencesBox::CachePreferencesBox(std::function<void()> diagnostics, QWid
   m_disk->setToolTip(tr("Opening a design again takes its costly features from there instead of "
                         "computing them again"));
   m_diskSize = new QSpinBox;
+  m_diskSize->setObjectName(QStringLiteral("cacheDiskGigabytes"));
+  m_diskSize->setKeyboardTracking(false);
   m_diskSize->setRange(CacheSettings::kMinDiskGigabytes, CacheSettings::kMaxDiskGigabytes);
   m_diskSize->setSuffix(tr(" GB"));
   m_diskSize->setValue(static_cast<int>((m_settings.diskMegabytes + 512) / 1024));

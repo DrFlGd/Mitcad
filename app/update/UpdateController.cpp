@@ -279,7 +279,7 @@ void UpdateController::onDownloaded(const QString& path) {
 void UpdateController::finish(const QString& path) {
   const QString current = m_client->source().currentVersion;
   QString error;
-  if (!stageUpdate(m_installation, path, current, m_offer.version, error)) {
+  if (!stageUpdate(m_installation, path, m_offer.sha256, current, m_offer.version, error)) {
     QFile::remove(path);
     m_state = State::Idle;
     m_notice->showMessage(tr("Mitcad %1 was not installed: %2").arg(m_offer.version, error), true);

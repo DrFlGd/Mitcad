@@ -688,6 +688,7 @@ void SketchController::logView() {
                                 .arg(qRound(at.y() + window.y()));
     }
   }
+  m_overlay->logDimensionHalos();
 }
 
 // ---------------------------------------------------------------------------

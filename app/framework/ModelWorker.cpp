@@ -15,10 +15,13 @@ constexpr unsigned kStackSize = 256u << 20;
 
 } // namespace
 
-ModelWorker::ModelWorker(QObject* parent) : QThread(parent) {
+ModelWorker::ModelWorker(QObject* parent, WorkerThreadStarter starter)
+    : QThread(parent), m_starter(std::move(starter)) {
   setObjectName(QStringLiteral("model worker"));
   setStackSize(kStackSize);
 }
+
+bool ModelWorker::ensureStarted(QString& error) { return startWorkerThread(*this, error, m_starter); }
 
 ModelWorker::~ModelWorker() {
   {
@@ -30,6 +33,10 @@ ModelWorker::~ModelWorker() {
 }
 
 void ModelWorker::post(std::function<void()> job) {
+  QString error;
+  if (!ensureStarted(error)) {
+    throw std::runtime_error(error.toStdString());
+  }
   {
     const std::lock_guard<std::mutex> lock(m_mutex);
     Q_ASSERT(!m_busy);

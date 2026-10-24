@@ -493,10 +493,14 @@ fi
 if wanted build; then
   step build cmake --build --preset dev || { echo "build failed"; exit 1; }
   BUILT=1
-  # The build is to be warning-free (what it compiled, that is).
-  warnings=$(grep -cE '(^| )warning(\[[^]]*\])?: ' "$LOGS/build.log")
+  # The build is to be warning-free (what it compiled, that is). vcpkg's
+  # note that a port has many files (the OCCT port's patches) is not
+  # about the code; it shows whenever vcpkg hashes the port again.
+  warnings=$(grep -E '(^| )warning(\[[^]]*\])?: ' "$LOGS/build.log" |
+    grep -vc 'files. Hashing these contents may take a long time')
   if [ "$warnings" -gt 0 ]; then
-    grep -E '(^| )warning(\[[^]]*\])?: ' "$LOGS/build.log" | head -20
+    grep -E '(^| )warning(\[[^]]*\])?: ' "$LOGS/build.log" |
+      grep -v 'files. Hashing these contents may take a long time' | head -20
     record "build warnings" - "FAIL($warnings)"
   fi
 fi

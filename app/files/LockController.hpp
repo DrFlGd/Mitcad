@@ -245,6 +245,9 @@ private:
   // Sends the versions and releases this session's locks and requests;
   // false when the user chose to keep the design (Resolve Sync).
   bool closeLock(bool quit);
+  // Save As already wrote the new file; finish its lock transfer after
+  // Resolve Sync succeeds, retaining the old lock and its timers meanwhile.
+  void finishSavedTransition();
   bool releaseAll(const QString& label);
   void releaseByUser();
   void showDetails();
@@ -276,6 +279,7 @@ private:
   Why m_why = Why::HeldByOther;
   QString m_root;     // the design's project ("" none)
   QString m_path;     // the design's file (absolute, "" untitled)
+  QString m_pendingSaved; // a saved filename waiting for the old lock's sync
   QString m_relative; // in the project, with "/"
   QString m_fileId;   // SHA-256 of m_relative (the lock's id)
   QString m_myName;   // the project's author's name (myName)

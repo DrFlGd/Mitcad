@@ -34,6 +34,7 @@
 #include <Bnd_Box.hxx>
 #include <ElCLib.hxx>
 #include <ElSLib.hxx>
+#include <Geom2d_BSplineCurve.hxx>
 #include <Geom2d_Line.hxx>
 #include <GeomAPI_Interpolate.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
@@ -101,6 +102,7 @@
 #include <gp_Vec.hxx>
 
 #include "mitcad/analysis/common.hpp"
+#include "blend_surfaces.hpp"
 #include "mitcad/geometry/guard.hpp"
 #include "util.hpp"
 
@@ -111,6 +113,7 @@ constexpr int kCurveLine = 0;
 constexpr int kCurveEllipse = 1;
 constexpr int kCurveBSpline = 2;
 constexpr int kCurveInterpolated = 3;
+constexpr int kCurveOnSurface = 4;
 
 constexpr int kSurfacePlane = 0;
 constexpr int kSurfaceCone = 1;
@@ -121,6 +124,7 @@ constexpr int kSurfaceExtrusion = 5;
 constexpr int kSurfaceRevolution = 6;
 constexpr int kSurfaceRuled = 7;
 constexpr int kSurfaceArcSweep = 8;
+constexpr int kSurfaceRollingBall = 9;
 
 constexpr double kPi = 3.14159265358979323846;
 
@@ -182,6 +186,8 @@ private:
   std::size_t m_rp;
   std::size_t m_rend;
 };
+
+Handle(Geom_Surface) make_surface(Reader& in, int kind);
 
 Handle(Geom_Curve) make_curve(Reader& in, int kind) {
   switch (kind) {
@@ -255,6 +261,41 @@ Handle(Geom_Curve) make_curve(Reader& in, int kind) {
       throw std::runtime_error("curve interpolation failed");
     }
     return Handle(Geom_Curve)(interpolate.Curve());
+  }
+  case kCurveOnSurface: {
+    // A surface the builder makes along a curve in its parameters (a
+    // rolling-ball blend's contact tracks, mitcad#621).
+    const int surface_kind = in.integer();
+    const Handle(Geom_Surface) surface = make_surface(in, surface_kind);
+    const int degree = in.integer();
+    const int nk = in.count();
+    const int np = in.count();
+    const bool rational = in.integer() != 0;
+    NCollection_Array1<int> mults(1, nk);
+    for (int i = 1; i <= nk; ++i) {
+      mults(i) = in.integer();
+    }
+    NCollection_Array1<double> knots(1, nk);
+    for (int i = 1; i <= nk; ++i) {
+      knots(i) = in.real();
+    }
+    NCollection_Array1<gp_Pnt2d> poles(1, np);
+    for (int i = 1; i <= np; ++i) {
+      const double u = in.real();
+      const double v = in.real();
+      poles(i) = gp_Pnt2d(u, v);
+    }
+    Handle(Geom2d_BSplineCurve) pcurve;
+    if (rational) {
+      NCollection_Array1<double> weights(1, np);
+      for (int i = 1; i <= np; ++i) {
+        weights(i) = in.real();
+      }
+      pcurve = new Geom2d_BSplineCurve(poles, weights, knots, mults, degree);
+    } else {
+      pcurve = new Geom2d_BSplineCurve(poles, knots, mults, degree);
+    }
+    return curve_on_surface(surface, pcurve);
   }
   default:
     throw std::runtime_error("unknown curve kind " + std::to_string(kind));
@@ -477,6 +518,27 @@ Handle(Geom_Surface) make_surface(Reader& in, int kind) {
       sections.push_back(make_curve(in, section_kind));
     }
     return make_arc_sweep(sections, weights);
+  }
+  case kSurfaceRollingBall: {
+    // A rolling-ball blend stored without its approximation (mitcad#621).
+    const double radius = in.real();
+    const double v0 = in.real();
+    const double v1 = in.real();
+    const double n0 = in.real();
+    const double n1 = in.real();
+    BlendSupport supports[2];
+    for (BlendSupport& support : supports) {
+      const bool is_curve = in.integer() != 0;
+      const int support_kind = in.integer();
+      if (is_curve) {
+        support.curve = make_curve(in, support_kind);
+      } else {
+        support.surface = make_surface(in, support_kind);
+      }
+    }
+    const int spine_kind = in.integer();
+    const Handle(Geom_Curve) spine = make_curve(in, spine_kind);
+    return rolling_ball_surface(supports[0], supports[1], spine, radius, v0, v1, n0, n1);
   }
   default:
     throw std::runtime_error("unknown surface kind " + std::to_string(kind));
@@ -828,6 +890,7 @@ TopoDS_Shape build_topology(const Body& body, const BuildOptions& options, Build
       }
     }
     bool complete = true;
+    int wires = 0;
     for (std::uint32_t l = f.first_loop; l < f.first_loop + f.loop_count && l < body.loops.size(); ++l) {
       const Loop& lp = body.loops[l];
       TopoDS_Wire wire;
@@ -865,7 +928,16 @@ TopoDS_Shape build_topology(const Body& body, const BuildOptions& options, Build
       if (added > 0) {
         wire.Closed(complete);
         builder.Add(face, wire);
+        ++wires;
       }
+    }
+    // A face whose loops all lost every edge would be its whole surface,
+    // unbounded on a plane or a cylinder (mitcad#589: a body of such faces
+    // came in as a solid of infinite planes): it is not built.
+    if (f.loop_count > 0 && wires == 0) {
+      ++report.faces_failed;
+      note(report, "face " + std::to_string(i) + ": none of its loops could be built");
+      continue;
     }
     // Point loops: a degenerated edge at the apex of a cone or the pole of
     // a sphere or of a surface of revolution, on the side of the face's

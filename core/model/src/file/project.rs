@@ -111,11 +111,45 @@ impl FsStore {
         let name = sha256.to_string();
         self.dir.join(&name[..2]).join(format!("{name}.brep.zlib"))
     }
+
+    /// Never follow a link in a store supplied by another project participant.
+    fn checked_path(&self, sha256: &Sha256) -> io::Result<PathBuf> {
+        let path = self.path(sha256);
+        let shard = path.parent().expect("a store file has a parent");
+        let marker = self
+            .dir
+            .parent()
+            .filter(|p| p.file_name().is_some_and(|n| n == ".mitcad"));
+        for at in marker
+            .into_iter()
+            .chain([self.dir.as_path(), shard, path.as_path()])
+        {
+            match fs::symlink_metadata(at) {
+                Ok(metadata)
+                    if metadata.file_type().is_symlink()
+                        || (at != path && !metadata.is_dir())
+                        || (at == path && !metadata.is_file()) =>
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "the store path {} is not a regular file or folder",
+                            at.display()
+                        ),
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(path)
+    }
 }
 
 impl BlobStore for FsStore {
     fn get(&self, sha256: &Sha256) -> io::Result<Option<Vec<u8>>> {
-        match fs::read(self.path(sha256)) {
+        match fs::read(self.checked_path(sha256)?) {
             Ok(content) => Ok(Some(content)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
@@ -123,11 +157,11 @@ impl BlobStore for FsStore {
     }
 
     fn contains(&self, sha256: &Sha256) -> io::Result<bool> {
-        Ok(self.path(sha256).is_file())
+        Ok(self.checked_path(sha256)?.is_file())
     }
 
     fn put(&self, sha256: &Sha256, content: &[u8]) -> io::Result<()> {
-        let path = self.path(sha256);
+        let path = self.checked_path(sha256)?;
         if path.is_file() {
             return Ok(());
         }

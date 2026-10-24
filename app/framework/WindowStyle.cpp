@@ -27,6 +27,7 @@
 #include <QtLogging>
 
 #include "AutoselectPanel.hpp"
+#include "SelectionCreate.hpp"
 #include "Theme.hpp"
 #include "../platform/WindowsFrame.hpp"
 
@@ -430,6 +431,10 @@ WindowStyle::WindowStyle(QMainWindow* window) : QObject(window), m_window(window
   // box's frame.
   if (auto* autoselect = window->findChild<AutoselectPanel*>()) {
     autoselect->setSectionTitle(new SectionTitle(autoselect->title()));
+  }
+  // Its Create row above it likewise (mitcad#619).
+  if (auto* create = window->findChild<SelectionCreatePanel*>()) {
+    create->setSectionTitle(new SectionTitle(create->title()));
   }
   window->installEventFilter(this);
   // The theme's palette changes reach the window's children (the menu bar

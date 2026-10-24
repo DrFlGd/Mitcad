@@ -47,6 +47,9 @@ if(APPLE)
   if(NOT MITCAD_CYCLES_BUILDER_SHA256 STREQUAL mitcad_render_builder_sha256)
     message(FATAL_ERROR "The macOS renderer prefix was made by an older dependency builder. ${mitcad_render_rebuild}")
   endif()
+  if(NOT "MITCAD_CYCLES_NATIVE_DISPLAY_PASSES" IN_LIST MITCAD_CYCLES_DEFINITIONS)
+    message(FATAL_ERROR "The macOS renderer prefix lacks native auxiliary pass support. ${mitcad_render_rebuild}")
+  endif()
   set(mitcad_render_input_hashes "")
   foreach(input vcpkg.json triplets/arm64-osx-dynamic.cmake
                 third_party/oidn/respect-macos-deployment-target.patch
@@ -54,7 +57,9 @@ if(APPLE)
                 third_party/cycles/denoiser-diagnostics.patch
                 third_party/cycles/metal-pipeline-failure.patch
                 third_party/cycles/metal-cancellation-diagnostic.patch
-                third_party/cycles/denoiser-preview-batches.patch)
+                third_party/cycles/denoiser-preview-batches.patch
+                third_party/cycles/metal-external-buffer-usage.patch
+                third_party/cycles/native-display-passes.patch)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/${input}")
     file(SHA256 "${PROJECT_SOURCE_DIR}/${input}" mitcad_render_input_sha256)
     string(APPEND mitcad_render_input_hashes "${mitcad_render_input_sha256}\n")

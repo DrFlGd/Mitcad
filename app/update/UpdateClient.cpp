@@ -252,6 +252,7 @@ void UpdateClient::readManifest(const QByteArray& data) {
     offer.hasDownload = !asset.isEmpty();
     offer.url = asset.value(QStringLiteral("url")).toString();
     offer.size = static_cast<qint64>(asset.value(QStringLiteral("size")).toDouble());
+    offer.sha256 = asset.value(QStringLiteral("sha256")).toString();
     offer.manifest = data;
   } catch (const std::exception& e) {
     fail(tr("The update manifest was refused: %1.").arg(errorText(e)));

@@ -26,13 +26,17 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScreen>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QShowEvent>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QtLogging>
 
 #include "../framework/AppSettings.hpp"
 #include "../framework/Dialogs.hpp"
+#include "../framework/FitToScreen.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
@@ -315,10 +319,15 @@ public:
 
 protected:
   void changeEvent(QEvent* event) override;
+  void showEvent(QShowEvent* event) override;
   void reject() override;
 
 private:
   QString folder() const { return cleanFolder(m_folder->text()); }
+  // The dialog as tall as its contents, within the screen (mitcad#631).
+  void fitToContents(FitMode mode = FitMode::Fit);
+  // Logs the layout once it has settled, for the UI tests.
+  void logLayout();
   bool cloud() const { return m_cloudChoice->isChecked(); }
   void folderChanged();
   void folderChecked();
@@ -330,6 +339,7 @@ private:
 
   std::optional<NewProjectResult> m_result;
   std::unique_ptr<FolderCheck> m_check;
+  QScrollArea* m_scroll = nullptr;
   QLineEdit* m_folder = nullptr;
   QPushButton* m_browse = nullptr;
   QRadioButton* m_local = nullptr;
@@ -356,11 +366,13 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
     : QDialog(parent) {
   setWindowTitle(options.title.isEmpty() ? tr("New Project") : options.title);
   auto* outer = new QVBoxLayout(this);
-  auto* scroll = new QScrollArea;
+  // As tall as its contents (no fixed maximum): the dialog opens at its
+  // full height, and the scroll bar is for a screen too low for it.
+  auto* scroll = new FittingScrollArea;
+  m_scroll = scroll;
   scroll->setWidgetResizable(true);
   scroll->setFrameShape(QFrame::NoFrame);
-  scroll->setMinimumSize(620, 400);
-  scroll->setMaximumHeight(620);
+  scroll->setMinimumSize(620, 240);
   auto* contents = new QWidget;
   auto* layout = new QVBoxLayout(contents);
   scroll->setWidget(contents);
@@ -467,13 +479,16 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
       m_section->recheck();
     }
     updateState();
-    adjustSize();
+    fitToContents();
+    logLayout();
   });
   for (QLineEdit* edit : {m_name, m_email}) {
     connect(edit, &QLineEdit::textChanged, this, [this] { updateState(); });
   }
   connect(m_section, &CloudSection::addressChanged, this, [this] { updateState(); });
   connect(m_section, &CloudSection::checked, this, [this] { updateState(); });
+  // The Details opened or closed: the section already fitted the window.
+  connect(m_section, &CloudSection::detailsToggled, this, [this] { logLayout(); });
   connect(m_create, &QPushButton::clicked, this, [this] { createClicked(); });
   connect(m_openInstead, &QPushButton::clicked, this, [this] {
     m_section->stopCheck();
@@ -507,6 +522,37 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   if (preset) {
     qInfo().noquote() << QStringLiteral("New Project dialog: storage cloud");
   }
+  // The size before it is shown, where it is centred over the window.
+  fitToContents();
+}
+
+void NewProjectDialog::fitToContents(FitMode mode) { fitWindowToContents(this, mode); }
+
+void NewProjectDialog::showEvent(QShowEvent* event) {
+  QDialog::showEvent(event);
+  // The window frame is known now: its real size is taken off the screen.
+  fitToContents();
+  logLayout();
+}
+
+void NewProjectDialog::logLayout() {
+  // After the resize and the scroll area's layout have been handled.
+  QTimer::singleShot(50, this, [this] {
+    if (!isVisible()) {
+      return;
+    }
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    const QScreen* screenNow = screen();
+    const int room = screenNow != nullptr ? screenNow->availableGeometry().height() : 0;
+    qInfo().noquote() << QStringLiteral("New Project dialog: layout storage %1, details %2, vertical scroll bar %3 "
+                                        "(dialog height %4, screen room %5)")
+                             .arg(cloud() ? QStringLiteral("cloud") : QStringLiteral("local"),
+                                  m_section->detailsOpen() ? QStringLiteral("open") : QStringLiteral("closed"),
+                                  m_scroll->verticalScrollBar()->isVisible() ? QStringLiteral("shown")
+                                                                             : QStringLiteral("hidden"))
+                             .arg(height())
+                             .arg(room);
+  });
 }
 
 void NewProjectDialog::changeEvent(QEvent* event) {
@@ -607,6 +653,11 @@ void NewProjectDialog::updateState() {
   m_localForNow->setVisible(cloud() && !opens &&
                             (cls == QLatin1String("network") || cls == QLatin1String("timed_out")));
   m_localForNow->setEnabled(!authorOf(m_name, m_email).isEmpty());
+  if (isVisible()) {
+    // A longer note or message: the window grows with it instead of the
+    // contents scrolling.
+    fitToContents(FitMode::GrowOnly);
+  }
 }
 
 void NewProjectDialog::createClicked() {
@@ -686,6 +737,9 @@ void NewProjectDialog::create(bool asCloud) {
   setBusy(true);
   m_progress->follow(task, asCloud ? tr("Creating the project and sending it to %1...").arg(url)
                                    : tr("Creating the project..."));
+  // The progress row is shown: room for it, so that the contents do not
+  // start to scroll.
+  fitToContents(FitMode::GrowOnly);
   connect(task, &RemoteTask::finished, this, [this, task, asCloud] { finished(task, asCloud); });
   qInfo().noquote() << QStringLiteral("New Project: creating %1 (%2)")
                            .arg(dir, asCloud ? QStringLiteral("cloud %1").arg(url) : QStringLiteral("local"));

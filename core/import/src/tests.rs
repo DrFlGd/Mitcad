@@ -85,3 +85,6 @@ mod derive_tests;
 
 // Components' part numbers and descriptions as properties (mitcad#496).
 mod property_tests;
+
+// History replay into a document that already has bodies (mitcad#624).
+mod body_scope_tests;

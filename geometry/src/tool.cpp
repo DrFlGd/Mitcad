@@ -11,6 +11,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GeomAbs_SurfaceType.hxx>
@@ -93,8 +94,9 @@ TopoDS_Face extended_face(const TopoDS_Face& face, const Bnd_Box& around) {
                                                                 : adaptor.Cone().Axis();
     const double scale =
         adaptor.GetType() == GeomAbs_Cone ? 1.0 / std::cos(adaptor.Cone().SemiAngle()) : 1.0;
-    v_low = adaptor.FirstVParameter();
-    v_high = adaptor.LastVParameter();
+    double u_low = 0.0;
+    double u_high = 0.0;
+    BRepTools::UVBounds(face, u_low, u_high, v_low, v_high);
     for (const gp_Pnt& corner : box_corners(around)) {
       const double along = gp_Vec(axis.Location(), corner).Dot(gp_Vec(axis.Direction())) * scale;
       v_low = std::min(v_low, along);

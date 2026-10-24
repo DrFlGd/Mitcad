@@ -118,6 +118,30 @@ int main(int argc, char* argv[]) {
 
   // The actual long-lived model worker keeps its class after a failed job.
   {
+    bool reject = true;
+    int attempts = 0;
+    ModelWorker worker(nullptr, [&](QThread& thread) {
+      ++attempts;
+      if (!reject) { thread.start(); }
+    });
+    std::atomic<bool> ran{false};
+    bool refused = false;
+    try {
+      worker.post([&] { ran = true; });
+    } catch (const std::runtime_error& error) {
+      refused = QString::fromUtf8(error.what()).contains(QStringLiteral("could not start"));
+    }
+    CHECK(refused && !ran && !worker.isRunning() && attempts > 1);
+    reject = false;
+    worker.post([&] { ran = true; });
+    const bool done = worker.waitFor(5s);
+    CHECK(done);
+    if (done) {
+      CHECK(worker.take() == nullptr);
+      CHECK(ran);
+    }
+  }
+  {
     ModelWorker worker;
     worker.start();
     std::atomic<bool> first{false};

@@ -42,6 +42,10 @@ if(NOT EXISTS "${MITCAD_BUILD_RENDER_EXECUTABLE}")
   message(FATAL_ERROR "The render worker is missing; build mitcad-render first")
 endif()
 list(APPEND mitcad_executables "${MITCAD_BUILD_RENDER_EXECUTABLE}")
+if(NOT EXISTS "${MITCAD_BUILD_RENDER_SERVICE_EXECUTABLE}")
+  message(FATAL_ERROR "The embedded render service is missing; build mitcad-render-service first")
+endif()
+list(APPEND mitcad_executables "${MITCAD_BUILD_RENDER_SERVICE_EXECUTABLE}")
 if(NOT EXISTS "${MITCAD_BUILD_CLI_EXECUTABLE}")
   message(FATAL_ERROR "The MCP CLI bridge is missing; build mitcad-cli first")
 endif()
@@ -126,6 +130,7 @@ find_program(mitcad_install_name_tool install_name_tool REQUIRED)
 find_program(mitcad_otool otool REQUIRED)
 set(mitcad_relocate_files "${mitcad_bundle}/Contents/MacOS/@MITCAD_BUNDLE_EXECUTABLE@"
                           "${mitcad_bundle}/Contents/MacOS/mitcad-render"
+                          "${mitcad_bundle}/Contents/XPCServices/org.mitcad.renderer.xpc/Contents/MacOS/mitcad-render-service"
                           "${mitcad_bundle}/Contents/MacOS/mitcad-cli")
 # install(PROGRAMS) copies the CLI without CMake's target rpath rewrite.
 # Replace its build-tree search paths before macdeployqt scans the bundle.

@@ -529,7 +529,10 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         states: States,
     ) -> Option<(f64, f64, f64)> {
         let kernel = self.doc.kernel();
-        let after: Vec<K::Shape> = self.doc.bodies().iter().map(|b| b.shape.clone()).collect();
+        let after: Vec<K::Shape> = crate::body_scope::bodies(self.doc)
+            .iter()
+            .map(|b| b.shape.clone())
+            .collect();
         let ours_before: Vec<&K::Shape> = before.iter().map(|(_, s)| s).collect();
         let ours_after: Vec<&K::Shape> = after.iter().collect();
         let (ours, our_slack) = kernel.changed_volume(&ours_before, &ours_after).ok()?;
@@ -562,8 +565,7 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
     /// The replay's bodies now, for [`crate::Importer::geometric`] (their
     /// shapes are shared, not copied).
     pub(crate) fn body_shapes(&self) -> Vec<(BodyUid, K::Shape)> {
-        self.doc
-            .bodies()
+        crate::body_scope::bodies(self.doc)
             .iter()
             .map(|b| (b.uid, b.shape.clone()))
             .collect()
@@ -590,9 +592,7 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         };
         let before: Vec<Body<K::Shape>> =
             before.iter().filter_map(|(u, s)| measured(*u, s)).collect();
-        let after: Vec<Body<K::Shape>> = self
-            .doc
-            .bodies()
+        let after: Vec<Body<K::Shape>> = crate::body_scope::bodies(self.doc)
             .iter()
             .filter_map(|b| measured(b.uid, b.shape))
             .collect();
@@ -672,7 +672,10 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         }
         let kernel = self.doc.kernel();
         let before: Vec<&K::Shape> = before.iter().map(|(_, s)| s).collect();
-        let after: Vec<K::Shape> = self.doc.bodies().iter().map(|b| b.shape.clone()).collect();
+        let after: Vec<K::Shape> = crate::body_scope::bodies(self.doc)
+            .iter()
+            .map(|b| b.shape.clone())
+            .collect();
         let mut state = |index: usize| -> Option<Vec<K::Shape>> {
             let bodies = self.oracle.state(kernel, index).ok()?;
             Some(bodies.iter().map(|(b, _)| b.shape.clone()).collect())

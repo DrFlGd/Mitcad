@@ -265,6 +265,31 @@ pub fn test_drawing() -> TestDrawing {
     }
 }
 
+/// The test drawing with a case of an import test added (`mitcad-cli
+/// import-dwg --write-test --case`), or `None` for an unknown case:
+///
+/// - `empty-solid`: a solid in model space (handle 64) whose B-rep record
+///   has faces but no point positions, so that none of its faces can be
+///   built (mitcad#589: such a body ended the whole import).
+pub fn test_case(name: &str) -> Option<TestDrawing> {
+    let mut d = test_drawing();
+    match name {
+        "" => {}
+        "empty-solid" => d.entities.push(Placed {
+            handle: 0x64,
+            owner: None,
+            layer: LAYER_0,
+            color: 256,
+            entity: TestEntity::Solid {
+                asm: mitcad_f3d::testdata::cube_without_points_blob(),
+                text: false,
+            },
+        }),
+        _ => return None,
+    }
+    Some(d)
+}
+
 /// The classes of the test drawing.
 pub fn test_classes() -> Vec<Class> {
     vec![Class {

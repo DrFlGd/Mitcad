@@ -263,6 +263,9 @@ void RenderMode::workerFailed(const QString& reason) {
   m_enabled = false;
   m_ready = false;
   m_viewer.setRenderedMode(false);
+  // The viewport has dropped its completed GPU lease; release the retained
+  // old allocation as well when a crashed worker will publish no more frames.
+  m_frame = render::Frame();
   if (m_client->incompatible()) {
     showMessage(tr("The renderer cannot be used: %1.").arg(reason));
   } else {
@@ -599,7 +602,7 @@ void RenderMode::showFrame() {
   // What the frame covers, in the view's logical pixels (UI tests compare
   // it with the shaded view).
   ScopedTiming diagnostics("render diagnostics");
-  const QRect covered = render::coverage(m_frame.pixels.data(), width, height);
+  const QRect covered = render::coverage(m_frame.lightPixels(), width, height);
   const double scaleX = static_cast<double>(m_viewer.width()) / width;
   const double scaleY = static_cast<double>(m_viewer.height()) / height;
   qDebug().noquote() << QStringLiteral("Render frame view %1 %2x%3 samples %4%5 covers %6,%7 %8,%9")
@@ -615,7 +618,7 @@ void RenderMode::showFrame() {
   // How bright what it covers is (UI tests tell a body rendered black from
   // one lit, mitcad#319).
   int opaque = 0;
-  const double brightness = render::coveredBrightness(m_frame.pixels.data(), width, height, &opaque);
+  const double brightness = render::coveredBrightness(m_frame.lightPixels(), width, height, &opaque);
   qDebug().noquote() << QStringLiteral("Render brightness view %1 samples %2: %3 over %4 pixels")
                             .arg(m_frame.info.view)
                             .arg(m_frame.info.samples)
@@ -629,7 +632,7 @@ void RenderMode::showFrame() {
 }
 
 bool RenderMode::displayFrame() {
-  if (!m_enabled || m_frame.pixels.empty() || m_frame.info.view != m_view) {
+  if (!m_enabled || m_frame.empty() || m_frame.info.view != m_view) {
     return false;
   }
   // The camera has moved since the view was sent (a navigation goes on):
@@ -653,10 +656,18 @@ bool RenderMode::displayFrame() {
                  .arg(m_frame.info.view).arg(m_frame.info.samples).arg(m_frame.info.width)
                  .arg(m_frame.info.height).arg(m_frame.info.denoised);
   }
+#ifdef __APPLE__
+  if (m_frame.surface) {
+    ScopedTiming display("render surface display");
+    display.setDetail(detail);
+    m_viewer.setRenderedSurface(m_frame.surface, m_frame.info, top, bottom, m_look);
+    return true;
+  }
+#endif
   ScopedTiming conversion("render convert");
-  const QImage image = render::displayImage(m_frame.pixels.data(), static_cast<int>(m_frame.info.width),
+  const QImage image = render::displayImage(m_frame.lightPixels(), static_cast<int>(m_frame.info.width),
                                                  static_cast<int>(m_frame.info.height), top, bottom, m_look,
-                                                 m_frame.catcher.empty() ? nullptr : m_frame.catcher.data());
+                                                 m_frame.catcherPixels());
   conversion.setDetail(detail);
   conversion.finish();
   m_viewer.setRenderedImage(image, detail);

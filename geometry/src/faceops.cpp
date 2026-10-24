@@ -671,8 +671,11 @@ namespace {
 
 // Moves each face by its own offset; the other faces stay on their surfaces.
 // `except` are faces not to carry the names of.
-detail::FaceNamer move_faces(const Shape& body, const std::vector<std::pair<int, double>>& moves,
+detail::FaceNamer move_faces(const Shape& input, const std::vector<std::pair<int, double>>& moves,
                              const std::vector<int>& except, NCollection_List<TopoDS_Shape>& moved) {
+  // OCCT's offset widens the tolerances of its input's sub-shapes.
+  const ShapePtr copy = detail::working_copy(input);
+  const Shape& body = *copy;
   BRepOffset_MakeOffset maker;
   maker.Initialize(offset_input(body.occt()), 0.0, kTolerance, BRepOffset_Skin, false, false,
                    GeomAbs_Intersection, false, false);

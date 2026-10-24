@@ -31,6 +31,7 @@
 #include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
 
+#include "face_select.hpp"
 #include "sweep.hpp"
 #include "util.hpp"
 
@@ -165,10 +166,7 @@ ShapePtr band(const RimBandSpec& spec) {
   if (surface.GetType() != GeomAbs_Plane) {
     throw std::invalid_argument("the rim face must be planar");
   }
-  gp_Dir normal = surface.Plane().Axis().Direction();
-  if (face.Orientation() == TopAbs_REVERSED) {
-    normal.Reverse();
-  }
+  const gp_Dir normal = detail::planar_normal(face, surface.Plane());
   const gp_Pln plane(surface.Plane().Location(), normal);
   Bnd_Box box;
   BRepBndLib::Add(body.occt(), box);

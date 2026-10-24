@@ -34,11 +34,15 @@ private:
 
 } // namespace
 
-SectionWorker::SectionWorker(QObject* parent) : QObject(parent) {
+SectionWorker::SectionWorker(QObject* parent, WorkerThreadStarter starter)
+    : QObject(parent), m_starter(std::move(starter)) {
   m_thread = new SectionThread([this] { loop(); });
   m_thread->setObjectName(QStringLiteral("section worker"));
   m_thread->setStackSize(kStackSize);
-  m_thread->start();
+  QString error;
+  if (!startWorkerThread(*m_thread, error, m_starter)) {
+    qWarning().noquote() << error;
+  }
 }
 
 SectionWorker::~SectionWorker() {
@@ -153,6 +157,16 @@ void SectionWorker::postNext() {
   current.clock.start();
   qDebug().noquote() << QStringLiteral("Computing section %1 started").arg(current.label);
   m_current = std::move(current);
+  QString startupError;
+  if (!startWorkerThread(*m_thread, startupError, m_starter)) {
+    qWarning().noquote() << startupError;
+    // A startup failure is still this round's result. Normal completion
+    // checks suppress it if a model job cancels, stop() discards it, or a
+    // newer round replaces it before the UI handles this queued call.
+    const std::uint64_t id = m_current->id;
+    QMetaObject::invokeMethod(this, [this, id, startupError] { finished(id, startupError); }, Qt::QueuedConnection);
+    return;
+  }
   {
     const std::lock_guard<std::mutex> lock(m_mutex);
     m_next = std::move(round);

@@ -29,6 +29,9 @@
 #include "mitcad/geometry/import.hpp"
 #include "view/ViewCube.hpp"
 #include "view/ViewTessellation.hpp"
+#ifdef __APPLE__
+#include "render/MacFrameDisplay.hpp"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -539,9 +542,9 @@ bool sameFaceLooks(const std::vector<BodyDisplay::FaceLook>& a, const std::vecto
                     });
 }
 
-occ::handle<AIS_Shape> makeBody(const geometry::Shape& named, BodyDisplay::Style style, const QColor& color,
-                                const std::vector<BodyDisplay::FaceLook>& faceLooks, VisualStyle visual,
-                                const QColor& paper) {
+occ::handle<AIS_Shape> makeBodyObject(const geometry::Shape& named, BodyDisplay::Style style, const QColor& color,
+                                      const std::vector<BodyDisplay::FaceLook>& faceLooks, VisualStyle visual,
+                                      const QColor& paper) {
   const TopoDS_Shape& shape = named.occt();
   if (style == BodyDisplay::Style::New) {
     occ::handle<AIS_Shape> body = new AIS_Shape(shape);
@@ -614,6 +617,20 @@ occ::handle<AIS_Shape> makeBody(const geometry::Shape& named, BodyDisplay::Style
   return body;
 }
 
+// A body's presentation. One with faces OCCT's mesher failed on when the
+// job meshed it for display is never meshed here, on the UI thread
+// (viewMeshes, mitcad#589): its presentation and selection draw the faces
+// that have a triangulation.
+occ::handle<AIS_Shape> makeBody(const geometry::Shape& named, BodyDisplay::Style style, const QColor& color,
+                                const std::vector<BodyDisplay::FaceLook>& faceLooks, VisualStyle visual,
+                                const QColor& paper) {
+  occ::handle<AIS_Shape> body = makeBodyObject(named, style, color, faceLooks, visual, paper);
+  if (!viewMeshes(named)) {
+    body->Attributes()->SetAutoTriangulation(false);
+  }
+  return body;
+}
+
 } // namespace
 
 // The rendered view's image as a rectangle over the whole view (2D
@@ -656,6 +673,18 @@ private:
   mutable bool m_measured = false;
 };
 
+#ifdef __APPLE__
+class RenderedSurfaceElement final : public OpenGl_Element {
+public:
+  explicit RenderedSurfaceElement(std::shared_ptr<render::MacFrameDisplay> display) : m_display(std::move(display)) {}
+  void Render(const occ::handle<OpenGl_Workspace>&) const override { m_display->draw(); }
+  void Release(OpenGl_Context* context) override { m_display->release(context); }
+  bool IsFillDrawMode() const override { return true; }
+private:
+  std::shared_ptr<render::MacFrameDisplay> m_display;
+};
+#endif
+
 class OcctViewer::RenderedImageQuad : public AIS_InteractiveObject {
 public:
   RenderedImageQuad() {
@@ -666,7 +695,11 @@ public:
   // True when the size changed (the rectangle must be computed again).
   bool setImage(const occ::handle<Graphic3d_Texture2D>& texture, int width, int height,
                 const QString& timingDetail) {
-    const bool resized = width != m_width || height != m_height || texture != m_texture;
+    bool resized = width != m_width || height != m_height || texture != m_texture;
+#ifdef __APPLE__
+    resized = resized || static_cast<bool>(m_surface);
+    m_surface.reset();
+#endif
     m_texture = texture;
     m_width = width;
     m_height = height;
@@ -674,11 +707,34 @@ public:
     return resized;
   }
 
+#ifdef __APPLE__
+  bool setSurface(const std::shared_ptr<render::MacFrameDisplay>& display) {
+    const bool changed = m_surface != display;
+    m_surface = display;
+    m_texture.Nullify();
+    return changed;
+  }
+#endif
+
   bool AcceptDisplayMode(const int mode) const override { return mode == 0; }
 
 protected:
   void Compute(const occ::handle<PrsMgr_PresentationManager>&, const occ::handle<Prs3d_Presentation>& presentation,
                const int) override {
+#ifdef __APPLE__
+    if (m_surface) {
+      occ::handle<Graphic3d_AspectFillArea3d> aspect = new Graphic3d_AspectFillArea3d();
+      aspect->SetShadingModel(Graphic3d_TypeOfShadingModel_Unlit);
+      const auto group = presentation->NewGroup();
+      group->SetGroupPrimitivesAspect(aspect);
+      // A custom GL element has no OCCT primitive array to establish bounds.
+      // Keep its infinite 2D presentation nonempty and out of model fitting.
+      group->SetMinMaxValues(0, 0, 0, 1, 1, 0);
+      const auto glGroup = occ::handle<OpenGl_Group>::DownCast(group);
+      if (!glGroup.IsNull()) glGroup->AddElement(new RenderedSurfaceElement(m_surface));
+      return;
+    }
+#endif
     if (m_texture.IsNull() || m_width <= 0 || m_height <= 0) {
       return;
     }
@@ -711,6 +767,9 @@ protected:
   void ComputeSelection(const occ::handle<SelectMgr_Selection>&, const int) override {}
 
 private:
+#ifdef __APPLE__
+  std::shared_ptr<render::MacFrameDisplay> m_surface;
+#endif
   occ::handle<Graphic3d_Texture2D> m_texture;
   int m_width = 0;
   int m_height = 0;
@@ -1168,6 +1227,11 @@ OcctViewer::~OcctViewer() {
   // again; releasing it earlier can crash in ~QOpenGLWidget().
   occ::handle<Aspect_DisplayConnection> display = m_viewer->Driver()->GetDisplayConnection();
 
+#ifdef __APPLE__
+  QObject::disconnect(m_renderedContextCleanup);
+  releaseRenderedSurfaceContext();
+#endif
+
   if (QCoreApplication::instance() != nullptr) {
     QCoreApplication::instance()->removeEventFilter(this);
   }
@@ -1581,7 +1645,7 @@ void OcctViewer::applyRenderedVisibility(BodyEntry& entry) {
     }
   }
   // Their edges are in layers above the image: hidden under one.
-  const bool visible = m_renderedImage.isNull();
+  const bool visible = !showsRenderedImage();
   for (const occ::handle<AIS_Shape>* object : {&entry.hiddenEdges, &entry.visibleEdges}) {
     if (!object->IsNull()) {
       m_context->SetViewAffinity(*object, m_view, visible);
@@ -1605,13 +1669,18 @@ void OcctViewer::setRenderedMode(bool on) {
 }
 
 void OcctViewer::setRenderedImage(const QImage& image, const QString& timingDetail) {
-  const bool was = !m_renderedImage.isNull();
+  const bool was = showsRenderedImage();
+#ifdef __APPLE__
+  m_renderedSurface.reset();
+  if (m_renderedSurfaceDisplay) m_renderedSurfaceDisplay->setFrame({}, {}, {}, {}, {});
+#endif
   if (image.isNull()) {
     if (!was) {
       return;
     }
     m_renderedImage = QImage();
     m_context->Erase(m_renderedQuad, false);
+    m_renderedQuad->setImage({}, 0, 0, {});
     m_renderedTexture.Nullify();
     m_renderedPixels.Nullify();
   } else {
@@ -1646,7 +1715,7 @@ void OcctViewer::setRenderedImage(const QImage& image, const QString& timingDeta
       m_context->SetZLayer(m_renderedQuad, m_renderedImageLayer);
     }
   }
-  if (was != !m_renderedImage.isNull()) {
+  if (was != showsRenderedImage()) {
     for (auto& [key, entry] : m_bodies) {
       applyRenderedVisibility(entry);
     }
@@ -1655,6 +1724,40 @@ void OcctViewer::setRenderedImage(const QImage& image, const QString& timingDeta
   m_view->Invalidate();
   requestFrame();
 }
+
+#ifdef __APPLE__
+void OcctViewer::releaseRenderedSurfaceContext() {
+  if (!m_renderedSurfaceDisplay) return;
+  // Qt can replace its context when the viewport is reparented. Drop all
+  // context-specific resources while the old native context still exists;
+  // the retained frame is redrawn lazily in the replacement context.
+  makeCurrent();
+  const auto previous = glContextOf(m_view);
+  m_renderedSurfaceDisplay->release(previous.get());
+}
+
+void OcctViewer::setRenderedSurface(std::shared_ptr<render::MacFrameLease> frame, const render::FrameInfo& info,
+                                    const QColor& top, const QColor& bottom, const render::Look& look) {
+  if (!frame || info.width == 0 || info.height == 0) { setRenderedImage(QImage()); return; }
+  const bool was = showsRenderedImage();
+  m_renderedPose = viewPose();
+  m_renderedImage = QImage();
+  m_renderedTexture.Nullify();
+  m_renderedPixels.Nullify();
+  m_renderedSurface = std::move(frame);
+  if (!m_renderedSurfaceDisplay) m_renderedSurfaceDisplay = std::make_shared<render::MacFrameDisplay>();
+  m_renderedSurfaceDisplay->setFrame(m_renderedSurface, info, top, bottom, look);
+  if (m_renderedQuad->setSurface(m_renderedSurfaceDisplay) || !was) m_context->Redisplay(m_renderedQuad, false);
+  if (!was) {
+    m_context->Display(m_renderedQuad, 0, -1, false);
+    m_context->SetZLayer(m_renderedQuad, m_renderedImageLayer);
+    for (auto& [key, entry] : m_bodies) applyRenderedVisibility(entry);
+    updateGrid(true);
+  }
+  m_view->Invalidate();
+  requestFrame();
+}
+#endif
 
 ViewPose OcctViewer::viewPose() const {
   ViewPose pose;
@@ -1676,7 +1779,7 @@ ViewPose OcctViewer::viewPose() const {
 }
 
 QString OcctViewer::renderedImageStale() const {
-  if (m_renderedImage.isNull() || m_view->Window().IsNull()) {
+  if (!showsRenderedImage() || m_view->Window().IsNull()) {
     return QString();
   }
   // A tolerant comparison (mitcad#216): OCCT's IsEqual with a tolerance of
@@ -1995,6 +2098,14 @@ void OcctViewer::styleSketchHalo(const occ::handle<AIS_Shape>& halo, const Sketc
   // The line's own pattern, so that a centre line's gaps stay gaps.
   setEdgeStyle(halo, m_backgroundDark ? kSketchHaloDark : kSketchHaloLight, kSketchHaloWidth,
                look.centerline ? Aspect_TOL_DOTDASH : Aspect_TOL_SOLID);
+}
+
+QColor OcctViewer::sketchHaloColor() const {
+  double r = 0.0;
+  double g = 0.0;
+  double b = 0.0;
+  (m_backgroundDark ? kSketchHaloDark : kSketchHaloLight).Values(r, g, b, Quantity_TOC_sRGB);
+  return QColor::fromRgbF(static_cast<float>(r), static_cast<float>(g), static_cast<float>(b));
 }
 
 void OcctViewer::logSketchHalos() {
@@ -3388,6 +3499,21 @@ CameraState OcctViewer::camera() const {
   return state;
 }
 
+CameraState OcctViewer::pendingCamera() const {
+  occ::handle<Graphic3d_Camera> pending = new Graphic3d_Camera();
+  pending->Copy(m_view->Camera());
+  const occ::handle<AIS_AnimationCamera>& animation = ViewAnimation();
+  if (!animation.IsNull() && !animation->IsStopped() && !animation->CameraEnd().IsNull()) {
+    pending->Copy(animation->CameraEnd());
+  }
+  if (m_fitPending) {
+    fitCamera(pending);
+  }
+  return {pending->Eye(), pending->Center(), pending->Up(),
+          pending->ProjectionType() == Graphic3d_Camera::Projection_Perspective,
+          pending->ViewDimensions().Y()};
+}
+
 void OcctViewer::setCamera(const CameraState& state) {
   if (state.eye.Distance(state.target) <= Precision::Confusion() || !(state.height > 0.0)) {
     return;
@@ -3493,6 +3619,7 @@ void OcctViewer::setBackground(const QColor& top, const QColor& bottom, bool gra
     m_homeButton->setDark(m_backgroundDark);
     m_context->Redisplay(m_orientationCube, false);
     restyleSketchEntities();
+    emit backgroundToneChanged();
   }
   if (paper != m_paper) {
     m_paper = paper;
@@ -3542,7 +3669,7 @@ double OcctViewer::gridStep() const {
 }
 
 void OcctViewer::updateGrid(bool force) {
-  if (!m_gridShown || m_view->Window().IsNull() || !m_renderedImage.isNull()) {
+  if (!m_gridShown || m_view->Window().IsNull() || showsRenderedImage()) {
     if (m_context->IsDisplayed(m_grid)) {
       m_context->Erase(m_grid, false);
     }
@@ -3868,6 +3995,12 @@ void OcctViewer::initializeGL() {
   window->SetNativeHandle(occtDrawable());
   window->SetSize(viewWidth, viewHeight);
   m_view->SetWindow(window, glContext->RenderingContext());
+
+#ifdef __APPLE__
+  QObject::disconnect(m_renderedContextCleanup);
+  m_renderedContextCleanup = connect(context(), &QOpenGLContext::aboutToBeDestroyed, this,
+      &OcctViewer::releaseRenderedSurfaceContext, Qt::DirectConnection);
+#endif
 
   if (firstTime) {
     m_view->SetSize(250.0); // an empty scene shows about 250 mm
@@ -4630,7 +4763,7 @@ void OcctViewer::handleViewRedraw(const occ::handle<AIS_InteractiveContext>& con
   // A rendered image of another camera or size, or one that a camera
   // animation is about to move, would show the bodies where they no longer
   // are: this frame draws them shaded (mitcad#214).
-  if (!m_renderedImage.isNull()) {
+  if (showsRenderedImage()) {
     const QString why = !ViewAnimation()->IsStopped() ? QStringLiteral("animation") : renderedImageStale();
     if (!why.isEmpty()) {
       qDebug().noquote() << QStringLiteral("Render image dropped: %1").arg(why);

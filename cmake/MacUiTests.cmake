@@ -10,6 +10,19 @@
 option(MITCAD_MACOS_UI_TESTS "macOS: register the UI test app.ui-macos (opens the app's window briefly)" ON)
 
 if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
+  find_program(BASH_EXECUTABLE bash)
+  if(BASH_EXECUTABLE AND TARGET mitcad-cli)
+    add_test(NAME app.ui-macos-print-fits
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-print-fits-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-print-fits" qt)
+    set_tests_properties(app.ui-macos-print-fits PROPERTIES TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    if(MITCAD_MACOS_NATIVE_UI)
+      add_test(NAME app.ui-macos-native-print-fits
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-print-fits-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-print-fits" native)
+      set_tests_properties(app.ui-macos-native-print-fits PROPERTIES TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    endif()
+  endif()
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND AND TARGET mitcad-cli)
     if(TARGET mitcad-render)
@@ -21,7 +34,7 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
         TIMEOUT 1200 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
     endif()
     set(mitcad_mcp_test_ui qt)
-    if(MITCAD_MACOS_NATIVE_UI)
+    if(MITCAD_MACOS_NATIVE_UI AND BASH_EXECUTABLE)
       add_test(NAME app.ui-macos-cut-components
         COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-cut-components-test.sh"
                 "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-cut-components")
@@ -36,8 +49,11 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
     set_tests_properties(app.ui-macos-mcp PROPERTIES TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE
       ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
   endif()
-  find_program(BASH_EXECUTABLE bash)
   if(BASH_EXECUTABLE)
+    add_test(NAME app.ui-macos-settings
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-settings-test.sh"
+              "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-settings")
+    set_tests_properties(app.ui-macos-settings PROPERTIES TIMEOUT 240 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     if(TARGET mitcad-release AND Python3_Interpreter_FOUND)
       add_test(NAME app.ui-macos-update
         COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-update-test.sh"
@@ -137,6 +153,18 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
     set_tests_properties(app.ui-macos-cut-conversion PROPERTIES
       TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     if(TARGET mitcad-cli AND Python3_Interpreter_FOUND)
+      add_test(NAME app.ui-macos-drag-preview
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-drag-preview-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-drag-preview" qt)
+      set_tests_properties(app.ui-macos-drag-preview PROPERTIES
+        TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      if(MITCAD_MACOS_NATIVE_UI)
+        add_test(NAME app.ui-macos-native-drag-preview
+          COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-drag-preview-test.sh"
+                  "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-drag-preview" native)
+        set_tests_properties(app.ui-macos-native-drag-preview PROPERTIES
+          TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      endif()
       add_test(NAME app.ui-macos-edit-auto-operation
         COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-edit-auto-operation-test.sh"
                 "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-edit-auto-operation")

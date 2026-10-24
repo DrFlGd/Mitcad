@@ -250,7 +250,7 @@ void addSeat(QJsonObject& def, const CommandState& state, const CommandContext& 
     return;
   }
   def.insert(QStringLiteral("seat"), seatOf(state, context));
-  if (panel.clearance && nonZero(state, clearanceKey())) {
+  if (panel.clearance && std::isfinite(state.value(clearanceKey()))) {
     def.insert(QStringLiteral("bore_clearance"), state.expression(clearanceKey()));
   }
 }

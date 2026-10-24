@@ -13,7 +13,7 @@ endif()
 include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.26.0
+  VERSION 0.27.0
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 
@@ -27,6 +27,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+include(cmake/MacOptimization.cmake)
 
 # ccache for the C++ compiles when it is installed (a build tool; nothing of
 # it is linked or shipped), shared by all checkouts on the machine: paths

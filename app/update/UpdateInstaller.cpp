@@ -2,6 +2,7 @@
 #include "UpdateInstaller.hpp"
 
 #include <cstdio>
+#include <string>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -21,10 +22,12 @@
 #endif
 
 #include "UpdateSettings.hpp"
+#include "UpdaterChecks.hpp"
 
 namespace mitcad {
 namespace {
 
+const QString kDownloadFolders = QStringLiteral("updates/downloadFolders");
 const QString kInstalling = QStringLiteral("updates/installing");
 const QString kInstallingFrom = QStringLiteral("updates/installingFrom");
 const QString kInstallLog = QStringLiteral("updates/installLog");
@@ -47,19 +50,38 @@ std::optional<Staged>& staged() {
   return update;
 }
 
-#ifdef __APPLE__
-QString macDownloadDirectory(bool create = true) {
-  // A private, unpredictable folder: both the verified image and the
-  // helper survive this process and are never shared with another run.
+QString downloadFolderPrefix() { return QStringLiteral("mitcad-update-"); }
+
+// A private, unpredictable folder (macOS; Windows since mitcad#603): the
+// verified download and the helper that installs it survive this process
+// and are never shared with another run, and no other program knows the
+// folder's name in advance. One per run, made on first use in the user's
+// temp folder with a random name: owner-only on Unix (mkdtemp, 0700), with
+// the user's temp folder's permissions on Windows.
+QString privateDownloadDirectory(bool create = true) {
   static QString path;
   if (create && !QFileInfo(path).isDir()) {
-    QTemporaryDir folder(QDir::temp().filePath(QStringLiteral("mitcad-update-XXXXXX")));
+    QTemporaryDir folder(QDir::temp().filePath(downloadFolderPrefix() + QStringLiteral("XXXXXX")));
     folder.setAutoRemove(false);
-    path = folder.path();
+    path = folder.isValid() ? folder.path() : QString();
   }
   return path;
 }
+
+// Whether `path` is such a folder, directly in the temp folder: nothing
+// else is removed as a leftover, whatever the settings say.
+bool isPrivateDownloadDirectory(const QString& path) {
+#ifdef _WIN32
+  const Qt::CaseSensitivity sensitivity = Qt::CaseInsensitive;
+#else
+  const Qt::CaseSensitivity sensitivity = Qt::CaseSensitive;
 #endif
+  const QFileInfo folder(path);
+  const QString name = folder.fileName();
+  return !path.isEmpty() && folder.isAbsolute() && name.startsWith(downloadFolderPrefix()) &&
+         name.size() > downloadFolderPrefix().size() &&
+         QDir::cleanPath(folder.absolutePath()).compare(QDir::cleanPath(QDir::temp().absolutePath()), sensitivity) == 0;
+}
 
 // From QCoreApplication's destructor (qAddPostRoutine): the window, its
 // document and the session's autosave are gone by then.
@@ -192,70 +214,112 @@ QString Installation::describe() const {
 }
 
 QString Installation::downloadPath(const QString& version) const {
-#ifdef __APPLE__
-  if (kind == Kind::MacBundle) {
-    const QString folder = macDownloadDirectory();
-    return folder.isEmpty() ? QString() : QDir(folder).filePath(QStringLiteral("Mitcad-%1-macos-arm64.dmg").arg(version));
-  }
-#endif
   if (kind == Kind::AppImage) {
     const QFileInfo file(location);
     return file.absoluteDir().filePath(QStringLiteral(".%1.update").arg(file.fileName()));
   }
-  const QString folder = QDir::temp().filePath(QStringLiteral("mitcad-update"));
-  QDir().mkpath(folder);
-  return QDir(folder).filePath(QStringLiteral("mitcad-%1-windows-x64.exe").arg(version));
+  if (kind != Kind::WindowsInstaller && kind != Kind::MacBundle) {
+    return QString();
+  }
+  const QString folder = privateDownloadDirectory();
+  if (folder.isEmpty()) {
+    return QString();
+  }
+  if (kind == Kind::WindowsInstaller) {
+    // mitcad-updater.exe runs from this folder until Mitcad has started
+    // again, so the next start removes it (removeLeftovers).
+    QSettings settings;
+    QStringList folders = settings.value(kDownloadFolders).toStringList();
+    if (!folders.contains(folder)) {
+      folders.append(folder);
+      settings.setValue(kDownloadFolders, folders);
+    }
+  }
+  return QDir(folder).filePath((kind == Kind::MacBundle ? QStringLiteral("Mitcad-%1-macos-arm64.dmg")
+                                                        : QStringLiteral("mitcad-%1-windows-x64.exe"))
+                                   .arg(version));
 }
 
 void Installation::removeLeftovers() const {
-#ifdef __APPLE__
-  if (kind == Kind::MacBundle) {
-    const QString folder = macDownloadDirectory(false);
-    if (!folder.isEmpty()) {
-      QDir(folder).removeRecursively();
-    }
-    return;
-  }
-#endif
   if (kind == Kind::AppImage) {
     QFile::remove(downloadPath(QString()));
-  } else if (kind == Kind::WindowsInstaller) {
-    QDir(QDir::temp().filePath(QStringLiteral("mitcad-update"))).removeRecursively();
+    return;
   }
+  if (kind != Kind::WindowsInstaller && kind != Kind::MacBundle) {
+    return;
+  }
+  // This run's folder.
+  const QString current = privateDownloadDirectory(false);
+  if (!current.isEmpty()) {
+    QDir(current).removeRecursively();
+  }
+  if (kind != Kind::WindowsInstaller) {
+    return;
+  }
+  // Earlier runs' folders on Windows; one whose updater still runs stays
+  // listed for the next start.
+  QSettings settings;
+  QStringList kept;
+  for (const QString& folder : settings.value(kDownloadFolders).toStringList()) {
+    if (isPrivateDownloadDirectory(folder) && QFileInfo::exists(folder) && !QDir(folder).removeRecursively()) {
+      kept.append(folder);
+    }
+  }
+  if (kept.isEmpty()) {
+    settings.remove(kDownloadFolders);
+  } else {
+    settings.setValue(kDownloadFolders, kept);
+  }
+  // The fixed folder of earlier releases.
+  QDir(QDir::temp().filePath(QStringLiteral("mitcad-update"))).removeRecursively();
 }
 
-bool stageUpdate(const Installation& installation, const QString& file, const QString& from, const QString& to,
-                 QString& error) {
+QStringList windowsUpdaterArguments(const Installation& installation, const QString& file, const QString& sha256,
+                                    const QString& log, qint64 pid) {
+  return {QStringLiteral("--wait"),
+          QString::number(pid),
+          QStringLiteral("--installer"),
+          QDir::toNativeSeparators(file),
+          QStringLiteral("--sha256"),
+          sha256,
+          QStringLiteral("--dir"),
+          QDir::toNativeSeparators(installation.location),
+          QStringLiteral("--scope"),
+          installation.allUsers ? QStringLiteral("all") : QStringLiteral("user"),
+          QStringLiteral("--restart"),
+          QDir::toNativeSeparators(QDir(installation.location).filePath(QStringLiteral("bin/mitcad.exe"))),
+          QStringLiteral("--log"),
+          QDir::toNativeSeparators(log)};
+}
+
+bool stageUpdate(const Installation& installation, const QString& file, const QString& sha256, const QString& from,
+                 const QString& to, QString& error) {
   Staged update;
   update.kind = installation.kind;
   QString log;
   if (installation.kind == Installation::Kind::WindowsInstaller) {
+    // The updater checks the installer again with this hash right before
+    // it runs it (mitcad#603); it refuses to run one without.
+    if (!updater::isSha256Hex(sha256.toStdWString())) {
+      error = QCoreApplication::translate("Update", "The release gives no SHA-256 of the installer.");
+      return false;
+    }
     // The installer replaces bin, so the updater runs from the download's
     // folder.
     const QDir folder = QFileInfo(file).absoluteDir();
-    const QString updater = folder.filePath(kUpdater);
-    QFile::remove(updater);
-    if (!QFile::copy(QDir(QCoreApplication::applicationDirPath()).filePath(kUpdater), updater)) {
+    const QString updaterCopy = folder.filePath(kUpdater);
+    QFile::remove(updaterCopy);
+    if (!QFile::copy(QDir(QCoreApplication::applicationDirPath()).filePath(kUpdater), updaterCopy)) {
       error = QCoreApplication::translate("Update", "Cannot copy %1 to %2.")
                   .arg(kUpdater, QDir::toNativeSeparators(folder.absolutePath()));
       return false;
     }
     log = folder.filePath(QStringLiteral("updater.log"));
     QFile::remove(log);
-    update.program = updater;
+    update.program = updaterCopy;
     update.workingDirectory = folder.absolutePath();
-    update.arguments = {QStringLiteral("--wait"),
-                        QString::number(QCoreApplication::applicationPid()),
-                        QStringLiteral("--installer"),
-                        QDir::toNativeSeparators(file),
-                        QStringLiteral("--dir"),
-                        QDir::toNativeSeparators(installation.location),
-                        QStringLiteral("--scope"),
-                        installation.allUsers ? QStringLiteral("all") : QStringLiteral("user"),
-                        QStringLiteral("--restart"),
-                        QDir::toNativeSeparators(QDir(installation.location).filePath(QStringLiteral("bin/mitcad.exe"))),
-                        QStringLiteral("--log"),
-                        QDir::toNativeSeparators(log)};
+    update.arguments =
+        windowsUpdaterArguments(installation, file, sha256, log, QCoreApplication::applicationPid());
   } else if (installation.kind == Installation::Kind::AppImage) {
     QFile download(file);
     const QFile::Permissions permissions = QFile(installation.location).permissions() | QFile::ReadOwner |

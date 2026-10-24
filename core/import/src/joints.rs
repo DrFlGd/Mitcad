@@ -636,7 +636,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
         let kernel = self.doc.kernel();
         let mut out = Vec::new();
-        if let Some(shape) = self.doc.body_shape(body) {
+        if let Some(shape) = crate::body_scope::shape(self.doc, body) {
             // Kernel calls in a row: the watchdog's progress (mitcad#82).
             crate::tick();
             match kernel.edge_geometries(shape) {

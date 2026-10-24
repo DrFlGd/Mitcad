@@ -13,6 +13,10 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <gp_Pln.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
@@ -229,6 +233,29 @@ void checkTank(const occ::handle<Prs3d_Drawer>& drawer) {
   CHECK(triangulations(shown) == before);
   CHECK(circlePoints(shown) == points);
 }
+
+// A face OCCT's mesher fails on (mitcad#589: meshing such a face again
+// took without end, on the UI thread): a plane bounded by a wire that
+// crosses itself. Meshed for display on the model's thread, it keeps no
+// triangulation; once marked so (DisplayMeshes), the view does not mesh
+// the body again. A body whose faces all got one is meshed by the view as
+// before, marked or not.
+void checkUnmeshable() {
+  BRepBuilderAPI_MakePolygon bowTie(gp_Pnt(0, 0, 0), gp_Pnt(10, 10, 0), gp_Pnt(10, 0, 0), gp_Pnt(0, 10, 0), true);
+  const TopoDS_Shape crossed = BRepBuilderAPI_MakeFace(gp_Pln(), bowTie.Wire(), true).Shape();
+  CHECK(mitcad::io::mesh_all_in_place({crossed}, mitcad::viewMeshOptions()) == 1);
+  CHECK(!mitcad::io::has_triangulation(crossed));
+  const mitcad::geometry::Shape body(crossed);
+  CHECK(mitcad::viewMeshes(body));
+  body.set_display_meshed();
+  CHECK(!mitcad::viewMeshes(body));
+
+  const TopoDS_Shape box = BRepPrimAPI_MakeBox(10.0, 20.0, 30.0).Shape();
+  CHECK(mitcad::io::mesh_all_in_place({box}, mitcad::viewMeshOptions()) == 1);
+  const mitcad::geometry::Shape meshed(box);
+  meshed.set_display_meshed();
+  CHECK(mitcad::viewMeshes(meshed));
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -249,6 +276,7 @@ int main(int argc, char** argv) {
     drawer->SetLink(defaults);
     checkDome(drawer);
     checkTank(drawer);
+    checkUnmeshable();
   } catch (const Standard_Failure& error) {
     std::fprintf(stderr, "OCCT: %s\n", error.what());
     return 1;

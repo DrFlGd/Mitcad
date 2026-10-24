@@ -8,8 +8,11 @@
 #include <limits>
 #include <map>
 #include <utility>
+#include <vector>
 
+#include <QDebug>
 #include <QFontMetricsF>
+#include <QPaintDevice>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegularExpression>
@@ -46,9 +49,52 @@ constexpr double kGlyphSize = 15.0;
 constexpr double kGlyphStep = 17.0;
 constexpr double kArrowLength = 8.0;
 
+// The halo under the dimensions' lines and arrowheads (mitcad#633): 3 px
+// under the 1 px lines, and a 2 px outline round the arrowheads. Thinner
+// than the geometry's 6 px halo (mitcad#302), so that the dimensions stay
+// lighter than the geometry.
+constexpr double kDimensionHaloWidth = 3.0;
+constexpr double kArrowHaloWidth = 2.0;
+
 QPointF unitOf(const QPointF& p) {
   const double n = std::hypot(p.x(), p.y());
   return n > 1e-12 ? QPointF(p.x() / n, p.y() / n) : QPointF(1, 0);
+}
+
+// The arrowhead with its tip at `tip`, pointing along `towards`.
+QPolygonF arrowHead(const QPointF& tip, const QPointF& towards) {
+  const QPointF dir = unitOf(towards);
+  const QPointF side(-dir.y(), dir.x());
+  QPolygonF head;
+  head << tip << tip - dir * kArrowLength + side * (kArrowLength * 0.32)
+       << tip - dir * kArrowLength - side * (kArrowLength * 0.32);
+  return head;
+}
+
+// A dimension's lines and arrow tips moved by less than a device pixel so
+// that the 1 px lines cover whole device pixels (mitcad#633). Painted
+// anti-aliased at a whole pixel, a level line straddles two rows at half
+// its tone and its 3 px halo spreads over four: the line blurs into its
+// halo and shows in neither its own tone nor the halo's. Aligned, a level
+// or upright line takes one row (two at a device pixel ratio of 2) between
+// whole rows of its halo; the halo and the line get the same points, so
+// the line stays in the halo's middle. Oblique lines are anti-aliased
+// anyway and move by less than a pixel.
+DimensionShape onDevicePixels(const DimensionShape& shape, const QPainter& painter) {
+  const double ratio = painter.device() != nullptr ? painter.device()->devicePixelRatioF() : 1.0;
+  // The line, `ratio` device pixels wide, from a whole device pixel.
+  const auto aligned = [ratio](double v) {
+    return (std::floor(v * ratio - ratio / 2.0 + 0.5) + ratio / 2.0) / ratio;
+  };
+  const auto point = [&aligned](const QPointF& p) { return QPointF(aligned(p.x()), aligned(p.y())); };
+  DimensionShape out = shape;
+  for (QLineF& line : out.lines) {
+    line = QLineF(point(line.p1()), point(line.p2()));
+  }
+  for (auto& arrow : out.arrows) {
+    arrow.first = point(arrow.first);
+  }
+  return out;
 }
 
 // The part of the line through `at` along `direction` (not zero) inside
@@ -536,6 +582,22 @@ SketchOverlay::SketchOverlay(SketchController& controller, QWidget* view)
   QFont small = font();
   small.setPointSizeF(9.0);
   setFont(small);
+  connect(&m_c.viewer(), &OcctViewer::backgroundToneChanged, this, &SketchOverlay::logDimensionHalos);
+}
+
+void SketchOverlay::logDimensionHalos() {
+  if (!m_c.isActive() || !m_c.showDimensions()) {
+    return;
+  }
+  // How many dimensions have a halo, and its tone.
+  const QColor halo = m_c.viewer().sketchHaloColor();
+  const QString line = QStringLiteral("%1 %2")
+                           .arg(dimensions().size())
+                           .arg(halo.lightnessF() < 0.5 ? QStringLiteral("dark") : QStringLiteral("light"));
+  if (line != m_loggedDimensionHalos) {
+    m_loggedDimensionHalos = line;
+    qDebug().noquote() << QStringLiteral("Sketch dimension halos: %1").arg(line);
+  }
 }
 
 Projection SketchOverlay::projection() const {
@@ -859,9 +921,29 @@ void SketchOverlay::paintGlyph(QPainter& painter, const Glyph& glyph, bool selec
   }
 }
 
-void SketchOverlay::paintDimension(QPainter& painter, const DimensionShape& shape,
+void SketchOverlay::paintDimensionHalo(QPainter& painter, const DimensionShape& placed,
+                                       const QColor& halo) const {
+  const DimensionShape shape = onDevicePixels(placed, painter);
+  painter.setPen(QPen(halo, kDimensionHaloWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+  painter.setBrush(Qt::NoBrush);
+  for (const QLineF& line : shape.lines) {
+    painter.drawLine(line);
+  }
+  for (const QPolygonF& arc : shape.arcs) {
+    painter.drawPolyline(arc);
+  }
+  // The arrowheads outlined, then filled by `paintDimension`.
+  painter.setPen(QPen(halo, kArrowHaloWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+  painter.setBrush(halo);
+  for (const auto& [tip, towards] : shape.arrows) {
+    painter.drawPolygon(arrowHead(tip, towards));
+  }
+}
+
+void SketchOverlay::paintDimension(QPainter& painter, const DimensionShape& placed,
                                    const QRectF& rect, const QColor& color, const QColor& lines,
                                    bool driven) const {
+  const DimensionShape shape = onDevicePixels(placed, painter);
   painter.setPen(QPen(lines, 1.0));
   painter.setBrush(Qt::NoBrush);
   for (const QLineF& line : shape.lines) {
@@ -872,12 +954,7 @@ void SketchOverlay::paintDimension(QPainter& painter, const DimensionShape& shap
   }
   painter.setBrush(lines);
   for (const auto& [tip, towards] : shape.arrows) {
-    const QPointF dir = unitOf(towards);
-    const QPointF side(-dir.y(), dir.x());
-    QPolygonF head;
-    head << tip << tip - dir * kArrowLength + side * (kArrowLength * 0.32)
-         << tip - dir * kArrowLength - side * (kArrowLength * 0.32);
-    painter.drawPolygon(head);
+    painter.drawPolygon(arrowHead(tip, towards));
   }
   painter.setPen(QPen(color.lighter(driven ? 130 : 160), 1.0));
   painter.setBrush(QColor(255, 255, 255, 235));
@@ -1011,6 +1088,7 @@ void SketchOverlay::paintPreview(QPainter& painter, const ToolPreview& preview) 
     const SketchModel& model = preview.model != nullptr ? *preview.model : m_c.model();
     const DimensionShape shape = dimensionShape(d, model, projection(), dimensionText(d));
     if (shape.valid) {
+      paintDimensionHalo(painter, shape, m_c.viewer().sketchHaloColor());
       paintDimension(painter, shape, textRect(shape.textAt, shape.text), kPreviewColor, kPreviewColor,
                      false);
     }
@@ -1143,7 +1221,15 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
   const QString hover = m_c.hoverAnnotation();
   if (m_c.showDimensions()) {
     const bool dark = m_c.viewer().backgroundDark();
-    for (const DimensionLayout& layout : dimensions()) {
+    const std::vector<DimensionLayout> layouts = dimensions();
+    // All the halos first, then the lines, so that a halo never cuts
+    // another dimension's line (mitcad#633).
+    const QColor halo = m_c.viewer().sketchHaloColor();
+    for (const DimensionLayout& layout : layouts) {
+      paintDimensionHalo(painter, layout.shape, halo);
+    }
+    logDimensionHalos();
+    for (const DimensionLayout& layout : layouts) {
       const DimensionData* d = model.dimension(layout.id);
       const bool selected = isSelected(QStringLiteral("dimension"), layout.id);
       const bool driven = d != nullptr && d->driven;

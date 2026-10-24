@@ -62,8 +62,13 @@
 //                           mnemonic) triggers it unless the focused widget
 //                           takes the key as text.
 //   type <text>             the characters as key events
-//   expect-selection-info <text-regex> [maximum-card-height]
-//                           idle Qt selection measurements and compact card
+//   expect-widget-property <object-name> <property> <value>
+//                           a Qt target widget's property as text
+//   expect-setting <key> <value>     the current saved QSettings value
+//   expect-dialog-gone <title-regex> no matching Qt tool window remains visible
+//   expect-selection-info <text-regex> [maximum-card-height] [with-create-row]
+//                           idle Qt selection measurements and compact card;
+//                           optionally add the visible Create row's size hint
 //   click <x%> <y%> [button] [mods]
 //   dblclick <x%> <y%> [button] [mods]
 //   drag <x1%> <y1%> <x2%> <y2%> [button] [mods]     with moves between
@@ -89,10 +94,14 @@
 //                           logged "Sketch view" (the origin, (100, 0) and
 //                           (0, 100) in window coordinates)
 //   sketch-drag <x1> <y1> <x2> <y2>
-//   type-in <regex> <text>  click the logged panel field, select all, type
+//   type-in <regex> <text>  reveal/focus the identified panel field, select
+//                           all and type through its actual frontend editor
+//   expect-input-text <id> <regex> check the actual Qt or AppKit field text
+//   expect-model-parameter <name> <value|absent> check a user parameter in mm
 //   command <id>            trigger the command's action (objectName
 //                           "command_<id>": "sketch.create", "file.export")
 //   open-file <path>        open through the external-file document host
+//   open-file-now <path>    use that same host while its preview owns the model
 //                           (Finder or drops), including save/lock questions
 //   file-dialog save|directory <initial> [filters] [selected-filter]
 //                           open a shared chooser with explicit initial state
@@ -212,6 +221,11 @@
 //   native-history-drag-now begin|to <index>|end send the same actual event
 //                           immediately, including while the model is busy
 //   expect-model-busy true|false assert the worker's actual state immediately
+//   menu-now <menu path> invoke the actual menu action without waiting for
+//                           an active worker, to test document transitions
+//   cancel-model-job <command name> cancel its running preview through the
+//                           worker control, to test its interrupted result;
+//                           normal interactive previews have no modal dialog
 //   capture-undo-depth <var> read the real document's undo depth
 //   expect-undo-depth <base> <change> assert its change since capture
 //   expect-model-bodies <count> <volume-mm3> query real OCCT body volumes

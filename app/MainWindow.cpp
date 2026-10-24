@@ -102,6 +102,7 @@
 #include "framework/Restart.hpp"
 #include "framework/Ribbon.hpp"
 #include "framework/SectionWorker.hpp"
+#include "framework/SelectionCreate.hpp"
 #include "framework/TitleBar.hpp"
 #include "framework/ShortcutDialog.hpp"
 #include "framework/Theme.hpp"
@@ -741,7 +742,7 @@ void MainWindow::registerCommands() {
   removeDef.tab = QStringLiteral("SOLID");
   removeDef.group = QStringLiteral("INSPECT");
   removeDef.keywords = {QStringLiteral("section"), QStringLiteral("clip")};
-  removeDef.enabled = [this] { return !m_snapshot.shownAnalysis().isEmpty(); };
+  removeDef.enabled = [this] { return sectionShown(); };
   m_registry->add(removeDef);
   CommandDef flip = action("inspect.flip_section", tr("Flip Section Analysis"), "flip",
                            CommandDef::Mode::Model, [this] { flipSection(); });
@@ -749,7 +750,7 @@ void MainWindow::registerCommands() {
   flip.tab = QStringLiteral("SOLID");
   flip.group = QStringLiteral("INSPECT");
   flip.keywords = {QStringLiteral("section"), QStringLiteral("clip"), QStringLiteral("other side")};
-  flip.enabled = [this] { return !m_snapshot.shownAnalysis().isEmpty(); };
+  flip.enabled = [this] { return sectionShown(); };
   m_registry->add(flip);
   // ASSEMBLE (mitcad#55): after Drive Joint.
   CommandDef animate = action("assemble.animate_joint", tr("Animate Joint"), "drive-joint",
@@ -1387,6 +1388,19 @@ void MainWindow::createIdlePage() {
   auto* layout = new QVBoxLayout(m_idlePage);
   layout->setContentsMargins(0, 0, 0, 0);
   layout->addWidget(m_idleInfo);
+  // The CREATE commands that fit the selection (mitcad#619): under the
+  // selection's text, above Autoselect.
+  m_selectionCreate = new SelectionCreatePanel;
+  layout->addWidget(m_selectionCreate);
+  connect(m_selectionCreate, &SelectionCreatePanel::commandRequested, this, [this](const QString& id) {
+    if (m_mode != Mode::Idle) {
+      return;
+    }
+    const CommandDef* def = m_registry->find(id);
+    qDebug().noquote() << QStringLiteral("Selection card create chose %1").arg(def != nullptr ? def->name : id);
+    // As the ribbon starts it: the selection goes to its inputs.
+    trigger(id);
+  });
   m_autoselect = new AutoselectPanel;
   layout->addWidget(m_autoselect);
   layout->addStretch();
@@ -1453,7 +1467,8 @@ void MainWindow::updateCommandCard() {
     return;
   }
   const bool idle = m_commandPages->currentWidget() == m_idlePage;
-  m_commandCard->setVisible(!(idle && m_idleInfo->text().isEmpty() && !m_autoselect->available()));
+  m_commandCard->setVisible(!(idle && m_idleInfo->text().isEmpty() && !m_autoselect->available() &&
+                              m_selectionCreate->entries().isEmpty()));
   m_floating->requestLayout();
 }
 
@@ -1512,6 +1527,8 @@ void MainWindow::updateActions() {
     ~Reset() { window->m_queryMemo = nullptr; }
   } reset{this};
   m_registry->updateEnabled([this](const CommandDef& def) { return isAvailable(def); });
+  // The card's Create row offers enabled commands only (mitcad#619).
+  updateSelectionCreate();
   m_confirmAction->setEnabled(m_mode == Mode::Command || m_mode == Mode::Sketch);
   updateWindowTitle();
 #ifdef MITCAD_MACOS_NATIVE_UI
@@ -1719,9 +1736,14 @@ void MainWindow::editAnalysis(const QString& name) {
     return;
   }
   const QJsonObject analysis = m_snapshot.analysis(name);
-  const CommandDef* def = m_registry->find(QStringLiteral("inspect.section"));
-  if (analysis.isEmpty() || def == nullptr ||
-      analysis.value(QStringLiteral("type")).toString() != QStringLiteral("section")) {
+  // Each type in its command's panel: Section Analysis, Print Analysis
+  // (mitcad#620).
+  const QString type = analysis.value(QStringLiteral("type")).toString();
+  const QString command = type == QStringLiteral("section") ? QStringLiteral("inspect.section")
+                          : type == QStringLiteral("print") ? QStringLiteral("inspect.print_analysis")
+                                                            : QString();
+  const CommandDef* def = command.isEmpty() ? nullptr : m_registry->find(command);
+  if (analysis.isEmpty() || def == nullptr) {
     return;
   }
   startFeatureCommand(*def, QString(), analysis);
@@ -2012,6 +2034,12 @@ void MainWindow::followAnalyses() {
   // The shown analysis' plane at the marker; none when its plane is gone.
   const QJsonValue plane = m_snapshot.shownAnalysis().value(QStringLiteral("section"));
   setSection(plane.isObject() ? plane : QJsonValue());
+  // A shown Print Analysis' overhangs and thin walls (mitcad#620).
+  followPrintAnalysis();
+}
+
+bool MainWindow::sectionShown() const {
+  return m_snapshot.shownAnalysis().value(QStringLiteral("type")).toString() == QStringLiteral("section");
 }
 
 bool MainWindow::sketchShown() const {
@@ -2222,7 +2250,7 @@ void MainWindow::showThreads(const std::vector<BodyDisplay>& bodies) {
 
 void MainWindow::flipSection() {
   const QJsonObject shown = m_snapshot.shownAnalysis();
-  if (shown.isEmpty() || !canChangeModel()) {
+  if (!sectionShown() || !canChangeModel()) {
     return;
   }
   // Its definition with the other side.
@@ -2238,7 +2266,7 @@ void MainWindow::flipSection() {
 
 void MainWindow::removeSection() {
   const QString name = m_snapshot.shownAnalysis().value(QStringLiteral("name")).toString();
-  if (name.isEmpty() || !canChangeModel()) {
+  if (name.isEmpty() || !sectionShown() || !canChangeModel()) {
     return;
   }
   // Hidden, not deleted: it stays in the browser's Analysis folder.
@@ -3725,6 +3753,7 @@ void MainWindow::setSelection(const Selection& items) {
 
 void MainWindow::updateIdleView() {
   m_autoselect->setActive(m_mode == Mode::Idle);
+  updateSelectionCreate();
   updateModeBanner();
   if (m_mode == Mode::Command) {
     return;
@@ -4381,7 +4410,10 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 bool MainWindow::deferForNativeCommand(std::function<void()> action) {
-  if (!m_nativeUi || !m_session) {
+  // Qt feature previews also retain the document after returning to the
+  // event loop. New/Open/Close must finish cancelling before maybeSave or
+  // document replacement reads that owner.
+  if (!m_session || (!m_nativeUi && !modelBusy())) {
     return false;
   }
   if (m_nativeCommandContinuation) {
@@ -4443,6 +4475,7 @@ void MainWindow::openDocument() {
 }
 
 bool MainWindow::loadDesign(const QString& path, QString& error) {
+  const bool mcpOpen = m_mcpRequestActive;
   ScopedTiming timing("open"); // reading, recomputing and showing it
   const QString name = QFileInfo(path).fileName();
   // In a project with version history (P12d): a file renamed outside
@@ -4454,7 +4487,16 @@ bool MainWindow::loadDesign(const QString& path, QString& error) {
     error = file.errorString();
     return false;
   }
-  const QByteArray json = file.readAll();
+  constexpr qint64 maxMcpDocumentBytes = 64 * 1024 * 1024;
+  const QByteArray json = mcpOpen ? file.read(maxMcpDocumentBytes + 1) : file.readAll();
+  if (file.error() != QFileDevice::NoError) {
+    error = file.errorString();
+    return false;
+  }
+  if (mcpOpen && json.size() > maxMcpDocumentBytes) {
+    error = tr("The design is too large for MCP (maximum 64 MiB).");
+    return false;
+  }
   if (!json.isValidUtf8()) {
     error = tr("The file is not UTF-8 text.");
     return false;
@@ -4466,22 +4508,28 @@ bool MainWindow::loadDesign(const QString& path, QString& error) {
   QString digest; // of the file as read, for autosave (P8)
   // A version 3 file's B-rep data comes from its project's store (P12a).
   const QByteArray location = QFileInfo(path).absoluteFilePath().toUtf8();
-  // On the worker: the file is parsed and its links followed there, then
-  // installDocument computes it.
-  const DocumentMaker read = [&](ModelJob& job) {
+  // On the worker: parse the file, and for ordinary opens follow its links,
+  // before installDocument computes it.
+  const DocumentMaker read = [&, mcpOpen](ModelJob& job) {
     job.setStage(tr("Reading %1").arg(name));
     digest = fileDigest(json);
     ScopedTiming loading("open load");
     rust::Box<Document> document = load_document_at(rustStr(json), rustStr(location));
+    if (mcpOpen) {
+      // Audit the actual parsed bytes before installDocument can evaluate
+      // them. MCP opens retain the embedded saved component bodies: a
+      // linked child must not run unaudited font-file definitions either.
+      document->validate_mcp_features();
+    }
     loading.setDetail(QStringLiteral("%1 bytes").arg(json.size()));
     loading.finish();
     job.setStage(tr("Opening %1").arg(name));
-    {
+    if (!mcpOpen) {
       const AttachedJob attached(*document, job);
       messages = parseObject(document->command(rustStr(links))).value(QStringLiteral("messages")).toArray();
     }
-    // As opened, with its links followed: no change to save (a recompute
-    // changes no revision).
+    // As opened (with refreshed links for ordinary opens): no change to
+    // save; a recompute changes no revision.
     markSaved(*document);
     return document;
   };
@@ -4523,7 +4571,7 @@ bool MainWindow::loadDesign(const QString& path, QString& error) {
 }
 
 bool MainWindow::save() {
-  if (m_nativeUi && m_session) {
+  if (m_session && (m_nativeUi || modelBusy())) {
     showHint(tr("Finish the current command before saving."));
     return false;
   }
@@ -4543,7 +4591,7 @@ bool MainWindow::save() {
 }
 
 bool MainWindow::saveAs() {
-  if (m_nativeUi && m_session) {
+  if (m_session && (m_nativeUi || modelBusy())) {
     showHint(tr("Finish the current command before saving."));
     return false;
   }

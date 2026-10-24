@@ -12,6 +12,9 @@
 
 #include "render/RenderProtocol.hpp"
 #include "platform/MacChrome.hpp"
+#ifdef __APPLE__
+#include "render/MacFrameSurface.hpp"
+#endif
 
 class QProcess;
 
@@ -19,13 +22,32 @@ namespace mitcad::render {
 
 class FrameMemory;
 class FrameChannel;
+#ifdef __APPLE__
+class MacRenderClient;
+#endif
 
-// A frame copied out of the shared memory.
+// A copied frame on POSIX/CLI, or a retained private Mac surface allocation.
 struct Frame {
   FrameInfo info;
   std::vector<std::uint16_t> pixels; // info.width x info.height RGBA half floats
   // The ground's catcher factors (as pixels; empty: none, mitcad#54).
   std::vector<std::uint16_t> catcher;
+#ifdef __APPLE__
+  std::shared_ptr<MacFrameLease> surface;
+#endif
+  const std::uint16_t* lightPixels() const {
+#ifdef __APPLE__
+    if (surface) return surface->pixels();
+#endif
+    return pixels.empty() ? nullptr : pixels.data();
+  }
+  const std::uint16_t* catcherPixels() const {
+#ifdef __APPLE__
+    if (surface) return info.catcher != 0 ? surface->pixels(1) : nullptr;
+#endif
+    return catcher.empty() ? nullptr : catcher.data();
+  }
+  bool empty() const { return lightPixels() == nullptr; }
 };
 
 // The application's end of the render worker (the executable mitcad-render,
@@ -88,6 +110,9 @@ private:
   void handle(const QJsonObject& event);
 
   QProcess* m_process = nullptr;
+#ifdef __APPLE__
+  std::unique_ptr<MacRenderClient> m_native;
+#endif
   mac::ProcessActivity m_activity;
   std::unique_ptr<FrameMemory> m_memory;
 #ifndef _WIN32

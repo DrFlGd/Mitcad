@@ -18,9 +18,11 @@
 #      give the nearest one (202 mm). OK makes F2.b0.
 #   4. On a shaft (mitcad#578), in a design mitcad-cli makes (an 8 mm
 #      cylinder 30 high, Cylinder1, F1.b0): Pulley with Shaft the
-#      cylinder's top edge: the note shows the bore the shaft gives (8 mm);
-#      an offset of 2 mm and a bore clearance of 0.2 mm make it 8.2 mm; OK
-#      makes the pulley on the shaft (F2.b0).
+#      cylinder's top edge: the Bore Clearance starts as the printed-fit
+#      parameter shaft_bore_clearance (0.2 mm, mitcad#623), so the note
+#      shows the bore the shaft gives as 8.2 mm; an offset of 2 mm and a
+#      typed bore clearance of 0.3 mm make it 8.3 mm; OK makes the pulley
+#      on the shaft (F2.b0).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-pulley-test.sh [screenshot.png]
@@ -112,20 +114,21 @@ ui_expect_log "Bodies shown: F1.b0" "the shaft shown"
 ui_mark
 ui_step "Pulley"                           ui_command "Pulley"
 ui_expect_new "Preview Pulley: ok" "the panel open on XY" 30
-ui_step "teeth 20"                         ui_type_in "Panel Pulley input teeth" "20"
+ui_expect_new "Pulley Bore Clearance: shaft_bore_clearance = 0.2 mm" "the bore clearance is the printed-fit parameter"
+ui_step "teeth 20"                       ui_type_in "Panel Pulley input teeth" "20"
 ui_mark
 ui_step "Shaft"                            ui_click_logged "Panel Pulley input shaft"
 ui_expect_new "Pick places:" "the picks are logged"
 ui_expect_new "Pick edge F1.b0/E{F1:side0|F1:top} at" "the shaft's top edge can be picked"
 ui_mark
 ui_step "click the shaft's top edge"       ui_click_pick "edge F1.b0/E{F1:side0|F1:top} at"
-ui_expect_new "bore 8 mm (shaft 8 mm)" "the bore the shaft gives" 30
+ui_expect_new "bore 8.2 mm (shaft 8 mm)" "the bore the shaft gives, with the printed fit" 30
 ui_mark
 ui_step "offset 2"                         ui_type_in "Panel Pulley input seat_offset" "2"
 ui_expect_new "Preview Pulley: ok" "2 mm down the shaft previewed" 30
 ui_mark
-ui_step "bore clearance 0.2"               ui_type_in "Panel Pulley input bore_clearance" "0.2"
-ui_expect_new "bore 8.2 mm (shaft 8 mm)" "the clearance widens the bore" 30
+ui_step "bore clearance 0.3"               ui_type_in "Panel Pulley input bore_clearance" "0.3"
+ui_expect_new "bore 8.3 mm (shaft 8 mm)" "a typed clearance replaces the parameter" 30
 grep "^Panel Pulley note: " "$UI_LOG" | tail -1 | sed 's/^/     /'
 ui_mark
 ui_step "OK (Enter)"                       ui_key Return

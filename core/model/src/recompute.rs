@@ -151,8 +151,8 @@ pub(crate) struct Output<S> {
     /// their warnings (mitcad#408).
     pub split_pieces: Option<Arc<Vec<crate::features::PieceGroup>>>,
     pub changed_pieces: Vec<(BodyUid, String)>,
-    /// A tapped hole's walls its modelled thread took whole, as they were
-    /// (mitcad#436).
+    /// A tapped hole's walls whose modelled thread has its crest off them,
+    /// as they were (mitcad#436, mitcad#628).
     pub threaded_walls: Vec<crate::features::hole::ThreadedWall>,
 }
 

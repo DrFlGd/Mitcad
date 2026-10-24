@@ -368,8 +368,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// The bodies of the replay as they are, by uid and measures (mm).
     fn learn_bodies(&self) -> Vec<Value> {
         let kernel = self.doc.kernel();
-        self.doc
-            .bodies()
+        crate::body_scope::bodies(self.doc)
             .iter()
             .take(MAX_BODIES)
             .filter_map(|b| {
@@ -438,7 +437,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
         let kernel = self.doc.kernel();
         let mut out = Vec::new();
-        for b in self.doc.bodies() {
+        for b in crate::body_scope::bodies(self.doc) {
             if !bodies.contains(&b.uid.to_string()) {
                 continue;
             }

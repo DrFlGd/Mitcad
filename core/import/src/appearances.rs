@@ -749,7 +749,7 @@ impl<K: Kernel> Importer<'_, K> {
                         .and_then(|fp| fp.point_on_face)
                         .map(crate::geom::mm3)
                         .and_then(|p| {
-                            let shape = self.doc.body_shape(uid)?;
+                            let shape = crate::body_scope::shape(self.doc, uid)?;
                             let kernel = self.doc.kernel();
                             kernel
                                 .faces(shape)

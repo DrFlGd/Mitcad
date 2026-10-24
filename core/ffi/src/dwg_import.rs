@@ -160,7 +160,15 @@ fn world_placements(plan: &Plan) -> Vec<Vec<Transform>> {
 }
 
 impl Document {
-    fn import_dwg_report(&mut self, path: &str, options: &Options) -> Result<Value, ApiError> {
+    /// `pause`: the job's monitor, whose test delay each item of the
+    /// drawing waits (`RecomputeMonitor::test_pause`; the import itself
+    /// runs without the job).
+    fn import_dwg_report(
+        &mut self,
+        path: &str,
+        options: &Options,
+        pause: Option<&mitcad_model::RecomputeMonitor>,
+    ) -> Result<Value, ApiError> {
         let file = file_name(path);
         let fail = |e: &dyn std::fmt::Display| ApiError(format!("{file}: {e}"));
         let started = std::time::Instant::now();
@@ -189,6 +197,9 @@ impl Document {
             .flat_map(|n| n.bodies.iter().map(|b| (b.block, b.item)))
             .collect();
         for &(block, index) in &wanted {
+            if let Some(monitor) = pause {
+                monitor.test_pause();
+            }
             let item = &scene.blocks[&block].items[index];
             let place = format!("{} {:X}", entity_name(&item.kind), item.handle);
             let mut out = Vec::new();
@@ -239,8 +250,16 @@ impl Document {
                         }
                         let data = to_ffi(&source, body);
                         let r = build_brep_body(&data, list.pin_mut());
-                        if !r.built {
-                            not_built.push(json!({"source": format!("{place}/{}", body.record), "error": r.error.to_string()}));
+                        // A body none of whose faces could be built is
+                        // not built: an empty body ended the whole import
+                        // (mitcad#589).
+                        if !r.built || r.faces == 0 {
+                            let error = if r.built {
+                                "none of its faces could be built".to_owned()
+                            } else {
+                                r.error.to_string()
+                            };
+                            not_built.push(json!({"source": format!("{place}/{}", body.record), "error": error}));
                             continue;
                         }
                         out.push(Built {
@@ -702,7 +721,10 @@ impl Document {
         let json = if json.trim().is_empty() { "{}" } else { json };
         let options: Options = serde_json::from_str(json)
             .map_err(|e| ApiError(format!("invalid import options: {e}")))?;
-        let report = self.without_job(|document| document.import_dwg_report(path, &options))?;
+        let monitor = self.0.monitor().cloned();
+        let report = self.without_job(|document| {
+            document.import_dwg_report(path, &options, monitor.as_deref())
+        })?;
         Ok(if options.text {
             summary(&report)
         } else {
@@ -723,7 +745,10 @@ impl Document {
         }
         let options: Options = serde_json::from_value(command)
             .map_err(|e| ApiError(format!("invalid import options: {e}")))?;
-        let report = self.without_job(|document| document.import_dwg_report(&path, &options))?;
+        let monitor = self.0.monitor().cloned();
+        let report = self.without_job(|document| {
+            document.import_dwg_report(&path, &options, monitor.as_deref())
+        })?;
         Ok(json!({
             "file": report["file"],
             "bodies": report["bodies"],
@@ -854,12 +879,20 @@ pub(crate) fn dwg_report_passes(json: &str) -> bool {
 }
 
 /// Writes the reader's test drawing in a version (`mitcad-cli import-dwg
-/// --write-test`): R13, R14, R2000, R2004, R2007, R2010, R2013 or R2018.
-pub(crate) fn dwg_write_test_file(path: &str, version: &str) -> Result<(), ApiError> {
+/// --write-test`): R13, R14, R2000, R2004, R2007, R2010, R2013 or R2018;
+/// `test_case` (empty for none) adds a case of an import test
+/// (`mitcad_dwg::testfile::test_case`).
+pub(crate) fn dwg_write_test_file(
+    path: &str,
+    version: &str,
+    test_case: &str,
+) -> Result<(), ApiError> {
     let v = mitcad_dwg::Version::ALL
         .into_iter()
         .find(|v| v.name().eq_ignore_ascii_case(version))
         .ok_or_else(|| ApiError(format!("unknown drawing version {version}")))?;
-    let bytes = mitcad_dwg::testfile::write(&mitcad_dwg::testfile::test_drawing(), v);
+    let drawing = mitcad_dwg::testfile::test_case(test_case)
+        .ok_or_else(|| ApiError(format!("unknown test case {test_case}")))?;
+    let bytes = mitcad_dwg::testfile::write(&drawing, v);
     std::fs::write(path, bytes).map_err(|e| ApiError(format!("{path}: {e}")))
 }

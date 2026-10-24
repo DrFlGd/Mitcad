@@ -54,6 +54,7 @@ capability=$?
 unset QT_QPA_PLATFORM QT_OPENGL LIBGL_ALWAYS_SOFTWARE GALLIUM_DRIVER
 unset MITCAD_RENDER_TEST_DENOISER MITCAD_RENDER_TEST_COMPARE_DENOISER
 unset MITCAD_RENDER_TEST_DENOISER_FAILURE MITCAD_RENDER_TEST_DEVICE_FAILURE
+unset MITCAD_RENDER_TEST_NATIVE_PASS_COMPARE MITCAD_RENDER_TEST_COMMAND_TRACE
 unset CYCLES_TEST_SINGLE_SAMPLE_UPDATES
 mkdir -p "$MITCAD_SETTINGS_DIR/nocodo.fi"
 printf '[render]\ndevice=metal\n' > "$MITCAD_SETTINGS_DIR/nocodo.fi/Mitcad.ini"
@@ -272,6 +273,14 @@ elif [ -n "${MITCAD_UI_RENDERER:-}" ] && ! printf '%s' "$renderer" | grep -Eq --
   ui_fail "OpenGL renderer is '$renderer', expected '$MITCAD_UI_RENDERER'"
 else
   ui_pass "OpenGL renderer: $renderer"
+fi
+if [ -z "${MITCAD_RENDER_WORKER:-}" ] || [ "${MITCAD_RENDER_REQUIRE_IOSURFACE:-0}" = 1 ]; then
+  ui_expect_log 'Render transport: IOSurface, private XPC session' 'private native surface session selected'
+  ui_expect_log 'Render frame transport: Metal buffer interop' 'Cycles wrote the final native light buffer'
+  ui_expect_log 'Render frame transport: native auxiliary GPU, composite [01]' 'native GPU auxiliary conversion executed'
+  if [ "${MITCAD_RENDER_ACCEPTANCE:-0}" = 1 ]; then
+    ui_expect_log 'Render frame transport: native auxiliary CPU, composite [01]' 'CPU device switch kept native auxiliary output'
+  fi
 fi
 ui_expect_log 'Render device: .*METAL.*\(asked for metal\)' 'explicit Metal selected'
 ui_expect_log 'Render denoising diagnostics: backend METAL,.*OIDN METAL.*\(execution confirmed\)' 'Metal OIDN executed'

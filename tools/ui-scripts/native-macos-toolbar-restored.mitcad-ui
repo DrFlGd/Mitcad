@@ -6,6 +6,12 @@ sleep 800
 expect-native-toolbar-item mitcad.sidebar true
 expect-native-toolbar-item mitcad.search true
 expect-native-toolbar-item mitcad.project false
+expect-native-toolbar-item command.file.open_from_project true
+native-toolbar-item command.file.open_from_project remove
+expect-native-toolbar-item command.file.open_from_project false
+expect-native-toolbar-item command.native.menu.242b980209fc28b76baeaadbbef1c1b9079287ce1b9a4011686d0895ceb53e1b true
+native-toolbar-item command.native.menu.242b980209fc28b76baeaadbbef1c1b9079287ce1b9a4011686d0895ceb53e1b remove
+expect-native-toolbar-item command.native.menu.242b980209fc28b76baeaadbbef1c1b9079287ce1b9a4011686d0895ceb53e1b false
 native-toolbar-item mitcad.project insert
 expect-native-toolbar-item mitcad.project true
 expect-native-text mitcad.project 'Not in a project'

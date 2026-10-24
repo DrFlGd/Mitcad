@@ -1532,9 +1532,14 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
       row.name = row.uid;
       row.visible = analysis.value(QStringLiteral("visible")).toBool();
       row.hasEye = true;
+      // Section and Print Analysis (mitcad#620), each with its icon.
+      row.featureType = analysis.value(QStringLiteral("type")).toString();
+      const bool print = row.featureType == QStringLiteral("print");
       const QString error = analysis.value(QStringLiteral("error")).toString();
-      QTreeWidgetItem* item = addRow(analyses, row, QStringLiteral("section-analysis"),
-                                     error.isEmpty() ? tr("%1: Section Analysis").arg(row.name)
+      const QString kind = print ? tr("Print Analysis") : tr("Section Analysis");
+      QTreeWidgetItem* item = addRow(analyses, row,
+                                     print ? QStringLiteral("print-analysis") : QStringLiteral("section-analysis"),
+                                     error.isEmpty() ? QStringLiteral("%1: %2").arg(row.name, kind)
                                                      : QStringLiteral("%1: %2").arg(row.name, error));
       if (!error.isEmpty()) {
         item->setForeground(kName, kFailedText);

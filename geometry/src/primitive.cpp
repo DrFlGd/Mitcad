@@ -12,6 +12,7 @@
 #include <TopoDS.hxx>
 #include <gp_Ax2.hxx>
 
+#include "face_select.hpp"
 #include "history.hpp"
 #include "util.hpp"
 
@@ -25,10 +26,7 @@ std::string role(const TopoDS_Face& face, const Frame& frame) {
   if (surface.GetType() != GeomAbs_Plane) {
     return "side0";
   }
-  gp_Dir normal = surface.Plane().Axis().Direction();
-  if (surface.Plane().Position().Direct() == (face.Orientation() == TopAbs_REVERSED)) {
-    normal.Reverse();
-  }
+  const gp_Dir normal = detail::planar_normal(face, surface.Plane());
   const double z = normal.Dot(frame.normal());
   const double x = normal.Dot(frame.x_axis);
   const double y = normal.Dot(frame.y_axis);

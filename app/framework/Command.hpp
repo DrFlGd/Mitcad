@@ -214,6 +214,9 @@ struct InputDef {
   // Value: an expression with units, as text.
   ValueKind valueKind = ValueKind::Length;
   QString defaultText;
+  // The model's printed-fit table supplies this field's initial name.
+  // Empty for ordinary fields; used only for a new command's defaults.
+  QString printedFitFeature;
   // A handle in the view that drags the value; none when it returns none.
   std::function<std::optional<Manipulator>(const CommandState&, const CommandContext&)>
       manipulator;
@@ -304,6 +307,10 @@ struct InputDef {
 
   InputDef& withTooltip(const QString& tip) {
     tooltip = tip;
+    return *this;
+  }
+  InputDef& withPrintedFit(const QString& feature) {
+    printedFitFeature = feature;
     return *this;
   }
   InputDef& withHeading(const QString& text) {
@@ -583,6 +590,11 @@ struct Inspection {
   // result's text and log line. The panel shows `text` meanwhile.
   QJsonObject laterQuery;
   std::function<void(const QJsonObject& answer, Inspection& result)> measured;
+  // Print Analysis (mitcad#620): its overhang and thin-wall triangles, the
+  // thinnest point and the legend's settings (commands/PrintAnalysis.hpp,
+  // printOverlayJson), drawn over the bodies (CommandHost::showPrintAnalysis);
+  // empty: nothing drawn.
+  QJsonObject printOverlay;
 };
 
 struct CommandDef {
@@ -648,7 +660,8 @@ struct CommandDef {
   // Inspections (U4: Measure, Interference, Section Analysis): the panel
   // shows the answer while the inputs change, OK closes it.
   std::function<Inspection(const CommandState&, const CommandContext&)> inspect;
-  // Whether OK keeps an inspection's section shown (Section Analysis). With
+  // Whether OK keeps an inspection's section shown (Section Analysis), or
+  // its overlay (Print Analysis, mitcad#620). With
   // `build` it is kept in the document (mitcad#41): `build` gives the
   // analysis' definition, OK adds it (`add_analysis`) or changes the one
   // edited (`edit_analysis`), and `load` fills the inputs from an entry of

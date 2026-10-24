@@ -59,6 +59,58 @@ else
   if [ -z "$(plist_value CFBundleIdentifier)" ]; then
     fail "$plist" "CFBundleIdentifier is empty"
   fi
+  # Keep Finder/Open With and Dock drops aligned with the actual opener.
+  # Every document type lists extensions explicitly, including the native
+  # type, and non-system UTIs must have an exported/imported declaration.
+  document_extensions=""
+  document_index=0
+  while [ -n "$(plist_value "CFBundleDocumentTypes:$document_index:CFBundleTypeName")" ]; do
+    document="CFBundleDocumentTypes:$document_index"
+    role=$(plist_value "$document:CFBundleTypeRole")
+    rank=$(plist_value "$document:LSHandlerRank")
+    extension_index=0
+    while extension=$(plist_value "$document:CFBundleTypeExtensions:$extension_index") && [ -n "$extension" ]; do
+      document_extensions="$document_extensions
+$extension"
+      if [ "$extension" = mitcad ]; then
+        if [ "$role" != Editor ] || [ "$rank" != Owner ]; then
+          fail "$plist" ".mitcad must remain Editor/Owner"
+        fi
+      elif [ "$role" != Viewer ] || [ "$rank" != Alternate ]; then
+        fail "$plist" ".$extension must be Viewer/Alternate"
+      fi
+      extension_index=$((extension_index + 1))
+    done
+    if [ "$extension_index" -eq 0 ]; then
+      fail "$plist" "document type $document_index has no explicit extensions"
+    fi
+    type_index=0
+    while type_id=$(plist_value "$document:LSItemContentTypes:$type_index") && [ -n "$type_id" ]; do
+      case "$type_id" in
+        public.*) ;;
+        *)
+          declared=0
+          for type_group in UTExportedTypeDeclarations UTImportedTypeDeclarations; do
+            declaration_index=0
+            while identifier=$(plist_value "$type_group:$declaration_index:UTTypeIdentifier") && [ -n "$identifier" ]; do
+              if [ "$identifier" = "$type_id" ]; then declared=1; fi
+              declaration_index=$((declaration_index + 1))
+            done
+          done
+          if [ "$declared" -ne 1 ]; then fail "$plist" "document UTI $type_id has no declaration"; fi
+          ;;
+      esac
+      type_index=$((type_index + 1))
+    done
+    if [ "$type_index" -eq 0 ]; then fail "$plist" "document type $document_index has no UTI"; fi
+    document_index=$((document_index + 1))
+  done
+  supported_extensions=$(sed -n '/^FileKind fileKind(/,/^}/p' "$SCRIPT_DIR/../app/files/FileFormats.cpp" |
+    grep -oE 'QStringLiteral\("[a-z0-9]+"\)' | sed 's/QStringLiteral("//; s/")//' | sort -u)
+  declared_extensions=$(printf '%s\n' "$document_extensions" | sed '/^$/d' | tr '[:upper:]' '[:lower:]' | sort -u)
+  if [ "$declared_extensions" != "$supported_extensions" ]; then
+    fail "$plist" "document extensions differ from FileFormats.cpp (expected: $(echo "$supported_extensions" | tr '\n' ' '); declared: $(echo "$declared_extensions" | tr '\n' ' '))"
+  fi
 fi
 # The native look of the widgets is a plug-in that macdeployqt leaves out
 # unless it is asked for; without it Qt falls back to its own cross-platform style.
@@ -78,8 +130,27 @@ fi
 # dependency graph.
 licenses="$contents/Resources/licenses"
 worker="$contents/MacOS/mitcad-render"
+# Old incremental build bundles can retain removed experiment targets. CMake's
+# BUNDLE install copies the directory, so reject these even if signed correctly.
+for obsolete in mitcad-frame-bootstrap-probe libmitcad-render-probe-runtime.dylib; do
+  if [ -e "$contents/MacOS/$obsolete" ] || [ -L "$contents/MacOS/$obsolete" ]; then
+    fail "$contents/MacOS/$obsolete" "obsolete bootstrap experiment must not be shipped"
+  fi
+done
 if [ ! -x "$worker" ]; then
   fail "$worker" "the renderer is not an executable in Contents/MacOS"
+fi
+render_service="$contents/XPCServices/org.mitcad.renderer.xpc"
+if [ ! -x "$render_service/Contents/MacOS/mitcad-render-service" ]; then
+  fail "$render_service" "the private interactive renderer service is missing"
+elif ! codesign --verify --strict "$render_service" 2>/dev/null; then
+  fail "$render_service" "the private interactive renderer service has no valid code signature"
+fi
+if [ ! -f "$render_service/Contents/Info.plist" ] || ! plutil -lint "$render_service/Contents/Info.plist" >/dev/null; then
+  fail "$render_service" "the private renderer's Info.plist is missing or invalid"
+elif [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$render_service/Contents/Info.plist")" != org.mitcad.renderer ] || \
+     [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundlePackageType' "$render_service/Contents/Info.plist")" != 'XPC!' ]; then
+  fail "$render_service" "the private renderer's bundle identity or type is wrong"
 fi
 for license in cycles/LICENSE openimagedenoise/LICENSE.txt openimagedenoise/third-party-programs.txt \
                embree-copyright.txt tbb-copyright.txt openimageio-copyright.txt \
@@ -142,8 +213,12 @@ rpaths_of() {
 
 # Expands @executable_path and @loader_path in a path of a file.
 expand_at() { # <path> <loader file>
+  local executable_dir="$contents/MacOS"
+  case "$2" in
+    "$contents"/XPCServices/*.xpc/Contents/MacOS/*) executable_dir=$(dirname "$2") ;;
+  esac
   case "$1" in
-    @executable_path/*) echo "$contents/MacOS/${1#@executable_path/}" ;;
+    @executable_path/*) echo "$executable_dir/${1#@executable_path/}" ;;
     @loader_path/*) echo "$(dirname "$2")/${1#@loader_path/}" ;;
     *) echo "$1" ;;
   esac

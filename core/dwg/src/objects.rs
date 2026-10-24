@@ -122,9 +122,10 @@ pub fn fixed_type_name(code: u16) -> Option<&'static str> {
     })
 }
 
-/// Fixed types that are entities.
+/// Fixed types that are entities (OLE2FRAME too: read as an object, its
+/// data ended early, mitcad#589).
 fn fixed_is_entity(code: u16) -> bool {
-    matches!(code, 1..=0x29 | 0x2B..=0x2F | 0x4D | 0x4E | 0x1f2)
+    matches!(code, 1..=0x29 | 0x2B..=0x2F | 0x4A | 0x4D | 0x4E | 0x1f2)
 }
 
 /// The DXF names of class entities whose data starts with B-rep data as
@@ -136,6 +137,9 @@ pub const SURFACE_CLASSES: &[&str] = &[
     "REVOLVEDSURFACE",
     "SWEPTSURFACE",
     "NURBSURFACE",
+    // The plain surface class (AcDbSurface), as a public sample drawing
+    // stores its procedural surfaces' B-rep (mitcad#589).
+    "SURFACE",
 ];
 
 /// An entity's colour.
@@ -943,4 +947,28 @@ fn entity_data(r: &mut Reader, code: u16, name: &str) -> Result<EntityData, DwgE
         _ if name == "MESH" => mesh(r)?,
         _ => EntityData::Other,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_surfaces_have_brep_data() {
+        // A class entity SURFACE (AcDbSurface) carries B-rep data as the
+        // other surfaces do (a public sample drawing: 88 of them).
+        assert!(is_brep(500, "SURFACE"));
+        assert!(is_brep(501, "PLANESURFACE"));
+        assert!(!is_brep(502, "SURFACEVAR"));
+    }
+
+    #[test]
+    fn ole_frames_are_entities() {
+        // Both OLE frame types are entities: their common data is an
+        // entity's (a public sample drawing's OLE2FRAME read as an object
+        // ended early).
+        assert_eq!(type_info(0x2B, &[]), ("OLEFRAME".to_owned(), true));
+        assert_eq!(type_info(0x4A, &[]), ("OLE2FRAME".to_owned(), true));
+        assert_eq!(type_info(0x4F, &[]), ("XRECORD".to_owned(), false));
+    }
 }

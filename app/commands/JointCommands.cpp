@@ -107,47 +107,11 @@ int uidNumber(const QString& uid) { return uid.mid(1).toInt(); }
 
 // --- Components and occurrence paths
 
-QJsonObject componentsOf(const CommandContext& context) {
-  return context.queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
-}
-
 QString activeComponent(const CommandContext& context) {
   try {
     return componentsOf(context).value(QStringLiteral("active")).toString(kRoot);
   } catch (const std::exception&) {
     return kRoot;
-  }
-}
-
-QString componentName(const QString& component, const CommandContext& context) {
-  try {
-    for (const QJsonValue& value : componentsOf(context).value(QStringLiteral("components")).toArray()) {
-      if (str(value.toObject(), "uid") == component) {
-        return str(value.toObject(), "name");
-      }
-    }
-  } catch (const std::exception&) {
-    // The uid then.
-  }
-  return component;
-}
-
-// Calls `visit` with each occurrence of the `components` query's tree and
-// its path of uids from the root.
-void eachOccurrence(const CommandContext& context,
-                    const std::function<void(const QJsonObject&, const QString&)>& visit) {
-  std::function<void(const QJsonArray&, const QString&)> walk = [&](const QJsonArray& level, const QString& parent) {
-    for (const QJsonValue& value : level) {
-      const QJsonObject node = value.toObject();
-      const QString path = parent.isEmpty() ? str(node, "uid") : parent + QLatin1Char('/') + str(node, "uid");
-      visit(node, path);
-      walk(node.value(QStringLiteral("children")).toArray(), path);
-    }
-  };
-  try {
-    walk(componentsOf(context).value(QStringLiteral("occurrences")).toArray(), QString());
-  } catch (const std::exception&) {
-    // No occurrences then.
   }
 }
 

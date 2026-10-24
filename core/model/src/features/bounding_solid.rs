@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
@@ -35,14 +36,11 @@ impl<P> BoundingSolidDef<P> {
     pub const TYPE: &'static str = "bounding_solid";
     pub const BASE_NAME: &'static str = "BoundingSolid";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<BoundingSolidDef<Q>, E> {
-        Ok(BoundingSolidDef {
-            bodies: self.bodies.clone(),
-            margin: f("margin", &self.margin)?,
-        })
+    map_params! {
+        BoundingSolidDef {
+            bodies: clone,
+            margin: param,
+        }
     }
 }
 

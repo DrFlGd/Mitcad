@@ -21,6 +21,8 @@ path = "src/bin/mitcad-dwg-inspect.rs"
 mitcad-f3d = { path = "../f3d" }
 # Drawing units ($INSUNITS) shared with the DXF reader.
 mitcad-dxf = { path = "../dxf" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
 # The drawing's summary and the import report as JSON.
 serde = { workspace = true }
 serde_json = { workspace = true }

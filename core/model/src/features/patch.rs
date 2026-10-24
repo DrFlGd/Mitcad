@@ -20,6 +20,7 @@ use super::extrude::{
     ProfileRef, check_profiles, profile_references, profile_regions, profile_set,
 };
 use super::face_refs::{add_faces, check_faces, kernel_error};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
@@ -95,15 +96,12 @@ impl<P> PatchDef<P> {
     pub const TYPE: &'static str = "patch";
     pub const BASE_NAME: &'static str = "Patch";
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<PatchDef<Q>, E> {
-        Ok(PatchDef {
-            profiles: self.profiles.clone(),
-            boundary: self.boundary.clone(),
-            values: PhantomData,
-        })
+    map_params! {
+        PatchDef {
+            profiles: clone,
+            boundary: clone,
+            values: phantom,
+        }
     }
 }
 

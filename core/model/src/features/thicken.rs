@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::extrude::{Operation, apply_operation, check_participants, participant_bodies};
 use super::face_refs::kernel_error;
+use super::mapping::map_params;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, is_false,
 };
@@ -40,17 +41,14 @@ impl<P> ThickenDef<P> {
     pub const TYPE: &'static str = "thicken";
     pub const BASE_NAME: &'static str = "Thicken";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<ThickenDef<Q>, E> {
-        Ok(ThickenDef {
-            bodies: self.bodies.clone(),
-            thickness: f("thickness", &self.thickness)?,
-            symmetric: self.symmetric,
-            operation: self.operation,
-            participants: self.participants.clone(),
-        })
+    map_params! {
+        ThickenDef {
+            bodies: clone,
+            thickness: param,
+            symmetric: copy,
+            operation: copy,
+            participants: clone,
+        }
     }
 }
 

@@ -28,4 +28,10 @@ inline QJsonObject parseObject(const rust::String& json) { return parseJson(json
 
 inline QString errorText(const std::exception& error) { return QString::fromUtf8(error.what()); }
 
+// A string member of a JSON object; empty when the key is missing or not a
+// string.
+inline QString str(const QJsonObject& object, const char* key) {
+  return object.value(QLatin1String(key)).toString();
+}
+
 } // namespace mitcad

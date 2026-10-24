@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
+#include <functional>
 #include <limits>
 
 #include <BRepAdaptor_Curve.hxx>
@@ -71,10 +73,6 @@ QString sketchCurveType(const QString& sketch, const QString& curve, const Comma
 }
 
 } // namespace
-
-QString str(const QJsonObject& object, const char* key) {
-  return object.value(QLatin1String(key)).toString();
-}
 
 QString label(const Choices& choices, const QString& value) {
   for (const auto& [choice, text] : choices) {
@@ -610,6 +608,40 @@ bool hasSketches(const CommandContext& context) {
   return std::any_of(features.begin(), features.end(), [](const QJsonValue& feature) {
     return feature.toObject().value(QStringLiteral("type")).toString() == QStringLiteral("sketch");
   });
+}
+
+QJsonObject componentsOf(const CommandContext& context) {
+  return context.queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
+}
+
+QString componentName(const QString& uid, const CommandContext& context) {
+  try {
+    for (const QJsonValue& value : componentsOf(context).value(QStringLiteral("components")).toArray()) {
+      if (str(value.toObject(), "uid") == uid) {
+        return str(value.toObject(), "name");
+      }
+    }
+  } catch (const std::exception&) {
+    // The uid then.
+  }
+  return uid;
+}
+
+void eachOccurrence(const CommandContext& context,
+                    const std::function<void(const QJsonObject&, const QString&)>& visit) {
+  std::function<void(const QJsonArray&, const QString&)> walk = [&](const QJsonArray& level, const QString& parent) {
+    for (const QJsonValue& value : level) {
+      const QJsonObject node = value.toObject();
+      const QString path = parent.isEmpty() ? str(node, "uid") : parent + QLatin1Char('/') + str(node, "uid");
+      visit(node, path);
+      walk(node.value(QStringLiteral("children")).toArray(), path);
+    }
+  };
+  try {
+    walk(componentsOf(context).value(QStringLiteral("occurrences")).toArray(), QString());
+  } catch (const std::exception&) {
+    // No occurrences then.
+  }
 }
 
 // ---------------------------------------------------------------------------

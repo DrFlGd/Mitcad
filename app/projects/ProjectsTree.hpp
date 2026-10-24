@@ -88,4 +88,17 @@ bool anyProjectConfigured(const QStringList& known, const QString& projectsFolde
 // Whether two folder paths are the same (case-insensitive on Windows).
 bool sameRoot(const QString& a, const QString& b);
 
+// Paths inside a project: relative to its folder, '/'-separated.
+// The folder part of a path ("" for a top-level name).
+inline QString dirOf(const QString& path) {
+  const qsizetype slash = path.lastIndexOf(QLatin1Char('/'));
+  return slash < 0 ? QString() : path.left(slash);
+}
+// The name after the last '/'.
+inline QString lastPart(const QString& path) { return path.section(QLatin1Char('/'), -1); }
+// `name` inside `folder` ("" is the project's top level).
+inline QString joinPath(const QString& folder, const QString& name) {
+  return folder.isEmpty() ? name : QStringLiteral("%1/%2").arg(folder, name);
+}
+
 } // namespace mitcad

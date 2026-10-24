@@ -471,7 +471,7 @@ fn a_corner_s_shared_mitre_meets_at_the_outer_corners() {
         .unwrap();
         let normal = placement.apply_vector(normal);
         let centre = placement.apply_point(point);
-        let dot = |a: [f64; 3], c: [f64; 3]| a[0] * c[0] + a[1] * c[1] + a[2] * c[2];
+        use mitcad_vec3::dot;
         let delta: [f64; 3] = std::array::from_fn(|i| centre[i] - edge[i]);
         let k = dot(delta, normal) / dot(along, normal);
         std::array::from_fn::<f64, 3, _>(|i| edge[i] + along[i] * k)

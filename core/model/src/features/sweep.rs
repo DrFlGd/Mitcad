@@ -13,6 +13,7 @@ use super::extrude::{
     Operation, ProfileRef, apply_operation, check_participants, participant_bodies,
     profile_references, profile_regions,
 };
+use super::mapping::map_params;
 use super::path::{self, CurvePath, SketchCurves};
 use super::surface_sweeps;
 use super::{
@@ -67,6 +68,7 @@ impl<P> PathExtent<P> {
         matches!(self, Self::Full)
     }
 
+    // Written by hand: an enum, its slots by kind (`extent.fraction`).
     pub(crate) fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -296,46 +298,31 @@ impl<P> SweepDef<P> {
     pub const TYPE: &'static str = "sweep";
     pub const BASE_NAME: &'static str = "Sweep";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SweepDef<Q>, E> {
-        Ok(SweepDef {
-            profiles: self.profiles.clone(),
-            path: self.path.clone(),
-            orientation: self.orientation,
-            twist_angle: self
-                .twist_angle
-                .as_ref()
-                .map(|v| f("twist_angle", v))
-                .transpose()?,
-            taper_angle: self
-                .taper_angle
-                .as_ref()
-                .map(|v| f("taper_angle", v))
-                .transpose()?,
-            guide_rail: self.guide_rail.clone(),
-            guide_surfaces: self.guide_surfaces.clone(),
-            profile_scaling: self.profile_scaling,
-            extent: self.extent.map_params(f)?,
-            flip: self.flip,
-            operation: self.operation,
-            participants: self.participants.clone(),
-            body_links: self.body_links.clone(),
-            binormal: self.binormal,
-            end_scale: self
-                .end_scale
-                .as_ref()
-                .map(|v| f("end_scale", v))
-                .transpose()?,
-            guide_rail2: self.guide_rail2.clone(),
-            surface: self.surface,
-            curves: self.curves.clone(),
-            rail_point: self.rail_point,
-            frame: self.frame.clone(),
-            profile_face: self.profile_face.clone(),
-            fixed_curves: self.fixed_curves.clone(),
-        })
+    map_params! {
+        SweepDef {
+            profiles: clone,
+            path: clone,
+            orientation: copy,
+            twist_angle: option,
+            taper_angle: option,
+            guide_rail: clone,
+            guide_surfaces: clone,
+            profile_scaling: copy,
+            extent: map,
+            flip: copy,
+            operation: copy,
+            participants: clone,
+            body_links: clone,
+            binormal: copy,
+            end_scale: option,
+            guide_rail2: clone,
+            surface: copy,
+            curves: clone,
+            rail_point: copy,
+            frame: clone,
+            profile_face: clone,
+            fixed_curves: clone,
+        }
     }
 }
 

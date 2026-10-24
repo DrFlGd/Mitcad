@@ -200,6 +200,7 @@ impl<P> ThreadDef<P> {
     pub const TYPE: &'static str = "thread";
     pub const BASE_NAME: &'static str = "Thread";
 
+    // Written by hand: the diameters map under nested slots (`diameters.major`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

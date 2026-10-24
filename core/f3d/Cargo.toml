@@ -20,6 +20,8 @@ path = "src/bin/mitcad-f3d-inspect.rs"
 [dependencies]
 # The zip container (shared with the .FCStd reader).
 mitcad-zip = { path = "../zip" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
 # The design dump IR (core/import/SCHEMA.md) is JSON.
 serde.workspace = true
 serde_json.workspace = true

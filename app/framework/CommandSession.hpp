@@ -148,14 +148,12 @@ public:
   virtual const SelectionScope* commandScope() const { return nullptr; }
   // Parameter names picked from the view into a value field (mitcad#250):
   // the sketches the view shows (not one sketch mode edits), each with the
-  // placement of the occurrence that places it, and the feature command
-  // that edits a definition (the `feature` query's def; null: none).
+  // placement of the occurrence that places it.
   struct ShownSketch {
     QString uid;
     gp_Trsf placement;
   };
   virtual std::vector<ShownSketch> shownSketches() const { return {}; }
-  virtual const CommandDef* featureEditor(const QJsonObject& /*def*/) const { return nullptr; }
 };
 
 // A feature command from start to OK or Cancel: its inputs' state and
@@ -224,6 +222,10 @@ public:
   void discard();
   // Puts the keyboard into a value input (by its key) of the panel.
   bool focusValue(const QString& key);
+  // Puts the keyboard into the first value input as the panel opens
+  // (startsWithValues): the session's own doing, so the parameter labels
+  // wait until the user picks the field or types in it (mitcad#587).
+  bool focusFirstValueOnOpen();
   // A choice made outside the panel (mitcad#418: BUILD's part picker), as
   // if chosen in it: its onChange runs and the preview follows; or the
   // text of a text input (mitcad#519: BUILD's Openings window), as if
@@ -462,6 +464,7 @@ private:
   bool m_valueKeyboard = false; // a value field has the keyboard now
   bool m_valueTouched = false;  // the user put the keyboard in a field himself
   bool m_autoFocusing = false;  // the session itself is focusing a field
+  bool m_openFocusPending = false; // the field focused on opening has not had the keyboard yet
   QTimer m_previewTimer;
   bool m_previewOk = false;
   QJsonObject m_shownReport; // the report of the preview shown (toggles)

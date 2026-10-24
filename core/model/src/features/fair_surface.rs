@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::{add_faces, check_faces, kernel_error, require_faces};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
@@ -71,18 +72,15 @@ impl<P> FairSurfaceDef<P> {
     pub const TYPE: &'static str = "fair_surface";
     pub const BASE_NAME: &'static str = "FairSurface";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<FairSurfaceDef<Q>, E> {
-        Ok(FairSurfaceDef {
-            body: self.body,
-            faces: self.faces.clone(),
-            strength: self.strength,
-            iterations: self.iterations,
-            keep_edges: self.keep_edges,
-            tolerance: f("tolerance", &self.tolerance)?,
-        })
+    map_params! {
+        FairSurfaceDef {
+            body: copy,
+            faces: clone,
+            strength: copy,
+            iterations: copy,
+            keep_edges: copy,
+            tolerance: param,
+        }
     }
 }
 

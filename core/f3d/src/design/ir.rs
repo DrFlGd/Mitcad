@@ -28,7 +28,7 @@ use serde_json::{Map, Value};
 use super::record::record;
 
 /// `[x, y, z]`.
-pub type Vec3 = [f64; 3];
+pub use mitcad_vec3::Vec3;
 /// Row-major 4x4 matrix (`[row][column]`, translation in column 3).
 pub type Mat4 = [[f64; 4]; 4];
 

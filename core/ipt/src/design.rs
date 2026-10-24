@@ -419,7 +419,7 @@ fn planes_of_sketches(items: &mut [Value]) {
         ) else {
             continue;
         };
-        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        use mitcad_vec3::dot;
         let on = planes.iter().find(|(i, o, n)| {
             *i < index
                 && (dot(*n, normal) - 1.0).abs() < 1e-9

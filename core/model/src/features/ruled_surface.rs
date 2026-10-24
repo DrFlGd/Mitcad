@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::{add_faces, kernel_error};
+use super::mapping::map_params;
 use super::sheet_edges::{self, OpeningEdgesRef};
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -55,22 +56,19 @@ impl<P> RuledSurfaceDef<P> {
     pub const TYPE: &'static str = "ruled_surface";
     pub const BASE_NAME: &'static str = "RuledSurface";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<RuledSurfaceDef<Q>, E> {
-        Ok(RuledSurfaceDef {
-            body: self.body,
-            edges: self.edges.clone(),
-            openings: self.openings.clone(),
-            face: self.face.clone(),
-            distance: f("distance", &self.distance)?,
-            mode: self.mode,
-            angle: self.angle.as_ref().map(|a| f("angle", a)).transpose()?,
-            direction: self.direction,
-            flip: self.flip,
-            corners: self.corners,
-        })
+    map_params! {
+        RuledSurfaceDef {
+            body: copy,
+            edges: clone,
+            openings: clone,
+            face: clone,
+            distance: param,
+            mode: copy,
+            angle: option,
+            direction: copy,
+            flip: copy,
+            corners: copy,
+        }
     }
 }
 

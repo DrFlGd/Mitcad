@@ -13,21 +13,13 @@
 //! Corner reliefs ([`super::relief`]) are the same operation with generated
 //! tool contours.
 
+use mitcad_vec3::{add, sub};
+
 use super::develop::{bend_record, domain_label, loop_area, planar_map, reconfigure};
 use super::*;
 use crate::features::sheet_cut::SheetCutDef;
 use crate::profile::dot;
 use std::collections::BTreeMap;
-
-type V3 = [f64; 3];
-
-fn sub(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
-fn add3(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] + b[i])
-}
 
 /// A trimmed edge before its identity is settled.
 struct Pending {
@@ -989,7 +981,7 @@ pub(crate) fn straight_cuts_at_once<K: Kernel>(
             };
             let back = frame.normal().map(|v| v * parity.sign() * rules.thickness);
             seams.push((frame.point(a), frame.point(b)));
-            seams.push((add3(frame.point(a), back), add3(frame.point(b), back)));
+            seams.push((add(frame.point(a), back), add(frame.point(b), back)));
         }
     }
     let grow = 1.0e-4;

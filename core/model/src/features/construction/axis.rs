@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{GeomRef, Want, distinct, finite};
 use crate::datum::{Datum, DatumAxis, SurfaceGeometry, Vec3, unit};
+use crate::features::mapping::map_params;
 use crate::features::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, is_false,
 };
@@ -65,14 +66,12 @@ impl<P> ConstructionAxisDef<P> {
         }
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<ConstructionAxisDef<Q>, E> {
-        Ok(ConstructionAxisDef {
-            flip: self.flip,
-            ..ConstructionAxisDef::new(self.definition.clone())
-        })
+    map_params! {
+        ConstructionAxisDef {
+            definition: clone,
+            flip: copy,
+            values: phantom,
+        }
     }
 
     fn inputs(&self) -> Vec<(&GeomRef, Want)> {

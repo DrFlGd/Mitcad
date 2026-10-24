@@ -1630,7 +1630,7 @@ occurrence table's properties and the model state an occurrence uses
 ### Results on the assemblies
 
 `iam.corpus` (dev build, 2026-10-09, parts as their stored bodies; the
-test: [core/import/README.md](../import/README.md#iam-corpus-test)), the
+test: [core/import/docs/iam.md](../import/docs/iam.md#iam-corpus-test)), the
 166 assemblies of the private project tree (saved by releases from 2016
 to 2023, sub-assemblies nested up to seven deep):
 
@@ -1693,7 +1693,7 @@ to 2023, sub-assemblies nested up to seven deep):
   feature, an empty part, a body the result list keeps hidden), `cli.import_ipt*`,
   `cli.ipt_design_file`, `ipt.corpus`
   ([tools/cli/ipt-corpus.cmake](../../tools/cli/ipt-corpus.cmake)) and
-  `ui-import-test.sh`; see [core/import/README.md](../import/README.md#ipt-import).
+  `ui-import-test.sh`; see [core/import/docs/ipt.md](../import/docs/ipt.md#ipt-import).
   Assemblies: `cli.import_iam`, `cli.info_iam`, `cli.import_ipt_iam` (the
   `testassembly` project) and `iam.corpus`
   ([tools/cli/iam-corpus.cmake](../../tools/cli/iam-corpus.cmake): every

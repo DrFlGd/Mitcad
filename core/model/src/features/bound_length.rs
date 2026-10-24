@@ -166,6 +166,7 @@ impl<P> BoundLengthDef<P> {
     pub const TYPE: &'static str = "bound_length";
     pub const BASE_NAME: &'static str = "BoundLength";
 
+    // Written by hand: the shift's slots are named by axis (`from.shift.x`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

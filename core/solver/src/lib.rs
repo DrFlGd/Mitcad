@@ -14,7 +14,7 @@
 //! values.
 //!
 //! The solver is our own implementation (MIT) of well-known methods; see
-//! `README.md` for the formulation. It has no dependencies.
+//! `README.md` for the formulation. It has no third-party dependencies.
 //!
 //! ```
 //! use mitcad_solver::{Constraint, SolveOptions, System};

@@ -66,6 +66,7 @@ fn is_developed(mode: &SheetCutMode) -> bool {
 impl<P> SheetCutDef<P> {
     pub const TYPE: &'static str = "sheet_cut";
     pub const BASE_NAME: &'static str = "SheetCut";
+    // Written by hand: the extent maps by its kind (`extent.distance`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

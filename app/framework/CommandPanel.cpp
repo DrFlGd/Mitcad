@@ -1369,12 +1369,15 @@ bool CommandPanel::eventFilter(QObject* watched, QEvent* event) {
   default:
     break;
   }
-  if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) {
+  // A click in a field counts as the user giving it the keyboard, also when
+  // it has it already (the panel put it there as it opened, mitcad#587).
+  const bool pressed = event->type() == QEvent::MouseButtonPress;
+  if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut || pressed) {
     for (const auto& row : m_rows) {
       if (row->edit == watched && row->input->type == InputDef::Type::Value) {
         auto call = CommandPresenter::actions().valueFocused;
-        if (call) {
-          call(row->key, event->type() == QEvent::FocusIn);
+        if (call && (!pressed || row->edit->hasFocus())) {
+          call(row->key, event->type() != QEvent::FocusOut);
         }
         break;
       }

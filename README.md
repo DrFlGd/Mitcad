@@ -186,6 +186,7 @@ corpus setup: [docs/development.md](docs/development.md#the-check-script).
 |---|---|
 | `core/model` | Rust model: document, timeline, features, sketches, naming, recompute, design file, JSON API ([commands.md](core/model/src/api/commands.md)) |
 | `core/solver` | 2D sketch constraint solver |
+| `core/vec3` | The `[f64; 3]` helpers shared by the model, the solver and the readers |
 | `core/f3d`, `core/freecad`, `core/import`, `core/zip` | `.f3d` and FreeCAD readers and the history import |
 | `core/ipt` | `.ipt` reader: compound file, property sets, segments, the bodies |
 | `core/solidcraft` | `.solidcraft` reader: the JSON design or its container, upgraded to one format |

@@ -27,6 +27,8 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use serde::{Deserialize, Serialize};
 
+use mitcad_vec3::{add_scaled, combine};
+
 use super::extrude::{Operation, apply_operation, check_participants, participant_bodies};
 use super::gear::{Bore, Hub};
 use super::gear_profile::{self, NamedSegment, bore_outline, circle};
@@ -195,6 +197,7 @@ impl<P> PulleyDef<P> {
     pub const TYPE: &'static str = "pulley";
     pub const BASE_NAME: &'static str = "Pulley";
 
+    // Written by hand: the optional values come first, nested parts under prefixes.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -677,14 +680,6 @@ pub struct Placement {
     pub phase: f64,
 }
 
-fn add(a: [f64; 3], b: [f64; 3], s: f64) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] + b[i] * s)
-}
-
-fn combine(a: [f64; 3], sa: f64, b: [f64; 3], sb: f64) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] * sa + b[i] * sb)
-}
-
 impl PulleyDef {
     fn params_list(&self) -> Vec<ParamId> {
         let mut ids = Vec::new();
@@ -770,7 +765,7 @@ pub(crate) fn placement<K: Kernel>(
     let u = combine(frame.x_axis, c, frame.y_axis, s);
     let placed = Placement {
         frame: SketchFrame {
-            origin: add(frame.origin, u, belt.center_distance),
+            origin: add_scaled(frame.origin, u, belt.center_distance),
             ..frame
         },
         phase: 0.0,
@@ -832,7 +827,7 @@ fn screw_frame(frame: &SketchFrame, angle: f64, height: f64) -> SketchFrame {
     let (s, c) = angle.sin_cos();
     let u = combine(frame.x_axis, c, frame.y_axis, s);
     SketchFrame {
-        origin: add(frame.origin, n, height),
+        origin: add_scaled(frame.origin, n, height),
         x_axis: n,
         y_axis: cross(u, n),
     }

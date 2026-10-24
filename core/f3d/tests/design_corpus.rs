@@ -290,7 +290,7 @@ const DECODER_ONLY: &[&str] = &[
     ".occurrences[].children[].children[]._f3d.guids",
     ".timeline.items[].detail.orientation",
     // The light bulbs of hidden occurrences, checked against the API
-    // reference dumps instead (core/import/README.md, *Light bulbs*).
+    // reference dumps instead (core/import/docs/f3d-appearances.md, *Light bulbs*).
     ".occurrences[].isLightBulbOn",
     ".occurrences[].children[].isLightBulbOn",
     ".occurrences[].children[].children[].isLightBulbOn",

@@ -13,6 +13,7 @@ use super::face_refs::{
     add_faces, check_faces, check_tool, kernel_error, map_offset, require_faces, resolve_tool,
 };
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::pattern::none;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -51,18 +52,15 @@ impl<P> SplitFaceDef<P> {
     pub const TYPE: &'static str = "split_face";
     pub const BASE_NAME: &'static str = "SplitFace";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SplitFaceDef<Q>, E> {
-        Ok(SplitFaceDef {
-            body: self.body,
-            faces: self.faces.clone(),
-            tool: self.tool.clone(),
-            offset: map_offset(&self.offset, f)?,
-            direction: self.direction,
-            extend: self.extend,
-        })
+    map_params! {
+        SplitFaceDef {
+            body: copy,
+            faces: clone,
+            tool: clone,
+            offset: with(map_offset),
+            direction: copy,
+            extend: copy,
+        }
     }
 }
 

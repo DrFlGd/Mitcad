@@ -46,12 +46,13 @@
 
 use std::collections::HashMap;
 
+use mitcad_vec3::{add, scale};
 use serde::Serialize;
 
 use crate::schema::Schema;
 use crate::walk::{Object, Record, Value};
 
-pub type P3 = [f64; 3];
+pub use mitcad_vec3::Vec3 as P3;
 pub type Uv = [f64; 2];
 
 /// A curve a surface is made from (feet; parameters as the file's).
@@ -173,14 +174,6 @@ fn hermite(us: &[f64], vs: &[f64], nodes: &[[P3; 4]], u: f64, v: f64) -> P3 {
         }
     }
     p
-}
-
-fn add(a: P3, b: P3) -> P3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale(a: P3, s: f64) -> P3 {
-    [a[0] * s, a[1] * s, a[2] * s]
 }
 
 impl Surface {

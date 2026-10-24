@@ -174,6 +174,7 @@ impl<P> DerivedPartDef<P> {
     pub const TYPE: &'static str = "derived_part";
     pub const BASE_NAME: &'static str = "Part";
 
+    // Written by hand: parameters, ends and cuts map under computed slots.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

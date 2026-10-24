@@ -84,6 +84,7 @@ impl<P> RevolveDef<P> {
     pub const TYPE: &'static str = "revolve";
     pub const BASE_NAME: &'static str = "Revolve";
 
+    // Written by hand: the extent maps by its kind (`extent.angle1`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

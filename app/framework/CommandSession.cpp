@@ -3289,6 +3289,22 @@ void CommandSession::discard() {
 
 bool CommandSession::focusValue(const QString& key) { return m_presenter != nullptr && m_presenter->focusValue(key); }
 
+bool CommandSession::focusFirstValueOnOpen() {
+  if (m_presenter == nullptr) {
+    return false;
+  }
+  // The field may take the keyboard only once the panel is shown, after
+  // this returns: its first focus counts as the session's too.
+  m_openFocusPending = true;
+  m_autoFocusing = true;
+  const bool focused = m_presenter->focusFirstValue();
+  m_autoFocusing = false;
+  if (!focused) {
+    m_openFocusPending = false;
+  }
+  return focused;
+}
+
 bool CommandSession::choose(const QString& key, const QString& value) {
   if (m_done || m_presenter == nullptr) {
     return false;

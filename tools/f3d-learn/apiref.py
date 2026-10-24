@@ -9,7 +9,7 @@ input group is compared field by field:
 
     decoder   the dump IR of `mitcad-f3d-inspect design FILE --json`
     census    the answer the history accepted in the learning dump
-              (core/import/README.md, "Learning the undecoded inputs")
+              (core/import/docs/f3d-learning.md, "Learning the undecoded inputs")
     API       the reference dump, taken as the truth
 
     apiref.py compare --api DIR --ir DIR --out DIR

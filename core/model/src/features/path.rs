@@ -23,6 +23,8 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use mitcad_vec3::{add, distance, scale};
+
 use super::geom_ref::PathRef;
 use super::{CheckContext, EvalContext, FeatureDef, References, is_false};
 use crate::ids::{BodyUid, EntityUid, FeatureUid};
@@ -441,18 +443,6 @@ pub(crate) fn curve3(frame: &SketchFrame, curve: &Curve2) -> Curve3 {
     }
 }
 
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-
-fn scaled(a: [f64; 3], s: f64) -> [f64; 3] {
-    a.map(|v| v * s)
-}
-
-fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
-    (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
-}
-
 /// A point of a conic at parameter `t`.
 pub(crate) fn conic_point(
     center: [f64; 3],
@@ -465,8 +455,8 @@ pub(crate) fn conic_point(
     add(
         center,
         add(
-            scaled(x_axis, major * t.cos()),
-            scaled(y_axis, minor * t.sin()),
+            scale(x_axis, major * t.cos()),
+            scale(y_axis, minor * t.sin()),
         ),
     )
 }
@@ -481,7 +471,7 @@ pub(crate) fn helix_point(
 ) -> [f64; 3] {
     add(
         conic_point(center, axis, x_axis, (radius, radius), t),
-        scaled(axis, pitch * t / TAU),
+        scale(axis, pitch * t / TAU),
     )
 }
 

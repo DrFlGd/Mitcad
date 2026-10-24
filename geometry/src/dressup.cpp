@@ -288,12 +288,6 @@ std::vector<TopoDS_Shape> corner_vertices(const BRepFilletAPI_LocalOperation& ma
   return corners;
 }
 
-double volume_of(const TopoDS_Shape& shape) {
-  GProp_GProps props;
-  BRepGProp::VolumeProperties(shape, props);
-  return props.Mass();
-}
-
 // A dressup's result that BRepCheck rejects, repaired by shape healing
 // with its names, or null. On imported bodies (.f3d bodies, with tolerances
 // up to 0.05 mm) OCCT at times builds the rounding right but turns the
@@ -315,8 +309,8 @@ ShapePtr healed(const Shape& result, const Shape& body) {
     if (fixed.IsNull() || !BRepCheck_Analyzer(fixed, true, true).IsValid()) {
       return nullptr;
     }
-    const double before = volume_of(body.occt());
-    const double after = volume_of(fixed);
+    const double before = detail::volume_of(body.occt());
+    const double after = detail::volume_of(fixed);
     if (!(after > 0.0) || std::abs(after - before) > 0.25 * std::abs(before)) {
       return nullptr;
     }

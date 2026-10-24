@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::{add_faces, check_faces, kernel_error, require_faces};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
@@ -30,15 +31,12 @@ impl<P> DeleteFaceDef<P> {
     pub const TYPE: &'static str = "delete_face";
     pub const BASE_NAME: &'static str = "DeleteFace";
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<DeleteFaceDef<Q>, E> {
-        Ok(DeleteFaceDef {
-            body: self.body,
-            faces: self.faces.clone(),
-            values: PhantomData,
-        })
+    map_params! {
+        DeleteFaceDef {
+            body: copy,
+            faces: clone,
+            values: phantom,
+        }
     }
 }
 

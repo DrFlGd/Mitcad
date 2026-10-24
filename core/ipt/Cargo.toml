@@ -21,6 +21,8 @@ mitcad-cfb = { path = "../cfb" }
 # The B-rep record holds an ASM binary file, read and converted by the
 # .f3d reader's ASM code.
 mitcad-f3d = { path = "../f3d" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
 # Pure-Rust decompressors of the segment streams (zlib, zstd); zlib also
 # compresses (test files).
 miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }

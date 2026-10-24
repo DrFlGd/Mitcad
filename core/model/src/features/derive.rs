@@ -19,6 +19,7 @@ use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
 
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
@@ -54,11 +55,12 @@ impl<P> DeriveDef<P> {
         }
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<DeriveDef<Q>, E> {
-        Ok(DeriveDef::new(self.bodies.clone(), self.links.clone()))
+    map_params! {
+        DeriveDef {
+            bodies: clone,
+            links: clone,
+            values: phantom,
+        }
     }
 }
 

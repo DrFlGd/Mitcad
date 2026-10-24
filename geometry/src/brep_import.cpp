@@ -700,7 +700,9 @@ TopoDS_Edge singular_edge(const TopoDS_Face& face, const TopoDS_Vertex& vertex, 
   return edge;
 }
 
-double volume_of(const TopoDS_Shape& shape) { return analysis::volume_properties(shape).Mass(); }
+// The volume by the analysis library's integrals, as the queries report it
+// (detail::volume_of in util.hpp is OCCT's own integration).
+double analysed_volume_of(const TopoDS_Shape& shape) { return analysis::volume_properties(shape).Mass(); }
 
 // The vertices, edges and faces of a body by their index in its data.
 struct Parts {
@@ -1870,7 +1872,7 @@ void build_into(const Body& body, const BuildOptions& options, BuildResult& resu
         TopoDS_Shape again = apply_transform(build_topology(body, options, scratch, unused), body.transform);
         again = heal(again, options, !touching, crowded);
         const auto solid_volume = [](const TopoDS_Shape& s) {
-          return count_of(s, TopAbs_SOLID) > 0 ? std::abs(volume_of(orient_solids(s))) : 0.0;
+          return count_of(s, TopAbs_SOLID) > 0 ? std::abs(analysed_volume_of(orient_solids(s))) : 0.0;
         };
         if (BRepCheck_Analyzer(again, true, true).IsValid()) {
           const double before = solid_volume(shape);
@@ -1901,11 +1903,11 @@ void build_into(const Body& body, const BuildOptions& options, BuildResult& resu
     const TopoDS_Shape unoriented = shape;
     if (report.solid) {
       if (options.measure) {
-        report.raw_volume = volume_of(shape);
+        report.raw_volume = analysed_volume_of(shape);
       }
       shape = orient_solids(shape);
       if (options.measure) {
-        report.volume = volume_of(shape);
+        report.volume = analysed_volume_of(shape);
       }
     }
     if (!options.measure) {

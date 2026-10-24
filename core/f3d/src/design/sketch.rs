@@ -523,12 +523,7 @@ pub struct EllipseGeom {
 impl EllipseGeom {
     /// The normal the angles turn about: `major × minor`.
     pub fn normal(&self) -> Vec3 {
-        let (a, b) = (self.major, self.minor);
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
+        mitcad_vec3::cross(self.major, self.minor)
     }
 
     /// A whole ellipse: no end points.
@@ -548,7 +543,7 @@ pub fn ellipses(seg: &Segment) -> HashMap<u64, EllipseGeom> {
         let p = root.end;
         let Some(v) = f64s_at(d, p, 13) else { continue };
         let (major, minor) = (vec3(&v[3..6]), vec3(&v[6..9]));
-        let dot = |a: Vec3, b: Vec3| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        use mitcad_vec3::dot;
         let valid = v.iter().all(|x| x.is_finite())
             && (dot(major, major) - 1.0).abs() < 1e-9
             && (dot(minor, minor) - 1.0).abs() < 1e-9

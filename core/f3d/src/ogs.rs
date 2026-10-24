@@ -511,15 +511,7 @@ pub fn mesh_stats(positions_cm: &[[f32; 3]], triangles: &[[u32; 3]]) -> MeshStat
     }
     s.bbox_mm = [lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]];
     let centre = [0, 1, 2].map(|k| 0.5 * (lo[k] + hi[k]));
-    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-    let cross = |a: [f64; 3], b: [f64; 3]| {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    };
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    use mitcad_vec3::{cross, dot, sub};
     for t in &tris {
         let [a, b, c] = t.map(|i| sub(p[i], centre));
         s.volume_mm3 += dot(a, cross(b, c)) / 6.0;

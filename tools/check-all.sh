@@ -146,6 +146,8 @@ CORPUS_SOURCES=(core/f3d core/import core/freecad core/zip core/ipt core/tests
   CMakeLists.txt rust-toolchain.toml vcpkg.json third_party/vcpkg-ports)
 # The IFC import (mitcad#273).
 CORPUS_SOURCES+=(core/ifc tools/cli/ifc-corpus.cmake)
+# The vector helpers the readers and the import use (mitcad#582).
+CORPUS_SOURCES+=(core/vec3)
 # Single .f3d designs checked item by item (mitcad#311).
 CORPUS_SOURCES+=(tools/cli/f3d-designs.cmake)
 # The .solidcraft import (mitcad#450).

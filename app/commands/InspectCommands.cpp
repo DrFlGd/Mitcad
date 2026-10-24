@@ -260,8 +260,8 @@ CommandDef measureCommand() {
       const QJsonArray a = between.value(QStringLiteral("on_a")).toArray();
       const QJsonArray c = between.value(QStringLiteral("on_b")).toArray();
       if (a.size() == 3 && c.size() == 3) {
-        const gp_Pnt p(a[0].toDouble(), a[1].toDouble(), a[2].toDouble());
-        const gp_Pnt q(c[0].toDouble(), c[1].toDouble(), c[2].toDouble());
+        const gp_Pnt p = pointOf(a);
+        const gp_Pnt q = pointOf(c);
         lines << QObject::tr("Δx %1, Δy %2, Δz %3 mm")
                      .arg(n(q.X() - p.X()), n(q.Y() - p.Y()), n(q.Z() - p.Z()));
         lines << QObject::tr("From %1 to %2").arg(xyz(a), xyz(c));

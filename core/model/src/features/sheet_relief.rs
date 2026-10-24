@@ -33,6 +33,7 @@ pub struct SheetCornerReliefDef<P = ParamId> {
 impl<P> SheetCornerReliefDef<P> {
     pub const TYPE: &'static str = "sheet_corner_relief";
     pub const BASE_NAME: &'static str = "SheetCornerRelief";
+    // Written by hand: the relief maps under nested slots (`relief.width`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

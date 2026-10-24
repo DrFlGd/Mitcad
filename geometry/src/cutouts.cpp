@@ -102,11 +102,8 @@ TopoDS_Shape solid_of(const Box& b) {
   return BRepPrimAPI_MakeBox(gp_Pnt(b[0], b[1], b[2]), gp_Pnt(b[3], b[4], b[5])).Shape();
 }
 
-double volume_of(const TopoDS_Shape& shape) {
-  GProp_GProps props;
-  BRepGProp::VolumeProperties(shape, props);
-  return std::abs(props.Mass());
-}
+// The size of a shape's volume, whichever way a solid is turned.
+double absolute_volume_of(const TopoDS_Shape& shape) { return std::abs(volume_of(shape)); }
 
 // Runs `make`; what the geometry kernel fails at gives nothing (the
 // fallback then does not apply).
@@ -452,7 +449,7 @@ std::vector<Region> regions_at(const Shape& body, int n, const ShapeSet& selecte
         // (A copy: the region's faces are the body's, which the booleans
         // below would write into.)
         const TopoDS_Shape region = BRepBuilderAPI_Copy(cx.Current()).Shape();
-        const double region_volume = volume_of(region);
+        const double region_volume = absolute_volume_of(region);
         if (region_volume <= 1.0e-9 * std::max(1.0, body_volume)) {
           continue;
         }
@@ -550,15 +547,15 @@ std::vector<Region> regions_at(const Shape& body, int n, const ShapeSet& selecte
         // The tool holds all of the region; a cut-out's none of the body, a
         // protrusion's no other part of the body past the face's surface.
         const double eps = 1.0e-6 * region_volume + 1.0e-12;
-        if (volume_of(boolean<BRepAlgoAPI_Cut>(region, *tool)) > eps) {
+        if (absolute_volume_of(boolean<BRepAlgoAPI_Cut>(region, *tool)) > eps) {
           continue;
         }
-        if (!protrusion && volume_of(boolean<BRepAlgoAPI_Common>(*tool, solid)) > eps) {
+        if (!protrusion && absolute_volume_of(boolean<BRepAlgoAPI_Common>(*tool, solid)) > eps) {
           continue;
         }
         if (protrusion) {
           const TopoDS_Shape kept = boolean<BRepAlgoAPI_Common>(*tool, solid);
-          if (volume_of(boolean<BRepAlgoAPI_Common>(kept, *side)) > region_volume + eps) {
+          if (absolute_volume_of(boolean<BRepAlgoAPI_Common>(kept, *side)) > region_volume + eps) {
             continue;
           }
           tool = kept;
@@ -614,7 +611,7 @@ std::optional<Cutouts> fill_cutouts(const Shape& body, const std::vector<int>& o
     builder.MakeCompound(rejoin);
     std::vector<int> walls;
     const std::vector<int> spine = faces;
-    const double body_volume = volume_of(solid);
+    const double body_volume = absolute_volume_of(solid);
     // The body's faces' boxes, to look for a region's walls among the faces
     // near it only.
     std::vector<Box> face_boxes;

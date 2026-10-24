@@ -9,6 +9,8 @@
 
 use std::collections::BTreeSet;
 
+use mitcad_vec3::unit_div_above;
+
 use super::{Document, ModelError, invalid};
 use crate::features::FeatureDef;
 use crate::ids::{BodyUid, FeatureUid, OccurrenceUid};
@@ -87,13 +89,9 @@ fn distance_from_plane(curve: &Curve3, origin: [f64; 3], normal: [f64; 3]) -> f6
     }
 }
 
+/// `v` divided by its length; `v` itself when it has none.
 fn unit(v: [f64; 3]) -> [f64; 3] {
-    let n = dot(v, v).sqrt();
-    if n > 0.0 {
-        std::array::from_fn(|i| v[i] / n)
-    } else {
-        v
-    }
+    unit_div_above(v, 0.0).unwrap_or(v)
 }
 
 /// A body to look at: its shape in its component's coordinates and the

@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::dispatch::named_enum;
 use super::{ApiError, parse};
 use crate::document::Document;
 use crate::features::sketch::{FrameDef, SketchDef, SketchOutput};
@@ -29,580 +30,535 @@ use crate::sketch::{
 };
 use crate::topo::{RegionKey, TopoName};
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", deny_unknown_fields)]
-pub(super) enum SketchCommand {
-    #[serde(rename = "sketch.create")]
-    Create {
-        #[serde(default)]
-        plane: SketchPlane,
-        #[serde(default)]
-        frame: Option<FrameDef>,
-        #[serde(default)]
-        name: Option<String>,
-        /// Where the plane was picked: the occurrence path from the root
-        /// to its component (mitcad#100); another component's plane is
-        /// linked.
-        #[serde(default)]
-        occurrence: Option<OccurrencePath>,
-        /// Where the active component is seen (its first occurrence path
-        /// when left out).
-        #[serde(default)]
-        context: Option<OccurrencePath>,
-    },
-    #[serde(rename = "sketch.add_rectangle")]
-    AddRectangle {
-        sketch: FeatureUid,
-        corner: [f64; 2],
-        width: ValueInput,
-        height: ValueInput,
-    },
-    #[serde(rename = "sketch.add_circle")]
-    AddCircle {
-        sketch: FeatureUid,
-        center: [f64; 2],
-        diameter: ValueInput,
-    },
-    #[serde(rename = "sketch.add_point")]
-    AddPoint {
-        sketch: FeatureUid,
-        at: [f64; 2],
-        #[serde(default)]
-        fixed: bool,
-    },
-    #[serde(rename = "sketch.add_line")]
-    AddLine {
-        sketch: FeatureUid,
-        start: Value,
-        end: Value,
-        #[serde(default)]
-        construction: bool,
-        #[serde(default)]
-        centerline: bool,
-    },
-    #[serde(rename = "sketch.rectangle")]
-    Rectangle {
-        sketch: FeatureUid,
-        mode: String,
-        #[serde(default)]
-        a: Option<[f64; 2]>,
-        #[serde(default)]
-        b: Option<[f64; 2]>,
-        #[serde(default)]
-        c: Option<[f64; 2]>,
-        #[serde(default)]
-        center: Option<[f64; 2]>,
-        #[serde(default)]
-        corner: Option<[f64; 2]>,
-        #[serde(default)]
-        construction: bool,
-    },
-    #[serde(rename = "sketch.circle")]
-    Circle {
-        sketch: FeatureUid,
-        mode: String,
-        #[serde(default)]
-        center: Option<Value>,
-        #[serde(default)]
-        radius: Option<f64>,
-        #[serde(default)]
-        a: Option<[f64; 2]>,
-        #[serde(default)]
-        b: Option<[f64; 2]>,
-        #[serde(default)]
-        c: Option<[f64; 2]>,
-        #[serde(default, with = "curves_opt")]
-        lines: Option<Vec<EntityUid>>,
-        #[serde(default)]
-        near: Option<[f64; 2]>,
-        #[serde(default)]
-        construction: bool,
-    },
-    #[serde(rename = "sketch.arc")]
-    Arc {
-        sketch: FeatureUid,
-        mode: String,
-        #[serde(default)]
-        start: Option<Value>,
-        #[serde(default)]
-        through: Option<[f64; 2]>,
-        #[serde(default)]
-        end: Option<Value>,
-        #[serde(default)]
-        center: Option<Value>,
-        #[serde(default)]
-        clockwise: bool,
-        #[serde(default)]
-        from: Option<String>,
-        #[serde(default)]
-        construction: bool,
-    },
-    #[serde(rename = "sketch.polygon")]
-    Polygon {
-        sketch: FeatureUid,
-        center: [f64; 2],
-        vertex: [f64; 2],
-        sides: usize,
-        #[serde(default = "yes")]
-        inscribed: bool,
-        #[serde(default)]
-        construction: bool,
-    },
-    #[serde(rename = "sketch.slot")]
-    Slot {
-        sketch: FeatureUid,
-        mode: String,
-        width: f64,
-        #[serde(default)]
-        a: Option<[f64; 2]>,
-        #[serde(default)]
-        b: Option<[f64; 2]>,
-        #[serde(default)]
-        center: Option<[f64; 2]>,
-        #[serde(default)]
-        start: Option<[f64; 2]>,
-        #[serde(default)]
-        end: Option<[f64; 2]>,
-    },
-    #[serde(rename = "sketch.ellipse")]
-    Ellipse {
-        sketch: FeatureUid,
-        center: Value,
-        major: [f64; 2],
-        minor_radius: f64,
-        #[serde(default)]
-        start: Option<Value>,
-        #[serde(default)]
-        end: Option<Value>,
-        #[serde(default)]
-        construction: bool,
-    },
-    #[serde(rename = "sketch.spline")]
-    Spline {
-        sketch: FeatureUid,
-        points: Vec<Value>,
-        #[serde(default)]
-        degree: Option<u32>,
-        #[serde(default)]
-        construction: bool,
-    },
-    #[serde(rename = "sketch.add_text")]
-    AddText {
-        sketch: FeatureUid,
-        text: String,
-        #[serde(default)]
-        at: Option<[f64; 2]>,
-        height: f64,
-        #[serde(default)]
-        angle: f64,
-        #[serde(default)]
-        font: String,
-        #[serde(default)]
-        bold: bool,
-        #[serde(default)]
-        italic: bool,
-        #[serde(default)]
-        align: TextAlign,
-        #[serde(default)]
-        valign: TextVAlign,
-        #[serde(default)]
-        spacing: f64,
-        #[serde(default)]
-        frame: Option<Value>,
-        #[serde(default)]
-        path: Option<TextPath>,
-        #[serde(default)]
-        flip_x: bool,
-        #[serde(default)]
-        flip_y: bool,
-        #[serde(default)]
-        cap_height: bool,
-        #[serde(default)]
-        wrap: bool,
-        #[serde(default)]
-        line_spacing: f64,
-        #[serde(default)]
-        pen_align: bool,
-        #[serde(default)]
-        ink_top: bool,
-        #[serde(default)]
-        glyphs: Option<crate::sketch::StoredGlyphs>,
-        /// A font file instead of an installed font (mitcad#473).
-        #[serde(default)]
-        font_file: Option<String>,
-    },
-    // Sketch text edited afterwards (P3).
-    #[serde(rename = "sketch.edit_text")]
-    EditText {
-        sketch: FeatureUid,
-        id: String,
-        #[serde(default)]
-        text: Option<String>,
-        #[serde(default)]
-        at: Option<[f64; 2]>,
-        #[serde(default)]
-        height: Option<f64>,
-        #[serde(default)]
-        angle: Option<f64>,
-        #[serde(default)]
-        font: Option<String>,
-        #[serde(default)]
-        bold: Option<bool>,
-        #[serde(default)]
-        italic: Option<bool>,
-        #[serde(default)]
-        align: Option<TextAlign>,
-        #[serde(default)]
-        valign: Option<TextVAlign>,
-        #[serde(default)]
-        spacing: Option<f64>,
-        #[serde(default)]
-        path: Option<TextPath>,
-        #[serde(default)]
-        flip_x: Option<bool>,
-        #[serde(default)]
-        flip_y: Option<bool>,
-        #[serde(default)]
-        cap_height: Option<bool>,
-        #[serde(default)]
-        wrap: Option<bool>,
-        #[serde(default)]
-        line_spacing: Option<f64>,
-        #[serde(default)]
-        pen_align: Option<bool>,
-        #[serde(default)]
-        ink_top: Option<bool>,
-        /// A font file (mitcad#473); "" leaves it for the installed `font`.
-        #[serde(default)]
-        font_file: Option<String>,
-    },
-    #[serde(rename = "sketch.add_constraint")]
-    AddConstraint {
-        sketch: FeatureUid,
-        constraint: ConstraintKind,
-    },
-    #[serde(rename = "sketch.add_dimension")]
-    AddDimension {
-        sketch: FeatureUid,
-        dimension: DimensionKind,
-        #[serde(default)]
-        value: Option<ValueInput>,
-        #[serde(default)]
-        driven: bool,
-        #[serde(default)]
-        text: Option<[f64; 2]>,
-    },
-    #[serde(rename = "sketch.set_dimension")]
-    SetDimension {
-        sketch: FeatureUid,
-        dimension: ConstraintUid,
-        value: ValueInput,
-    },
-    #[serde(rename = "sketch.set_driven")]
-    SetDriven {
-        sketch: FeatureUid,
-        dimension: ConstraintUid,
-        #[serde(default = "yes")]
-        driven: bool,
-    },
-    #[serde(rename = "sketch.set_signed")]
-    SetSigned {
-        sketch: FeatureUid,
-        dimension: ConstraintUid,
-        #[serde(default = "yes")]
-        signed: bool,
-    },
-    #[serde(rename = "sketch.remove")]
-    Remove {
-        sketch: FeatureUid,
-        items: Vec<String>,
-    },
-    #[serde(rename = "sketch.set_construction")]
-    SetConstruction {
-        sketch: FeatureUid,
-        #[serde(with = "curves")]
-        curves: Vec<EntityUid>,
-        #[serde(default = "yes")]
-        construction: bool,
-    },
-    #[serde(rename = "sketch.set_centerline")]
-    SetCenterline {
-        sketch: FeatureUid,
-        #[serde(with = "curves")]
-        lines: Vec<EntityUid>,
-        #[serde(default = "yes")]
-        centerline: bool,
-    },
-    #[serde(rename = "sketch.set_fixed")]
-    SetFixed {
-        sketch: FeatureUid,
-        entities: Vec<Ref>,
-        #[serde(default = "yes")]
-        fixed: bool,
-    },
-    #[serde(rename = "sketch.drag")]
-    Drag {
-        sketch: FeatureUid,
-        entity: Ref,
-        #[serde(default)]
-        to: Option<[f64; 2]>,
-        #[serde(default)]
-        by: Option<[f64; 2]>,
-        #[serde(default)]
-        radius: Option<f64>,
-    },
-    #[serde(rename = "sketch.move")]
-    Move {
-        sketch: FeatureUid,
-        entities: Vec<Ref>,
-        #[serde(default)]
-        by: Option<[f64; 2]>,
-        #[serde(default)]
-        rotate: Option<Rotation>,
-        #[serde(default)]
-        copy: bool,
-    },
-    #[serde(rename = "sketch.trim")]
-    Trim {
-        sketch: FeatureUid,
-        #[serde(with = "crate::ids::curve_serde")]
-        curve: EntityUid,
-        at: [f64; 2],
-    },
-    #[serde(rename = "sketch.extend")]
-    Extend {
-        sketch: FeatureUid,
-        #[serde(with = "crate::ids::curve_serde")]
-        curve: EntityUid,
-        at: [f64; 2],
-    },
-    #[serde(rename = "sketch.fillet")]
-    Fillet {
-        sketch: FeatureUid,
-        #[serde(with = "crate::ids::curve_serde")]
-        a: EntityUid,
-        #[serde(with = "crate::ids::curve_serde")]
-        b: EntityUid,
-        radius: ValueInput,
-    },
-    #[serde(rename = "sketch.chamfer")]
-    Chamfer {
-        sketch: FeatureUid,
-        #[serde(with = "crate::ids::curve_serde")]
-        a: EntityUid,
-        #[serde(with = "crate::ids::curve_serde")]
-        b: EntityUid,
-        distance: ValueInput,
-        #[serde(default)]
-        distance2: Option<ValueInput>,
-        #[serde(default)]
-        angle: Option<ValueInput>,
-    },
-    #[serde(rename = "sketch.offset")]
-    Offset {
-        sketch: FeatureUid,
-        #[serde(with = "curves")]
-        curves: Vec<EntityUid>,
-        distance: ValueInput,
-    },
-    #[serde(rename = "sketch.mirror")]
-    Mirror {
-        sketch: FeatureUid,
-        entities: Vec<Ref>,
-        #[serde(with = "crate::ids::curve_serde")]
-        axis: EntityUid,
-    },
-    #[serde(rename = "sketch.circular_pattern")]
-    CircularPattern {
-        sketch: FeatureUid,
-        entities: Vec<Ref>,
-        center: Value,
-        count: u32,
-        #[serde(default = "full_turn")]
-        angle: ValueInput,
-    },
-    #[serde(rename = "sketch.rectangular_pattern")]
-    RectangularPattern {
-        sketch: FeatureUid,
-        entities: Vec<Ref>,
-        #[serde(default = "x_axis")]
-        direction: [f64; 2],
-        count: [u32; 2],
-        spacing: [ValueInput; 2],
-        // Per direction: the originals in the middle (an odd count).
-        #[serde(default)]
-        symmetric: [bool; 2],
-    },
-    // Sketch patterns and offsets edited afterwards (P4).
-    #[serde(rename = "sketch.edit_pattern")]
-    EditPattern {
-        sketch: FeatureUid,
-        pattern: ConstraintUid,
-        #[serde(default)]
-        count: Option<Value>,
-        #[serde(default)]
-        angle: Option<ValueInput>,
-        #[serde(default)]
-        spacing: Option<[ValueInput; 2]>,
-        #[serde(default)]
-        direction: Option<[f64; 2]>,
-        #[serde(default)]
-        center: Option<Value>,
-        #[serde(default)]
-        entities: Option<Vec<Ref>>,
-    },
-    #[serde(rename = "sketch.edit_offset")]
-    EditOffset {
-        sketch: FeatureUid,
-        offset: ConstraintUid,
-        #[serde(default)]
-        distance: Option<ValueInput>,
-        #[serde(default)]
-        flip: bool,
-    },
-    #[serde(rename = "sketch.project")]
-    Project {
-        sketch: FeatureUid,
-        source: TopoName,
-        #[serde(default)]
-        body: Option<BodyUid>,
-        #[serde(default)]
-        linked: bool,
-        /// As in `sketch.create` (mitcad#100).
-        #[serde(default)]
-        occurrence: Option<OccurrencePath>,
-        #[serde(default)]
-        context: Option<OccurrencePath>,
-        /// Section curves (mitcad#389): where the sketch's plane cuts the
-        /// source face instead of its projection.
-        #[serde(default)]
-        section: bool,
-    },
-    // Sketch mode (U2): a dimension's value dragged to another place.
-    #[serde(rename = "sketch.set_dimension_text")]
-    SetDimensionText {
-        sketch: FeatureUid,
-        dimension: ConstraintUid,
-        text: [f64; 2],
-    },
-    // Files (U6): a DXF drawing's geometry into the sketch.
-    #[serde(rename = "sketch.import_dxf")]
-    ImportDxf {
-        sketch: FeatureUid,
-        path: String,
-        /// The unit of a drawing that names none (`mm` by default).
-        #[serde(default)]
-        unit: Option<String>,
-        /// Where the drawing's origin goes, in sketch coordinates.
-        #[serde(default)]
-        at: Option<[f64; 2]>,
-        /// Only the entities on these layers (P9); all when left out.
-        #[serde(default)]
-        layers: Option<Vec<String>>,
-    },
-    // Equal spacing (mitcad#221).
-    #[serde(rename = "sketch.add_equal_spacing")]
-    AddEqualSpacing {
-        sketch: FeatureUid,
-        anchors: Vec<Ref>,
-        mode: SpacingMode,
-        #[serde(default, with = "crate::sketch::curve_opt_serde")]
-        direction: Option<EntityUid>,
-        #[serde(default)]
-        keep_order: bool,
-        /// A common spacing dimension: driving with `spacing` (or the mean
-        /// of the current intervals), or `driven`.
-        #[serde(default)]
-        dimension: bool,
-        #[serde(default)]
-        spacing: Option<ValueInput>,
-        #[serde(default)]
-        driven: bool,
-        #[serde(default)]
-        text: Option<[f64; 2]>,
-    },
-    #[serde(rename = "sketch.edit_equal_spacing")]
-    EditEqualSpacing {
-        sketch: FeatureUid,
-        constraint: ConstraintUid,
-        #[serde(default)]
-        anchors: Option<Vec<Ref>>,
-        #[serde(default)]
-        mode: Option<SpacingMode>,
-        #[serde(default, with = "crate::sketch::curve_opt_serde")]
-        direction: Option<EntityUid>,
-        #[serde(default)]
-        keep_order: bool,
-    },
-    // Duplicate and overlapping projected curves (mitcad#232).
-    #[serde(rename = "sketch.clean_up_projections")]
-    CleanUpProjections {
-        sketch: FeatureUid,
-        /// Also lines on or overlapping a collinear one.
-        #[serde(default = "yes")]
-        merge: bool,
-    },
-    // Projected curves that no longer match their source (mitcad#252).
-    #[serde(rename = "sketch.clean_up_stale_projections")]
-    CleanUpStaleProjections { sketch: FeatureUid },
-    // Projected geometry into ordinary sketch geometry (mitcad#257).
-    #[serde(rename = "sketch.convert_projected")]
-    ConvertProjected {
-        sketch: FeatureUid,
-        entities: Vec<Ref>,
-    },
-    // An SVG drawing's geometry and texts into the sketch (mitcad#473).
-    #[serde(rename = "sketch.import_svg")]
-    ImportSvg {
-        sketch: FeatureUid,
-        path: String,
-        /// Sketch millimetres per millimetre of the drawing.
-        #[serde(default = "one")]
-        scale: f64,
-        /// Where the drawing's lower left corner goes.
-        #[serde(default)]
-        at: Option<[f64; 2]>,
-        /// Stroked paths also as bands of their stroke width.
-        #[serde(default)]
-        stroke_outline: bool,
-    },
-    // QR codes (mitcad#473): a text drawn as a code of its content.
-    #[serde(rename = "sketch.add_code")]
-    AddCode {
-        sketch: FeatureUid,
-        text: String,
-        /// The lower left corner of the modules.
-        #[serde(default)]
-        at: [f64; 2],
-        /// A module's size, mm.
-        #[serde(default = "one")]
-        module: f64,
-        #[serde(default)]
-        angle: f64,
-        #[serde(default)]
-        kind: crate::sketch::CodeKind,
-        #[serde(default)]
-        ecc: crate::sketch::CodeEcc,
-    },
-    #[serde(rename = "sketch.edit_code")]
-    EditCode {
-        sketch: FeatureUid,
-        id: String,
-        #[serde(default)]
-        text: Option<String>,
-        #[serde(default)]
-        at: Option<[f64; 2]>,
-        #[serde(default)]
-        module: Option<f64>,
-        #[serde(default)]
-        angle: Option<f64>,
-        #[serde(default)]
-        ecc: Option<crate::sketch::CodeEcc>,
-    },
-    // The sketch's own axes and origin as entities (mitcad#500): the one there
-    // is, or a new one.
-    #[serde(rename = "sketch.axis")]
-    Axis { sketch: FeatureUid, axis: String },
+named_enum! {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", deny_unknown_fields)]
+    pub(super) enum SketchCommand {
+        "sketch.create" => Create {
+            #[serde(default)]
+            plane: SketchPlane,
+            #[serde(default)]
+            frame: Option<FrameDef>,
+            #[serde(default)]
+            name: Option<String>,
+            /// Where the plane was picked: the occurrence path from the root
+            /// to its component (mitcad#100); another component's plane is
+            /// linked.
+            #[serde(default)]
+            occurrence: Option<OccurrencePath>,
+            /// Where the active component is seen (its first occurrence path
+            /// when left out).
+            #[serde(default)]
+            context: Option<OccurrencePath>,
+        },
+        "sketch.add_rectangle" => AddRectangle {
+            sketch: FeatureUid,
+            corner: [f64; 2],
+            width: ValueInput,
+            height: ValueInput,
+        },
+        "sketch.add_circle" => AddCircle {
+            sketch: FeatureUid,
+            center: [f64; 2],
+            diameter: ValueInput,
+        },
+        "sketch.add_point" => AddPoint {
+            sketch: FeatureUid,
+            at: [f64; 2],
+            #[serde(default)]
+            fixed: bool,
+        },
+        "sketch.add_line" => AddLine {
+            sketch: FeatureUid,
+            start: Value,
+            end: Value,
+            #[serde(default)]
+            construction: bool,
+            #[serde(default)]
+            centerline: bool,
+        },
+        "sketch.rectangle" => Rectangle {
+            sketch: FeatureUid,
+            mode: String,
+            #[serde(default)]
+            a: Option<[f64; 2]>,
+            #[serde(default)]
+            b: Option<[f64; 2]>,
+            #[serde(default)]
+            c: Option<[f64; 2]>,
+            #[serde(default)]
+            center: Option<[f64; 2]>,
+            #[serde(default)]
+            corner: Option<[f64; 2]>,
+            #[serde(default)]
+            construction: bool,
+        },
+        "sketch.circle" => Circle {
+            sketch: FeatureUid,
+            mode: String,
+            #[serde(default)]
+            center: Option<Value>,
+            #[serde(default)]
+            radius: Option<f64>,
+            #[serde(default)]
+            a: Option<[f64; 2]>,
+            #[serde(default)]
+            b: Option<[f64; 2]>,
+            #[serde(default)]
+            c: Option<[f64; 2]>,
+            #[serde(default, with = "curves_opt")]
+            lines: Option<Vec<EntityUid>>,
+            #[serde(default)]
+            near: Option<[f64; 2]>,
+            #[serde(default)]
+            construction: bool,
+        },
+        "sketch.arc" => Arc {
+            sketch: FeatureUid,
+            mode: String,
+            #[serde(default)]
+            start: Option<Value>,
+            #[serde(default)]
+            through: Option<[f64; 2]>,
+            #[serde(default)]
+            end: Option<Value>,
+            #[serde(default)]
+            center: Option<Value>,
+            #[serde(default)]
+            clockwise: bool,
+            #[serde(default)]
+            from: Option<String>,
+            #[serde(default)]
+            construction: bool,
+        },
+        "sketch.polygon" => Polygon {
+            sketch: FeatureUid,
+            center: [f64; 2],
+            vertex: [f64; 2],
+            sides: usize,
+            #[serde(default = "yes")]
+            inscribed: bool,
+            #[serde(default)]
+            construction: bool,
+        },
+        "sketch.slot" => Slot {
+            sketch: FeatureUid,
+            mode: String,
+            width: f64,
+            #[serde(default)]
+            a: Option<[f64; 2]>,
+            #[serde(default)]
+            b: Option<[f64; 2]>,
+            #[serde(default)]
+            center: Option<[f64; 2]>,
+            #[serde(default)]
+            start: Option<[f64; 2]>,
+            #[serde(default)]
+            end: Option<[f64; 2]>,
+        },
+        "sketch.ellipse" => Ellipse {
+            sketch: FeatureUid,
+            center: Value,
+            major: [f64; 2],
+            minor_radius: f64,
+            #[serde(default)]
+            start: Option<Value>,
+            #[serde(default)]
+            end: Option<Value>,
+            #[serde(default)]
+            construction: bool,
+        },
+        "sketch.spline" => Spline {
+            sketch: FeatureUid,
+            points: Vec<Value>,
+            #[serde(default)]
+            degree: Option<u32>,
+            #[serde(default)]
+            construction: bool,
+        },
+        "sketch.add_text" => AddText {
+            sketch: FeatureUid,
+            text: String,
+            #[serde(default)]
+            at: Option<[f64; 2]>,
+            height: f64,
+            #[serde(default)]
+            angle: f64,
+            #[serde(default)]
+            font: String,
+            #[serde(default)]
+            bold: bool,
+            #[serde(default)]
+            italic: bool,
+            #[serde(default)]
+            align: TextAlign,
+            #[serde(default)]
+            valign: TextVAlign,
+            #[serde(default)]
+            spacing: f64,
+            #[serde(default)]
+            frame: Option<Value>,
+            #[serde(default)]
+            path: Option<TextPath>,
+            #[serde(default)]
+            flip_x: bool,
+            #[serde(default)]
+            flip_y: bool,
+            #[serde(default)]
+            cap_height: bool,
+            #[serde(default)]
+            wrap: bool,
+            #[serde(default)]
+            line_spacing: f64,
+            #[serde(default)]
+            pen_align: bool,
+            #[serde(default)]
+            ink_top: bool,
+            #[serde(default)]
+            glyphs: Option<crate::sketch::StoredGlyphs>,
+            /// A font file instead of an installed font (mitcad#473).
+            #[serde(default)]
+            font_file: Option<String>,
+        },
+        // Sketch text edited afterwards (P3).
+        "sketch.edit_text" => EditText {
+            sketch: FeatureUid,
+            id: String,
+            #[serde(default)]
+            text: Option<String>,
+            #[serde(default)]
+            at: Option<[f64; 2]>,
+            #[serde(default)]
+            height: Option<f64>,
+            #[serde(default)]
+            angle: Option<f64>,
+            #[serde(default)]
+            font: Option<String>,
+            #[serde(default)]
+            bold: Option<bool>,
+            #[serde(default)]
+            italic: Option<bool>,
+            #[serde(default)]
+            align: Option<TextAlign>,
+            #[serde(default)]
+            valign: Option<TextVAlign>,
+            #[serde(default)]
+            spacing: Option<f64>,
+            #[serde(default)]
+            path: Option<TextPath>,
+            #[serde(default)]
+            flip_x: Option<bool>,
+            #[serde(default)]
+            flip_y: Option<bool>,
+            #[serde(default)]
+            cap_height: Option<bool>,
+            #[serde(default)]
+            wrap: Option<bool>,
+            #[serde(default)]
+            line_spacing: Option<f64>,
+            #[serde(default)]
+            pen_align: Option<bool>,
+            #[serde(default)]
+            ink_top: Option<bool>,
+            /// A font file (mitcad#473); "" leaves it for the installed `font`.
+            #[serde(default)]
+            font_file: Option<String>,
+        },
+        "sketch.add_constraint" => AddConstraint {
+            sketch: FeatureUid,
+            constraint: ConstraintKind,
+        },
+        "sketch.add_dimension" => AddDimension {
+            sketch: FeatureUid,
+            dimension: DimensionKind,
+            #[serde(default)]
+            value: Option<ValueInput>,
+            #[serde(default)]
+            driven: bool,
+            #[serde(default)]
+            text: Option<[f64; 2]>,
+        },
+        "sketch.set_dimension" => SetDimension {
+            sketch: FeatureUid,
+            dimension: ConstraintUid,
+            value: ValueInput,
+        },
+        "sketch.set_driven" => SetDriven {
+            sketch: FeatureUid,
+            dimension: ConstraintUid,
+            #[serde(default = "yes")]
+            driven: bool,
+        },
+        "sketch.set_signed" => SetSigned {
+            sketch: FeatureUid,
+            dimension: ConstraintUid,
+            #[serde(default = "yes")]
+            signed: bool,
+        },
+        "sketch.remove" => Remove {
+            sketch: FeatureUid,
+            items: Vec<String>,
+        },
+        "sketch.set_construction" => SetConstruction {
+            sketch: FeatureUid,
+            #[serde(with = "curves")]
+            curves: Vec<EntityUid>,
+            #[serde(default = "yes")]
+            construction: bool,
+        },
+        "sketch.set_centerline" => SetCenterline {
+            sketch: FeatureUid,
+            #[serde(with = "curves")]
+            lines: Vec<EntityUid>,
+            #[serde(default = "yes")]
+            centerline: bool,
+        },
+        "sketch.set_fixed" => SetFixed {
+            sketch: FeatureUid,
+            entities: Vec<Ref>,
+            #[serde(default = "yes")]
+            fixed: bool,
+        },
+        "sketch.drag" => Drag {
+            sketch: FeatureUid,
+            entity: Ref,
+            #[serde(default)]
+            to: Option<[f64; 2]>,
+            #[serde(default)]
+            by: Option<[f64; 2]>,
+            #[serde(default)]
+            radius: Option<f64>,
+        },
+        "sketch.move" => Move {
+            sketch: FeatureUid,
+            entities: Vec<Ref>,
+            #[serde(default)]
+            by: Option<[f64; 2]>,
+            #[serde(default)]
+            rotate: Option<Rotation>,
+            #[serde(default)]
+            copy: bool,
+        },
+        "sketch.trim" => Trim {
+            sketch: FeatureUid,
+            #[serde(with = "crate::ids::curve_serde")]
+            curve: EntityUid,
+            at: [f64; 2],
+        },
+        "sketch.extend" => Extend {
+            sketch: FeatureUid,
+            #[serde(with = "crate::ids::curve_serde")]
+            curve: EntityUid,
+            at: [f64; 2],
+        },
+        "sketch.fillet" => Fillet {
+            sketch: FeatureUid,
+            #[serde(with = "crate::ids::curve_serde")]
+            a: EntityUid,
+            #[serde(with = "crate::ids::curve_serde")]
+            b: EntityUid,
+            radius: ValueInput,
+        },
+        "sketch.chamfer" => Chamfer {
+            sketch: FeatureUid,
+            #[serde(with = "crate::ids::curve_serde")]
+            a: EntityUid,
+            #[serde(with = "crate::ids::curve_serde")]
+            b: EntityUid,
+            distance: ValueInput,
+            #[serde(default)]
+            distance2: Option<ValueInput>,
+            #[serde(default)]
+            angle: Option<ValueInput>,
+        },
+        "sketch.offset" => Offset {
+            sketch: FeatureUid,
+            #[serde(with = "curves")]
+            curves: Vec<EntityUid>,
+            distance: ValueInput,
+        },
+        "sketch.mirror" => Mirror {
+            sketch: FeatureUid,
+            entities: Vec<Ref>,
+            #[serde(with = "crate::ids::curve_serde")]
+            axis: EntityUid,
+        },
+        "sketch.circular_pattern" => CircularPattern {
+            sketch: FeatureUid,
+            entities: Vec<Ref>,
+            center: Value,
+            count: u32,
+            #[serde(default = "full_turn")]
+            angle: ValueInput,
+        },
+        "sketch.rectangular_pattern" => RectangularPattern {
+            sketch: FeatureUid,
+            entities: Vec<Ref>,
+            #[serde(default = "x_axis")]
+            direction: [f64; 2],
+            count: [u32; 2],
+            spacing: [ValueInput; 2],
+            // Per direction: the originals in the middle (an odd count).
+            #[serde(default)]
+            symmetric: [bool; 2],
+        },
+        // Sketch patterns and offsets edited afterwards (P4).
+        "sketch.edit_pattern" => EditPattern {
+            sketch: FeatureUid,
+            pattern: ConstraintUid,
+            #[serde(default)]
+            count: Option<Value>,
+            #[serde(default)]
+            angle: Option<ValueInput>,
+            #[serde(default)]
+            spacing: Option<[ValueInput; 2]>,
+            #[serde(default)]
+            direction: Option<[f64; 2]>,
+            #[serde(default)]
+            center: Option<Value>,
+            #[serde(default)]
+            entities: Option<Vec<Ref>>,
+        },
+        "sketch.edit_offset" => EditOffset {
+            sketch: FeatureUid,
+            offset: ConstraintUid,
+            #[serde(default)]
+            distance: Option<ValueInput>,
+            #[serde(default)]
+            flip: bool,
+        },
+        "sketch.project" => Project {
+            sketch: FeatureUid,
+            source: TopoName,
+            #[serde(default)]
+            body: Option<BodyUid>,
+            #[serde(default)]
+            linked: bool,
+            /// As in `sketch.create` (mitcad#100).
+            #[serde(default)]
+            occurrence: Option<OccurrencePath>,
+            #[serde(default)]
+            context: Option<OccurrencePath>,
+            /// Section curves (mitcad#389): where the sketch's plane cuts the
+            /// source face instead of its projection.
+            #[serde(default)]
+            section: bool,
+        },
+        // Sketch mode (U2): a dimension's value dragged to another place.
+        "sketch.set_dimension_text" => SetDimensionText {
+            sketch: FeatureUid,
+            dimension: ConstraintUid,
+            text: [f64; 2],
+        },
+        // Files (U6): a DXF drawing's geometry into the sketch.
+        "sketch.import_dxf" => ImportDxf {
+            sketch: FeatureUid,
+            path: String,
+            /// The unit of a drawing that names none (`mm` by default).
+            #[serde(default)]
+            unit: Option<String>,
+            /// Where the drawing's origin goes, in sketch coordinates.
+            #[serde(default)]
+            at: Option<[f64; 2]>,
+            /// Only the entities on these layers (P9); all when left out.
+            #[serde(default)]
+            layers: Option<Vec<String>>,
+        },
+        // Equal spacing (mitcad#221).
+        "sketch.add_equal_spacing" => AddEqualSpacing {
+            sketch: FeatureUid,
+            anchors: Vec<Ref>,
+            mode: SpacingMode,
+            #[serde(default, with = "crate::sketch::curve_opt_serde")]
+            direction: Option<EntityUid>,
+            #[serde(default)]
+            keep_order: bool,
+            /// A common spacing dimension: driving with `spacing` (or the mean
+            /// of the current intervals), or `driven`.
+            #[serde(default)]
+            dimension: bool,
+            #[serde(default)]
+            spacing: Option<ValueInput>,
+            #[serde(default)]
+            driven: bool,
+            #[serde(default)]
+            text: Option<[f64; 2]>,
+        },
+        "sketch.edit_equal_spacing" => EditEqualSpacing {
+            sketch: FeatureUid,
+            constraint: ConstraintUid,
+            #[serde(default)]
+            anchors: Option<Vec<Ref>>,
+            #[serde(default)]
+            mode: Option<SpacingMode>,
+            #[serde(default, with = "crate::sketch::curve_opt_serde")]
+            direction: Option<EntityUid>,
+            #[serde(default)]
+            keep_order: bool,
+        },
+        // Duplicate and overlapping projected curves (mitcad#232).
+        "sketch.clean_up_projections" => CleanUpProjections {
+            sketch: FeatureUid,
+            /// Also lines on or overlapping a collinear one.
+            #[serde(default = "yes")]
+            merge: bool,
+        },
+        // Projected curves that no longer match their source (mitcad#252).
+        "sketch.clean_up_stale_projections" => CleanUpStaleProjections { sketch: FeatureUid },
+        // Projected geometry into ordinary sketch geometry (mitcad#257).
+        "sketch.convert_projected" => ConvertProjected {
+            sketch: FeatureUid,
+            entities: Vec<Ref>,
+        },
+        // An SVG drawing's geometry and texts into the sketch (mitcad#473).
+        "sketch.import_svg" => ImportSvg {
+            sketch: FeatureUid,
+            path: String,
+            /// Sketch millimetres per millimetre of the drawing.
+            #[serde(default = "one")]
+            scale: f64,
+            /// Where the drawing's lower left corner goes.
+            #[serde(default)]
+            at: Option<[f64; 2]>,
+            /// Stroked paths also as bands of their stroke width.
+            #[serde(default)]
+            stroke_outline: bool,
+        },
+        // QR codes (mitcad#473): a text drawn as a code of its content.
+        "sketch.add_code" => AddCode {
+            sketch: FeatureUid,
+            text: String,
+            /// The lower left corner of the modules.
+            #[serde(default)]
+            at: [f64; 2],
+            /// A module's size, mm.
+            #[serde(default = "one")]
+            module: f64,
+            #[serde(default)]
+            angle: f64,
+            #[serde(default)]
+            kind: crate::sketch::CodeKind,
+            #[serde(default)]
+            ecc: crate::sketch::CodeEcc,
+        },
+        "sketch.edit_code" => EditCode {
+            sketch: FeatureUid,
+            id: String,
+            #[serde(default)]
+            text: Option<String>,
+            #[serde(default)]
+            at: Option<[f64; 2]>,
+            #[serde(default)]
+            module: Option<f64>,
+            #[serde(default)]
+            angle: Option<f64>,
+            #[serde(default)]
+            ecc: Option<crate::sketch::CodeEcc>,
+        },
+        // The sketch's own axes and origin as entities (mitcad#500): the one there
+        // is, or a new one.
+        "sketch.axis" => Axis { sketch: FeatureUid, axis: String },
+    }
 }
 
 fn one() -> f64 {

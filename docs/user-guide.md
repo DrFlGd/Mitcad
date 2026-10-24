@@ -1769,14 +1769,14 @@ after the label (`Distance (d5)`). Its tooltip says what the parameter
 is, as the tooltip of a dimension does (`d5 = d1 / 2 → 20 mm (Extrude2
 distance)`). The field also takes `name = value`.
 
-**Labels in the view.** While the value field of a feature panel has
-the keyboard focus, the view shows labels. The labels show the
-dimensions of the sketches that the view shows. They also show the
-values of the features before the feature that the panel adds or edits,
-for example `depth = 12 mm`. A label is where the handle of its feature
-would be. The values of the sets of a fillet or a chamfer are on the
-faces that they made. A click on a label inserts the name of the label
-at the cursor of the field.
+**Labels in the view.** When you click into the value field of a feature
+panel or type in it, the view shows labels on the dimensions of the
+sketches that the view shows. A click on a label inserts the name of the
+label at the cursor of the field. When a panel opens, its first value
+field has the keyboard focus, but the view shows no labels until you
+click into the field or type. The values of other features have no
+labels: type their names (for example `depth`), with the help of the
+parameter suggestions below.
 
 **Parameter suggestions.** When you type part of a parameter name into
 a value field, a list shows the parameters that match. This applies to

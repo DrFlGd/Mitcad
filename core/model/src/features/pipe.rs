@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::extrude::{Operation, apply_operation, check_participants, participant_bodies};
+use super::mapping::map_params;
 use super::path::{self, CurvePath};
 use super::sweep::PathExtent;
 use super::{CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, ToolUse};
@@ -44,23 +45,16 @@ impl<P> PipeDef<P> {
     pub const TYPE: &'static str = "pipe";
     pub const BASE_NAME: &'static str = "Pipe";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<PipeDef<Q>, E> {
-        Ok(PipeDef {
-            path: self.path.clone(),
-            section: self.section,
-            size: f("size", &self.size)?,
-            thickness: self
-                .thickness
-                .as_ref()
-                .map(|v| f("thickness", v))
-                .transpose()?,
-            extent: self.extent.map_params(f)?,
-            operation: self.operation,
-            participants: self.participants.clone(),
-        })
+    map_params! {
+        PipeDef {
+            path: clone,
+            section: copy,
+            size: param,
+            thickness: option,
+            extent: map,
+            operation: copy,
+            participants: clone,
+        }
     }
 }
 

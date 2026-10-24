@@ -51,19 +51,6 @@ constexpr double kTolerance = 1.0e-6;
 // Faces sewn after an untrim in place.
 constexpr double kSewing = 1.0e-4;
 
-TopoDS_Shape compound_of(const std::vector<TopoDS_Shape>& shapes) {
-  if (shapes.size() == 1) {
-    return shapes.front();
-  }
-  BRep_Builder builder;
-  TopoDS_Compound all;
-  builder.MakeCompound(all);
-  for (const TopoDS_Shape& shape : shapes) {
-    builder.Add(all, shape);
-  }
-  return all;
-}
-
 // The faces of the shape grouped into the pieces that hang together
 // through shared edges (not through an edge on the cutting tool, which
 // parts the faces at it), in the faces' order of TopExp.
@@ -141,7 +128,7 @@ TopoDS_Shape curve_cutter(const TrimInput& input, const Shape& body) {
   if (walls.empty()) {
     throw std::invalid_argument("trim: no curves to trim with");
   }
-  return compound_of(walls);
+  return detail::compound_or_single(walls);
 }
 
 } // namespace
@@ -184,7 +171,7 @@ ShapePtr trim_surface(const Shape& body, const TrimInput& input, const std::vect
       double best = std::numeric_limits<double>::infinity();
       std::size_t nearest = 0;
       for (std::size_t i = 0; i < pieces.size(); ++i) {
-        BRepExtrema_DistShapeShape distance(vertex, compound_of(pieces[i]));
+        BRepExtrema_DistShapeShape distance(vertex, detail::compound_or_single(pieces[i]));
         if (distance.IsDone() && distance.Value() < best) {
           best = distance.Value();
           nearest = i;
@@ -200,7 +187,7 @@ ShapePtr trim_surface(const Shape& body, const TrimInput& input, const std::vect
         named.push_back({face, all->names_of_face(face)});
       }
     }
-    auto trimmed = std::make_shared<Shape>(compound_of(parts), named);
+    auto trimmed = std::make_shared<Shape>(detail::compound_or_single(parts), named);
     detail::require_valid(trimmed->occt(), "trim");
     return trimmed;
   });
@@ -290,7 +277,7 @@ ShapePtr untrim_surface(const std::string& feature, const Shape& body, const std
       parts.push_back(part);
       named.push_back({part, body.face_names(f)});
     }
-    const Shape faces(compound_of(parts), named);
+    const Shape faces(detail::compound_or_single(parts), named);
     return stitch({&faces}, kSewing);
   });
 }
@@ -340,7 +327,7 @@ std::pair<ShapePtr, std::vector<ShapePtr>> unstitch(const Shape& body, const std
     }
     ShapePtr rest;
     if (!shells.empty()) {
-      const detail::InputCopy copy(compound_of(shells));
+      const detail::InputCopy copy(detail::compound_or_single(shells));
       std::vector<Shape::NamedFace> named;
       for (const int f : left) {
         named.push_back({copy.of(body.face(f)), body.face_names(f)});
@@ -391,7 +378,7 @@ ShapePtr reverse_faces(const Shape& body, const std::vector<std::string>& faces)
         named.push_back({face, body.names_of_face(f.Current())});
       }
     }
-    return std::make_shared<Shape>(compound_of(parts), named);
+    return std::make_shared<Shape>(detail::compound_or_single(parts), named);
   });
 }
 

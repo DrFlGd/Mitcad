@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::kernel_error;
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
@@ -27,14 +28,11 @@ impl<P> StitchDef<P> {
     pub const TYPE: &'static str = "stitch";
     pub const BASE_NAME: &'static str = "Stitch";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<StitchDef<Q>, E> {
-        Ok(StitchDef {
-            bodies: self.bodies.clone(),
-            tolerance: f("tolerance", &self.tolerance)?,
-        })
+    map_params! {
+        StitchDef {
+            bodies: clone,
+            tolerance: param,
+        }
     }
 }
 

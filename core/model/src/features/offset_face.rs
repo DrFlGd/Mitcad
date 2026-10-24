@@ -7,6 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::{add_faces, check_faces, kernel_error, require_faces};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
@@ -27,15 +28,12 @@ impl<P> OffsetFaceDef<P> {
     pub const TYPE: &'static str = "offset_face";
     pub const BASE_NAME: &'static str = "OffsetFace";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<OffsetFaceDef<Q>, E> {
-        Ok(OffsetFaceDef {
-            body: self.body,
-            faces: self.faces.clone(),
-            distance: f("distance", &self.distance)?,
-        })
+    map_params! {
+        OffsetFaceDef {
+            body: copy,
+            faces: clone,
+            distance: param,
+        }
     }
 }
 

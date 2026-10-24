@@ -127,6 +127,7 @@ impl<P> ConstructionPlaneDef<P> {
         }
     }
 
+    // Written by hand: the definition maps by its kind (`definition.angle`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

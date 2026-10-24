@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ApiError;
+use super::dispatch::named_enum;
 use crate::document::{Document, MoveDestination, MoveGroup, MovePlan, PlannedGroup};
 use crate::features::{FeatureDef, OccurrencePath, ValueInput};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid};
@@ -34,51 +35,53 @@ pub(crate) struct MoveSelection {
     together: bool,
 }
 
-// Parsed once per command and dropped: the size difference costs nothing.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum MoveCommand {
-    MoveToComponent {
-        #[serde(default)]
-        component: Option<String>,
-        #[serde(default)]
-        bodies: Vec<BodyUid>,
-        #[serde(default)]
-        features: Vec<FeatureUid>,
-        #[serde(default)]
-        groups: Vec<Vec<BodyUid>>,
-        /// The new component's name (one component).
-        #[serde(default)]
-        name: Option<String>,
-        /// The components' names, one per group.
-        #[serde(default)]
-        names: Vec<String>,
-        /// Bodies a feature ties go into one component.
-        #[serde(default)]
-        together: bool,
-        #[serde(default)]
-        source_occurrence: Option<OccurrencePath>,
-        #[serde(default)]
-        destination: Option<MoveDestination>,
-    },
-    MoveHistoryIntoComponent {
-        feature: FeatureUid,
-    },
-    SetHybridAssembly {
-        #[serde(default = "yes")]
-        allowed: bool,
-    },
-    /// Bodies moved into an existing component on the timeline, by a Body
-    /// Transfer (mitcad#465).
-    TransferBodies {
-        bodies: Vec<BodyUid>,
-        #[serde(default)]
-        source_occurrence: Option<OccurrencePath>,
-        destination: TransferTarget,
-        #[serde(default)]
-        name: Option<String>,
-    },
+named_enum! {
+    // Parsed once per command and dropped: the size difference costs nothing.
+    #[allow(clippy::large_enum_variant)]
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    pub(crate) enum MoveCommand {
+        "move_to_component" => MoveToComponent {
+            #[serde(default)]
+            component: Option<String>,
+            #[serde(default)]
+            bodies: Vec<BodyUid>,
+            #[serde(default)]
+            features: Vec<FeatureUid>,
+            #[serde(default)]
+            groups: Vec<Vec<BodyUid>>,
+            /// The new component's name (one component).
+            #[serde(default)]
+            name: Option<String>,
+            /// The components' names, one per group.
+            #[serde(default)]
+            names: Vec<String>,
+            /// Bodies a feature ties go into one component.
+            #[serde(default)]
+            together: bool,
+            #[serde(default)]
+            source_occurrence: Option<OccurrencePath>,
+            #[serde(default)]
+            destination: Option<MoveDestination>,
+        },
+        "move_history_into_component" => MoveHistoryIntoComponent {
+            feature: FeatureUid,
+        },
+        "set_hybrid_assembly" => SetHybridAssembly {
+            #[serde(default = "yes")]
+            allowed: bool,
+        },
+        /// Bodies moved into an existing component on the timeline, by a Body
+        /// Transfer (mitcad#465).
+        "transfer_bodies" => TransferBodies {
+            bodies: Vec<BodyUid>,
+            #[serde(default)]
+            source_occurrence: Option<OccurrencePath>,
+            destination: TransferTarget,
+            #[serde(default)]
+            name: Option<String>,
+        },
+    }
 }
 
 /// Where a body transfer moves bodies: a component, seen at an occurrence
@@ -104,14 +107,6 @@ pub(crate) struct TransferQuery {
 fn yes() -> bool {
     true
 }
-
-/// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 4] = [
-    "move_to_component",
-    "move_history_into_component",
-    "set_hybrid_assembly",
-    "transfer_bodies",
-];
 
 /// The `feature_references` query: what a definition (a command panel's,
 /// before it is added) refers to.

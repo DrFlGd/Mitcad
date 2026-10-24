@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use super::face_refs::{Resolved, check_tool, kernel_error, map_offset, resolve_tool};
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::pattern::none;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -82,19 +83,16 @@ impl<P> SplitBodyDef<P> {
         std::iter::once(&self.tool).chain(&self.more_tools)
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SplitBodyDef<Q>, E> {
-        Ok(SplitBodyDef {
-            bodies: self.bodies.clone(),
-            tool: self.tool.clone(),
-            more_tools: self.more_tools.clone(),
-            offset: map_offset(&self.offset, f)?,
-            direction: self.direction,
-            extend: self.extend,
-            tool_links: self.tool_links.clone(),
-        })
+    map_params! {
+        SplitBodyDef {
+            bodies: clone,
+            tool: clone,
+            more_tools: clone,
+            offset: with(map_offset),
+            direction: copy,
+            extend: copy,
+            tool_links: clone,
+        }
     }
 }
 

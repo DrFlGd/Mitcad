@@ -1619,7 +1619,7 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
       m_nativeWindow->setInspectorView(m_nativeForm->nativeView());
       if (!m_nativeFocusInput.isEmpty()) {
         guarded->focusValue(std::exchange(m_nativeFocusInput, QString()));
-      } else if (!guarded->startsWithValues() || !m_nativeForm->focusFirstValue()) {
+      } else if (!guarded->startsWithValues() || !guarded->focusFirstValueOnOpen()) {
         m_nativeWindow->focusViewport();
       }
       updateActions();
@@ -1670,7 +1670,7 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
   m_commandPages->addWidget(scroll);
   m_commandPages->setCurrentWidget(scroll);
   m_panelScroll = scroll;
-  if (!session->startsWithValues() || !panel->focusFirstValue()) {
+  if (!session->startsWithValues() || !session->focusFirstValueOnOpen()) {
     m_viewer->setFocus();
   }
   updateActions();

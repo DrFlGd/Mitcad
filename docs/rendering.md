@@ -1830,10 +1830,10 @@ completed checks were:
 
 These VM checks establish GPU execution and package completeness, not a
 hardware speedup. Asynchronous pipeline creation initially stalled; the
-worker's synchronous pipeline default passed the final checks. Physical
-M1/M2 and M3-or-newer generation behaviour, hardware MetalRT, representative
-performance, minimum-OS runtime coverage and native/Qt rendered-view
-acceptance remain mitcad#185. Physical Metal-denoising results are recorded below.
+worker's synchronous pipeline default passed the final checks. These guest
+checks do not establish MetalRT acceleration on a physical chip or
+minimum-OS runtime behaviour. The later physical M1 denoising and broader acceptance
+results are recorded below, including explicit untested configurations.
 
 The OIDN Metal integration (mitcad#184) builds both CPU/BNNS and Metal
 modules, but the same guest cannot validate GPU denoising: OIDN 2.5.1
@@ -1997,10 +1997,9 @@ source tree. For the explicit image check, run that worker with
 Verify the actual backend/denoiser diagnostics and absence of unexpected
 fallback, not only the exit code or enumerated capability.
 
-The broader matrix remains mitcad#185: M3-or-newer hardware and its MetalRT
-policy, representative acceleration/memory measurements, native AppKit
-rendered-view acceptance, and minimum-OS runtime coverage. Neither M2 nor
-M3-or-newer nor macOS 14.4 was tested by this physical-M1 validation.
+The later M1 acceptance matrix, representative measurements and per-worker
+memory observations are recorded under [Tests and measurements](#tests-and-measurements).
+Neither M2 nor M3-or-newer nor macOS 14.4 was tested by this physical-M1 validation.
 
 ### AppImage
 
@@ -2029,6 +2028,148 @@ the render ran on the GPU (tested with the build of `--cuda` on the GTX
 1060 below).
 
 ## Tests and measurements
+
+### Physical Metal acceptance tools
+
+`app.render_metal_scenes` uses three repository-owned synthetic scenes:
+embedded base-colour/normal/roughness textures with an area light and glossy
+shadow catcher; clear glass, a point light and transparent output; and six
+occurrences sharing one mesh. It compares CPU and Metal path tracing with
+CPU denoising, Metal denoising and denoising disabled, at 320 x 240 and
+64 samples. Each run checks the actual worker's completed JSON device and
+denoiser events, automatic MetalRT policy, a complete nonblank image and
+absence of warnings/fallback. RGB uses the existing mean 2 / p99 24 limits
+on 8-bit channels; alpha is checked separately with maximum difference 24.
+The transparent scene must contain both fully transparent and opaque pixels.
+
+The test retains scenes, commands, images, raw worker events, logs and a
+`results.json`. Darwin `time -l` runs around each actual worker separately;
+its peak RSS includes that process's resident driver/library allocations,
+not a separate GPU-allocation peak or the combined CPU/GPU runs. Worker
+render time and CLI wall time have different boundaries. The CLI wall time
+also includes model preparation and worker startup. Different denoising
+modes are correctness checks, not isolated measurements of denoising cost.
+
+For an explicit physical-hardware run, set `MITCAD_RENDER_REQUIRE_METAL=1`;
+missing Metal/OIDN or a paravirtual device then fails. Without it, unavailable
+hardware skips with 77. A fallback after advertising a device always fails.
+The same tool supports bounded measurements, for example:
+
+```sh
+python3 tools/render-metal-acceptance.py <cli> <worker> <output-directory> \
+  --size 1280x720 --modes cpu,metal
+```
+
+`app.ui-macos-render-acceptance` and its opt-in AppKit counterpart
+`app.ui-macos-native-render-acceptance` extend the navigation test with actual
+framebuffer scale/picking checks, live CPU/Metal selection, a geometry change
+and undo, a clear-glass material assignment and undo, and Render Image's
+completed Metal/OIDN batch image and cancellation. They use the displayed
+Qt or AppKit controls, with settings confined to each test process.
+`app.ui-macos-render-recovery` and `app.ui-macos-native-render-recovery` cover
+a saved absent device, an injected failure of the actual Metal renderer
+followed by CPU recovery, and an actual worker-process crash followed by
+restart. The crash targets only the PID reported by that test's own app.
+Both frontends must preserve the model and real face picking after recovery.
+
+These hardware tests run serially. Set `MITCAD_UI_REQUIRE_GUI=1` and
+`MITCAD_UI_REQUIRE_RETINA=1` when collecting the real window-server/2x
+acceptance evidence; required mode must not silently skip.
+
+### M1 acceptance measurements (2026-10-23)
+
+Physical Apple M1 Max (32 GPU cores), 32 GiB unified memory, macOS 27.0.1
+(26A434), native arm64. Automatic MetalRT is **off**: this GPU exposes the
+Metal ray-tracing API, but this is not evidence of M3-class hardware RT.
+The three-scene 320 x 240 matrix completed all 15 actual render runs and
+12 image comparisons without a skip or fallback. The largest RGB mean
+difference was 0.083/255 and p99 was 1/255, within the unchanged 2:24 limits.
+The instance scene reported six bodies and one shared mesh.
+
+The same scenes at 1280 x 720, 64 samples, with the production scheduler
+and populated shader caches gave the following single-run observations.
+CPU uses actual CPU OIDN and Metal actual Metal OIDN. These are worker
+render/denoising times, starting when the prepared scene's view is submitted
+and ending before image encoding; CLI wall time also includes preparation,
+startup and output. The acceptance runner serialized its renders; other
+machine load was not controlled.
+
+| Synthetic scene | CPU seconds | Metal seconds | CPU / Metal | CPU peak RSS MiB | Metal peak RSS MiB |
+|---|---:|---:|---:|---:|---:|
+| Textures, area light, glossy shadow catcher | 20.104 | 4.843 | 4.15 | 740.3 | 659.4 |
+| Clear glass, point light, transparency | 17.208 | 4.601 | 3.74 | 737.3 | 649.2 |
+| Six occurrences of one mesh | 22.514 | 3.117 | 7.22 | 736.4 | 664.5 |
+
+All three larger CPU/Metal comparisons passed too (maximum RGB mean 0.080,
+p99 1, maximum alpha difference 5). Ratios apply to these scenes, dimensions,
+quality and cache state, not to arbitrary designs or all interaction.
+The RSS columns measure each separate worker process, not GPU-only memory.
+
+A separate pair used a new, empty `XDG_CACHE_HOME` for Cycles, without
+clearing the system Metal compiler cache or the normal Cycles cache. The
+textured scene's first run took 4.940 s in the worker / 5.566 s CLI wall,
+with peak RSS 720.4 MiB; the next took 4.571 / 5.225 s and 662.8 MiB.
+The isolated cache contained 79 binary archives afterwards. This is an
+empty-Cycles-archive versus reused-archive comparison, **not** a post-reboot
+or entirely cold system compiler test. Keep the earlier first-use 100.375 s
+observation below distinct from this pair.
+
+The existing interactive benchmark, with production sample batching at
+640 x 480 / 64 samples, required actual Metal and compared against CPU
+with the same 2:24 limit. First useful/denoised previews and final times were:
+
+| Event | Metal first preview ms | CPU first preview ms | Metal final s | CPU final s |
+|---|---:|---:|---:|---:|
+| Initial view | 448 | 30 | 3.065 | 5.576 |
+| Camera changed, then stable | 224 | 69 | 2.474 | 5.864 |
+| Navigation stopped | 5 | 10 | 2.195 | 5.470 |
+
+The initial previews were 128 x 96; subsequent first previews were 320 x 240.
+In the 20-view, 40 ms synthetic navigation burst, Metal delivered previews
+for 2 of the first 19 views, CPU for 12. Metal's better final-image throughput
+therefore does not imply a faster initial low-resolution preview or more
+delivered views while cancellation/coalescing is active. The fixed startup
+and dispatch costs are consistent with that boundary; this run does not
+isolate their individual causes. After navigation stopped, both delivered a
+denoised preview promptly and the final images agreed. These are worker
+delivery measurements, not physical display/input latency or a manual
+trackpad assessment.
+
+Both frontends' broader automated runs exercise real controls, actual 2x
+framebuffers, geometry/material changes and undo, device switching, Render
+Image and cancellation. Separate missing-device, Metal-failure/CPU-recovery
+and killed-worker/restart runs preserve model volume and actual face picking.
+Framebuffer comparison also verifies the visible selection overlay, rather
+than only the selection's model state. An initial native whole-window capture
+was uniformly black and was excluded from appearance evidence. The later
+relocated native run captured the actual Render Image window and its image;
+that content was visually inspected. Console lock state alone does not prove
+whether a particular own-window capture contains usable pixels.
+
+Fresh ad hoc signed Qt and opt-in AppKit packages were relocated and checked:
+89 Mach-O files, 963 library references and zero bundle problems in each.
+The actual app, CLI and workers ran with source/build, renderer/Qt/vcpkg,
+standalone-tool, Rust and Apple developer-tree reads denied. Denial was
+verified against existing files. Under that profile, all 15 scene runs,
+strict matched 4/16/final denoiser previews, both complete frontend workflows
+and both three-case recovery suites passed. Strict signatures remained valid
+after execution. The Qt script completed 144 steps and AppKit 115, including
+actual selection overlays over the rendered framebuffer.
+
+Image inspection exposed a compressed AppKit Render Image form caption.
+Non-wrapping form labels now retain their source label's required width.
+The native-panel regression, repackaging, full relocated AppKit acceptance
+and final signature verification passed after that fix; the final worker was
+byte-identical to the previously validated worker. The corrected native
+dialog and final image were inspected too. The checks use local ad hoc
+signatures; they do not claim Developer ID/notarisation acceptance.
+
+Untested configurations remain explicit: M2, M3-or-newer/physical MetalRT,
+macOS 14.4 runtime, a physical 1x external display and moving between displays
+of different backing scales. The available built-in display was 2x/120 Hz;
+resize tests verify its actual framebuffer dimensions. These missing hardware
+configurations are recorded as untested under the maintainer's acceptance
+scope; they are not inferred from the M1 tests. Qt remains the default UI.
 
 - `ctest` `app.render_worker`: `mitcad-render --bench 160x120
   --samples 4` renders the test scene headless.
@@ -2186,8 +2327,9 @@ change device selection, the production fallback or the automatic MetalRT
 policy, and overrides that force another MetalRT state fail acceptance.
 Use `MITCAD_RENDER_REQUIRE_GPU=1` separately for the existing Metal OIDN
 tests; requiring Metal tracing does not imply a Metal denoiser executed.
-This guard is preparation for #185, not completion of its multi-generation,
-frontend, image-scene, installed-bundle or minimum-OS validation matrix.
+This guard alone does not establish frontend, image-scene, installed-bundle
+or hardware/OS coverage; the physical acceptance tools and M1 results above
+state what actually ran and which configurations remain untested.
 `app.render_required_metal_contract` checks the real worker's refusal of
 CPU/absent devices and invalid comparison arguments, including the
 environment switch and preservation of optional skip status 77. It needs
@@ -2250,10 +2392,11 @@ workers passed required Metal/CPU comparison (mean RGB difference 0.07,
 p99 1) and matching Metal/CPU-denoiser previews at 4 and 16 samples plus
 the 64-sample final image for both views. No fallback or capability skip
 occurred. The paired-preview scheduler hook was unset for GUI navigation.
-Scene/material/device switching and failure recovery in both UIs, overlays
-and picking, display-scale transitions, the full final-image scene matrix
-and the other hardware/OS combinations remain separate #185 acceptance
-work. This basic navigation/resize check does not close that matrix.
+The broader M1 acceptance above adds scene/material/device switching and
+failure recovery in both UIs, overlays and picking, final-image scenes,
+Render Image and per-worker memory measurements. Physical display-scale
+transitions and the other named hardware/OS combinations remain untested;
+they are not inferred from the basic navigation/resize check.
 
 A required-Metal comparison on the M1 Max at 1920 x 1080, 64 samples,
 with the production scheduler and already-populated shader cache, completed
@@ -2344,7 +2487,8 @@ GPU devices (mitcad#50; also in [development.md](development.md#licence-policy))
   hardware; Open Image Denoise's CUDA device on Linux (built with CUDA 13)
   and tested on Turing or newer on Linux and Windows; several GPUs at
   once. Metal denoising on macOS is implemented and physically validated
-  (mitcad#184); broader Apple Silicon hardware/UI acceptance remains mitcad#185.
+  (mitcad#184), with the broader M1 scene/UI/package acceptance and explicit
+  untested Apple Silicon/OS configurations recorded above (mitcad#185).
 - Roughness and normal maps, textures in the shaded view, OCCT's PBR shading from the same
   parameters ([Materials](#materials)).
 - Lights ([Lights](#lights)): a rotation of area lights about their

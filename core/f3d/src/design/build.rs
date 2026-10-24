@@ -525,7 +525,7 @@ fn rigid_matrix(d: &[u8]) -> Option<Mat4> {
         if let Some(m) = f64s_at(d, p, 16) {
             let last = m[12] == 0.0 && m[13] == 0.0 && m[14] == 0.0 && m[15] == 1.0;
             let row = |r: usize| [m[4 * r], m[4 * r + 1], m[4 * r + 2]];
-            let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+            use mitcad_vec3::dot;
             let orthonormal = (0..3).all(|i| {
                 (0..3).all(|j| {
                     let want = if i == j { 1.0 } else { 0.0 };

@@ -12,6 +12,8 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_3, FRAC_PI_4};
 
 use serde_json::{Value, json};
 
+use mitcad_vec3::distance as dist;
+
 use crate::datum::Vec3;
 use crate::ids::{ComponentUid, FeatureUid, OccurrenceUid};
 use crate::testing::MockKernel;
@@ -40,10 +42,6 @@ fn turn(angle: f64) -> Transform {
 
 fn assert_near(a: Vec3, b: Vec3) {
     assert!((0..3).all(|i| (a[i] - b[i]).abs() < 1e-8), "{a:?} != {b:?}");
-}
-
-fn dist(a: Vec3, b: Vec3) -> f64 {
-    (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
 }
 
 /// A component without bodies, its occurrence at `at` in the root.

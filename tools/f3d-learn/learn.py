@@ -3,7 +3,7 @@
 
 The import writes one JSON line per modelling item whose definition the
 file's history settled (``mitcad-cli import-f3d --learn DIR`` or
-``MITCAD_IMPORT_LEARN=DIR``; core/import/README.md, "Learning the
+``MITCAD_IMPORT_LEARN=DIR``; core/import/docs/f3d-learning.md, "Learning the
 undecoded inputs"). This tool reads those lines only (no geometry) and
 tests rules from the item's raw record to the accepted answer.
 

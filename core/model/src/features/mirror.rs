@@ -11,6 +11,7 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::pattern::{
     ComputeOption, Element, PatternObjects, ScaleRule, ScaleSpec, add_scale_references,
     check_options, check_scale_values, map_scale, map_scale_copies, map_scale_groups, map_scales,
@@ -74,24 +75,21 @@ impl<P> MirrorDef<P> {
     pub const TYPE: &'static str = "mirror";
     pub const BASE_NAME: &'static str = "Mirror";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<MirrorDef<Q>, E> {
-        Ok(MirrorDef {
-            objects: self.objects.clone(),
-            plane: self.plane.clone(),
-            combine: self.combine,
-            compute: self.compute,
-            original_bodies: self.original_bodies,
-            scale: map_scale(&self.scale, f)?,
-            scale_groups: map_scale_groups(&self.scale_groups, f)?,
-            scale_copies: map_scale_copies(&self.scale_copies, f)?,
-            scales: map_scales(&self.scales, f)?,
-            scale_center: self.scale_center.clone(),
-            skipped_copies: self.skipped_copies.clone(),
-            marker: PhantomData,
-        })
+    map_params! {
+        MirrorDef {
+            objects: clone,
+            plane: clone,
+            combine: copy,
+            compute: copy,
+            original_bodies: copy,
+            scale: with(map_scale),
+            scale_groups: with(map_scale_groups),
+            scale_copies: with(map_scale_copies),
+            scales: with(map_scales),
+            scale_center: clone,
+            skipped_copies: clone,
+            marker: phantom,
+        }
     }
 }
 

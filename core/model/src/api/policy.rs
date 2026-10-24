@@ -6,29 +6,29 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::ApiError;
+use super::dispatch::named_enum;
 use crate::document::{Document, PolicyReport};
 use crate::ids::ComponentUid;
 use crate::kernel::Kernel;
 use crate::policy::{Policy, Setting};
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum PolicyCommand {
-    SetPolicy {
-        /// Uid or name; the active component when left out.
-        #[serde(default)]
-        component: Option<String>,
-        /// `hybrid` (alias `defaults`), `part` or `assembly`, applied first.
-        #[serde(default)]
-        preset: Option<String>,
-        /// Settings to change (the others stay).
-        #[serde(default)]
-        policy: Option<Map<String, Value>>,
-    },
+named_enum! {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    pub(crate) enum PolicyCommand {
+        "set_policy" => SetPolicy {
+            /// Uid or name; the active component when left out.
+            #[serde(default)]
+            component: Option<String>,
+            /// `hybrid` (alias `defaults`), `part` or `assembly`, applied first.
+            #[serde(default)]
+            preset: Option<String>,
+            /// Settings to change (the others stay).
+            #[serde(default)]
+            policy: Option<Map<String, Value>>,
+        },
+    }
 }
-
-/// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 1] = ["set_policy"];
 
 /// The `policy` query.
 #[derive(Debug, Deserialize)]

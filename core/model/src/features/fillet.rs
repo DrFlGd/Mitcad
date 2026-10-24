@@ -313,6 +313,7 @@ impl<P> FilletDef<P> {
     /// Slots: `radius` (`chord_length`, `start_radius`, `end_radius`,
     /// `mid[k].radius`, `distance1`, `distance2`, `tangency_weight`) for the
     /// first set, `sets[i].radius`, ... for the others.
+    // Written by hand: each set and size kind has slots of its own (above).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

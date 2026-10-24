@@ -18,6 +18,8 @@ path = "src/bin/mitcad-ifc-inspect.rs"
 [dependencies]
 # .ifczip: a zip archive of one .ifc file.
 mitcad-zip = { path = "../zip" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
 # The inspector's JSON output and the decoded items' summaries.
 serde = { workspace = true }
 serde_json = { workspace = true }

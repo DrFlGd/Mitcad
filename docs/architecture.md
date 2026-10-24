@@ -11,6 +11,7 @@ JSON commands.
 |---|---|---|
 | `core/model` (`mitcad-model`) | Rust | Document, timeline, features, parameters and expressions, units, sketches, topological naming, cached recompute, undo, design file, design comparison, JSON command API. No OCCT. |
 | `core/solver` (`mitcad-solver`) | Rust | 2D constraint solver and the joint solver of assemblies behind a narrow API ([README](../core/solver/README.md)). |
+| `core/vec3` (`mitcad-vec3`) | Rust | The `[f64; 3]` helpers (`add`, `sub`, `dot`, `cross`, `norm`, the unit-vector variants) that the model, the solver and the readers share, and the same for `[f64; 2]` in its `vec2` module; no dependencies, no vector type. |
 | `core/f3d` (`mitcad-f3d`) | Rust | `.f3d` container, ASM B-rep, design streams decoded into the dump IR. |
 | `core/import` (`mitcad-import`) | Rust | Replays `.f3d` dumps and FreeCAD documents as Mitcad commands, checked against the file's stored results ([README](../core/import/README.md)). |
 | `core/freecad` (`mitcad-freecad`) | Rust | `.FCStd` reader: typed objects and properties, placements, links, sketches, spreadsheets, expressions. No geometry. |
@@ -32,7 +33,7 @@ JSON commands.
 | `tools/freecad-export` | Python, Bash | FreeCAD macros that make the FreeCAD import's reference models and dumps. |
 
 Dependencies point one way: `app` → `core/ffi` → `core/model` (with
-`solver`, `f3d`, `import`, `freecad`, `zip`, `3mf`, `usdz`, `vcs`, `ipt`, `ifc`, `solidcraft`, `dwg`; `update`
+`solver`, `vec3`, `f3d`, `import`, `freecad`, `zip`, `3mf`, `usdz`, `vcs`, `ipt`, `ifc`, `solidcraft`, `dwg`; `update`
 stands alone) and `core/ffi` → `geometry` → OCCT. The model reaches geometry only
 through the `Kernel` trait, so model tests run on a mock kernel.
 
@@ -142,7 +143,7 @@ design in a project.
   into the document's cache. The `.f3d` import evaluates the definitions
   ranked after the one it tries on such forks, with `threads` workers,
   and takes their results in rank order, so the import is the one of a
-  single thread (mitcad#95, `core/import/README.md`, *Definitions
+  single thread (mitcad#95, `core/import/docs/f3d-performance.md`, *Definitions
   evaluated in parallel*). Its kernels must be `ImportKernel`s: `Send`,
   with shapes that threads may share (`Send + Sync`). Within the same
   `threads` (`Progress::helper`) the import reads the file's bodies
@@ -158,7 +159,7 @@ design in a project.
   process against its tightest limit (`core/ffi/src/memory.rs`: an
   address-space or data limit, a Windows job's limit or the commit left,
   the memory the system has left) and gives up definitions before an
-  allocation can fail (`core/import/README.md`, *Memory*). OCCT's own
+  allocation can fail (`core/import/docs/f3d-performance.md`, *Memory*). OCCT's own
   allocator throws instead of returning null (a patch of the port,
   mitcad#132) and counts its failures per process and per thread, the
   jobs of OCCT's thread pool counted for the thread that ran them
@@ -712,7 +713,7 @@ the `Shape` type.
   heals a stored body of 256 faces or more only where it differs from
   its build in the history state before (`brep::Healed`; that base is
   fixed by the file, not by the order of the builds, mitcad#243;
-  `core/import/README.md`). A shape of 64 faces or more finds
+  `core/import/docs/f3d-performance.md`). A shape of 64 faces or more finds
   its faces by a reference through an index of its face names, made the
   first time it is asked (`Shape::find_faces`); before, each lookup read
   every face's names, and finding the faces of a large body one by one
@@ -2252,7 +2253,7 @@ default; Preferences, General) is the distance within which the replay's
 geometry is taken as the file's where no exact match is: the lookups of
 decoded edges, faces and vertices look within 1e-3 mm first and then
 within it, and an item's new faces must lie on the file's within it
-(mitcad#224, `core/import/README.md`). Fillets and chamfers with a tangent
+(mitcad#224, `core/import/docs/f3d-fallbacks.md`). Fillets and chamfers with a tangent
 chain follow Mitcad's own chain (edges that meet end to end in the same
 direction), not only the kernel's (`commands.md`, fillet).
 
@@ -2381,4 +2382,4 @@ names and pick points on the rebuilt bodies, then followed by Mitcad's
 topological names. Components, occurrences, joints, motion links, contact sets, motion studies and sheet
 metal map to Mitcad's; a feature without a counterpart, or one that fails, is a
 suppressed placeholder with the reason, and the report lists it
-([core/import/README.md](../core/import/README.md#solidcraft-import)).
+([core/import/docs/solidcraft.md](../core/import/docs/solidcraft.md#solidcraft-import)).

@@ -2033,7 +2033,7 @@ Faces are named as an extrusion's: `side(<segment>)` the walls,
 `start(<region>)` its foot on the face (inside the body after a raise).
 The `.solidcraft` import maps SolidCraft's emboss onto it (a deboss
 sinks), and the `.f3d` import the file's embosses (a negative depth
-sinks; `core/import/README.md`).
+sinks; `core/import/docs/f3d-components.md`).
 
 ### Patterns
 
@@ -4232,7 +4232,7 @@ tests `constraint_tests.rs`, `core/solver/tests/rigid_constraints.rs`,
 
 The `.f3d` import brings the file's assembly relationships in as
 constraint sets (mitcad#155, *Assembly relationships* in the [import
-README](../../../import/README.md#assembly-relationships)).
+notes](../../../import/docs/f3d-components.md#assembly-relationships)).
 
 Not yet: a tangent's contact passing to the second body's other faces
 ("all faces"), cones and tori in tangents, symmetry and motion
@@ -4539,16 +4539,16 @@ file's bodies built with OCCT.
 | `no_verify` | do not check the replay against the ASM history (and take only first guesses) |
 | `no_fallback` | leave items that cannot be replayed out instead of using the file's bodies |
 | `no_compare` | compare the final bodies by volume only, not by surface deviation |
-| `geometric_tolerance` | mm, greater than 0 (default 0.01; the application's Preferences, General, *Import tolerance*): how far the replay's geometry may be from the file's where no exact result is (mitcad#224). The decoded edges, faces and vertices are looked for in the replay within 0.001 mm first (a fillet's edge by its middle, ends, or circle centre, radius and plane), then within this tolerance; a match found so keeps the uniqueness rules, counts as `read` where the input was decoded and the match is unique, and the item's report gives its `geometric_deviation`. It is also the distance within which an item's new faces must lie on the file's in the history's geometric check (`core/import/README.md`), and the distance a sketch's solved points may lie from the file's where the sketch's regions stay the file's (mitcad#396; else 1e-4 mm); volume and area checks keep their relative tolerances |
-| `retry_bodies` | `keep` (default), `replace` or `ask` (mitcad#283): what a retry of an item on the file's stored state before it does with the replayed bodies that match that state (exactly, or within `geometric_tolerance`). `keep`: they stay, parametric, and only the bodies that differ are brought to the state (nothing differs: no retry, and the item takes the file's bodies if it fails); `replace`: the stored bodies replace them too; `ask`: the user is asked through the document's job (`JobControl::question`, `answer`) the first time a retry would replace a body that matches, and the answer holds for the rest of the import, its tries and the documents it refers to (kept without a job). See *Retries on the file's exact state* in `core/import/README.md` |
+| `geometric_tolerance` | mm, greater than 0 (default 0.01; the application's Preferences, General, *Import tolerance*): how far the replay's geometry may be from the file's where no exact result is (mitcad#224). The decoded edges, faces and vertices are looked for in the replay within 0.001 mm first (a fillet's edge by its middle, ends, or circle centre, radius and plane), then within this tolerance; a match found so keeps the uniqueness rules, counts as `read` where the input was decoded and the match is unique, and the item's report gives its `geometric_deviation`. It is also the distance within which an item's new faces must lie on the file's in the history's geometric check (`core/import/docs/f3d-fallbacks.md`), and the distance a sketch's solved points may lie from the file's where the sketch's regions stay the file's (mitcad#396; else 1e-4 mm); volume and area checks keep their relative tolerances |
+| `retry_bodies` | `keep` (default), `replace` or `ask` (mitcad#283): what a retry of an item on the file's stored state before it does with the replayed bodies that match that state (exactly, or within `geometric_tolerance`). `keep`: they stay, parametric, and only the bodies that differ are brought to the state (nothing differs: no retry, and the item takes the file's bodies if it fails); `replace`: the stored bodies replace them too; `ask`: the user is asked through the document's job (`JobControl::question`, `answer`) the first time a retry would replace a body that matches, and the answer holds for the rest of the import, its tries and the documents it refers to (kept without a job). See *Retries on the file's exact state* in `core/import/docs/f3d-fallbacks.md` |
 | `time_limit` | seconds; after them the remaining items take the file's bodies without trying definitions |
 | `hang_limit` | seconds without progress after which the import is taken to hang in the geometry kernel (a new document only; the import makes progress between kernel calls, also in its own long loops, so only a kernel call that does not return counts, mitcad#82): the import runs on a thread of its own and is run again with the item it hung on taking the file's bodies (hung comparing the final bodies: by volume only; elsewhere: the stored bodies without the timeline); the report warns. The try given up stops once its kernel call returns (before its next item or definition; a definition's long kernel operations stop inside) and its result is dropped (mitcad#71) |
 | `text` | `import_f3d_timeline` returns a readable report |
 | `report_path` | also write the JSON report to this file |
 | `list` | `import_f3d_timeline` only lists the designs: `{"designs": [{"label", "items"}]}` |
-| `memory_limit` | MiB the import may take besides the process's own limits (mitcad#80): low on memory (85 % of the tightest limit, always watched), the import cuts the definition being tried short and tries no more until the memory recovers; those items take the file's bodies, and the report's `low_memory` (`item`, `name`, `memory`, `items`) and a warning say so (`core/import/README.md`, *Memory*) |
-| `threads` | how many threads the import uses at once (mitcad#95, mitcad#103; default 1, the application gives the logical cores up to 8): workers evaluate the definitions ranked after the one being evaluated, each on its own copy of the document, and the import takes their results in rank order; the file's bodies are read and the history's bodies built ahead of the replay on the same threads. It is the same import as with one thread, only faster (`core/import/README.md`, *Definitions evaluated in parallel*, *Work beside the replay*) |
-| `learn` | a directory for the learning dump (mitcad#96): one JSON line per modelling item with its raw record, its candidates and the one the history accepted (`core/import/README.md`, *Learning the undecoded inputs*); `MITCAD_IMPORT_LEARN` when left out |
+| `memory_limit` | MiB the import may take besides the process's own limits (mitcad#80): low on memory (85 % of the tightest limit, always watched), the import cuts the definition being tried short and tries no more until the memory recovers; those items take the file's bodies, and the report's `low_memory` (`item`, `name`, `memory`, `items`) and a warning say so (`core/import/docs/f3d-performance.md`, *Memory*) |
+| `threads` | how many threads the import uses at once (mitcad#95, mitcad#103; default 1, the application gives the logical cores up to 8): workers evaluate the definitions ranked after the one being evaluated, each on its own copy of the document, and the import takes their results in rank order; the file's bodies are read and the history's bodies built ahead of the replay on the same threads. It is the same import as with one thread, only faster (`core/import/docs/f3d-performance.md`, *Definitions evaluated in parallel*, *Work beside the replay*) |
+| `learn` | a directory for the learning dump (mitcad#96): one JSON line per modelling item with its raw record, its candidates and the one the history accepted (`core/import/docs/f3d-learning.md`, *Learning the undecoded inputs*); `MITCAD_IMPORT_LEARN` when left out |
 | `references` | folders searched for the documents the design refers to (its components of other documents, mitcad#196), besides the reference folder next to it (`<design> vN.refs`): see *Components of other documents* below |
 | `reference_files` | files of documents the design refers to, by the documents' URNs (`{"urn:…?version=2": "C:/…/Part v2.f3d"}`; the application's file dialogs); their folders are searched too |
 | `skipped_references` | URNs of documents the user chose not to give: reported `skipped` rather than `missing` |
@@ -4718,7 +4718,7 @@ job.
 
 An item whose decoded definition builds a result that is not the file's
 (its result does not measure as its history state, or the volume it adds
-or removes or its new faces are off the file's, `core/import/README.md`,
+or removes or its new faces are off the file's, `core/import/docs/f3d-history.md`,
 *Matching rules*) takes the file's bodies as before; its report entry
 has `deviation`, how far off the result was there:
 
@@ -4778,9 +4778,9 @@ first, then those the file's history suggests without them.
 | `SplitFaceFeature` | | not translated (fallback) |
 | `CombineFeature` | `combine` | `targetBody` → `target`, `toolBodies` → `tools`, `operation` (Join/Cut/IntersectFeatureOperation), `isKeepToolBodies` → `keep_tools` (tools consumed: the history's copies of them are left out from the combine's state on, mitcad#96); `isNewComponent`: the combine goes into the component the import puts the item in |
 | `MirrorFeature` | `mirror` | `patternEntityType` + `inputEntities` → `objects` (Faces → faces of one body, Features, Bodies; not Occurrences), `mirrorPlane` (origin `XY`/`XZ`/`YZ` → origin plane; other construction planes → a fixed plane from `geometry`; face fingerprint → face), `isCombine` → `combine` (the stream decoder's, then the other way as a guess; not given: separate copies, then joined), `patternComputeOption` → `compute` |
-| `RectangularPatternFeature` | `rectangular_pattern` | `directionOne/TwoEntity` → axes (origin X/Y/Z, edge, fixed from `directionOne/Two` when the entity is null or a sketch line), `quantityOne/Two`, `distanceOne/Two`, `isSymmetricInDirectionOne/Two`, `patternDistanceType` (Extent/Spacing), `patternComputeOption`, `suppressedElementsIds` → `suppressed_elements` matched by `outputs.patternElements[].transform`; without directions (the oldest item version, mitcad#74) the history checks guesses: direction one along an origin axis, two across it at 90°, 60° or 120°, both symmetric or not (`core/import/README.md`) |
+| `RectangularPatternFeature` | `rectangular_pattern` | `directionOne/TwoEntity` → axes (origin X/Y/Z, edge, fixed from `directionOne/Two` when the entity is null or a sketch line), `quantityOne/Two`, `distanceOne/Two`, `isSymmetricInDirectionOne/Two`, `patternDistanceType` (Extent/Spacing), `patternComputeOption`, `suppressedElementsIds` → `suppressed_elements` matched by `outputs.patternElements[].transform`; without directions (the oldest item version, mitcad#74) the history checks guesses: direction one along an origin axis, two across it at 90°, 60° or 120°, both symmetric or not (`core/import/docs/f3d-history.md`) |
 | `CircularPatternFeature` | `circular_pattern` | `axis` (a sketch circle or arc: the axis through its centre, the line the stream decoder's `_f3d_axis` gives where the sketch faces the other way; an axis entity not found: that line), `quantity`, `totalAngle` → `angle`, `isSymmetric`, `patternComputeOption`, `suppressedElementsIds` |
-| `PathPatternFeature` | `path_pattern` | `inputEntities` → `objects`, `path` (one sketch curve → `{"sketch", "curve"}`, lines and arcs of one sketch → `{"sketch", "curves"}`; edges are not translated), `quantity`, `distance`, `patternDistanceType`, `startPoint` → `start`, `isFlipDirection` → `flip`, `isOrientationAlongPath` → `along_path`, `isSymmetric`, `patternComputeOption`, `suppressedElementsIds` (mitcad#468). The stream decoder gives no start point, flip, orientation or symmetry: the defaults, then each of the three flags the other way as a guess the history checks ([core/import/README.md](../../../import/README.md#path-patterns-mitcad468)) |
+| `PathPatternFeature` | `path_pattern` | `inputEntities` → `objects`, `path` (one sketch curve → `{"sketch", "curve"}`, lines and arcs of one sketch → `{"sketch", "curves"}`; edges are not translated), `quantity`, `distance`, `patternDistanceType`, `startPoint` → `start`, `isFlipDirection` → `flip`, `isOrientationAlongPath` → `along_path`, `isSymmetric`, `patternComputeOption`, `suppressedElementsIds` (mitcad#468). The stream decoder gives no start point, flip, orientation or symmetry: the defaults, then each of the three flags the other way as a guess the history checks ([core/import/docs/f3d-history.md](../../../import/docs/f3d-history.md#path-patterns-mitcad468)) |
 | `MoveFeature` | `move` | bodies of `inputEntities`; `transform` (rigid, cm) → `free` matrix, or `moveFeatureDefinition` (`TranslateXYZ`, `TranslateAlongEntity`, `Rotate`, `PointToPoint`, `PointToPosition`) to keep it editable; moves of faces are unsupported |
 | `CopyPasteBody` | `move` with `copy: true` | `sourceBody` (decoded from the file's item inputs), an identity `free` move; a cut and paste into another component is not translated, and one whose body the file lost keeps the cached result |
 | Align (not in the API) | `move` (`free`) or `align` | |
@@ -4794,15 +4794,15 @@ first, then those the file's history suggests without them.
 | `ThreadFeature` | `thread` | `inputCylindricalFaces` (resolved through `point_on_face`) → `faces`; `threadInfo`: `threadType` ISO Metric profile and other metric `M` sizes → `iso_metric`, ANSI Unified → `unified`, BSP Pipe Threads → `whitworth` with `G <size>-<tpi>` → `G <size>`, others fallback; `threadDesignation` → `designation`, `threadClass` → `class` when Mitcad lists it for the face's side (else left out), `isRightHanded` → `right_handed`; `isModeled` true → `modeled` with `diameters` from `majorDiameter`, `minorDiameter` and `pitchDiameter` and the `angle` the next history state shows on each face (one `thread` per face; Whitworth and NPT fall back), tried first without sizing the faces; `isFullLength` false → `length` (`threadLength`), `offset` (`threadOffset`) and `location` (`threadLocation`, swapped where Mitcad's cylinder axis runs against the face's `geometry.axis`). First with an `offset_face` of each face to the thread's major (external) or minor (internal) diameter, as the file sizes threaded faces, and one of each chamfer at the face's ends (a cone about its axis from an end circle, narrowing away from a shaft, widening away from a bore) by the radial step times the cosine of its angle to the axis, so that it moves along the radius with the face as in the file (mitcad#335), then with a tube between the two radii (`cylinder`s and `combine`s) cut from or joined to the body, then without |
 | `HoleFeature` tapped (`holeTapType` Tapped) | `hole` + `thread` | the hole with its diameter (then `tappedHoleInfo.minorDiameter`), and a `thread` on `hole<i>.wall` with the size of `tappedHoleInfo` (as for `ThreadFeature`; for `thread.isModeled` modelled with its diameters, angle 0), and for `thread.isFullLength` false `length` and `offset` from the hole's start (`low_end`); then the hole without the thread |
 | `HoleFeature` | `hole` | `position` (the stream decoder: every point of `_f3d_positions`) on the planar face named by `holePositionDefinition` or through the point, `holeType` Simple/Counterbore/Countersink with `counterboreDiameter`/`Depth` or `countersinkDiameter`/`Angle`, `holeDiameter`, `tipAngle` (180° → `flat`), `extentDefinition` `DistanceExtentDefinition` → `distance`, `ThroughAllExtentDefinition` or `AllExtentDefinition` → `through_all` (others fall back; with the stream decoder's `_f3d_through_all` through all first, checked by the history), `isDefaultDirection` false → `flip`; without a position, the holes the history shows |
-| `Joint` | `joint` | in the component its occurrence paths start in (`_f3d.context_component`); `occurrenceOne` → `a`, `occurrenceTwo` → `b` (`_f3d.path` of occurrence objects → occurrence uids, occurrences of components of other documents included: they are occurrences of empty components; a level inside one leaves the joint out); each side's stored frame (`_f3d.frames`, else `geometryOrOrigin*`) on geometry of the side's component that gives it (a joint origin, construction geometry, a circular edge, a planar face or a face of revolution, with a `frame_override` for the rest; on a component of another document its `"origin"`), else a fixed plane; `jointMotion` → `kind` (`slide_axis` by the motion's slot), the values the motions have where the file places the occurrences (from the frames, mitcad#87: a joint that cannot hold there is not added), `rotationLimits` → `rz`'s and `slideLimits` → the slide's `limits` where they hold those values (else left out), the values → `position` where the rest value is another; `_f3d.opposed` → `flip`, `angle` → `angle`, `offset` → `offset` (an offset the file stores rounded takes the placements' value, mitcad#81), `offsetX`/`offsetY` move `b`'s origin. Kept only where every occurrence stays where it was or goes where the file places it after the item or at the end of its timeline (the occurrences' `_f3d.placements`, else its last captured position, else its stored transform); else an `as_built_joint` of the placements with a warning ([core/import/README.md](../../../import/README.md#joints)) |
+| `Joint` | `joint` | in the component its occurrence paths start in (`_f3d.context_component`); `occurrenceOne` → `a`, `occurrenceTwo` → `b` (`_f3d.path` of occurrence objects → occurrence uids, occurrences of components of other documents included: they are occurrences of empty components; a level inside one leaves the joint out); each side's stored frame (`_f3d.frames`, else `geometryOrOrigin*`) on geometry of the side's component that gives it (a joint origin, construction geometry, a circular edge, a planar face or a face of revolution, with a `frame_override` for the rest; on a component of another document its `"origin"`), else a fixed plane; `jointMotion` → `kind` (`slide_axis` by the motion's slot), the values the motions have where the file places the occurrences (from the frames, mitcad#87: a joint that cannot hold there is not added), `rotationLimits` → `rz`'s and `slideLimits` → the slide's `limits` where they hold those values (else left out), the values → `position` where the rest value is another; `_f3d.opposed` → `flip`, `angle` → `angle`, `offset` → `offset` (an offset the file stores rounded takes the placements' value, mitcad#81), `offsetX`/`offsetY` move `b`'s origin. Kept only where every occurrence stays where it was or goes where the file places it after the item or at the end of its timeline (the occurrences' `_f3d.placements`, else its last captured position, else its stored transform); else an `as_built_joint` of the placements with a warning ([core/import/docs/f3d-components.md](../../../import/docs/f3d-components.md#joints)) |
 | `AsBuiltJoint` | `as_built_joint` | `occurrenceOne`/`Two` → `a`/`b`, `relative` from the placements at its point of the timeline (`_f3d.placements` checked against them, a warning where they differ), `jointMotion` → `kind`, its motion frame `origin` the recorded frame (on geometry of `b`'s component, else of `a`'s, else fixed on `b`), its limits where the recorded placement is the file's and they hold 0 (a rest value other than 0 → `position` 0) |
 | `RigidGroup` (an as-built joint of motion type 11) | `rigid_group` | `occurrences` → the occurrences of its component they are or are in (members below the top level and inside components of other documents move with them); with the component's own geometry among them, rigid `as_built_joint`s of each to it |
 | `JointOrigin` | `joint_origin` | in the owning component: `geometry` → geometry that gives the frame before `angle` and `offsetZ` (`"origin"` for the component's origin point, a face or edge, else a fixed plane), `angle` → `angle`, `offsetZ` → `offset`; checked against the file's frame, else that frame fixed |
 | `GroundOccurrence` | | `occurrence` → the occurrence is grounded |
 | `Snapshot` (captured position) | `capture_position` | one per component whose occurrences it places: `positions[]` (`occurrence` paths from the item's component, `transform` there; for a captured position of joints' values, the occurrences whose `_f3d.placements` name it) → each occurrence at its placement in its parent; positions inside components of other documents and of grounded occurrences are left out (`partial`) |
-| `GeometricRelationship` | `constraint_set` | in the component its rows' paths start in, a row per decoded constraint (`rows[]`): side two → `a`, side one → `b` (a point or an axis on a plane: it → `a`, the plane → `b`); each frame (`_f3d.frames`) on geometry of the component the path ends in that gives its plane, axis, circle or point (nearest the picked point first), else fixed geometry with the frame; on a component of another document fixed geometry there; two planes, a plane and a circle, a point or an axis on a plane, two axes → `align`, two circles → `insert`, a centring → `center` (`a`, `a2`, `b`, `b2`), an angle → `angle`; `flip` and the sign of `offset` (the parameter, negated where Mitcad's normal is the other way) from the references where the file places the occurrences; rows that do not hold there, sides inside components of other documents and circles on components of other documents are left out with the reason ([core/import/README.md](../../../import/README.md#assembly-relationships)) |
+| `GeometricRelationship` | `constraint_set` | in the component its rows' paths start in, a row per decoded constraint (`rows[]`): side two → `a`, side one → `b` (a point or an axis on a plane: it → `a`, the plane → `b`); each frame (`_f3d.frames`) on geometry of the component the path ends in that gives its plane, axis, circle or point (nearest the picked point first), else fixed geometry with the frame; on a component of another document fixed geometry there; two planes, a plane and a circle, a point or an axis on a plane, two axes → `align`, two circles → `insert`, a centring → `center` (`a`, `a2`, `b`, `b2`), an angle → `angle`; `flip` and the sign of `offset` (the parameter, negated where Mitcad's normal is the other way) from the references where the file places the occurrences; rows that do not hold there, sides inside components of other documents and circles on components of other documents are left out with the reason ([core/import/docs/f3d-components.md](../../../import/docs/f3d-components.md#assembly-relationships)) |
 | `TangentRelationship` | `constraint_set` | one `tangent` row between the planar, cylindrical or spherical faces the file's points lie on (`flip` where they touch inside); else left out with the reason |
-| Items the stream decoder names by their class only (`ComponentInsert`, `Group`, `FlangeFeature`, ...) | | those without geometry are skipped with what they are, the others are not translated (fallback) with the reason ([core/import/README.md](../../../import/README.md#items-without-a-translation)) |
+| Items the stream decoder names by their class only (`ComponentInsert`, `Group`, `FlangeFeature`, ...) | | those without geometry are skipped with what they are, the others are not translated (fallback) with the reason ([core/import/docs/f3d-components.md](../../../import/docs/f3d-components.md#items-without-a-translation)) |
 
 ### FreeCAD import (.FCStd)
 
@@ -4814,7 +4814,7 @@ imports a FreeCAD document's bodies in its structure, with its sketches,
 history and parameters (`core/import/src/freecad/`; the file is read by
 `core/freecad`). One undo step (`Import part.FCStd`). How the import
 works (stages, checks, readings tried, what falls back):
-[core/import/README.md](../../../import/README.md#freecad-import-fcstd).
+[core/import/docs/freecad.md](../../../import/docs/freecad.md#freecad-import-fcstd).
 
 | Field | Meaning |
 |---|---|
@@ -5054,7 +5054,7 @@ The result: `file`, `design` (the document's label), `items` (objects),
 Tests: `core/freecad/tests/parse.rs`, `core/freecad/tests/sketch_corpus.rs`,
 `core/import/src/freecad/tests.rs` (mock kernel), `cli.import_fcstd`
 (`tools/cli/fcstd-test.cmake`), `freecad.corpus` (`MITCAD_FCSTD_CORPUS`;
-[core/import/README.md](../../../import/README.md#tests)) and
+[core/import/docs/freecad.md](../../../import/docs/freecad.md#tests)) and
 `tools/ui-import-test.sh`.
 
 ### .ipt import
@@ -5092,7 +5092,7 @@ or `Document::import_ipt(path, json)` for the report alone) imports an
   flanges on one edge and cuts through the sheet replay as `sheet_rules`
   (named `Sheet rules <style>`, before the first face), `sheet_face`,
   `sheet_flange` and `sheet_cut` (mitcad#211; the `.f3d` import's base and
-  edge flanges likewise; `core/import/README.md`, *Sheet metal*).
+  edge flanges likewise; `core/import/docs/f3d-sheet-metal.md`, *Sheet metal*).
 - **Bodies only** (`bodies_only`, and files without definitions; stage
   1): one base feature per body (solids and sheet bodies), built from the
   file's B-rep record with OCCT.
@@ -5148,7 +5148,7 @@ Tests: `core/ipt` (`core.ipt`, no OCCT; with the design replayed on the
 mock kernel, `tests/design_import.rs`), `core.exchange`
 (`core/tests/test_exchange.cpp`), `cli.import_ipt*`, `cli.ipt_design_file`,
 `ipt.corpus`
-(`MITCAD_IPT_CORPUS`, [core/import/README.md](../../../import/README.md#ipt-import))
+(`MITCAD_IPT_CORPUS`, [core/import/docs/ipt.md](../../../import/docs/ipt.md#ipt-import))
 and `tools/ui-import-test.sh`.
 
 ### .iam import
@@ -5611,7 +5611,7 @@ without a Mitcad counterpart with their counts; notes; and `check` with
   named as SolidCraft names them, the pieces a cut or split leaves
   `<name> (k)`, ordered so that the picks later features make on them by
   name lie on them.
-- What maps to what: [core/import/README.md](../../../import/README.md#solidcraft-import).
+- What maps to what: [core/import/docs/solidcraft.md](../../../import/docs/solidcraft.md#solidcraft-import).
   Unmapped kinds and failed features become suppressed `placeholder`
   features with the reason as their import note ([The import's outcomes
   on the timeline](#the-imports-outcomes-on-the-timeline)).
@@ -7573,6 +7573,12 @@ of all evaluated sketches when pruning stale application selection.
   (`features/mod.rs`). Its serde form is then its command and file form;
   the dispatch, the cache, undo, preview and the design file need no
   change. Add its section under [Feature definitions](#feature-definitions).
+  When every value maps under its field's name, `map_params!`
+  (`features/mapping.rs`, mitcad#586) writes `map_params` from the list of
+  all fields, each `clone`, `copy`, `param`, `option`, `map` (a type with
+  its own `map_params`), `with(helper)` or `phantom`, in the order the
+  values are visited (parameter numbering depends on it); a mapping with
+  other slot names or prefixes is written by hand.
 - Patterns and mirrors of features: `FeatureInfo::tool_use()` returns the
   operation and participants of the tool body the feature leaves in
   `FeatureOutput::tool`; without it a feature cannot be patterned
@@ -7587,10 +7593,20 @@ of all evaluated sketches when pruning stale application selection.
   `Err(KernelError::Unsupported(…))` (`kernel.rs`), a family bridge in
   `core/ffi/src/kernel/` with its C++ half in `core/cpp/bridge/`, and the
   geometry in `geometry/src/<family>.cpp`.
-- A command or query: a variant of `Command` or `Query` in `mod.rs`, a
-  line in the tables above, and its class in `classes.rs` (see [Classes of
-  commands and queries](#classes-of-commands-and-queries); a test fails
-  without one).
+- A command or query: a variant of `Command` or `Query` in `mod.rs` (or
+  of a family's command enum), a line in the tables above, and its class
+  in `classes.rs` (see [Classes of commands and
+  queries](#classes-of-commands-and-queries); a test fails without one).
+  The enums are declared with `named_enum!` (`api/dispatch.rs`), each
+  variant with its name on the wire before it (`"add_feature" =>
+  AddFeature { … }`), which gives the variant its serde name and the
+  enum its list of names, `NAMES` (mitcad#585). A family of commands
+  with an enum of its own (components, joints, sketches, …) is one row of
+  `Document::command_families` (its names and the method that runs it);
+  every other name goes to `Command`, whose error for an unknown name
+  lists its commands. A test checks that every name reaches its own
+  family and that no name is in two lists.
+
 ## Sheet rules and base Face
 
 `sheet_rules` owns fabrication parameters. A `sheet_face` refers to an earlier
@@ -8569,7 +8585,7 @@ closer to the other angle. Reversing both rays gives the opposite sector
 
 Tests: `core/model/src/api/sketch_tests.rs` (`an_angle_dimension_*`),
 `core/model/src/sketch/tests.rs`, `core/model/src/api/projection_tests.rs`,
-`core/import/src/tests.rs`, `tools/ui-sketch-angle-test.sh`.
+`core/import/src/tests/constraint_tests.rs`, `tools/ui-sketch-angle-test.sh`.
 
 ## Tangent chains
 
@@ -10249,7 +10265,7 @@ preview's `placements` and `values`, `fraction`, `contact`):
   frames), else from where it is.
 
 The `.solidcraft` import maps the file's contact sets and motion studies
-onto these ([.solidcraft import](#solidcraft-import), `core/import/README.md`).
+onto these ([.solidcraft import](#solidcraft-import), `core/import/docs/solidcraft.md`).
 
 ## Contour Flange, Convert to Sheet Metal and Perforate
 
@@ -10416,7 +10432,7 @@ offset as given, zero without one).
 | `motion_link_offset` | `a`, `b`, `coupling`, `reverse`, `component` (as `add_motion_link`) | `offset`: what `as_built` would give (Motion Link's panel) |
 
 The `.solidcraft` import maps the file's motion links onto these
-([.solidcraft import](#solidcraft-import), `core/import/README.md`).
+([.solidcraft import](#solidcraft-import), `core/import/docs/solidcraft.md`).
 
 ## Boundary Fill
 
@@ -10615,7 +10631,7 @@ side and both, the input check on), the `.solidcraft` test design
 `patch-stitch-thicken` (`cli.import_solidcraft`) and
 `core/import/src/solidcraft/tests.rs`. The `.solidcraft` import maps
 SolidCraft's patches, stitches and thickens onto these
-([.solidcraft import](#solidcraft-import), `core/import/README.md`).
+([.solidcraft import](#solidcraft-import), `core/import/docs/solidcraft.md`).
 
 ## Surface modelling
 
@@ -10933,7 +10949,7 @@ parameter range alone. The body keeps its id and the faces their names.
 A solid is refused.
 
 The `.solidcraft` import maps SolidCraft's surface blend, boundary patch,
-network, match and fair to these ([core/import/README.md](../../../import/README.md)).
+network, match and fair to these ([core/import/docs/solidcraft.md](../../../import/docs/solidcraft.md)).
 
 Tests (surface modelling): `core/model/src/surface_modelling_tests.rs`
 (mock kernel), `geometry/tests/test_surface_modelling.cpp`
@@ -11136,7 +11152,7 @@ components' first placements, and the conversion the file records as
 ([.solidcraft import](#solidcraft-import)). The `.f3d` import translates a
 cut and paste of bodies into another component as this feature where Move
 to Component cannot take the features that made them
-(`core/import/README.md`, *Copies and cut and paste of bodies*). Tests:
+(`core/import/docs/f3d-undecoded.md`, *Copies and cut and paste of bodies*). Tests:
 `core/model/src/body_transfer_tests.rs`, `cli.import_solidcraft`
 (`core/solidcraft/tests/designs/body-transfer.solidcraft.json`),
 `mitcad-import`'s `a_cut_and_paste_whose_features_cannot_go_transfers_the_body`.

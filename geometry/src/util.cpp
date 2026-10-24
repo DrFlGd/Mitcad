@@ -439,4 +439,27 @@ int inflated_vertices(const TopoDS_Shape& shape, bool tighten) {
   return count;
 }
 
+double volume_of(const TopoDS_Shape& shape) {
+  GProp_GProps props;
+  BRepGProp::VolumeProperties(shape, props);
+  return props.Mass();
+}
+
+TopoDS_Compound compound_of(const std::vector<TopoDS_Shape>& shapes) {
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  for (const TopoDS_Shape& shape : shapes) {
+    builder.Add(compound, shape);
+  }
+  return compound;
+}
+
+TopoDS_Shape compound_or_single(const std::vector<TopoDS_Shape>& shapes) {
+  if (shapes.size() == 1) {
+    return shapes.front();
+  }
+  return compound_of(shapes);
+}
+
 } // namespace mitcad::geometry::detail

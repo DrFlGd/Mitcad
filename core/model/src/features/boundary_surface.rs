@@ -16,6 +16,7 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::kernel_error;
+use super::mapping::map_params;
 use super::path::{self, SketchCurves};
 use super::sheet_edges::{self, OpeningEdgesRef, ResolvedChain};
 use super::{
@@ -89,16 +90,13 @@ impl<P> BoundarySurfaceDef<P> {
     pub const TYPE: &'static str = "boundary_surface";
     pub const BASE_NAME: &'static str = "BoundarySurface";
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<BoundarySurfaceDef<Q>, E> {
-        Ok(BoundarySurfaceDef {
-            boundary: self.boundary.clone(),
-            u: self.u.clone(),
-            v: self.v.clone(),
-            values: PhantomData,
-        })
+    map_params! {
+        BoundarySurfaceDef {
+            boundary: clone,
+            u: clone,
+            v: clone,
+            values: phantom,
+        }
     }
 
     fn all(&self) -> impl Iterator<Item = &BoundaryCurveRef> {

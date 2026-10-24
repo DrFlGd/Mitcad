@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::{add_faces, check_faces, kernel_error};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     is_false,
@@ -51,18 +52,15 @@ impl<P> UntrimSurfaceDef<P> {
     pub const TYPE: &'static str = "untrim_surface";
     pub const BASE_NAME: &'static str = "Untrim";
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<UntrimSurfaceDef<Q>, E> {
-        Ok(UntrimSurfaceDef {
-            body: self.body,
-            face: self.face.clone(),
-            holes: self.holes,
-            outer: self.outer,
-            in_place: self.in_place,
-            values: PhantomData,
-        })
+    map_params! {
+        UntrimSurfaceDef {
+            body: copy,
+            face: clone,
+            holes: copy,
+            outer: copy,
+            in_place: copy,
+            values: phantom,
+        }
     }
 }
 

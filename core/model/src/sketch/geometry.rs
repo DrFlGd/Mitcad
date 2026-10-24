@@ -7,48 +7,18 @@ use std::f64::consts::{PI, TAU};
 
 use crate::profile::SegmentGeometry;
 
+use mitcad_vec3::vec2;
+
 pub type P2 = [f64; 2];
 
-pub fn add(a: P2, b: P2) -> P2 {
-    [a[0] + b[0], a[1] + b[1]]
-}
+// The sketch modules take the `[f64; 2]` helpers from here.
+pub use mitcad_vec3::vec2::distance as dist;
+pub use mitcad_vec3::vec2::{add, cross, dot, lerp, norm, perp, scale, sub};
 
-pub fn sub(a: P2, b: P2) -> P2 {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-pub fn scale(a: P2, s: f64) -> P2 {
-    [a[0] * s, a[1] * s]
-}
-
-pub fn dot(a: P2, b: P2) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-pub fn cross(a: P2, b: P2) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-
-pub fn norm(a: P2) -> f64 {
-    a[0].hypot(a[1])
-}
-
-pub fn dist(a: P2, b: P2) -> f64 {
-    norm(sub(a, b))
-}
-
-pub fn lerp(a: P2, b: P2, t: f64) -> P2 {
-    [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
-}
-
-/// Rotated a quarter turn counter-clockwise.
-pub fn perp(a: P2) -> P2 {
-    [-a[1], a[0]]
-}
-
+/// The unit vector along `a` (multiplied by the reciprocal of its length),
+/// or `a` itself when its length is not greater than zero.
 pub fn unit(a: P2) -> P2 {
-    let n = norm(a);
-    if n > 0.0 { scale(a, 1.0 / n) } else { a }
+    vec2::unit_above(a, 0.0).unwrap_or(a)
 }
 
 /// The rays of an angle dimension between the lines `a` and `b` (start,

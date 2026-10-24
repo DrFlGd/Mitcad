@@ -14,7 +14,7 @@
 # (FreeCAD computes no revolution up to the first or the last face and no
 # groove up to the first face: "not yet supported" in 1.0 and 1.1, so these
 # cannot be reference models. Mitcad translates a revolution up to the last
-# face as one through the Body's body, see core/import/README.md.)
+# face as one through the Body's body, see core/import/docs/freecad.md.)
 #
 # The sketches have fixed placements in their Bodies (no attachment), the
 # same in every FreeCAD version.

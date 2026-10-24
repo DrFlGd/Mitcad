@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::{add_faces, check_faces, kernel_error, require_faces};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     is_false,
@@ -52,18 +53,15 @@ impl<P> ShellDef<P> {
     pub const TYPE: &'static str = "shell";
     pub const BASE_NAME: &'static str = "Shell";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<ShellDef<Q>, E> {
-        Ok(ShellDef {
-            body: self.body,
-            faces: self.faces.clone(),
-            inside: self.inside.as_ref().map(|v| f("inside", v)).transpose()?,
-            outside: self.outside.as_ref().map(|v| f("outside", v)).transpose()?,
-            tangent_chain: self.tangent_chain,
-            rounded: self.rounded,
-        })
+    map_params! {
+        ShellDef {
+            body: copy,
+            faces: clone,
+            inside: option,
+            outside: option,
+            tangent_chain: copy,
+            rounded: copy,
+        }
     }
 }
 

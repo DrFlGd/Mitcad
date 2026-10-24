@@ -83,16 +83,6 @@ ShapePtr one_face(const std::string& feature, const std::string& role, const Top
   return std::make_shared<Shape>(shell_of(face), std::vector<Shape::NamedFace>{{face, {face_name(feature, role)}}});
 }
 
-TopoDS_Shape compound_of(const std::vector<TopoDS_Shape>& shapes) {
-  TopoDS_Compound compound;
-  BRep_Builder builder;
-  builder.MakeCompound(compound);
-  for (const TopoDS_Shape& shape : shapes) {
-    builder.Add(compound, shape);
-  }
-  return compound;
-}
-
 // A chain's edges joined into one wire, in order.
 TopoDS_Wire wire_of(const Shape& body, const std::vector<int>& edges) {
   NCollection_List<TopoDS_Shape> list;
@@ -903,7 +893,7 @@ ShapePtr replaced(const Shape& body, const std::map<int, TopoDS_Face>& faces) {
     parts.push_back(face);
     named.push_back({face, body.face_names(f)});
   }
-  const Shape pieces(compound_of(parts), named);
+  const Shape pieces(detail::compound_of(parts), named);
   return stitch({&pieces}, kSewing);
 }
 

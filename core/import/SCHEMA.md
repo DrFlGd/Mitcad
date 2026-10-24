@@ -149,7 +149,7 @@ convert values as follows:
   any free-form surface, type only), `point_on_face` and
   `normal_at_point`, and a free-form one `_f3d.face_points` (more points
   inside it, spread over it, cm; mitcad#161); `found` says where, or why
-  not ([README.md](README.md), *Limits*). Sweeps' guide surfaces are
+  not ([docs/f3d.md](docs/f3d.md), *Limits*). Sweeps' guide surfaces are
   found too. An input found in another component's history than the
   item's has `_f3d.component` (that component's `_f3d.object_id`): its
   geometry is in that component's coordinates (mitcad#161). A reference
@@ -202,7 +202,7 @@ convert values as follows:
   (`MITCAD_F3D_MODELS`, [docs/development.md](../../docs/development.md)).
 
 The stream decoder's `_f3d.appearance` (mitcad#228;
-`mitcad_f3d::design::ir::AppearanceData`, README *Appearances and
+`mitcad_f3d::design::ir::AppearanceData`, `docs/f3d-appearances.md`, *Appearances and
 materials*) holds the appearances and physical materials: `assets` (the
 assets used, their textures and their materials' aspects: `id`, `schema`,
 `name`, `library`, `ui_name`, `category`, `description`, `properties`
@@ -401,7 +401,7 @@ in component order.
 (OccurrenceNode list). At most 5000 nodes; a list cut there ends with
 `{"_truncated": true}`. The stream decoder gives `isLightBulbOn: false` on
 the nodes of the paths the file hides (one hidden-occurrence object per
-path, `core/import/README.md` *Light bulbs*) and leaves it out elsewhere.
+path, `core/import/docs/f3d-appearances.md` *Light bulbs*) and leaves it out elsewhere.
 
 The stream decoder (mitcad#81) gives `_f3d.placements`: where the
 timeline's items put the occurrence, in timeline order, each `{index,
@@ -450,10 +450,10 @@ its group in `group`.
 | `index` | timeline index |
 | `group` | `{name, index}` of the containing group, or null |
 | `name` | timeline item name. The stream decoder gives the custom name, else the default name the application shows: the file keeps construction planes, axes and joint origins under the internal bases `WorkPlane`, `WorkAxis` and `JointOrigin`, shown as `Plane1`, `Axis1` and `Joint Origin1` |
-| `objectType` | short type of the item's entity (`Sketch`, `ExtrudeFeature`, `ConstructionPlane`, `Occurrence`, `Joint`, ...), null if unknown. The stream decoder also names items it knows only by their class (`ComponentInsert`, `Fastener`, `GeometricRelationship`, `Group`, `FlangeFeature`, ...: [README](README.md#items-without-a-translation)) |
+| `objectType` | short type of the item's entity (`Sketch`, `ExtrudeFeature`, `ConstructionPlane`, `Occurrence`, `Joint`, ...), null if unknown. The stream decoder also names items it knows only by their class (`ComponentInsert`, `Fastener`, `GeometricRelationship`, `Group`, `FlangeFeature`, ...: [docs/f3d-components.md](docs/f3d-components.md#items-without-a-translation)) |
 | `entityToken`, `component` | of the entity; `component` is the owning component's name (the stream decoder: the component whose feature list holds the item, also for occurrence items, whose external dumps name the occurrence's component; its object id is `_f3d.component`) |
-| `isRolledBack` | at the document's original marker position. The stream decoder writes `isRolledBack: true` (and nothing otherwise) for an item after the timeline marker: the second of the two state bytes before its last reference (`_f3d.after`), and the marker positions of the timeline ([README](README.md#items-suppressed-in-the-file)) |
-| `isSuppressed`, `healthState`, `errorOrWarningMessage` | read with the marker at the end; `healthState` is the health state's name. The stream decoder writes `isSuppressed: true` (and nothing otherwise) for an item its tail marks suppressed: result number -1 with the first or second of the three state bytes (`_f3d.flags`) set (`000100` an item the user suppressed, `010000` one suppressed through an item it depends on: `decode::item_suppression`); a third byte set alone (`000001`) marks an item whose change is all in its parts in other components (`_f3d.part_of`) (mitcad#180, [README](README.md#items-suppressed-in-the-file)) |
+| `isRolledBack` | at the document's original marker position. The stream decoder writes `isRolledBack: true` (and nothing otherwise) for an item after the timeline marker: the second of the two state bytes before its last reference (`_f3d.after`), and the marker positions of the timeline ([docs/f3d-fallbacks.md](docs/f3d-fallbacks.md#items-suppressed-in-the-file)) |
+| `isSuppressed`, `healthState`, `errorOrWarningMessage` | read with the marker at the end; `healthState` is the health state's name. The stream decoder writes `isSuppressed: true` (and nothing otherwise) for an item its tail marks suppressed: result number -1 with the first or second of the three state bytes (`_f3d.flags`) set (`000100` an item the user suppressed, `010000` one suppressed through an item it depends on: `decode::item_suppression`); a third byte set alone (`000001`) marks an item whose change is all in its parts in other components (`_f3d.part_of`) (mitcad#180, [docs/f3d-fallbacks.md](docs/f3d-fallbacks.md#items-suppressed-in-the-file)) |
 | `detail_marker` | marker position when `detail` and `props` were read |
 | `detail` | dedicated fields (below) |
 | `props` | reflection fallback: the entity's other properties, two levels deep, without output collections |
@@ -723,7 +723,7 @@ The import report and learning dump have a separate `input_provenance`
 field (`read`, `inferred`, `unknown`); it is not part of this design IR.
 It describes an accepted candidate's inputs independently of geometric
 verification or the candidate's history-only `guess` policy. See
-`README.md`, *Input decoding audit*.
+`docs/f3d-learning.md`, *Input decoding audit*.
 
 Sheet metal (mitcad#211): the `.ipt` decoder's `SheetMetalFaceFeature`,
 `SheetMetalFlangeFeature` and `CutFeature` items and the stream decoder's

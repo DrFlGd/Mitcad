@@ -11,6 +11,8 @@ use std::sync::Arc;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use mitcad_vec3::unit_div_above;
+
 use super::{CheckContext, Evaluate, FeatureInfo, FeatureOutput, References};
 use crate::ids::{BodyUid, EntityUid, FeatureUid};
 use crate::kernel::KernelError;
@@ -86,9 +88,9 @@ impl SketchPlane {
     }
 }
 
+/// `v` divided by its length; `v` itself when it has none.
 fn normalize(v: [f64; 3]) -> [f64; 3] {
-    let n = dot(v, v).sqrt();
-    if n > 0.0 { v.map(|x| x / n) } else { v }
+    unit_div_above(v, 0.0).unwrap_or(v)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -433,6 +435,7 @@ impl<P> SketchDef<P> {
         }
     }
 
+    // Written by hand: dimensions, patterns and offsets map their own values.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

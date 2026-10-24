@@ -14,6 +14,7 @@
 #include <gp_Pnt.hxx>
 #include <gp_Vec.hxx>
 
+#include "../framework/ModelShapes.hpp"
 #include "CommandSupport.hpp"
 
 namespace mitcad::cmd {
@@ -116,9 +117,9 @@ QJsonObject seatOf(const CommandState& state, const CommandContext& context) {
   if (state.checked(flipKey())) {
     seat.insert(QStringLiteral("flip"), true);
   }
-  const QJsonArray near = state.object(pickKey()).value(QStringLiteral("near")).toArray();
-  if (item.kind == SelectKind::Face && near.size() == 3) {
-    seat.insert(QStringLiteral("near"), near);
+  const QJsonArray nearPick = state.object(pickKey()).value(QStringLiteral("near")).toArray();
+  if (item.kind == SelectKind::Face && nearPick.size() == 3) {
+    seat.insert(QStringLiteral("near"), nearPick);
   }
   // A shaft of another component than the feature's: read where it was
   // picked, the feature's component where the view shows it.
@@ -182,7 +183,7 @@ void unseat(CommandState& state, const CommandContext& context, const SeatPanel&
   if (!planeFrame || panel.x.isEmpty() || panel.y.isEmpty()) {
     return;
   }
-  const gp_Vec offset(planeFrame->origin, gp_Pnt(origin.at(0).toDouble(), origin.at(1).toDouble(), origin.at(2).toDouble()));
+  const gp_Vec offset(planeFrame->origin, pointOf(origin));
   const auto round = [](double value) { return std::round(value * 100.0) / 100.0; };
   state.setText(panel.x, lengthText(round(offset.Dot(gp_Vec(planeFrame->x))), context));
   state.setText(panel.y, lengthText(round(offset.Dot(gp_Vec(planeFrame->y))), context));

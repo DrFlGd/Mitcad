@@ -100,6 +100,7 @@ pub struct HelixEnd<P = ParamId> {
 }
 
 impl<P> HelixEnd<P> {
+    // Written by hand: the slots take the end (`start.flat_angle`).
     fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -140,6 +141,7 @@ impl<P> HelixDef<P> {
     pub const TYPE: &'static str = "helix";
     pub const BASE_NAME: &'static str = "Helix";
 
+    // Written by hand: the start and the end map with their prefixes.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

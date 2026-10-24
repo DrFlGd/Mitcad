@@ -37,17 +37,9 @@ fn is_zero(value: &f64) -> bool {
     *value == 0.0
 }
 
-pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-pub(crate) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
+// The vector helpers live in `mitcad-vec3`; the modules that take their cross
+// and dot products from here keep this path.
+pub(crate) use mitcad_vec3::{cross, dot};
 
 /// The curve of a segment. Arcs run counter-clockwise from the start to the
 /// end angle; ellipse angles are parameter angles from the major axis.

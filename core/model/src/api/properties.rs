@@ -6,19 +6,11 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 
 use super::ApiError;
+use super::dispatch::named_enum;
 use crate::document::{Document, PropertyTypeChange};
 use crate::ids::ComponentUid;
 use crate::kernel::Kernel;
 use crate::properties::{BaseType, PropertyOwner, Source};
-
-/// The commands of this module, by name.
-pub(crate) const COMMANDS: [&str; 5] = [
-    "set_property",
-    "remove_property",
-    "define_property_type",
-    "edit_property_type",
-    "remove_property_type",
-];
 
 /// A field given, also as `null` (`Some(Value::Null)`), told from one left
 /// out (`None`).
@@ -26,58 +18,60 @@ fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Value>, 
     Value::deserialize(deserializer).map(Some)
 }
 
-/// The variants are the commands' names (`set_property`, ...).
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum PropertyCommand {
-    SetProperty {
-        owner: String,
-        set: String,
-        key: String,
-        #[serde(default)]
-        value: Option<Value>,
-        #[serde(default, rename = "type")]
-        ty: Option<String>,
-        #[serde(default)]
-        unit: Option<String>,
-        #[serde(default)]
-        source: Option<Source>,
-    },
-    RemoveProperty {
-        owner: String,
-        set: String,
-        key: String,
-    },
-    DefinePropertyType {
-        name: String,
-        base: String,
-        #[serde(default)]
-        values: Vec<Value>,
-        #[serde(default)]
-        unit: Option<String>,
-        #[serde(default)]
-        default: Option<Value>,
-        #[serde(default)]
-        description: String,
-    },
-    EditPropertyType {
-        name: String,
-        #[serde(default)]
-        new_name: Option<String>,
-        #[serde(default)]
-        base: Option<String>,
-        #[serde(default)]
-        values: Option<Vec<Value>>,
-        #[serde(default, deserialize_with = "present")]
-        unit: Option<Value>,
-        #[serde(default, deserialize_with = "present")]
-        default: Option<Value>,
-        #[serde(default)]
-        description: Option<String>,
-    },
-    RemovePropertyType {
-        name: String,
-    },
+named_enum! {
+    /// The variants are the commands' names (`set_property`, ...).
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    pub(crate) enum PropertyCommand {
+        "set_property" => SetProperty {
+            owner: String,
+            set: String,
+            key: String,
+            #[serde(default)]
+            value: Option<Value>,
+            #[serde(default, rename = "type")]
+            ty: Option<String>,
+            #[serde(default)]
+            unit: Option<String>,
+            #[serde(default)]
+            source: Option<Source>,
+        },
+        "remove_property" => RemoveProperty {
+            owner: String,
+            set: String,
+            key: String,
+        },
+        "define_property_type" => DefinePropertyType {
+            name: String,
+            base: String,
+            #[serde(default)]
+            values: Vec<Value>,
+            #[serde(default)]
+            unit: Option<String>,
+            #[serde(default)]
+            default: Option<Value>,
+            #[serde(default)]
+            description: String,
+        },
+        "edit_property_type" => EditPropertyType {
+            name: String,
+            #[serde(default)]
+            new_name: Option<String>,
+            #[serde(default)]
+            base: Option<String>,
+            #[serde(default)]
+            values: Option<Vec<Value>>,
+            #[serde(default, deserialize_with = "present")]
+            unit: Option<Value>,
+            #[serde(default, deserialize_with = "present")]
+            default: Option<Value>,
+            #[serde(default)]
+            description: Option<String>,
+        },
+        "remove_property_type" => RemovePropertyType {
+            name: String,
+        },
+    }
 }
 
 /// The `property_sets` query: the levels of a selection.

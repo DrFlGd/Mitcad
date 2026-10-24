@@ -76,6 +76,8 @@ use std::f64::consts::{FRAC_PI_4, PI, TAU};
 
 use serde::{Deserialize, Serialize};
 
+use mitcad_vec3::{add_scaled, combine, unit_div};
+
 use super::bearing_sizes::{self, Fit, short_number};
 use super::extrude::Operation;
 use super::geom_ref::{GeomRef, Want};
@@ -87,7 +89,7 @@ use crate::ids::{BodyUid, EntityUid};
 use crate::kernel::{Axis, BooleanOp, Kernel, RevolveSpec};
 use crate::parameters::ParamId;
 use crate::profile::{
-    ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchFrame, cross, dot,
+    ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchFrame, cross,
 };
 use crate::topo::{RegionKey, SegmentKey};
 use crate::transform::{Instance, PrimitiveShape, PrimitiveSpec, Transform};
@@ -247,6 +249,7 @@ impl<P> PrintableBearingDef<P> {
     pub const TYPE: &'static str = "printable_bearing";
     pub const BASE_NAME: &'static str = "Bearing";
 
+    // Written by hand: the optional values come first, nested parts under prefixes.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -1220,19 +1223,6 @@ impl Placement {
     }
 }
 
-fn add(a: [f64; 3], b: [f64; 3], s: f64) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] + b[i] * s)
-}
-
-fn combine(a: [f64; 3], sa: f64, b: [f64; 3], sb: f64) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] * sa + b[i] * sb)
-}
-
-fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
-    let length = dot(v, v).sqrt();
-    (length > 1.0e-12 && length.is_finite()).then(|| v.map(|x| x / length))
-}
-
 /// An x axis across `z`: z x X, or z x Y for z near X.
 fn across(z: [f64; 3]) -> [f64; 3] {
     let other = if z[0].abs() < 0.9 {
@@ -1240,7 +1230,7 @@ fn across(z: [f64; 3]) -> [f64; 3] {
     } else {
         [0.0, 1.0, 0.0]
     };
-    unit(cross(z, other)).unwrap_or([1.0, 0.0, 0.0])
+    unit_div(cross(z, other)).unwrap_or([1.0, 0.0, 0.0])
 }
 
 /// The values, the placement and the groove's body, face and shape.
@@ -1290,13 +1280,13 @@ fn placement<K: Kernel>(
             radius: cylinder.radius,
             internal: cylinder.internal,
         }))?;
-        let n = unit(cylinder.axis.direction).ok_or("the face's axis has no direction")?;
+        let n = unit_div(cylinder.axis.direction).ok_or("the face's axis has no direction")?;
         let start = bearing
             .offset
             .unwrap_or((cylinder.length - layout.width) / 2.0);
         let x = across(n);
         let frame = SketchFrame {
-            origin: add(cylinder.axis.origin, n, start),
+            origin: add_scaled(cylinder.axis.origin, n, start),
             x_axis: x,
             y_axis: cross(n, x),
         };
@@ -1548,7 +1538,7 @@ fn bodies<K: Kernel>(
     let rp = layout.pitch_radius;
     let first = match layout.element {
         Element::Airsoft => {
-            let centre = add(add(o, u, rp), n, layout.middle());
+            let centre = add_scaled(add_scaled(o, u, rp), n, layout.middle());
             ctx.kernel
                 .primitive(&PrimitiveSpec {
                     feature: ctx.uid,
@@ -1564,7 +1554,7 @@ fn bodies<K: Kernel>(
                 .map_err(|e| e.to_string())?
         }
         _ => {
-            let centre = add(o, u, rp);
+            let centre = add_scaled(o, u, rp);
             let start = layout
                 .section
                 .last()
@@ -1628,7 +1618,7 @@ fn bodies<K: Kernel>(
                 .primitive(&PrimitiveSpec {
                     feature: ctx.uid,
                     frame: SketchFrame {
-                        origin: add(add(o, u, rp), n, layout.middle()),
+                        origin: add_scaled(add_scaled(o, u, rp), n, layout.middle()),
                         x_axis: u,
                         y_axis: v,
                     },
@@ -1823,7 +1813,7 @@ fn mount_frames(at: &Placement, width: f64) -> [(&'static str, SketchFrame); 3] 
         (
             MOUNTS[2],
             SketchFrame {
-                origin: add(f.origin, n, width),
+                origin: add_scaled(f.origin, n, width),
                 ..f
             },
         ),

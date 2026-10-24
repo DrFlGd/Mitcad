@@ -105,6 +105,7 @@ pub struct ConstraintRow<P = ParamId> {
 }
 
 impl<P> ConstraintRow<P> {
+    // Written by hand: the slots take the row's index (`rows.0.offset`).
     fn map_params<Q, E>(
         &self,
         index: usize,
@@ -242,6 +243,7 @@ impl<P> ConstraintSetDef<P> {
     pub const TYPE: &'static str = "constraint_set";
     pub const BASE_NAME: &'static str = "Constraint";
 
+    // Written by hand: each row maps under its index.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

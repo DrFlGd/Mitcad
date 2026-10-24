@@ -5,7 +5,7 @@
 //!
 //! [`mapped_regions`] maps them onto Mitcad's regions of the sketch, so
 //! that the import tries those regions first and the history's guesses
-//! after them (*What the history settles* in the README). It is a function
+//! after them (*What the history settles* in `docs/f3d-history.md`). It is a function
 //! of its own so that a better mapping can replace it.
 //!
 //! The rule *(found on the learning dump of the private corpora: it gives

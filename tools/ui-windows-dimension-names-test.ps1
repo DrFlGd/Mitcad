@@ -20,10 +20,11 @@
 #      k7 with its reference d3).
 #   5. Edit Extrude1: its distance field is labelled "Distance (d4)", its
 #      tooltip says what d4 is (mitcad#250); "depth = 12" renames it.
-#   6. Edit Extrude2 (mitcad#250): its field's tooltip; with the field
-#      taking the keyboard, a click on the sketch's width dimension inserts
-#      width, one on Extrude1's distance label depth, one on Fillet1's
-#      radius label (its set's value) d5; the tooltip follows.
+#   6. Edit Extrude2 (mitcad#250): its field's tooltip; no labels while the
+#      field has the keyboard only because the panel opened (mitcad#587); a
+#      click into it labels the sketch's dimensions, and only those; a
+#      click on the width dimension inserts width, depth and d5 are typed
+#      by name; the tooltip follows.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-dimension-names-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -128,19 +129,28 @@ Ui-Step 'edit Extrude1 again'            { Ui-DoubleClickLogged 'Timeline Extrud
 Ui-ExpectNew 'Panel Extrude label: Distance (depth)' 'd4 renamed to depth' 30
 Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
 
-Write-Host '--- Names picked from the view into a feature panel''s field (mitcad#250)'
+Write-Host '--- Names picked from the view into a feature panel''s field (mitcad#250, mitcad#587)'
 Ui-Mark
 Ui-Step 'edit Extrude2 (double-click)'   { Ui-DoubleClickLogged 'Timeline Extrude2' }
 Ui-ExpectNew 'Editing F4 with Extrude' 'the second extrude opens for editing' 30
 Ui-ExpectNew 'Panel Extrude label: Distance (d6)' 'its distance field names d6'
 Ui-ExpectNew 'Panel Extrude tooltip distance: d6 = -4' 'its tooltip says what d6 is'
 Ui-ExpectNew '(Extrude2 distance)' 'with its comment'
-# The field has the keyboard (the panel gave it its first value's field, or
-# the click below does).
-Ui-Step 'type 2* into the distance'      { Ui-TypeIn 'Panel Extrude input distance' '2*' }
+# The panel gave its first value's field the keyboard as it opened: no
+# labels until the field is clicked or typed in (mitcad#587).
+if (Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.Contains('Parameter labels for Extrude:') }) {
+  Ui-Fail 'the view showed parameter labels as the panel opened'
+}
+Write-Host 'ok   no labels as the panel opened'
+Ui-Mark
+Ui-Step 'click into the distance'        { Ui-ClickLogged 'Panel Extrude input distance' }
+Ui-ExpectNew 'Parameter labels for Extrude: Sketch1 k5 width' 'the click showed the names to pick'
 Ui-ExpectNew 'Parameter label Sketch1 k5 width at' 'the shown sketch''s dimensions are labelled'
-Ui-ExpectNew 'Parameter label Extrude1 distance depth at' 'and so is Extrude1''s distance'
-Ui-ExpectNew 'Parameter label Fillet1 sets.0.radius d5 at' 'and Fillet1''s radius, a value of its edge set'
+if (Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_ -match 'Parameter label (Extrude1|Fillet1) ' }) {
+  Ui-Fail 'an earlier feature''s value was labelled (only sketch dimensions, mitcad#587)'
+}
+Write-Host 'ok   only the sketch''s dimensions are labelled'
+Ui-Step 'type 2* into the distance'      { Ui-TypeIn 'Panel Extrude input distance' '2*' }
 Ui-ExpectNew 'Extrude Distance: 2*' 'the typed text evaluated'
 Ui-Mark
 Ui-Step 'click the width dimension'      { Ui-ClickLogged 'Parameter label Sketch1 k5 width' }
@@ -148,18 +158,8 @@ Ui-ExpectNew 'Parameter label picked: width (Sketch1 k5)' 'the width''s label pi
 Ui-ExpectNew 'Panel Extrude input distance: inserted width, now 2*width' 'width inserted into the field'
 Ui-ExpectNew 'Extrude Distance: 2*width = 100' 'the distance follows the width'
 Ui-Mark
-Ui-Step 'type +'                         { Ui-Type '+' }
-Ui-ExpectNew 'Extrude Distance: 2*width+' 'the field kept the keyboard'
-Ui-Step 'click Extrude1''s distance'     { Ui-ClickLogged 'Parameter label Extrude1 distance depth' }
-Ui-ExpectNew 'Parameter label picked: depth (Extrude1 distance)' 'Extrude1''s value label picked'
-Ui-ExpectNew 'Panel Extrude input distance: inserted depth, now 2*width+depth' 'depth inserted into the field'
-Ui-ExpectNew 'Extrude Distance: 2*width+depth = 112' 'the distance follows both'
-Ui-Mark
-Ui-Step 'type +'                         { Ui-Type '+' }
-Ui-ExpectNew 'Extrude Distance: 2*width+depth+' 'the field kept the keyboard again'
-Ui-Step 'click Fillet1''s radius'        { Ui-ClickLogged 'Parameter label Fillet1 sets.0.radius d5' }
-Ui-ExpectNew 'Parameter label picked: d5 (Fillet1 sets.0.radius)' 'the fillet set''s radius label picked'
-Ui-ExpectNew 'Panel Extrude input distance: inserted d5, now 2*width+depth+d5' 'd5 inserted into the field'
+# The features' values are used by their names, typed.
+Ui-Step 'type +depth+d5'                 { Ui-Type '+depth+d5' }
 Ui-ExpectNew 'Extrude Distance: 2*width+depth+d5 = 115' 'the distance follows all three'
 Ui-ExpectNew 'Panel Extrude tooltip distance: d6 = 2*width+depth+d5' 'the tooltip shows the expression'
 Ui-ExpectNew '115 mm (Extrude2 distance)' 'with its value and comment'

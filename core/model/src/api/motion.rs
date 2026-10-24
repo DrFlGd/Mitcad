@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::ApiError;
+use super::dispatch::named_enum;
 use crate::contact::{ContactBody, ContactHit, ContactPairs};
 use crate::document::{Document, JointValues, MotionOutcome};
 use crate::features::{FeatureDef, OccurrencePath, ValueInput};
@@ -27,84 +28,73 @@ pub(crate) struct KeyInput {
     points: Vec<(f64, ValueInput)>,
 }
 
-/// The variants are the commands' names (`add_motion_study`, ...).
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum MotionCommand {
-    AddMotionStudy {
-        #[serde(default)]
-        name: Option<String>,
-        #[serde(default)]
-        steps: Option<u32>,
-        #[serde(default)]
-        keys: Vec<KeyInput>,
-    },
-    EditMotionStudy {
-        name: String,
-        #[serde(default)]
-        new_name: Option<String>,
-        #[serde(default)]
-        steps: Option<u32>,
-        #[serde(default)]
-        keys: Option<Vec<KeyInput>>,
-    },
-    DeleteMotionStudy {
-        name: String,
-    },
-    /// Add Key: a joint's motion at a step, its value where the joint is
-    /// when none is given.
-    SetStudyKey {
-        study: String,
-        joint: String,
-        motion: Motion,
-        step: f64,
-        #[serde(default)]
-        value: Option<ValueInput>,
-    },
-    RemoveStudyKey {
-        study: String,
-        joint: String,
-        motion: Motion,
-        #[serde(default)]
-        step: Option<f64>,
-    },
-    PlayStudy {
-        study: String,
-        step: f64,
-    },
-    AddContactSet {
-        #[serde(default)]
-        name: Option<String>,
-        occurrences: Vec<String>,
-        #[serde(default)]
-        suppressed: bool,
-    },
-    EditContactSet {
-        name: String,
-        #[serde(default)]
-        new_name: Option<String>,
-        #[serde(default)]
-        occurrences: Option<Vec<String>>,
-        #[serde(default)]
-        suppressed: Option<bool>,
-    },
-    DeleteContactSet {
-        name: String,
-    },
+named_enum! {
+    /// The variants are the commands' names (`add_motion_study`, ...).
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    pub(crate) enum MotionCommand {
+        "add_motion_study" => AddMotionStudy {
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            steps: Option<u32>,
+            #[serde(default)]
+            keys: Vec<KeyInput>,
+        },
+        "edit_motion_study" => EditMotionStudy {
+            name: String,
+            #[serde(default)]
+            new_name: Option<String>,
+            #[serde(default)]
+            steps: Option<u32>,
+            #[serde(default)]
+            keys: Option<Vec<KeyInput>>,
+        },
+        "delete_motion_study" => DeleteMotionStudy {
+            name: String,
+        },
+        /// Add Key: a joint's motion at a step, its value where the joint is
+        /// when none is given.
+        "set_study_key" => SetStudyKey {
+            study: String,
+            joint: String,
+            motion: Motion,
+            step: f64,
+            #[serde(default)]
+            value: Option<ValueInput>,
+        },
+        "remove_study_key" => RemoveStudyKey {
+            study: String,
+            joint: String,
+            motion: Motion,
+            #[serde(default)]
+            step: Option<f64>,
+        },
+        "play_study" => PlayStudy {
+            study: String,
+            step: f64,
+        },
+        "add_contact_set" => AddContactSet {
+            #[serde(default)]
+            name: Option<String>,
+            occurrences: Vec<String>,
+            #[serde(default)]
+            suppressed: bool,
+        },
+        "edit_contact_set" => EditContactSet {
+            name: String,
+            #[serde(default)]
+            new_name: Option<String>,
+            #[serde(default)]
+            occurrences: Option<Vec<String>>,
+            #[serde(default)]
+            suppressed: Option<bool>,
+        },
+        "delete_contact_set" => DeleteContactSet {
+            name: String,
+        },
+    }
 }
-
-/// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 9] = [
-    "add_motion_study",
-    "edit_motion_study",
-    "delete_motion_study",
-    "set_study_key",
-    "remove_study_key",
-    "play_study",
-    "add_contact_set",
-    "edit_contact_set",
-    "delete_contact_set",
-];
 
 /// The `study_values` query: the keyed values of a study at a step.
 #[derive(Debug, Deserialize)]

@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::{add_faces, check_faces, kernel_error, require_faces};
+use super::mapping::map_params;
 use super::moves::MoveSpec;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -31,15 +32,12 @@ impl<P> MoveFaceDef<P> {
     pub const TYPE: &'static str = "move_face";
     pub const BASE_NAME: &'static str = "MoveFace";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<MoveFaceDef<Q>, E> {
-        Ok(MoveFaceDef {
-            body: self.body,
-            faces: self.faces.clone(),
-            transform: self.transform.map_params(f)?,
-        })
+    map_params! {
+        MoveFaceDef {
+            body: copy,
+            faces: clone,
+            transform: map,
+        }
     }
 }
 

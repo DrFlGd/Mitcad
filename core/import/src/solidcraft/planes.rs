@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use super::Importer;
 use crate::geom::{add, cross, dot, norm, scale, sub, unit};
 
-pub(crate) type Vec3 = [f64; 3];
+pub(crate) use mitcad_vec3::Vec3;
 
 /// A frame: origin and unit axes (normal x × y), component coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]

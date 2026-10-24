@@ -12,6 +12,7 @@ use mitcad_solver::{
     BodyId, JointId, JointMotion, Pose, RigidJoint, RigidOptions, RigidSystem, SolveStatus,
     motion_pose,
 };
+use mitcad_vec3::distance as dist;
 
 type V = [f64; 3];
 
@@ -64,10 +65,6 @@ fn near(a: V, b: V, tol: f64) -> bool {
 
 fn assert_near(a: V, b: V) {
     assert!(near(a, b, 1e-8), "{a:?} != {b:?}");
-}
-
-fn dist(a: V, b: V) -> f64 {
-    (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
 }
 
 /// Where a point given at the body's start is now.

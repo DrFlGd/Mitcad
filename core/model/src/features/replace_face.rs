@@ -15,6 +15,7 @@ use super::face_refs::{
     add_faces, check_faces, check_tool, kernel_error, map_offset, require_faces, resolve_tool,
 };
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::pattern::none;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -50,17 +51,14 @@ impl<P> ReplaceFaceDef<P> {
     pub const TYPE: &'static str = "replace_face";
     pub const BASE_NAME: &'static str = "ReplaceFace";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<ReplaceFaceDef<Q>, E> {
-        Ok(ReplaceFaceDef {
-            body: self.body,
-            faces: self.faces.clone(),
-            target: self.target.clone(),
-            offset: map_offset(&self.offset, f)?,
-            tangent_chain: self.tangent_chain,
-        })
+    map_params! {
+        ReplaceFaceDef {
+            body: copy,
+            faces: clone,
+            target: clone,
+            offset: with(map_offset),
+            tangent_chain: copy,
+        }
     }
 }
 

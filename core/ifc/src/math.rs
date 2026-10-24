@@ -10,39 +10,10 @@ pub const IDENTITY: Matrix = [
     [0.0, 0.0, 1.0, 0.0],
 ];
 
-pub fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-pub fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-pub fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-
-pub fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-pub fn length(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
-}
-
-/// The unit vector of `a`, or None for a zero (or not finite) vector.
-pub fn normalize(a: [f64; 3]) -> Option<[f64; 3]> {
-    let l = length(a);
-    (l > 1e-12 && l.is_finite()).then(|| scale(a, 1.0 / l))
-}
+// The vector helpers, shared with the model and the other readers; `length`
+// and `normalize` (the unit vector, None for a zero or not finite one) are
+// this module's names for `norm` and `unit`.
+pub use mitcad_vec3::{add, cross, dot, norm as length, scale, sub, unit as normalize};
 
 /// A frame from an origin, a z direction and a direction the x axis is
 /// taken from (projected at right angles to z), as IFC's axis placements

@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 mitcad-solver = { path = "../solver" }
+# Vector helpers on [f64; 3], shared with the solver and the readers.
+mitcad-vec3 = { path = "../vec3" }
 serde.workspace = true
 serde_json.workspace = true
 # Imported bodies and sketch export (data exchange).

@@ -482,59 +482,31 @@ pub fn external_query_allowed(name: &str) -> bool {
 mod tests {
     use std::collections::BTreeSet;
 
-    use serde::Deserialize;
     use serde_json::json;
 
     use super::ApiClass::{FileIo, Internal, Model, Remote};
     use super::*;
+    use crate::document::Document;
+    use crate::testing::MockKernel;
 
-    /// The names of an internally tagged enum's variants, as serde lists
-    /// them when a tag is unknown.
-    fn variants<T: for<'de> Deserialize<'de>>(tag: &str) -> Vec<String> {
-        let message = match serde_json::from_value::<T>(json!({tag: "\u{1}unknown"})) {
-            Ok(_) => panic!("an unknown {tag} was accepted"),
-            Err(error) => error.to_string(),
-        };
-        let (_, expected) = message
-            .split_once("expected ")
-            .unwrap_or_else(|| panic!("no variants in {message}"));
-        let names: Vec<String> = expected
-            .split('`')
-            .skip(1)
-            .step_by(2)
-            .map(str::to_owned)
-            .collect();
-        assert!(names.len() > 3, "{message}");
-        names
-    }
-
-    /// Every command the API runs, by name.
+    /// Every command the API runs, by name: the document's own and those
+    /// of every family the dispatch sends commands to (mitcad#585).
     fn commands() -> BTreeSet<String> {
-        let mut names: BTreeSet<String> =
-            variants::<crate::api::Command>("cmd").into_iter().collect();
-        names.extend(variants::<crate::api::sketch::SketchCommand>("cmd"));
-        for list in [
-            &crate::api::components::COMMANDS[..],
-            &crate::api::joints::COMMANDS[..],
-            &crate::api::libraries::COMMANDS[..],
-            &crate::api::move_features::COMMANDS[..],
-            &crate::api::policy::COMMANDS[..],
-            &crate::api::build::COMMANDS[..],
-            &crate::api::motion::COMMANDS[..],
-            // Gears (mitcad#472).
-            &crate::api::gears::COMMANDS[..],
-            // Typed property sets (mitcad#496).
-            &crate::api::properties::COMMANDS[..],
-            // Reorient Design (mitcad#502).
-            &crate::api::reorient::COMMANDS[..],
-        ] {
-            names.extend(list.iter().map(|name| (*name).to_owned()));
+        let mut names: BTreeSet<String> = crate::api::Command::NAMES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        for family in Document::<MockKernel>::command_families() {
+            names.extend(family.names.iter().map(|name| (*name).to_owned()));
         }
         names
     }
 
     fn queries() -> BTreeSet<String> {
-        variants::<crate::api::Query>("query").into_iter().collect()
+        crate::api::Query::NAMES
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
     }
 
     #[test]

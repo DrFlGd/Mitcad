@@ -14,6 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::geom_ref::GeomRef;
+use super::mapping::map_params;
 use super::pattern::{
     ComputeOption, PatternObjects, ScaleRule, ScaleSpec, active, add_scale_references,
     check_options, check_scale_values, check_suppressed, is_adjust, map_scales, none, quantity,
@@ -62,22 +63,19 @@ impl<P> ScalePatternDef<P> {
     pub const TYPE: &'static str = "scale_pattern";
     pub const BASE_NAME: &'static str = "ScalePattern";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<ScalePatternDef<Q>, E> {
-        Ok(ScalePatternDef {
-            objects: self.objects.clone(),
-            quantity: f("quantity", &self.quantity)?,
-            scale: f("scale", &self.scale)?,
-            compute: self.compute,
-            original_bodies: self.original_bodies,
-            combine: self.combine,
-            suppressed_elements: self.suppressed_elements.clone(),
-            scales: map_scales(&self.scales, f)?,
-            scale_center: self.scale_center.clone(),
-            skipped_copies: self.skipped_copies.clone(),
-        })
+    map_params! {
+        ScalePatternDef {
+            objects: clone,
+            quantity: param,
+            scale: param,
+            compute: copy,
+            original_bodies: copy,
+            combine: copy,
+            suppressed_elements: clone,
+            scales: with(map_scales),
+            scale_center: clone,
+            skipped_copies: clone,
+        }
     }
 }
 

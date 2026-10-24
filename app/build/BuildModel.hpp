@@ -26,7 +26,6 @@ namespace mitcad::build {
 
 // --- Components and occurrence paths (uids from the root, "O1/O4")
 
-QString componentName(const QString& uid, const CommandContext& context);
 // Where a path places its component in the design; identity for "".
 std::optional<gp_Trsf> worldOf(const QString& path, const CommandContext& context);
 // The component a path ends in ("" the root's).

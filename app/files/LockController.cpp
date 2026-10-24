@@ -58,7 +58,6 @@ int scaledMs(double seconds) {
   return static_cast<int>(std::clamp(std::lround(seconds * 1000.0 / timeScale()), 50L, 24L * 3600L * 1000L));
 }
 
-QString str(const QJsonObject& object, const char* key) { return object.value(QLatin1String(key)).toString(); }
 QJsonObject obj(const QJsonObject& object, const char* key) { return object.value(QLatin1String(key)).toObject(); }
 
 QString ownerName(const QJsonObject& lock) {

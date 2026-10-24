@@ -1332,7 +1332,7 @@ contract, with explicit errors for undecoded fields.
 
 Implementation (mitcad#211, first part): the decoders write sheet items
 (`core/import/SCHEMA.md`, *Sheet metal*) and the import replays them
-(`core/import/README.md`, *Sheet metal*; the `.ipt` records in
+(`core/import/docs/f3d-sheet-metal.md`, *Sheet metal*; the `.ipt` records in
 `core/ipt/README.md`, *Sheet metal*): `.ipt` new-body faces with the
 style's rules, flanges on one edge and cuts through the sheet; `.f3d` base
 flanges with the design's rule and edge flanges on one edge at the inside

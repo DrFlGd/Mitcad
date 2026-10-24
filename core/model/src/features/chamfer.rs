@@ -171,6 +171,7 @@ impl<P> ChamferDef<P> {
 
     /// Slots: `size.distance` (...) for the first set, `sets[i].size.distance`
     /// for the others.
+    // Written by hand: each set and size kind has slots of its own (above).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-3mf"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "mitcad-zip",
  "roxmltree",
@@ -1500,27 +1500,32 @@ dependencies = [
 
 [[package]]
 name = "mitcad-cfb"
-version = "0.25.0"
+version = "0.26.0"
 
 [[package]]
 name = "mitcad-dwg"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "mitcad-dxf",
  "mitcad-f3d",
+ "mitcad-vec3",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "mitcad-dxf"
-version = "0.25.0"
+version = "0.26.0"
+dependencies = [
+ "mitcad-vec3",
+]
 
 [[package]]
 name = "mitcad-f3d"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "mitcad-model",
+ "mitcad-vec3",
  "mitcad-zip",
  "serde",
  "serde_json",
@@ -1528,7 +1533,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-ffi"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "cxx",
  "mitcad-dwg",
@@ -1547,8 +1552,9 @@ dependencies = [
 
 [[package]]
 name = "mitcad-freecad"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
+ "mitcad-vec3",
  "mitcad-zip",
  "roxmltree",
  "serde",
@@ -1557,8 +1563,9 @@ dependencies = [
 
 [[package]]
 name = "mitcad-ifc"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
+ "mitcad-vec3",
  "mitcad-zip",
  "serde",
  "serde_json",
@@ -1566,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-import"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "mitcad-f3d",
  "mitcad-freecad",
@@ -1574,6 +1581,7 @@ dependencies = [
  "mitcad-model",
  "mitcad-rvt",
  "mitcad-solidcraft",
+ "mitcad-vec3",
  "mitcad-zip",
  "serde",
  "serde_json",
@@ -1581,13 +1589,14 @@ dependencies = [
 
 [[package]]
 name = "mitcad-ipt"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "mitcad-cfb",
  "mitcad-f3d",
  "mitcad-import",
  "mitcad-model",
+ "mitcad-vec3",
  "ruzstd",
  "serde",
  "serde_json",
@@ -1595,14 +1604,14 @@ dependencies = [
 
 [[package]]
 name = "mitcad-mcp"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "mitcad-model"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "harfrust",
  "miniz_oxide 0.8.9",
@@ -1610,6 +1619,7 @@ dependencies = [
  "mitcad-dxf",
  "mitcad-solver",
  "mitcad-usdz",
+ "mitcad-vec3",
  "qrcode",
  "roxmltree",
  "rqrr",
@@ -1623,17 +1633,18 @@ dependencies = [
 
 [[package]]
 name = "mitcad-rvt"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "mitcad-cfb",
+ "mitcad-vec3",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "mitcad-solidcraft"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "mitcad-zip",
  "serde",
@@ -1642,11 +1653,14 @@ dependencies = [
 
 [[package]]
 name = "mitcad-solver"
-version = "0.25.0"
+version = "0.26.0"
+dependencies = [
+ "mitcad-vec3",
+]
 
 [[package]]
 name = "mitcad-update"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "ed25519-dalek",
  "semver",
@@ -1657,14 +1671,14 @@ dependencies = [
 
 [[package]]
 name = "mitcad-usdz"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "mitcad-zip",
 ]
 
 [[package]]
 name = "mitcad-vcs"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "gix",
  "libc",
@@ -1676,8 +1690,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "mitcad-vec3"
+version = "0.26.0"
+
+[[package]]
 name = "mitcad-zip"
-version = "0.25.0"
+version = "0.26.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "ruzstd",

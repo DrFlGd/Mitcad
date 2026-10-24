@@ -5,15 +5,11 @@
 //! the face's sketch curves as boundary identities (the trim's lineage); it
 //! has no panel identity of its own, since a coplanar join leaves no seam.
 
+use mitcad_vec3::sub;
+
 use super::*;
 use crate::features::sheet::SheetFaceDef;
 use crate::profile::dot;
-
-type V3 = [f64; 3];
-
-fn sub(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
 
 pub(crate) fn join_face<K: Kernel>(
     d: &SheetFaceDef,

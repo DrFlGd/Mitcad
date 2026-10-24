@@ -15,14 +15,17 @@ use serde::{Deserialize, Serialize};
 
 use super::bodies::{BodySet, apply_tool, boolean_op, verb};
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, Operation, References,
     ToolUse, is_false,
 };
+use mitcad_vec3::{add, scale as scaled};
+
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
-use crate::transform::{PrimitiveShape, PrimitiveSpec, Transform, add, scaled};
+use crate::transform::{PrimitiveShape, PrimitiveSpec, Transform};
 
 /// Where a torus lies relative to its diameter (Position).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,20 +113,17 @@ impl<P> BoxDef<P> {
     pub const TYPE: &'static str = "box";
     pub const BASE_NAME: &'static str = "Box";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<BoxDef<Q>, E> {
-        Ok(BoxDef {
-            plane: self.plane.clone(),
-            corner: self.corner,
-            length: f("length", &self.length)?,
-            width: f("width", &self.width)?,
-            height: f("height", &self.height)?,
-            symmetric: self.symmetric,
-            operation: self.operation,
-            participants: self.participants.clone(),
-        })
+    map_params! {
+        BoxDef {
+            plane: clone,
+            corner: copy,
+            length: param,
+            width: param,
+            height: param,
+            symmetric: copy,
+            operation: copy,
+            participants: clone,
+        }
     }
 }
 
@@ -131,19 +131,16 @@ impl<P> CylinderDef<P> {
     pub const TYPE: &'static str = "cylinder";
     pub const BASE_NAME: &'static str = "Cylinder";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<CylinderDef<Q>, E> {
-        Ok(CylinderDef {
-            plane: self.plane.clone(),
-            center: self.center,
-            diameter: f("diameter", &self.diameter)?,
-            height: f("height", &self.height)?,
-            symmetric: self.symmetric,
-            operation: self.operation,
-            participants: self.participants.clone(),
-        })
+    map_params! {
+        CylinderDef {
+            plane: clone,
+            center: copy,
+            diameter: param,
+            height: param,
+            symmetric: copy,
+            operation: copy,
+            participants: clone,
+        }
     }
 }
 
@@ -151,17 +148,14 @@ impl<P> SphereDef<P> {
     pub const TYPE: &'static str = "sphere";
     pub const BASE_NAME: &'static str = "Sphere";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SphereDef<Q>, E> {
-        Ok(SphereDef {
-            plane: self.plane.clone(),
-            center: self.center,
-            diameter: f("diameter", &self.diameter)?,
-            operation: self.operation,
-            participants: self.participants.clone(),
-        })
+    map_params! {
+        SphereDef {
+            plane: clone,
+            center: copy,
+            diameter: param,
+            operation: copy,
+            participants: clone,
+        }
     }
 }
 
@@ -169,19 +163,16 @@ impl<P> TorusDef<P> {
     pub const TYPE: &'static str = "torus";
     pub const BASE_NAME: &'static str = "Torus";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<TorusDef<Q>, E> {
-        Ok(TorusDef {
-            plane: self.plane.clone(),
-            center: self.center,
-            diameter: f("diameter", &self.diameter)?,
-            section_diameter: f("section_diameter", &self.section_diameter)?,
-            position: self.position,
-            operation: self.operation,
-            participants: self.participants.clone(),
-        })
+    map_params! {
+        TorusDef {
+            plane: clone,
+            center: copy,
+            diameter: param,
+            section_diameter: param,
+            position: copy,
+            operation: copy,
+            participants: clone,
+        }
     }
 }
 

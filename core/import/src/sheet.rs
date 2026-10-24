@@ -15,6 +15,7 @@ use mitcad_f3d::design::ir::{Reference, TimelineItem};
 use mitcad_model::FeatureUid;
 use mitcad_model::features::FeatureDef;
 use mitcad_model::sheet::SheetReferenceSide;
+use mitcad_vec3::{add, cross, dot, norm, sub, unit_div};
 use serde_json::{Map, Value, json};
 
 use crate::report::InputProvenance;
@@ -23,10 +24,6 @@ use crate::{Candidate, Importer};
 /// A reference of the sheet item's JSON (a parameter, a profile).
 fn reference(v: &Value) -> Option<Reference> {
     v.as_object().map(|m| Reference::from_map(m.clone()))
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 fn vector(v: &Value) -> Option<[f64; 3]> {
@@ -357,7 +354,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let direction = sheet
             .get("direction")
             .and_then(vector)
-            .and_then(unit)
+            .and_then(unit_div)
             .ok_or("its direction was not decoded")?;
         let along = dot(direction, frame.normal());
         if along.abs() < 1.0 - 1e-6 {
@@ -379,7 +376,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 ) else {
                     continue;
                 };
-                let n = unit(cross(x, y)).ok_or("a panel without a plane")?;
+                let n = unit_div(cross(x, y)).ok_or("a panel without a plane")?;
                 let q = dot(sub(frame.origin, o), n).abs();
                 if dot(n, frame.normal()).abs() > 1.0 - 1e-9 && (q <= 1e-4 || (q - t).abs() <= 1e-4)
                 {
@@ -667,7 +664,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let sketch_uid = info.uid.to_string();
         // The face's material: from its sketch's plane along the decoded
         // direction (against it for side 1), as thick as the sheet.
-        let direction = unit(material_direction(sheet)?).ok_or("no material direction")?;
+        let direction = unit_div(material_direction(sheet)?).ok_or("no material direction")?;
         let along = dot(direction, frame.normal());
         if along.abs() < 1.0 - 1e-6 {
             return Err("its material direction is not normal to its sketch".to_owned());
@@ -1028,7 +1025,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 .iter()
                 .find(|c| c["domain"]["kind"] == "panel" && c["domain"]["id"] == *panel)?;
             let f = &chart["embedding"]["front_frame"];
-            unit(cross(vector(&f["x_axis"])?, vector(&f["y_axis"])?))
+            unit_div(cross(vector(&f["x_axis"])?, vector(&f["y_axis"])?))
         };
         let parallel = match (
             normal(&found[0].0, &found[0].1["panel"]),
@@ -1098,7 +1095,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         else {
             return Err("its double bend's axis and direction were not read".to_owned());
         };
-        let outward = unit(cross(axis, direction))
+        let outward = unit_div(cross(axis, direction))
             .ok_or("its double bend's axis and direction are parallel")?;
         // Each edge's middle, and a point of its panel's material (the mean
         // of its chart's corners).
@@ -1223,7 +1220,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             return Err("its line was not read".to_owned());
         };
         let point = point.map(|x| x * 10.0);
-        let direction = unit(direction).ok_or("its line has no direction")?;
+        let direction = unit_div(direction).ok_or("its line has no direction")?;
         let index = sheet["sketch"]["timeline_index"]
             .as_i64()
             .ok_or("its sketch was not decoded")?;
@@ -1414,7 +1411,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let (from, to) = (from.map(|c| c * 10.0), to.map(|c| c * 10.0));
         // (The ends lie on either surface of the panel: compared in its
         // plane.)
-        let n = unit(cross(ax, ay)).ok_or("its panel has no plane")?;
+        let n = unit_div(cross(ax, ay)).ok_or("its panel has no plane")?;
         let near = |p: [f64; 3], q: [f64; 3]| {
             let d = sub(p, q);
             norm(sub(d, n.map(|c| c * dot(d, n)))) <= 1e-2
@@ -1606,7 +1603,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .iter()
             .map(|p| sub(*p, start))
             .find(|d| norm(*d) > 1e-3)
-            .and_then(unit)
+            .and_then(unit_div)
             .ok_or("its path has no length")?;
         let param_value = |key: &str| -> Option<f64> {
             reference(sheet.get(key)?)
@@ -1745,7 +1742,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         } else {
             add(start, n_inner.map(|c| c * t))
         };
-        let edge_dir = unit(cross(along, n_inner)).ok_or("no edge direction")?;
+        let edge_dir = unit_div(cross(along, n_inner)).ok_or("no edge direction")?;
         let in_section = |p: [f64; 3]| {
             let v = sub(p, inner_start);
             sub(v, edge_dir.map(|c| c * dot(v, edge_dir)))
@@ -1882,31 +1879,6 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         c.note = Some(notes.join("; "));
         Ok(vec![c])
     }
-}
-
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn norm(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
-}
-
-fn unit(a: [f64; 3]) -> Option<[f64; 3]> {
-    let n = norm(a);
-    (n > 1e-12).then(|| a.map(|c| c / n))
 }
 
 /// A length in mm for an expression: at most 12 significant digits.

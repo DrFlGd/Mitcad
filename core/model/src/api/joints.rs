@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::ApiError;
+use super::dispatch::named_enum;
 use crate::assembly::matrix_rows;
 use crate::constraints::{Geo, constraint_fits, fitting_types, measures, resolve_geo};
 use crate::datum::Vec3;
@@ -82,43 +83,45 @@ pub(crate) struct AddAsBuiltJoint {
     component: Option<String>,
 }
 
-/// The variants are the commands' names (`add_joint`, ...).
-#[allow(clippy::enum_variant_names)]
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum JointCommand {
-    AddJoint(Box<AddJoint>),
-    AddAsBuiltJoint(Box<AddAsBuiltJoint>),
-    AddRigidGroup {
-        occurrences: Vec<String>,
-        #[serde(default)]
-        name: Option<String>,
-        #[serde(default)]
-        component: Option<String>,
-    },
-    /// Drives free motions: a value each, null to take it away.
-    DriveJoint {
-        joint: String,
-        values: BTreeMap<Motion, Option<ValueInput>>,
-    },
-    DragOccurrence {
-        occurrence: String,
-        #[serde(default)]
-        point: Option<Vec3>,
-        target: Vec3,
-    },
-    /// A constraint set (mitcad#148): rows of `constraint_set`, their
-    /// occurrences also by names.
-    AddConstraintSet {
-        rows: Vec<Value>,
-        #[serde(default)]
-        name: Option<String>,
-        #[serde(default)]
-        component: Option<String>,
-    },
-    /// A motion link (mitcad#466): joints by uid or name, occurrences of
-    /// picked geometry also by names.
-    AddMotionLink(Box<AddMotionLink>),
+named_enum! {
+    /// The variants are the commands' names (`add_joint`, ...).
+    #[allow(clippy::enum_variant_names)]
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    pub(crate) enum JointCommand {
+        "add_joint" => AddJoint(Box<AddJoint>),
+        "add_as_built_joint" => AddAsBuiltJoint(Box<AddAsBuiltJoint>),
+        "add_rigid_group" => AddRigidGroup {
+            occurrences: Vec<String>,
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            component: Option<String>,
+        },
+        /// Drives free motions: a value each, null to take it away.
+        "drive_joint" => DriveJoint {
+            joint: String,
+            values: BTreeMap<Motion, Option<ValueInput>>,
+        },
+        "drag_occurrence" => DragOccurrence {
+            occurrence: String,
+            #[serde(default)]
+            point: Option<Vec3>,
+            target: Vec3,
+        },
+        /// A constraint set (mitcad#148): rows of `constraint_set`, their
+        /// occurrences also by names.
+        "add_constraint_set" => AddConstraintSet {
+            rows: Vec<Value>,
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            component: Option<String>,
+        },
+        /// A motion link (mitcad#466): joints by uid or name, occurrences of
+        /// picked geometry also by names.
+        "add_motion_link" => AddMotionLink(Box<AddMotionLink>),
+    }
 }
 
 /// A joint's motion in `add_motion_link`: the joint by uid or name.
@@ -164,17 +167,6 @@ pub(crate) struct MotionLinkOffsetQuery {
     #[serde(default)]
     component: Option<String>,
 }
-
-/// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 7] = [
-    "add_joint",
-    "add_as_built_joint",
-    "add_rigid_group",
-    "drive_joint",
-    "drag_occurrence",
-    "add_constraint_set",
-    "add_motion_link",
-];
 
 /// The `joint_dof` query.
 #[derive(Debug, Deserialize)]

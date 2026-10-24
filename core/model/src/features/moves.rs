@@ -9,14 +9,17 @@
 use serde::{Deserialize, Serialize};
 
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     is_false,
 };
+use mitcad_vec3::{scale as scaled, sub};
+
 use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
-use crate::transform::{Instance, Transform, scaled, sub};
+use crate::transform::{Instance, Transform};
 
 /// The motion of a move. Distances in millimetres, angles in radians.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -50,20 +53,18 @@ impl<P> MoveDef<P> {
     pub const TYPE: &'static str = "move";
     pub const BASE_NAME: &'static str = "Move";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<MoveDef<Q>, E> {
-        Ok(MoveDef {
-            bodies: self.bodies.clone(),
-            transform: self.transform.map_params(f)?,
-            copy: self.copy,
-        })
+    map_params! {
+        MoveDef {
+            bodies: clone,
+            transform: map,
+            copy: copy,
+        }
     }
 }
 
 impl<P> MoveSpec<P> {
     /// Converts the value fields (slots `transform.x`, ...).
+    // Written by hand: an enum, its slots by kind.
     pub(crate) fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

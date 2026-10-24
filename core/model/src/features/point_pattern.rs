@@ -8,16 +8,19 @@ use serde::{Deserialize, Serialize};
 
 use super::FeatureEntry;
 use super::geom_ref::{GeomRef, Resolver, Want, resolve_point};
+use super::mapping::map_params;
 use super::pattern::{ComputeOption, Element, PatternObjects, repeat};
 use super::{
     CheckContext, Datum, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput,
     OccurrencePath, PlacementChange, References, SketchOutput,
 };
+use mitcad_vec3::sub;
+
 use crate::assembly::{Assembly, inverse};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
-use crate::transform::{Transform, sub};
+use crate::transform::Transform;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,18 +71,15 @@ impl<P> PointPatternDef<P> {
     pub const TYPE: &'static str = "pattern_at_points";
     pub const BASE_NAME: &'static str = "PatternAtPoints";
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<PointPatternDef<Q>, E> {
-        Ok(PointPatternDef {
-            objects: self.objects.clone(),
-            targets: self.targets.clone(),
-            anchor: self.anchor.clone(),
-            context: self.context.clone(),
-            compute: self.compute,
-            marker: PhantomData,
-        })
+    map_params! {
+        PointPatternDef {
+            objects: clone,
+            targets: clone,
+            anchor: clone,
+            context: clone,
+            compute: copy,
+            marker: phantom,
+        }
     }
 
     pub(crate) fn paths(&self) -> Vec<&OccurrencePath> {

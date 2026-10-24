@@ -19,17 +19,20 @@
 use serde::{Deserialize, Serialize};
 
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::moves::{check_bodies, place_bodies};
 use super::pattern::none;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, is_false,
 };
+use mitcad_vec3::{add, dot, scale as scaled, sub};
+
 use crate::datum::DatumAxis as Axis;
 use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::profile::SketchFrame;
-use crate::transform::{Transform, add, dot, rotation_between, scaled, sub};
+use crate::transform::{Transform, rotation_between};
 
 /// The geometry an alignment moves from or to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -57,20 +60,14 @@ impl<P> AlignDef<P> {
     pub const TYPE: &'static str = "align";
     pub const BASE_NAME: &'static str = "Align";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<AlignDef<Q>, E> {
-        Ok(AlignDef {
-            bodies: self.bodies.clone(),
-            from: self.from.clone(),
-            to: self.to.clone(),
-            flip: self.flip,
-            angle: match &self.angle {
-                Some(angle) => Some(f("angle", angle)?),
-                None => None,
-            },
-        })
+    map_params! {
+        AlignDef {
+            bodies: clone,
+            from: clone,
+            to: clone,
+            flip: copy,
+            angle: option,
+        }
     }
 }
 

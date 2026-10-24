@@ -8,6 +8,8 @@
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use mitcad_vec3::sub;
+
 use super::ApiError;
 use crate::datum::Vec3;
 use crate::document::Document;
@@ -136,10 +138,6 @@ fn threads_of(threads: &Value) -> Vec<ThreadOf> {
             })
         })
         .collect()
-}
-
-fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// Whether a hole lies on a thread's axis (both in the design's

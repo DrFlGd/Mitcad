@@ -39,8 +39,6 @@
 namespace mitcad {
 namespace {
 
-using cmd::str;
-
 const QString kRoot = QStringLiteral("C0");
 const QString kAt = QStringLiteral("at");
 const QString kFrame = QStringLiteral("frame");
@@ -252,9 +250,8 @@ std::vector<PreviewMarker> markersOf(const QJsonObject& report) {
   std::vector<PreviewMarker> markers;
   for (const QJsonValue& value : report.value(QStringLiteral("markers")).toArray()) {
     const QJsonObject entry = value.toObject();
-    const QJsonArray point = entry.value(QStringLiteral("point")).toArray();
-    if (point.size() >= 3) {
-      markers.push_back({str(entry, "label"), gp_Pnt(point[0].toDouble(), point[1].toDouble(), point[2].toDouble())});
+    if (const std::optional<gp_Pnt> point = pointFrom(entry.value(QStringLiteral("point")))) {
+      markers.push_back({str(entry, "label"), *point});
     }
   }
   return markers;

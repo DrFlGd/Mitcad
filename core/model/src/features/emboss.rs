@@ -13,6 +13,7 @@ use super::extrude::{
     Operation, ProfileRef, apply_operation, check_participants, check_profiles, participant_bodies,
     profile_references, profile_regions, profile_set,
 };
+use super::mapping::map_params;
 use super::reference::FaceRef;
 use super::{CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, ToolUse};
 use crate::ids::BodyUid;
@@ -73,17 +74,14 @@ impl<P> EmbossDef<P> {
     pub const TYPE: &'static str = "emboss";
     pub const BASE_NAME: &'static str = "Emboss";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<EmbossDef<Q>, E> {
-        Ok(EmbossDef {
-            profiles: self.profiles.clone(),
-            face: self.face.clone(),
-            depth: f("depth", &self.depth)?,
-            mode: self.mode,
-            participants: self.participants.clone(),
-        })
+    map_params! {
+        EmbossDef {
+            profiles: clone,
+            face: clone,
+            depth: param,
+            mode: copy,
+            participants: clone,
+        }
     }
 
     /// The bodies it works on when none are listed: the face's.

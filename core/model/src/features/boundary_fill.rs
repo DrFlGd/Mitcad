@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use super::bodies::{BodySet, apply_tool, boolean_op, verb};
 use super::extrude::check_participants;
+use super::mapping::map_params;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, Operation, References,
     is_false,
@@ -54,18 +55,15 @@ impl<P> BoundaryFillDef<P> {
     pub const TYPE: &'static str = "boundary_fill";
     pub const BASE_NAME: &'static str = "BoundaryFill";
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<BoundaryFillDef<Q>, E> {
-        Ok(BoundaryFillDef {
-            tools: self.tools.clone(),
-            cells: self.cells.clone(),
-            operation: self.operation,
-            participants: self.participants.clone(),
-            remove_tools: self.remove_tools,
-            values: PhantomData,
-        })
+    map_params! {
+        BoundaryFillDef {
+            tools: clone,
+            cells: clone,
+            operation: copy,
+            participants: clone,
+            remove_tools: copy,
+            values: phantom,
+        }
     }
 }
 

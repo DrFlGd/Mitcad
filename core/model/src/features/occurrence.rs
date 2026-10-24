@@ -18,6 +18,7 @@ use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
 
+use super::mapping::map_params;
 use super::moves::{MoveSpec, check_bodies};
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, PlacementChange,
@@ -48,11 +49,11 @@ impl<P> ComponentFromBodiesDef<P> {
         }
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<ComponentFromBodiesDef<Q>, E> {
-        Ok(ComponentFromBodiesDef::new(self.bodies.clone()))
+    map_params! {
+        ComponentFromBodiesDef {
+            bodies: clone,
+            marker: phantom,
+        }
     }
 }
 
@@ -110,14 +111,11 @@ impl<P> MoveOccurrenceDef<P> {
     /// Named like moves of bodies.
     pub const BASE_NAME: &'static str = "Move";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<MoveOccurrenceDef<Q>, E> {
-        Ok(MoveOccurrenceDef {
-            occurrences: self.occurrences.clone(),
-            transform: self.transform.map_params(f)?,
-        })
+    map_params! {
+        MoveOccurrenceDef {
+            occurrences: clone,
+            transform: map,
+        }
     }
 }
 
@@ -209,11 +207,11 @@ impl<P> CapturePositionDef<P> {
         }
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<CapturePositionDef<Q>, E> {
-        Ok(CapturePositionDef::new(self.positions.clone()))
+    map_params! {
+        CapturePositionDef {
+            positions: clone,
+            marker: phantom,
+        }
     }
 }
 

@@ -51,17 +51,6 @@ constexpr int kDesignRow = 3;
 // The design files' suffix.
 QString suffix() { return QStringLiteral(".mitcad"); }
 
-QString dirOf(const QString& path) {
-  const qsizetype slash = path.lastIndexOf(QLatin1Char('/'));
-  return slash < 0 ? QString() : path.left(slash);
-}
-
-QString lastPart(const QString& path) { return path.section(QLatin1Char('/'), -1); }
-
-QString joinPath(const QString& folder, const QString& name) {
-  return folder.isEmpty() ? name : QStringLiteral("%1/%2").arg(folder, name);
-}
-
 // Whether a project of this kind is offered.
 bool offered(const ProjectRow& row, ProjectPickerOptions::Mode mode) {
   switch (row.kind) {

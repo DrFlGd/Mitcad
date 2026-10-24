@@ -117,7 +117,7 @@ const char* const kUsage = R"(usage:
       history's bodies ahead of the replay (default: the logical cores, at
       most 8; 1: one after another); the import is the same, only faster.
       --learn writes the items the history settled, with their raw records,
-      to <dir> (also MITCAD_IMPORT_LEARN; core/import/README.md).
+      to <dir> (also MITCAD_IMPORT_LEARN; core/import/docs/f3d-learning.md).
       Components of other documents (inserted designs) are imported from
       their documents' files: those of the folder next to the design
       (<design> vN.refs/, with its references.json) and of the folders

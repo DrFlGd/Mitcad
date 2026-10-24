@@ -54,16 +54,19 @@ use super::bodies::{BodySet, apply_tool, apply_tool_strays};
 use super::dressup_copies::{copied_features, is_dressup, repeat_dressup};
 use super::face_refs::UNSUPPORTED;
 use super::geom_ref::{GeomRef, PathChain, PathCurve, PathRef, Want, path_curve};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureDef, FeatureEntry, FeatureInfo,
     FeatureOutput, Operation, References, ToolUse, is_false,
 };
+use mitcad_vec3::{add, cross, dot, scale as scaled, sub};
+
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{BooleanOp, BooleanOutput, BoundingBox, Kernel, KernelError};
 use crate::parameters::ParamId;
 use crate::recompute::Read;
 use crate::topo::FaceName;
-use crate::transform::{Instance, Transform, add, cross, dot, scaled, sub};
+use crate::transform::{Instance, Transform};
 
 /// What a pattern or a mirror repeats (`patternEntityType` in .f3d designs).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -378,6 +381,7 @@ fn is_zero(value: &f64) -> bool {
 }
 
 impl<P> PatternDirection<P> {
+    // Written by hand: the slots take the direction (`direction1.quantity`).
     fn map_params<Q, E>(
         &self,
         prefix: &str,
@@ -396,6 +400,7 @@ impl<P> RectangularPatternDef<P> {
     pub const TYPE: &'static str = "rectangular_pattern";
     pub const BASE_NAME: &'static str = "RectangularPattern";
 
+    // Written by hand: the directions map with their prefixes.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -426,27 +431,24 @@ impl<P> CircularPatternDef<P> {
     pub const TYPE: &'static str = "circular_pattern";
     pub const BASE_NAME: &'static str = "CircularPattern";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<CircularPatternDef<Q>, E> {
-        Ok(CircularPatternDef {
-            objects: self.objects.clone(),
-            axis: self.axis.clone(),
-            quantity: f("quantity", &self.quantity)?,
-            angle: f("angle", &self.angle)?,
-            symmetric: self.symmetric,
-            compute: self.compute,
-            original_bodies: self.original_bodies,
-            scale: map_scale(&self.scale, f)?,
-            scale_groups: map_scale_groups(&self.scale_groups, f)?,
-            combine: self.combine,
-            scale_copies: map_scale_copies(&self.scale_copies, f)?,
-            scales: map_scales(&self.scales, f)?,
-            scale_center: self.scale_center.clone(),
-            skipped_copies: self.skipped_copies.clone(),
-            suppressed_elements: self.suppressed_elements.clone(),
-        })
+    map_params! {
+        CircularPatternDef {
+            objects: clone,
+            axis: clone,
+            quantity: param,
+            angle: param,
+            symmetric: copy,
+            compute: copy,
+            original_bodies: copy,
+            scale: with(map_scale),
+            scale_groups: with(map_scale_groups),
+            combine: copy,
+            scale_copies: with(map_scale_copies),
+            scales: with(map_scales),
+            scale_center: clone,
+            skipped_copies: clone,
+            suppressed_elements: clone,
+        }
     }
 }
 
@@ -454,31 +456,28 @@ impl<P> PathPatternDef<P> {
     pub const TYPE: &'static str = "path_pattern";
     pub const BASE_NAME: &'static str = "PathPattern";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<PathPatternDef<Q>, E> {
-        Ok(PathPatternDef {
-            objects: self.objects.clone(),
-            path: self.path.clone(),
-            quantity: f("quantity", &self.quantity)?,
-            distance: f("distance", &self.distance)?,
-            distance_type: self.distance_type,
-            start: self.start,
-            flip: self.flip,
-            along_path: self.along_path,
-            symmetric: self.symmetric,
-            compute: self.compute,
-            original_bodies: self.original_bodies,
-            scale: map_scale(&self.scale, f)?,
-            scale_groups: map_scale_groups(&self.scale_groups, f)?,
-            combine: self.combine,
-            scale_copies: map_scale_copies(&self.scale_copies, f)?,
-            scales: map_scales(&self.scales, f)?,
-            scale_center: self.scale_center.clone(),
-            skipped_copies: self.skipped_copies.clone(),
-            suppressed_elements: self.suppressed_elements.clone(),
-        })
+    map_params! {
+        PathPatternDef {
+            objects: clone,
+            path: clone,
+            quantity: param,
+            distance: param,
+            distance_type: copy,
+            start: copy,
+            flip: copy,
+            along_path: copy,
+            symmetric: copy,
+            compute: copy,
+            original_bodies: copy,
+            scale: with(map_scale),
+            scale_groups: with(map_scale_groups),
+            combine: copy,
+            scale_copies: with(map_scale_copies),
+            scales: with(map_scales),
+            scale_center: clone,
+            skipped_copies: clone,
+            suppressed_elements: clone,
+        }
     }
 }
 

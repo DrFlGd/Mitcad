@@ -8,5 +8,7 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# No dependencies: the reader and writer are plain Rust.
+# No third-party dependencies: the reader and writer are plain Rust.
 [dependencies]
+# Vector helpers on [f64; 3] (dependency-free).
+mitcad-vec3 = { path = "../vec3" }

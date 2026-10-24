@@ -47,13 +47,14 @@
 
 use std::collections::BTreeMap;
 
+use mitcad_vec3::{add, scale};
 use serde::Serialize;
 
 use crate::params::{self, ParamDef};
 use crate::schema::Schema;
 use crate::walk::{Object, Record, Value};
 
-pub type P3 = [f64; 3];
+pub use mitcad_vec3::Vec3 as P3;
 
 /// A curve in model feet.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -97,14 +98,6 @@ pub enum Curve {
         start: f64,
         end: f64,
     },
-}
-
-fn add(a: P3, b: P3) -> P3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn scale(a: P3, s: f64) -> P3 {
-    [a[0] * s, a[1] * s, a[2] * s]
 }
 
 /// A point moved by a transform (the 3×3 matrix by rows, then the origin).

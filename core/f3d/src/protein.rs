@@ -7,7 +7,7 @@
 //! it is based on) and `AssetData/`, whose `InstanceProperties.bin` holds
 //! the assets' values and `DefinitionIteratorProperties.bin` their
 //! descriptions. Layouts (verified on the appearance variant models, every
-//! record decoding to its exact end; see `core/import/README.md`,
+//! record decoding to its exact end; see `core/import/docs/f3d-appearances.md`,
 //! *Appearances and materials*):
 //!
 //! ```text

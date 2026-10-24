@@ -22,17 +22,15 @@
 //!   not normal to the material make the rebuild differ, and the sheet
 //!   meaning is lost with that reason.
 
+use mitcad_vec3::sub;
+
 use super::folded::{cut::developed_cut, develop::planar_map, mapped_regions, read};
 use super::*;
 use crate::features::{BodyChange, EvalContext, FeatureOutput};
 use crate::kernel::{Curve3, Kernel, KernelError};
 use crate::profile::{SegmentGeometry, dot};
 
-type V3 = [f64; 3];
-
-fn sub(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
+use mitcad_vec3::Vec3 as V3;
 
 /// How close an edge's end must be to the next edge's start in a face's
 /// loop, and a face to a chart's surface (mm).

@@ -10,7 +10,7 @@
 //! component and the one to the sketch's component.
 //!
 //! The file stores neither the face a sketch lies on nor the geometry a
-//! linked curve follows in a form the decoder names (`core/import/README.md`,
+//! linked curve follows in a form the decoder names (`core/import/docs/f3d-learning.md`,
 //! *Sketch curve flags, spline kinds and sketches without a link*): both
 //! are found in the replay by where they are. A face is the sketch's plane
 //! when it is the only planar face of the other components' bodies, seen

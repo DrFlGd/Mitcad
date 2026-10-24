@@ -44,16 +44,6 @@ using EdgeFaces =
 // Below this many faces the ordinary boolean is as quick.
 constexpr int kLocalFaces = 200;
 
-TopoDS_Compound compound_of(const std::vector<TopoDS_Shape>& shapes) {
-  BRep_Builder builder;
-  TopoDS_Compound compound;
-  builder.MakeCompound(compound);
-  for (const TopoDS_Shape& shape : shapes) {
-    builder.Add(compound, shape);
-  }
-  return compound;
-}
-
 std::vector<TopoDS_Shape> sub_shapes(const TopoDS_Shape& shape, TopAbs_ShapeEnum type) {
   std::vector<TopoDS_Shape> found;
   for (TopExp_Explorer it(shape, type); it.More(); it.Next()) {

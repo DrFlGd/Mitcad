@@ -197,11 +197,9 @@ impl FaceRef {
     }
 }
 
-/// The unit vector of `v`; None for a zero vector.
-pub(crate) fn normalized(v: [f64; 3]) -> Option<[f64; 3]> {
-    let length = dot(v, v).sqrt();
-    (length > 1e-12).then(|| v.map(|c| c / length))
-}
+// The unit vector of `v` (each component divided by the length); None for a
+// zero vector.
+pub(crate) use mitcad_vec3::unit_div as normalized;
 
 /// The axis projected into the sketch plane (`isProjectAxis` in .f3d designs).
 pub(crate) fn project_axis(axis: Axis, frame: &SketchFrame) -> Result<Axis, String> {

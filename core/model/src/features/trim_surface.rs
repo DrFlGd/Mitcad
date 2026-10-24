@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::face_refs::{check_tool, kernel_error, map_offset, resolve_tool};
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::path::{self, SketchCurves};
 use super::pattern::none;
 use super::{
@@ -53,18 +54,15 @@ impl<P> TrimSurfaceDef<P> {
     pub const TYPE: &'static str = "trim_surface";
     pub const BASE_NAME: &'static str = "Trim";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<TrimSurfaceDef<Q>, E> {
-        Ok(TrimSurfaceDef {
-            body: self.body,
-            tool: self.tool.clone(),
-            offset: map_offset(&self.offset, f)?,
-            direction: self.direction,
-            extend: self.extend,
-            keep: self.keep.clone(),
-        })
+    map_params! {
+        TrimSurfaceDef {
+            body: copy,
+            tool: clone,
+            offset: with(map_offset),
+            direction: copy,
+            extend: copy,
+            keep: clone,
+        }
     }
 }
 

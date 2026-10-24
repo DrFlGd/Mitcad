@@ -14,12 +14,12 @@
 #     second body; the sketch's light bulb on.
 #   - Edit Extrude1: the distance field's tooltip says what d4 is, as a
 #     sketch dimension's does.
-#   - Edit Extrude2: its tooltip; while its distance field has the keyboard,
-#     the shown sketch's dimensions, Extrude1's distance and Fillet1's
-#     radius (a value of its edge set, a list row) are labelled in the
-#     view; a click on the width's label inserts d1 at the field's cursor,
-#     one on Extrude1's label d4, one on Fillet1's label d5; the tooltip
-#     follows, and OK keeps 2*d1+d4+d5.
+#   - Edit Extrude2: its tooltip; no labels while the distance field has
+#     the keyboard only because the panel opened (mitcad#587); a click into
+#     the field labels the shown sketch's dimensions in the view, and only
+#     those (not Extrude1's or Fillet1's values); a click on the width's
+#     label inserts d1 at the field's cursor, d4 and d5 are typed by name;
+#     the tooltip follows, and OK keeps 2*d1+d4+d5.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-dimension-names-test.sh
@@ -65,37 +65,34 @@ ui_expect_new "Panel Extrude label: Distance (d4)" "the distance field names d4"
 ui_expect_new "Panel Extrude tooltip distance: d4 = 10 mm (Extrude1 distance)" "its tooltip says what d4 is"
 ui_step "cancel (Esc)"                   ui_key Escape
 
-echo "--- Names picked from the view into the field (mitcad#250)"
+echo "--- Names picked from the view into the field (mitcad#250, mitcad#587)"
 ui_mark
 ui_step "edit Extrude2 (double-click)"   ui_double_click_logged "Timeline Extrude2"
 ui_expect_new "Editing F4 with Extrude" "Extrude2 opens for editing" 30
 ui_expect_new "Panel Extrude tooltip distance: d6 = -4" "its tooltip says what d6 is"
 ui_expect_new "(Extrude2 distance)" "with its comment"
-# The field has the keyboard (the panel gives it to the first value's
-# field; the click of ui_type_in does too).
-ui_step "type 2* into the distance"      ui_type_in "Panel Extrude input distance" "2*"
+# The panel gives the first value's field the keyboard as it opens: no
+# labels until the field is clicked or typed in (mitcad#587).
+grep -q "Parameter labels for Extrude:" <(tail -n +$((UI_MARK + 1)) "$UI_LOG") &&
+  ui_fail "the view showed parameter labels as the panel opened"
+echo "ok   no labels as the panel opened"
+ui_mark
+ui_step "click into the distance field"  ui_click_logged "Panel Extrude input distance"
+ui_expect_new "Parameter labels for Extrude: Sketch1 k5 d1" "the click showed the names to pick"
 ui_expect_new "Parameter label Sketch1 k5 d1 at" "the shown sketch's width is labelled"
 ui_expect_new "Parameter label Sketch1 k7 d3 at" "and its driven dimension, by its reference"
-ui_expect_new "Parameter label Extrude1 distance d4 at" "and Extrude1's distance"
-ui_expect_new "Parameter label Fillet1 sets.0.radius d5 at" "and Fillet1's radius, a value of its edge set"
+grep -qE "Parameter label (Extrude1|Fillet1) " <(tail -n +$((UI_MARK + 1)) "$UI_LOG") &&
+  ui_fail "an earlier feature's value was labelled (only sketch dimensions, mitcad#587)"
+echo "ok   only the sketch's dimensions are labelled"
+ui_step "type 2* into the distance"      ui_type_in "Panel Extrude input distance" "2*"
 ui_mark
 ui_step "click the width's label"        ui_click_logged "Parameter label Sketch1 k5 d1"
 ui_expect_new "Parameter label picked: d1 (Sketch1 k5)" "the width's label picked"
 ui_expect_new "Panel Extrude input distance: inserted d1, now 2*d1" "d1 inserted at the cursor"
 ui_expect_new "Extrude Distance: 2*d1 = 80" "the distance follows the width"
 ui_mark
-ui_step "type +"                         xdotool type --delay 40 "+"
-ui_expect_new "Extrude Distance: 2*d1+" "the field kept the keyboard"
-ui_step "click Extrude1's label"         ui_click_logged "Parameter label Extrude1 distance d4"
-ui_expect_new "Parameter label picked: d4 (Extrude1 distance)" "Extrude1's value label picked"
-ui_expect_new "Panel Extrude input distance: inserted d4, now 2*d1+d4" "d4 inserted after it"
-ui_expect_new "Extrude Distance: 2*d1+d4 = 90" "the distance follows both"
-ui_mark
-ui_step "type +"                         xdotool type --delay 40 "+"
-ui_expect_new "Extrude Distance: 2*d1+d4+" "the field kept the keyboard again"
-ui_step "click Fillet1's label"          ui_click_logged "Parameter label Fillet1 sets.0.radius d5"
-ui_expect_new "Parameter label picked: d5 (Fillet1 sets.0.radius)" "the fillet set's radius label picked"
-ui_expect_new "Panel Extrude input distance: inserted d5, now 2*d1+d4+d5" "d5 inserted after it"
+# The features' values are used by their names, typed.
+ui_step "type +d4+d5"                    xdotool type --delay 40 "+d4+d5"
 ui_expect_new "Extrude Distance: 2*d1+d4+d5 = 93" "the distance follows all three"
 ui_expect_new "Panel Extrude tooltip distance: d6 = 2*d1+d4+d5" "the tooltip shows the expression"
 ui_expect_new "93 mm (Extrude2 distance)" "with its value and comment"

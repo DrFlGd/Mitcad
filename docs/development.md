@@ -668,7 +668,7 @@ next to it, `<name>.stp`, within 1e-6 or the limit the folder's
 `references.tsv` gives the file), `core/ipt/tests/corpus.rs` and a step
 of `ui-import-test.sh` (the smallest file). Files run as the other corpus
 tests do (the options above). See
-[core/import/README.md](../core/import/README.md#ipt-import).
+[core/import/docs/ipt.md](../core/import/docs/ipt.md#ipt-import).
 
 ### .dwg corpus
 
@@ -971,13 +971,21 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   counts. The detail goes into the [user guide](user-guide.md). The ctest
   `repo.tooltips` (`tools/tooltip-check`) checks the texts in `app/`.
 - Metric defaults everywhere ([architecture](architecture.md#units)).
+- Vector arithmetic on `[f64; 3]` comes from `core/vec3` (`mitcad_vec3::{add, sub, dot, cross, norm, unit, …}`), never from a private copy in a module; where a caller must keep a cut-off or a division by the length it has always had, use the named variant (`unit_above`, `unit_div`, `unit_div_above`). The same holds for `[f64; 2]` with `mitcad_vec3::vec2` (`perp`, `lerp` and a scalar `cross` besides; the 2D length is `hypot`). The order of the floating-point operations there is part of the contract.
 - New geometry operation: a `Kernel` method with a default
   `Err(Unsupported)` in `core/model/src/kernel.rs`, grouped by family;
   bridges per family (`core/ffi/src/kernel/<family>.rs`,
   `core/cpp/bridge/<family>.{hpp,cpp}`, `geometry/src/<family>.cpp`).
 - New feature: a module in `core/model/src/features/`, registered in
-  `features/mod.rs`, documented in `core/model/src/api/commands.md`. UI
+  `features/mod.rs`, documented in `core/model/src/api/commands.md`. Its
+  `map_params` comes from `map_params!` (`features/mapping.rs`) when every
+  value maps under its field's name; the fields are listed in the order
+  the values are visited ([Adding to the
+  API](../core/model/src/api/commands.md#adding-to-the-api)). UI
   commands: [app/COMMANDS.md](../app/COMMANDS.md).
+- New command or query: a variant of a `named_enum!` enum
+  (`core/model/src/api/dispatch.rs`) with its name on the wire; a family
+  with an enum of its own is one row of `Document::command_families`.
 
 ## Licence policy
 

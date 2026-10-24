@@ -27,6 +27,7 @@ use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
 use super::joint::OccurrencePath;
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     is_false,
@@ -161,19 +162,16 @@ impl<P> CombineDef<P> {
     pub const TYPE: &'static str = "combine";
     pub const BASE_NAME: &'static str = "Combine";
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<CombineDef<Q>, E> {
-        Ok(CombineDef {
-            target: self.target,
-            tools: self.tools.clone(),
-            operation: self.operation,
-            keep_tools: self.keep_tools,
-            new_component: self.new_component,
-            tool_links: self.tool_links.clone(),
-            marker: PhantomData,
-        })
+    map_params! {
+        CombineDef {
+            target: copy,
+            tools: clone,
+            operation: copy,
+            keep_tools: copy,
+            new_component: copy,
+            tool_links: clone,
+            marker: phantom,
+        }
     }
 
     /// The tool bodies, a body in two occurrences twice.

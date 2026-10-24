@@ -63,6 +63,7 @@ impl<P> ConstructionPointDef<P> {
         Self { definition }
     }
 
+    // Written by hand: the definition maps by its kind (`definition.distance`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

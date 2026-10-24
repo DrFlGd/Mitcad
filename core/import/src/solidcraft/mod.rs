@@ -128,24 +128,10 @@ pub fn import_solidcraft_file<K: Kernel>(
         notes,
         ..
     } = importer;
-    let mut kept: Vec<(FeatureUid, String)> = notes
-        .into_iter()
-        .filter(|(uid, _)| doc.feature(*uid).is_some())
-        .collect();
-    kept.sort();
-    kept.dedup_by(|a, b| {
-        if a.0 == b.0 {
-            b.1 = format!("{}; {}", b.1, a.1);
-            true
-        } else {
-            false
-        }
-    });
-    if let Err(e) = doc.set_import_notes(&kept) {
+    if let Some(e) =
+        crate::scaffold::finish_import(doc, depth, notes, options.undo_label.as_deref())
+    {
         report.notes.push(format!("timeline notes: {e}"));
-    }
-    if let Some(label) = &options.undo_label {
-        doc.merge_undo(depth, label);
     }
     if let Some(expected) = &options.expected {
         report.check = Some(check(&report, expected));

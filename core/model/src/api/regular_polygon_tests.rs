@@ -6,6 +6,7 @@
 
 use std::f64::consts::{PI, TAU};
 
+use mitcad_vec3::vec2::distance as dist;
 use serde_json::{Value, json};
 
 use crate::Document;
@@ -45,10 +46,6 @@ fn entity(s: &Value, id: &str) -> Value {
 
 fn xy(v: &Value) -> [f64; 2] {
     [v[0].as_f64().unwrap(), v[1].as_f64().unwrap()]
-}
-
-fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
 /// A polygon in a new sketch; returns the document and its sides in order.

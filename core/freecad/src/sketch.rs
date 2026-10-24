@@ -34,6 +34,7 @@
 //!   0.21 keeps only the links: one geometry each, projected when FreeCAD
 //!   opens the file.
 
+use mitcad_vec3::{cross, unit_div_above};
 use serde::Serialize;
 
 use crate::document::Object;
@@ -299,13 +300,13 @@ impl ConicFrame {
     /// OCCT's frame for a normal turned by `angle_xu` about it, seen from
     /// +Z.
     pub fn new(normal: [f64; 3], angle_xu: f64) -> ConicFrame {
-        let n = unit3(normal).unwrap_or([0.0, 0.0, 1.0]);
+        let n = unit_div_above(normal, 0.0).unwrap_or([0.0, 0.0, 1.0]);
         let x0 = default_x(n);
         // Rodrigues: x0 turned by the angle about n (x0 ⟂ n).
         let (s, c) = angle_xu.sin_cos();
-        let nx = cross3(n, x0);
+        let nx = cross(n, x0);
         let x: [f64; 3] = std::array::from_fn(|i| x0[i] * c + nx[i] * s);
-        let y = cross3(n, x);
+        let y = cross(n, x);
         ConicFrame {
             x: [x[0], x[1]],
             y: [y[0], y[1]],
@@ -331,19 +332,6 @@ impl ConicFrame {
     }
 }
 
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn unit3(v: [f64; 3]) -> Option<[f64; 3]> {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    (n > 0.0 && n.is_finite()).then(|| v.map(|c| c / n))
-}
-
 /// The X direction OCCT gives a frame with main direction `n` (`gp_Ax2`
 /// from a point and a direction): at right angles to it, with a zero
 /// coordinate where `n` is smallest.
@@ -359,7 +347,7 @@ fn default_x(n: [f64; 3]) -> [f64; 3] {
     } else {
         [b, -a, 0.0]
     };
-    unit3(d).unwrap_or([1.0, 0.0, 0.0])
+    unit_div_above(d, 0.0).unwrap_or([1.0, 0.0, 0.0])
 }
 
 /// A B-spline of the sketch.

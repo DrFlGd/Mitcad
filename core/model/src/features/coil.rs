@@ -82,6 +82,7 @@ impl<P> CoilDef<P> {
     pub const TYPE: &'static str = "coil";
     pub const BASE_NAME: &'static str = "Coil";
 
+    // Written by hand: the helix maps by its kind (`helix.pitch`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

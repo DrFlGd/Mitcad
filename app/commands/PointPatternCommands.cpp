@@ -6,6 +6,7 @@
 
 #include <QJsonArray>
 
+#include "../framework/ModelShapes.hpp"
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
 
@@ -210,7 +211,7 @@ CommandDef pointPatternCommand(const CommandContext& context) {
         })) {
       result.push_back({anchor.value(QStringLiteral("mode")).toString() == QStringLiteral("automatic")
                             ? QObject::tr("Automatic anchor") : QObject::tr("Selected anchor"),
-                        gp_Pnt(world[0].toDouble(), world[1].toDouble(), world[2].toDouble())});
+                        pointOf(world)});
     }
     return result;
   };

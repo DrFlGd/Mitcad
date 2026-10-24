@@ -428,22 +428,9 @@ pub fn trim_number(value: f64, decimals: usize) -> String {
 
 // --- Small vector helpers ---------------------------------------------------
 
-pub(crate) fn dot(a: Vec3, b: Vec3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub(crate) fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-pub(crate) fn unit(v: Vec3) -> Option<Vec3> {
-    let n = dot(v, v).sqrt();
-    (n > 1e-12).then(|| [v[0] / n, v[1] / n, v[2] / n])
-}
+// The vector helpers live in `mitcad-vec3`; `unit` here divides by the length.
+pub(crate) use mitcad_vec3::unit_div as unit;
+pub(crate) use mitcad_vec3::{cross, dot};
 
 /// The view of a section plane: the eye on its normal side, x horizontal
 /// (along Z × normal) unless the plane is horizontal (then +X).

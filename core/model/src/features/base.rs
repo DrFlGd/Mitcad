@@ -21,6 +21,7 @@ use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, Operation,
     References, is_false,
@@ -96,18 +97,15 @@ impl<P> BaseDef<P> {
         }
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<BaseDef<Q>, E> {
-        Ok(BaseDef {
-            bodies: self.bodies.clone(),
-            operation: self.operation,
-            participants: self.participants.clone(),
-            source: self.source.clone(),
-            replaces: self.replaces.clone(),
-            values: PhantomData,
-        })
+    map_params! {
+        BaseDef {
+            bodies: clone,
+            operation: copy,
+            participants: clone,
+            source: clone,
+            replaces: clone,
+            values: phantom,
+        }
     }
 
     /// Writes the definition to a fingerprint (P7d): what its serde form

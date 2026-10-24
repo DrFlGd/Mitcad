@@ -14,6 +14,8 @@
 use std::f64::consts::TAU;
 
 use mitcad_f3d::design::ir::Geometry;
+use mitcad_vec3::vec2::distance as dist;
+use mitcad_vec3::vec2::{cross, dot, sub};
 
 /// Distances (cm) within which curves meet.
 pub(super) const TOL: f64 = 2e-5;
@@ -22,22 +24,6 @@ pub(super) const TOL: f64 = 2e-5;
 const RAY_ANGLE: f64 = 0.813_771_9;
 
 pub(super) type P = [f64; 2];
-
-fn sub(a: P, b: P) -> P {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn dot(a: P, b: P) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-fn cross(a: P, b: P) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-
-fn dist(a: P, b: P) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
-}
 
 /// A NURBS curve of the sketch: its domain is `[knots[degree],
 /// knots[poles - degree - 1 + degree]]`, the span the curve is defined on.

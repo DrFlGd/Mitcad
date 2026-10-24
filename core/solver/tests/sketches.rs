@@ -6,6 +6,7 @@ mod common;
 use common::*;
 use mitcad_solver::Constraint::*;
 use mitcad_solver::{EntityId, PointId, SplineEnd, System};
+use mitcad_vec3::vec2::{cross, dot, sub, unit_div};
 use std::f64::consts::PI;
 
 /// Traversal direction of an arc (counter-clockwise) at one of its points.
@@ -17,17 +18,9 @@ fn arc_tangent(s: &System, arc: EntityId, at: PointId) -> [f64; 2] {
     [-dy / n, dx / n]
 }
 
-fn unit(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
-    let d = dist(a, b);
-    [(b[0] - a[0]) / d, (b[1] - a[1]) / d]
-}
-
-fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-
-fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
+/// The unit direction from `a` to `b`.
+fn direction(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+    unit_div(sub(b, a)).expect("two distinct points")
 }
 
 #[test]
@@ -268,7 +261,7 @@ fn tangent_arc_chain_is_smooth() {
     assert_pt(&s, q, 20.0, 10.0);
     // G1 at every joint: traversal directions agree (no cusps).
     let check_smooth = |s: &System| {
-        let d_line = unit(pt(s, p0), pt(s, p1));
+        let d_line = direction(pt(s, p0), pt(s, p1));
         let t1 = arc_tangent(s, a1, p1);
         assert!(dot(d_line, t1) > 0.999_999, "line -> arc 1");
         // Arc 1 is traversed forward, arc 2 backward (from its end).
@@ -276,7 +269,7 @@ fn tangent_arc_chain_is_smooth() {
         let t2 = arc_tangent(s, a2, j);
         assert!(dot(t1e, [-t2[0], -t2[1]]) > 0.999_999, "arc 1 -> arc 2");
         let t2s = arc_tangent(s, a2, s2);
-        let d_out = unit(pt(s, s2), pt(s, q));
+        let d_out = direction(pt(s, s2), pt(s, q));
         assert!(dot([-t2s[0], -t2s[1]], d_out) > 0.999_999, "arc 2 -> line");
         assert!(cross(d_line, d_out).abs() < 1e-9);
     };

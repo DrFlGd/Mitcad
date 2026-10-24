@@ -8,6 +8,10 @@
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 
+// The 2D helpers under names apart from the 3D `dot`, `cross` and `unit`.
+use mitcad_vec3::vec2::{self, perp};
+use mitcad_vec3::vec2::{add as add2, dot as dot2, norm as len2, scale as mul2, sub as sub2};
+
 use super::sheet::{Anchor, Group, Item, Pen, Sheet, text_width};
 use super::{
     CutPlane, DrawingOptions, Orientation, P2, Projection, RoundHole, ScaleChoice, Units,
@@ -214,28 +218,9 @@ impl Placement {
     }
 }
 
-fn add2(a: P2, b: P2) -> P2 {
-    [a[0] + b[0], a[1] + b[1]]
-}
-fn sub2(a: P2, b: P2) -> P2 {
-    [a[0] - b[0], a[1] - b[1]]
-}
-fn mul2(a: P2, s: f64) -> P2 {
-    [a[0] * s, a[1] * s]
-}
-fn len2(a: P2) -> f64 {
-    a[0].hypot(a[1])
-}
+/// The unit vector along `a`, or the sheet's x axis when `a` has no length.
 fn unit2(a: P2) -> P2 {
-    let n = len2(a);
-    if n > 1e-12 {
-        mul2(a, 1.0 / n)
-    } else {
-        [1.0, 0.0]
-    }
-}
-fn perp(a: P2) -> P2 {
-    [-a[1], a[0]]
+    vec2::unit(a).unwrap_or([1.0, 0.0])
 }
 
 /// A filled arrowhead whose tip is at `tip`, pointing along `direction`.
@@ -307,10 +292,6 @@ fn linear_dimension(a: P2, b: P2, direction: P2, offset: f64, text: &str) -> Gro
         text,
     );
     g
-}
-
-fn dot2(a: P2, b: P2) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
 }
 
 /// The height of a callout's text lines.

@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use mitcad_f3d::asm::file::AsmFile;
 use mitcad_f3d::asm::token::Token;
 use mitcad_f3d::convert;
+use mitcad_vec3::{cross, dot, unit_div_above};
 
 use crate::dc::{Definitions, type_id};
 
@@ -439,11 +440,11 @@ impl Profiles {
         let options = crate::convert_options();
         let column = |c: usize| [m[0][c], m[1][c], m[2][c]];
         let (x, y, o) = (column(0), column(1), column(3));
-        let z = unit3(cross3(x, y))?;
+        let z = unit_div_above(cross(x, y), 0.0)?;
         // Model (mm) to the sketch (cm), None off its plane.
         let local = |p: [f64; 3]| -> Option<[f64; 2]> {
             let d = [p[0] / 10.0 - o[0], p[1] / 10.0 - o[1], p[2] / 10.0 - o[2]];
-            (dot3(d, z).abs() <= 1e-6).then(|| [dot3(d, x), dot3(d, y)])
+            (dot(d, z).abs() <= 1e-6).then(|| [dot(d, x), dot(d, y)])
         };
         let mut out = Vec::new();
         for edge in wire_edges(file, body)? {
@@ -588,7 +589,7 @@ fn outline_edge(
             major,
             minor,
         } => {
-            let v = cross3(*normal, *major_dir);
+            let v = cross(*normal, *major_dir);
             // A circle in the sketch's plane: its arc as one (a profile's
             // hole edge, which a taper needs as an arc, mitcad#235).
             if (major - minor).abs() <= 1e-9 * major.abs() {
@@ -769,23 +770,6 @@ fn nurbs_point(
         }
     }
     [d[p][0] / d[p][2], d[p][1] / d[p][2]]
-}
-
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn unit3(a: [f64; 3]) -> Option<[f64; 3]> {
-    let l = dot3(a, a).sqrt();
-    (l > 0.0).then(|| [a[0] / l, a[1] / l, a[2] / l])
 }
 
 /// The record a pointer field of a record names.

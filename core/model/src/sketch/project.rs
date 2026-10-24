@@ -23,6 +23,9 @@
 
 use std::collections::BTreeMap;
 
+use mitcad_vec3::distance;
+
+use super::geometry::dot as dot2;
 use super::geometry::{Curve2, P2, add, angle_after, dist, norm, scale, sub};
 use super::solve::{SolveError, Solved};
 use super::{Entity, EntityKind, Projection, Ref};
@@ -273,10 +276,6 @@ fn edge_on(spline: &Curve2) -> Option<Curve2> {
     };
     let (a, b) = (spline.point(extreme(-1.0)), spline.point(extreme(1.0)));
     (dist(a, b) > 1e-12).then_some(Curve2::Line { a, b })
-}
-
-fn dot2(a: P2, b: P2) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
 }
 
 /// Entities for projected primitives: fixed reference geometry, with
@@ -558,10 +557,6 @@ fn reversed((degree, poles, knots): Spline) -> Spline {
     )
 }
 
-fn distance3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
-}
-
 /// Curves joined end to end into one B-spline, exactly (continuous in
 /// position where they meet; mitcad#389), in the order given, each turned
 /// to start where the one before ends. Lines join B-splines of the degree
@@ -588,19 +583,19 @@ pub fn join_curves(curves: &[Curve3]) -> Option<Curve3> {
     let mut joined = pieces[0].clone();
     let (a0, a1) = ends(&joined);
     let (b0, b1) = ends(&pieces[1]);
-    if distance3(a1, b0).min(distance3(a1, b1)) > distance3(a0, b0).min(distance3(a0, b1)) {
+    if distance(a1, b0).min(distance(a1, b1)) > distance(a0, b0).min(distance(a0, b1)) {
         joined = reversed(joined);
     }
     let p = degree as usize;
     for piece in &pieces[1..] {
         let end = joined.1[joined.1.len() - 1];
         let (s0, s1) = ends(piece);
-        let piece = if distance3(end, s0) <= distance3(end, s1) {
+        let piece = if distance(end, s0) <= distance(end, s1) {
             piece.clone()
         } else {
             reversed(piece.clone())
         };
-        if distance3(end, piece.1[0]) > JOIN {
+        if distance(end, piece.1[0]) > JOIN {
             return None;
         }
         let at = joined.2[joined.2.len() - 1];

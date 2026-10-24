@@ -44,7 +44,7 @@ fn in_sketch(doc: &Document<MockKernel>, sketch: &str, p: [f64; 3]) -> [f64; 2] 
     let v = |key: &str| -> [f64; 3] { std::array::from_fn(|i| frame[key][i].as_f64().unwrap()) };
     let (origin, x, y) = (v("origin"), v("x_axis"), v("y_axis"));
     let d: [f64; 3] = std::array::from_fn(|i| p[i] - origin[i]);
-    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    use mitcad_vec3::dot;
     [dot(d, x), dot(d, y)]
 }
 

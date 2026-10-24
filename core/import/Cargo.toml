@@ -22,6 +22,8 @@ mitcad-ifc = { path = "../ifc" }
 mitcad-rvt = { path = "../rvt" }
 # .solidcraft designs (mitcad#450).
 mitcad-solidcraft = { path = "../solidcraft" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
 serde.workspace = true
 serde_json.workspace = true
 

@@ -4,6 +4,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+use mitcad_vec3::{cross, norm};
+
 use crate::error::Error;
 use crate::math::{Affine, bulge_arc, ellipse_from_conjugate};
 use crate::text;
@@ -317,16 +319,10 @@ fn ocs_to_xy(n: [f64; 3], z: f64) -> Option<Affine> {
     (affine.determinant().abs() > 1e-9).then_some(affine)
 }
 
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
+/// `v` divided by its length, with no cut-off (the caller's vectors are
+/// not zero).
 fn normalize(v: [f64; 3]) -> [f64; 3] {
-    let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let length = norm(v);
     [v[0] / length, v[1] / length, v[2] / length]
 }
 

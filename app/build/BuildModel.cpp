@@ -3,7 +3,6 @@
 
 #include <cmath>
 #include <exception>
-#include <functional>
 
 #include <QObject>
 
@@ -18,35 +17,6 @@ namespace mitcad::build {
 namespace {
 
 const QString kRoot = QStringLiteral("C0");
-
-QString text(const QJsonObject& object, const char* key) { return object.value(QLatin1String(key)).toString(); }
-
-QJsonObject componentsOf(const CommandContext& context) {
-  return context.queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
-}
-
-// Calls `visit` with each occurrence of the `components` query's tree and
-// its path of uids from the root.
-void eachOccurrence(const QJsonObject& components,
-                    const std::function<void(const QJsonObject&, const QString&)>& visit) {
-  std::function<void(const QJsonArray&, const QString&)> walk = [&](const QJsonArray& level, const QString& parent) {
-    for (const QJsonValue& value : level) {
-      const QJsonObject node = value.toObject();
-      const QString path = parent.isEmpty() ? text(node, "uid") : parent + QLatin1Char('/') + text(node, "uid");
-      visit(node, path);
-      walk(node.value(QStringLiteral("children")).toArray(), path);
-    }
-  };
-  walk(components.value(QStringLiteral("occurrences")).toArray(), QString());
-}
-
-std::optional<gp_Pnt> pointFrom(const QJsonValue& value) {
-  const QJsonArray xyz = value.toArray();
-  if (xyz.size() < 3) {
-    return std::nullopt;
-  }
-  return gp_Pnt(xyz[0].toDouble(), xyz[1].toDouble(), xyz[2].toDouble());
-}
 
 std::optional<gp_Dir> directionFrom(const QJsonValue& value) {
   const QJsonArray xyz = value.toArray();
@@ -74,15 +44,15 @@ int quarterTurns(const QJsonValue& value) {
 BuildPart buildPartOf(const QJsonObject& entry) {
   BuildPart part;
   part.raw = entry;
-  part.component = text(entry, "component");
-  part.name = text(entry, "name");
-  part.role = text(entry, "role");
-  part.source = text(entry, "source");
-  part.designation = text(entry, "designation");
-  part.supplier = text(entry, "supplier");
-  part.partNumber = text(entry, "part_number");
-  part.config = text(entry, "config");
-  part.addedBy = text(entry, "added_by");
+  part.component = str(entry, "component");
+  part.name = str(entry, "name");
+  part.role = str(entry, "role");
+  part.source = str(entry, "source");
+  part.designation = str(entry, "designation");
+  part.supplier = str(entry, "supplier");
+  part.partNumber = str(entry, "part_number");
+  part.config = str(entry, "config");
+  part.addedBy = str(entry, "added_by");
   part.length = lengthOf(entry.value(QStringLiteral("length")));
   part.ends = entry.value(QStringLiteral("ends")).toObject();
   part.bound = entry.value(QStringLiteral("bound")).toObject();
@@ -90,42 +60,25 @@ BuildPart buildPartOf(const QJsonObject& entry) {
   part.machining = entry.value(QStringLiteral("machining")).toArray();
   part.flip = entry.value(QStringLiteral("flip")).toBool();
   part.rotate = quarterTurns(entry.value(QStringLiteral("rotate"))) * 90;
-  part.kind = text(entry, "kind");
-  part.grade = text(entry, "grade");
-  part.set = text(entry, "set");
+  part.kind = str(entry, "kind");
+  part.grade = str(entry, "grade");
+  part.set = str(entry, "set");
   part.spacing = entry.value(QStringLiteral("spacing")).toObject();
   return part;
 }
 
 } // namespace
 
-QString componentName(const QString& uid, const CommandContext& context) {
-  try {
-    for (const QJsonValue& value : componentsOf(context).value(QStringLiteral("components")).toArray()) {
-      if (text(value.toObject(), "uid") == uid) {
-        return text(value.toObject(), "name");
-      }
-    }
-  } catch (const std::exception&) {
-    // The uid then.
-  }
-  return uid;
-}
-
 std::optional<gp_Trsf> worldOf(const QString& path, const CommandContext& context) {
   if (path.isEmpty()) {
     return gp_Trsf();
   }
   std::optional<gp_Trsf> found;
-  try {
-    eachOccurrence(componentsOf(context), [&](const QJsonObject& node, const QString& at) {
-      if (at == path) {
-        found = trsfOf(node.value(QStringLiteral("world")).toArray());
-      }
-    });
-  } catch (const std::exception&) {
-    return std::nullopt;
-  }
+  cmd::eachOccurrence(context, [&](const QJsonObject& node, const QString& at) {
+    if (at == path) {
+      found = trsfOf(node.value(QStringLiteral("world")).toArray());
+    }
+  });
   return found;
 }
 
@@ -134,15 +87,11 @@ QString componentAt(const QString& path, const CommandContext& context) {
     return kRoot;
   }
   QString component;
-  try {
-    eachOccurrence(componentsOf(context), [&](const QJsonObject& node, const QString& at) {
-      if (at == path) {
-        component = text(node, "component");
-      }
-    });
-  } catch (const std::exception&) {
-    // None then.
-  }
+  cmd::eachOccurrence(context, [&](const QJsonObject& node, const QString& at) {
+    if (at == path) {
+      component = str(node, "component");
+    }
+  });
   return component;
 }
 
@@ -151,13 +100,13 @@ Host buildHost(const CommandContext& context) {
   try {
     const QJsonObject answer = context.queryObject({{QStringLiteral("query"), QStringLiteral("build_host")}});
     host.component = answer.value(QStringLiteral("component")).toString(kRoot);
-    host.name = text(answer, "name");
-    host.path = text(answer, "path");
+    host.name = str(answer, "name");
+    host.path = str(answer, "path");
   } catch (const std::exception&) {
     // The root then.
   }
   if (host.name.isEmpty()) {
-    host.name = componentName(host.component, context);
+    host.name = cmd::componentName(host.component, context);
   }
   return host;
 }
@@ -225,7 +174,7 @@ std::optional<double> pickSnap(const QString& key, const CommandState& state) {
   const Selection& items = state.items(key);
   const QJsonObject pick = state.object(key + QStringLiteral("_pick"));
   const double snap = pick.value(QStringLiteral("snap")).toDouble(-1.0);
-  if (items.isEmpty() || text(pick, "item") != items.first().describe() || !std::isfinite(snap) || snap <= 0.0) {
+  if (items.isEmpty() || str(pick, "item") != items.first().describe() || !std::isfinite(snap) || snap <= 0.0) {
     return std::nullopt;
   }
   return snap;
@@ -237,7 +186,7 @@ std::optional<gp_Pnt> pickPoint(const QString& key, const CommandState& state, c
     return std::nullopt;
   }
   const QJsonObject pick = state.object(key + QStringLiteral("_pick"));
-  if (text(pick, "item") == items.first().describe()) {
+  if (str(pick, "item") == items.first().describe()) {
     if (const auto point = pointFrom(pick.value(QStringLiteral("point")))) {
       return point;
     }
@@ -280,20 +229,20 @@ std::optional<QJsonObject> atOf(const QString& key, const CommandState& state, c
 
 std::optional<SelectionItem> itemOfTarget(const QJsonObject& target, const CommandContext& context) {
   const QJsonValue geometry = target.value(QStringLiteral("geometry"));
-  const QString occurrence = rootPath(text(target, "occurrence"), context);
+  const QString occurrence = rootPath(str(target, "occurrence"), context);
   if (geometry.isString()) {
     return SelectionItem{SelectKind::Plane, geometry.toString(), QString(), QString(), occurrence};
   }
   const QJsonObject reference = geometry.toObject();
-  const QString body = text(reference, "body");
+  const QString body = str(reference, "body");
   if (body.isEmpty()) {
     return std::nullopt; // a frame (`mount`) is no item of the view
   }
   if (reference.contains(QStringLiteral("face"))) {
-    return SelectionItem{SelectKind::Face, body, text(reference, "face"), QString(), occurrence};
+    return SelectionItem{SelectKind::Face, body, str(reference, "face"), QString(), occurrence};
   }
   if (reference.contains(QStringLiteral("edge"))) {
-    return SelectionItem{SelectKind::Edge, body, text(reference, "edge"), QString(), occurrence};
+    return SelectionItem{SelectKind::Edge, body, str(reference, "edge"), QString(), occurrence};
   }
   return SelectionItem{SelectKind::Body, body, QString(), QString(), occurrence};
 }
@@ -384,10 +333,10 @@ std::optional<gp_Pnt> junctionPoint(const QJsonObject& junction) {
 
 QString junctionText(const QJsonObject& junction, const CommandContext& context) {
   const auto partName = [&context](const QJsonObject& side) {
-    return componentName(text(side, "component"), context);
+    return cmd::componentName(str(side, "component"), context);
   };
   QString shown = QObject::tr("%1 junction of %2 and %3")
-                      .arg(text(junction, "kind"), partName(junction.value(QStringLiteral("a")).toObject()),
+                      .arg(str(junction, "kind"), partName(junction.value(QStringLiteral("a")).toObject()),
                            partName(junction.value(QStringLiteral("b")).toObject()));
   if (!junction.value(QStringLiteral("connectors")).toArray().isEmpty()) {
     shown += QObject::tr(", connected");

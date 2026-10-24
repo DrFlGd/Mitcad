@@ -237,6 +237,7 @@ impl<P> HoleDef<P> {
     pub const TYPE: &'static str = "hole";
     pub const BASE_NAME: &'static str = "Hole";
 
+    // Written by hand: placement, kind, extent and thread map by their kind.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

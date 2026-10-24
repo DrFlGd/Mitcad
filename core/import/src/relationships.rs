@@ -64,7 +64,7 @@ use crate::joints::{
 use crate::report::Outcome;
 use crate::{Candidate, Importer, InputProvenance};
 
-type Vec3 = [f64; 3];
+use mitcad_vec3::Vec3;
 
 /// How far, mm, an occurrence may be from where the file places it for a
 /// row to hold there, and its offset from the file's: the file's placements

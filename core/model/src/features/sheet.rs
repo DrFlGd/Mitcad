@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Fabrication rules and a base sheet built from named bounded profiles.
 
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput,
     ProfileRef, References,
@@ -50,6 +51,7 @@ pub struct SheetRulesDef<P = ParamId> {
 impl<P> SheetRulesDef<P> {
     pub const TYPE: &'static str = "sheet_rules";
     pub const BASE_NAME: &'static str = "SheetRules";
+    // Written by hand: the allowance and the reliefs map under nested slots.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -148,17 +150,14 @@ pub struct SheetFaceDef<P = ParamId> {
 impl<P> SheetFaceDef<P> {
     pub const TYPE: &'static str = "sheet_face";
     pub const BASE_NAME: &'static str = "SheetFace";
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SheetFaceDef<Q>, E> {
-        Ok(SheetFaceDef {
-            rules: self.rules,
-            profiles: self.profiles.clone(),
-            body: self.body,
-            panel_slots: self.panel_slots.clone(),
-            marker: PhantomData,
-        })
+    map_params! {
+        SheetFaceDef {
+            rules: copy,
+            profiles: clone,
+            body: copy,
+            panel_slots: clone,
+            marker: phantom,
+        }
     }
 
     pub(crate) fn settle(&mut self, old: Option<&Self>) {

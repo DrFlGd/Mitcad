@@ -9,12 +9,14 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include <Message_ProgressIndicator.hxx>
 #include <Message_ProgressRange.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <Standard_Failure.hxx>
 #include <Standard_OutOfMemory.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Shape.hxx>
 #include <gp_Pnt.hxx>
 
@@ -224,5 +226,16 @@ int inflated_vertices(const TopoDS_Shape& shape, bool tighten);
 // only the result's own edges, not the input's (dressup.cpp). The number
 // widened.
 int widen_inherited_curve_tolerances(const TopoDS_Shape& result, const TopoDS_Shape& input);
+
+// The volume of a shape by OCCT's BRepGProp, negative for a solid turned
+// inside out. (brep_import.cpp's analysed_volume_of integrates with the
+// analysis library instead, so that the import's reports agree with the
+// queries.)
+double volume_of(const TopoDS_Shape& shape);
+
+// A compound of the shapes, also of one.
+TopoDS_Compound compound_of(const std::vector<TopoDS_Shape>& shapes);
+// A compound of the shapes, or the shape itself when there is one.
+TopoDS_Shape compound_or_single(const std::vector<TopoDS_Shape>& shapes);
 
 } // namespace mitcad::geometry::detail

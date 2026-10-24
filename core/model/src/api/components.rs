@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ApiError;
+use super::dispatch::named_enum;
 use crate::assembly::{from_rows, matrix_rows, matrix4};
 use crate::document::{Document, InsertOptions};
 use crate::features::OccurrencePath;
@@ -62,114 +63,99 @@ fn optional(input: Option<&TransformInput>) -> Result<Option<Transform>, ApiErro
     input.map(TransformInput::transform).transpose()
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum ComponentCommand {
-    CreateComponent {
-        #[serde(default)]
-        name: Option<String>,
-        #[serde(default)]
-        transform: Option<TransformInput>,
-        #[serde(default = "yes")]
-        activate: bool,
-        /// Its design policy (mitcad#220): a preset name or settings over
-        /// the general defaults; the general defaults when left out.
-        #[serde(default)]
-        policy: Option<Value>,
-    },
-    ComponentsFromBodies {
-        bodies: Vec<BodyUid>,
-    },
-    ActivateComponent {
-        component: String,
-        /// As the document opens (mitcad#426): no undo step, no new revision.
-        #[serde(default)]
-        opening: bool,
-    },
-    RenameComponent {
-        component: String,
-        name: String,
-    },
-    GroundOccurrence {
-        occurrence: String,
-        #[serde(default = "yes")]
-        grounded: bool,
-    },
-    SetOccurrenceVisible {
-        occurrence: String,
-        visible: bool,
-    },
-    SetOccurrenceTransform {
-        occurrence: String,
-        transform: TransformInput,
-        #[serde(default)]
-        capture: bool,
-    },
-    CopyOccurrence {
-        occurrence: String,
-        #[serde(default)]
-        transform: Option<TransformInput>,
-    },
-    PasteNew {
-        occurrence: String,
-        #[serde(default)]
-        transform: Option<TransformInput>,
-    },
-    DeleteOccurrence {
-        occurrence: String,
-    },
-    InsertComponent {
-        /// A design file; or `library` (mitcad#64).
-        #[serde(default)]
-        path: Option<String>,
-        #[serde(default)]
-        library: Option<super::libraries::LibraryInput>,
-        #[serde(default = "yes")]
-        link: bool,
-        #[serde(default)]
-        transform: Option<TransformInput>,
-        #[serde(default)]
-        name: Option<String>,
-        #[serde(default)]
-        base: Option<String>,
-        /// Placed by a mount frame (mitcad#525).
-        #[serde(default)]
-        mount: Option<Box<crate::document::MountInput>>,
-    },
-    UpdateLinks {
-        #[serde(default)]
-        base: Option<String>,
-    },
-    // Moving an occurrence to another parent (mitcad#219).
-    ReparentOccurrence {
-        /// Its path from the root.
-        occurrence: String,
-        /// The path of the new parent's occurrence; empty: the root.
-        #[serde(default)]
-        parent: String,
-    },
+named_enum! {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    pub(crate) enum ComponentCommand {
+        "create_component" => CreateComponent {
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            transform: Option<TransformInput>,
+            #[serde(default = "yes")]
+            activate: bool,
+            /// Its design policy (mitcad#220): a preset name or settings over
+            /// the general defaults; the general defaults when left out.
+            #[serde(default)]
+            policy: Option<Value>,
+        },
+        "components_from_bodies" => ComponentsFromBodies {
+            bodies: Vec<BodyUid>,
+        },
+        "activate_component" => ActivateComponent {
+            component: String,
+            /// As the document opens (mitcad#426): no undo step, no new revision.
+            #[serde(default)]
+            opening: bool,
+        },
+        "rename_component" => RenameComponent {
+            component: String,
+            name: String,
+        },
+        "ground_occurrence" => GroundOccurrence {
+            occurrence: String,
+            #[serde(default = "yes")]
+            grounded: bool,
+        },
+        "set_occurrence_visible" => SetOccurrenceVisible {
+            occurrence: String,
+            visible: bool,
+        },
+        "set_occurrence_transform" => SetOccurrenceTransform {
+            occurrence: String,
+            transform: TransformInput,
+            #[serde(default)]
+            capture: bool,
+        },
+        "copy_occurrence" => CopyOccurrence {
+            occurrence: String,
+            #[serde(default)]
+            transform: Option<TransformInput>,
+        },
+        "paste_new" => PasteNew {
+            occurrence: String,
+            #[serde(default)]
+            transform: Option<TransformInput>,
+        },
+        "delete_occurrence" => DeleteOccurrence {
+            occurrence: String,
+        },
+        "insert_component" => InsertComponent {
+            /// A design file; or `library` (mitcad#64).
+            #[serde(default)]
+            path: Option<String>,
+            #[serde(default)]
+            library: Option<super::libraries::LibraryInput>,
+            #[serde(default = "yes")]
+            link: bool,
+            #[serde(default)]
+            transform: Option<TransformInput>,
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            base: Option<String>,
+            /// Placed by a mount frame (mitcad#525).
+            #[serde(default)]
+            mount: Option<Box<crate::document::MountInput>>,
+        },
+        "update_links" => UpdateLinks {
+            #[serde(default)]
+            base: Option<String>,
+        },
+        // Moving an occurrence to another parent (mitcad#219).
+        "reparent_occurrence" => ReparentOccurrence {
+            /// Its path from the root.
+            occurrence: String,
+            /// The path of the new parent's occurrence; empty: the root.
+            #[serde(default)]
+            parent: String,
+        },
+    }
 }
 
 fn yes() -> bool {
     true
 }
-
-/// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 13] = [
-    "create_component",
-    "components_from_bodies",
-    "activate_component",
-    "rename_component",
-    "ground_occurrence",
-    "set_occurrence_visible",
-    "set_occurrence_transform",
-    "copy_occurrence",
-    "paste_new",
-    "delete_occurrence",
-    "insert_component",
-    "update_links",
-    "reparent_occurrence",
-];
 
 /// The `reparent_occurrence` query (mitcad#219): where an occurrence can
 /// go and, with `parent`, what moving it there does.

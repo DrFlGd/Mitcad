@@ -216,6 +216,7 @@ impl<P> MotionLinkDef<P> {
     pub const TYPE: &'static str = "motion_link";
     pub const BASE_NAME: &'static str = "MotionLink";
 
+    // Written by hand: the coupling maps by kind, the offset's slot by the motion.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

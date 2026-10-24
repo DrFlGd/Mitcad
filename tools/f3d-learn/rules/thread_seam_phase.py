@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """learn.py rule: a right-handed modelled thread on a whole cylinder whose
 file axis points up starts its helix at the seam of the cylinder's surface
-(core/import README, "Twin edges and thread phase"): the thread's angle is
+(core/import/docs/f3d-learning.md, "Twin edges and a thread's start angle"): the thread's angle is
 the seam's direction about the axis, from the reference direction.
 
     learn.py test --kind ThreadFeature --rule tools/f3d-learn/rules/thread_seam_phase.py --unsettled

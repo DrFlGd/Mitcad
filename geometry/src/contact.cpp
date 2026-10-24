@@ -21,7 +21,9 @@ namespace {
 // Shapes closer than this touch (boolean.cpp's kContact).
 constexpr double kContact = 1.0e-6;
 
-Bnd_Box box_of(const TopoDS_Shape& shape) {
+// A shape's box from its triangulation where it has one (BRepBndLib's default;
+// detail::box_of in face_select.hpp reads the geometry only).
+Bnd_Box triangulated_box_of(const TopoDS_Shape& shape) {
   Bnd_Box box;
   BRepBndLib::Add(shape, box);
   return box;
@@ -44,7 +46,7 @@ bool inside(const TopoDS_Shape& shape, const gp_Pnt& point) {
 std::vector<ToolContact> tool_contacts(const Shape& tool, const std::vector<const Shape*>& bodies) {
   return detail::run("tool contacts", [&] {
     std::vector<ToolContact> contacts(bodies.size(), ToolContact::Apart);
-    Bnd_Box tool_box = box_of(tool.occt());
+    Bnd_Box tool_box = triangulated_box_of(tool.occt());
     if (tool_box.IsVoid()) {
       return contacts;
     }
@@ -57,7 +59,7 @@ std::vector<ToolContact> tool_contacts(const Shape& tool, const std::vector<cons
       if (detail::has_mesh_faces(bodies[i]->occt())) {
         continue;
       }
-      const Bnd_Box box = box_of(bodies[i]->occt());
+      const Bnd_Box box = triangulated_box_of(bodies[i]->occt());
       if (box.IsVoid() || tool_box.IsOut(box) || !detail::shapes_touch(*bodies[i], tool)) {
         continue;
       }

@@ -12,34 +12,16 @@ use std::fmt;
 
 use crate::profile::{SketchFrame, cross, dot};
 
-pub type Vec3 = [f64; 3];
+pub use mitcad_vec3::Vec3;
+
+// The vector helpers live in `mitcad-vec3`; the modules that take them from
+// here keep this path.
+pub(crate) use mitcad_vec3::{add, norm, scale, sub, unit};
 
 /// Directions closer than this (as the sine of their angle) are parallel.
 pub(crate) const ANGULAR: f64 = 1e-9;
 /// Points closer than this are the same point, mm.
 pub(crate) const LINEAR: f64 = 1e-6;
-
-pub(crate) fn add(a: Vec3, b: Vec3) -> Vec3 {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-
-pub(crate) fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
-pub(crate) fn scale(a: Vec3, s: f64) -> Vec3 {
-    a.map(|v| v * s)
-}
-
-pub(crate) fn norm(a: Vec3) -> f64 {
-    dot(a, a).sqrt()
-}
-
-/// The unit vector along `a`, None for a (nearly) zero vector.
-pub(crate) fn unit(a: Vec3) -> Option<Vec3> {
-    let length = norm(a);
-    (length > 1e-12 && length.is_finite()).then(|| scale(a, 1.0 / length))
-}
 
 /// `v` rotated by `angle` about the unit vector `axis`, right-handed.
 pub(crate) fn rotate(v: Vec3, axis: Vec3, angle: f64) -> Vec3 {

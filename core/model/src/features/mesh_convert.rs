@@ -24,6 +24,7 @@ mod tests;
 
 use serde::{Deserialize, Serialize};
 
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
@@ -51,14 +52,11 @@ impl<P> MeshConvertDef<P> {
     pub const TYPE: &'static str = "mesh_convert";
     pub const BASE_NAME: &'static str = "ConvertMesh";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<MeshConvertDef<Q>, E> {
-        Ok(MeshConvertDef {
-            body: self.body,
-            tolerance: f("tolerance", &self.tolerance)?,
-        })
+    map_params! {
+        MeshConvertDef {
+            body: copy,
+            tolerance: param,
+        }
     }
 }
 

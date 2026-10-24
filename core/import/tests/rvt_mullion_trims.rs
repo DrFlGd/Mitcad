@@ -11,6 +11,7 @@ use mitcad_import::rvt::plan::{decoded_mullion_ends, ends_apart, stored_mullion_
 use mitcad_rvt::RvtFile;
 use mitcad_rvt::building::{Curve, P3};
 use mitcad_rvt::elements::Model;
+use mitcad_vec3::{cross, dot, norm, scale, sub};
 
 /// The projects with trimmed mullions and how many trimmed ends each has.
 const FILES: [(&str, usize); 3] = [("33271010", 20), ("ff791052", 89), ("bb62c161", 21)];
@@ -37,24 +38,9 @@ fn corpus_file(id: &str) -> Option<PathBuf> {
     p.is_file().then_some(p)
 }
 
-fn sub(a: P3, b: P3) -> P3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn dot(a: P3, b: P3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn cross(a: P3, b: P3) -> P3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-fn scale(a: P3, s: f64) -> P3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
+/// The unit vector along `a`, with no cut-off (the ends' sides are not zero).
 fn unit(a: P3) -> P3 {
-    scale(a, 1.0 / dot(a, a).sqrt())
+    scale(a, 1.0 / norm(a))
 }
 
 #[test]

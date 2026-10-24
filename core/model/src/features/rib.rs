@@ -52,6 +52,7 @@ macro_rules! thin_feature {
             pub const TYPE: &'static str = $type;
             pub const BASE_NAME: &'static str = $base;
 
+            // Written by hand: the extent maps by its kind (`extent.depth`).
             pub fn map_params<Q, E>(
                 &self,
                 f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

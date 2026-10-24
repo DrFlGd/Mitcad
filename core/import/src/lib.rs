@@ -602,7 +602,9 @@ pub(crate) struct SketchInfo {
 /// Mitcad needs one per body (a fillet of edges on two bodies).
 #[derive(Debug, Clone)]
 pub(crate) struct Candidate {
-    pub defs: Vec<Value>,
+    /// The definitions, shared with the other imports' candidates; reached
+    /// as `candidate.defs`.
+    pub core: CandidateCore,
     /// What it assumes, for the report.
     pub note: Option<String>,
     /// A guess only the history can confirm: not used without one.
@@ -621,10 +623,24 @@ pub(crate) struct Candidate {
     pub first: bool,
 }
 
+impl std::ops::Deref for Candidate {
+    type Target = CandidateCore;
+
+    fn deref(&self) -> &CandidateCore {
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for Candidate {
+    fn deref_mut(&mut self) -> &mut CandidateCore {
+        &mut self.core
+    }
+}
+
 impl Candidate {
     pub fn new(def: Value) -> Self {
         Self {
-            defs: vec![def],
+            core: CandidateCore::new(def),
             note: None,
             guess: false,
             input_provenance: InputProvenance::Unknown,
@@ -1160,32 +1176,13 @@ mod deviations;
 pub use deviations::{AcceptDeviations, DeviatingFace, DeviationReport};
 // .solidcraft designs with their history (mitcad#450).
 pub mod solidcraft;
+// What the imports share: the `$k` placeholders, the core of a candidate and
+// the end of an import (mitcad#583).
+mod scaffold;
+use scaffold::{CandidateCore, substitute};
 
 fn item_name(item: &TimelineItem) -> String {
     item.name().unwrap_or("?").to_owned()
-}
-
-/// Replaces the strings `"$k"` in a definition by the uid of the k-th
-/// feature added before it ([`Importer::add_all`]), also as the prefix of
-/// a face or body name (`"$0:hole0.wall"`, `"$1.b0"`).
-fn substitute(def: &mut Value, uids: &[FeatureUid]) {
-    match def {
-        Value::String(s) => {
-            if let Some(rest) = s.strip_prefix('$') {
-                let digits = rest
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(rest.len());
-                let (k, tail) = rest.split_at(digits);
-                let fits = tail.is_empty() || tail.starts_with([':', '.']);
-                if fits && let Some(uid) = k.parse::<usize>().ok().and_then(|k| uids.get(k)) {
-                    *s = format!("{uid}{tail}");
-                }
-            }
-        }
-        Value::Array(items) => items.iter_mut().for_each(|v| substitute(v, uids)),
-        Value::Object(map) => map.values_mut().for_each(|v| substitute(v, uids)),
-        _ => {}
-    }
 }
 
 /// Whether a candidate's predicted volume change is the most it can

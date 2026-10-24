@@ -14,34 +14,15 @@
 //! that does not close is a non-developable configuration, never resolved
 //! by dropping a seam.
 
+use mitcad_vec3::{add, cross, distance, scale, sub};
+
 use super::*;
 use crate::features::sheet_unfold::{SheetRefoldDef, SheetUnfoldDef};
 use crate::profile::dot;
 use crate::transform::Transform;
 use std::collections::{BTreeMap, VecDeque};
 
-type V3 = [f64; 3];
-
-fn add(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-fn sub(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-fn scale(a: V3, s: f64) -> V3 {
-    a.map(|v| v * s)
-}
-fn cross(a: V3, b: V3) -> V3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-fn distance(a: V3, b: V3) -> f64 {
-    let d = sub(a, b);
-    dot(d, d).sqrt()
-}
+use mitcad_vec3::Vec3 as V3;
 
 /// Positions of one seam reached along two paths must agree this closely.
 /// Well above chained rounding, well below any meaningful material offset.

@@ -5,6 +5,7 @@
 //! and the sheet is `width` wide along the sketch's normal (against it with
 //! `reverse`).
 
+use super::mapping::map_params;
 use super::sheet::SheetRulesDef;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput, References,
@@ -53,19 +54,16 @@ fn is_right(side: &ContourSide) -> bool {
 impl<P> SheetContourDef<P> {
     pub const TYPE: &'static str = "sheet_contour";
     pub const BASE_NAME: &'static str = "SheetContour";
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SheetContourDef<Q>, E> {
-        Ok(SheetContourDef {
-            rules: self.rules,
-            sketch: self.sketch,
-            curves: self.curves.clone(),
-            width: f("width", &self.width)?,
-            side: self.side,
-            reverse: self.reverse,
-            radius: self.radius.as_ref().map(|r| f("radius", r)).transpose()?,
-        })
+    map_params! {
+        SheetContourDef {
+            rules: copy,
+            sketch: copy,
+            curves: clone,
+            width: param,
+            side: copy,
+            reverse: copy,
+            radius: option,
+        }
     }
 }
 

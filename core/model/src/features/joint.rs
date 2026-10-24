@@ -28,6 +28,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::construction::datum_kind;
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::pattern::none;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, is_false,
@@ -251,14 +252,6 @@ fn map_limits<P, Q, E>(
     Ok(out)
 }
 
-fn map_option<P, Q, E>(
-    slot: &str,
-    value: &Option<P>,
-    f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-) -> Result<Option<Q>, E> {
-    value.as_ref().map(|v| f(slot, v)).transpose()
-}
-
 /// Limits and positions only for the kind's free motions; a slider's axis
 /// only on sliders.
 fn check_kind<P>(
@@ -369,21 +362,18 @@ impl<P> JointDef<P> {
     pub const TYPE: &'static str = "joint";
     pub const BASE_NAME: &'static str = "Joint";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<JointDef<Q>, E> {
-        Ok(JointDef {
-            kind: self.kind,
-            slide_axis: self.slide_axis,
-            a: self.a.clone(),
-            b: self.b.clone(),
-            offset: map_option("offset", &self.offset, f)?,
-            angle: map_option("angle", &self.angle, f)?,
-            flip: self.flip,
-            limits: map_limits(&self.limits, f)?,
-            position: map_position(&self.position, f)?,
-        })
+    map_params! {
+        JointDef {
+            kind: copy,
+            slide_axis: copy,
+            a: clone,
+            b: clone,
+            offset: option,
+            angle: option,
+            flip: copy,
+            limits: with(map_limits),
+            position: with(map_position),
+        }
     }
 }
 
@@ -478,20 +468,17 @@ impl<P> AsBuiltJointDef<P> {
     pub const TYPE: &'static str = "as_built_joint";
     pub const BASE_NAME: &'static str = "AsBuiltJoint";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<AsBuiltJointDef<Q>, E> {
-        Ok(AsBuiltJointDef {
-            kind: self.kind,
-            slide_axis: self.slide_axis,
-            a: self.a.clone(),
-            b: self.b.clone(),
-            origin: self.origin.clone(),
-            relative: self.relative,
-            limits: map_limits(&self.limits, f)?,
-            position: map_position(&self.position, f)?,
-        })
+    map_params! {
+        AsBuiltJointDef {
+            kind: copy,
+            slide_axis: copy,
+            a: clone,
+            b: clone,
+            origin: clone,
+            relative: copy,
+            limits: with(map_limits),
+            position: with(map_position),
+        }
     }
 }
 
@@ -562,18 +549,15 @@ impl<P> JointOriginDef<P> {
     pub const TYPE: &'static str = "joint_origin";
     pub const BASE_NAME: &'static str = "JointOrigin";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<JointOriginDef<Q>, E> {
-        Ok(JointOriginDef {
-            geometry: self.geometry.clone(),
-            frame_override: self.frame_override,
-            offset: map_option("offset", &self.offset, f)?,
-            angle: map_option("angle", &self.angle, f)?,
-            flip: self.flip,
-            mount: self.mount.clone(),
-        })
+    map_params! {
+        JointOriginDef {
+            geometry: clone,
+            frame_override: copy,
+            offset: option,
+            angle: option,
+            flip: copy,
+            mount: clone,
+        }
     }
 }
 
@@ -814,11 +798,11 @@ impl<P> RigidGroupDef<P> {
         }
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<RigidGroupDef<Q>, E> {
-        Ok(RigidGroupDef::new(self.occurrences.clone()))
+    map_params! {
+        RigidGroupDef {
+            occurrences: clone,
+            marker: phantom,
+        }
     }
 }
 

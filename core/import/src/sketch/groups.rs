@@ -21,6 +21,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mitcad_f3d::design::ir::{Reference, SketchConstraint, SketchDimension};
+use mitcad_vec3::vec2::distance as dist;
+use mitcad_vec3::vec2::{add, cross, dot, perp, scale, sub, unit_div};
 use serde_json::{Value, json};
 
 use super::{Ids, Kind, RefOf, refs, resolve};
@@ -67,40 +69,6 @@ pub(super) struct Sketch<'a> {
 }
 
 type P2 = [f64; 2];
-
-fn sub(a: P2, b: P2) -> P2 {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn add(a: P2, b: P2) -> P2 {
-    [a[0] + b[0], a[1] + b[1]]
-}
-
-fn scale(a: P2, s: f64) -> P2 {
-    [a[0] * s, a[1] * s]
-}
-
-fn dist(a: P2, b: P2) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
-}
-
-fn cross(a: P2, b: P2) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-
-fn dot(a: P2, b: P2) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-fn unit(a: P2) -> Option<P2> {
-    let n = a[0].hypot(a[1]);
-    (n > 1e-12).then(|| [a[0] / n, a[1] / n])
-}
-
-/// A quarter turn counter-clockwise.
-fn perp(a: P2) -> P2 {
-    [-a[1], a[0]]
-}
 
 fn number(name: &str) -> Option<u32> {
     name.get(1..)?.parse().ok()
@@ -467,7 +435,7 @@ pub(super) fn rectangular_pattern(
     let (originals, created) = pattern_entities(c, s, None)?;
     let direction = |key: &str| -> Option<P2> {
         let v = props?.get(key)?.as_array()?;
-        unit([v.first()?.as_f64()?, v.get(1)?.as_f64()?])
+        unit_div([v.first()?.as_f64()?, v.get(1)?.as_f64()?])
     };
     // Whether the pattern is symmetric in a direction (the originals are
     // the middle instance): the API's flag, or the stream's flags (the
@@ -546,8 +514,8 @@ pub(super) fn rectangular_pattern(
         };
         // Mitcad's second direction is its first turned a quarter
         // counter-clockwise, and its spacings are positive.
-        let u1 = unit(e1).ok_or("a zero spacing")?;
-        let ok_second = |a: P2, b: P2| unit(b).is_some_and(|b| dot(b, perp(a)) > 1.0 - 1e-9);
+        let u1 = unit_div(e1).ok_or("a zero spacing")?;
+        let ok_second = |a: P2, b: P2| unit_div(b).is_some_and(|b| dot(b, perp(a)) > 1.0 - 1e-9);
         let value = |k: usize, div: u32, sp: f64| {
             let (_, name, d, _, _) = &dirs[k];
             value_of(name.as_deref(), *d, sp < 0.0, div)
@@ -567,7 +535,7 @@ pub(super) fn rectangular_pattern(
                 [value(0, div1, s1), value(1, div2, s2)],
                 [dirs[0].4, dirs[1].4],
             )
-        } else if let Some(u2) = unit(e2).filter(|u2| ok_second(*u2, e1)) {
+        } else if let Some(u2) = unit_div(e2).filter(|u2| ok_second(*u2, e1)) {
             for (index, _) in &mut copies {
                 index.swap(0, 1);
             }
@@ -794,7 +762,7 @@ pub(super) fn offset(
                         ))
                     };
                     let ((a, b), (p, q)) = (ends(pe)?, ends(ce)?);
-                    let (Some(u), Some(v)) = (unit(sub(b, a)), unit(sub(q, p))) else {
+                    let (Some(u), Some(v)) = (unit_div(sub(b, a)), unit_div(sub(q, p))) else {
                         continue;
                     };
                     let m = scale(add(p, q), 0.5);

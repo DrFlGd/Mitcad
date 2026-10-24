@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use mitcad_usdz::{Image, Material, Mesh, Node, Placement, Scene, Subset, TexCoords};
+use mitcad_vec3::{cross, sub};
 
 use super::{BodyKind, Exported, MeshTolerance, invalid, kernel_error};
 use crate::appearance::{Appearance, Projection, Texture, image_format};
@@ -414,16 +415,4 @@ impl<K: Kernel> Document<K> {
         exported.warnings = warnings;
         Ok(exported)
     }
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }

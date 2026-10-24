@@ -7,7 +7,7 @@
 //! (classes `74CA4562` and `40DCC3F4`) pair entities with the blob that
 //! holds the body and its selector there. The assets the records name are
 //! in the document's packages ([`crate::protein`]). Layouts (verified on
-//! the appearance variant models and the corpora, `core/import/README.md`,
+//! the appearance variant models and the corpora, `core/import/docs/f3d-appearances.md`,
 //! *Appearances and materials*):
 //!
 //! ```text

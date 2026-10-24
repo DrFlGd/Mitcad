@@ -55,6 +55,8 @@
 use std::f64::consts::{PI, TAU};
 use std::sync::OnceLock;
 
+use mitcad_vec3::{add, cross, dot, norm, sub};
+
 use crate::analysis::{self, CONFLICT_TOL, DepRow};
 use crate::prepare::Component;
 use crate::scalar::{Dual, LANES, Scalar};
@@ -62,7 +64,7 @@ use crate::solve::{self, Ctx, Equations, Run, Work};
 use crate::sparse::{GramPlan, Rows};
 use crate::types::SolveStatus;
 
-pub type Vec3 = [f64; 3];
+pub use mitcad_vec3::Vec3;
 type M3<T> = [[T; 3]; 3];
 
 const I3: M3<f64> = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -71,18 +73,6 @@ const I3: M3<f64> = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 const VALUE_WEIGHT: f64 = 100.0;
 /// Attempts of a solve that ends half a turn off.
 const ATTEMPTS: usize = 4;
-
-fn add(a: Vec3, b: Vec3) -> Vec3 {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-
-fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
-fn norm(a: Vec3) -> f64 {
-    a.iter().map(|v| v * v).sum::<f64>().sqrt()
-}
 
 fn mat_vec<T: Scalar>(m: &M3<T>, v: [T; 3]) -> [T; 3] {
     std::array::from_fn(|r| m[r][0] * v[0] + m[r][1] * v[1] + m[r][2] * v[2])
@@ -1134,18 +1124,6 @@ fn parts_error(parts: &[ConstraintPart], fa: &Pose, fb: &Pose, value: Option<f64
         });
     }
     (length, angle)
-}
-
-fn dot(a: Vec3, b: Vec3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 fn column(p: &Pose, c: usize) -> Vec3 {

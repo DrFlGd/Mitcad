@@ -21,6 +21,7 @@ use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
 
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
@@ -66,15 +67,13 @@ impl<P> BodyTransferDef<P> {
         }
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<BodyTransferDef<Q>, E> {
-        Ok(BodyTransferDef::new(
-            self.bodies.clone(),
-            self.link.clone(),
-            self.transform,
-        ))
+    map_params! {
+        BodyTransferDef {
+            bodies: clone,
+            link: clone,
+            transform: copy,
+            values: phantom,
+        }
     }
 }
 

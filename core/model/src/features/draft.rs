@@ -22,6 +22,7 @@ use super::face_refs::{
     add_faces, check_faces, check_tool, kernel_error, map_offset, require_faces, resolve_tool,
 };
 use super::geom_ref::{GeomRef, Want};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     is_false,
@@ -67,21 +68,18 @@ impl<P> DraftDef<P> {
     pub const TYPE: &'static str = "draft";
     pub const BASE_NAME: &'static str = "Draft";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<DraftDef<Q>, E> {
-        Ok(DraftDef {
-            body: self.body,
-            faces: self.faces.clone(),
-            plane: self.plane.clone(),
-            offset: map_offset(&self.offset, f)?,
-            angle: f("angle", &self.angle)?,
-            symmetric: self.symmetric,
-            angle2: self.angle2.as_ref().map(|a| f("angle2", a)).transpose()?,
-            flip: self.flip,
-            tangent_chain: self.tangent_chain,
-        })
+    map_params! {
+        DraftDef {
+            body: copy,
+            faces: clone,
+            plane: clone,
+            offset: with(map_offset),
+            angle: param,
+            symmetric: copy,
+            angle2: option,
+            flip: copy,
+            tangent_chain: copy,
+        }
     }
 }
 

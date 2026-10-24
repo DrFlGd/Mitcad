@@ -114,7 +114,7 @@ number of edges that fit them, which this rule does not decide.
 ## The curves an input stores (mitcad#306, mitcad#106)
 
 An edge input also stores the curve of each edge it stood for when it was
-made ([`design/curve.rs`](src/design/curve.rs), the import README's *Stored
+made ([`design/curve.rs`](src/design/curve.rs), [the import notes](../import/docs/f3d-learning.md#stored-edge-curves-mitcad306), *Stored
 edge curves*). Where the names fit several edges, these curves come first,
 before the tail's order and the rules above (`design::inputs::pick_edge`):
 

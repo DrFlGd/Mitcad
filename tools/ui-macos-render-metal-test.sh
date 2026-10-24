@@ -93,10 +93,169 @@ wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
 screenshot-view '${MITCAD_METAL_SHOTS}/resized.png'
 DRIVER
 cat >> "$script" <<'DRIVER'
+expect-viewport
+# Selection remains OCCT-backed while the rendered frame is composited.
+click-visible-face
+expect-selection 1 0
+screenshot-view '${MITCAD_METAL_SHOTS}/selected.png'
+key Escape
+DRIVER
+if [ "${MITCAD_RENDER_ACCEPTANCE:-0}" = 1 ]; then
+  cat >> "$script" <<'DRIVER'
+# Preferences changes the running worker, rather than just a saved setting.
+command tools.preferences.display
+focus-dialog '^Settings$'
+focus-widget renderDevice
+key Home Down
+key ctrl+w
+focus-main
+wait-log 'Render device: .*\(asked for cpu\)' 30
+expect-log 'Render diagnostics: backend CPU,'
+wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
+mark
+command tools.preferences.display
+focus-dialog '^Settings$'
+focus-widget renderDevice
+key Home Down Down
+key ctrl+w
+focus-main
+wait-log 'Render device: .*METAL.*\(asked for METAL_' 30
+wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
+
+# A geometry change and undo update the live render scene as well.
+key Escape
+mark
+command solid.box
+expect-log 'Command Box started'
+click-logged 'Datum xy'
+focus-widget input_x
+key ctrl+a
+type 80
+key Tab
+focus-widget input_y
+key ctrl+a
+type 0
+key Tab
+focus-widget input_length
+key ctrl+a
+type 10
+key Tab
+focus-widget input_width
+key ctrl+a
+type 10
+key Tab
+focus-widget input_height
+key ctrl+a
+type 10
+key Tab
+button '^OK$'
+expect-model-bodies 2 49000
+wait-log 'Render scene [0-9]+: 2 bodies' 30
+wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
+mark
+command edit.undo
+expect-model-bodies 1 48000
+wait-log 'Render scene [0-9]+: 1 bodies' 30
+wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
+
+# A real appearance assignment updates the material in the live scene.
+click-visible-face
+command solid.appearances
+focus-dialog '^Appearances$'
+focus-widget appearanceSearch
+type 'Glass - Clear'
+wait-log 'Appearances filtered "Glass - Clear" .*1 shown' 6
+focus-widget appearanceLibrary
+key Home Down
+expect-log 'Appearance selected: glass_clear'
+mark
+button '^Assign to 1 body$'
+wait-log 'Render material swap .* -> glass_clear' 30
+button '^Close$'
+focus-main
+wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
+screenshot-view '${MITCAD_METAL_SHOTS}/glass.png'
+mark
+command edit.undo
+wait-log 'Render material swap .*glass_clear.* -> ' 30
+wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
+DRIVER
+fi
+cat >> "$script" <<'DRIVER'
 command view.rendered
 expect-log 'Rendered view off'
 wait-log 'Render worker ended' 15
 DRIVER
+if [ "${MITCAD_RENDER_ACCEPTANCE:-0}" = 1 ]; then
+  cat >> "$script" <<'DRIVER'
+# Render Image uses the separate batch worker with the chosen Metal device.
+command file.render_image
+focus-dialog '^Render Image$'
+focus-widget renderImage_aspect
+key End
+focus-widget renderImage_width
+key ctrl+a
+type 320
+key Return
+focus-widget renderImage_height
+key ctrl+a
+type 240
+key Return
+focus-widget renderImage_samples
+key ctrl+a
+type 16
+key Return
+mark
+button '^Render$'
+wait-log 'Render image worker ready: Cycles' 30
+expect-log 'Render diagnostics: backend METAL,'
+wait-log 'Render image done: 320 x 240, 16 samples' 120
+expect-log 'Render denoising diagnostics: backend METAL,.*OIDN METAL.*execution confirmed'
+screenshot-dialog '${MITCAD_METAL_SHOTS}/final-image.png'
+focus-widget renderImage_samples
+key ctrl+a
+type 65536
+key Return
+mark
+button '^Render$'
+wait-log 'Render image progress ' 30
+button '^Cancel$'
+wait-log 'Render image cancelled' 15
+expect-model-bodies 1 48000
+button '^Close$'
+focus-main
+DRIVER
+fi
+if [ "${MITCAD_RENDER_ACCEPTANCE:-0}" = 1 ]; then
+  # Keep this broader interaction matrix bounded; the separate navigation
+  # case retains its larger Retina workload.
+  sed -i '' -e 's/window-resize 1280 800/window-resize 900 650/' \
+            -e 's/window-resize 1440 900/window-resize 1000 720/' "$script"
+fi
+if [ "$frontend" = native ] && [ "${MITCAD_RENDER_ACCEPTANCE:-0}" = 1 ]; then
+  python3 - "$script" "$UI_OUT/devices.json" <<'PY'
+import json, pathlib, shlex, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+devices = json.load(open(sys.argv[2]))["devices"]
+cpu = next(d for d in devices if d["type"] == "CPU")
+metal = next(d for d in devices if d["type"] == "METAL")
+text = text.replace("focus-widget renderDevice\nkey Home Down Down",
+                    "native-choice renderDevice " + shlex.quote(metal["name"] + " (METAL)"))
+text = text.replace("focus-widget renderDevice\nkey Home Down",
+                    "native-choice renderDevice " + shlex.quote("CPU: " + cpu["name"]))
+text = text.replace('focus-widget appearanceSearch\ntype \'Glass - Clear\'\nwait-log \'Appearances filtered "Glass - Clear" .*1 shown\' 6\nfocus-widget appearanceLibrary\nkey Home Down',
+                    "native-type appearanceSearch 'Glass - Clear'\nnative-select appearance.glass_clear")
+for field, value in (("width", 320), ("height", 240), ("samples", 16), ("samples", 65536)):
+    text = text.replace(f"focus-widget renderImage_{field}\nkey ctrl+a\ntype {value}",
+                        f"native-type renderImage_{field} {value}")
+text = text.replace("focus-widget renderImage_aspect\nkey End", "native-choice renderImage_aspect Fixed")
+for field, value in (("x", 80), ("y", 0), ("length", 10), ("width", 10), ("height", 10)):
+    text = text.replace(f"focus-widget input_{field}\nkey ctrl+a\ntype {value}\nkey Tab",
+                        f"native-type input_{field} {value}")
+path.write_text(text)
+PY
+fi
 MITCAD_TEST_INPUT="$script" MITCAD_METAL_SHOTS="$UI_OUT" \
   MITCAD_RENDER_SAMPLES=16 MITCAD_RENDER_PREVIEWS=4,16 UI_TIMEOUT=420 \
   ui_run_app metal "--ui=$frontend" --no-recovery --demo
@@ -116,8 +275,12 @@ else
 fi
 ui_expect_log 'Render device: .*METAL.*\(asked for metal\)' 'explicit Metal selected'
 ui_expect_log 'Render denoising diagnostics: backend METAL,.*OIDN METAL.*\(execution confirmed\)' 'Metal OIDN executed'
-ui_expect_no_log 'Rendering on the CPU:|Denoising on the CPU:|Render device: .*CPU|OIDN CPU.*\(execution confirmed\)|Render worker error|Render failed|Recompute failed|ERROR:' \
-  'no fallback, worker error or shutdown pipeline error'
+for forbidden in 'Rendering on the CPU:' 'Denoising on the CPU:' 'Render worker error' 'Render failed' 'Recompute failed' 'ERROR:'; do
+  ui_expect_no_log "$forbidden" 'no fallback, worker error or shutdown pipeline error'
+done
+if [ "${MITCAD_RENDER_ACCEPTANCE:-0}" != 1 ]; then
+  ui_expect_no_log 'OIDN CPU' 'no CPU denoising on the required Metal path'
+fi
 ui_expect_log 'Render worker ended' 'leaving rendered mode ended the worker'
 if ! python3 - "$UI_LOG_FILE" <<'PY'
 import re, sys
@@ -149,6 +312,25 @@ PY
     ui_pass "$shot: rendered image contains the body"
   fi
 done
+if ! python3 - "$UI_STATS" "$UI_OUT/resized.png" "$UI_OUT/selected.png" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("image_stats", sys.argv[1])
+stats = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(stats)
+before, after = (stats.read_png(path) for path in sys.argv[2:])
+assert before[:3] == after[:3], "selection changed the framebuffer dimensions"
+channels = before[2]
+changed = sum(max(abs(x-y) for x, y in zip(a[:3], b[:3])) > 24
+              for left, right in zip(before[3], after[3])
+              for a, b in zip(zip(*[iter(left)] * channels), zip(*[iter(right)] * channels)))
+assert changed > 32, "selection overlay did not change the actual rendered framebuffer"
+print("Selection overlay changed %d rendered pixels" % changed)
+PY
+then
+  ui_fail 'selection overlay was not visible over the rendered image'
+else
+  ui_pass 'actual face picking also drew its selection overlay'
+fi
 if ! python3 - "$UI_OUT/zoomed.stats.json" "$UI_OUT/resized.stats.json" <<'PY'
 import json, sys
 with open(sys.argv[1]) as stream:

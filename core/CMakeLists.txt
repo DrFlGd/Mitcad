@@ -446,6 +446,9 @@ if(BUILD_TESTING)
   # The .dwg reader (mitcad#453) on drawings written by its tests in every
   # version (no OCCT).
   mitcad_cargo_test(core.dwg mitcad-dwg)
+  # The vector helpers on [f64; 3] that the model, the solver and the
+  # readers share (mitcad#582; no OCCT).
+  mitcad_cargo_test(core.vec3 mitcad-vec3)
 
   # The fixtures that build the test binaries, and the documentation tests
   # (cargo with the fixture's packages, so that it builds nothing again).

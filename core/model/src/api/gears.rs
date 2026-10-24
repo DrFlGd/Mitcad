@@ -16,9 +16,6 @@ use crate::ids::FeatureUid;
 use crate::kernel::Kernel;
 use crate::parameters::{slot_unit, unit_for};
 
-/// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 1] = ["link_gears"];
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GearValuesQuery {

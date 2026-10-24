@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
 
+use super::mapping::map_params;
 use super::{CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References};
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
@@ -36,11 +37,11 @@ impl<P> PlaceholderDef<P> {
         }
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<PlaceholderDef<Q>, E> {
-        Ok(PlaceholderDef::new(self.item_type.clone()))
+    map_params! {
+        PlaceholderDef {
+            item_type: clone,
+            marker: phantom,
+        }
     }
 }
 

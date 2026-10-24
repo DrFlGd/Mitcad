@@ -129,6 +129,7 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
   };
   const auto spin = [this](const QString& field, int low, int high, const QString& suffix, const QString& tip) {
     auto* box = new QSpinBox;
+    box->setObjectName(QStringLiteral("renderImage_") + field);
     box->setRange(low, high);
     box->setSuffix(suffix);
     box->setKeyboardTracking(false);
@@ -152,6 +153,7 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
   };
   const auto choice = [this](const QString& field, const QVector<std::pair<QString, QString>>& items) {
     auto* box = new QComboBox;
+    box->setObjectName(QStringLiteral("renderImage_") + field);
     for (const auto& [id, text] : items) {
       box->addItem(text, id);
     }

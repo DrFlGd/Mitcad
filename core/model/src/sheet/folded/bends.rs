@@ -1,26 +1,14 @@
 // SPDX-License-Identifier: MIT
 //! Tangent construction and material-side correspondence of native bends.
 
+use mitcad_vec3::{add, distance, scale, sub};
+
 use super::*;
 use crate::features::sheet::{Allowance, Relief, ReliefKind};
 use crate::features::sheet_folded::*;
 use crate::profile::dot;
 use crate::sketch::geometry as g2;
 use crate::transform::Transform;
-
-fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-fn scale(a: [f64; 3], s: f64) -> [f64; 3] {
-    a.map(|v| v * s)
-}
-fn distance(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let d = sub(a, b);
-    dot(d, d).sqrt()
-}
 
 pub(super) struct BendMetrics {
     pub(super) angle: f64,

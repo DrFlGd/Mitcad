@@ -13,6 +13,7 @@ use serde_json::{Map, Value, json};
 
 use crate::geom::{self, mm, mm3};
 use crate::history::{EXACT, RELATIVE, Sig};
+use crate::scaffold::CandidateCore;
 use crate::{Candidate, Importer, InputProvenance, features, refs};
 
 /// An item's detail as its JSON object (typed details written back).
@@ -398,7 +399,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             // boolean operation too where that gives the same bodies).
             let candidate = |def: Value, copies: f64| {
                 let one = |def: Value| Candidate {
-                    defs: vec![def],
+                    core: CandidateCore::new(def),
                     note: Some(format!(
                         "inputs not decoded: copies of {} checked against the history",
                         uid
@@ -700,9 +701,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         continue;
                     }
                     out.push(Candidate {
-                        defs: vec![json!({"type": "mirror",
+                        core: CandidateCore::new(json!({"type": "mirror",
                         "objects": {"type": "bodies", "bodies": objects},
-                        "plane": plane, "combine": combine, "compute": "adjust"})],
+                        "plane": plane, "combine": combine, "compute": "adjust"})),
                         note: Some(format!(
                             "inputs not decoded: {} of {} checked against the history",
                             if combine { "a joined mirror" } else { "copies" },
@@ -795,9 +796,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             let sum: f64 = picked.iter().map(|&p| inputs[p].1).sum();
             for plane in &planes {
                 out.push(Candidate {
-                    defs: vec![json!({"type": "mirror",
+                    core: CandidateCore::new(json!({"type": "mirror",
                         "objects": {"type": "features", "features": uids},
-                        "plane": plane, "compute": "adjust"})],
+                        "plane": plane, "compute": "adjust"})),
                     note: Some(format!(
                         "inputs not decoded: a mirror of {} checked against the history",
                         uids.join(", ")
@@ -1693,7 +1694,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     })
                     .collect();
                 Ok(vec![Candidate {
-                    defs,
+                    core: CandidateCore::of(defs),
                     note: None,
                     guess: false,
                     predicted: None,
@@ -2252,7 +2253,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 self.hole_variants(d, vec![def])?
                     .into_iter()
                     .map(|(defs, note)| Candidate {
-                        defs,
+                        core: CandidateCore::of(defs),
                         note,
                         guess,
                         predicted: None,
@@ -2430,7 +2431,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                                 note = format!("{note}; {n}");
                             }
                             let c = Candidate {
-                                defs,
+                                core: CandidateCore::of(defs),
                                 note: Some(note),
                                 guess: true,
                                 predicted: None,
@@ -2901,7 +2902,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // first alone, then after the faces are sized as a whole.
         if modelled.is_some() {
             candidates.push(Candidate {
-                defs: plain.clone(),
+                core: CandidateCore::of(plain.clone()),
                 note: note.clone(),
                 guess: false,
                 predicted: None,
@@ -2950,7 +2951,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
             offsets.extend(plain.iter().cloned());
             candidates.push(Candidate {
-                defs: offsets,
+                core: CandidateCore::of(offsets),
                 note: Some(with("its faces sized to the thread's diameter")),
                 guess: false,
                 predicted: sized_change,
@@ -2995,7 +2996,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
             defs.extend(threads(&sized)?);
             candidates.push(Candidate {
-                defs,
+                core: CandidateCore::of(defs),
                 note: Some(with("its faces sized to the thread's diameter by a tube")),
                 guess: false,
                 predicted: sized_change,
@@ -3006,7 +3007,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if modelled.is_none() {
             let sizes = threaded.iter().any(|t| t.4.is_some());
             candidates.push(Candidate {
-                defs: plain,
+                core: CandidateCore::of(plain),
                 note,
                 guess: false,
                 predicted: sizes.then_some(0.0),

@@ -5,6 +5,7 @@
 // model's JSON and picked items, operations, values, and the geometry that
 // places manipulators and primitives.
 
+#include <functional>
 #include <optional>
 #include <utility>
 
@@ -18,12 +19,12 @@
 #include <gp_Pnt.hxx>
 
 #include "../framework/Command.hpp"
+#include "../framework/Json.hpp"
 
 namespace mitcad::cmd {
 
 using Choices = QVector<QPair<QString, QString>>;
 
-QString str(const QJsonObject& object, const char* key);
 // The label of a choice's value.
 QString label(const Choices& choices, const QString& value);
 QString number(double value);
@@ -119,6 +120,17 @@ void newestProfile(CommandState& state, const CommandContext& context);
 bool hasProfiles(const CommandContext& context);
 bool hasBodies(const CommandContext& context);
 bool hasSketches(const CommandContext& context);
+
+// --- Components and occurrence paths (uids from the root, "O1/O4")
+
+// The `components` query's answer; throws like the query.
+QJsonObject componentsOf(const CommandContext& context);
+// A component's name; its uid when it is not known.
+QString componentName(const QString& uid, const CommandContext& context);
+// Calls `visit` with each occurrence of the `components` query's tree and
+// its path of uids from the root; no occurrences when the query fails.
+void eachOccurrence(const CommandContext& context,
+                    const std::function<void(const QJsonObject&, const QString&)>& visit);
 
 // --- Geometry (model coordinates, placed by occurrences)
 

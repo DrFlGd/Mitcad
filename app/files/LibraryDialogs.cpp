@@ -47,8 +47,6 @@
 namespace mitcad {
 namespace {
 
-QString str(const QJsonObject& object, const char* key) { return object.value(QLatin1String(key)).toString(); }
-
 QString errorOf(const QJsonObject& answer) {
   return answer.value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString();
 }

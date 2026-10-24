@@ -39,6 +39,7 @@ use serde_json::Value;
 use super::report::{FallbackGroup, FeatureCheck, FeatureReport, ObjectOutcome};
 use super::sketches::Placed;
 use super::{Importer, NOT_CONSUMING, measure};
+use crate::scaffold::{CandidateCore, substitute};
 
 /// The largest distance (relative volume and area, centre over size) of a
 /// replayed feature from FreeCAD's stored shape: the same OCCT definitions
@@ -116,7 +117,9 @@ impl<S> Default for Replay<S> {
 /// refer to earlier ones as `$0`, `$1`), with notes for the report.
 #[derive(Debug, Clone)]
 pub(super) struct Candidate {
-    pub defs: Vec<Value>,
+    /// The definitions, shared with the other imports' candidates; reached
+    /// as `candidate.defs`.
+    pub core: CandidateCore,
     /// Per definition, what its name adds to the object's label (the main
     /// one's is empty: it is named after the label); numbered ones made on
     /// the way (mitcad#547: more faces than fixed suffixes) are owned.
@@ -126,10 +129,24 @@ pub(super) struct Candidate {
     pub partial: bool,
 }
 
+impl std::ops::Deref for Candidate {
+    type Target = CandidateCore;
+
+    fn deref(&self) -> &CandidateCore {
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for Candidate {
+    fn deref_mut(&mut self) -> &mut CandidateCore {
+        &mut self.core
+    }
+}
+
 impl Candidate {
     pub fn new(def: Value) -> Self {
         Self {
-            defs: vec![def],
+            core: CandidateCore::new(def),
             suffixes: vec![Cow::Borrowed("")],
             notes: Vec::new(),
             partial: false,
@@ -150,7 +167,7 @@ impl Candidate {
     pub fn several_named(defs: Vec<(Value, Cow<'static, str>)>) -> Self {
         let (defs, suffixes) = defs.into_iter().unzip();
         Self {
-            defs,
+            core: CandidateCore::of(defs),
             suffixes,
             notes: Vec::new(),
             partial: false,
@@ -1247,26 +1264,4 @@ fn result_bodies(
         .collect();
     out.extend(after.iter().copied().filter(|b| !before.contains(b)));
     out
-}
-
-/// Replaces `"$<i>"` strings in a definition by the uids of the features
-/// added before it, also as body prefixes (`"$0.b0"`).
-fn substitute(def: &mut Value, uids: &[FeatureUid]) {
-    match def {
-        Value::String(s) if s.starts_with('$') => {
-            let (index, rest) = s[1..].split_at(
-                s[1..]
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(s.len() - 1),
-            );
-            if let Ok(i) = index.parse::<usize>()
-                && let Some(uid) = uids.get(i)
-            {
-                *s = format!("{uid}{rest}");
-            }
-        }
-        Value::Array(items) => items.iter_mut().for_each(|v| substitute(v, uids)),
-        Value::Object(map) => map.values_mut().for_each(|v| substitute(v, uids)),
-        _ => {}
-    }
 }

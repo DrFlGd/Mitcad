@@ -1442,6 +1442,8 @@ pub fn mesh_distance(a: &Tooth, b: &Tooth, internal: bool) -> (f64, f64) {
 
 #[cfg(test)]
 mod tests {
+    use mitcad_vec3::vec2::distance;
+
     use super::*;
 
     fn spur(teeth: f64) -> Tooth {
@@ -1453,10 +1455,6 @@ mod tests {
             shift: 0.0,
             backlash: 0.0,
         }
-    }
-
-    fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
-        (a[0] - b[0]).hypot(a[1] - b[1])
     }
 
     /// The loop's segments join end to end.

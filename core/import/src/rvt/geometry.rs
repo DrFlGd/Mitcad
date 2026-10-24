@@ -18,6 +18,7 @@ use mitcad_ifc::geometry::triangulate;
 use mitcad_ifc::math;
 use mitcad_rvt::brep::{GRep, P3, Solid, Surface, Uv};
 use mitcad_rvt::elements::{FOOT_MM, Model};
+use mitcad_vec3::distance as dist;
 
 use crate::ifc::brep::{mesh_closed, mesh_measures};
 
@@ -304,10 +305,6 @@ fn add_grep(
             }
         }
     }
-}
-
-fn dist(a: P3, b: P3) -> f64 {
-    math::length(math::sub(a, b))
 }
 
 /// A loop's model points (feet): each edge's points on this face's

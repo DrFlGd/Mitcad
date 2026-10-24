@@ -817,6 +817,7 @@ public:
       [check.trailingAnchor constraintLessThanOrEqualToAnchor:cell.trailingAnchor constant:-4].active = YES;
       [check.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor].active = YES;
     } else {
+      cell.accessibilityIdentifier = ns(index.data(NativeControlIdentifierRole).toString());
       NSTextField* field = label(index.data().toString());
       const QVariant permission = index.data(NativeEditableRole);
       field.editable = permission.isValid() ? permission.toBool()
@@ -1163,7 +1164,13 @@ private:
         if (spanning != nullptr) { add(rows, renderItem(spanning)); }
         else {
           NSStackView* line = stack(true);
-          if (caption != nullptr) { add(line, renderItem(caption)); }
+          if (caption != nullptr) {
+            NSView* nativeCaption = renderItem(caption);
+            if (auto* text = qobject_cast<QLabel*>(caption->widget()); text && !text->wordWrap()) {
+              [nativeCaption.widthAnchor constraintGreaterThanOrEqualToConstant:text->sizeHint().width()].active = YES;
+            }
+            add(line, nativeCaption);
+          }
           if (field != nullptr) { add(line, renderItem(field)); }
           add(rows, line);
         }

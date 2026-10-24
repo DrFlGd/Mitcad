@@ -110,20 +110,6 @@ bool along_normal(const TopoDS_Face& original, const TopoDS_Shape& image, double
   return projection.NbPoints() > 0 && projection.LowerDistance() <= tolerance;
 }
 
-// A compound of the shapes, or the one shape.
-TopoDS_Shape compound_of(const std::vector<TopoDS_Shape>& shapes) {
-  if (shapes.size() == 1) {
-    return shapes.front();
-  }
-  BRep_Builder builder;
-  TopoDS_Compound all;
-  builder.MakeCompound(all);
-  for (const TopoDS_Shape& shape : shapes) {
-    builder.Add(all, shape);
-  }
-  return all;
-}
-
 // --- Ruled Surface
 
 // An edge of the chain and the face it leaves.
@@ -728,7 +714,7 @@ ShapePtr ruled_surface(const Shape& body, const RuledSpec& spec) {
       parts.push_back(face);
       faces.push_back({face, {name}});
     }
-    const Shape pieces(compound_of(parts), faces);
+    const Shape pieces(detail::compound_or_single(parts), faces);
     ShapePtr sewn = stitch({&pieces}, kSewing);
     return sewn;
   });
@@ -766,7 +752,7 @@ ShapePtr extend_surface(const Shape& body, const std::vector<std::string>& edges
       parts.push_back(face);
       named.push_back({face, body.face_names(f)});
     }
-    const Shape faces(compound_of(parts), named);
+    const Shape faces(detail::compound_or_single(parts), named);
     return stitch({&faces}, kSewing);
   });
 }

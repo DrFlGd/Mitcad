@@ -48,13 +48,10 @@
 #include "../framework/TestSync.hpp"
 #include "../report/ReportCenter.hpp"
 #include "ProjectsPanel.hpp"
+#include "ProjectsTree.hpp"
 
 namespace mitcad {
 namespace {
-
-QString joinPath(const QString& folder, const QString& name) {
-  return folder.isEmpty() ? name : QStringLiteral("%1/%2").arg(folder, name);
-}
 
 // Whether `path` is `folder` or inside it.
 bool atOrInside(const QString& path, const QString& folder) {

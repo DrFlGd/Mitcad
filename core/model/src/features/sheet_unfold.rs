@@ -3,6 +3,7 @@
 //! the actual evaluated sheet between folded and developed configurations
 //! while keeping every panel, bend and curve identity.
 
+use super::mapping::map_params;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput, References,
 };
@@ -41,32 +42,26 @@ pub struct SheetRefoldDef<P = ParamId> {
 impl<P> SheetUnfoldDef<P> {
     pub const TYPE: &'static str = "sheet_unfold";
     pub const BASE_NAME: &'static str = "SheetUnfold";
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SheetUnfoldDef<Q>, E> {
-        Ok(SheetUnfoldDef {
-            body: self.body,
-            stationary: self.stationary,
-            bends: self.bends.clone(),
-            marker: PhantomData,
-        })
+    map_params! {
+        SheetUnfoldDef {
+            body: copy,
+            stationary: copy,
+            bends: clone,
+            marker: phantom,
+        }
     }
 }
 
 impl<P> SheetRefoldDef<P> {
     pub const TYPE: &'static str = "sheet_refold";
     pub const BASE_NAME: &'static str = "SheetRefold";
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SheetRefoldDef<Q>, E> {
-        Ok(SheetRefoldDef {
-            body: self.body,
-            unfold: self.unfold,
-            bends: self.bends.clone(),
-            marker: PhantomData,
-        })
+    map_params! {
+        SheetRefoldDef {
+            body: copy,
+            unfold: copy,
+            bends: clone,
+            marker: phantom,
+        }
     }
 }
 

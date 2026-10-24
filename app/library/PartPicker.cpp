@@ -43,6 +43,7 @@
 
 #include "../build/BuildCatalog.hpp"
 #include "../files/Libraries.hpp"
+#include "../framework/Json.hpp"
 #include "../framework/TestSync.hpp"
 #include "PartFavourites.hpp"
 
@@ -85,8 +86,6 @@ void setGroupFolded(const QString& key, bool folded) {
   keys.sort();
   QSettings().setValue(kFoldedKey, QJsonDocument(QJsonArray::fromStringList(keys)).toJson(QJsonDocument::Compact));
 }
-
-QString str(const QJsonObject& object, const char* key) { return object.value(QLatin1String(key)).toString(); }
 
 QColor starColour() { return QColor(232, 170, 0); }
 

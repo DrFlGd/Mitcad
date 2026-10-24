@@ -13,6 +13,7 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::{add_faces, check_faces, kernel_error};
+use super::mapping::map_params;
 use super::sheet_edges::{self, OpeningEdgesRef};
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -62,20 +63,17 @@ impl<P> MatchSurfaceDef<P> {
     pub const TYPE: &'static str = "match_surface";
     pub const BASE_NAME: &'static str = "MatchSurface";
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<MatchSurfaceDef<Q>, E> {
-        Ok(MatchSurfaceDef {
-            body: self.body,
-            face: self.face.clone(),
-            target: self.target,
-            edges: self.edges.clone(),
-            openings: self.openings.clone(),
-            target_face: self.target_face.clone(),
-            continuity: self.continuity,
-            values: PhantomData,
-        })
+    map_params! {
+        MatchSurfaceDef {
+            body: copy,
+            face: clone,
+            target: copy,
+            edges: clone,
+            openings: clone,
+            target_face: clone,
+            continuity: copy,
+            values: phantom,
+        }
     }
 }
 

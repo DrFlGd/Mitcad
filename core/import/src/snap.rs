@@ -35,6 +35,8 @@ use mitcad_model::datum::CurveGeometry;
 use mitcad_model::sketch::geometry::{Curve2, angle_after};
 use mitcad_model::sketch::intersect::intersections;
 use mitcad_model::sketch::project::{Projected, project};
+use mitcad_vec3::vec2::distance as dist;
+use mitcad_vec3::{cross, dot, sub, unit_div};
 use serde_json::{Value, json};
 
 use crate::sketch::SketchParts;
@@ -60,31 +62,6 @@ pub(crate) struct Snapped {
     pub left: usize,
 }
 
-fn dist(a: P, b: P) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
-}
-
-fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn unit3(a: [f64; 3]) -> Option<[f64; 3]> {
-    let n = dot3(a, a).sqrt();
-    (n > 1e-12).then(|| [a[0] / n, a[1] / n, a[2] / n])
-}
-
 /// An edge's curve as a model curve for projection (lines, circles and
 /// arcs; the rest is no projection this module matches).
 fn model_curve(g: &CurveGeometry) -> Option<Curve3> {
@@ -100,15 +77,15 @@ fn model_curve(g: &CurveGeometry) -> Option<Curve3> {
             start,
             end,
         } => {
-            let normal = unit3(*normal)?;
-            let x_axis = unit3(sub3(*start, *center))?;
-            let y_axis = cross3(normal, x_axis);
+            let normal = unit_div(*normal)?;
+            let x_axis = unit_div(sub(*start, *center))?;
+            let y_axis = cross(normal, x_axis);
             let closed = {
-                let d = sub3(*end, *start);
-                dot3(d, d).sqrt() <= 1e-9 * radius.max(1.0)
+                let d = sub(*end, *start);
+                dot(d, d).sqrt() <= 1e-9 * radius.max(1.0)
             };
-            let to = sub3(*end, *center);
-            let angle = dot3(to, y_axis).atan2(dot3(to, x_axis)).rem_euclid(TAU);
+            let to = sub(*end, *center);
+            let angle = dot(to, y_axis).atan2(dot(to, x_axis)).rem_euclid(TAU);
             Some(Curve3::Conic {
                 center: *center,
                 normal,
@@ -162,8 +139,8 @@ fn projections(
 /// the curves no projection here matches.
 fn reach(edge: &CurveGeometry, frame: &SketchFrame) -> Option<(P, P)> {
     let in_sketch = |p: &[f64; 3]| -> P {
-        let d = sub3(*p, frame.origin);
-        [dot3(d, frame.x_axis), dot3(d, frame.y_axis)]
+        let d = sub(*p, frame.origin);
+        [dot(d, frame.x_axis), dot(d, frame.y_axis)]
     };
     match edge {
         CurveGeometry::Line { start, end } => {

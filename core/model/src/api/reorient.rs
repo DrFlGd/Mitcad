@@ -6,31 +6,31 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ApiError;
+use super::dispatch::named_enum;
 use crate::datum::OriginDatum;
 use crate::document::Document;
 use crate::kernel::Kernel;
 use crate::reorient::{Turn, TurnAxis};
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum ReorientCommand {
-    ReorientDesign {
-        /// `x`, `y` or `z`, with `degrees`.
-        #[serde(default)]
-        axis: Option<String>,
-        /// 90, 180 or 270 (-90 is 270), counter-clockwise looking against
-        /// the axis.
-        #[serde(default)]
-        degrees: Option<i64>,
-        /// Instead of an axis: the origin plane (`xz`, `yz`, `xy`) whose
-        /// frame becomes XY's.
-        #[serde(default)]
-        plane: Option<String>,
-    },
+named_enum! {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    pub(crate) enum ReorientCommand {
+        "reorient_design" => ReorientDesign {
+            /// `x`, `y` or `z`, with `degrees`.
+            #[serde(default)]
+            axis: Option<String>,
+            /// 90, 180 or 270 (-90 is 270), counter-clockwise looking against
+            /// the axis.
+            #[serde(default)]
+            degrees: Option<i64>,
+            /// Instead of an axis: the origin plane (`xz`, `yz`, `xy`) whose
+            /// frame becomes XY's.
+            #[serde(default)]
+            plane: Option<String>,
+        },
+    }
 }
-
-/// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 1] = ["reorient_design"];
 
 /// The turn a command asks for.
 pub(crate) fn requested_turn(

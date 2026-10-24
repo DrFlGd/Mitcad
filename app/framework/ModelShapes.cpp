@@ -145,6 +145,14 @@ gp_Pnt pointOf(const QJsonValue& xyz) {
   return gp_Pnt(a.at(0).toDouble(), a.at(1).toDouble(), a.at(2).toDouble());
 }
 
+std::optional<gp_Pnt> pointFrom(const QJsonValue& xyz) {
+  const QJsonArray a = xyz.toArray();
+  if (a.size() < 3) {
+    return std::nullopt;
+  }
+  return gp_Pnt(a.at(0).toDouble(), a.at(1).toDouble(), a.at(2).toDouble());
+}
+
 gp_Vec vectorOf(const QJsonValue& xyz) {
   const QJsonArray a = xyz.toArray();
   return gp_Vec(a.at(0).toDouble(), a.at(1).toDouble(), a.at(2).toDouble());

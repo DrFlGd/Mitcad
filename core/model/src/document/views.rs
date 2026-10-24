@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use mitcad_vec3::norm;
+
 use super::{Document, ModelError, invalid};
 use crate::features::is_false;
 use crate::kernel::Kernel;
@@ -28,10 +30,6 @@ pub struct NamedView {
     pub height: f64,
 }
 
-fn length(v: [f64; 3]) -> f64 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
-}
-
 impl NamedView {
     /// Why the view cannot be saved, if it cannot.
     pub(crate) fn check(&self) -> Result<(), String> {
@@ -47,7 +45,7 @@ impl NamedView {
             self.target[1] - self.eye[1],
             self.target[2] - self.eye[2],
         ];
-        let (along, up) = (length(sight), length(self.up));
+        let (along, up) = (norm(sight), norm(self.up));
         if along <= 1e-9 || up <= 1e-12 {
             return Err(format!(
                 "view '{}': the eye must differ from the target, and up must not be zero",

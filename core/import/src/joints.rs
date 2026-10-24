@@ -72,7 +72,7 @@ use crate::geom::{self, mm, mm3};
 use crate::report::Outcome;
 use crate::{Candidate, Importer, InputProvenance, components};
 
-type Vec3 = [f64; 3];
+use mitcad_vec3::Vec3;
 
 /// A trace line with the time (`MITCAD_IMPORT_TRACE`).
 macro_rules! trace {

@@ -15,6 +15,7 @@ use mitcad_model::{BodyUid, ComponentUid};
 use serde_json::{Map, Value, json};
 
 use crate::features::profiles_of;
+use crate::scaffold::CandidateCore;
 use crate::{Candidate, Importer, refs};
 
 /// At most this many choices of loft sections' regions are tried.
@@ -711,7 +712,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 let whole_path =
                     d.orientation.is_some() && !rail && !surfaces && def.get("extent").is_none();
                 let candidate = Candidate {
-                    defs: vec![def],
+                    core: CandidateCore::new(def),
                     note: None,
                     guess: set.guess || k > 0,
                     predicted: None,

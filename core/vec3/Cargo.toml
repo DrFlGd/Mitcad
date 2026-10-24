@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-vec3"
+description = "Free functions on [f64; 3] and [f64; 2] shared by the model, the solver and the readers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_vec3"
+
+# No dependencies: the lowest crate of the workspace.
+[dependencies]

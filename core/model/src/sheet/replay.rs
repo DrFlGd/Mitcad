@@ -18,6 +18,8 @@
 //! Domains and curves each copy makes are the pattern's own (its feature
 //! identity, numbered per copy).
 
+use mitcad_vec3::{add, distance as dist, sub};
+
 use super::folded::cut::{straight_cut_on, straight_cuts_at_once, straight_profiles};
 use super::folded::{boundary, flange, line, plane, read};
 use super::*;
@@ -28,21 +30,6 @@ use crate::kernel::{BooleanOp, Kernel};
 use crate::profile::dot;
 use crate::recompute::Versioned;
 use crate::transform::{Instance, Transform};
-
-type V3 = [f64; 3];
-
-fn sub(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
-fn add(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-
-fn dist(a: V3, b: V3) -> f64 {
-    let d = sub(a, b);
-    dot(d, d).sqrt()
-}
 
 /// One copy: the feature, the transform from its place to the copy's, and
 /// the instance that names the copy.

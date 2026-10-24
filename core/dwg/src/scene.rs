@@ -17,6 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mitcad_dxf::Units;
+use mitcad_vec3::{cross, unit_div};
 
 use crate::objects::{Color, EntityData, Insert, Kind, types};
 use crate::solid::{self, Form};
@@ -97,23 +98,10 @@ impl Affine {
     }
 }
 
-fn normalize(v: [f64; 3]) -> Option<[f64; 3]> {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    (n > 1e-12 && n.is_finite()).then(|| [v[0] / n, v[1] / n, v[2] / n])
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
 /// The object coordinate system of an extrusion direction (the arbitrary
 /// axis algorithm): columns are its x, y and z axes in world coordinates.
 pub fn ocs(extrusion: [f64; 3]) -> Affine {
-    let Some(z) = normalize(extrusion) else {
+    let Some(z) = unit_div(extrusion) else {
         return Affine::IDENTITY;
     };
     if (z[0] - 0.0).abs() < 1e-12 && (z[1] - 0.0).abs() < 1e-12 && z[2] > 0.0 {
@@ -125,7 +113,7 @@ pub fn ocs(extrusion: [f64; 3]) -> Affine {
     } else {
         cross([0.0, 0.0, 1.0], z)
     };
-    let x = normalize(x).unwrap_or([1.0, 0.0, 0.0]);
+    let x = unit_div(x).unwrap_or([1.0, 0.0, 0.0]);
     let y = cross(z, x);
     Affine {
         m: [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]],

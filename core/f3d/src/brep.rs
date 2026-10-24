@@ -11,36 +11,17 @@
 //!   the surface's natural normal (see [`Surface`]), negated when
 //!   `Face::reversed` is set.
 
-pub type P3 = [f64; 3];
+use mitcad_vec3::unit_above;
 
-pub fn add(a: P3, b: P3) -> P3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-pub fn sub(a: P3, b: P3) -> P3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-pub fn scale(a: P3, s: f64) -> P3 {
-    [a[0] * s, a[1] * s, a[2] * s]
-}
-pub fn dot(a: P3, b: P3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-pub fn cross(a: P3, b: P3) -> P3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-pub fn norm(a: P3) -> f64 {
-    dot(a, a).sqrt()
-}
+pub use mitcad_vec3::Vec3 as P3;
+
+// The vector helpers (shared with the model and the other readers); the
+// names are this module's public ones.
+pub use mitcad_vec3::{add, cross, distance as dist, dot, norm, scale, sub};
+
+/// The unit vector along `a`; `a` itself when it has no length.
 pub fn normalize(a: P3) -> P3 {
-    let n = norm(a);
-    if n > 0.0 { scale(a, 1.0 / n) } else { a }
-}
-pub fn dist(a: P3, b: P3) -> f64 {
-    norm(sub(a, b))
+    unit_above(a, 0.0).unwrap_or(a)
 }
 
 /// Non-rational or rational B-spline curve in OCCT form: distinct knots with

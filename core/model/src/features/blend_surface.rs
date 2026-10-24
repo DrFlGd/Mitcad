@@ -12,6 +12,7 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::kernel_error;
+use super::mapping::map_params;
 use super::sheet_edges::{self, OpeningEdgesRef};
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -76,16 +77,13 @@ impl<P> BlendSurfaceDef<P> {
     pub const TYPE: &'static str = "blend_surface";
     pub const BASE_NAME: &'static str = "BlendSurface";
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<BlendSurfaceDef<Q>, E> {
-        Ok(BlendSurfaceDef {
-            from: self.from.clone(),
-            to: self.to.clone(),
-            stitch: self.stitch,
-            values: PhantomData,
-        })
+    map_params! {
+        BlendSurfaceDef {
+            from: clone,
+            to: clone,
+            stitch: copy,
+            values: phantom,
+        }
     }
 }
 

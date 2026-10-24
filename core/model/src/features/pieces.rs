@@ -41,6 +41,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use mitcad_vec3::distance;
+
 use super::{EvalContext, is_false};
 use crate::fingerprint::Fingerprint;
 use crate::ids::{BodyUid, FeatureUid};
@@ -169,10 +171,6 @@ fn measure<K: Kernel>(kernel: &K, shape: &K::Shape) -> Option<Measured> {
     )
 }
 
-fn distance(a: &[f64; 3], b: &[f64; 3]) -> f64 {
-    (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt()
-}
-
 /// How far a piece (volume, centre) is from a remembered one: the change
 /// of volume and the shift of the centre, each 1 at the most a match
 /// allows (`scale`: the pieces' size); infinite for what cannot be
@@ -182,7 +180,7 @@ fn closeness(mark: &PieceMark, volume: f64, centre: &[f64; 3], scale: f64) -> (f
         return (f64::INFINITY, f64::INFINITY);
     }
     let growth = (volume / mark.volume).ln().abs() / VOLUME_FACTOR.ln();
-    let shift = distance(&mark.centre, centre) / (SHIFT * scale);
+    let shift = distance(mark.centre, *centre) / (SHIFT * scale);
     (growth, shift)
 }
 
@@ -278,7 +276,7 @@ impl<K: Kernel> EvalContext<'_, K> {
             .iter()
             .map(|m| m.bounds)
             .reduce(|a, b| a.union(&b))
-            .map_or(0.0, |b| distance(&b.min, &b.max));
+            .map_or(0.0, |b| distance(b.min, b.max));
         let marks: &[PieceMark] = remembered.as_ref().map_or(&[], |g| &g.pieces);
         let scale = remembered.as_ref().map_or(size, |g| g.size.max(size));
         let found: Vec<(f64, [f64; 3])> = measured.iter().map(|m| (m.volume, m.centre)).collect();
@@ -307,7 +305,7 @@ impl<K: Kernel> EvalContext<'_, K> {
                          (volume {} → {} mm³, centre moved {} mm)",
                         amount(mark.volume),
                         amount(piece.volume),
-                        amount(distance(&mark.centre, &piece.centre)),
+                        amount(distance(mark.centre, piece.centre)),
                     ),
                 ));
             }

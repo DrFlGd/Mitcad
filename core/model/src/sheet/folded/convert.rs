@@ -28,6 +28,8 @@
 //! curves `g<1000000+>` of the feature, the setback lines `g<900000+20k+3>`
 //! (on the panel before the bend) and `g<900010+20k+1>` (after it).
 
+use mitcad_vec3::{norm, scale, sub};
+
 use super::bends::{BendMetrics, add_bend_strip, construction, port_frame, side};
 use super::develop::{orient, region_area};
 use super::*;
@@ -39,16 +41,10 @@ use crate::kernel::Curve3;
 use crate::profile::{cross, dot};
 use crate::topo::{FaceName, TopoName};
 
-type V3 = [f64; 3];
+use mitcad_vec3::Vec3 as V3;
 
-fn sub(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-fn scale(a: V3, s: f64) -> V3 {
-    a.map(|v| v * s)
-}
 fn unit(a: V3) -> Result<V3, String> {
-    let l = dot(a, a).sqrt();
+    let l = norm(a);
     if l <= 1e-12 {
         return Err("a direction of zero length".into());
     }

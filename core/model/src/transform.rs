@@ -3,6 +3,8 @@
 //! alignments, scales and primitives): affine maps of model space and the
 //! kernel data these features exchange. Millimetres and radians.
 
+use mitcad_vec3::{add, cross, dot, norm, sub, unit};
+
 use crate::ids::FeatureUid;
 use crate::profile::SketchFrame;
 use crate::topo::{FaceName, RoleKey};
@@ -36,7 +38,7 @@ impl Transform {
     /// counter-clockwise looking against the direction (right-hand rule).
     /// None for a zero direction.
     pub fn rotation(origin: [f64; 3], direction: [f64; 3], angle: f64) -> Option<Self> {
-        let [x, y, z] = normalized(direction)?;
+        let [x, y, z] = unit(direction)?;
         let (s, c) = angle.sin_cos();
         let t = 1.0 - c;
         let linear = [
@@ -50,7 +52,7 @@ impl Transform {
     /// Reflection in the plane through `origin` with the normal. None for a
     /// zero normal.
     pub fn mirror(origin: [f64; 3], normal: [f64; 3]) -> Option<Self> {
-        let n = normalized(normal)?;
+        let n = unit(normal)?;
         let linear = std::array::from_fn(|r| {
             std::array::from_fn(|c| f64::from(u8::from(r == c)) - 2.0 * n[r] * n[c])
         });
@@ -213,40 +215,6 @@ pub struct PrimitiveSpec {
     pub shape: PrimitiveShape,
 }
 
-pub(crate) fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-
-pub(crate) fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
-pub(crate) fn scaled(v: [f64; 3], factor: f64) -> [f64; 3] {
-    v.map(|x| x * factor)
-}
-
-pub(crate) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-pub(crate) fn length(v: [f64; 3]) -> f64 {
-    dot(v, v).sqrt()
-}
-
-/// The unit vector, None for a zero or non-finite one.
-pub(crate) fn normalized(v: [f64; 3]) -> Option<[f64; 3]> {
-    let l = length(v);
-    (l > 1e-12 && l.is_finite()).then(|| scaled(v, 1.0 / l))
-}
-
 /// A unit vector at right angles to the unit vector `v`.
 pub(crate) fn perpendicular(v: [f64; 3]) -> [f64; 3] {
     let other = if v[0].abs() < 0.9 {
@@ -254,7 +222,7 @@ pub(crate) fn perpendicular(v: [f64; 3]) -> [f64; 3] {
     } else {
         [0.0, 1.0, 0.0]
     };
-    normalized(cross(v, other)).expect("not parallel")
+    unit(cross(v, other)).expect("not parallel")
 }
 
 /// The rotation about `pivot` that turns the unit vector `from` onto `to`,
@@ -267,15 +235,11 @@ pub(crate) fn rotation_between(
     fallback: [f64; 3],
 ) -> Transform {
     let axis = cross(from, to);
-    let angle = length(axis).atan2(dot(from, to));
+    let angle = norm(axis).atan2(dot(from, to));
     if angle.abs() <= 1e-12 {
         return Transform::IDENTITY;
     }
-    let axis = if length(axis) <= 1e-12 {
-        fallback
-    } else {
-        axis
-    };
+    let axis = if norm(axis) <= 1e-12 { fallback } else { axis };
     Transform::rotation(pivot, axis, angle).expect("a non-zero axis")
 }
 
@@ -349,7 +313,7 @@ mod tests {
         assert!(
             near(perpendicular([0.0, 0.0, 1.0]), [0.0, 1.0, 0.0]) || {
                 let p = perpendicular([0.0, 0.0, 1.0]);
-                dot(p, [0.0, 0.0, 1.0]).abs() < 1e-12 && (length(p) - 1.0).abs() < 1e-12
+                dot(p, [0.0, 0.0, 1.0]).abs() < 1e-12 && (norm(p) - 1.0).abs() < 1e-12
             }
         );
     }

@@ -210,7 +210,6 @@ public:
   // Parameter names picked from the view (mitcad#250;
   // MainWindowParameterPicks.cpp).
   std::vector<ShownSketch> shownSketches() const override;
-  const CommandDef* featureEditor(const QJsonObject& def) const override;
 
   // SketchHost
   const Selection& selection() const override { return m_selection; }

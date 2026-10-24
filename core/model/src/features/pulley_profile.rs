@@ -427,12 +427,10 @@ pub fn toothed_outline(
 
 #[cfg(test)]
 mod tests {
+    use mitcad_vec3::vec2::distance;
+
     use super::super::gear_profile::{ends, loop_area, sample};
     use super::*;
-
-    fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
-        (a[0] - b[0]).hypot(a[1] - b[1])
-    }
 
     /// The loop's segments join end to end, in their order.
     fn assert_closed(segments: &[NamedSegment]) {

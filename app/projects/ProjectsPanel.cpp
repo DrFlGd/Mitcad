@@ -58,17 +58,6 @@ constexpr int kDefaultWidth = 240;
 
 const QString kSuffix = QStringLiteral(".mitcad");
 
-QString joinPath(const QString& folder, const QString& name) {
-  return folder.isEmpty() ? name : QStringLiteral("%1/%2").arg(folder, name);
-}
-
-QString dirOf(const QString& path) {
-  const int slash = path.lastIndexOf(QLatin1Char('/'));
-  return slash < 0 ? QString() : path.left(slash);
-}
-
-QString lastPart(const QString& path) { return path.mid(path.lastIndexOf(QLatin1Char('/')) + 1); }
-
 // A design's name as the panel shows it: its file's name without .mitcad.
 QString designName(const QString& path) { return designDisplayName(path); }
 

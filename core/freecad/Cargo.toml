@@ -17,6 +17,8 @@ path = "src/bin/mitcad-fcstd-inspect.rs"
 
 [dependencies]
 mitcad-zip = { path = "../zip" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
 # Document.xml and GuiDocument.xml; DTDs (and so entity expansion) refused.
 roxmltree = "0.20.0"
 serde.workspace = true

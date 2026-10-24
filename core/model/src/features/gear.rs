@@ -26,6 +26,8 @@ use std::f64::consts::{PI, TAU};
 
 use serde::{Deserialize, Serialize};
 
+use mitcad_vec3::{add_scaled, combine};
+
 use super::extrude::{Operation, apply_operation, check_participants, participant_bodies};
 use super::gear_profile::{
     self, Bevel, NamedSegment, Rack, Tooth, bore_outline, circle, mesh_distance,
@@ -190,6 +192,7 @@ impl<P> GearDef<P> {
     pub const TYPE: &'static str = "gear";
     pub const BASE_NAME: &'static str = "Gear";
 
+    // Written by hand: the optional values come first, nested parts under prefixes.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -533,14 +536,6 @@ pub struct Placement {
     pub phase: f64,
 }
 
-fn add(a: [f64; 3], b: [f64; 3], s: f64) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] + b[i] * s)
-}
-
-fn combine(a: [f64; 3], sa: f64, b: [f64; 3], sb: f64) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] * sa + b[i] * sb)
-}
-
 /// The values of two gears' mesh: the centre distance (a rack: from the
 /// pinion's axis to the rack's reference line) and the radii a motion link
 /// couples (the pitch radii; a rack's none).
@@ -706,14 +701,14 @@ pub(crate) fn placement<K: Kernel>(
             let middle = rack.pitch_length() / 2.0;
             let s = p * (f + (middle / p - f).round());
             let d = combine(frame.x_axis, -theta.sin(), frame.y_axis, theta.cos());
-            let datum = add(
+            let datum = add_scaled(
                 frame.origin,
                 u,
                 tooth.pitch_radius() + tooth.shift * tooth.module,
             );
             Placement {
                 frame: SketchFrame {
-                    origin: add(datum, d, -s),
+                    origin: add_scaled(datum, d, -s),
                     x_axis: d,
                     y_axis: u.map(|v| -v),
                 },
@@ -726,8 +721,8 @@ pub(crate) fn placement<K: Kernel>(
             let p = rack.tooth.pitch();
             let x = rack.pitch_length() / 2.0 + mesh.position.unwrap_or(0.0);
             let tooth = gear.tooth();
-            let origin = add(
-                add(frame.origin, frame.x_axis, x),
+            let origin = add_scaled(
+                add_scaled(frame.origin, frame.x_axis, x),
                 frame.y_axis,
                 tooth.pitch_radius() + tooth.shift * tooth.module,
             );
@@ -741,7 +736,7 @@ pub(crate) fn placement<K: Kernel>(
             let f = fraction(theta + PI, at.phase, mate_teeth) - 0.5;
             Placement {
                 frame: SketchFrame {
-                    origin: add(frame.origin, u, distance),
+                    origin: add_scaled(frame.origin, u, distance),
                     ..frame
                 },
                 phase: theta + PI - f * TAU / new_teeth,
@@ -751,7 +746,7 @@ pub(crate) fn placement<K: Kernel>(
             let f = fraction(theta, at.phase, mate_teeth) + 0.5;
             Placement {
                 frame: SketchFrame {
-                    origin: add(frame.origin, u, distance),
+                    origin: add_scaled(frame.origin, u, distance),
                     ..frame
                 },
                 phase: theta - f * TAU / new_teeth,
@@ -761,7 +756,7 @@ pub(crate) fn placement<K: Kernel>(
             let f = fraction(theta, at.phase, mate_teeth);
             Placement {
                 frame: SketchFrame {
-                    origin: add(frame.origin, u, distance),
+                    origin: add_scaled(frame.origin, u, distance),
                     ..frame
                 },
                 phase: theta + PI - (0.5 - f) * TAU / new_teeth,
@@ -1046,7 +1041,7 @@ fn bevel_mate<K: Kernel>(
 ) -> Result<K::Shape, String> {
     let mate_section = mate.section(0.0)?;
     let normal = frame.normal();
-    let apex = add(frame.origin, normal, section.apex);
+    let apex = add_scaled(frame.origin, normal, section.apex);
     // From the apex: the gear's axis towards its heel is -normal; the
     // contact along the plane's x axis.
     let u = frame.x_axis;
@@ -1054,14 +1049,14 @@ fn bevel_mate<K: Kernel>(
     let delta = gear.pitch_angle;
     let contact = combine(u, delta.sin(), normal, -delta.cos());
     let along = contact.iter().zip(&axis).map(|(a, b)| a * b).sum::<f64>();
-    let x = add(contact, axis, -along);
+    let x = add_scaled(contact, axis, -along);
     let length = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
     let x = x.map(|v| v / length);
     // The mate's frame: its normal towards its apex (-axis), its origin on
     // its own section plane.
     let mate_normal = axis.map(|v| -v);
     let y = cross(mate_normal, x);
-    let origin = add(apex, axis, mate_section.apex);
+    let origin = add_scaled(apex, axis, mate_section.apex);
     let mate_frame = SketchFrame {
         origin,
         x_axis: x,

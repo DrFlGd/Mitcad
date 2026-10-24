@@ -29,6 +29,7 @@ use crate::geom::{self, mm, mm3};
 use crate::history::{Sig, StoredBody};
 use crate::refs::Section;
 use crate::report::{InputProvenance, Outcome};
+use crate::scaffold::CandidateCore;
 use crate::sketch::{self, position_error};
 use crate::snap;
 use crate::{Candidate, Guesses, Importer, SketchInfo, linked, refs};
@@ -3957,7 +3958,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                            "flip": flip, "operation": operation}),
                 ];
                 let c = Candidate {
-                    defs,
+                    core: CandidateCore::of(defs),
                     note: Some("the faces of its profile as decoded".to_owned()),
                     guess: false,
                     predicted: predicted(area),
@@ -4039,12 +4040,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
             for flip in flips {
                 out.push(Candidate {
-                    defs: vec![
+                    core: CandidateCore::of(vec![
                         sketch.clone(),
                         json!({"type": "extrude", "profiles": profiles,
                                "extent": {"type": "distance", "distance": extent_value},
                                "flip": flip, "operation": operation}),
-                    ],
+                    ]),
                     note: Some(format!(
                         "profile not decoded: face {face} of {body} checked against the history"
                     )),
@@ -4142,7 +4143,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
             let read = read_flip == Some(flip);
             let c = Candidate {
-                defs: vec![sketch.clone(), def],
+                core: CandidateCore::of(vec![sketch.clone(), def]),
                 note: Some("the faces of its profile as decoded".to_owned()),
                 guess: !read,
                 predicted: None,
@@ -5435,7 +5436,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         _ => format!("edges found against ASM history state {q}"),
                     };
                     candidates.push(Candidate {
-                        defs,
+                        core: CandidateCore::of(defs),
                         note: Some(note),
                         guess: true,
                         predicted: None,
@@ -5609,7 +5610,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             InputProvenance::Unknown
         };
         Candidate {
-            defs,
+            core: CandidateCore::of(defs),
             note: None,
             guess: false,
             predicted: None,
@@ -5763,7 +5764,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
         }
         (defs.len() > c.defs.len()).then(|| Candidate {
-            defs,
+            core: CandidateCore::of(defs),
             note: Some(format!("{BY_NAME}, one tangent chain at a time")),
             guess: true,
             predicted: None,
@@ -5808,7 +5809,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
         }
         (added > 0).then_some(Candidate {
-            defs,
+            core: CandidateCore::of(defs),
             note: None,
             guess: true,
             predicted: None,
@@ -6290,7 +6291,7 @@ const LOST_REFERENCES: [&str; 2] = [
 /// the geometry the item had before (its health warning says the edge
 /// references are lost and the cached geometry is used): the items with such
 /// references are those the API reference dumps report so (*What stays open
-/// (decoder)* in the README). None when the item is not a fillet or chamfer
+/// (decoder)* in `docs/f3d-learning.md`). None when the item is not a fillet or chamfer
 /// or has none.
 pub(crate) fn lost_edge_references(detail: &Detail) -> Option<(usize, usize)> {
     let sets: Vec<&EdgeSet> = match detail {

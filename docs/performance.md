@@ -183,7 +183,7 @@ converts its oldest state with bodies first, and heals its bodies of
 1 000 faces or more on threads taken from the converting ones (at most
 half of them; `mitcad_import::Share`, `in_order_sharing`) while the rest
 of the file is read; the bodies go to the replay as bodies built ahead
-(`core/import/README.md`, *Work beside the replay*). The two bodies were
+(`core/import/docs/f3d-performance.md`, *Work beside the replay*). The two bodies were
 healed in 12.5 and 5.4 s beside the conversion (14.8 s), and the first
 item took 1.1 s instead of 22.6 s.
 

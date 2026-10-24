@@ -52,9 +52,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use mitcad_vec3::{add, scale, sub, unit_div};
+
 use super::base::apply_tool;
 use super::extrude::Operation;
 use super::face_refs::{add_faces, check_faces, kernel_error};
+use super::mapping::map_params;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput,
     References, ToolUse, is_false,
@@ -73,14 +76,6 @@ use crate::topo::{EdgeName, FaceName, RegionKey, SegmentKey};
 
 /// The steepest draft a feature takes, as tapered extrusions do.
 const MAX_DRAFT: f64 = 85.0 * std::f64::consts::PI / 180.0;
-
-fn opt<P, Q, E>(
-    f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    slot: &str,
-    value: &Option<P>,
-) -> Result<Option<Q>, E> {
-    value.as_ref().map(|v| f(slot, v)).transpose()
-}
 
 // ---------------------------------------------------------------------------
 // Plastic rules.
@@ -146,24 +141,21 @@ impl<P> PlasticRuleDef<P> {
     pub const TYPE: &'static str = "plastic_rule";
     pub const BASE_NAME: &'static str = "PlasticRule";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<PlasticRuleDef<Q>, E> {
-        Ok(PlasticRuleDef {
-            rule_name: self.rule_name.clone(),
-            material: self.material.clone(),
-            thickness: f("thickness", &self.thickness)?,
-            nominal_radius: opt(f, "nominal_radius", &self.nominal_radius)?,
-            clearance: opt(f, "clearance", &self.clearance)?,
-            knife_edge: opt(f, "knife_edge", &self.knife_edge)?,
-            reveal_height: opt(f, "reveal_height", &self.reveal_height)?,
-            thickness_variation: opt(f, "thickness_variation", &self.thickness_variation)?,
-            draft_angle: opt(f, "draft_angle", &self.draft_angle)?,
-            max_thickness: opt(f, "max_thickness", &self.max_thickness)?,
-            min_thickness: opt(f, "min_thickness", &self.min_thickness)?,
-            min_draft_angle: opt(f, "min_draft_angle", &self.min_draft_angle)?,
-        })
+    map_params! {
+        PlasticRuleDef {
+            rule_name: clone,
+            material: clone,
+            thickness: param,
+            nominal_radius: option,
+            clearance: option,
+            knife_edge: option,
+            reveal_height: option,
+            thickness_variation: option,
+            draft_angle: option,
+            max_thickness: option,
+            min_thickness: option,
+            min_draft_angle: option,
+        }
     }
 }
 
@@ -354,28 +346,11 @@ fn warn_wall<K: Kernel>(
 // ---------------------------------------------------------------------------
 // Geometry helpers.
 
-fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
-    let length = dot(v, v).sqrt();
-    (length > 1e-12 && length.is_finite()).then(|| v.map(|x| x / length))
-}
-
-fn scaled(v: [f64; 3], s: f64) -> [f64; 3] {
-    v.map(|x| x * s)
-}
-
-fn plus(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-
-fn minus(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
 /// The axes across `z`: x along `along` (its part across z) or z × X (× Y
 /// for z near X), and y = z × x.
 fn across(z: [f64; 3], along: Option<[f64; 3]>) -> Result<([f64; 3], [f64; 3]), String> {
     let x = match along {
-        Some(a) => unit(minus(a, scaled(z, dot(a, z))))
+        Some(a) => unit_div(sub(a, scale(z, dot(a, z))))
             .ok_or("the direction along the face must not run along the feature's direction")?,
         None => {
             let other = if z[0].abs() < 0.9 {
@@ -383,7 +358,7 @@ fn across(z: [f64; 3], along: Option<[f64; 3]>) -> Result<([f64; 3], [f64; 3]), 
             } else {
                 [0.0, 1.0, 0.0]
             };
-            unit(cross(z, other)).ok_or("the feature's direction is zero")?
+            unit_div(cross(z, other)).ok_or("the feature's direction is zero")?
         }
     };
     Ok((x, cross(z, x)))
@@ -463,8 +438,8 @@ fn placed<K: Kernel>(
     let face = ctx.face_on(body, &shape, face)?;
     let (origin, normal) = match ctx.kernel.face_plane(&shape, &face) {
         Ok(plane) => {
-            let d = dot(minus(point, plane.origin), plane.normal);
-            (minus(point, scaled(plane.normal, d)), plane.normal)
+            let d = dot(sub(point, plane.origin), plane.normal);
+            (sub(point, scale(plane.normal, d)), plane.normal)
         }
         Err(_) => {
             let on = ctx
@@ -475,8 +450,8 @@ fn placed<K: Kernel>(
         }
     };
     let z = match direction {
-        Some(d) => unit(d).ok_or("the direction must not be zero")?,
-        None => unit(normal).ok_or("the face has no normal there")?,
+        Some(d) => unit_div(d).ok_or("the direction must not be zero")?,
+        None => unit_div(normal).ok_or("the face has no normal there")?,
     };
     Ok(Placed { shape, origin, z })
 }
@@ -499,7 +474,9 @@ fn shape_of<S: Clone>(changes: &[BodyChange<S>], body: BodyUid) -> Option<S> {
 
 fn check_direction(what: &str, v: Option<[f64; 3]>) -> Result<(), String> {
     match v {
-        Some(v) if unit(v).is_none() => Err(format!("the {what} must be a direction, got {v:?}")),
+        Some(v) if unit_div(v).is_none() => {
+            Err(format!("the {what} must be a direction, got {v:?}"))
+        }
         _ => Ok(()),
     }
 }
@@ -603,27 +580,24 @@ impl<P> BossDef<P> {
     pub const TYPE: &'static str = "boss";
     pub const BASE_NAME: &'static str = "Boss";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<BossDef<Q>, E> {
-        Ok(BossDef {
-            body: self.body,
-            face: self.face.clone(),
-            point: self.point,
-            direction: self.direction,
-            diameter: f("diameter", &self.diameter)?,
-            height: f("height", &self.height)?,
-            hole_diameter: opt(f, "hole_diameter", &self.hole_diameter)?,
-            hole_depth: opt(f, "hole_depth", &self.hole_depth)?,
-            draft_angle: opt(f, "draft_angle", &self.draft_angle)?,
-            fillet: opt(f, "fillet", &self.fillet)?,
-            ribs: opt(f, "ribs", &self.ribs)?,
-            rib_thickness: opt(f, "rib_thickness", &self.rib_thickness)?,
-            rib_length: opt(f, "rib_length", &self.rib_length)?,
-            rib_offset: opt(f, "rib_offset", &self.rib_offset)?,
-            rule: self.rule,
-        })
+    map_params! {
+        BossDef {
+            body: copy,
+            face: clone,
+            point: copy,
+            direction: copy,
+            diameter: param,
+            height: param,
+            hole_diameter: option,
+            hole_depth: option,
+            draft_angle: option,
+            fillet: option,
+            ribs: option,
+            rib_thickness: option,
+            rib_length: option,
+            rib_offset: option,
+            rule: copy,
+        }
     }
 }
 
@@ -791,8 +765,8 @@ impl<K: Kernel> Evaluate<K> for BossDef {
             for k in 0..n {
                 let a = std::f64::consts::TAU * f64::from(k) / f64::from(n);
                 let (c, s) = (a.cos(), a.sin());
-                let u = plus(scaled(x, c), scaled(y, s));
-                let v = minus(scaled(y, c), scaled(x, s));
+                let u = add(scale(x, c), scale(y, s));
+                let v = sub(scale(y, c), scale(x, s));
                 let t = thickness / 2.0;
                 let rib = region(vec![polygon_loop(
                     10 + 4 * k,
@@ -932,17 +906,14 @@ impl<P> LipDef<P> {
     pub const TYPE: &'static str = "lip";
     pub const BASE_NAME: &'static str = "Lip";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<LipDef<Q>, E> {
-        Ok(LipDef {
-            body: self.body,
-            face: self.face.clone(),
-            width: f("width", &self.width)?,
-            height: f("height", &self.height)?,
-            outside: self.outside,
-        })
+    map_params! {
+        LipDef {
+            body: copy,
+            face: clone,
+            width: param,
+            height: param,
+            outside: copy,
+        }
     }
 }
 
@@ -1011,19 +982,16 @@ impl<P> GrooveDef<P> {
     pub const TYPE: &'static str = "groove";
     pub const BASE_NAME: &'static str = "Groove";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<GrooveDef<Q>, E> {
-        Ok(GrooveDef {
-            body: self.body,
-            face: self.face.clone(),
-            width: f("width", &self.width)?,
-            depth: f("depth", &self.depth)?,
-            gap: opt(f, "gap", &self.gap)?,
-            outside: self.outside,
-            rule: self.rule,
-        })
+    map_params! {
+        GrooveDef {
+            body: copy,
+            face: clone,
+            width: param,
+            depth: param,
+            gap: option,
+            outside: copy,
+            rule: copy,
+        }
     }
 }
 
@@ -1142,22 +1110,19 @@ impl<P> SnapFitDef<P> {
     pub const TYPE: &'static str = "snap_fit";
     pub const BASE_NAME: &'static str = "SnapFit";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SnapFitDef<Q>, E> {
-        Ok(SnapFitDef {
-            body: self.body,
-            face: self.face.clone(),
-            point: self.point,
-            direction: self.direction,
-            hook: self.hook,
-            length: f("length", &self.length)?,
-            thickness: f("thickness", &self.thickness)?,
-            width: f("width", &self.width)?,
-            catch_depth: f("catch_depth", &self.catch_depth)?,
-            catch_length: f("catch_length", &self.catch_length)?,
-        })
+    map_params! {
+        SnapFitDef {
+            body: copy,
+            face: clone,
+            point: copy,
+            direction: copy,
+            hook: copy,
+            length: param,
+            thickness: param,
+            width: param,
+            catch_depth: param,
+            catch_length: param,
+        }
     }
 }
 
@@ -1213,7 +1178,7 @@ impl<K: Kernel> Evaluate<K> for SnapFitDef {
         let cl = ctx.param(self.catch_length)?;
         snap_fit_sizes(l, t, w, cd, cl)?;
         let at = placed(ctx, self.body, &self.face, self.point, self.direction)?;
-        let hook = unit(minus(self.hook, scaled(at.z, dot(self.hook, at.z))))
+        let hook = unit_div(sub(self.hook, scale(at.z, dot(self.hook, at.z))))
             .ok_or("the snap fit's hook must point across the arm")?;
         let y = cross(at.z, hook);
         let delta = overlap(l);
@@ -1235,7 +1200,7 @@ impl<K: Kernel> Evaluate<K> for SnapFitDef {
             .extrude(&ExtrudeSpec {
                 feature: ctx.uid,
                 frame: SketchFrame {
-                    origin: minus(at.origin, scaled(y, w / 2.0)),
+                    origin: sub(at.origin, scale(y, w / 2.0)),
                     x_axis: hook,
                     y_axis: at.z,
                 },
@@ -1298,23 +1263,20 @@ impl<P> RestDef<P> {
     pub const TYPE: &'static str = "rest";
     pub const BASE_NAME: &'static str = "Rest";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<RestDef<Q>, E> {
-        Ok(RestDef {
-            body: self.body,
-            face: self.face.clone(),
-            point: self.point,
-            direction: self.direction,
-            along: self.along,
-            width: f("width", &self.width)?,
-            length: opt(f, "length", &self.length)?,
-            height: f("height", &self.height)?,
-            draft_angle: opt(f, "draft_angle", &self.draft_angle)?,
-            thickness: opt(f, "thickness", &self.thickness)?,
-            rule: self.rule,
-        })
+    map_params! {
+        RestDef {
+            body: copy,
+            face: clone,
+            point: copy,
+            direction: copy,
+            along: copy,
+            width: param,
+            length: option,
+            height: param,
+            draft_angle: option,
+            thickness: option,
+            rule: copy,
+        }
     }
 }
 

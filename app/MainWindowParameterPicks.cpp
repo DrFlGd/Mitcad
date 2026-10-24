@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Parameter names picked from the view into a feature panel's value field
 // (mitcad#250; framework/ParameterPicker.hpp): what the window tells a
-// running command about the sketches the view shows and the commands that
-// edit features.
+// running command about the sketches the view shows.
 #include "MainWindow.hpp"
 
 #include <utility>
 
 #include <TopLoc_Location.hxx>
-
-#include "framework/CommandRegistry.hpp"
 
 namespace mitcad {
 
@@ -34,10 +31,6 @@ std::vector<CommandHost::ShownSketch> MainWindow::shownSketches() const {
     shown.push_back(std::move(entry));
   }
   return shown;
-}
-
-const CommandDef* MainWindow::featureEditor(const QJsonObject& def) const {
-  return m_registry != nullptr ? m_registry->editorOf(def) : nullptr;
 }
 
 } // namespace mitcad

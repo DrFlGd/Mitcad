@@ -20,33 +20,9 @@ use mitcad_ifc::geometry::{Area, Path, Profile, Seg};
 use mitcad_ifc::math::{self, Matrix};
 use mitcad_rvt::building::{Building, Curve, JoinedEnd, P3, Wall};
 use mitcad_rvt::elements::FOOT_MM;
+use mitcad_vec3::vec2::{add, cross, dot, scale, sub, unit_div};
 
 pub type P2 = [f64; 2];
-
-fn sub(a: P2, b: P2) -> P2 {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn add(a: P2, b: P2) -> P2 {
-    [a[0] + b[0], a[1] + b[1]]
-}
-
-fn mul(a: P2, s: f64) -> P2 {
-    [a[0] * s, a[1] * s]
-}
-
-fn dot(a: P2, b: P2) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-fn cross(a: P2, b: P2) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-
-fn unit(a: P2) -> Option<P2> {
-    let l = a[0].hypot(a[1]);
-    (l > 1e-12).then(|| [a[0] / l, a[1] / l])
-}
 
 fn xy(p: P3) -> P2 {
     [p[0], p[1]]
@@ -62,7 +38,7 @@ struct Line {
 impl Line {
     fn offset(&self, by: f64) -> Line {
         Line {
-            p: add(self.p, mul([-self.d[1], self.d[0]], by)),
+            p: add(self.p, scale([-self.d[1], self.d[0]], by)),
             d: self.d,
         }
     }
@@ -74,7 +50,7 @@ impl Line {
             return None;
         }
         let t = cross(sub(other.p, self.p), other.d) / den;
-        Some(add(self.p, mul(self.d, t)))
+        Some(add(self.p, scale(self.d, t)))
     }
 }
 
@@ -103,7 +79,7 @@ fn wall_line(wall: &Wall, near: P2) -> Option<Line> {
     match &wall.curve {
         Curve::Line { start, end } => Some(Line {
             p: xy(*start),
-            d: unit(sub(xy(*end), xy(*start)))?,
+            d: unit_div(sub(xy(*end), xy(*start)))?,
         }),
         arc @ (Curve::Arc { .. } | Curve::Ellipse { .. } | Curve::Helix { .. }) => {
             let (s, e) = (xy(arc.start()), xy(arc.end()));
@@ -116,7 +92,7 @@ fn wall_line(wall: &Wall, near: P2) -> Option<Line> {
             let b = xy(arc.at((f + 1e-6f64).clamp(0.0, 1.0)));
             Some(Line {
                 p: xy(arc.at(f)),
-                d: unit(sub(b, a))?,
+                d: unit_div(sub(b, a))?,
             })
         }
     }
@@ -200,7 +176,9 @@ fn end_cut(
             let (Some(p), Some(q)) = (left.meet(&f[a]), right.meet(&f[b])) else {
                 continue;
             };
-            let Some(d) = unit(sub(p, q)) else { continue };
+            let Some(d) = unit_div(sub(p, q)) else {
+                continue;
+            };
             let line = Line { p: q, d };
             // The miter line passes through the walls' meeting point.
             let miss = cross(sub(point, q), d).abs();
@@ -259,10 +237,10 @@ fn wall_end_cut(
         return Err("an arc wall".into());
     };
     let (p0, p1) = (xy(*start), xy(*stop));
-    let d = unit(sub(p1, p0)).ok_or("its location line has no length")?;
+    let d = unit_div(sub(p1, p0)).ok_or("its location line has no length")?;
     let center = Line { p: p0, d };
     let (point, out) = if end == 0 {
-        (p0, mul(d, -1.0))
+        (p0, scale(d, -1.0))
     } else {
         (p1, d)
     };
@@ -277,11 +255,11 @@ pub fn wall_footprint(building: &Building, wall: &Wall) -> Result<(Path, Vec<Str
     match &wall.curve {
         Curve::Line { start, end } => {
             let (p0, p1) = (xy(*start), xy(*end));
-            let d = unit(sub(p1, p0)).ok_or("its location line has no length")?;
+            let d = unit_div(sub(p1, p0)).ok_or("its location line has no length")?;
             let center = Line { p: p0, d };
             let (left, right) = (center.offset(s[1]), center.offset(s[0]));
             let mut ends = Vec::new();
-            for (e, point, out) in [(0, p0, mul(d, -1.0)), (1, p1, d)] {
+            for (e, point, out) in [(0, p0, scale(d, -1.0)), (1, p1, d)] {
                 let (cut, what) = end_cut(building, wall, e, &center, s, point, out)?;
                 if what != "free" {
                     notes.push(format!(
@@ -325,7 +303,10 @@ pub fn wall_footprint(building: &Building, wall: &Wall) -> Result<(Path, Vec<Str
             let at = |r: f64, t: f64| -> [f64; 3] {
                 let p = add(
                     xy(*center),
-                    add(mul(xy(*x_axis), r * t.cos()), mul(xy(*y_axis), r * t.sin())),
+                    add(
+                        scale(xy(*x_axis), r * t.cos()),
+                        scale(xy(*y_axis), r * t.sin()),
+                    ),
                 );
                 [p[0], p[1], 0.0]
             };
@@ -514,7 +495,7 @@ pub fn covers(path: &Path, p: P2, tolerance: f64) -> bool {
         } else {
             0.0
         };
-        let d = sub(p, add(a, mul(ab, t)));
+        let d = sub(p, add(a, scale(ab, t)));
         dot(d, d).sqrt() <= tolerance
     })
 }

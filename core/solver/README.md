@@ -1,6 +1,6 @@
 # mitcad-solver
 
-2D sketch constraint solver for Mitcad, without dependencies: residual
+2D sketch constraint solver for Mitcad, without third-party dependencies: residual
 equations, Newton / Levenberg-Marquardt with minimum-norm steps, LDL^T
 factorization of the Gram matrix in a minimum degree ordering, rank
 detection by pivot thresholds, forward-mode automatic differentiation.

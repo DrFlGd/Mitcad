@@ -10,6 +10,8 @@
 //! - `map_params`, which converts between the value forms field by field
 //!   and names each field's slot (`"extent.distance"`), used for error
 //!   locations, parameter comments and keeping parameters on edits;
+//!   `map_params!` (`mapping.rs`) writes it from the list of fields when
+//!   every value maps under its field's name;
 //! - [`FeatureInfo`]: static references, validation against the features
 //!   before it, and value checks for new features;
 //! - [`Evaluate`]: evaluation against the body state left by the previous
@@ -277,6 +279,9 @@ pub mod seat;
 pub use seat::{Seat, SeatFrame};
 #[cfg(test)]
 mod seat_tests;
+// `map_params!`: the regular `map_params` written from the fields
+// (mitcad#586).
+mod mapping;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;

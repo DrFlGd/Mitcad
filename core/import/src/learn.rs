@@ -16,7 +16,7 @@
 //! Fillet and chamfer failures with no candidates also retain their input
 //! diagnostics in unsettled records (mitcad#106).
 //! `tools/f3d-learn/learn.py` tests hypotheses on these files without
-//! geometry. The format is in `core/import/README.md` (*Learning the
+//! geometry. The format is in `core/import/docs/f3d-learning.md` (*Learning the
 //! undecoded inputs*).
 //!
 //! The import only reports to this module: [`Importer::learn_offered`]

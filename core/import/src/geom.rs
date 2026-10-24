@@ -17,43 +17,9 @@ pub fn mm3(v: Vec3) -> Vec3 {
     v.map(mm)
 }
 
-pub fn dot(a: Vec3, b: Vec3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-pub fn sub(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-pub fn add(a: Vec3, b: Vec3) -> Vec3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-pub fn scale(a: Vec3, s: f64) -> Vec3 {
-    a.map(|v| v * s)
-}
-
-pub fn norm(a: Vec3) -> f64 {
-    dot(a, a).sqrt()
-}
-
-pub fn distance(a: Vec3, b: Vec3) -> f64 {
-    norm(sub(a, b))
-}
-
-/// The unit vector; None for a (nearly) zero vector.
-pub fn unit(a: Vec3) -> Option<Vec3> {
-    let n = norm(a);
-    (n > 1e-12).then(|| scale(a, 1.0 / n))
-}
+// The vector helpers, shared with the model and the readers; `unit` is None
+// for a (nearly) zero vector.
+pub use mitcad_vec3::{add, cross, distance, dot, norm, scale, sub, unit};
 
 /// A sketch's placement in model space: the dump's `model_frame`
 /// (`sketch_to_model` columns), in millimetres. The axes are made unit

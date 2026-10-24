@@ -48,12 +48,6 @@ constexpr double kMixed = 1.0e-4;
 
 double diagonal(const Bnd_Box& box) { return box.IsVoid() ? 0.0 : std::sqrt(box.SquareExtent()); }
 
-double volume_of(const TopoDS_Shape& shape) {
-  GProp_GProps props;
-  BRepGProp::VolumeProperties(shape, props);
-  return props.Mass();
-}
-
 // True when sample points of the face lie on the other face's surface.
 bool lies_on(const TopoDS_Face& face, const TopoDS_Face& other) {
   double u0 = 0, u1 = 0, v0 = 0, v1 = 0;

@@ -23,13 +23,6 @@ bool sameFolder(const QString& a, const QString& b) {
 #endif
 }
 
-QString dirOf(const QString& path) {
-  const qsizetype slash = path.lastIndexOf(QLatin1Char('/'));
-  return slash < 0 ? QString() : path.left(slash);
-}
-
-QString lastPart(const QString& path) { return path.section(QLatin1Char('/'), -1); }
-
 bool byName(const QString& a, const QString& b) {
   const int folded = a.compare(b, Qt::CaseInsensitive);
   return folded != 0 ? folded < 0 : a < b;

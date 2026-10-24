@@ -105,8 +105,6 @@ InputDef memberInput(const QString& id, const QString& label, int min, int max) 
   return selectionInput(id, label, kPartKinds, min, max).withAlsoTakes(SelectKind::Edge).withConvert(memberBody);
 }
 
-QString str(const QJsonObject& object, const char* key) { return object.value(QLatin1String(key)).toString(); }
-
 // What the definitions share while the application runs: the parts of the
 // pickers, the junctions, the design's BUILD parts, the preview shown last
 // (the length's handle stands on it). Read and written on the UI thread;
@@ -1254,9 +1252,8 @@ std::vector<PreviewMarker> markersOf(const QJsonObject& report) {
   std::vector<PreviewMarker> markers;
   for (const QJsonValue& value : report.value(QStringLiteral("markers")).toArray()) {
     const QJsonObject marker = value.toObject();
-    const QJsonArray point = marker.value(QStringLiteral("point")).toArray();
-    if (point.size() >= 3) {
-      markers.push_back({str(marker, "label"), gp_Pnt(point[0].toDouble(), point[1].toDouble(), point[2].toDouble())});
+    if (const std::optional<gp_Pnt> point = pointFrom(marker.value(QStringLiteral("point")))) {
+      markers.push_back({str(marker, "label"), *point});
     }
   }
   return markers;
@@ -1264,14 +1261,6 @@ std::vector<PreviewMarker> markersOf(const QJsonObject& report) {
 
 QJsonObject marker(const QString& label, const gp_Pnt& point) {
   return {{QStringLiteral("label"), label}, {QStringLiteral("point"), build::pointJson(point)}};
-}
-
-std::optional<gp_Pnt> pointOf(const QJsonValue& value) {
-  const QJsonArray point = value.toArray();
-  if (point.size() < 3) {
-    return std::nullopt;
-  }
-  return gp_Pnt(point[0].toDouble(), point[1].toDouble(), point[2].toDouble());
 }
 
 // A side snap's name in the view: "flush A", "middle", ...
@@ -1298,7 +1287,7 @@ QString targetText(const QJsonObject& target, const CommandContext& context) {
   const std::optional<SelectionItem> item = build::itemOfTarget(target, context);
   const QString occurrence = build::rootPath(str(target, "occurrence"), context);
   const QString component = build::componentAt(occurrence, context);
-  const QString name = component.isEmpty() ? occurrence : build::componentName(component, context);
+  const QString name = component.isEmpty() ? occurrence : cmd::componentName(component, context);
   return item ? QObject::tr("%1 of %2").arg(item->name.isEmpty() ? item->owner : item->name, name) : name;
 }
 
@@ -1590,7 +1579,7 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
       sideLog += QStringLiteral("; tilt %1 deg").arg(tilt, 0, 'f', 2);
     }
     Shared::Foot foot;
-    const std::optional<gp_Pnt> point = pointOf(side.value(QStringLiteral("foot")));
+    const std::optional<gp_Pnt> point = pointFrom(side.value(QStringLiteral("foot")));
     const QJsonArray normal = side.value(QStringLiteral("normal")).toArray();
     const QJsonArray along = side.value(QStringLiteral("along")).toArray();
     if (point && normal.size() >= 3 && along.size() >= 3) {
@@ -1675,7 +1664,7 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   // A corner the length closes, bound (mitcad#485) or typed to end there
   // (mitcad#492).
   if (const QJsonObject closing = answer.value(QStringLiteral("closing")).toObject(); !closing.isEmpty()) {
-    const QString name = build::componentName(str(closing, "component"), context);
+    const QString name = cmd::componentName(str(closing, "component"), context);
     const QString atEnd = str(closing, "end").toUpper();
     const bool mitred = str(closing, "mitre") == QStringLiteral("shared");
     lines.append(mitred ? QObject::tr("Closes the corner at end %1 of %2: a shared mitre").arg(atEnd, name.toHtmlEscaped())
@@ -1702,12 +1691,12 @@ Inspection inspectPlacement(const SharedPtr& shared, const QString& role, const 
   for (const QJsonValue& value : answer.value(QStringLiteral("snaps")).toArray()) {
     const QJsonObject snapped = value.toObject();
     const QString kind = str(snapped, "kind");
-    const std::optional<gp_Pnt> point = pointOf(snapped.value(QStringLiteral("point")));
+    const std::optional<gp_Pnt> point = pointFrom(snapped.value(QStringLiteral("point")));
     if (point && kind != QStringLiteral("grid") && kind != str(side, "kind")) {
       markers.append(marker(snapText(kind), *point));
     }
   }
-  if (const std::optional<gp_Pnt> point = pointOf(side.value(QStringLiteral("point")));
+  if (const std::optional<gp_Pnt> point = pointFrom(side.value(QStringLiteral("point")));
       point && !str(side, "kind").isEmpty()) {
     markers.append(marker(QStringLiteral("> %1").arg(snapText(str(side, "kind"))), *point));
   }
@@ -2987,7 +2976,7 @@ QJsonArray openingMarkers(const QJsonObject& preview, int selected) {
       continue;
     }
     for (const char* end : {"start", "end"}) {
-      const std::optional<gp_Pnt> point = pointOf(member.value(QLatin1String(end)));
+      const std::optional<gp_Pnt> point = pointFrom(member.value(QLatin1String(end)));
       if (!point) {
         continue;
       }
@@ -3300,7 +3289,7 @@ std::optional<std::pair<QString, double>> wallClicked(const Shared& shared, cons
     if (str(definition, "kind") != kWall) {
       return std::nullopt;
     }
-    const std::optional<gp_Pnt> base = pointOf(definition.value(QStringLiteral("start")));
+    const std::optional<gp_Pnt> base = pointFrom(definition.value(QStringLiteral("start")));
     return std::make_pair(lead, base ? base->Z() : 0.0);
   }
   return std::nullopt;
@@ -3716,9 +3705,9 @@ FramePreview previewFrame(const QJsonObject& frame, const QString& component, co
   bool any = false;
   for (const QJsonValue& value : result.answer.value(QStringLiteral("members")).toArray()) {
     const QJsonObject member = value.toObject();
-    const std::optional<gp_Pnt> from = pointOf(member.value(QStringLiteral("start")));
-    const std::optional<gp_Pnt> to = pointOf(member.value(QStringLiteral("end")));
-    const std::optional<gp_Pnt> x = pointOf(member.value(QStringLiteral("x")));
+    const std::optional<gp_Pnt> from = pointFrom(member.value(QStringLiteral("start")));
+    const std::optional<gp_Pnt> to = pointFrom(member.value(QStringLiteral("end")));
+    const std::optional<gp_Pnt> x = pointFrom(member.value(QStringLiteral("x")));
     const QJsonArray section = member.value(QStringLiteral("section")).toArray();
     if (!from || !to || !x || section.size() < 2 || from->Distance(*to) < 1e-6 ||
         gp_Vec(x->XYZ()).Magnitude() < 1e-9) {
@@ -3827,8 +3816,8 @@ Inspection inspectFrame(const SharedPtr& shared, const CommandState& state, cons
   {
     Shared::OpeningsSizes sizes;
     if (kind == kWall) {
-      const std::optional<gp_Pnt> from = pointOf(placed.fields.value(QStringLiteral("start")));
-      const std::optional<gp_Pnt> to = pointOf(placed.fields.value(QStringLiteral("end")));
+      const std::optional<gp_Pnt> from = pointFrom(placed.fields.value(QStringLiteral("start")));
+      const std::optional<gp_Pnt> to = pointFrom(placed.fields.value(QStringLiteral("end")));
       sizes.wall.length = !joined.isEmpty() ? junction.toObject().value(QStringLiteral("length")).toDouble()
                           : from && to   ? std::hypot(to->X() - from->X(), to->Y() - from->Y())
                                          : kNaN;
@@ -3840,9 +3829,9 @@ Inspection inspectFrame(const SharedPtr& shared, const CommandState& state, cons
     } else if (kind == kFloor) {
       const QJsonArray outline = placed.fields.value(QStringLiteral("outline")).toArray();
       if (outline.size() == 4) {
-        const gp_Pnt p0 = pointOf(outline[0]).value_or(gp_Pnt());
-        const gp_Pnt p1 = pointOf(outline[1]).value_or(gp_Pnt());
-        const gp_Pnt p2 = pointOf(outline[2]).value_or(gp_Pnt());
+        const gp_Pnt p0 = pointFrom(outline[0]).value_or(gp_Pnt());
+        const gp_Pnt p1 = pointFrom(outline[1]).value_or(gp_Pnt());
+        const gp_Pnt p2 = pointFrom(outline[2]).value_or(gp_Pnt());
         sizes.floorLength = p0.Distance(p1);
         sizes.floorWidth = p1.Distance(p2);
       }
@@ -3948,7 +3937,7 @@ void logJointsByComponent(const CommandContext& context) {
   QStringList parts{QStringLiteral("%1 %2").arg(host.name).arg(counts.value(host.component))};
   for (auto it = counts.cbegin(); it != counts.cend(); ++it) {
     if (it.key() != host.component) {
-      parts << QStringLiteral("%1 %2").arg(build::componentName(it.key(), context)).arg(it.value());
+      parts << QStringLiteral("%1 %2").arg(cmd::componentName(it.key(), context)).arg(it.value());
     }
   }
   qInfo().noquote() << QStringLiteral("Joints by component: %1").arg(parts.join(QStringLiteral(", ")));
@@ -3988,7 +3977,7 @@ bool applyFrame(Shared& shared, DocumentHost& host, CommandState& state, const C
   const QString component = str(result, "frame_component");
   if (!component.isEmpty()) {
     qInfo().noquote() << QStringLiteral("Frame component %1 (%2) in %3")
-                             .arg(build::componentName(component, context), component, build::buildHost(context).name);
+                             .arg(cmd::componentName(component, context), component, build::buildHost(context).name);
   }
   logJointsByComponent(context);
   logTimberSeating(context);
@@ -4887,7 +4876,7 @@ bool isRectangle(const QJsonArray& outline) {
   }
   QVector<gp_Pnt> p;
   for (const QJsonValue& value : outline) {
-    p.append(pointOf(value).value_or(gp_Pnt()));
+    p.append(pointFrom(value).value_or(gp_Pnt()));
   }
   for (int i = 0; i < 4; ++i) {
     const gp_Vec a(p[i], p[(i + 1) % 4]);
@@ -4926,9 +4915,9 @@ QJsonObject frameEditFields(const BuildPart& lead, const CommandState& state, QS
   frame.insert(QStringLiteral("blocking"), state.checked(kFrameBlocking) ? 1 : 0);
   const QJsonArray outline = definition.value(QStringLiteral("outline")).toArray();
   if (isRectangle(outline)) {
-    const gp_Pnt p0 = pointOf(outline[0]).value_or(gp_Pnt());
-    const gp_Dir e0(gp_Vec(p0, pointOf(outline[1]).value_or(gp_Pnt())));
-    const gp_Dir e1(gp_Vec(pointOf(outline[1]).value_or(gp_Pnt()), pointOf(outline[2]).value_or(gp_Pnt())));
+    const gp_Pnt p0 = pointFrom(outline[0]).value_or(gp_Pnt());
+    const gp_Dir e0(gp_Vec(p0, pointFrom(outline[1]).value_or(gp_Pnt())));
+    const gp_Dir e1(gp_Vec(pointFrom(outline[1]).value_or(gp_Pnt()), pointFrom(outline[2]).value_or(gp_Pnt())));
     const double length = millimetresOf(state, kFrameLength, 4000.0);
     const double width = millimetresOf(state, kFrameWidth, 3000.0);
     if (!(length > 1.0) || !(width > 1.0)) {
@@ -4987,8 +4976,8 @@ CommandDef frameCommand(const SharedPtr& shared, DocumentHost& host, const Comma
             set(kFrameSpacing, valueText(definition.value(QStringLiteral("spacing")), defaultFrameSpacing(kind), false, model));
             set(kFrameOpenings, openingsText(definition.value(QStringLiteral("openings")).toArray()));
             if (kind == kWall) {
-              const std::optional<gp_Pnt> start = pointOf(definition.value(QStringLiteral("start")));
-              const std::optional<gp_Pnt> end = pointOf(definition.value(QStringLiteral("end")));
+              const std::optional<gp_Pnt> start = pointFrom(definition.value(QStringLiteral("start")));
+              const std::optional<gp_Pnt> end = pointFrom(definition.value(QStringLiteral("end")));
               if (start && end) {
                 const double length = std::hypot(end->X() - start->X(), end->Y() - start->Y());
                 set(kFrameLength, cmd::lengthText(length, model));
@@ -5007,9 +4996,9 @@ CommandDef frameCommand(const SharedPtr& shared, DocumentHost& host, const Comma
               const bool rectangle = isRectangle(outline);
               state.setChoice(kRectangle, rectangle ? QStringLiteral("yes") : QString());
               if (rectangle) {
-                const gp_Pnt p0 = pointOf(outline[0]).value_or(gp_Pnt());
-                const gp_Pnt p1 = pointOf(outline[1]).value_or(gp_Pnt());
-                const gp_Pnt p2 = pointOf(outline[2]).value_or(gp_Pnt());
+                const gp_Pnt p0 = pointFrom(outline[0]).value_or(gp_Pnt());
+                const gp_Pnt p1 = pointFrom(outline[1]).value_or(gp_Pnt());
+                const gp_Pnt p2 = pointFrom(outline[2]).value_or(gp_Pnt());
                 set(kFrameLength, cmd::lengthText(p0.Distance(p1), model));
                 set(kFrameWidth, cmd::lengthText(p1.Distance(p2), model));
               }
@@ -5186,7 +5175,7 @@ CommandDef frameCommand(const SharedPtr& shared, DocumentHost& host, const Comma
     const QString component = str(result, "frame_component");
     if (!component.isEmpty()) {
       qInfo().noquote() << QStringLiteral("Frame component %1 (%2) in %3")
-                               .arg(build::componentName(component, model), component, build::buildHost(model).name);
+                               .arg(cmd::componentName(component, model), component, build::buildHost(model).name);
     }
     logJointsByComponent(model);
     shared->refreshDesign(model);
@@ -5768,7 +5757,7 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
           size << QString::number(side.toDouble(), 'f', 1);
         }
         cuts << QStringLiteral("%1 in %2 (%3 mm)")
-                    .arg(str(cut, "kind"), build::componentName(str(cut, "component"), model),
+                    .arg(str(cut, "kind"), cmd::componentName(str(cut, "component"), model),
                          size.join(QStringLiteral(" x ")));
       }
       lines << QObject::tr("Preview: %1").arg(cuts.isEmpty() ? QObject::tr("no cut") : cuts.join(QStringLiteral("; ")).toHtmlEscaped());
@@ -5828,10 +5817,9 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
       // The holes it machines: {component, at, point, diameter, depth, thread}.
       for (const QJsonValue& value : answer.value(QStringLiteral("machining")).toArray()) {
         const QJsonObject hole = value.toObject();
-        const QJsonArray point = hole.value(QStringLiteral("point")).toArray();
-        if (point.size() >= 3) {
+        if (const std::optional<gp_Pnt> point = pointFrom(hole.value(QStringLiteral("point")))) {
           markers.append(marker(QObject::tr("bore D%1").arg(hole.value(QStringLiteral("diameter")).toDouble(), 0, 'g', 4),
-                                gp_Pnt(point[0].toDouble(), point[1].toDouble(), point[2].toDouble())));
+                                *point));
         }
       }
       result.report.insert(QStringLiteral("markers"), markers);
@@ -5881,9 +5869,9 @@ CommandDef connectorCommand(const SharedPtr& shared, DocumentHost& host, const C
         shown = shown || (!path.isEmpty() && !hovered.isEmpty() &&
                           (hovered == path || hovered.startsWith(path + QLatin1Char('/'))));
       }
-      const QJsonArray point = entry.value(QStringLiteral("point")).toArray();
-      if (shown && point.size() >= 3) {
-        markers.push_back({str(entry, "label"), gp_Pnt(point[0].toDouble(), point[1].toDouble(), point[2].toDouble())});
+      const std::optional<gp_Pnt> point = pointFrom(entry.value(QStringLiteral("point")));
+      if (shown && point) {
+        markers.push_back({str(entry, "label"), *point});
       }
     }
     return markers;
@@ -6672,7 +6660,7 @@ CommandDef endsCommand(DocumentHost& host, const CommandContext& context) {
     }
     if (state.checked(QStringLiteral("shared"))) {
       const auto other = otherEnd(part.component, state.choice(QStringLiteral("end")), model);
-      lines << (other ? QObject::tr("Also %1, end %2").arg(build::componentName(other->first, model), other->second.toUpper())
+      lines << (other ? QObject::tr("Also %1, end %2").arg(cmd::componentName(other->first, model), other->second.toUpper())
                       : QObject::tr("No part's end meets this end"));
     }
     result.text = lines.join(QStringLiteral("<br>"));

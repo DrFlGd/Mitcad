@@ -750,7 +750,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             .into_iter()
             .map(|c| {
                 let mut defs = vec![(plane.clone(), " (plane)"), (sketch.clone(), " (edges)")];
-                defs.extend(c.defs.into_iter().map(|d| (d, "")));
+                defs.extend(c.defs.iter().cloned().map(|d| (d, "")));
                 if let Some(removal) = &removal {
                     defs.push((removal.clone(), " (base removed)"));
                 }

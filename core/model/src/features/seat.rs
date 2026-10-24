@@ -69,6 +69,7 @@ pub struct Seat<P = ParamId> {
 impl<P> Seat<P> {
     /// Converts the value fields; the offset's slot is `<prefix>offset`
     /// (`seat.offset`).
+    // Written by hand: the slot takes the owner's prefix.
     pub fn map_params<Q, E>(
         &self,
         prefix: &str,

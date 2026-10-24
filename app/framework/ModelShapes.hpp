@@ -4,6 +4,7 @@
 // Display shapes built from the model's JSON answers: datums and sketch
 // geometry, which the model gives as numbers rather than shape handles.
 
+#include <optional>
 #include <vector>
 
 #include <QJsonArray>
@@ -21,6 +22,8 @@
 namespace mitcad {
 
 gp_Pnt pointOf(const QJsonValue& xyz);
+// The point of an array of at least three numbers; none for anything else.
+std::optional<gp_Pnt> pointFrom(const QJsonValue& xyz);
 gp_Vec vectorOf(const QJsonValue& xyz);
 
 // A placement of the model's queries: 3 or 4 rows of 4 numbers.

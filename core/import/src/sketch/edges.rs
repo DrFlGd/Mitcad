@@ -21,6 +21,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use mitcad_vec3::vec2::distance as dist;
+use mitcad_vec3::vec2::{add, dot, scale, sub};
 use serde_json::{Value, json};
 
 /// How far a curve may lie off the face's edge it is on, mm (the file's own
@@ -39,26 +41,6 @@ pub enum Carrier {
         center: [f64; 2],
         radius: f64,
     },
-}
-
-fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn add(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
-    [a[0] + b[0], a[1] + b[1]]
-}
-
-fn scale(a: [f64; 2], s: f64) -> [f64; 2] {
-    [a[0] * s, a[1] * s]
-}
-
-fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
 impl Carrier {

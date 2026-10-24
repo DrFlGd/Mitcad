@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 
+use mitcad_vec3::{cross, unit_div};
 use serde_json::{Value, json};
 
 use crate::dc::{self, Definitions, Reader, type_id};
@@ -363,7 +364,7 @@ fn extent_surface(dc: &Definitions, record: usize) -> Option<Value> {
         if !is_unit(x) || !is_unit(y) {
             return None;
         }
-        let normal = unit(cross([x[0], x[1], x[2]], [y[0], y[1], y[2]]))?;
+        let normal = unit_div(cross([x[0], x[1], x[2]], [y[0], y[1], y[2]]))?;
         return Some(json!({"kind": "face", "objectType": "BRepFace",
                            "geometry": {"type": "Plane", "origin": origin, "normal": normal}}));
     }
@@ -1034,25 +1035,12 @@ pub fn plane(dc: &Definitions, record: usize) -> Option<([f64; 3], [f64; 3], [f6
         .then_some((v[0], v[1], v[2]))
 }
 
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    (n > 1e-12).then(|| v.map(|x| x / n))
-}
-
 /// A work plane as the dump's construction plane reference: an origin
 /// plane by its name, an imported work plane by its item, else its
 /// geometry.
 pub fn plane_reference(cx: &Context, record: usize, items: &HashMap<usize, i64>) -> Option<Value> {
     let (origin, x, y) = plane(cx.dc, record)?;
-    let normal = unit(cross(x, y))?;
+    let normal = unit_div(cross(x, y))?;
     let on_origin = origin.iter().all(|v| v.abs() < 1e-9);
     let axis = |i: usize| (normal[i].abs() - 1.0).abs() < 1e-9;
     if on_origin
@@ -1184,7 +1172,7 @@ pub fn work_plane(
     items: &HashMap<usize, i64>,
 ) -> Result<Translated, String> {
     let (origin, x, y) = plane(cx.dc, record).ok_or("its geometry was not read")?;
-    let normal = unit(cross(x, y)).ok_or("its axes are parallel")?;
+    let normal = unit_div(cross(x, y)).ok_or("its axes are parallel")?;
     let mut t = Translated {
         detail: json!({"geometry": {"type": "Plane", "origin": origin, "normal": normal,
                                     "uDirection": x}}),
@@ -1276,7 +1264,7 @@ fn parallel_offset(
     normal: [f64; 3],
 ) -> Option<(Value, f64)> {
     let (o, x, y) = plane(cx.dc, base)?;
-    let n = unit(cross(x, y))?;
+    let n = unit_div(cross(x, y))?;
     let c = cross(n, normal);
     if c.iter().map(|v| v * v).sum::<f64>().sqrt() > 1e-9 {
         return None;
@@ -1568,7 +1556,7 @@ fn path_direction(cx: &Context, record: usize, reach: f64) -> Option<[f64; 3]> {
     if !(reach >= 0.0 && reach <= length + 1e-9) {
         return None;
     }
-    let v = unit(v)?;
+    let v = unit_div(v)?;
     Some(if flip { v.map(|x| -x) } else { v })
 }
 
@@ -1580,7 +1568,7 @@ fn pattern_direction(cx: &Context, record: usize) -> Option<[f64; 3]> {
     r.reference().ok()?;
     r.skip(4 + 2 + 4 + 24).ok()?;
     let v = [r.f64().ok()?, r.f64().ok()?, r.f64().ok()?];
-    let v = unit(v)?;
+    let v = unit_div(v)?;
     Some(if flip == Some(true) { v.map(|x| -x) } else { v })
 }
 
@@ -1712,7 +1700,7 @@ pub fn thread(cx: &Context, record: usize) -> Result<Translated, String> {
         ends[1][1] - ends[0][1],
         ends[1][2] - ends[0][2],
     ];
-    let axis = unit(along).ok_or("its ends are one point")?;
+    let axis = unit_div(along).ok_or("its ends are one point")?;
     let (designation, kind, class) = thread_size(cx.dc, record).ok_or("its size was not read")?;
     let full = cx.boolean(slot(1)).ok_or("its extent was not read")?;
     let mut d = json!({
@@ -1747,7 +1735,7 @@ pub fn axis(dc: &Definitions, record: usize) -> Option<([f64; 3], [f64; 3])> {
     let bytes = dc.bytes(record);
     let mut r = Reader::at(bytes, bytes.len().checked_sub(49)?);
     let p = [r.f64().ok()?, r.f64().ok()?, r.f64().ok()?];
-    let v = unit([r.f64().ok()?, r.f64().ok()?, r.f64().ok()?])?;
+    let v = unit_div([r.f64().ok()?, r.f64().ok()?, r.f64().ok()?])?;
     p.iter().all(|x| x.is_finite()).then_some((p, v))
 }
 

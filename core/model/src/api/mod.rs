@@ -52,6 +52,9 @@ mod pulleys;
 mod bearings;
 // Seats on shafts (mitcad#578).
 mod seats;
+// The enums of commands and queries with their names, and the table of
+// command families (mitcad#585).
+mod dispatch;
 // Section Analysis worked out without the document, off the UI thread
 // (mitcad#438).
 pub use analysis::{PreparedClips, PreparedQuery};
@@ -61,6 +64,7 @@ use std::fmt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use self::dispatch::named_enum;
 use crate::document::{
     AnalysisDef, Document, ModelError, NamedView, PreviewReport, noted_message, noted_status,
 };
@@ -96,251 +100,250 @@ fn read_json(json: &str) -> Result<Value, ApiError> {
     serde_json::from_str(json).map_err(|e| ApiError(format!("not valid JSON: {e}")))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-enum Command {
-    #[serde(rename = "begin_command")]
-    BeginCheckpoint,
-    #[serde(rename = "restore_command")]
-    RestoreCheckpoint {
-        token: String,
-    },
-    #[serde(rename = "discard_command")]
-    DiscardCheckpoint {
-        token: String,
-    },
-    AddFeature {
-        def: FeatureDef<ValueInput>,
-        #[serde(default)]
-        name: Option<String>,
-        /// The component (uid or name); the active one when left out.
-        #[serde(default)]
-        component: Option<String>,
-        /// Inserted just after this feature instead of at the marker
-        /// (mitcad#403).
-        #[serde(default)]
-        after: Option<FeatureUid>,
-        /// Inserted at this timeline position (the number of features
-        /// before it) instead of at the marker (mitcad#403).
-        #[serde(default)]
-        index: Option<usize>,
-    },
-    EditFeature {
-        uid: FeatureUid,
-        def: FeatureDef<ValueInput>,
-    },
-    DeleteFeature {
-        uid: FeatureUid,
-        #[serde(default)]
-        dependents: bool,
-    },
-    SuppressFeature {
-        uid: FeatureUid,
-        #[serde(default = "yes")]
-        suppressed: bool,
-    },
-    ReorderFeature {
-        uid: FeatureUid,
-        index: usize,
-    },
-    RenameFeature {
-        uid: FeatureUid,
-        name: String,
-    },
-    RenameBody {
-        uid: BodyUid,
-        name: String,
-    },
-    SetMarker {
-        position: usize,
-        #[serde(default)]
-        temporary: bool,
-    },
-    AddParameter {
-        name: String,
-        #[serde(default)]
-        value: Option<ValueInput>,
-        #[serde(default)]
-        expression: Option<String>,
-        #[serde(default)]
-        unit: Option<String>,
-        #[serde(default)]
-        comment: String,
-    },
-    SetParameter {
-        name: String,
-        #[serde(default)]
-        value: Option<ValueInput>,
-        #[serde(default)]
-        expression: Option<String>,
-        #[serde(default)]
-        unit: Option<String>,
-        #[serde(default)]
-        comment: Option<String>,
-        /// A favourite (P9: Change Parameters' star).
-        #[serde(default)]
-        favorite: Option<bool>,
-    },
-    SetUnits {
-        length: String,
-    },
-    RenameParameter {
-        name: String,
-        new_name: String,
-    },
-    DeleteParameter {
-        name: String,
-    },
-    Undo,
-    Redo,
-    Recompute,
-    // Body attributes (F5).
-    SetBodyVisible {
-        uid: BodyUid,
-        visible: bool,
-    },
-    SetBodyMaterial {
-        uid: BodyUid,
-        #[serde(default)]
-        material: Option<String>,
-    },
-    SetBodyAppearance {
-        uid: BodyUid,
-        #[serde(default)]
-        appearance: Option<String>,
-    },
-    // Appearances of single faces (mitcad#53).
-    SetFaceAppearance {
-        uid: BodyUid,
-        faces: Vec<String>,
-        #[serde(default)]
-        appearance: Option<String>,
-    },
-    ClearFaceAppearances {
-        uid: BodyUid,
-    },
-    ImportFile(exchange::ImportFileCommand),
-    Export(exchange::ExportCommand),
-    ExportSketch(exchange::ExportSketchCommand),
-    // Sketch mode (U2): one undo step for an interactive operation made of
-    // several commands (a tool's curves and constraints, a drag).
-    MergeUndo {
-        depth: usize,
-        label: String,
-    },
-    // Browser and timeline (U3): the light bulb of sketches and
-    // construction features.
-    SetFeatureVisible {
-        uid: FeatureUid,
-        visible: bool,
-    },
-    // Named views (U5).
-    AddNamedView {
-        /// The next free `NamedView<n>` when left out.
-        #[serde(default)]
-        name: String,
-        eye: [f64; 3],
-        target: [f64; 3],
-        up: [f64; 3],
-        #[serde(default)]
-        perspective: bool,
-        height: f64,
-        /// Replace a view of the same name instead of refusing.
-        #[serde(default)]
-        replace: bool,
-    },
-    DeleteNamedView {
-        name: String,
-    },
-    RenameNamedView {
-        name: String,
-        new_name: String,
-    },
-    // The Origin folder and Isolate saved in the document (P9).
-    SetOriginVisible {
-        visible: bool,
-    },
-    SetIsolation {
-        #[serde(default)]
-        items: Vec<crate::document::Isolated>,
-    },
-    // Timeline groups (P9).
-    GroupFeatures {
-        features: Vec<FeatureUid>,
-        #[serde(default)]
-        name: Option<String>,
-    },
-    Ungroup {
-        name: String,
-    },
-    RenameGroup {
-        name: String,
-        new_name: String,
-    },
-    // The saved state (P8): the design file was written or read.
-    MarkSaved,
-    // The caches of computed results (P7d, `cache.rs`).
-    ClearCache,
-    // Analyses kept in the document (mitcad#41, `document/analyses.rs`).
-    AddAnalysis {
-        def: AnalysisDef,
-        /// The next free `Section<n>` when left out.
-        #[serde(default)]
-        name: Option<String>,
-    },
-    EditAnalysis {
-        name: String,
-        def: AnalysisDef,
-        /// Shows (hiding the others) or hides it; as it was when left out.
-        #[serde(default)]
-        visible: Option<bool>,
-    },
-    SetAnalysisVisible {
-        name: String,
-        visible: bool,
-    },
-    RenameAnalysis {
-        name: String,
-        new_name: String,
-    },
-    DeleteAnalysis {
-        name: String,
-    },
-    // Appearances kept in the document (mitcad#46, `document/appearances.rs`).
-    CreateAppearance(crate::appearance::AppearanceChange),
-    EditAppearance(crate::appearance::AppearanceChange),
-    DeleteAppearance {
-        id: String,
-    },
-    // Render settings of the document (mitcad#47).
-    SetRenderSettings(crate::render_settings::RenderSettingsChange),
-    ResetRenderSettings,
-    // Lights of the render settings (mitcad#54): the light's fields.
-    AddRenderLight(serde_json::Map<String, Value>),
-    EditRenderLight(serde_json::Map<String, Value>),
-    DeleteRenderLight {
-        id: String,
-    },
-    // Sheet-metal Flat Patterns (mitcad#208, `document/flat_patterns.rs`).
-    SetFlatPattern {
-        body: BodyUid,
-        #[serde(default)]
-        stationary: Option<crate::sheet::PanelId>,
-        #[serde(default)]
-        x_axis: Option<crate::sheet::flat::FlatXAxis>,
-        #[serde(default)]
-        reference_side: Option<crate::sheet::SheetReferenceSide>,
-        /// Show the developed solid in place of the body (mitcad#210).
-        #[serde(default)]
-        shown: Option<bool>,
-    },
-    RemoveFlatPattern {
-        body: BodyUid,
-    },
-    // The Flat Pattern as a DXF drawing (mitcad#210, `exchange.rs`).
-    ExportFlatPatternDxf(exchange::ExportFlatPatternCommand),
-    // Drawings: views with dimensions and a hole table (mitcad#471, `drawing.rs`).
-    ExportDrawing(drawing::ExportDrawingCommand),
+named_enum! {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    enum Command {
+        "begin_command" => BeginCheckpoint,
+        "restore_command" => RestoreCheckpoint {
+            token: String,
+        },
+        "discard_command" => DiscardCheckpoint {
+            token: String,
+        },
+        "add_feature" => AddFeature {
+            def: FeatureDef<ValueInput>,
+            #[serde(default)]
+            name: Option<String>,
+            /// The component (uid or name); the active one when left out.
+            #[serde(default)]
+            component: Option<String>,
+            /// Inserted just after this feature instead of at the marker
+            /// (mitcad#403).
+            #[serde(default)]
+            after: Option<FeatureUid>,
+            /// Inserted at this timeline position (the number of features
+            /// before it) instead of at the marker (mitcad#403).
+            #[serde(default)]
+            index: Option<usize>,
+        },
+        "edit_feature" => EditFeature {
+            uid: FeatureUid,
+            def: FeatureDef<ValueInput>,
+        },
+        "delete_feature" => DeleteFeature {
+            uid: FeatureUid,
+            #[serde(default)]
+            dependents: bool,
+        },
+        "suppress_feature" => SuppressFeature {
+            uid: FeatureUid,
+            #[serde(default = "yes")]
+            suppressed: bool,
+        },
+        "reorder_feature" => ReorderFeature {
+            uid: FeatureUid,
+            index: usize,
+        },
+        "rename_feature" => RenameFeature {
+            uid: FeatureUid,
+            name: String,
+        },
+        "rename_body" => RenameBody {
+            uid: BodyUid,
+            name: String,
+        },
+        "set_marker" => SetMarker {
+            position: usize,
+            #[serde(default)]
+            temporary: bool,
+        },
+        "add_parameter" => AddParameter {
+            name: String,
+            #[serde(default)]
+            value: Option<ValueInput>,
+            #[serde(default)]
+            expression: Option<String>,
+            #[serde(default)]
+            unit: Option<String>,
+            #[serde(default)]
+            comment: String,
+        },
+        "set_parameter" => SetParameter {
+            name: String,
+            #[serde(default)]
+            value: Option<ValueInput>,
+            #[serde(default)]
+            expression: Option<String>,
+            #[serde(default)]
+            unit: Option<String>,
+            #[serde(default)]
+            comment: Option<String>,
+            /// A favourite (P9: Change Parameters' star).
+            #[serde(default)]
+            favorite: Option<bool>,
+        },
+        "set_units" => SetUnits {
+            length: String,
+        },
+        "rename_parameter" => RenameParameter {
+            name: String,
+            new_name: String,
+        },
+        "delete_parameter" => DeleteParameter {
+            name: String,
+        },
+        "undo" => Undo,
+        "redo" => Redo,
+        "recompute" => Recompute,
+        // Body attributes (F5).
+        "set_body_visible" => SetBodyVisible {
+            uid: BodyUid,
+            visible: bool,
+        },
+        "set_body_material" => SetBodyMaterial {
+            uid: BodyUid,
+            #[serde(default)]
+            material: Option<String>,
+        },
+        "set_body_appearance" => SetBodyAppearance {
+            uid: BodyUid,
+            #[serde(default)]
+            appearance: Option<String>,
+        },
+        // Appearances of single faces (mitcad#53).
+        "set_face_appearance" => SetFaceAppearance {
+            uid: BodyUid,
+            faces: Vec<String>,
+            #[serde(default)]
+            appearance: Option<String>,
+        },
+        "clear_face_appearances" => ClearFaceAppearances {
+            uid: BodyUid,
+        },
+        "import_file" => ImportFile(exchange::ImportFileCommand),
+        "export" => Export(exchange::ExportCommand),
+        "export_sketch" => ExportSketch(exchange::ExportSketchCommand),
+        // Sketch mode (U2): one undo step for an interactive operation made of
+        // several commands (a tool's curves and constraints, a drag).
+        "merge_undo" => MergeUndo {
+            depth: usize,
+            label: String,
+        },
+        // Browser and timeline (U3): the light bulb of sketches and
+        // construction features.
+        "set_feature_visible" => SetFeatureVisible {
+            uid: FeatureUid,
+            visible: bool,
+        },
+        // Named views (U5).
+        "add_named_view" => AddNamedView {
+            /// The next free `NamedView<n>` when left out.
+            #[serde(default)]
+            name: String,
+            eye: [f64; 3],
+            target: [f64; 3],
+            up: [f64; 3],
+            #[serde(default)]
+            perspective: bool,
+            height: f64,
+            /// Replace a view of the same name instead of refusing.
+            #[serde(default)]
+            replace: bool,
+        },
+        "delete_named_view" => DeleteNamedView {
+            name: String,
+        },
+        "rename_named_view" => RenameNamedView {
+            name: String,
+            new_name: String,
+        },
+        // The Origin folder and Isolate saved in the document (P9).
+        "set_origin_visible" => SetOriginVisible {
+            visible: bool,
+        },
+        "set_isolation" => SetIsolation {
+            #[serde(default)]
+            items: Vec<crate::document::Isolated>,
+        },
+        // Timeline groups (P9).
+        "group_features" => GroupFeatures {
+            features: Vec<FeatureUid>,
+            #[serde(default)]
+            name: Option<String>,
+        },
+        "ungroup" => Ungroup {
+            name: String,
+        },
+        "rename_group" => RenameGroup {
+            name: String,
+            new_name: String,
+        },
+        // The saved state (P8): the design file was written or read.
+        "mark_saved" => MarkSaved,
+        // The caches of computed results (P7d, `cache.rs`).
+        "clear_cache" => ClearCache,
+        // Analyses kept in the document (mitcad#41, `document/analyses.rs`).
+        "add_analysis" => AddAnalysis {
+            def: AnalysisDef,
+            /// The next free `Section<n>` when left out.
+            #[serde(default)]
+            name: Option<String>,
+        },
+        "edit_analysis" => EditAnalysis {
+            name: String,
+            def: AnalysisDef,
+            /// Shows (hiding the others) or hides it; as it was when left out.
+            #[serde(default)]
+            visible: Option<bool>,
+        },
+        "set_analysis_visible" => SetAnalysisVisible {
+            name: String,
+            visible: bool,
+        },
+        "rename_analysis" => RenameAnalysis {
+            name: String,
+            new_name: String,
+        },
+        "delete_analysis" => DeleteAnalysis {
+            name: String,
+        },
+        // Appearances kept in the document (mitcad#46, `document/appearances.rs`).
+        "create_appearance" => CreateAppearance(crate::appearance::AppearanceChange),
+        "edit_appearance" => EditAppearance(crate::appearance::AppearanceChange),
+        "delete_appearance" => DeleteAppearance {
+            id: String,
+        },
+        // Render settings of the document (mitcad#47).
+        "set_render_settings" => SetRenderSettings(crate::render_settings::RenderSettingsChange),
+        "reset_render_settings" => ResetRenderSettings,
+        // Lights of the render settings (mitcad#54): the light's fields.
+        "add_render_light" => AddRenderLight(serde_json::Map<String, Value>),
+        "edit_render_light" => EditRenderLight(serde_json::Map<String, Value>),
+        "delete_render_light" => DeleteRenderLight {
+            id: String,
+        },
+        // Sheet-metal Flat Patterns (mitcad#208, `document/flat_patterns.rs`).
+        "set_flat_pattern" => SetFlatPattern {
+            body: BodyUid,
+            #[serde(default)]
+            stationary: Option<crate::sheet::PanelId>,
+            #[serde(default)]
+            x_axis: Option<crate::sheet::flat::FlatXAxis>,
+            #[serde(default)]
+            reference_side: Option<crate::sheet::SheetReferenceSide>,
+            /// Show the developed solid in place of the body (mitcad#210).
+            #[serde(default)]
+            shown: Option<bool>,
+        },
+        "remove_flat_pattern" => RemoveFlatPattern {
+            body: BodyUid,
+        },
+        // The Flat Pattern as a DXF drawing (mitcad#210, `exchange.rs`).
+        "export_flat_pattern_dxf" => ExportFlatPatternDxf(exchange::ExportFlatPatternCommand),
+        // Drawings: views with dimensions and a hole table (mitcad#471, `drawing.rs`).
+        "export_drawing" => ExportDrawing(drawing::ExportDrawingCommand),
+    }
 }
 
 fn yes() -> bool {
@@ -397,222 +400,224 @@ enum PreviewCommand {
     },
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "query", rename_all = "snake_case", deny_unknown_fields)]
-enum Query {
-    Document,
-    Timeline,
-    // Value inputs of command panels (U1, `evaluate.rs`).
-    Evaluate(evaluate::EvaluateQuery),
-    Parameters,
-    Bodies {
-        #[serde(default)]
-        properties: bool,
-        // Only the volume of the properties (W1: the application's log of
-        // what a command changed, without listing faces and edges).
-        #[serde(default)]
-        volumes: bool,
-    },
-    Profiles {
-        // A hash of each region's geometry and sketch frame (W1: the
-        // application keeps the faces it built while it stays the same).
-        #[serde(default)]
-        hashes: bool,
-    },
-    AutoselectProfiles,
-    SheetState {
-        #[serde(default)]
-        body: Option<BodyUid>,
-    },
-    SheetRules {
-        #[serde(default)]
-        feature: Option<FeatureUid>,
-    },
-    Feature {
-        uid: FeatureUid,
-    },
-    Faces {
-        body: BodyUid,
-    },
-    Edges {
-        body: BodyUid,
-    },
-    Report,
-    // Construction geometry and analysis (F5, `analysis.rs`).
-    Datums(analysis::DatumsQuery),
-    Datum(analysis::DatumQuery),
-    Properties(analysis::PropertiesQuery),
-    Measure(analysis::MeasureQuery),
-    Interference(analysis::InterferenceQuery),
-    Section(analysis::SectionQuery),
-    SectionPlane(crate::document::SectionAnalysis),
-    CompareStep(analysis::CompareStepQuery),
-    Threads,
-    // The general sketch (S1, `sketch.rs`).
-    Sketch {
-        uid: FeatureUid,
-    },
-    // Components and occurrences (F6, `components.rs`).
-    Components,
-    Instances(components::InstancesQuery),
-    // Browser and timeline (U3).
-    Dependents {
-        uid: FeatureUid,
-    },
-    CanReorder {
-        uid: FeatureUid,
-        index: usize,
-    },
-    // Named views (U5).
-    NamedViews,
-    // Recompute speed (P10).
-    RecomputeTimes,
-    // Small UI gaps and metric defaults (P9, P11).
-    ThreadSizes {
-        #[serde(default)]
-        standard: Option<crate::features::ThreadStandard>,
-    },
-    DxfInfo {
-        path: String,
-    },
-    // The caches of computed results (P7d, `cache.rs`).
-    Cache {
-        /// Also what the result store on disk holds (reads its files).
-        #[serde(default)]
-        disk: bool,
-    },
-    // Saving a version (P12d): what changed since the saved state.
-    ChangesSinceSaved,
-    // Analyses kept in the document (mitcad#41).
-    Analyses,
-    // Appearances: the library's and the document's (mitcad#46).
-    Appearances,
-    // An appearance's embedded texture image (mitcad#53), of the base
-    // colour or another map of its set (mitcad#313).
-    AppearanceImage {
-        id: String,
-        #[serde(default)]
-        map: Option<String>,
-    },
-    // Render settings of the document (mitcad#47).
-    RenderSettings,
-    // Joints between occurrences (mitcad#55, `joints.rs`).
-    Joints,
-    JointDof(joints::JointDofQuery),
-    JointDrag(joints::JointDragQuery),
-    // The frame a joint origin gives (mitcad#55 phase 3: the panels show
-    // where an origin snaps).
-    JointFrame(joints::JointFrameQuery),
-    // Configuration tables and library parts (mitcad#64).
-    Configurations,
-    LibraryParts,
-    PartsList {
-        /// Columns of property values: `Key` or `Set/Key` (mitcad#496).
-        #[serde(default)]
-        properties: Vec<String>,
-    },
-    // A row of assembly constraints before it is added: its references' kinds,
-    // the types they fit and what they measure (mitcad#148).
-    ConstraintRow(Box<joints::ConstraintRowQuery>),
-    // Move Features into a Component (mitcad#171): what a move would do,
-    // and what a definition refers to.
-    MoveToComponent(move_features::MoveSelection),
-    FeatureReferences(Box<move_features::ReferencesQuery>),
-    // The region a profile reference means now (mitcad#199): the
-    // application's selection inputs tell by it whether a click is on a
-    // selected region, whatever key the selection keeps for it.
-    Profile {
-        sketch: FeatureUid,
-        region: crate::topo::RegionKey,
-    },
-    // Sheet-metal Flat Patterns (mitcad#208): one body's, or all of them.
-    FlatPattern {
-        #[serde(default)]
-        body: Option<BodyUid>,
-    },
-    // The two-way flat correspondence of a body point or flat position.
-    FlatPoint {
-        body: BodyUid,
-        #[serde(default)]
-        flat: Option<[f64; 2]>,
-        #[serde(default)]
-        model: Option<[f64; 3]>,
-    },
-    // The command UI of sheet metal (mitcad#210, `document/flat_patterns.rs`):
-    // a picked face or edge as a semantic reference, the seam two panels
-    // share, and the sheet bodies with their rules and Flat Patterns.
-    SheetReference {
-        body: BodyUid,
-        #[serde(default)]
-        face: Option<String>,
-        #[serde(default)]
-        edge: Option<String>,
-        #[serde(default)]
-        at: Option<[f64; 3]>,
-    },
-    SheetSeam {
-        body: BodyUid,
-        stationary: crate::sheet::PanelId,
-        moving: crate::sheet::PanelId,
-    },
-    SheetBodies,
-    // Design policy (mitcad#220, `policy.rs`): one owner's settings and
-    // violations, every owner's, and whose geometry sketches may attach to.
-    Policy(policy::PolicyQuery),
-    Policies,
-    SketchSupports(policy::SketchSupportsQuery),
-    // Moving an occurrence to another parent (mitcad#219, `components.rs`).
-    ReparentOccurrence(components::ReparentQuery),
-    // Body edges and vertices in a sketch's plane (mitcad#256, `sketch.rs`).
-    PlaneGeometry {
-        sketch: FeatureUid,
-    },
-    // Tangent chains of edges and faces (mitcad#290, `tangent_chains.rs`).
-    TangentChains(tangent_chains::TangentChainsQuery),
-    // A thread's default end chamfer (mitcad#304, `threads.rs`).
-    ThreadChamfer(threads::ThreadChamferQuery),
-    // The BUILD tab (mitcad#375, `build.rs`): a preview of build_place's,
-    // build_panel's or build_connect's fields, the parts, the junctions
-    // and the cut list.
-    BuildPreview(serde_json::Map<String, Value>),
-    BuildParts,
-    BuildJunctions(build::JunctionsQuery),
-    BuildCutList(build::CutListQuery),
-    // The component BUILD places parts in (mitcad#394, `build.rs`).
-    BuildHost,
-    // The library parts the design uses, with their counts, for the part
-    // picker (mitcad#418, `libraries.rs`).
-    LibraryUsage,
-    // Motion studies and contact sets (mitcad#454, `motion.rs`).
-    MotionStudies,
-    StudyValues(motion::StudyValuesQuery),
-    ContactSets,
-    ContactCheck,
-    // Motion links between joints (mitcad#466, `joints.rs`).
-    MotionLinkOffset(Box<joints::MotionLinkOffsetQuery>),
-    // Bodies moved into another component (mitcad#465, `move_features.rs`).
-    TransferBodies(move_features::TransferQuery),
-    // Gears: derived values (mitcad#472, `gears.rs`).
-    GearValues(gears::GearValuesQuery),
-    GearLink(gears::GearLinkQuery),
-    // An SVG drawing for Insert SVG (mitcad#473, `sketch/svg.rs`).
-    SvgInfo {
-        path: String,
-    },
-    // Typed property sets (mitcad#496, `properties.rs`).
-    PropertySets(properties::PropertySetsQuery),
-    PropertyTypes,
-    PropertySearch(properties::PropertySearchQuery),
-    // Mount frames and placing a part by one (mitcad#525, `mounts.rs`).
-    MountFrames(mounts::MountFramesQuery),
-    MountPreview(Box<mounts::MountPreviewQuery>),
-    // Pulleys: derived values and belts (mitcad#562, `pulleys.rs`).
-    PulleyValues(pulleys::PulleyValuesQuery),
-    // Printable bearings: derived values and sizes (mitcad#577, `bearings.rs`).
-    BearingValues(bearings::BearingValuesQuery),
-    BearingSizes(bearings::BearingSizesQuery),
-    // Seats on shafts (mitcad#578, `seats.rs`).
-    SeatFrame(seats::SeatFrameQuery),
+named_enum! {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "query", rename_all = "snake_case", deny_unknown_fields)]
+    enum Query {
+        "document" => Document,
+        "timeline" => Timeline,
+        // Value inputs of command panels (U1, `evaluate.rs`).
+        "evaluate" => Evaluate(evaluate::EvaluateQuery),
+        "parameters" => Parameters,
+        "bodies" => Bodies {
+            #[serde(default)]
+            properties: bool,
+            // Only the volume of the properties (W1: the application's log of
+            // what a command changed, without listing faces and edges).
+            #[serde(default)]
+            volumes: bool,
+        },
+        "profiles" => Profiles {
+            // A hash of each region's geometry and sketch frame (W1: the
+            // application keeps the faces it built while it stays the same).
+            #[serde(default)]
+            hashes: bool,
+        },
+        "autoselect_profiles" => AutoselectProfiles,
+        "sheet_state" => SheetState {
+            #[serde(default)]
+            body: Option<BodyUid>,
+        },
+        "sheet_rules" => SheetRules {
+            #[serde(default)]
+            feature: Option<FeatureUid>,
+        },
+        "feature" => Feature {
+            uid: FeatureUid,
+        },
+        "faces" => Faces {
+            body: BodyUid,
+        },
+        "edges" => Edges {
+            body: BodyUid,
+        },
+        "report" => Report,
+        // Construction geometry and analysis (F5, `analysis.rs`).
+        "datums" => Datums(analysis::DatumsQuery),
+        "datum" => Datum(analysis::DatumQuery),
+        "properties" => Properties(analysis::PropertiesQuery),
+        "measure" => Measure(analysis::MeasureQuery),
+        "interference" => Interference(analysis::InterferenceQuery),
+        "section" => Section(analysis::SectionQuery),
+        "section_plane" => SectionPlane(crate::document::SectionAnalysis),
+        "compare_step" => CompareStep(analysis::CompareStepQuery),
+        "threads" => Threads,
+        // The general sketch (S1, `sketch.rs`).
+        "sketch" => Sketch {
+            uid: FeatureUid,
+        },
+        // Components and occurrences (F6, `components.rs`).
+        "components" => Components,
+        "instances" => Instances(components::InstancesQuery),
+        // Browser and timeline (U3).
+        "dependents" => Dependents {
+            uid: FeatureUid,
+        },
+        "can_reorder" => CanReorder {
+            uid: FeatureUid,
+            index: usize,
+        },
+        // Named views (U5).
+        "named_views" => NamedViews,
+        // Recompute speed (P10).
+        "recompute_times" => RecomputeTimes,
+        // Small UI gaps and metric defaults (P9, P11).
+        "thread_sizes" => ThreadSizes {
+            #[serde(default)]
+            standard: Option<crate::features::ThreadStandard>,
+        },
+        "dxf_info" => DxfInfo {
+            path: String,
+        },
+        // The caches of computed results (P7d, `cache.rs`).
+        "cache" => Cache {
+            /// Also what the result store on disk holds (reads its files).
+            #[serde(default)]
+            disk: bool,
+        },
+        // Saving a version (P12d): what changed since the saved state.
+        "changes_since_saved" => ChangesSinceSaved,
+        // Analyses kept in the document (mitcad#41).
+        "analyses" => Analyses,
+        // Appearances: the library's and the document's (mitcad#46).
+        "appearances" => Appearances,
+        // An appearance's embedded texture image (mitcad#53), of the base
+        // colour or another map of its set (mitcad#313).
+        "appearance_image" => AppearanceImage {
+            id: String,
+            #[serde(default)]
+            map: Option<String>,
+        },
+        // Render settings of the document (mitcad#47).
+        "render_settings" => RenderSettings,
+        // Joints between occurrences (mitcad#55, `joints.rs`).
+        "joints" => Joints,
+        "joint_dof" => JointDof(joints::JointDofQuery),
+        "joint_drag" => JointDrag(joints::JointDragQuery),
+        // The frame a joint origin gives (mitcad#55 phase 3: the panels show
+        // where an origin snaps).
+        "joint_frame" => JointFrame(joints::JointFrameQuery),
+        // Configuration tables and library parts (mitcad#64).
+        "configurations" => Configurations,
+        "library_parts" => LibraryParts,
+        "parts_list" => PartsList {
+            /// Columns of property values: `Key` or `Set/Key` (mitcad#496).
+            #[serde(default)]
+            properties: Vec<String>,
+        },
+        // A row of assembly constraints before it is added: its references' kinds,
+        // the types they fit and what they measure (mitcad#148).
+        "constraint_row" => ConstraintRow(Box<joints::ConstraintRowQuery>),
+        // Move Features into a Component (mitcad#171): what a move would do,
+        // and what a definition refers to.
+        "move_to_component" => MoveToComponent(move_features::MoveSelection),
+        "feature_references" => FeatureReferences(Box<move_features::ReferencesQuery>),
+        // The region a profile reference means now (mitcad#199): the
+        // application's selection inputs tell by it whether a click is on a
+        // selected region, whatever key the selection keeps for it.
+        "profile" => Profile {
+            sketch: FeatureUid,
+            region: crate::topo::RegionKey,
+        },
+        // Sheet-metal Flat Patterns (mitcad#208): one body's, or all of them.
+        "flat_pattern" => FlatPattern {
+            #[serde(default)]
+            body: Option<BodyUid>,
+        },
+        // The two-way flat correspondence of a body point or flat position.
+        "flat_point" => FlatPoint {
+            body: BodyUid,
+            #[serde(default)]
+            flat: Option<[f64; 2]>,
+            #[serde(default)]
+            model: Option<[f64; 3]>,
+        },
+        // The command UI of sheet metal (mitcad#210, `document/flat_patterns.rs`):
+        // a picked face or edge as a semantic reference, the seam two panels
+        // share, and the sheet bodies with their rules and Flat Patterns.
+        "sheet_reference" => SheetReference {
+            body: BodyUid,
+            #[serde(default)]
+            face: Option<String>,
+            #[serde(default)]
+            edge: Option<String>,
+            #[serde(default)]
+            at: Option<[f64; 3]>,
+        },
+        "sheet_seam" => SheetSeam {
+            body: BodyUid,
+            stationary: crate::sheet::PanelId,
+            moving: crate::sheet::PanelId,
+        },
+        "sheet_bodies" => SheetBodies,
+        // Design policy (mitcad#220, `policy.rs`): one owner's settings and
+        // violations, every owner's, and whose geometry sketches may attach to.
+        "policy" => Policy(policy::PolicyQuery),
+        "policies" => Policies,
+        "sketch_supports" => SketchSupports(policy::SketchSupportsQuery),
+        // Moving an occurrence to another parent (mitcad#219, `components.rs`).
+        "reparent_occurrence" => ReparentOccurrence(components::ReparentQuery),
+        // Body edges and vertices in a sketch's plane (mitcad#256, `sketch.rs`).
+        "plane_geometry" => PlaneGeometry {
+            sketch: FeatureUid,
+        },
+        // Tangent chains of edges and faces (mitcad#290, `tangent_chains.rs`).
+        "tangent_chains" => TangentChains(tangent_chains::TangentChainsQuery),
+        // A thread's default end chamfer (mitcad#304, `threads.rs`).
+        "thread_chamfer" => ThreadChamfer(threads::ThreadChamferQuery),
+        // The BUILD tab (mitcad#375, `build.rs`): a preview of build_place's,
+        // build_panel's or build_connect's fields, the parts, the junctions
+        // and the cut list.
+        "build_preview" => BuildPreview(serde_json::Map<String, Value>),
+        "build_parts" => BuildParts,
+        "build_junctions" => BuildJunctions(build::JunctionsQuery),
+        "build_cut_list" => BuildCutList(build::CutListQuery),
+        // The component BUILD places parts in (mitcad#394, `build.rs`).
+        "build_host" => BuildHost,
+        // The library parts the design uses, with their counts, for the part
+        // picker (mitcad#418, `libraries.rs`).
+        "library_usage" => LibraryUsage,
+        // Motion studies and contact sets (mitcad#454, `motion.rs`).
+        "motion_studies" => MotionStudies,
+        "study_values" => StudyValues(motion::StudyValuesQuery),
+        "contact_sets" => ContactSets,
+        "contact_check" => ContactCheck,
+        // Motion links between joints (mitcad#466, `joints.rs`).
+        "motion_link_offset" => MotionLinkOffset(Box<joints::MotionLinkOffsetQuery>),
+        // Bodies moved into another component (mitcad#465, `move_features.rs`).
+        "transfer_bodies" => TransferBodies(move_features::TransferQuery),
+        // Gears: derived values (mitcad#472, `gears.rs`).
+        "gear_values" => GearValues(gears::GearValuesQuery),
+        "gear_link" => GearLink(gears::GearLinkQuery),
+        // An SVG drawing for Insert SVG (mitcad#473, `sketch/svg.rs`).
+        "svg_info" => SvgInfo {
+            path: String,
+        },
+        // Typed property sets (mitcad#496, `properties.rs`).
+        "property_sets" => PropertySets(properties::PropertySetsQuery),
+        "property_types" => PropertyTypes,
+        "property_search" => PropertySearch(properties::PropertySearchQuery),
+        // Mount frames and placing a part by one (mitcad#525, `mounts.rs`).
+        "mount_frames" => MountFrames(mounts::MountFramesQuery),
+        "mount_preview" => MountPreview(Box<mounts::MountPreviewQuery>),
+        // Pulleys: derived values and belts (mitcad#562, `pulleys.rs`).
+        "pulley_values" => PulleyValues(pulleys::PulleyValuesQuery),
+        // Printable bearings: derived values and sizes (mitcad#577, `bearings.rs`).
+        "bearing_values" => BearingValues(bearings::BearingValuesQuery),
+        "bearing_sizes" => BearingSizes(bearings::BearingSizesQuery),
+        // Seats on shafts (mitcad#578, `seats.rs`).
+        "seat_frame" => SeatFrame(seats::SeatFrameQuery),
+    }
 }
 
 fn names(names: &[String]) -> Value {
@@ -651,85 +656,17 @@ impl<K: Kernel> Document<K> {
         // What failed before, and the feature the command names (mitcad#401).
         let before = self.timeline_before();
         let target = command_target(&value);
-        let is_sketch = value
+        // The family that runs the command (`dispatch.rs`); the document's
+        // own commands take every other name.
+        let families = Self::command_families();
+        let family = value
             .get("cmd")
             .and_then(Value::as_str)
-            .is_some_and(|cmd| cmd.starts_with("sketch."));
-        let is_component = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| components::COMMANDS.contains(&cmd));
-        // Joints between occurrences (mitcad#55).
-        let is_joint = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| joints::COMMANDS.contains(&cmd));
-        // Configuration tables and library parts (mitcad#64).
-        let is_library = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| libraries::COMMANDS.contains(&cmd));
-        // Move Features into a Component (mitcad#171).
-        let is_move = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| move_features::COMMANDS.contains(&cmd));
-        // Design policy (mitcad#220).
-        let is_policy = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| policy::COMMANDS.contains(&cmd));
-        // The BUILD tab (mitcad#375).
-        let is_build = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| build::COMMANDS.contains(&cmd));
-        // Motion studies and contact sets (mitcad#454).
-        let is_motion = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| motion::COMMANDS.contains(&cmd));
-        // Gears: the motion link of a mesh (mitcad#472, `gears.rs`).
-        let is_gear_link = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| gears::COMMANDS.contains(&cmd));
-        // Typed property sets (mitcad#496).
-        let is_property = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| properties::COMMANDS.contains(&cmd));
-        // Reorient Design (mitcad#502).
-        let is_reorient = value
-            .get("cmd")
-            .and_then(Value::as_str)
-            .is_some_and(|cmd| reorient::COMMANDS.contains(&cmd));
+            .and_then(|cmd| families.iter().find(|family| family.runs(cmd)));
         let mut result = if let Some(rules) = inline_face_rules(&value) {
             self.add_face_with_rules_command(rules, &value)?
-        } else if is_gear_link {
-            let link = self.link_gears_json(&value)?;
-            self.run_joint_command(parse(link, "command")?)?
-        } else if is_sketch {
-            let command = sketch::parse_sketch_command(value)?;
-            self.run_sketch_command(command)?
-        } else if is_component {
-            self.run_component_command(parse(value, "command")?)?
-        } else if is_joint {
-            self.run_joint_command(parse(value, "command")?)?
-        } else if is_library {
-            self.run_library_command(parse(value, "command")?)?
-        } else if is_move {
-            self.run_move_command(parse(value, "command")?)?
-        } else if is_policy {
-            self.run_policy_command(parse(value, "command")?)?
-        } else if is_build {
-            self.run_build_command(parse(value, "command")?)?
-        } else if is_motion {
-            self.run_motion_command(parse(value, "command")?)?
-        } else if is_property {
-            self.run_property_command(parse(value, "command")?)?
-        } else if is_reorient {
-            self.run_reorient_command(parse(value, "command")?)?
+        } else if let Some(family) = family {
+            (family.run)(self, value)?
         } else {
             self.run_document_command(parse(value, "command")?)?
         };

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Editable folded sheet operations; geometry is shared with material trimming.
 
+use super::mapping::map_params;
 use super::sheet::Relief;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput, References,
@@ -212,6 +213,7 @@ fn map_relief<P, Q, E>(
 impl<P> SheetFlangeDef<P> {
     pub const TYPE: &'static str = "sheet_flange";
     pub const BASE_NAME: &'static str = "SheetFlange";
+    // Written by hand: length, offsets and width map under nested slots.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -267,6 +269,7 @@ impl<P> SheetBendDef<P> {
                 BendPortMode::VirtualSharp
             })
     }
+    // Written by hand: the port mode is the resolved one, not a copy.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -287,40 +290,35 @@ impl<P> SheetBendDef<P> {
 impl<P> SheetFoldDef<P> {
     pub const TYPE: &'static str = "sheet_fold";
     pub const BASE_NAME: &'static str = "SheetFold";
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SheetFoldDef<Q>, E> {
-        Ok(SheetFoldDef {
-            body: self.body,
-            panel: self.panel,
-            line: self.line.clone(),
-            stationary_side: self.stationary_side,
-            angle: f("angle", &self.angle)?,
-            position: self.position,
-            radius: self.radius.as_ref().map(|p| f("radius", p)).transpose()?,
-            relief: map_relief(&self.relief, f)?,
-        })
+    map_params! {
+        SheetFoldDef {
+            body: copy,
+            panel: copy,
+            line: clone,
+            stationary_side: copy,
+            angle: param,
+            position: copy,
+            radius: option,
+            relief: with(map_relief),
+        }
     }
 }
 impl<P> SheetCornerRoundDef<P> {
     pub const TYPE: &'static str = "sheet_corner_round";
     pub const BASE_NAME: &'static str = "SheetCornerRound";
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SheetCornerRoundDef<Q>, E> {
-        Ok(SheetCornerRoundDef {
-            body: self.body,
-            corners: self.corners.clone(),
-            radius: f("radius", &self.radius)?,
-            corner_slots: self.corner_slots.clone(),
-        })
+    map_params! {
+        SheetCornerRoundDef {
+            body: copy,
+            corners: clone,
+            radius: param,
+            corner_slots: clone,
+        }
     }
 }
 impl<P> SheetCornerChamferDef<P> {
     pub const TYPE: &'static str = "sheet_corner_chamfer";
     pub const BASE_NAME: &'static str = "SheetCornerChamfer";
+    // Written by hand: the distances map under nested slots (`distances.first`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

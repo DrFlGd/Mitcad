@@ -21,8 +21,6 @@ namespace {
 // How long the labels stay after their field lost the keyboard: a click in
 // the view takes it before the view sees the click.
 constexpr int kPickGraceMs = 400;
-// The features before the marker whose values are labelled, nearest first.
-constexpr int kLabelledFeatures = 40;
 
 // A number with or without its unit ("20", "-4 mm", "30 deg").
 bool plainNumber(const QString& text) {
@@ -43,18 +41,20 @@ void CommandSession::valueFocused(const QString& key, bool focused) {
   }
   if (focused) {
     m_valueKeyboard = true;
-    if (!m_autoFocusing) {
+    const bool onOpen = std::exchange(m_openFocusPending, false);
+    if (!m_autoFocusing && !onOpen) {
       m_valueTouched = true;
     }
     const bool same = key == m_pickTarget && !m_picker.isNull();
     m_pickTarget = key;
     m_pickFocused = true;
-    // The field takes the keyboard back after a name went in: the labels
-    // stay as they are. Nor while the keyboard moved here by itself after a
-    // pick (moveKeyboardToValues) and the selection takes more items: the
-    // next click in the view is its next pick, not a label's name
-    // (mitcad#467); typing in the field shows them.
-    if (!(same && m_inserting) && !(m_autoFocusing && activeTakesMore())) {
+    // The labels shown for this field stay as they are (it takes the
+    // keyboard back after a name went in, or is clicked again). None while
+    // the keyboard went here by itself as the panel opened (mitcad#587), nor
+    // after a pick when the selection takes more items: the next click in
+    // the view is its next pick, not a label's name (mitcad#467). A click in
+    // the field (CommandPanel) or typing in it shows them.
+    if (!same && !onOpen && !(m_autoFocusing && activeTakesMore())) {
       showParameterLabels();
     }
     return;
@@ -92,9 +92,8 @@ void CommandSession::showParameterLabels() {
     return;
   }
   std::vector<ParameterPicker::Sketch> sketches;
-  std::vector<ParameterPicker::Value> values;
   QHash<QString, QString> texts;
-  gatherParameterLabels(m_host, kLabelledFeatures, sketches, values, texts);
+  gatherParameterLabels(m_host, sketches, texts);
   if (!m_picker) {
     auto* picker = new ParameterPicker(m_host.viewer(), m_def.name);
     m_picker = picker;
@@ -104,7 +103,7 @@ void CommandSession::showParameterLabels() {
     connect(this, &CommandSession::finished, picker, &QObject::deleteLater);
     connect(this, &QObject::destroyed, picker, &QObject::deleteLater);
   }
-  m_picker->setContent(std::move(sketches), std::move(values), std::move(texts));
+  m_picker->setContent(std::move(sketches), std::move(texts));
 }
 
 void CommandSession::hideParameterLabels() {

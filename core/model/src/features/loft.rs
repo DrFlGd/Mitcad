@@ -124,6 +124,7 @@ pub enum EndCondition<P = ParamId> {
 }
 
 impl<P> EndCondition<P> {
+    // Written by hand: the condition maps by its kind under its prefix.
     fn map_params<Q, E>(
         &self,
         prefix: &str,
@@ -278,6 +279,7 @@ impl<P> LoftDef<P> {
     pub const TYPE: &'static str = "loft";
     pub const BASE_NAME: &'static str = "Loft";
 
+    // Written by hand: the end conditions map with their prefixes.
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

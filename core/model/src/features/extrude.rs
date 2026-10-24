@@ -267,6 +267,7 @@ fn map_option<P, Q, E>(
 }
 
 impl<P> Side<P> {
+    // Written by hand: the side maps by its kind under its prefix.
     fn map_params<Q, E>(&self, prefix: &str, f: &mut Mapper<'_, P, Q, E>) -> Result<Side<Q>, E> {
         let slot = |field: &str| format!("{prefix}.{field}");
         Ok(match self {
@@ -301,6 +302,7 @@ impl<P> ExtrudeDef<P> {
             .flatten()
     }
 
+    // Written by hand: start, extent and thin map by their kind (`extent.distance`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

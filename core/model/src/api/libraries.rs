@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ApiError;
+use super::dispatch::named_enum;
 use crate::configurations::Configurations;
 use crate::document::{Document, LibraryChange, LibraryPart};
 use crate::kernel::Kernel;
@@ -52,30 +53,25 @@ pub(crate) struct ChangeInput {
     config: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum LibraryCommand {
-    /// The design's configuration table; null or an empty table removes
-    /// it.
-    SetConfigurations {
-        #[serde(default)]
-        configurations: Option<Configurations>,
-    },
-    ApplyConfiguration {
-        name: String,
-    },
-    /// Linked library parts to other versions or rows, one undo step.
-    UpdateLibraryParts {
-        changes: Vec<ChangeInput>,
-    },
+named_enum! {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    pub(crate) enum LibraryCommand {
+        /// The design's configuration table; null or an empty table removes
+        /// it.
+        "set_configurations" => SetConfigurations {
+            #[serde(default)]
+            configurations: Option<Configurations>,
+        },
+        "apply_configuration" => ApplyConfiguration {
+            name: String,
+        },
+        /// Linked library parts to other versions or rows, one undo step.
+        "update_library_parts" => UpdateLibraryParts {
+            changes: Vec<ChangeInput>,
+        },
+    }
 }
-
-/// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 3] = [
-    "set_configurations",
-    "apply_configuration",
-    "update_library_parts",
-];
 
 impl<K: Kernel> Document<K> {
     pub(crate) fn run_library_command(

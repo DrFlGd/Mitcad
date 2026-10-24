@@ -12,6 +12,14 @@ option(MITCAD_MACOS_UI_TESTS "macOS: register the UI test app.ui-macos (opens th
 if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND AND TARGET mitcad-cli)
+    if(TARGET mitcad-render)
+      add_test(NAME app.render_metal_scenes
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/render-metal-acceptance.py"
+                "$<TARGET_FILE:mitcad-cli>" "$<TARGET_FILE:mitcad-render>"
+                "${CMAKE_BINARY_DIR}/render-metal-scenes")
+      set_tests_properties(app.render_metal_scenes PROPERTIES
+        TIMEOUT 1200 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    endif()
     set(mitcad_mcp_test_ui qt)
     if(MITCAD_MACOS_NATIVE_UI)
       add_test(NAME app.ui-macos-cut-components
@@ -103,6 +111,16 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
               "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-render-metal")
     set_tests_properties(app.ui-macos-render-metal PROPERTIES
       TIMEOUT 480 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-render-acceptance
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-render-metal-test.sh"
+              "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-render-acceptance")
+    set_tests_properties(app.ui-macos-render-acceptance PROPERTIES
+      TIMEOUT 720 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE ENVIRONMENT "MITCAD_RENDER_ACCEPTANCE=1")
+    add_test(NAME app.ui-macos-render-recovery
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-render-recovery-test.sh"
+              "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-render-recovery" qt)
+    set_tests_properties(app.ui-macos-render-recovery PROPERTIES
+      TIMEOUT 780 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     add_test(NAME app.ui-macos-dialogs
       COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-dialogs-test.sh"
               "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-dialogs")
@@ -141,6 +159,16 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
                 "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-native-render-metal" native)
       set_tests_properties(app.ui-macos-native-render-metal PROPERTIES
         TIMEOUT 480 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-render-acceptance
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-render-metal-test.sh"
+                "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-native-render-acceptance" native)
+      set_tests_properties(app.ui-macos-native-render-acceptance PROPERTIES
+        TIMEOUT 720 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE ENVIRONMENT "MITCAD_RENDER_ACCEPTANCE=1")
+      add_test(NAME app.ui-macos-native-render-recovery
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-render-recovery-test.sh"
+                "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-native-render-recovery" native)
+      set_tests_properties(app.ui-macos-native-render-recovery PROPERTIES
+        TIMEOUT 780 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     endif()
   endif()
 endif()

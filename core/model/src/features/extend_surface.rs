@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::kernel_error;
+use super::mapping::map_params;
 use super::sheet_edges::{self, OpeningEdgesRef};
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -40,17 +41,14 @@ impl<P> ExtendSurfaceDef<P> {
     pub const TYPE: &'static str = "extend_surface";
     pub const BASE_NAME: &'static str = "Extend";
 
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<ExtendSurfaceDef<Q>, E> {
-        Ok(ExtendSurfaceDef {
-            body: self.body,
-            edges: self.edges.clone(),
-            openings: self.openings.clone(),
-            distance: f("distance", &self.distance)?,
-            mode: self.mode,
-        })
+    map_params! {
+        ExtendSurfaceDef {
+            body: copy,
+            edges: clone,
+            openings: clone,
+            distance: param,
+            mode: copy,
+        }
     }
 }
 

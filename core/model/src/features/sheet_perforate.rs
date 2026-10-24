@@ -5,6 +5,7 @@
 //! developed sheet cut, so the body, the Flat Pattern, the DXF and every
 //! measure have them.
 
+use super::mapping::map_params;
 use super::{CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References};
 use crate::ids::BodyUid;
 use crate::kernel::Kernel;
@@ -50,18 +51,15 @@ fn is_staggered(p: &PerforationPattern) -> bool {
 impl<P> SheetPerforateDef<P> {
     pub const TYPE: &'static str = "sheet_perforate";
     pub const BASE_NAME: &'static str = "SheetPerforate";
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SheetPerforateDef<Q>, E> {
-        Ok(SheetPerforateDef {
-            body: self.body,
-            diameter: f("diameter", &self.diameter)?,
-            pitch: f("pitch", &self.pitch)?,
-            margin: self.margin.as_ref().map(|m| f("margin", m)).transpose()?,
-            pattern: self.pattern,
-            stationary: self.stationary,
-        })
+    map_params! {
+        SheetPerforateDef {
+            body: copy,
+            diameter: param,
+            pitch: param,
+            margin: option,
+            pattern: copy,
+            stationary: copy,
+        }
     }
 }
 

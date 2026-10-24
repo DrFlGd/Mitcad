@@ -7,6 +7,7 @@
 //! sharp on that edge.
 
 use super::face_refs::add_faces;
+use super::mapping::map_params;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput, References,
 };
@@ -35,17 +36,14 @@ pub struct SheetConvertDef<P = ParamId> {
 impl<P> SheetConvertDef<P> {
     pub const TYPE: &'static str = "sheet_convert";
     pub const BASE_NAME: &'static str = "SheetConvert";
-    pub fn map_params<Q, E>(
-        &self,
-        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<SheetConvertDef<Q>, E> {
-        Ok(SheetConvertDef {
-            rules: self.rules,
-            body: self.body,
-            face: self.face.clone(),
-            bends: self.bends.clone(),
-            radius: self.radius.as_ref().map(|r| f("radius", r)).transpose()?,
-        })
+    map_params! {
+        SheetConvertDef {
+            rules: copy,
+            body: copy,
+            face: clone,
+            bends: clone,
+            radius: option,
+        }
     }
 }
 

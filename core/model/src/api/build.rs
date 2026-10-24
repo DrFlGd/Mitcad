@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::ApiError;
+use super::dispatch::named_enum;
 use crate::build::place::{LengthPlan, Plan, SourceUse, Spot, value_in};
 use crate::build::{
     BuildRole, ConnectInput, CutListOptions, EditInput, MitreCut, PanelInput, PartInput,
@@ -46,36 +47,27 @@ struct PreviewCuts<'a> {
     rip: Option<&'a PartCut<ValueInput>>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
-// The variants are named after the commands (`build_place`, ...), read from `cmd`.
-#[allow(clippy::enum_variant_names)]
-pub(crate) enum BuildCommand {
-    BuildPlace(Box<PlaceInput>),
-    BuildEdit(Box<EditInput>),
-    BuildConnect(Box<ConnectInput>),
-    BuildPanel(Box<PanelInput>),
-    BuildRemove {
-        component: String,
-        #[serde(default)]
-        set: bool,
-    },
-    // Timber frames (mitcad#479).
-    BuildFrame(Box<crate::build::FrameInput>),
-    // Fasteners swapped in place (mitcad#497).
-    BuildSwapFasteners(Box<crate::build::SwapInput>),
+named_enum! {
+    #[derive(Debug, Deserialize)]
+    #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+    // The variants are named after the commands (`build_place`, ...), read from `cmd`.
+    #[allow(clippy::enum_variant_names)]
+    pub(crate) enum BuildCommand {
+        "build_place" => BuildPlace(Box<PlaceInput>),
+        "build_edit" => BuildEdit(Box<EditInput>),
+        "build_connect" => BuildConnect(Box<ConnectInput>),
+        "build_panel" => BuildPanel(Box<PanelInput>),
+        "build_remove" => BuildRemove {
+            component: String,
+            #[serde(default)]
+            set: bool,
+        },
+        // Timber frames (mitcad#479).
+        "build_frame" => BuildFrame(Box<crate::build::FrameInput>),
+        // Fasteners swapped in place (mitcad#497).
+        "build_swap_fasteners" => BuildSwapFasteners(Box<crate::build::SwapInput>),
+    }
 }
-
-/// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 7] = [
-    "build_place",
-    "build_edit",
-    "build_connect",
-    "build_panel",
-    "build_remove",
-    "build_frame",
-    "build_swap_fasteners",
-];
 
 /// What a timber frame's command made (mitcad#479).
 fn framed_json(framed: &crate::build::frames::Framed) -> Value {
@@ -862,7 +854,7 @@ impl<K: Kernel> Document<K> {
         if let Some((end, was)) = touch
             && let Some(now) = evaluated.mounts.get(end)
         {
-            let shift = crate::transform::sub(was, now.translation);
+            let shift = mitcad_vec3::sub(was, now.translation);
             placement = placement.after(&Transform::translation(shift));
         }
         let world = self.host_placement().after(&placement);

@@ -7,6 +7,8 @@
 
 use serde_json::json;
 
+use mitcad_vec3::dot;
+
 use super::test_library::*;
 use crate::features::FeatureDef;
 use crate::transform::Transform;
@@ -497,10 +499,6 @@ fn world_plane(
     (at.apply_point(point), at.apply_vector(normal))
 }
 
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
 #[test]
 fn an_angled_end_keeps_the_part_within_its_length() {
     // mitcad#443: the length is the long point; the cut runs through the
@@ -525,7 +523,7 @@ fn an_angled_end_keeps_the_part_within_its_length() {
     let (point, normal) = world_plane(&doc, &t, true);
     assert!(close(point, [0.0, -10.0, 500.0]), "{point:?}");
     let short = [0.0, 10.0, 480.0];
-    let gap = dot3(normal, std::array::from_fn(|i| short[i] - point[i]));
+    let gap = dot(normal, std::array::from_fn(|i| short[i] - point[i]));
     assert!(gap.abs() < 1e-9, "{gap}");
     // The same at end A, and the cut list keeps the length.
     command(

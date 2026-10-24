@@ -8,6 +8,7 @@ use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
 
+use super::mapping::map_params;
 use super::moves::check_bodies;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -36,11 +37,11 @@ impl<P> RemoveBodyDef<P> {
         }
     }
 
-    pub fn map_params<Q, E>(
-        &self,
-        _f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
-    ) -> Result<RemoveBodyDef<Q>, E> {
-        Ok(RemoveBodyDef::new(self.bodies.clone()))
+    map_params! {
+        RemoveBodyDef {
+            bodies: clone,
+            values: phantom,
+        }
     }
 }
 

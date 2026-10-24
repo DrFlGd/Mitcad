@@ -6,45 +6,14 @@
 use crate::kernel::BoundingBox;
 use crate::transform::Transform;
 
-pub(crate) type V3 = [f64; 3];
+// The vector helpers live in `mitcad-vec3`; the build rules take them from
+// here.
+pub(crate) use mitcad_vec3::Vec3 as V3;
+pub(crate) use mitcad_vec3::{add, cross, dot, norm, scale, sub, unit};
 
 pub(crate) const X: V3 = [1.0, 0.0, 0.0];
 pub(crate) const Y: V3 = [0.0, 1.0, 0.0];
 pub(crate) const Z: V3 = [0.0, 0.0, 1.0];
-
-pub(crate) fn add(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-
-pub(crate) fn sub(a: V3, b: V3) -> V3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
-pub(crate) fn scale(a: V3, s: f64) -> V3 {
-    a.map(|v| v * s)
-}
-
-pub(crate) fn dot(a: V3, b: V3) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-pub(crate) fn cross(a: V3, b: V3) -> V3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-pub(crate) fn norm(a: V3) -> f64 {
-    dot(a, a).sqrt()
-}
-
-/// The unit vector, None for a zero one.
-pub(crate) fn unit(a: V3) -> Option<V3> {
-    let n = norm(a);
-    (n > 1e-12 && n.is_finite()).then(|| scale(a, 1.0 / n))
-}
 
 /// A unit vector at right angles to the unit vector `v`.
 pub(crate) fn perpendicular(v: V3) -> V3 {

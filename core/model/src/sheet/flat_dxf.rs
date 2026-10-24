@@ -12,6 +12,8 @@
 
 use std::f64::consts::TAU;
 
+use mitcad_vec3::vec2::distance as dist;
+
 use super::MaterialRegion;
 use super::flat::FlatBend;
 use crate::exchange::LengthUnit;
@@ -59,10 +61,6 @@ pub fn dxf_unit(unit: LengthUnit) -> (mitcad_dxf::Units, f64) {
 
 /// Distance below which two points of the drawing are one, in mm.
 const JOIN: f64 = 1e-6;
-
-fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
-}
 
 fn same_angle(a: f64, b: f64) -> bool {
     let d = (a - b).rem_euclid(TAU);

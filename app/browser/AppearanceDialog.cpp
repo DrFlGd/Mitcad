@@ -39,6 +39,7 @@
 #include "../framework/Icons.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "../materials/TextureBrowser.hpp"
 #include "../materials/TextureUse.hpp"
 #include "DocumentHost.hpp"
@@ -86,6 +87,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   left->addWidget(m_source);
   auto* searchRow = new QHBoxLayout;
   m_search = new QLineEdit;
+  m_search->setObjectName(QStringLiteral("appearanceSearch"));
   m_search->setPlaceholderText(tr("Search"));
   m_search->setClearButtonEnabled(true);
   m_category = new QComboBox;
@@ -100,6 +102,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   m_searchTimer->setInterval(250);
 
   m_list = new QListWidget;
+  m_list->setObjectName(QStringLiteral("appearanceLibrary"));
   m_list->setIconSize(QSize(kIconSize, kIconSize));
   m_list->setSelectionMode(QAbstractItemView::SingleSelection);
   m_list->setMinimumWidth(300);
@@ -788,6 +791,7 @@ void AppearanceDialog::refresh() {
     }
     auto* item = new QListWidgetItem(QIcon(QPixmap::fromImage(appearanceSwatch(a, kIconSize, ratio))), a.name, m_list);
     item->setData(kIdRole, a.id);
+    item->setData(NativeControlIdentifierRole, QStringLiteral("appearance.") + a.id);
     if (!a.bodies.isEmpty() || !a.faces.isEmpty()) {
       item->setToolTip(tr("Used by %n body(ies)", nullptr, static_cast<int>(a.bodies.size())) +
                        (a.faces.isEmpty() ? QString()

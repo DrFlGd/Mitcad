@@ -2526,8 +2526,7 @@ impl Kernel for MockKernel {
         let (Some(bounds), true) = (shape.bounds, face.is_none_or(|f| shape.has_face(f))) else {
             return Ok(Vec::new());
         };
-        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        use mitcad_vec3::{dot, sub};
         let normal = plane.normal();
         let corners: Vec<[f64; 3]> = bounds.corners().collect();
         let mut points: Vec<[f64; 3]> = Vec::new();

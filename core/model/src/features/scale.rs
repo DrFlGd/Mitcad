@@ -33,6 +33,7 @@ impl<P> ScaleDef<P> {
     pub const TYPE: &'static str = "scale";
     pub const BASE_NAME: &'static str = "Scale";
 
+    // Written by hand: the scale maps by its kind (`scale.factor`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,

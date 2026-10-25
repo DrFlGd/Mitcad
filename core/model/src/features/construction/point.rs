@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{GeomRef, PathRef, Want, distinct, finite};
+use super::{GeomRef, PathRef, Want, along_slot, distinct, finite};
 use crate::datum::{
     ANGULAR, CurveGeometry, Datum, DatumAxis, DatumPlane, DatumPoint, LINEAR, PathParameter,
     SurfaceGeometry, Vec3, add, norm, scale, sub,
@@ -63,7 +63,8 @@ impl<P> ConstructionPointDef<P> {
         Self { definition }
     }
 
-    // Written by hand: the definition maps by its kind (`definition.distance`).
+    // Written by hand: the definition maps by its kind (`definition.distance`,
+    // `definition.fraction`).
     pub fn map_params<Q, E>(
         &self,
         f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
@@ -99,7 +100,8 @@ impl<P> ConstructionPointDef<P> {
                 physical,
             } => D::AlongPath {
                 path: path.clone(),
-                distance: f("definition.distance", distance)?,
+                // A fraction of the path is unitless (mitcad#662).
+                distance: f(along_slot(*physical), distance)?,
                 physical: *physical,
             },
             D::Fixed { point } => D::Fixed { point: *point },

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::FeatureEntry;
-use super::geom_ref::{GeomRef, Resolver, Want, resolve_point};
+use super::geom_ref::{GeomRef, Resolver, Want, resolve_axis, resolve_point};
 use super::mapping::map_params;
 use super::pattern::{ComputeOption, Element, PatternObjects, repeat};
 use super::{
@@ -240,7 +240,10 @@ impl FeatureInfo for PointPatternDef {
     }
 }
 
-fn placement<K: Kernel>(
+/// Where the occurrence path (absolute, from the root) places its component
+/// in the design at this point of the timeline. Also used by moves'
+/// points and axes picked in occurrences (mitcad#699).
+pub(crate) fn placement<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
     path: &OccurrencePath,
 ) -> Result<Transform, String> {
@@ -298,10 +301,39 @@ fn point<K: Kernel>(
     let Some(path) = &reference.occurrence else {
         return resolve_point(ctx, &reference.point);
     };
+    point_in(ctx, &reference.point, path, from_world)
+}
+
+/// A point of the component the occurrence path (absolute) ends in, where
+/// that occurrence places it, moved by `from_world` (out of the design's
+/// coordinates).
+pub(crate) fn point_in<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    point: &GeomRef,
+    path: &OccurrencePath,
+    from_world: &Transform,
+) -> Result<[f64; 3], String> {
     let component = crate::joints::path_component(ctx.env.assembly, ComponentUid::ROOT, &path.0)?;
     let transform = from_world.after(&placement(ctx, path)?);
-    let p = resolve_point(&mut PointResolver { ctx, component }, &reference.point)?;
+    let p = resolve_point(&mut PointResolver { ctx, component }, point)?;
     Ok(transform.apply_point(p))
+}
+
+/// An axis of the component the occurrence path (absolute) ends in, as
+/// [`point_in`] places a point.
+pub(crate) fn axis_in<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    axis: &GeomRef,
+    path: &OccurrencePath,
+    from_world: &Transform,
+) -> Result<crate::datum::DatumAxis, String> {
+    let component = crate::joints::path_component(ctx.env.assembly, ComponentUid::ROOT, &path.0)?;
+    let transform = from_world.after(&placement(ctx, path)?);
+    let a = resolve_axis(&mut PointResolver { ctx, component }, axis)?;
+    Ok(crate::datum::DatumAxis {
+        origin: transform.apply_point(a.origin),
+        direction: transform.apply_vector(a.direction),
+    })
 }
 
 fn centre(points: &[[f64; 3]]) -> Result<[f64; 3], String> {

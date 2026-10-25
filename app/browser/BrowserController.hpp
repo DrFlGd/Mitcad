@@ -11,6 +11,9 @@
 #include "BrowserPanel.hpp"
 #include "DocumentSnapshot.hpp"
 #include "FindInDesign.hpp"
+#include "../print/MaterialsDialog.hpp"
+#include "../print/OwnSettingsDialog.hpp"
+#include "../print/ProfilesDialog.hpp"
 #include "PropertySetsDialog.hpp"
 
 class QEvent;
@@ -38,6 +41,9 @@ public:
   BrowserPanel* browser() const { return m_browser; }
   TimelineWidget* timeline() const { return m_timeline; }
   bool markerDragActive() const { return m_markerDepth >= 0; }
+  // Exact feature context while the controller passes a timeline or feature-row
+  // pick to the host. A body-row or any independent view pick has no context.
+  QStringList pickingFeatures() const { return m_picking ? m_pickedFeatures : QStringList(); }
   // The status bar's summary of failed features; a click goes to them.
   QToolButton* failures() const { return m_failures; }
   // Beside it, yellow: features with warnings, the import's fallbacks,
@@ -73,6 +79,22 @@ public:
   // Property Sets (mitcad#496) of a body, an occurrence and its component
   // (the window follows the model; another target replaces the shown one).
   void openPropertySets(const PropertyTarget& target);
+  // Materials (mitcad#655; Material... and Edit Materials): Assign gives
+  // the bodies (uids) the selected material, or with `component` (a uid)
+  // makes it that component's default; neither: no Assign. The window
+  // follows the model.
+  // `keepOpen`: Assign leaves the window open (3D Print's Assign materials…).
+  void openMaterial(const QStringList& bodies, const QString& component = QString(), bool keepOpen = false);
+  // Printers and Processes (mitcad#655; Edit Printers and Processes, Edit…
+  // of 3D Print's and Property Sets' Printer and Process rows): the item
+  // `key` ("<place>/<id>") of `kind` (printer or process) selected, none
+  // for an empty key. The window follows the model.
+  void openProfiles(const QString& kind, const QString& key);
+  // A body's, an occurrence's or a component's own process settings in
+  // the settings form (mitcad#655): `owner` its uid, `name` as the design
+  // shows it (3D Print's own-settings links, Property Sets' Edit… of
+  // Process).
+  void openOwnSettings(const QString& owner, const QString& name);
   // Reorient Design (mitcad#502): the whole design turned by quarter turns,
   // previewed while its dialog is open; OK keeps it as one undo step.
   void openReorient();
@@ -181,6 +203,11 @@ private:
   void moveHistory(const QString& uid);
   void paste(bool asNew);
   void changeUnits();
+  // A measurement object's colour from the named ones (or another, Qt's
+  // colour dialog) and the kind of value it shows from those its picks
+  // have (mitcad#649), each an undo step.
+  void chooseMeasurementColor(const BrowserNode& node);
+  void chooseMeasurementKind(const BrowserNode& node);
   void reveal(const QString& uid);
   void updateFailures();
   bool canChange(bool visibilityOnly = false);
@@ -196,6 +223,9 @@ private:
   QPointer<ParametersDialog> m_parameters;
   QPointer<AppearanceDialog> m_appearances;
   QPointer<PropertySetsDialog> m_propertySets;
+  QPointer<MaterialsDialog> m_materials;     // mitcad#655
+  QPointer<ProfilesDialog> m_profiles;       // mitcad#655
+  QPointer<OwnSettingsDialog> m_ownSettings; // mitcad#655
   QPointer<FindDialog> m_find;
   QToolButton* m_findButton = nullptr;
   QString m_loggedFindButton;

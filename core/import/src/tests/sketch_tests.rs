@@ -791,3 +791,95 @@ fn an_offset_with_a_round_corner_is_a_derived_offset() {
     let s = sketch_query(&doc);
     assert!((radius(&s, &arc) - 2.0).abs() < 1e-6, "{s}");
 }
+
+#[test]
+fn text_parameters_are_imported_and_sketch_texts_follow_them() {
+    // mitcad#664, a synthetic design: a user text parameter, one kept as
+    // older files keep a text (without quotes), and the text parameters the
+    // sketch made for its two texts (roles `Text1-Text`, `Text2-Text`), the
+    // second's expression naming the user one.
+    let sketch = json!({
+        "index": 0, "name": "Sketch1", "objectType": "Sketch",
+        "detail": {
+            "referencePlane": {"kind": "construction_plane", "name": "XY", "origin": "XY"},
+            "model_frame": {"sketch_to_model": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
+                                                [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]},
+            "points": [], "curves": [],
+            "texts": [
+                {"id": "t0", "text": "Other", "height": 0.5, "position": [0.0, 2.0, 0.0]},
+                {"id": "t1", "text": "6qt lid", "height": 0.5, "position": [0.0, 0.0, 0.0]}
+            ]
+        }
+    });
+    let sketch_ref = json!({"kind": "feature", "objectType": "Sketch", "name": "Sketch1",
+                            "timeline_index": 0});
+    let source = dump(json!({
+        "schema": "mitcad-f3d-dump", "schema_version": 2,
+        "source": {"mode": "f3d_stream", "file": "texts.f3d"},
+        "parameters": {
+            "user": [
+                {"name": "Label", "expression": "'6qt'", "unit": "Text", "comment": "Lid label"},
+                {"name": "Note", "expression": "plain words", "unit": "Text"}
+            ],
+            "model": [
+                {"name": "d1", "expression": "'Other'", "unit": "Text", "role": "Text1-Text",
+                 "createdBy": sketch_ref},
+                {"name": "d2", "expression": "Label & ' lid'", "unit": "Text",
+                 "role": "Text2-Text", "createdBy": sketch_ref}
+            ]
+        },
+        "timeline": {"items": [sketch]}
+    }));
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &source);
+    let params = doc.parameters();
+    let text = |name: &str| {
+        params
+            .text(params.find(name).unwrap_or_else(|| panic!("no {name}")))
+            .map(str::to_owned)
+    };
+    assert_eq!(text("Label").as_deref(), Some("6qt"));
+    assert_eq!(text("d1").as_deref(), Some("Other"));
+    assert_eq!(text("d2").as_deref(), Some("6qt lid"));
+    // A text without quotes is taken as it is.
+    assert_eq!(text("Note").as_deref(), Some("plain words"));
+    assert_eq!(
+        report.parameters.literal,
+        ["Note"],
+        "{:?}",
+        report.parameters
+    );
+    assert!(
+        report.parameters.skipped.is_empty() && report.parameters.mismatched.is_empty(),
+        "{:?}",
+        report.parameters
+    );
+    let label = params.get(params.find("Label").unwrap()).unwrap();
+    assert_eq!(label.unit().to_string(), "Text");
+    assert_eq!(label.comment(), "Lid label");
+    // The texts follow their parameters, which the sketch owns.
+    assert_eq!(
+        params.owner(params.find("d2").unwrap()),
+        Some(FeatureUid(1))
+    );
+    let s = sketch_query(&doc);
+    let texts = s["texts"].as_array().unwrap();
+    assert_eq!(texts.len(), 2, "{s}");
+    let lid = texts.iter().find(|t| t["text"] == "6qt lid").unwrap();
+    assert_eq!(lid["value"]["parameter"], "d2", "{s}");
+    assert_eq!(lid["value"]["own"], true, "{s}");
+    let other = texts.iter().find(|t| t["text"] == "Other").unwrap();
+    assert_eq!(other["value"]["parameter"], "d1", "{s}");
+    // A change of the user parameter changes the text.
+    doc.command(r#"{"cmd": "set_parameter", "name": "Label", "expression": "'8qt'"}"#)
+        .unwrap();
+    let s = sketch_query(&doc);
+    assert!(
+        s["texts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["text"] == "8qt lid"),
+        "{s}"
+    );
+}

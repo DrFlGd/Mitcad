@@ -38,6 +38,8 @@
 #include "../framework/Theme.hpp"
 #include "IamImport.hpp"
 
+#include "../platform/MacDialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -148,7 +150,8 @@ std::optional<ExportChoice> askExport(QWidget* parent, const QString& path, int 
   layout->addLayout(form);
 
   auto* file = new QLineEdit(path);
-  auto* browse = new QPushButton(QObject::tr("Browse..."));
+  auto* browse = new QPushButton(QObject::tr("Browse…"));
+  mac::auxiliaryButton(browse);
   auto* fileRow = new QHBoxLayout;
   fileRow->addWidget(file, 1);
   fileRow->addWidget(browse);
@@ -272,7 +275,7 @@ std::optional<ExportChoice> askExport(QWidget* parent, const QString& path, int 
       choice.path += QLatin1Char('.') + QLatin1String(chosen.suffix);
     }
     if (choice.format == QStringLiteral("dxf") && choice.sketch.isEmpty()) {
-      message->setText(QObject::tr("The document has no sketch to export."));
+      message->setText(QObject::tr("The design has no sketch to export."));
       continue;
     }
     if (QFileInfo::exists(choice.path) &&
@@ -619,12 +622,12 @@ std::optional<bool> askIamImport(QWidget* parent, const QString& file) {
   dialog.setObjectName(QStringLiteral("importAssembly"));
   dialog.setWindowTitle(QObject::tr("Import Assembly"));
   auto* layout = new QVBoxLayout(&dialog);
-  auto* text = new QLabel(QObject::tr("Import %1 with its parts as components.").arg(QFileInfo(file).fileName()));
+  auto* text = new QLabel(QObject::tr("Import the components of %1.").arg(QFileInfo(file).fileName()));
   text->setWordWrap(true);
   layout->addWidget(text);
-  auto* history = new QCheckBox(QObject::tr("&Parts with their design history"));
+  auto* history = new QCheckBox(QObject::tr("Components with their design &history"));
   history->setObjectName(QStringLiteral("iamPartsHistory"));
-  history->setToolTip(QObject::tr("Each part's parameters and features replayed; off: its stored bodies only"));
+  history->setToolTip(QObject::tr("Each component's parameters and features replayed; off: its stored bodies only"));
   QSettings settings;
   history->setChecked(iamPartsHistory(settings));
   layout->addWidget(history);
@@ -1145,10 +1148,10 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
   if (isIamImport(result)) {
     const QJsonObject parts = design.value(QStringLiteral("parts")).toObject();
     summary += design.value(QStringLiteral("history")).toBool()
-                   ? QObject::tr("<br>Parts with their design history: %1 replayed, %2 as their stored bodies.")
+                   ? QObject::tr("<br>Components with their design history: %1 replayed, %2 as their stored bodies.")
                          .arg(parts.value(QStringLiteral("replayed")).toInt())
                          .arg(parts.value(QStringLiteral("as_bodies")).toInt())
-                   : QObject::tr("<br>The parts' stored bodies only (their design history not replayed).");
+                   : QObject::tr("<br>The components' stored bodies only (their design history not replayed).");
   }
   // Stopped by the user (T1e).
   const QString stop = importStop(result);

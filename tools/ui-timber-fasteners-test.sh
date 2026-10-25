@@ -230,12 +230,12 @@ ui_step "click a screw"                    ui_click_logged "Body ${TOP[0]}"
 ui_step "Ctrl+click another"               xdotool mousemove $(ui_logged_at "Body ${TOP[1]}") keydown ctrl click 1 keyup ctrl
 ui_mark
 ui_step "right-click it"                   ui_click_logged "Body ${TOP[1]}" 3
-ui_expect_new "Context menu BUILD: " "the context menu's BUILD"
-menu=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Context menu BUILD: " | tail -1)
+ui_expect_new "Context menu Build: " "the context menu's BUILD"
+menu=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Context menu Build: " | tail -1)
 [[ $menu == *"Swap Fastener"* ]] || ui_fail "BUILD has no Swap Fastener: $menu"
 echo "ok   BUILD offers Swap Fastener"
 ui_mark
-ui_step "BUILD > Swap Fastener"            ui_menu_choose "BUILD" "Swap Fastener"
+ui_step "Build > Swap Fastener"            ui_menu_choose "Build" "Swap Fastener"
 ui_expect_new "Command Swap Fastener started" "Swap Fastener started"
 ui_expect_new "BUILD swap fastener starts with 2 fastener(s), test-timber|wood-screw-test" \
   "with the two screws selected, their own part"

@@ -1,0 +1,21 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "material": {
+    "id": "nylon",
+    "name": "PA (Nylon)",
+    "density": 1.14,
+    "appearance": "plastic_white",
+    "filament": {
+      "filament_type": "PA",
+      "filament_diameter": 1.75,
+      "temperature": 265,
+      "first_layer_temperature": 265,
+      "bed_temperature": 90,
+      "first_layer_bed_temperature": 90,
+      "max_fan_speed": 0
+    },
+    "based_on": "nylon",
+    "version": 1
+  }
+}

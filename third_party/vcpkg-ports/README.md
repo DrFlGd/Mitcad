@@ -368,6 +368,15 @@ creases instead of 0980's turn about both creases at once, mitcad#343).
 by curvilinear equivalence (`GeomFill_GuideTrihedronAC::D2`), which bent a
 pipe shell's surfaces along an auxiliary spine between its sections
 (mitcad#539).
+1040 lets the face merge after booleans move the faces of a cylinder
+whose axis points the other way onto the reference face's parameters by
+the signed angle between their X directions, which left a bin's corner
+cut by an extrusion going down in faces built separately with seams used
+once, an invalid result (mitcad#642).
+1050 reads a wire's edges into an array once in ShapeFix's search for
+intersecting edges of one wire instead of by number from the wire's
+sequence for every pair, which made healing a body with long wires grow
+with the cube of their edges (mitcad#642).
 
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
@@ -3612,6 +3621,46 @@ the bar).
   binormal. With the square of the first derivative (as the normal's
   second derivative has it) the pipe holds 800 mm³, as by the plane rule.
 
+The patch 1040 comes from mitcad#642 (the open time of a design of a bin
+with a pattern of 372 ribs): an intersection of the bin's body (8 191
+faces) with an extrusion going down, whose face merge was invalid, so the
+boolean was computed again without it (8 s more) and left 8 208 faces
+where the stored body after the item has 6 721; a rounding of seven edges
+on that body then failed after the item's 60 s and the item fell back.
+
+- `1040-shapeupgrade-unifysamedomain-signed-angle-to-a-reversed-axis.patch`:
+  the pieces of the bin's rounded corner (radius 2.75) lie on one cylinder
+  with two parametrisations: the body's, axis up with its X direction along
+  +y, and the tool's, axis down in an indirect frame with its X direction
+  along +x, a quarter turn behind. `TransformPCurves` mirrors the pcurves
+  of a face whose axis or handedness is reversed against the reference
+  face's and then turns them by the angle between the X directions, which
+  for such faces was the unsigned angle: they came out half a turn away
+  from where the faces lie. The edges between the pieces got a seam's two
+  pcurves on the reference surface, the union seemed to fall into four
+  intervals of u, and each piece's wire was built as a face of its own
+  with such an edge used once (`BRepCheck_UnorientableShape`). With the
+  signed angle (about the reference's X direction crossed with its Y
+  direction) the six pieces lie in one interval of u and are merged into
+  one face: the intersection is valid with 6 732 faces at the first try
+  (0.8 s for the merge), the volume within 0.06 mm³ (1.2e-6 of it) of the
+  unmerged result's.
+
+The patch 1050 also comes from mitcad#642: after 1040 the larger part of
+healing the bin's large stored bodies went to the search for intersecting
+edges of one wire.
+
+- `1050-shapefix-self-intersecting-wire-edges-read-once.patch`:
+  `ShapeFix_IntersectionTool::FixSelfIntersectWire` reads edge num1 and
+  edge num2 of the wire for every pair of numbers, by number from
+  `ShapeExtend_WireData`'s `NCollection_Sequence`, whose access walks node
+  by node from the place read last: each pair walked about twice the
+  distance between the two numbers, and half the stack samples of healing
+  the bodies stood in that walk. The edges are read into an array in one
+  walk and taken from it; the fixes change the wire only for a pair whose
+  edges intersect, and the array is read again after such a pair, so the
+  fixes see the same edges as before.
+
 The patches 0961 and 0962 come from mitcad#343 (round 18): the same bar's
 outline rounded with 0.3 on both sides (22 edges, the item before that
 rim's rounding). Each side's chain runs along an earlier concave rounding
@@ -4115,6 +4164,13 @@ corner cylinders from its foot up past the creases, the material taken
 within 1e-3 mm³ of the peg rounded alone with the block carried on up into
 it; with 0980 and without the patch the fillet fails, before 0980 it
 rounds the block's corners with 0.5);
+for 1040, mitcad#642 and a quarter of a cylinder fused with a sector
+before or after it mirrored top to bottom (its axis down, its frame
+indirect), either first, in `geometry/tests/test_merge_reversed_axis.cpp`
+(the merge valid, one cylindrical face, the volume kept; without the patch
+the two faces stay apart wherever the other face's X direction lies behind
+the reference face's: the sector behind with the quarter first, the sector
+ahead with the sector first);
 each fails without its patch but 0931's (on that body OCCT's topological
 build closes the rod's face without it as well, so the test checks 0931's
 way only; the design's failure is verified on its replayed body) and

@@ -662,6 +662,12 @@ pub(crate) fn occurrences_used(def: &FeatureDef) -> Vec<OccurrenceUid> {
 /// Explicit occurrence references, including geometry links and timeline moves.
 pub(crate) fn referenced_occurrences(def: &FeatureDef) -> Vec<OccurrenceUid> {
     let mut out = occurrences_used(def);
+    // A move's points and axes picked in occurrences (mitcad#699).
+    if let Some(spec) = def.move_spec() {
+        for path in spec.occurrence_paths() {
+            out.extend(&path.0);
+        }
+    }
     let links: Vec<&crate::links::OccurrenceLink> = match def {
         FeatureDef::Sketch(s) => s
             .plane_link

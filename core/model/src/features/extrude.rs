@@ -399,6 +399,21 @@ impl<P> ExtrudeDef<P> {
         self.thin.as_ref().and_then(|t| t.curves.as_ref())
     }
 
+    /// The distances of a two-sided extent, side one's and side two's: none
+    /// for a side up to an object or through all, nor for other extents.
+    pub fn two_side_distances(&self) -> [Option<&P>; 2] {
+        fn distance<P>(side: &Side<P>) -> Option<&P> {
+            match side {
+                Side::Distance { distance, .. } => Some(distance),
+                _ => None,
+            }
+        }
+        match &self.extent {
+            Extent::TwoSides { side1, side2 } => [distance(side1), distance(side2)],
+            _ => [None, None],
+        }
+    }
+
     /// The objects the extrusion starts from or runs to.
     fn objects(&self) -> Vec<&ExtentObject> {
         let mut objects: Vec<&ExtentObject> = Vec::new();
@@ -764,7 +779,8 @@ impl FeatureInfo for ExtrudeDef {
                 ));
             }
             Extent::TwoSides { side1, side2 } => {
-                // The sign of a side's distance does not matter (see `tool`).
+                // The sign of a side's distance does not matter (see `tool`;
+                // commands refuse a negative one, mitcad#693).
                 if let (Side::Distance { distance: d1, .. }, Side::Distance { distance: d2, .. }) =
                     (side1, side2)
                     && !is_positive(value(*d1).abs() + value(*d2).abs())
@@ -1124,7 +1140,9 @@ impl ExtrudeDef {
                         // the sign of a two-sided distance does not turn it
                         // (a cut through all one way with a negative second
                         // distance cuts that far the other way in the API
-                        // reference dumps).
+                        // reference dumps). Commands refuse a negative one
+                        // (mitcad#693, `api/two_sides.rs`); imports add
+                        // theirs through the document's own API.
                         _ => ctx.param(id)?.abs(),
                     };
                     if d == 0.0 && !two_sides {

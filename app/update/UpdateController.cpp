@@ -42,12 +42,12 @@ UpdateController::UpdateController(QMainWindow& window, Host host, QObject* pare
 void UpdateController::registerCommands(CommandRegistry& registry) {
   CommandDef check;
   check.id = QStringLiteral("help.check_updates");
-  check.name = tr("Check for Updates...");
+  check.name = tr("Check for Updates…");
   check.icon = QStringLiteral("update");
   check.kind = CommandDef::Kind::Action;
   check.mode = CommandDef::Mode::Any;
   check.tab.clear();
-  check.tooltip = tr("Asks whether a newer Mitcad is out (Tools > Preferences: automatic checks)");
+  check.tooltip = tr("Asks whether a newer Mitcad is out (Tools › Preferences: automatic checks)");
   check.keywords = {QStringLiteral("update"), QStringLiteral("new version"), QStringLiteral("release"),
                     QStringLiteral("upgrade")};
   check.duringCommands = true;
@@ -93,7 +93,7 @@ void UpdateController::startUp() {
   connect(m_client, &UpdateClient::failed, this, &UpdateController::onFailed);
   connect(m_client, &UpdateClient::progress, this, [this](qint64 received, qint64 total) {
     if (m_state == State::Downloading) {
-      m_notice->showProgress(tr("Downloading Mitcad %1...").arg(m_offer.version), received, total);
+      m_notice->showProgress(tr("Downloading Mitcad %1…").arg(m_offer.version), received, total);
     }
   });
   connect(m_client, &UpdateClient::downloaded, this, &UpdateController::onDownloaded);
@@ -175,7 +175,7 @@ void UpdateController::check(bool manual) {
   m_manual = manual;
   const UpdateSettings settings = UpdateSettings::load();
   if (manual) {
-    m_notice->showProgress(tr("Checking for updates..."), 0, 0);
+    m_notice->showProgress(tr("Checking for updates…"), 0, 0);
     showNotice();
   }
   m_client->check(settings.channel, settings.skippedVersion);
@@ -222,7 +222,7 @@ void UpdateController::offer(const UpdateOffer& offer) {
   }
   UpdateSettings settings = UpdateSettings::load();
   if (!settings.hintShown) {
-    text += QLatin1Char(' ') + tr("Mitcad checks for updates once a day; Tools > Preferences turns that off.");
+    text += QLatin1Char(' ') + tr("Mitcad checks for updates once a day; Tools › Preferences turns that off.");
     settings.hintShown = true;
     settings.save();
   }
@@ -249,12 +249,12 @@ void UpdateController::install() {
     return;
   }
   m_state = State::Downloading;
-  m_notice->showProgress(tr("Downloading Mitcad %1...").arg(m_offer.version), 0, m_offer.size);
+  m_notice->showProgress(tr("Downloading Mitcad %1…").arg(m_offer.version), 0, m_offer.size);
   m_client->download(m_offer, m_installation.downloadPath(m_offer.version));
 }
 
 void UpdateController::onDownloaded(const QString& path) {
-  m_notice->showProgress(tr("Verifying Mitcad %1...").arg(m_offer.version), 0, 0);
+  m_notice->showProgress(tr("Verifying Mitcad %1…").arg(m_offer.version), 0, 0);
   const UpdateSource& source = m_client->source();
   try {
     updates::update_verify_download(
@@ -286,7 +286,7 @@ void UpdateController::finish(const QString& path) {
     showNotice();
     return;
   }
-  m_notice->showProgress(tr("Mitcad closes to install %1...").arg(m_offer.version), 0, 0);
+  m_notice->showProgress(tr("Mitcad closes to install %1…").arg(m_offer.version), 0, 0);
   qInfo() << "Update: closing the window to install";
   if (m_host.closeWindow()) {
     QCoreApplication::quit();

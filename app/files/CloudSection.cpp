@@ -35,6 +35,9 @@
 #include "Projects.hpp"
 #include "RemoteTask.hpp"
 
+#include "../platform/MacChrome.hpp"
+#include "../platform/MacDialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -112,7 +115,11 @@ void CloudSection::build() {
   m_details->setCheckable(true);
   m_details->setAutoRaise(true);
   m_details->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+#ifdef Q_OS_MACOS
+  m_details->setIcon(mac::symbolIcon(QStringLiteral("chevron.right")));
+#else
   m_details->setArrowType(Qt::RightArrow);
+#endif
   m_details->setToolTip(tr("Show or change the service, server, owner and repository the address is made of"));
   m_summary = new QLabel;
   m_summary->setObjectName(QStringLiteral("cloudSummary"));
@@ -165,7 +172,7 @@ void CloudSection::build() {
   m_form->addRow(m_connectLabel, m_connectRow);
   m_folder = new QLineEdit;
   m_folder->setPlaceholderText(tr("A folder others can reach: an empty one, or a repository"));
-  auto* browse = new QPushButton(tr("Browse..."));
+  auto* browse = new QPushButton(tr("Browse…"));
   browse->setAutoDefault(false);
   m_folderRow = new QWidget;
   auto* folderLayout = new QHBoxLayout(m_folderRow);
@@ -175,7 +182,7 @@ void CloudSection::build() {
   m_folderLabel = new QLabel(tr("Repository fol&der:"));
   m_folderLabel->setBuddy(m_folder);
   m_form->addRow(m_folderLabel, m_folderRow);
-  m_create =new QPushButton(tr("Create Repository in &Browser..."));
+  m_create =new QPushButton(tr("Create Repository in &Browser…"));
   m_create->setAutoDefault(false);
   m_create->setToolTip(tr("Make an empty repository on the service's page, then come back: the address is "
                           "checked again"));
@@ -197,8 +204,8 @@ void CloudSection::build() {
   fixes->addWidget(m_fixText);
   auto* fixButtons = new QHBoxLayout;
   m_copyKey = new QPushButton(tr("Copy &Public Key"));
-  m_keysPage = new QPushButton(tr("SSH &Keys Page..."));
-  m_trust = new QPushButton(tr("Trust This Server..."));
+  m_keysPage = new QPushButton(tr("SSH &Keys Page…"));
+  m_trust = new QPushButton(tr("Trust This Server…"));
   for (QPushButton* button : {m_copyKey, m_keysPage, m_trust}) {
     button->setAutoDefault(false);
     fixButtons->addWidget(button);
@@ -277,7 +284,11 @@ QWidget* CloudSection::firstField() const {
 void CloudSection::showFields() {
   const CloudService service = m_address.service;
   const bool known = knownService(service);
+#ifdef Q_OS_MACOS
+  m_details->setIcon(mac::symbolIcon(m_detailsOpen ? QStringLiteral("chevron.down") : QStringLiteral("chevron.right")));
+#else
   m_details->setArrowType(m_detailsOpen ? Qt::DownArrow : Qt::RightArrow);
+#endif
   m_form->setRowVisible(m_service, m_detailsOpen);
   m_form->setRowVisible(m_serverLabel, m_detailsOpen && service == CloudService::Forgejo);
   m_form->setRowVisible(m_ownerLabel, m_detailsOpen && known);
@@ -450,7 +461,7 @@ void CloudSection::scheduleCheck() {
     m_answerOk = false;
     m_needsBare = false;
     m_fixes->hide();
-    setStatus(address.isEmpty() ? QString() : tr("Checking %1...").arg(address), false);
+    setStatus(address.isEmpty() ? QString() : tr("Checking %1…").arg(address), false);
   }
   m_delay->start();
 }
@@ -651,7 +662,7 @@ bool askTrustServer(QWidget* parent, const QString& host, int port) {
   QDialog dialog(parent);
   dialog.setWindowTitle(QCoreApplication::translate("CloudSection", "Trust This Server"));
   auto* layout = new QVBoxLayout(&dialog);
-  auto* text = new QLabel(QCoreApplication::translate("CloudSection", "Fetching the identity of %1...").arg(host));
+  auto* text = new QLabel(QCoreApplication::translate("CloudSection", "Fetching the identity of %1…").arg(host));
   text->setWordWrap(true);
   text->setTextFormat(Qt::PlainText);
   layout->addWidget(text);

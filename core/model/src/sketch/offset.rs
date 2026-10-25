@@ -45,6 +45,11 @@ pub const TOLERANCE: f64 = 1e-4;
 /// The most pieces a spline offset is made of.
 const MAX_PIECES: usize = 512;
 
+/// A seeded offset corner where a line and a circle, or two circles, come
+/// within this much (relative to the radius, at least 1 mm) of touching is a
+/// tangent corner, put where they touch (mitcad#641).
+const TOUCH: f64 = 1e-9;
+
 /// A round corner of a derived offset: the arc between the offsets of
 /// curves `join` and `join + 1` (of the last and the first for `join =
 /// n - 1` of a closed chain).
@@ -735,6 +740,336 @@ pub fn regenerate(
         }
     }
     Ok(())
+}
+
+/// Puts the curves of each offset made by constraints where the offset of
+/// its source is now, as the solve's start (mitcad#641). The solver keeps a
+/// distance dimension on the side its curves start on: when the source has
+/// moved by more than the distance before the solve (a linked projection
+/// that followed its face a grid cell, 28 mm, with a 2 mm offset), the
+/// stale results lay on the other side of the moved source and were solved
+/// there, mirrored. Each result goes where the offset of its source curve
+/// is (a line moved along its normal, an arc or circle about its centre,
+/// an arc's ends at its source's angles); a corner two results share where
+/// their offset curves cross (two lines, a line and an arc's circle, or
+/// two arcs' circles; else between their ends), so that an offset already
+/// in place stays as it is; the rest is left to the solve, whose
+/// constraints join the results. An offset whose results are not of their sources' kinds keeps
+/// its stored positions. Offsets in order, so that an offset of an offset starts from
+/// its source's new place.
+pub fn seed(
+    offsets: &[SketchOffset<ParamId>],
+    entities: &mut [Entity],
+    value: &mut dyn FnMut(ParamId) -> Result<f64, String>,
+) {
+    for offset in offsets.iter().filter(|o| !o.derived) {
+        let Ok(d) = value(offset.distance) else {
+            continue;
+        };
+        if !(d.is_finite() && d > 0.0) {
+            continue;
+        }
+        let d = if offset.left { -d } else { d };
+        let updates = {
+            let index = EntityIndex::new(entities);
+            let at = |p: EntityUid| match index.get(p).map(|e| &e.kind) {
+                Some(EntityKind::Point { at }) => Some(*at),
+                _ => None,
+            };
+            let mut curves = std::collections::BTreeMap::new();
+            for id in &offset.curves {
+                let curve = match index.get(*id).map(|e| &e.kind) {
+                    Some(EntityKind::Line { start, end, .. }) => {
+                        let (Some(a), Some(b)) = (at(*start), at(*end)) else {
+                            continue;
+                        };
+                        Curve2::Line { a, b }
+                    }
+                    Some(EntityKind::Arc { center, start, end }) => {
+                        let (Some(c), Some(a), Some(b)) = (at(*center), at(*start), at(*end))
+                        else {
+                            continue;
+                        };
+                        let (va, vb) = (sub(a, c), sub(b, c));
+                        let start = va[1].atan2(va[0]);
+                        Curve2::Arc {
+                            center: c,
+                            radius: norm(va),
+                            start,
+                            end: angle_after(start, vb[1].atan2(vb[0])),
+                        }
+                    }
+                    Some(EntityKind::Circle {
+                        center,
+                        radius,
+                        start,
+                    }) => {
+                        let Some(c) = at(*center) else { continue };
+                        Curve2::Circle {
+                            center: c,
+                            radius: *radius,
+                            start: *start,
+                        }
+                    }
+                    _ => continue,
+                };
+                curves.insert(*id, curve);
+            }
+            // Each source curve with the direction it runs along the chain:
+            // by its shared points, else (a chain joined at coincident ends,
+            // as an import's offset of an offset is) where its ends meet.
+            let chain = match sources(offset, &index, &curves) {
+                Ok((chain, _)) => chain,
+                Err(_) => {
+                    let listed: Option<Vec<(Curve2, bool)>> = offset
+                        .curves
+                        .iter()
+                        .map(|id| curves.get(id).map(|c| (c.clone(), true)))
+                        .collect();
+                    let Some(listed) = listed else {
+                        continue;
+                    };
+                    joined_by_ends(&listed).0
+                }
+            };
+            if chain.len() != offset.results.len() {
+                continue;
+            }
+            // Each result where the offset of its own source curve is: the
+            // offset's joins are its constraints', which the solve keeps. A
+            // point two results share (a corner) takes where their offset
+            // lines meet, else the middle of their ends.
+            let mut points: Vec<(EntityUid, P2)> = Vec::new();
+            let mut lines: Vec<(EntityUid, P2, P2)> = Vec::new();
+            let mut radii: Vec<(EntityUid, f64)> = Vec::new();
+            let mut circles: Vec<(EntityUid, P2, f64)> = Vec::new();
+            let mut fits = true;
+            for ((curve, forward), result) in chain.iter().zip(&offset.results) {
+                // Along the left normal of the curve's own direction, as
+                // `compute` offsets a piece.
+                let left = if *forward { -d } else { d };
+                match (curve, index.get(*result).map(|e| &e.kind)) {
+                    (Curve2::Line { a, b }, Some(EntityKind::Line { start, end, .. })) => {
+                        let length = norm(sub(*b, *a));
+                        if !(length.is_finite() && length > 0.0) {
+                            fits = false;
+                            continue;
+                        }
+                        let along = unit(sub(*b, *a));
+                        let n = perp(along);
+                        let (a, b) = (add(*a, scale(n, left)), add(*b, scale(n, left)));
+                        // The result keeps its own direction.
+                        let stored = at(*start).zip(at(*end)).map(|(s, e)| sub(e, s));
+                        let (a, b) = match stored {
+                            Some(v) if dot(v, along) < 0.0 => (b, a),
+                            _ => (a, b),
+                        };
+                        points.extend([(*start, a), (*end, b)]);
+                        lines.extend([(*start, a, b), (*end, a, b)]);
+                    }
+                    (
+                        Curve2::Arc {
+                            center,
+                            radius,
+                            start: s,
+                            end: e,
+                        },
+                        Some(EntityKind::Arc {
+                            center: c,
+                            start,
+                            end,
+                        }),
+                    ) => {
+                        let r = radius - left;
+                        if !(r.is_finite() && r > 0.0) {
+                            fits = false;
+                            continue;
+                        }
+                        // The ends at the source's angles (a free end where
+                        // the source's is, even where the source turned);
+                        // a corner is placed below, where the curves cross.
+                        let on = |t: f64| add(*center, [r * t.cos(), r * t.sin()]);
+                        points.extend([(*c, *center), (*start, on(*s)), (*end, on(*e))]);
+                        circles.extend([(*start, *center, r), (*end, *center, r)]);
+                    }
+                    (
+                        Curve2::Circle { center, radius, .. },
+                        Some(EntityKind::Circle { center: c, .. }),
+                    ) => {
+                        let r = radius - left;
+                        if !(r.is_finite() && r > 0.0) {
+                            fits = false;
+                            continue;
+                        }
+                        points.push((*c, *center));
+                        radii.push((*result, r));
+                    }
+                    _ => fits = false,
+                }
+            }
+            if !fits {
+                continue;
+            }
+            // Corners: each point once.
+            let mut placed: Vec<(EntityUid, P2)> = Vec::new();
+            for (id, p) in &points {
+                if placed.iter().any(|(q, _)| q == id) {
+                    continue;
+                }
+                let all: Vec<P2> = points
+                    .iter()
+                    .filter(|(q, _)| q == id)
+                    .map(|(_, p)| *p)
+                    .collect();
+                if all.len() == 1 {
+                    placed.push((*id, *p));
+                    continue;
+                }
+                let through: Vec<(P2, P2)> = lines
+                    .iter()
+                    .filter(|(q, _, _)| q == id)
+                    .map(|(_, a, b)| (*a, *b))
+                    .collect();
+                let round: Vec<(P2, f64)> = circles
+                    .iter()
+                    .filter(|(q, _, _)| q == id)
+                    .map(|(_, c, r)| (*c, *r))
+                    .collect();
+                let middle = scale(
+                    all.iter().fold([0.0, 0.0], |s, p| add(s, *p)),
+                    1.0 / all.len() as f64,
+                );
+                let meet = match (through.as_slice(), round.as_slice()) {
+                    ([(a1, b1), (a2, b2)], []) => {
+                        let (u, v) = (sub(*b1, *a1), sub(*b2, *a2));
+                        let den = cross(u, v);
+                        (den.abs() > 1e-9 * norm(u) * norm(v))
+                            .then(|| add(*a1, scale(u, cross(sub(*a2, *a1), v) / den)))
+                    }
+                    // A line meeting an arc: their crossing nearest the
+                    // middle of the two ends; a line touching the circle
+                    // (within rounding, a tangent corner) at the point it
+                    // touches, as the two crossings' distance from it is the
+                    // square root of the rounding and would move the corner.
+                    ([(a, b)], [(c, r)]) => {
+                        let u = unit(sub(*b, *a));
+                        let foot = add(*a, scale(u, dot(sub(*c, *a), u)));
+                        let h = norm(sub(foot, *c));
+                        if (r - h).abs() <= TOUCH * r.max(1.0) {
+                            Some(foot)
+                        } else {
+                            (h < *r).then(|| {
+                                let s = (r * r - h * h).sqrt();
+                                let (p, q) = (add(foot, scale(u, s)), add(foot, scale(u, -s)));
+                                if norm(sub(p, middle)) <= norm(sub(q, middle)) {
+                                    p
+                                } else {
+                                    q
+                                }
+                            })
+                        }
+                    }
+                    // Two arcs: their circles' crossing nearest the middle
+                    // of the two ends; circles touching (within rounding) at
+                    // the point they touch.
+                    ([], [(c1, r1), (c2, r2)]) => {
+                        let d = norm(sub(*c2, *c1));
+                        let touch = TOUCH * (r1 + r2).max(1.0);
+                        (d > 0.0 && d <= r1 + r2 + touch && d >= (r1 - r2).abs() - touch).then(
+                            || {
+                                let u = scale(sub(*c2, *c1), 1.0 / d);
+                                let a = (r1 * r1 - r2 * r2 + d * d) / (2.0 * d);
+                                let foot = add(*c1, scale(u, a));
+                                if (d - (r1 + r2)).abs() <= touch
+                                    || (d - (r1 - r2).abs()).abs() <= touch
+                                {
+                                    return foot;
+                                }
+                                let h = (r1 * r1 - a * a).max(0.0).sqrt();
+                                let (p, q) =
+                                    (add(foot, scale(perp(u), h)), add(foot, scale(perp(u), -h)));
+                                if norm(sub(p, middle)) <= norm(sub(q, middle)) {
+                                    p
+                                } else {
+                                    q
+                                }
+                            },
+                        )
+                    }
+                    _ => None,
+                };
+                placed.push((*id, meet.unwrap_or(middle)));
+            }
+            (placed, radii)
+        };
+        let (points, radii) = updates;
+        for entity in entities.iter_mut() {
+            match &mut entity.kind {
+                EntityKind::Point { at } => {
+                    if let Some((_, p)) = points.iter().find(|(id, _)| *id == entity.id) {
+                        *at = *p;
+                    }
+                }
+                EntityKind::Circle { radius, .. } => {
+                    if let Some((_, r)) = radii.iter().find(|(id, _)| *id == entity.id) {
+                        *radius = *r;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// A chain's curves (in its order) each running towards the next where
+/// their ends meet, and whether the last meets the first: for a chain whose
+/// curves meet at coincident ends, not shared points.
+fn joined_by_ends(chain: &[(Curve2, bool)]) -> (Vec<(Curve2, bool)>, bool) {
+    let ends = |c: &Curve2| {
+        let (lo, hi) = c.domain();
+        (c.eval(lo)[0], c.eval(hi)[0])
+    };
+    let near = |p: P2, c: &Curve2| {
+        let (a, b) = ends(c);
+        dist(p, a).min(dist(p, b))
+    };
+    let n = chain.len();
+    let mut out = Vec::with_capacity(n);
+    for (i, (curve, forward)) in chain.iter().enumerate() {
+        let (start, end) = ends(curve);
+        let forward = if n < 2 {
+            *forward
+        } else if i + 1 < n {
+            let next = &chain[i + 1].0;
+            near(end, next) <= near(start, next)
+        } else {
+            let previous = &chain[i - 1].0;
+            near(start, previous) <= near(end, previous)
+        };
+        out.push((curve.clone(), forward));
+    }
+    let closed = n > 1 && {
+        let size = chain
+            .iter()
+            .map(|(c, _)| {
+                let (lo, hi) = c.bounds();
+                dist(lo, hi)
+            })
+            .fold(1.0, f64::max);
+        let (first, last) = (&out[0], &out[n - 1]);
+        let start = if first.1 {
+            ends(&first.0).0
+        } else {
+            ends(&first.0).1
+        };
+        let finish = if last.1 {
+            ends(&last.0).1
+        } else {
+            ends(&last.0).0
+        };
+        dist(start, finish) <= (1e-6 * size).max(TOLERANCE)
+    };
+    (out, closed)
 }
 
 /// The joins as the offset was made: round where it has a corner arc,

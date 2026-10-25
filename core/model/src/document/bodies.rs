@@ -20,7 +20,6 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use super::{Document, ModelError, invalid};
-use crate::analysis::{self, DEFAULT_MATERIAL, MATERIALS};
 use crate::features::renamed::faces_found;
 use crate::ids::BodyUid;
 use crate::kernel::{Kernel, KernelError};
@@ -29,10 +28,11 @@ use crate::topo::FaceName;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BodyAttributes {
     pub visible: bool,
-    /// A material id from [`analysis::MATERIALS`]; None for the default
-    /// material (steel).
+    /// A material id (built in or the document's, `crate::material`); None
+    /// for its component's default material (steel when none is set).
     pub material: Option<String>,
-    /// An appearance id for display; None for the material's appearance.
+    /// An appearance id for display; None for the default look. Setting
+    /// the material sets it to the material's (mitcad#640).
     pub appearance: Option<String>,
     /// Appearances of single faces, which override the body's: appearance
     /// ids by the face's topological name as it was assigned (canonical
@@ -67,15 +67,6 @@ impl BodyAttributes {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
-
-    /// The material that gives the body its density.
-    pub fn material(&self) -> &'static analysis::Material {
-        self.material
-            .as_deref()
-            .and_then(analysis::material)
-            .or_else(|| analysis::material(DEFAULT_MATERIAL))
-            .expect("the default material exists")
-    }
 }
 
 impl<K: Kernel> Document<K> {
@@ -97,25 +88,16 @@ impl<K: Kernel> Document<K> {
         })
     }
 
-    /// Sets a body's material by id, or back to the default with None.
+    /// Sets a body's material by id (a built-in one or the document's), or
+    /// back to its component's default with None; its appearance stays as
+    /// it is (`set_body_material_with` can give it the material's,
+    /// mitcad#640).
     pub fn set_body_material(
         &mut self,
         uid: BodyUid,
         material: Option<&str>,
     ) -> Result<(), ModelError> {
-        if let Some(id) = material
-            && analysis::material(id).is_none()
-        {
-            let known: Vec<&str> = MATERIALS.iter().map(|m| m.id).collect();
-            return Err(invalid(format!(
-                "unknown material '{id}' (known: {})",
-                known.join(", ")
-            )));
-        }
-        self.change_body(uid, "Set Material of", |a| {
-            a.material = material.map(str::to_owned);
-            Ok(())
-        })
+        self.set_body_material_with(uid, material, super::AppearanceChoice::Keep)
     }
 
     /// Sets a body's appearance by id, or back to its material's with None.

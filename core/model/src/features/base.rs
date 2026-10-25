@@ -301,7 +301,18 @@ pub(crate) fn apply_tool<K: Kernel>(
     if participants.is_empty() {
         return Err(format!("there is no body to {verb}"));
     }
-    let targets: Vec<&K::Shape> = participants.iter().map(|(_, s)| s).collect();
+    // A cut or intersection works on each lump of a body of several (its
+    // disjoint solids, as a combine of bodies apart makes it), so that the
+    // body keeps its lumps and only a lump the tool splits gives new bodies
+    // (mitcad#658).
+    let lumps: Vec<Vec<K::Shape>> = participants
+        .iter()
+        .map(|(_, s)| match op {
+            BooleanOp::Join => vec![s.clone()],
+            BooleanOp::Cut | BooleanOp::Intersect => body_lumps(ctx.kernel, s),
+        })
+        .collect();
+    let targets: Vec<&K::Shape> = lumps.iter().flatten().collect();
     let result = ctx.boolean(op, &targets, tool).map_err(|e| e.to_string())?;
     if !result.touched.iter().any(|t| *t) {
         return Err(match op {
@@ -326,17 +337,55 @@ pub(crate) fn apply_tool<K: Kernel>(
             }
         }
         BooleanOp::Cut | BooleanOp::Intersect => {
-            let mut pieces: Vec<Vec<K::Shape>> = vec![Vec::new(); participants.len()];
+            // The pieces of each lump (target).
+            let mut pieces: Vec<Vec<K::Shape>> = vec![Vec::new(); targets.len()];
             for piece in result.pieces {
                 if let Some(source) = piece.sources.first() {
                     pieces[*source].push(piece.shape);
                 }
             }
+            let mut first = 0;
             for (i, (uid, _)) in participants.iter().enumerate() {
-                if !result.touched[i] {
+                let range = first..first + lumps[i].len();
+                first = range.end;
+                if !range.clone().any(|k| result.touched[k]) {
                     continue;
                 }
-                let own = lump_needles(ctx.kernel, std::mem::take(&mut pieces[i]));
+                let own = if lumps[i].len() == 1 {
+                    lump_needles(ctx.kernel, std::mem::take(&mut pieces[range.start]))
+                } else {
+                    // Each lump's first piece stays in the body, with the
+                    // lumps a cut does not reach (an intersection leaves
+                    // nothing of those); a lump's other pieces are new
+                    // bodies, as a body of one solid's.
+                    let mut kept = Vec::new();
+                    let mut others = Vec::new();
+                    let start = range.start;
+                    for k in range {
+                        if !result.touched[k] {
+                            if op == BooleanOp::Cut {
+                                kept.push(lumps[i][k - start].clone());
+                            }
+                            continue;
+                        }
+                        let mut each =
+                            lump_needles(ctx.kernel, std::mem::take(&mut pieces[k])).into_iter();
+                        kept.extend(each.next());
+                        others.extend(each);
+                    }
+                    let mut own = Vec::new();
+                    match kept.len() {
+                        0 => {}
+                        1 => own.extend(kept),
+                        _ => match ctx.kernel.compound(&kept) {
+                            Ok(body) => own.push(body),
+                            // (Without compounds, each lump a body.)
+                            Err(_) => own.extend(kept),
+                        },
+                    }
+                    own.extend(others);
+                    own
+                };
                 // The pieces' ids (mitcad#408); none left for the body
                 // removes it.
                 let named = ctx.piece_ids(*uid, own);
@@ -350,6 +399,27 @@ pub(crate) fn apply_tool<K: Kernel>(
         }
     }
     Ok(changes)
+}
+
+/// The lumps of a body for a cut or intersection: its solids where it has
+/// several and they hold all of its faces, else the body (one solid, or
+/// sheet faces beside its solids).
+fn body_lumps<K: Kernel>(kernel: &K, shape: &K::Shape) -> Vec<K::Shape> {
+    // (Without making a shape of a large body's one solid, where the
+    // kernel counts them.)
+    if kernel.solid_count(shape).is_ok_and(|n| n < 2) {
+        return vec![shape.clone()];
+    }
+    let solids = kernel.solids(shape).unwrap_or_default();
+    let faces = |s: &K::Shape| kernel.face_count(s).ok();
+    if solids.len() > 1
+        && solids.iter().map(faces).sum::<Option<usize>>() == faces(shape)
+        && faces(shape).is_some()
+    {
+        solids
+    } else {
+        vec![shape.clone()]
+    }
 }
 
 /// The pieces a cut left of one body. Pieces of negligible volume (needles

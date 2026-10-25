@@ -61,6 +61,12 @@ pub fn value_to_expression(canonical: f64, unit: Unit) -> String {
     with_unit(format_number_exact(shortest), unit)
 }
 
+/// A text as an expression that gives it back (mitcad#664): in single
+/// quotes, a quote in it doubled, `It's` as `'It''s'`.
+pub fn text_literal(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
 fn with_unit(mut number: String, unit: Unit) -> String {
     if !unit.is_unitless() {
         write!(number, " {unit}").expect("writing to a string");
@@ -81,7 +87,9 @@ fn write_node(f: &mut fmt::Formatter<'_>, node: &Node) -> fmt::Result {
     match &node.kind {
         NodeKind::Number(v) => f.write_str(&format_number_exact(*v)),
         NodeKind::Constant(c) => f.write_str(c.name()),
-        NodeKind::Reference(name) => f.write_str(name),
+        NodeKind::Reference(name) | NodeKind::Local(name) => f.write_str(name),
+        NodeKind::UnitText(unit) => write!(f, "\"{unit}\""),
+        NodeKind::Text(text) => f.write_str(&text_literal(text)),
         NodeKind::Neg(x) => {
             f.write_str("-")?;
             let parens = x.precedence() < PREC_UNARY || matches!(x.kind, NodeKind::Neg(_));
@@ -173,6 +181,9 @@ mod tests {
             "30 deg"
         );
         assert_eq!(value_to_expression(25.4, Unit::IN), "1 in");
+        assert_eq!(text_literal("6qt"), "'6qt'");
+        assert_eq!(text_literal("It's"), "'It''s'");
+        assert_eq!(text_literal(""), "''");
         assert_eq!(value_to_expression(0.0, Unit::DEG), "0 deg");
         for (v, unit) in [(0.1, Unit::IN), (1.0 / 7.0, Unit::DEG), (123.456, Unit::CM)] {
             let canonical = unit.to_canonical(v);

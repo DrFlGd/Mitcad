@@ -237,6 +237,11 @@ pub struct ExtrudeFields {
     /// block is `u8 1 | u32 location | holder | u32 location two | holder
     /// two | u32 1 | ref BODY_INPUT`.
     pub thin_two: Option<(u8, u64)>,
+    /// The selection of the face an extrusion starts on ([`Self::start`]
+    /// 2): in class versions 7 and later, a reference right after the root
+    /// part, where an extrusion that starts elsewhere has one zero byte
+    /// (mitcad#641: the fields after it were read 10 bytes early).
+    pub start_entity: Option<u64>,
 }
 
 impl ExtrudeFields {
@@ -646,7 +651,13 @@ pub fn extrude_fields(seg: &Segment, o: &Object) -> Option<ExtrudeFields> {
         Some(6) => 2,
         _ => 3,
     };
-    let p = root.end + skip;
+    // The start face's selection takes the place of the first byte
+    // (mitcad#641).
+    let start_ref = (skip == 3)
+        .then(|| seg.ref_at(d, root.end))
+        .flatten()
+        .filter(|r| d.get(r.end..r.end + 2) == Some(&[0, 1]));
+    let p = start_ref.as_ref().map_or(root.end + skip, |r| r.end + 2);
     let operation_code = u32_at(d, p)?;
     let extent_a = u32_at(d, p + 4)?;
     let extent_b = u32_at(d, p + 8)?;
@@ -695,6 +706,7 @@ pub fn extrude_fields(seg: &Segment, o: &Object) -> Option<ExtrudeFields> {
         thin_location,
         thin_holder,
         thin_two,
+        start_entity: start_ref.map(|r| r.id),
     })
 }
 

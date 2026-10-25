@@ -141,10 +141,14 @@ void CommandSession::describeParameter(const QString& key, const QString& rename
   }
   if (!m_parameterComments.contains(own)) {
     try {
+      m_parametersWithLimits.clear();
       for (const QJsonValue& entry : m_host.queryArray(QStringLiteral("parameters"))) {
         const QJsonObject p = entry.toObject();
         m_parameterComments.insert(p.value(QStringLiteral("name")).toString(),
                                    p.value(QStringLiteral("comment")).toString());
+        if (p.contains(QStringLiteral("limits"))) {
+          m_parametersWithLimits.insert(p.value(QStringLiteral("name")).toString());
+        }
       }
     } catch (const std::exception&) {
       // Without its comment then.
@@ -161,6 +165,40 @@ void CommandSession::describeParameter(const QString& key, const QString& rename
     about += QStringLiteral(" (%1)").arg(comment);
   }
   m_state.setParameterTooltip(key, about);
+}
+
+QString CommandSession::limitHint(const QString& key, const QString& text) {
+  const QString own = m_state.parameterName(key);
+  if (own.isEmpty() || text.isEmpty() || !m_parametersWithLimits.contains(own)) {
+    return {};
+  }
+  QString hint;
+  QString about;
+  try {
+    const QJsonObject answer = m_host.queryObject({{QStringLiteral("query"), QStringLiteral("evaluate")},
+                                                   {QStringLiteral("expression"), text},
+                                                   {QStringLiteral("parameter"), own}});
+    const QString limited = answer.value(QStringLiteral("limited")).toString();
+    if (!limited.isEmpty()) {
+      const QString mark = limited == QStringLiteral("max")   ? QStringLiteral("▲max")
+                           : limited == QStringLiteral("min") ? QStringLiteral("▼min")
+                                                              : QStringLiteral("◆step");
+      const QString to = answer.value(QStringLiteral("limited_text")).toString();
+      hint = QStringLiteral("→ %1 %2").arg(to, mark);
+      about = tr("%1 will be limited to %2 (%3)").arg(answer.value(QStringLiteral("text")).toString(), to, mark);
+    }
+  } catch (const std::exception& e) {
+    // A strict parameter refuses it: said where the value is, as other
+    // problems are told when the panel's OK is pressed.
+    about = tr("Refused by the limits of %1: %2").arg(own, QString::fromUtf8(e.what()));
+    hint = tr("refused by its limits");
+  }
+  if (!about.isEmpty()) {
+    const QString tooltip = m_state.parameterTooltip(key);
+    m_state.setParameterTooltip(key, tooltip.isEmpty() ? about : QString(tooltip + QLatin1Char('\n') + about));
+    qDebug().noquote() << QStringLiteral("%1 %2: %3 %4").arg(m_def.name, own, text, about);
+  }
+  return hint;
 }
 
 } // namespace mitcad

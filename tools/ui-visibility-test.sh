@@ -21,6 +21,10 @@
 # The same design with a component (Part) and the root active:
 #   - Create Sketch does not show the origin planes, says how to get them;
 #     a face of Body2 can be picked.
+#   - Create Sketch offers the hidden origin planes in the browser
+#     (mitcad#694): the Origin folder opens with XY, XZ and YZ pickable, its
+#     light bulb unchanged; a click on XZ starts the sketch on it, and the
+#     folder folds back.
 #   - The Origin folder's light bulb during the pick shows them, and an
 #     origin plane can be picked.
 #
@@ -206,6 +210,25 @@ ui_expect_new 'Sketch started on {"body":"F4.b0","face":"F4:end(' "the sketch st
 ui_mark
 ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
 ui_expect_new "Sketch finished" "the empty sketch finished"
+
+echo "--- The hidden origin planes offered in the browser (mitcad#694)"
+ui_mark
+ui_step "create sketch (search)"         ui_command "Create Sketch"
+ui_expect_new "Create Sketch: origin planes not shown (the design has components)" "the origin planes not shown"
+ui_expect_new "Browser offers the origin planes: Root/Origin open; XY, XZ, YZ pickable" \
+  "the Origin folder opened, its planes pickable"
+ui_expect_new "Browser Root/Origin/XZ at" "the XZ row in sight"
+expect_none "Visibility Root/Origin" "the Origin's light bulb not changed"
+expect_none "Datum xz at" "the XZ plane is not in the view"
+ui_mark
+ui_step "click XZ in the browser"        ui_click_logged "Browser Root/Origin/XZ"
+ui_expect_new "Sketch started on xz" "the sketch started on the origin's XZ plane"
+ui_expect_new "Browser no longer offers the origin planes: Root/Origin folded" "the Origin folder folded back"
+ui_expect_new "Browser Root/Origin/XZ out of sight" "the XZ row folded away"
+ui_mark
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_new "Sketch finished" "the empty sketch finished"
+expect_none "Browser Root/Origin/XZ at" "the Origin folder stays folded"
 
 echo "--- The Origin folder's light bulb during the pick"
 ui_mark

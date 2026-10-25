@@ -319,6 +319,7 @@ fn encode_surface(s: &Surface, ints: &mut Vec<i32>, reals: &mut Vec<f64>) -> i32
             range,
             needed,
             radius,
+            stored,
         } => {
             reals.push(*radius);
             reals.extend_from_slice(range);
@@ -336,6 +337,16 @@ fn encode_surface(s: &Surface, ints: &mut Vec<i32>, reals: &mut Vec<f64>) -> i32
             let at = ints.len();
             ints.push(0);
             ints[at] = encode_curve(spine, ints, reals);
+            // The stored approximation: 0, or 1 and the surface (mitcad#622).
+            match stored {
+                None => ints.push(0),
+                Some(s) => {
+                    ints.push(1);
+                    let at = ints.len();
+                    ints.push(0);
+                    ints[at] = encode_surface(s, ints, reals);
+                }
+            }
             SURFACE_ROLLING_BALL
         }
     }
@@ -536,6 +547,7 @@ mod tests {
             range: [0.0, 4.0],
             needed: [1.0, 3.0],
             radius: 2.0,
+            stored: None,
         };
         let on = Curve::OnSurface {
             surface: Box::new(ball.clone()),
@@ -547,7 +559,7 @@ mod tests {
                 weights: None,
             },
         };
-        let body = Body {
+        let mut body = Body {
             curves: vec![on],
             surfaces: vec![ball],
             ..Body::default()
@@ -556,7 +568,7 @@ mod tests {
         let s = f.surfaces[0];
         assert_eq!(s.kind, SURFACE_ROLLING_BALL);
         let ints = &f.ints[s.int_offset as usize..(s.int_offset + s.int_count) as usize];
-        assert_eq!(ints, &[0, SURFACE_PLANE, 1, CURVE_ELLIPSE, CURVE_LINE]);
+        assert_eq!(ints, &[0, SURFACE_PLANE, 1, CURVE_ELLIPSE, CURVE_LINE, 0]);
         let reals = &f.reals[s.real_offset as usize..(s.real_offset + s.real_count) as usize];
         assert_eq!(&reals[..5], &[2.0, 0.0, 4.0, 1.0, 3.0]);
         assert_eq!(reals.len(), 5 + 9 + 11 + 6);
@@ -564,8 +576,36 @@ mod tests {
         assert_eq!(c.kind, CURVE_ON_SURFACE);
         let ints = &f.ints[c.int_offset as usize..(c.int_offset + c.int_count) as usize];
         assert_eq!(ints[0], SURFACE_ROLLING_BALL);
-        assert_eq!(&ints[6..], &[1, 2, 2, 0, 2, 2]);
+        assert_eq!(&ints[7..], &[1, 2, 2, 0, 2, 2]);
         let reals = &f.reals[c.real_offset as usize..(c.real_offset + c.real_count) as usize];
         assert_eq!(&reals[31..], &[1.0, 3.0, 0.0, 1.0, 0.0, 3.0]);
+
+        // mitcad#622: with the approximation the file stores, after the
+        // spine.
+        let Surface::RollingBall { stored, .. } = &mut body.surfaces[0] else {
+            unreachable!()
+        };
+        *stored = Some(Box::new(Surface::Plane {
+            origin: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+            u_dir: [1.0, 0.0, 0.0],
+        }));
+        let f = FlatBody::from_body(&body);
+        let s = f.surfaces[0];
+        let ints = &f.ints[s.int_offset as usize..(s.int_offset + s.int_count) as usize];
+        assert_eq!(
+            ints,
+            &[
+                0,
+                SURFACE_PLANE,
+                1,
+                CURVE_ELLIPSE,
+                CURVE_LINE,
+                1,
+                SURFACE_PLANE
+            ]
+        );
+        let reals = &f.reals[s.real_offset as usize..(s.real_offset + s.real_count) as usize];
+        assert_eq!(reals.len(), 5 + 9 + 11 + 6 + 9);
     }
 }

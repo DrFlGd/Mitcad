@@ -20,6 +20,7 @@ window-resize 1400 990
 command view.front
 command view.fit
 expect-viewport
+test-manipulator-feedback
 capture-undo-depth initial
 dblclick-logged '^Timeline Drag boss at '
 expect-log 'Editing .* with Extrude'
@@ -39,7 +40,7 @@ command edit.undo
 expect-undo-depth ${initial} 0
 command edit.redo
 expect-undo-depth ${initial} 1
-expect-never 'The document was read while a job computes it|OCCT view event failed|Recompute failed|ended by a dialog'
+expect-never 'The document was read while a job computes it|OCCT view event failed|Recompute failed|Manipulator Extrude .*ended by a dialog'
 DRIVER
   if [ "$frontend" = native ]; then
     boss=F3
@@ -61,7 +62,8 @@ PY
     MITCAD_TEST_RECOMPUTE_DELAY_MS=0,preview=500 MITCAD_TEST_INPUT=$UI_OUT/drag.mitcad-ui \
     ui_run_app "$fixture" --ui="$frontend" --no-recovery --no-mcp --open "$MITCAD_TEST_WORK/drag.mitcad"
   ui_expect_log '^TestDriver: done' "$fixture: all held-drag and history assertions completed"
-  ui_expect_no_log 'Progress dialog shown: preview|ended by a dialog|Computing preview cancelled' "$fixture: input never blocked or cancelled by numeric motion"
+  ui_expect_no_log 'Progress dialog shown: preview' "$fixture: preview never blocks input"
+  ui_expect_no_log 'Computing preview cancelled' "$fixture: numeric motion never cancels useful work"
   python3 - "$UI_LOG_FILE" "$MITCAD_TEST_WORK/drag.mitcad" <<'PY'
 import json, re, sys
 text = open(sys.argv[1], encoding="utf-8").read()
@@ -71,6 +73,10 @@ assert "Preview numeric replaced:" in gesture, "did not replace pending numeric 
 assert not re.search(r"pending= [2-9]", gesture), "more than one pending distance"
 assert "Preview Extrude: intermediate numeric result" in gesture, "no intermediate solid installed"
 assert "Held drag: resumed" in gesture
+feedback = re.search(r"Manipulator feedback Extrude distance: moves=(\d+) semantic=(\d+) visual=(\d+) paints=(\d+)", text)
+assert feedback, "missing delivered/semantic/visual/paint counters"
+moves, semantic, visual, paints = map(int, feedback.groups())
+assert moves == 180 and visual > semantic > 0 and paints > 0, feedback[0]
 delivered = re.search(r"Held drag: end, delivered= (\d+) elapsed_ms= (\d+)", text)
 assert delivered and int(delivered[1]) == 180
 distance = float(re.search(r"Manipulator Extrude distance dragged to ([0-9.]+)", text)[1])
@@ -82,7 +88,8 @@ assert abs(float(str(expression).split()[0]) - distance) < 1e-6, feature
 print("Held drag evidence:", "events", delivered[1], "elapsed_ms", delivered[2],
       "numeric_replacements", gesture.count("Preview numeric replaced:"),
       "evaluated_pending", gesture.count("Preview numeric drained:"),
-      "solid_installs", gesture.count("Preview installed:"), "committed_mm", distance)
+      "solid_installs", gesture.count("Preview installed:"), "committed_mm", distance,
+      "semantic_changes", semantic, "visual_updates", visual, "overlay_paints", paints)
 PY
   [ "$UI_FAILURES" = 0 ] || exit 1
 done

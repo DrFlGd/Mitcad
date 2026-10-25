@@ -58,6 +58,10 @@ if command -v launchctl > /dev/null; then
 fi
 
 ui_finish() {
+  if [ -d "$work" ]; then
+    rm -rf "$UI_OUT/files"
+    cp -R "$work" "$UI_OUT/files"
+  fi
   echo "Logs and files: $UI_OUT"
   if [ "$UI_FAILURES" -gt 0 ]; then
     echo "FAIL: UI macOS workflow test ($UI_FAILURES failures)"
@@ -80,9 +84,9 @@ run_script() {
   if [ "$UI_FAILURES" -gt 0 ]; then ui_finish; fi
 }
 
-# The test's own folder for its files, as in the Windows test; the app logs
-# paths with forward slashes, as here.
-work=$UI_OUT/files
+# Project creation must inspect a folder outside the source repository.
+# Preserve the synthetic files with the logs after checking their history.
+work=$(cd "$UI_ROOT" && pwd)/files
 rm -rf "$work"
 mkdir -p "$work"
 export MITCAD_TEST_WORK=$work

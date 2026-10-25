@@ -3,7 +3,7 @@
 # check-all sources: app/commands/BearingCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/printable_bearing.rs core/model/src/features/bearing_sizes.rs
 # check-all sources: core/model/src/api/bearings.rs tools/cli
-# check-all sources: app/commands/SeatInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs
+# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs
 # Bearing (mitcad#577) through the real UI, on a design mitcad-cli makes: a
 # shaft 10 mm across and 20 long at (60, 0) (Extrude1, F2.b0, its round
 # face F2:side(c1)), an 8 mm cylinder 30 high at (0, 60) (Cylinder1, F3.b0,
@@ -11,7 +11,8 @@
 # with a 22 mm hole through it (Extrude2 F5.b0, the hole's wall
 # F7:side(c1)). The Windows counterpart is tools/ui-windows-bearing-test.ps1
 # (ctest app.ui-windows-bearing):
-#   1. Bearing: the panel starts on XY with a 608 of dumbbells; its note
+#   1. Bearing, placed by a click on the XY plane and both distances 0
+#      (it waits for a pick, mitcad#656): a 608 of dumbbells; its note
 #      shows the model's values (15 mm pitch diameter, 10 elements of 3.8
 #      mm, walls 1.2 mm, the flanks' gap 0.4 / sqrt(2)). 12 elements are
 #      too many (the note says so), 8 are fine; as a New Body, OK makes
@@ -20,9 +21,9 @@
 #   3. Bearing again, Groove Into the shaft's round face: the 608's outer
 #      race on the shaft, the raceway cut into it (7 dumbbells of 4.9333 mm
 #      on a 13.2667 mm pitch circle, the outer race's wall 1.5 mm). OK.
-#   4. On a shaft's end (mitcad#578): Shaft the cylinder's top edge takes
+#   4. On a shaft's end (mitcad#578): Place On the cylinder's top edge takes
 #      the 608 (its bore fits the 8 mm shaft), 5 mm down the shaft. OK.
-#   5. In a hole: Shaft the hole's top rim takes the 608 by its outside
+#   5. In a hole: Place On the hole's top rim takes the 608 by its outside
 #      (22 mm), flush with the block's top face. OK.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
@@ -84,7 +85,7 @@ echo "--- 1. A 608 of dumbbells on XY"
 ui_mark
 ui_step "Bearing"                          ui_command "Bearing"
 ui_expect_new "Command Bearing started" "the panel opened" 30
-ui_expect_new "Preview Bearing: ok" "the bearing previewed" 30
+ui_place_on_xy Bearing
 ui_expect_new "Panel Bearing note: Pitch diameter 15 mm, 10 elements of 3.8 mm, walls 1.2 mm and 1.2 mm, least gap 0.2828 mm" \
   "its values shown" 30
 ui_mark
@@ -118,7 +119,7 @@ echo "--- 3. A raceway cut into the shaft"
 ui_step "fit (F6)"                         ui_key F6
 ui_mark
 ui_step "Bearing"                          ui_command "Bearing"
-ui_expect_new "Preview Bearing: ok" "the panel open" 30
+ui_expect_new "Command Bearing started" "the panel opened, waiting for a pick" 30
 ui_mark
 ui_step "Groove Into"                      ui_click_logged "Panel Bearing input groove"
 ui_expect_new "Pick places:" "the picks are logged"
@@ -137,9 +138,9 @@ echo "--- 4. On the cylinder's top end, 5 mm down (mitcad#578)"
 ui_step "fit (F6)"                         ui_key F6
 ui_mark
 ui_step "Bearing"                          ui_command "Bearing"
-ui_expect_new "Preview Bearing: ok" "the panel open" 30
+ui_expect_new "Command Bearing started" "the panel opened, waiting for a pick" 30
 ui_mark
-ui_step "Shaft"                            ui_click_logged "Panel Bearing input shaft"
+ui_step "Place On"                         ui_click_logged "Panel Bearing input at"
 ui_expect_new "Pick places:" "the picks are logged"
 ui_expect_new "Pick edge F3.b0/E{F3:side0|F3:top} at" "the cylinder's top edge can be picked"
 ui_mark
@@ -147,7 +148,8 @@ ui_step "click the top edge"               ui_click_pick "edge F3.b0/E{F3:side0|
 ui_expect_new "Preview Bearing: ok" "the bearing previewed on the shaft" 30
 ui_expect_new "on a 8 mm shaft" "the size whose bore fits the 8 mm shaft" 30
 ui_mark
-ui_step "offset 5"                         ui_type_in "Panel Bearing input seat_offset" "5"
+ui_step "More"                             ui_click_logged "Panel Bearing input at_more"
+ui_step "offset 5"                         ui_type_in "Panel Bearing input at_offset" "5"
 ui_expect_new "Preview Bearing: ok" "5 mm down the shaft previewed" 30
 grep "^Panel Bearing note: " "$UI_LOG" | tail -1 | sed 's/^/     /'
 ui_mark
@@ -159,9 +161,9 @@ echo "--- 5. In the hole, flush with the block's top face"
 ui_step "fit (F6)"                         ui_key F6
 ui_mark
 ui_step "Bearing"                          ui_command "Bearing"
-ui_expect_new "Preview Bearing: ok" "the panel open" 30
+ui_expect_new "Command Bearing started" "the panel opened, waiting for a pick" 30
 ui_mark
-ui_step "Shaft"                            ui_click_logged "Panel Bearing input shaft"
+ui_step "Place On"                         ui_click_logged "Panel Bearing input at"
 ui_expect_new "Pick places:" "the picks are logged"
 ui_expect_new "Pick edge F5.b0/E{" "the block's edges can be picked"
 rim=$(sed -n 's/^Pick edge F5\.b0\/\(E{[^ ]*F7:side(c1)[^ ]*}\) at [0-9]*,[0-9]*$/\1/p' "$UI_LOG" | grep -F "F5:end(" | tail -1)

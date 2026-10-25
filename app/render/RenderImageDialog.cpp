@@ -8,8 +8,8 @@
 #include <utility>
 
 #include <QCheckBox>
-#include <QCloseEvent>
 #include <QComboBox>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -44,8 +44,11 @@
 #include "render/RenderBatch.hpp"
 #include "render/RenderDevice.hpp"
 #include "render/RenderScene.hpp"
+#include "view/MeasurementDrawing.hpp"
 
 #include "../framework/Dialogs.hpp"
+
+#include "../platform/MacDialogs.hpp"
 
 namespace mitcad {
 
@@ -124,6 +127,7 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
   columns->addLayout(settings);
   const auto group = [settings](const QString& title) {
     auto* box = new QGroupBox(title);
+    mac::styleSection(box);
     auto* form = new QFormLayout(box);
     settings->addWidget(box);
     return form;
@@ -230,6 +234,15 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
   m_transparent = check(QStringLiteral("transparent"), tr("Transparent background"),
                         tr("Only the bodies and their shadows, with an alpha channel (not JPEG)"));
   file->addRow(m_transparent);
+  // The shown measurement objects drawn over the saved image (mitcad#649);
+  // the application's choice, not the design's.
+  m_measurements = new QCheckBox(tr("Measurements"));
+  m_measurements->setToolTip(tr("Draws the measurements shown in the view over the saved image (not OpenEXR)"));
+  m_measurements->setChecked(true);
+  connect(m_measurements, &QCheckBox::toggled, this, [](bool on) {
+    qDebug().noquote() << QStringLiteral("Render image measurements %1").arg(on ? QStringLiteral("on") : QStringLiteral("off"));
+  });
+  file->addRow(m_measurements);
   settings->addStretch(1);
 
   auto* result = new QVBoxLayout;
@@ -239,6 +252,7 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
   m_preview->setMinimumSize(kPreviewSize);
   m_preview->setAlignment(Qt::AlignCenter);
   m_preview->setFrameShape(QFrame::StyledPanel);
+  mac::stylePreview(m_preview);
   m_preview->setText(tr("Render shows the image here as it refines."));
   m_preview->setWordWrap(true);
   result->addWidget(m_preview, 1);
@@ -255,28 +269,24 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
   setErrorStyleSheet(m_message);
   result->addWidget(m_message);
 
-  auto* buttons = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
   m_render = new QPushButton(themeIcon(QStringLiteral("render-image")), tr("Render"));
   m_render->setToolTip(tr("Renders the image in the background; Mitcad stays usable"));
   m_cancel = new QPushButton(tr("Cancel"));
   m_cancel->setToolTip(tr("Stops the render"));
-  m_save = new QPushButton(tr("Save..."));
+  m_save = new QPushButton(tr("Save…"));
   m_save->setToolTip(tr("Saves the rendered image"));
   m_close = new QPushButton(tr("Close"));
-  // No default button: Return in a field takes its value, nothing more.
-  for (QPushButton* button : {m_render, m_cancel, m_save, m_close}) {
-    button->setAutoDefault(false);
-  }
-  buttons->addWidget(m_render);
-  buttons->addWidget(m_cancel);
-  buttons->addWidget(m_save);
-  buttons->addStretch(1);
-  buttons->addWidget(m_close);
-  layout->addLayout(buttons);
+  buttons->addButton(m_render, QDialogButtonBox::AcceptRole);
+  buttons->addButton(m_cancel, QDialogButtonBox::ActionRole);
+  buttons->addButton(m_save, QDialogButtonBox::ActionRole);
+  buttons->addButton(m_close, QDialogButtonBox::RejectRole);
+  mac::styleDialogButtons(buttons, m_render);
+  layout->addWidget(buttons);
   connect(m_render, &QPushButton::clicked, this, &RenderImageDialog::startRender);
   connect(m_cancel, &QPushButton::clicked, this, &RenderImageDialog::cancelRender);
   connect(m_save, &QPushButton::clicked, this, &RenderImageDialog::save);
-  connect(m_close, &QPushButton::clicked, this, &QDialog::close);
+  connect(buttons, &QDialogButtonBox::rejected, this, &RenderImageDialog::reject);
 
   m_job = new render::FinalRender(this);
   connect(m_job, &render::FinalRender::ready, this, [](const QString& renderer) {
@@ -332,6 +342,7 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
   m_viewerFilter.install(&m_viewer);
   setRendering(false);
   refresh();
+  mac::styleDialog(this);
 }
 
 RenderImageDialog::~RenderImageDialog() {
@@ -516,7 +527,7 @@ void RenderImageDialog::startRender() {
   m_image.clear();
   m_waiting = true;
   setRendering(true);
-  m_status->setText(tr("Waiting for the model..."));
+  m_status->setText(tr("Waiting for the design…"));
   // The bodies' triangulations are read only while no job computes them.
   m_host.whenIdle(this, [this] { renderScene(); });
 }
@@ -601,15 +612,16 @@ void RenderImageDialog::renderScene() {
   m_imageFormat = output.value(QStringLiteral("format")).toString();
   const QString imagePath =
       m_dir->filePath(QStringLiteral("render.%1").arg(render::outputExtension(m_imageFormat)));
-  QJsonObject job = render::finalJob(m_settings, m_documentFolder, scenePath, render::finalView(camera, size),
-                                     imagePath, top, bottom, m_dir->filePath(QStringLiteral("preview.png")));
+  m_finalView = render::finalView(camera, size); // the measurements' projection (mitcad#649)
+  QJsonObject job = render::finalJob(m_settings, m_documentFolder, scenePath, m_finalView, imagePath, top, bottom,
+                                     m_dir->filePath(QStringLiteral("preview.png")));
   // The render device of Preferences (mitcad#50).
   job.insert(QStringLiteral("device"), render::renderDeviceChoice());
   m_progress->setRange(0, output.value(QStringLiteral("samples")).toInt(1));
   m_progress->setValue(0);
   m_preview->setPixmap(QPixmap());
-  m_preview->setText(tr("Starting the renderer..."));
-  m_status->setText(tr("Rendering %1 × %2 pixels...").arg(size.width()).arg(size.height()));
+  m_preview->setText(tr("Starting the renderer…"));
+  m_status->setText(tr("Rendering %1 × %2 pixels…").arg(size.width()).arg(size.height()));
   if (m_job->start(render::workerExecutable(), job, m_dir->filePath(QStringLiteral("job.json")))) {
     qInfo().noquote() << QStringLiteral("Render image started: %1 x %2, %3 samples, %4, %5, %6 bodies (pid %7)")
                              .arg(size.width())
@@ -638,7 +650,7 @@ void RenderImageDialog::cancelRender() {
   }
   if (m_job->isRunning()) {
     qDebug().noquote() << "Render image cancelling";
-    m_status->setText(tr("Cancelling..."));
+    m_status->setText(tr("Cancelling…"));
     m_job->cancel();
   }
 }
@@ -685,6 +697,37 @@ void RenderImageDialog::save() {
   if (QFileInfo(path).suffix().isEmpty()) {
     path += QLatin1Char('.') + extension;
   }
+  // The shown measurements over it (mitcad#649), through the render's
+  // camera; OpenEXR (linear light) as it is.
+  const std::vector<MeasurementDisplay>& shown = m_viewer.measurements();
+  if (m_measurements->isChecked() && !shown.empty() && m_imageFormat != QLatin1String("exr")) {
+    QImage image(m_image);
+    const MeasurementProjection project = renderViewProjection(m_finalView);
+    if (!image.isNull() && m_viewer.height() > 0) {
+      // Labels and arrows in proportion to the picture, as in the view.
+      const double scale = std::clamp(static_cast<double>(image.height()) / m_viewer.height(), 0.75, 8.0);
+      std::vector<MeasurementShape> shapes;
+      for (const MeasurementDisplay& m : shown) {
+        shapes.push_back(layoutMeasurement(m, project, scale));
+      }
+      {
+        QPainter painter(&image);
+        paintMeasurements(painter, shapes, m_viewer.sketchHaloColor(), measurementFont(font(), scale), scale);
+      }
+      const int quality = m_imageFormat == QLatin1String("jpeg") ? value(QStringLiteral("quality")).toInt(90) : -1;
+      if (!image.save(path, nullptr, quality)) {
+        m_message->setText(tr("The image cannot be saved as %1.").arg(QDir::toNativeSeparators(path)));
+        qWarning().noquote() << QStringLiteral("Render image not saved: %1").arg(path);
+        return;
+      }
+      m_message->clear();
+      m_status->setText(tr("Saved as %1.").arg(QDir::toNativeSeparators(path)));
+      qInfo().noquote() << QStringLiteral("Render image saved %1 with %2 measurement(s)")
+                               .arg(path)
+                               .arg(static_cast<int>(shown.size()));
+      return;
+    }
+  }
   QFile source(m_image);
   QString error;
   if (!source.open(QIODevice::ReadOnly) || !copyToFileAtomically(source, path, error)) {
@@ -725,12 +768,12 @@ void RenderImageDialog::hideEvent(QHideEvent* event) {
   updateFrame();
 }
 
-void RenderImageDialog::closeEvent(QCloseEvent* event) {
-  // Closing stops a render: nothing would show or save it.
+void RenderImageDialog::reject() {
+  // Escape and every close path stop a render: nothing would show or save it.
   if (isRendering()) {
     cancelRender();
   }
-  QDialog::closeEvent(event);
+  QDialog::reject();
 }
 
 void RenderImageDialog::logLayout() {
@@ -746,7 +789,8 @@ void RenderImageDialog::logLayout() {
       {"field output.width", m_width},         {"field output.height", m_height},
       {"field output.aspect", m_aspect},       {"field output.samples", m_samples},
       {"field output.time_limit", m_timeLimit}, {"field output.denoise", m_denoise},
-      {"field output.transparent", m_transparent}, {"field output.format", m_format},
+      {"field output.transparent", m_transparent}, {"field measurements", m_measurements},
+      {"field output.format", m_format},
       {"field output.quality", m_quality},     {"camera", m_camera},
       {"size", m_preset},                      {"render", m_render},
       {"cancel", m_cancel},                    {"save", m_save},

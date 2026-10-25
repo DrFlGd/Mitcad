@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Renamed UI controls retain their existing commands and serialized policy ids.
+wait-idle
+expect-ever '^Browser Root/Design Settings at '
+click-logged '^Browser arrow Root/Design Settings at '
+expect-log '^Browser Root/Design Settings/Units: mm at '
+dblclick-logged '^Browser Root/Design Settings/Units: mm at '
+focus-dialog '^Units$'
+button '^Cancel$'
+focus-main
+command file.recover
+focus-dialog '^Recover Designs$|^There are no unsaved changes to recover\.$'
+button '^OK$'
+expect-dialog-gone '^Recover Designs$|^There are no unsaved changes to recover\.$'
+focus-main
+command assembly.policy
+focus-dialog '^Design Policy of Root$'
+button '^Component$'
+expect-log '^Policy dialog Root: part;'
+button '^Cancel$'
+focus-main
+command tools.search
+focus-widget commandSearchInput
+type 'Recover Designs'
+expect-command-search 'Recover Designs' file.recover
+key Escape
+focus-main
+expect-never '^TestDriver: FAIL|OCCT view event failed'

@@ -189,6 +189,24 @@ private:
 
 Handle(Geom_Surface) make_surface(Reader& in, int kind);
 
+// The depth of make_surface calls on this thread (a blend's supports and
+// the surfaces of curves on surfaces are made inside), and why the
+// outermost one took a rolling-ball blend's stored approximation for its
+// surface (mitcad#622; empty when it did not).
+thread_local int surface_depth = 0;
+thread_local std::string stored_reason;
+
+struct SurfaceDepth {
+  SurfaceDepth() { ++surface_depth; }
+  ~SurfaceDepth() { --surface_depth; }
+  SurfaceDepth(const SurfaceDepth&) = delete;
+  SurfaceDepth& operator=(const SurfaceDepth&) = delete;
+};
+
+// The start of the report message saying that a surface is a blend's
+// stored approximation (read by the importers' reports).
+constexpr const char* kStoredApproximation = "stored approximation of surface ";
+
 Handle(Geom_Curve) make_curve(Reader& in, int kind) {
   switch (kind) {
   case kCurveLine: {
@@ -393,6 +411,7 @@ Handle(Geom_Surface) make_arc_sweep(const std::vector<Handle(Geom_Curve)>& secti
 }
 
 Handle(Geom_Surface) make_surface(Reader& in, int kind) {
+  const SurfaceDepth depth;
   switch (kind) {
   case kSurfacePlane: {
     const gp_Pnt origin = in.point();
@@ -538,7 +557,25 @@ Handle(Geom_Surface) make_surface(Reader& in, int kind) {
     }
     const int spine_kind = in.integer();
     const Handle(Geom_Curve) spine = make_curve(in, spine_kind);
-    return rolling_ball_surface(supports[0], supports[1], spine, radius, v0, v1, n0, n1);
+    // The file's approximation, the surface where OCCT cannot walk the ball
+    // (mitcad#622: kept where it is too far off the blend); the report says
+    // so, for the surface of a face.
+    Handle(Geom_Surface) stored;
+    if (in.integer() != 0) {
+      const int stored_kind = in.integer();
+      stored = make_surface(in, stored_kind);
+    }
+    if (stored.IsNull()) {
+      return rolling_ball_surface(supports[0], supports[1], spine, radius, v0, v1, n0, n1);
+    }
+    try {
+      return rolling_ball_surface(supports[0], supports[1], spine, radius, v0, v1, n0, n1);
+    } catch (const std::exception& e) {
+      if (surface_depth == 1) {
+        stored_reason = e.what();
+      }
+      return stored;
+    }
   }
   default:
     throw std::runtime_error("unknown surface kind " + std::to_string(kind));
@@ -568,7 +605,7 @@ std::vector<Handle> build_all(const Body& body, const std::vector<Geometry>& ite
     }
     try {
       Reader in(body, items[i]);
-      out[i] = make(in, items[i].kind);
+      out[i] = make(in, items[i].kind, i);
     } catch (const Standard_Failure& e) {
       ++failed;
       note(report, std::string(what) + " " + std::to_string(i) + ": " + failure_text(e));
@@ -801,10 +838,20 @@ TopoDS_Shape build_topology(const Body& body, const BuildOptions& options, Build
   }
   const auto curves = build_all<Handle(Geom_Curve)>(
       body, body.curves, "curve", report.curves_failed, report,
-      [](Reader& in, int kind) { return make_curve(in, kind); }, preset != nullptr ? &curve_needed : nullptr);
+      [](Reader& in, int kind, std::size_t) { return make_curve(in, kind); },
+      preset != nullptr ? &curve_needed : nullptr);
   const auto surfaces = build_all<Handle(Geom_Surface)>(
       body, body.surfaces, "surface", report.surfaces_failed, report,
-      [](Reader& in, int kind) { return make_surface(in, kind); }, preset != nullptr ? &surface_needed : nullptr);
+      [&report](Reader& in, int kind, std::size_t i) {
+        stored_reason.clear();
+        Handle(Geom_Surface) s = make_surface(in, kind);
+        if (!stored_reason.empty()) {
+          // Said whatever else the report holds (one per surface).
+          report.messages.push_back(kStoredApproximation + std::to_string(i) + ": " + stored_reason);
+        }
+        return s;
+      },
+      preset != nullptr ? &surface_needed : nullptr);
   const double tol = options.tolerance;
   BRep_Builder builder;
 

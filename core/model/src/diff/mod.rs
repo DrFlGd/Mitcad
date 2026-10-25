@@ -26,8 +26,11 @@
 //! - **Components** and **occurrences** by uid (placements as moves and
 //!   turns), **bodies** (names and attributes) by uid, **timeline
 //!   groups**, **named views** and **analyses** by name, the document's
-//!   **appearances** by id, and the sheet-metal **Flat Pattern** items by
-//!   body uid (mitcad#125).
+//!   **appearances** by id, the sheet-metal **Flat Pattern** items by
+//!   body uid (mitcad#125), the document's **materials** by id
+//!   (mitcad#640; a component's default material with the component) and
+//!   its **print profiles** by id (mitcad#640; the choices and overrides
+//!   are properties).
 //! - **Geometry** (optional, [`DesignDiff::add_geometry`]): the volume and
 //!   area of each body of two computed documents.
 //!
@@ -307,6 +310,12 @@ pub struct DesignDiff {
     /// Sheet-metal Flat Pattern items (mitcad#125), by body uid: their fixed
     /// panel, orientation, viewed side and display choice.
     pub flat_patterns: Vec<ItemChange>,
+    /// The document's own materials (mitcad#640), by id.
+    pub materials: Vec<ItemChange>,
+    /// The document's printer and process profiles (mitcad#640), by id.
+    pub print_profiles: Vec<ItemChange>,
+    /// Measurement objects (mitcad#649), by name.
+    pub measurements: Vec<ItemChange>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometry: Option<GeometryDiff>,
 }
@@ -340,7 +349,7 @@ pub fn diff_states(from: &DocState, to: &DocState) -> DesignDiff {
         document: document_changes(from, to),
         parameters: parameter_changes(&a, &b, &renames),
         features: feature_changes(&a, &b, &a_features, &b_features),
-        components: component_changes(&from.assembly, &to.assembly),
+        components: component_changes(from, to),
         occurrences: occurrence_changes(&from.assembly, &to.assembly),
         bodies: body_changes(from, to),
         groups: group_changes(from, to),
@@ -348,6 +357,9 @@ pub fn diff_states(from: &DocState, to: &DocState) -> DesignDiff {
         analyses: analysis_changes(from, to),
         appearances: appearance_changes(from, to),
         flat_patterns: flat_pattern_changes(from, to),
+        materials: material_changes(from, to),
+        print_profiles: print_profile_changes(from, to),
+        measurements: measurement_changes(from, to),
         ..DesignDiff::default()
     };
     diff.finish();
@@ -423,6 +435,9 @@ impl DesignDiff {
             && self.analyses.is_empty()
             && self.appearances.is_empty()
             && self.flat_patterns.is_empty()
+            && self.materials.is_empty()
+            && self.print_profiles.is_empty()
+            && self.measurements.is_empty()
             && self
                 .geometry
                 .as_ref()
@@ -1332,12 +1347,16 @@ fn item_changes<K: Eq + std::hash::Hash + Clone + ToString>(
     out
 }
 
-fn component_changes(a: &Assembly, b: &Assembly) -> Vec<ItemChange> {
-    let list = |assembly: &Assembly| -> Vec<(ComponentUid, String, Value)> {
+fn component_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
+    let list = |state: &DocState| -> Vec<(ComponentUid, String, Value)> {
+        let assembly: &Assembly = &state.assembly;
+        // The default material (mitcad#640).
+        let material = |c: ComponentUid| json!(state.component_materials.get(&c));
         let root = (
             ComponentUid::ROOT,
             assembly.root_name.clone(),
-            json!({"name": assembly.root_name, "policy": assembly.root_policy}),
+            json!({"name": assembly.root_name, "policy": assembly.root_policy,
+                   "material": material(ComponentUid::ROOT)}),
         );
         std::iter::once(root)
             .chain(assembly.components.iter().map(|c| {
@@ -1345,11 +1364,50 @@ fn component_changes(a: &Assembly, b: &Assembly) -> Vec<ItemChange> {
                     c.uid,
                     c.name.clone(),
                     json!({"name": c.name, "created_by": c.created_by, "link": c.link,
-                           "library": c.library, "policy": c.policy}),
+                           "library": c.library, "policy": c.policy,
+                           "material": material(c.uid)}),
                 )
             }))
             .collect()
     };
+    item_changes(list(a), list(b), true, &|_, _| {})
+}
+
+/// The document's own materials (mitcad#640) by id.
+fn material_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
+    let list = |state: &DocState| -> Vec<(String, String, Value)> {
+        state
+            .materials
+            .iter()
+            .map(|material| {
+                let mut value = serde_json::to_value(material).expect("materials serialize");
+                if let Value::Object(fields) = &mut value {
+                    fields.remove("id");
+                }
+                (material.id.clone(), material.name.clone(), value)
+            })
+            .collect()
+    };
+    // Named with their ids, which bodies and libraries refer to.
+    item_changes(list(a), list(b), true, &|_, _| {})
+}
+
+/// The document's printer and process profiles (mitcad#640) by id.
+fn print_profile_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
+    let list = |state: &DocState| -> Vec<(String, String, Value)> {
+        state
+            .print_profiles
+            .iter()
+            .map(|profile| {
+                let mut value = serde_json::to_value(profile).expect("profiles serialize");
+                if let Value::Object(fields) = &mut value {
+                    fields.remove("id");
+                }
+                (profile.id.clone(), profile.name.clone(), value)
+            })
+            .collect()
+    };
+    // Named with their ids, which the Print sets' choices refer to.
     item_changes(list(a), list(b), true, &|_, _| {})
 }
 
@@ -1466,6 +1524,25 @@ fn analysis_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
                     fields.remove("name");
                 }
                 (analysis.name.clone(), analysis.name.clone(), value)
+            })
+            .collect()
+    };
+    item_changes(list(a), list(b), false, &|_, _| {})
+}
+
+/// Measurement objects (mitcad#649) by name: their kind, colour, light
+/// bulb and picks.
+fn measurement_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
+    let list = |state: &DocState| -> Vec<(String, String, Value)> {
+        state
+            .measurements
+            .iter()
+            .map(|measurement| {
+                let mut value = serde_json::to_value(measurement).expect("measurements serialize");
+                if let Value::Object(fields) = &mut value {
+                    fields.remove("name");
+                }
+                (measurement.name.clone(), measurement.name.clone(), value)
             })
             .collect()
     };

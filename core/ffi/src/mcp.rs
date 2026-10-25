@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use mitcad_mcp::{Backend, LiveSession, ToolResult};
+use mitcad_mcp::{Backend, LiveSession, TimelineMode, ToolResult};
 use mitcad_model::api::classes::{self, ApiClass};
 use mitcad_model::{BlobStore, Sha256};
 use serde_json::{Map, Value, json};
@@ -19,6 +19,43 @@ use crate::kernel::OcctKernel;
 const MAX_DOCUMENTS: usize = 64;
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+
+/// A pure edit plan: the UI retains consent, policy, backups and atomic writes.
+pub fn plan_codex_mcp_config(current: &str, bridge: &str, replace_existing: bool) -> String {
+    mitcad_mcp::assistant_setup::plan_codex_config(current, bridge, replace_existing).to_string()
+}
+
+pub fn verify_codex_mcp_config(before: &str, after: &str, bridge: &str) -> String {
+    mitcad_mcp::assistant_setup::verify_codex_config(before, after, bridge).to_string()
+}
+
+/// Package only the application's installed native launcher, without executing it.
+pub fn build_mcp_bundle(manifest: &str, launcher_path: &str) -> Result<Vec<u8>, crate::ApiError> {
+    let launcher = fs::File::open(launcher_path).map_err(|error| {
+        crate::ApiError(format!(
+            "Cannot read the bundled assistant launcher: {error}"
+        ))
+    })?;
+    if !launcher
+        .metadata()
+        .map_err(|error| crate::ApiError(error.to_string()))?
+        .is_file()
+    {
+        return Err(crate::ApiError(
+            "The bundled assistant launcher is not a regular file.".to_owned(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    launcher
+        .take(32 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            crate::ApiError(format!(
+                "Cannot read the bundled assistant launcher: {error}"
+            ))
+        })?;
+    mitcad_mcp::assistant_setup::mcp_bundle(manifest, &bytes).map_err(crate::ApiError)
+}
 
 /// Reads requests from stdin and writes only MCP messages to stdout.
 pub fn run_mcp(workspace: &str, read_only: bool) -> Result<(), crate::ApiError> {
@@ -341,26 +378,25 @@ impl Backend for CadBackend {
             "model_command" => {
                 self.require_writable()?;
                 let id = string(arguments, "document")?;
-                let request = object(arguments, "command")?;
-                validate_command(request)?;
+                let mode = TimelineMode::of(arguments)?;
+                let array = arguments["command"].is_array();
+                let entries = command_entries(arguments)?;
                 let opened = self.document_mut(id)?;
-                opened
-                    .document
-                    .validate_mcp_document_command(&request.to_string())
-                    .map_err(|e| e.to_string())?;
-                let result = opened
-                    .document
-                    .command(&request.to_string())
-                    .map_err(|e| e.to_string())?;
-                let result = parse_result(&result)?;
-                let mut value = snapshot(&opened.document)?;
-                value["document"] = json!(id);
-                value["applied"] = json!(true);
-                value["result"] = result;
-                // An error only when a feature this command added or
-                // edited fails; the others are listed (mitcad#401).
-                let is_error = mitcad_mcp::command_outcome(&mut value);
-                Ok(ToolResult { value, is_error })
+                // Every entry is checked before any runs (mitcad#689).
+                for (i, entry) in entries.iter().enumerate() {
+                    let checked = validate_command(entry).and_then(|()| {
+                        opened
+                            .document
+                            .validate_mcp_document_command(&entry.to_string())
+                            .map_err(|e| e.to_string())
+                    });
+                    match checked {
+                        Ok(()) => {}
+                        Err(error) if !array => return Err(error),
+                        Err(error) => return Ok(refused_entry(id, i, &error, 0)),
+                    }
+                }
+                run_commands(id, &mut opened.document, &entries, array, mode)
             }
             "document_save" => {
                 self.require_writable()?;
@@ -389,139 +425,29 @@ impl Backend for CadBackend {
             "model_export" => {
                 self.require_writable()?;
                 let id = string(arguments, "document")?;
-                let format = string(arguments, "format")?;
-                if !matches!(
-                    format,
-                    "step"
-                        | "iges"
-                        | "brep"
-                        | "stl"
-                        | "obj"
-                        | "3mf"
-                        | "usdz"
-                        | "dxf"
-                        | "pdf"
-                        | "svg"
-                ) {
-                    return Err(format!("unknown export format '{format}'"));
-                }
-                // Drawings (mitcad#471): PDF and SVG, and DXF with drawing.
-                let drawing = match arguments.get("drawing") {
-                    Some(options) => Some(
-                        options
-                            .as_object()
-                            .ok_or_else(|| "drawing must be an object".to_owned())?
-                            .clone(),
-                    ),
-                    None if matches!(format, "pdf" | "svg") => Some(Map::new()),
-                    None => None,
-                };
-                if let Some(options) = &drawing {
-                    if !matches!(format, "pdf" | "svg" | "dxf") {
-                        return Err(
-                            "drawing is only accepted for PDF, SVG or DXF export".to_owned()
-                        );
-                    }
-                    if arguments.get("sketch").is_some() || arguments.get("flat_pattern").is_some()
-                    {
-                        return Err("a drawing uses bodies, not sketch or flat_pattern".to_owned());
-                    }
-                    if let Some(key) = ["cmd", "path", "bodies", "format"]
-                        .into_iter()
-                        .find(|k| options.contains_key(*k))
-                    {
-                        return Err(format!("drawing must not hold '{key}'"));
-                    }
-                }
-                // DXF: a sketch, or a sheet body's Flat Pattern (mitcad#210).
-                let (sketch, flat) = if format == "dxf" && drawing.is_none() {
-                    if arguments.get("bodies").is_some() {
-                        return Err("DXF export uses sketch or flat_pattern, not bodies".to_owned());
-                    }
-                    match (arguments.get("sketch"), arguments.get("flat_pattern")) {
-                        (Some(_), None) => (Some(string(arguments, "sketch")?), None),
-                        (None, Some(_)) => (None, Some(string(arguments, "flat_pattern")?)),
-                        _ => {
-                            return Err("DXF export needs either sketch or flat_pattern".to_owned());
-                        }
-                    }
-                } else {
-                    if arguments.get("sketch").is_some() || arguments.get("flat_pattern").is_some()
-                    {
-                        return Err(
-                            "sketch and flat_pattern are only accepted for DXF export".to_owned()
-                        );
-                    }
-                    (None, None)
-                };
-                let bodies = arguments.get("bodies");
-                if let Some(bodies) = bodies
-                    && !bodies
-                        .as_array()
-                        .is_some_and(|items| items.iter().all(Value::is_string))
-                {
-                    return Err("bodies must be an array of strings".to_owned());
-                }
                 let path = self
                     .workspace
                     .write_path(string(arguments, "path")?, false)?;
-                let mut command = if let Some(options) = drawing {
-                    require_extension(&path, format)?;
-                    let mut command = Value::Object(options);
-                    command["cmd"] = json!("export_drawing");
-                    command["path"] = json!(path);
-                    command
-                } else if let Some(sketch) = sketch {
-                    require_extension(&path, "dxf")?;
-                    json!({"cmd": "export_sketch", "path": path, "sketch": sketch})
-                } else if let Some(body) = flat {
-                    require_extension(&path, "dxf")?;
-                    json!({"cmd": "export_flat_pattern_dxf", "path": path, "body": body})
-                } else {
-                    if format == "obj" {
-                        // OCCT also writes <name>.mtl beside an OBJ.
-                        require_extension(&path, "obj")?;
-                        self.workspace
-                            .write_path(path_text(&path.with_extension("mtl"))?, false)?;
-                    }
-                    json!({"cmd": "export", "path": path, "format": format})
-                };
-                if let Some(bodies) = bodies {
-                    command["bodies"] = bodies.clone();
+                let plan = export_plan(arguments, &path)?;
+                for extra in &plan.extra {
+                    self.workspace.write_path(path_text(extra)?, false)?;
                 }
                 let opened = self.document(id)?;
-                // A drawing's title block names the design by its file.
-                if command["cmd"] == "export_drawing" && command.get("title").is_none() {
-                    let title = opened
-                        .path
-                        .as_deref()
-                        .and_then(|p| p.file_stem())
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Untitled")
-                        .to_owned();
-                    command["title"] = json!(title);
-                }
-                // USDZ: texture paths are relative to the design's folder.
-                if format == "usdz"
-                    && let Some(folder) = opened.path.as_deref().and_then(|p| p.parent())
-                {
-                    command["design_folder"] = json!(path_text(folder)?);
-                }
-                if format == "usdz" {
-                    for appearance in opened.document.0.custom_appearances() {
-                        if let Some(texture) = &appearance.texture
-                            && texture.slots().any(|(_, _, data)| data.is_none())
-                        {
-                            return Err("USDZ export through MCP requires embedded texture images; external texture files are not read".to_owned());
-                        }
-                    }
-                }
-                if geometry_failed(&snapshot(&opened.document)?) {
-                    return Err(
-                        "document has failed features; inspect and fix them before export"
-                            .to_owned(),
-                    );
-                }
+                // A drawing's title block names the design by its file;
+                // USDZ texture paths are relative to the design's folder.
+                let title = opened
+                    .path
+                    .as_deref()
+                    .and_then(|p| p.file_stem())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Untitled")
+                    .to_owned();
+                let folder = match opened.path.as_deref().and_then(|p| p.parent()) {
+                    Some(folder) => Some(path_text(folder)?.to_owned()),
+                    None => None,
+                };
+                let mut command = plan.command;
+                prepare_export(&opened.document, &mut command, &title, folder.as_deref())?;
                 if command["cmd"] == "export_drawing" {
                     let result = opened
                         .document
@@ -542,6 +468,399 @@ impl Backend for CadBackend {
             _ => Err(format!("unknown tool '{name}'")),
         }
     }
+}
+
+/// The commands of a `model_command` call: its object, or each of its
+/// array (mitcad#689). Undo and redo run alone.
+fn command_entries(arguments: &Value) -> Result<Vec<&Value>, String> {
+    match &arguments["command"] {
+        Value::Array(entries) => {
+            if entries.is_empty() {
+                return Err("'command' must not be an empty array".to_owned());
+            }
+            for (i, entry) in entries.iter().enumerate() {
+                if !entry.is_object() {
+                    return Err(format!("commands[{i}] must be a JSON object"));
+                }
+                if entries.len() > 1 && matches!(entry["cmd"].as_str(), Some("undo" | "redo")) {
+                    return Err(format!(
+                        "commands[{i}]: undo and redo run alone, not in a command array"
+                    ));
+                }
+            }
+            Ok(entries.iter().collect())
+        }
+        command if command.is_object() => Ok(vec![command]),
+        _ => Err("'command' must be an object or an array of objects".to_owned()),
+    }
+}
+
+/// The document as a `model_command` result compares it
+/// (`mitcad_mcp::SNAPSHOT_QUERIES`).
+fn command_snapshot(document: &Document) -> Result<Value, String> {
+    let mut snapshot = Map::new();
+    for (key, request) in mitcad_mcp::SNAPSHOT_QUERIES {
+        let answer = document.query(request).map_err(|e| e.to_string())?;
+        snapshot.insert(key.to_owned(), parse_result(&answer)?);
+    }
+    Ok(Value::Object(snapshot))
+}
+
+fn undo_depth(document: &Document) -> Result<u64, String> {
+    Ok(query(document, "document")?["undo_depth"]
+        .as_u64()
+        .unwrap_or_default())
+}
+
+/// Undoes the steps after `depth` (a refused array entry, mitcad#689);
+/// how many.
+fn undo_to(document: &mut Document, depth: u64) -> Result<usize, String> {
+    let mut undone = 0;
+    loop {
+        let now = undo_depth(document)?;
+        if now <= depth {
+            return Ok(undone);
+        }
+        document
+            .command(r#"{"cmd":"undo"}"#)
+            .map_err(|e| e.to_string())?;
+        undone += 1;
+        if undo_depth(document)? >= now {
+            return Err("an entry of the array could not be undone".to_owned());
+        }
+    }
+}
+
+/// The error result of an array whose entry `i` was refused (mitcad#689):
+/// nothing of it stays, `undone` steps of the entries before it undone.
+fn refused_entry(id: &str, i: usize, error: &str, undone: usize) -> ToolResult {
+    ToolResult {
+        value: json!({
+            "document": id,
+            "applied": false,
+            "error": format!("commands[{i}]: {error}; the {undone} step(s) of the entries before it were undone"),
+            "entry": i,
+            "undone": undone,
+        }),
+        is_error: true,
+    }
+}
+
+/// Runs a `model_command`'s commands in order (mitcad#689): an array
+/// stops at the first refused entry, whose earlier entries are undone, or
+/// after the first entry whose added or edited feature fails, and its steps
+/// become one undo step. The result holds the document by `mode`.
+fn run_commands(
+    id: &str,
+    document: &mut Document,
+    entries: &[&Value],
+    array: bool,
+    mode: TimelineMode,
+) -> Result<ToolResult, String> {
+    let before = if mode.needs_before() {
+        Some(command_snapshot(document)?)
+    } else {
+        None
+    };
+    let depth = undo_depth(document)?;
+    let mut results = Vec::with_capacity(entries.len());
+    let mut times = Vec::new();
+    let mut stopped = None;
+    for (i, entry) in entries.iter().enumerate() {
+        let text = match document.command(&entry.to_string()) {
+            Ok(text) => text,
+            Err(error) if !array => return Err(error.to_string()),
+            Err(error) => {
+                let undone = undo_to(document, depth)?;
+                return Ok(refused_entry(id, i, &error.to_string(), undone));
+            }
+        };
+        let result = parse_result(&text)?;
+        if mitcad_mcp::recomputed(&result) {
+            times.push(query(document, "recompute_times")?);
+        }
+        let failed = mitcad_mcp::entry_failed(&result);
+        results.push(result);
+        if failed && i + 1 < entries.len() {
+            stopped = Some(i);
+            break;
+        }
+    }
+    // The array's steps as one, named as its last.
+    let state = query(document, "document")?;
+    if array && state["undo_depth"].as_u64().unwrap_or_default() > depth + 1 {
+        let label = state["undo"].as_str().unwrap_or("Commands").to_owned();
+        document
+            .command(&json!({"cmd": "merge_undo", "depth": depth, "label": label}).to_string())
+            .map_err(|e| e.to_string())?;
+    }
+    let after = command_snapshot(document)?;
+    let evaluated = mitcad_mcp::evaluated_features(&times);
+    let mut value = Value::Object(mitcad_mcp::command_document(
+        mode,
+        before.as_ref(),
+        &after,
+        &evaluated,
+    ));
+    value["document"] = json!(id);
+    value["applied"] = json!(true);
+    value["result"] = results.last().cloned().unwrap_or(Value::Null);
+    if array {
+        value["ran"] = json!(results.len());
+        value["results"] = Value::Array(results);
+        if let Some(i) = stopped {
+            value["stopped_at"] = json!(i);
+        }
+    }
+    // An error only when a feature the (last) command added or edited
+    // fails; the others are listed (mitcad#401).
+    let is_error = mitcad_mcp::command_outcome(&mut value);
+    Ok(ToolResult { value, is_error })
+}
+
+/// A `model_export` call's model command writing to `path`, and the other
+/// files it writes (an OBJ's .mtl beside it); the same in the headless and
+/// the live server (mitcad#689). A drawing's further sheets are checked as
+/// the drawing names them.
+struct ExportPlan {
+    command: Value,
+    extra: Vec<PathBuf>,
+}
+
+fn export_plan(arguments: &Value, path: &Path) -> Result<ExportPlan, String> {
+    let format = string(arguments, "format")?;
+    if !matches!(
+        format,
+        "step" | "iges" | "brep" | "stl" | "obj" | "3mf" | "usdz" | "dxf" | "pdf" | "svg"
+    ) {
+        return Err(format!("unknown export format '{format}'"));
+    }
+    // Drawings (mitcad#471): PDF and SVG, and DXF with drawing.
+    let drawing = match arguments.get("drawing") {
+        Some(options) => Some(
+            options
+                .as_object()
+                .ok_or_else(|| "drawing must be an object".to_owned())?
+                .clone(),
+        ),
+        None if matches!(format, "pdf" | "svg") => Some(Map::new()),
+        None => None,
+    };
+    if let Some(options) = &drawing {
+        if !matches!(format, "pdf" | "svg" | "dxf") {
+            return Err("drawing is only accepted for PDF, SVG or DXF export".to_owned());
+        }
+        if arguments.get("sketch").is_some() || arguments.get("flat_pattern").is_some() {
+            return Err("a drawing uses bodies, not sketch or flat_pattern".to_owned());
+        }
+        if let Some(key) = ["cmd", "path", "bodies", "format"]
+            .into_iter()
+            .find(|k| options.contains_key(*k))
+        {
+            return Err(format!("drawing must not hold '{key}'"));
+        }
+    }
+    // DXF: a sketch, or a sheet body's Flat Pattern (mitcad#210).
+    let (sketch, flat) = if format == "dxf" && drawing.is_none() {
+        if arguments.get("bodies").is_some() {
+            return Err("DXF export uses sketch or flat_pattern, not bodies".to_owned());
+        }
+        match (arguments.get("sketch"), arguments.get("flat_pattern")) {
+            (Some(_), None) => (Some(string(arguments, "sketch")?), None),
+            (None, Some(_)) => (None, Some(string(arguments, "flat_pattern")?)),
+            _ => {
+                return Err("DXF export needs either sketch or flat_pattern".to_owned());
+            }
+        }
+    } else {
+        if arguments.get("sketch").is_some() || arguments.get("flat_pattern").is_some() {
+            return Err("sketch and flat_pattern are only accepted for DXF export".to_owned());
+        }
+        (None, None)
+    };
+    let bodies = arguments.get("bodies");
+    if let Some(bodies) = bodies
+        && !bodies
+            .as_array()
+            .is_some_and(|items| items.iter().all(Value::is_string))
+    {
+        return Err("bodies must be an array of strings".to_owned());
+    }
+    let text = path_text(path)?;
+    let mut extra = Vec::new();
+    let mut command = if let Some(options) = drawing {
+        require_extension(path, format)?;
+        let mut command = Value::Object(options);
+        command["cmd"] = json!("export_drawing");
+        command["path"] = json!(text);
+        command
+    } else if let Some(sketch) = sketch {
+        require_extension(path, "dxf")?;
+        json!({"cmd": "export_sketch", "path": text, "sketch": sketch})
+    } else if let Some(body) = flat {
+        require_extension(path, "dxf")?;
+        json!({"cmd": "export_flat_pattern_dxf", "path": text, "body": body})
+    } else {
+        if format == "obj" {
+            // OCCT also writes <name>.mtl beside an OBJ.
+            require_extension(path, "obj")?;
+            extra.push(path.with_extension("mtl"));
+        }
+        json!({"cmd": "export", "path": text, "format": format})
+    };
+    if let Some(bodies) = bodies {
+        command["bodies"] = bodies.clone();
+    }
+    Ok(ExportPlan { command, extra })
+}
+
+/// Completes a `model_export`'s command for `document` and refuses what
+/// MCP must not export (mitcad#689: both servers): a drawing's title block
+/// names the design (`title`); a USDZ's texture paths are relative to the
+/// design's folder, and only textures embedded in the design are read; a
+/// document with failed features is not exported.
+fn prepare_export(
+    document: &Document,
+    command: &mut Value,
+    title: &str,
+    design_folder: Option<&str>,
+) -> Result<(), String> {
+    if command["cmd"] == "export_drawing" && command.get("title").is_none() {
+        command["title"] = json!(title);
+    }
+    if command["cmd"] == "export" && command["format"] == "usdz" {
+        if let Some(folder) = design_folder {
+            command["design_folder"] = json!(folder);
+        }
+        for appearance in document.0.custom_appearances() {
+            if let Some(texture) = &appearance.texture
+                && texture.slots().any(|(_, _, data)| data.is_none())
+            {
+                return Err("USDZ export through MCP requires embedded texture images; external texture files are not read".to_owned());
+            }
+        }
+    }
+    if geometry_failed(&snapshot(document)?) {
+        return Err("document has failed features; inspect and fix them before export".to_owned());
+    }
+    Ok(())
+}
+
+impl Document {
+    /// A live `model_export` (mitcad#689): the model command that writes
+    /// `arguments`' export to `path`, which the application found to be a
+    /// new file in a folder agents may use, with the other files it writes
+    /// (`outputs`, to be checked the same way) and whether it is a drawing
+    /// ([`Document::mcp_export_drawing`] writes those). `title` names the
+    /// design in a drawing's title block; `design_folder` is the design's
+    /// folder (empty for an unsaved design).
+    pub fn mcp_export_plan(
+        &self,
+        arguments: &str,
+        path: &str,
+        title: &str,
+        design_folder: &str,
+    ) -> Result<String, crate::ApiError> {
+        let arguments: Value = serde_json::from_str(arguments)
+            .map_err(|error| crate::ApiError(format!("invalid MCP export JSON: {error}")))?;
+        let plan = export_plan(&arguments, Path::new(path)).map_err(crate::ApiError)?;
+        let mut command = plan.command;
+        let folder = (!design_folder.is_empty()).then_some(design_folder);
+        prepare_export(self, &mut command, title, folder).map_err(crate::ApiError)?;
+        let outputs = plan
+            .extra
+            .iter()
+            .map(|extra| path_text(extra).map(str::to_owned))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::ApiError)?;
+        let drawing = command["cmd"] == "export_drawing";
+        Ok(json!({"command": command, "outputs": outputs, "drawing": drawing}).to_string())
+    }
+
+    /// Writes a live drawing export's files (mitcad#689): each, the further
+    /// sheets too, must be a new file beside the first, whose folder the
+    /// application checked; nothing is written before every one is.
+    pub fn mcp_export_drawing(&self, command: &str) -> Result<String, crate::ApiError> {
+        let request: Value = serde_json::from_str(command)
+            .map_err(|error| crate::ApiError(format!("invalid MCP export JSON: {error}")))?;
+        let first = request["path"]
+            .as_str()
+            .ok_or_else(|| crate::ApiError("the drawing has no path".to_owned()))?;
+        let folder = Path::new(first).parent().map(Path::to_path_buf);
+        let result = self
+            .0
+            .export_drawing_checked(command, |output| {
+                let output = Path::new(output);
+                if output.parent().map(Path::to_path_buf) != folder {
+                    return Err(format!("{} is not beside {first}", output.display()));
+                }
+                match fs::symlink_metadata(output) {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(format!("cannot inspect {}: {e}", output.display())),
+                    Ok(_) => Err(format!(
+                        "{} already exists; model_export writes new files only",
+                        output.display()
+                    )),
+                }
+            })
+            .map_err(|e| crate::ApiError(e.to_string()))?;
+        Ok(result.to_string())
+    }
+}
+
+/// The queries of a live `model_command`'s snapshots, by the key each
+/// answer goes under (mitcad#689, `mitcad_mcp::SNAPSHOT_QUERIES`).
+pub fn mcp_snapshot_queries() -> String {
+    let mut queries = Map::new();
+    for (key, request) in mitcad_mcp::SNAPSHOT_QUERIES {
+        let request: Value = serde_json::from_str(request).expect("a query of our own");
+        queries.insert(key.to_owned(), request);
+    }
+    Value::Object(queries).to_string()
+}
+
+/// The document's part of a live `model_command`'s result (mitcad#689):
+/// `mode` (`changed`, `full`, `none`), the snapshots `before` (empty when
+/// the mode needs none) and `after`, and `times`, the `recompute_times`
+/// answers of the commands that recomputed (a JSON array).
+pub fn mcp_command_document(
+    mode: &str,
+    before: &str,
+    after: &str,
+    times: &str,
+) -> Result<String, crate::ApiError> {
+    let read = |text: &str| -> Result<Value, crate::ApiError> {
+        serde_json::from_str(text)
+            .map_err(|error| crate::ApiError(format!("invalid MCP snapshot JSON: {error}")))
+    };
+    let mode = TimelineMode::parse(mode).map_err(crate::ApiError)?;
+    let before = if before.is_empty() {
+        None
+    } else {
+        Some(read(before)?)
+    };
+    let after = read(after)?;
+    let times = read(times)?;
+    let evaluated = mitcad_mcp::evaluated_features(times.as_array().into_iter().flatten());
+    Ok(Value::Object(mitcad_mcp::command_document(
+        mode,
+        before.as_ref(),
+        &after,
+        &evaluated,
+    ))
+    .to_string())
+}
+
+/// Whether a live command array stops after an entry whose model result
+/// is `result` (mitcad#689): a feature it added or edited failed.
+pub fn mcp_entry_failed(result: &str) -> bool {
+    serde_json::from_str::<Value>(result).is_ok_and(|result| mitcad_mcp::entry_failed(&result))
+}
+
+/// Whether a model result says the command recomputed, so that the
+/// `recompute_times` query tells what (mitcad#689).
+pub fn mcp_recomputed(result: &str) -> bool {
+    serde_json::from_str::<Value>(result).is_ok_and(|result| mitcad_mcp::recomputed(&result))
 }
 
 fn success(value: Value) -> Result<ToolResult, String> {

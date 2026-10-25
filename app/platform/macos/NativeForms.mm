@@ -246,6 +246,25 @@ public:
       case InputDef::Type::CutTargets:
         row.targets->setScope(scope.object(input.id));
         break;
+      case InputDef::Type::Note: {
+        const InputNote note = input.noteFor ? input.noteFor(scope) : InputNote();
+        row.box.hidden = !visible || note.isEmpty();
+        row.noteText.stringValue = nativeString(note.text);
+        row.noteText.hidden = note.text.isEmpty();
+        if (note.actions != row.noteActions) {
+          for (NSView* child in [row.noteLine.arrangedSubviews copy]) {
+            if (child != row.noteText) {
+              [row.noteLine removeArrangedSubview:child];
+              [child removeFromSuperview];
+            }
+          }
+          for (int i = 0; i < note.actions.size(); ++i) {
+            [row.noteLine addArrangedSubview:button(note.actions.at(i), QStringLiteral("note|%1|%2").arg(row.key).arg(i))];
+          }
+          row.noteActions = note.actions;
+        }
+        break;
+      }
       case InputDef::Type::List:
         break;
       }
@@ -479,6 +498,9 @@ public:
     } else if (kind == QStringLiteral("move")) {
       auto call = actions().itemMoved;
       if (call) { call(key, parts.value(2).toInt(), parts.value(3).toInt()); }
+    } else if (kind == QStringLiteral("note")) {
+      auto call = actions().noteAction;
+      if (call) { call(key, parts.value(2).toInt()); }
     }
   }
 
@@ -545,6 +567,10 @@ private:
     NSStackView* __strong order = nil;
     QStringList orderDescriptions;
     std::shared_ptr<CutTargetsPanel> targets;
+    // A note row (InputDef::Type::Note, mitcad#655): its text and buttons.
+    NSTextField* __strong noteText = nil;
+    NSStackView* __strong noteLine = nil;
+    QStringList noteActions;
     std::shared_ptr<NativeWidgetView> targetsView;
   };
 
@@ -675,7 +701,9 @@ private:
       heading.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
       addFullWidth(row.box, heading);
     }
-    if (!input.disclosure) { addFullWidth(row.box, label(input.label)); }
+    if (!input.disclosure && !(input.type == InputDef::Type::Note && input.label.isEmpty())) {
+      addFullWidth(row.box, label(input.label));
+    }
     NSView* control = nil;
     switch (input.type) {
     case InputDef::Type::Value:
@@ -794,6 +822,13 @@ private:
       // Declarative lists contain fields; nesting is not supported by the
       // shared CommandState row representation either.
       return;
+    case InputDef::Type::Note:
+      // A line of text and its buttons, set by refresh (mitcad#655).
+      row.noteLine = line();
+      row.noteText = label(QString(), true);
+      [row.noteLine addArrangedSubview:row.noteText];
+      control = row.noteLine;
+      break;
     }
     if (control != nil) {
       if ([control isKindOfClass:[NSControl class]]) {

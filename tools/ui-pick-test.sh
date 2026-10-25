@@ -16,7 +16,7 @@
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-pick-test.sh
-# check-all sources: tools/cli
+# check-all sources: tools/cli app/framework app/commands/FilletCommands.cpp
 
 if [ -z "${UI_SCALE:-}" ]; then
   UI_SCALE=1 bash "$0" "$@" || exit 1
@@ -130,4 +130,21 @@ for face in F1:top F2:side0; do
 done
 
 ui_step "cancel (Esc)"                     ui_key Escape
+echo "--- Selected faces leave their edges available (mitcad#669)"
+for tool in Fillet Chamfer; do
+  ui_mark
+  ui_step "$tool" ui_command "$tool"
+  ui_step "pick the floor face" ui_click_pick "face F1.b0/F1:top"
+  ui_expect_new "$tool Edges: 1 face" "the face picked"
+  ui_expect_new "Preview $tool: ok" "the face preview is shown"
+  ui_mark
+  ui_step "click 4 px inside the face off its edge" xdotool mousemove $(edge_off "$INSIDE" "$OFF") click 1
+  ui_expect_new "$tool Edges: 1 face, 1 edge" "edge added without taking the face out"
+  ui_expect_new "Preview $tool: ok" "the combined preview is shown"
+  ui_mark
+  ui_step "click the face middle" ui_click_pick "face F1.b0/F1:top"
+  ui_expect_new "$tool Edges: 1 edge [edge $INSIDE of F1.b0]" "only the face taken out"
+  ui_step "cancel (Esc)" ui_key Escape
+done
+
 ui_finish "picking edges next to faces at device pixel ratio $UI_SCALE"

@@ -19,6 +19,7 @@
 #include <QtLogging>
 
 #include "../framework/Dialogs.hpp"
+#include "../platform/MacDialogs.hpp"
 
 namespace mitcad::sketch {
 
@@ -202,14 +203,15 @@ FontPreferencesBox::FontPreferencesBox(QWidget* parent)
     m_folders->addItem(QDir::toNativeSeparators(folder));
   }
   layout->addWidget(m_folders);
+  mac::stylePreview(m_folders);
   auto* row = new QHBoxLayout;
   m_typed = new QLineEdit;
   m_typed->setObjectName(QStringLiteral("fontFolder"));
   m_typed->setPlaceholderText(tr("A folder of fonts"));
   m_typed->setToolTip(tr("Add, or OK, adds the folder typed here"));
   auto* add = new QPushButton(tr("Add"));
-  add->setToolTip(tr("Adds the folder typed at the left"));
-  auto* choose = new QPushButton(tr("Choose..."));
+  add->setToolTip(tr("Adds the typed folder"));
+  auto* choose = new QPushButton(tr("Choose…"));
   choose->setToolTip(tr("Chooses a folder to add"));
   m_remove = new QPushButton(tr("Remove"));
   m_remove->setToolTip(tr("Removes the selected folders from the list (the files stay)"));
@@ -217,10 +219,22 @@ FontPreferencesBox::FontPreferencesBox(QWidget* parent)
   for (QPushButton* button : {add, choose, m_remove}) {
     button->setAutoDefault(false);
   }
-  row->addWidget(m_typed, 1);
+#ifdef Q_OS_MACOS
+  auto* controls = new QHBoxLayout;
+  controls->setSpacing(0);
+  controls->addWidget(add);
+  controls->addWidget(m_remove);
+  controls->addStretch(1);
+  layout->addLayout(controls);
+#else
   row->addWidget(add);
+#endif
+  row->insertWidget(0, m_typed, 1);
   row->addWidget(choose);
+#ifndef Q_OS_MACOS
   row->addWidget(m_remove);
+#endif
+  mac::styleListButtons(add, m_remove);
   layout->addLayout(row);
 
   connect(add, &QPushButton::clicked, this, [this] {

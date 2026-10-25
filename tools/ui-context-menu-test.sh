@@ -125,9 +125,10 @@ menu_line() { grep -F "Context menu$1: " "$UI_LOG" | tail -1 | sed "s/.*Context 
 has() {
   local name=$1 entries entry
   shift
-  entries="| $(menu_line "$name") |"
+  # (The labels' single ellipsis matches three dots, mitcad#645.)
+  entries="| $(menu_line "$name" | sed "s/…/.../g") |"
   for entry in "$@"; do
-    [[ $entries == *"| $entry |"* ]] || ui_fail "'$entry' is not in the context menu$name: $(menu_line "$name")"
+    [[ $entries == *"| ${entry//…/...} |"* ]] || ui_fail "'$entry' is not in the context menu$name: $(menu_line "$name")"
   done
   echo "ok   the context menu${name:- itself} has: $*"
 }
@@ -174,7 +175,7 @@ shown=$(grep "^Bodies shown: " "$UI_LOG" | tail -1)
 echo "--- A face of an ordinary body"
 right_click face F2.b0 O1 "F2:end("
 has "" Solid Construct "Create Sketch" Measure "Appearance..." Delete Hide "Find in Browser" "Clear Selection"
-lacks "" BUILD
+lacks "" Build
 has " Solid" "Press Pull" Fillet Chamfer Shell "Offset Face" "Delete Face" More
 has " Solid More" Draft Hole "Split Face" "Replace Face" "Plastic Feature" Joint Box Cylinder Sphere Torus Coil Gear Loft
 lacks " Solid" Draft Hole Box Loft Untrim Unstitch "Reverse Normal"
@@ -193,7 +194,7 @@ right_click edge F2.b0 O1
 solid=$(menu_line " Solid")
 [[ $solid == *"Fillet | Chamfer"* ]] || ui_fail "Fillet and Chamfer are not Solid's first entries: $solid"
 echo "ok   Solid: $solid"
-lacks "" BUILD "Create Sketch"
+lacks "" Build "Create Sketch"
 ui_step "Escape (close the menu)"          ui_key Escape
 ui_step "Escape (clear the selection)"     ui_key Escape
 
@@ -208,12 +209,12 @@ ui_step "Escape (clear the selection)"     ui_key Escape
 
 echo "--- A face of the lone timber member"
 right_click face "$member" O2 "${member%%.*}:part("
-has "" Solid BUILD Construct Delete Hide
-has " BUILD" Length Ends Flip "Rotate 90 deg" Timber Wall Panel More
-has " BUILD More" Profile "Linear Part"
-lacks " BUILD" "Spacing Set" Profile "Linear Part"
-lacks " BUILD More" "Spacing Set" "Floor / Roof"
-lacks " BUILD" "Floor / Roof"
+has "" Solid Build Construct Delete Hide
+has " Build" Length Ends Flip "Rotate 90 deg" Timber Wall Panel More
+has " Build More" Profile "Linear Part"
+lacks " Build" "Spacing Set" Profile "Linear Part"
+lacks " Build More" "Spacing Set" "Floor / Roof"
+lacks " Build" "Floor / Roof"
 [ "$(menu_line " Delete")" = "Delete Member | Delete Body | Delete Component" ] ||
   ui_fail "Delete of a member's face: $(menu_line " Delete")"
 echo "ok   Delete: Member, Body, Component"
@@ -222,7 +223,7 @@ ui_step "Escape (clear the selection)"     ui_key Escape
 
 echo "--- A face of a member of the set"
 right_click face "$setMember" O3 "${setMember%%.*}:part("
-has " BUILD" "Spacing Set"
+has " Build" "Spacing Set"
 [ "$(menu_line " Delete")" = "Delete Member | Delete Spacing Set | Delete Body | Delete Component" ] ||
   ui_fail "Delete of a set member's face: $(menu_line " Delete")"
 echo "ok   Delete: Member, Spacing Set, Body, Component"
@@ -231,7 +232,7 @@ ui_step "Escape (clear the selection)"     ui_key Escape
 
 echo "--- BUILD > Timber on the member's face"
 right_click face "$member" O2 "${member%%.*}:part("
-ui_step "BUILD > Timber"                   ui_menu_choose "BUILD" "Timber"
+ui_step "Build > Timber"                   ui_menu_choose "Build" "Timber"
 ui_expect_new "Command Timber started" "Timber started"
 ui_expect_new "Timber Place On: 1 face" "the face is where it goes"
 for _ in $(seq 1 50); do
@@ -251,7 +252,7 @@ ui_step "Escape (clear the selection)"     ui_key Escape
 
 echo "--- BUILD > Panel on the member's face"
 right_click face "$member" O2 "${member%%.*}:part("
-ui_step "BUILD > Panel"                    ui_menu_choose "BUILD" "Panel"
+ui_step "Build > Panel"                    ui_menu_choose "Build" "Panel"
 ui_expect_new "Command Panel started" "Panel started"
 ui_expect_new "Panel Frame Face: 1 face" "the face is its frame face"
 ui_step "Cancel (Esc)"                     ui_key Escape

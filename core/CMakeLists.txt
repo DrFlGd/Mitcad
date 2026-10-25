@@ -373,6 +373,17 @@ if(BUILD_TESTING)
   endfunction()
 
   mitcad_cargo_test(core.model mitcad-model)
+  # Slicers' print settings in real 3MF projects under MITCAD_3MF_CORPUS
+  # (mitcad#640; core/model/src/print_files/corpus.rs, an ignored test that
+  # core.model leaves out): each project an index.tsv lists imported as the
+  # application imports it, checked against its row, exported in the same
+  # dialect and read back; skipped without the corpus.
+  add_test(NAME 3mf.corpus
+    COMMAND "${CMAKE_COMMAND}" "-DLIST=${CMAKE_CURRENT_BINARY_DIR}/cargo-test/tests-debug.tsv"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cargo-tests.cmake" -- run mitcad-model print_files::corpus:: --ignored
+            --nocapture)
+  set_tests_properties(3mf.corpus PROPERTIES FIXTURES_REQUIRED cargo_tests_debug
+    SKIP_REGULAR_EXPRESSION "3mf corpus: skipped")
 
   # The .f3d import on synthetic dumps with the mock kernel (T1).
   mitcad_cargo_test(core.import mitcad-import)

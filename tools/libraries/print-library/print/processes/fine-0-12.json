@@ -1,0 +1,18 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "profile": {
+    "id": "fine-0-12",
+    "name": "Fine 0.12 mm (0.4 nozzle)",
+    "kind": "process",
+    "values": {
+      "layer_height": 0.12,
+      "first_layer_height": 0.2,
+      "perimeters": 3,
+      "top_solid_layers": 7,
+      "bottom_solid_layers": 5,
+      "fill_density": 15
+    },
+    "version": 1
+  }
+}

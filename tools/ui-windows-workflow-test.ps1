@@ -96,7 +96,7 @@ Move-Item -Force 'ARGS.part' 'ARGS'
 '@ -creplace 'ARGS', $slicerArgs)
 $powershell = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -replace '\\', '/'
 Add-Content -Encoding ascii (Join-Path $script:UiSettings 'Mitcad\Mitcad.ini') @(
-  '[print]', 'slicerName=Fake slicer', "slicerProgram=$powershell",
+  '[print]', 'slicerName=Fake slicer', "slicerProgram=$powershell", 'format=stl',
   "slicerArguments=-NoProfile, -ExecutionPolicy, Bypass, -File, $($slicerScript -replace '\\', '/')")
 # The app logs paths with forward slashes.
 $workLogged = $work -replace '\\', '/'
@@ -359,7 +359,7 @@ Ui-Step '3D print (Shift+F9)'            { Ui-Key 'shift+F9' }
 Ui-ExpectNew '3D Print panel: 1 visible: Body1; format stl' 'the panel, STL remembered'
 Ui-ExpectNew 'Panel 3D Print input format at ' 'the panel laid out'
 Ui-Step 'format 3MF (wheel)'             { Ui-WheelLogged 'Panel 3D Print input format' -1 }
-Ui-ExpectNew '3D Print: Format = 3MF, one object with parts' 'the format 3MF chosen'
+Ui-ExpectNew '3D Print: Format = 3MF' 'the format 3MF chosen'
 Ui-Step 'send (Enter)'                   { Ui-Key 'Return' }
 Ui-ExpectNew '3D Print: 1 bodies as 3mf (high) to ' 'the body written as 3MF'
 $threeMf = Join-Path $printFolder 'block.3mf'

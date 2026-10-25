@@ -26,6 +26,8 @@
 #include "framework/Command.hpp"
 #include "framework/TestSync.hpp"
 
+#include "../platform/MacDialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -94,6 +96,7 @@ MotionStudyDialog::MotionStudyDialog(MotionStudyHost host, const QString& study,
   auto* transport = new QHBoxLayout;
   m_play = new QPushButton(tr("&Play"), this);
   m_play->setCheckable(true);
+  mac::auxiliaryButton(m_play);
   m_loop = new QCheckBox(tr("&Loop"), this);
   m_speed = new QComboBox(this);
   for (const double speed : {0.25, 0.5, 1.0, 2.0, 4.0}) {
@@ -113,6 +116,7 @@ MotionStudyDialog::MotionStudyDialog(MotionStudyHost host, const QString& study,
   m_keys->setHeaderLabels({tr("Joint"), tr("Motion"), tr("Keys (step: value)"), tr("At step")});
   m_keys->header()->setStretchLastSection(false);
   m_keys->header()->setSectionResizeMode(2, QHeaderView::Stretch);
+  mac::styleListTree(m_keys);
   layout->addWidget(m_keys, 1);
 
   auto* keying = new QHBoxLayout;
@@ -129,8 +133,19 @@ MotionStudyDialog::MotionStudyDialog(MotionStudyHost host, const QString& study,
   keying->addWidget(m_motion, 1);
   keying->addWidget(valueLabel);
   keying->addWidget(m_value, 1);
+  mac::auxiliaryButton(add);
+  mac::auxiliaryButton(remove);
+  mac::styleListButtons(add, remove);
+#ifdef Q_OS_MACOS
+  auto* keyButtons = new QHBoxLayout;
+  keyButtons->setSpacing(0);
+  keyButtons->addWidget(add);
+  keyButtons->addWidget(remove);
+  keying->addLayout(keyButtons);
+#else
   keying->addWidget(add);
   keying->addWidget(remove);
+#endif
   layout->addLayout(keying);
 
   m_message = new QLabel(this);
@@ -141,6 +156,7 @@ MotionStudyDialog::MotionStudyDialog(MotionStudyHost host, const QString& study,
   QPushButton* keepButton = buttons->addButton(tr("Keep Posi&tion"), QDialogButtonBox::AcceptRole);
   keepButton->setToolTip(tr("Plays the study to the shown step in the design: one undo step"));
   buttons->addButton(QDialogButtonBox::Close);
+  mac::styleDialogButtons(buttons, keepButton, true);
   layout->addWidget(buttons);
 
   m_timer = new QTimer(this);
@@ -190,6 +206,7 @@ MotionStudyDialog::MotionStudyDialog(MotionStudyHost host, const QString& study,
   }
   showStudy(m_study);
   resize(560, 420);
+  mac::styleDialog(this);
 }
 
 MotionStudyDialog::~MotionStudyDialog() = default;

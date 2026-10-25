@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Selection owners in both Qt layouts, using the actual GUI and MCP bridge.
+# check-all sources: app/framework core/model core/ffi tools/cli
+"""Selection owners and bounded face gaps in both Qt layouts, through MCP.
 
 Run in the approved platform VM (Linux under Xvfb):
   python3 ui-selection-owners-test.py <app> <cli> <output> [qt-bin]
@@ -49,8 +50,17 @@ def run(app, cli, out, qt_bin):
                 ("nested-face", "(?s)" + nested + r"\nArea:"),
                 ("nested-body", "(?s)" + nested + r"\nArea:.*\nVolume:"),
                 ("mixed", "(?s)" + nested + r"\nLength:.*Body: Root Plate\nLength:"),
+                ("pair-parallel", r"(?s)Body: Gap Base\nArea:.*Body: Gap Plate\nArea:.*Between faces\nDistance: 5 mm"),
+                ("pair-angled", r"(?s)Body: Gap Base\nArea:.*Body: Gap Plate\nArea:.*Minimum distance: 5 mm\nMaximum distance: 17 mm"),
+                ("pair-moved", r"(?s)Minimum distance: 8 mm\nMaximum distance: 20 mm"),
+                ("pair-touching", r"(?s)Minimum distance: 0 mm\nMaximum distance: 12 mm"),
+                ("pair-unit", r"(?s)Minimum distance: 0\.5 cm\nMaximum distance: 1\.7 cm"),
+                ("pair-unavailable", r"(?s)\A(?!.*Maximum distance: [0-9]).*Minimum distance:.*Maximum distance: unavailable"),
+                ("pair-single", r"(?s)\A(?!.*Between faces).*Body: Gap Base\nArea:"),
+                ("pair-cleared", r"(?s)\A(?!.*Between faces)(?!.*Body:)"),
             ]
             script = "expect-ever 'View area'\n"
+            script += "expect-file '${MITCAD_SELECTION_WORK}/framed' 60\nwait-idle 30\n"
             for name, expected in cases:
                 script += "expect-file '${MITCAD_SELECTION_WORK}/" + name + "' 60\n"
                 script += "expect-selection-info '" + expected + "'\n"
@@ -107,7 +117,54 @@ def run(app, cli, out, qt_bin):
                 selections = [[root_edge], [edge], [entity("face", child, occurrence)],
                               [entity("body", child, occurrence)],
                               [edge, root_edge]]
+
+                def plate(name, translation):
+                    previous = {body["uid"] for body in query({"query": "bodies"})}
+                    command({"cmd": "create_component", "name": name,
+                             "transform": {"translation": translation}})
+                    command({"cmd": "add_feature", "def": {
+                        "type": "box", "plane": "xy", "corner": [0, 0],
+                        "length": 20, "width": 20, "height": 1, "operation": "new_body"}})
+                    body = next(body["uid"] for body in query({"query": "bodies"})
+                                if body["uid"] not in previous)
+                    command({"cmd": "rename_body", "uid": body, "name": name})
+                    command({"cmd": "activate_component", "component": "C0"})
+                    placed = next(row["uid"] for row in query({"query": "components"})["occurrences"]
+                                  if row["name"] == name + ":1")
+                    face = next(name for row in query({"query": "faces", "body": body})
+                                for name in row["names"] if name.endswith(":bottom"))
+                    return {"kind": "face", "owner": body, "name": face, "occurrence": placed}
+
+                base = plate("Gap Base", [50, 10, 0])
+                other = plate("Gap Plate", [50, 10, 5])
+                before_cylinder = {body["uid"] for body in query({"query": "bodies"})}
+                command({"cmd": "add_feature", "def": {
+                    "type": "cylinder", "plane": "xy", "center": [90, 10],
+                    "diameter": 4, "height": 10, "operation": "new_body"}})
+                cylinder = next(body["uid"] for body in query({"query": "bodies"})
+                                if body["uid"] not in before_cylinder)
+                round_face = next(name for row in query({"query": "faces", "body": cylinder})
+                                  for name in row["names"] if name.endswith(":side0"))
+                curved = {"kind": "face", "owner": cylinder, "name": round_face, "occurrence": ""}
+                selections += [[base, other]] * 5 + [[base, curved], [base], []]
+                # view.* MCP replies wait for the camera animation to end.
+                # Frame the complete synthetic scene, then release the driver.
+                bridge.tool("ui_command", {"document": document, "id": "view.fit"})
+                (work / "framed").touch()
+
+                def move_plate(height):
+                    command({"cmd": "set_occurrence_transform", "occurrence": other["occurrence"],
+                             "transform": {"translation": [50, 10, height],
+                                           "rotation": {"axis": [0, 1, 0], "angle": -0.6435011087932844}}})
+
                 for index, ((name, _), selected) in enumerate(zip(cases, selections)):
+                    if name in ("pair-angled", "pair-moved", "pair-touching", "pair-unit"):
+                        move_plate({"pair-angled": 5, "pair-moved": 8,
+                                    "pair-touching": 0, "pair-unit": 5}[name])
+                    if name == "pair-unit":
+                        command({"cmd": "set_units", "length": "cm"})
+                    elif name == "pair-unavailable":
+                        command({"cmd": "set_units", "length": "mm"})
                     bridge.tool("ui_select", {"document": document, "items": selected})
                     (work / name).touch()
                     screenshot = work / (name + ".png")
@@ -128,7 +185,7 @@ def run(app, cli, out, qt_bin):
                 completed = "TestDriver: quit (%d of %d steps)" % (step_count, step_count)
                 MCP.check(gui.process.returncode == 0 and completed in gui.log_text()
                           and "TestDriver: FAIL" not in gui.log_text(), gui.log_text())
-                print("PASS:", chrome, "root, nested, multi-item selection owners")
+                print("PASS:", chrome, "selection owners, placed parallel/angled face gaps, refresh, units, unavailable and clearing")
             finally:
                 if bridge is not None:
                     bridge.stop()

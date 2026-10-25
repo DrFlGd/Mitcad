@@ -580,7 +580,11 @@ fn previews_report_without_committing() {
         report,
         json!({"uid": "F3", "name": "Extrude2", "status": "ok", "error": null, "warnings": [],
                "bodies": [{"uid": "F2.b0", "name": "Body1", "changed": true}],
-               "removed": [], "tool": true, "sheet_states": []})
+               "removed": [], "tool": true, "sheet_states": [],
+               // The tool where its component is: the root, unplaced (mitcad#636).
+               "tool_instances": [{"occurrence": "", "visible": true,
+                   "transform": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
+                                 [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]}]})
     );
     assert_eq!(query(&doc, json!({"query": "document"}))["features"], 2);
     let edit = json!({"cmd": "edit_feature", "uid": "F2", "def": {"type": "extrude",

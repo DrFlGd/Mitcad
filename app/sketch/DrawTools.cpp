@@ -74,6 +74,88 @@ namespace {
 
 using Style = ToolPreview::Style;
 
+// Feed drawing geometry through the placed-dimension renderer, so the
+// extension lines and arrows describe exactly the value being entered.
+void fieldCurve(ToolPreview& preview, const QString& field, const QString& type,
+                const Curve2& curve, const V2& text) {
+  ToolPreview::FieldDimension value;
+  value.field = field;
+  value.dimension.type = type;
+  value.dimension.text = text;
+  const QString key = type == QStringLiteral("length") ? QStringLiteral("line")
+                     : type.endsWith(QStringLiteral("_radius")) ? QStringLiteral("ellipse")
+                                                                 : QStringLiteral("curve");
+  value.dimension.json.insert(key, QStringLiteral("preview"));
+  CurveData geometry;
+  geometry.id = QStringLiteral("preview");
+  geometry.type = curve.type == Curve2::Type::Line ? QStringLiteral("line")
+                  : curve.type == Curve2::Type::Ellipse ? QStringLiteral("ellipse") : QStringLiteral("circle");
+  geometry.curve = curve;
+  value.model.curves.push_back(geometry);
+  preview.fieldDimensions.push_back(std::move(value));
+}
+
+void fieldLength(ToolPreview& preview, const SketchController& c, const QString& field,
+                 const V2& a, const V2& b, double offset = 36.0) {
+  if (dist(a, b) <= 1e-9) {
+    return;
+  }
+  const V2 direction = unit(b - a);
+  const V2 text = (a + b) / 2.0 + perp(direction) * (offset * c.pixel());
+  fieldCurve(preview, field, QStringLiteral("length"), Curve2::line(a, b), text);
+}
+
+void fieldRadius(ToolPreview& preview, const SketchController& c, const QString& field,
+                 const V2& center, double radius, const V2& direction, bool diameter = false) {
+  if (radius <= 1e-9) {
+    return;
+  }
+  fieldCurve(preview, field, diameter ? QStringLiteral("diameter") : QStringLiteral("radius"),
+             Curve2::circle(center, radius), center + unit(direction) * (radius + 65.0 * c.pixel()));
+}
+
+void fieldAngle(ToolPreview& preview, const SketchController& c, const V2& center,
+                const V2& first, const V2& second, double radius) {
+  if (std::abs(cross(first, second)) < 1e-9) {
+    return;
+  }
+  ToolPreview::FieldDimension value;
+  value.field = QStringLiteral("angle");
+  value.dimension.type = QStringLiteral("angle");
+  value.dimension.json = {{QStringLiteral("a"), QStringLiteral("a")},
+                          {QStringLiteral("b"), QStringLiteral("b")},
+                          {QStringLiteral("reverse_a"), false},
+                          {QStringLiteral("reverse_b"), false}};
+  value.dimension.measured = std::acos(std::clamp(dot(unit(first), unit(second)), -1.0, 1.0));
+  value.dimension.text = center + unit(unit(first) + unit(second)) * std::max(radius, 85.0 * c.pixel());
+  for (const auto& item : {std::pair{QStringLiteral("a"), first}, std::pair{QStringLiteral("b"), second}}) {
+    CurveData line;
+    line.id = item.first;
+    line.type = QStringLiteral("line");
+    line.curve = Curve2::line(center, center + item.second);
+    value.model.curves.push_back(line);
+  }
+  preview.fieldDimensions.push_back(std::move(value));
+}
+
+void fieldSweep(ToolPreview& preview, const SketchController& c, const Curve2& arc, double angle) {
+  ToolPreview::FieldDimension value;
+  value.field = QStringLiteral("angle");
+  // Arc-length dimensions have the same sector graphics, including a
+  // reflex sector, whereas a two-line angle measures the smaller angle.
+  value.dimension.type = QStringLiteral("arc_length");
+  value.dimension.previewSweep = angle;
+  value.dimension.json = {{QStringLiteral("arc"), QStringLiteral("preview")}};
+  value.dimension.text = arc.center + polar(arc.start + angle / 2.0,
+                                           std::max(arc.radius + 40.0 * c.pixel(), 85.0 * c.pixel()));
+  CurveData geometry;
+  geometry.id = QStringLiteral("preview");
+  geometry.type = QStringLiteral("arc");
+  geometry.curve = arc;
+  value.model.curves.push_back(geometry);
+  preview.fieldDimensions.push_back(std::move(value));
+}
+
 double screenDistance(const QPointF& a, const QPointF& b) {
   return std::hypot(a.x() - b.x(), a.y() - b.y());
 }
@@ -260,6 +342,16 @@ public:
         previewAuto(preview, m_c, *m_plan, (m_start + m_end) / 2.0, V2{});
       }
       preview.line(m_start, m_end);
+      fieldLength(preview, m_c, QStringLiteral("length"), m_start, m_end);
+      if (m_previous.isEmpty()) {
+        const double angle = m_c.fieldValue(QStringLiteral("angle")).value_or(displayAngle());
+        if (std::abs(angle) > 1e-9) {
+          fieldSweep(preview, m_c, Curve2::arc(m_start, dist(m_start, m_end) * 0.4,
+                                              0.0, angleOf(m_end - m_start)), angle);
+        }
+      } else {
+        fieldAngle(preview, m_c, m_start, m_prevDir, m_end - m_start, dist(m_start, m_end) * 0.65);
+      }
       preview.points.push_back(m_end);
       if (m_inference) {
         preview.glyph = m_inference->type;
@@ -699,9 +791,14 @@ public:
     const auto corners = cornersFor(cursor());
     if (corners.empty()) {
       preview.line(click(0), cursor());
+      fieldLength(preview, m_c, QStringLiteral("length"), click(0), cursor());
       return;
     }
     preview.add({corners.begin(), corners.end()}, Style::Draw, true);
+    if (m_mode != QStringLiteral("three_point")) {
+      fieldLength(preview, m_c, QStringLiteral("width"), corners[2], corners[3], -36.0);
+    }
+    fieldLength(preview, m_c, QStringLiteral("height"), corners[1], corners[2], -68.0);
     if (m_mode == QStringLiteral("center")) {
       preview.line(corners[0], corners[2], Style::Construction);
     }
@@ -972,6 +1069,8 @@ public:
       if (!pickingLines()) {
         if (const auto c = tangentCircle(m_snap.at)) {
           preview.curve(Curve2::circle(c->first, c->second), step());
+          fieldRadius(preview, m_c, QStringLiteral("diameter"), c->first, c->second,
+                       m_snap.at - c->first, true);
         }
       }
       return;
@@ -987,6 +1086,8 @@ public:
         previewAuto(preview, m_c, *plan, c->center, c->center);
       }
       preview.curve(Curve2::circle(c->center, c->radius), step());
+      fieldRadius(preview, m_c, QStringLiteral("diameter"), c->center, c->radius,
+                   cursor() - c->center, true);
     } else {
       preview.line(click(clicked() - 1), cursor(), Style::Guide);
     }
@@ -1328,12 +1429,23 @@ public:
         previewAuto(preview, m_c, *plan, arc->center, arc->center);
       }
       preview.curve(*arc, step());
+      if (m_mode == QStringLiteral("center") && clicked() == 2 &&
+          std::abs(m_c.fieldValue(QStringLiteral("angle")).value_or(m_sweep)) > 1e-9) {
+        const double angle = m_c.fieldValue(QStringLiteral("angle")).value_or(std::abs(m_sweep));
+        const double start = angleOf(click(1) - arc->center);
+        fieldSweep(preview, m_c, Curve2::arc(arc->center, arc->radius, start, angleOf(cursor() - arc->center)),
+                    m_sweep >= 0 ? angle : -angle);
+      }
     } else {
       preview.line(click(clicked() - 1), cursor(), Style::Guide);
     }
     if (m_mode == QStringLiteral("center")) {
       preview.line(click(0), click(clicked() == 1 ? 0 : 1), Style::Guide);
       preview.line(click(0), cursor(), Style::Guide);
+      if (clicked() == 1) {
+        fieldRadius(preview, m_c, QStringLiteral("radius"), click(0), dist(click(0), cursor()),
+                     cursor() - click(0));
+      }
     }
   }
 
@@ -1538,6 +1650,14 @@ public:
       return;
     }
     const auto shape = corners(cursor());
+    if (clicked() == 1) {
+      if (m_mode == QStringLiteral("edge")) {
+        fieldLength(preview, m_c, QStringLiteral("length"), click(0), cursor());
+      } else {
+        fieldRadius(preview, m_c, QStringLiteral("radius"), click(0), dist(click(0), cursor()),
+                     cursor() - click(0));
+      }
+    }
     if (shape.empty()) {
       preview.line(click(0), cursor(), Style::Guide);
       return;
@@ -1720,6 +1840,9 @@ public:
     }
     if (clicked() < clicks() - 1) {
       preview.line(click(clicked() - 1), cursor(), Style::Guide);
+      if (!arcSlot() && clicked() == 1) {
+        fieldLength(preview, m_c, QStringLiteral("length"), click(0), cursor());
+      }
       if (arcSlot() && clicked() == 2) {
         if (const auto axis = axisArc(cursor())) {
           preview.curve(*axis, step(), Style::Construction);
@@ -1734,6 +1857,11 @@ public:
         return;
       }
       preview.curve(*axis, step(), Style::Construction);
+      const double middle = axis->start + sweep(axis->start, axis->end) / 2.0;
+      const V2 radial = polar(middle);
+      fieldLength(preview, m_c, QStringLiteral("width"),
+                   axis->center + radial * (axis->radius - w / 2.0),
+                   axis->center + radial * (axis->radius + w / 2.0), 68.0);
       for (const double r : {axis->radius - w / 2.0, axis->radius + w / 2.0}) {
         if (r > 0.0) {
           preview.curve(Curve2::arc(axis->center, r, axis->start, axis->end), step());
@@ -1750,6 +1878,7 @@ public:
     }
     const V2 u = unit(ends->second - ends->first);
     const V2 n = perp(u) * (w / 2.0);
+    fieldLength(preview, m_c, QStringLiteral("width"), ends->second - n, ends->second + n, -68.0);
     preview.line(ends->first + n, ends->second + n);
     preview.line(ends->first - n, ends->second - n);
     const double a = angleOf(n);
@@ -1947,6 +2076,28 @@ public:
       return;
     }
     preview.line(click(0), clicked() == 1 ? cursor() : click(1), Style::Guide);
+    if (clicked() == 1) {
+      const double radius = dist(click(0), cursor());
+      if (radius > 1e-9) {
+        Curve2 e;
+        e.type = Curve2::Type::Ellipse;
+        e.center = click(0);
+        e.radius = radius;
+        e.rotation = angleOf(cursor() - click(0));
+        // Beside the axis it measures, not on it: the axis ends where the
+        // next click goes (mitcad#671).
+        fieldCurve(preview, QStringLiteral("major"), QStringLiteral("major_radius"), e,
+                    (click(0) + cursor()) / 2.0 + perp(unit(cursor() - click(0))) * (36.0 * m_c.pixel()));
+      }
+    } else {
+      const V2 n = perp(unit(click(1) - click(0)));
+      if (const auto e = ellipse(cursor())) {
+        const QString type = minor(cursor()) > dist(click(0), click(1))
+                                 ? QStringLiteral("major_radius") : QStringLiteral("minor_radius");
+        fieldCurve(preview, QStringLiteral("minor"), type, *e,
+                    click(0) + n * (minor(cursor()) / 2.0) + perp(n) * (36.0 * m_c.pixel()));
+      }
+    }
     if (clicked() == 2) {
       if (const auto e = ellipse(cursor())) {
         preview.curve(*e, step());
@@ -2360,6 +2511,10 @@ public:
       return;
     }
     preview.points.push_back(m_at);
+    if (m_placed) {
+      const double height = m_c.fieldValue(QStringLiteral("height")).value_or(kDefaultHeight);
+      fieldLength(preview, m_c, QStringLiteral("height"), m_at, m_at + V2{0, height}, 68.0);
+    }
     const V2 corner = m_pressed ? m_cursor : m_diagonal;
     if (m_pressed || m_framed) {
       preview.add({m_at, V2{corner.x, m_at.y}, corner, V2{m_at.x, corner.y}}, ToolPreview::Style::Construction,

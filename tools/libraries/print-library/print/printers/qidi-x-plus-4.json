@@ -1,0 +1,18 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "profile": {
+    "id": "qidi-x-plus-4",
+    "name": "QIDI X-Plus 4 (0.4 nozzle)",
+    "kind": "printer",
+    "values": {
+      "bed_shape": [[0, 0], [305, 0], [305, 305], [0, 305]],
+      "max_print_height": 280,
+      "nozzle_diameter": 0.4,
+      "filament_slots": 1,
+      "printer_model": {"qidi_studio": "X-Plus 4"},
+      "printer_settings_id": {"qidi_studio": "X-Plus 4 0.4 nozzle"}
+    },
+    "version": 1
+  }
+}

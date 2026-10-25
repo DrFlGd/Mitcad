@@ -1643,3 +1643,61 @@ fn a_part_of_a_derived_offset_cannot_be_removed_alone() {
     );
     assert_eq!(sketch(&d)["offsets"], json!([]));
 }
+
+/// Copies are bound through their neighbours (mitcad#677): every copy of a
+/// 3 x 4 pattern, symmetric in the first direction, still follows the
+/// originals at its own offset, and the copies add no freedom.
+#[test]
+fn copies_bound_through_their_neighbours_follow_the_originals() {
+    let mut d = with_sketch();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": [0, 0], "end": [4, 1]}),
+    ); // c1 on p2, p3
+    command(
+        &mut d,
+        json!({"cmd": "sketch.circle", "sketch": "F1", "mode": "center", "center": [2, 5],
+               "radius": 1}),
+    ); // c4 on p5
+    command(
+        &mut d,
+        json!({"cmd": "sketch.rectangular_pattern", "sketch": "F1", "entities": ["c1", "c4"],
+               "count": [3, 4], "spacing": [20, 15], "symmetric": [true, false]}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "sketch.drag", "sketch": "F1", "entity": "p5", "to": [3, 7]}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "sketch.drag", "sketch": "F1", "entity": "c4", "radius": 2}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "sketch.drag", "sketch": "F1", "entity": "p3", "to": [6, -2]}),
+    );
+    let s = sketch(&d);
+    assert_eq!(s["dof"], 7, "the line's 4 and the circle's 3");
+    assert_eq!(s["redundant"], json!([]));
+    let copies = s["patterns"][0]["copies"].as_array().unwrap();
+    assert_eq!(copies.len(), 11);
+    let radius = |id: &str| match curve(&s, id) {
+        Curve2::Circle { radius, .. } => radius,
+        other => panic!("{id}: {other:?}"),
+    };
+    for copy in copies {
+        let index = &copy["index"];
+        let by = [
+            20.0 * (index[0].as_f64().unwrap() - 1.0),
+            15.0 * index[1].as_f64().unwrap(),
+        ];
+        for p in ["p2", "p3", "p5"] {
+            let o = at(&s, p);
+            let c = at(&s, copy["entities"][p].as_str().unwrap());
+            assert!(near(c, [o[0] + by[0], o[1] + by[1]]), "{index} {p}: {c:?}");
+        }
+        let r = radius(copy["entities"]["c4"].as_str().unwrap());
+        assert!(close(r, radius("c4"), 1e-9), "{index}: radius {r}");
+    }
+    assert!(close(radius("c4"), 2.0, 1e-9));
+}

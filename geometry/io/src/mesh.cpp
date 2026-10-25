@@ -2,8 +2,14 @@
 #include "mitcad/io/mesh.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <unordered_map>
 #include <utility>
 
@@ -16,29 +22,46 @@
 #include <BRepMesh_DiscretAlgoFactory.hxx>
 #include <BRepMesh_DiscretFactory.hxx>
 #include <BRepMesh_EdgeDiscret.hxx>
+#include <BRepMesh_DelabellaMeshAlgoFactory.hxx>
+#include <BRepMesh_FaceDiscret.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
+#include <BRepMesh_MeshAlgoFactory.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_CurveRepresentation.hxx>
+#include <BRep_TEdge.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
+#include <Geom2d_Curve.hxx>
+#include <Geom_Curve.hxx>
+#include <Geom_Plane.hxx>
+#include <Geom_Surface.hxx>
+#include <IMeshData_Curve.hxx>
 #include <IMeshData_Edge.hxx>
 #include <IMeshData_Face.hxx>
 #include <IMeshData_Model.hxx>
 #include <IMeshData_PCurve.hxx>
 #include <IMeshData_Status.hxx>
+#include <IMeshData_Wire.hxx>
 #include <IMeshTools_CurveTessellator.hxx>
+#include <IMeshTools_MeshAlgo.hxx>
+#include <IMeshTools_MeshAlgoFactory.hxx>
 #include <IMeshTools_Parameters.hxx>
+#include <OSD_Environment.hxx>
+#include <TCollection_AsciiString.hxx>
 #include <Message_ProgressScope.hxx>
 #include <OSD_Parallel.hxx>
 #include <Poly_PolygonOnTriangulation.hxx>
 #include <Precision.hxx>
 #include <Standard_Failure.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <gp_Circ.hxx>
 #include <gp_Cone.hxx>
 #include <gp_Cylinder.hxx>
@@ -59,11 +82,11 @@ constexpr double kDegree = kPi / 180.0;
 MeshOptions MeshOptions::from(Refinement refinement) {
   switch (refinement) {
   case Refinement::Low:
-    return MeshOptions{0.1, 30.0 * kDegree, false, 5000};
+    return MeshOptions{0.1, 30.0 * kDegree, false, 5000, false};
   case Refinement::Medium:
-    return MeshOptions{0.03, 15.0 * kDegree, false, 20000};
+    return MeshOptions{0.03, 15.0 * kDegree, false, 20000, false};
   case Refinement::High:
-    return MeshOptions{0.01, 8.0 * kDegree, false, 50000};
+    return MeshOptions{0.01, 8.0 * kDegree, false, 50000, false};
   }
   return MeshOptions{};
 }
@@ -329,6 +352,120 @@ void coarsen_round_edges(const occ::handle<IMeshData_Model>& model, const IMeshT
       !parameters.InParallel || model->EdgesNb() < 8);
 }
 
+using Clock = std::chrono::steady_clock;
+
+double milliseconds_since(Clock::time_point start) {
+  return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+
+} // namespace
+
+const char* surface_name(GeomAbs_SurfaceType type) {
+  switch (type) {
+  case GeomAbs_Plane:
+    return "plane";
+  case GeomAbs_Cylinder:
+    return "cylinder";
+  case GeomAbs_Cone:
+    return "cone";
+  case GeomAbs_Sphere:
+    return "sphere";
+  case GeomAbs_Torus:
+    return "torus";
+  case GeomAbs_BezierSurface:
+    return "bezier";
+  case GeomAbs_BSplineSurface:
+    return "bspline";
+  case GeomAbs_SurfaceOfRevolution:
+    return "revolution";
+  case GeomAbs_SurfaceOfExtrusion:
+    return "extrusion";
+  case GeomAbs_OffsetSurface:
+    return "offset";
+  default:
+    return "other";
+  }
+}
+
+namespace {
+
+// The faces' triangulation times of one meshing, from BRepMesh's threads.
+struct FaceTimes {
+  std::mutex mutex;
+  std::vector<MeshReport::FaceTime> faces;
+};
+
+// BRepMesh's algorithm for a face, timed (MeshReport::slowest).
+class TimedAlgo : public IMeshTools_MeshAlgo {
+public:
+  TimedAlgo(occ::handle<IMeshTools_MeshAlgo> inner, FaceTimes& times) : m_inner(std::move(inner)), m_times(times) {}
+
+  void Perform(const IMeshData::IFaceHandle& face, const IMeshTools_Parameters& parameters,
+               const Message_ProgressRange& range) override {
+    const Clock::time_point start = Clock::now();
+    try {
+      m_inner->Perform(face, parameters, range);
+    } catch (...) {
+      record(face, start); // BRepMesh marks the face failed
+      throw;
+    }
+    record(face, start);
+  }
+
+private:
+  void record(const IMeshData::IFaceHandle& face, Clock::time_point start) {
+    MeshReport::FaceTime time;
+    time.milliseconds = milliseconds_since(start);
+    time.face = face->GetFace();
+    time.surface = surface_name(face->GetSurface()->GetType());
+    time.wires = face->WiresNb();
+    for (int w = 0; w < face->WiresNb(); ++w) {
+      const IMeshData::IWireHandle& wire = face->GetWire(w);
+      for (int e = 0; e < wire->EdgesNb(); ++e) {
+        time.points += std::max(0, wire->GetEdge(e)->GetCurve()->ParametersNb() - 1);
+      }
+    }
+    const std::lock_guard<std::mutex> lock(m_times.mutex);
+    m_times.faces.push_back(std::move(time));
+  }
+
+  occ::handle<IMeshTools_MeshAlgo> m_inner;
+  FaceTimes& m_times;
+};
+
+// The faces' algorithms: BRepMesh_Context's default (CSF_MeshAlgo), with
+// planes through Delabella's base triangulation when `fast_planes`
+// (MeshOptions::fast_planes), each timed when `times` is given.
+class FaceAlgoFactory : public IMeshTools_MeshAlgoFactory {
+public:
+  FaceAlgoFactory(bool fast_planes, FaceTimes* times) : m_times(times) {
+    TCollection_AsciiString algorithm = OSD_Environment("CSF_MeshAlgo").Value();
+    algorithm.LowerCase();
+    if (algorithm == "delabella" || algorithm == "1") {
+      m_default = new BRepMesh_DelabellaMeshAlgoFactory();
+    } else {
+      m_default = new BRepMesh_MeshAlgoFactory();
+    }
+    m_planes = fast_planes ? occ::handle<IMeshTools_MeshAlgoFactory>(new BRepMesh_DelabellaMeshAlgoFactory())
+                           : m_default;
+  }
+
+  occ::handle<IMeshTools_MeshAlgo> GetAlgo(const GeomAbs_SurfaceType type,
+                                           const IMeshTools_Parameters& parameters) const override {
+    const occ::handle<IMeshTools_MeshAlgo> algorithm =
+        (type == GeomAbs_Plane ? m_planes : m_default)->GetAlgo(type, parameters);
+    if (algorithm.IsNull() || m_times == nullptr) {
+      return algorithm;
+    }
+    return new TimedAlgo(algorithm, *m_times);
+  }
+
+private:
+  occ::handle<IMeshTools_MeshAlgoFactory> m_default;
+  occ::handle<IMeshTools_MeshAlgoFactory> m_planes;
+  FaceTimes* m_times;
+};
+
 // BRepMesh's own context, with the edges of large cylinders and cones
 // discretized at their faces' floor (coarsen_round_edges) and each face's
 // deviation raised to its floor once the healer has computed the
@@ -336,25 +473,42 @@ void coarsen_round_edges(const occ::handle<IMeshData_Model>& model, const IMeshT
 // triangulation that meets it). The floors are computed over the faces in
 // parallel when the meshing is (each task only reads its own face and sets
 // its own deviation); a face whose floor cannot be computed keeps
-// BRepMesh's deviation.
+// BRepMesh's deviation. With a report, each phase is timed and so is each
+// face (MeshReport).
 class BoundedContext : public BRepMesh_Context {
 public:
-  explicit BoundedContext(std::size_t face_triangles) : m_faceTriangles(face_triangles) {}
+  BoundedContext(std::size_t face_triangles, bool fast_planes, MeshReport* report)
+      : m_faceTriangles(face_triangles), m_report(report) {
+    if (fast_planes || m_report != nullptr) {
+      SetFaceDiscret(new BRepMesh_FaceDiscret(new FaceAlgoFactory(fast_planes, m_report ? &m_times : nullptr)));
+    }
+  }
+
+  bool BuildModel() override {
+    const Clock::time_point start = Clock::now();
+    const bool done = BRepMesh_Context::BuildModel();
+    add(&MeshReport::build, start);
+    return done;
+  }
 
   bool DiscretizeEdges() override {
+    const Clock::time_point start = Clock::now();
     if (!BRepMesh_Context::DiscretizeEdges()) {
       return false;
     }
     coarsen_round_edges(GetModel(), GetParameters(), m_faceTriangles);
+    add(&MeshReport::edges, start);
     return true;
   }
 
   bool HealModel() override {
+    const Clock::time_point start = Clock::now();
     if (!BRepMesh_Context::HealModel()) {
       return false;
     }
     const occ::handle<IMeshData_Model>& model = GetModel();
     if (m_faceTriangles == 0 || model.IsNull()) {
+      add(&MeshReport::heal, start);
       return true;
     }
     const std::size_t limit = m_faceTriangles;
@@ -372,25 +526,113 @@ public:
           }
         },
         !GetParameters().InParallel || model->FacesNb() < 8);
+    add(&MeshReport::heal, start);
     return true;
   }
 
+  bool PreProcessModel() override {
+    const Clock::time_point start = Clock::now();
+    const bool done = BRepMesh_Context::PreProcessModel();
+    add(&MeshReport::check, start);
+    return done;
+  }
+
+  bool DiscretizeFaces(const Message_ProgressRange& range) override {
+    const Clock::time_point start = Clock::now();
+    const bool done = BRepMesh_Context::DiscretizeFaces(range);
+    add(&MeshReport::triangulate, start);
+    return done;
+  }
+
+  bool PostProcessModel() override {
+    const Clock::time_point start = Clock::now();
+    const bool done = BRepMesh_Context::PostProcessModel();
+    add(&MeshReport::write, start);
+    count();
+    return done;
+  }
+
 private:
+  void add(double MeshReport::*phase, Clock::time_point start) {
+    if (m_report != nullptr) {
+      m_report->*phase += milliseconds_since(start);
+    }
+  }
+
+  // The faces kept, meshed and failed, by surface kind, and the slowest.
+  void count() {
+    const occ::handle<IMeshData_Model>& model = GetModel();
+    if (m_report == nullptr || model.IsNull()) {
+      return;
+    }
+    std::map<std::string, std::size_t> surfaces;
+    for (int i = 0; i < model->FacesNb(); ++i) {
+      const IMeshData::IFaceHandle& face = model->GetFace(i);
+      ++m_report->faces;
+      TopLoc_Location location;
+      if (face->IsSet(IMeshData_Reused)) {
+        ++m_report->kept;
+      } else if (face->IsSet(IMeshData_Failure) || BRep_Tool::Triangulation(face->GetFace(), location).IsNull()) {
+        ++m_report->failed;
+      } else {
+        ++m_report->meshed;
+        ++surfaces[surface_name(face->GetSurface()->GetType())];
+      }
+    }
+    for (const auto& [surface, count] : surfaces) {
+      m_report->meshed_by_surface.emplace_back(surface, count);
+    }
+    if (m_report->every_face) {
+      m_report->every_face_time.insert(m_report->every_face_time.end(), m_times.faces.begin(), m_times.faces.end());
+    }
+    std::vector<MeshReport::FaceTime>& slowest = m_report->slowest;
+    slowest.insert(slowest.end(), m_times.faces.begin(), m_times.faces.end());
+    std::sort(slowest.begin(), slowest.end(), [](const MeshReport::FaceTime& a, const MeshReport::FaceTime& b) {
+      return a.milliseconds > b.milliseconds;
+    });
+    if (slowest.size() > 5) {
+      slowest.resize(5);
+    }
+  }
+
   std::size_t m_faceTriangles;
+  MeshReport* m_report;
+  FaceTimes m_times;
 };
 
-// BRepMesh_IncrementalMesh with that context.
+// Faces the presentations' algorithm triangulated (presentation_faces_meshed).
+std::atomic<std::size_t> g_presentationFaces{0};
+
+// BRepMesh_IncrementalMesh with that context. A presentation's meshing
+// (BoundedFactory) counts the faces it meshed and traces itself.
 class BoundedMesh : public BRepMesh_IncrementalMesh {
 public:
-  explicit BoundedMesh(std::size_t face_triangles) : m_faceTriangles(face_triangles) {}
+  explicit BoundedMesh(const MeshOptions& options, MeshReport* report = nullptr, bool presentation = false)
+      : m_faceTriangles(options.face_triangles), m_fastPlanes(options.fast_planes), m_report(report),
+        m_presentation(presentation) {}
 
   using BRepMesh_IncrementalMesh::Perform;
   void Perform(const Message_ProgressRange& range = Message_ProgressRange()) override {
-    BRepMesh_IncrementalMesh::Perform(new BoundedContext(m_faceTriangles), range);
+    MeshReport own;
+    MeshReport* report = m_presentation ? &own : m_report;
+    const Clock::time_point start = Clock::now();
+    BRepMesh_IncrementalMesh::Perform(new BoundedContext(m_faceTriangles, m_fastPlanes, report), range);
+    if (report != nullptr) {
+      report->total += milliseconds_since(start);
+    }
+    if (m_presentation) {
+      g_presentationFaces += own.meshed;
+      if (mesh_tracing()) {
+        std::fprintf(stderr, "mesh-trace: presentation %s\n", own.line().c_str());
+      }
+    }
   }
 
 private:
   std::size_t m_faceTriangles;
+  bool m_fastPlanes;
+  MeshReport* m_report;
+  bool m_presentation;
 };
 
 // The presentations' meshing algorithm (use_bounded_presentation_meshes).
@@ -403,7 +645,8 @@ public:
 
   occ::handle<BRepMesh_DiscretRoot> CreateAlgorithm(const TopoDS_Shape& shape, double deviation,
                                                     double angle) override {
-    occ::handle<BoundedMesh> mesher = new BoundedMesh(m_faceTriangles);
+    const MeshOptions options{deviation, angle, false, m_faceTriangles, false};
+    occ::handle<BoundedMesh> mesher = new BoundedMesh(options, nullptr, true);
     mesher->ChangeParameters().Deflection = deviation;
     mesher->ChangeParameters().Angle = angle;
     mesher->ChangeParameters().InParallel = BRepMesh_IncrementalMesh::IsParallelDefault();
@@ -428,6 +671,49 @@ IMeshTools_Parameters parameters_of(const MeshOptions& options) {
 }
 
 } // namespace
+
+bool mesh_tracing() {
+  static const bool on = [] {
+#ifdef _MSC_VER
+    char* value = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&value, &length, "MITCAD_MESH_TRACE") != 0 || value == nullptr) {
+      return false;
+    }
+    std::free(value);
+    return true;
+#else
+    return std::getenv("MITCAD_MESH_TRACE") != nullptr;
+#endif
+  }();
+  return on;
+}
+
+std::size_t presentation_faces_meshed() { return g_presentationFaces.load(); }
+
+std::string MeshReport::line() const {
+  char text[256];
+  std::snprintf(text, sizeof text,
+                "faces=%zu kept=%zu meshed=%zu failed=%zu build=%.1f edges=%.1f heal=%.1f check=%.1f "
+                "triangulate=%.1f write=%.1f total=%.1f ms",
+                faces, kept, meshed, failed, build, edges, heal, check, triangulate, write, total);
+  std::string out = text;
+  if (!meshed_by_surface.empty()) {
+    out += "; meshed";
+    for (std::size_t i = 0; i < meshed_by_surface.size(); ++i) {
+      out += (i == 0 ? " " : ", ") + meshed_by_surface[i].first + " " + std::to_string(meshed_by_surface[i].second);
+    }
+  }
+  if (!slowest.empty()) {
+    out += "; slowest";
+    for (std::size_t i = 0; i < slowest.size(); ++i) {
+      std::snprintf(text, sizeof text, "%s %s wires=%d points=%d %.1f ms", i == 0 ? "" : ",",
+                    slowest[i].surface.c_str(), slowest[i].wires, slowest[i].points, slowest[i].milliseconds);
+      out += text;
+    }
+  }
+  return out;
+}
 
 double face_deviation_floor(const TopoDS_Face& face, double deviation, std::size_t face_triangles) {
   if (face_triangles == 0 || face.IsNull()) {
@@ -464,6 +750,258 @@ bool has_triangulation(const TopoDS_Shape& shape) {
     }
   }
   return true;
+}
+
+namespace {
+
+// What makes a face's triangulation valid for another face
+// (reuse_triangulations): its surface and each edge's geometry, compared
+// by identity (the copies an operation makes share them), and the edges'
+// end points by value.
+struct EdgeKey {
+  // Which edge it is in its face (not compared): an edge may bound a face
+  // twice in other placements (a prism's side between its base's edge
+  // and the same edge moved to the top), with a polygon for each.
+  const TopoDS_TShape* tshape = nullptr;
+  TopLoc_Location placement; // compared
+  TopAbs_Orientation orientation = TopAbs_FORWARD;
+  const Geom_Curve* curve = nullptr;
+  TopLoc_Location location;
+  double first = 0.0;
+  double last = 0.0;
+  const Geom2d_Curve* pcurve = nullptr;
+  const Geom2d_Curve* pcurve2 = nullptr; // a seam's other
+  gp_Pnt start;
+  gp_Pnt end;
+  bool degenerated = false;
+
+  bool same(const EdgeKey& other) const {
+    return orientation == other.orientation && placement.IsEqual(other.placement) && curve == other.curve &&
+           location.IsEqual(other.location) &&
+           first == other.first && last == other.last && pcurve == other.pcurve && pcurve2 == other.pcurve2 &&
+           start.X() == other.start.X() && start.Y() == other.start.Y() && start.Z() == other.start.Z() &&
+           end.X() == other.end.X() && end.Y() == other.end.Y() && end.Z() == other.end.Z() &&
+           degenerated == other.degenerated;
+  }
+};
+
+struct FaceKey {
+  TopoDS_Face face; // located as explored
+  const Geom_Surface* surface = nullptr;
+  TopLoc_Location location;
+  bool natural = false;
+  std::vector<EdgeKey> edges; // in the face's order, each sub-shape once
+
+  bool same(const FaceKey& other) const {
+    if (surface != other.surface || !location.IsEqual(other.location) || natural != other.natural ||
+        edges.size() != other.edges.size()) {
+      return false;
+    }
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+      if (!edges[i].same(other.edges[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+FaceKey face_key(const TopoDS_Face& face) {
+  FaceKey key;
+  key.face = face;
+  TopLoc_Location location;
+  key.surface = BRep_Tool::Surface(face, location).get();
+  key.location = location;
+  key.natural = BRep_Tool::NaturalRestriction(face);
+  for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+    const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+    if (std::any_of(key.edges.begin(), key.edges.end(), [&edge](const EdgeKey& seen) {
+          return seen.tshape == edge.TShape().get() && seen.placement.IsEqual(edge.Location());
+        })) {
+      continue; // a seam's second use
+    }
+    EdgeKey e;
+    e.tshape = edge.TShape().get();
+    e.placement = edge.Location();
+    e.orientation = edge.Orientation();
+    TopLoc_Location curve_location;
+    e.curve = BRep_Tool::Curve(edge, curve_location, e.first, e.last).get();
+    e.location = curve_location;
+    // The edge's parameter curve on the face; none on a plane, where it is
+    // the curve's, compared already (OCCT makes one anew from it when the
+    // edge stores none, and a copy may store it).
+    const bool plane = key.surface != nullptr && key.surface->IsKind(STANDARD_TYPE(Geom_Plane));
+    const auto stored = [&edge, &face, plane](TopAbs_Orientation orientation) -> const Geom2d_Curve* {
+      if (plane) {
+        return nullptr;
+      }
+      double f = 0.0;
+      double l = 0.0;
+      bool kept = false;
+      const occ::handle<Geom2d_Curve> pcurve =
+          BRep_Tool::CurveOnSurface(TopoDS::Edge(edge.Oriented(orientation)), face, f, l, &kept);
+      return kept ? pcurve.get() : nullptr;
+    };
+    e.pcurve = stored(TopAbs_FORWARD);
+    e.pcurve2 = BRep_Tool::IsClosed(edge, face) ? stored(TopAbs_REVERSED) : nullptr;
+    TopoDS_Vertex v1;
+    TopoDS_Vertex v2;
+    TopExp::Vertices(edge, v1, v2);
+    if (!v1.IsNull()) {
+      e.start = BRep_Tool::Pnt(v1);
+    }
+    if (!v2.IsNull()) {
+      e.end = BRep_Tool::Pnt(v2);
+    }
+    e.degenerated = BRep_Tool::Degenerated(edge);
+    key.edges.push_back(e);
+  }
+  return key;
+}
+
+// The edge's polygons on the triangulation of the face (two for a seam),
+// or false when it has none there.
+bool polygons_of(const TopoDS_Edge& edge, const occ::handle<Poly_Triangulation>& triangulation,
+                 const TopLoc_Location& location, occ::handle<Poly_PolygonOnTriangulation>& first,
+                 occ::handle<Poly_PolygonOnTriangulation>& second) {
+  const auto* tedge = static_cast<const BRep_TEdge*>(edge.TShape().get());
+  const TopLoc_Location relative = location.Predivided(edge.Location());
+  for (const occ::handle<BRep_CurveRepresentation>& representation : tedge->Curves()) {
+    if (representation->IsPolygonOnTriangulation(triangulation, relative)) {
+      first = representation->PolygonOnTriangulation();
+      if (representation->IsPolygonOnClosedTriangulation()) {
+        second = representation->PolygonOnTriangulation2();
+      }
+      return !first.IsNull();
+    }
+  }
+  return false;
+}
+
+// A copy of what a triangulation holds of the face (nodes, parameters,
+// triangles, deviation), without the normals a presentation may be adding
+// to the original meanwhile.
+occ::handle<Poly_Triangulation> copy_triangulation(const occ::handle<Poly_Triangulation>& source) {
+  occ::handle<Poly_Triangulation> copy =
+      new Poly_Triangulation(source->NbNodes(), source->NbTriangles(), source->HasUVNodes(), false);
+  for (int i = 1; i <= source->NbNodes(); ++i) {
+    copy->SetNode(i, source->Node(i));
+    if (source->HasUVNodes()) {
+      copy->SetUVNode(i, source->UVNode(i));
+    }
+  }
+  for (int i = 1; i <= source->NbTriangles(); ++i) {
+    copy->SetTriangle(i, source->Triangle(i));
+  }
+  copy->Deflection(source->Deflection());
+  copy->Parameters(source->Parameters());
+  return copy;
+}
+
+// Gives `face` a copy of the donor face's triangulation and of its edges'
+// polygons; false (nothing written) when an edge has no polygon there.
+bool reuse_face(const FaceKey& target, const FaceKey& donor) {
+  TopLoc_Location donor_location;
+  const occ::handle<Poly_Triangulation>& source = BRep_Tool::Triangulation(donor.face, donor_location);
+  if (source.IsNull()) {
+    return false;
+  }
+  struct Polygons {
+    occ::handle<Poly_PolygonOnTriangulation> first;
+    occ::handle<Poly_PolygonOnTriangulation> second;
+  };
+  std::vector<Polygons> polygons(donor.edges.size());
+  std::vector<TopoDS_Edge> donor_edges(donor.edges.size());
+  std::vector<TopoDS_Edge> target_edges(target.edges.size());
+  const auto edges_of = [](const FaceKey& key, std::vector<TopoDS_Edge>& edges) {
+    for (TopExp_Explorer it(key.face, TopAbs_EDGE); it.More(); it.Next()) {
+      for (std::size_t i = 0; i < key.edges.size(); ++i) {
+        const EdgeKey& e = key.edges[i];
+        const TopoDS_Shape& edge = it.Current();
+        if (e.tshape == edge.TShape().get() && e.placement.IsEqual(edge.Location()) && edges[i].IsNull()) {
+          edges[i] = TopoDS::Edge(it.Current());
+        }
+      }
+    }
+  };
+  edges_of(donor, donor_edges);
+  edges_of(target, target_edges);
+  for (std::size_t i = 0; i < donor_edges.size(); ++i) {
+    if (donor_edges[i].IsNull() || target_edges[i].IsNull() ||
+        !polygons_of(donor_edges[i], source, donor_location, polygons[i].first, polygons[i].second)) {
+      return false;
+    }
+  }
+  const occ::handle<Poly_Triangulation> copy = copy_triangulation(source);
+  BRep_Builder builder;
+  builder.UpdateFace(target.face, copy);
+  TopLoc_Location location;
+  BRep_Tool::Triangulation(target.face, location);
+  for (std::size_t i = 0; i < target_edges.size(); ++i) {
+    if (polygons[i].second.IsNull()) {
+      builder.UpdateEdge(target_edges[i], polygons[i].first->Copy(), copy, location);
+    } else {
+      builder.UpdateEdge(target_edges[i], polygons[i].first->Copy(), polygons[i].second->Copy(), copy, location);
+    }
+  }
+  return true;
+}
+
+} // namespace
+
+std::size_t reuse_triangulations(const TopoDS_Shape& shape, const std::vector<TopoDS_Shape>& donors) {
+  if (shape.IsNull() || donors.empty()) {
+    return 0;
+  }
+  std::vector<FaceKey> wanted;
+  for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+    TopLoc_Location location;
+    const TopoDS_Face& face = TopoDS::Face(it.Current());
+    if (BRep_Tool::Triangulation(face, location).IsNull() && !BRep_Tool::Surface(face, location).IsNull()) {
+      wanted.push_back(face_key(face));
+    }
+  }
+  if (wanted.empty()) {
+    return 0;
+  }
+  // The donors' meshed faces by their surface.
+  std::unordered_map<const Geom_Surface*, std::vector<FaceKey>> offered;
+  std::unordered_map<const Geom_Surface*, bool> needed;
+  for (const FaceKey& key : wanted) {
+    needed[key.surface] = true;
+  }
+  for (const TopoDS_Shape& donor : donors) {
+    if (donor.IsNull()) {
+      continue;
+    }
+    for (TopExp_Explorer it(donor, TopAbs_FACE); it.More(); it.Next()) {
+      const TopoDS_Face& face = TopoDS::Face(it.Current());
+      TopLoc_Location location;
+      const Geom_Surface* surface = BRep_Tool::Surface(face, location).get();
+      if (surface != nullptr && needed.count(surface) > 0 && !BRep_Tool::Triangulation(face, location).IsNull()) {
+        offered[surface].push_back(face_key(face));
+      }
+    }
+  }
+  std::size_t reused = 0;
+  std::vector<const TopoDS_TShape*> done;
+  for (const FaceKey& key : wanted) {
+    if (std::find(done.begin(), done.end(), key.face.TShape().get()) != done.end()) {
+      continue; // the same face again in another placement
+    }
+    const auto found = offered.find(key.surface);
+    if (found == offered.end()) {
+      continue;
+    }
+    for (const FaceKey& candidate : found->second) {
+      if (key.same(candidate) && reuse_face(key, candidate)) {
+        done.push_back(key.face.TShape().get());
+        ++reused;
+        break;
+      }
+    }
+  }
+  return reused;
 }
 
 void use_bounded_presentation_meshes(std::size_t face_triangles) {
@@ -508,7 +1046,7 @@ TopoDS_Shape triangulate(const TopoDS_Shape& shape, const MeshOptions& options) 
   }
   // A topology copy without triangulations: the original keeps its own.
   const TopoDS_Shape copy = BRepBuilderAPI_Copy(shape, false, false).Shape();
-  BoundedMesh mesher(options.face_triangles);
+  BoundedMesh mesher(options);
   mesher.SetShape(copy);
   mesher.ChangeParameters() = parameters;
   mesher.Perform();
@@ -518,7 +1056,8 @@ TopoDS_Shape triangulate(const TopoDS_Shape& shape, const MeshOptions& options) 
   return copy;
 }
 
-bool mesh_in_place(const TopoDS_Shape& shape, const MeshOptions& options, const Message_ProgressRange& range) {
+bool mesh_in_place(const TopoDS_Shape& shape, const MeshOptions& options, const Message_ProgressRange& range,
+                   MeshReport* report) {
   if (shape.IsNull()) {
     throw Error("cannot triangulate a null shape");
   }
@@ -526,7 +1065,7 @@ bool mesh_in_place(const TopoDS_Shape& shape, const MeshOptions& options, const 
   if (has_surfaceless_face(shape)) {
     return true;
   }
-  BoundedMesh mesher(options.face_triangles);
+  BoundedMesh mesher(options, report);
   mesher.SetShape(shape);
   mesher.ChangeParameters() = parameters;
   mesher.Perform(range);
@@ -534,7 +1073,7 @@ bool mesh_in_place(const TopoDS_Shape& shape, const MeshOptions& options, const 
 }
 
 std::size_t mesh_all_in_place(const std::vector<TopoDS_Shape>& shapes, const MeshOptions& options,
-                              const Message_ProgressRange& range) {
+                              const Message_ProgressRange& range, MeshReport* report) {
   const IMeshTools_Parameters parameters = parameters_of(options);
   std::size_t meshed = 0;
   // The shapes in one compound: it holds their own sub-shapes (TShapes), so
@@ -562,7 +1101,7 @@ std::size_t mesh_all_in_place(const std::vector<TopoDS_Shape>& shapes, const Mes
   Message_ProgressScope scope(range, nullptr, 2);
   bool failed = false;
   try {
-    BoundedMesh mesher(options.face_triangles);
+    BoundedMesh mesher(options, report);
     mesher.SetShape(all);
     mesher.ChangeParameters() = parameters;
     mesher.Perform(scope.Next());

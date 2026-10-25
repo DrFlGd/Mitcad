@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Buttons at the end of a command panel's title row (mitcad#564: Change
-// Parameters, which opens the parameter table while the panel stays open).
+// Parameters, which opens the parameter table while the panel stays open),
+// and sections of a command's own above the result (mitcad#648: Measure's
+// history).
 #include "CommandPanel.hpp"
 
+#include <functional>
 #include <utility>
 
 #include <QAction>
 #include <QBoxLayout>
 #include <QEvent>
+#include <QLabel>
 #include <QLayout>
 #include <QLayoutItem>
 #include <QObject>
@@ -92,6 +96,23 @@ void CommandPanel::addHeaderAction(QAction* action) {
   button->setFocusPolicy(Qt::NoFocus);
   header->addWidget(button);
   new HeaderButtonPlace(button, QStringLiteral("Panel %1 %2").arg(m_def.name, id));
+}
+
+void CommandPanel::addSection(QWidget* section, std::function<QStringList()> places) {
+  auto* box = qobject_cast<QBoxLayout*>(layout());
+  if (section == nullptr || box == nullptr) {
+    return;
+  }
+  // Above the result: its rows stay where they are while the result's
+  // lines come and go.
+  const int at = box->indexOf(m_result);
+  box->insertWidget(at < 0 ? box->count() : at, section);
+  // Its moves move what it logs (mitcad#528), as the rows' do.
+  section->installEventFilter(this);
+  if (places) {
+    m_sectionPlaces.push_back(std::move(places));
+  }
+  scheduleLogLayout();
 }
 
 } // namespace mitcad

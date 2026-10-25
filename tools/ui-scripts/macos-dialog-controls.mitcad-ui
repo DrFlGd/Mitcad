@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: MIT
+wait-idle
+show-dialog-style-fixture setup
+command tools.libraries
+focus-dialog '^Libraries$'
+button '.*' libraryAddSource
+key Escape
+focus-dialog '^Libraries$'
+button '.*' libraryAddSource
+popup 'Add URL…'
+focus-dialog '^Add Library$'
+key Escape
+focus-dialog '^Libraries$'
+key Return
+expect-dialog-gone '^Libraries$'
+focus-main
+show-dialog-style-fixture parts
+focus-dialog '^Library Parts$'
+show-dialog-style-fixture bom
+test-dialog-controls bom
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/bom-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Return
+expect-dialog-gone '^Library Parts$'
+focus-main
+show-dialog-style-fixture picker
+focus-dialog '^Part Picker'
+button '.*' partPickerPin
+expect-widget-property partPickerPin checked true
+button '.*' partPickerPin
+expect-widget-property partPickerPin checked false
+button '.*' partPickerStar
+expect-widget-property partPickerStar checked true
+button '.*' partPickerStar
+expect-widget-property partPickerStar checked false
+key Return
+expect-dialog-gone '^Part Picker'
+focus-main
+show-dialog-style-fixture project-settings
+focus-dialog '^Project Settings'
+button '^Cloud \(git\)$'
+button '^Local$'
+focus-widget projectDisplayName
+key Return
+expect-dialog-gone '^Project Settings'
+focus-main
+command tools.shortcuts
+focus-dialog '^Keyboard Shortcuts$'
+focus-widget shortcutSearch
+type noMatchingCommandForThisFixture
+test-dialog-controls shortcuts-empty
+key ctrl+a
+type Extrude
+test-dialog-controls shortcuts-results
+key Escape
+expect-dialog-gone '^Keyboard Shortcuts$'
+focus-main
+expect-model-bodies 1 48000
+
+# Old scripts and typed captions may still use the three-dot spelling.
+command tools.search
+focus-widget commandSearchInput
+type 'Libraries...'
+expect-command-search 'Libraries...' tools.libraries
+key ctrl+a
+type 'Libraries…'
+expect-command-search 'Libraries…' tools.libraries
+key Escape
+focus-main
+
+# The Materials window (mitcad#655) shares the same conventions.
+command solid.materials
+focus-dialog '^Materials$'
+test-dialog-controls materials
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/materials-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+expect-dialog-gone '^Materials$'
+focus-main

@@ -96,6 +96,7 @@ ui_init() {
   export MITCAD_SETTINGS_DIR=$UI_ROOT/settings
   export MITCAD_AUTOSAVE_DIR=$UI_ROOT/autosave
   export MITCAD_PROJECTS_DIR=$UI_ROOT/projects
+  export MITCAD_PRINT_LIBRARY_DIR=$UI_ROOT/print-library
   export MITCAD_THUMBNAIL_DIR=$UI_ROOT/thumbnails
   # Crash reports of the run's own (mitcad#62): none offered from the user's.
   export MITCAD_CRASH_DIR=$UI_ROOT/crashes

@@ -188,7 +188,7 @@ QJsonObject pageData(const CommandContext& context, const PageOptions& options, 
 
   // The visible bodies as placed; each body meshed once, on a copy of its
   // shape (io::triangulate), its faces in the shape's order.
-  const io::MeshOptions meshing{options.linearDeflection, options.angularDeflection, false, kFaceTriangles};
+  const io::MeshOptions meshing{options.linearDeflection, options.angularDeflection, false, kFaceTriangles, false};
   std::map<QString, std::shared_ptr<const render::MeshData>> meshes;
   std::map<QString, std::vector<render::FaceMaterial>> faceMaterials;
   std::vector<PageBody> bodies;

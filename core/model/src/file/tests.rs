@@ -992,3 +992,151 @@ fn version_1_errors_keep_their_messages() {
     value["features"].as_array_mut().unwrap().push(second);
     assert!(load(&value.to_string()).is_ok());
 }
+
+/// A design with a rectangular pattern of the block's body, three copies
+/// along x, saved and edited as one from before mitcad#662: the quantity's
+/// parameter `d4` in `unit` with the expression the old code wrote, and
+/// `n`, when given, a length user parameter that the quantity names.
+fn old_pattern_design(unit: LengthUnit, user: Option<&str>) -> String {
+    let mut b = block();
+    b.doc.set_units(unit).unwrap();
+    b.doc
+        .add_parameter_expression("n", "3", None, "count")
+        .unwrap();
+    let quantity = if user.is_some() { json!("n") } else { json!(3) };
+    b.doc
+        .add_feature(
+            &def(json!({"type": "rectangular_pattern",
+                "objects": {"type": "bodies", "bodies": ["F2.b0"]},
+                "direction1": {"axis": {"type": "origin", "axis": "x"},
+                               "quantity": quantity, "distance": 100},
+                "distance_type": "spacing"})),
+            None,
+        )
+        .unwrap();
+    let length = crate::expr::Unit::of_length(unit);
+    edited(&b.doc.to_json(), |v| {
+        for p in v["parameters"].as_array_mut().unwrap() {
+            if p["name"] == "d4" && user.is_none() {
+                p["unit"] = json!(length.to_string());
+                p["expression"] = json!(crate::expr::value_to_expression(3.0, length));
+            }
+            if let Some(expression) = user.filter(|_| p["name"] == "n") {
+                p["unit"] = json!(length.to_string());
+                p["expression"] = json!(expression);
+            }
+        }
+    })
+}
+
+#[test]
+fn pattern_quantities_saved_as_lengths_load_unitless() {
+    // mitcad#662: the quantity's own parameter in mm or inches loads as the
+    // unitless number it gave, with the same copies.
+    for unit in [LengthUnit::Millimetre, LengthUnit::Inch] {
+        let json = old_pattern_design(unit, None);
+        assert!(json.contains(&format!("\"unit\":\"{unit}\"")), "{json}");
+        let mut doc = load(&json).unwrap();
+        assert!(doc.load_warnings().is_empty(), "{:?}", doc.load_warnings());
+        let params = doc.parameters();
+        let d4 = params.get(params.find("d4").unwrap()).unwrap();
+        assert!(d4.unit().is_unitless(), "{unit}: {}", d4.unit());
+        assert_eq!(d4.expression(), "3", "{unit}");
+        doc.recompute();
+        assert_eq!(doc.bodies().len(), 3, "{unit}");
+        // Saved again, it is a plain count.
+        let saved: Value = serde_json::from_str(&doc.to_json()).unwrap();
+        let d4 = saved["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == "d4")
+            .unwrap();
+        assert_eq!(d4["expression"], json!("3"), "{unit}");
+        assert_eq!(d4["unit"], json!(""), "{unit}");
+    }
+}
+
+#[test]
+fn a_length_user_parameter_in_a_count_loads_with_a_warning() {
+    // mitcad#662: a user parameter keeps its unit; the slot reads its number
+    // as before (3 copies) and keeps it on edits, and the load says so.
+    for (unit, expression) in [(LengthUnit::Millimetre, "3"), (LengthUnit::Inch, "3 mm")] {
+        let mut doc = load(&old_pattern_design(unit, Some(expression))).unwrap();
+        let warnings = doc.load_warnings().join("\n");
+        assert!(
+            warnings.contains("RectangularPattern1 direction1.quantity: parameter 'n' is a length")
+                && warnings.contains("the slot reads it as 3"),
+            "{unit}: {warnings}"
+        );
+        let params = doc.parameters();
+        let n = params.get(params.find("n").unwrap()).unwrap();
+        assert!(!n.unit().is_unitless(), "{unit}");
+        doc.recompute();
+        assert_eq!(doc.bodies().len(), 3, "{unit}");
+        let pattern: FeatureUid = "F3".parse().unwrap();
+        doc.edit_feature(
+            pattern,
+            &def(json!({"type": "rectangular_pattern",
+                "objects": {"type": "bodies", "bodies": ["F2.b0"]},
+                "direction1": {"axis": {"type": "origin", "axis": "x"},
+                               "quantity": "n", "distance": 50},
+                "distance_type": "spacing"})),
+        )
+        .unwrap();
+        assert_eq!(doc.bodies().len(), 3, "{unit}");
+    }
+}
+
+#[test]
+fn an_old_quantity_expression_keeps_the_number_it_gave() {
+    // mitcad#662: in a centimetre document the expression `n` of a length
+    // quantity gave 30 (n = 3 read as 3 cm); it loads as 30, with a warning
+    // naming the expression.
+    let json = edited(&old_pattern_design(LengthUnit::Centimetre, None), |v| {
+        for p in v["parameters"].as_array_mut().unwrap() {
+            if p["name"] == "d4" {
+                p["expression"] = json!("n");
+            }
+        }
+    });
+    let mut doc = load(&json).unwrap();
+    let params = doc.parameters();
+    let d4 = params.get(params.find("d4").unwrap()).unwrap();
+    assert!(d4.unit().is_unitless());
+    assert_eq!(d4.expression(), "30");
+    let warnings = doc.load_warnings().join("\n");
+    assert!(
+        warnings.contains("parameter 'd4' is now unitless with the number it gave, 30")
+            && warnings.contains("'n'"),
+        "{warnings}"
+    );
+    doc.recompute();
+    assert_eq!(doc.bodies().len(), 30);
+}
+
+#[test]
+fn parameters_named_like_functions_in_another_case_are_renamed() {
+    // Function names are reserved in any case since mitcad#663: a
+    // parameter `Max` of an older file gets a free name, and the
+    // expressions and features that use it follow.
+    let json = edited(EXAMPLE, |v| {
+        v["parameters"][2]["name"] = json!("Max");
+        v["parameters"][3]["expression"] = json!("Max / 10 + 0 mm");
+        v["features"][1]["extent"]["distance"] = json!("Max");
+    });
+    let mut doc = load(&json).unwrap();
+    assert_eq!(
+        doc.load_warnings(),
+        [
+            "parameter 'Max' is renamed to 'Max_1': 'Max' is a unit, function or constant in expressions"
+        ]
+    );
+    let params = doc.parameters();
+    assert!(params.find("Max").is_none());
+    let d4 = params.get(params.find("d4").unwrap()).unwrap();
+    // The unit `mm` stays as it is.
+    assert_eq!((d4.expression(), d4.value()), ("Max_1 / 10 + 0 mm", 2.0));
+    assert!(doc.recompute().error.is_none());
+    assert_eq!(histories(&doc)[0].2, "fillet(prism(F2:0..20),2)");
+}

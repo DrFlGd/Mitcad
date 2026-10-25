@@ -77,6 +77,11 @@
 //! takes precedence for that unit's dimensions. Without this field,
 //! expressions follow the document's defaults as before.
 //!
+//! A parameter with limits (mitcad#665) also stores `min`, `max` and
+//! `step` (expression texts in its unit, each only when set) and
+//! `"strict": true` (a result outside them is refused instead of clamped);
+//! `value` is then the limited value.
+//!
 //! Optional fields: `units` (millimetres and degrees), a parameter's
 //! `comment` and `owner` (the feature whose dimension it is), a feature's
 //! `"suppressed": true` and `import_note` (what the importer that made it
@@ -135,6 +140,25 @@
 //! (`owner`: `C2`, `O3` or `F7.b0`, `sets`: `name`, `properties`: `key`,
 //! `type`, `value`, `source` unless `user`, `imported`, `unit`), see
 //! [`crate::properties`]. Computed values are never written.
+//!
+//! Materials of the design (mitcad#640), when there are any: `materials`
+//! (`id`, `name`, `density`, `appearance`, `filament`, `based_on`,
+//! `version`, `origin`) and the components' default materials
+//! `component_materials` (`[{"component", "material"}]`), see
+//! [`crate::material`]; a body's `material` names a built-in material or
+//! one of these.
+//!
+//! Printer and process profiles of the design (mitcad#640), when there are
+//! any: `print_profiles` (`id`, `name`, `kind`, `values`, `slicer`, `raw`,
+//! `based_on`, `version`, `origin`), see [`crate::print_profile`]; the
+//! components', occurrences' and bodies' choices and overrides are
+//! properties of the `Print Printer` and `Print Process` sets.
+//!
+//! Measurement objects (mitcad#649), when there are any: `measurements`
+//! (`name`, `kind`, `color` `#rrggbb`, `"visible": false`, the picks `a`
+//! and `b` as the `measure` query's selections: `body` with `face`, `edge`
+//! or `vertex`, or `datum`, and `occurrence`), see
+//! `document/measurements.rs`. Their values are not stored.
 //!
 //! Appearances of the document (mitcad#46), when there are any:
 //! `appearances` (`id`, `name`, `base_color`, `metalness`, `roughness`,

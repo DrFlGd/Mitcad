@@ -74,8 +74,8 @@ expect-log 'Command Box started'
 expect-native-visible native.inspectorCard true
 expect-native-layout
 click-logged 'Datum xy'
-native-type input_x '0 mm'
-native-type input_y '0 mm'
+native-type input_at_offset1 '0 mm'
+native-type input_at_offset2 '0 mm'
 native-type input_length '40 mm'
 native-type input_width '25 mm'
 native-type input_height 'bad_expression'

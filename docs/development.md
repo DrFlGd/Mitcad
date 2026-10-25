@@ -590,9 +590,29 @@ Run in the isolated environments:
   `mitcad-cli info design.mitcad --timings [--result-store <dir>
   --diagnostics]`. `cli.perf_recompute`, `cli.perf_join_recompute` and
   `cli.perf_holes_recompute` guard against large slowdowns.
+  `mitcad-cli run script.json --timings` prints each step's time
+  ("Timing steps[i] <command>: <ms> ms"); `cli.perf_sketch_pattern`
+  runs it on a sketch with a 10 x 10 circle pattern
+  (`tools/cli/tests/perf_sketch_pattern_{5,10,20}.json`, mitcad#670), and
+  `UI_APP=build/rel/app/mitcad UI_PATTERN_SIZE=10
+  tools/ui-sketch-pattern-speed-test.sh` times a window selection and
+  drags of that sketch in the application (`UI_SCALE=2` for a device
+  pixel ratio of 2) and checks that each drag step reads the sketch from
+  the model once (the "sketch query" lines, mitcad#679). The regions of
+  400 disjoint circles are guarded in the model's tests (`sketch::regions_tests`, mitcad#678); `cargo test
+  --release -p mitcad-model regions_timings -- --ignored --nocapture`
+  prints the times of 25, 100 and 400 circles.
   `mitcad-cli info design.mitcad --names` prints the names of every
   body's faces and edges, to compare the topology two builds (or one
   build with and without `MITCAD_NO_FAR_FEATURES=1`) give a design.
+- Display meshing (mitcad#644): `mitcad-cli mesh-compare design
+  --report report.json` meshes every body of a design (opened, or
+  imported as the application imports it) as the view's final tier does
+  and with planes through Delabella, and compares them face by face
+  (triangles, deviation, area against the face's own, folds, faces left
+  without a triangulation, time); `mitcad-cli mesh-compare --summary
+  <folder>...` totals the reports of many designs
+  ([performance.md](performance.md#display-meshing-planes-through-delabella-mitcad644)).
 - `tools/repo-growth.sh <work dir> design.mitcad...` measures git
   repository growth of the design file formats over 50 saves.
 - Live updates (mitcad#89): `core.vcs` runs the MQTT client's scenarios
@@ -618,6 +638,7 @@ Run in the isolated environments:
 | Variable | Effect |
 |---|---|
 | `MITCAD_LOG_PICKS=1`, `MITCAD_LOG_VOLUMES=1`, `MITCAD_LOG_TIMING=1` | Log pick positions, body volumes after changes, step durations. |
+| `MITCAD_MESH_TRACE=1` | Log the view's display meshings (faces kept, reused, meshed, BRepMesh's phases, the slowest faces) and, on standard error, any meshing a presentation does on the UI thread (mitcad#635; also `test_preview_meshing --bench`). |
 | `MITCAD_SETTINGS_DIR` | Settings as an INI file in this folder. |
 | `MITCAD_AUTOSAVE_DIR`, `MITCAD_TEST_AUTOSAVE_SECONDS` | Recovery folder and autosave interval. |
 | `MITCAD_TEST_RECOMPUTE_DELAY_MS=n[,job=m...]` | Every feature computed in a job takes n ms longer (`400,undo=800`), to exercise the progress dialog. |
@@ -721,7 +742,19 @@ Not a test: `tools/ui-windows-window-shots.ps1 -App <mitcad.exe> -Out <dir>`
 saves screenshots of the whole main window in the Docked chrome on the light
 and the dark theme (the demo block, a feature selected, Extrude's panel
 open), through the test driver in the same session, for comparing the
-window's look before and after a change.
+window's look before and after a change. Likewise
+`tools/ui-windows-print-settings-shots.ps1 -App <mitcad.exe> -Out <dir>`
+saves screenshots of the print settings UI (mitcad#655): 3D Print after
+Import from slicer…, Import Details, the profile editors, Materials,
+Property Sets' print settings and an update bar, on data it makes with
+mitcad-cli.
+
+Not a test either: `tools/ui-windows-place-shots.ps1 -App <mitcad.exe> -Out <dir>`
+saves screenshots of placement by picked geometry (mitcad#656): Box and Hole
+on a face with their in-view dimensions and value boxes, a pulley on a shaft
+and its Check Belt, a cylinder at a sketch point, Gear Pair and Belt Drive
+with their candidate lists, an earlier version's gear opened for editing,
+and Gear Pair in the Docked chrome, on data it makes with mitcad-cli.
 
 ### macOS UI tests
 
@@ -887,6 +920,25 @@ projects saved by earlier versions (each design with its project's
 (`tools/cli/designs-corpus.cmake`) opens every `.mitcad` with `mitcad-cli
 info` and fails when a sketch of one fails, such as a linked projection
 whose source changed shape since (mitcad#249); skipped without the corpus.
+
+### 3MF print settings corpus
+
+Real slicer projects are never committed. `MITCAD_3MF_CORPUS` (a
+`PATH`-like list of folders) points at them; each folder's `index.tsv`
+lists its projects (a header row naming the columns, then a row per
+project; projects named by their content id). The ctest `3mf.corpus`
+(`core/model/src/print_files/corpus.rs`, a test ignored in `core.model`
+and run with `--ignored`) imports each project's print settings into a
+fresh design as Import from slicer... does (`import_print_profile`),
+checks the row's columns where it gives them: `bytes`, `dialect`,
+`printers`, `processes` and `materials` (how many came in), `printer`
+and `process` (their names) and `problems` (the values not read as the
+import's summary lists them, separated by ` | `; empty or `none` for
+none), then exports a body of each material in the same dialect and
+reads the export back: every value read into Mitcad's keys must come
+back alike (numbers within 1e-6). Other columns are notes. Skipped
+without the variable. Example:
+`MITCAD_3MF_CORPUS=~/3mf-corpus ctest --preset dev -R 3mf.corpus`.
 
 ### USDZ files
 
@@ -1113,6 +1165,8 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   `mitcad_utf8_code_page(<target>)` (`cmake/Utf8CodePage.cmake`), so that
   its `argv` and file names are UTF-8 too.
 - Match the surrounding style and comment density.
+- Terms (project, design, component, occurrence, body) and the names of
+  controls in user-facing text follow [naming](naming.md).
 - A tooltip says in one short line what the control is or does: a
   command's (`CommandDef::tooltip`, the ribbon and the menus) at most 80
   characters, an input's or any other control's at most 100. No usage

@@ -1832,8 +1832,8 @@ int messageBox(QMessageBox* box) {
     // QMessageBox adds its own ActionRole details toggle. It is a
     // disclosure in the accessory, never a response that ends NSAlert.
     if (!box->detailedText().isEmpty() && role == QMessageBox::ActionRole &&
-        (title(button->text()) == title(QMessageBox::tr("Show Details...")) ||
-         title(button->text()) == title(QMessageBox::tr("Hide Details...")))) {
+        (title(button->text()) == title(QMessageBox::tr("Show Details…")) ||
+         title(button->text()) == title(QMessageBox::tr("Hide Details…")))) {
       continue;
     }
     NSButton* native = [alert addButtonWithTitle:ns(title(button->text()))];
@@ -1852,8 +1852,8 @@ int messageBox(QMessageBox* box) {
   if (!box->detailedText().isEmpty()) {
     detailsTarget = [MitcadNativeAlertDetails new];
     detailsTarget->alert = alert;
-    detailsTarget->showTitle = ns(QMessageBox::tr("Show Details..."));
-    detailsTarget->hideTitle = ns(QMessageBox::tr("Hide Details..."));
+    detailsTarget->showTitle = ns(QMessageBox::tr("Show Details…"));
+    detailsTarget->hideTitle = ns(QMessageBox::tr("Hide Details…"));
     NSButton* disclosure = [NSButton checkboxWithTitle:detailsTarget->showTitle
                                               target:detailsTarget action:@selector(toggle:)];
     disclosure.buttonType = NSButtonTypePushOnPushOff;

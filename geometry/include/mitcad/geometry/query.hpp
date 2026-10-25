@@ -109,6 +109,10 @@ struct NewFace {
 // mitcad#138.)
 std::vector<NewFace> new_faces(const std::vector<TopoDS_Shape>& before, const TopoDS_Shape& after,
                                int count);
+// The same of Shapes: only the faces of `before` whose boxes (face_boxes,
+// kept with each shape) hold the centre of a face of `after` are measured,
+// with the same result (mitcad#658).
+std::vector<NewFace> new_faces(const std::vector<const Shape*>& before, const Shape& after, int count);
 
 // The volume a change makes as the faces it changed bound it (mm³): the
 // faces of `after` that `before` does not have, as new_faces tells them,
@@ -123,5 +127,8 @@ struct ChangedVolume {
 };
 
 ChangedVolume changed_volume(const std::vector<TopoDS_Shape>& before, const std::vector<TopoDS_Shape>& after);
+// The same of Shapes, measuring only the faces whose boxes may hold a
+// changed face's centre, as new_faces of Shapes does (mitcad#658).
+ChangedVolume changed_volume(const std::vector<const Shape*>& before, const std::vector<const Shape*>& after);
 
 } // namespace mitcad::geometry

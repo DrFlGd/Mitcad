@@ -93,8 +93,11 @@ bool parameterCommandChangesValues(const QJsonObject& command) {
     return true;
   }
   if (cmd == QStringLiteral("set_parameter")) {
+    // Limits change the value too (mitcad#665).
     return command.contains(QStringLiteral("expression")) || command.contains(QStringLiteral("unit")) ||
-           command.contains(QStringLiteral("value"));
+           command.contains(QStringLiteral("value")) || command.contains(QStringLiteral("min")) ||
+           command.contains(QStringLiteral("max")) || command.contains(QStringLiteral("step")) ||
+           command.contains(QStringLiteral("strict"));
   }
   return false;
 }

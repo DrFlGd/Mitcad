@@ -32,7 +32,7 @@ JSON
 MITCAD_TEST_STEP_MS=20 MITCAD_TEST_SETTLE_MS=60 \
   MITCAD_TEST_RECOMPUTE_DELAY_MS=0,preview=1500,add_feature=1500,edit_feature=1500 \
   MITCAD_TEST_INPUT=$here/ui-scripts/macos-command-cancel.mitcad-ui \
-  ui_run_app cancel --ui=qt --no-recovery --no-mcp --open "$MITCAD_TEST_WORK/root-design.mitcad"
+  ui_run_app cancel --ui=qt --chrome="${MITCAD_TEST_CHROME:-floating}" --no-recovery --no-mcp --open "$MITCAD_TEST_WORK/root-design.mitcad"
 ui_expect_log 'TestDriver: done' 'Qt preview, pending Return, commit cancellation and close restoration completed'
 ui_expect_log 'Qt test: clicked progress Cancel during edit_feature \(busy\)' 'actual Qt progress Cancel invoked during the commit job'
 ui_expect_log 'Test preview cancellation requested: Box' 'interrupted background preview handled without a modal dialog'

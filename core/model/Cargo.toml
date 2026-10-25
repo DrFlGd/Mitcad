@@ -35,6 +35,8 @@ qrcode = { version = "0.14.1", default-features = false }
 [dev-dependencies]
 # QR codes read back in the tests (mitcad#473).
 rqrr = { version = "0.11.0", default-features = false }
+# Slicers' preset bundles (zips) the print settings tests write (mitcad#640).
+mitcad-zip = { path = "../zip" }
 
 [features]
 # The mock geometry kernel (`mitcad_model::testing`) for other crates' tests.

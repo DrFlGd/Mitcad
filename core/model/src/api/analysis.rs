@@ -10,22 +10,29 @@ use std::fmt::Write;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::measure_axes::{self, Element};
 use super::{ApiError, parse, read_json};
 use crate::analysis::{
     self, CompareOptions, Comparison, Measurement, PhysicalProperties, Selection, Separation,
 };
-use crate::datum::{Datum, DatumPlane, OriginDatum, Vec3};
-use crate::document::{BodyView, Document};
+use crate::datum::{CurveGeometry, Datum, DatumPlane, OriginDatum, SurfaceGeometry, Vec3};
+use crate::document::{BodyView, Document, MeasurePick};
 use crate::features::OccurrencePath;
 use crate::features::geom_ref::GeomRef;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::joints::path_component;
-use crate::kernel::{Kernel, KernelError};
+use crate::kernel::{Kernel, KernelError, Plane};
 use crate::topo::{EdgeName, FaceName, TopoName, VertexName};
+use crate::transform::Transform;
 
 /// Size of the shapes that stand for datums in measurements, mm: large
 /// enough to act as unbounded.
 const DATUM_EXTENT: f64 = 1e5;
+
+/// Two planes whose normals are closer than this (radians, either way) are
+/// parallel for Measure's offset (mitcad#646): the tolerance assembly
+/// constraints hold directions to.
+const PARALLEL: f64 = crate::constraints::ANGULAR;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +78,11 @@ pub(super) struct SelectionInput {
     vertex: Option<VertexName>,
     #[serde(default)]
     datum: Option<String>,
+    /// The occurrence that places the body or datum in the design, a path
+    /// from the root (`"O1/O4"`, mitcad#646); left out, the owner's only
+    /// placement (none in the root).
+    #[serde(default)]
+    occurrence: Option<OccurrencePath>,
 }
 
 /// A selection as fields, or as text: a datum (`xy`, `F5`), or a body
@@ -109,6 +121,9 @@ pub(super) struct MeasureQuery {
     a: SelectionArg,
     #[serde(default)]
     b: Option<SelectionArg>,
+    /// Include the exact maximum nearest-face gap when supported (#661).
+    #[serde(default)]
+    face_range: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -332,10 +347,14 @@ impl SelectionInput {
     }
 }
 
-/// A selection resolved to a shape and a name in it.
+/// A selection resolved to a shape in the design's coordinates (placed by
+/// its occurrence, mitcad#646) and a name in it, with its plane, axis,
+/// line or point in the design's coordinates where it has one
+/// (mitcad#647).
 struct Resolved<S> {
     shape: S,
     name: Option<TopoName>,
+    element: Option<Element>,
 }
 
 impl<S> Resolved<S> {
@@ -345,6 +364,29 @@ impl<S> Resolved<S> {
             name: self.name.as_ref(),
         }
     }
+}
+
+/// What [`Document::measure_picks`] finds for a measurement object
+/// (mitcad#649).
+pub(super) struct MeasuredPicks {
+    /// The only pick measured alone (its circle, a round face's or edge's).
+    pub(super) single: Option<Measurement>,
+    /// Between the two picks.
+    pub(super) between: Option<Separation>,
+    /// Each pick's plane, axis, line or point in the design's coordinates.
+    pub(super) elements: [Option<Element>; 2],
+}
+
+/// A measurement object's pick (mitcad#649) as a selection given as fields.
+fn selection_arg(pick: &MeasurePick) -> SelectionArg {
+    SelectionArg::Fields(Box::new(SelectionInput {
+        body: pick.body,
+        face: pick.face.clone(),
+        edge: pick.edge.clone(),
+        vertex: pick.vertex.clone(),
+        datum: pick.datum.clone(),
+        occurrence: pick.occurrence.clone(),
+    }))
 }
 
 impl<K: Kernel> Document<K> {
@@ -422,7 +464,9 @@ impl<K: Kernel> Document<K> {
         let mut bodies = Vec::new();
         let mut all = Vec::new();
         for BodyView { uid, name, shape } in self.chosen_bodies(&query.bodies)? {
-            let attributes = self.body_attributes(uid);
+            // Its own material, else its component's default (mitcad#640);
+            // `density` stands for the default.
+            let (made_of, source) = self.body_material(uid, None);
             let (material, density) = match query.densities.get(&uid) {
                 Some(density) if *density > 0.0 && density.is_finite() => (Value::Null, *density),
                 Some(density) => {
@@ -430,12 +474,11 @@ impl<K: Kernel> Document<K> {
                         "the density of {uid} must be greater than zero, got {density}"
                     )));
                 }
-                None => match (&attributes.material, query.density) {
-                    (None, Some(density)) => (Value::Null, density),
-                    _ => {
-                        let material = attributes.material();
-                        (json!(material.id), material.density)
+                None => match (source, query.density) {
+                    (crate::document::MaterialSource::Default, Some(density)) => {
+                        (Value::Null, density)
                     }
+                    _ => (json!(made_of.id), made_of.density),
                 },
             };
             let properties = self
@@ -499,6 +542,42 @@ impl<K: Kernel> Document<K> {
         Ok(fields)
     }
 
+    /// The transform of a selection's owner into the design (mitcad#646):
+    /// that of the occurrence given (which must place `owner`), else of the
+    /// owner's only placement; none in the root or for a component placed
+    /// nowhere. A component placed more than once needs its occurrence.
+    fn selection_transform(
+        &self,
+        owner: Option<ComponentUid>,
+        occurrence: Option<&OccurrencePath>,
+        what: &str,
+    ) -> Result<Transform, ApiError> {
+        if let Some(path) = occurrence {
+            let component =
+                path_component(self.assembly(), ComponentUid::ROOT, &path.0).map_err(ApiError)?;
+            if owner.is_some_and(|owner| owner != component) {
+                return Err(ApiError(format!(
+                    "occurrence '{path}' does not place {what}"
+                )));
+            }
+            return Ok(self.path_transform(&path.0));
+        }
+        let Some(owner) = owner.filter(|owner| !owner.is_root()) else {
+            return Ok(Transform::IDENTITY);
+        };
+        match self.assembly().paths_to(owner).as_slice() {
+            [] => Ok(Transform::IDENTITY),
+            [path] => Ok(self.path_transform(path)),
+            paths => Err(ApiError(format!(
+                "{what} is in a component placed {} times: give the occurrence to measure it in",
+                paths.len()
+            ))),
+        }
+    }
+
+    /// A selection in the design's coordinates (mitcad#646): a body's shape
+    /// moved by its occurrence's transform, a datum moved likewise, with
+    /// its plane, axis, line or point (mitcad#647).
     fn resolve_selection(&self, arg: &SelectionArg) -> Result<Resolved<K::Shape>, ApiError> {
         let input = &self.selection_fields(arg)?;
         let names = [
@@ -516,22 +595,143 @@ impl<K: Kernel> Document<K> {
         match (&input.datum, input.body) {
             (Some(id), None) if name.is_none() => {
                 let (_, label, datum) = self.datum_by_id(id)?;
+                // A construction feature's datum is in its component's
+                // coordinates; an origin datum in the occurrence's given.
+                let owner = id
+                    .parse::<FeatureUid>()
+                    .ok()
+                    .and_then(|uid| self.feature(uid))
+                    .map(|entry| entry.component);
+                let transform =
+                    self.selection_transform(owner, input.occurrence.as_ref(), &label)?;
+                let datum = moved_datum(&datum, &transform);
                 let shape = self
                     .kernel()
                     .datum_shape(&datum, DATUM_EXTENT)
                     .map_err(kernel_error(&label))?;
-                Ok(Resolved { shape, name: None })
+                let element = match datum {
+                    Datum::Plane(p) => Some(Element::Plane {
+                        origin: p.origin,
+                        normal: p.normal(),
+                    }),
+                    Datum::Axis(a) => axis_element(a.origin, a.direction, false),
+                    Datum::Point(p) => Some(Element::Point(p.point)),
+                };
+                Ok(Resolved {
+                    shape,
+                    name: None,
+                    element,
+                })
             }
-            (None, Some(body)) => Ok(Resolved {
-                shape: self.require_body(body)?.clone(),
-                name,
-            }),
+            (None, Some(body)) => {
+                let local = self.require_body(body)?;
+                let transform = self.selection_transform(
+                    self.body_component(body),
+                    input.occurrence.as_ref(),
+                    &format!("body {body}"),
+                )?;
+                // The pick's plane, axis, line or point in its body's
+                // coordinates, then placed.
+                let element = name
+                    .as_ref()
+                    .and_then(|name| self.measure_element(local, name))
+                    .and_then(|element| moved_element(&element, &transform));
+                let shape = if transform.is_identity() {
+                    local.clone()
+                } else {
+                    self.kernel()
+                        .transform_shape(local, &transform, None)
+                        .map_err(kernel_error(&input.describe()))?
+                };
+                Ok(Resolved {
+                    shape,
+                    name,
+                    element,
+                })
+            }
             _ => Err(ApiError(
                 "a selection is {\"body\": ...} with an optional \"face\", \"edge\" or \
                  \"vertex\", or {\"datum\": ...}"
                     .to_owned(),
             )),
         }
+    }
+
+    /// The plane, axis, line or point of a face, edge or vertex for Measure
+    /// (mitcad#647), in the body's coordinates: a cylinder's, cone's or
+    /// torus's axis, a sphere's centre, a planar face's plane
+    /// (`Kernel::face_plane`, its normal out of the material), a straight
+    /// edge, a circle's or arc's axis through its centre, a vertex's
+    /// point. None for other faces and curves.
+    fn measure_element(&self, shape: &K::Shape, name: &TopoName) -> Option<Element> {
+        let kernel = self.kernel();
+        match name {
+            TopoName::Face(face) => {
+                let plane = || {
+                    kernel.face_plane(shape, face).ok().map(|p| Element::Plane {
+                        origin: p.origin,
+                        normal: p.normal,
+                    })
+                };
+                match kernel.face_geometry(shape, face) {
+                    Ok(
+                        SurfaceGeometry::Cylinder { origin, axis, .. }
+                        | SurfaceGeometry::Cone { origin, axis, .. }
+                        | SurfaceGeometry::Torus {
+                            center: origin,
+                            axis,
+                            ..
+                        },
+                    ) => axis_element(origin, axis, false),
+                    Ok(SurfaceGeometry::Sphere { center, .. }) => Some(Element::Point(center)),
+                    Ok(SurfaceGeometry::Plane { origin, normal }) => {
+                        plane().or(Some(Element::Plane { origin, normal }))
+                    }
+                    _ => plane(),
+                }
+            }
+            TopoName::Edge(edge) => match kernel.edge_geometry(shape, edge).ok()? {
+                CurveGeometry::Line { start, end } => Some(Element::Line { start, end }),
+                CurveGeometry::Circle { center, normal, .. } => axis_element(center, normal, true),
+                CurveGeometry::Other { .. } => None,
+            },
+            TopoName::Vertex(vertex) => kernel.vertex_point(shape, vertex).ok().map(Element::Point),
+        }
+    }
+
+    /// What a measurement object's picks give at the marker (mitcad#649,
+    /// `measurements.rs`): placed in the design as the `measure` query
+    /// places them, the first measured alone when there is no second (its
+    /// circle), else their separation, and each pick's plane, axis, line or
+    /// point.
+    pub(super) fn measure_picks(
+        &self,
+        a: &MeasurePick,
+        b: Option<&MeasurePick>,
+    ) -> Result<MeasuredPicks, ApiError> {
+        let a_arg = selection_arg(a);
+        let ra = self.resolve_selection(&a_arg)?;
+        let Some(b) = b else {
+            let single = self
+                .kernel()
+                .measure(&ra.selection())
+                .map_err(kernel_error(&a_arg.describe()))?;
+            return Ok(MeasuredPicks {
+                single: Some(single),
+                between: None,
+                elements: [ra.element, None],
+            });
+        };
+        let rb = self.resolve_selection(&selection_arg(b))?;
+        let between = self
+            .kernel()
+            .measure_between(&ra.selection(), &rb.selection())
+            .map_err(kernel_error("measure"))?;
+        Ok(MeasuredPicks {
+            single: None,
+            between: Some(between),
+            elements: [ra.element, rb.element],
+        })
     }
 
     pub(super) fn measure_json(&self, query: &MeasureQuery) -> Result<Value, ApiError> {
@@ -541,6 +741,7 @@ impl<K: Kernel> Document<K> {
                 &self.kernel().measure(&a.selection()).map_err(kernel_error(&query.a.describe()))?
             ),
         });
+        add_axis_json(&mut value["a"], a.element.as_ref());
         if let Some(b_input) = &query.b {
             let b = self.resolve_selection(b_input)?;
             value["b"] = measurement_json(
@@ -549,11 +750,52 @@ impl<K: Kernel> Document<K> {
                     .measure(&b.selection())
                     .map_err(kernel_error(&b_input.describe()))?,
             );
+            add_axis_json(&mut value["b"], b.element.as_ref());
             let between = self
                 .kernel()
                 .measure_between(&a.selection(), &b.selection())
                 .map_err(kernel_error("measure"))?;
             value["between"] = separation_json(&between);
+            if query.face_range {
+                if value["a"]["kind"] != "face" || value["b"]["kind"] != "face" {
+                    return Err(ApiError("face_range needs two faces".into()));
+                }
+                // A failure to compute the optional maximum must not discard
+                // the exact minimum, nor return an old maximum to the caller.
+                value["between"]["maximum_distance"] = json!(
+                    self.kernel()
+                        .maximum_face_gap(&a.selection(), &b.selection())
+                        .ok()
+                        .flatten()
+                );
+            }
+            if let (Some(ea), Some(eb)) = (&a.element, &b.element) {
+                // Two parallel planes (planar faces or datum planes): their
+                // distance along the normal (mitcad#646).
+                if let (Some(pa), Some(pb)) = (element_plane(ea), element_plane(eb))
+                    && let Some(offset) = plane_offset(&pa, &pb)
+                {
+                    value["between"]["offset"] = json!(offset);
+                }
+                // Axes, directions and normals (mitcad#647): the angle the
+                // kernel has no answer for, and the axes' distances.
+                let found = measure_axes::between(ea, eb, PARALLEL);
+                if value["between"]["angle"].is_null()
+                    && let Some(angle) = found.angle
+                {
+                    value["between"]["angle"] = json!(angle);
+                }
+                if let (Some(d), Some(points)) = (found.axis_distance, found.axis_points) {
+                    value["between"]["axis_distance"] = json!(d);
+                    value["between"]["axis_points"] = json!(points);
+                }
+                if let Some(d) = found.center_distance {
+                    value["between"]["center_distance"] = json!(d);
+                }
+            }
+        }
+        if query.face_range && query.b.is_none() {
+            return Err(ApiError("face_range needs two faces".into()));
         }
         Ok(value)
     }
@@ -771,6 +1013,10 @@ impl<K: Kernel> Document<K> {
         }
         if let Some(appearance) = &attributes.appearance {
             value["appearance"] = json!(appearance);
+            // Not its material's: set by hand (mitcad#640).
+            if self.appearance_set_by_hand(uid) {
+                value["appearance_set_by_hand"] = json!(true);
+            }
         }
         // Faces with their own appearance (mitcad#53), with the faces each
         // finds at the marker.
@@ -832,6 +1078,20 @@ impl<K: Kernel> Document<K> {
                     );
                     if let Some(angle) = between["angle"].as_f64() {
                         let _ = writeln!(text, "Angle: {:.6} deg", angle.to_degrees());
+                    }
+                    if let Some(offset) = between["offset"].as_f64() {
+                        let _ = writeln!(text, "Offset: {offset:.6} mm");
+                    }
+                    if let Some(d) = between["axis_distance"].as_f64() {
+                        let _ = writeln!(
+                            text,
+                            "Axis distance: {d:.6} mm, from {} to {}",
+                            point(vec3(&between["axis_points"][0])),
+                            point(vec3(&between["axis_points"][1]))
+                        );
+                    }
+                    if let Some(d) = between["center_distance"].as_f64() {
+                        let _ = writeln!(text, "Centre distance: {d:.6} mm");
                     }
                 }
             }
@@ -1184,6 +1444,89 @@ impl<K: Kernel> PreparedSection<K> {
     }
 }
 
+/// A datum moved by `t` (into the design, by its occurrence's transform).
+fn moved_datum(datum: &Datum, t: &Transform) -> Datum {
+    match datum {
+        Datum::Plane(p) => Datum::Plane(DatumPlane {
+            origin: t.apply_point(p.origin),
+            x_axis: t.apply_vector(p.x_axis),
+            y_axis: t.apply_vector(p.y_axis),
+        }),
+        Datum::Axis(a) => Datum::Axis(crate::datum::DatumAxis {
+            origin: t.apply_point(a.origin),
+            direction: t.apply_vector(a.direction),
+        }),
+        Datum::Point(p) => Datum::Point(crate::datum::DatumPoint {
+            point: t.apply_point(p.point),
+        }),
+    }
+}
+
+/// An axis through `origin` along `direction` (made a unit vector), for
+/// Measure (mitcad#647); `center`: `origin` is a circle's centre.
+fn axis_element(origin: Vec3, direction: Vec3, center: bool) -> Option<Element> {
+    Some(Element::Axis {
+        origin,
+        direction: mitcad_vec3::unit(direction)?,
+        center,
+    })
+}
+
+/// An element of Measure moved by `t` (mitcad#647).
+fn moved_element(element: &Element, t: &Transform) -> Option<Element> {
+    Some(match element {
+        Element::Plane { origin, normal } => Element::Plane {
+            origin: t.apply_point(*origin),
+            normal: t.apply_vector(*normal),
+        },
+        Element::Line { start, end } => Element::Line {
+            start: t.apply_point(*start),
+            end: t.apply_point(*end),
+        },
+        Element::Axis {
+            origin,
+            direction,
+            center,
+        } => return axis_element(t.apply_point(*origin), t.apply_vector(*direction), *center),
+        Element::Point(p) => Element::Point(t.apply_point(*p)),
+    })
+}
+
+/// The plane of a planar face or a datum plane.
+pub(super) fn element_plane(element: &Element) -> Option<Plane> {
+    match element {
+        Element::Plane { origin, normal } => Some(Plane {
+            origin: *origin,
+            normal: *normal,
+        }),
+        _ => None,
+    }
+}
+
+/// A selection's `axis` {`origin`, `direction`} in the measure query's
+/// answer (mitcad#647), where it has one.
+fn add_axis_json(value: &mut Value, element: Option<&Element>) {
+    if let Some((origin, direction)) = element.and_then(Element::axis) {
+        // + 0.0 turns -0.0 into 0.0.
+        let v = |v: Vec3| v.map(|x| x + 0.0);
+        value["axis"] = json!({"origin": v(origin), "direction": v(direction)});
+    }
+}
+
+/// The offset of two parallel planes (mitcad#646): the distance between
+/// them along their normal, never negative; None unless their normals are
+/// parallel or opposite within [`PARALLEL`].
+pub(super) fn plane_offset(a: &Plane, b: &Plane) -> Option<f64> {
+    use mitcad_vec3::{cross, dot, norm, sub, unit};
+    let (na, nb) = (unit(a.normal)?, unit(b.normal)?);
+    // The sine of the angle between the normal lines.
+    if norm(cross(na, nb)) > PARALLEL.sin() {
+        return None;
+    }
+    // + 0.0 turns -0.0 into 0.0.
+    Some(dot(sub(b.origin, a.origin), na).abs() + 0.0)
+}
+
 fn vec3(value: &Value) -> Vec3 {
     std::array::from_fn(|i| value[i].as_f64().unwrap_or(f64::NAN))
 }
@@ -1249,6 +1592,13 @@ fn measurement_text(text: &mut String, label: &str, m: &Value) {
             "radius {radius:.6} mm, diameter {:.6} mm, centre {}",
             2.0 * radius,
             point(vec3(&circle["center"]))
+        ));
+    }
+    if let Some(axis) = m.get("axis") {
+        parts.push(format!(
+            "axis through {} along {}",
+            point(vec3(&axis["origin"])),
+            point(vec3(&axis["direction"]))
         ));
     }
     let _ = writeln!(

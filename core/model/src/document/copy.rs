@@ -339,6 +339,31 @@ impl DocState {
         } else {
             self.copy_appearances(source, &uids, &origin)?
         };
+        // Materials the copied bodies and components name (mitcad#640),
+        // brought from another document; a target's own of the same id
+        // and other fields stays, the copy gets another id.
+        let materials = if same_document {
+            BTreeMap::new()
+        } else {
+            let needed: BTreeSet<String> = source
+                .body_attributes
+                .iter()
+                .filter(|(body, _)| uids.contains_key(&body.feature))
+                .filter_map(|(_, a)| a.material.clone())
+                .chain(
+                    inside
+                        .iter()
+                        .filter_map(|c| source.component_materials.get(c).cloned()),
+                )
+                .collect();
+            self.copy_materials(source, &needed)
+        };
+        for c in &inside {
+            if let Some(id) = source.component_materials.get(c) {
+                let id = materials.get(id).cloned().unwrap_or_else(|| id.clone());
+                self.component_materials.insert(components[c], id);
+            }
+        }
         // Body attributes follow the bodies, face appearances their faces.
         let text: HashMap<String, String> = uids
             .iter()
@@ -352,6 +377,11 @@ impl DocState {
                 let mut attributes = attributes.clone();
                 if let Some(id) = attributes.appearance.as_mut()
                     && let Some(mapped) = appearances.get(id)
+                {
+                    *id = mapped.clone();
+                }
+                if let Some(id) = attributes.material.as_mut()
+                    && let Some(mapped) = materials.get(id)
                 {
                     *id = mapped.clone();
                 }
@@ -525,9 +555,21 @@ impl DocState {
             let context = p
                 .expression_context()
                 .or_else(|| (!same_document).then_some(source.parameters.context()));
+            // Its limits come along, their references renamed as the
+            // expression's (mitcad#665).
+            let mut limits = p.limits().clone();
+            for text in [&mut limits.min, &mut limits.max, &mut limits.step]
+                .into_iter()
+                .flatten()
+            {
+                if let Ok(expr) = crate::expr::Expr::parse(text) {
+                    *text = rename_references(text, &expr, &names);
+                }
+            }
             let mut spec = ParamSpec::user(&name, &expression, p.unit())
                 .with_comment(p.comment())
-                .with_expression_context(context);
+                .with_expression_context(context)
+                .with_limits(limits);
             // A copied sketch's driven dimensions keep read-only references
             // (mitcad#231).
             if owner.is_some() && p.kind() == crate::expr::ParamKind::Reference {
@@ -662,6 +704,27 @@ impl CopyReferences<'_> {
         original: &FeatureDef,
         component: ComponentUid,
     ) -> Result<(), ModelError> {
+        // A move's points and axes picked in occurrences (mitcad#699): root
+        // paths into the copied subtree follow it, others stay as they were,
+        // as Pattern at Points' points do.
+        if let (Some(to), Some(from)) = (copy.move_spec_mut(), original.move_spec()) {
+            for ((to_ref, to_path), (from_ref, from_path)) in to
+                .placed_references_mut()
+                .into_iter()
+                .zip(from.placed_references())
+            {
+                if let Some(path) = from_path {
+                    match self.path(path) {
+                        Some(mapped) => *to_path = Some(mapped),
+                        None => {
+                            *to_ref = from_ref.clone();
+                            *to_path = Some(path.clone());
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
         match (copy, original) {
             (FeatureDef::PatternAtPoints(copy), FeatureDef::PatternAtPoints(original)) => {
                 for (to, from) in copy

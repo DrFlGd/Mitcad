@@ -17,6 +17,9 @@ and [docs/development.md](docs/development.md) before larger changes.
   `-Wall -Wextra -Wpedantic` and AppleClang, Windows, Linux and macOS,
   metric defaults) and the
   [licence policy](docs/development.md#licence-policy).
+- Use the terms of [docs/naming.md](docs/naming.md): component, not
+  part; user-facing text names controls as the UI shows them (the
+  Assemble group, not ASSEMBLE).
 - Never commit real `.f3d` designs, FreeCAD documents or other
   third-party models; corpus tests read them from `MITCAD_F3D_CORPUS` and
   `MITCAD_FCSTD_CORPUS`.

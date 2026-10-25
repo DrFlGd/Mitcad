@@ -1,0 +1,18 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "profile": {
+    "id": "bambu-lab-a1-mini",
+    "name": "Bambu Lab A1 mini (0.4 nozzle)",
+    "kind": "printer",
+    "values": {
+      "bed_shape": [[0, 0], [180, 0], [180, 180], [0, 180]],
+      "max_print_height": 180,
+      "nozzle_diameter": 0.4,
+      "filament_slots": 4,
+      "printer_model": {"bambu_studio": "Bambu Lab A1 mini", "orcaslicer": "Bambu Lab A1 mini"},
+      "printer_settings_id": {"bambu_studio": "Bambu Lab A1 mini 0.4 nozzle", "orcaslicer": "Bambu Lab A1 mini 0.4 nozzle"}
+    },
+    "version": 1
+  }
+}

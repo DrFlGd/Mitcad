@@ -653,6 +653,72 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         verdict
     }
 
+    /// Whether the item's result (the document's bodies now) is its state
+    /// within the geometric tolerance by its faces: every face it made or
+    /// changed lies on the state, every face the file's operation made or
+    /// changed lies on the result, no corner patch off either, and the
+    /// faces account for how far its change is from the file's (`own`, the
+    /// file's change for it; `current`, the bodies' measures now), measured
+    /// as [`crate::Importer::change_check`] measures it, as [`judge`] asks.
+    /// For an extrusion that came within the tolerance of its state only
+    /// approximately: no other set of regions can come closer then
+    /// (mitcad#658). False where it cannot be told.
+    pub(crate) fn faces_on_state(
+        &mut self,
+        name: &str,
+        before: &[(BodyUid, K::Shape)],
+        states: States,
+        own: Option<&history::Change>,
+        current: &[Sig],
+    ) -> bool {
+        let clock = std::time::Instant::now();
+        let volume = match self.changed_faces(name, before, states) {
+            Some((ours, theirs, slack)) => ((ours - theirs).abs() - slack).max(0.0),
+            None => own.map_or(0.0, |o| o.difference_volume(current)),
+        };
+        let kernel = self.doc.kernel();
+        let measured = |uid: BodyUid, shape: &K::Shape| {
+            Sig::of(kernel, shape).map(|sig| (Some(uid), sig, shape.clone()))
+        };
+        let before: Vec<Body<K::Shape>> =
+            before.iter().filter_map(|(u, s)| measured(*u, s)).collect();
+        let after: Vec<Body<K::Shape>> = crate::body_scope::bodies(self.doc)
+            .iter()
+            .filter_map(|b| measured(b.uid, b.shape))
+            .collect();
+        let mut state = |index: usize| -> Option<Vec<Body<K::Shape>>> {
+            let bodies = self.oracle.state(kernel, index).ok()?;
+            Some(
+                bodies
+                    .iter()
+                    .map(|(b, sig)| (None, *sig, b.shape.clone()))
+                    .collect(),
+            )
+        };
+        let reference = match states.before {
+            Some(s) => state(s),
+            None => Some(Vec::new()),
+        };
+        let (Some(reference), Some(target)) = (reference, state(states.after)) else {
+            return false;
+        };
+        let Ok((ours, theirs)) = measure(kernel, &before, &after, &reference, &target) else {
+            return false;
+        };
+        let on = |faces: &[Deviation]| faces.iter().all(|f| !f.off());
+        let verdict = judge(&ours, &theirs, volume);
+        let agrees = on(&ours) && on(&theirs) && matches!(verdict, Some(Verdict::Agrees(_)));
+        trace!(
+            "{name}: faces on its state within {} mm: {agrees}, the change {volume:.4} mm³ off: \
+             {verdict:?} ({} and {} new faces, in {:.2} s)",
+            tolerance(),
+            ours.len(),
+            theirs.len(),
+            clock.elapsed().as_secs_f64()
+        );
+        agrees
+    }
+
     /// For traces (`MITCAD_IMPORT_TRACE_MISS` with `MITCAD_IMPORT_TRACE`):
     /// where a result that is not the file's state differs from it, the
     /// first deviation in numbers. The faces the result made or changed

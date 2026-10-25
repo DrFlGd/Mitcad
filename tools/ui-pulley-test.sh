@@ -2,27 +2,38 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/PulleyCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/pulley.rs core/model/src/features/pulley_profile.rs core/model/src/api/pulleys.rs
-# check-all sources: app/commands/SeatInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
+# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
+# check-all sources: core/model/src/features/place_at.rs core/model/src/features/drives.rs
+# check-all sources: app/framework/ManipulatorOverlay.cpp
 # Pulley (mitcad#562) through the real UI; the Windows counterpart is
 # tools/ui-windows-pulley-test.ps1 (ctest app.ui-windows-pulley):
-#   1. Pulley in an empty design: the panel starts on XY with a GT2 2 mm
+#   1. Pulley in an empty design, placed by a click on the XY plane and
+#      both distances 0 (it waits for a pick, mitcad#656): a GT2 2 mm
 #      pulley of 20 teeth; its note shows the pitch diameter (20 x 2 / pi =
 #      12.7324 mm). In the preview: flanges 24 across, then 30 teeth (pitch
 #      diameter 60 / pi = 19.0986 mm), then a flange on one side only. OK
 #      makes Pulley1 (F1.b0).
 #   2. Pulley1 edited: it opens with its flange on one side and its 30
 #      teeth; 20 teeth again, OK.
-#   3. Pulley again (20 teeth): Belt With a face of Pulley1, 80 mm apart:
-#      the note shows the belt round both (two equal pulleys: 2 x 80 +
-#      20 x 2 = 200 mm, 100 teeth); the catalogue lengths 188, 202 and 210
-#      give the nearest one (202 mm). OK makes F2.b0.
+#   3. Pulley again (20 teeth), 80 mm from Pulley1 along X (mitcad#656):
+#      Distance 1 typed in the dimension's value box in the view; Check
+#      Belt, under Place On, a face of Pulley1: its rows show the belt
+#      round both (two equal pulleys: 2 x 80 + 20 x 2 = 200 mm, 100 teeth)
+#      and the view draws its pitch line; the library's 200 mm GT2 belt,
+#      6 mm wide, fits as the pulleys are (0 mm of travel). OK makes
+#      F2.b0, which keeps the check (belt_check).
 #   4. On a shaft (mitcad#578), in a design mitcad-cli makes (an 8 mm
-#      cylinder 30 high, Cylinder1, F1.b0): Pulley with Shaft the
+#      cylinder 30 high, Cylinder1, F1.b0): Pulley with Place On the
 #      cylinder's top edge: the Bore Clearance starts as the printed-fit
 #      parameter shaft_bore_clearance (0.2 mm, mitcad#623), so the note
 #      shows the bore the shaft gives as 8.2 mm; an offset of 2 mm and a
 #      typed bore clearance of 0.3 mm make it 8.3 mm; OK makes the pulley
 #      on the shaft (F2.b0).
+#   5. Belt Drive (mitcad#656), in a design with two 8 mm shafts 60 mm
+#      apart: the shafts' top edges picked as the two axes, ratio 2, GT2
+#      2 mm: the rows list the tooth counts with their belts, the least
+#      tension travel first; the first previewed as new bodies; OK makes
+#      both pulleys.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-pulley-test.sh [screenshot.png]
@@ -41,6 +52,15 @@ cat > "$WORK/shaft.json" << 'EOF'
 ]
 EOF
 "$CLI" run "$WORK/shaft.json" --save "$WORK/shaft.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+cat > "$WORK/shafts.json" << 'JSON'
+[
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [60, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}}
+]
+JSON
+"$CLI" run "$WORK/shafts.json" --save "$WORK/shafts.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
 ui_start_display
 ui_start_app
@@ -49,7 +69,7 @@ echo "--- A GT2 pulley on XY, its teeth and flanges changed in the preview"
 ui_mark
 ui_step "Pulley"                           ui_command "Pulley"
 ui_expect_new "Command Pulley started" "the panel opened" 30
-ui_expect_new "Preview Pulley: ok" "the pulley previewed" 30
+ui_place_on_xy Pulley
 ui_expect_new "Panel Pulley note: Pitch diameter 12.7324 mm" "its pitch diameter shown"
 ui_mark
 ui_step "flange diameter 24"               ui_type_in "Panel Pulley input flange_diameter" "24"
@@ -79,32 +99,44 @@ ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Edited F1" "Pulley1 edited" 30
 
-echo "--- A second pulley on the belt"
-ui_step "fit (F6)"                         ui_key F6
+
+echo "--- A second pulley 80 mm along X, the belt round both checked (mitcad#656)"
+# No fit (F6) here: fitted to Pulley1 alone, the view would show the XY
+# plane only under the pulley, with no place where a click picks it.
 ui_mark
 ui_step "Pulley"                           ui_command "Pulley"
-ui_expect_new "Preview Pulley: ok" "the panel open" 30
+ui_place_on_xy Pulley
+ui_expect_new "Value box Pulley at_offset1 at " "Distance 1 is a dimension in the view" 30
 ui_mark
-ui_step "Belt With"                        ui_click_logged "Panel Pulley input belt_with"
+ui_step "Distance 1's value box"           ui_click_logged "Value box Pulley at_offset1"
+ui_expect_new "Value box Pulley at_offset1 opened: 0" "a field over the view edits it"
+ui_step "type 80"                          xdotool type --delay 40 "80"
+ui_step "Enter keeps it"                   ui_key Return
+ui_expect_new "Value box Pulley at_offset1 closed: 80" "the distance typed in the view"
+ui_expect_new "Preview Pulley: ok" "previewed 80 mm along X" 30
+grep -q "Added pulley" <(tail -n +"$UI_MARK" "$UI_LOG") && ui_fail "Enter in the value box confirmed the command"
+ui_mark
+ui_step "Check Belt"                       ui_click_logged "Panel Pulley input check_belt"
 ui_expect_new "Pick places:" "the picks are logged"
 ui_expect_new "Pick face F1.b0/F1:" "a face of Pulley1 can be picked"
 face=$(sed -n 's/^Pick face F1\.b0\/\(F1:[^ ]*\) at [0-9]*,[0-9]*$/\1/p' "$UI_LOG" | tail -1)
 [ -n "$face" ] || ui_fail "no face of Pulley1 to pick"
 ui_mark
 ui_step "click $face"                      ui_click_pick "face F1.b0/$face at"
-ui_expect_new "Preview Pulley: ok" "previewed beside Pulley1" 30
-ui_mark
-ui_step "centre distance 80"               ui_type_in "Panel Pulley input center_distance" "80"
-ui_expect_new "belt length 200 mm (100 teeth)" "the belt length logged" 30
-ui_mark
-ui_step "catalogue lengths"                ui_type_in "Panel Pulley input belt_lengths" "188, 202, 210"
-ui_expect_new "nearest catalogue length 202 mm" "the nearest catalogue length logged" 30
-grep "^Panel Pulley note: " "$UI_LOG" | tail -1 | sed 's/^/     /'
+ui_expect_new "Pulley belt check with F1: Belt length 200 mm (100 teeth)" "the belt round both, in its own rows" 30
+ui_expect_new "Lines Pulley: 1" "the belt's pitch line drawn" 30
+ui_expect_new "Nearest belt GT2 200 mm, 6 mm wide, Travel 0 mm, fits" "the library's belt, its travel and its verdict" 30
+grep "^Pulley belt check with " "$UI_LOG" | tail -1 | sed 's/^/     /'
 ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added pulley (Toothed), GT2 2 mm, 20 teeth" "the second pulley added" 30
 ui_expect_new "(F2.b0): volume " "its body made" 30
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+ui_mark
+ui_step "double-click Pulley2"             ui_double_click_logged "Timeline Pulley2"
+ui_expect_new "Editing F2 with Pulley" "Pulley2 opens for editing" 30
+ui_expect_new "Pulley belt check with F1: Belt length" "its belt check kept with it (belt_check)" 30
+ui_step "Cancel (Escape)"                  ui_key Escape
 
 echo "--- A pulley on a shaft (mitcad#578)"
 ui_stop_app
@@ -113,18 +145,20 @@ ui_step "fit (F6)"                         ui_key F6
 ui_expect_log "Bodies shown: F1.b0" "the shaft shown"
 ui_mark
 ui_step "Pulley"                           ui_command "Pulley"
-ui_expect_new "Preview Pulley: ok" "the panel open on XY" 30
+ui_expect_new "Command Pulley started" "the panel opened, waiting for a pick" 30
 ui_expect_new "Pulley Bore Clearance: shaft_bore_clearance = 0.2 mm" "the bore clearance is the printed-fit parameter"
 ui_step "teeth 20"                       ui_type_in "Panel Pulley input teeth" "20"
 ui_mark
-ui_step "Shaft"                            ui_click_logged "Panel Pulley input shaft"
+ui_step "Place On"                         ui_click_logged "Panel Pulley input at"
 ui_expect_new "Pick places:" "the picks are logged"
 ui_expect_new "Pick edge F1.b0/E{F1:side0|F1:top} at" "the shaft's top edge can be picked"
 ui_mark
 ui_step "click the shaft's top edge"       ui_click_pick "edge F1.b0/E{F1:side0|F1:top} at"
+ui_expect_new "Place Pulley: axis edge E{F1:side0|F1:top} of F1.b0" "placed on the shaft's end"
 ui_expect_new "bore 8.2 mm (shaft 8 mm)" "the bore the shaft gives, with the printed fit" 30
 ui_mark
-ui_step "offset 2"                         ui_type_in "Panel Pulley input seat_offset" "2"
+ui_step "More"                             ui_click_logged "Panel Pulley input at_more"
+ui_step "offset 2"                         ui_type_in "Panel Pulley input at_offset" "2"
 ui_expect_new "Preview Pulley: ok" "2 mm down the shaft previewed" 30
 ui_mark
 ui_step "bore clearance 0.3"               ui_type_in "Panel Pulley input bore_clearance" "0.3"
@@ -134,6 +168,33 @@ ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added pulley (Toothed), GT2 2 mm, 20 teeth" "the pulley on the shaft added" 30
 ui_expect_new "(F2.b0): volume " "its body made" 30
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- 5. Belt Drive between two shafts (mitcad#656)"
+ui_stop_app
+ui_start_app --open "$WORK/shafts.mitcad"
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Bodies shown: F1.b0, F2.b0" "the shafts shown"
+ui_mark
+ui_step "Belt Drive"                       ui_command "Belt Drive"
+ui_expect_new "Command Belt Drive started" "the panel opened" 30
+ui_expect_new "Pick edge F1.b0/E{F1:side0|F1:top} at" "the first shaft's top edge can be picked"
+ui_mark
+ui_step "the first shaft"                  ui_click_pick "edge F1.b0/E{F1:side0|F1:top} at"
+ui_expect_new "Pick edge F2.b0/E{F2:side0|F2:top} at" "the second shaft's top edge can be picked"
+ui_mark
+ui_step "the second shaft"                 ui_click_pick "edge F2.b0/E{F2:side0|F2:top} at"
+ui_expect_new "Belt Drive candidates: " "the model's candidates" 30
+ui_expect_new "centre distance 60 mm" "the axes 60 mm apart"
+ui_expect_new "Panel Belt Drive options candidate: " "the rows listed" 30
+grep "^Panel Belt Drive options candidate: " "$UI_LOG" | tail -1 | cut -c1-160 | sed 's/^/     /'
+ui_mark
+ui_step "operation: New Body"              ui_choose "Panel Belt Drive input operation" 1
+ui_expect_new "Preview Belt Drive: ok" "the drive previewed" 30
+ui_expect_new "Panel Belt Drive note: Belt length " "the belt as values" 30
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added belt drive (gt2_2mm), " "both pulleys added" 30
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 
 ui_finish "UI pulley test"

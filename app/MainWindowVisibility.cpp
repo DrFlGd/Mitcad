@@ -7,6 +7,7 @@
 #include <QtLogging>
 
 #include "OcctViewer.hpp"
+#include "browser/BrowserController.hpp"
 #include "view/ModeBanner.hpp"
 
 namespace mitcad {
@@ -93,6 +94,11 @@ QString MainWindow::pickPlaneText() const {
 void MainWindow::updateModeBanner() {
   if (m_modeBanner != nullptr) {
     m_modeBanner->setText(m_mode == Mode::PickPlane ? pickPlaneText() : QString());
+  }
+  // The origin planes startSketch offered in the browser (mitcad#694) go
+  // with the pick: the sketch started, Esc, another document.
+  if (m_mode != Mode::PickPlane && m_controller != nullptr) {
+    m_controller->browser()->offerOriginPlanes(false);
   }
 }
 

@@ -238,8 +238,8 @@ ui_expect_volume "New body Body5 (F13.b0): volume \([0-9.]*\) mm3" 28000 "the fr
 echo "--- Coil: placed with a click on XY"
 ui_step "coil (search)"                    ui_command "Coil"
 ui_step "click XY"                         ui_click_logged "Datum xy"
-ui_expect_log "Coil Plane: 1 plane [plane xy]" "XY picked"
-ui_expect_log "Coil Center X: " "the centre where the click was"
+ui_expect_log "Coil Place On: 1 plane [plane xy]" "XY picked"
+ui_expect_log "Place Coil: face plane xy, " "the centre where the click was, from the origin axes"
 ui_step "Revolution and Pitch"             ui_choose "Panel Coil input type" 1
 ui_expect_log "Preview Coil: ok" "previewed"
 ui_step "OK (Enter)"                       ui_key Return

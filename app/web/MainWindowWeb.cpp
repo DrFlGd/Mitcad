@@ -138,7 +138,7 @@ void MainWindow::registerWebViewerCommands() {
                   QStringLiteral("website"), QStringLiteral("customer")};
     return d;
   };
-  m_registry->add(def("file.web_viewer", tr("Web Viewer..."), "web",
+  m_registry->add(def("file.web_viewer", tr("Web Viewer…"), "web",
                       tr("Turns on the project's web viewer: a web page per design and an index"),
                       [this] { writeWebViewer(true); }));
   m_registry->add(def("file.update_web_viewer", tr("Update Web Viewer"), "update",
@@ -162,7 +162,7 @@ void MainWindow::writeWebViewer(bool turnOn) {
   const WebViewerState state = webViewerState(inspection);
   if (!turnOn && !state.on) {
     qInfo().noquote() << QStringLiteral("Web viewer: not turned on in %1").arg(root);
-    showHint(tr("The web viewer of %1 is not turned on: File > Project > Web Viewer turns it on.").arg(name));
+    showHint(tr("The web viewer of %1 is not turned on: File › Project › Web Viewer turns it on.").arg(name));
     return;
   }
   if (inspection.value(QStringLiteral("designs_truncated")).toBool()) {

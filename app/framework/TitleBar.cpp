@@ -53,26 +53,19 @@ protected:
   void paintEvent(QPaintEvent*) override { QPainter(this).fillRect(rect(), cardBorderColor(palette())); }
 };
 
-// A capsule button of the title bar: the search field (an outline of the
-// command search with its label) or the prominent button (accent fill, white
-// text). The action gives the click, the state and the tooltip.
+// The title bar's search field: an outline of command search with its label.
+// The action gives the click, the state and the tooltip.
 class TitleButton : public QToolButton {
 public:
-  enum class Kind { Field, Prominent };
-
-  TitleButton(Kind kind, QAction* action, const QString& label, QWidget* parent = nullptr)
-      : QToolButton(parent), m_kind(kind), m_label(label) {
+  TitleButton(QAction* action, const QString& label, QWidget* parent = nullptr)
+      : QToolButton(parent), m_label(label) {
     setDefaultAction(action);
     setToolButtonStyle(Qt::ToolButtonTextOnly);
     setFocusPolicy(Qt::NoFocus);
     setAttribute(Qt::WA_Hover);
     setCursor(Qt::ArrowCursor);
     setFixedHeight(kControlHeight);
-    if (kind == Kind::Field) {
-      setFixedWidth(220);
-    } else {
-      setFixedWidth(fontMetrics().horizontalAdvance(label) + 40);
-    }
+    setFixedWidth(220);
   }
 
 protected:
@@ -89,37 +82,16 @@ protected:
     const QPalette pal = palette();
     const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     const qreal radius = box.height() / 2;
-    if (m_kind == Kind::Field) {
-      painter.setPen(QPen(cardBorderColor(pal), 1));
-      painter.setBrush(tint(pal, isDarkPalette(pal) ? 24 : 15));
-      painter.drawRoundedRect(box, radius, radius);
-      const QColor quiet = tint(pal, 150);
-      painter.setPen(quiet);
-      const QPixmap glass = m_glass.pixmap(QSize(14, 14), devicePixelRatioF());
-      painter.drawPixmap(QPointF(12, (height() - 14) / 2.0), glass);
-      painter.drawText(QRect(34, 0, width() - 44, height()), Qt::AlignVCenter | Qt::AlignLeft, m_label);
-      return;
-    }
-    QColor fill = accentColor(pal);
-    if (!isEnabled()) {
-      fill.setAlpha(90);
-    } else if (isDown()) {
-      fill = fill.darker(125);
-    } else if (underMouse()) {
-      fill = fill.lighter(110);
-    }
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(fill);
+    painter.setPen(QPen(cardBorderColor(pal), 1));
+    painter.setBrush(tint(pal, isDarkPalette(pal) ? 24 : 15));
     painter.drawRoundedRect(box, radius, radius);
-    QFont bold = font();
-    bold.setWeight(QFont::DemiBold);
-    painter.setFont(bold);
-    painter.setPen(pal.color(QPalette::HighlightedText));
-    painter.drawText(rect(), Qt::AlignCenter, m_label);
+    painter.setPen(tint(pal, 150));
+    const QPixmap glass = m_glass.pixmap(QSize(14, 14), devicePixelRatioF());
+    painter.drawPixmap(QPointF(12, (height() - 14) / 2.0), glass);
+    painter.drawText(QRect(34, 0, width() - 44, height()), Qt::AlignVCenter | Qt::AlignLeft, m_label);
   }
 
 private:
-  Kind m_kind;
   QString m_label;
   QIcon m_glass = mac::symbolIcon(QStringLiteral("magnifyingglass"), QIcon());
 };
@@ -128,8 +100,7 @@ private:
 
 int TitleBar::rowHeight() { return kRowHeight; }
 
-TitleBar::TitleBar(Ribbon* ribbon, QAction* undo, QAction* redo, QAction* search, QAction* finish,
-                   QWidget* parent)
+TitleBar::TitleBar(Ribbon* ribbon, QAction* undo, QAction* redo, QAction* search, QWidget* parent)
     : QWidget(parent) {
   setObjectName(QStringLiteral("titleBar"));
   setFixedHeight(kRowHeight);
@@ -158,21 +129,10 @@ TitleBar::TitleBar(Ribbon* ribbon, QAction* undo, QAction* redo, QAction* search
   row->addWidget(tabs);
   row->addStretch();
 
-  m_search = new TitleButton(TitleButton::Kind::Field, search, tr("Search commands"));
+  m_search = new TitleButton(search, tr("Search commands"));
   m_search->setObjectName(QStringLiteral("titleSearch"));
   row->addWidget(m_search);
-  m_finish = new TitleButton(TitleButton::Kind::Prominent, finish, finish->text());
-  m_finish->setObjectName(QStringLiteral("titleFinishSketch"));
-  m_finish->setVisible(false);
-  row->addWidget(m_finish);
-
-  connect(ribbon, &Ribbon::sketchModeChanged, this, &TitleBar::setSketchMode);
   updateInset();
-}
-
-void TitleBar::setSketchMode(bool sketching) {
-  m_finish->setVisible(sketching);
-  update();
 }
 
 void TitleBar::setIndicator(QWidget* indicator) {
@@ -204,7 +164,7 @@ void TitleBar::setFloatingRow(bool floating) {
   layout()->setContentsMargins(floating ? 0 : 12, 0, floating ? 0 : 12, 0);
   m_inset->setVisible(!floating);
   m_history->setCardMaterial(floating);
-  for (QWidget* part : std::initializer_list<QWidget*>{m_history, m_tabs, m_search, m_finish, m_indicator.data()}) {
+  for (QWidget* part : std::initializer_list<QWidget*>{m_history, m_tabs, m_search, m_indicator.data()}) {
     if (part == nullptr) {
       continue;
     }
@@ -236,7 +196,6 @@ std::vector<std::pair<QString, QRect>> TitleBar::rowParts() const {
   add("titleTabs", m_tabs);
   add("titleIndicator", m_indicator.data());
   add("titleSearch", m_search);
-  add("titleFinishSketch", m_finish);
   const QRect box = titleBox();
   if (!box.isEmpty()) {
     parts.emplace_back(QStringLiteral("titleBox"), box);
@@ -413,14 +372,14 @@ void TitleBar::paintEvent(QPaintEvent*) {
   if (m_floatingRow) {
     // Over the view (mitcad#429): the cards' fill and hairline behind the
     // tabs, the project indicator and the search field (capsules; the Undo
-    // and Redo pair has its own, Finish Sketch is opaque), and behind the
+    // and Redo pair has its own), and behind the
     // document's name a box as a bare card's header.
     painter.setRenderHint(QPainter::Antialiasing);
     const qreal hairline = 1.0 / devicePixelRatioF();
     painter.setPen(QPen(cardBorderColor(pal), hairline));
     painter.setBrush(cardFillColor(pal));
     for (const auto& [name, rect] : rowParts()) {
-      if (name == QLatin1String("titleHistory") || name == QLatin1String("titleFinishSketch")) {
+      if (name == QLatin1String("titleHistory")) {
         continue;
       }
       const QRectF box = QRectF(rect).adjusted(hairline / 2, hairline / 2, -hairline / 2, -hairline / 2);

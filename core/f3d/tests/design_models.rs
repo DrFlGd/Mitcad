@@ -1821,7 +1821,8 @@ fn construction_axes_match_the_reference_dumps() {
 
 /// The settings of patterns and mirrors (mitcad#186): every decoded
 /// symmetry flag, compute option, distance type, suppressed list and join
-/// flag is the dump's (the one-option variants of each among the models).
+/// flag is the dump's (the one-option variants of each among the models),
+/// and a path pattern's flip and orientation (mitcad#673).
 #[test]
 fn pattern_settings_match_the_reference_dumps() {
     let Some(dir) = models_dir() else {
@@ -1842,6 +1843,8 @@ fn pattern_settings_match_the_reference_dumps() {
         "patternDistanceType",
         "suppressedElementsIds",
         "isCombine",
+        "isFlipDirection",
+        "isOrientationAlongPath",
     ];
     let (mut agree, mut differ) = (0usize, Vec::new());
     for (id, f3d, json) in models(&dir) {

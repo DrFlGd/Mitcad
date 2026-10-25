@@ -135,6 +135,16 @@ pub trait LinkResolver: Send + Sync {
             request.component
         ))
     }
+
+    /// The base library of materials and print profiles (mitcad#640,
+    /// `crate::print_library`): the item files Mitcad's parts library
+    /// lists in its newest version (`materials/...`, `print/printers/...`,
+    /// `print/processes/...`), each with its path in the library and its
+    /// bytes. None when there is none on this computer; resolvers without
+    /// libraries have none.
+    fn print_library(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+        Ok(Vec::new())
+    }
 }
 
 static RESOLVER: RwLock<Option<Arc<dyn LinkResolver>>> = RwLock::new(None);

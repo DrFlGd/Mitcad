@@ -207,12 +207,12 @@ $init = Mcp-Request 'initialize' @{ protocolVersion = '2025-11-25'; capabilities
 Mcp-Check ($init.result.protocolVersion -eq '2025-11-25') 'initialized' ($init | ConvertTo-Json -Compress -Depth 10)
 Mcp-Send @{ jsonrpc = '2.0'; method = 'notifications/initialized' }
 $tools = @((Mcp-Request 'tools/list').result.tools | ForEach-Object { $_.name }) | Sort-Object
-$expected = @('document_list', 'document_open', 'document_save', 'model_command', 'model_query', 'ui_camera',
+$expected = @('document_list', 'document_open', 'document_save', 'model_command', 'model_export', 'model_query', 'ui_camera',
   'ui_command', 'ui_log', 'ui_screenshot', 'ui_select', 'ui_state') | Sort-Object
 Mcp-Check (($tools -join ',') -eq ($expected -join ',')) 'the live catalog has the debugging tools' ($tools -join ',')
 $document = @((Mcp-Tool 'document_list' @{}).documents)[0].document
 Ui-ExpectNew 'Agent connected' 'the window says an agent is connected'
-Ui-ExpectNew 'Project indicator: not in a project, agent connected' 'the status bar says so'
+Ui-ExpectNew 'Project indicator: not in a project, connected: mitcad-windows-test' 'the status bar names the client'
 
 Write-Host '--- The sketch opened, queries with it open, ui_state'
 $edited = Mcp-Tool 'ui_command' @{ document = $document; edit = 'F4' }
@@ -261,8 +261,12 @@ Ui-ExpectLog 'Selected: 1 sketch curve, 1 sketch point' 'the window selected the
 
 Write-Host '--- ui_screenshot'
 foreach ($whole in @($false, $true)) {
-  $shot = Mcp-Tool 'ui_screenshot' @{ window = $whole; max_size = 400 }
-  $png = [Convert]::FromBase64String($shot.png_base64)
+  # The image is an MCP image block after the text (mitcad#689).
+  $response = Mcp-Request 'tools/call' @{ name = 'ui_screenshot'; arguments = @{ window = $whole; max_size = 400 } }
+  if ($response.error -or $response.result.isError) { Mcp-Fail "ui_screenshot: $($response | ConvertTo-Json -Compress -Depth 5)" }
+  $shot = $response.result.structuredContent
+  $image = @($response.result.content | Where-Object { $_.type -eq 'image' })[0]
+  $png = [Convert]::FromBase64String($image.data)
   $signature = ($png[0..7] | ForEach-Object { $_.ToString('X2') }) -join ''
   Mcp-Check ($signature -eq '89504E470D0A1A0A' -and $png.Length -eq $shot.bytes -and $png.Length -lt 8MB -and
     [Math]::Max($shot.width, $shot.height) -le 400) "ui_screenshot (window $whole) is a PNG under the limit" `

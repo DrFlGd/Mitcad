@@ -25,6 +25,8 @@
 #include <BRepFill_TypeOfContact.hxx>
 #include <GeomAPI_PointsToBSpline.hxx>
 #include <ShapeAnalysis_Surface.hxx>
+#include <ShapeExtend_WireData.hxx>
+#include <ShapeFix_Wire.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Pnt2d.hxx>
 #include <BRep_Builder.hxx>
@@ -178,14 +180,48 @@ TopoDS_Wire path_wire(const Path& path) {
   if (path.empty()) {
     throw std::invalid_argument("the path has no curves");
   }
+  std::vector<TopoDS_Edge> edges;
+  edges.reserve(path.size());
   BRepBuilderAPI_MakeWire wire;
+  bool joined = true;
   for (const PathCurve& piece : path) {
-    wire.Add(model_edge(piece.curve));
-    if (!wire.IsDone()) {
-      throw std::invalid_argument("path curve " + piece.name + " does not join the curve before it");
+    edges.push_back(model_edge(piece.curve));
+    if (joined) {
+      wire.Add(edges.back());
+      joined = wire.IsDone();
     }
   }
-  return wire.Wire();
+  if (joined) {
+    return wire.Wire();
+  }
+  // (mitcad#641) The model chains the curves within 1e-6 of the path's size
+  // (features/path.rs), the wire joins them within their vertices' 1e-7: the
+  // curves of a body's edges whose vertices are wider than that (a sketch's
+  // curves placed by its solve within its tolerance and extruded) end apart
+  // by more. Ends within the model's tolerance share one vertex.
+  double size = 1.0;
+  for (const TopoDS_Edge& edge : edges) {
+    for (const TopoDS_Vertex& v : {TopExp::FirstVertex(edge), TopExp::LastVertex(edge)}) {
+      const gp_Pnt p = BRep_Tool::Pnt(v);
+      size = std::max({size, std::abs(p.X()), std::abs(p.Y()), std::abs(p.Z())});
+    }
+  }
+  const double tolerance = 1.0e-6 * size;
+  for (std::size_t i = 1; i < edges.size(); ++i) {
+    const double gap = BRep_Tool::Pnt(TopExp::LastVertex(edges[i - 1])).Distance(BRep_Tool::Pnt(TopExp::FirstVertex(edges[i])));
+    if (gap > tolerance) {
+      throw std::invalid_argument("path curve " + path[i].name + " does not join the curve before it");
+    }
+  }
+  occ::handle<ShapeExtend_WireData> data = new ShapeExtend_WireData();
+  for (const TopoDS_Edge& edge : edges) {
+    data->Add(edge);
+  }
+  ShapeFix_Wire fix;
+  fix.Load(data);
+  fix.ClosedWireMode() = BRep_Tool::Pnt(TopExp::LastVertex(edges.back())).Distance(BRep_Tool::Pnt(TopExp::FirstVertex(edges.front()))) <= tolerance;
+  fix.FixConnected(tolerance);
+  return data->Wire();
 }
 
 Spine::Spine(const TopoDS_Wire& wire) : m_wire(wire) {

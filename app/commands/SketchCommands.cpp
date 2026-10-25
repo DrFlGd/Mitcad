@@ -361,7 +361,7 @@ void addProject(CommandRegistry& registry, SketchController& c) {
       selectionInput(QStringLiteral("geometry"), QObject::tr("Geometry"),
                      SelectKind::Edge | SelectKind::Face | SelectKind::Vertex, 1, 0),
       checkInput(QStringLiteral("linked"), QObject::tr("Projection Link"), true)
-          .withTooltip(QObject::tr("The projection follows its source when the model changes")),
+          .withTooltip(QObject::tr("The projection follows its source when the design changes")),
   };
   def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
     QJsonArray commands;
@@ -726,7 +726,7 @@ InputDef fontInput(SketchController& c) {
   InputDef input = choiceInput(QStringLiteral("font"), QObject::tr("Font"), {}, QStringLiteral("Droid Sans"));
   input.choicesFor = [](const CommandState& s) { return fontChoices(s.choice(QStringLiteral("font"))); };
   input.choiceImage = [](const QString& value) { return sketch::fontPreview(value); };
-  input.buttonText = QObject::tr("File...");
+  input.buttonText = QObject::tr("File…");
   input.buttonTooltip = QObject::tr("Chooses a font file (.ttf, .otf, .woff, .woff2); its outlines are kept in the "
                                     "design");
   input.onButton = [&c](const CommandState& s, const CommandContext&) {
@@ -872,6 +872,10 @@ void addEditText(CommandRegistry& registry, SketchController& c) {
       selectionInput(QStringLiteral("text"), QObject::tr("Text"), SelectKind::SketchCurve, 1, 1)
           .withAccepts(editable(c, lookup)),
       textInput(QStringLiteral("content"), QObject::tr("Text")),
+      // The text from a text parameter or expression (mitcad#664).
+      textInput(QStringLiteral("value"), QObject::tr("Text Parameter"))
+          .withTooltip(QObject::tr(
+              "A text parameter or text expression, such as 'Box ' & Width, for the text; empty for the text above")),
       valueInput(QStringLiteral("height"), QObject::tr("Height"), ValueKind::Length, QStringLiteral("5")),
       valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
           .withVisible(free),
@@ -911,6 +915,7 @@ void addEditText(CommandRegistry& registry, SketchController& c) {
       return;
     }
     s.setText(QStringLiteral("content"), t->text);
+    s.setText(QStringLiteral("value"), t->value);
     s.setText(QStringLiteral("height"), QString::number(t->height / context.unitMillimetres(), 'g', 12));
     s.setText(QStringLiteral("angle"), QStringLiteral("%1 deg").arg(t->angle * 180.0 / 3.14159265358979323846, 0, 'g', 12));
     if (!t->fontFile.isEmpty()) {
@@ -940,12 +945,21 @@ void addEditText(CommandRegistry& registry, SketchController& c) {
       return Built::failure(QObject::tr("Pick a text."), QStringLiteral("text"));
     }
     const QString content = s.text(QStringLiteral("content"));
-    if (content.trimmed().isEmpty()) {
+    const QString value = s.text(QStringLiteral("value")).trimmed();
+    if (content.trimmed().isEmpty() && value.isEmpty()) {
       return Built::failure(QObject::tr("The text is empty."), QStringLiteral("content"));
     }
     QJsonObject cmd = base(c, "sketch.edit_text");
     cmd.insert(QStringLiteral("id"), picked.first().name);
-    cmd.insert(QStringLiteral("text"), content);
+    if (!content.trimmed().isEmpty()) {
+      cmd.insert(QStringLiteral("text"), content);
+    }
+    // The text parameter it follows (mitcad#664); empty stops it following
+    // the one it followed.
+    const sketch::TextData* edited = c.model().text(picked.first().name);
+    if (!value.isEmpty() || (edited != nullptr && !edited->value.isEmpty())) {
+      cmd.insert(QStringLiteral("value"), value);
+    }
     cmd.insert(QStringLiteral("height"), s.value(QStringLiteral("height")));
     if (!std::isnan(s.value(QStringLiteral("angle")))) {
       cmd.insert(QStringLiteral("angle"), s.value(QStringLiteral("angle")));
@@ -1102,6 +1116,9 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
   addCleanUpStaleProjections(registry, c);
   add({"sketch.dimension", QObject::tr("Sketch Dimension"), "dimension", "CREATE",
        [&c] {
+         // A viewport click's queued pick must reach the selection before
+         // the tool captures it (mitcad#660).
+         c.host().deliverPendingPicks();
          // Three or more objects selected: their equal spacing (mitcad#221).
          if (!dimensionEqualSpacing(c)) {
            c.startTool(sketch::dimensionTool(c));

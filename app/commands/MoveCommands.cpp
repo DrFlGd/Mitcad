@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Scale, Combine, Move/Copy, Align, Physical Material and Appearance
+// Scale, Combine, Move/Copy, Align and Appearance
 // (commands.md, "move, align, scale", "combine", "Visibility and
 // display"). Move/Copy's free move has
 // handles: arrows along X, Y and Z and rings about them, at the middle of
@@ -98,6 +98,74 @@ QString occurrencePath(const QString& occurrence, const CommandContext& context)
   } catch (const std::exception&) {
     return occurrence;
   }
+}
+
+// The component the occurrence path ("O1/O4") places; empty when the path
+// leads nowhere.
+QString placedComponent(const QString& path, const CommandContext& context) {
+  std::function<QString(const QJsonArray&, const QString&)> find = [&](const QJsonArray& tree, const QString& prefix) {
+    for (const QJsonValue& value : tree) {
+      const QJsonObject node = value.toObject();
+      const QString uid = node.value(QStringLiteral("uid")).toString();
+      const QString here = prefix.isEmpty() ? uid : prefix + QLatin1Char('/') + uid;
+      if (here == path) {
+        return node.value(QStringLiteral("component")).toString();
+      }
+      if (path.startsWith(here + QLatin1Char('/'))) {
+        return find(node.value(QStringLiteral("children")).toArray(), here);
+      }
+    }
+    return QString();
+  };
+  try {
+    return find(context.queryObject({{QStringLiteral("query"), QStringLiteral("components")}})
+                    .value(QStringLiteral("occurrences"))
+                    .toArray(),
+                QString());
+  } catch (const std::exception&) {
+    return QString();
+  }
+}
+
+// The component a move works in, kept in its hidden input "component"
+// (mitcad#699): the active one for a new move, the feature's own in an
+// edit (loadTransform).
+const QString kMoveComponent = QStringLiteral("component");
+
+void initMoveComponent(CommandState& state, const CommandContext& context) {
+  try {
+    state.setText(kMoveComponent, context.queryObject({{QStringLiteral("query"), QStringLiteral("components")}})
+                                      .value(QStringLiteral("active"))
+                                      .toString(QStringLiteral("C0")));
+  } catch (const std::exception&) {
+  }
+}
+
+// A move's point or axis picked in an occurrence of another component than
+// the move's (a vertex of another part): `<key>_occurrence` beside it, the
+// occurrence's path, so that the model takes it where that occurrence
+// places it (commands.md, "move, align, scale", mitcad#699). Geometry of
+// the move's own component, or picked in no occurrence, goes as before.
+void addPickedOccurrence(QJsonObject& transform, const QString& key, const SelectionItem& item,
+                         const CommandState& state, const CommandContext& context) {
+  if (item.occurrence.isEmpty()) {
+    return;
+  }
+  const QString own = state.text(kMoveComponent).isEmpty() ? QStringLiteral("C0") : state.text(kMoveComponent);
+  if (placedComponent(item.occurrence, context) == own) {
+    return;
+  }
+  transform.insert(key + QStringLiteral("_occurrence"), item.occurrence);
+}
+
+// A definition's point or axis, in the occurrence it was picked in.
+SelectionItem pickedItemOf(const QJsonObject& transform, const QString& key, const CommandContext& context) {
+  SelectionItem item = itemOf(transform.value(key), context);
+  const QJsonValue occurrence = transform.value(key + QStringLiteral("_occurrence"));
+  if (occurrence.isString()) {
+    item.occurrence = occurrence.toString();
+  }
+  return item;
 }
 
 // The names of the occurrences by their paths ("O1/O4" → "Screw:1").
@@ -304,31 +372,48 @@ QJsonObject transformOf(const CommandState& state, const CommandContext& context
             {QStringLiteral("y"), state.expression(QStringLiteral("y"))},
             {QStringLiteral("z"), state.expression(QStringLiteral("z"))}};
   }
+  // Points and axes go with the occurrences they were picked in.
+  const auto picked = [&state, &context](QJsonObject transform, const QString& key, const SelectionItem& item) {
+    transform.insert(key, item.reference());
+    addPickedOccurrence(transform, key, item, state, context);
+    return transform;
+  };
   if (type == QStringLiteral("along")) {
     // Move Face's Translate Along (mitcad#531).
-    return {{QStringLiteral("type"), QStringLiteral("translate_along")},
-            {QStringLiteral("axis"), state.items(QStringLiteral("along_axis")).first().reference()},
-            {QStringLiteral("distance"), state.expression(QStringLiteral("distance"))}};
+    const QJsonObject along{{QStringLiteral("type"), QStringLiteral("translate_along")},
+                            {QStringLiteral("distance"), state.expression(QStringLiteral("distance"))}};
+    return picked(along, QStringLiteral("axis"), state.items(QStringLiteral("along_axis")).first());
   }
   if (type == QStringLiteral("rotate")) {
-    return {{QStringLiteral("type"), type},
-            {QStringLiteral("axis"), state.items(QStringLiteral("axis")).first().reference()},
-            {QStringLiteral("angle"), state.expression(QStringLiteral("angle"))}};
+    const QJsonObject rotate{{QStringLiteral("type"), type},
+                             {QStringLiteral("angle"), state.expression(QStringLiteral("angle"))}};
+    return picked(rotate, QStringLiteral("axis"), state.items(QStringLiteral("axis")).first());
   }
   if (type == QStringLiteral("point_to_point")) {
-    return {{QStringLiteral("type"), type},
-            {QStringLiteral("from"), state.items(QStringLiteral("from")).first().reference()},
-            {QStringLiteral("to"), state.items(QStringLiteral("to")).first().reference()}};
+    const QJsonObject points{{QStringLiteral("type"), type}};
+    return picked(picked(points, QStringLiteral("from"), state.items(QStringLiteral("from")).first()),
+                  QStringLiteral("to"), state.items(QStringLiteral("to")).first());
   }
-  return {{QStringLiteral("type"), type},
-          {QStringLiteral("point"), state.items(QStringLiteral("point")).first().reference()},
-          {QStringLiteral("x"), state.expression(QStringLiteral("px"))},
-          {QStringLiteral("y"), state.expression(QStringLiteral("py"))},
-          {QStringLiteral("z"), state.expression(QStringLiteral("pz"))}};
+  const QJsonObject position{{QStringLiteral("type"), type},
+                             {QStringLiteral("x"), state.expression(QStringLiteral("px"))},
+                             {QStringLiteral("y"), state.expression(QStringLiteral("py"))},
+                             {QStringLiteral("z"), state.expression(QStringLiteral("pz"))}};
+  return picked(position, QStringLiteral("point"), state.items(QStringLiteral("point")).first());
 }
 
 bool loadTransform(const QJsonObject& transform, CommandState& state, const QJsonObject& feature,
                    const CommandContext& context) {
+  // The component the edited move works in (mitcad#699).
+  if (feature.contains(QStringLiteral("uid"))) {
+    try {
+      state.setText(kMoveComponent, context
+                                        .queryObject({{QStringLiteral("query"), QStringLiteral("feature")},
+                                                      {QStringLiteral("uid"), feature.value(QStringLiteral("uid"))}})
+                                        .value(QStringLiteral("component"))
+                                        .toString(QStringLiteral("C0")));
+    } catch (const std::exception&) {
+    }
+  }
   const QString type = str(transform, "type");
   if (type == QStringLiteral("free")) {
     state.setChoice(QStringLiteral("type"), type);
@@ -364,19 +449,19 @@ bool loadTransform(const QJsonObject& transform, CommandState& state, const QJso
   }
   if (type == QStringLiteral("rotate")) {
     state.setChoice(QStringLiteral("type"), type);
-    state.setItems(QStringLiteral("axis"), {itemOf(transform.value(QStringLiteral("axis")), context)});
+    state.setItems(QStringLiteral("axis"), {pickedItemOf(transform, QStringLiteral("axis"), context)});
     loadValue(state, QStringLiteral("angle"), transform.value(QStringLiteral("angle")), feature, context);
     return true;
   }
   if (type == QStringLiteral("point_to_point")) {
     state.setChoice(QStringLiteral("type"), type);
-    state.setItems(QStringLiteral("from"), {itemOf(transform.value(QStringLiteral("from")), context)});
-    state.setItems(QStringLiteral("to"), {itemOf(transform.value(QStringLiteral("to")), context)});
+    state.setItems(QStringLiteral("from"), {pickedItemOf(transform, QStringLiteral("from"), context)});
+    state.setItems(QStringLiteral("to"), {pickedItemOf(transform, QStringLiteral("to"), context)});
     return true;
   }
   if (type == QStringLiteral("point_to_position")) {
     state.setChoice(QStringLiteral("type"), type);
-    state.setItems(QStringLiteral("point"), {itemOf(transform.value(QStringLiteral("point")), context)});
+    state.setItems(QStringLiteral("point"), {pickedItemOf(transform, QStringLiteral("point"), context)});
     loadValue(state, QStringLiteral("px"), transform.value(QStringLiteral("x")), feature, context);
     loadValue(state, QStringLiteral("py"), transform.value(QStringLiteral("y")), feature, context);
     loadValue(state, QStringLiteral("pz"), transform.value(QStringLiteral("z")), feature, context);
@@ -385,7 +470,7 @@ bool loadTransform(const QJsonObject& transform, CommandState& state, const QJso
   if (type == QStringLiteral("translate_along")) {
     // Move Face's Translate Along (Move/Copy has no inputs for it).
     state.setChoice(QStringLiteral("type"), QStringLiteral("along"));
-    state.setItems(QStringLiteral("along_axis"), {itemOf(transform.value(QStringLiteral("axis")), context)});
+    state.setItems(QStringLiteral("along_axis"), {pickedItemOf(transform, QStringLiteral("axis"), context)});
     loadValue(state, QStringLiteral("distance"), transform.value(QStringLiteral("distance")), feature, context);
     return true;
   }
@@ -537,6 +622,11 @@ InputDef pivotInput() {
   return textInput(QStringLiteral("pivot"), QObject::tr("Pivot")).withVisible([](const CommandState&) { return false; });
 }
 
+// The hidden component the move works in (mitcad#699).
+InputDef moveComponentInput() {
+  return textInput(kMoveComponent, QObject::tr("Component")).withVisible([](const CommandState&) { return false; });
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -581,13 +671,14 @@ CommandDef moveCommand(const CommandContext& context) {
   def.inputs << checkInput(QStringLiteral("copy"), QObject::tr("Create Copy"), false)
                     .withTooltip(QObject::tr("Move copies of the bodies; the originals stay"))
                     .withVisible(bodies)
-             << pivotInput();
+             << pivotInput() << moveComponentInput();
   def.enabled = [&context] { return hasBodies(context); };
   // Components selected before (a pasted copy, P9) move as components.
-  def.init = [](CommandState& state, const CommandContext&) {
+  def.init = [](CommandState& state, const CommandContext& context) {
     if (!state.items(QStringLiteral("components")).isEmpty() && state.items(QStringLiteral("bodies")).isEmpty()) {
       state.setChoice(QStringLiteral("move_type"), QStringLiteral("components"));
     }
+    initMoveComponent(state, context);
   };
 
   def.build = [](const CommandState& state, const CommandContext& context) {
@@ -725,8 +816,9 @@ CommandDef moveFaceCommand(const CommandContext& context) {
           .withTooltip(QObject::tr("Faces of one body; they move together")),
   };
   // The motion, as Move/Copy's, with Translate Along.
-  def.inputs << motionInputs(kMoveFaceTypes, true) << pivotInput();
+  def.inputs << motionInputs(kMoveFaceTypes, true) << pivotInput() << moveComponentInput();
   def.enabled = [&context] { return hasBodies(context); };
+  def.init = [](CommandState& state, const CommandContext& context) { initMoveComponent(state, context); };
   def.build = [](const CommandState& state, const CommandContext& context) {
     Built result;
     const Selection& faces = state.items(QStringLiteral("faces"));
@@ -856,10 +948,10 @@ CommandDef scaleCommand(const CommandContext& context) {
     Built result;
     QJsonObject scale{{QStringLiteral("type"), state.choice(QStringLiteral("scale_type"))}};
     if (state.choice(QStringLiteral("scale_type")) == QStringLiteral("uniform")) {
-      scale.insert(QStringLiteral("factor"), countValue(state, QStringLiteral("factor")));
+      scale.insert(QStringLiteral("factor"), state.expression(QStringLiteral("factor")));
     } else {
       for (const char* axis : {"x", "y", "z"}) {
-        scale.insert(QLatin1String(axis), countValue(state, QString::fromLatin1(axis)));
+        scale.insert(QLatin1String(axis), state.expression(QString::fromLatin1(axis)));
       }
     }
     result.def = {{QStringLiteral("type"), QStringLiteral("scale")},
@@ -1002,68 +1094,51 @@ CommandDef combineCommand(const CommandContext& context) {
 }
 
 // ---------------------------------------------------------------------------
-// Physical Material and Appearance
+// Appearance (materials are Edit Materials', the main window's: mitcad#655)
 
-namespace {
-
-CommandDef attributeCommand(const CommandContext& context, bool material) {
+CommandDef appearanceCommand(const CommandContext& context) {
   CommandDef def;
-  def.id = material ? QStringLiteral("solid.material") : QStringLiteral("solid.appearance");
-  def.name = material ? QObject::tr("Physical Material") : QObject::tr("Appearance");
-  def.icon = material ? QStringLiteral("material") : QStringLiteral("appearance");
-  def.tooltip = material ? QObject::tr("The material of bodies: their density for masses")
-                         : QObject::tr("How bodies look");
+  def.id = QStringLiteral("solid.appearance");
+  def.name = QObject::tr("Appearance");
+  def.icon = QStringLiteral("appearance");
+  def.tooltip = QObject::tr("How bodies look");
   def.group = QStringLiteral("MODIFY");
-  def.keywords = material ? QStringList{QStringLiteral("density"), QStringLiteral("mass")}
-                          : QStringList{QStringLiteral("colour"), QStringLiteral("color"), QStringLiteral("paint")};
+  def.keywords = QStringList{QStringLiteral("colour"), QStringLiteral("color"), QStringLiteral("paint")};
   def.modelCommand = true;
-  InputDef value = material ? choiceInput(QStringLiteral("value"), QObject::tr("Material"), physicalMaterials(),
-                                          QStringLiteral("steel"))
-                            : choiceInput(QStringLiteral("value"), QObject::tr("Appearance"), {},
-                                          QStringLiteral("steel_satin"));
-  if (!material) {
-    // The library's appearances and the document's own (mitcad#46).
-    value.withChoices([&context](const CommandState&) {
-      Choices choices{{QString(), QObject::tr("Default")}};
-      for (const Appearance& appearance : appearancesOf(context.queryArray(QStringLiteral("appearances")))) {
-        choices.append({appearance.id, appearance.name});
-      }
-      return choices;
-    });
-  }
+  InputDef value = choiceInput(QStringLiteral("value"), QObject::tr("Appearance"), {}, QStringLiteral("steel_satin"));
+  // The library's appearances and the document's own (mitcad#46).
+  value.withChoices([&context](const CommandState&) {
+    Choices choices{{QString(), QObject::tr("Default")}};
+    for (const Appearance& appearance : appearancesOf(context.queryArray(QStringLiteral("appearances")))) {
+      choices.append({appearance.id, appearance.name});
+    }
+    return choices;
+  });
   // Appearances also go to single faces (mitcad#53), overriding their
   // body's; Default takes a face's own away.
-  if (material) {
-    def.inputs = {selectionInput(QStringLiteral("bodies"), QObject::tr("Bodies"), SelectKind::Body, 1, 0), value};
-  } else {
-    def.inputs = {selectionInput(QStringLiteral("bodies"), QObject::tr("Bodies"), SelectKind::Body, 0, 0),
-                  selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 0, 0), value};
-  }
+  def.inputs = {selectionInput(QStringLiteral("bodies"), QObject::tr("Bodies"), SelectKind::Body, 0, 0),
+                selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 0, 0), value};
   def.enabled = [&context] { return hasBodies(context); };
-  def.build = [material, name = def.name](const CommandState& state, const CommandContext&) {
+  def.build = [name = def.name](const CommandState& state, const CommandContext&) {
     Built result;
     const QString value = state.choice(QStringLiteral("value"));
-    const QJsonValue id =
-        value.isEmpty() || (material && value == QStringLiteral("steel")) ? QJsonValue() : QJsonValue(value);
+    const QJsonValue id = value.isEmpty() ? QJsonValue() : QJsonValue(value);
     QJsonArray commands;
     QStringList owners;
     QHash<QString, QJsonArray> faces;
-    if (!material) {
-      for (const SelectionItem& item : state.items(QStringLiteral("faces"))) {
-        if (!owners.contains(item.owner)) {
-          owners << item.owner;
-        }
-        faces[item.owner].append(item.name);
+    for (const SelectionItem& item : state.items(QStringLiteral("faces"))) {
+      if (!owners.contains(item.owner)) {
+        owners << item.owner;
       }
-      if (owners.isEmpty() && state.items(QStringLiteral("bodies")).isEmpty()) {
-        return Built::failure(QObject::tr("Select bodies or faces"), QStringLiteral("bodies"));
-      }
+      faces[item.owner].append(item.name);
+    }
+    if (owners.isEmpty() && state.items(QStringLiteral("bodies")).isEmpty()) {
+      return Built::failure(QObject::tr("Select bodies or faces"), QStringLiteral("bodies"));
     }
     for (const SelectionItem& item : state.items(QStringLiteral("bodies"))) {
-      commands.append(QJsonObject{
-          {QStringLiteral("cmd"), material ? QStringLiteral("set_body_material") : QStringLiteral("set_body_appearance")},
-          {QStringLiteral("uid"), item.owner},
-          {material ? QStringLiteral("material") : QStringLiteral("appearance"), id}});
+      commands.append(QJsonObject{{QStringLiteral("cmd"), QStringLiteral("set_body_appearance")},
+                                  {QStringLiteral("uid"), item.owner},
+                                  {QStringLiteral("appearance"), id}});
     }
     for (const QString& owner : std::as_const(owners)) {
       commands.append(QJsonObject{{QStringLiteral("cmd"), QStringLiteral("set_face_appearance")},
@@ -1074,19 +1149,14 @@ CommandDef attributeCommand(const CommandContext& context, bool material) {
     result.def = {{QStringLiteral("commands"), commands}, {QStringLiteral("label"), name}};
     return result;
   };
-  def.describe = [material](const CommandState& state, const CommandContext&) {
-    const auto faces = material ? 0 : state.items(QStringLiteral("faces")).size();
-    return QStringLiteral("%1 %2 for %3 body(ies)%4")
-        .arg(material ? QStringLiteral("Material") : QStringLiteral("Appearance"), state.choice(QStringLiteral("value")))
+  def.describe = [](const CommandState& state, const CommandContext&) {
+    const auto faces = state.items(QStringLiteral("faces")).size();
+    return QStringLiteral("Appearance %1 for %2 body(ies)%3")
+        .arg(state.choice(QStringLiteral("value")))
         .arg(state.items(QStringLiteral("bodies")).size())
         .arg(faces > 0 ? QStringLiteral(", %1 face(s)").arg(faces) : QString());
   };
   return def;
 }
-
-} // namespace
-
-CommandDef materialCommand(const CommandContext& context) { return attributeCommand(context, true); }
-CommandDef appearanceCommand(const CommandContext& context) { return attributeCommand(context, false); }
 
 } // namespace mitcad::cmd

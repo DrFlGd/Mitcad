@@ -1,0 +1,83 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ShapeFix_IntersectionTool::FixSelfIntersectWire: the edges of the wire
+are read into an array once instead of by number from the wire's
+sequence for every pair of edges (mitcad#642).
+
+The search for intersections of non-adjacent edges of a wire reads, for
+every pair of edge numbers num1 < num2, edge num1 and edge num2 from
+ShapeExtend_WireData. The wire keeps its edges in an NCollection_Sequence,
+whose access by number walks node by node from the place read last (or
+from the nearer end), so each pair walked about twice the distance between
+num1 and num2: the work grew with the cube of the number of edges, and on
+the long wires of a body with hundreds of ribs it was the larger part of
+healing the body.
+
+The edges are now read into an array in one walk and taken from it by
+number. The fixes of the loop change the wire (split edges, union their
+vertices, remove segments) only for a pair whose edges intersect at a
+point or along a segment; the array is read again after such a pair, so
+every later pair sees the wire as the fixes left it, as before.
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx
+@@ -45,6 +45,8 @@
+ #include <TopoDS_Wire.hxx>
+ #include <TopoDS_Shape.hxx>
+ 
++#include <vector>
++
+ // gka 06.09.04 BUG 6555 shape is modified always independently either intersection was fixed or not
+ //=================================================================================================
+ 
+@@ -1084,6 +1086,27 @@
+   NbCut           = 0;
+   int  nbReplaced = 0;
+   bool isDone     = false;
++  // The edges of the wire by their numbers. The wire keeps them in a sequence
++  // whose access by number walks from the place read last, so reading edge
++  // num1 and edge num2 for every pair walked the distance between them twice:
++  // a wire of n edges took about n^3 / 3 steps. They are read into an array in
++  // one walk, and again after a pair of edges that intersect, the only place
++  // where the fixes below change the wire.
++  std::vector<TopoDS_Edge> edges;
++  bool                     isEdgesRead = false;
++  auto                     edgeAt      = [&](const int num) -> const TopoDS_Edge& {
++    if (!isEdgesRead)
++    {
++      edges.clear();
++      edges.reserve(sewd->NbEdges());
++      for (int i = 1; i <= sewd->NbEdges(); i++)
++      {
++        edges.push_back(sewd->Edge(i));
++      }
++      isEdgesRead = true;
++    }
++    return edges[num - 1];
++  };
+   for (int num1 = 1; num1 < sewd->NbEdges() && NbSplit < 30; num1++)
+   {
+     // for each edge from first wire
+@@ -1094,8 +1117,8 @@
+       {
+         continue;
+       }
+-      TopoDS_Edge edge1 = sewd->Edge(num1);
+-      TopoDS_Edge edge2 = sewd->Edge(num2);
++      TopoDS_Edge edge1 = edgeAt(num1);
++      TopoDS_Edge edge2 = edgeAt(num2);
+       if (edge1.IsSame(edge2))
+       {
+         continue;
+@@ -1133,6 +1156,11 @@
+         {
+           continue;
+         }
++        // the fixes below change the wire only where the edges intersect
++        if (Inter.NbPoints() > 0 || Inter.NbSegments() > 0)
++        {
++          isEdgesRead = false;
++        }
+         // the fixes below read MaxTolVert and change edges and vertices
+         if (!isMaxTolVertFound
+             && ((Inter.NbPoints() > 0 && Inter.NbPoints() < 3) || Inter.NbSegments() == 1))

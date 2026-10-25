@@ -117,6 +117,12 @@ struct DocumentSnapshot {
   // `contact_sets` queries' entries.
   QJsonArray motionStudies;
   QJsonArray contactSets;
+  // Measurement objects (mitcad#649): the `measurements` query's entries
+  // (name, kind, colour, light bulb, picks, and their value and drawing at
+  // the marker or why they cannot be measured there).
+  QJsonArray measurements;
+  // A measurement by name, or an empty object.
+  QJsonObject measurement(const QString& name) const;
   // Saved in the document (P9): the root's Origin folder shown, and what
   // the view is isolated to (bodies and occurrences; none: everything).
   bool originShown = false;

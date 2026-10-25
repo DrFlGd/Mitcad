@@ -11,10 +11,17 @@
 //! names and colours (`basematerials`). [`read`] reads any core model back
 //! into parts with their placements and checks what the core specification
 //! requires of it (tests use it on what [`write`] wrote).
+//!
+//! A slicer's settings (mitcad#640) go with the model: more metadata of
+//! the model and of each part's mesh object, and more files of the
+//! package ([`Model::files`]); [`read_package`] reads them back without
+//! the geometry.
 
+mod package;
 mod read;
 mod write;
 
+pub use package::{Package, PackageObject, read_package};
 pub use read::read;
 pub use write::write;
 
@@ -166,6 +173,10 @@ pub struct Part {
     pub color: Option<[f64; 3]>,
     pub mesh: Mesh,
     pub placements: Vec<Placement>,
+    /// The mesh object's own metadata (a `metadatagroup`: a slicer's
+    /// per-object settings, `cura:layer_height`), by name; the names'
+    /// prefixes need their namespaces in [`Model::namespaces`].
+    pub metadata: Vec<(String, String)>,
 }
 
 /// What a 3MF file holds: one object (named `name`) made of parts.
@@ -175,6 +186,27 @@ pub struct Model {
     pub parts: Vec<Part>,
     /// The writing application, for the `Application` metadata.
     pub application: String,
+    /// More metadata of the model (`BambuStudio:3mfVersion`), after the
+    /// application and the title.
+    pub metadata: Vec<(String, String)>,
+    /// The namespaces of prefixed metadata names: (prefix, URI).
+    pub namespaces: Vec<(String, String)>,
+    /// More files of the package by their paths
+    /// (`Metadata/project_settings.config`): a slicer's settings.
+    pub files: Vec<(String, Vec<u8>)>,
+}
+
+/// The object id [`write`] gives the mesh object of part `index` (the
+/// material group is 1, the parts' objects follow from 2): slicers'
+/// per-part settings refer to it.
+pub fn part_object_id(index: usize) -> u32 {
+    index as u32 + 2
+}
+
+/// The object id [`write`] gives the object of a model's `parts` parts,
+/// its one build item.
+pub fn assembly_object_id(parts: usize) -> u32 {
+    parts as u32 + 2
 }
 
 /// A 3MF file could not be written or read, or breaks the core

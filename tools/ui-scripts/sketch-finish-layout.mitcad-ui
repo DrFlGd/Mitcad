@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MIT
+# Finish Sketch belongs to the ribbon and palette, never the title row.
+wait-idle 30
+window-resize 1440 1000
+mark
+dblclick-logged '^Timeline Sketch1 at '
+expect-log '^Editing sketch F1 \(Sketch1\)$'
+expect-sketch-finish-layout
+screenshot '${MITCAD_TEST_SHOTS}/wide-sketch.png'
+screenshot-screen '${MITCAD_TEST_SHOTS}/wide-sketch-native.png'
+mark
+button '^Finish Sketch$' ribbon_sketch.finish
+expect-log '^Sketch finished$'
+window-resize 900 700
+mark
+dblclick-logged '^Timeline Sketch1 at '
+expect-log '^Editing sketch F1 \(Sketch1\)$'
+expect-sketch-finish-layout
+screenshot '${MITCAD_TEST_SHOTS}/narrow-sketch.png'
+screenshot-screen '${MITCAD_TEST_SHOTS}/narrow-sketch-native.png'
+mark
+button '^Finish Sketch$' paletteFinish
+expect-log '^Sketch finished$'
+# The ribbon group remains usable when trailing icon rows collapse.
+mark
+dblclick-logged '^Timeline Sketch1 at '
+expect-log '^Editing sketch F1 \(Sketch1\)$'
+expect-sketch-finish-layout
+mark
+click-logged '^Ribbon SKETCH/FINISH SKETCH at '
+popup 'Finish Sketch'
+expect-log '^Sketch finished$'
+# The standard keyboard binding still points at the same action.
+mark
+dblclick-logged '^Timeline Sketch1 at '
+expect-log '^Editing sketch F1 \(Sketch1\)$'
+key ctrl+Return
+expect-log '^Sketch finished$'
+expect-never 'OCCT view event failed|Recompute failed|The document was read while a job computes it'

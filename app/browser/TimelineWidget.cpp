@@ -8,6 +8,7 @@
 
 #include <QContextMenuEvent>
 #include <QAction>
+#include <QApplication>
 #include <QDockWidget>
 #include <QFocusEvent>
 #include <QHBoxLayout>
@@ -44,6 +45,7 @@
 #include "../framework/PlaceWatcher.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacChrome.hpp"
+#include "../platform/MacDialogs.hpp"
 
 namespace mitcad {
 namespace {
@@ -184,12 +186,23 @@ public:
   };
 
   explicit TimelineStrip(TimelineWidget& owner) : QWidget(&owner), m_owner(owner) {
+    setObjectName(QStringLiteral("timelineStrip"));
     setMouseTracking(true);
     setFocusPolicy(Qt::ClickFocus);
     setFixedHeight(kHeight);
+    m_hoverTimer.setSingleShot(true);
+    m_hoverTimer.setInterval(350);
+    connect(&m_hoverTimer, &QTimer::timeout, this, [this] {
+      if (m_hover < 0 || m_dragItem || m_dragMarker) return;
+      const QPoint at = cell(m_hover).center();
+      QHelpEvent help(QEvent::ToolTip, at, mapToGlobal(at));
+      QApplication::sendEvent(this, &help);
+    });
   }
 
   void setItems(QVector<Item> items, int marker, QVector<Group> groups) {
+    setHover(-1);
+    QToolTip::hideText();
     m_items = std::move(items);
     m_groups = std::move(groups);
     m_marker = std::clamp(marker, 0, static_cast<int>(m_items.size()));
@@ -573,6 +586,8 @@ protected:
       QWidget::mousePressEvent(event);
       return;
     }
+    setHover(-1);
+    QToolTip::hideText();
     const QPoint at = event->position().toPoint();
     if (markerRect().adjusted(-3, 0, 3, 0).contains(at)) {
       m_dragMarker = true;
@@ -626,7 +641,7 @@ protected:
     }
     const int hover = itemAt(at);
     if (hover != m_hover) {
-      m_hover = hover;
+      setHover(hover);
       update();
     }
   }
@@ -737,16 +752,22 @@ protected:
   }
 
   void leaveEvent(QEvent*) override {
-    m_hover = -1;
+    setHover(-1);
+    QToolTip::hideText();
     update();
   }
 
   bool event(QEvent* event) override {
+    if (event->type() == QEvent::Hide || event->type() == QEvent::WindowDeactivate) {
+      setHover(-1);
+      QToolTip::hideText();
+    }
     if (event->type() == QEvent::WindowBlocked) {
       // A modal dialog took the input (a long computation's progress, P7),
       // and with it the release: the marker stays where it was dragged to,
       // a feature being dragged where it was.
       unsetCursor();
+      setHover(-1);
       m_press = -1;
       m_pressGroup = -1;
       m_dragItem = false;
@@ -778,27 +799,35 @@ protected:
         return true;
       }
       const DocumentSnapshot::Feature& feature = m_items[i].feature;
-      QString tip = QStringLiteral("<b>%1</b>").arg(feature.name.toHtmlEscaped());
+      const QString title = QStringLiteral("<b>%1</b>").arg(feature.name.toHtmlEscaped());
+      // The feature's details (its kind, component and sizes), then its
+      // state; the log names the feature and its state only.
+      const QString details = m_owner.m_featureDetails ? m_owner.m_featureDetails(feature.uid) : title;
+      QString state;
       if (isHead(i)) {
         const Group& group = m_groups[m_items[i].group];
-        tip = tr("<b>%1</b><br>%n feature(s); double-click to open", nullptr, group.last - group.first + 1)
-                  .arg(group.name.toHtmlEscaped());
+        state = tr("<b>%1</b><br>%n feature(s); double-click to open", nullptr, group.last - group.first + 1)
+                    .arg(group.name.toHtmlEscaped());
       } else if (feature.status == QStringLiteral("error") || feature.status == QStringLiteral("warning")) {
-        tip += QStringLiteral("<br>%1").arg(feature.error.toHtmlEscaped());
+        state = QStringLiteral("<br>%1").arg(feature.error.toHtmlEscaped());
       } else if (feature.suppressed) {
         // A placeholder says why the import skipped its item (mitcad#170).
-        tip += feature.error.isEmpty() ? tr("<br>Suppressed")
-                                       : tr("<br>Suppressed: %1").arg(feature.error.toHtmlEscaped());
+        state = feature.error.isEmpty() ? tr("<br>Suppressed")
+                                        : tr("<br>Suppressed: %1").arg(feature.error.toHtmlEscaped());
       } else if (i >= m_marker) {
-        tip += tr("<br>Rolled back");
+        state = tr("<br>Rolled back");
         if (!feature.error.isEmpty()) {
-          tip += QStringLiteral("<br>%1").arg(feature.error.toHtmlEscaped());
+          state += QStringLiteral("<br>%1").arg(feature.error.toHtmlEscaped());
         }
       }
+      if (!isHead(i) && (!feature.succeeded() || feature.suppressed || i >= m_marker)) {
+        state += tr("<br>No geometry to show");
+      }
+      const QString tip = isHead(i) ? state : details + state;
       QToolTip::showText(help->globalPos(), tip, this, cell(i));
       if (tip != m_loggedTip) {
         m_loggedTip = tip;
-        QString plain = tip;
+        QString plain = isHead(i) ? state : title + state;
         plain.replace(QStringLiteral("<br>"), QStringLiteral(": "));
         plain.remove(QStringLiteral("<b>")).remove(QStringLiteral("</b>"));
         qDebug().noquote() << QStringLiteral("Timeline tooltip: %1").arg(plain);
@@ -809,6 +838,24 @@ protected:
   }
 
 private:
+  void setHover(int index) {
+    m_hover = index;
+    m_hoverTimer.stop();
+    QStringList features;
+    if (index >= 0) {
+      const int last = isHead(index) ? m_groups[m_items[index].group].last : index;
+      for (int i = index; i <= last; ++i) {
+        const auto& feature = m_items[i].feature;
+        if (i < m_marker && feature.succeeded() && !feature.suppressed) features << feature.uid;
+      }
+      m_hoverTimer.start();
+    }
+    if (features != m_owner.m_hoveredFeatures) {
+      m_owner.m_hoveredFeatures = features;
+      emit m_owner.featuresHovered(features);
+    }
+  }
+  QTimer m_hoverTimer;
   TimelineWidget& m_owner;
   QVector<Item> m_items;
   QVector<Group> m_groups;
@@ -910,6 +957,7 @@ TimelineWidget::TimelineWidget(const CommandContext& model, QWidget* parent)
   m_searchField->setPlaceholderText(tr("Name or type; is:failed, in:component"));
   m_searchField->setToolTip(tr("Finds features by name or type; filters such as is:failed and in:<component>"));
   m_searchField->setClearButtonEnabled(true);
+  mac::styleSearchField(m_searchField);
   m_searchField->setFixedWidth(240);
   m_searchField->installEventFilter(this);
   QAction* filters = m_searchField->addAction(themeIcon(QStringLiteral("filter")), QLineEdit::TrailingPosition);

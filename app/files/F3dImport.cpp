@@ -171,7 +171,7 @@ public:
         buttons->addButton(F3dImport::tr("&Stop and Keep What Is Imported"), QDialogButtonBox::ActionRole);
     m_stopButton->setToolTip(F3dImport::tr("End the import now and keep what is imported"));
     QPushButton* cancelButton = buttons->addButton(F3dImport::tr("&Cancel Import"), QDialogButtonBox::RejectRole);
-    cancelButton->setToolTip(F3dImport::tr("Discard the import; the open document stays as it is"));
+    cancelButton->setToolTip(F3dImport::tr("Discard the import; the open design stays as it is"));
     for (QPushButton* button : {m_stopButton, cancelButton}) {
       button->setAutoDefault(false);
       button->setDefault(false);
@@ -782,8 +782,8 @@ void F3dImport::tick() {
     // An .iam assembly's part being imported, and its timeline item when it
     // is replayed (mitcad#507).
     const int part = std::clamp(m_part, 1, m_parts);
-    item = m_current.isEmpty() ? tr("Part %1 of %2: %3").arg(part).arg(m_parts).arg(m_partName)
-                               : tr("Part %1 of %2: %3, timeline item %4: %5")
+    item = m_current.isEmpty() ? tr("Component %1 of %2: %3").arg(part).arg(m_parts).arg(m_partName)
+                               : tr("Component %1 of %2: %3, timeline item %4: %5")
                                      .arg(part)
                                      .arg(m_parts)
                                      .arg(m_partName)

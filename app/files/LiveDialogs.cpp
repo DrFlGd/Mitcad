@@ -152,7 +152,7 @@ LiveNotice::LiveNotice(QWidget* parent) : QWidget(parent) {
   m_text = plainLabel();
   layout->addWidget(m_text, 1);
   // No mnemonics: the menus' Alt keys stay theirs.
-  signIn = new QPushButton(tr("Sign In..."));
+  signIn = new QPushButton(tr("Sign In…"));
   signIn->setAutoDefault(false);
   notNow = new QPushButton(tr("Not Now"));
   notNow->setAutoDefault(false);
@@ -168,7 +168,7 @@ void LiveNotice::present(const QString& text) {
     for (const QPushButton* button : {signIn, notNow}) {
       const QPoint center = button->mapTo(window(), button->rect().center());
       qDebug().noquote() << QStringLiteral("Live notice %1 at %2,%3")
-                                .arg(button->text().remove(QLatin1Char('&')).remove(QStringLiteral("...")))
+                                .arg(button->text().remove(QLatin1Char('&')).remove(QStringLiteral("...")).remove(QChar(0x2026)))
                                 .arg(center.x())
                                 .arg(center.y());
     }

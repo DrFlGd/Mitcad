@@ -17,13 +17,18 @@ use crate::assembly::{
 };
 use crate::configurations::Configurations;
 use crate::document::{
-    Analysis, BodyAttributes, DisplayState, DocState, NamedView, TimelineGroup, check_components,
+    Analysis, BodyAttributes, DisplayState, DocState, Measurement, NamedView, TimelineGroup,
+    check_components,
 };
-use crate::expr::{EvalContext, ParamSpec, TableError, Unit, value_to_expression};
+use crate::expr::ParamLimits;
+use crate::expr::{
+    DEFAULT_DECIMALS, EvalContext, ParamId, ParamSpec, TableError, Unit, format_number,
+    is_newly_reserved, rename_names, value_to_expression,
+};
 use crate::features::{CheckContext, FeatureDef, FeatureEntry, HelixConstruction, is_false};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::motion::{ContactSet, MotionStudy};
-use crate::parameters::{Parameters, default_context, slot_unit};
+use crate::parameters::{Parameters, default_context, describe, slot_unit};
 use crate::policy::Policy;
 use crate::render_settings::RenderSettings;
 use crate::sketch::legacy::{LegacyShape, convert, settle};
@@ -101,6 +106,27 @@ struct FileOut<'a> {
     property_types: &'a [crate::properties::PropertyType],
     #[serde(skip_serializing_if = "Vec::is_empty")]
     properties: Vec<crate::properties::OwnerProperties>,
+    // The design's materials and the components' default materials
+    // (mitcad#640), when there are any.
+    #[serde(skip_serializing_if = "<[crate::material::Material]>::is_empty")]
+    materials: &'a [crate::material::Material],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    component_materials: Vec<ComponentMaterial>,
+    // The design's printer and process profiles (mitcad#640), when there
+    // are any.
+    #[serde(skip_serializing_if = "<[crate::print_profile::PrintProfile]>::is_empty")]
+    print_profiles: &'a [crate::print_profile::PrintProfile],
+    // Measurement objects (mitcad#649), when there are any.
+    #[serde(skip_serializing_if = "<[Measurement]>::is_empty")]
+    measurements: &'a [Measurement],
+}
+
+/// A component's default material (mitcad#640).
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComponentMaterial {
+    component: ComponentUid,
+    material: String,
 }
 
 /// A Flat Pattern: its body and settings.
@@ -187,6 +213,15 @@ struct ParameterOut<'a> {
     // Favourite parameters (P9).
     #[serde(skip_serializing_if = "is_false")]
     favorite: bool,
+    // Limits (mitcad#665).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    min: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<&'a str>,
+    #[serde(skip_serializing_if = "is_false")]
+    strict: bool,
 }
 
 #[derive(Serialize)]
@@ -257,6 +292,10 @@ pub(super) fn save(state: &DocState) -> String {
                 comment: p.comment(),
                 owner: parameters.owner(p.id()),
                 favorite: state.favorites.contains(&p.id()),
+                min: p.limits().min.as_deref(),
+                max: p.limits().max.as_deref(),
+                step: p.limits().step.as_deref(),
+                strict: p.limits().strict,
             })
             .collect(),
         root_component: (assembly.root_name != ROOT_NAME).then_some(assembly.root_name.as_str()),
@@ -352,6 +391,19 @@ pub(super) fn save(state: &DocState) -> String {
         properties: state
             .properties
             .file_owners(|owner| state.property_owner_kept(owner)),
+        materials: &state.materials,
+        // Only the components the design has.
+        component_materials: state
+            .component_materials
+            .iter()
+            .filter(|(c, _)| c.is_root() || assembly.component(**c).is_some())
+            .map(|(c, m)| ComponentMaterial {
+                component: *c,
+                material: m.clone(),
+            })
+            .collect(),
+        print_profiles: &state.print_profiles,
+        measurements: &state.measurements,
     };
     let mut json =
         serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
@@ -498,6 +550,15 @@ struct ParameterIn {
     owner: Option<FeatureUid>,
     #[serde(default)]
     favorite: bool,
+    // Limits (mitcad#665).
+    #[serde(default)]
+    min: Option<String>,
+    #[serde(default)]
+    max: Option<String>,
+    #[serde(default)]
+    step: Option<String>,
+    #[serde(default)]
+    strict: bool,
 }
 
 #[derive(Deserialize)]
@@ -580,7 +641,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 28] = [
+const TOP_FIELDS: [&str; 32] = [
     "format",
     "version",
     "units",
@@ -618,6 +679,13 @@ const TOP_FIELDS: [&str; 28] = [
     // Own property types and properties (mitcad#496).
     "property_types",
     "properties",
+    // The design's materials and the components' defaults (mitcad#640).
+    "materials",
+    "component_materials",
+    // The design's printer and process profiles (mitcad#640).
+    "print_profiles",
+    // Measurement objects (mitcad#649).
+    "measurements",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -968,6 +1036,74 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         .collect::<Result<Vec<_>, FileError>>()?;
     let properties = crate::properties::PropertyStore::from_file(property_types, property_owners)
         .map_err(invalid)?;
+    // The design's materials and the components' defaults (mitcad#640).
+    let materials = array(&mut top, "materials", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let material = serde_json::from_value::<crate::material::Material>(m)
+                .map_err(|e| schema(format!("materials[{i}]: {e}")))?;
+            material
+                .check()
+                .map_err(|e| invalid(format!("materials[{i}]: {e}")))?;
+            Ok(material)
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    let component_materials = array(&mut top, "component_materials", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| {
+            serde_json::from_value::<ComponentMaterial>(c)
+                .map_err(|e| schema(format!("component_materials[{i}]: {e}")))
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    let known_material = |id: &str| {
+        crate::material::built_in_material(id).is_some() || materials.iter().any(|m| m.id == id)
+    };
+    // The design's printer and process profiles (mitcad#640): each valid,
+    // each id once.
+    let print_profiles = array(&mut top, "print_profiles", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let profile = serde_json::from_value::<crate::print_profile::PrintProfile>(p)
+                .map_err(|e| schema(format!("print_profiles[{i}]: {e}")))?;
+            profile
+                .check()
+                .map_err(|e| invalid(format!("print_profiles[{i}]: {e}")))?;
+            Ok(profile)
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    for (i, profile) in print_profiles.iter().enumerate() {
+        if print_profiles[..i].iter().any(|p| p.id == profile.id) {
+            return Err(invalid(format!(
+                "print_profiles[{i}]: profile '{}' is listed more than once",
+                profile.id
+            )));
+        }
+    }
+    // Measurement objects (mitcad#649): their picks are resolved when they
+    // are asked for, so one whose pick is gone loads and says why.
+    let measurements = array(&mut top, "measurements", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let measurement = serde_json::from_value::<Measurement>(m)
+                .map_err(|e| schema(format!("measurements[{i}]: {e}")))?;
+            measurement
+                .check()
+                .map_err(|e| invalid(format!("measurements[{i}]: {e}")))?;
+            Ok(measurement)
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    for (i, measurement) in measurements.iter().enumerate() {
+        if measurements[..i].iter().any(|m| m.name == measurement.name) {
+            return Err(invalid(format!(
+                "measurements[{i}]: measurement '{}' is listed more than once",
+                measurement.name
+            )));
+        }
+    }
     let marker = match top.remove("marker") {
         None => None,
         Some(value) => Some(
@@ -1119,11 +1255,7 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
                 body.uid
             )));
         }
-        if let Some(id) = body
-            .material
-            .as_deref()
-            .filter(|id| crate::analysis::material(id).is_none())
-        {
+        if let Some(id) = body.material.as_deref().filter(|id| !known_material(id)) {
             return Err(invalid(format!("bodies[{i}]: unknown material '{id}'")));
         }
         if let Some(face) = body
@@ -1252,8 +1384,63 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         }
     }
     state.appearances = appearances;
+    // Materials (mitcad#640): each id once; components' defaults of
+    // components the file has, by materials it knows.
+    for (i, material) in materials.iter().enumerate() {
+        if materials[..i].iter().any(|m| m.id == material.id) {
+            return Err(invalid(format!(
+                "materials[{i}]: material '{}' is listed more than once",
+                material.id
+            )));
+        }
+    }
+    for (i, c) in component_materials.into_iter().enumerate() {
+        if !c.component.is_root() && state.assembly.component(c.component).is_none() {
+            return Err(invalid(format!(
+                "component_materials[{i}]: there is no component {}",
+                c.component
+            )));
+        }
+        if !known_material(&c.material) {
+            return Err(invalid(format!(
+                "component_materials[{i}]: unknown material '{}'",
+                c.material
+            )));
+        }
+        if state
+            .component_materials
+            .insert(c.component, c.material)
+            .is_some()
+        {
+            return Err(invalid(format!(
+                "component_materials[{i}]: component {} is listed more than once",
+                c.component
+            )));
+        }
+    }
+    state.materials = materials;
+    state.print_profiles = print_profiles;
+    state.measurements = measurements;
     state.render = render;
-    // The configuration table (mitcad#64): rows of the file's parameters.
+    // The configuration table (mitcad#64): rows of the file's parameters,
+    // under the names they were loaded with.
+    let mut configurations = configurations;
+    if !renamed.is_empty() {
+        for name in &mut configurations.parameters {
+            if let Some(new) = renamed.get(name) {
+                new.clone_into(name);
+            }
+        }
+        for row in &mut configurations.rows {
+            row.values = std::mem::take(&mut row.values)
+                .into_iter()
+                .map(|(name, expression)| {
+                    let name = renamed.get(&name).cloned().unwrap_or(name);
+                    (name, rename_names(&expression, &renamed))
+                })
+                .collect();
+        }
+    }
     if let Some(problem) = configurations.problems(&state.parameters).first() {
         return Err(invalid(format!("configurations: {problem}")));
     }
@@ -1284,7 +1471,100 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         analysis.visible = analysis.visible && !shown;
         shown = shown || analysis.visible;
     }
+    settle_unitless_slots(&mut state, &mut warnings);
     Ok((state, warnings))
+}
+
+/// Count, factor and fraction slots are unitless (mitcad#662). A file from
+/// before keeps their parameters in a length unit, whose value in
+/// millimetres each slot read as its number. A slot's own parameter that
+/// only unitless slots of its feature use, that no other parameter refers
+/// to and that no configuration sets becomes unitless with that number:
+/// its expression stays when it gives the same number without a unit,
+/// else the number replaces it (with a warning when the expression named
+/// parameters). Any other parameter keeps its unit with a warning, and the
+/// slot reads its number as before.
+fn settle_unitless_slots(state: &mut DocState, warnings: &mut Vec<String>) {
+    // Each parameter's uses: the feature, its name, the slot and whether
+    // the slot is unitless.
+    let mut uses: BTreeMap<ParamId, Vec<(FeatureUid, String, String, bool)>> = BTreeMap::new();
+    for entry in &state.features {
+        let _ = entry.def.map_params(&mut |slot, id: &ParamId| {
+            uses.entry(*id).or_default().push((
+                entry.uid,
+                entry.name.clone(),
+                slot.to_owned(),
+                slot_unit(slot).is_unitless(),
+            ));
+            Ok::<_, ()>(())
+        });
+    }
+    for (id, uses) in uses {
+        let Some((_, feature, slot, _)) = uses.iter().find(|u| u.3) else {
+            continue;
+        };
+        let Some(param) = state.parameters.get(id) else {
+            continue;
+        };
+        if param.unit().is_unitless() {
+            continue;
+        }
+        let name = param.name().to_owned();
+        let value = param.value();
+        let owner = state.parameters.owner(id);
+        let own = uses
+            .iter()
+            .all(|(uid, _, _, unitless)| *unitless && Some(*uid) == owner);
+        if !own
+            || !state.parameters.table().dependents(id).is_empty()
+            || state.configurations.parameters.contains(&name)
+        {
+            warnings.push(format!(
+                "{feature} {slot}: parameter '{name}' is {} ({}) in a slot that takes a \
+                 unitless number; the slot reads it as {}: give the parameter no unit, or use \
+                 another one",
+                describe(param.unit()),
+                param.formatted_value(DEFAULT_DECIMALS),
+                short_number(value)
+            ));
+            continue;
+        }
+        let expression = param.expression().to_owned();
+        let references = !param.expr().is_constant();
+        let same = state
+            .parameters
+            .table()
+            .evaluate(&expression, Unit::NONE)
+            .is_ok_and(|q| (q.value - value).abs() <= 1e-9 * value.abs().max(1.0));
+        let number = short_number(value);
+        let new = if same { &expression } else { &number };
+        // Limits in a length unit (mitcad#665) keep it a length.
+        if let Err(error) = state.parameters.update(id, new, Unit::NONE) {
+            warnings.push(format!(
+                "{feature} {slot}: parameter '{name}' keeps its unit in a slot that takes a \
+                 unitless number ({error}); the slot reads it as {number}"
+            ));
+            continue;
+        }
+        if !same && references {
+            warnings.push(format!(
+                "{feature} {slot}: parameter '{name}' is now unitless with the number it gave, \
+                 {number}; its expression '{expression}' gives another number without a unit"
+            ));
+        }
+    }
+}
+
+/// The shortest decimal within 1e-12 (relative) of `value`: a count saved
+/// in inches as `0.11811023622047245 in` is 3, not 3.0000000000000004.
+fn short_number(value: f64) -> String {
+    (0..16)
+        .map(|decimals| format_number(value, decimals))
+        .find(|text| {
+            text.parse::<f64>()
+                .is_ok_and(|v| (v - value).abs() <= 1e-12 * value.abs().max(1.0))
+        })
+        .unwrap_or_else(|| value_to_expression(value, Unit::NONE))
 }
 
 /// The default units of a file.
@@ -1343,11 +1623,34 @@ fn load_parameters(
         if !seen.insert(p.name.as_str()) {
             return Err(at(format!("parameter '{}' already exists", p.name)));
         }
+        // A name that is now reserved: in files from before expressions a
+        // unit, function or constant (`m`, `E`); with an expression only a
+        // name reserved since mitcad#663 (`Max`, `pi`, `sum`), as any other
+        // reserved name (`mm`, `sin`) was never valid there and is refused.
+        let renamable = p.expression.is_none() || is_newly_reserved(&p.name);
+        let legacy = if renamable {
+            legacy_name(&p.name, &taken)
+        } else {
+            None
+        };
+        let name = match legacy {
+            Some(new) => {
+                warnings.push(format!(
+                    "parameter '{}' is renamed to '{new}': '{}' is a unit, function \
+                     or constant in expressions",
+                    p.name, p.name
+                ));
+                taken.insert(new.clone());
+                renamed.insert(p.name.clone(), new.clone());
+                new
+            }
+            None => p.name.clone(),
+        };
         let spec = match (&p.expression, p.value) {
             (Some(expression), _) => {
                 let unit = Unit::parse(p.unit.as_deref().unwrap_or(""))
                     .map_err(|e| at(format!("unit: {e}")))?;
-                ParamSpec::user(&p.name, expression, unit)
+                ParamSpec::user(&name, expression, unit)
             }
             (None, Some(value)) => {
                 if p.unit.is_some() {
@@ -1357,19 +1660,6 @@ fn load_parameters(
                     Unit::DEG
                 } else {
                     Unit::MM
-                };
-                let name = match legacy_name(&p.name, &taken) {
-                    Some(new) => {
-                        warnings.push(format!(
-                            "parameter '{}' is renamed to '{new}': '{}' is a unit, function \
-                             or constant in expressions",
-                            p.name, p.name
-                        ));
-                        taken.insert(new.clone());
-                        renamed.insert(p.name.clone(), new.clone());
-                        new
-                    }
-                    None => p.name.clone(),
                 };
                 ParamSpec::user(&name, &value_to_expression(value, unit), unit)
             }
@@ -1385,11 +1675,25 @@ fn load_parameters(
             .map(units_context)
             .transpose()
             .map_err(|e| at(format!("expression_units: {e}")))?;
+        // Limits (mitcad#665).
+        let limits = ParamLimits {
+            min: p.min.clone(),
+            max: p.max.clone(),
+            step: p.step.clone(),
+            strict: p.strict,
+        };
         specs.push((
             spec.with_comment(&p.comment)
-                .with_expression_context(expression_context),
+                .with_expression_context(expression_context)
+                .with_limits(limits),
             p.owner,
         ));
+    }
+    // The expressions use the new names.
+    if !renamed.is_empty() {
+        for (spec, _) in &mut specs {
+            spec.expression = rename_names(&spec.expression, &renamed);
+        }
     }
     let index_of = |name: &str| {
         parameters
@@ -1404,6 +1708,7 @@ fn load_parameters(
             TableError::Parse { parameter, .. } | TableError::Eval { parameter, .. } => {
                 Some(parameter.as_str())
             }
+            TableError::Limit { parameter, .. } => Some(parameter.as_str()),
             _ => None,
         };
         match name.and_then(index_of) {

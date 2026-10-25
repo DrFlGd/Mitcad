@@ -25,7 +25,7 @@ mark
 dblclick-logged '^Timeline Extrude1 at '
 expect-log 'Extrude: stored operation matches automatic choice; editing follows geometry'
 mark
-button '^✕$' clear_objects
+button '^(✕|Clear the selection)$' clear_objects
 expect-log 'Extrude: operation chosen by hand'
 expect-log '^Extrude Local bodies: nothing$'
 focus-main

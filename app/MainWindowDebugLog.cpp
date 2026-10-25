@@ -66,7 +66,7 @@ void MainWindow::createDebugLog() {
 void MainWindow::debugLogChanged(bool running) {
   const QString file = QDir::toNativeSeparators(DebugLog::instance().currentFile());
   m_indicator->setDebugLog(running ? tr("Debug log on") : QString(),
-                           tr("A debug log is written to %1 (Help > Open Log Folder). Preferences: Diagnostics or "
+                           tr("A debug log is written to %1 (Help › Open Log Folder). Preferences: Diagnostics or "
                               "this menu turns it off.")
                                .arg(file));
   QList<QAction*> actions;

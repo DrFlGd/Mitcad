@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{GeomRef, PathRef, Want, distinct, finite};
+use super::{GeomRef, PathRef, Want, along_slot, distinct, finite};
 use crate::datum::{
     ANGULAR, Datum, DatumAxis, DatumPlane, LINEAR, PathParameter, SurfaceGeometry, Vec3, add, norm,
     rotate, rotate_onto, scale, sub, unit,
@@ -179,7 +179,8 @@ impl<P> ConstructionPlaneDef<P> {
                 physical,
             } => D::AlongPath {
                 path: path.clone(),
-                distance: f("definition.distance", distance)?,
+                // A fraction of the path is unitless (mitcad#662).
+                distance: f(along_slot(*physical), distance)?,
                 physical: *physical,
             },
             D::NormalAtPoint { path, point } => D::NormalAtPoint {

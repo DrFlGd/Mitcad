@@ -79,7 +79,7 @@ void MainWindow::registerProjectCommands() {
     d.run = std::move(run);
     return d;
   };
-  CommandDef project = def("file.new_project", tr("New Project..."), "new-project",
+  CommandDef project = def("file.new_project", tr("New Project…"), "new-project",
                            tr("A folder whose designs keep their versions, on this computer or shared"),
                            [this] { newProject(); });
   project.keywords = {QStringLiteral("project"),         QStringLiteral("folder"),
@@ -87,33 +87,33 @@ void MainWindow::registerProjectCommands() {
                       QStringLiteral("local"),           QStringLiteral("version history"),
                       QStringLiteral("start version history"), QStringLiteral("repository")};
   m_registry->add(project);
-  CommandDef openProject = def("file.open_project", tr("Open Project..."), "folder",
+  CommandDef openProject = def("file.open_project", tr("Open Project…"), "folder",
                                tr("Opens a project's folder, or makes a folder of designs a project"),
                                [this] { openProjectFolder(); });
   openProject.keywords = {QStringLiteral("project"),    QStringLiteral("folder"), QStringLiteral("git"),
                           QStringLiteral("repository"), QStringLiteral("cloud"),  QStringLiteral("local")};
   m_registry->add(openProject);
-  CommandDef readOnly = def("file.open_read_only", tr("Open Read-Only..."), "project",
+  CommandDef readOnly = def("file.open_read_only", tr("Open Read-Only…"), "project",
                             tr("Opens a design without its edit lock: to look at it while someone else edits it"),
                             [this] { openReadOnly(); });
   readOnly.keywords = {QStringLiteral("view"), QStringLiteral("lock"), QStringLiteral("read only")};
   m_registry->add(readOnly);
   // A design of a project, browsed or searched (mitcad#530).
-  CommandDef browse = def("file.open_from_project", tr("Open from Project..."), "folder",
+  CommandDef browse = def("file.open_from_project", tr("Open from Project…"), "folder",
                           tr("Opens a design of a project: its folders browsed, or its name searched"),
                           [this] { openFromProject(); });
   browse.keywords = {QStringLiteral("project"), QStringLiteral("browse"), QStringLiteral("folder"),
                      QStringLiteral("design"),  QStringLiteral("find"),   QStringLiteral("search"),
                      QStringLiteral("files"),   QStringLiteral("read only")};
   m_registry->add(browse);
-  CommandDef cloud = def("file.open_remote", tr("Open from Cloud..."), "remote-open",
+  CommandDef cloud = def("file.open_remote", tr("Open from Cloud…"), "remote-open",
                          tr("Opens a Cloud project from its git repository into a new folder"),
                          [this] { openFromCloud(); });
   cloud.keywords = {QStringLiteral("clone"),  QStringLiteral("remote"), QStringLiteral("download"),
                     QStringLiteral("git"),    QStringLiteral("cloud"),  QStringLiteral("server"),
                     QStringLiteral("github"), QStringLiteral("gitlab"), QStringLiteral("forgejo")};
   m_registry->add(cloud);
-  CommandDef settings = def("file.project_settings", tr("Project Settings..."), "settings",
+  CommandDef settings = def("file.project_settings", tr("Project Settings…"), "settings",
                             tr("The current project's storage, sharing, edit locks and syncing"),
                             [this] { showProjectSettings(); });
   settings.keywords = {QStringLiteral("connect"), QStringLiteral("remote"),     QStringLiteral("share"),
@@ -123,7 +123,7 @@ void MainWindow::registerProjectCommands() {
   m_registry->add(settings);
   // Save to Project (mitcad#503) replaces Move to a Project; saved shortcuts
   // and scripts of the old command id keep working.
-  CommandDef save = def("file.save_to_project", tr("Save to Project..."), "new-project",
+  CommandDef save = def("file.save_to_project", tr("Save to Project…"), "new-project",
                         tr("Saves the design in a project, so that its versions are kept"),
                         [this] { saveToProject(); });
   save.keywords = {QStringLiteral("start version history"), QStringLiteral("version history"),
@@ -286,7 +286,7 @@ void MainWindow::openProjectFolder(const QString& given, bool ask) {
     options.title = tr("Open a Project");
     options.text = tr("The project to open:");
     options.acceptText = tr("&Open");
-    options.otherText = tr("&Another Folder...");
+    options.otherText = tr("&Another Folder…");
     options.root = panelProjectSelection().first;
     const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);
     if (!picked) {
@@ -476,7 +476,7 @@ void MainWindow::openFromProject() {
   ProjectBrowserOptions options;
   options.title = tr("Open from Project");
   options.acceptText = tr("&Open");
-  options.otherText = tr("A&nother File...");
+  options.otherText = tr("A&nother File…");
   options.readOnlyText = tr("&Read-only");
   // Where it starts without a remembered place: the Projects panel's
   // selection, else the current project.
@@ -522,7 +522,7 @@ void MainWindow::showProjectSettings() {
                            : tr("%1 is in no project.").arg(documentName()),
                     QMessageBox::Close, this);
     box.setInformativeText(tr("Save to Project puts the design in a project that keeps its versions."));
-    QPushButton* save = box.addButton(tr("&Save to Project..."), QMessageBox::AcceptRole);
+    QPushButton* save = box.addButton(tr("&Save to Project…"), QMessageBox::AcceptRole);
     prepareModal(&box);
     execDialog(&box);
     if (box.clickedButton() == save) {
@@ -592,8 +592,8 @@ void MainWindow::saveToProject() {
   options.text = (reason.isEmpty() ? QString() : reason + QLatin1Char('\n')) +
                  tr("The project and the folder for %1, and its name there:").arg(documentName());
   options.acceptText = tr("&Save");
-  options.newProjectText = tr("New &Project...");
-  options.otherText = tr("&Another Folder...");
+  options.newProjectText = tr("New &Project…");
+  options.otherText = tr("&Another Folder…");
   options.root = place.first;
   options.folder = place.second;
   options.name = path.isEmpty() ? documentName() : QFileInfo(path).completeBaseName();

@@ -1650,6 +1650,15 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
             .map(|(e, p)| SketchPoint {
                 id: Some(p.clone()),
                 xyz: pts.get(&e).map(|g| g.xyz),
+                // The sketch's origin point is fixed (mitcad#641): flag
+                // bytes 3 and 5 set, on exactly one point of each sketch
+                // (the first, at the origin) in the 40 designs looked at.
+                // As a free point it let a sketch tied to the origin slide
+                // when a dimension changed.
+                is_fixed: pts
+                    .get(&e)
+                    .filter(|g| g.flags[3] == 1 && g.flags[5] == 1)
+                    .map(|_| true),
                 connected: Some(Some(connected.get(&e).cloned().unwrap_or_default())),
                 ..SketchPoint::default()
             })

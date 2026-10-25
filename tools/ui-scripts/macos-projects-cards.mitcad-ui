@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+wait-log 'Projects panel: ${MITCAD_TEST_PROJECT_COUNT} project' 30
+screenshot ${MITCAD_TEST_SHOTS}/initial.png
+screenshot-screen ${MITCAD_TEST_SHOTS}/initial-native.png
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+focus-widget projectsTree
+key Home Right
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+screenshot ${MITCAD_TEST_SHOTS}/expanded.png
+key End
+screenshot ${MITCAD_TEST_SHOTS}/selected.png
+key Home Left
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+window-resize 900 650
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+screenshot ${MITCAD_TEST_SHOTS}/small.png
+window-resize 1440 1000
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+collapse-card projectsDock true
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+collapse-card browserDock true
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+collapse-card projectsDock false
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+collapse-card browserDock false
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+command view.projects
+command view.projects
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+screenshot ${MITCAD_TEST_SHOTS}/restored.png

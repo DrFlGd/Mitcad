@@ -219,6 +219,35 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("sketch.axis", Model),
     // Reorient Design (mitcad#502).
     ("reorient_design", Model),
+    // Materials and components' default materials (mitcad#640).
+    ("create_material", Model),
+    ("edit_material", Model),
+    ("delete_material", Model),
+    ("set_component_material", Model),
+    // Print profiles (mitcad#640).
+    ("create_print_profile", Model),
+    ("edit_print_profile", Model),
+    ("delete_print_profile", Model),
+    // The libraries of materials and print profiles (mitcad#640): they read
+    // and write folders.
+    ("copy_from_print_library", FileIo),
+    ("update_from_print_library", FileIo),
+    ("decline_print_library_update", FileIo),
+    ("save_to_print_library", FileIo),
+    ("import_print_profile", FileIo),
+    // Gear pairs and belt drives (mitcad#656).
+    ("add_gear_pair", Model),
+    ("add_belt_drive", Model),
+    // Measurement objects (mitcad#649).
+    ("add_measurement", Model),
+    ("rename_measurement", Model),
+    ("set_measurement_color", Model),
+    ("set_measurement_visible", Model),
+    ("set_measurement_kind", Model),
+    ("delete_measurement", Model),
+    // The parameters as CSV (mitcad#666): the CSV is the command's text, the
+    // application reads the file.
+    ("import_parameters_csv", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -231,6 +260,7 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("document", Model),
     ("timeline", Model),
     ("evaluate", Model),
+    ("formula_help", Model),
     ("printed_fit_parameters", Model),
     ("parameters", Model),
     ("bodies", Model),
@@ -330,6 +360,29 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("print_overhangs", Model),
     ("print_thickness", Model),
     ("print_estimate", Model),
+    // Materials and the print key map (mitcad#640).
+    ("materials", Model),
+    ("body_material", Model),
+    ("material_conflicts", Model),
+    ("print_keys", Model),
+    // Print profiles and settings (mitcad#640).
+    ("print_profiles", Model),
+    ("print_settings", Model),
+    ("build_volume", Model),
+    ("print_library", FileIo),
+    // Placement by picked geometry, Gear Pair and Belt Drive (mitcad#656).
+    ("place_frame", Model),
+    ("gear_pair", Model),
+    ("belt_drive", Model),
+    ("belt_check", Model),
+    // Choosable materials and profiles where they live (mitcad#655): they
+    // read the libraries' folders.
+    ("library_items", FileIo),
+    // Measurement objects (mitcad#649).
+    ("measurements", Model),
+    // The parameters as CSV (mitcad#666).
+    ("parameters_csv", Model),
+    ("parameters_csv_preview", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {
@@ -458,6 +511,28 @@ pub fn command_class_with(request: &serde_json::Value) -> Option<ApiClass> {
             .is_some_and(serde_json::Value::is_object)
     {
         return Some(Remote);
+    }
+    // A material or print profile named in a library is read from or
+    // written to its folder (mitcad#655).
+    if matches!(
+        name,
+        "create_material"
+            | "edit_material"
+            | "delete_material"
+            | "set_component_material"
+            | "set_body_material"
+            | "create_print_profile"
+            | "edit_print_profile"
+            | "delete_print_profile"
+            | "set_property"
+    ) && (request
+        .get("library")
+        .is_some_and(serde_json::Value::is_string)
+        || request
+            .get("based_on")
+            .is_some_and(serde_json::Value::is_object))
+    {
+        return Some(FileIo);
     }
     command_class(name)
 }
@@ -767,6 +842,27 @@ mod tests {
             "environment": {"preset": "image", "image": "/env/sky.hdr"}});
         assert_eq!(class_of(request.clone()), Some(FileIo));
         assert_eq!(file_path_read(&request).as_deref(), Some("/env/sky.hdr"));
+    }
+
+    #[test]
+    fn materials_and_profiles_in_a_library_are_file_io() {
+        for request in [
+            json!({"cmd": "edit_material", "id": "acme/petg", "library": "user", "density": 1.3}),
+            json!({"cmd": "set_body_material", "uid": "F2.b0", "material": "petg",
+                   "library": "base"}),
+            json!({"cmd": "create_print_profile",
+                   "based_on": {"library": "base", "id": "draft"}}),
+            json!({"cmd": "set_property", "owner": "C0", "set": "Print Process",
+                   "key": "profile", "value": "draft", "library": "user"}),
+        ] {
+            assert_eq!(class_of(request.clone()), Some(FileIo), "{request}");
+        }
+        for request in [
+            json!({"cmd": "edit_material", "id": "custom1", "density": 1.3}),
+            json!({"cmd": "create_print_profile", "based_on": "draft"}),
+        ] {
+            assert_eq!(class_of(request.clone()), Some(Model), "{request}");
+        }
     }
 
     #[test]

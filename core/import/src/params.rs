@@ -7,7 +7,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use mitcad_f3d::design::ir::{Dump, Parameter, Reference};
-use mitcad_model::expr::{Unit, f3d, is_reserved_name, is_valid_name, value_to_expression};
+use mitcad_model::expr::{
+    Unit, f3d, is_reserved_name, is_valid_name, text_literal, value_to_expression,
+};
 use mitcad_model::{Document, Kernel};
 
 use crate::report::ParameterReport;
@@ -20,6 +22,10 @@ pub struct ParamMap {
     /// Timeline index of the owning feature or sketch → its model
     /// parameters (Mitcad names).
     owned: BTreeMap<i64, Vec<String>>,
+    /// Timeline index of a sketch → the text parameters it made for its
+    /// texts (mitcad#664): the text's number in their role (`Text1-Text`)
+    /// and the Mitcad name.
+    texts: BTreeMap<i64, Vec<(Option<usize>, String)>>,
 }
 
 impl ParamMap {
@@ -32,6 +38,22 @@ impl ParamMap {
     pub fn owned_by(&self, index: i64) -> &[String] {
         self.owned.get(&index).map_or(&[], Vec::as_slice)
     }
+
+    /// The text parameters the sketch at `index` made for its texts
+    /// (mitcad#664), with the text's number in their role.
+    pub fn texts_of(&self, index: i64) -> &[(Option<usize>, String)] {
+        self.texts.get(&index).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// The number of the text a sketch text's parameter is of, from its role
+/// (`Text1-Text` is the first text's).
+fn text_number(role: &str) -> Option<usize> {
+    role.strip_suffix("-Text")?
+        .strip_prefix("Text")?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// The timeline item that made a model parameter.
@@ -50,12 +72,24 @@ fn text(field: &Option<String>) -> Option<&str> {
 }
 
 /// Identifiers of an expression (names, units, functions), with their byte
-/// ranges; enough to rename parameters textually.
+/// ranges; enough to rename parameters textually. Words in quoted texts
+/// (`'Width'`, mitcad#664) are none.
 fn identifiers(expression: &str) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
     let mut chars = expression.char_indices().peekable();
     while let Some((start, c)) = chars.next() {
-        if c.is_alphabetic() || c == '_' {
+        if c == '\'' || c == '"' {
+            // To the closing quote; a doubled one is a quote inside.
+            while let Some((_, next)) = chars.next() {
+                if next == c {
+                    if chars.peek().is_some_and(|&(_, after)| after == c) {
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } else if c.is_alphabetic() || c == '_' {
             let mut end = start + c.len_utf8();
             while let Some(&(i, c)) = chars.peek() {
                 if c.is_alphanumeric() || c == '_' {
@@ -132,8 +166,9 @@ pub(crate) fn free_name(name: &str, taken: &BTreeSet<String>) -> String {
 }
 
 /// Creates the parameters of the dump (names, expressions, units, comments
-/// and favorites). Text parameters are skipped; expressions that do not
-/// evaluate become values.
+/// and favorites). Text parameters (unit `Text`, mitcad#664) are text
+/// parameters; expressions that do not evaluate become values, a text
+/// parameter's its expression as a text.
 pub fn import_parameters<K: Kernel>(
     doc: &mut Document<K>,
     dump: &Dump,
@@ -175,14 +210,8 @@ pub fn import_parameters<K: Kernel>(
         let Some(name) = text(&p.name) else {
             continue;
         };
+        // `Text` is a text parameter's unit (mitcad#664).
         let unit_text = text(&p.unit).unwrap_or("");
-        if unit_text == "Text" {
-            report.skipped.push((
-                name.to_owned(),
-                "text parameters are not supported".to_owned(),
-            ));
-            continue;
-        }
         let unit = f3d::parse_unit(unit_text).ok();
         let expression = rename_in(text(&p.expression).unwrap_or(""), &renamed);
         let new_name = renamed
@@ -243,13 +272,20 @@ pub fn import_parameters<K: Kernel>(
                 .add_parameter_expression(&p.name, &p.expression, p.unit, comment)
                 .is_ok();
         if !as_expression {
-            let Some((value, unit)) = stored_value(p) else {
-                report
-                    .skipped
-                    .push((file_name, "no value or unit to fall back on".to_owned()));
-                continue;
+            let (literal, unit) = if p.unit.is_some_and(Unit::is_text) {
+                // A text parameter has no number to fall back on: its
+                // expression is its text (as older files keep a text
+                // without quotes), mitcad#664.
+                (text_literal(p.expression.trim()), Unit::TEXT)
+            } else {
+                let Some((value, unit)) = stored_value(p) else {
+                    report
+                        .skipped
+                        .push((file_name, "no value or unit to fall back on".to_owned()));
+                    continue;
+                };
+                (value_to_expression(value, unit), unit)
             };
-            let literal = value_to_expression(value, unit);
             if let Err(e) = doc.add_parameter_expression(&p.name, &literal, Some(unit), comment) {
                 report.skipped.push((file_name, e.to_string()));
                 continue;
@@ -261,9 +297,11 @@ pub fn import_parameters<K: Kernel>(
         if p.param.is_favorite == Some(true) {
             let _ = doc.set_parameter_favorite(&p.name, true);
         }
-        // Does Mitcad agree with the value stored in the file?
+        // Does Mitcad agree with the value stored in the file? (A text
+        // parameter stores no number.)
+        let number = stored_value(p).filter(|(_, unit)| !unit.is_text());
         if let (Some((expected, _)), Some(param)) = (
-            stored_value(p),
+            number,
             doc.parameters()
                 .find(&p.name)
                 .and_then(|id| doc.parameters().get(id)),
@@ -279,6 +317,15 @@ pub fn import_parameters<K: Kernel>(
         map.names.insert(file_name, p.name.clone());
         if let Some(owner) = owner_index(p.param) {
             map.owned.entry(owner).or_default().push(p.name.clone());
+            // A sketch text's own text parameter (role `Text1-Text`),
+            // which the text follows (mitcad#664).
+            if p.unit.is_some_and(Unit::is_text) {
+                let number = text(&p.param.role).and_then(text_number);
+                map.texts
+                    .entry(owner)
+                    .or_default()
+                    .push((number, p.name.clone()));
+            }
         }
     }
     map
@@ -296,10 +343,37 @@ mod tests {
     }
 
     #[test]
+    fn texts_are_no_names_and_roles_number_texts() {
+        // mitcad#664.
+        let renamed = HashMap::from([("Label".to_owned(), "Label_1".to_owned())]);
+        assert_eq!(
+            rename_in("Label & ' Label ''x''' & \"Label\"", &renamed),
+            "Label_1 & ' Label ''x''' & \"Label\""
+        );
+        assert_eq!(text_number("Text1-Text"), Some(1));
+        assert_eq!(text_number("Text12-Text"), Some(12));
+        assert_eq!(text_number("Text1-Height"), None);
+        assert_eq!(text_number("AlongDistance"), None);
+    }
+
+    #[test]
     fn renames_whole_names_only() {
         let renamed = HashMap::from([("mil".to_owned(), "mil_1".to_owned())]);
         assert_eq!(rename_in("mil * 2 + mils", &renamed), "mil_1 * 2 + mils");
         assert_eq!(free_name("mil", &BTreeSet::new()), "mil_1");
         assert_eq!(free_name("a b", &BTreeSet::new()), "a_b");
+    }
+
+    #[test]
+    fn names_of_functions_in_any_case_are_renamed() {
+        // Function names are case-insensitive in expressions (mitcad#663).
+        assert_eq!(free_name("Max", &BTreeSet::new()), "Max_1");
+        assert_eq!(free_name("Sum", &BTreeSet::new()), "Sum_1");
+        assert_eq!(free_name("MM", &BTreeSet::new()), "MM");
+        let renamed = HashMap::from([("Max".to_owned(), "Max_1".to_owned())]);
+        assert_eq!(
+            rename_in("Max * 2 + max(1; 2)", &renamed),
+            "Max_1 * 2 + max(1; 2)"
+        );
     }
 }

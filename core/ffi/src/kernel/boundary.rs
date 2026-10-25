@@ -225,6 +225,7 @@ pub(super) fn boundary_body(
         degenerate_edges: 0,
         tidied: Default::default(),
         check: Default::default(),
+        stored_blends: Vec::new(),
     };
     let source = Source {
         document: "",

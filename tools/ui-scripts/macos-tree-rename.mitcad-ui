@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: MIT
+wait-idle 30
+expect-viewport
+window-resize 1440 1000
+click-logged '^Browser Root/Bodies at '
+key Right
+dblclick-logged '^Browser Root/Bodies/Body1 at '
+expect-tree-rename Body1
+screenshot ${MITCAD_TEST_SHOTS}/body-double-click.png
+screenshot-screen ${MITCAD_TEST_SHOTS}/body-native.png
+key Escape
+click-logged '^Browser Root/Bodies/Body1 at '
+key F2
+expect-tree-rename Body1
+type Plate
+key Return
+expect-log '^Renamed Body1 to Plate$'
+expect-log '^Browser Root/Bodies/Plate at '
+# A slow second click must use the same opaque editor.
+click-logged '^Browser Root/Bodies/Plate at '
+sleep 700
+click-logged '^Browser Root/Bodies/Plate at '
+expect-tree-rename Plate
+type DiscardedName
+key Escape
+# Esc must discard the draft: re-enter the committed name and inspect it.
+click-logged '^Browser Root/Bodies/Plate at '
+key F2
+expect-tree-rename Plate
+key Escape
+dblclick-logged '^Browser Root/Bracket:1 at '
+expect-tree-rename Bracket:1
+screenshot ${MITCAD_TEST_SHOTS}/component.png
+key Escape
+click-logged '^Browser Root/Measurements at '
+key Right
+dblclick-logged '^Browser Root/Measurements/Angle1 at '
+expect-tree-rename Angle1
+screenshot ${MITCAD_TEST_SHOTS}/measurement.png
+key Escape
+focus-widget projectsTree
+key Home Right End
+key F2
+screenshot-screen ${MITCAD_TEST_SHOTS}/projects-before-check-native.png
+expect-tree-rename base
+screenshot ${MITCAD_TEST_SHOTS}/projects.png
+key Escape

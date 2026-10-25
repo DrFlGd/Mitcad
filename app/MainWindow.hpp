@@ -25,6 +25,7 @@
 #include "browser/BrowserPanel.hpp"
 #include "browser/DocumentHost.hpp"
 #include "browser/DocumentSnapshot.hpp"
+#include "commands/MeasureHistory.hpp"
 #include "files/ProjectDialogs.hpp"
 #include "files/Projects.hpp"
 #include "framework/CommandSession.hpp"
@@ -58,6 +59,7 @@ class CommandRegistry;
 class CommandSearch;
 class ComputeProgress;
 class F3dImport;
+struct PrintImport;
 class FloatingLayout;
 class GlassCard;
 class LockController;
@@ -123,7 +125,9 @@ public:
   QString mcpDocumentId() const { return m_mcpDocumentId; }
   QJsonObject mcpDocumentInfo() const;
   QJsonObject mcpQuery(const QJsonObject& request) const;
-  QJsonObject mcpCommand(const QJsonObject& request);
+  // model_command's arguments: a command or an array of them, and how much
+  // of the document the result holds (mitcad#689).
+  QJsonObject mcpCommand(const QJsonObject& arguments);
   // One call of the live catalog's tools on this window and its document
   // (mitcad#265; MainWindowMcp.cpp, MainWindowMcpUi.cpp): document_list,
   // model_query, model_command, document_save and the ui_* tools. Throws
@@ -131,9 +135,10 @@ public:
   // the reason when it is refused.
   QJsonObject mcpTool(const QString& name, const QJsonObject& arguments);
   // The agents connected through MCP (initialized sessions): the project
-  // indicator says "Agent connected" and its menu offers Disconnect Agent,
+  // indicator lists their display labels and its menu offers Disconnect Agent,
   // which calls `disconnectAll`.
-  void setMcpAgents(int count, std::function<void()> disconnectAll);
+  void setMcpAgents(const QStringList& clients, std::function<void()> disconnectAll);
+  const QStringList& mcpAgentNames() const { return m_mcpAgentNames; }
 
   // Sets a parameter's value (mm or rad, written in its unit), as typed in
   // the parameters dialog (--set).
@@ -187,13 +192,18 @@ public:
   void clearModelPreview() override;
   std::shared_ptr<geometry::Shape> previewBodyShape(const std::string& uid) const override;
   std::shared_ptr<geometry::Shape> previewToolShape() const override;
+  bool refinePreviewDisplay(const std::vector<std::shared_ptr<geometry::Shape>>& bodies, QObject* context,
+                            std::function<void(bool)> done) override;
   bool runCommand(const QJsonObject& command, QJsonObject* result = nullptr) override;
   bool runCommands(const QJsonArray& commands, const QString& label) override;
   void refreshScene() override;
   void inputActivated(SelectFilter filter) override;
   void setConstructionHidden(bool hidden) override;
   void showHint(const QString& message) override;
+  // A warning on the status line: the warning colour (mitcad#655).
+  void showWarning(const QString& message);
   TopoDS_Shape itemShape(const SelectionItem& item) const override;
+  std::shared_ptr<void> itemShapeBatch() const override; // mitcad#679
   TopoDS_Shape analysisShape(const QJsonObject& request) const override;
   double pixelSize(const gp_Pnt& point) const override; // mitcad#417
   std::optional<gp_Dir> towardViewer(const gp_Pnt& point) const override; // mitcad#525
@@ -208,6 +218,8 @@ public:
   // After the view shows the section's clipped bodies, off the UI thread
   // (MainWindowSection.cpp, mitcad#438).
   void measureLater(const QJsonObject& query, QObject* context, Measured done) override;
+  // Measure's history (mitcad#648; MainWindowMeasureHistory.cpp).
+  void inspectionRecorded(const CommandDef& def, const CommandState& state, const Inspection& result) override;
   void editInstead(const QString& uid, const QString& input) override;
   QString profileOccurrence(const QString& sketch) const override { return placingOccurrence(sketch); }
   QString bodyOccurrence(const QString& body) const override;
@@ -257,11 +269,15 @@ public:
   void setOriginShown(bool shown) override;
   bool originShown() const override { return m_originShown; }
   QString documentFolder() const override;
+  QString projectFolder() const override { return m_project.isProject() ? m_project.root : QString(); }
   void exportFlatPattern(const QString& body) override;
   // Light bulbs in every mode (mitcad#295; MainWindowVisibility.cpp).
   bool runVisibilityCommands(const QJsonArray& commands, const QString& label) override;
   QString activeCommandName() const override;
   bool chooseInCommand(const QString& command, const QString& input, const QString& value) override;
+  // The print windows beside 3D Print (mitcad#655; files/MainWindowPrint.cpp).
+  void commandInputsChanged() override;
+  bool canChangePrintSettings() const override;
   // Change Parameters while a sketch or a feature is edited (mitcad#564;
   // MainWindowParameterEdits.cpp).
   bool runParameterCommand(const QJsonObject& command) override;
@@ -306,12 +322,24 @@ private:
   // Live MCP (mitcad#265): busy refusals, a sketch's commands through its
   // session, the agent's undo labels, Save, and the ui_* tools.
   void mcpRefuseBusy() const;
-  QJsonObject mcpSketchCommand(const QJsonObject& request);
+  // One command of model_command: through the model, or the sketch being
+  // edited; false with the reason when it is refused (mitcad#689).
+  bool mcpModelStep(const QJsonObject& request, QJsonObject* answer, QString& reason);
+  bool mcpSketchStep(const QJsonObject& request, QJsonObject* answer, QString& reason);
+  // Undoes the steps after `depth` (a refused array entry); how many.
+  int mcpUndoTo(int depth);
+  // The document as a command result compares it (mcp_snapshot_queries).
+  QJsonObject mcpSnapshot() const;
+  // model_export into a folder agents may use (mitcad#689).
+  QJsonObject mcpExport(const QJsonObject& arguments);
   void mcpLabelAgentChange(int depthBefore);
   QJsonObject mcpSave(const QJsonObject& arguments);
   QJsonObject mcpUiState();
   QJsonObject mcpLog(const QJsonObject& arguments) const;
   QJsonObject mcpScreenshot(const QJsonObject& arguments);
+  // ui_screenshot's size of an offscreen render (width, height, aspect;
+  // mitcad#689), none for the view as it is.
+  std::optional<QSize> mcpScreenshotSize(const QJsonObject& arguments, int maxSize) const;
   QJsonObject mcpSelect(const QJsonObject& arguments);
   QJsonObject mcpUiCommand(const QJsonObject& arguments);
   // Open into the window from an allowed folder, and the view's camera
@@ -397,6 +425,7 @@ private:
   void applyCacheSettings();
   // Help > Diagnostics (framework/CacheDiagnostics.hpp).
   void showDiagnostics();
+  void showConnectAssistant();
   // Starts Mitcad again (Preferences' Layout, mitcad#419): the window
   // closes as when Mitcad quits (the design saved or asked about) and the
   // design, when it has a file, opens in the new one; nothing when the close
@@ -437,6 +466,7 @@ private:
   // component's first occurrence; empty for the root.
   QString sketchEditOccurrence(const QString& uid, const QString& picked) const;
   gp_Trsf sketchPlacement(const QString& uid) const override;
+  QString sketchOccurrence(const QString& uid) const override;
 
   // Dragging components the joints move (mitcad#55, MainWindowJoints.cpp):
   // the `joint_drag` query per pointer move shows where the occurrences go,
@@ -486,6 +516,18 @@ private:
   // BUILD parts (components) given, or of their sets, one undo step.
   void deleteBuildParts(const QStringList& components, bool sets);
   bool keepSelected(const SelectionItem& item) const;
+  // While a SketchShapeBatch lives (a loop over many selected items, which
+  // changes no model), itemShape reads each sketch's entities once and
+  // takes their shapes from here (mitcad#670): a window round 100 circles
+  // otherwise solved and drew the whole sketch once per item, seconds.
+  struct SketchShapeBatch;
+  mutable std::optional<QHash<QString, QHash<QString, TopoDS_Shape>>> m_sketchShapes;
+  // While a SketchQueryMemo lives (the part of a refresh that reads the
+  // sketches: those shown, sketch mode's own, the selection kept), the
+  // `sketch` query of each sketch is asked once and its answer shared
+  // (mitcad#679): one edit step read the edited sketch three times.
+  struct SketchQueryMemo;
+  mutable std::optional<QHash<QString, QJsonValue>> m_sketchQueries;
   // The joint highlight (mitcad#523, MainWindowJointHighlight.cpp): the
   // `joints` query's entry of a joint, as-built joint or constraint set
   // (empty for other features); the highlights of the selected joints and
@@ -524,9 +566,10 @@ private:
   void logSketchPicks();
   // While Create Sketch waits for a plane (mitcad#474): the text of the
   // view's banner and of the MCP's hint, the banner shown while the mode
-  // lasts, and why a face or plane picked cannot take the sketch (a face
-  // that is not planar, or what the design policy leaves out), shown and
-  // logged as "Create Sketch: refused pick ...".
+  // lasts (and the origin planes startSketch offered in the browser taken
+  // back when it ends, mitcad#694), and why a face or plane picked cannot
+  // take the sketch (a face that is not planar, or what the design policy
+  // leaves out), shown and logged as "Create Sketch: refused pick ...".
   QString pickPlaneText() const;
   void updateModeBanner();
   void refusePlanePick(const SelectionItem& item);
@@ -912,7 +955,7 @@ private:
   // (editing a sketch or a feature), else -1: autosave writes that.
   int autosaveMarker() const;
   // Recovery (P8c, files/MainWindowAutosave.cpp): the dialog of the work
-  // left to recover (at start-up, or File > Recover Documents), and the
+  // left to recover (at start-up, or File > Recover Designs), and the
   // document restored from it: modified, as the file it came from.
   void recoverDocuments(bool atStart);
   bool restoreRecovered(RecoverableSession& session);
@@ -972,13 +1015,37 @@ private:
   // slicer; OK writes the files and starts the slicer (sendToSlicer: false
   // when the files could not be written).
   CommandDef print3dCommand();
+  // Edit Printers and Processes… (mitcad#655): the MAKE group's command next
+  // to 3D Print that opens Printers and Processes.
+  CommandDef printersCommand();
   bool sendToSlicer(const CommandState& state);
+  // Import from slicer… of 3D Print (mitcad#655): a slicer's file into the
+  // design, its line and report kept in `target`.
+  void importPrintSettings(const std::shared_ptr<PrintImport>& target);
+  // The design's printer as 3D Print shows it (mitcad#640): the root's
+  // effective printer profile, or that there is none.
+  QString designPrinterName() const;
+  // The dialect of a 3MF's print settings without a slicer of a known one
+  // (mitcad#655): the slicer the design's printer came from, else Bambu
+  // Studio.
+  QString designDialect() const;
+  // 3D Print's New printer… / New process… (mitcad#655): a new profile of
+  // `kind` in this design, made its choice in one undo step (`current`, the
+  // choice now, is not used: Save to puts it into a library). Its row key;
+  // empty when it was refused.
+  QString newDesignProfile(const QString& kind, const QString& current);
+  // 3D Print's Own settings (mitcad#655): the owners below the root with
+  // process values of their own, {uid, name, "Body1: Walls"}, each once.
+  QVector<QStringList> processOwnSettings() const;
   // The appearance colours the view shows of bodies (all when empty), as
   // `export`'s `colors` for 3MF files.
   QJsonObject appearanceColors(const QStringList& bodies) const;
   // The bodies Edit Appearances assigns to: those the selection stands for
   // (bodies, and the bodies of faces, edges and vertices), each once.
   Selection appearanceTargets() const;
+  // Opens the Materials window (mitcad#655) for the bodies of the selection:
+  // Edit Materials (the old Physical Material's id too).
+  void openMaterialsForSelection();
   void closeDocument();
   void addRecentFile(const QString& path);
   void updateRecentMenu();
@@ -1012,6 +1079,7 @@ private:
   QString m_mcpDocumentId;
   bool m_mcpRequestActive = false;
   int m_mcpAgents = 0;                     // connected MCP clients (mitcad#265)
+  QStringList m_mcpAgentNames;             // client-supplied display labels, not identities
   QAction* m_mcpDisconnect = nullptr;      // the indicator's Disconnect Agent
   std::function<void()> m_mcpDisconnectAll;
   bool m_mcpSketchEdited = false;          // an agent changed the sketch being edited
@@ -1117,6 +1185,9 @@ private:
   QHash<QString, QString> m_idleMeasurements;
   QWidget* m_idlePage = nullptr;
   AutoselectPanel* m_autoselect = nullptr;
+  QStringList m_timelineSelection;
+  QStringList m_timelineHover;
+  QString m_loggedTimelineHover;
   Selection m_autoselectPreview; // hover only; never part of the actual selection
   SelectionCreatePanel* m_selectionCreate = nullptr; // the card's Create row (mitcad#619)
   QString m_loggedSelectionCreate = QStringLiteral("none"); // its log line last logged (UI tests)
@@ -1295,6 +1366,40 @@ private:
   // written; returns those files (and those removed) for the version. None
   // when the file did not change (unless `renamed`).
   QStringList webViewerOnSave(const Project& project, const QString& path, const QString& author, bool renamed);
+
+  // Measure's history (mitcad#648, MainWindowMeasureHistory.cpp): the
+  // measurements taken while the design is open (cleared when another
+  // opens), shown in each Measure panel above its result; a row clicked is
+  // measured again in the panel, a row whose picks are gone is grey.
+  void addMeasureHistory(CommandPanel& panel, const CommandDef& def);
+  void refreshMeasureHistory();
+  // Marks the rows whose picks the view no longer has (not while the
+  // model computes).
+  void checkMeasureHistory();
+  bool measureRowThere(const MeasureHistory::Row& row) const;
+  void showMeasurement(int number);
+  void clearMeasureHistory();
+  MeasureHistory m_measureHistory;
+  QPointer<QWidget> m_measureHistoryView;
+
+  // Measurement objects (mitcad#649, MainWindowMeasurements.cpp): Keep in
+  // the Measure panel (the measurement it shows) and on a row of its
+  // history adds its picks as a measurement object (add_measurement, a
+  // change outside the panel's undo range, CommandSession::runVisibility);
+  // the shown ones are drawn over the view after each refresh, and one
+  // kept is logged once the model lists it ("Measurement kept: <name>").
+  void followMeasurements();
+  // The picks of a measurement's inputs ("a" and "b", or "body_a" and
+  // "body_b") as add_measurement takes them; false (with the reason in
+  // `why`) when there are none or they are the application's own (sketch
+  // curves and points).
+  static bool measurementPicks(const QHash<QString, Selection>& inputs, QJsonObject& command, QString& why);
+  void keepMeasurement(const QHash<QString, Selection>& inputs, const QString& what);
+  void keepMeasurementRow(int number);
+  QHash<QString, Selection> m_measureShown; // the picks of the measurement the panel shows
+  QStringList m_measurementNames;           // the measurements' names at the last refresh
+  bool m_measurementKept = false;           // a Keep waits for its measurement to be listed
+  QString m_loggedMeasurements;             // "Measurements: …" as last logged
 };
 
 } // namespace mitcad

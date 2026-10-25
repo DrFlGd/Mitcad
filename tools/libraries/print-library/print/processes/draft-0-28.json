@@ -1,0 +1,18 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "profile": {
+    "id": "draft-0-28",
+    "name": "Draft 0.28 mm (0.4 nozzle)",
+    "kind": "process",
+    "values": {
+      "layer_height": 0.28,
+      "first_layer_height": 0.2,
+      "perimeters": 2,
+      "top_solid_layers": 3,
+      "bottom_solid_layers": 3,
+      "fill_density": 15
+    },
+    "version": 1
+  }
+}

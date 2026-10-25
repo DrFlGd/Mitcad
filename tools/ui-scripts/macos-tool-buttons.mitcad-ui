@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MIT
+wait-idle 30
+window-resize 1280 900
+command view.fit
+expect-viewport
+expect-model-bodies 1 24000
+expect-macos-tool-buttons
+screenshot '${MITCAD_TEST_SHOTS}/initial.png'
+screenshot-screen '${MITCAD_TEST_SHOTS}/initial-native.png'
+command tools.search
+focus-widget commandSearchInput
+type 'Libraries...'
+expect-command-search 'Libraries...' tools.libraries
+expect-macos-tool-buttons
+screenshot-screen '${MITCAD_TEST_SHOTS}/command-search-native.png'
+key Escape
+focus-main
+dblclick-logged '^Browser Root/Bodies at '
+click-logged '^Browser Root/Bodies/Body1 at '
+expect-selection 1 0
+expect-macos-tool-buttons
+screenshot '${MITCAD_TEST_SHOTS}/selection.png'
+click-logged '^Selection card create Rectangular Pattern at '
+expect-log '^Command Rectangular Pattern started$'
+expect-macos-tool-buttons
+screenshot '${MITCAD_TEST_SHOTS}/pattern.png'
+key Escape
+command solid.box
+expect-log '^Command Box started$'
+expect-macos-tool-buttons
+screenshot '${MITCAD_TEST_SHOTS}/box.png'
+key Escape
+expect-model-bodies 1 24000
+expect-never 'OCCT view event failed|Recompute failed'

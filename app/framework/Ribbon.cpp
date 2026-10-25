@@ -773,10 +773,13 @@ void Ribbon::fitGroups() {
     for (const GroupInfo& info : infos) {
       total += info.collapsible ? info.fullWidth : info.collapsedWidth;
     }
-    // Collapse from the right while the groups do not fit.
+    // Collapse from the right while the groups do not fit, only groups that
+    // get narrower: a group whose buttons fit under its name (FINISH SKETCH)
+    // is no wider with them, and collapsing it hid Finish Sketch in a
+    // 1024-wide window for nothing (mitcad#696).
     std::vector<bool> collapsed(static_cast<std::size_t>(infos.size()), false);
     for (int i = static_cast<int>(infos.size()) - 1; i >= 0 && total > width(); --i) {
-      if (infos[i].collapsible) {
+      if (infos[i].collapsible && infos[i].fullWidth > infos[i].collapsedWidth) {
         total -= infos[i].fullWidth - infos[i].collapsedWidth;
         collapsed[static_cast<std::size_t>(i)] = true;
       }

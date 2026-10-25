@@ -1,0 +1,20 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "material": {
+    "id": "petg",
+    "name": "PETG",
+    "density": 1.27,
+    "appearance": "plastic_clear",
+    "filament": {
+      "filament_type": "PETG",
+      "filament_diameter": 1.75,
+      "temperature": 240,
+      "first_layer_temperature": 240,
+      "bed_temperature": 75,
+      "first_layer_bed_temperature": 75,
+      "max_fan_speed": 50
+    },
+    "version": 1
+  }
+}

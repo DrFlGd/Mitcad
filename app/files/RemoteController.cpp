@@ -593,7 +593,7 @@ void RemoteController::waitForBranch() {
   if (m_task == nullptr || m_task->name() != QLatin1String("sync")) {
     return;
   }
-  QProgressDialog dialog(tr("Waiting for the sync to finish..."), tr("Stop the Sync"), 0, 0, &m_window);
+  QProgressDialog dialog(tr("Waiting for the sync to finish…"), tr("Stop the Sync"), 0, 0, &m_window);
   dialog.setWindowTitle(tr("Sync"));
   dialog.setWindowModality(Qt::WindowModal);
   prepareProgressDialog(&dialog);
@@ -693,7 +693,7 @@ void RemoteController::check() {
     box.setInformativeText(tr("Project Settings shares it through a git repository."));
     QPushButton* settings = m_host.projectRoot().isEmpty()
                                 ? nullptr
-                                : box.addButton(tr("Project &Settings..."), QMessageBox::AcceptRole);
+                                : box.addButton(tr("Project &Settings…"), QMessageBox::AcceptRole);
     execDialog(&box);
     if (settings != nullptr && box.clickedButton() == settings && m_host.projectSettings) {
       m_host.projectSettings();
@@ -903,8 +903,8 @@ void RemoteController::sync() {
   if (!repo) {
     qInfo().noquote() << QStringLiteral("Sync: no project with versions");
     sheetInformation(&m_window, tr("Sync"),
-                             tr("Sync shares the versions of a Cloud project's designs: make one with File > "
-                                "Project > New Project, or share a Local project in its Project Settings."));
+                             tr("Sync shares the versions of a Cloud project's designs: make one with File › "
+                                "Project › New Project, or share a Local project in its Project Settings."));
     return;
   }
   refreshStatus();
@@ -915,7 +915,7 @@ void RemoteController::sync() {
                         .arg(QFileInfo(m_state.root).fileName()),
                     QMessageBox::Cancel, &m_window);
     box.setInformativeText(tr("Project Settings shares it through a git repository."));
-    QPushButton* settingsButton = box.addButton(tr("Project &Settings..."), QMessageBox::AcceptRole);
+    QPushButton* settingsButton = box.addButton(tr("Project &Settings…"), QMessageBox::AcceptRole);
     box.setDefaultButton(settingsButton);
     execDialog(&box);
     if (box.clickedButton() == settingsButton && m_host.projectSettings) {
@@ -1051,7 +1051,7 @@ void RemoteController::runSync(const QString& author, const QJsonObject& resolut
     m_host.status(tr("The remote is busy: Sync again in a moment."), true);
     return;
   }
-  m_host.status(tr("Syncing with %1...").arg(m_state.upstream), false);
+  m_host.status(tr("Syncing with %1…").arg(m_state.upstream), false);
 }
 
 void RemoteController::syncFinished(const QString& author, const QJsonObject& answer) {

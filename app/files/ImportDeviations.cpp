@@ -15,6 +15,8 @@
 
 #include "../framework/Dialogs.hpp"
 
+#include "../platform/MacDialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -146,6 +148,7 @@ QSet<qint64> askDeviations(QWidget* parent, const QString& file, const std::vect
   table->setSelectionMode(QAbstractItemView::SingleSelection);
   table->setEditTriggers(QAbstractItemView::NoEditTriggers);
   table->verticalHeader()->setVisible(false);
+  mac::styleListTable(table);
   for (int r = 0; r < static_cast<int>(rows.size()); ++r) {
     const DeviationRow& row = rows[static_cast<std::size_t>(r)];
     auto* choice = new QTableWidgetItem(QObject::tr("Use stored"));
@@ -241,6 +244,8 @@ QSet<qint64> askDeviations(QWidget* parent, const QString& file, const std::vect
     checkAll(Qt::Unchecked);
     dialog.accept();
   });
+  mac::styleDialogButtons(buttons, apply, true);
+  mac::styleDialog(&dialog);
   QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
   layout->addWidget(buttons);

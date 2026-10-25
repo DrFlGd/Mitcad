@@ -14,6 +14,7 @@
 #include <QString>
 #include <QTimer>
 
+#include "DisplayMeshes.hpp"
 #include "ModelWorker.hpp"
 #include "Command.hpp"
 #include "Selection.hpp"
@@ -131,6 +132,13 @@ public:
   bool previewAsync(const QByteArray& request, const QString& name, QObject* context, Completion completion);
   bool inspectionAsync(const QString& name, QObject* context, InspectionTask task,
                        InspectionCompletion completion);
+  // Meshes `bodies` (refinableShapes of a preview's stand-ins) in the
+  // view's final tier in a job of their own, which computes nothing in the
+  // model and changes no revision and no undo step (DisplayMeshes.hpp,
+  // mitcad#635): their stand-ins are dropped once they are meshed to the
+  // end, so the view draws them. True when all were.
+  bool refineDisplay(const DisplayShapes& bodies);
+  bool refineDisplayAsync(const DisplayShapes& bodies, QObject* context, Completion completion);
   void clearPreview();
   void markSaved();
   void cancelJob();
@@ -168,6 +176,9 @@ private:
   std::unique_ptr<ModelWorker> m_worker;
   ModelJob* m_job = nullptr;
   std::unique_ptr<AsyncJob> m_async;
+  // The last preview's stand-ins (DisplayMeshes.hpp, mitcad#635): its
+  // bodies hold them weakly, the view takes them from here.
+  DisplayShapes m_standIns;
   WaitHandler m_waitHandler;
   std::function<void()> m_beforeJob;
   std::deque<IdleCall> m_idleCalls;

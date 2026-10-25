@@ -3,9 +3,12 @@
 # check-all sources: app/commands geometry/analysis
 # The INSPECT group (U4) through the real UI, on two 20 mm cubes that
 # overlap by 5 mm (Body1 at x = 0, Body2 at x = 15) and, apart from them,
-# a rod of radius 5 (Body3, from a circle in Sketch1 about (-40, 10)):
+# a rod of radius 5 (Body3, from a circle in Sketch1 about (-40, 10)) and a
+# block 10 x 10 x 50 behind it (Body4, at x = -45, y = 40):
 #   - Measure between a face and a vertex, and an edge's length; in sketch
 #     mode between two sketch lines (P9).
+#   - The offset of two parallel faces that do not overlap (mitcad#646):
+#     the panel's Offset line beside the closest distance.
 #   - The radius and diameter of the rod's circular edge and of the sketch
 #     circle, alone and as either item of two (mitcad#194); a straight edge
 #     gets no diameter.
@@ -42,7 +45,11 @@ cat > "$WORK/cubes.json" << EOF
     "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
   {"cmd": "sketch.add_circle", "sketch": "F1", "center": [-40, 10], "diameter": 10},
   {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "r{c9}"}],
-    "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}
+    "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F6", "corner": [-45, 40], "width": 10, "height": 10},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F6", "region": "$R"}],
+    "extent": {"type": "distance", "distance": 50}, "operation": "new_body"}}
 ]
 EOF
 "$CLI" run "$WORK/cubes.json" --save "$WORK/cubes.mitcad" > "$WORK/cli.log" 2>&1 ||
@@ -61,6 +68,7 @@ ui_expect_log "Inspect Measure: area 400" "its area"
 ui_step "pick a bottom vertex"             ui_click_pick "vertex F4.b0/V{F4:side(c1[c4,c2])|F4:side(c2[c1,c3])|F4:start("
 ui_expect_log "Measure Selection 2: 1 vertex" "a vertex picked"
 ui_expect_log "distance 20" "the top is 20 mm above it"
+grep "distance 20.*offset" "$UI_LOG" > /dev/null && ui_fail "a face and a vertex have an offset"
 ui_step "clear the second"                 ui_key Escape
 ui_expect_log "Command Measure cancelled" "measure closed"
 ui_step "measure (I)"                      ui_key i
@@ -75,9 +83,23 @@ ui_mark
 ui_step "measure (I)"                      ui_key i
 ui_step "pick the rod's top edge"          ui_click_pick "edge F5.b0/E{F5:end(r{c9})|"
 ui_expect_new "Inspect Measure: length 31.416, radius 5, diameter 10" "radius 5 and diameter 10"
+ui_expect_new "diameter 10, axis (-40, 10, 20) along (0, 0, " "and its axis through its centre (mitcad#647)"
 ui_step "pick Body2's top face"            ui_click_pick "face F4.b0/F4:end($R)"
-ui_expect_new "Inspect Measure: length 31.416, radius 5, diameter 10, area 400, distance" \
-  "the diameter stays beside the face's area and the distance"
+ui_expect_new "area 400, distance" "the diameter stays beside the face's area and the distance"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "area 400, distance" | grep -q "Inspect Measure: length 31.416, radius 5, diameter 10, axis" ||
+  ui_fail "the rod's diameter and axis went"
+ui_step "close (Enter)"                    ui_key Return
+ui_expect_new "Closed Measure" "measure closed"
+
+echo "--- Measure the offset of parallel faces (mitcad#646)"
+ui_mark
+ui_step "measure (I)"                      ui_key i
+ui_step "pick Body2's top face"            ui_click_pick "face F4.b0/F4:end($R)"
+ui_expect_new "Inspect Measure: area 400" "its area"
+ui_step "pick the tall block's top face"   ui_click_pick "face F7.b0/F7:end($R)"
+ui_expect_new "Inspect Measure: area 400, area 100, distance 61.644" \
+  "the faces' nearest corners are 61.644 apart"
+ui_expect_new "offset 30" "their planes are 30 apart (the panel's Offset line)"
 ui_step "close (Enter)"                    ui_key Return
 ui_expect_new "Closed Measure" "measure closed"
 

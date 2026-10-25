@@ -3,6 +3,7 @@
 # check-all sources: app/framework/CommandSession.cpp app/framework/CommandPanel.cpp
 # check-all sources: core/model/src/features/combine.rs tools/cli
 # check-all sources: app/OcctViewer.cpp app/framework/PreviewBodies.cpp
+# check-all sources: core/model/src/features/moves.rs core/model/src/features/point_pattern.rs
 # Input-driven Windows UI test of Combine with the same body in two
 # occurrences as tools (mitcad#544) in the build VM (tools/ui-windows-lib.ps1
 # says how the input is posted), as the last part of
@@ -17,6 +18,12 @@
 #      Cut, OK: both cut away, 2000 mm3 left.
 #   2. The design file keeps a tool in each occurrence.
 #   3. Edited: the panel takes both tools back where they were picked.
+#   4. Move/Copy Point to Point between components (mitcad#699), as the
+#      last part of the Linux test, on a second design: Part:1 10 mm and
+#      Part:2 50 mm along X, nothing in the root. Part:2 moved from a
+#      vertex of its block to the same vertex where Part:1 shows it: the
+#      preview puts Part:2 on Part:1, the file keeps each point's
+#      occurrence, an edit loads them back.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-component-combine-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -26,7 +33,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'solid.combine' = 'F8'; 'view.top' = 'F7' }
+Ui-Init $App $Out $QtBin @{ 'solid.combine' = 'F8'; 'view.top' = 'F7'; 'solid.move' = 'F9' }
 
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -132,6 +139,97 @@ Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Edited F5' 'edited' 30
 Ui-ExpectVolume 'Body [A-Za-z0-9]* \(F4\.b0\): volume [0-9.]+ -> ([0-9.]+) mm3' 2000 'still both cuts'
+if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
+
+Write-Host '--- 4. Move/Copy Point to Point between copies of a component (mitcad#699)'
+# Part:1 (O1, C1) 10 along X: Sketch1 (F1) 30 x 20, Extrude1 (F2) 10 up:
+# F2.b0. Part:2 (O2) 50 along X. Nothing in the root.
+$copiesJson = Join-Path $work 'copies.json'
+Set-Content -Encoding ascii $copiesJson (@'
+[
+  {"cmd": "create_component", "name": "Part", "transform": {"translation": [10, 0, 0]}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 30, "height": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "RECT"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "copy_occurrence", "occurrence": "Part:1", "transform": {"translation": [50, 0, 0]}}
+]
+'@).Replace('RECT', $r)
+$copies = Join-Path $work 'copies.mitcad'
+$output = & $cli run $copiesJson --save $copies 2>&1
+if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
+
+Ui-StartApp 'component-move' @('--open', $copies)
+Ui-Step 'top view (F7)'                  { Ui-Key 'F7' }
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-ExpectLog 'Body F2.b0 in O2 at ' "Part:2's block shown"
+Ui-Mark
+Ui-Step 'select Part:2 in the browser'   { Ui-ClickLogged 'Browser Root/Part:2' }
+Ui-ExpectNew 'Browser selected: Root/Part:2' 'Part:2 selected'
+Ui-Step 'move (F9)'                      { Ui-Key 'F9' }
+Ui-ExpectNew 'Command Move/Copy started' 'Move/Copy started'
+Ui-ExpectNew 'Panel Move/Copy choices: move_type=components' 'Part:2 moves as a component'
+# One wheel step towards the user at a time: Translate, Rotate, Point to Point.
+foreach ($type in 'Translate', 'Rotate', 'Point to Point') {
+  Ui-Step "$type (wheel)"                { Ui-WheelLogged 'Panel Move/Copy input type' -1 }
+  Ui-ExpectNew "Move/Copy: Move Type = $type" "Move Type $type"
+}
+Ui-Step 'Origin Point'                   { Ui-ClickLogged 'Panel Move/Copy input from' }
+Ui-ExpectNew 'Pick places:' 'the places of the picks logged'
+Ui-Sync
+# Where a click picks the vertices of Part's block, both copies: in the top
+# view X points right, so of the two places of a vertex Part:2's is the
+# one on the right.
+$lines = @(Ui-LogLines)
+$start = 0
+for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains('Pick places:')) { $start = $i; break } }
+$places = @(foreach ($line in $lines[$start..($lines.Count - 1)]) {
+    $match = [regex]::Match("$line", '^Pick vertex F2\.b0/(V\{\S*\}) at (\d+),(\d+)$')
+    if ($match.Success) {
+      [pscustomobject]@{ Name = $match.Groups[1].Value; X = [int]$match.Groups[2].Value; Y = [int]$match.Groups[3].Value }
+    }
+  })
+$twice = $places | Group-Object Name | Where-Object { $_.Count -ge 2 } | Select-Object -First 1
+if (-not $twice) { Ui-Fail "no vertex of Part's block can be picked in both copies ($($places.Count) places)" }
+$vertex = $twice.Name
+$sorted = @($twice.Group | Sort-Object X)
+$left = $sorted[0]
+$right = $sorted[$sorted.Count - 1]
+if ($right.X -le $left.X) { Ui-Fail "the two places of $vertex are not side by side" }
+Write-Host "ok   $vertex at $($left.X),$($left.Y) (Part:1) and $($right.X),$($right.Y) (Part:2)"
+Ui-Mark
+Ui-Step 'pick it where Part:2 shows it'  { Ui-Click $right.X $right.Y }
+Ui-ExpectNew "Move/Copy Origin Point: 1 vertex [vertex $vertex of F2.b0 in O2]" 'the origin picked in Part:2'
+Ui-Step 'Target Point'                   { Ui-ClickLogged 'Panel Move/Copy input to' }
+Ui-Step 'pick it where Part:1 shows it'  { Ui-Click $left.X $left.Y }
+Ui-ExpectNew "Move/Copy Target Point: 1 vertex [vertex $vertex of F2.b0 in O1]" 'the target picked in Part:1'
+Ui-ExpectNew 'Preview Move/Copy: ok' 'previewed' 30
+Ui-ExpectNew 'Preview Move/Copy moves O2' 'the preview moves Part:2'
+# From 50 mm to 10 mm along X: onto Part:1.
+Ui-ExpectNew 'F2.b0 in O2 at 10,0,0' 'Part:2 previewed on Part:1'
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Moved 1 components (Point to Point)' 'Part:2 moved' 30
+if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
+Ui-Mark
+Ui-Step 'save (Ctrl+S)'                  { Ui-Key 'ctrl+s' }
+Ui-ExpectNew 'Saved ' 'saved'
+$move = (Get-Content -Raw $copies | ConvertFrom-Json).features | Where-Object { $_.type -eq 'move_occurrence' } |
+  Select-Object -First 1
+if (-not $move) { Ui-Fail 'no move_occurrence in the saved design' }
+$shown = $move.transform | ConvertTo-Json -Compress
+if ($move.transform.from_occurrence -ne 'O2' -or $move.transform.to_occurrence -ne 'O1') {
+  Ui-Fail "the saved move is $shown, expected the origin in O2 and the target in O1"
+}
+Write-Host "ok   each point kept with its occurrence: $shown"
+Ui-Mark
+Ui-Step 'edit Move1 (double-click)'      { Ui-DoubleClickLogged 'Timeline Move1' }
+Ui-ExpectNew 'Editing F3 with Move/Copy' 'editing the move'
+Ui-ExpectNew "Move/Copy Origin Point: 1 vertex [vertex $vertex of F2.b0 in O2]" 'the origin back in Part:2'
+Ui-ExpectNew "Move/Copy Target Point: 1 vertex [vertex $vertex of F2.b0 in O1]" 'the target back in Part:1'
+Ui-ExpectNew 'Preview Move/Copy: ok' 'previewed again' 30
+Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
 if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
 
 Ui-Finish 'UI Windows component combine test'

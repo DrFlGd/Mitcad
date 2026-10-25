@@ -112,7 +112,7 @@ void MainWindow::registerVersionCommands() {
   registerProjectCommands();
   // Save with Description (mitcad#175, Save Version before: Save records a
   // version in a project too).
-  CommandDef version = def("file.save_version", tr("Save with Description..."), "save-version",
+  CommandDef version = def("file.save_version", tr("Save with Description…"), "save-version",
                            tr("Saves the design and records a version of it with a description you write"),
                            [this] { saveVersion(); });
   version.shortcut = QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_S);
@@ -121,7 +121,7 @@ void MainWindow::registerVersionCommands() {
                       QStringLiteral("git")};
   m_registry->add(version);
   // P12e.
-  CommandDef versions = def("file.version_history", tr("Version History..."), "versions",
+  CommandDef versions = def("file.version_history", tr("Version History…"), "versions",
                             tr("The versions of this design: compare, open, restore or save a copy"),
                             [this] { showVersionHistory(); });
   versions.shortcut = QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_H);
@@ -197,7 +197,7 @@ bool MainWindow::saveVersion() {
                     tr("%1 has no version history.").arg(documentName()), QMessageBox::Cancel, this);
     box.setInformativeText(tr("Versions are kept for the designs of projects: Save to Project puts it in "
                               "one."));
-    QPushButton* save = box.addButton(tr("&Save to Project..."), QMessageBox::AcceptRole);
+    QPushButton* save = box.addButton(tr("&Save to Project…"), QMessageBox::AcceptRole);
     box.setDefaultButton(save);
     prepareModal(&box);
     execDialog(&box);
@@ -475,7 +475,7 @@ void MainWindow::showVersionHistory() {
     } else {
       box.setInformativeText(tr("Versions are kept for the designs of projects: Save to Project puts it in "
                                 "one."));
-      QPushButton* save = box.addButton(tr("&Save to Project..."), QMessageBox::AcceptRole);
+      QPushButton* save = box.addButton(tr("&Save to Project…"), QMessageBox::AcceptRole);
       box.setDefaultButton(save);
     }
     prepareModal(&box);
@@ -775,7 +775,7 @@ void MainWindow::saveVersionCopy(QWidget* parent, const QString& file, const Fil
     options.text = tr("The project and the folder for the copy of %1 of %2, and its name there:")
                        .arg(version.label(), info.fileName());
     options.acceptText = tr("&Save");
-    options.otherText = tr("&Another Folder...");
+    options.otherText = tr("&Another Folder…");
     options.root = fileProject.root;
     options.folder = folderInProject(fileProject.root, info.absolutePath());
     options.name = QFileInfo(suggested).completeBaseName();

@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: MIT
+# Both inner boxes are wholly enclosed by Outer, including their bottom faces.
+wait-idle 30
+window-resize 1280 900
+expect-viewport
+command view.fit
+expect-ever 'Timeline Inner at '
+expect-selection 0 0
+capture-view-image '${MITCAD_TEST_SHOTS}/baseline.png'
+mark
+hover-logged '^Timeline Inner at '
+expect-timeline-hover F1
+expect-log '^Timeline hover highlighted: F1 6$'
+expect-timeline-tooltip '(?s)Box: Inner.*Component: Root.*Length: 10.*Width: 10.*Height: 10'
+expect-selection 0 0
+expect-view-image '${MITCAD_TEST_SHOTS}/baseline.png' changed
+screenshot '${MITCAD_TEST_SHOTS}/hidden-hover.png'
+timeline-leave
+expect-timeline-hover none
+expect-log '^Timeline hover highlighted: none$'
+expect-view-image '${MITCAD_TEST_SHOTS}/baseline.png' same
+mark
+click-logged '^Timeline Inner at '
+timeline-leave
+expect-selection 1 0
+expect-selection-info '(?s)\A(?!.*F1)(?!.*O1).*Selected: Inner.*Box: Inner.*Component: Root.*Length: 10.*Width: 10.*Height: 10'
+expect-view-image '${MITCAD_TEST_SHOTS}/baseline.png' changed
+screenshot '${MITCAD_TEST_SHOTS}/hidden-selected.png'
+key Escape
+expect-selection 0 0
+expect-view-image '${MITCAD_TEST_SHOTS}/baseline.png' same
+# Folded group hover previews both members and clears without selecting them.
+click-logged '^Timeline group Inner details at '
+hover-logged '^Timeline group Inner details at '
+expect-timeline-hover F1,F2
+expect-log '^Timeline hover highlighted: F1 6, F2 6$'
+expect-timeline-tooltip '(?s)Inner details.*2 feature'
+expect-selection 0 0
+expect-view-image '${MITCAD_TEST_SHOTS}/baseline.png' changed
+timeline-leave
+expect-view-image '${MITCAD_TEST_SHOTS}/baseline.png' same
+# Failed, suppressed and rolled-back cells never show cached geometry.
+hover-logged '^Timeline Failed round at '
+expect-timeline-hover none
+expect-timeline-tooltip '(?s)Fillet: Failed round.*No geometry to show'
+expect-view-image '${MITCAD_TEST_SHOTS}/baseline.png' same
+hover-logged '^Timeline Suppressed detail at '
+expect-timeline-hover none
+expect-timeline-tooltip '(?s)Box: Suppressed detail.*Suppressed.*No geometry to show'
+expect-view-image '${MITCAD_TEST_SHOTS}/baseline.png' same
+hover-logged '^Timeline Later plane at '
+expect-timeline-hover none
+expect-timeline-tooltip '(?s)Later plane.*Rolled back.*No geometry to show'
+expect-view-image '${MITCAD_TEST_SHOTS}/baseline.png' same
+timeline-leave
+expect-never 'OCCT view event failed|The document was read while a job computes it|TestDriver: FAIL'

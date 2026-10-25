@@ -433,7 +433,9 @@ pub fn lookup(standard: ThreadStandard, designation: &str) -> Result<ThreadData,
 
 /// Checks a tolerance class: lower case for external threads, upper case
 /// for internal ones (`6g`, `6H`; `2A`, `2B`; Whitworth's by name). `internal`
-/// None accepts either.
+/// None accepts either. A class of the other side names the class to use
+/// instead, the standard's default of the face's side (mitcad#691: "class
+/// 6g is for external threads; use 6H for a hole").
 pub fn check_class(
     standard: ThreadStandard,
     class: &str,
@@ -447,8 +449,14 @@ pub fn check_class(
             "unknown {} thread class {class}",
             standard_name(standard)
         )),
-        Some(true) if !inside => Err(format!("class {class} is for external threads")),
-        Some(false) if !external => Err(format!("class {class} is for internal threads")),
+        Some(true) if !inside => Err(format!(
+            "class {class} is for external threads; use {} for a hole",
+            standard.default_class(true)
+        )),
+        Some(false) if !external => Err(format!(
+            "class {class} is for internal threads; use {} for a shaft",
+            standard.default_class(false)
+        )),
         _ => Ok(()),
     }
 }
@@ -844,6 +852,16 @@ mod tests {
         assert!(check_class(ThreadStandard::IsoMetric, "6H", None).is_ok());
         let error = check_class(ThreadStandard::IsoMetric, "6g", Some(true)).unwrap_err();
         assert!(error.contains("external"), "{error}");
+        // The message names the class to use instead (mitcad#691).
+        assert_eq!(error, "class 6g is for external threads; use 6H for a hole");
+        assert_eq!(
+            check_class(ThreadStandard::IsoMetric, "6H", Some(false)).unwrap_err(),
+            "class 6H is for internal threads; use 6g for a shaft"
+        );
+        assert_eq!(
+            check_class(ThreadStandard::Unified, "2A", Some(true)).unwrap_err(),
+            "class 2A is for external threads; use 2B for a hole"
+        );
         assert!(check_class(ThreadStandard::IsoMetric, "9z", None).is_err());
         assert!(check_class(ThreadStandard::Unified, "2B", Some(true)).is_ok());
         assert!(check_class(ThreadStandard::Whitworth, "Normal", Some(true)).is_ok());

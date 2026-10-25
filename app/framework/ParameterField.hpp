@@ -32,12 +32,16 @@ struct ParameterSource {
   // The `parameters` query's answer; throws when the model cannot answer
   // now (a job computes it).
   std::function<QJsonArray()> parameters;
-  // Runs an `add_parameter` command as the parameter table does in the
+  // Runs `add_parameter` or the formula editor's `set_parameter` as the table does in the
   // window's mode (its own undo step; outside an open panel's undo range);
   // false with the model's reason in `error` when the model refuses it.
   std::function<bool(const QJsonObject& command, QString* error)> addParameter;
   // The document's length unit ("mm"), for a new length parameter.
   std::function<QString()> lengthUnit;
+  // Read-only formula assistance and expression evaluation in this design.
+  std::function<QJsonObject(const QJsonObject&)> query = {};
+  // Why an existing parameter's limits are held by an open command, if any.
+  std::function<QString(const QJsonObject&)> limitProblem = {};
 };
 
 void setParameterSource(QWidget* window, ParameterSource source);
@@ -98,6 +102,7 @@ public:
   // The fx button: every parameter, to be searched.
   void openBrowser();
   void openCreateEditor();
+  void openFormulaEditor();
   void startNaming();
   void close(const QString& why = QString());
 
@@ -136,6 +141,7 @@ private:
   void showMenu(const QPoint& at);
   void updateIcon();
   void logFx();
+  void updateAssistance();
   SuggestContext context() const;
   // As the field is now while typing; as it was when the browser opened
   // while it is open.
@@ -159,6 +165,7 @@ private:
   QString m_filter;  // typing: the name before the caret; browsing: the search
   Anchor m_anchor;   // where the browser opened
   std::vector<SuggestedParameter> m_parameters;
+  QJsonArray m_functions;
   bool m_inserting = false;
   QString m_logged;
   QString m_loggedPlaces;

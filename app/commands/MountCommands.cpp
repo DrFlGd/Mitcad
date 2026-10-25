@@ -173,7 +173,7 @@ std::optional<QJsonObject> atOf(const CommandState& state, const CommandContext&
   const Active active = activeOf(context);
   const std::optional<QString> path = pathFromActive(item, active);
   if (!path) {
-    problem = QObject::tr("%1 is not in %2, where the part goes.").arg(item.describe(), active.name);
+    problem = QObject::tr("%1 is not in %2, where the component goes.").arg(item.describe(), active.name);
     return std::nullopt;
   }
   QJsonObject at{{QStringLiteral("geometry"), item.reference()}};
@@ -257,7 +257,7 @@ std::vector<PreviewMarker> markersOf(const QJsonObject& report) {
   return markers;
 }
 
-QString noPart() { return QObject::tr("Choose a part with mount frames in Insert from Library first."); }
+QString noPart() { return QObject::tr("Choose a component with mount frames in Insert from Library first."); }
 
 Inspection inspectPlacement(const MountPart& part, const CommandState& state, const CommandContext& context) {
   Inspection result;
@@ -375,9 +375,9 @@ bool place(MountPart& part, DocumentHost& host, CommandState& state, const Comma
 CommandDef mountPartCommand(const std::shared_ptr<MountPart>& part, DocumentHost& host) {
   CommandDef def;
   def.id = QString::fromLatin1(kMountPartCommand);
-  def.name = QObject::tr("Place Part");
+  def.name = QObject::tr("Place Component");
   def.icon = QStringLiteral("insert-library");
-  def.tooltip = QObject::tr("Places a library part by its mount frame on a face, a hole or a grid");
+  def.tooltip = QObject::tr("Places a library component by its mount frame on a face, a hole or a grid");
   def.tab.clear(); // Insert from Library starts it
   def.group = QStringLiteral("ASSEMBLE");
   def.keywords = {QStringLiteral("mount"), QStringLiteral("snap"), QStringLiteral("library"), QStringLiteral("grid")};
@@ -405,10 +405,10 @@ CommandDef mountPartCommand(const std::shared_ptr<MountPart>& part, DocumentHost
               false)
           // Shift + click: the pick and Place in one (as BUILD, mitcad#451).
           .withShiftClickApplies()
-          .withTooltip(QObject::tr("A face, a hole's round face or rim, or a grid; none drops the part in")),
+          .withTooltip(QObject::tr("A face, a hole's round face or rim, or a grid; none drops the component in")),
       choiceInput(kFrame, QObject::tr("Mount Frame"), {}, QString())
           .withChoices([part](const CommandState&) { return frameChoices(*part); })
-          .withTooltip(QObject::tr("The part's frame that goes on the pick (a lamp's ceiling or wall frame)")),
+          .withTooltip(QObject::tr("The component's frame that goes on the pick (a lamp's ceiling or wall frame)")),
       valueInput(QStringLiteral("rotate"), QObject::tr("Rotate"), ValueKind::Angle, QStringLiteral("0 deg"))
           .withTooltip(QObject::tr("About the frame's Z; on a grid in quarter turns")),
       valueInput(QStringLiteral("offset"), QObject::tr("Offset"), ValueKind::Length, QStringLiteral("0 mm"))

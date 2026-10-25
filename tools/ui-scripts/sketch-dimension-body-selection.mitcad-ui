@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: MIT
+# Select body geometry before D; projection and dimension remain one undo
+# action, with no projection side effect from starting or cancelling D.
+expect-ever 'View area'
+wait-idle
+window-resize 1400 990
+dblclick-logged 'Timeline Sketch2'
+expect-log 'Editing sketch F3 \(Sketch2\)'
+command view.fit
+expect-ever 'Sketch Sketch2: 0 linked projection\(s\)'
+capture-undo-depth baseline
+
+# A body edge alone: D enters placement, and the fixed edge is dimensioned
+# as driven after projection, just as when it is picked inside the tool.
+sketch-click 38 0
+expect-selection 1 0
+mark
+key d
+expect-log 'Sketch Dimension picked the body edge E\{'
+expect-no-log 'Projected the body'
+sketch-click 30 5
+expect-log 'Sketch value editor at'
+key Return
+expect-log 'Projected the body edge E\{'
+expect-log 'Added driven dimension \S+ length'
+expect-log 'Sketch Sketch2: 1 linked projection\(s\)'
+expect-undo-depth ${baseline} 1
+key Escape
+mark
+key ctrl+z
+expect-log 'Sketch Sketch2: 0 linked projection\(s\)'
+expect-undo-depth ${baseline} 0
+
+# A selected body edge and sketch point define a point-line distance.
+sketch-click 38 0
+sketch-click 20 10 ctrl
+expect-selection 2 0
+mark
+key d
+expect-log 'Sketch Dimension picked the body edge E\{'
+sketch-click 30 5
+expect-log 'Sketch value editor at'
+type '15 mm'
+key Return
+expect-log 'Projected the body edge E\{'
+expect-log 'Added dimension \S+ point_line_distance \S+ = 15 mm'
+expect-log 'Sketch Sketch2: 1 linked projection\(s\)'
+expect-undo-depth ${baseline} 1
+key Escape
+mark
+key ctrl+z
+expect-log 'Sketch Sketch2: 0 linked projection\(s\)'
+expect-undo-depth ${baseline} 0
+
+# Vertex clicks are enabled through the sketch filter's Shift expansion.
+sketch-click 60 40 shift
+expect-selection 1 0
+sketch-click 20 10 ctrl
+expect-selection 2 0
+mark
+key d
+expect-log 'Sketch Dimension picked the body vertex V\{'
+sketch-click 40 25
+expect-log 'Sketch value editor at'
+key Return
+expect-log 'Projected the body vertex V\{'
+expect-log 'Added dimension \S+ distance'
+expect-undo-depth ${baseline} 1
+key Escape
+mark
+key ctrl+z
+expect-log 'Sketch Sketch2: 0 linked projection\(s\)'
+expect-undo-depth ${baseline} 0
+
+# Cancelled placement does not project a selected body edge.
+sketch-click 38 0
+expect-selection 1 0
+mark
+key d
+expect-log 'Sketch Dimension picked the body edge E\{'
+key Escape
+key Escape
+expect-no-log 'Projected the body'
+expect-undo-depth ${baseline} 0
+expect-never 'Dimension not added:|OCCT view event failed|TestDriver: FAIL'

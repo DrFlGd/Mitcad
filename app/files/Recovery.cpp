@@ -30,7 +30,7 @@
 namespace mitcad {
 namespace {
 
-QString unknownDocument() { return QObject::tr("Unknown document"); }
+QString unknownDocument() { return QObject::tr("Unknown design"); }
 
 // What the session's files tell; a reason it cannot be restored goes to
 // its damage.
@@ -213,7 +213,7 @@ std::optional<std::size_t> askRecovery(QWidget* parent, std::vector<RecoverableS
   QDialog dialog(parent);
   dialog.setWindowTitle(QObject::tr("Recover Unsaved Work"));
   auto* layout = new QVBoxLayout(&dialog);
-  auto* text = new QLabel(QObject::tr("<b>Mitcad ended without closing these documents.</b> Their changes that "
+  auto* text = new QLabel(QObject::tr("<b>Mitcad ended without closing these designs.</b> Their changes that "
                                       "were not saved are kept."));
   text->setWordWrap(true);
   layout->addWidget(text);
@@ -221,18 +221,18 @@ std::optional<std::size_t> askRecovery(QWidget* parent, std::vector<RecoverableS
   table->setRootIsDecorated(false);
   table->setAllColumnsShowFocus(true);
   table->setSelectionMode(QAbstractItemView::ExtendedSelection);
-  table->setHeaderLabels({QObject::tr("Document"), QObject::tr("Autosaved"), QObject::tr("Size"),
+  table->setHeaderLabels({QObject::tr("Design"), QObject::tr("Autosaved"), QObject::tr("Size"),
                           QObject::tr("File"), QObject::tr("Note")});
   table->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
   layout->addWidget(table, 1);
-  auto* info = new QLabel(QObject::tr("Restore opens the selected document with these changes, not saved yet and "
-                                      "without undo history. One document is restored at a time; the others stay "
-                                      "until you restore or discard them (File > Recover Documents)."));
+  auto* info = new QLabel(QObject::tr("Restore opens the selected design with these changes, not saved yet and "
+                                      "without undo history. One design is restored at a time; the others stay "
+                                      "until you restore or discard them (File › Recover Designs)."));
   info->setWordWrap(true);
   layout->addWidget(info);
   auto* buttons = new QDialogButtonBox;
   QPushButton* restore = buttons->addButton(QObject::tr("&Restore"), QDialogButtonBox::AcceptRole);
-  QPushButton* discard = buttons->addButton(QObject::tr("&Discard..."), QDialogButtonBox::DestructiveRole);
+  QPushButton* discard = buttons->addButton(QObject::tr("&Discard…"), QDialogButtonBox::DestructiveRole);
   buttons->addButton(QObject::tr("&Later"), QDialogButtonBox::RejectRole);
   restore->setDefault(true);
   layout->addWidget(buttons);
@@ -290,7 +290,7 @@ std::optional<std::size_t> askRecovery(QWidget* parent, std::vector<RecoverableS
     QMessageBox box(QMessageBox::Warning, QObject::tr("Discard"),
                     rows.size() == 1
                         ? QObject::tr("Discard the unsaved changes of %1?").arg(sessions[rows.front()].document)
-                        : QObject::tr("Discard the unsaved changes of %1 documents?").arg(rows.size()),
+                        : QObject::tr("Discard the unsaved changes of %1 designs?").arg(rows.size()),
                     QMessageBox::Discard | QMessageBox::Cancel, &dialog);
     box.setInformativeText(QObject::tr("They cannot be recovered afterwards."));
     box.button(QMessageBox::Discard)->setText(QObject::tr("&Discard"));

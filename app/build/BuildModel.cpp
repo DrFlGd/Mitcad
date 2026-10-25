@@ -214,7 +214,7 @@ std::optional<QJsonObject> atOf(const QString& key, const CommandState& state, c
         return QJsonObject{{QStringLiteral("point"), pointJson(inHost(*point, context))}};
       }
     }
-    problem = QObject::tr("%1 is not in %2, where BUILD places parts.").arg(item.describe(), buildHost(context).name);
+    problem = QObject::tr("%1 is not in %2, where the Build tab places components.").arg(item.describe(), buildHost(context).name);
     return std::nullopt;
   }
   QJsonObject at{{QStringLiteral("geometry"), item.reference()}};

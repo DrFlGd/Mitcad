@@ -66,6 +66,14 @@ public:
   virtual bool chooseInCommand(const QString& /*command*/, const QString& /*input*/, const QString& /*value*/) {
     return false;
   }
+  // A window beside the running command's panel changed the model
+  // (mitcad#655: the profile editor and Materials beside 3D Print): the
+  // panel's inputs follow it (CommandSession::refreshInputs).
+  virtual void commandInputsChanged() {}
+  // Whether the print windows can change the design now (mitcad#655): as
+  // canChangeModel, and also while 3D Print's panel is open, which has no
+  // preview and whose Edit... opens them.
+  virtual bool canChangePrintSettings() const { return canChangeModel(); }
   // Why the design cannot be changed at all (a read-only window whose edit
   // lock someone else holds, mitcad#89); empty when it can.
   virtual QString readOnlyReason() const { return {}; }
@@ -128,6 +136,9 @@ public:
   // The folder of the document's file (relative image paths are in it);
   // empty while it is not saved.
   virtual QString documentFolder() const = 0;
+  // The folder of the project the document is in (its library of
+  // materials and print profiles, mitcad#640); empty outside a project.
+  virtual QString projectFolder() const { return {}; }
 
   // Sheet metal (mitcad#210): the Flat Pattern of a sheet-metal body to a
   // DXF file the user chooses.

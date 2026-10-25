@@ -26,6 +26,7 @@ namespace mitcad::bridge {
 struct AnalysisProperties;
 struct AnalysisMeasure;
 struct AnalysisSeparation;
+struct AnalysisFaceGap;
 struct AnalysisPlane;
 struct AnalysisComparison;
 struct AnalysisEdgeMiddle;
@@ -101,6 +102,8 @@ AnalysisProperties analysis_properties(const geometry::Shape& shape, double dens
 AnalysisMeasure analysis_measure(const geometry::Shape& shape, rust::Str name);
 AnalysisSeparation analysis_between(const geometry::Shape& a, rust::Str a_name,
                                     const geometry::Shape& b, rust::Str b_name);
+AnalysisFaceGap analysis_face_gap(const geometry::Shape& a, rust::Str a_name,
+                                  const geometry::Shape& b, rust::Str b_name);
 std::unique_ptr<AnalysisInterferences> analysis_interferences(const ShapeList& bodies,
                                                               double min_volume);
 std::unique_ptr<AnalysisSection> analysis_section(const geometry::Shape& shape,

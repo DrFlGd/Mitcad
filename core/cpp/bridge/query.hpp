@@ -27,5 +27,6 @@ BoundingBox enclosing_box(const geometry::Shape& shape);
 std::size_t count_edges(const geometry::Shape& shape, rust::Str name);
 std::size_t count_faces(const geometry::Shape& shape, rust::Str name);
 std::unique_ptr<ShapeList> solids(const geometry::Shape& shape);
+std::size_t solid_count(const geometry::Shape& shape);
 
 } // namespace mitcad::bridge

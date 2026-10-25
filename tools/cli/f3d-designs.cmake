@@ -14,16 +14,21 @@
 # - reading the file and applying its appearances take less time than
 #   replaying its items (the appearances made a design of hundreds of face
 #   appearances 16 times slower to open: 25 s reading them and 159 s
-#   applying them against 8 s of replay).
+#   applying them against 8 s of replay);
+# - where a design gives a time limit (a fifth field, seconds in a release
+#   build, SLOWER times that in a debug build), the import takes no longer
+#   (mitcad#642): about ten times its usual time, so that only a large
+#   regression fails, as the recompute speed tests do.
 #
 # Skipped when none of the designs is found.
 #
-#   cmake -DCLI=<mitcad-cli> -DWORK=<dir> -P f3d-designs.cmake
+#   cmake -DCLI=<mitcad-cli> -DWORK=<dir> [-DSLOWER=<factor>] -P f3d-designs.cmake
 
 cmake_minimum_required(VERSION 3.24)
 
 # <id>|<items parametric, comma separated>|<items that fall back>[|<items
-# whose inputs may be inferred>]
+# whose inputs may be inferred>[|<time limit, seconds in a release build>]]; an
+# item that falls back may be named by its place on the timeline, `#<index>`.
 set(designs
     # A circuit board with a pole round it (150 items, 78 occurrences):
     # its fillet between the pole's chamfer and a band 0.3 mm high where
@@ -58,7 +63,44 @@ set(designs
     # patch 0910 (mitcad#343). Falling back: a sweep that passes over
     # itself, and an extrusion whose profile's curve the sketch no longer
     # has.
-    "db73863f|Thread1,Revolve4,Fillet6|Sweep1,Extrude3|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,Fillet5,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2")
+    "db73863f|Thread1,Revolve4,Fillet6|Sweep1,Extrude3|Axis1,C-Pattern1,Extrude3,Extrude6,Fillet4,Fillet5,GeometricRelationship1,Plane1,Plane2,Plane3,Thread1,Thread2"
+    # A grid-unit chute (27 items; mitcad#641): a base, a frame, a chute of
+    # stacked rings and a catch, every size a count of grid cells. The
+    # pastes and the derive keep their bodies in base features of their
+    # own, the frame's slots are patterned from a paste, an align places
+    # the derived slot, the rings' count is a parameter's and their pattern
+    # runs against its axis, and an extrusion starts on a face. Falling
+    # back: only the derive (item 2) of a design the file does not hold,
+    # static in the source too. Inferred: the align's motion (its geometry
+    # is not decoded), the slot's thin cut (its profile's sketch is not
+    # decoded: the last sketch before it) and a cut of faces up to an
+    # object (the side the history settles).
+    "b35176e6|Extrude3,Align1,CopyPasteBodies1,R-Pattern4,Combine2,Fillet7,Extrude4,Extrude5,Chamfer2,Extrude8,Sweep4,R-Pattern3,Extrude9,Extrude10,Extrude11,CopyPasteBodies2,Move5,Extrude14,Extrude15,Chamfer3|#2|Align1,Extrude4,Extrude11"
+    # A bin with a pattern of 372 ribs along a path (21 items, mitcad#642):
+    # a stored body was healed from its base, the states of all the
+    # pattern's copies built in a chain (4 359 s to open); the face merge of
+    # its cut by an extrusion going down was invalid (port patch 1040, then
+    # Extrude9 and the rounding Fillet4 after it come in parametric); healing
+    # its large stored bodies searched their long wires' edges by number
+    # (port patch 1050). The extrusion before the pattern looks ahead no
+    # further than its own state (it built two of the copies' states), the
+    # faces' measures skip the faces far from a change, a cut down the wall
+    # that lies on its state by its faces tries no other definitions, and
+    # the pattern, which does not translate, is not tried again from its
+    # last copy but one (mitcad#658). The last cut keeps the combined body's
+    # 18 lumps together and is parametric. Reading it converts only the
+    # bodies of the states the replay asks for, not those of the copies'
+    # 372 states (mitcad#675). It opens in about 44 s in a release build
+    # (37 s while the pattern fell back);
+    # the limit catches the chain of states coming back.
+    # Combine2 omits 31 stale selections of copies the file no longer has,
+    # with inferred inputs; the other 17 are kept as its tools and their
+    # consumed history bodies are retired (mitcad#674). The pattern is
+    # parametric (mitcad#673): its path decoded at the right place, the
+    # original placed on the closed outline by its ribs' centre, the copies
+    # turned along it and joined to the body as the file keeps one.
+    # Nothing falls back.
+    "b832916a|Extrude8,Fillet3,PathPattern3,Extrude9,Extrude10,Extrude11,Extrude12,Chamfer1,Fillet4,Extrude18,Extrude19,Fillet5,Chamfer6,R-Pattern3,Combine2,Extrude20||Extrude7,Combine2|375")
 
 # Seconds as the trace gives them (two decimals) in hundredths.
 function(hundredths seconds out)
@@ -123,9 +165,16 @@ foreach(design IN LISTS designs)
   list(GET fields 1 parametric)
   list(GET fields 2 falling)
   set(inferred "")
+  set(limit "")
   list(LENGTH fields field_count)
   if(field_count GREATER 3)
     list(GET fields 3 inferred)
+  endif()
+  if(field_count GREATER 4)
+    list(GET fields 4 limit)
+    if(DEFINED SLOWER)
+      math(EXPR limit "${limit} * ${SLOWER}")
+    endif()
   endif()
   string(REPLACE "," ";" parametric "${parametric}")
   string(REPLACE "," ";" falling "${falling}")
@@ -135,10 +184,16 @@ foreach(design IN LISTS designs)
     message("f3d designs: ${id} not found, not checked")
     continue()
   endif()
+  string(TIMESTAMP started "%s")
   execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env MITCAD_IMPORT_TRACE=1
             "${CLI}" import-f3d "${path_${id}}" --report "${WORK}/${id}.json"
     OUTPUT_FILE "${WORK}/${id}.txt" ERROR_FILE "${WORK}/${id}.trace" RESULT_VARIABLE status)
+  string(TIMESTAMP ended "%s")
+  math(EXPR took "${ended} - ${started}")
+  if(limit AND took GREATER limit)
+    list(APPEND problems "${id}: the import took ${took} s, more than its limit of ${limit} s")
+  endif()
   if(NOT status EQUAL 0)
     list(APPEND problems "${id}: import-f3d failed (${status})")
     continue()
@@ -159,7 +214,15 @@ foreach(design IN LISTS designs)
       list(APPEND problems "${id}: ${name} ${outcome}, not parametric")
     endif()
     if(outcome STREQUAL "fallback" AND NOT type STREQUAL "BaseFeature")
-      list(APPEND fell "${name}")
+      # An item whose name is not for the list (a comma in it, or the name
+      # of another design) is named by its place on the timeline, `#<i>`.
+      string(JSON index GET "${report}" designs 0 items ${i} index)
+      list(FIND falling "#${index}" by_index)
+      if(by_index GREATER -1)
+        list(APPEND fell "#${index}")
+      else()
+        list(APPEND fell "${name}")
+      endif()
     endif()
     if(outcome STREQUAL "parametric" AND NOT retry_missing)
       list(APPEND problems "${id}: ${name} is parametric after a retry on the file's exact state")
@@ -194,7 +257,7 @@ foreach(design IN LISTS designs)
   hundredths("${reading}" reading_cs)
   hundredths("${replay}" replay_cs)
   math(EXPR beside "${reading_cs} + ${applying}")
-  message("f3d designs: ${id}: reading ${reading} s, replay ${replay} s, appearances "
+  message("f3d designs: ${id}: ${took} s in all, reading ${reading} s, replay ${replay} s, appearances "
           "${applying} cs; falling back: ${fell}")
   if(beside GREATER replay_cs)
     list(APPEND problems "${id}: reading (${reading} s) and the appearances (${applying} cs) took longer than the replay (${replay} s)")

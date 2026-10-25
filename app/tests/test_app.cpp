@@ -50,6 +50,7 @@
 #include "sketch/AutoConstraint.hpp"
 #include "view/ViewMatch.hpp"
 #include "view/ViewNavigation.hpp"
+#include "NavigationTests.hpp"
 
 namespace {
 
@@ -455,6 +456,20 @@ void printTests() {
     CHECK(found[5].arguments == QStringList{QStringLiteral("--single-instance")});
   }
   CHECK(mitcad::findSlicers(mitcad::SlicerSearch{}).isEmpty());
+  // QIDI Studio, and each slicer's dialect of print settings (mitcad#640).
+  touch(dir + QStringLiteral("/qidi/QIDIStudio/qidi-studio.exe"));
+  mitcad::SlicerSearch qidi;
+  qidi.programDirectories = {dir + QStringLiteral("/qidi")};
+  const QVector<Slicer> qidiFound = mitcad::findSlicers(qidi);
+  CHECK(qidiFound.size() == 1 && qidiFound.first().name == QStringLiteral("QIDI Studio"));
+  CHECK(!qidiFound.isEmpty() && mitcad::slicerDialect(qidiFound.first()) == QStringLiteral("qidi_studio"));
+  if (found.size() == 6) {
+    CHECK(mitcad::slicerDialect(found[0]) == QStringLiteral("bambu_studio"));
+    CHECK(mitcad::slicerDialect(found[1]) == QStringLiteral("orcaslicer"));
+    CHECK(mitcad::slicerDialect(found[2]) == QStringLiteral("prusaslicer"));
+    CHECK(mitcad::slicerDialect(found[3]) == QStringLiteral("cura"));
+  }
+  CHECK(mitcad::slicerDialect(Slicer{QStringLiteral("viewer"), QStringLiteral("/usr/bin/viewer"), {}, {}}).isEmpty());
 
   // Application bundles (macOS): started with `open -a`, the bundle shown.
   QDir().mkpath(dir + QStringLiteral("/Applications/OrcaSlicer.app/Contents"));
@@ -1441,7 +1456,7 @@ void reportLinkTests() {
   const QString sent = QUrl::fromPercentEncoding(link.url.toEncoded());
   CHECK(sent.contains(QStringLiteral("The whole report is on the clipboard")));
   CHECK(sent.contains(QStringLiteral("frame 0: ")) && !sent.contains(QStringLiteral("frame 1999: ")));
-  CHECK(sent.contains(QStringLiteral("[... cut: the rest is on the clipboard]")));
+  CHECK(sent.contains(QStringLiteral("[… cut: the rest is on the clipboard]")));
 
   // The body: included sections with text, code fenced, the key last.
   Report report;
@@ -2214,6 +2229,7 @@ int textureSourceTests();
 int polyHavenSourceTests();
 int renderMeshTests();
 int agentFolderTests();
+int assistantSetupTests();
 int partPickerDataTests();
 int webPageTests();
 int projectWebTests();
@@ -2242,6 +2258,15 @@ int selectionCreateTests();
 int updateInstallerTests();
 int printAnalysisTests();
 int fitToScreenTests();
+int measureHistoryTests();
+int printImportSummaryTests();
+int placeGeometryTests();
+int printSettingsFormTests();
+int measurementDrawingTests();
+int treeItemDelegateTests();
+int macToolButtonTests();
+int navigationPreferencesTests();
+int formulaEditorTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2295,6 +2320,7 @@ int main(int argc, char* argv[]) {
     failures += polyHavenSourceTests();
     failures += renderMeshTests();
     failures += agentFolderTests();
+    failures += assistantSetupTests();
     failures += partPickerDataTests();
     failures += webPageTests();
     failures += projectWebTests();
@@ -2323,6 +2349,16 @@ int main(int argc, char* argv[]) {
     failures += updateInstallerTests();
     failures += printAnalysisTests();
     failures += fitToScreenTests();
+    failures += measureHistoryTests();
+    failures += printImportSummaryTests();
+    failures += placeGeometryTests();
+    failures += printSettingsFormTests();
+    failures += measurementDrawingTests();
+    failures += treeItemDelegateTests();
+    failures += macToolButtonTests();
+    failures += navigationPreferencesTests();
+    failures += formulaEditorTests();
+    mitcad::tests::navigationSettingsTests(check);
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

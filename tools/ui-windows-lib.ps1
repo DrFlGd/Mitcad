@@ -870,6 +870,22 @@ function Ui-ExpectVolume([string]$Pattern, [double]$Expected, [string]$Descripti
   Write-Host "ok   ${Description}: $v mm3"
 }
 
+# Places a part that waits for a pick (mitcad#656: Pulley, Gear, Bearing)
+# on the XY plane at the origin: a click on the plane while Place On takes
+# picks, then both distances 0 in the panel.
+function Ui-PlaceOnXy([string]$Command) {
+  Ui-Mark
+  Ui-Step 'Place On: the XY plane' { Ui-ClickLogged 'Datum xy' }
+  Ui-ExpectNew "Place ${Command}: face plane xy, " 'placed on the XY plane' 30
+  $first = "Panel $Command input at_offset1"
+  $second = "Panel $Command input at_offset2"
+  Ui-Step 'Distance 1: 0' { Ui-TypeIn $first '0' }
+  Ui-Step 'Distance 2: 0' { Ui-TypeIn $second '0' }
+  Ui-ExpectNew "$Command Distance 1: 0 = 0 mm" 'Distance 1 typed' 30
+  Ui-ExpectNew "$Command Distance 2: 0 = 0 mm" 'Distance 2 typed' 30
+  Ui-ExpectNew "Preview ${Command}: ok" 'previewed at the origin' 30
+}
+
 function Ui-Finish([string]$Name) {
   if ((Ui-LogLines) | Where-Object { $_.Contains('OCCT view event failed') }) {
     Ui-Fail 'OCCT reported a failed view operation'

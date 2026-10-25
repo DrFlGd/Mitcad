@@ -395,6 +395,57 @@ fn join_cut_and_intersect_change_their_participants() {
 }
 
 #[test]
+fn a_cut_keeps_a_body_of_several_lumps_together() {
+    // Body1 joined with a second block apart: one body of two lumps.
+    let mut b = block();
+    let second = b
+        .doc
+        .add_feature(&extrude(b.sketch, &[&b.region], 3.0, "new_body", &[]), None)
+        .unwrap()
+        .uid;
+    let combine = b
+        .doc
+        .add_feature(
+            &def(json!({"type": "combine", "target": b.body,
+                        "tools": [BodyUid::new(second, 0)], "operation": "join"})),
+            None,
+        )
+        .unwrap()
+        .uid;
+    assert_eq!(b.status(combine), FeatureStatus::Ok);
+    assert_eq!(b.doc.bodies().len(), 1);
+    // A cut through both lumps: each lump is cut on its own and the body
+    // keeps both (mitcad#658); before, the body was cut as one shape.
+    let cut = b.circle_extrude("cut", &[b.body]);
+    assert_eq!(b.status(cut), FeatureStatus::Ok);
+    assert_eq!(b.doc.bodies().len(), 1);
+    let history = b.history(b.body);
+    assert!(history.starts_with("compound(cut("), "{history}");
+    assert_eq!(history.matches("cut(").count(), 2, "{history}");
+    b.doc.undo();
+    // A cut that splits each lump in two: the first piece of each stays in
+    // the body, the second pieces are new bodies.
+    b.doc.kernel().split.set(Some(2));
+    let split = b.circle_extrude("cut", &[b.body]);
+    assert_eq!(b.status(split), FeatureStatus::Ok);
+    let bodies = b.doc.bodies();
+    assert_eq!(bodies.len(), 3);
+    let history = b.history(b.body);
+    assert_eq!(history.matches("#0").count(), 2, "{history}");
+    assert!(!history.contains("#1"), "{history}");
+    b.doc.undo();
+    // An intersection that reaches one lump: the body keeps only what it
+    // left of that lump.
+    b.doc.kernel().split.set(None);
+    b.doc.kernel().touch.replace(Some(vec![true, false]));
+    let common = b.circle_extrude("intersect", &[b.body]);
+    assert_eq!(b.status(common), FeatureStatus::Ok);
+    let history = b.history(b.body);
+    assert!(history.starts_with("common("), "{history}");
+    assert!(!history.starts_with("compound("), "{history}");
+}
+
+#[test]
 fn join_merges_the_bodies_it_touches() {
     let mut b = block();
     let second = b.circle_extrude("new_body", &[]); // Body2

@@ -20,7 +20,7 @@
 //!    with `#k` along the curve for repeats; a curve that is a loop by
 //!    itself is `c5`. A region is named by its outer loop's segments.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
 use super::geometry::{
@@ -127,6 +127,8 @@ struct Edge {
 
 struct Arrangement<'a> {
     curves: &'a [RegionCurve],
+    /// The bounds of each whole curve ([`Curve2::bounds`]), computed once.
+    bounds: Vec<(P2, P2)>,
     tol: f64,
     vertices: Vec<P2>,
     edges: Vec<Edge>,
@@ -156,7 +158,7 @@ pub fn regions_and_layout(curves: &[RegionCurve]) -> (Vec<Region>, Layout) {
     // (Not below 1e-6 mm: the solved positions of imported designs differ
     // by that much where lines were meant to coincide.)
     let tol = (1e-9 * size).max(1e-6);
-    let mut arrangement = Arrangement::new(curves, &bounds, tol);
+    let mut arrangement = Arrangement::new(curves, bounds, tol);
     arrangement.clean();
     arrangement.regions()
 }
@@ -172,7 +174,7 @@ fn is_end(curve: &Curve2, t: f64) -> bool {
 }
 
 impl<'a> Arrangement<'a> {
-    fn new(curves: &'a [RegionCurve], bounds: &[(P2, P2)], tol: f64) -> Self {
+    fn new(curves: &'a [RegionCurve], bounds: Vec<(P2, P2)>, tol: f64) -> Self {
         let n = curves.len();
         let mut splits: Vec<Vec<Split>> = vec![Vec::new(); n];
         for (i, c) in curves.iter().enumerate() {
@@ -346,6 +348,7 @@ impl<'a> Arrangement<'a> {
         }
         let mut arrangement = Self {
             curves,
+            bounds,
             tol,
             vertices,
             edges,
@@ -505,7 +508,10 @@ impl<'a> Arrangement<'a> {
     /// tolerance of overlapping pieces.
     fn on_each_other(&self, e: usize, f: usize) -> bool {
         let reach = 100.0 * self.tol;
-        let (a, b) = (self.curve(e).bounds(), self.curve(f).bounds());
+        let (a, b) = (
+            self.bounds[self.edges[e].curve],
+            self.bounds[self.edges[f].curve],
+        );
         if (0..2).any(|k| (a.0[k] - b.0[k]).abs() > reach || (a.1[k] - b.1[k]).abs() > reach) {
             return false;
         }
@@ -1117,8 +1123,28 @@ impl<'a> Arrangement<'a> {
             .iter()
             .map(|(f, touching)| (*f, touching.clone()))
             .collect();
-        let attached: Vec<usize> = holes.values().flatten().copied().collect();
+        let attached: BTreeSet<usize> = holes.values().flatten().copied().collect();
         let face_ids: Vec<usize> = faces.iter().map(|(f, _)| *f).collect();
+        // Each face's bounds, from its curves' (mitcad#678): a probe off
+        // them is outside it, without sampling its curves. The points the
+        // containment test samples lie on the curves, inside these bounds,
+        // and a polygon holds no point outside its bounds.
+        // (Widened by the tolerance; in the order of `face_ids`.)
+        let face_bounds: Vec<(P2, P2)> = face_ids
+            .iter()
+            .map(|&f| {
+                let mut lo = [f64::INFINITY; 2];
+                let mut hi = [f64::NEG_INFINITY; 2];
+                for &h in &loops[f].halves {
+                    let (a, b) = self.bounds[self.edges[h / 2].curve];
+                    for k in 0..2 {
+                        lo[k] = lo[k].min(a[k] - self.tol);
+                        hi[k] = hi[k].max(b[k] + self.tol);
+                    }
+                }
+                (lo, hi)
+            })
+            .collect();
         for i in 0..loops.len() {
             if loops[i].area > 0.0 || attached.contains(&i) {
                 continue;
@@ -1126,11 +1152,16 @@ impl<'a> Arrangement<'a> {
             let probe = loops[i].outline[0];
             let around = face_ids
                 .iter()
-                .copied()
-                .filter(|&f| {
-                    loops[f].component != loops[i].component
+                .zip(&face_bounds)
+                .filter(|&(&f, (lo, hi))| {
+                    probe[0] >= lo[0]
+                        && probe[0] <= hi[0]
+                        && probe[1] >= lo[1]
+                        && probe[1] <= hi[1]
+                        && loops[f].component != loops[i].component
                         && self.contains(&loops[f].halves, probe)
                 })
+                .map(|(&f, _)| f)
                 .min_by(|a, b| loops[*a].area.total_cmp(&loops[*b].area));
             if let Some(face) = around {
                 holes.entry(face).or_default().push(i);

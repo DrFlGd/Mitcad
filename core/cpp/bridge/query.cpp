@@ -4,6 +4,8 @@
 #include <array>
 #include <string>
 
+#include <TopExp_Explorer.hxx>
+
 #include "mitcad/geometry/query.hpp"
 #include "mitcad_bridge/kernel/query.h"
 
@@ -90,6 +92,14 @@ std::unique_ptr<ShapeList> solids(const geometry::Shape& shape) {
     list->push(std::move(solid));
   }
   return list;
+}
+
+std::size_t solid_count(const geometry::Shape& shape) {
+  std::size_t count = 0;
+  for (TopExp_Explorer it(shape.occt(), TopAbs_SOLID); it.More(); it.Next()) {
+    ++count;
+  }
+  return count;
 }
 
 } // namespace mitcad::bridge

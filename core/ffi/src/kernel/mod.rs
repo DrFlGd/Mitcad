@@ -905,6 +905,16 @@ impl Kernel for OcctKernel {
             .map_err(failed)
     }
 
+    fn maximum_face_gap(
+        &self,
+        a: &Selection<'_, Self::Shape>,
+        b: &Selection<'_, Self::Shape>,
+    ) -> Result<Option<f64>, KernelError> {
+        analysis::ffi::analysis_face_gap(occt(a.shape)?, &sub_name(a), occt(b.shape)?, &sub_name(b))
+            .map(analysis::maximum_face_gap)
+            .map_err(failed)
+    }
+
     fn interferences(
         &self,
         bodies: &[&Self::Shape],
@@ -2394,6 +2404,10 @@ impl Kernel for OcctKernel {
         face: &mitcad_model::sweeps::ProfileFace<'_, Self::Shape>,
     ) -> Result<Self::Shape, KernelError> {
         sweeps::face_sweep(spec, face)
+    }
+
+    fn solid_count(&self, shape: &Self::Shape) -> Result<usize, KernelError> {
+        Ok(query::ffi::solid_count(occt(shape)?))
     }
 }
 

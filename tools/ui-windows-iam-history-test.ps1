@@ -10,7 +10,7 @@
 #      3), the cube part's sketch and extrusion are replayed into its
 #      component, the report says per part whether it was replayed or came
 #      in as its stored bodies and why.
-#   2. Off (Alt+P): every part as its stored bodies, one base feature per
+#   2. Off (Alt+H): every part as its stored bodies, one base feature per
 #      part; the components' volumes are those of the import with the
 #      history. The next dialog shows the choice made last; Esc cancels.
 #   3. With the test files' assembly 1dc60c2a (seven parts; never
@@ -69,7 +69,7 @@ function Import-Assembly([string]$Path, [string]$Want, [string]$Run) {
   $shown = (New-Lines | Where-Object { $_.Contains("Import Assembly dialog opened: $name") } | Select-Object -Last 1) -replace '.*design history ', ''
   Ui-FocusDialog '^Import Assembly$'
   if ($shown -ne $Want) {
-    Ui-Step "parts with their design history $Want (Alt+P)" { Ui-Key 'alt+p' }
+    Ui-Step "parts with their design history $Want (Alt+H)" { Ui-Key 'alt+h' }
     Ui-ExpectNew "Import Assembly: parts with their design history $Want" 'the box toggled'
   }
   Ui-Step 'import (Enter)' { Ui-Key 'Return' }
@@ -135,7 +135,7 @@ if (-not ($on | Where-Object { $_.Contains('Import report part: cube.ipt: replay
 if (-not ($on | Where-Object { $_.Contains('Import report part: pair.ipt: stored bodies: the part has no design history') })) {
   Ui-Fail "the part without a design is not reported so: $((Part-Lines $on) -join '; ')"
 }
-if (-not ($on | Where-Object { $_.Contains('Parts with their design history: 1 replayed, 2 as their stored bodies.') })) {
+if (-not ($on | Where-Object { $_.Contains('Components with their design history: 1 replayed, 2 as their stored bodies.') })) {
   Ui-Fail 'the report does not sum the parts up'
 }
 Write-Host 'ok   the report: the cube replayed, the parts without a design as their stored bodies'

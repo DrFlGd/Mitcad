@@ -122,7 +122,8 @@ ui_focus_main
 ui_step "right-click Panel in Wall:1"    ui_click_logged "Browser Root/Wall:1/Bodies/Panel" 3
 ui_expect_new "Context menu: " "its menu opened"
 ui_step "choose Property Sets..."        ui_menu_choose "Property Sets..."
-ui_expect_new "Property sets of Body Panel, Occurrence Wall:1, Component Wall:" "the body's level first"
+# A body's level is titled by its name alone (mitcad#655).
+ui_expect_new "Property sets of Panel, Occurrence Wall:1, Component Wall:" "the body's level first"
 ui_expect_new "Property sets row: body Identity/Reference = R-1 (ifc)" "the imported value with its source"
 ui_expect_new "Property sets row: body Computed/Volume = 4000 mm^3 (computed)" "the computed volume, read-only"
 ui_mark

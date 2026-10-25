@@ -51,8 +51,10 @@
 #include "framework/SelectionScope.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "view/FirstBodiesFit.hpp"
+#include "view/MeasurementDrawing.hpp"
 #include "view/ViewMatch.hpp"
 #include "view/ViewNavigation.hpp"
+#include "view/Navigation.hpp"
 
 class QNativeGestureEvent;
 class QTimer;
@@ -72,7 +74,9 @@ struct Look;
 
 class ViewCubeHomeButton;
 class PrintOverlayLabels;
+class MeasurementOverlay;
 struct PrintOverlay;
+struct ProxyMesh;
 
 #ifdef Q_OS_MACOS
 // The OpenGL format of every context Qt creates on macOS, the viewport's and
@@ -176,6 +180,10 @@ struct HighlightDisplay {
   // of a whole occurrence drawn under the others.
   bool pickable = true;
   bool light = false;
+  // Original topology for a face/edge overlay's boundary picks, including
+  // while a command preview replaces the displayed body.
+  std::shared_ptr<geometry::Shape> body = nullptr;
+  bool throughSolid = false; // feature inspection: boundaries remain visible behind solids
 };
 
 // How bodies are drawn (U5).
@@ -185,32 +193,6 @@ enum class VisualStyle {
   ShadedHiddenEdges,    // also the edges behind faces, dashed
   Wireframe,            // edges only
   WireframeHiddenEdges, // edges in sight, those behind faces dashed
-};
-
-// Which mouse buttons pan, orbit and zoom (U5), named after what the mouse
-// does. The wheel zooms in every scheme, and a trackpad's pinch (zoom),
-// rotation (roll) and two-finger double tap (fit) work in every scheme too.
-enum class NavigationScheme {
-  MiddlePan,   // middle: pan; Shift + middle: orbit (the default)
-  AltButtons,  // Alt + left: orbit; Alt + middle: pan; Alt + right: zoom
-  MiddlePanF4, // middle: pan; Shift + middle or F4 + left: orbit
-  MiddleOrbit, // middle: orbit; Ctrl + middle: pan; Shift + middle: zoom
-  RightOrbit,  // right: orbit; middle or Shift + right: pan
-  // For a trackpad (the default on macOS): two-finger scroll
-  // pans, Alt + scroll orbits, Shift or Ctrl + scroll zooms; Alt + left
-  // orbits, Shift + Alt + left, middle: pan; right: orbit. A mouse wheel
-  // zooms as in the other schemes.
-  Trackpad,
-  // As Trackpad, but Shift + scroll orbits and Alt or Ctrl + scroll zooms.
-  TrackpadShift,
-};
-
-struct NavigationSettings {
-  NavigationScheme scheme = NavigationScheme::MiddlePan;
-  bool zoomToCursor = true;    // the wheel zooms about the cursor, else the middle
-  bool reverseZoom = false;    // the wheel zooms the other way
-  bool constrainedOrbit = false; // orbits keep Z up
-  bool animate = true;         // view changes (standard views, named views) move smoothly
 };
 
 // What a left drag without keys that starts on a body does (mitcad#150):
@@ -276,6 +258,7 @@ public:
   void setComponentColors(bool on);
   VisualStyle visualStyle() const { return m_visualStyle; }
   void setNavigation(const NavigationSettings& settings);
+  bool UpdateZoom(const Aspect_ScrollDelta& delta) override;
   const NavigationSettings& navigation() const { return m_navigation; }
   // The background: a vertical gradient from top to bottom, or one colour.
   void setBackground(const QColor& top, const QColor& bottom, bool gradient);
@@ -304,6 +287,24 @@ public:
   // the lower left corner; an empty overlay clears them. Logs "Print
   // overlay: …" when it changes.
   void setPrintOverlay(const PrintOverlay& overlay);
+  // Show Build Volume (mitcad#640, view/BuildVolume.cpp): the design
+  // printer's bed and printable height as lines, and the boxes of the bodies
+  // that do not fit in `warning`; not pickable. Null shapes clear them.
+  void setBuildVolume(const TopoDS_Shape& frame, const TopoDS_Shape& outside, const QColor& warning);
+  // Measurement objects (mitcad#649, view/MeasurementOverlay.cpp): the
+  // shown ones drawn as dimensions over the view (MeasurementOverlay), in
+  // their colours over the halo tone; logs "Measurements drawn: …" and
+  // their labels' places when they change.
+  void setMeasurements(const std::vector<MeasurementDisplay>& measurements);
+  const std::vector<MeasurementDisplay>& measurements() const { return m_measurements; }
+  // A snapshot of the view (mitcad#649, view/Snapshot.cpp): the bodies as
+  // the view shows them rendered offscreen at `size` (OCCT's ToPixMap;
+  // the view's aspect for a sharp picture of its contents), without the
+  // orientation cube, the background left out (`transparent`: an alpha
+  // channel, worked out from a render over black and one over white) and
+  // the shown measurements drawn over it at the picture's scale. Null when
+  // the view cannot render one. Only while no model job runs.
+  QImage snapshot(const QSize& size, bool transparent, bool withMeasurements);
 
   // The camera (named views, U5).
   CameraState camera() const;
@@ -343,6 +344,16 @@ public:
   // them, and the view itself is not picked there.
   void setCoveredRects(const std::vector<QRect>& rects);
   bool isCovered(const QPointF& position) const;
+  // The value boxes of a command's handles (mitcad#656, widget pixels):
+  // a click there edits a value, so they count as covered too.
+  void setHandleBoxes(const std::vector<QRect>& boxes) { m_handleBoxes = boxes; }
+  // The panels floating over the view and the cards at its top (widget
+  // pixels): what the handles' value boxes keep out of (mitcad#656).
+  std::vector<QRect> coveredRects() const {
+    std::vector<QRect> all = m_covered;
+    all.insert(all.end(), m_topCards.begin(), m_topCards.end());
+    return all;
+  }
   // The cards floating at the top of the view (mitcad#425: the title card and
   // the toolbar's group cards) and the bottom of their rows (widget
   // pixels; 0: none): the free area starts below them, and the view is not
@@ -411,6 +422,12 @@ public:
   // others are taken as usual. Logs "Pick priority: active <name>" when a
   // click took such an item before a nearer other one.
   void setActivePickPriority(bool on);
+  // While a placement input takes picks (InputDef::places, mitcad#656):
+  // origin and construction planes come behind the bodies, sketches and
+  // other items under the cursor (PickContext.hpp's setPickLast), so that
+  // a shaft or a face an origin plane runs through is picked rather than
+  // the plane in front of it; a plane where nothing else is still is.
+  void setPlanesBehind(bool on) { m_planesBehind = on; }
 
   // The rendered view (docs/rendering.md): the image fills the view
   // (stretched; a frame that refines is smaller) over the bodies, which
@@ -454,11 +471,24 @@ public:
   // `occurrences` are those that place the sketches of components.
   void setProfiles(const std::vector<std::pair<ProfileKey, TopoDS_Shape>>& profiles,
                    const std::map<std::string, QString>& occurrences = {});
+  // Remove only this sketch's filled regions while its geometry is dragged.
+  void removeSketchProfiles(const QString& sketch);
+  std::size_t profileCount() const { return m_profiles.size(); }
   void setSketchEntities(const std::vector<SketchEntityDisplay>& entities);
   void setDatums(const std::vector<DatumDisplay>& datums);
   void setHighlights(const std::vector<HighlightDisplay>& highlights);
   // Semi-transparent preview of the active command; null clears it.
   void setPreview(const TopoDS_Shape& shape, PreviewStyle style = PreviewStyle::Add);
+  // A provisional drag presentation (mitcad#636, framework/DragProxy.hpp):
+  // the mesh at each placement, see-through amber with dashed edges and
+  // not pickable, standing in for the command preview's tool, which is
+  // hidden meanwhile (setPreview keeps it for when this is cleared). Null
+  // clears it. Drawn from the mesh only: nothing is read from the model.
+  void setProvisional(const std::shared_ptr<const ProxyMesh>& mesh, const std::vector<gp_Trsf>& placements);
+  bool provisionalShown() const { return !m_provisional.IsNull(); }
+  // Frames drawn so far (paintGL), for the drag timings' logs (mitcad#636):
+  // what was submitted, not what the screen showed.
+  quint64 framesDrawn() const { return m_framesDrawn; }
   // Outline of the sketch shape being drawn; null clears it.
   void setSketchPreview(const TopoDS_Shape& shape);
 
@@ -481,6 +511,11 @@ public:
   // what it crosses (dragged to the left).
   QRectF lastWindow() const { return m_windowRect; }
   bool lastWindowCrossing() const { return m_windowCrossing; }
+  // With MITCAD_LOG_TIMING (mitcad#670): the main window has applied the
+  // last window selection; logs the time since its release ("window
+  // selection applied") and, at the end of the next frame, until it shows
+  // ("window selection shown").
+  void windowSelectionApplied();
   // For UI tests (MITCAD_LOG_EDGE_PLACES): per edge of the shown bodies, a place
   // in the widget where a click hits that edge first among what the view
   // offers now, one where the edge is in sight and one where it is behind
@@ -529,6 +564,13 @@ public:
   // along the current view direction, with Fit's margin, in the part of the
   // view no card covers; at once (mitcad#405).
   void frameBox(const Bnd_Box& box);
+  // Moves the view sideways, as little as it takes, so that a box (model
+  // coordinates: a part just placed) is out from under the panels floating
+  // over the view (mitcad#656); false when it is clear already. Logged
+  // "View moved dx,dy px: the part clear of the panels".
+  // With `fit`, a box larger than the free area is fitted into it
+  // (frameBox: zoomed out).
+  bool bringClearOfPanels(const Bnd_Box& box, bool fit = false);
   // The box of the bodies shown as placed (not previews, ghosts, datums,
   // sketches or the grid); void when none is shown.
   Bnd_Box bodiesBox() const;
@@ -551,9 +593,12 @@ public:
   QPointF toWidgetF(const gp_Pnt& point) const;
   // A point of a plane datum that faces the viewer, away from the others.
   gp_Pnt planePickPoint(const gp_Pnt& origin, const gp_Dir& normal, double size) const;
-  // Points of a plane datum in the order a click is best tried at.
-  std::vector<gp_Pnt> planePickCandidates(const gp_Pnt& origin, const gp_Dir& normal,
-                                          double size) const;
+  // Points of a plane datum in the order a click is best tried at; with
+  // `offDiagonals`, points off its diagonals instead, which an axis seen
+  // along a diagonal does not cover (a placement input puts the planes
+  // behind the axes, mitcad#656).
+  std::vector<gp_Pnt> planePickCandidates(const gp_Pnt& origin, const gp_Dir& normal, double size,
+                                          bool offDiagonals = false) const;
   // The camera's up direction (manipulators measure the zoom along it).
   gp_Dir viewUp() const;
   // The direction the camera looks along, from the eye to the model.
@@ -639,6 +684,7 @@ protected:
   void keyPressEvent(QKeyEvent* event) override;
   void keyReleaseEvent(QKeyEvent* event) override;
 
+  void handlePanning(const occ::handle<V3d_View>& view) override;
   void handleViewRedraw(const occ::handle<AIS_InteractiveContext>& context,
                         const occ::handle<V3d_View>& view) override;
   void contextLazyMoveTo(const occ::handle<AIS_InteractiveContext>& context,
@@ -848,6 +894,7 @@ private:
   ActiveScope m_activeScope;
   bool m_ghostInactive = true;
   bool m_activePickPriority = true; // setActivePickPriority()
+  bool m_planesBehind = false;       // setPlanesBehind()
   std::set<const AIS_InteractiveObject*> m_inactiveObjects;
   QString m_loggedInactiveGhosts = QStringLiteral("none");
   std::map<ProfileKey, occ::handle<AIS_Shape>> m_profiles;
@@ -879,6 +926,10 @@ private:
   // What each pickable object shows.
   std::map<const AIS_InteractiveObject*, PickInfo> m_pickInfo;
   occ::handle<AIS_Shape> m_preview;
+  int m_previewMode = 1; // AIS_Shaded, or AIS_WireFrame for a failed one
+  // setProvisional's (mitcad#636), and the frames drawn.
+  occ::handle<AIS_InteractiveObject> m_provisional;
+  quint64 m_framesDrawn = 0;
   occ::handle<AIS_Shape> m_sketchPreview;
   occ::handle<Graphic3d_Camera> m_savedCamera;
   SelectFilter m_filter;
@@ -894,6 +945,10 @@ private:
   bool m_windowSelecting = false;
   QRectF m_windowRect;
   bool m_windowCrossing = false;
+  // With MITCAD_LOG_TIMING: from a window selection's release until the
+  // frame that shows it (windowSelectionApplied).
+  QElapsedTimer m_windowClock;
+  bool m_windowShowPending = false;
   gp_Ax3 m_sketchPlane;
   bool m_sketchInput = false;
   // The sketch tool's cursor (mitcad#3): its icon, and whether it snaps.
@@ -912,6 +967,12 @@ private:
   QPointF m_clickPosition;
   bool m_clickPickedNothing = false;
   bool m_untestedPicks = false;
+  // While pickPoints() tries its points (the view, the filter and the
+  // input stand still): what accepts() found of each owner it was asked
+  // about, so that the hundreds of a toothed part's items under each point
+  // are tested once (mitcad#697).
+  enum class OwnerTest { Refused, Accepted, Tested };
+  mutable std::map<const SelectMgr_EntityOwner*, std::pair<OwnerTest, SelectKind>>* m_ownerTests = nullptr;
   Qt::KeyboardModifiers m_pressModifiers;
   bool m_windowPick = false;
   bool m_cubeClick = false;
@@ -939,6 +1000,8 @@ private:
   VisualStyle m_visualStyle = VisualStyle::ShadedVisibleEdges;
   bool m_componentColors = false;
   NavigationSettings m_navigation;
+  QPointF m_panRemainder;
+  bool m_f4Press = false;
   Graphic3d_ZLayerId m_hiddenLayer = Graphic3d_ZLayerId_UNKNOWN;
   Graphic3d_ZLayerId m_edgeLayer = Graphic3d_ZLayerId_UNKNOWN;
   // Sketch entities' halos, just before the top layer (mitcad#302).
@@ -952,8 +1015,16 @@ private:
   // Print Analysis' triangles, and its marker, label and legend over the
   // view (setPrintOverlay, mitcad#620).
   occ::handle<AIS_InteractiveObject> m_printTriangles;
+  // The build volume's lines and the boxes of bodies outside it
+  // (setBuildVolume, mitcad#640).
+  occ::handle<AIS_Shape> m_buildFrame;
+  occ::handle<AIS_Shape> m_buildOutside;
   PrintOverlayLabels* m_printLabels = nullptr;
   QString m_loggedPrintOverlay = QStringLiteral("Print overlay: none");
+  // Measurement objects (setMeasurements, mitcad#649).
+  std::vector<MeasurementDisplay> m_measurements;
+  MeasurementOverlay* m_measurementOverlay = nullptr;
+  QString m_loggedMeasurements = QStringLiteral("Measurements drawn: none");
   QColor m_paper = QColor(0xd8, 0xdc, 0xe2); // the hidden-line style's faces
   bool m_gridShown = true;
   double m_gridStep = 0.0; // mm; 0: follows the zoom
@@ -992,6 +1063,7 @@ private:
   QMargins m_overlayInsets;
   int m_badgeWidth = 0;
   std::vector<QRect> m_covered;
+  std::vector<QRect> m_handleBoxes; // setHandleBoxes
   std::vector<QRect> m_topCards; // setTopCards
   int m_topCardsBottom = 0;
   qreal m_cubeRatio = 1.0;       // the device pixel ratio applied to the cube

@@ -948,6 +948,31 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         .ok_or("a patterned fillet or chamfer did not come in parametric")?;
                     features.extend(uids.iter().map(ToString::to_string));
                 }
+                // An item that only brings bodies (a paste, a base feature,
+                // a derive) leaves no tool to copy: its pattern copies the
+                // bodies it brought (mitcad#641).
+                Reference::Feature(f) if brings_bodies(f.object_type.as_deref()) => {
+                    let index = f
+                        .timeline_index
+                        .flatten()
+                        .ok_or("a patterned item without its place on the timeline")?;
+                    let made: Vec<BodyUid> = self
+                        .made_by(index)
+                        .0
+                        .into_iter()
+                        .filter(|b| crate::body_scope::shape(self.doc, *b).is_some())
+                        .collect();
+                    if made.is_empty() {
+                        return Err(format!(
+                            "the bodies {} brought were not found in the replay",
+                            f.name
+                                .clone()
+                                .flatten()
+                                .unwrap_or_else(|| "the patterned item".to_owned())
+                        ));
+                    }
+                    bodies.extend(made.iter().map(ToString::to_string));
+                }
                 Reference::Feature(f) => {
                     let uid = f
                         .timeline_index
@@ -1116,9 +1141,32 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         } else {
             named().or_else(stored)
         }?;
+        let mut distance = self.value_of(d.get(distance))?;
+        // An origin axis whose stored vector points the other way
+        // (mitcad#641: a pattern along Z stored with the vector (0, 0, -1)
+        // and a negative distance copies upwards): the copies go against the
+        // axis, as a negated distance takes them.
+        let along = match axis.as_str() {
+            Some("x") => Some([1.0, 0.0, 0.0]),
+            Some("y") => Some([0.0, 1.0, 0.0]),
+            Some("z") => Some([0.0, 0.0, 1.0]),
+            _ => None,
+        };
+        let stored_vector: Option<[f64; 3]> = d
+            .get(vector)
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        if let (Some(a), Some(v)) = (along, stored_vector)
+            && geom::dot(a, v) < -0.5
+        {
+            distance = match distance {
+                Value::String(s) => json!(format!("-({s})")),
+                Value::Number(n) => json!(-n.as_f64()?),
+                other => other,
+            };
+        }
         Some(
             json!({"axis": axis, "quantity": self.value_of(d.get(quantity))?,
-            "distance": self.value_of(d.get(distance))?,
+            "distance": distance,
             "symmetric": d.get(symmetric).and_then(Value::as_bool).unwrap_or(false)}),
         )
     }
@@ -1356,10 +1404,27 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 let bodies_produced = target.as_ref().is_some_and(produced)
                     && !tools.is_empty()
                     && tools.iter().all(produced);
+                let local_document = self.combine_local_document(target.as_ref());
                 let target = target
                     .as_ref()
                     .and_then(|r| self.body_of(r))
                     .ok_or("the target body was not found")?;
+                // A resized pattern can leave selections of copies the file
+                // no longer has. Only the decoder's precise missing-body
+                // evidence permits omitting them, never a failed replay.
+                let all_tools = tools.len();
+                let tools: Vec<&Reference> = tools
+                    .iter()
+                    .filter(|r| !self.lost_combine_tool(r, local_document))
+                    .collect();
+                let lost = all_tools - tools.len();
+                if tools.is_empty() {
+                    return Err(if lost > 0 {
+                        "all its tool body references are lost in the file".to_owned()
+                    } else {
+                        "no tool bodies were found".to_owned()
+                    });
+                }
                 let tools: Vec<String> = tools
                     .iter()
                     .map(|r| self.body_of(r).map(|b| b.to_string()))
@@ -1387,7 +1452,13 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     def["tool_links"] = Value::Object(links);
                 }
                 let mut c = Candidate::new(def);
-                if inputs_read {
+                if lost > 0 {
+                    c.input_provenance = InputProvenance::Inferred;
+                    c.note = Some(format!(
+                        "{lost} of its {all_tools} tool body references are lost in the file; \
+                         remaining tools inferred"
+                    ));
+                } else if inputs_read {
                     c.input_provenance = InputProvenance::Read;
                 }
                 Ok(vec![c])
@@ -1765,6 +1836,30 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 out.push(fixed);
                 Ok(out)
             }
+            // An align of bodies (mitcad#641): the motion it made, a move by
+            // its matrix. The geometry it aligns is not decoded, so the move
+            // does not follow that geometry: its inputs count as inferred.
+            "AlignFeature" => {
+                let bodies: Vec<String> = references(get("inputEntities"))
+                    .iter()
+                    .map(|r| self.body_of(r).map(|b| b.to_string()))
+                    .collect::<Option<_>>()
+                    .ok_or("an aligned body was not found")?;
+                if bodies.is_empty() {
+                    return Err("its bodies were not decoded".to_owned());
+                }
+                let m: [[f64; 4]; 4] = get("transform")
+                    .and_then(|t| serde_json::from_value(t.clone()).ok())
+                    .ok_or("the align's motion was not decoded")?;
+                let matrix: Vec<[f64; 4]> = (0..3)
+                    .map(|r| [m[r][0], m[r][1], m[r][2], mm(m[r][3])])
+                    .collect();
+                let mut c = Candidate::new(json!({"type": "move", "bodies": bodies,
+                    "transform": {"type": "free", "matrix": matrix}}))
+                .with_note("the bodies moved as the align moved them (a fixed transform: the geometry it aligns is not decoded)");
+                c.input_provenance = InputProvenance::Inferred;
+                Ok(vec![c])
+            }
             "SplitBodyFeature" => {
                 let bodies: Vec<String> = references(get("splitBodies"))
                     .iter()
@@ -1928,13 +2023,25 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
 
     /// A path pattern (mitcad#468): its objects, the path's sketch curves
     /// (one curve, or a chain of lines and arcs), the quantity and distance
-    /// and the settings. Where the start point, flip, orientation and
-    /// symmetry are not given (the stream decoder does not read them), the
-    /// defaults are tried first, then, where the history checks the item,
-    /// each of flip, orientation along the path and symmetry as a guess.
+    /// and the settings. The stream decoder gives the flip, orientation and
+    /// symmetry, and the objects' centre that places the original on the
+    /// path (`start_point`, mitcad#673). Where a setting is not given, the
+    /// default is tried first, then, where the history checks the item, each
+    /// of flip, orientation along the path and symmetry as a guess.
     fn path_pattern(&self, d: &Map<String, Value>) -> Result<Vec<Candidate>, String> {
         let get = |k: &str| d.get(k);
-        let variants = self.object_variants(&references(get("inputEntities")))?;
+        let mut variants = self.object_variants(&references(get("inputEntities")))?;
+        // A pattern of features that made no body (the stream decoder's
+        // count, mitcad#673): the copies of a feature that made a new body
+        // joined the body it is in (`combine`). The copies of that feature's
+        // own solid cannot carry the fillets and chamfers patterned with it,
+        // which the joined body holds at every copy: only the definition
+        // that repeats them is tried (the one without them took 7–11 s of
+        // the item's 30 s for 372 copies).
+        let joined = get("_f3d_new_bodies").and_then(Value::as_u64) == Some(0);
+        if joined && variants.iter().any(|(_, dressed, _)| *dressed) {
+            variants.retain(|(_, dressed, _)| *dressed);
+        }
         let path = self.path_of(get("path"), "path")?;
         if path.get("body").is_some() {
             return Err(
@@ -1965,6 +2072,13 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             "symmetric": flag("isSymmetric").unwrap_or(false),
             "compute": compute(get("patternComputeOption"))});
         suppressed(&mut def, get("suppressedElementsIds"));
+        // The stream decoder's objects' centre (mitcad#673): the original
+        // sits at the path's point nearest to it.
+        let center = get("_f3d_objects_center")
+            .and_then(|p| serde_json::from_value::<[f64; 3]>(p.clone()).ok());
+        if let Some(c) = center.filter(|_| get("startPoint").is_none()) {
+            def["start_point"] = json!(mm3(c));
+        }
         let read = [
             "patternDistanceType",
             "patternComputeOption",
@@ -1979,12 +2093,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             ("isSymmetric", "symmetry"),
         ]
         .into_iter()
-        .filter(|(k, _)| get(k).is_none())
+        .filter(|(k, _)| get(k).is_none() && !(*k == "startPoint" && center.is_some()))
         .map(|(_, what)| what)
         .collect();
         let candidate = |def: &Value, objects: &Value, dressed: bool, p: InputProvenance| {
             let mut def = def.clone();
             def["objects"] = objects.clone();
+            if joined && objects["type"] == "features" {
+                def["combine"] = json!(true);
+            }
             let mut c = read_pattern(dressed_note(def, dressed, p), read && unread.is_empty());
             if !unread.is_empty() {
                 c.input_provenance = InputProvenance::Inferred;
@@ -3780,6 +3897,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
         Ok(candidates)
     }
+}
+
+/// Items that bring bodies and leave no tool (mitcad#641): a pattern or
+/// mirror of one copies the bodies it brought.
+fn brings_bodies(object_type: Option<&str>) -> bool {
+    matches!(
+        object_type,
+        Some("CopyPasteBodies" | "BaseFeature" | "ExternalDerived" | "DerivedContext")
+    )
 }
 
 /// A modelled thread's diameters from the dump's ThreadInfo (centimetres):

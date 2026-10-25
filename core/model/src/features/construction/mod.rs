@@ -39,6 +39,16 @@ pub fn datum_kind(def: &FeatureDef) -> Option<DatumKind> {
     }
 }
 
+/// The slot of a position along a path: a length from its start with
+/// `physical`, else a unitless fraction of its length (mitcad#662).
+pub(crate) fn along_slot(physical: bool) -> &'static str {
+    if physical {
+        "definition.distance"
+    } else {
+        "definition.fraction"
+    }
+}
+
 /// Checks that no reference is listed twice, e.g. a midplane between a
 /// plane and itself.
 pub(crate) fn distinct(references: &[&GeomRef]) -> Result<(), String> {

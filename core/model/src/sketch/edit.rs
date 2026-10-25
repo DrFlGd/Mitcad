@@ -52,6 +52,9 @@ pub struct SketchEdit<'a> {
     /// Solve and store when finishing (false for edits that set positions
     /// themselves, like a drag).
     pub solve: bool,
+    /// The last drag's solve with the definition it left (mitcad#679):
+    /// finishing takes it instead of solving that definition again.
+    pub(crate) dragged: Option<Box<(SketchDef, Parameters, Solved)>>,
 }
 
 impl<'a> SketchEdit<'a> {
@@ -73,6 +76,7 @@ impl<'a> SketchEdit<'a> {
             next_constraint,
             report: EditReport::default(),
             solve: true,
+            dragged: None,
         }
     }
 
@@ -228,6 +232,60 @@ impl<'a> SketchEdit<'a> {
         Ok(id)
     }
 
+    /// Makes text `id` follow a text parameter (mitcad#664): `value` is a
+    /// text parameter's name or a text expression (`'Box ' & GridX`), which
+    /// becomes the sketch's own parameter of the text (or changes the one
+    /// it has); an empty name stops it following one, and None leaves it
+    /// as it is. The text's `text` becomes the parameter's text.
+    pub fn set_text_value(
+        &mut self,
+        id: EntityUid,
+        value: Option<&ValueInput>,
+    ) -> Result<(), String> {
+        let Some(value) = value else {
+            return Ok(());
+        };
+        if !self.def.texts.iter().any(|t| t.id == id) {
+            return Err(format!("text t{} does not exist", id.0));
+        }
+        let old = self.def.text_values.iter().position(|v| v.text == id);
+        if matches!(value, ValueInput::Name(name) if name.trim().is_empty()) {
+            if let Some(i) = old {
+                self.def.text_values.remove(i);
+            }
+            return Ok(());
+        }
+        let slot = format!("texts[t{}].text", id.0);
+        let comment = format!("{} t{} text", self.owner_name, id.0);
+        let old_param = old.map(|i| self.def.text_values[i].value);
+        let (param, created) = resolve_value(
+            self.params,
+            &slot,
+            value,
+            self.owner,
+            &comment,
+            old_param.as_ref(),
+        )
+        .map_err(|e| e.to_string())?;
+        self.report.parameters.extend(created);
+        match old {
+            Some(i) => self.def.text_values[i].value = param,
+            None => self.def.text_values.push(crate::sketch::TextValue {
+                text: id,
+                value: param,
+            }),
+        }
+        let text = self.params.text(param).unwrap_or_default().to_owned();
+        if let Some(t) = self.def.texts.iter_mut().find(|t| t.id == id) {
+            t.text = text;
+            // Stored outlines of another string are dropped (mitcad#416).
+            if t.glyphs.as_ref().is_some_and(|g| !g.fit(t)) {
+                t.glyphs = None;
+            }
+        }
+        Ok(())
+    }
+
     /// The number of redundant constraints now. A constraint or driving
     /// dimension that raises it is implied by the others; the commands that
     /// add one refuse it, as they refuse one that over-constrains the
@@ -348,8 +406,21 @@ impl<'a> SketchEdit<'a> {
             params.value(id).unwrap_or(f64::NAN)
         })?;
         if self.solve {
-            self.refit_offsets()?;
-            let solved = self.solved()?;
+            // A drag just solved this very definition with these values
+            // and stored its solution (mitcad#679): solving it again gives
+            // the same. Derived offsets refit first, which solves anyway.
+            let dragged = self.dragged.take().filter(|dragged| {
+                dragged.0 == self.def
+                    && dragged.1 == *self.params
+                    && !self.def.offsets.iter().any(|o| o.derived)
+            });
+            let solved = match dragged {
+                Some(dragged) => dragged.2,
+                None => {
+                    self.refit_offsets()?;
+                    self.solved()?
+                }
+            };
             solved.store(&mut self.def.entities);
             // Texts in frames keep their frame's corner and direction.
             for t in &mut self.def.texts {

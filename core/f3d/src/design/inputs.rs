@@ -427,9 +427,10 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
             .flat_map(|s| s.edges.iter_mut().flatten())
             .collect(),
         Detail::Thread(t) => t.input_cylindrical_faces.iter_mut().flatten().collect(),
-        // The face an extrusion's extent goes up to (mitcad#96), and the
-        // faces its profile selects (mitcad#169).
-        Detail::Extrude(x) => [&mut x.extent_one, &mut x.extent_two]
+        // The face an extrusion's extent goes up to (mitcad#96), the face
+        // it starts on (mitcad#641), and the faces its profile selects
+        // (mitcad#169).
+        Detail::Extrude(x) => [&mut x.extent_one, &mut x.extent_two, &mut x.start_extent]
             .into_iter()
             .flatten()
             .filter_map(|d| d.entity.as_mut())

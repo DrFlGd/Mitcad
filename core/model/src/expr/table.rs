@@ -8,6 +8,7 @@ use std::fmt;
 use super::ast::Expr;
 use super::eval::{EvalContext, EvalError, Lookup};
 use super::format::{format_value, value_to_expression};
+use super::limits::{self, Bounds, LimitError, LimitExprs, Limited, ParamLimits};
 use super::parser::ParseError;
 use super::units::{Quantity, Unit};
 use super::{ExprError, is_name_char, is_name_start, is_reserved_name, with_decimal_points};
@@ -67,6 +68,8 @@ pub struct ParamSpec {
     /// Default units retained by an expression copied from another
     /// document. None follows the table's defaults.
     pub expression_context: Option<EvalContext>,
+    /// Minimum, maximum, step and strictness (mitcad#665); none by default.
+    pub limits: ParamLimits,
 }
 
 impl ParamSpec {
@@ -78,7 +81,13 @@ impl ParamSpec {
             comment: String::new(),
             kind,
             expression_context: None,
+            limits: ParamLimits::default(),
         }
+    }
+
+    pub fn with_limits(mut self, limits: ParamLimits) -> Self {
+        self.limits = limits;
+        self
     }
 
     pub fn user(name: &str, expression: &str, unit: Unit) -> Self {
@@ -121,8 +130,18 @@ pub struct Parameter {
     comment: String,
     kind: ParamKind,
     value: Quantity,
+    /// The value of a text parameter (unit [`Unit::TEXT`], mitcad#664);
+    /// its `value` is then 0.
+    text: Option<String>,
     dependencies: Vec<ParamId>,
     expression_context: Option<EvalContext>,
+    /// Limits as written, parsed and evaluated, the result before them
+    /// and which one took effect (mitcad#665).
+    limits: ParamLimits,
+    limit_exprs: LimitExprs,
+    bounds: Bounds,
+    unclamped: Quantity,
+    limited: Option<Limited>,
 }
 
 impl Parameter {
@@ -162,7 +181,8 @@ impl Parameter {
         self.kind
     }
 
-    /// The value in canonical units (millimetres, radians).
+    /// The value in canonical units (millimetres, radians); 0 for a text
+    /// parameter.
     pub fn value(&self) -> f64 {
         self.value.value
     }
@@ -171,19 +191,131 @@ impl Parameter {
         self.value
     }
 
+    /// Whether it is a text parameter (unit `Text`, mitcad#664).
+    pub fn is_text(&self) -> bool {
+        self.unit.is_text()
+    }
+
+    /// The value of a text parameter (mitcad#664); None for a number.
+    pub fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
+
     /// The value in the parameter's own unit.
     pub fn value_in_unit(&self) -> f64 {
         self.unit.canonical_to_unit(self.value.value)
     }
 
-    /// The value as text in the parameter's unit, such as `12.5 mm`.
+    /// The value as text in the parameter's unit, such as `12.5 mm`; a text
+    /// parameter's text as it is.
     pub fn formatted_value(&self, max_decimals: usize) -> String {
-        format_value(self.value.value, self.unit, max_decimals)
+        match &self.text {
+            Some(text) => text.clone(),
+            None => format_value(self.value.value, self.unit, max_decimals),
+        }
     }
 
-    /// The parameters this one's expression references, each once.
+    /// The parameters this one's expression and limits reference, each
+    /// once.
     pub fn dependencies(&self) -> &[ParamId] {
         &self.dependencies
+    }
+
+    /// Its limits as written (mitcad#665).
+    pub fn limits(&self) -> &ParamLimits {
+        &self.limits
+    }
+
+    /// Its limits evaluated, in canonical units.
+    pub fn bounds(&self) -> Bounds {
+        self.bounds
+    }
+
+    /// The expression's result before the limits, in canonical units.
+    pub fn unclamped(&self) -> f64 {
+        self.unclamped.value
+    }
+
+    /// Which limit changed the value, if one did.
+    pub fn limited(&self) -> Option<Limited> {
+        self.limited
+    }
+
+    /// The names its limit expressions reference, each once.
+    pub fn limit_references(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = Vec::new();
+        for (_, expr) in self.limit_exprs.iter() {
+            for name in expr.references() {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        names
+    }
+}
+
+/// A parameter's value with its limits applied.
+#[derive(Debug, Clone)]
+struct Evaluated {
+    value: Quantity,
+    unclamped: Quantity,
+    bounds: Bounds,
+    limited: Option<Limited>,
+    /// A text parameter's text (mitcad#664).
+    text: Option<String>,
+}
+
+impl Evaluated {
+    fn unlimited(value: Quantity) -> Self {
+        Self {
+            value,
+            unclamped: value,
+            bounds: Bounds::default(),
+            limited: None,
+            text: None,
+        }
+    }
+
+    /// A text parameter's value.
+    fn text(text: String) -> Self {
+        Self {
+            text: Some(text),
+            ..Self::unlimited(Quantity::unitless(0.0))
+        }
+    }
+}
+
+/// What a parameter is evaluated from: its expression, unit and limits,
+/// either its own or the ones an edit gives it.
+#[derive(Clone, Copy)]
+struct Definition<'a> {
+    name: &'a str,
+    expr: &'a Expr,
+    unit: Unit,
+    context: Option<EvalContext>,
+    limits: &'a LimitExprs,
+    strict: bool,
+}
+
+impl Parameter {
+    fn store(&mut self, evaluated: Evaluated) {
+        self.value = evaluated.value;
+        self.unclamped = evaluated.unclamped;
+        self.bounds = evaluated.bounds;
+        self.limited = evaluated.limited;
+        self.text = evaluated.text;
+    }
+
+    fn definition(&self) -> Definition<'_> {
+        Definition {
+            name: &self.name,
+            expr: &self.expr,
+            unit: self.unit,
+            context: self.expression_context,
+            limits: &self.limit_exprs,
+            strict: self.limits.strict,
+        }
     }
 }
 
@@ -215,6 +347,13 @@ pub enum TableError {
     },
     /// Loaded ids must increase.
     IdOrder(ParamId),
+    /// A limit that does not parse or evaluate, a minimum above the
+    /// maximum, a step that is not positive, or a strict parameter's result
+    /// outside its limits (mitcad#665).
+    Limit {
+        parameter: String,
+        error: LimitError,
+    },
 }
 
 impl fmt::Display for TableError {
@@ -237,6 +376,7 @@ impl fmt::Display for TableError {
                 write!(f, "parameter '{name}' is used by {}", used_by.join(", "))
             }
             Self::IdOrder(id) => write!(f, "parameter ids must increase, found {}", id.0),
+            Self::Limit { parameter, error } => write!(f, "parameter '{parameter}': {error}"),
         }
     }
 }
@@ -267,22 +407,46 @@ const DIMENSION_PREFIX: &str = "d";
 /// Values of the table with pending new values on top.
 struct Overlay<'a> {
     table: &'a ParameterTable,
-    values: &'a HashMap<ParamId, Quantity>,
+    values: &'a HashMap<ParamId, Evaluated>,
+}
+
+impl Overlay<'_> {
+    /// The pending or current value of `name`: its number and its text
+    /// (a text parameter's, mitcad#664).
+    fn current(&self, name: &str) -> Option<(Quantity, Option<String>)> {
+        let id = *self.table.by_name.get(name)?;
+        match self.values.get(&id) {
+            Some(e) => Some((e.value, e.text.clone())),
+            None => self.table.get(id).map(|p| (p.value, p.text.clone())),
+        }
+    }
 }
 
 impl Lookup for Overlay<'_> {
     fn lookup(&self, name: &str) -> Option<Quantity> {
-        let id = *self.table.by_name.get(name)?;
-        self.values
-            .get(&id)
-            .copied()
-            .or_else(|| self.table.get(id).map(|p| p.value))
+        match self.current(name)? {
+            (q, None) => Some(q),
+            (_, Some(_)) => None,
+        }
+    }
+
+    fn lookup_text(&self, name: &str) -> Option<String> {
+        self.current(name)?.1
     }
 }
 
 impl Lookup for ParameterTable {
     fn lookup(&self, name: &str) -> Option<Quantity> {
-        self.find(name).and_then(|id| self.get(id)).map(|p| p.value)
+        self.find(name)
+            .and_then(|id| self.get(id))
+            .filter(|p| p.text.is_none())
+            .map(|p| p.value)
+    }
+
+    fn lookup_text(&self, name: &str) -> Option<String> {
+        self.find(name)
+            .and_then(|id| self.get(id))
+            .and_then(|p| p.text.clone())
     }
 }
 
@@ -321,6 +485,7 @@ impl ParameterTable {
             table.check_new_name(&spec.name)?;
             let expr = parse(&spec.name, &spec.expression)?;
             let expression = with_decimal_points(&spec.expression).into_owned();
+            let (limits, limit_exprs) = parse_limits(&spec.name, spec.limits)?;
             table.by_name.insert(spec.name.clone(), id);
             table.name_taken(&spec.name);
             table.items.push(Parameter {
@@ -332,14 +497,20 @@ impl ParameterTable {
                 comment: spec.comment,
                 kind: spec.kind,
                 value: Quantity::unitless(0.0),
+                text: None,
                 dependencies: Vec::new(),
                 expression_context: spec.expression_context,
+                limits,
+                limit_exprs,
+                bounds: Bounds::default(),
+                unclamped: Quantity::unitless(0.0),
+                limited: None,
             });
             table.next_id = id.0 + 1;
         }
         for i in 0..table.items.len() {
             let p = &table.items[i];
-            let dependencies = table.resolve(&p.name, &p.expr)?;
+            let dependencies = table.resolve_all(&p.name, &p.expr, &p.limit_exprs)?;
             table.items[i].dependencies = dependencies;
         }
         let order = table
@@ -348,10 +519,8 @@ impl ParameterTable {
         let no_overlay = HashMap::new();
         for id in order {
             let i = table.index(id).expect("ordered ids exist");
-            let p = &table.items[i];
-            let value =
-                table.eval_param(&p.expr, p.unit, &p.name, p.expression_context, &no_overlay)?;
-            table.items[i].value = value;
+            let evaluated = table.eval_param(table.items[i].definition(), &no_overlay)?;
+            table.items[i].store(evaluated);
         }
         Ok(table)
     }
@@ -458,17 +627,26 @@ impl ParameterTable {
         // with decimal points (the same expression, the same positions).
         let expr = parse(&spec.name, &spec.expression)?;
         let expression = with_decimal_points(&spec.expression).into_owned();
-        if expr.references().contains(&spec.name.as_str()) {
+        let (limits, limit_exprs) = parse_limits(&spec.name, spec.limits)?;
+        let refers_to_itself = expr.references().contains(&spec.name.as_str())
+            || limit_exprs
+                .iter()
+                .any(|(_, e)| e.references().contains(&spec.name.as_str()));
+        if refers_to_itself {
             return Err(TableError::Cycle {
                 path: vec![spec.name.clone(), spec.name],
             });
         }
-        let dependencies = self.resolve(&spec.name, &expr)?;
-        let value = self.eval_param(
-            &expr,
-            spec.unit,
-            &spec.name,
-            spec.expression_context,
+        let dependencies = self.resolve_all(&spec.name, &expr, &limit_exprs)?;
+        let evaluated = self.eval_param(
+            Definition {
+                name: &spec.name,
+                expr: &expr,
+                unit: spec.unit,
+                context: spec.expression_context,
+                limits: &limit_exprs,
+                strict: limits.strict,
+            },
             &HashMap::new(),
         )?;
         let id = ParamId(self.next_id);
@@ -483,9 +661,15 @@ impl ParameterTable {
             unit: spec.unit,
             comment: spec.comment,
             kind: spec.kind,
-            value,
+            value: evaluated.value,
+            text: evaluated.text,
             dependencies,
             expression_context: spec.expression_context,
+            limits,
+            limit_exprs,
+            bounds: evaluated.bounds,
+            unclamped: evaluated.unclamped,
+            limited: evaluated.limited,
         });
         Ok(id)
     }
@@ -518,7 +702,8 @@ impl ParameterTable {
             let i = candidate.index(id).ok_or(TableError::UnknownId(id))?;
             let name = &candidate.items[i].name;
             let expr = parse(name, expression)?;
-            let dependencies = candidate.resolve(name, &expr)?;
+            let dependencies =
+                candidate.resolve_all(name, &expr, &candidate.items[i].limit_exprs)?;
             let p = &mut candidate.items[i];
             p.expression = with_decimal_points(expression).into_owned();
             p.expr = expr;
@@ -554,21 +739,68 @@ impl ParameterTable {
         expression: &str,
         unit: Unit,
     ) -> Result<ChangeSet, TableError> {
-        let name = self.param(id)?.name.clone();
+        self.redefine(id, expression, unit, None)
+    }
+
+    /// Sets a parameter's limits (mitcad#665): `min` and `max` expressions
+    /// in its unit that may reference other parameters, a positive `step`,
+    /// and whether a result outside them is refused (`strict`) instead of
+    /// clamped and snapped. Re-evaluates it and its dependents; returns the
+    /// parameters whose values changed. On failure the table is unchanged.
+    pub fn set_limits(
+        &mut self,
+        id: ParamId,
+        limits: ParamLimits,
+    ) -> Result<ChangeSet, TableError> {
+        let p = self.param(id)?;
+        let (expression, unit) = (p.expression.clone(), p.unit);
+        self.redefine(id, &expression, unit, Some(limits))
+    }
+
+    /// Changes the expression, the unit and, when given, the limits
+    /// together, so that a new expression can be checked against new
+    /// limits. Returns the parameters whose values changed; on failure the
+    /// table is unchanged.
+    pub fn redefine(
+        &mut self,
+        id: ParamId,
+        expression: &str,
+        unit: Unit,
+        limits: Option<ParamLimits>,
+    ) -> Result<ChangeSet, TableError> {
+        let p = self.param(id)?;
+        let name = p.name.clone();
         let expr = parse(&name, expression)?;
         let expression = with_decimal_points(expression);
-        let dependencies = self.resolve(&name, &expr)?;
+        let new_limits = limits.map(|l| parse_limits(&name, l)).transpose()?;
+        let (limit_exprs, strict) = match &new_limits {
+            Some((limits, exprs)) => (exprs, limits.strict),
+            None => (&p.limit_exprs, p.limits.strict),
+        };
+        // A reference to itself, in the expression or a limit, is a cycle.
+        let dependencies = self.resolve_all(&name, &expr, limit_exprs)?;
         if let Some(cycle) = self.cycle_through(id, &dependencies) {
             return Err(self.cycle_error(&cycle));
         }
         let order = self.affected(id);
-        let values = self.evaluate_pending(&order, Some((id, &expr, unit)))?;
+        let replace = Definition {
+            expr: &expr,
+            unit,
+            limits: limit_exprs,
+            strict,
+            ..p.definition()
+        };
+        let values = self.evaluate_pending(&order, Some((id, replace)))?;
         let i = self.index(id).expect("checked above");
         let p = &mut self.items[i];
         p.expression = expression.into_owned();
         p.expr = expr;
         p.unit = unit;
         p.dependencies = dependencies;
+        if let Some((limits, limit_exprs)) = new_limits {
+            p.limits = limits;
+            p.limit_exprs = limit_exprs;
+        }
         Ok(self.commit(values))
     }
 
@@ -602,12 +834,22 @@ impl ParameterTable {
             }
             let text = replace_references(&p.expression, &p.expr, &old, new_name);
             let expr = parse(&p.name, &text)?;
-            rewrites.push((i, text, expr));
+            // Limits that reference it follow too (mitcad#665).
+            let mut limits = p.limits.clone();
+            for (which, limit) in p.limit_exprs.iter() {
+                if let Some(written) = limits.text_mut(which) {
+                    *written = replace_references(written, limit, &old, new_name);
+                }
+            }
+            let (limits, limit_exprs) = parse_limits(&p.name, limits)?;
+            rewrites.push((i, text, expr, limits, limit_exprs));
         }
         let rewritten = rewrites.iter().map(|(i, ..)| self.items[*i].id).collect();
-        for (i, text, expr) in rewrites {
+        for (i, text, expr, limits, limit_exprs) in rewrites {
             self.items[i].expression = text;
             self.items[i].expr = expr;
+            self.items[i].limits = limits;
+            self.items[i].limit_exprs = limit_exprs;
         }
         self.by_name.remove(&old);
         self.name_freed(&old);
@@ -659,6 +901,18 @@ impl ParameterTable {
         Ok(Expr::parse(expression)?.eval_as(self, &self.context, unit)?)
     }
 
+    /// Evaluates a text expression that is not a parameter, such as a
+    /// sketch text's (mitcad#664), against the table's values.
+    pub fn evaluate_text(&self, expression: &str) -> Result<String, ExprError> {
+        Ok(Expr::parse(expression)?.eval_text(self, &self.context)?)
+    }
+
+    /// The value of an expression, a number or a text, against the table's
+    /// values.
+    pub fn evaluate_value(&self, expression: &str) -> Result<super::Value, ExprError> {
+        Ok(Expr::parse(expression)?.eval_value(self, &self.context)?)
+    }
+
     fn index(&self, id: ParamId) -> Option<usize> {
         self.items.binary_search_by_key(&id, |p| p.id).ok()
     }
@@ -701,56 +955,150 @@ impl ParameterTable {
         Ok(ids)
     }
 
+    /// The parameters an expression and its limits reference, each once:
+    /// the expression's first, in order of appearance.
+    fn resolve_all(
+        &self,
+        owner: &str,
+        expr: &Expr,
+        limits: &LimitExprs,
+    ) -> Result<Vec<ParamId>, TableError> {
+        let mut ids = self.resolve(owner, expr)?;
+        for (which, limit) in limits.iter() {
+            let found = self.resolve(owner, limit).map_err(|e| match e {
+                TableError::Eval { parameter, error } => TableError::Limit {
+                    parameter,
+                    error: LimitError::Eval {
+                        limit: which,
+                        error,
+                    },
+                },
+                other => other,
+            })?;
+            for id in found {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+        Ok(ids)
+    }
+
+    /// A parameter's value: its expression's result with its limits
+    /// applied (mitcad#665).
     fn eval_param(
         &self,
-        expr: &Expr,
-        unit: Unit,
-        name: &str,
-        context: Option<EvalContext>,
-        pending: &HashMap<ParamId, Quantity>,
-    ) -> Result<Quantity, TableError> {
+        def: Definition<'_>,
+        pending: &HashMap<ParamId, Evaluated>,
+    ) -> Result<Evaluated, TableError> {
         let lookup = Overlay {
             table: self,
             values: pending,
         };
-        expr.eval_as(&lookup, &context.unwrap_or(self.context), unit)
+        let context = def.context.unwrap_or(self.context);
+        let limit_error = |error| TableError::Limit {
+            parameter: def.name.to_owned(),
+            error,
+        };
+        // A text parameter (mitcad#664): its expression's text, no limits.
+        if def.unit.is_text() {
+            if !def.limits.is_empty() {
+                return Err(limit_error(LimitError::Text));
+            }
+            let text = def
+                .expr
+                .eval_text(&lookup, &context)
+                .map_err(|error| TableError::Eval {
+                    parameter: def.name.to_owned(),
+                    error,
+                })?;
+            return Ok(Evaluated::text(text));
+        }
+        let unclamped = def
+            .expr
+            .eval_as(&lookup, &context, def.unit)
             .map_err(|error| TableError::Eval {
-                parameter: name.to_owned(),
+                parameter: def.name.to_owned(),
                 error,
-            })
+            })?;
+        if def.limits.is_empty() {
+            return Ok(Evaluated::unlimited(unclamped));
+        }
+        let mut bounds = Bounds::default();
+        for (which, expr) in def.limits.iter() {
+            let bound = expr.eval_as(&lookup, &context, def.unit).map_err(|error| {
+                limit_error(LimitError::Eval {
+                    limit: which,
+                    error,
+                })
+            })?;
+            bounds.set(which, bound.value);
+        }
+        let (value, limited) =
+            limits::apply(unclamped.value, &bounds, def.strict, def.unit).map_err(limit_error)?;
+        Ok(Evaluated {
+            value: Quantity::new(value, unclamped.dims),
+            unclamped,
+            bounds,
+            limited,
+            text: None,
+        })
     }
 
     /// New values for `order`, without changing the table. `replace` gives
-    /// a new expression and unit for one parameter.
+    /// a new expression, unit or limits for one parameter.
     fn evaluate_pending(
         &self,
         order: &[ParamId],
-        replace: Option<(ParamId, &Expr, Unit)>,
-    ) -> Result<HashMap<ParamId, Quantity>, TableError> {
+        replace: Option<(ParamId, Definition<'_>)>,
+    ) -> Result<HashMap<ParamId, Evaluated>, TableError> {
         let mut values = HashMap::new();
         for &id in order {
             let p = self.get(id).expect("ordered ids exist");
-            let (expr, unit) = match replace {
-                Some((replaced, expr, unit)) if replaced == id => (expr, unit),
-                _ => (&p.expr, p.unit),
+            let def = match replace {
+                Some((replaced, def)) if replaced == id => def,
+                _ => p.definition(),
             };
-            let value = self.eval_param(expr, unit, &p.name, p.expression_context, &values)?;
+            let value = self.eval_param(def, &values)?;
             values.insert(id, value);
         }
         Ok(values)
     }
 
-    /// Stores new values and returns the ids whose values changed.
-    fn commit(&mut self, values: HashMap<ParamId, Quantity>) -> ChangeSet {
+    /// Stores new values and returns the ids whose values changed. The
+    /// result before the limits and which limit took effect are stored
+    /// too; they alone are no change.
+    fn commit(&mut self, values: HashMap<ParamId, Evaluated>) -> ChangeSet {
         let mut changed = ChangeSet::new();
-        for (id, value) in values {
+        for (id, evaluated) in values {
             let i = self.index(id).expect("evaluated ids exist");
-            if self.items[i].value != value {
-                self.items[i].value = value;
+            if self.items[i].value != evaluated.value || self.items[i].text != evaluated.text {
                 changed.insert(id);
             }
+            self.items[i].store(evaluated);
         }
         changed
+    }
+
+    /// What the limits of `id` would make of `expression` as its new
+    /// expression, without changing the table: the value, the result
+    /// before the limits and which limit took effect, or why a strict
+    /// parameter would refuse it (the `evaluate` query, mitcad#665).
+    pub fn try_expression(
+        &self,
+        id: ParamId,
+        expression: &str,
+    ) -> Result<(Quantity, Quantity, Option<Limited>), TableError> {
+        let p = self.param(id)?;
+        let expr = parse(&p.name, expression)?;
+        let evaluated = self.eval_param(
+            Definition {
+                expr: &expr,
+                ..p.definition()
+            },
+            &HashMap::new(),
+        )?;
+        Ok((evaluated.value, evaluated.unclamped, evaluated.limited))
     }
 
     /// `id` and everything that depends on it, in evaluation order.
@@ -876,6 +1224,27 @@ fn parse(name: &str, expression: &str) -> Result<Expr, TableError> {
         parameter: name.to_owned(),
         error,
     })
+}
+
+/// Limits as kept (blank texts are no limit, decimal commas become points)
+/// and parsed.
+fn parse_limits(
+    name: &str,
+    mut limits: ParamLimits,
+) -> Result<(ParamLimits, LimitExprs), TableError> {
+    for which in limits::ALL_LIMITS {
+        let text = limits.text_mut(which);
+        *text = text
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|t| with_decimal_points(t).into_owned());
+    }
+    let exprs = LimitExprs::parse(&limits).map_err(|error| TableError::Limit {
+        parameter: name.to_owned(),
+        error,
+    })?;
+    Ok((limits, exprs))
 }
 
 /// `text` with the references to `old` replaced by `new`.

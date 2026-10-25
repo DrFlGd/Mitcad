@@ -24,6 +24,7 @@ install(TARGETS mitcad mitcad-cli
   RUNTIME DESTINATION bin)
 # The automatic updates' installer step (mitcad#9); system DLLs only.
 install(TARGETS mitcad-updater RUNTIME DESTINATION bin)
+install(TARGETS mitcad-mcp-launcher RUNTIME DESTINATION bin)
 # The render worker (docs/rendering.md) next to mitcad, where the
 # application looks for it, with its libraries: vcpkg's and Open Image
 # Denoise's through the runtime dependencies below, and Open Image

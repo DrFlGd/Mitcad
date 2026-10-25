@@ -96,12 +96,14 @@ std::shared_ptr<geometry::Shape> DocumentSession::bodyShape(const QString& uid) 
   return idleDocument().body_shape(uid.toStdString());
 }
 
+// A preview's body or tool as the view draws it: its stand-in of the
+// interactive tier while it has one (DisplayMeshes.hpp, mitcad#635).
 std::shared_ptr<geometry::Shape> DocumentSession::previewBodyShape(const std::string& uid) const {
-  return idleDocument().preview_body_shape(uid);
+  return displayShape(idleDocument().preview_body_shape(uid));
 }
 
 std::shared_ptr<geometry::Shape> DocumentSession::previewToolShape() const {
-  return idleDocument().preview_tool_shape();
+  return displayShape(idleDocument().preview_tool_shape());
 }
 
 int DocumentSession::undoDepth() const {
@@ -246,12 +248,15 @@ QJsonObject DocumentSession::command(const QJsonObject& request) {
   const bool display = !name.startsWith(QStringLiteral("sketch."));
   DisplayMeshing meshing;
   const bool done = runJob(name, commandStage(name), [&document, &json, &answer, display, &meshing](ModelJob& job) {
+    // The bodies as the view shows them before the command: the meshes of
+    // the faces it leaves as they were (mitcad#635).
+    const DisplayShapes before = display ? shownBodyShapes(document) : DisplayShapes();
     {
       const AttachedJob attached(document, job);
       answer = document.command(rustStr(json));
     }
     if (display) {
-      meshing = meshForDisplay(shownBodyShapes(document), job);
+      meshing = meshForDisplay(shownBodyShapes(document), job, DisplayTier::Final, before);
     }
   }, JobLog::WhenSlow);
   if (!done) {
@@ -274,8 +279,12 @@ QJsonObject DocumentSession::preview(const QByteArray& request, const QString& n
       const AttachedJob attached(document, job);
       answer = document.preview(rustStr(request));
     }
-    meshing = meshForDisplay(previewShapes(document, parseObject(answer)), job);
+    // The interactive tier: stand-ins (DisplayMeshes.hpp, mitcad#635).
+    const QJsonObject report = parseObject(answer);
+    meshing = meshForDisplay(previewShapes(document, report), job, DisplayTier::Interactive,
+                             previewDonors(document, report));
   }, JobLog::WhenSlow);
+  m_standIns = meshing.standIns;
   if (!done) {
     throw ComputationCancelled();
   }
@@ -295,12 +304,13 @@ bool DocumentSession::commandAsync(const QJsonObject& request, QObject* context,
   if (failForTest) { m_testFailCommand.clear(); }
   return startAsync(name, commandStage(name), [document, json, result, display, meshing, failForTest](ModelJob& job) {
     if (failForTest) { throw std::runtime_error("Injected recovery command failure."); }
+    const DisplayShapes before = display ? shownBodyShapes(*document) : DisplayShapes();
     {
       const AttachedJob attached(*document, job);
       result->answer = parseObject(document->command(rustStr(json)));
     }
     if (display) {
-      *meshing = meshForDisplay(shownBodyShapes(*document), job);
+      *meshing = meshForDisplay(shownBodyShapes(*document), job, DisplayTier::Final, before);
     }
   }, result, context, [meshing, name, completion = std::move(completion)](const AsyncResult& outcome) {
     logDisplayMeshing(*meshing, name);
@@ -319,9 +329,40 @@ bool DocumentSession::previewAsync(const QByteArray& request, const QString& nam
       const AttachedJob attached(*document, job);
       result->answer = parseObject(document->preview(rustStr(request)));
     }
-    *meshing = meshForDisplay(previewShapes(*document, result->answer), job);
-  }, result, context, [meshing, completion = std::move(completion)](const AsyncResult& outcome) {
+    *meshing = meshForDisplay(previewShapes(*document, result->answer), job, DisplayTier::Interactive,
+                              previewDonors(*document, result->answer));
+  }, result, context, [this, meshing, completion = std::move(completion)](const AsyncResult& outcome) {
+    m_standIns = meshing->standIns;
     logDisplayMeshing(*meshing, QStringLiteral("preview"));
+    if (completion) { completion(outcome); }
+  });
+}
+
+bool DocumentSession::refineDisplay(const DisplayShapes& bodies) {
+  DisplayMeshing meshing;
+  Document& document = *m_state.document;
+  const bool done = runJob(QStringLiteral("display"), tr("Meshing the bodies for display"),
+                           [&document, &bodies, &meshing](ModelJob& job) {
+    // The bodies shown give the faces the previewed command left as they
+    // were (mitcad#635).
+    meshing = meshForDisplay(bodies, job, DisplayTier::Final, shownBodyShapes(document));
+  }, JobLog::WhenSlow);
+  logDisplayMeshing(meshing, QStringLiteral("preview refinement"));
+  return done && meshing.bodies + meshing.ready == bodies.size();
+}
+
+bool DocumentSession::refineDisplayAsync(const DisplayShapes& bodies, QObject* context, Completion completion) {
+  auto result = std::make_shared<AsyncResult>();
+  auto meshing = std::make_shared<DisplayMeshing>();
+  Document* document = &*m_state.document;
+  return startAsync(QStringLiteral("display"), tr("Meshing the bodies for display"),
+                    [document, bodies, meshing](ModelJob& job) {
+    *meshing = meshForDisplay(bodies, job, DisplayTier::Final, shownBodyShapes(*document));
+    if (job.control().is_cancelled()) {
+      throw ComputationCancelled();
+    }
+  }, result, context, [meshing, completion = std::move(completion)](const AsyncResult& outcome) {
+    logDisplayMeshing(*meshing, QStringLiteral("preview refinement"));
     if (completion) { completion(outcome); }
   });
 }
@@ -433,6 +474,7 @@ void DocumentSession::clearPreview() {
     throw ModelBusy();
   }
   m_state.document->clear_preview();
+  m_standIns.clear();
 }
 
 void DocumentSession::markSaved() {
@@ -444,6 +486,13 @@ void DocumentSession::markSaved() {
 
 void DocumentSession::cancelJob() {
   if (m_job) {
+    // A job without a progress dialog (a feature preview, mitcad#634):
+    // when it was asked to stop, as the dialog's Cancel logs it, so that
+    // the time a cancel takes inside the kernel can be read (P7e).
+    if (m_async && m_job == &m_async->job && !m_job->control().is_cancelled()) {
+      qDebug().noquote() << QStringLiteral("Computing %1: cancel requested after %2 ms")
+                               .arg(m_async->label).arg(m_async->clock.elapsed());
+    }
     m_job->control().cancel();
   }
 }

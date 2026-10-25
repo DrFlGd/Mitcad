@@ -4,7 +4,7 @@
 //! sparse structure. The result is cached until the structure changes.
 
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::equations::{CurvTerm, EqKind, Interval, P, Rad, SplineEq, TParam};
 use crate::sparse::{GramPlan, Rows};
@@ -61,10 +61,10 @@ pub(crate) struct Component {
     /// Inverse weights of the unknowns.
     pub dcol: Vec<f64>,
     /// Gram matrix assembly in a minimum degree order.
-    pub plan: GramPlan,
+    pub plan: Arc<GramPlan>,
     /// Gram matrix assembly in equation order (rank analysis), built on
     /// first use.
-    pub analysis_plan: OnceLock<GramPlan>,
+    pub analysis_plan: OnceLock<Arc<GramPlan>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1257,7 +1257,7 @@ fn components(sys: &System, eqs: &[Equation]) -> (Vec<Component>, Vec<usize>) {
             jac.ptr.push(jac.col.len());
         }
         jac.val = vec![0.0; jac.col.len()];
-        let plan = GramPlan::new(&row_cols, cv.len(), None);
+        let plan = GramPlan::shared(&row_cols, cv.len(), None);
         let dcol = cv.iter().map(|&g| 1.0 / sys.weights[g]).collect();
         comps.push(Component {
             eqs: ce,

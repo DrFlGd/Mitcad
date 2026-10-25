@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <utility>
 
+#include <QAction>
 #include <QApplication>
 #include <QBuffer>
 #include <QCheckBox>
@@ -23,6 +24,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPointer>
@@ -39,6 +41,7 @@
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
 #include "../library/PartPicker.hpp"
+#include "../platform/MacDialogs.hpp"
 #include "Libraries.hpp"
 #include "LibraryAutoUpdate.hpp"
 #include "RemoteTask.hpp"
@@ -252,21 +255,49 @@ LibrariesDialog::LibrariesDialog(QWidget* parent) : QDialog(parent) {
   m_table->horizontalHeader()->setSectionResizeMode(kSourceColumn, QHeaderView::Stretch);
   m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
   m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  mac::styleListTable(m_table);
   layout->addWidget(m_table, 1);
   auto* buttons = new QHBoxLayout;
-  auto* addUrlButton = new QPushButton(tr("&Add URL..."));
-  auto* addFolder = new QPushButton(tr("Add F&older..."));
+  auto* addUrlButton = new QAction(tr("&Add URL…"), this);
+  auto* addFolder = new QAction(tr("Add F&older…"), this);
   auto* remove = new QPushButton(tr("&Remove"));
   auto* fetchSelected = new QPushButton(tr("Fetch &Selected"));
   auto* fetchAll = new QPushButton(tr("&Fetch All"));
-  auto* close = new QPushButton(tr("&Close"));
-  for (QPushButton* button : {addUrlButton, addFolder, remove, fetchSelected, fetchAll}) {
+#ifdef Q_OS_MACOS
+  auto* add = new QPushButton(tr("Add Library"));
+  add->setObjectName(QStringLiteral("libraryAddSource"));
+  auto* addMenu = new QMenu(add);
+  addMenu->addAction(addUrlButton);
+  addMenu->addAction(addFolder);
+  add->setMenu(addMenu);
+  mac::styleListButtons(add, remove);
+  mac::auxiliaryButton(add);
+  auto* sourceButtons = new QHBoxLayout;
+  sourceButtons->setSpacing(0);
+  sourceButtons->addWidget(add);
+  sourceButtons->addWidget(remove);
+  buttons->addLayout(sourceButtons);
+#else
+  auto* addUrlControl = new QPushButton(addUrlButton->text());
+  auto* addFolderControl = new QPushButton(addFolder->text());
+  for (QPushButton* button : {addUrlControl, addFolderControl, remove}) {
+    mac::auxiliaryButton(button);
     buttons->addWidget(button);
   }
+  connect(addUrlControl, &QPushButton::clicked, addUrlButton, &QAction::trigger);
+  connect(addFolderControl, &QPushButton::clicked, addFolder, &QAction::trigger);
+#endif
+  for (QPushButton* button : {remove, fetchSelected, fetchAll}) {
+    mac::auxiliaryButton(button);
+  }
   buttons->addStretch(1);
-  buttons->addWidget(close);
+  buttons->addWidget(fetchSelected);
+  buttons->addWidget(fetchAll);
   layout->addLayout(buttons);
-  connect(addUrlButton, &QPushButton::clicked, this, [this] {
+  auto* close = new QDialogButtonBox(QDialogButtonBox::Close);
+  mac::styleDialogButtons(close);
+  layout->addWidget(close);
+  connect(addUrlButton, &QAction::triggered, this, [this] {
     bool ok = false;
     const QString url = dialogText(this, tr("Add Library"),
                                               tr("A library's or a community index's git URL (https:// or ssh://):"),
@@ -275,7 +306,7 @@ LibrariesDialog::LibrariesDialog(QWidget* parent) : QDialog(parent) {
       addUrl(url);
     }
   });
-  connect(addFolder, &QPushButton::clicked, this, [this] {
+  connect(addFolder, &QAction::triggered, this, [this] {
     const QString dir = dialogDirectory(this, tr("Library Folder"));
     if (!dir.isEmpty()) {
       addUrl(QDir::toNativeSeparators(dir));
@@ -299,7 +330,7 @@ LibrariesDialog::LibrariesDialog(QWidget* parent) : QDialog(parent) {
   });
   connect(fetchSelected, &QPushButton::clicked, this, [this] { fetch(false); });
   connect(fetchAll, &QPushButton::clicked, this, [this] { fetch(true); });
-  connect(close, &QPushButton::clicked, this, &QDialog::accept);
+  connect(close, &QDialogButtonBox::rejected, this, &QDialog::reject);
   connect(m_table, &QTableWidget::itemChanged, this, [this](QTableWidgetItem* item) {
     if (item->column() == kOnColumn) {
       // A source that is off cannot be fetched at start-up: its
@@ -312,6 +343,7 @@ LibrariesDialog::LibrariesDialog(QWidget* parent) : QDialog(parent) {
   });
   // A background fetch that brought something new while the dialog is open.
   connect(&LibraryAutoUpdate::instance(), &LibraryAutoUpdate::updated, this, [this] { reload(); });
+  mac::styleDialog(this);
   reload();
 }
 
@@ -438,6 +470,7 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
   m_search = m_grid->searchField();
   m_search->setObjectName(QStringLiteral("librarySearch"));
   m_search->setPlaceholderText(tr("Search: name, standard, size, tag (e.g. 4762, washer, M5)"));
+  mac::styleSearchField(m_search, m_search->placeholderText());
   m_license = new QComboBox;
   m_license->setObjectName(QStringLiteral("libraryLicense"));
   const QStringList accepted = acceptedLicenses();
@@ -465,13 +498,15 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
   auto* form = new QFormLayout;
   m_version = new QComboBox;
   m_version->setObjectName(QStringLiteral("libraryVersion"));
-  m_version->setToolTip(tr("The part keeps this version; it changes only with Library Parts > Update"));
+  m_version->setToolTip(tr("The part keeps this version; it changes only with Library Parts › Update"));
   form->addRow(tr("&Version:"), m_version);
   side->addLayout(form);
   m_size = new SizeChooser;
   side->addWidget(m_size);
-  m_link = new QRadioButton(tr("&Linked (read only; follows the version chosen for it)"));
-  m_copy = new QRadioButton(tr("Co&py (editable, with its history)"));
+  m_link = new QRadioButton(tr("&Linked"));
+  m_link->setToolTip(tr("Read only; follows the version chosen for it"));
+  m_copy = new QRadioButton(tr("Co&py"));
+  m_copy->setToolTip(tr("Editable, with its history"));
   m_link->setChecked(true);
   side->addWidget(m_link);
   side->addWidget(m_copy);
@@ -479,23 +514,22 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
   split->setStretchFactor(0, 2);
   split->setStretchFactor(1, 1);
   layout->addWidget(split, 1);
-  auto* buttons = new QHBoxLayout;
-  auto* libraries = new QPushButton(tr("Li&braries..."));
+  auto* buttons = new QDialogButtonBox;
+  auto* libraries = new QPushButton(tr("Li&braries…"));
   // Fetches every enabled source, as Fetch All in Libraries... (mitcad#317).
   auto* update = new QPushButton(tr("&Update"));
   update->setObjectName(QStringLiteral("libraryUpdate"));
   update->setToolTip(tr("Fetch newer versions of all enabled libraries"));
   m_get = new QPushButton(tr("&Get Library"));
   m_insert = new QPushButton(tr("&Insert"));
-  m_insert->setDefault(true);
   auto* close = new QPushButton(tr("Close"));
-  buttons->addWidget(libraries);
-  buttons->addWidget(update);
-  buttons->addStretch(1);
-  buttons->addWidget(m_get);
-  buttons->addWidget(m_insert);
-  buttons->addWidget(close);
-  layout->addLayout(buttons);
+  buttons->addButton(libraries, QDialogButtonBox::ResetRole);
+  buttons->addButton(update, QDialogButtonBox::ResetRole);
+  buttons->addButton(m_get, QDialogButtonBox::ActionRole);
+  buttons->addButton(m_insert, QDialogButtonBox::AcceptRole);
+  buttons->addButton(close, QDialogButtonBox::RejectRole);
+  mac::styleDialogButtons(buttons, m_insert, true);
+  layout->addWidget(buttons);
   m_get->setEnabled(false);
   m_insert->setEnabled(false);
   connect(m_grid, &PartGrid::searchChanged, this, &LibraryBrowser::search);
@@ -520,6 +554,7 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
     refresh();
   });
   connect(update, &QPushButton::clicked, this, &LibraryBrowser::updateLibraries);
+  mac::styleDialog(this);
   connect(m_size, &SizeChooser::rowChanged, this, [](const QString& row) {
     if (!row.isEmpty()) {
       qInfo().noquote() << QStringLiteral("Library browser size %1").arg(row);
@@ -623,12 +658,12 @@ void LibraryBrowser::select() {
     // (mitcad#317); Libraries... adds sources.
     if (!anySourceFetched()) {
       m_details->setText(tr("<p>No library is fetched yet. Press <b>Update</b> to fetch the enabled libraries; "
-                            "add sources in <b>Libraries...</b>.</p>"));
+                            "add sources in <b>Libraries…</b>.</p>"));
       qInfo().noquote() << QStringLiteral("Library browser empty: nothing fetched yet, press Update");
       return;
     }
     m_details->setText(tr("<p>Nothing found. Fetch newer versions with <b>Update</b> or add sources in "
-                          "<b>Libraries...</b>; items without an accepted licence are hidden unless asked for.</p>"));
+                          "<b>Libraries…</b>; items without an accepted licence are hidden unless asked for.</p>"));
     qInfo().noquote() << QStringLiteral("Library browser empty: nothing found");
     return;
   }
@@ -702,17 +737,44 @@ void LibraryBrowser::showVersion() {
     authors << a.toString();
   }
   const QString license = component.value(QStringLiteral("license")).toString();
-  const QString attribution =
-      tr("%1 from %2 by %3, %4, %5")
+  QString attribution =
+      tr("%1 from %2 by %3, %4")
           .arg(str(component, "name"), str(manifest, "name"),
                authors.isEmpty() ? tr("unknown authors") : authors.join(QStringLiteral(", ")),
-               license.isEmpty() ? tr("no licence") : license, str(m_shown, "url"));
-  m_details->setText(tr("<h3>%1</h3><p>%2</p><p><b>Standard:</b> %3<br><b>Library:</b> %4 (%5)</p>"
-                        "<p><b>Licence:</b> %6 %7</p><p><b>Attribution:</b> %8</p>")
-                         .arg(escaped(str(component, "name")), escaped(str(component, "description")),
-                              escaped(str(component, "standard")), escaped(str(manifest, "name")),
-                              escaped(str(manifest, "id")), license.isEmpty() ? tr("none") : escaped(license),
-                              escaped(licenseNote(license)), escaped(attribution)));
+               license.isEmpty() ? tr("no licence") : license);
+  if (!str(m_shown, "url").isEmpty()) {
+    attribution += QStringLiteral(", ") + str(m_shown, "url");
+  }
+  QStringList details{tr("<h3>%1</h3>").arg(escaped(str(component, "name")))};
+  if (!str(component, "description").isEmpty()) {
+    details << tr("<p>%1</p>").arg(escaped(str(component, "description")));
+  }
+  QStringList metadata;
+  if (!str(component, "standard").isEmpty()) {
+    metadata << tr("<b>Standard:</b> %1").arg(escaped(str(component, "standard")));
+  }
+  const QString libraryName = str(manifest, "name");
+  const QString libraryId = str(manifest, "id");
+  if (!libraryName.isEmpty() || !libraryId.isEmpty()) {
+    QString library = libraryName;
+    if (library.isEmpty()) {
+      library = libraryId;
+    } else if (!libraryId.isEmpty()) {
+      library = tr("%1 (%2)").arg(libraryName, libraryId);
+    }
+    metadata << tr("<b>Library:</b> %1").arg(escaped(library));
+  }
+  if (!metadata.isEmpty()) {
+    details << QStringLiteral("<p>%1</p>").arg(metadata.join(QStringLiteral("<br>")));
+  }
+  QString licence = tr("<b>Licence:</b> %1").arg(license.isEmpty() ? tr("none") : escaped(license));
+  const QString note = licenseNote(license);
+  if (!note.isEmpty()) {
+    licence += QStringLiteral("<br>") + escaped(note);
+  }
+  details << QStringLiteral("<p>%1</p>").arg(licence);
+  details << tr("<p><b>Attribution:</b> %1</p>").arg(escaped(attribution));
+  m_details->setText(details.join(QString()));
   m_size->setTable(component.value(QStringLiteral("configurations")).toObject());
   m_insert->setEnabled(true);
   // Tab order: results, version, sizes, linked or copy, the buttons.
@@ -760,7 +822,7 @@ void LibraryBrowser::updateLibraries() {
   const QStringList urls = LibrarySettings::load().enabledUrls();
   qInfo().noquote() << QStringLiteral("Library browser update: %1 enabled source(s)").arg(urls.size());
   if (urls.isEmpty()) {
-    sheetInformation(this, tr("Update"), tr("No library source is enabled. Add or enable sources in Libraries..."));
+    sheetInformation(this, tr("Update"), tr("No library source is enabled. Add or enable sources in Libraries…"));
     return;
   }
   fetchAndReport(this, urls, [this] { refresh(); });
@@ -852,6 +914,7 @@ LibraryPartsDialog::LibraryPartsDialog(const QJsonArray& parts, const QJsonArray
   m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
   m_table->setSelectionMode(QAbstractItemView::SingleSelection);
   m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  mac::styleListTable(m_table);
   page->addWidget(m_table, 1);
   auto* editor = new QFormLayout;
   m_version = new QComboBox;
@@ -865,18 +928,18 @@ LibraryPartsDialog::LibraryPartsDialog(const QJsonArray& parts, const QJsonArray
   m_changes->setPlaceholderText(tr("Show Changes lists what an update changes."));
   m_changes->setMaximumHeight(140);
   page->addWidget(m_changes);
-  auto* row = new QHBoxLayout;
+  auto* row = new QDialogButtonBox;
   auto* check = new QPushButton(tr("Check for &Newer Versions"));
   check->setToolTip(tr("Fetches the libraries these parts come from; nothing changes until you update"));
   m_get = new QPushButton(tr("&Get Missing Libraries"));
   auto* show = new QPushButton(tr("&Show Changes"));
   m_update = new QPushButton(tr("&Update"));
-  row->addWidget(check);
-  row->addWidget(m_get);
-  row->addStretch(1);
-  row->addWidget(show);
-  row->addWidget(m_update);
-  page->addLayout(row);
+  row->addButton(check, QDialogButtonBox::ResetRole);
+  row->addButton(m_get, QDialogButtonBox::ActionRole);
+  row->addButton(show, QDialogButtonBox::ActionRole);
+  row->addButton(m_update, QDialogButtonBox::AcceptRole);
+  mac::styleDialogButtons(row, m_update);
+  page->addWidget(row);
   tabs->addTab(partsPage, tr("Library Parts"));
 
   auto* listPage = new QWidget;
@@ -886,6 +949,7 @@ LibraryPartsDialog::LibraryPartsDialog(const QJsonArray& parts, const QJsonArray
   bom->setHorizontalHeaderLabels({tr("Qty"), tr("Part"), tr("Library"), tr("Version"), tr("Licence")});
   bom->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
   bom->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  mac::styleListTable(bom);
   bom->setRowCount(int(list.size()));
   QStringList csv{QStringLiteral("Quantity,Part,Library,Version,Licence")};
   for (int i = 0; i < list.size(); ++i) {
@@ -908,6 +972,7 @@ LibraryPartsDialog::LibraryPartsDialog(const QJsonArray& parts, const QJsonArray
   bom->resizeColumnsToContents();
   listLayout->addWidget(bom, 1);
   auto* copy = new QPushButton(tr("&Copy as CSV"));
+  mac::auxiliaryButton(copy);
   listLayout->addWidget(copy, 0, Qt::AlignRight);
   connect(copy, &QPushButton::clicked, this, [csv] {
     QApplication::clipboard()->setText(csv.join(QLatin1Char('\n')) + QLatin1Char('\n'));
@@ -916,7 +981,19 @@ LibraryPartsDialog::LibraryPartsDialog(const QJsonArray& parts, const QJsonArray
   tabs->addTab(listPage, tr("Parts List"));
 
   auto* close = new QDialogButtonBox(QDialogButtonBox::Close);
+  mac::styleDialogButtons(close);
   layout->addWidget(close);
+  const auto defaultForTab = [tabs, close, this] {
+    const bool parts = tabs->currentIndex() == 0;
+    QPushButton* closeButton = close->button(QDialogButtonBox::Close);
+    closeButton->setAutoDefault(!parts);
+    closeButton->setDefault(!parts);
+    m_update->setAutoDefault(parts);
+    m_update->setDefault(parts);
+  };
+  connect(tabs, &QTabWidget::currentChanged, this, defaultForTab);
+  defaultForTab();
+  mac::styleDialog(this);
   connect(close, &QDialogButtonBox::rejected, this, &QDialog::reject);
   connect(m_table, &QTableWidget::currentCellChanged, this, &LibraryPartsDialog::selectPart);
   connect(m_version, &QComboBox::currentIndexChanged, this, &LibraryPartsDialog::versionChosen);
@@ -1198,7 +1275,8 @@ PublishLibraryDialog::PublishLibraryDialog(std::function<QString()> design, std:
   auto* where = new QFormLayout;
   m_folder = new QLineEdit;
   m_folder->setObjectName(QStringLiteral("publishFolder"));
-  auto* browse = new QPushButton(tr("Bro&wse..."));
+  auto* browse = new QPushButton(tr("Bro&wse…"));
+  mac::auxiliaryButton(browse);
   auto* folderRow = new QHBoxLayout;
   folderRow->addWidget(m_folder, 1);
   folderRow->addWidget(browse);
@@ -1210,6 +1288,7 @@ PublishLibraryDialog::PublishLibraryDialog(std::function<QString()> design, std:
   layout->addLayout(where);
 
   auto* library = new QGroupBox(tr("New library"));
+  mac::styleSection(library);
   auto* libraryForm = new QFormLayout(library);
   m_libraryId = new QLineEdit;
   m_libraryId->setPlaceholderText(tr("my-parts (a-z, 0-9, -)"));
@@ -1224,6 +1303,7 @@ PublishLibraryDialog::PublishLibraryDialog(std::function<QString()> design, std:
   layout->addWidget(library);
 
   auto* item = new QGroupBox(tr("This design as a component"));
+  mac::styleSection(item);
   auto* itemForm = new QFormLayout(item);
   m_id = new QLineEdit;
   m_id->setPlaceholderText(tr("bracket-20 (a-z, 0-9, -)"));
@@ -1251,17 +1331,17 @@ PublishLibraryDialog::PublishLibraryDialog(std::function<QString()> design, std:
   m_log = new QPlainTextEdit;
   m_log->setReadOnly(true);
   layout->addWidget(m_log, 1);
-  auto* buttons = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
   auto* add = new QPushButton(tr("Add to &Library"));
   auto* push = new QPushButton(tr("&Push"));
   auto* entry = new QPushButton(tr("Inde&x Entry"));
   auto* close = new QPushButton(tr("Close"));
-  buttons->addWidget(add);
-  buttons->addWidget(push);
-  buttons->addWidget(entry);
-  buttons->addStretch(1);
-  buttons->addWidget(close);
-  layout->addLayout(buttons);
+  buttons->addButton(add, QDialogButtonBox::AcceptRole);
+  buttons->addButton(push, QDialogButtonBox::ActionRole);
+  buttons->addButton(entry, QDialogButtonBox::ActionRole);
+  buttons->addButton(close, QDialogButtonBox::RejectRole);
+  mac::styleDialogButtons(buttons, add);
+  layout->addWidget(buttons);
   connect(browse, &QPushButton::clicked, this, [this] {
     const QString dir = dialogDirectory(this, tr("Library Folder"), m_folder->text());
     if (!dir.isEmpty()) {
@@ -1273,6 +1353,7 @@ PublishLibraryDialog::PublishLibraryDialog(std::function<QString()> design, std:
   connect(push, &QPushButton::clicked, this, &PublishLibraryDialog::push);
   connect(entry, &QPushButton::clicked, this, &PublishLibraryDialog::indexEntry);
   connect(close, &QPushButton::clicked, this, &QDialog::accept);
+  mac::styleDialog(this);
   folderChanged();
   m_folder->setFocus();
 }
@@ -1403,7 +1484,7 @@ void PublishLibraryDialog::push() {
   const QPointer<PublishLibraryDialog> presenter = this;
   connect(task, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
   connect(this, &QObject::destroyed, task, &RemoteTask::cancel);
-  say(tr("Pushing %1...").arg(dir));
+  say(tr("Pushing %1…").arg(dir));
   task->start();
   waitDialogUntil([&] { return finished || pending == nullptr; });
   if (pending == nullptr) { return; }

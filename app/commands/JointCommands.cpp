@@ -890,17 +890,17 @@ CommandDef jointOriginCommand(const CommandContext& context) {
       // A mount frame of the part (mitcad#525): where it mounts when placed
       // from a library, and how it may move there.
       checkInput(QStringLiteral("mount"), QObject::tr("Mount Frame"))
-          .withTooltip(QObject::tr("Where the part mounts when it is placed from a library: a face, a hole, a grid")),
+          .withTooltip(QObject::tr("Where the component mounts when it is placed from a library: a face, a hole, a grid")),
       textInput(QStringLiteral("mount_name"), QObject::tr("Name"), QStringLiteral("base"))
           .withTooltip(QObject::tr("The frame's name in the library: letters, digits, _ - + ."))
           .withVisible(mountOn),
       choiceInput(QStringLiteral("mount_kind"), QObject::tr("Mounts"), kMountKinds, QStringLiteral("face"))
-          .withTooltip(QObject::tr("What the frame mounts on: z points out of the part towards it"))
+          .withTooltip(QObject::tr("What the frame mounts on: z points out of the component towards it"))
           .withVisible(mountOn),
       choiceInput(QStringLiteral("mount_joint"), QObject::tr("Moves"), mountJoints(QStringLiteral("face")),
                   QStringLiteral("rigid"))
           .withChoices([](const CommandState& state) { return mountJoints(state.choice(QStringLiteral("mount_kind"))); })
-          .withTooltip(QObject::tr("How the placed part may move: the joint its placement makes"))
+          .withTooltip(QObject::tr("How the placed component may move: the joint its placement makes"))
           .withVisible([](const CommandState& state) { return mountOn(state) && !mountKindIs(state, {"grid", "foot"}); }),
       valueInput(QStringLiteral("pitch_x"), QObject::tr("Pitch X"), ValueKind::Length, QStringLiteral("42 mm"))
           .withTooltip(QObject::tr("A cell's size along the frame's X"))
@@ -1970,7 +1970,7 @@ CommandDef motionLinkCommand(const CommandContext& context) {
     } else if (type == QStringLiteral("screw")) {
       coupling.insert(QStringLiteral("lead"), state.expression(QStringLiteral("lead")));
     } else if (type == QStringLiteral("ratio")) {
-      coupling.insert(QStringLiteral("ratio"), countValue(state, QStringLiteral("ratio")));
+      coupling.insert(QStringLiteral("ratio"), state.expression(QStringLiteral("ratio")));
     } else {
       const Selection& profile = state.items(QStringLiteral("profile"));
       if (profile.isEmpty()) {

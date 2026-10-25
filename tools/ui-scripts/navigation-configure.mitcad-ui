@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MIT
+wait-idle
+command tools.preferences.navigation
+focus-dialog '^(Settings|Preferences)$'
+expect-navigation-controls default
+expect-navigation-controls configure
+screenshot-dialog '${MITCAD_TEST_SHOTS}/navigation-custom.png'
+key ctrl+w
+expect-dialog-gone '^(Settings|Preferences)$'
+focus-main
+expect-setting view/navigationScheme custom

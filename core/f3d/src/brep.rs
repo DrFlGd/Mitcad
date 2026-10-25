@@ -418,9 +418,11 @@ pub enum Surface {
     },
     /// The surface a ball of `radius` sweeps while its centre runs along
     /// `spine` over `range` touching both supports (a rolling-ball blend
-    /// stored without its approximation, mitcad#621). The builder makes it
-    /// with OCCT's blend walking: `u` in [0, 1] across the section from the
-    /// first support's contact to the second's, `v` the spine's parameter.
+    /// stored without its approximation, mitcad#621, or with one too far
+    /// off, mitcad#622). The builder makes it with OCCT's blend walking:
+    /// `u` in [0, 1] across the section from the first support's contact
+    /// to the second's, `v` the spine's parameter. On a closed spine a
+    /// `range` of one whole period makes the surface closed in `v`.
     RollingBall {
         supports: Box<[BlendSupport; 2]>,
         spine: Curve,
@@ -429,6 +431,9 @@ pub enum Surface {
         /// the ball may leave a support in the rest.
         needed: [f64; 2],
         radius: f64,
+        /// The approximation the file stores, the surface where OCCT
+        /// cannot walk the ball (as before mitcad#622).
+        stored: Option<Box<Surface>>,
     },
 }
 

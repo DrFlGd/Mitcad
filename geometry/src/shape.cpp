@@ -172,6 +172,7 @@ void Shape::keep_measures_of(const Shape& other) const {
   take(other.m_measured, m_measured);
   take(other.m_bounds, m_bounds);
   take(other.m_boundaryIndex, m_boundaryIndex);
+  take(other.m_contactFaces, m_contactFaces);
   take(other.m_faceMeasures, m_faceMeasures);
   take(other.m_edgeCurves, m_edgeCurves);
   take(other.m_faceBoxes, m_faceBoxes);

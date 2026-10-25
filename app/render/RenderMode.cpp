@@ -269,7 +269,7 @@ void RenderMode::workerFailed(const QString& reason) {
   if (m_client->incompatible()) {
     showMessage(tr("The renderer cannot be used: %1.").arg(reason));
   } else {
-    showMessage(tr("The renderer stopped: %1. View > Rendered starts it again.").arg(reason));
+    showMessage(tr("The renderer stopped: %1. View › Visual Style › Rendered starts it again.").arg(reason));
   }
   emit stopped();
 }

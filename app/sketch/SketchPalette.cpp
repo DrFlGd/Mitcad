@@ -448,6 +448,10 @@ void SketchPalette::logLayout() const {
   }
   const QPoint combo = GlassCard::mapToHost(m_dimensionText, m_dimensionText->rect().center());
   qDebug().noquote() << QStringLiteral("Palette %1 at %2,%3").arg(m_dimensionText->objectName()).arg(combo.x()).arg(combo.y());
+  if (const QWidget* finish = findChild<const QWidget*>(QStringLiteral("paletteFinish"))) {
+    const QPoint center = GlassCard::mapToHost(finish, finish->rect().center());
+    qDebug().noquote() << QStringLiteral("Palette Finish Sketch at %1,%2").arg(center.x()).arg(center.y());
+  }
   // Each option row's place and size against its size hint, and the
   // palette's against its own: a row laid out below its hint overlaps the
   // next one (mitcad#470).

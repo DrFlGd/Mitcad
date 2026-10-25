@@ -17,11 +17,13 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QHeaderView>
+#include <QHelpEvent>
 #include <QIcon>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPainter>
 #include <QPalette>
 #include <QPixmap>
@@ -33,6 +35,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolTip>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVBoxLayout>
@@ -40,6 +43,7 @@
 #include <QtLogging>
 
 #include "Dialogs.hpp"
+#include "FormulaEditor.hpp"
 #include "Theme.hpp"
 
 namespace mitcad {
@@ -55,6 +59,9 @@ constexpr int kHeader = -1; // a group's title or a note: not chosen
 constexpr int kParameter = 0;
 constexpr int kCreate = 1;
 constexpr int kName = 2;
+constexpr int kFormula = 3;
+constexpr int kFunction = 4;
+constexpr int kTemplate = 5;
 
 constexpr int kMaxRows = 10;
 constexpr int kPageRows = 8;
@@ -240,7 +247,7 @@ private:
         accept();
         return;
       }
-      problem = error.isEmpty() ? tr("The model did not take the parameter.") : error;
+      problem = error.isEmpty() ? tr("The design did not take the parameter.") : error;
     }
     m_error->setText(problem);
     qDebug().noquote() << QStringLiteral("Create User Parameter %1 refused: %2").arg(name, problem);
@@ -310,6 +317,14 @@ ParameterField::ParameterField(QLineEdit* edit, ParameterFieldOptions options)
   edit->setContextMenuPolicy(Qt::CustomContextMenu);
   connect(edit, &QWidget::customContextMenuRequested, this, &ParameterField::showMenu);
   edit->installEventFilter(this);
+  edit->setMouseTracking(true);
+  auto* assistance = new QTimer(this);
+  assistance->setSingleShot(true);
+  assistance->setInterval(150);
+  connect(edit, &QLineEdit::textChanged, assistance, [assistance] { assistance->start(); });
+  connect(edit, &QLineEdit::cursorPositionChanged, assistance, [assistance] { assistance->start(); });
+  connect(edit, &QLineEdit::selectionChanged, assistance, [assistance] { assistance->start(); });
+  connect(assistance, &QTimer::timeout, this, &ParameterField::updateAssistance);
   if (edit->hasFocus()) {
     QTimer::singleShot(0, this, [this] { logFx(); });
   }
@@ -385,6 +400,10 @@ void ParameterField::fetch() {
   }
   try {
     m_parameters = suggestedParameters(source->parameters());
+    if (source->query) {
+      m_functions = source->query({{QStringLiteral("query"),QStringLiteral("formula_help")}})
+                        .value(QStringLiteral("functions")).toArray();
+    }
   } catch (const std::exception& e) {
     // A job computes the model: the parameters read last.
     qDebug().noquote() << QStringLiteral("Parameter suggestions for %1: parameters not read now: %2")
@@ -593,6 +612,41 @@ bool ParameterField::fill() {
            name.isEmpty() ? tr("Create User Parameter…") : tr("Create User Parameter “%1”…").arg(name),
            tr("a new parameter of its own"), QStringLiteral("create"));
   }
+  if (browsing && source != nullptr && source->query) {
+    action(kFormula,tr("Edit Formula…"),tr("A larger formula editor with functions, templates and parameter limits"),
+           QStringLiteral("formula"));
+  }
+  bool hasFunctions = false;
+  for (const QJsonValue& value : m_functions) {
+    const QJsonObject function=value.toObject();
+    const QString functionName=function.value(QStringLiteral("name")).toString();
+    const QString description=function.value(QStringLiteral("description")).toString();
+    const QString example=function.value(QStringLiteral("example")).toString();
+    const bool matches=browsing
+        ? (functionName+QLatin1Char(' ')+description+QLatin1Char(' ')+example).contains(m_filter,Qt::CaseInsensitive)
+        : functionName.startsWith(m_filter,Qt::CaseInsensitive);
+    if (!matches) continue;
+    auto* item=new QTreeWidgetItem(m_list,{functionName,description,example});
+    item->setData(0,kNameRole,functionName+QStringLiteral("()"));
+    item->setData(0,kActionRole,kFunction);
+    item->setToolTip(0,description+QLatin1Char('\n')+example);
+    if (!current && (!browsing || !firstAction)) current=item;
+    hasFunctions=true;
+  }
+  if (browsing && source != nullptr && source->query) {
+    const QVector<QPair<QString,QString>> templates{
+        {tr("How many fit"),QStringLiteral("FLOOR(length / pitch)")},
+        {tr("Spacing for N items"),QStringLiteral("length / (count - 1)")},
+        {tr("Even count"),QStringLiteral("EVEN(count)")},{tr("Odd count"),QStringLiteral("ODD(count)")},
+        {tr("Round to a step"),QStringLiteral("MROUND(value; step)")}};
+    for (const auto& entry:templates) {
+      if (!(entry.first+entry.second).contains(m_filter,Qt::CaseInsensitive)) continue;
+      auto* item=new QTreeWidgetItem(m_list,{entry.first,tr("Formula template"),entry.second});
+      item->setData(0,kNameRole,entry.second);
+      item->setData(0,kActionRole,kTemplate);
+      if (!current) current=item;
+    }
+  }
   if (current == nullptr) {
     current = firstAction != nullptr ? firstAction : firstAny;
   }
@@ -614,7 +668,7 @@ bool ParameterField::fill() {
     const QString word = at.text.mid(fragment.start, fragment.length);
     // Nothing to offer for a function's or a unit's name; nor for exactly
     // the one name typed already (Enter then confirms as without a list).
-    if (choices.empty() && actions.isEmpty() && isReservedName(word)) {
+    if (choices.empty() && actions.isEmpty() && !hasFunctions && isReservedName(word)) {
       return false;
     }
     if (choices.size() == 1 && choices.front().parameter->name == word && actions.isEmpty()) {
@@ -762,6 +816,9 @@ void ParameterField::activate(QTreeWidgetItem* item) {
   case kName:
     startNaming();
     return;
+  case kFormula:
+    QTimer::singleShot(0,this,[this] { openFormulaEditor(); });
+    return;
   default:
     break;
   }
@@ -774,7 +831,9 @@ void ParameterField::activate(QTreeWidgetItem* item) {
     qDebug().noquote() << QStringLiteral("Parameter suggestion %1 refused: %2").arg(name, problem);
     return;
   }
-  insert(name, m_mode == Mode::Browsing ? QStringLiteral("browser") : QStringLiteral("suggestion"), anchor());
+  const bool function = item->data(0,kActionRole).toInt()==kFunction;
+  insert(name, function ? QStringLiteral("function") : m_mode == Mode::Browsing ? QStringLiteral("browser") : QStringLiteral("suggestion"), anchor());
+  if (function) m_edit->setCursorPosition(m_edit->cursorPosition()-1);
 }
 
 void ParameterField::insert(const QString& name, const QString& how, const Anchor& where) {
@@ -842,6 +901,9 @@ void ParameterField::openCreateEditor() {
     setup.unit = QStringLiteral("deg");
     break;
   case ParameterKind::Unitless:
+    break;
+  case ParameterKind::Text:
+    setup.unit = QStringLiteral("Text");
     break;
   case ParameterKind::Length:
     setup.unit = QStringLiteral("mm");
@@ -941,6 +1003,8 @@ void ParameterField::showMenu(const QPoint& at) {
   const std::unique_ptr<QMenu> menu(m_edit->createStandardContextMenu());
   menu->addSeparator();
   QAction* browse = menu->addAction(tr("Insert Parameter…"));
+  QAction* formula = menu->addAction(tr("Edit Formula…"));
+  formula->setEnabled(parameterSourceOf(m_edit) && parameterSourceOf(m_edit)->query);
   QAction* naming = m_options.naming ? menu->addAction(tr("Name This Value (name = value)")) : nullptr;
   const ParameterSource* source = parameterSourceOf(m_edit);
   QAction* create = m_options.create && source != nullptr && source->addParameter
@@ -953,6 +1017,8 @@ void ParameterField::showMenu(const QPoint& at) {
   }
   if (chosen == browse) {
     QTimer::singleShot(0, this, [this] { openBrowser(); });
+  } else if (chosen == formula) {
+    QTimer::singleShot(0,this,[this] { openFormulaEditor(); });
   } else if (chosen == naming) {
     QTimer::singleShot(0, this, [this] { startNaming(); });
   } else if (chosen == create) {
@@ -966,11 +1032,94 @@ void ParameterField::updateIcon() {
   }
 }
 
+void ParameterField::openFormulaEditor() {
+  const ParameterSource* source=parameterSourceOf(m_edit);
+  if (!source || !source->query) return;
+  close();
+  const QPointer<QLineEdit> edit(m_edit);
+  const QPointer<ParameterField> alive(this);
+  const QString original=edit->text();
+  const QString value=expressionPart(original);
+  const int start=original.indexOf(value);
+  const QString prefix=start>0 ? original.left(start) : QString();
+  FormulaEditor dialog(*source,m_options,value,edit->window());
+  while (execDialog(&dialog)==QDialog::Accepted) {
+    if (!alive || !edit) return;
+    if (dialog.limitsChanged() && source->addParameter) {
+      QString error;
+      if (!source->addParameter(dialog.parameterCommand(),&error)) {
+        QMessageBox::warning(&dialog,tr("Parameter Limits"),error);
+        continue;
+      }
+    }
+    if (!alive || !edit) return;
+    const QString chosen=prefix+dialog.expression();
+    edit->selectAll();
+    edit->insert(chosen);
+    edit->setFocus(Qt::OtherFocusReason);
+    qDebug().noquote() << QStringLiteral("Formula editor applied: %1").arg(chosen);
+    return;
+  }
+  if (edit) edit->setFocus(Qt::OtherFocusReason);
+}
+
+void ParameterField::updateAssistance() {
+  const ParameterSource* source=parameterSourceOf(m_edit);
+  if (!source || !source->query) return;
+  try {
+    const QString text=expressionPart(m_edit->text());
+    const int offset=std::max(0,int(m_edit->text().indexOf(text)));
+    const int start=m_edit->hasSelectedText() ? m_edit->selectionStart() : m_edit->cursorPosition();
+    QJsonObject query{{QStringLiteral("query"),QStringLiteral("formula_help")},
+                      {QStringLiteral("expression"),text}, {QStringLiteral("kind"),formulaKindName(m_options.kind)},
+                      {QStringLiteral("cursor"),int(text.left(std::max(0,start-offset)).toUtf8().size())}};
+    if (m_edit->hasSelectedText()) query.insert(QStringLiteral("selection_end"),
+        int(text.left(std::max(0,start-offset)+int(m_edit->selectedText().size())).toUtf8().size()));
+    const QJsonObject result=source->query(query);
+    const QString signature=formulaSignatureHtml(result.value(QStringLiteral("signature")).toObject());
+    const QJsonObject part=result.value(QStringLiteral("selection")).toObject();
+    const QString shown=part.value(QStringLiteral("error")).toString(part.value(QStringLiteral("text")).toString());
+    m_edit->setProperty("formulaSignature",signature);
+    m_edit->setProperty("formulaPartValue",shown);
+    const QJsonObject error=result.value(QStringLiteral("error")).toObject();
+    m_edit->setProperty("formulaErrorStart",error.value(QStringLiteral("start")).toInt());
+    m_edit->setProperty("formulaErrorEnd",error.value(QStringLiteral("end")).toInt());
+    // A selected part's value, not the whole text's: a field selects all of
+    // it on focus, and the tip below would only repeat it over the next
+    // control (ui-wrap's Flip, mitcad#700).
+    const bool partSelected=m_edit->hasSelectedText() && m_edit->selectedText().trimmed()!=m_edit->text().trimmed();
+    if (m_edit->hasFocus() && !isOpen() && (!signature.isEmpty() || partSelected)) {
+      const QString tip=signature+(partSelected && !shown.isEmpty() ? QStringLiteral("<br>%1").arg(shown.toHtmlEscaped()) : QString());
+      if (!tip.isEmpty()) QToolTip::showText(m_edit->mapToGlobal(QPoint(0,m_edit->height())),tip,m_edit);
+    }
+    if (!signature.isEmpty()) qDebug().noquote() << QStringLiteral("Formula field signature: %1").arg(signature);
+  } catch (const std::exception&) {
+    m_edit->setProperty("formulaSignature",QString());
+    m_edit->setProperty("formulaPartValue",QString());
+    if (m_edit->hasFocus()) QToolTip::hideText();
+  }
+}
+
 bool ParameterField::eventFilter(QObject* watched, QEvent* event) {
   if (watched != m_edit) {
     return QObject::eventFilter(watched, event);
   }
   switch (event->type()) {
+  case QEvent::ToolTip: {
+    const auto* help=static_cast<QHelpEvent*>(event);
+    const ParameterSource* source=parameterSourceOf(m_edit);
+    if (!source || !source->query) break;
+    try {
+      const int cursor=m_edit->cursorPositionAt(help->pos());
+      const QJsonObject result=source->query({{QStringLiteral("query"),QStringLiteral("formula_help")},
+          {QStringLiteral("expression"),m_edit->text()}, {QStringLiteral("kind"),formulaKindName(m_options.kind)},
+          {QStringLiteral("cursor"),int(m_edit->text().left(cursor).toUtf8().size())}});
+      const QJsonObject part=result.value(QStringLiteral("selection")).toObject();
+      const QString shown=part.value(QStringLiteral("error")).toString(part.value(QStringLiteral("text")).toString());
+      if (!shown.isEmpty()) QToolTip::showText(help->globalPos(),shown,m_edit);
+    } catch (const std::exception&) {}
+    return true;
+  }
   case QEvent::ShortcutOverride: {
     // The list's keys are the list's while it is open: Enter does not
     // confirm the command, Esc does not cancel it (the window's shortcuts).

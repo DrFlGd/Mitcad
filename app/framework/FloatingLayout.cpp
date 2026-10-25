@@ -165,7 +165,9 @@ bool FloatingLayout::eventFilter(QObject* watched, QEvent* event) {
   case QEvent::Move:
     if (watched == m_viewer) {
       layoutCards();
-    } else if (watched == m_header) {
+    } else if (watched == m_header || qobject_cast<GlassCard*>(watched) != nullptr) {
+      // A native card can grow to its layout's minimum after a content or
+      // font change. Stack its neighbours against the actual new bounds.
       requestLayout();
     }
     break;
@@ -373,15 +375,28 @@ void FloatingLayout::layoutCards() {
       insetTop = std::max(insetTop, entry.card->slot().bottom() + 1 + kGap - view.top());
     }
   }
+  int cubeRight = 0; // how far the cube moves left of a tall card on the right
   for (Entry& entry : m_entries) {
     if (!visible(entry) || entry.anchor != Anchor::TopRight) {
       continue;
     }
-    // Under the cube, and its arrows; below the top bar in any case.
-    const int top = std::max(view.top() + insetTop + OcctViewer::kCubeArea, topLimit);
-    const int limit = std::min(static_cast<int>((view.height() - 2 * kMargin) * entry.sizing.maxHeightShare),
-                               cardsBottom - top);
-    const QSize size = sized(entry, entry.sizing.width > 0 ? entry.sizing.width : 300, limit);
+    // Under the cube, and its arrows; below the top bar in any case. A card
+    // taller than the room under the cube (mitcad#655: 3D Print's panel)
+    // grows up to the top first, the cube moving to its left, before it
+    // scrolls.
+    const int width = entry.sizing.width > 0 ? entry.sizing.width : 300;
+    const int share = static_cast<int>((view.height() - 2 * kMargin) * entry.sizing.maxHeightShare);
+    int top = std::max(view.top() + insetTop + OcctViewer::kCubeArea, topLimit);
+    int limit = std::min(share, cardsBottom - top);
+    QSize size = sized(entry, width, limit);
+    const int tallLimit = std::min(share, cardsBottom - topLimit);
+    const QSize tall = sized(entry, width, tallLimit);
+    if (top > topLimit && tall.height() > size.height()) {
+      top = topLimit;
+      limit = tallLimit;
+      size = tall;
+      cubeRight = std::max(cubeRight, kMargin + size.width() + kGap);
+    }
     entry.card->setSlot(QRect(view.right() + 1 - kMargin - size.width(), top, size.width(), size.height()));
     entry.maxContent = std::max(0, limit - entry.card->heightForContent(0));
   }
@@ -425,7 +440,7 @@ void FloatingLayout::layoutCards() {
       m_pill->raise();
     }
   }
-  m_viewer->setOverlayInsets(QMargins(0, insetTop, 0, hasBottom ? view.bottom() + 1 - bottomEdge : 0));
+  m_viewer->setOverlayInsets(QMargins(0, insetTop, cubeRight, hasBottom ? view.bottom() + 1 - bottomEdge : 0));
   std::vector<QRect> covered;
   for (const Entry& entry : m_entries) {
     if (visible(entry)) {

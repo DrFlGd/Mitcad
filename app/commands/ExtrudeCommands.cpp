@@ -16,6 +16,7 @@
 
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
+#include "ExtrudeDragProxy.hpp"
 #include "../framework/CutTargetsPanel.hpp"
 
 namespace mitcad::cmd {
@@ -176,7 +177,12 @@ QVector<InputDef> sideInputs(const QString& suffix, std::function<bool(const Com
             if ((one && state.checked(QStringLiteral("flip"))) || !suffix.isEmpty()) {
               direction.Reverse(); // side two goes against the normal
             }
-            return arrow(base->first, direction);
+            Manipulator handle = arrow(base->first, direction);
+            if (state.choice(QStringLiteral("direction")) == kTwoSides) {
+              // Each side stays on its own side of the start (mitcad#693).
+              handle.minimum = 0.0;
+            }
+            return handle;
           }),
   };
   inputs += objectInputs(suffix, when(kToObject));
@@ -247,7 +253,9 @@ CommandDef extrudeCommand(const CommandContext& context) {
                   {{QStringLiteral("profile_plane"), QStringLiteral("Profile Plane")},
                    {QStringLiteral("offset"), QStringLiteral("Offset")},
                    {QStringLiteral("object"), QStringLiteral("Object")}},
-                  QStringLiteral("profile_plane")),
+                  QStringLiteral("profile_plane"))
+          .withTooltip(QObject::tr(
+              "Start away from the sketch plane, for example a solid on one side that does not touch the sketch")),
       valueInput(QStringLiteral("start_offset"), QObject::tr("Offset"), ValueKind::Length,
                  QStringLiteral("0 mm"))
           .withTooltip(QObject::tr("Along the sketch normal from the start plane"))
@@ -468,6 +476,17 @@ CommandDef extrudeCommand(const CommandContext& context) {
       const QJsonObject side2 = sideOf(state, QStringLiteral("2"), result);
       if (!result.error.isEmpty()) {
         return result;
+      }
+      // Each side goes its own way from the start: a negative distance is
+      // refused, not drawn on the other side (mitcad#693).
+      for (const QString& suffix : {QString(), QStringLiteral("2")}) {
+        const QString key = QStringLiteral("distance") + suffix;
+        if (state.choice(QStringLiteral("extent") + suffix) == kDistance && state.value(key) < 0.0) {
+          const QString name = suffix.isEmpty() ? QObject::tr("Distance") : QObject::tr("Distance %1").arg(suffix);
+          return Built::failure(
+              QObject::tr("%1 is on the other side: for a solid on one side of the sketch use Start: Offset").arg(name),
+              key);
+        }
       }
       extent = {{QStringLiteral("type"), kTwoSides},
                 {QStringLiteral("side1"), side1},
@@ -776,6 +795,9 @@ CommandDef extrudeCommand(const CommandContext& context) {
         .arg(state.choice(QStringLiteral("type")) == QStringLiteral("thin") ? QStringLiteral("thin ") : QString(),
              label(kOperations, state.choice(QStringLiteral("operation"))), extent, wrapped, ofFace);
   };
+  // A dragged distance or start offset shows the tool changed at once
+  // while its exact preview computes (mitcad#636, ExtrudeDragProxy.hpp).
+  def.dragProxy = extrudeDragProxy;
   return def;
 }
 

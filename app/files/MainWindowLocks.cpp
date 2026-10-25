@@ -212,7 +212,7 @@ std::optional<bool> MainWindow::readOnlySave(bool closing) {
   box.setInformativeText(tr("Save as Copy keeps them in a file of their own; Save as New Version records them as a "
                             "version of %1 all the same, and Sync then asks which version to keep.")
                              .arg(name));
-  QPushButton* copy = box.addButton(tr("Save as &Copy..."), QMessageBox::AcceptRole);
+  QPushButton* copy = box.addButton(tr("Save as &Copy…"), QMessageBox::AcceptRole);
   QPushButton* version = m_filePath.isEmpty() ? nullptr : box.addButton(tr("Save as New &Version"), QMessageBox::ApplyRole);
   QPushButton* discard = closing ? box.addButton(tr("&Don't Save"), QMessageBox::DestructiveRole) : nullptr;
   box.setDefaultButton(copy);

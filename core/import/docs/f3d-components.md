@@ -1056,9 +1056,14 @@ their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
   sunk) are parametric and verified against the history.
   Bodies derived from other designs (`DerivedContext`) come in as Mitcad's
   derives where the documents they come from are found (*Derived designs*
-  below), else the history states stand in. Copies and cuts of bodies
+  below), else the history states stand in. Bodies derived from another
+  design by the derive's base class (`ExternalDerived`, mitcad#641: its
+  record is not `DerivedContext`'s) are static in the source too, as the
+  design they follow is not in the file: the history state of their base
+  feature stands in, with that reason. Copies and cuts of bodies
   (`CopyPasteBodies`) come in as Mitcad's except a cut whose body the file
-  lost. Bodies moved into a new component
+  lost. Bodies aligned by geometry (`AlignFeature`, mitcad#641) come in as
+  moves by the motion they made ([*Grid-unit designs*](f3d-history.md#grid-unit-designs-pastes-aligns-counts-and-start-faces-mitcad641)). Bodies moved into a new component
   (`ComponentFromBodies`) come in as Mitcad's where the history settles
   them (*Components*), else so.
 - Lofts of another class are `LoftFeature`s, translated (*Sweeps, pipes

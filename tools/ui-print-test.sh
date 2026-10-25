@@ -52,7 +52,9 @@ mv "$ARGS.part" "$ARGS"
 EOF
 chmod +x "$WORK/fake-slicer.sh"
 mkdir -p "$XDG_CONFIG_HOME/Mitcad"
-printf '[print]\nslicerName=Fake slicer\nslicerProgram=%s\n' "$WORK/fake-slicer.sh" > "$XDG_CONFIG_HOME/Mitcad/Mitcad.conf"
+# STL to start with (3MF is the first time's default, mitcad#655).
+printf '[print]\nslicerName=Fake slicer\nslicerProgram=%s\nformat=stl\n' "$WORK/fake-slicer.sh" \
+  > "$XDG_CONFIG_HOME/Mitcad/Mitcad.conf"
 
 # A 20 x 10 x 5 plate, a 10 mm cube in red and a pin of 10 mm diameter, 20
 # high: 1000, 1000 and 1570.796 mm3.
@@ -118,8 +120,8 @@ echo "ok   the files are there"
 echo "--- 3MF: one object with three parts"
 ui_step "3D print, 3MF (Format, Enter)"  send 1
 ui_expect_new "3D Print panel: 3 visible: Plate, Cube, Pin; format stl" "the panel"
-ui_expect_new "3D Print: Format = 3MF, one object with parts" "3MF chosen"
-ui_expect_new "3D Print: Format = 3MF, one object with parts" "3MF chosen"
+ui_expect_new "3D Print: Format = 3MF" "3MF chosen"
+ui_expect_new "3D Print: Format = 3MF" "3MF chosen"
 ui_expect_new "3D Print: 3 bodies as 3mf (high) to $FOLDER: Plate " "a 3MF file"
 slicer_ran
 [ "$(cat "$ARGS")" = "$FOLDER/parts.3mf" ] || ui_fail "the slicer's arguments: $(cat "$ARGS")"

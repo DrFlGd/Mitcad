@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: MIT
+# Two occurrences of one component: O1 at the origin, O2 translated 100 mm
+# along X. Sketch2 is edited in O1; plane_geometry lists own bodies once.
+expect-ever 'View area'
+wait-idle
+window-resize 1400 990
+dblclick-logged 'Timeline Sketch2'
+expect-log 'Editing sketch F3 \(Sketch2\)'
+command view.fit
+capture-undo-depth baseline
+
+# The edge of the occurrence being edited is accepted immediately.
+sketch-click 38 0
+expect-selection 1 0
+mark
+key d
+expect-log 'Sketch Dimension picked the body edge E\{'
+sketch-click 30 5
+expect-log 'Sketch value editor at'
+key Return
+expect-log 'Projected the body edge E\{'
+expect-log 'Added driven dimension \S+ length'
+expect-undo-depth ${baseline} 1
+key Escape
+mark
+key ctrl+z
+expect-log 'Sketch Sketch2: 0 linked projection\(s\)'
+expect-undo-depth ${baseline} 0
+
+# The identical topological edge in O2 cannot silently become O1's edge.
+# D clears it and starts picking; the next O1 edge click only picks, and
+# a second click places. No projection happens until that value is accepted.
+sketch-click 138 0
+expect-selection 1 0
+mark
+key d
+expect-selection 0 0
+expect-no-log 'Sketch Dimension picked the body edge|Projected the body'
+sketch-click 38 0
+expect-log 'Sketch Dimension picked the body edge E\{'
+expect-no-log 'Sketch value editor at|Projected the body'
+sketch-click 30 5
+expect-log 'Sketch value editor at'
+key Return
+expect-log 'Projected the body edge E\{'
+expect-log 'Added driven dimension \S+ length'
+expect-undo-depth ${baseline} 1
+key Escape
+mark
+key ctrl+z
+expect-log 'Sketch Sketch2: 0 linked projection\(s\)'
+expect-undo-depth ${baseline} 0
+expect-never 'Dimension not added:|OCCT view event failed|TestDriver: FAIL'

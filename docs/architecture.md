@@ -5,6 +5,11 @@ but no geometry; a thin C++ facade over Open CASCADE Technology (OCCT)
 that does the geometry; and a Qt application that talks to the model with
 JSON commands.
 
+Sketch drawing tools attach their live value editors to dimension
+previews built from temporary geometry. The overlay uses the placed
+dimension renderer for their extension lines, arrows and sectors; typed
+values continue to reach the model through the existing sketch commands.
+
 ## Layers
 
 | Part | Language | Responsibility |
@@ -148,7 +153,8 @@ design in a project.
   with shapes that threads may share (`Send + Sync`). Within the same
   `threads` (`Progress::helper`) the import reads the file's bodies
   on several threads, heals the large bodies of each history's first
-  state while the rest is read (mitcad#245), and builds the history's
+  state, and of the first states the replay asks for, while the rest is
+  read (mitcad#245, mitcad#676), and builds the history's
   bodies ahead of the replay (mitcad#103, *Work beside the replay*); the
   timeline items
   themselves are replayed one after another.
@@ -190,19 +196,80 @@ design in a project.
   kind (model or user), evaluated in dependency order; cycles and unit
   mismatches are errors. Internal units are mm and radians. Input accepts
   a decimal comma (`core/model/src/expr/mod.rs`); stored expressions
-  always use points.
+  always use points. The language is a superset of `.f3d` expressions
+  with the functions and syntax of spreadsheet formulas (mitcad#663):
+  case-insensitive function names, `=` comparing inside parentheses,
+  `let`, `value(x; "mm")`; `let` names are `NodeKind::Local`, never
+  parameter references.
   Printed fit suggestions (`print_fits.rs`) are a table of ordinary user
   parameters, created only by explicit feature-field references during
   definition-state resolution. They share the feature's transaction and
   undo step. The UI reads their names from the model; expression hints
   and generator reports evaluate prospective defaults on parameter copies,
   while previews use the usual private definition-state copy.
+  Limits (mitcad#665, `expr/limits.rs`): a parameter's optional `min`,
+  `max` (expressions that join the dependency graph) and `step` clamp and
+  snap its value, or refuse it when `strict`; the table keeps the result
+  before them and which limit took effect.
+  Text parameters (mitcad#664): the unit `Unit::TEXT` (`Text`) gives a
+  parameter a text instead of a number. An expression's value is
+  `expr::Value` (a `Quantity` or a text); the evaluator's numeric path
+  refuses a text and the text path a number, so the two never mix.
+  `Lookup::lookup_text` gives text parameters to expressions. A sketch
+  text follows one through the sketch's `text_values` (slot
+  `texts[t5].text`, a `ParamId` like any slot, so renames, ownership and
+  dependencies are the usual ones); the recompute records a text
+  parameter's read as a hash of its text (`Parameters::read_bits`).
 - **Construction geometry:** planes, axes and points are features that
   make a datum, not bodies. Features refer to geometry through `GeomRef`
   (origin datum, construction feature, or a body face/edge/vertex) and to
   paths through `PathRef`.
 - **Body attributes** (visibility, material, appearance; steel by
   default) live in the definition state.
+- **Materials** (mitcad#640, `core/model/src/material.rs`,
+  `document/materials.rs`): objects with a density, an appearance and an
+  optional filament (`Print Filament` values), `based_on`, a version and
+  an origin. The built-in ones keep the old ids (`steel`, `pla`, ...); a
+  design keeps materials of its own in the definition state and the
+  design file (one with a built-in's id takes its place), and default
+  materials of components. A body is made of its own material, else the
+  nearest component's default up the occurrence path, else the root's,
+  else steel. Setting a body's material sets its appearance too, unless
+  the body's was set by hand.
+- **Print settings key map** (mitcad#640, `core/model/src/print_keys/`):
+  one Rust table of Mitcad's printer, process and filament keys, each
+  with its type, unit, choices, plain name and, per slicer dialect (the
+  Bambu Studio family, PrusaSlicer, Cura), the slicer's key and the
+  conversion of values; built from the slicers' option definitions by
+  meaning (the module documentation names them). Export and import of
+  print settings convert through it. Each key also has its place in the
+  settings form (mitcad#655: a category, a group, advanced or common), in
+  the table's display order, so the application keeps no list of its own.
+- **Print profiles** (mitcad#640, `core/model/src/print_profile.rs`,
+  `document/print_settings.rs`): the design keeps printer and process
+  profiles in its definition state and file; components, occurrences and
+  bodies choose one and override values in the `Print Printer` and
+  `Print Process` property sets, typed by the key map. What a body prints
+  with is resolved root, components down the occurrence path, occurrence,
+  body (nearest wins; a level's own values before its profile's), with
+  the material's filament (`print_settings`, `build_volume`).
+- **Print libraries** (`core/model/src/print_library.rs`,
+  `document/print_library.rs`): materials and profiles are JSON items of
+  the base library (the parts library's manifest lists them; read through
+  the library resolver, `LinkResolver::print_library`), the user's folder
+  and the project's folder; the design keeps complete copies with their
+  origin and takes a newer version only on request.
+  `document/library_items.rs` (mitcad#655) lists the choosable items where
+  they live (`library_items`: built-in, base, user, project, the design's
+  own), edits an item in its library file with the design's copy taking
+  the same change in one undo step, and copies a library's item in within
+  the undo step that chooses it.
+- **Slicers' files** (`core/model/src/print_files/`, `core/3mf`): the
+  import reads a slicer's settings (Bambu Studio family JSON, PrusaSlicer
+  INI, Cura stacks; presets and bundles) into profiles and materials, never
+  geometry; the 3MF export writes each body's effective settings in a
+  slicer's dialect (`core/3mf` carries more metadata, per-object
+  metadata and files; `read_package` reads them without the geometry).
 - **Appearances** (mitcad#46, `core/model/src/appearance.rs`): physically
   based parameter sets (base colour, metalness, roughness, specular,
   transmission, IOR, coat, emission, opacity, and a texture for the base
@@ -251,6 +318,28 @@ design in a project.
   bounding volume hierarchy of their own for the wall rays, no kernel
   method of their own; the results are kept in memory by the bodies'
   shape versions and the settings.
+- **Measurement objects** (mitcad#649, `core/model/src/document/measurements.rs`,
+  `api/measurements.rs`): measurements kept in the definition state with
+  a name, a colour, a light bulb, a kind (distance, angle, offset, axis or
+  centre distance, radius, diameter) and one or two picks as the `measure`
+  query's selections (topological names with their occurrences); their
+  commands are undo steps that recompute nothing. Each is measured at the
+  marker whenever the `measurements` query asks (the kernel's measures and
+  `api::measure_axes`), with the geometry of its dimension worked out in
+  Rust (the ends of a length, a circle, an angle's corner and rays); a
+  pick that is gone gives an error instead, and the object stays. The app
+  draws the shown ones as dimensions over the view with QPainter
+  (`app/view/MeasurementDrawing`, `MeasurementOverlay`), in snapshots
+  rendered offscreen at a larger size (`OcctViewer::snapshot`, OCCT's
+  `V3d_View::ToPixMap`) and over Render Image's image.
+- **Parameters as CSV** (mitcad#666, `core/model/src/parameters_csv.rs`,
+  `document/parameters_csv.rs`, `api/parameters_csv.rs`): Mitcad's
+  parameter table and the `.f3d` application's parameter table CSV are
+  read and written in Rust; the queries and the command carry the CSV
+  text, and the app only reads and writes the file (Change Parameters'
+  Import and Export). An import works on a copy of the definition state
+  row by row in dependency order, as the `.f3d` import does, and is one
+  undo step; its preview runs the same rows on a copy that is dropped.
 - **Components** (`core/model/src/assembly.rs`): structure is in the
   definition state, not on the timeline, though features can create
   components. Occurrences belong to a component, so sub-assemblies are
@@ -441,7 +530,24 @@ design in a project.
   component's body read in its component and moved by the seat's
   occurrence link, as a sweep's `body_links`) into the end measured from,
   the axis and the diameter, which the part's frame and its plain bore
-  follow. The app's panels share its inputs (`app/commands/SeatInputs.hpp`).
+  follow. The app's panels place a part on a shaft through Place On
+  (`app/commands/PlaceInputs.hpp`, mitcad#656): `at.axis` resolved as a
+  seat, `seat` with its link for another component's shaft.
+- **Placement by picked geometry** (mitcad#656,
+  `core/model/src/features/place_at.rs`): pulleys, gears, bearings, coils,
+  primitives and holes take `at`, one placement of three forms (on an
+  axis: a seat, or an axis of its own; at a point with its sketch's or a
+  plane's normal; on a face at offsets from two edges), kept as references
+  and resolved into a frame by one resolver at each recompute, so the part
+  follows what it was placed by. A gear placed so and meshed is only
+  turned by its mesh. `features/drives.rs` works out Gear Pair (modules
+  and tooth counts that fit two axes: exact, by profile shifts, by a helix
+  angle) and Belt Drive (tooth counts, catalogue belts and their tension
+  travel); `api/drives.rs` serves them as queries and makes both parts in
+  one undo step. The app's shared input is `app/commands/PlaceInputs.hpp`;
+  Gear Pair and Belt Drive are `app/commands/DriveCommands.cpp`. The
+  panels show distances as dimensions in the view, a value box on each
+  handle (`Manipulator::valueBox`).
 - **Extrude's automatic operation** (mitcad#289, mitcad#575,
   `core/model/src/document/auto_operation.rs`): a preview asked for it
   evaluates the extrusion as a new body, tries its tool against the
@@ -454,7 +560,15 @@ design in a project.
   ordinary preview, including any Cut scope, without changing the document
   or its undo history. The app decides when to take the answer into the
   panel ([commands.md](../core/model/src/api/commands.md),
-  "Extrude's automatic operation").
+  "Extrude's automatic operation"). Contact preparation (mitcad#638) retains
+  geometry-only face bounds, edge counts and eligible planes on the immutable
+  `Shape`, keyed also by contact tolerance. A changed BRep, orientation or location has a
+  fresh index; display mesh quality does not affect it. Each query still
+  evaluates its current tool and the model's current visible participants;
+  no distance, operation or participant answer is retained. For planar
+  faces with many edges, up to four tool vertices can prove contact using
+  plane distance and OCCT's trimmed-face classification. A point in a hole,
+  on a trim boundary or away from that plane uses the existing checks.
 - **Extrude target conversion** (mitcad#570): only Cut activates its
   `cut_scope`; other solid operations may retain that scope as dormant
   editor data, with no geometry or dependency effect. A new boss stores
@@ -1085,6 +1199,13 @@ The solver works on its own ids; the sketch model maps entity ids to them.
 
 ## Application
 
+Formula assistance lives in the Rust expression layer: its existing tokenizer
+and AST provide partial-call signatures, source ranges, lexical `LET` context
+and sub-expression evaluation through the read-only `formula_help` query.
+The Qt `FormulaEditor` shares this query with value fields and returns ordinary
+formula text and normal parameter-limit edits; it stores no additional design
+state. Both the fx browser and Change Parameters open the same editor.
+
 The app uses the model only through JSON commands and queries
 ([commands.md](../core/model/src/api/commands.md)); geometry comes back as
 `SharedPtr<Shape>` handles, so new commands need no bridge changes.
@@ -1102,6 +1223,19 @@ not recompute.
   hides stays hidden. A body the command consumes as a tool stays drawn,
   see-through and pickable, where other occurrences show it while its
   input is active (`InputDef::toolOverlays`, mitcad#561).
+- **Viewport picks** (`app/PickContext.*`): nearby edges and vertices
+  precede the face or edge they bound. Selection overlays resolve to the
+  original body's local topology and exact occurrence before this ranking,
+  so selected faces leave their edges available while remaining pickable
+  for removal. While a command's preview shows the body changed, an
+  overlay hit no farther than the preview's first hit ranks before the
+  preview's items (`setPickCovers`), so a face of the same name on the
+  preview does not take the click meant for the selected face or its
+  edges (mitcad#672). Opposing edges of a narrow face win only where one is
+  clearly nearer the cursor; hover and clicks use the same ordering. The
+  pick places UI tests click (`OcctViewer::pickPoints`) are the camera's
+  projection rounded to the nearest logical pixel, probed at exactly that
+  pixel.
 - **Sketch mode** (`app/sketch/`): the app keeps the sketch in the form of
   the `sketch` query and does snapping, inference and hit testing itself;
   every change is a `sketch.*` command, one undo step per user action.
@@ -1118,7 +1252,23 @@ not recompute.
   was picked at, else the component's first. The view's sketch plane, Look
   At, the grid, Hide Above Sketch and the sketch's curves and profiles all
   use that one placement; outside sketch mode a component's sketch is
-  shown at its component's first occurrence.
+  shown at its component's first occurrence. During a geometry drag, the
+  edited sketch's filled profiles are removed from display and picking;
+  curves and points stay live. Profile queries and face rebuilding wait
+  until release or interruption, including a drag the solver refused.
+  Dimension-text drags keep their profiles.
+- **Navigation settings** (`app/view/Navigation.hpp`): stable preset ids
+  share a canonical input table with Custom bindings. Reserved selection
+  drags and the orientation cube remain separate. The viewer applies
+  orbit acceleration through OCCT, scales pan deltas with fractional
+  carry, and scales wheel/drag zoom; trackpad scrolling has its own
+  multiplier. Settings and the visual guide use the same binding table.
+- **Timeline inspection** (`app/browser/FeaturePresentation.hpp`): hover
+  previews are independent of selection and exclude failed, suppressed
+  and rolled-back features. A nonpickable dashed boundary on the Topmost
+  layer locates enclosed geometry alongside the normal shaded highlight.
+  Tooltips and feature cards share command labels, loaded dimension text
+  and component names; they do not expose internal identifiers.
 - **Browser, timeline, view** (`app/browser/`, `app/view/`): the model is
   read once per change; the view keeps AIS objects that did not change.
   Visibility is the model's: an unset sketch light bulb follows "hidden
@@ -1157,6 +1307,8 @@ not recompute.
   bridge). The wait cursor is a guard of the wait
   (`app/framework/WaitCursor`, mitcad#268): restored once, by the dialog
   or at the end, logged; one left on is cleared when the window is idle.
+  Hover, clicks and candidate-point enumeration all suspend while a job
+  owns the document; candidate probes also call model-backed command filters.
   Queries run on the UI thread between jobs; reads during a job
   are refused (`ModelBusy`), and deferred work waits for idle
   (`MainWindow::whenIdle`). `MITCAD_COMPUTE_INLINE=1` runs jobs on the UI
@@ -1168,10 +1320,20 @@ not recompute.
   and invalidate/cancel old work. A completed numeric preview may display
   intermediate geometry, but only the latest input's result may update
   operation/target controls or enable OK. Pending values drain before the
-  next job, without another debounce delay; release requests an immediate
+  next job, without another debounce delay; a value of the same field
+  taken at once (the model idle before the drain) empties them, so none
+  puts an older value back (mitcad#636); release requests an immediate
   preview and OK waits for the latest exact result. `MITCAD_LOG_TIMING=1`
   also logs numeric queue replacement/drain counts and solid installation
-  during a drag. The jobs that change what the view draws
+  during a drag. `ManipulatorOverlay` keeps a separate continuous pointer
+  value for local drawing (mitcad#637). Its snapped value alone emits a
+  command input change; the marked snap position and field remain the
+  committed value. An unchanged snap interval updates only the overlay,
+  including while the worker is busy. A form refresh preserves pointer
+  feedback for the same handle geometry; a changed placement/kind or a
+  removed handle invalidates its grab. Opt-in feedback counters distinguish
+  delivered moves, semantic changes, visual updates and overlay paints.
+  The jobs that change what the view draws
   (opening, model commands but a sketch's own, previews) end with the
   view's meshes of the shown bodies, the previewed ones and the tool
   (`app/framework/DisplayMeshes`, mitcad#398): made on the worker as the
@@ -1183,7 +1345,47 @@ not recompute.
   OCCT meshes the faces of all of them in parallel on every core (one body
   at a time, a design of many small bodies used a core or two) and a face
   that bodies share is meshed once; should that throw, the bodies are
-  meshed one by one and one OCCT fails on is left to the view.
+  meshed one by one and one OCCT fails on is left to the view. Two tiers
+  (mitcad#635): a preview's bodies are drawn through stand-ins, copies
+  sharing no face, edge or vertex with them (`geometry::independent_copy`),
+  meshed in the interactive tier (`previewMeshOptions`: the view's
+  deviation, planes through OCCT's Delabella base triangulation, about ten
+  times faster on planes with many holes for the same nodes); the bodies
+  themselves keep no triangulation until a job meshes them in the final
+  tier: the command that commits the preview, or a refinement job (no
+  model change, no undo step) once a drag ends and the inputs rest. So a
+  committed body never keeps a preview's meshes, and no job writes into a
+  shape the view draws. Both tiers first take the triangulations of the
+  faces a command or preview left untouched from the bodies as shown
+  (`io::reuse_triangulations`: the same surface, curves, parameter curves,
+  ranges and end points; nothing cached between jobs), so only the changed
+  faces are meshed. `MITCAD_MESH_TRACE=1` logs each meshing's faces, phases
+  and slowest faces. While a handle is dragged, Extrude also shows a
+  provisional tool at once (mitcad#636; `framework/DragProxy`,
+  `framework/CommandSessionProxy.cpp`, `CommandDef::dragProxy`,
+  `commands/ExtrudeDragProxy`): when an exact preview is installed, its
+  tool's interactive-tier triangulation is copied on the UI thread into an
+  owned, immutable `ProxyMesh` (the job that made it is over and nothing
+  writes into a stand-in), with the inputs it was computed from and the
+  tool's placements in the design (the report's `tool_instances`, which
+  also place the exact tool now). Each dragged value then changes a copy
+  of that mesh on the UI thread: Extrude stretches it along the dragged
+  arrow about its start (one side), its middle (symmetric) or the profile
+  plane (two sides, one side only), or moves it for the start offset; only
+  for distances without a taper, from the profile plane or an offset, not
+  wrapped, and only while every other input is as the exact preview had
+  it. The arrow's direction is taken into the tool's coordinates through
+  each placement and must give the length the values say, or nothing is
+  shown. `OcctViewer::setProvisional` draws it see-through amber with
+  dashed edges, unpickable, hiding the exact tool meanwhile; no model
+  query, no job and no worker-owned shape is involved, and the bounded
+  scheduler of mitcad#634 computes the exact previews as before. An exact
+  preview of the value dragged to replaces the proxy; a structural change,
+  a typed value, a failed, cancelled or cleared preview, OK, Cancel and
+  the session's end remove it. The automatic operation and the targets
+  still follow the exact previews only. `MITCAD_LOG_TIMING=1` logs each
+  update; every drag logs its inputs, proxy updates, exact previews and
+  frames drawn (`OcctViewer::framesDrawn`) apart.
 - **macOS computation scheduling** (`app/platform/macos/MacWork.mm`,
   through `MacChrome.hpp`, mitcad#556): model and section workers set
   `QOS_CLASS_USER_INITIATED` on entering their thread loops. Before either
@@ -1243,9 +1445,15 @@ not recompute.
   definition, saved state and exact undo/redo history, then releases it
   before the session finishes. Legacy workflows keep their existing
   synchronous wait presentation through an injected handler.
+- **Assistant setup** (`app/mcp/ConnectAssistantDialog`): one discoverable
+  dialog configures local clients without owning a model or changing undo.
+  A Rust TOML planner preserves unrelated config and comments; supported CLI
+  registration runs on a private copy before an atomic, backed-up update.
+  MCP Bundles contain a standalone native launcher for the installed bridge.
+  Initialized client labels are UI metadata, never authentication identities.
 - **MCP** (`core/mcp`, `core/ffi/src/mcp.rs`, `app/mcp`): the live
   application profile exposes `document_list`, `model_query`,
-  `model_command`, `document_save`, `document_open` and the application's
+  `model_command`, `model_export`, `document_save`, `document_open` and the application's
   own `ui_state`, `ui_log`, `ui_screenshot`, `ui_select`, `ui_command` and
   `ui_camera` against the
   window's actual `DocumentSession` (mitcad#265, `app/MainWindowMcp.cpp`,
@@ -1284,7 +1492,14 @@ not recompute.
   feature it added or edited fails; the model's `failed_features` (each
   failed feature, `edited`, `new`; `core/model/src/document/command_outcome.rs`)
   go to the top of the result, and `mitcad_mcp::command_outcome` decides
-  for both profiles (mitcad#401).
+  for both profiles (mitcad#401). A `model_command` takes an array of
+  commands (one undo step; a refused entry undoes the earlier ones) and
+  answers with what it changed, compared in Rust
+  (`core/mcp/src/changes.rs`: snapshots before and after, the shape
+  versions of the `bodies` query, `recompute_times`); the live
+  `model_export` writes into the folders for agents with the headless
+  server's command and checks (`Document::mcp_export_plan`), and
+  `ui_screenshot` returns an MCP image block (mitcad#689).
 - **Logging** (`app/mcp/LogRing`, `app/framework/DebugLog`, mitcad#269):
   one message handler for the whole run, installed by `main()` after the
   UI test driver's and passing every message on to it: a ring of the
@@ -1591,7 +1806,8 @@ Floating is a full-window 3D view with the panels over it:
 - `TitleBar`: one toolbar-high row under the native title bar (the content
   extends under it; empty parts move the window): Undo and Redo, the
   ribbon's tabs as a segmented control, the document name with the project
-  indicator beside it, the command search and, in a sketch, Finish Sketch.
+  indicator beside it and the command search. Finish Sketch stays in the
+  ribbon's Finish Sketch group and the Sketch Palette.
   Under it the ribbon in
   `Presentation::Mac` (capsule groups whose name opens a menu of all their
   commands), and the update and remote notices. That is macOS's header
@@ -1606,7 +1822,10 @@ Floating is a full-window 3D view with the panels over it:
 - `FloatingLayout`, the central widget, owns all card geometry: cards are
   anchored to the view's corners (Browser upper left, Command upper right
   under the orientation cube, Timeline along the bottom), sized by their
-  content up to a share of the view, laid out in one queued pass. It gives
+  content up to a share of the view, laid out in one queued pass. A
+  Command card taller than the room under the cube grows up to the top
+  first, the cube moving to its left (the right inset), before it scrolls
+  (mitcad#655). It gives
   the view the free margins (`OcctViewer::setOverlayInsets`) and covered
   rectangles (`setCoveredRects`): the cube and its buttons stay clear of
   cards, picks and logged click positions avoid them, and Fit, Home and the
@@ -1647,6 +1866,19 @@ selection colours. Layout dimensions are logical pixels, so the controls
 and their icons follow the display's backing scale. Parameter editing and
 command dispatch stay in the shared widgets; the appearance does not
 change which frontend is selected.
+
+The shared `MacDialogs.hpp` extends those conventions to library/part,
+browser/project/settings and render/build dialogs (mitcad#645): native search
+fields and SF Symbols, source lists, unframed sections and readable tables.
+Unchecked table cells have an explicit palette-derived checkbox outline;
+checked/mixed cells retain native painting, and the model/delegate keeps
+mouse and Space editing. Library tiles use rounded image selection and a
+separate caption highlight. Role-based `QDialogButtonBox` layouts follow the
+platform's button order; explicit primary defaults prevent auxiliary actions
+from taking Return. Escape follows each dialog's close/cancel path, including
+stopping an active or queued final render. Icon-only controls retain their
+accessible names and tooltips. Shared UI labels use the single ellipsis
+character; menu/log-name normalization accepts both forms.
 
 **The platform layer.** `app/platform/MacChrome.hpp` declares the
 AppKit-only functions in `mitcad::mac`: SF Symbols as icons in the palette's
@@ -2252,7 +2484,7 @@ come from the model's `library_usage` query. Its groups are a tree
 (mitcad#527): the libraries' answers give each component its groups'
 names from the top (`groups`, from the categories' `parent` and path
 names), and the app merges groups of the same names across libraries
-(`PartGroupTree`). A part with mount frames is placed by Place Part
+(`PartGroupTree`). A part with mount frames is placed by Place Component
 (`app/commands/MountCommands.cpp`), a panel of the framework whose
 preview is the model's `mount_preview`.
 

@@ -3,7 +3,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <limits>
+#include <utility>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QMouseEvent>
@@ -13,6 +16,7 @@
 #include <QtLogging>
 
 #include "../OcctViewer.hpp"
+#include "Diagnostics.hpp"
 
 namespace mitcad {
 namespace {
@@ -60,26 +64,175 @@ ManipulatorOverlay::ManipulatorOverlay(OcctViewer& viewer, const QString& comman
   m_viewerFilter.install(&viewer);
   connect(&viewer, &OcctViewer::viewChanged, this, [this] {
     update();
+    publishBoxes();
     logPlaces();
   });
 }
 
 ManipulatorOverlay::~ManipulatorOverlay() = default;
 
-void ManipulatorOverlay::setHandles(std::vector<Handle> handles) {
-  if (m_drag >= 0) {
-    // The dragged handle stays the one being dragged.
-    const QString key = m_handles[static_cast<std::size_t>(m_drag)].key;
-    m_drag = -1;
-    for (std::size_t i = 0; i < handles.size(); ++i) {
-      if (handles[i].key == key) {
-        m_drag = static_cast<int>(i);
+void ManipulatorOverlay::layoutBoxes() {
+  // Each value box where its handle puts it, then pushed off the boxes
+  // placed before it and out of the panels floating over the view
+  // (mitcad#656). A box of a value that is 0 shows only while its handle
+  // or the box is under the mouse (Manipulator::boxAtZero).
+  m_boxes.assign(m_handles.size(), QRectF());
+  const std::vector<QRect> covered = m_viewer.coveredRects();
+  const QRectF area = QRectF(rect()).adjusted(2, 2, -2, -2);
+  std::vector<QRectF> placed;
+  for (std::size_t i = 0; i < m_handles.size(); ++i) {
+    const Handle& handle = m_handles[i];
+    if (!handle.manipulator.valueBox) {
+      continue;
+    }
+    const int index = static_cast<int>(i);
+    if (!handle.manipulator.boxAtZero && std::abs(handle.value) < 1e-12 && index != m_hover &&
+        index != m_drag && index != m_boxHover) {
+      continue;
+    }
+    Handle shown = handle;
+    if (index == m_drag && m_visualValue) {
+      shown.value = *m_visualValue;
+    }
+    QRectF box;
+    try {
+      const Drawn drawn = draw(shown);
+      if (!drawn.valid) {
+        continue;
+      }
+      box = drawn.box;
+    } catch (const std::exception&) {
+      continue; // degenerate: not drawn
+    }
+    if (box.isEmpty()) {
+      continue;
+    }
+    for (int round = 0; round < 12; ++round) {
+      bool moved = false;
+      for (const QRectF& other : placed) {
+        const QRectF overlap = box.intersected(other.adjusted(-3, -3, 3, 3));
+        if (overlap.isEmpty()) {
+          continue;
+        }
+        // Apart along the smaller overlap, away from the other's middle.
+        if (overlap.height() <= overlap.width()) {
+          box.translate(0, box.center().y() >= other.center().y() ? overlap.height() : -overlap.height());
+        } else {
+          box.translate(box.center().x() >= other.center().x() ? overlap.width() : -overlap.width(), 0);
+        }
+        moved = true;
+      }
+      for (const QRect& card : covered) {
+        const QRectF panel = QRectF(card).adjusted(-4, -4, 4, 4);
+        if (!panel.intersects(box)) {
+          continue;
+        }
+        // Out by the shortest way that stays in the view.
+        const double left = box.right() - panel.left();
+        const double right = panel.right() - box.left();
+        const double up = box.bottom() - panel.top();
+        const double down = panel.bottom() - box.top();
+        std::vector<std::pair<double, QPointF>> ways{{left, QPointF(-left, 0)}, {right, QPointF(right, 0)},
+                                                     {up, QPointF(0, -up)}, {down, QPointF(0, down)}};
+        std::sort(ways.begin(), ways.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& way : ways) {
+          if (area.contains(box.translated(way.second))) {
+            box.translate(way.second);
+            break;
+          }
+        }
+        moved = true;
+      }
+      if (!moved) {
+        break;
       }
     }
+    placed.push_back(box);
+    m_boxes[i] = box;
+  }
+}
+
+void ManipulatorOverlay::publishBoxes() {
+  // Where a click edits a value: the view offers no picks there.
+  layoutBoxes();
+  std::vector<QRect> boxes;
+  for (const QRectF& box : m_boxes) {
+    if (!box.isEmpty()) {
+      boxes.push_back(box.toAlignedRect());
+    }
+  }
+  m_viewer.setHandleBoxes(boxes);
+}
+
+QStringList ManipulatorOverlay::boxKeys() const {
+  QStringList keys;
+  for (std::size_t i = 0; i < m_handles.size() && i < m_boxes.size(); ++i) {
+    if (!m_boxes[i].isEmpty() || m_handles[i].manipulator.valueBox) {
+      keys << m_handles[i].key;
+    }
+  }
+  return keys;
+}
+
+std::optional<QPoint> ManipulatorOverlay::boxCentre(const QString& key) const {
+  for (std::size_t i = 0; i < m_handles.size() && i < m_boxes.size(); ++i) {
+    if (m_handles[i].key != key) {
+      continue;
+    }
+    if (!m_boxes[i].isEmpty()) {
+      return m_boxes[i].center().toPoint();
+    }
+    // A box hidden at 0: where its handle is.
+    try {
+      const Drawn drawn = draw(m_handles[i]);
+      if (drawn.valid) {
+        return drawn.handle.toPoint();
+      }
+    } catch (const std::exception&) {
+    }
+  }
+  return std::nullopt;
+}
+
+void ManipulatorOverlay::setLines(std::vector<std::vector<gp_Pnt>> lines) {
+  if (lines.size() != m_lines.size()) {
+    // For UI tests: the command's own lines (a belt's pitch line) came or went.
+    qDebug().noquote() << QStringLiteral("Lines %1: %2").arg(m_command).arg(static_cast<qlonglong>(lines.size()));
+  }
+  m_lines = std::move(lines);
+  update();
+}
+
+void ManipulatorOverlay::setHandles(std::vector<Handle> handles) {
+  const auto retained = [&](int index) {
+    if (index < 0) { return -1; }
+    const Handle& previous = m_handles[static_cast<std::size_t>(index)];
+    for (std::size_t i = 0; i < handles.size(); ++i) {
+      const Handle& next = handles[i];
+      const Manipulator& a = previous.manipulator;
+      const Manipulator& b = next.manipulator;
+      if (next.key == previous.key && a.kind == b.kind && a.element == b.element &&
+          a.origin.IsEqual(b.origin, 1e-9) && a.direction.IsEqual(b.direction, 1e-12) &&
+          (a.kind != Manipulator::Kind::Ring || a.reference.IsEqual(b.reference, 1e-12)) &&
+          (a.kind != Manipulator::Kind::Arrow || (a.base == b.base && a.factor == b.factor)) &&
+          std::isfinite(next.value)) {
+        return static_cast<int>(i);
+      }
+    }
+    return -1;
+  };
+  // A normal form refresh retains the local pointer feedback. A changed
+  // placement/kind, or a removed handle, invalidates its grab geometry.
+  m_drag = retained(m_drag);
+  m_pending = retained(m_pending);
+  if (m_drag < 0) {
+    m_visualValue.reset();
   }
   m_handles = std::move(handles);
   m_hover = -1;
+  m_boxHover = -1;
   update();
+  publishBoxes();
   logPlaces();
 }
 
@@ -107,6 +260,13 @@ ManipulatorOverlay::Drawn ManipulatorOverlay::draw(const Handle& handle) const {
   if (!std::isfinite(handle.value)) {
     return drawn;
   }
+  // The value box (mitcad#656) centred at a point, as large as its text.
+  const auto around = [this, &handle](const QPointF& centre) {
+    const QRectF text = fontMetrics().boundingRect(handle.text);
+    const QSizeF size(text.width() + 12.0, text.height() + 6.0);
+    return QRectF(centre - QPointF(size.width() / 2.0, size.height() / 2.0), size);
+  };
+  const bool boxed = m.valueBox && !handle.text.isEmpty();
   if (m.kind == Manipulator::Kind::Toggle || m.kind == Manipulator::Kind::Marker) {
     drawn.origin = m_viewer.toWidgetF(m.origin);
     drawn.handle = drawn.origin;
@@ -120,6 +280,20 @@ ManipulatorOverlay::Drawn ManipulatorOverlay::draw(const Handle& handle) const {
     drawn.handle = m_viewer.toWidgetF(end);
     const QPointF along = m_viewer.toWidgetF(end.Translated(gp_Vec(m.direction))) - drawn.handle;
     drawn.tip = drawn.handle + unit(along) * kArrowPixels;
+    if (boxed) {
+      // A dimension's value on its line: at its middle, or, where the
+      // dimension is too short on the screen to hold it, on the line
+      // beyond the reference, away from the point.
+      const QPointF middle = (drawn.origin + drawn.handle) / 2.0;
+      const QPointF span = drawn.handle - drawn.origin;
+      const double length = std::hypot(span.x(), span.y());
+      const QPointF line = length > 1.0 ? unit(span) : unit(along);
+      const QRectF box = around(QPointF());
+      const double half = std::hypot(box.width(), box.height()) / 2.0;
+      drawn.box = m.boxAtTip ? around(drawn.tip + unit(along) * (half + 12.0))
+                  : length > box.width() + 24.0 ? around(middle)
+                                                : around(drawn.origin - line * (half + 10.0));
+    }
     drawn.valid = true;
     return drawn;
   }
@@ -139,8 +313,29 @@ ManipulatorOverlay::Drawn ManipulatorOverlay::draw(const Handle& handle) const {
   drawn.origin = m_viewer.toWidgetF(m.origin);
   drawn.handle = at(handle.value);
   drawn.tip = drawn.handle;
+  if (boxed) {
+    // An angle's dimension (mitcad#656): its zero line along the
+    // reference it is measured from, out past the ring, and the arc from
+    // there to the knob; the value beyond the arc's middle.
+    drawn.zero = m_viewer.toWidgetF(m.origin.Translated(gp_Vec(m.reference) * radius * 1.35));
+    const int steps = std::max(2, static_cast<int>(std::abs(handle.value) / (2.0 * kPi) * 64.0) + 2);
+    for (int i = 0; i <= steps; ++i) {
+      drawn.arc << at(handle.value * i / steps);
+    }
+    const QPointF arcMiddle = at(handle.value / 2.0);
+    drawn.box = around(arcMiddle + unit(arcMiddle - drawn.origin) * 26.0);
+  }
   drawn.valid = true;
   return drawn;
+}
+
+int ManipulatorOverlay::boxAt(const QPointF& position) const {
+  for (std::size_t i = 0; i < m_boxes.size() && i < m_handles.size(); ++i) {
+    if (!m_boxes[i].isEmpty() && m_boxes[i].adjusted(-2, -2, 2, 2).contains(position)) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
 }
 
 int ManipulatorOverlay::handleAt(const QPointF& position) const {
@@ -175,7 +370,7 @@ int ManipulatorOverlay::handleAt(const QPointF& position) const {
   return best;
 }
 
-double ManipulatorOverlay::valueAt(const Handle& handle, const QPointF& position) {
+ManipulatorOverlay::DragValue ManipulatorOverlay::valueAt(const Handle& handle, const QPointF& position) {
   const Manipulator& m = handle.manipulator;
   if (m.kind == Manipulator::Kind::Arrow) {
     // Along the arrow's line on the screen: a millimetre is this long.
@@ -184,17 +379,18 @@ double ManipulatorOverlay::valueAt(const Handle& handle, const QPointF& position
     const QPointF ab = b - a;
     const double length2 = QPointF::dotProduct(ab, ab);
     if (length2 < 1e-4) {
-      return handle.value; // looking along the arrow
+      return {handle.value, handle.value}; // looking along the arrow
     }
     // Where the arrow was grabbed, not its base, follows the cursor.
     const double factor = std::abs(m.factor) > 1e-12 ? m.factor : 1.0;
-    const double raw = m.base + QPointF::dotProduct(position - m_grab - a, ab) / length2 / factor;
+    const double raw = std::max(
+        m.minimum, m.base + QPointF::dotProduct(position - m_grab - a, ab) / length2 / factor);
     const double step = niceStep(3.0 * pixelSize(m.origin) / std::abs(factor));
-    return std::round(raw / step) * step;
+    return {std::max(m.minimum, std::round(raw / step) * step), raw};
   }
   const double angle = ringAngle(handle, position);
   if (!std::isfinite(angle)) {
-    return handle.value; // the ring is edge-on
+    return {handle.value, handle.value}; // the ring is edge-on
   }
   // Continuous from where the drag began, in whole degrees.
   double turn = angle - m_angleLast;
@@ -207,7 +403,8 @@ double ManipulatorOverlay::valueAt(const Handle& handle, const QPointF& position
   m_angleLast = angle;
   m_turned += turn;
   const double degree = kPi / 180.0;
-  return std::round((m_dragStart + m_turned) / degree) * degree;
+  const double raw = m_dragStart + m_turned;
+  return {std::round(raw / degree) * degree, raw};
 }
 
 double ManipulatorOverlay::ringAngle(const Handle& handle, const QPointF& position) const {
@@ -244,6 +441,7 @@ bool ManipulatorOverlay::eventFilter(QObject* watched, QEvent* event) {
     qWarning().noquote() << "Manipulator:" << e.what();
     m_drag = -1;
     m_pending = -1;
+    m_visualValue.reset();
     return false;
   }
 }
@@ -257,10 +455,13 @@ bool ManipulatorOverlay::viewerEvent(QEvent* event) {
     // A modal dialog took the input (a long computation's progress, P7),
     // and with it the release: a drag ends at the value it has.
     m_pending = -1;
+    m_boxKey.clear();
     if (m_drag >= 0) {
       const QString key = m_handles[static_cast<std::size_t>(m_drag)].key;
       const double value = m_handles[static_cast<std::size_t>(m_drag)].value;
+      logDragFeedback();
       m_drag = -1;
+      m_visualValue.reset();
       update();
       qDebug().noquote() << QStringLiteral("Manipulator %1 %2 dragged to %3 (ended by a dialog)")
                                 .arg(m_command, key)
@@ -273,6 +474,11 @@ bool ManipulatorOverlay::viewerEvent(QEvent* event) {
     if (e->button() != Qt::LeftButton) {
       return false;
     }
+    // A value box takes the click: it edits the value (mitcad#656).
+    if (const int box = boxAt(e->position()); box >= 0) {
+      m_boxKey = m_handles[static_cast<std::size_t>(box)].key;
+      return true;
+    }
     const int at = handleAt(e->position());
     if (at < 0) {
       return false;
@@ -281,10 +487,16 @@ bool ManipulatorOverlay::viewerEvent(QEvent* event) {
     m_pending = at;
     m_pressAt = e->position();
     m_pressModifiers = e->modifiers();
+    m_visualValue.reset();
+    m_dragMoves = m_semanticChanges = m_visualUpdates = m_dragPaints = 0;
     return true;
   }
   case QEvent::MouseMove: {
     auto* e = static_cast<QMouseEvent*>(event);
+    if (!m_boxKey.isEmpty()) {
+      return true; // a value box held: its click comes with the release
+    }
+    if (m_pending >= 0 || m_drag >= 0) { ++m_dragMoves; }
     if (m_pending >= 0 && m_drag < 0) {
       const QPointF moved = e->position() - m_pressAt;
       if (std::hypot(moved.x(), moved.y()) < 3.0 ||
@@ -300,21 +512,33 @@ bool ManipulatorOverlay::viewerEvent(QEvent* event) {
       m_grab = m_pressAt - draw(handle).handle;
       m_angleLast = ringAngle(handle, m_pressAt);
       m_turned = 0.0;
+      m_visualValue = handle.value;
     }
     if (m_drag >= 0) {
       Handle& handle = m_handles[static_cast<std::size_t>(m_drag)];
-      const double value = valueAt(handle, e->position());
-      if (value != handle.value) {
-        handle.value = value;
+      const DragValue value = valueAt(handle, e->position());
+      if (!m_visualValue || *m_visualValue != value.continuous) {
+        m_visualValue = value.continuous;
+        ++m_visualUpdates;
         update();
-        emit dragged(handle.key, value);
+      }
+      if (value.snapped != handle.value) {
+        handle.value = value.snapped;
+        ++m_semanticChanges;
+        emit dragged(handle.key, value.snapped);
       }
       return true;
     }
     const int hover = handleAt(e->position());
-    if (hover != m_hover) {
+    const int boxHover = boxAt(e->position());
+    if (hover != m_hover || boxHover != m_boxHover) {
+      // A box shown only while its handle or itself is under the mouse
+      // comes or goes (Manipulator::boxAtZero).
       m_hover = hover;
+      m_boxHover = boxHover;
+      publishBoxes();
       update();
+      logPlaces();
     }
     return false;
   }
@@ -322,6 +546,16 @@ bool ManipulatorOverlay::viewerEvent(QEvent* event) {
     auto* e = static_cast<QMouseEvent*>(event);
     if (e->button() != Qt::LeftButton) {
       return false;
+    }
+    if (!m_boxKey.isEmpty()) {
+      const QString key = std::exchange(m_boxKey, QString());
+      const int box = boxAt(e->position());
+      if (box >= 0 && m_handles[static_cast<std::size_t>(box)].key == key) {
+        const QPoint centre = m_boxes[static_cast<std::size_t>(box)].center().toPoint();
+        qDebug().noquote() << QStringLiteral("Value box %1 %2 clicked").arg(m_command, key);
+        emit valueBoxClicked(key, centre);
+      }
+      return true;
     }
     if (m_pending >= 0 &&
         m_handles[static_cast<std::size_t>(m_pending)].manipulator.kind == Manipulator::Kind::Toggle) {
@@ -352,7 +586,9 @@ bool ManipulatorOverlay::viewerEvent(QEvent* event) {
     }
     const QString key = m_handles[static_cast<std::size_t>(m_drag)].key;
     const double value = m_handles[static_cast<std::size_t>(m_drag)].value;
+    logDragFeedback();
     m_drag = -1;
+    m_visualValue.reset();
     update();
     qDebug().noquote() << QStringLiteral("Manipulator %1 %2 dragged to %3")
                               .arg(m_command, key)
@@ -367,12 +603,31 @@ bool ManipulatorOverlay::viewerEvent(QEvent* event) {
 }
 
 void ManipulatorOverlay::paintEvent(QPaintEvent*) {
+  if (m_drag >= 0) { ++m_dragPaints; }
   QPainter painter(this);
   painter.setRenderHint(QPainter::Antialiasing);
+  layoutBoxes(); // the dragged value's box where its handle is now
+  // Lines of the command's own (a belt's pitch line, mitcad#656).
+  painter.setPen(QPen(QColor(0x1f, 0x9d, 0x8b), 1.6));
+  painter.setBrush(Qt::NoBrush);
+  for (const std::vector<gp_Pnt>& line : m_lines) {
+    QPolygonF points;
+    for (const gp_Pnt& point : line) {
+      points << m_viewer.toWidgetF(point);
+    }
+    painter.drawPolyline(points);
+  }
   for (std::size_t i = 0; i < m_handles.size(); ++i) {
     Drawn drawn;
+    Drawn snapped;
     try {
-      drawn = draw(m_handles[i]);
+      snapped = draw(m_handles[i]);
+      drawn = snapped;
+      if (static_cast<int>(i) == m_drag && m_visualValue && *m_visualValue != m_handles[i].value) {
+        Handle visual = m_handles[i];
+        visual.value = *m_visualValue;
+        drawn = draw(visual);
+      }
     } catch (const std::exception&) {
       continue; // degenerate: not drawn
     }
@@ -402,8 +657,18 @@ void ManipulatorOverlay::paintEvent(QPaintEvent*) {
       painter.setBrush(m_handles[i].manipulator.on ? color : QColor(Qt::white));
       painter.drawEllipse(drawn.handle, 6.0, 6.0);
     } else if (m_handles[i].manipulator.kind == Manipulator::Kind::Arrow) {
-      painter.setPen(QPen(color, 1.0, Qt::DashLine));
-      painter.drawLine(drawn.origin, drawn.handle);
+      if (m_handles[i].manipulator.valueBox) {
+        // A dimension (mitcad#656): a solid line from the reference, a
+        // short bar across it there.
+        painter.setPen(QPen(color, 1.4));
+        painter.drawLine(drawn.origin, drawn.handle);
+        const QPointF line = unit(drawn.handle - drawn.origin);
+        const QPointF bar(-line.y() * 6.0, line.x() * 6.0);
+        painter.drawLine(drawn.origin - bar, drawn.origin + bar);
+      } else {
+        painter.setPen(QPen(color, 1.0, Qt::DashLine));
+        painter.drawLine(drawn.origin, drawn.handle);
+      }
       painter.setPen(QPen(color, 3.0, Qt::SolidLine, Qt::RoundCap));
       painter.drawLine(drawn.handle, drawn.tip);
       const QPointF along = unit(drawn.tip - drawn.handle);
@@ -418,11 +683,49 @@ void ManipulatorOverlay::paintEvent(QPaintEvent*) {
       painter.setBrush(Qt::NoBrush);
       painter.setPen(QPen(color, active ? 2.5 : 1.8));
       painter.drawPolyline(drawn.ring);
+      if (!drawn.arc.isEmpty()) {
+        // An angle's dimension (mitcad#656): the zero line along the
+        // reference, the arc to the knob.
+        painter.setPen(QPen(color, 1.4));
+        painter.drawLine(drawn.origin, drawn.zero);
+        painter.setPen(QPen(color, 3.0, Qt::SolidLine, Qt::RoundCap));
+        painter.drawPolyline(drawn.arc);
+      }
       painter.setPen(QPen(color, 1.0, Qt::DashLine));
       painter.drawLine(drawn.origin, drawn.handle);
       painter.setPen(QPen(color.darker(130), 1.0));
       painter.setBrush(color);
       painter.drawEllipse(drawn.handle, 6.0, 6.0);
+    }
+    if (i < m_boxes.size() && !m_boxes[i].isEmpty()) {
+      // The value, where a click edits it (mitcad#656), as the layout
+      // pass placed it; a thin leader back to where it belongs when the
+      // pass moved it (off another box or a panel).
+      const QRectF& placed = m_boxes[i];
+      if (!drawn.box.isEmpty() && !placed.contains(drawn.box.center())) {
+        const QPointF anchor = drawn.box.center();
+        const QPointF nearest(std::clamp(anchor.x(), placed.left(), placed.right()),
+                              std::clamp(anchor.y(), placed.top(), placed.bottom()));
+        painter.setPen(QPen(color, 1.0));
+        painter.drawLine(anchor, nearest);
+        painter.setBrush(color);
+        painter.drawEllipse(anchor, 2.0, 2.0);
+      }
+      painter.setPen(QPen(color, 1.0));
+      painter.setBrush(QColor(0xff, 0xff, 0xff, 235));
+      painter.drawRoundedRect(m_boxes[i], 4, 4);
+      painter.setPen(QColor(0x2b, 0x3a, 0x4a));
+      painter.drawText(m_boxes[i], Qt::AlignCenter, m_handles[i].text);
+    }
+    if (static_cast<int>(i) == m_drag && m_visualValue && snapped.valid) {
+      // The moving arrow/knob follows the pointer continuously. This
+      // separate tick and the numeric field identify what will be kept.
+      painter.setPen(QPen(kActiveColor, 1.0, Qt::DotLine));
+      painter.drawLine(drawn.handle, snapped.handle);
+      painter.setPen(QPen(kActiveColor, 1.0));
+      painter.setBrush(kHandleColor);
+      painter.drawEllipse(snapped.handle, 2.5, 2.5);
+      painter.drawText(snapped.handle + QPointF(10, 18), tr("Snapped"));
     }
   }
   if (!m_hint.isEmpty()) {
@@ -437,12 +740,22 @@ void ManipulatorOverlay::paintEvent(QPaintEvent*) {
   }
 }
 
+void ManipulatorOverlay::logDragFeedback() const {
+  if (timingLogged() && m_drag >= 0) {
+    qDebug().noquote() << QStringLiteral("Manipulator feedback %1 %2: moves=%3 semantic=%4 visual=%5 paints=%6")
+        .arg(m_command, m_handles[static_cast<std::size_t>(m_drag)].key)
+        .arg(m_dragMoves).arg(m_semanticChanges).arg(m_visualUpdates).arg(m_dragPaints);
+  }
+}
+
 void ManipulatorOverlay::logPlaces() {
   if (!isVisible()) {
     return;
   }
+  layoutBoxes();
   QStringList lines;
-  for (const Handle& handle : m_handles) {
+  for (std::size_t index = 0; index < m_handles.size(); ++index) {
+    const Handle& handle = m_handles[index];
     Drawn drawn;
     try {
       drawn = draw(handle);
@@ -470,6 +783,15 @@ void ManipulatorOverlay::logPlaces() {
                                   .arg(handle.manipulator.on ? QString() : QStringLiteral(" (off)"))
                             : handle.key;
     lines << QStringLiteral("Manipulator %1 %2 at %3,%4").arg(m_command, key).arg(at.x()).arg(at.y());
+    if (index < m_boxes.size() && !m_boxes[index].isEmpty()) {
+      // Where a click edits the value (mitcad#656).
+      const QPoint box = mapTo(window(), m_boxes[index].center().toPoint());
+      lines << QStringLiteral("Value box %1 %2 at %3,%4: %5")
+                   .arg(m_command, handle.key)
+                   .arg(box.x())
+                   .arg(box.y())
+                   .arg(handle.text);
+    }
   }
   const QString logged = lines.join(QLatin1Char('\n'));
   if (logged != m_logged) {

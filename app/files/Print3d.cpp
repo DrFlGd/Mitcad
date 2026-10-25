@@ -52,6 +52,9 @@ const KnownSlicer kKnownSlicers[] = {
      "com.bambulab.BambuStudio", "BambuStudio.app,Bambu Studio.app"},
     {"OrcaSlicer", "OrcaSlicer", "OrcaSlicer", "orca-slicer.exe", "orca-slicer,OrcaSlicer,orcaslicer",
      "io.github.softfever.OrcaSlicer", "OrcaSlicer.app"},
+    // QIDI Studio (mitcad#640): no Flatpak.
+    {"QIDI Studio", "QIDI Studio", "QIDIStudio", "qidi-studio.exe", "qidi-studio,QIDIStudio,qidistudio", "",
+     "QIDIStudio.app,QIDI Studio.app"},
     {"PrusaSlicer", "PrusaSlicer", "Prusa3D/PrusaSlicer", "prusa-slicer.exe", "prusa-slicer,PrusaSlicer",
      "com.prusa3d.PrusaSlicer", "PrusaSlicer.app,Original Prusa Drivers/PrusaSlicer.app"},
     {"UltiMaker Cura", "Cura", "UltiMaker Cura*", "UltiMaker-Cura.exe", "cura,UltiMaker-Cura,ultimaker-cura",
@@ -183,6 +186,28 @@ QString Slicer::location() const {
   return program;
 }
 
+QString slicerDialect(const Slicer& slicer) {
+  // By its name, else its program's file name (a program chosen by hand).
+  const QString name = slicer.name + QLatin1Char(' ') + QFileInfo(slicer.location()).fileName();
+  const QString lower = name.toLower();
+  if (lower.contains(QStringLiteral("bambu"))) {
+    return QStringLiteral("bambu_studio");
+  }
+  if (lower.contains(QStringLiteral("orca"))) {
+    return QStringLiteral("orcaslicer");
+  }
+  if (lower.contains(QStringLiteral("qidi"))) {
+    return QStringLiteral("qidi_studio");
+  }
+  if (lower.contains(QStringLiteral("prusa"))) {
+    return QStringLiteral("prusaslicer");
+  }
+  if (lower.contains(QStringLiteral("cura"))) {
+    return QStringLiteral("cura");
+  }
+  return QString();
+}
+
 Slicer slicerForProgram(const QString& name, const QString& program) {
   if (program.endsWith(QStringLiteral(".app"), Qt::CaseInsensitive) && QFileInfo(program).isDir()) {
     return Slicer{name, kOpen, {QStringLiteral("-a"), program}, {}};
@@ -248,7 +273,7 @@ QVector<Slicer> findSlicers(const SlicerSearch& search) {
   for (const QString& dir : search.flatpakDirectories) {
     for (const KnownSlicer& known : kKnownSlicers) {
       const QString id = QString::fromLatin1(known.flatpak);
-      if (!flatpak.isEmpty() && QFileInfo(dir + QLatin1Char('/') + id).isDir()) {
+      if (!flatpak.isEmpty() && !id.isEmpty() && QFileInfo(dir + QLatin1Char('/') + id).isDir()) {
         addSlicer(found, Slicer{QStringLiteral("%1 (Flatpak)").arg(QString::fromLatin1(known.name)), flatpak,
                                 {QStringLiteral("run"), QStringLiteral("--file-forwarding"), id, QStringLiteral("@@")},
                                 {QStringLiteral("@@")}});
@@ -295,7 +320,7 @@ PrintSettings PrintSettings::load() {
   print.slicer.arguments = settings.value(QStringLiteral("slicerArguments")).toStringList();
   print.slicer.argumentsAfter = settings.value(QStringLiteral("slicerArgumentsAfter")).toStringList();
   const QString format = settings.value(QStringLiteral("format"), print.format).toString();
-  print.format = format == QStringLiteral("3mf") ? format : QStringLiteral("stl");
+  print.format = format == QStringLiteral("stl") ? format : QStringLiteral("3mf");
   const QString refinement = settings.value(QStringLiteral("refinement"), print.refinement).toString();
   if (QStringList{QStringLiteral("low"), QStringLiteral("medium"), QStringLiteral("high"), QStringLiteral("custom")}
           .contains(refinement)) {
@@ -474,7 +499,7 @@ QComboBox* slicerComboBox(const QVector<Slicer>& found, const Slicer& current, c
     combo->addItem(itemLabel(slicer), slicerData(slicer));
     combo->setItemData(combo->count() - 1, slicer.describe(), Qt::ToolTipRole);
   }
-  combo->addItem(QObject::tr("Other program..."), kBrowse);
+  combo->addItem(QObject::tr("Other program…"), kBrowse);
   const int chosen = current.isValid() ? static_cast<int>(listed.indexOf(current)) + 1 : 0;
   combo->setCurrentIndex(chosen);
   combo->setProperty("previous", chosen);
@@ -533,7 +558,7 @@ Slicer slicerOfChoice(const QString& choice) {
 
 QVector<QPair<QString, QString>> slicerChoices(const QVector<Slicer>& found, const Slicer& current,
                                                const Slicer& other) {
-  QVector<QPair<QString, QString>> choices{{kNoSlicer, QObject::tr("None: open the files' folder")}};
+  QVector<QPair<QString, QString>> choices{{kNoSlicer, QObject::tr("Folder only")}};
   QVector<Slicer> listed;
   for (const Slicer& slicer : {current, other}) {
     if (slicer.isValid() && !found.contains(slicer) && !listed.contains(slicer)) {
@@ -544,7 +569,7 @@ QVector<QPair<QString, QString>> slicerChoices(const QVector<Slicer>& found, con
   for (const Slicer& slicer : std::as_const(listed)) {
     choices.append({slicerChoice(slicer), itemLabel(slicer)});
   }
-  choices.append({kOtherSlicer, QObject::tr("Other program...")});
+  choices.append({kOtherSlicer, QObject::tr("Other program…")});
   return choices;
 }
 
@@ -590,11 +615,17 @@ SlicerPreferencesBox::SlicerPreferencesBox(QWidget* parent) : QGroupBox(tr("3D P
   const QVector<Slicer> found = findSlicers();
   const Slicer current = PrintSettings::load().slicer;
   m_slicers = slicerComboBox(found, current,
-                             found.isEmpty() ? tr("None found: open the files' folder")
+                             found.isEmpty() ? tr("Folder only")
                                              : tr("Automatic: %1").arg(found.first().name),
                              this);
   m_slicers->setToolTip(tr("The program 3D Print sends the files to"));
-  form->addRow(tr("Sli&cer:"), m_slicers);
+  // Its entries name programs with their paths: a long path neither widens
+  // Preferences nor sets its minimum width (mitcad#690); each entry's
+  // tooltip names its program whole.
+  m_slicers->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+  m_slicers->setMinimumContentsLength(32);
+  // The same words as 3D Print's Open in (mitcad#655).
+  form->addRow(tr("Open &in:"), m_slicers);
 }
 
 Slicer SlicerPreferencesBox::chosen() const { return slicerOf(m_slicers); }

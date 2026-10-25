@@ -496,7 +496,18 @@ impl Writer {
     /// Adds an entry, stored or compressed with deflate (`Method::Stored`
     /// or `Method::Deflate`).
     pub fn add(&mut self, name: &str, data: &[u8], method: Method) -> Result<(), ZipError> {
-        self.add_entry(name, data, method, 1)
+        self.add_entry(name, data, method, 1, None)
+    }
+
+    /// Adds a regular executable with Unix 0755 permissions, for local
+    /// application bundles. Ordinary archive entries retain their metadata.
+    pub fn add_executable(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        method: Method,
+    ) -> Result<(), ZipError> {
+        self.add_entry(name, data, method, 1, Some(0o100755))
     }
 
     /// Adds a stored entry whose data starts at a multiple of `alignment`
@@ -509,7 +520,7 @@ impl Writer {
         data: &[u8],
         alignment: usize,
     ) -> Result<(), ZipError> {
-        self.add_entry(name, data, Method::Stored, alignment.max(1))
+        self.add_entry(name, data, Method::Stored, alignment.max(1), None)
     }
 
     fn add_entry(
@@ -518,6 +529,7 @@ impl Writer {
         data: &[u8],
         method: Method,
         alignment: usize,
+        unix_mode: Option<u32>,
     ) -> Result<(), ZipError> {
         let too_large = || ZipError::Unsupported(format!("{name}: too large without ZIP64"));
         let packed = match method {
@@ -547,7 +559,13 @@ impl Writer {
         let header = |buf: &mut Vec<u8>, central: bool| {
             buf.extend_from_slice(&(if central { CENTRAL_SIG } else { LOCAL_SIG }).to_le_bytes());
             if central {
-                buf.extend_from_slice(&20u16.to_le_bytes()); // version made by
+                // Host 3 identifies Unix permission bits in external attributes.
+                let made_by = if unix_mode.is_some() {
+                    0x0314u16
+                } else {
+                    20u16
+                };
+                buf.extend_from_slice(&made_by.to_le_bytes());
             }
             buf.extend_from_slice(&20u16.to_le_bytes()); // version needed
             buf.extend_from_slice(&flags.to_le_bytes());
@@ -562,7 +580,7 @@ impl Writer {
             buf.extend_from_slice(&extra.to_le_bytes()); // extra field length
             if central {
                 buf.extend_from_slice(&[0u8; 6]); // comment length, disk, internal attributes
-                buf.extend_from_slice(&0u32.to_le_bytes()); // external attributes
+                buf.extend_from_slice(&(unix_mode.unwrap_or(0) << 16).to_le_bytes());
                 buf.extend_from_slice(&offset.to_le_bytes());
             }
             buf.extend_from_slice(name.as_bytes());
@@ -617,6 +635,29 @@ pub fn stored_zip(files: &[(&str, &[u8])]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executable_entries_keep_unix_mode_without_changing_ordinary_metadata() {
+        let mut writer = Writer::new();
+        writer.add("manifest.json", b"{}", Method::Stored).unwrap();
+        writer
+            .add_executable("server/launcher", b"native executable", Method::Deflate)
+            .unwrap();
+        let bytes = writer.finish().unwrap();
+        let end = bytes.len() - 22;
+        let first = u32_at(&bytes, end + 16).unwrap() as usize;
+        assert_eq!(u16_at(&bytes, first + 4), Some(20));
+        assert_eq!(u32_at(&bytes, first + 38), Some(0));
+        let next = first + 46 + "manifest.json".len();
+        assert_eq!(u16_at(&bytes, next + 4), Some(0x0314));
+        assert_eq!(u32_at(&bytes, next + 38), Some(0o100755 << 16));
+        let archive = Archive::new(bytes).unwrap();
+        assert_eq!(archive.read_by_name("manifest.json").unwrap(), b"{}");
+        assert_eq!(
+            archive.read_by_name("server/launcher").unwrap(),
+            b"native executable"
+        );
+    }
 
     /// Zstandard frames containing RLE blocks, authored here rather than
     /// requiring a compressor or a third-party binary fixture. Unknown-size

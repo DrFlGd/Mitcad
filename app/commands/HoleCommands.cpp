@@ -19,11 +19,14 @@
 
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
+#include "PlaceInputs.hpp"
 
 namespace mitcad::cmd {
 namespace {
 
-const QString kPositions = QStringLiteral("positions");
+// A face hole of several positions written before (mitcad#656): kept as it
+// was while the placement stays Earlier Positions.
+const QString kKept = QStringLiteral("kept_placement");
 
 std::function<bool(const CommandState&)> choiceIs(const QString& id, const QString& value) {
   return [id, value](const CommandState& state) { return state.choice(id) == value; };
@@ -160,10 +163,70 @@ std::optional<std::pair<QString, QString>> sizeOfDesignation(const ThreadStandar
   return std::nullopt;
 }
 
+// The side of the faces a thread goes on (mitcad#691), kept in the state
+// beside the inputs: `internal` (hole walls), `external` (shafts), empty
+// while no face is picked or the faces are of both sides.
+const QString kSide = QStringLiteral("faces_side");
+const QString kInternal = QStringLiteral("internal");
+const QString kExternal = QStringLiteral("external");
+
+// The side of the cylindrical faces: one side for all, else empty.
+QString sideOf(const Selection& faces, const CommandContext& model) {
+  QString side;
+  for (const SelectionItem& item : faces) {
+    const auto cylinder = cylinderOf(item, model);
+    if (!cylinder) {
+      continue;
+    }
+    const QString own = cylinder->second ? kInternal : kExternal;
+    if (!side.isEmpty() && side != own) {
+      return QString();
+    }
+    side = own;
+  }
+  return side;
+}
+
+// Keeps the class on the faces' side (mitcad#691): a class of the other
+// side becomes the standard's default of the faces' side (6g on a hole
+// becomes 6H); `internalOnly`: always the internal side (tapped holes).
+void keepClassOnSide(CommandState& state, const CommandContext& context, bool internalOnly) {
+  const ThreadStandard* standard = standardOf(context, state.choice(QStringLiteral("standard")));
+  if (standard == nullptr) {
+    return;
+  }
+  const QString side = internalOnly ? kInternal : state.choice(kSide);
+  const QString current = state.choice(QStringLiteral("class"));
+  if (side == kInternal && !standard->internal.contains(current)) {
+    state.setChoice(QStringLiteral("class"), standard->defaultInternal);
+  } else if (side == kExternal && !standard->external.contains(current)) {
+    state.setChoice(QStringLiteral("class"), standard->defaultExternal);
+  }
+}
+
+// The ISO metric coarse size a cylindrical face suggests (its nominal
+// diameter outside, its tap drill inside), with 6H for a hole and 6g for a
+// shaft; nothing for another standard or another surface. A face picked in
+// the open command and one selected before it alike (mitcad#691).
+void suggestSize(const SelectionItem& item, CommandState& state, const CommandContext& model) {
+  if (state.choice(QStringLiteral("standard")) != QStringLiteral("iso_metric")) {
+    return;
+  }
+  const auto cylinder = cylinderOf(item, model);
+  if (!cylinder) {
+    return;
+  }
+  const MetricSize size = sizeFor(cylinder->first, cylinder->second);
+  state.setChoice(QStringLiteral("size"), number(size.d));
+  state.setChoice(QStringLiteral("designation"), designation(size));
+  state.setChoice(QStringLiteral("class"), cylinder->second ? QStringLiteral("6H") : QStringLiteral("6g"));
+}
+
 // The size table's inputs: Thread Type, Size, Designation and Class,
 // starting at an ISO metric size (M6x1 6H for holes,
 // M10x1.5 6g for threads); `internalOnly`: the classes are a nut's (tapped
-// holes), else both (threads).
+// holes), else those of the faces' side (`kSide`), both while it is
+// unknown (threads).
 struct ThreadStart {
   QString size;
   QString designation;
@@ -174,6 +237,10 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
                                const std::function<bool(const CommandState&)>& shown) {
   const auto standardIn = [&context](const CommandState& state) {
     return standardOf(context, state.choice(QStringLiteral("standard")));
+  };
+  // A new size or designation keeps the class on the faces' side.
+  const auto keepClass = [internalOnly](CommandState& state, const CommandContext& model) {
+    keepClassOnSide(state, model, internalOnly);
   };
   // The designations of the state's size.
   const auto designationsIn = [standardIn](const CommandState& state) {
@@ -211,6 +278,7 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
                             return s.internal.contains(current);
                           });
     state.setChoice(QStringLiteral("class"), internal ? standard->defaultInternal : standard->defaultExternal);
+    keepClassOnSide(state, context, internalOnly);
   };
   QVector<QPair<QString, QString>> standards;
   for (const ThreadStandard& standard : threadTable(context)) {
@@ -234,12 +302,15 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
             }
             return options;
           })
-          .withOnChange([designationsIn](CommandState& state, const CommandContext&) {
+          .withOnChange([designationsIn, keepClass](CommandState& state, const CommandContext& model) {
             state.setChoice(QStringLiteral("designation"), designationsIn(state).value(0));
+            keepClass(state, model);
           }),
       choiceInput(QStringLiteral("designation"), QObject::tr("Designation"), {}, start.designation)
           .withTooltip(QObject::tr("The size and pitch: M10x1.5 (coarse), M10x1.25 (fine), 1/4-20 UNC"))
-          .withChoices([designationsIn](const CommandState& state) { return labelled(designationsIn(state)); }),
+          .withChoices([designationsIn](const CommandState& state) { return labelled(designationsIn(state)); })
+          .withOnChange(keepClass),
+      // Once the faces are known, only the classes of their side (mitcad#691).
       choiceInput(QStringLiteral("class"), QObject::tr("Class"), {}, start.threadClass)
           .withTooltip(internalOnly ? QObject::tr("The tolerance class of the tapped hole")
                                     : QObject::tr("The tolerance class: 6g outside, 6H inside"))
@@ -248,7 +319,10 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
             if (standard == nullptr) {
               return QVector<QPair<QString, QString>>();
             }
-            return labelled(internalOnly ? standard->internal : standard->external + standard->internal);
+            const QString side = internalOnly ? kInternal : state.choice(kSide);
+            return labelled(side == kInternal   ? standard->internal
+                            : side == kExternal ? standard->external
+                                                : standard->external + standard->internal);
           }),
   };
   for (InputDef& input : inputs) {
@@ -344,7 +418,7 @@ QVector<InputDef> chamferInputs(const CommandContext& context) {
       state.setText(kChamferDiameter, lengthText(std::round(diameter * 1000.0) / 1000.0, model));
       state.setValue(kChamferDiameter, std::numeric_limits<double>::quiet_NaN());
     }
-    state.setText(kChamferAngle, QStringLiteral("%1 deg").arg(number(answer.value(QStringLiteral("angle")).toDouble(45.0))));
+    state.setText(kChamferAngle, number(answer.value(QStringLiteral("angle")).toDouble(45.0)) + QChar(0x00B0));
     state.setValue(kChamferAngle, std::numeric_limits<double>::quiet_NaN());
   };
   return {
@@ -365,7 +439,7 @@ QVector<InputDef> chamferInputs(const CommandContext& context) {
           .withTooltip(QObject::tr("From the thread size, following it, or an angle and a diameter of your own"))
           .withVisible(chamfered)
           .withOnChange(startValues),
-      valueInput(kChamferAngle, QObject::tr("Chamfer Angle"), ValueKind::Angle, QStringLiteral("45 deg"))
+      valueInput(kChamferAngle, QObject::tr("Chamfer Angle"), ValueKind::Angle, QStringLiteral("45") + QChar(0x00B0))
           .withTooltip(QObject::tr("The cone's angle to the axis: 45 degrees is a 90-degree countersink"))
           .withVisible(given),
       valueInput(kChamferDiameter, QObject::tr("Chamfer Diameter"), ValueKind::Length, QStringLiteral("6.5 mm"))
@@ -417,38 +491,31 @@ CommandDef holeCommand(const CommandContext& context) {
   def.keywords = {QStringLiteral("drill"), QStringLiteral("tap"), QStringLiteral("counterbore"),
                   QStringLiteral("countersink"), QStringLiteral("counterdrill"), QStringLiteral("taper")};
   def.featureType = QStringLiteral("hole");
-  const auto onFace = choiceIs(QStringLiteral("placement"), QStringLiteral("face"));
   const auto tapped = choiceIs(QStringLiteral("tap"), QStringLiteral("tapped"));
   const auto type = [](const char* kind) { return choiceIs(QStringLiteral("type"), QString::fromLatin1(kind)); };
+  // One hole where a pick puts it (mitcad#656, PlaceInputs.hpp): on a face
+  // at distances from two of its edges, at a point, or into a shaft or a
+  // hole along its axis. The hole has its own Flip, on the Placement line.
+  PlacePanel place;
+  place.command = def.name;
+  place.along = false;
+  place.offered = choiceIs(QStringLiteral("placement"), QStringLiteral("face"));
   def.inputs = {
-      choiceInput(QStringLiteral("placement"), QObject::tr("Placement"),
-                  {{QStringLiteral("face"), QStringLiteral("On Face")},
-                   {QStringLiteral("sketch"), QStringLiteral("From Sketch")}},
-                  QStringLiteral("face")),
-      selectionInput(QStringLiteral("face"), QObject::tr("Face"), SelectKind::Face, 1, 1)
-          .withTooltip(QObject::tr("A planar face; each click on it places a hole"))
-          .withAccepts([](const SelectionItem& item) { return item.geometry == QStringLiteral("plane"); })
-          .withVisible(onFace)
-          .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& model) {
-            if (!item.at) {
-              return;
+      choiceInput(QStringLiteral("placement"), QObject::tr("Placement"), {}, QStringLiteral("face"))
+          .withChoices([](const CommandState& state) {
+            Choices options{{QStringLiteral("face"), QStringLiteral("By Pick")},
+                            {QStringLiteral("sketch"), QStringLiteral("From Sketch")}};
+            // A face hole of several positions made before keeps them.
+            if (!state.object(kKept).isEmpty()) {
+              options.append({QStringLiteral("positions"), QStringLiteral("Earlier Positions")});
             }
-            const int row = state.rows(kPositions);
-            state.setRows(kPositions, row + 1);
-            const char* axes[] = {"x", "y", "z"};
-            for (int i = 0; i < 3; ++i) {
-              const QString key = CommandState::rowKey(kPositions, row, QString::fromLatin1(axes[i]));
-              state.setText(key, lengthText(std::round((*item.at)[static_cast<std::size_t>(i)] * 100.0) / 100.0, model));
-              state.setValue(key, std::numeric_limits<double>::quiet_NaN());
-            }
+            return options;
           }),
-      listInput(kPositions, QObject::tr("Positions"),
-                {valueInput(QStringLiteral("x"), QObject::tr("X"), ValueKind::Length, QStringLiteral("0 mm")),
-                 valueInput(QStringLiteral("y"), QObject::tr("Y"), ValueKind::Length, QStringLiteral("0 mm")),
-                 valueInput(QStringLiteral("z"), QObject::tr("Z"), ValueKind::Length, QStringLiteral("0 mm"))},
-                QObject::tr("Add Position"), QObject::tr("Hole %1"), 0)
-          .withTooltip(QObject::tr("Where the holes are: put onto the face's plane"))
-          .withVisible(onFace),
+      // Beside the placement (mitcad#656), on a face or from a sketch.
+      flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withBesidePrevious(),
+  };
+  def.inputs += placeInputs(place);
+  def.inputs += {
       selectionInput(QStringLiteral("points"), QObject::tr("Sketch Points"),
                      SelectKind::SketchPoint | SelectKind::SketchCurve, 1, 0)
           .withTooltip(QObject::tr("Sketch points, or circles and arcs (their centres)"))
@@ -483,28 +550,25 @@ CommandDef holeCommand(const CommandContext& context) {
       valueInput(QStringLiteral("diameter"), QObject::tr("Diameter"), ValueKind::Length, QStringLiteral("6 mm"))
           .withVisible([tapped](const CommandState& s) { return !tapped(s); }),
       // A tapped hole has no taper (the model refuses it).
-      valueInput(QStringLiteral("taper"), QObject::tr("Taper Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
+      valueInput(QStringLiteral("taper"), QObject::tr("Taper Angle"), ValueKind::Angle, QStringLiteral("0") + QChar(0x00B0))
           .withTooltip(QObject::tr("The wall's angle to the axis; positive narrows the hole as it goes deeper"))
           .withVisible([tapped](const CommandState& s) { return !tapped(s); }),
       valueInput(QStringLiteral("depth"), QObject::tr("Depth"), ValueKind::Length, QStringLiteral("10 mm"))
           .withVisible(choiceIs(QStringLiteral("extent"), QStringLiteral("distance")))
-          .withManipulator([](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
-            // Into the face from the first position.
-            if (state.choice(QStringLiteral("placement")) != QStringLiteral("face") ||
-                state.rows(kPositions) == 0 || state.items(QStringLiteral("face")).isEmpty()) {
+          .withManipulator([place](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
+            // From where the hole starts, the way it goes: along the axis
+            // into a shaft or a hole, into a face or at a point against
+            // the normal; the hole's Flip turns it round.
+            const auto frame = placeFrame(state, model, place);
+            if (!frame) {
               return std::nullopt;
             }
-            const auto frame = frameOf(state.items(QStringLiteral("face")).first(), model);
-            const double x = state.value(CommandState::rowKey(kPositions, 0, QStringLiteral("x")));
-            const double y = state.value(CommandState::rowKey(kPositions, 0, QStringLiteral("y")));
-            const double z = state.value(CommandState::rowKey(kPositions, 0, QStringLiteral("z")));
-            if (!frame || !std::isfinite(x + y + z)) {
-              return std::nullopt;
-            }
-            // The position put onto the face's plane.
-            gp_Pnt at(x, y, z);
-            at.Translate(-gp_Vec(frame->normal) * gp_Vec(frame->origin, at).Dot(gp_Vec(frame->normal)));
-            return arrow(at, frame->normal.Reversed());
+            const bool along = placeForm(state, place) == PlaceForm::Axis;
+            const bool flipped = state.checked(QStringLiteral("flip"));
+            Manipulator m = arrow(frame->origin, along != flipped ? frame->normal : frame->normal.Reversed());
+            m.valueBox = true; // the depth at its tip (mitcad#656)
+            m.boxAtTip = true;
+            return m;
           }),
       valueInput(QStringLiteral("cb_diameter"), QObject::tr("Counterbore Diameter"), ValueKind::Length,
                  QStringLiteral("10 mm"))
@@ -514,7 +578,7 @@ CommandDef holeCommand(const CommandContext& context) {
       valueInput(QStringLiteral("cs_diameter"), QObject::tr("Countersink Diameter"), ValueKind::Length,
                  QStringLiteral("10 mm"))
           .withVisible(type("countersink")),
-      valueInput(QStringLiteral("cs_angle"), QObject::tr("Countersink Angle"), ValueKind::Angle, QStringLiteral("90 deg"))
+      valueInput(QStringLiteral("cs_angle"), QObject::tr("Countersink Angle"), ValueKind::Angle, QStringLiteral("90") + QChar(0x00B0))
           .withVisible(type("countersink")),
       valueInput(QStringLiteral("cd_diameter"), QObject::tr("Counterdrill Diameter"), ValueKind::Length,
                  QStringLiteral("10 mm"))
@@ -522,10 +586,10 @@ CommandDef holeCommand(const CommandContext& context) {
       valueInput(QStringLiteral("cd_depth"), QObject::tr("Counterdrill Depth"), ValueKind::Length, QStringLiteral("3 mm"))
           .withTooltip(QObject::tr("The depth of its cylinder; the cone narrowing to the hole is below it"))
           .withVisible(type("counterdrill")),
-      valueInput(QStringLiteral("cd_angle"), QObject::tr("Counterdrill Angle"), ValueKind::Angle, QStringLiteral("90 deg"))
+      valueInput(QStringLiteral("cd_angle"), QObject::tr("Counterdrill Angle"), ValueKind::Angle, QStringLiteral("90") + QChar(0x00B0))
           .withTooltip(QObject::tr("The full angle of the cone at its floor"))
           .withVisible(type("counterdrill")),
-      valueInput(QStringLiteral("tip_angle"), QObject::tr("Drill Point Angle"), ValueKind::Angle, QStringLiteral("118 deg"))
+      valueInput(QStringLiteral("tip_angle"), QObject::tr("Drill Point Angle"), ValueKind::Angle, QStringLiteral("118") + QChar(0x00B0))
           .withVisible(choiceIs(QStringLiteral("drill"), QStringLiteral("angle"))),
   };
   def.inputs += threadInputs(context, {QStringLiteral("6"), QStringLiteral("M6x1"), QStringLiteral("6H")}, true, tapped);
@@ -533,32 +597,33 @@ CommandDef holeCommand(const CommandContext& context) {
   def.inputs += clearanceInputs(
       [tapped](const CommandState& s) { return tapped(s) && s.checked(QStringLiteral("modeled")); });
   def.inputs += {
-      flipInput(QStringLiteral("flip"), QObject::tr("Flip")),
       selectionInput(QStringLiteral("objects"), QObject::tr("Objects to Cut"), SelectKind::Body, 0, 0)
           .withoutMeshes()
           .withTooltip(QObject::tr("The bodies the holes cut; none: every body they reach")),
   };
   def.enabled = [&context] { return hasBodies(context); };
 
-  def.build = [](const CommandState& state, const CommandContext&) {
+  def.init = [place](CommandState& state, const CommandContext& model) { initPlace(state, model, place); };
+
+  def.build = [place](const CommandState& state, const CommandContext& model) {
     Built result;
     QJsonObject placement;
-    if (state.choice(QStringLiteral("placement")) == QStringLiteral("face")) {
-      const int rows = state.rows(kPositions);
-      if (rows == 0) {
-        return Built::failure(QObject::tr("Click on the face where a hole goes."), QStringLiteral("face"));
+    const QString placed = state.choice(QStringLiteral("placement"));
+    if (placed == QStringLiteral("face")) {
+      QJsonObject at;
+      if (!addPlace(at, state, model, place, result)) {
+        return result;
       }
-      QJsonArray points;
-      for (int i = 0; i < rows; ++i) {
-        const CommandState row = state.row(kPositions, i);
-        points.append(QJsonArray{row.value(QStringLiteral("x")), row.value(QStringLiteral("y")),
-                                 row.value(QStringLiteral("z"))});
+      if (at.contains(QStringLiteral("placement"))) {
+        // A position on a face written before, unchanged: as it was.
+        placement = at.value(QStringLiteral("placement")).toObject();
+      } else if (!at.contains(QStringLiteral("at"))) {
+        return Built::failure(QObject::tr("Pick a shaft or a hole of the active component"), QStringLiteral("at"));
+      } else {
+        placement = {{QStringLiteral("type"), QStringLiteral("at")}, {QStringLiteral("at"), at.value(QStringLiteral("at"))}};
       }
-      const SelectionItem& face = state.items(QStringLiteral("face")).first();
-      placement = {{QStringLiteral("type"), QStringLiteral("face")},
-                   {QStringLiteral("body"), face.owner},
-                   {QStringLiteral("face"), face.name},
-                   {QStringLiteral("points"), points}};
+    } else if (placed == QStringLiteral("positions")) {
+      placement = state.object(kKept);
     } else {
       const Selection& items = state.items(QStringLiteral("points"));
       const QString sketch = oneSketch(items, result, QStringLiteral("points"));
@@ -631,23 +696,33 @@ CommandDef holeCommand(const CommandContext& context) {
     return result;
   };
 
-  def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+  def.load = [place](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
     const QJsonObject placement = feature.value(QStringLiteral("placement")).toObject();
-    if (str(placement, "type") == QStringLiteral("face")) {
+    state.setObject(kKept, QJsonObject());
+    const QString placed = str(placement, "type");
+    if (placed == QStringLiteral("at")) {
       state.setChoice(QStringLiteral("placement"), QStringLiteral("face"));
-      state.setItems(QStringLiteral("face"),
-                     {itemOf(QJsonObject{{QStringLiteral("body"), placement.value(QStringLiteral("body"))},
-                                         {QStringLiteral("face"), placement.value(QStringLiteral("face"))}},
-                             context)});
+      loadPlace({{QStringLiteral("uid"), feature.value(QStringLiteral("uid"))}, {QStringLiteral("at"), placement.value(QStringLiteral("at"))}},
+                state, context, place);
+    } else if (placed == QStringLiteral("face")) {
+      // Positions on a face written before (mitcad#656): one is placed on
+      // the face from the origin axes and saved as it was until it is
+      // moved (then as `at`); several stay as they were until Place On is
+      // picked again.
       const QJsonArray points = placement.value(QStringLiteral("points")).toArray();
-      state.setRows(kPositions, static_cast<int>(points.size()));
-      for (int i = 0; i < points.size(); ++i) {
-        const QJsonArray point = points[i].toArray();
-        const char* axes[] = {"x", "y", "z"};
-        for (int k = 0; k < 3; ++k) {
-          state.setText(CommandState::rowKey(kPositions, i, QString::fromLatin1(axes[k])),
-                        lengthText(point.at(k).toDouble(), context));
-        }
+      const QJsonObject face{{QStringLiteral("body"), placement.value(QStringLiteral("body"))},
+                             {QStringLiteral("face"), placement.value(QStringLiteral("face"))}};
+      loadPlace({{QStringLiteral("uid"), feature.value(QStringLiteral("uid"))}}, state, context, place);
+      const QJsonArray first = points.at(0).toArray();
+      const bool onFace = placeOnPlaneAt(state, context, face,
+                                         gp_Pnt(first.at(0).toDouble(), first.at(1).toDouble(), first.at(2).toDouble()));
+      if (points.size() > 1 || !onFace) {
+        state.setObject(kKept, placement);
+        state.setChoice(QStringLiteral("placement"), QStringLiteral("positions"));
+      } else {
+        state.setChoice(QStringLiteral("placement"), QStringLiteral("face"));
+        logPlacement(state, context, place);
+        keepEarlierForm(state, context, place, {{QStringLiteral("placement"), placement}});
       }
     } else {
       state.setChoice(QStringLiteral("placement"), QStringLiteral("sketch"));
@@ -707,6 +782,10 @@ CommandDef holeCommand(const CommandContext& context) {
     if (type == QStringLiteral("face_offsets")) {
       return false;
     }
+    if (type == QStringLiteral("at") &&
+        !placeShowable({{QStringLiteral("at"), placement.value(QStringLiteral("at"))}}, context)) {
+      return false;
+    }
     if (type == QStringLiteral("sketch_points")) {
       for (const QJsonValue& point : placement.value(QStringLiteral("points")).toArray()) {
         if (!point.isString()) {
@@ -725,9 +804,13 @@ CommandDef holeCommand(const CommandContext& context) {
   };
 
   def.describe = [](const CommandState& state, const CommandContext&) {
-    const int count = state.choice(QStringLiteral("placement")) == QStringLiteral("face")
-                          ? state.rows(kPositions)
-                          : static_cast<int>(state.items(QStringLiteral("points")).size());
+    const QString placed = state.choice(QStringLiteral("placement"));
+    const int count = placed == QStringLiteral("face")        ? 1
+                      : placed == QStringLiteral("positions") ? static_cast<int>(state.object(kKept)
+                                                                                      .value(QStringLiteral("points"))
+                                                                                      .toArray()
+                                                                                      .size())
+                                                              : static_cast<int>(state.items(QStringLiteral("points")).size());
     const bool tapped = state.choice(QStringLiteral("tap")) == QStringLiteral("tapped");
     const QString taper = !tapped && nonZero(state, QStringLiteral("taper"))
                               ? QStringLiteral(", taper %1 deg").arg(degrees(state.value(QStringLiteral("taper"))))
@@ -766,20 +849,30 @@ CommandDef threadCommand(const CommandContext& context) {
           .withOnPick(
               [](const SelectionItem& item, CommandState& state, const CommandContext& model) {
                 // The first face suggests the size.
-                if (state.items(QStringLiteral("faces")).size() != 1 ||
-                    state.choice(QStringLiteral("standard")) != QStringLiteral("iso_metric")) {
-                  return;
+                if (state.items(QStringLiteral("faces")).size() == 1) {
+                  suggestSize(item, state, model);
                 }
-                const auto cylinder = cylinderOf(item, model);
-                if (!cylinder) {
-                  return;
-                }
-                const MetricSize size = sizeFor(cylinder->first, cylinder->second);
-                state.setChoice(QStringLiteral("size"), number(size.d));
-                state.setChoice(QStringLiteral("designation"), designation(size));
-                state.setChoice(QStringLiteral("class"), cylinder->second ? QStringLiteral("6H") : QStringLiteral("6g"));
               },
-              false),
+              false)
+          // The faces' side keeps the class on it (mitcad#691).
+          .withOnChange([](CommandState& state, const CommandContext& model) {
+            state.setChoice(kSide, sideOf(state.items(QStringLiteral("faces")), model));
+            keepClassOnSide(state, model, false);
+          }),
+  };
+  // Faces selected before the command (the view's context menu offers
+  // Thread first for them) suggest the size as a face picked in the open
+  // command does: the first cylindrical one (mitcad#691).
+  def.preselected = [](const Selection&, CommandState& state, const CommandContext& model) {
+    const Selection& faces = state.items(QStringLiteral("faces"));
+    for (const SelectionItem& item : faces) {
+      if (cylinderOf(item, model)) {
+        suggestSize(item, state, model);
+        break;
+      }
+    }
+    state.setChoice(kSide, sideOf(faces, model));
+    keepClassOnSide(state, model, false);
   };
   def.inputs += threadInputs(context, {QStringLiteral("10"), QStringLiteral("M10x1.5"), QStringLiteral("6g")}, false,
                              nullptr);

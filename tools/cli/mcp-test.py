@@ -137,7 +137,10 @@ class Session:
         assert json.loads(result["content"][0]["text"]) == content, result
         if error:
             if content.get("applied") is True:
-                assert any(item["status"] == "error" for item in content["timeline"]["features"]), content
+                # The whole timeline when asked for, else what the command
+                # changed, failed features included (mitcad#689).
+                features = (content["timeline"] if "timeline" in content else content["changes"])["features"]
+                assert any(item["status"] == "error" for item in features), content
             else:
                 assert isinstance(content["error"], str) and content["error"], content
         return content
@@ -716,6 +719,81 @@ class McpTest(unittest.TestCase):
                 "format": "svg", "drawing": {"per_body": True, "views": ["front"]}})["result"]
             self.assertEqual(result["sheets"], 2)
             self.assertEqual(len(result["files"]), 2)
+            client.finish()
+
+    def test_compact_results_and_command_arrays(self):
+        """mitcad#689: what a command changed, arrays as one undo step."""
+        with Session(self.workspace) as client:
+            client.initialize()
+            document = client.tool("document_create", {})["document"]
+            created = client.tool("model_query", {"document": document,
+                "query": {"query": "document"}})["result"]["undo_depth"]
+            # Parameters and a box placed by them, in one call.
+            made = client.tool("model_command", {"document": document, "command": [
+                {"cmd": "add_parameter", "name": "L", "expression": "40 mm"},
+                {"cmd": "add_parameter", "name": "W", "expression": "20 mm"},
+                {"cmd": "add_feature", "def": {
+                    "type": "box", "plane": {"type": "origin", "plane": "xy"},
+                    "corner": ["-L/2", "-W/2"], "length": "L", "width": "W", "height": 10,
+                    "operation": "new_body"}}]})
+            self.assertEqual(made["ran"], 3)
+            self.assertEqual(len(made["results"]), 3)
+            self.assertNotIn("timeline", made)
+            added = [f for f in made["changes"]["features"] if f["change"] == "added"]
+            self.assertEqual(len(added), 1)
+            self.assertEqual([b["change"] for b in made["changes"]["bodies"]], ["added"])
+            self.assertEqual(made["state"]["undo_depth"], created + 1)
+            box = client.tool("model_query", {"document": document, "query": {
+                "query": "bodies", "properties": True}})["result"][0]
+            self.assertAlmostEqual(box["bbox"]["min"][0], -20, places=5)
+            self.assertAlmostEqual(box["bbox"]["max"][1], 10, places=5)
+            # A parameter change moves the box: its body is listed as changed.
+            moved = client.tool("model_command", {"document": document, "command": {
+                "cmd": "set_parameter", "name": "L", "expression": "60 mm"}})
+            self.assertEqual([b["change"] for b in moved["changes"]["bodies"]], ["changed"])
+            box = client.tool("model_query", {"document": document, "query": {
+                "query": "bodies", "properties": True}})["result"][0]
+            self.assertAlmostEqual(box["bbox"]["min"][0], -30, places=5)
+            # A command that recomputes nothing answers only what it changed.
+            hidden = client.tool("model_command", {"document": document, "command": {
+                "cmd": "set_body_visible", "uid": box["uid"], "visible": False}})
+            self.assertEqual(hidden["changes"]["features"], [])
+            self.assertEqual([b["uid"] for b in hidden["changes"]["bodies"]], [box["uid"]])
+            self.assertLess(len(json.dumps(hidden)), 2048)
+            full = client.tool("model_command", {"document": document, "command": {
+                "cmd": "set_body_visible", "uid": box["uid"], "visible": True}, "timeline": "full"})
+            self.assertEqual(len(full["timeline"]["features"]), 1)
+            self.assertEqual(len(full["bodies"]), 1)
+            self.assertNotIn("changes", full)
+            # A refused entry undoes the ones before it.
+            depth = client.tool("model_query", {"document": document,
+                "query": {"query": "document"}})["result"]["undo_depth"]
+            # The second H is refused by the model when it runs.
+            refused = client.tool("model_command", {"document": document, "command": [
+                {"cmd": "add_parameter", "name": "H", "expression": "5 mm"},
+                {"cmd": "add_parameter", "name": "H", "expression": "6 mm"}]}, error=True)
+            self.assertEqual(refused["entry"], 1)
+            self.assertEqual(refused["undone"], 1)
+            self.assertFalse(refused["applied"])
+            self.assertIn("commands[1]", refused["error"])
+            # An unknown command is refused before any entry runs.
+            unknown = client.tool("model_command", {"document": document, "command": [
+                {"cmd": "add_parameter", "name": "H", "expression": "5 mm"},
+                {"cmd": "no_such_command"}]}, error=True)
+            self.assertEqual((unknown["entry"], unknown["undone"]), (1, 0))
+            state = client.tool("model_query", {"document": document,
+                "query": {"query": "document"}})["result"]
+            self.assertEqual(state["undo_depth"], depth)
+            names = [p["name"] for p in client.tool("model_query", {"document": document,
+                "query": {"query": "parameters"}})["result"]]
+            self.assertNotIn("H", names)
+            client.tool("model_command", {"document": document, "command": [
+                {"cmd": "undo"}, {"cmd": "undo"}]}, error=True)
+            # print_thickness answers its summary over MCP.
+            walls = client.tool("model_query", {"document": document, "query": {
+                "query": "print_thickness", "minimum": 20}})["result"]
+            self.assertNotIn("triangles", walls["bodies"][0])
+            self.assertGreater(walls["thin_triangles"], 0)
             client.finish()
 
 

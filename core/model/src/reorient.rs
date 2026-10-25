@@ -480,7 +480,9 @@ fn turn_fields(
             HolePlacement::Face { points, .. } | HolePlacement::Plane { points, .. } => {
                 points.iter_mut().for_each(v);
             }
-            HolePlacement::FaceOffsets { .. } | HolePlacement::SketchPoints { .. } => {}
+            HolePlacement::FaceOffsets { .. }
+            | HolePlacement::SketchPoints { .. }
+            | HolePlacement::At { .. } => {}
         },
         FeatureDef::Boss(boss) => {
             v(&mut boss.point);

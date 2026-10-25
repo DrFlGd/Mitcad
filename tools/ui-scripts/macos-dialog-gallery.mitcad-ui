@@ -1,0 +1,81 @@
+# SPDX-License-Identifier: MIT
+# Production Qt dialogs with a synthetic local library; no network requests.
+wait-idle
+show-dialog-style-fixture setup
+command tools.libraries
+focus-dialog '^Libraries$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+test-dialog-controls sources
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/libraries-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+command insert.library_component
+focus-dialog '^Insert from Library$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+test-dialog-controls insert
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/insert-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+command tools.community_library
+focus-dialog '^Community Library$'
+test-dialog-controls community
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/community-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+show-dialog-style-fixture parts
+focus-dialog '^Library Parts$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+test-dialog-controls parts
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/parts-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+show-dialog-style-fixture picker
+focus-dialog '^Part Picker'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+test-dialog-controls picker
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/picker-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+command tools.publish_library
+focus-dialog '^Publish to Library$'
+test-dialog-controls publish
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/publish-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+show-dialog-style-fixture projects
+focus-dialog '^Open a Project$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+test-dialog-controls projects
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/projects-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+command file.render_image
+focus-dialog '^Render Image$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+test-dialog-controls render
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/render-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+command solid.appearances
+focus-dialog '^Appearances$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+test-dialog-controls appearances
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/appearances-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+command tools.shortcuts
+focus-dialog '^Keyboard Shortcuts$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+test-dialog-controls shortcuts
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/shortcuts-${MITCAD_TEST_COLOR_SCHEME}.png'
+key Escape
+focus-main
+command tools.preferences.textures
+focus-dialog '^Settings$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+test-dialog-controls settings
+screenshot-dialog '${MITCAD_STYLE_SHOTS}/settings-${MITCAD_TEST_COLOR_SCHEME}.png'
+key ctrl+w
+expect-dialog-gone '^Settings$'
+focus-main
+expect-model-bodies 1 48000

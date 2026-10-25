@@ -155,7 +155,7 @@ QList<int> suppressedOf(const CommandState& state) {
 
 InputDef suppressedInput() {
   return textInput(QStringLiteral("suppressed"), QObject::tr("Suppressed"), QString())
-      .withTooltip(QObject::tr("Instances left out, by number (2, 5): click the dots in the view"))
+      .withTooltip(QObject::tr("Copies left out, by number (2, 5): click the dots in the view"))
       .withToggles([](const CommandState& state, const CommandContext& model, const QJsonObject& preview) {
         std::vector<Manipulator> toggles;
         const auto center = centerOf(state.items(objectsKey(state)), model);
@@ -304,7 +304,7 @@ CommandDef rectangularPatternCommand(const CommandContext& context) {
       const QString distance = state.expression(QStringLiteral("distance") + n);
       const QString type = state.choice(QStringLiteral("direction_type") + n);
       QJsonObject d{{QStringLiteral("axis"), state.items(QStringLiteral("direction") + n).first().reference()},
-                    {QStringLiteral("quantity"), countValue(state, QStringLiteral("quantity") + n)},
+                    {QStringLiteral("quantity"), state.expression(QStringLiteral("quantity") + n)},
                     {QStringLiteral("distance"),
                      flipApplies(type, state.checked(QStringLiteral("flip") + n)) ? negated(distance) : distance}};
       setDirectionType(d, type);
@@ -417,7 +417,7 @@ CommandDef circularPatternCommand(const CommandContext& context) {
     result.def = {{QStringLiteral("type"), QStringLiteral("circular_pattern")},
                   {QStringLiteral("objects"), objects},
                   {QStringLiteral("axis"), state.items(QStringLiteral("axis")).first().reference()},
-                  {QStringLiteral("quantity"), countValue(state, QStringLiteral("quantity"))},
+                  {QStringLiteral("quantity"), state.expression(QStringLiteral("quantity"))},
                   {QStringLiteral("angle"), state.expression(QStringLiteral("angle"))}};
     if (state.checked(QStringLiteral("symmetric"))) {
       result.def.insert(QStringLiteral("symmetric"), true);
@@ -498,7 +498,7 @@ CommandDef pathPatternCommand(const CommandContext& context) {
     result.def = {{QStringLiteral("type"), QStringLiteral("path_pattern")},
                   {QStringLiteral("objects"), objects},
                   {QStringLiteral("path"), path},
-                  {QStringLiteral("quantity"), countValue(state, QStringLiteral("quantity"))},
+                  {QStringLiteral("quantity"), state.expression(QStringLiteral("quantity"))},
                   {QStringLiteral("distance"), state.expression(QStringLiteral("distance"))},
                   {QStringLiteral("distance_type"), state.choice(QStringLiteral("distance_type"))}};
     if (nonZero(state, QStringLiteral("start"))) {

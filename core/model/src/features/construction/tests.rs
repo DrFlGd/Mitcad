@@ -1368,10 +1368,11 @@ fn body_attributes_are_commands_with_undo_and_saved() {
         &mut doc,
         json!({"cmd": "set_body_appearance", "uid": "F2.b0", "appearance": "paint_red"}),
     );
+    // The appearance was set by hand: not the material's (mitcad#640).
     assert_eq!(
         query(&doc, json!({"query": "bodies"})),
         json!([{"uid": "F2.b0", "name": "Body1", "visible": false, "material": "aluminum",
-                "appearance": "paint_red"}])
+                "appearance": "paint_red", "appearance_set_by_hand": true}])
     );
     let saved = doc.to_json();
     let file: Value = serde_json::from_str(&saved).unwrap();

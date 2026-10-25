@@ -125,11 +125,11 @@ CacheDiagnosticsDialog::CacheDiagnosticsDialog(Host host, QWidget* parent)
 
   auto* disk = new QWidget;
   auto* diskLayout = new QVBoxLayout(disk);
-  diskLayout->addWidget(new QLabel(tr("By document:")));
-  m_diskDocuments = table({tr("Document"), tr("Features"), tr("Results"), tr("Size")});
+  diskLayout->addWidget(new QLabel(tr("By design:")));
+  m_diskDocuments = table({tr("Design"), tr("Features"), tr("Results"), tr("Size")});
   diskLayout->addWidget(m_diskDocuments, 1);
   diskLayout->addWidget(new QLabel(tr("By feature, the largest first:")));
-  m_diskFeatures = table({tr("Feature"), tr("Document"), tr("Type"), tr("Results"), tr("Size")});
+  m_diskFeatures = table({tr("Feature"), tr("Design"), tr("Type"), tr("Results"), tr("Size")});
   diskLayout->addWidget(m_diskFeatures, 2);
   diskLayout->addWidget(new QLabel(tr("By feature type:")));
   m_diskTypes = table({tr("Type"), tr("Features"), tr("Results"), tr("Size")});
@@ -149,8 +149,8 @@ CacheDiagnosticsDialog::CacheDiagnosticsDialog(Host host, QWidget* parent)
   auto* refreshButton = buttons->addButton(tr("&Refresh"), QDialogButtonBox::ActionRole);
   auto* clearMemoryButton = buttons->addButton(tr("Clear &Memory"), QDialogButtonBox::ActionRole);
   auto* clearDiskButton = buttons->addButton(tr("Clear &Disk"), QDialogButtonBox::ActionRole);
-  auto* exportButton = buttons->addButton(tr("&Export Report..."), QDialogButtonBox::ActionRole);
-  clearMemoryButton->setToolTip(tr("Drops the computed results the document does not show now"));
+  auto* exportButton = buttons->addButton(tr("&Export Report…"), QDialogButtonBox::ActionRole);
+  clearMemoryButton->setToolTip(tr("Drops the computed results the design does not show now"));
   clearDiskButton->setToolTip(tr("Removes every computed result kept on disk"));
   for (QPushButton* button : {refreshButton, clearMemoryButton, clearDiskButton, exportButton}) {
     button->setAutoDefault(false);

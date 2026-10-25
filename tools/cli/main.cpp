@@ -34,6 +34,8 @@
 #include "mcp.hpp"
 // Drawings with views, dimensions and a hole table (mitcad#471).
 #include "drawing.hpp"
+// Display meshings compared face by face (mitcad#644).
+#include "mesh_compare.hpp"
 
 namespace {
 
@@ -52,12 +54,15 @@ const char* const kUsage = R"(usage:
       --names adds the names of every body's faces and edges (the faces and
       edges queries, JSON), to compare the topology of two builds.
   mitcad-cli run <script.json> [--open <file.mitcad>] [--save <out.mitcad>] [--json]
-                 [--properties [--density G_PER_CM3]]
+                 [--properties [--density G_PER_CM3]] [--timings]
       Runs a script of JSON commands and expectations on a new document, or
       on an opened one, then prints the same report. A script is a JSON
       array of commands ({"cmd": ...}), expectations ({"expect": {...}}) and
       comments ({"comment": "..."}); see core/model/src/api/commands.md.
       --save writes the resulting design.
+      --timings prints how long each step of the script took first,
+      "Timing steps[i] <command>: <ms> ms", and adds the last recompute's
+      times to the report.
       --properties adds the physical properties of each body: mass, centre
       of mass and inertia, with its material (steel by default), or with
       --density (g/cm3) for bodies without a material.
@@ -465,7 +470,7 @@ int fail(const std::string& message) {
 int usage(const std::string& problem) {
   std::cerr << "mitcad-cli: " << problem << "\n"
             << kUsage << mitcad::cli::kLibraryUsage << mitcad::cli::kProjectsUsage << mitcad::cli::kLiveUsage
-            << kExitStatus;
+            << mitcad::cli::kMeshCompareUsage << kExitStatus;
   return 2;
 }
 
@@ -621,7 +626,7 @@ int info_or_run(const std::string& mode, const std::vector<std::string>& args) {
       diagnostics = true;
     } else if (args[i] == "--properties") {
       properties = true;
-    } else if (args[i] == "--timings" && mode == "info") {
+    } else if (args[i] == "--timings") {
       timings = true;
     } else if (args[i] == "--result-store" && i + 1 < args.size()) {
       store.dir = args[++i];
@@ -665,7 +670,12 @@ int info_or_run(const std::string& mode, const std::vector<std::string>& args) {
     if (!read_file(input, script)) {
       return fail("cannot read " + input);
     }
-    document->run_script(script);
+    if (timings) {
+      // The steps' times (mitcad#670), before the report; to stderr with --json.
+      (json ? std::cerr : std::cout) << std::string(document->run_script_timings(script));
+    } else {
+      document->run_script(script);
+    }
   }
   if (!save.empty()) {
     save_document(*document, save);
@@ -1326,7 +1336,7 @@ int run(int argc, char* argv[]) {
   }
   if (args[0] == "--help" || args[0] == "-h") {
     std::cout << kUsage << mitcad::cli::kLibraryUsage << mitcad::cli::kProjectsUsage << mitcad::cli::kLiveUsage
-              << mitcad::cli::kMcpUsage << kExitStatus;
+              << mitcad::cli::kMcpUsage << mitcad::cli::kMeshCompareUsage << kExitStatus;
     return 0;
   }
   const std::string& mode = args[0];
@@ -1443,6 +1453,10 @@ int run(int argc, char* argv[]) {
     // Live updates (mitcad#89).
     if (mode == "live") {
       return mitcad::cli::live(args);
+    }
+    // Display meshings compared face by face (mitcad#644).
+    if (mode == "mesh-compare") {
+      return mitcad::cli::mesh_compare(args, [](const std::string& path) { return open_part(path); });
     }
   } catch (const rust::Error& error) {
     return fail(error.what());

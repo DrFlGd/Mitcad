@@ -335,6 +335,22 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-bearing"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-bearing PROPERTIES TIMEOUT 300)
+    # Gear Pair and Belt Drive (mitcad#656): both parts of a ratio between
+    # two shafts made by mitcad-cli, a row of the candidates chosen.
+    add_test(NAME app.ui-windows-drives
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-drives-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-drives"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-drives PROPERTIES TIMEOUT 300)
+    # Placement by picked geometry (mitcad#656): earlier placements opened
+    # through Place On, a box on a face from its edges, turned in the view.
+    add_test(NAME app.ui-windows-place
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-place-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-place"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-place PROPERTIES TIMEOUT 300)
     add_test(NAME app.ui-windows-print-fits
       COMMAND powershell -NoProfile -ExecutionPolicy Bypass
               -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-print-fits-test.ps1"
@@ -512,6 +528,48 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-selection-create"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-selection-create PROPERTIES TIMEOUT 300)
+
+    # Measure (mitcad#647): a round face's axis shown and drawn, parallel
+    # axes 50 apart, a round face square to a plane, two rims' axes and
+    # centres.
+    add_test(NAME app.ui-windows-measure
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-measure-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-measure"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-measure PROPERTIES TIMEOUT 300)
+
+    # 3D Print's Import from slicer... (mitcad#654, mitcad#655): a Bambu Studio
+    # project whose filaments are slowed for cooling on overhangs from 95%
+    # imported; the line under the button counts by kind, Details... shows
+    # the whole report.
+    add_test(NAME app.ui-windows-print-settings
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-print-settings-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-print-settings" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-print-settings PROPERTIES TIMEOUT 300)
+
+    # Measurement objects (mitcad#649): kept from the Measure panel and its
+    # history, renamed, recoloured and hidden in the browser, a 4 x
+    # transparent snapshot, saved and opened again.
+    add_test(NAME app.ui-windows-measurement-objects
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-measurement-objects-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-measurement-objects"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-measurement-objects PROPERTIES TIMEOUT 300)
+
+    # Preferences' size (mitcad#690): with git found, MITCAD_GIT naming a
+    # missing file and git not installed, the window fits a 1366 x 768
+    # screen, is resizable, its frame lies on the screen and the page list
+    # shows its entries whole.
+    add_test(NAME app.ui-windows-preferences
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-preferences-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-preferences"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-preferences PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

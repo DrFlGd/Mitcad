@@ -160,7 +160,7 @@ function Insert([string]$Search, [string]$Id, [switch]$Copy) {
   if ($Copy) { Ui-Step 'a copy (Alt+P)'   { Ui-Key 'alt+p' } }
   Ui-Step 'Insert (Alt+I)'                 { Ui-Key 'alt+i' }
   Ui-FocusMain
-  Ui-ExpectNew 'Command Place Part started' 'Place Part started'
+  Ui-ExpectNew 'Command Place Component started' 'Place Part started'
 }
 
 # The bodies (and the frame's place) a placement or a drop-in logged since the mark.
@@ -267,7 +267,7 @@ Insert 'Bin 1x1' 'bin1x1'
 Ui-ExpectNew ': frames foot (on a grid, fixed)' "the bin's foot frame"
 Ui-Mark
 Ui-Step 'click cell (2, 1)'                { Ui-ClickPick (Cell $cellBodies[5]) }
-Ui-ExpectNew 'Inspect Place Part: place part Bin 1x1: frame foot (foot), rigid joint, on Baseplate:1, cell (2, 1)' `
+Ui-ExpectNew 'Inspect Place Component: place part Bin 1x1: frame foot (foot), rigid joint, on Baseplate:1, cell (2, 1)' `
   'the foot snaps to the cell clicked' 20
 Ui-Mark
 Ui-Step 'Place (Enter)'                    { Ui-Key 'Return' }
@@ -276,7 +276,7 @@ $bin1 = (Bodies-Of 'Placed part Bin 1x1')[0]
 Ui-Step 'close (Escape)'                   { Ui-Key 'Escape' }
 
 Insert 'Bin 2x1' 'bin2x1'
-Ui-Step 'Rotate 90'                        { Ui-TypeIn 'Panel Place Part input rotate' '90' }
+Ui-Step 'Rotate 90'                        { Ui-TypeIn 'Panel Place Component input rotate' '90' }
 Ui-Mark
 Ui-Step 'click cell (2, 0)'                { Ui-ClickPick (Cell $cellBodies[2]) }
 Ui-ExpectNew "the cell (2, 1) of Baseplate:1's grid is taken by Bin 1x1:1" `
@@ -326,7 +326,7 @@ if ($env:MITCAD_GRIDFINITY_LIBRARY -and (Test-Path (Join-Path $env:MITCAD_GRIDFI
   Ui-Step 'a copy (Alt+P)'                 { Ui-Key 'alt+p' }
   Ui-Step 'Insert (Alt+I)'                 { Ui-Key 'alt+i' }
   Ui-FocusMain
-  Ui-ExpectNew 'Command Place Part started' "Place Part with the model's baseplate"
+  Ui-ExpectNew 'Command Place Component started' "Place Part with the model's baseplate"
   Ui-Mark
   Ui-Step 'drop it in (Enter)'             { Ui-Key 'Return' }
   Ui-ExpectNew "Inserted component $($gridPart.name) (copy)" "the model's baseplate dropped in" 60
@@ -338,10 +338,10 @@ if ($env:MITCAD_GRIDFINITY_LIBRARY -and (Test-Path (Join-Path $env:MITCAD_GRIDFI
   Ui-Step "search $($footPart.name)"       { Ui-Key 'alt+s'; Ui-Type $footPart.name }
   Ui-Step 'Insert (Alt+I)'                 { Ui-Key 'alt+i' }
   Ui-FocusMain
-  Ui-ExpectNew 'Command Place Part started' "Place Part with the model's bin"
+  Ui-ExpectNew 'Command Place Component started' "Place Part with the model's bin"
   Ui-Mark
   Ui-Step 'click the baseplate'            { Ui-ClickPick "face $gridBody/" }
-  Ui-ExpectNew "Inspect Place Part: place part $($footPart.name): frame " "the model's bin on the model's grid" 60
+  Ui-ExpectNew "Inspect Place Component: place part $($footPart.name): frame " "the model's bin on the model's grid" 60
   Ui-Mark
   Ui-Step 'Place (Enter)'                  { Ui-Key 'Return' }
   Ui-ExpectNew "Placed part $($footPart.name) (linked)" "the model's bin placed" 60
@@ -357,7 +357,7 @@ Ui-Mark
 $at = Ui-PickAt 'face F1.b0/F1:top'
 # Shift + click: the pick and Place in one (as BUILD's, mitcad#451).
 Ui-Step "Shift+click on the plate's top"   { Ui-ClickWith 'shift' $at[0] $at[1] }
-Ui-ExpectNew 'Inspect Place Part: place part Lamp: frame base (face), planar joint, on Plate:1' `
+Ui-ExpectNew 'Inspect Place Component: place part Lamp: frame base (face), planar joint, on Plate:1' `
   'the lamp lies where clicked, free on the face' 20
 Ui-ExpectNew 'Placed part Lamp (linked) from test-mounts' 'Shift+click placed it at once' 30
 $lamp = (Bodies-Of 'Placed part Lamp')[0]
@@ -438,7 +438,7 @@ Ui-ExpectNew 'Library browser selected my-screws/screw-m8' 'the own screw'
 Ui-Step 'Insert (Alt+I)'                   { Ui-Key 'alt+i' }
 Ui-FocusMain
 Ui-ExpectNew 'frames head (into a hole, turns and slides)' "Place Part with the screw's frame"
-Ui-ExpectNew 'Command Place Part started' 'Place Part started'
+Ui-ExpectNew 'Command Place Component started' 'Place Part started'
 Ui-Mark
 # The hole's wall (F2's face), else its rim on the plate's top: whichever
 # the view shows (the wall's middle can be out of sight in the hole).
@@ -448,7 +448,7 @@ Ui-Step "click the hole's wall or rim"     {
   Write-Host "note: the hole by $hole"
   Ui-ClickPick "$hole at"
 }
-Ui-ExpectNew 'Inspect Place Part: place part Screw M8: frame head (shaft), cylindrical joint, on Plate:1' `
+Ui-ExpectNew 'Inspect Place Component: place part Screw M8: frame head (shaft), cylindrical joint, on Plate:1' `
   'the screw goes into the hole' 20
 Ui-Mark
 Ui-Step 'Place (Enter)'                    { Ui-Key 'Return' }

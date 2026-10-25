@@ -4,6 +4,7 @@
 // The application's own state and actions (ui_state, ui_select, ui_command,
 // ...) are in MainWindowMcpUi.cpp (mitcad#265).
 #include "MainWindow.hpp"
+#include "framework/CommandRegistry.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -12,13 +13,16 @@
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
+#include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLabel>
 #include <QList>
 #include <QScopedValueRollback>
 #include <QString>
+#include <QStringList>
 #include <QThread>
 
 #include "browser/BrowserController.hpp"
@@ -44,6 +48,13 @@ const QString kAgentSuffix = QStringLiteral(" (agent)");
   throw std::runtime_error(reason.toStdString());
 }
 
+// A refusal with fields of its own beside the error (mitcad#689: which
+// entry of a command array).
+[[noreturn]] void refuseWith(const QString& reason, const QJsonObject& fields) {
+  qInfo().noquote() << QStringLiteral("MCP refused: %1").arg(reason);
+  throw mcp::Refusal(reason, fields);
+}
+
 } // namespace
 
 void MainWindow::mcpRefuseBusy() const {
@@ -55,7 +66,7 @@ void MainWindow::mcpRefuseBusy() const {
     reason = tr("Another external request is running");
     retry = 500;
   } else if (modelBusy()) {
-    reason = tr("The model is computing");
+    reason = tr("The design is computing");
     retry = 1000;
   } else if (m_viewer->isPainting()) {
     reason = tr("The view is drawing");
@@ -73,35 +84,35 @@ void MainWindow::mcpRefuseBusy() const {
 
 QString MainWindow::mcpBlockedReason(bool editing) const {
   if (m_mcpRequestActive) {
-    return tr("Another external model request is running.");
+    return tr("Another external design request is running.");
   }
   if (modelBusy() || m_viewer->isPainting()) {
-    return tr("The document is busy; retry when computation or drawing has finished.");
+    return tr("The design is busy; retry when computation or drawing has finished.");
   }
   // A sketch being edited takes its own commands (mcpSketchCommand); a
   // command panel or a plane pick takes none (mitcad#265).
   if (m_mode == Mode::Command || m_session || m_panelScroll) {
     const QString name = m_session ? m_session->def().name : tr("a command");
     return tr("The command panel of %1 is open: finish it (ui_command with finish ok or cancel) before changing the "
-              "model; queries and the ui tools work meanwhile.")
+              "design; queries and the ui tools work meanwhile.")
         .arg(name);
   }
   if (m_mode == Mode::PickPlane) {
     return tr("Create Sketch waits for a plane to be picked: pick one or cancel it first.");
   }
   if (m_drag || m_animation || (m_controller && m_controller->markerDragActive())) {
-    return tr("Finish dragging or animating the model before accessing it externally.");
+    return tr("Finish dragging or animating the design before accessing it externally.");
   }
   if (!m_import.isNull()) {
     return tr("An import is running; retry when it has finished.");
   }
   if (m_closePending || QApplication::activeModalWidget() != nullptr) {
-    return tr("The document is closing or waiting for a dialog.");
+    return tr("The design is closing or waiting for a dialog.");
   }
 #ifdef MITCAD_MACOS_NATIVE_UI
   if (m_nativeForm || m_nativeClosingCommand || nativeDialogModalActive() ||
       (m_nativeWindow && m_nativeWindow->modalBlocked())) {
-    return tr("The document is waiting for a native command or dialog.");
+    return tr("The design is waiting for a native command or dialog.");
   }
 #endif
   if (editing && windowReadOnly()) {
@@ -132,87 +143,246 @@ QJsonObject MainWindow::mcpQuery(const QJsonObject& request) const {
   return {{QStringLiteral("document"), m_mcpDocumentId}, {QStringLiteral("result"), query(request)}};
 }
 
-QJsonObject MainWindow::mcpCommand(const QJsonObject& request) {
+QJsonObject MainWindow::mcpCommand(const QJsonObject& arguments) {
   Q_ASSERT(QThread::currentThread() == thread());
   mcpRefuseBusy();
   const QString refusal = mcpBlockedReason(true);
   if (!refusal.isEmpty()) {
     refuse(refusal);
   }
-  // By class: file IO, remote and internal checkpoint commands stay
-  // unavailable (mitcad#265, core/model/src/api/classes.rs).
-  idleDocument().validate_mcp_document_command(rustStr(compactJson(request)));
+  // One command, or an array run in order as one undo step (mitcad#689).
+  const QJsonValue given = arguments.value(QStringLiteral("command"));
+  const bool array = given.isArray();
+  QList<QJsonObject> entries;
+  if (array) {
+    for (const QJsonValue& entry : given.toArray()) {
+      entries.append(entry.toObject());
+    }
+  } else {
+    entries.append(given.toObject());
+  }
+  if (entries.isEmpty()) {
+    refuse(tr("The command array is empty."));
+  }
+  const auto entryName = [array](qsizetype i) {
+    return array ? QStringLiteral("commands[%1]: ").arg(i) : QString();
+  };
+  const auto isStep = [](const QJsonObject& entry) {
+    const QString kind = entry.value(QStringLiteral("cmd")).toString();
+    return kind == QStringLiteral("undo") || kind == QStringLiteral("redo");
+  };
+  for (qsizetype i = 0; i < entries.size(); ++i) {
+    if (entries.size() > 1 && isStep(entries[i])) {
+      refuse(tr("%1undo and redo run alone, not in a command array.").arg(entryName(i)));
+    }
+    // By class: file IO, remote and internal checkpoint commands stay
+    // unavailable (mitcad#265, core/model/src/api/classes.rs).
+    try {
+      idleDocument().validate_mcp_document_command(rustStr(compactJson(entries[i])));
+    } catch (const std::exception& error) {
+      if (!array) {
+        refuse(errorText(error));
+      }
+      // Nothing of the array has run.
+      refuseWith(entryName(i) + errorText(error),
+                 {{QStringLiteral("entry"), static_cast<qint64>(i)},
+                  {QStringLiteral("applied"), false},
+                  {QStringLiteral("undone"), 0}});
+    }
+  }
+  const QString mode = arguments.value(QStringLiteral("timeline")).toString(QStringLiteral("changed"));
   const QScopedValueRollback<bool> active(m_mcpRequestActive, true);
-  if (m_mode == Mode::Sketch) {
-    return mcpSketchCommand(request);
-  }
-  const QString kind = request.value(QStringLiteral("cmd")).toString();
+  // What the result compares (mitcad#689): the document before, when only
+  // the changes are answered.
+  const QByteArray before = mode == QStringLiteral("changed") ? compactJson(mcpSnapshot()) : QByteArray();
+  const bool inSketch = m_mode == Mode::Sketch;
+  const QString sketchUid = inSketch ? m_sketch->uid() : QString();
   const int depth = undoDepth();
-  QJsonObject answer;
-  if (!runModelCommand(request, &answer)) {
-    const QString failure = lastError().isEmpty() ? tr("The model command was refused.") : lastError();
-    refuse(failure);
+  QJsonArray results;
+  QJsonArray times;
+  qsizetype stopped = -1;
+  for (qsizetype i = 0; i < entries.size(); ++i) {
+    QJsonObject answer;
+    QString reason;
+    const bool ran = inSketch ? mcpSketchStep(entries[i], &answer, reason) : mcpModelStep(entries[i], &answer, reason);
+    if (!ran) {
+      if (!array) {
+        refuse(reason);
+      }
+      // Nothing of the array stays: the entries before it are undone.
+      const int undone = mcpUndoTo(depth);
+      refuseWith(tr("%1%2; the %3 step(s) of the entries before it were undone").arg(entryName(i), reason).arg(undone),
+                 {{QStringLiteral("entry"), static_cast<qint64>(i)},
+                  {QStringLiteral("applied"), false},
+                  {QStringLiteral("undone"), undone}});
+    }
+    const QByteArray answerText = compactJson(answer);
+    if (mcp_recomputed(rustStr(answerText))) {
+      times.append(query({{QStringLiteral("query"), QStringLiteral("recompute_times")}}));
+    }
+    results.append(answer);
+    // An entry whose added or edited feature fails stops the array.
+    if (array && i + 1 < entries.size() && mcp_entry_failed(rustStr(answerText))) {
+      stopped = i;
+      break;
+    }
   }
-  if (kind != QStringLiteral("undo") && kind != QStringLiteral("redo")) {
+  if (!(entries.size() == 1 && isStep(entries.first()))) {
+    if (inSketch) {
+      m_mcpSketchEdited = true;
+    }
+    // The agent's steps as one, labelled (agent).
     mcpLabelAgentChange(depth);
   }
-  qInfo().noquote() << QStringLiteral("MCP: an agent ran %1").arg(kind);
-  return {{QStringLiteral("document"), m_mcpDocumentId},
-          {QStringLiteral("applied"), true},
-          {QStringLiteral("result"), answer},
-          {QStringLiteral("state"), query({{QStringLiteral("query"), QStringLiteral("document")}})},
-          {QStringLiteral("timeline"), query({{QStringLiteral("query"), QStringLiteral("timeline")}})},
-          {QStringLiteral("bodies"), query({{QStringLiteral("query"), QStringLiteral("bodies")}})}};
+  const QByteArray timesText = QJsonDocument(times).toJson(QJsonDocument::Compact);
+  QJsonObject result = parseObject(mcp_command_document(rustStr(mode.toUtf8()), rustStr(before),
+                                                        rustStr(compactJson(mcpSnapshot())), rustStr(timesText)));
+  result.insert(QStringLiteral("document"), m_mcpDocumentId);
+  result.insert(QStringLiteral("applied"), true);
+  result.insert(QStringLiteral("result"), results.last());
+  if (inSketch) {
+    result.insert(QStringLiteral("sketch"), sketchUid);
+  }
+  if (array) {
+    result.insert(QStringLiteral("ran"), static_cast<qint64>(results.size()));
+    result.insert(QStringLiteral("results"), results);
+    if (stopped >= 0) {
+      result.insert(QStringLiteral("stopped_at"), static_cast<qint64>(stopped));
+    }
+  }
+  QStringList kinds;
+  for (const QJsonObject& entry : std::as_const(entries)) {
+    kinds << entry.value(QStringLiteral("cmd")).toString();
+  }
+  qInfo().noquote() << (inSketch ? QStringLiteral("MCP: an agent ran %1 in sketch %2").arg(kinds.join(QStringLiteral(", ")), sketchUid)
+                                 : QStringLiteral("MCP: an agent ran %1").arg(kinds.join(QStringLiteral(", "))));
+  return result;
 }
 
-QJsonObject MainWindow::mcpSketchCommand(const QJsonObject& request) {
+bool MainWindow::mcpModelStep(const QJsonObject& request, QJsonObject* answer, QString& reason) {
+  if (!runModelCommand(request, answer)) {
+    reason = lastError().isEmpty() ? tr("The model command was refused.") : lastError();
+    return false;
+  }
+  return true;
+}
+
+bool MainWindow::mcpSketchStep(const QJsonObject& request, QJsonObject* answer, QString& reason) {
   // The sketch being edited: its own commands go through the sketch
   // session, as the user's would (mitcad#265): one undo step, the view,
   // the palette and the sketch's undo follow.
   const QString kind = request.value(QStringLiteral("cmd")).toString();
   const QString uid = m_sketch->uid();
   const QString sketchName = m_sketch->model().name;
-  QJsonObject answer;
   if (kind == QStringLiteral("undo") || kind == QStringLiteral("redo")) {
     const QString label =
         queryObject({{QStringLiteral("query"), QStringLiteral("document")}}).value(kind).toString();
     if (label.isEmpty()) {
-      refuse(tr("Nothing to %1.").arg(kind));
+      reason = tr("Nothing to %1.").arg(kind);
+      return false;
     }
     if (kind == QStringLiteral("undo")) {
       undo();
     } else {
       redo();
     }
-    answer = {{QStringLiteral("label"), label}};
-  } else {
-    const bool own =
-        (kind.startsWith(QStringLiteral("sketch.")) && request.value(QStringLiteral("sketch")).toString() == uid) ||
-        (kind == QStringLiteral("edit_feature") && request.value(QStringLiteral("uid")).toString() == uid);
-    if (!own) {
-      refuse(tr("%1 (%2) is being edited: only its own sketch commands (with \"sketch\": \"%2\"), edit_feature of "
-                "it, undo and redo run now. Finish it (ui_command with id sketch.finish) for other commands.")
-                 .arg(sketchName, uid));
-    }
-    const int depth = undoDepth();
-    sketch::SketchOp op(*m_sketch);
-    if (!op.run(request, &answer)) {
-      const QString reason = op.error();
-      op.rollback();
-      refuse(reason.isEmpty() ? tr("The sketch command was refused.") : reason);
-    }
-    op.commit();
-    m_mcpSketchEdited = true;
-    mcpLabelAgentChange(depth);
+    *answer = {{QStringLiteral("label"), label}};
+    return true;
   }
-  qInfo().noquote() << QStringLiteral("MCP: an agent ran %1 in sketch %2").arg(kind, uid);
+  const bool own =
+      (kind.startsWith(QStringLiteral("sketch.")) && request.value(QStringLiteral("sketch")).toString() == uid) ||
+      (kind == QStringLiteral("edit_feature") && request.value(QStringLiteral("uid")).toString() == uid);
+  if (!own) {
+    reason = tr("%1 (%2) is being edited: only its own sketch commands (with \"sketch\": \"%2\"), edit_feature of "
+                "it, undo and redo run now. Finish it (ui_command with id sketch.finish) for other commands.")
+                 .arg(sketchName, uid);
+    return false;
+  }
+  sketch::SketchOp op(*m_sketch);
+  if (!op.run(request, answer)) {
+    const QString error = op.error();
+    op.rollback();
+    reason = error.isEmpty() ? tr("The sketch command was refused.") : error;
+    return false;
+  }
+  op.commit();
+  return true;
+}
+
+int MainWindow::mcpUndoTo(int depth) {
+  // An array's entries taken back after a later one was refused
+  // (mitcad#689), as Undo would, in a sketch too.
+  int undone = 0;
+  for (int now = undoDepth(); now > depth; now = undoDepth()) {
+    undo();
+    if (undoDepth() >= now) {
+      break; // refused
+    }
+    ++undone;
+  }
+  return undone;
+}
+
+QJsonObject MainWindow::mcpSnapshot() const {
+  // The queries a command's result compares (mitcad#689, mcp_snapshot_queries).
+  QJsonObject snapshot;
+  const QJsonObject queries = parseObject(mcp_snapshot_queries());
+  for (auto it = queries.constBegin(); it != queries.constEnd(); ++it) {
+    snapshot.insert(it.key(), query(it.value().toObject()));
+  }
+  return snapshot;
+}
+
+QJsonObject MainWindow::mcpExport(const QJsonObject& arguments) {
+  mcpRefuseBusy();
+  // Into a folder the user allows agents, a new file, as document_save's
+  // path (mitcad#689); the document does not change.
+  if (m_session || m_mode == Mode::Command) {
+    refuse(tr("Finish the current command before exporting."));
+  }
+  if (m_closePending || QApplication::activeModalWidget() != nullptr) {
+    refuse(tr("The document is closing or waiting for a dialog."));
+  }
+  QString reason;
+  const QString path = mcp::agentOutputPath(arguments.value(QStringLiteral("path")).toString(), false, reason);
+  if (path.isEmpty()) {
+    refuse(reason);
+  }
+  const QString title = m_filePath.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(m_filePath).completeBaseName();
+  const QString folder = m_filePath.isEmpty() ? QString() : QFileInfo(m_filePath).absolutePath();
+  // The command and the checks are the headless server's (core/ffi/src/mcp.rs).
+  QJsonObject plan;
+  try {
+    plan = parseObject(idleDocument().mcp_export_plan(rustStr(compactJson(arguments)), rustStr(path.toUtf8()),
+                                                      rustStr(title.toUtf8()), rustStr(folder.toUtf8())));
+  } catch (const std::exception& error) {
+    refuse(errorText(error));
+  }
+  // The other files it writes (an OBJ's .mtl) by the same rule.
+  for (const QJsonValue& output : plan.value(QStringLiteral("outputs")).toArray()) {
+    if (mcp::agentOutputPath(output.toString(), false, reason).isEmpty()) {
+      refuse(reason);
+    }
+  }
+  const QJsonObject command = plan.value(QStringLiteral("command")).toObject();
+  const QScopedValueRollback<bool> active(m_mcpRequestActive, true);
+  QJsonObject result;
+  if (plan.value(QStringLiteral("drawing")).toBool()) {
+    // A drawing checks each sheet's file before it writes any.
+    try {
+      result = parseObject(idleDocument().mcp_export_drawing(rustStr(compactJson(command))));
+    } catch (const std::exception& error) {
+      refuse(errorText(error));
+    }
+  } else if (!runCommand(command, &result)) {
+    refuse(lastError().isEmpty() ? tr("The export failed.") : lastError());
+  }
+  qInfo().noquote() << QStringLiteral("MCP: an agent exported %1 (%2)")
+                           .arg(path, arguments.value(QStringLiteral("format")).toString());
   return {{QStringLiteral("document"), m_mcpDocumentId},
-          {QStringLiteral("applied"), true},
-          {QStringLiteral("sketch"), uid},
-          {QStringLiteral("result"), answer},
-          {QStringLiteral("state"), query({{QStringLiteral("query"), QStringLiteral("document")}})},
-          {QStringLiteral("timeline"), query({{QStringLiteral("query"), QStringLiteral("timeline")}})},
-          {QStringLiteral("bodies"), query({{QStringLiteral("query"), QStringLiteral("bodies")}})}};
+          {QStringLiteral("path"), path},
+          {QStringLiteral("exported"), true},
+          {QStringLiteral("result"), result}};
 }
 
 void MainWindow::mcpLabelAgentChange(int depthBefore) {
@@ -245,7 +415,7 @@ QJsonObject MainWindow::mcpSave(const QJsonObject& arguments) {
     refuse(tr("Finish the current command before saving."));
   }
   if (m_closePending || QApplication::activeModalWidget() != nullptr) {
-    refuse(tr("The document is closing or waiting for a dialog."));
+    refuse(tr("The design is closing or waiting for a dialog."));
   }
   if (windowReadOnly()) {
     refuse(readOnlyReason());
@@ -260,7 +430,7 @@ QJsonObject MainWindow::mcpSave(const QJsonObject& arguments) {
     }
   } else if (m_filePath.isEmpty()) {
     refuse(tr("%1 has never been saved: it has no path to save to. Give a path in a folder agents may use "
-              "(document_list lists them), or save it in the application (File > Save As).")
+              "(document_list lists them), or save it in the application (File › Save As).")
                .arg(documentName()));
   }
   const QScopedValueRollback<bool> active(m_mcpRequestActive, true);
@@ -275,7 +445,7 @@ QJsonObject MainWindow::mcpSave(const QJsonObject& arguments) {
     refuse(tr("Saving asked a question (%1), which an agent cannot answer: save in the application.").arg(dialog));
   }
   if (!saved || isModified()) {
-    refuse(m_statusLabel->text().isEmpty() ? tr("The document was not saved.") : m_statusLabel->text());
+    refuse(m_statusLabel->text().isEmpty() ? tr("The design was not saved.") : m_statusLabel->text());
   }
   qInfo().noquote() << QStringLiteral("MCP: an agent saved %1").arg(m_filePath);
   return {{QStringLiteral("document"), m_mcpDocumentId},
@@ -336,12 +506,14 @@ QJsonObject MainWindow::mcpOpen(const QJsonObject& arguments) {
   return result;
 }
 
-void MainWindow::setMcpAgents(int count, std::function<void()> disconnectAll) {
+void MainWindow::setMcpAgents(const QStringList& clients, std::function<void()> disconnectAll) {
   m_mcpDisconnectAll = std::move(disconnectAll);
-  if (count == m_mcpAgents) {
+  if (clients == m_mcpAgentNames) {
     return;
   }
   const bool before = m_mcpAgents > 0;
+  const int count = int(clients.size());
+  m_mcpAgentNames = clients;
   m_mcpAgents = count;
   if (m_mcpDisconnect == nullptr) {
     m_mcpDisconnect = new QAction(tr("Disconnect Agent"), this);
@@ -354,10 +526,10 @@ void MainWindow::setMcpAgents(int count, std::function<void()> disconnectAll) {
       }
     });
   }
-  m_indicator->setAgentText(count == 0   ? QString()
-                            : count == 1 ? tr("Agent connected")
-                                         : tr("%1 agents connected").arg(count));
-  m_indicator->setAgentActions(count > 0 ? QList<QAction*>{m_mcpDisconnect} : QList<QAction*>{});
+  m_indicator->setAgentText(count == 0 ? QString() : tr("Connected: %1").arg(clients.join(QStringLiteral(", "))));
+  QList<QAction*> actions{m_registry->action(QStringLiteral("help.connect_assistant"))};
+  if (count > 0) actions << m_mcpDisconnect;
+  m_indicator->setAgentActions(actions);
   if (count > 0 && !before) {
     qInfo().noquote() << QStringLiteral("Agent connected");
     showHint(tr("An agent is connected through MCP; the project indicator's menu disconnects it."));
@@ -402,7 +574,10 @@ QJsonObject MainWindow::mcpTool(const QString& name, const QJsonObject& argument
     return mcpQuery(arguments.value(QStringLiteral("query")).toObject());
   }
   if (name == QStringLiteral("model_command")) {
-    return mcpCommand(arguments.value(QStringLiteral("command")).toObject());
+    return mcpCommand(arguments);
+  }
+  if (name == QStringLiteral("model_export")) {
+    return mcpExport(arguments);
   }
   if (name == QStringLiteral("document_save")) {
     return mcpSave(arguments);

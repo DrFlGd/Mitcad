@@ -86,6 +86,21 @@ int agentFolderTests() {
   CHECK(agentDesignPath(QStringLiteral("link.mitcad"), false, false, reason).isEmpty());
   CHECK(reason.contains(QStringLiteral("not in a folder agents may use")));
 #endif
+  // An agent's output (mitcad#689: model_export, ui_screenshot's path): a
+  // new file of any or of the given suffixes, by the same rules.
+  using mitcad::mcp::agentOutputPath;
+  CHECK(agentOutputPath(QStringLiteral("part.step"), false, reason) == allowed + QStringLiteral("/part.step"));
+  CHECK(reason.isEmpty());
+  CHECK(agentOutputPath(QStringLiteral("sub/view.JPG"), false, reason, {QStringLiteral("jpg"), QStringLiteral("jpeg")}) ==
+        allowed + QStringLiteral("/sub/view.JPG"));
+  CHECK(agentOutputPath(QStringLiteral("view.png"), false, reason, {QStringLiteral("jpg")}).isEmpty());
+  CHECK(reason.contains(QStringLiteral(".jpg")));
+  CHECK(agentOutputPath(QStringLiteral("kept.mitcad"), false, reason).isEmpty());
+  CHECK(reason.contains(QStringLiteral("overwrite")));
+  CHECK(agentOutputPath(QStringLiteral("kept.mitcad"), true, reason) == allowed + QStringLiteral("/kept.mitcad"));
+  CHECK(agentOutputPath(outside + QStringLiteral("/part.stl"), false, reason).isEmpty());
+  CHECK(reason.contains(QStringLiteral("not in a folder agents may use")));
+  CHECK(agentOutputPath(QStringLiteral("../outside/part.stl"), false, reason).isEmpty());
   mitcad::mcp::setRunAgentFolders({});
   return failures;
 }

@@ -24,12 +24,14 @@ class QListWidget;
 class QPushButton;
 class QTimer;
 class QToolButton;
+class QTreeWidget;
 class QVBoxLayout;
 
 namespace mitcad {
 
 class CommandMessage;
 class CutTargetsPanel;
+class NoteRow;
 
 // The panel of a feature command, generated from its inputs: a title, one
 // row per input, a message line and OK and Cancel. It shows the state;
@@ -55,11 +57,16 @@ public:
   void setInputError(const QString& key, const QString& message) override;
   // The value an expression evaluates to, under its field.
   void setValueHint(const QString& key, const QString& hint) override;
+  void setPlaceholder(const QString& key, const QString& text) override;
   // The command's status line: an error, or a hint when `error` is false.
   void setMessage(const QString& message, bool error) override;
   // An inspection's answer (Measure, Interference).
   void setResult(const QString& text) override;
   void setOkEnabled(bool enabled) override;
+  // OK and Cancel, for a page that keeps them in view under the inputs it
+  // scrolls (mitcad#655: 3D Print's Send and Cancel in the Floating card);
+  // the caller lays them out. Null after the first call.
+  QWidget* takeButtons();
   QColor colorOf(const QString& key) const override;
   // Puts the keyboard into the first value field shown; false if none.
   bool focusFirstValue() override;
@@ -77,6 +84,10 @@ public:
   // (mitcad#564: Change Parameters while the panel stays open;
   // CommandPanelHeader.cpp).
   void addHeaderAction(QAction* action);
+  // A section of the command's own under the inputs, above the result
+  // (Measure's history, mitcad#648; CommandPanelHeader.cpp): `places`
+  // gives the lines logLayout adds for it ("<what> at x,y").
+  void addSection(QWidget* section, std::function<QStringList()> places = {});
 
 signals:
   void textEdited(const QString& key, const QString& text);
@@ -93,6 +104,8 @@ signals:
   void rowRemoved(const QString& list, int index);
   // The button beside a choice (InputDef::onButton).
   void buttonClicked(const QString& key);
+  // A note row's button (InputDef::onNoteAction, mitcad#655).
+  void noteActionClicked(const QString& key, int index);
   void accepted();
   void rejected();
 
@@ -121,9 +134,12 @@ private:
     QToolButton* clear = nullptr;
     QListWidget* order = nullptr; // an ordered selection's items
     QLineEdit* edit = nullptr;
+    int leftAt = -1; // the cursor as the field lost the keyboard
     QComboBox* combo = nullptr;
     QToolButton* button = nullptr; // beside the combo (InputDef::onButton)
     QToolButton* tile = nullptr;   // a choice shown as a tile (InputDef::choiceTile)
+    QTreeWidget* table = nullptr;  // a choice shown as rows of columns (InputDef::choiceColumns)
+    NoteRow* noteRow = nullptr;   // a note row (InputDef::Type::Note)
     // A choice shown as icon buttons (InputDef::choiceIcons), by option.
     QHash<QString, QToolButton*> choiceButtons;
     QAbstractButton* check = nullptr;
@@ -161,6 +177,7 @@ private:
   CommandMessage* m_message = nullptr;
   QLabel* m_result = nullptr;
   QPushButton* m_ok = nullptr;
+  QWidget* m_buttonBox = nullptr; // OK and Cancel until takeButtons
   std::vector<std::unique_ptr<Row>> m_rows;
   QHash<QString, Row*> m_byKey;
   QHash<QString, QPair<QString, QString>> m_notes; // key: error, hint
@@ -176,6 +193,8 @@ private:
   // The places logged last (mitcad#528) and the check after a move.
   mutable QStringList m_loggedLines;
   QTimer* m_movedTimer = nullptr;
+  // The places of the sections added (addSection, mitcad#648).
+  std::vector<std::function<QStringList()>> m_sectionPlaces;
 };
 
 } // namespace mitcad

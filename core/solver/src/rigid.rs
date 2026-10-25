@@ -969,7 +969,7 @@ impl RigidEquations {
         Component {
             eqs: (0..self.rows).collect(),
             vars: (0..n).collect(),
-            plan: GramPlan::new(&row_cols, n, None),
+            plan: GramPlan::shared(&row_cols, n, None),
             jac,
             dcol,
             analysis_plan: OnceLock::new(),

@@ -135,6 +135,11 @@ impl Builder<'_> {
                 if self.pos_of.contains_key(&target) {
                     return Some(self.feature_ref(target));
                 }
+                // The base feature inside a paste of bodies or a derive
+                // stands for its item (mitcad#641).
+                if let Some(&item) = self.sub_item.get(&target) {
+                    return Some(self.feature_ref(item));
+                }
                 self.entity_target(m)
             }
             _ => None,
@@ -142,7 +147,7 @@ impl Builder<'_> {
     }
 
     /// Every member of a selection; `None` unless all are known.
-    fn members(&self, selection: u64) -> Option<Vec<Reference>> {
+    pub(super) fn members(&self, selection: u64) -> Option<Vec<Reference>> {
         self.input_list(selection)?
             .into_iter()
             .map(|m| self.member(m))

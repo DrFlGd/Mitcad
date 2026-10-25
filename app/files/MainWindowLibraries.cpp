@@ -40,7 +40,7 @@ void MainWindow::registerLibraryCommands() {
     return d;
   };
   CommandDef insert = def("insert.library_component", tr("Insert from Library"), "insert-library",
-                          tr("Places a part of a component library, linked or as a copy"),
+                          tr("Places a library component, linked or as a copy"),
                           [this] { insertFromLibrary(false); });
   insert.mode = CommandDef::Mode::Model;
   insert.tab = QStringLiteral("SOLID");
@@ -49,25 +49,25 @@ void MainWindow::registerLibraryCommands() {
                      QStringLiteral("bolt"), QStringLiteral("nut"), QStringLiteral("washer"),
                      QStringLiteral("standard part"), QStringLiteral("iso")};
   m_registry->add(insert);
-  CommandDef parts = def("tools.library_parts", tr("Library Parts..."), "parts-list",
+  CommandDef parts = def("tools.library_parts", tr("Library Parts…"), "parts-list",
                          tr("The design's library parts: versions, sizes, updates and the parts list"),
                          [this] { showLibraryParts(); });
   parts.keywords = {QStringLiteral("update library"), QStringLiteral("bill of materials"), QStringLiteral("bom"),
                     QStringLiteral("parts list"), QStringLiteral("licence"), QStringLiteral("attribution")};
   m_registry->add(parts);
-  CommandDef libraries = def("tools.libraries", tr("Libraries..."), "library",
+  CommandDef libraries = def("tools.libraries", tr("Libraries…"), "library",
                              tr("The component libraries and community indexes to use; fetch them"),
                              [this] { manageLibraries(); });
   libraries.keywords = {QStringLiteral("library"), QStringLiteral("fetch"), QStringLiteral("git"),
                         QStringLiteral("sources")};
   m_registry->add(libraries);
-  CommandDef community = def("tools.community_library", tr("Community Library..."), "library",
+  CommandDef community = def("tools.community_library", tr("Community Library…"), "library",
                              tr("Searches and inserts designs others share in git repositories"),
                              [this] { insertFromLibrary(true); });
   community.keywords = {QStringLiteral("community"), QStringLiteral("share"), QStringLiteral("download"),
                         QStringLiteral("index"), QStringLiteral("library")};
   m_registry->add(community);
-  CommandDef publish = def("tools.publish_library", tr("Publish to Library..."), "library",
+  CommandDef publish = def("tools.publish_library", tr("Publish to Library…"), "library",
                            tr("Adds this design to a library of your own and helps to publish it"),
                            [this] { publishToLibrary(); });
   publish.keywords = {QStringLiteral("share"), QStringLiteral("publish"), QStringLiteral("library"),
@@ -92,11 +92,11 @@ void MainWindow::createLibraryMenu(QMenu* tools) {
   QMenu* menu = tools->addMenu(tr("&Libraries"));
   menu->setObjectName(QStringLiteral("librariesMenu"));
   const std::pair<const char*, QString> entries[] = {
-      {"insert.library_component", tr("&Insert from Library...")},
-      {"tools.library_parts", tr("Library &Parts...")},
-      {"tools.community_library", tr("&Community Library...")},
-      {"tools.publish_library", tr("P&ublish to Library...")},
-      {"tools.libraries", tr("&Libraries...")}};
+      {"insert.library_component", tr("&Insert from Library…")},
+      {"tools.library_parts", tr("Library &Parts…")},
+      {"tools.community_library", tr("&Community Library…")},
+      {"tools.publish_library", tr("P&ublish to Library…")},
+      {"tools.libraries", tr("&Libraries…")}};
   for (const auto& [id, text] : entries) {
     if (QAction* action = m_registry->action(QString::fromLatin1(id))) {
       action->setText(text);

@@ -308,9 +308,84 @@ impl<K: Kernel> Importer<'_, K> {
         crate::history::without_merged(&earlier, &later, current)
     }
 
+    fn declared_external_body_document(&self, guid: &str) -> bool {
+        self.dump
+            .f3d
+            .as_ref()
+            .and_then(|f| f.external_documents.as_ref())
+            .into_iter()
+            .flatten()
+            .any(|document| {
+                document
+                    .document_guid
+                    .iter()
+                    .chain(document.guids.iter().flatten())
+                    .any(|other| other.eq_ignore_ascii_case(guid))
+            })
+    }
+
+    /// The local document of a combine's target, proved by the bodies its
+    /// producer made. A geometric lookup with an unknown producer does
+    /// not establish ownership of the document GUID.
+    pub(crate) fn combine_local_document<'r>(
+        &self,
+        target: Option<&'r Reference>,
+    ) -> Option<&'r str> {
+        let Reference::Body(fp) = target? else {
+            return None;
+        };
+        let f3d = fp.f3d.as_ref()?;
+        let guid = f3d.document.as_deref()?;
+        let producer = f3d.producer?;
+        if f3d.stored.is_some() || self.declared_external_body_document(guid) {
+            return None;
+        }
+        let (made, _) = self.made_by(producer);
+        if made.is_empty() {
+            return None;
+        }
+        let body = self.produced_body(fp)?;
+        made.contains(&body).then_some(guid)
+    }
+
+    /// A combine tool whose named body is absent from the file's own
+    /// history and has no producer. Missing replay bodies, unnamed or
+    /// ambiguous recipes and external-document references are not lost
+    /// selections. A reference that still resolves is kept as well.
+    pub(crate) fn lost_combine_tool(
+        &self,
+        reference: &Reference,
+        local_document: Option<&str>,
+    ) -> bool {
+        let Reference::Body(fp) = reference else {
+            return false;
+        };
+        let Some(f3d) = fp.f3d.as_ref() else {
+            return false;
+        };
+        let local = f3d.document.as_deref().is_none_or(|guid| {
+            !self.declared_external_body_document(guid)
+                && local_document.is_some_and(|own| own.eq_ignore_ascii_case(guid))
+        });
+        f3d.producer.is_none()
+            && f3d.recipe.as_deref() == Some("body")
+            && f3d
+                .entities
+                .as_ref()
+                .and_then(|groups| groups.first())
+                .is_some_and(|group| group.iter().any(|entity| !entity.tag.is_empty()))
+            && f3d.found.as_deref() == Some("the body is not in the history state")
+            && f3d.stored.is_none()
+            && f3d.edge_points.as_ref().is_none_or(Vec::is_empty)
+            && fp.volume.is_none()
+            && fp.geometry.is_none()
+            && local
+            && self.body_ref(fp).is_none()
+    }
+
     /// A combine whose tools the file says it consumed
-    /// (`isKeepToolBodies` false): where every tool is found by the item
-    /// that made it and the item's history state holds each tool unchanged
+    /// (`isKeepToolBodies` false): where every retained tool is found by
+    /// the item that made it and the item's state holds each tool unchanged
     /// (the same stored body as in the state before it, with the replay's
     /// measures of the tool), those stored bodies are retired from that
     /// state on, so that the combine, and every item after it, is checked
@@ -338,12 +413,21 @@ impl<K: Kernel> Importer<'_, K> {
                     .collect()
             })
             .unwrap_or_default();
+        let target = detail
+            .get("targetBody")
+            .and_then(Value::as_object)
+            .map(|v| Reference::from_map(v.clone()));
+        let local_document = self.combine_local_document(target.as_ref());
         // Only tools found by the items that made them: a body found by its
         // names or measures alone may be another one in the same place,
         // and a body left out by mistake would keep every later item from
         // its state.
         let Some(tools) = tools
             .iter()
+            // The translation omits only these same proven lost
+            // selections. They must not prevent retiring the tools the
+            // file still has; every retained tool needs its producer.
+            .filter(|r| !self.lost_combine_tool(r, local_document))
             .map(|r| match r {
                 Reference::Body(fp) => self.produced_body(fp),
                 _ => None,

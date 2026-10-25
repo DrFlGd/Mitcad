@@ -295,7 +295,7 @@ CommandDef plasticCommand(const CommandContext& context) {
       optional("draft_angle", "draft");
       optional("fillet", "fillet");
       if (nonZero(state, QStringLiteral("ribs"))) {
-        d.insert(QStringLiteral("ribs"), countValue(state, QStringLiteral("ribs")));
+        d.insert(QStringLiteral("ribs"), state.expression(QStringLiteral("ribs")));
       }
       optional("rib_thickness", "rib_thickness");
       optional("rib_length", "rib_length");

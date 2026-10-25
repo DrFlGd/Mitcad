@@ -297,6 +297,68 @@ pub(crate) fn thread_clearance<K: Kernel>(
     ))
 }
 
+/// The crest's width along the axis with a flank clearance: half a pitch at
+/// the pitch diameter, narrowing along the 30-degree flanks to the crest
+/// (the minor diameter of an internal thread, the major one of an external
+/// one), each flank moved `flank / cos 30°` into the tooth.
+fn crest_width(
+    pitch: f64,
+    (major, minor, pitch_diameter): (f64, f64, f64),
+    internal: bool,
+    flank: f64,
+) -> f64 {
+    let tan30 = 30f64.to_radians().tan();
+    let cos30 = 30f64.to_radians().cos();
+    let depth = if internal {
+        pitch_diameter - minor
+    } else {
+        major - pitch_diameter
+    };
+    pitch / 2.0 - depth * tan30 - 2.0 * flank / cos30
+}
+
+/// The largest flank clearance that leaves the crest its minimum width
+/// (`MIN_CREST` pitches) on a thread of the profile; 0 when none does.
+pub(crate) fn largest_flank_clearance(
+    pitch: f64,
+    diameters: (f64, f64, f64),
+    internal: bool,
+) -> f64 {
+    let cos30 = 30f64.to_radians().cos();
+    let crest = crest_width(pitch, diameters, internal, 0.0);
+    ((crest - MIN_CREST * pitch) * cos30 / 2.0).max(0.0)
+}
+
+/// Whether a modelled thread's flank clearance is the printed-fit
+/// parameter `thread_flank_clearance` itself (`print_fits.rs`; the Thread
+/// and Hole panels' default, mitcad#691), not a number or another
+/// expression.
+pub(crate) fn flank_from_fit<K: Kernel>(ctx: &EvalContext<'_, K>, flank: Option<ParamId>) -> bool {
+    flank.is_some_and(|id| ctx.param_name(id) == crate::print_fits::THREAD_FLANK_CLEARANCE)
+}
+
+/// The clearance (radial, flank) a modelled thread uses (mitcad#691). The
+/// printed-fit parameter is a printer's fit shared by threads of every
+/// size: on a pitch too fine for it, the flank clearance it gives is
+/// capped at the largest that leaves the crest its minimum width (a
+/// micrometre below, so that the checks here and in the geometry pass),
+/// and the thread is made. A flank clearance given otherwise is used as it
+/// is; [`check_clearance`] refuses it when it leaves no tooth, naming the
+/// largest that fits.
+pub(crate) fn fitted_clearance(
+    pitch: f64,
+    diameters: (f64, f64, f64),
+    internal: bool,
+    (radial, flank): (f64, f64),
+    from_fit: bool,
+) -> (f64, f64) {
+    if !from_fit || crest_width(pitch, diameters, internal, flank) >= MIN_CREST * pitch {
+        return (radial, flank);
+    }
+    let largest = largest_flank_clearance(pitch, diameters, internal);
+    (radial, (largest - 1e-6).max(0.0))
+}
+
 /// Whether extra clearance leaves a thread of the profile (`pitch` and the
 /// `major`, `minor` and pitch diameters) on an internal or external face:
 /// the flank clearance moves each flank `flank / cos 30°` into the tooth
@@ -306,25 +368,21 @@ pub(crate) fn thread_clearance<K: Kernel>(
 /// geometry checks the same (`geometry/src/thread.cpp`).
 pub(crate) fn check_clearance(
     pitch: f64,
-    (major, minor, pitch_diameter): (f64, f64, f64),
+    diameters: (f64, f64, f64),
     internal: bool,
     (radial, flank): (f64, f64),
 ) -> Result<(), String> {
-    let tan30 = 30f64.to_radians().tan();
-    let cos30 = 30f64.to_radians().cos();
+    let (_, minor, _) = diameters;
     if flank > 0.0 {
-        // Half a pitch at the pitch diameter, narrowing along the flanks.
-        let depth = if internal {
-            pitch_diameter - minor
-        } else {
-            major - pitch_diameter
-        };
-        let crest = pitch / 2.0 - depth * tan30 - 2.0 * flank / cos30;
+        let crest = crest_width(pitch, diameters, internal, flank);
         let needed = MIN_CREST * pitch;
         if crest < needed {
+            // The most that fits, rounded down so that it fits as written.
+            let largest = (largest_flank_clearance(pitch, diameters, internal) * 1e4).floor() / 1e4;
             return Err(format!(
                 "the flank clearance of {flank} mm leaves no usable tooth: the crest would be \
-                 {crest:.4} mm wide, at least {needed:.4} mm is needed"
+                 {crest:.4} mm wide, at least {needed:.4} mm is needed; this thread takes a \
+                 flank clearance of at most {largest:.4} mm"
             ));
         }
     }
@@ -568,6 +626,19 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
         let (major, minor, pitch_diameter) =
             diameters.unwrap_or((data.major, data.minor, data.pitch_diameter));
         let is_internal = internal.unwrap_or(false);
+        // The printed-fit flank clearance capped where the pitch is too
+        // fine for it (mitcad#691); checked below with the other values.
+        let clearance = if self.modeled {
+            fitted_clearance(
+                data.pitch,
+                (major, minor, pitch_diameter),
+                is_internal,
+                clearance,
+                flank_from_fit(ctx, self.flank_clearance),
+            )
+        } else {
+            clearance
+        };
         let (radial_clearance, flank_clearance) = clearance;
         // The end chamfers, when an end is to be chamfered.
         let chamfer = match chamfer_angle {

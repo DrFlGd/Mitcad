@@ -114,7 +114,10 @@ void CommandSearch::paintEvent(QPaintEvent* event) {
 }
 
 void CommandSearch::fill(const QString& rawText) {
-  const QString text = rawText.trimmed().toLower();
+  QString text = rawText.trimmed().toLower();
+  if (text.endsWith(QStringLiteral("..."))) { text.chop(3); }
+  else if (text.endsWith(QChar(0x2026))) { text.chop(1); }
+  text = text.trimmed();
   std::vector<std::tuple<int, bool, QString, const CommandDef*>> found;
   for (const auto& def : m_registry.commands()) {
     QAction* action = m_registry.action(def->id);

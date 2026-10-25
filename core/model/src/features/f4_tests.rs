@@ -1584,6 +1584,70 @@ fn path_patterns_follow_chains_of_sketch_curves() {
 }
 
 #[test]
+fn path_patterns_go_round_closed_chains_from_a_point() {
+    // mitcad#673: the block's outline, 200 long and closed. The original
+    // sits at the outline's point nearest (30, -5, 10), 30 along c1; the
+    // copies 70 apart at 100 (the corner (60, 40)), 170 ((0, 30) on the
+    // last side) and 240, round again to 40 ((40, 0)).
+    let mut b = block();
+    let chain = |curves: Value| {
+        json!({"type": "path_pattern", "objects": {"type": "bodies", "bodies": ["F2.b0"]},
+               "path": {"sketch": "F1", "curves": curves}, "quantity": 4, "distance": 70,
+               "distance_type": "spacing", "start_point": [30, -5, 10]})
+    };
+    let pattern = add(&mut b.doc, chain(json!(["c1", "c2", "c3", "c4"])));
+    assert_eq!(status(&b.doc, pattern), FeatureStatus::Ok);
+    assert_bounds(&b.doc, "F3.b0", [30.0, 40.0, 0.0], [90.0, 80.0, 20.0]);
+    assert_bounds(&b.doc, "F3.b1", [-30.0, 30.0, 0.0], [30.0, 70.0, 20.0]);
+    assert_bounds(&b.doc, "F3.b2", [10.0, 0.0, 0.0], [70.0, 40.0, 20.0]);
+    // An open chain goes on straight past its end instead: 240 is 80
+    // beyond (0, 40) along c3's line, at (-80, 40).
+    let open = add(&mut b.doc, chain(json!(["c1", "c2", "c3"])));
+    assert_eq!(status(&b.doc, open), FeatureStatus::Ok);
+    assert_bounds(&b.doc, "F4.b2", [-110.0, 40.0, 0.0], [-50.0, 80.0, 20.0]);
+}
+
+#[test]
+fn combined_copies_of_new_body_features_join_their_body() {
+    // mitcad#673: copies of the block's own extrusion (a new body) along c1,
+    // 30 apart, joined to the block instead of new bodies of their own.
+    let pattern = |combine: bool| {
+        json!({"type": "path_pattern", "objects": {"type": "features", "features": ["F2"]},
+               "path": {"type": "sketch_curve", "sketch": "F1", "curve": "c1"}, "quantity": 3,
+               "distance": 30, "distance_type": "spacing", "combine": combine})
+    };
+    let mut b = block();
+    let apart = add(&mut b.doc, pattern(false));
+    assert_eq!(status(&b.doc, apart), FeatureStatus::Ok);
+    assert_eq!(uids(&b.doc).len(), 3);
+    let mut b = block();
+    let joined = add(&mut b.doc, pattern(true));
+    assert_eq!(status(&b.doc, joined), FeatureStatus::Ok);
+    assert_eq!(uids(&b.doc), ["F2.b0"]);
+    assert_bounds(&b.doc, "F2.b0", [0.0, 0.0, 0.0], [120.0, 40.0, 20.0]);
+    assert!(shape(&b.doc, "F2.b0").history.starts_with("join("));
+    // Not for faces.
+    let error = b
+        .doc
+        .add_feature(
+            &def(json!({"type": "path_pattern",
+                        "objects": {"type": "faces", "body": "F2.b0", "faces": ["F2:side(c1)"]},
+                        "path": {"type": "sketch_curve", "sketch": "F1", "curve": "c1"},
+                        "quantity": 2, "distance": 30, "distance_type": "spacing",
+                        "combine": true})),
+            None,
+        )
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("combine applies to bodies and features"),
+        "{error}"
+    );
+}
+
+#[test]
 fn files_keep_the_definitions() {
     let mut b = block();
     let (cut, _) = hole(&mut b.doc);
@@ -2306,5 +2370,316 @@ fn patterns_of_patterns_of_bodies_copy_the_body_at_every_product() {
         matches!(status(&b.doc, mixed), FeatureStatus::Failed(m) if m.contains("together")),
         "{:?}",
         status(&b.doc, mixed)
+    );
+}
+
+/// A pattern of the block's body with `quantity`: rectangular along x,
+/// circular about z (a full turn) or along the rectangle's line c1.
+fn pattern_with(kind: &str, quantity: Value) -> Value {
+    let objects = json!({"type": "bodies", "bodies": ["F2.b0"]});
+    match kind {
+        "rectangular" => json!({"type": "rectangular_pattern", "objects": objects,
+            "direction1": {"axis": {"type": "origin", "axis": "x"}, "quantity": quantity,
+                           "distance": 100},
+            "distance_type": "spacing"}),
+        "circular" => json!({"type": "circular_pattern", "objects": objects,
+            "axis": {"type": "origin", "axis": "z"}, "quantity": quantity,
+            "angle": std::f64::consts::TAU}),
+        _ => json!({"type": "path_pattern", "objects": objects,
+            "path": {"type": "sketch_curve", "sketch": "F1", "curve": "c1"},
+            "quantity": quantity, "distance": 60, "distance_type": "extent"}),
+    }
+}
+
+#[test]
+fn pattern_quantities_are_unitless_counts_in_every_document_unit() {
+    // mitcad#662: the same copies in mm, cm and inch documents, whether the
+    // quantity is a number, an expression of parameters or a unitless user
+    // parameter; the pattern's own parameter is `3`, not `3 mm`.
+    use crate::expr::LengthUnit;
+    for unit in [
+        LengthUnit::Millimetre,
+        LengthUnit::Centimetre,
+        LengthUnit::Inch,
+    ] {
+        for kind in ["rectangular", "circular", "path"] {
+            for (quantity, own) in [
+                (json!(3), Some("3")),
+                (json!("d1 / 20 mm"), Some("d1 / 20 mm")),
+                (json!("n * 2 - 3"), Some("n * 2 - 3")),
+                (json!("n"), None),
+            ] {
+                let what = format!("{unit} {kind} {quantity}");
+                let mut b = block();
+                b.doc.set_units(unit).unwrap();
+                b.doc
+                    .add_parameter_expression("n", "3", None, "count")
+                    .unwrap();
+                let added = b
+                    .doc
+                    .add_feature(&def(pattern_with(kind, quantity)), None)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert_eq!(status(&b.doc, added.uid), FeatureStatus::Ok, "{what}");
+                assert_eq!(b.doc.bodies().len(), 3, "{what}");
+                let params = b.doc.parameters();
+                let n = params.get(params.find("n").unwrap()).unwrap();
+                assert!(n.unit().is_unitless(), "{what}");
+                if let Some(expression) = own {
+                    // The quantity's parameter is made first.
+                    let id = params.find(&added.parameters[0]).unwrap();
+                    let param = params.get(id).unwrap();
+                    assert!(param.unit().is_unitless(), "{what}: {}", param.unit());
+                    assert_eq!(param.expression(), expression, "{what}");
+                    assert_eq!(param.value(), 3.0, "{what}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_length_or_angle_in_a_count_says_how_to_write_a_number() {
+    // mitcad#662: `d1 / 3` is a length, as a new quantity and in Change
+    // Parameters, with the expression that gives a number.
+    let mut b = block();
+    let error = b
+        .doc
+        .add_feature(&def(pattern_with("rectangular", json!("d1 / 3"))), None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("the result is a length (20 mm); for a count write `d1 / 3 mm`"),
+        "{error}"
+    );
+    let error = b
+        .doc
+        .add_feature(&def(pattern_with("circular", json!("30 deg"))), None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("the result is an angle (30 deg); for a count write `30`"),
+        "{error}"
+    );
+    let added = b
+        .doc
+        .add_feature(&def(pattern_with("rectangular", json!(3))), None)
+        .unwrap();
+    let quantity = added.parameters[0].clone();
+    let error = b
+        .doc
+        .set_parameter_expression(&quantity, "d1 / 3", None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("the result is a length (20 mm); for a count write `d1 / 3 mm`"),
+        "{error}"
+    );
+    b.doc
+        .set_parameter_expression(&quantity, "d1 / 30 mm", None)
+        .unwrap();
+    assert_eq!(b.doc.bodies().len(), 2);
+    // A length parameter is no count either.
+    let error = b
+        .doc
+        .edit_feature(added.uid, &def(pattern_with("rectangular", json!("d1"))))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("'d1' is a length"), "{error}");
+
+    // In an inch document the hint is in inches.
+    let mut b = block();
+    b.doc.set_units(crate::expr::LengthUnit::Inch).unwrap();
+    let error = b
+        .doc
+        .add_feature(&def(pattern_with("path", json!("d1 / 3"))), None)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("the result is a length (0.787402 in); for a count write `d1 / 3 in`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_count_that_is_not_whole_is_an_error_with_a_hint() {
+    // mitcad#662: no silent rounding; floor or round make it whole.
+    let mut b = block();
+    for quantity in [json!(2.5), json!("d1 / 25 mm")] {
+        let error = b
+            .doc
+            .add_feature(&def(pattern_with("rectangular", quantity)), None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("whole number"), "{error}");
+        assert!(
+            error.contains("use floor(…) or round(…) for a whole number"),
+            "{error}"
+        );
+    }
+    let added = b
+        .doc
+        .add_feature(
+            &def(pattern_with("rectangular", json!("floor(d1 / 25 mm)"))),
+            None,
+        )
+        .unwrap();
+    assert_eq!(status(&b.doc, added.uid), FeatureStatus::Ok);
+    assert_eq!(b.doc.bodies().len(), 2);
+    // Below one is no count at all: no hint.
+    let error = b
+        .doc
+        .edit_feature(added.uid, &def(pattern_with("rectangular", json!(0))))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("at least 1"), "{error}");
+    assert!(!error.contains("floor"), "{error}");
+}
+
+#[test]
+fn a_construction_point_s_fraction_is_unitless() {
+    // mitcad#662: a fraction of a path is a number in every document unit;
+    // a physical distance is a length.
+    let mut b = block();
+    b.doc.set_units(crate::expr::LengthUnit::Inch).unwrap();
+    let path = json!({"type": "sketch_curve", "sketch": "F1", "curve": "c1"});
+    let added = b
+        .doc
+        .add_feature(
+            &def(json!({"type": "construction_point", "definition":
+                {"type": "along_path", "path": path, "distance": 0.5}})),
+            None,
+        )
+        .unwrap();
+    let params = b.doc.parameters();
+    let fraction = params
+        .get(params.find(&added.parameters[0]).unwrap())
+        .unwrap();
+    assert!(fraction.unit().is_unitless());
+    assert_eq!(fraction.expression(), "0.5");
+    assert_eq!(fraction.comment(), "Point1 fraction");
+    let created = b
+        .doc
+        .edit_feature(
+            added.uid,
+            &def(json!({"type": "construction_point", "definition":
+                {"type": "along_path", "path": path, "distance": 25.4, "physical": true}})),
+        )
+        .unwrap();
+    let params = b.doc.parameters();
+    let length = params.get(params.find(&created[0]).unwrap()).unwrap();
+    assert_eq!(length.unit(), crate::expr::Unit::IN);
+    assert_eq!(length.value(), 25.4);
+}
+
+/// Primitive positions take values like their sizes (mitcad#689): an
+/// expression becomes a parameter of the feature and moves the primitive
+/// when the parameters it uses change; a plain number stays a number, as
+/// stored documents and imports have it, and both load from a file.
+#[test]
+fn primitive_positions_take_expressions_and_follow_parameters() {
+    use crate::features::FeatureDef;
+    use crate::features::primitive::Coord;
+
+    let mut doc = Document::new(MockKernel::default());
+    doc.add_parameter("L", 40.0, "").unwrap();
+    doc.add_parameter("W", 20.0, "").unwrap();
+    let added = doc
+        .add_feature(
+            &def(
+                json!({"type": "box", "plane": {"type": "origin", "plane": "xy"},
+                        "corner": ["-L/2", "-W/2"], "length": "L", "width": "W", "height": 10,
+                        "operation": "new_body"}),
+            ),
+            None,
+        )
+        .unwrap();
+    // The corner's expressions and the height are the feature's dimensions.
+    assert_eq!(added.parameters.len(), 3, "{:?}", added.parameters);
+    assert_bounds(&doc, "F1.b0", [-20.0, -10.0, 0.0], [20.0, 10.0, 10.0]);
+    let corner = |doc: &Document<MockKernel>| match &doc.features().next().unwrap().def {
+        FeatureDef::Box(def) => def.corner.clone(),
+        other => panic!("not a box: {other:?}"),
+    };
+    assert!(matches!(corner(&doc), [Coord::Value(_), Coord::Value(_)]));
+
+    // A parameter change moves it.
+    doc.set_parameter("L", 60.0).unwrap();
+    assert_bounds(&doc, "F1.b0", [-30.0, -10.0, 0.0], [30.0, 10.0, 10.0]);
+
+    // A cylinder centred by an expression and one by numbers.
+    add(
+        &mut doc,
+        json!({"type": "cylinder", "plane": {"type": "origin", "plane": "xy"},
+               "center": ["L/2 + 5 mm", 0], "diameter": 4, "height": 5, "operation": "new_body"}),
+    );
+    assert_bounds(&doc, "F2.b0", [35.0, 0.0, 0.0], [37.0, 2.0, 5.0]);
+    add(
+        &mut doc,
+        json!({"type": "sphere", "plane": {"type": "origin", "plane": "xy"},
+               "center": [7, 8], "diameter": 4, "operation": "new_body"}),
+    );
+    doc.set_parameter("L", 20.0).unwrap();
+    assert_bounds(&doc, "F1.b0", [-10.0, -10.0, 0.0], [10.0, 10.0, 10.0]);
+    assert_bounds(&doc, "F2.b0", [15.0, 0.0, 0.0], [17.0, 2.0, 5.0]);
+    assert_bounds(&doc, "F3.b0", [7.0, 8.0, 0.0], [9.0, 10.0, 2.0]);
+
+    // In the file: plain numbers as before, values by their parameters.
+    let json = doc.to_json();
+    let file: Value = serde_json::from_str(&json).unwrap();
+    let features = file["features"].as_array().unwrap();
+    assert!(
+        features[0]["corner"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(Value::is_string),
+        "{}",
+        features[0]
+    );
+    assert!(features[1]["center"][0].is_string(), "{}", features[1]);
+    assert_eq!(features[1]["center"][1], json!(0.0));
+    assert_eq!(features[2]["center"], json!([7.0, 8.0]));
+    let mut loaded = Document::from_json(&json, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), json);
+    assert!(matches!(
+        corner(&loaded),
+        [Coord::Value(_), Coord::Value(_)]
+    ));
+    loaded.recompute();
+    assert_bounds(&loaded, "F1.b0", [-10.0, -10.0, 0.0], [10.0, 10.0, 10.0]);
+    loaded.set_parameter("W", 30.0).unwrap();
+    assert_bounds(&loaded, "F1.b0", [-10.0, -15.0, 0.0], [10.0, 15.0, 10.0]);
+
+    // A document stored with plain numbers (every one before mitcad#689)
+    // loads them as numbers, with no parameters of their own.
+    let mut old = Document::new(MockKernel::default());
+    let plain = old
+        .add_feature(
+            &def(
+                json!({"type": "box", "plane": {"type": "origin", "plane": "xy"},
+                        "corner": [5, 5], "length": 30, "width": 20, "height": 10,
+                        "operation": "new_body"}),
+            ),
+            None,
+        )
+        .unwrap();
+    assert_eq!(plain.parameters, vec!["d1", "d2", "d3"]);
+    let json = old.to_json();
+    let file: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(file["features"][0]["corner"], json!([5.0, 5.0]));
+    let loaded = Document::from_json(&json, MockKernel::default()).unwrap();
+    assert_eq!(corner(&loaded), [Coord::Number(5.0), Coord::Number(5.0)]);
+    assert_eq!(loaded.to_json(), json);
+
+    // A position that is not a number or an expression is refused.
+    let error = serde_json::from_value::<FeatureDef<crate::features::ValueInput>>(
+        json!({"type": "box", "plane": {"type": "origin", "plane": "xy"},
+               "corner": [true, 0], "length": 1, "width": 1, "height": 1,
+               "operation": "new_body"}),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("a number or an expression"),
+        "{error}"
     );
 }

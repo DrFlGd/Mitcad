@@ -426,6 +426,11 @@ const DECODER_ONLY: &[&str] = &[
     // against the reference models' dumps (`design_models.rs`).
     ".timeline.items[].detail.targetBody",
     ".timeline.items[].detail.toolBodies",
+    // A pattern's quantities by their parameters (mitcad#641), which the
+    // reference decoder gave as values only.
+    ".timeline.items[].detail.quantity.name",
+    ".timeline.items[].detail.quantityOne.name",
+    ".timeline.items[].detail.quantityTwo.name",
     ".timeline.items[].detail.isKeepToolBodies",
     ".timeline.items[].detail.isSplittingToolExtended",
     ".timeline.items[].detail.patternEntityType",
@@ -487,6 +492,9 @@ const DECODER_ONLY: &[&str] = &[
     // A curve's fixed and linked flags and a fitted spline's fit points
     // (mitcad#186), checked against the API reference dumps.
     ".timeline.items[].detail.curves[].isFixed",
+    // The sketch's origin point is fixed (mitcad#641; the reference dumps
+    // record no point flags).
+    ".timeline.items[].detail.points[].isFixed",
     ".timeline.items[].detail.curves[].isReference",
     ".timeline.items[].detail.curves[].isLinked",
     ".timeline.items[].detail.curves[].fitPoints",
@@ -785,7 +793,10 @@ fn check_expressions(dump: &ir::Dump, label: &str, out: &mut ExprCheck) {
         let (Some(name), Some(unit), Some(value)) = (&p.name, &p.unit, p.value) else {
             continue;
         };
-        if let Ok(u) = f3d::parse_unit(unit) {
+        // A text parameter (unit `Text`, mitcad#664) has no number.
+        if let Ok(u) = f3d::parse_unit(unit)
+            && !u.is_text()
+        {
             values.insert(name.clone(), f3d::internal_quantity(value, u.dims()));
         }
     }

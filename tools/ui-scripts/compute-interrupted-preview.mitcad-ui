@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: MIT
+# tools/ui-compute-test.sh, its last part: a preview interrupted while its
+# panel stays open, on a 150 mm rod whose cosmetic M10 thread is made
+# modelled (seconds in OCCT's sweeps, common and cut). Feature previews
+# have no progress dialog (mitcad#634), so the worker control stops it,
+# as an interrupted computation would; the shell checks the timings.
+expect-ever 'View area'
+key F6
+sleep 300
+dblclick-logged '^Timeline Thread1 at'
+expect-log 'Editing F3 with Thread'
+wait-idle 60
+mark
+click-logged '^Panel Thread input modeled at'
+expect-log 'Thread: Modeled = on'
+wait-log 'Computing preview started' 30
+sleep 1000
+cancel-model-job Thread
+wait-log 'Computing preview cancelled after ' 30
+expect-log 'Preview Thread: cancelled' 30
+expect-no-log 'Preview Thread: ok|Command Thread cancelled'
+
+# OK after the interrupted preview computes the edit itself, with the
+# progress dialog of an explicit command; cancelled there a second in.
+mark
+button '^OK$'
+wait-log 'Progress dialog shown: edit_feature' 30
+sleep 1000
+qt-cancel-progress edit_feature
+wait-log 'Computing edit_feature cancelled after ' 30
+expect-log 'Thread: OK cancelled' 30
+expect-no-log 'Edited F3'
+
+# OK again computes the thread (the shell checks the groove's volume).
+mark
+button '^OK$'
+wait-log 'Edited F3' 120

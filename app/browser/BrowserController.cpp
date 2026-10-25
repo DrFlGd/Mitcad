@@ -5,10 +5,13 @@
 #include <cmath>
 #include <exception>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <tuple>
 #include <utility>
 
+#include <QColor>
+#include <QColorDialog>
 #include <QEvent>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -93,6 +96,7 @@ BrowserController::BrowserController(DocumentHost& host, QWidget* window)
   m_browser = new BrowserPanel(window);
   m_timeline = new TimelineWidget(host.model(), window);
   m_failures = new QToolButton(window);
+  m_failures->setObjectName(QStringLiteral("failuresBadge"));
   m_failures->setAutoRaise(true);
   m_failures->setFocusPolicy(Qt::NoFocus);
   m_failures->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -195,6 +199,16 @@ void BrowserController::refresh(const DocumentSnapshot& snapshot) {
   }
   if (m_propertySets && m_propertySets->isVisible()) {
     m_propertySets->refresh();
+  }
+  // The print windows (mitcad#655).
+  if (m_materials && m_materials->isVisible()) {
+    m_materials->refresh();
+  }
+  if (m_profiles && m_profiles->isVisible()) {
+    m_profiles->refresh();
+  }
+  if (m_ownSettings && m_ownSettings->isVisible()) {
+    m_ownSettings->refresh();
   }
   if (m_find) {
     m_find->setSnapshot(m_snapshot);
@@ -388,6 +402,7 @@ bool BrowserController::visibilityInEveryMode(const BrowserNode& node) {
   case BrowserNode::Type::Bodies:
   case BrowserNode::Type::Sketches:
   case BrowserNode::Type::Construction:
+  case BrowserNode::Type::Measurement: // mitcad#649: also while Measure keeps one
     return true;
   default:
     return false;
@@ -454,6 +469,12 @@ void BrowserController::toggleVisibility(const BrowserNode& node) {
     done = m_host.runModelCommand(cmd("set_analysis_visible", {{QStringLiteral("name"), node.uid},
                                                                {QStringLiteral("visible"), show}}));
     break;
+  case BrowserNode::Type::Measurement:
+    // A measurement object's dimension over the view (mitcad#649).
+    commands.append(cmd("set_measurement_visible", {{QStringLiteral("name"), node.uid},
+                                                    {QStringLiteral("visible"), show}}));
+    label = (show ? tr("Show %1") : tr("Hide %1")).arg(node.name);
+    break;
   default:
     return;
   }
@@ -512,6 +533,9 @@ void BrowserController::rename(const BrowserNode& node, const QString& name) {
   case BrowserNode::Type::ContactSet:
     command = cmd("edit_contact_set", {{QStringLiteral("name"), node.uid}, {QStringLiteral("new_name"), name}});
     break;
+  case BrowserNode::Type::Measurement:
+    command = cmd("rename_measurement", {{QStringLiteral("name"), node.uid}, {QStringLiteral("new_name"), name}});
+    break;
   default:
     return;
   }
@@ -553,6 +577,7 @@ void BrowserController::browserDoubleClicked(const BrowserNode& node) {
     break;
   case BrowserNode::Type::Body:
   case BrowserNode::Type::Component:
+  case BrowserNode::Type::Measurement: // mitcad#649
     if (canChange()) {
       m_browser->startRename(node);
     }
@@ -632,6 +657,11 @@ void BrowserController::deleteNode(const BrowserNode& node) {
   case BrowserNode::Type::ContactSet:
     if (canChange() && m_host.runModelCommand(cmd("delete_contact_set", {{QStringLiteral("name"), node.uid}}))) {
       qDebug().noquote() << QStringLiteral("Deleted contact set %1").arg(node.name);
+    }
+    break;
+  case BrowserNode::Type::Measurement:
+    if (canChange() && m_host.runModelCommand(cmd("delete_measurement", {{QStringLiteral("name"), node.uid}}))) {
+      qDebug().noquote() << QStringLiteral("Deleted measurement %1").arg(node.name);
     }
     break;
   default:
@@ -828,12 +858,95 @@ void BrowserController::changeUnits() {
   bool ok = false;
   qDebug().noquote() << QStringLiteral("Units dialog opened: %1 (%2)")
                             .arg(m_snapshot.lengthUnit, kLengthUnits.join(QStringLiteral(" | ")));
-  const QString unit = dialogItem(m_window, tr("Units"), tr("Document length unit:"), kLengthUnits,
+  const QString unit = dialogItem(m_window, tr("Units"), tr("Design length unit:"), kLengthUnits,
                                              std::max(0, static_cast<int>(kLengthUnits.indexOf(m_snapshot.lengthUnit))),
                                              &ok);
   if (ok && unit != m_snapshot.lengthUnit &&
       m_host.runModelCommand(cmd("set_units", {{QStringLiteral("length"), unit}}))) {
     qDebug().noquote() << QStringLiteral("Units: %1").arg(unit);
+  }
+}
+
+void BrowserController::chooseMeasurementColor(const BrowserNode& node) {
+  if (!canChange()) {
+    return;
+  }
+  // The six colours new measurements take in turn (the model's
+  // MEASUREMENT_COLORS), red, black and white, then any other.
+  static const std::pair<const char*, const char*> colours[] = {
+      {QT_TR_NOOP("Orange"), "#d9480f"}, {QT_TR_NOOP("Blue"), "#1971c2"},  {QT_TR_NOOP("Green"), "#2f9e44"},
+      {QT_TR_NOOP("Magenta"), "#c2255c"}, {QT_TR_NOOP("Violet"), "#7048e8"}, {QT_TR_NOOP("Amber"), "#e67700"},
+      {QT_TR_NOOP("Red"), "#e03131"},    {QT_TR_NOOP("Black"), "#212529"},  {QT_TR_NOOP("White"), "#f8f9fa"}};
+  const QString current = m_snapshot.measurement(node.uid).value(QStringLiteral("color")).toString();
+  QStringList names;
+  int at = -1;
+  for (const auto& [name, hex] : colours) {
+    if (QLatin1String(hex) == current) {
+      at = static_cast<int>(names.size());
+    }
+    names << tr(name);
+  }
+  names << tr("Other…");
+  qDebug().noquote() << QStringLiteral("Measurement colour dialog opened: %1 %2 (%3)")
+                            .arg(node.name, current, names.join(QStringLiteral(" | ")));
+  bool ok = false;
+  const QString chosen = dialogItem(m_window, tr("Measurement Colour"), tr("Colour of %1:").arg(node.name), names,
+                                    at >= 0 ? at : static_cast<int>(names.size()) - 1, &ok);
+  if (!ok) {
+    return;
+  }
+  QString hex;
+  const qsizetype index = names.indexOf(chosen);
+  if (index >= 0 && index < static_cast<qsizetype>(std::size(colours))) {
+    hex = QLatin1String(colours[index].second);
+  } else {
+    const QColor picked = QColorDialog::getColor(QColor(current), m_window, tr("Colour of %1").arg(node.name));
+    if (!picked.isValid()) {
+      return;
+    }
+    hex = picked.name();
+  }
+  if (hex != current && m_host.runModelCommand(cmd("set_measurement_color", {{QStringLiteral("name"), node.uid},
+                                                                           {QStringLiteral("color"), hex}}))) {
+    qDebug().noquote() << QStringLiteral("Measurement %1 colour %2").arg(node.name, hex);
+  }
+}
+
+void BrowserController::chooseMeasurementKind(const BrowserNode& node) {
+  if (!canChange()) {
+    return;
+  }
+  static const std::pair<const char*, const char*> kinds[] = {
+      {"distance", QT_TR_NOOP("Distance")},           {"angle", QT_TR_NOOP("Angle")},
+      {"offset", QT_TR_NOOP("Offset")},               {"axis_distance", QT_TR_NOOP("Axis distance")},
+      {"center_distance", QT_TR_NOOP("Centre distance")}, {"radius", QT_TR_NOOP("Radius")},
+      {"diameter", QT_TR_NOOP("Diameter")}};
+  const QJsonObject measurement = m_snapshot.measurement(node.uid);
+  const QJsonObject values = measurement.value(QStringLiteral("values")).toObject();
+  const QString current = measurement.value(QStringLiteral("kind")).toString();
+  QStringList keys;
+  QStringList names;
+  for (const auto& [key, name] : kinds) {
+    if (values.contains(QLatin1String(key))) {
+      keys << QLatin1String(key);
+      names << tr(name);
+    }
+  }
+  if (keys.isEmpty()) {
+    return;
+  }
+  qDebug().noquote() << QStringLiteral("Measurement kind dialog opened: %1 %2 (%3)")
+                            .arg(node.name, current, keys.join(QStringLiteral(" | ")));
+  bool ok = false;
+  const QString chosen = dialogItem(m_window, tr("Measurement Kind"), tr("%1 shows:").arg(node.name), names,
+                                    std::max(0, static_cast<int>(keys.indexOf(current))), &ok);
+  const qsizetype index = names.indexOf(chosen);
+  if (!ok || index < 0 || keys[index] == current) {
+    return;
+  }
+  if (m_host.runModelCommand(cmd("set_measurement_kind", {{QStringLiteral("name"), node.uid},
+                                                         {QStringLiteral("kind"), keys[index]}}))) {
+    qDebug().noquote() << QStringLiteral("Measurement %1 kind %2").arg(node.name, keys[index]);
   }
 }
 
@@ -903,7 +1016,7 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     }
     // Another parent for the occurrence, with what is in it (mitcad#219).
     if (!root) {
-      menu.add(QStringLiteral("component"), tr("Move to..."), [this, node] { moveOccurrence(node); });
+      menu.add(QStringLiteral("component"), tr("Move to…"), [this, node] { moveOccurrence(node); });
     }
     menu.separator();
     if (!root) {
@@ -936,14 +1049,16 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     }
     // Last, so that the entries above keep their places (mitcad#220).
     menu.separator();
-    menu.add(QStringLiteral("component"), tr("Design Policy..."), [this, node] { openPolicy(node.uid); });
+    menu.add(QStringLiteral("component"), tr("Design Policy…"), [this, node] { openPolicy(node.uid); });
+    // The default material of its bodies (mitcad#640, mitcad#655).
+    menu.add(QStringLiteral("material"), tr("Material…"), [this, node] { openMaterial({}, node.uid); });
     // The component's and the occurrence's properties (mitcad#496).
-    menu.add(QStringLiteral("parameters"), tr("Property Sets..."), [this, node] {
+    menu.add(QStringLiteral("parameters"), tr("Property Sets…"), [this, node] {
       openPropertySets({QString(), node.occurrence, node.occurrence.isEmpty() ? node.uid : QString()});
     });
     // The whole design turned by quarter turns (mitcad#502).
     if (root) {
-      menu.add(QStringLiteral("orientation-cube"), tr("Reorient Design..."), [this] { openReorient(); });
+      menu.add(QStringLiteral("orientation-cube"), tr("Reorient Design…"), [this] { openReorient(); });
     }
     break;
   }
@@ -958,23 +1073,25 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.add(QStringLiteral("component"), tr("Create Components from Bodies"),
              [this, node] { componentsFromBodies(node); });
     // The body with the features that made it (mitcad#171).
-    menu.add(QStringLiteral("component"), tr("Move to Component..."), [this, node] {
+    menu.add(QStringLiteral("component"), tr("Move to Component…"), [this, node] {
       moveToComponent({{QStringLiteral("component"), node.component},
                        {QStringLiteral("source_occurrence"), node.occurrence},
                        {QStringLiteral("bodies"), QJsonArray{node.uid}}});
     });
-    menu.add(QStringLiteral("appearance"), tr("Appearance..."), [this, node] {
+    menu.add(QStringLiteral("appearance"), tr("Appearance…"), [this, node] {
       openAppearances({SelectionItem{SelectKind::Body, node.uid, QString(), QString()}});
     });
+    // Its material: density, appearance and filament (mitcad#640).
+    menu.add(QStringLiteral("material"), tr("Material…"), [this, node] { openMaterial({node.uid}); });
     // Its properties, its occurrence's and its component's (mitcad#496).
-    menu.add(QStringLiteral("parameters"), tr("Property Sets..."),
+    menu.add(QStringLiteral("parameters"), tr("Property Sets…"),
              [this, node] { openPropertySets({node.uid, node.occurrence, QString()}); });
     // A sheet-metal body (mitcad#210): its rules and Flat Pattern.
     if (const QJsonObject sheet = m_snapshot.sheet(node.uid); !sheet.isEmpty()) {
       const QString rules = sheet.value(QStringLiteral("rules")).toString();
       menu.add(QStringLiteral("sheet-rules"), tr("Edit Sheet Rules"), [this, rules] { m_host.editFeature(rules); });
       if (sheet.value(QStringLiteral("flat_pattern")).isObject()) {
-        menu.add(QStringLiteral("export-dxf"), tr("Export Flat Pattern..."),
+        menu.add(QStringLiteral("export-dxf"), tr("Export Flat Pattern…"),
                  [this, node] { m_host.exportFlatPattern(node.uid); });
       } else {
         menu.add(QStringLiteral("flat-pattern"), tr("Create Flat Pattern"), [this, node] { editFlatPattern(node.uid); });
@@ -992,7 +1109,7 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.add(QStringLiteral("export"), tr("Save As DXF"), [this, node] { m_host.exportSketch(node.uid); });
     // The timeline's Move to Component (mitcad#218): the sketch from the
     // occurrence of the row, with what goes with it.
-    menu.add(QStringLiteral("component"), tr("Move to Component..."), [this, node] {
+    menu.add(QStringLiteral("component"), tr("Move to Component…"), [this, node] {
       moveToComponent({{QStringLiteral("component"), node.component},
                        {QStringLiteral("features"), QJsonArray{node.uid}},
                        {QStringLiteral("source_occurrence"), node.occurrence}});
@@ -1185,8 +1302,26 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.add(QStringLiteral("flat-pattern"), tr("Edit Flat Pattern"), [this, node] { editFlatPattern(node.uid); });
     menu.add(node.visible ? QStringLiteral("eye-off") : QStringLiteral("eye"),
              node.visible ? tr("Show Folded") : tr("Show Flat"), [this, node] { toggleVisibility(node); });
-    menu.add(QStringLiteral("export-dxf"), tr("Export DXF..."), [this, node] { m_host.exportFlatPattern(node.uid); });
+    menu.add(QStringLiteral("export-dxf"), tr("Export DXF…"), [this, node] { m_host.exportFlatPattern(node.uid); });
     menu.separator();
+    menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
+    break;
+  // Measurement objects (mitcad#649).
+  case BrowserNode::Type::Measurements:
+    menu.add(QStringLiteral("measure"), tr("Measure"), [this] {
+      if (canChange()) {
+        m_host.startCommand(QStringLiteral("inspect.measure"), {}, nullptr);
+      }
+    });
+    break;
+  case BrowserNode::Type::Measurement:
+    menu.add(QStringLiteral("appearance"), tr("Colour…"), [this, node] { chooseMeasurementColor(node); });
+    if (m_snapshot.measurement(node.uid).value(QStringLiteral("values")).toObject().size() > 1) {
+      menu.add(QStringLiteral("measure"), tr("Kind…"), [this, node] { chooseMeasurementKind(node); });
+    }
+    menu.separator();
+    visibility();
+    renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
     break;
   default:
@@ -1461,7 +1596,7 @@ void BrowserController::featureMenu(const QString& uid, const QPoint& at, const 
              feature->type != QStringLiteral("capture_position") &&
              feature->type != QStringLiteral("constraint_set")) {
     const QString component = feature->component;
-    menu.add(QStringLiteral("component"), tr("Move to Component..."), [this, uid, component, row] {
+    menu.add(QStringLiteral("component"), tr("Move to Component…"), [this, uid, component, row] {
       QJsonObject selection{{QStringLiteral("component"), component},
                             {QStringLiteral("features"), QJsonArray{uid}}};
       // A browser row identifies an occurrence. A timeline-only selection
@@ -1899,6 +2034,15 @@ void BrowserController::openAppearances(const Selection& targets) {
 void BrowserController::openPropertySets(const PropertyTarget& target) {
   if (!m_propertySets) {
     m_propertySets = new PropertySetsDialog(m_host, m_window);
+    // Material… of the print settings' Filament row (mitcad#655).
+    m_propertySets->openMaterial = [this](const QStringList& bodies, const QString& component) {
+      openMaterial(bodies, component);
+    };
+    // Edit… beside a Printer or Process profile.
+    m_propertySets->openProfile = [this](const QString& kind, const QString& key) { openProfiles(kind, key); };
+    m_propertySets->openOwnSettings = [this](const QString& owner, const QString& name) {
+      openOwnSettings(owner, name);
+    };
   }
   showDialog(m_propertySets);
   if (!m_propertySets->testAttribute(Qt::WA_DontShowOnScreen)) {
@@ -1913,6 +2057,31 @@ void BrowserController::openPropertySets(const PropertyTarget& target) {
   }
   qDebug().noquote() << QStringLiteral("Property Sets opened for %1").arg(what.join(QStringLiteral(", ")));
   m_propertySets->setTarget(target);
+}
+
+void BrowserController::openProfiles(const QString& kind, const QString& key) {
+  if (!m_profiles) {
+    m_profiles = new ProfilesDialog(m_host, m_window);
+  }
+  showDialog(m_profiles);
+  if (!m_profiles->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_profiles->raise();
+    m_profiles->activateWindow();
+  }
+  qDebug().noquote() << QStringLiteral("Printers and processes opened");
+  m_profiles->showItem(kind, key);
+}
+
+void BrowserController::openOwnSettings(const QString& owner, const QString& name) {
+  if (!m_ownSettings) {
+    m_ownSettings = new OwnSettingsDialog(m_host, m_window);
+  }
+  showDialog(m_ownSettings);
+  if (!m_ownSettings->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_ownSettings->raise();
+    m_ownSettings->activateWindow();
+  }
+  m_ownSettings->setOwner(owner, name);
 }
 
 void BrowserController::openPolicy(const QString& component) {
@@ -1937,6 +2106,42 @@ void BrowserController::openPolicy(const QString& component) {
                               .arg(m_snapshot.componentName(component),
                                    preset.isEmpty() ? QStringLiteral("custom") : preset);
   }
+}
+
+void BrowserController::openMaterial(const QStringList& bodies, const QString& component, bool keepOpen) {
+  if (!m_materials) {
+    m_materials = new MaterialsDialog(m_host, m_window);
+    m_materials->editAppearances = [this] { openAppearances({}); };
+  }
+  // The targets by name: Assign to Body1, Assign to Arm.
+  QStringList names;
+  if (!component.isEmpty()) {
+    names << m_snapshot.componentName(component);
+  } else {
+    try {
+      for (const QJsonValue& value : m_host.model().queryArray(QStringLiteral("bodies"))) {
+        const QJsonObject row = value.toObject();
+        if (bodies.contains(row.value(QStringLiteral("uid")).toString())) {
+          names << row.value(QStringLiteral("name")).toString();
+        }
+      }
+    } catch (const std::exception&) {
+      // Named by their count.
+    }
+  }
+  showDialog(m_materials);
+  if (!m_materials->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_materials->raise();
+    m_materials->activateWindow();
+  }
+  const QString what = !component.isEmpty() ? QStringLiteral("component %1").arg(component)
+                                             : QStringLiteral("bodies %1").arg(bodies.join(QStringLiteral(", ")));
+  qDebug().noquote() << (component.isEmpty() && bodies.isEmpty() ? QStringLiteral("Materials opened")
+                                                                 : QStringLiteral("Materials opened for %1").arg(what));
+  // From 3D Print's Assign materials… the window stays after Assign
+  // (mitcad#655): several new materials, several bodies.
+  m_materials->setKeepOpen(keepOpen);
+  m_materials->setTargets(bodies, component, names);
 }
 
 void BrowserController::openReorient() {

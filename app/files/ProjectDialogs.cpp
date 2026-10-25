@@ -40,6 +40,7 @@
 #include "../framework/Json.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
+#include "../platform/MacDialogs.hpp"
 #include "CloudSection.hpp"
 #include "ProjectSettingsFields.hpp"
 #include "Projects.hpp"
@@ -102,7 +103,7 @@ QStringList names(const QJsonValue& list, int most) {
   QStringList out;
   for (const QJsonValue& value : list.toArray()) {
     if (out.size() == most) {
-      out << QStringLiteral("...");
+      out << QStringLiteral("…");
       break;
     }
     out << value.toString();
@@ -383,7 +384,7 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   m_folder = new QLineEdit(QDir::toNativeSeparators(options.folder.isEmpty() ? freeProjectFolder() : options.folder));
   m_folder->setObjectName(QStringLiteral("projectFolder"));
   m_folder->setMinimumWidth(420);
-  m_browse = new QPushButton(tr("Brow&se..."));
+  m_browse = new QPushButton(tr("Brow&se…"));
   m_browse->setAutoDefault(false);
   auto* folderRow = new QHBoxLayout;
   folderRow->addWidget(m_folder, 1);
@@ -408,6 +409,7 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   form->addRow(tr("Storage:"), storageColumn);
   layout->addLayout(form);
   m_cloudBox = new QGroupBox(tr("Cloud"));
+  mac::styleSection(m_cloudBox);
   auto* cloudColumn = new QVBoxLayout(m_cloudBox);
   m_section = new CloudSection(checkRemote, describeForNewProject);
   cloudColumn->addWidget(m_section);
@@ -446,7 +448,8 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   outer->addWidget(m_buttons);
   // Enter creates, also while Create waits for a check (the button is the
   // dialog's default only once it is in the dialog).
-  m_create->setDefault(true);
+  mac::styleDialogButtons(m_buttons, m_create, true);
+  mac::styleDialog(this);
 
   m_check = std::make_unique<FolderCheck>(this, [this] { folderChecked(); });
   const bool preset = (options.cloud || !options.url.isEmpty()) && !git.missing;
@@ -735,8 +738,8 @@ void NewProjectDialog::create(bool asCloud) {
       this);
   m_task = task;
   setBusy(true);
-  m_progress->follow(task, asCloud ? tr("Creating the project and sending it to %1...").arg(url)
-                                   : tr("Creating the project..."));
+  m_progress->follow(task, asCloud ? tr("Creating the project and sending it to %1…").arg(url)
+                                   : tr("Creating the project…"));
   // The progress row is shown: room for it, so that the contents do not
   // start to scroll.
   fitToContents(FitMode::GrowOnly);
@@ -841,7 +844,7 @@ OpenFromCloudDialog::OpenFromCloudDialog(QWidget* parent, const OpenFromCloudOpt
   auto* form = new QFormLayout;
   m_folder = new QLineEdit(QDir::toNativeSeparators(options.folder));
   m_folder->setMinimumWidth(420);
-  m_browse = new QPushButton(tr("Brow&se..."));
+  m_browse = new QPushButton(tr("Brow&se…"));
   m_browse->setAutoDefault(false);
   auto* folderRow = new QHBoxLayout;
   folderRow->addWidget(m_folder, 1);
@@ -870,7 +873,8 @@ OpenFromCloudDialog::OpenFromCloudDialog(QWidget* parent, const OpenFromCloudOpt
   m_open = buttons->addButton(tr("&Open"), QDialogButtonBox::AcceptRole);
   buttons->button(QDialogButtonBox::Cancel)->setAutoDefault(false);
   layout->addWidget(buttons);
-  m_open->setDefault(true); // once in the dialog
+  mac::styleDialogButtons(buttons, m_open, true);
+  mac::styleDialog(this);
   fillAuthor(m_name, m_email);
   form->setRowVisible(m_authorLabel, false);
   m_check = std::make_unique<FolderCheck>(this, [this] { updateState(); });
@@ -1076,8 +1080,8 @@ void OpenFromCloudDialog::openClicked() {
     widget->setEnabled(false);
   }
   m_problem->clear();
-  m_progress->follow(task, what == QLatin1String("clone") ? tr("Opening %1...").arg(url)
-                                                          : tr("Making the project in %1...").arg(url));
+  m_progress->follow(task, what == QLatin1String("clone") ? tr("Opening %1…").arg(url)
+                                                          : tr("Making the project in %1…").arg(url));
   connect(task, &RemoteTask::finished, this, [this, task, what] { finished(task, what); });
   task->start();
 }
@@ -1149,14 +1153,14 @@ std::optional<QString> askChangeAddress(QWidget* parent, const QString& root, co
   const auto describe = [current](const QJsonObject& answer, bool& ok) -> QString {
     if (answer.value(QStringLiteral("new_folder")).toBool() || answer.value(QStringLiteral("empty")).toBool()) {
       ok = false;
-      return tr("This repository is empty, not the project's: Change... only takes a new address of the same "
+      return tr("This repository is empty, not the project's: Change… only takes a new address of the same "
                 "repository.");
     }
     if (answer.value(QStringLiteral("related")).toBool()) {
       return tr("✓ The same repository: it holds the project's history.");
     }
     ok = false;
-    return tr("This repository has another history: Change... only takes a new address of the same repository. "
+    return tr("This repository has another history: Change… only takes a new address of the same repository. "
               "Choose an empty repository with Stop Syncing and Share, or open that project with Open from Cloud.");
   };
   auto* section = new CloudSection(checker, describe);

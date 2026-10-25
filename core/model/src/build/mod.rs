@@ -95,6 +95,9 @@ mod two_points_tests;
 mod wall_bearing_tests;
 #[cfg(test)]
 mod wall_splice_tests;
+// A side placement's Offset measured in the design (mitcad#646).
+#[cfg(test)]
+mod side_offset_tests;
 
 use std::fmt;
 use std::str::FromStr;

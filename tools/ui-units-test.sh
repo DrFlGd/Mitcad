@@ -4,7 +4,7 @@
 # Metric defaults (P11, docs/architecture.md) through the real
 # UI, on the demo block (60 x 40 x 20 mm): wherever a unit or a measurement
 # system is chosen, the default is metric and inches are only a choice.
-#   - The document is in millimetres (Document Settings, Change Active
+#   - The document is in millimetres (Design Settings, Change Active
 #     Units offers mm first).
 #   - Export writes STEP in millimetres unless another unit is chosen.
 #   - Insert Mesh and Insert DXF read files without units as millimetres.
@@ -46,11 +46,11 @@ ui_start_app --demo --no-native-dialogs
 ui_step "fit (F6)"                         ui_key F6
 
 echo "--- The document"
-ui_step "select Document Settings"         ui_click_logged "Browser Root/Document Settings"
+ui_step "select Design Settings"         ui_click_logged "Browser Root/Design Settings"
 ui_step "expand it (Right)"                ui_key Right
-ui_expect_log "Browser Root/Document Settings/Units: mm at" "the document is in millimetres"
+ui_expect_log "Browser Root/Design Settings/Units: mm at" "the document is in millimetres"
 ui_mark
-ui_step "double-click the unit"            ui_double_click_logged "Browser Root/Document Settings/Units: mm"
+ui_step "double-click the unit"            ui_double_click_logged "Browser Root/Design Settings/Units: mm"
 ui_expect_new "Units dialog opened: mm (mm | cm | m | in | ft)" "Change Active Units offers mm first"
 ui_focus_dialog '^Units$'
 ui_step "keep it (Esc)"                    ui_key Escape

@@ -1,0 +1,23 @@
+[
+  {"comment": "Sketch with many patterned circles (mitcad#670): one circle (c1, centre p2) drawn as the Circle tool draws it, then a 10 x 10 rectangular pattern of it, 100 circles. Run with mitcad-cli run --timings: the time of the pattern, of a full solve (the spacing changed), of single drag steps of the original's centre (all copies follow) and of its radius. perf_sketch_pattern_5.json and _20.json are the same at 25 and 400 circles."},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.circle", "sketch": "F1", "mode": "center", "center": [0, 0], "radius": 3},
+  {"cmd": "sketch.rectangular_pattern", "sketch": "F1", "entities": ["c1"], "count": [10, 10], "spacing": [10, 10]},
+  {"expect": {"query": {"query": "sketch", "uid": "F1"}, "result": {"patterns": [{"count": [10, 10]}]}}},
+  {"comment": "A full solve: the spacing of the first direction changed, every copy moves."},
+  {"cmd": "set_parameter", "name": "d1", "value": 12},
+  {"comment": "Drag steps of the original's centre, as the app sends one per mouse move."},
+  {"cmd": "sketch.drag", "sketch": "F1", "entity": "p2", "to": [1, 0.5]},
+  {"cmd": "sketch.drag", "sketch": "F1", "entity": "p2", "to": [2, 1]},
+  {"cmd": "sketch.drag", "sketch": "F1", "entity": "p2", "to": [3, 1.5]},
+  {"cmd": "sketch.drag", "sketch": "F1", "entity": "p2", "to": [4, 2]},
+  {"cmd": "sketch.drag", "sketch": "F1", "entity": "p2", "to": [5, 2.5]},
+  {"comment": "Drag steps of the original circle itself: its radius, all copies follow."},
+  {"cmd": "sketch.drag", "sketch": "F1", "entity": "c1", "radius": 3.5},
+  {"cmd": "sketch.drag", "sketch": "F1", "entity": "c1", "radius": 4},
+  {"cmd": "sketch.drag", "sketch": "F1", "entity": "c1", "radius": 4.5},
+  {"comment": "The sketch as the app reads it after every step, then again unchanged (mitcad#679: the answer kept)."},
+  {"expect": {"query": {"query": "sketch", "uid": "F1"}, "result": {"dof": 3}}},
+  {"expect": {"query": {"query": "sketch", "uid": "F1"}, "result": {"dof": 3}}},
+  {"expect": {"sketch": "Sketch1", "dof": 3}}
+]

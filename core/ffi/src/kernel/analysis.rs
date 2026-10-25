@@ -43,6 +43,15 @@ pub mod ffi {
         angle: f64,
     }
 
+    /// Exact nearest-face distances at every vertex of two planar polygons.
+    /// Convexity and the maximum are evaluated on the Rust side.
+    struct AnalysisFaceGap {
+        supported: bool,
+        vertices_a: Vec<f64>,
+        vertices_b: Vec<f64>,
+        distances: Vec<f64>,
+    }
+
     struct AnalysisPlane {
         origin: [f64; 3],
         normal: [f64; 3],
@@ -114,6 +123,12 @@ pub mod ffi {
             b: &Shape,
             b_name: &str,
         ) -> Result<AnalysisSeparation>;
+        fn analysis_face_gap(
+            a: &Shape,
+            a_name: &str,
+            b: &Shape,
+            b_name: &str,
+        ) -> Result<AnalysisFaceGap>;
 
         fn analysis_interferences(
             bodies: &ShapeList,
@@ -274,6 +289,20 @@ pub fn separation(s: ffi::AnalysisSeparation) -> Separation {
         inside: s.inside,
         angle: s.has_angle.then_some(s.angle),
     }
+}
+
+/// Distance to a convex set is convex. Its maximum on a polygon is
+/// therefore attained at a vertex; checking both directions gives the
+/// symmetric Hausdorff distance without sampling or extending the faces.
+pub fn maximum_face_gap(gap: ffi::AnalysisFaceGap) -> Option<f64> {
+    if !gap.supported {
+        return None;
+    }
+    mitcad_model::analysis::maximum_polygon_face_gap(
+        &gap.vertices_a,
+        &gap.vertices_b,
+        &gap.distances,
+    )
 }
 
 fn deviation(d: &ffi::AnalysisDeviation) -> Deviation {

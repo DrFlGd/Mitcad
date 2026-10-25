@@ -20,6 +20,7 @@ include(GNUInstallDirs)
 # --- Files ---------------------------------------------------------------
 
 install(TARGETS mitcad mitcad-cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS mitcad-mcp-launcher RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 # The render worker (docs/rendering.md) next to mitcad, which offers View >
 # Rendered when it is there; make-appimage.sh adds its libraries.
 install(TARGETS mitcad-render RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

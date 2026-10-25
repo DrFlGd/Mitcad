@@ -5,7 +5,7 @@ use std::fmt;
 
 use super::Span;
 use super::ast::{Arity, BinaryOp, Constant, Function, Node, NodeKind};
-use super::lexer::{Tok, Token, lex};
+use super::lexer::{Tok, Token, lex, text_of};
 use super::units::{Unit, base_unit, is_unit_name, unit_power};
 
 /// Deepest accepted nesting of parentheses, unary operators and calls.
@@ -64,6 +64,21 @@ pub enum ParseErrorKind {
     /// Two different length (or angle) units in one unit, such as `mm*in`.
     IncompatibleUnits(String),
     TooComplex,
+    /// A `"` or `'` without the closing one.
+    UnterminatedText,
+    /// Text in quotes where it cannot be. Since mitcad#664 quoted text is a
+    /// text value everywhere, so the parser no longer gives this error; it
+    /// stays for callers that match on it.
+    Text,
+    /// `ifs` or `let` with an argument left over from its pairs.
+    UnpairedArguments {
+        function: &'static str,
+        found: usize,
+    },
+    /// A `let` name that is a unit, function or constant.
+    ReservedLocalName(String),
+    /// A name given twice in one `let`.
+    DuplicateLocalName(String),
 }
 
 impl fmt::Display for ParseError {
@@ -111,6 +126,27 @@ impl fmt::Display for ParseError {
                 )?;
             }
             ParseErrorKind::TooComplex => f.write_str("expression is too complex")?,
+            ParseErrorKind::UnterminatedText => f.write_str("text without its closing quote")?,
+            ParseErrorKind::Text => {
+                f.write_str(
+                    "text in quotes can only be the unit of 'value', as in 'value(x; \"mm\")'",
+                )?;
+            }
+            ParseErrorKind::UnpairedArguments { function, found } => {
+                let pairs = if *function == "let" {
+                    "names and values in pairs, then the result"
+                } else {
+                    "conditions and values in pairs"
+                };
+                write!(f, "'{function}' takes {pairs}, found {found} arguments")?;
+            }
+            ParseErrorKind::ReservedLocalName(name) => write!(
+                f,
+                "'{name}' is a unit, function or constant and cannot name a value in 'let'"
+            )?,
+            ParseErrorKind::DuplicateLocalName(name) => {
+                write!(f, "'{name}' is named twice in 'let'")?;
+            }
         }
         write!(f, " at byte {}", self.span.start)
     }
@@ -131,6 +167,7 @@ pub(crate) fn parse(text: &str) -> Result<Node, ParseError> {
         tokens,
         pos: 0,
         nesting: 0,
+        locals: Vec::new(),
     };
     let node = parser.expression()?;
     if let Some(token) = parser.peek() {
@@ -145,6 +182,9 @@ struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     nesting: usize,
+    /// Names of the enclosing `let`s that are given so far, innermost
+    /// last.
+    locals: Vec<String>,
 }
 
 impl Parser<'_> {
@@ -212,11 +252,22 @@ impl Parser<'_> {
 
     fn expression(&mut self) -> Result<Node, ParseError> {
         let start = self.start();
-        let mut lhs = self.additive()?;
+        let mut lhs = self.concatenation()?;
         while let Some(op) = self.peek_tok().and_then(comparison_op) {
             self.pos += 1;
-            let rhs = self.additive()?;
+            let rhs = self.concatenation()?;
             lhs = binary(op, lhs, rhs, self.span_from(start));
+        }
+        Ok(lhs)
+    }
+
+    /// Operands joined by `&` (mitcad#664).
+    fn concatenation(&mut self) -> Result<Node, ParseError> {
+        let start = self.start();
+        let mut lhs = self.additive()?;
+        while self.eat(Tok::Amp).is_some() {
+            let rhs = self.additive()?;
+            lhs = binary(BinaryOp::Concat, lhs, rhs, self.span_from(start));
         }
         Ok(lhs)
     }
@@ -294,8 +345,8 @@ impl Parser<'_> {
         };
         let name = self.source(token);
         let Some(base) = base_unit(name) else {
-            let reserved =
-                Function::from_name(name).is_some() || Constant::from_name(name).is_some();
+            let reserved = Function::from_name(name).is_some_and(Function::is_reserved)
+                || Constant::from_name(name).is_some();
             let kind = if reserved {
                 ParseErrorKind::Unexpected {
                     found: name.to_owned(),
@@ -341,6 +392,10 @@ impl Parser<'_> {
                 // Parentheses add no node; enclosing nodes' spans cover them.
                 Ok(inner)
             }
+            Tok::Str => Ok(Node::new(
+                NodeKind::Text(text_of(self.source(token))),
+                token.span,
+            )),
             _ => Err(self.unexpected(token, "a value")),
         }
     }
@@ -359,16 +414,29 @@ impl Parser<'_> {
     fn name(&mut self, token: Token) -> Result<Node, ParseError> {
         let name = self.source(token).to_owned();
         if self.peek_tok() == Some(Tok::LParen) {
+            // `PI()`: a constant with an empty argument list.
+            if let Some(constant) = Constant::from_name(&name)
+                && Function::from_name(&name).is_none()
+                && self.tokens.get(self.pos + 1).map(|t| t.tok) == Some(Tok::RParen)
+            {
+                self.pos += 2;
+                let span = self.span_from(token.span.start);
+                return Ok(Node::new(NodeKind::Constant(constant), span));
+            }
             return self.call(token, name);
+        }
+        if self.locals.contains(&name) {
+            return Ok(Node::new(NodeKind::Local(name), token.span));
         }
         let error = |kind| Err(ParseError::new(kind, token.span));
         if let Some(constant) = Constant::from_name(&name) {
             Ok(Node::new(NodeKind::Constant(constant), token.span))
-        } else if Function::from_name(&name).is_some() {
+        } else if Function::from_name(&name).is_some_and(Function::is_reserved) {
+            // The text functions' names are references here (mitcad#664).
             error(ParseErrorKind::MissingArguments(name))
         } else if is_unit_name(&name) {
             error(ParseErrorKind::UnitWithoutValue(name))
-        } else if super::UNSUPPORTED_NAMES.contains(&name.as_str()) {
+        } else if super::is_unsupported_name(&name) {
             error(ParseErrorKind::Unsupported(name))
         } else {
             Ok(Node::new(NodeKind::Reference(name), token.span))
@@ -377,7 +445,7 @@ impl Parser<'_> {
 
     fn call(&mut self, name_token: Token, name: String) -> Result<Node, ParseError> {
         let Some(function) = Function::from_name(&name) else {
-            let kind = if super::UNSUPPORTED_NAMES.contains(&name.as_str()) {
+            let kind = if super::is_unsupported_name(&name) {
                 ParseErrorKind::Unsupported(name)
             } else {
                 ParseErrorKind::UnknownFunction(name)
@@ -387,7 +455,11 @@ impl Parser<'_> {
         let open = self.eat(Tok::LParen).expect("caller checked '('");
         let first = self.pos;
         self.enter(open.span)?;
-        let args = self.arguments();
+        let args = match function {
+            Function::Let => self.let_arguments(),
+            Function::Value => self.value_arguments(),
+            _ => self.arguments(),
+        };
         self.leave();
         let args = args?;
         let last = self.pos;
@@ -410,7 +482,112 @@ impl Parser<'_> {
                 span,
             ));
         }
+        // `ifs` takes pairs; `let` pairs and then its result.
+        let paired = args.len().is_multiple_of(2) != (function == Function::Let);
+        if function.takes_pairs() && !paired {
+            return Err(ParseError::new(
+                ParseErrorKind::UnpairedArguments {
+                    function: function.name(),
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
         Ok(Node::new(NodeKind::Call { function, args }, span))
+    }
+
+    /// The arguments of `let`: a name and its value in turn, then the
+    /// result. A name can be used from the argument after its value on,
+    /// and only inside the `let`.
+    fn let_arguments(&mut self) -> Result<Vec<Node>, ParseError> {
+        let outer = self.locals.len();
+        let mut args = Vec::new();
+        let result = self.let_pairs(outer, &mut args);
+        self.locals.truncate(outer);
+        result.map(|()| args)
+    }
+
+    fn let_pairs(&mut self, outer: usize, args: &mut Vec<Node>) -> Result<(), ParseError> {
+        loop {
+            let name_place = args.len().is_multiple_of(2);
+            let named = name_place
+                && self.peek_tok() == Some(Tok::Ident)
+                && matches!(
+                    self.tokens.get(self.pos + 1).map(|t| t.tok),
+                    Some(Tok::Semicolon | Tok::Comma)
+                );
+            if named {
+                let token = self.peek().expect("checked above");
+                let name = self.source(token).to_owned();
+                if super::is_reserved_name(&name) {
+                    return Err(ParseError::new(
+                        ParseErrorKind::ReservedLocalName(name),
+                        token.span,
+                    ));
+                }
+                if self.locals[outer..].contains(&name) {
+                    return Err(ParseError::new(
+                        ParseErrorKind::DuplicateLocalName(name),
+                        token.span,
+                    ));
+                }
+                // The name and its separator.
+                self.pos += 2;
+                args.push(Node::new(NodeKind::Local(name.clone()), token.span));
+                args.push(self.expression()?);
+                self.locals.push(name);
+            } else {
+                let arg = self.expression()?;
+                let span = arg.span;
+                args.push(arg);
+                if name_place && matches!(self.peek_tok(), Some(Tok::Semicolon | Tok::Comma)) {
+                    // A value where a name belongs.
+                    return Err(ParseError::new(
+                        ParseErrorKind::Unexpected {
+                            found: self.text[span.start..span.end].to_owned(),
+                            expected: "a name",
+                        },
+                        span,
+                    ));
+                }
+            }
+            if self.eat(Tok::Semicolon).is_none() && self.eat(Tok::Comma).is_none() {
+                return Ok(());
+            }
+        }
+    }
+
+    /// The arguments of `value`: a value and its unit, in quotes (`"mm"`)
+    /// or as a value (`1 mm`).
+    fn value_arguments(&mut self) -> Result<Vec<Node>, ParseError> {
+        let mut args = vec![self.expression()?];
+        while self.eat(Tok::Semicolon).is_some() || self.eat(Tok::Comma).is_some() {
+            match self.peek() {
+                Some(token) if token.tok == Tok::Str && args.len() == 1 => {
+                    self.pos += 1;
+                    args.push(self.unit_text(token)?);
+                }
+                _ => args.push(self.expression()?),
+            }
+        }
+        Ok(args)
+    }
+
+    /// The unit of a quoted text token, such as `"mm"` or `"in^2"`.
+    fn unit_text(&self, token: Token) -> Result<Node, ParseError> {
+        let start = token.span.start + 1;
+        let text = &self.text[start..token.span.end - 1];
+        let unit = Unit::parse(text).map_err(|e| {
+            let span = Span::new(e.span.start + start, e.span.end + start);
+            ParseError::new(e.kind, span)
+        })?;
+        if unit.is_unitless() {
+            return Err(ParseError::new(
+                ParseErrorKind::UnknownUnit(text.to_owned()),
+                token.span,
+            ));
+        }
+        Ok(Node::new(NodeKind::UnitText(unit), token.span))
     }
 
     /// The call at `span`, whose arguments are `args`, with `;` between
@@ -497,7 +674,12 @@ fn check_depth(root: &Node) -> Result<(), ParseError> {
             return Err(ParseError::new(ParseErrorKind::TooComplex, node.span));
         }
         match &node.kind {
-            NodeKind::Number(_) | NodeKind::Constant(_) | NodeKind::Reference(_) => {}
+            NodeKind::Number(_)
+            | NodeKind::Constant(_)
+            | NodeKind::Reference(_)
+            | NodeKind::Local(_)
+            | NodeKind::UnitText(_)
+            | NodeKind::Text(_) => {}
             NodeKind::Neg(x) | NodeKind::WithUnit { value: x, .. } => stack.push((x, depth + 1)),
             NodeKind::Binary { lhs, rhs, .. } => {
                 stack.push((lhs, depth + 1));

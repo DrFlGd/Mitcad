@@ -12,6 +12,7 @@ use crate::expr::{
     AngleUnit, Dims, EvalContext, Expr, LengthUnit, ParamKind, ParamSpec, ParameterTable,
     TableError, Unit,
 };
+use crate::expr::{Bounds, ParamLimits};
 pub use crate::expr::{ChangeSet, ParamId, Parameter};
 use crate::ids::FeatureUid;
 
@@ -92,6 +93,14 @@ pub fn unit_for(dims: Dims, context: &EvalContext) -> Option<Unit> {
     }
 }
 
+/// A text's 64-bit FNV-1a hash, the same on every computer and in every
+/// build (a recompute keeps it in stored results).
+fn text_bits(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
 /// Parameters in creation order, with their owners.
 #[derive(Debug, Clone, Default)]
 pub struct Parameters {
@@ -160,6 +169,22 @@ impl Parameters {
     /// The value in millimetres or radians.
     pub fn value(&self, id: ParamId) -> Option<f64> {
         self.get(id).map(Parameter::value)
+    }
+
+    /// The value of a text parameter (mitcad#664); None for a number or a
+    /// missing parameter.
+    pub fn text(&self, id: ParamId) -> Option<&str> {
+        self.get(id).and_then(Parameter::text)
+    }
+
+    /// The value as a feature's recompute records it ([`crate::recompute`]):
+    /// a number's bits, or for a text parameter a hash of its text.
+    pub(crate) fn read_bits(&self, id: ParamId) -> Option<u64> {
+        let param = self.get(id)?;
+        Some(match param.text() {
+            Some(text) => text_bits(text),
+            None => param.value().to_bits(),
+        })
     }
 
     /// The name of a parameter, or a placeholder for a missing one.
@@ -327,6 +352,30 @@ impl Parameters {
         Ok(self.table.set_comment(id, comment)?)
     }
 
+    /// Sets a parameter's limits (mitcad#665); a driven dimension's
+    /// reference has none. Returns the parameters whose values changed.
+    pub fn set_limits(
+        &mut self,
+        id: ParamId,
+        limits: ParamLimits,
+    ) -> Result<ChangeSet, ParameterError> {
+        self.require_settable(id)?;
+        Ok(self.table.set_limits(id, limits)?)
+    }
+
+    /// Changes the expression, the unit and, when given, the limits in one
+    /// step (mitcad#665); returns the parameters whose values changed.
+    pub fn redefine(
+        &mut self,
+        id: ParamId,
+        expression: &str,
+        unit: Unit,
+        limits: Option<ParamLimits>,
+    ) -> Result<ChangeSet, ParameterError> {
+        self.require_settable(id)?;
+        Ok(self.table.redefine(id, expression, unit, limits)?)
+    }
+
     /// Changes the document's default units; bare numbers in expressions
     /// are read in them.
     pub fn set_context(&mut self, context: EvalContext) -> Result<ChangeSet, ParameterError> {
@@ -396,11 +445,16 @@ impl Parameters {
 
 /// The unit of a feature value slot: slots whose name has `angle` in it
 /// (`size.angle`, `extent.angle`, `extent.angle2`, `dimensions[k3].angle`)
-/// or ends in `taper` (`extent.taper`, `side1.taper`) hold angles; counts
-/// and ratios (`helix.revolutions`, `extent.fraction`, `start_condition.weight`,
-/// `tangency_weight`) are unitless; everything else lengths.
+/// or ends in `taper` (`extent.taper`, `side1.taper`) hold angles; counts,
+/// factors and ratios (`helix.revolutions`, `extent.fraction`,
+/// `start_condition.weight`, `tangency_weight`, `direction1.quantity`,
+/// `scale.factor`) are unitless; everything else lengths.
 pub fn slot_unit(slot: &str) -> Unit {
     let field = slot.rsplit('.').next().unwrap_or(slot);
+    // A sketch text's text (`texts[t5].text`, mitcad#664).
+    if field == "text" && slot.starts_with("texts[") {
+        return Unit::TEXT;
+    }
     if field.contains("angle") || field.ends_with("taper") {
         Unit::DEG
     } else if field == "revolutions"
@@ -417,6 +471,14 @@ pub fn slot_unit(slot: &str) -> Unit {
         || slot == "set_screws.count"
         // A printable bearing's elements (mitcad#577).
         || slot == "element_count"
+        // Every count, factor and fraction (mitcad#662): pattern quantities,
+        // a pattern's or mirror's scale factors and their runs, a scale's
+        // factors, a boss's ribs (construction paths' fractions are
+        // `definition.fraction`).
+        || field == "quantity"
+        || matches!(slot, "scale" | "scale_groups" | "scale_copies" | "ribs")
+        || (slot.starts_with("scales[") && matches!(field, "scale" | "groups" | "copies"))
+        || matches!(slot, "scale.factor" | "scale.x" | "scale.y" | "scale.z")
     {
         Unit::NONE
     } else {
@@ -426,14 +488,31 @@ pub fn slot_unit(slot: &str) -> Unit {
 
 /// Whether a parameter in `unit` can give a slot of `slot_unit` its value:
 /// the same dimensions, or a unitless parameter (its number is used as is).
+/// A text slot takes only a text parameter, and a text parameter fits only
+/// a text slot (mitcad#664).
 pub fn fits_slot(unit: Unit, slot_unit: Unit) -> bool {
+    if unit.is_text() || slot_unit.is_text() {
+        return unit.is_text() && slot_unit.is_text();
+    }
     unit.is_unitless() || unit.dims() == slot_unit.dims()
+}
+
+/// `message` about a count, with a hint when `value` is a finite number
+/// that is not whole (mitcad#662): counts are never rounded silently.
+pub(crate) fn count_error(message: String, value: f64) -> String {
+    if value.is_finite() && (value - value.round()).abs() > 1e-9 {
+        format!("{message}: use floor(…) or round(…) for a whole number")
+    } else {
+        message
+    }
 }
 
 /// What kind of value a unit measures, for messages.
 pub fn describe(unit: Unit) -> &'static str {
     let dims = unit.dims();
-    if dims == Dims::LENGTH {
+    if unit.is_text() {
+        "a text"
+    } else if dims == Dims::LENGTH {
         "a length"
     } else if dims == Dims::ANGLE {
         "an angle"
@@ -466,10 +545,58 @@ pub(crate) fn expression_dims(
     Ok(value.dims)
 }
 
+/// Whether an expression gives a text with the document's values
+/// (mitcad#664): a parameter without a unit given is then a text
+/// parameter.
+pub(crate) fn expression_is_text(parameters: &Parameters, expression: &str) -> bool {
+    parameters
+        .table()
+        .evaluate_value(expression)
+        .is_ok_and(|value| matches!(value, crate::expr::Value::Text(_)))
+}
+
 /// The default evaluation context of new documents: millimetres and
 /// degrees.
 pub fn default_context() -> EvalContext {
     EvalContext::new(LengthUnit::Millimetre, AngleUnit::Degree)
+}
+
+/// A feature's own limits of a value slot (mitcad#665), in canonical units
+/// (millimetres, radians): what the feature refuses outside them, reported
+/// with the parameter that gives the slot its value (the `parameters`
+/// query's `intrinsic`) so that a client can show them before an error.
+/// They are fixed: a parameter's own limits are set separately.
+/// `feature_type` is the definition's `type` (`rectangular_pattern`).
+pub fn slot_limits(feature_type: &str, slot: &str) -> Option<Bounds> {
+    let field = slot.rsplit('.').next().unwrap_or(slot);
+    let whole = |min: f64, max: Option<f64>| {
+        Some(Bounds {
+            min: Some(min),
+            max,
+            step: Some(1.0),
+        })
+    };
+    let is_pattern = feature_type.ends_with("pattern") || feature_type == "mirror";
+    match (feature_type, field) {
+        // Elements of a pattern, the original included (`pattern.rs`,
+        // `quantity`: 1 to 10 000).
+        (_, "quantity") if is_pattern => whole(1.0, Some(10_000.0)),
+        (_, "scale_copies" | "copies") if is_pattern => whole(1.0, Some(10_000.0)),
+        // A gear's teeth (`gear_profile.rs`: at least 5, whole), pressure
+        // angle (10 to 35 degrees) and profile shift (-1 to 0.8).
+        ("gear", "teeth") if slot == "teeth" => whole(5.0, None),
+        ("gear", "pressure_angle") => Some(Bounds {
+            min: Some(10f64.to_radians()),
+            max: Some(35f64.to_radians()),
+            step: None,
+        }),
+        ("gear", "profile_shift") => Some(Bounds {
+            min: Some(-1.0),
+            max: Some(0.8),
+            step: None,
+        }),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -555,5 +682,66 @@ mod tests {
         assert!(fits_slot(Unit::NONE, Unit::MM));
         assert!(fits_slot(Unit::IN, Unit::MM));
         assert!(!fits_slot(Unit::DEG, Unit::MM));
+    }
+
+    #[test]
+    fn text_slots_take_text_parameters_only() {
+        // mitcad#664.
+        assert_eq!(slot_unit("texts[t5].text"), Unit::TEXT);
+        assert_eq!(slot_unit("text"), Unit::MM);
+        assert!(fits_slot(Unit::TEXT, Unit::TEXT));
+        assert!(!fits_slot(Unit::TEXT, Unit::NONE));
+        assert!(!fits_slot(Unit::TEXT, Unit::MM));
+        assert!(!fits_slot(Unit::NONE, Unit::TEXT));
+        assert!(!fits_slot(Unit::MM, Unit::TEXT));
+        assert_eq!(describe(Unit::TEXT), "a text");
+        let mut params = Parameters::default();
+        let label = params
+            .add(ParamSpec::user("Label", "'6qt'", Unit::TEXT), None)
+            .unwrap();
+        let width = params.add_dimension("10", Unit::MM, "", None).unwrap();
+        assert_eq!(params.text(label), Some("6qt"));
+        assert_eq!(params.text(width), None);
+        assert_ne!(params.read_bits(label), params.read_bits(width));
+        assert_eq!(params.read_bits(width), Some(10f64.to_bits()));
+        let before = params.read_bits(label);
+        params.set_expression(label, "'8qt'").unwrap();
+        assert_ne!(params.read_bits(label), before);
+        assert!(expression_is_text(&params, "Label & 'x'"));
+        assert!(!expression_is_text(&params, "d1 * 2"));
+    }
+
+    #[test]
+    fn counts_factors_and_fractions_are_unitless() {
+        // mitcad#662.
+        for slot in [
+            "quantity",
+            "direction1.quantity",
+            "direction2.quantity",
+            "scale",
+            "scale_groups",
+            "scale_copies",
+            "scales[1].scale",
+            "scales[1].groups",
+            "scales[1].copies",
+            "scale.factor",
+            "scale.x",
+            "scale.z",
+            "ribs",
+            "definition.fraction",
+            "extent.fraction",
+            "teeth",
+            "set_screws.count",
+        ] {
+            assert!(slot_unit(slot).is_unitless(), "{slot}");
+        }
+        for slot in ["definition.distance", "direction1.distance", "rib_length"] {
+            assert_eq!(slot_unit(slot), Unit::MM, "{slot}");
+        }
+        assert_eq!(
+            count_error("2.5 teeth".to_owned(), 2.5),
+            "2.5 teeth: use floor(…) or round(…) for a whole number"
+        );
+        assert_eq!(count_error("0 teeth".to_owned(), 0.0), "0 teeth");
     }
 }

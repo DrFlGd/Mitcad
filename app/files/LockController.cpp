@@ -284,7 +284,7 @@ LockController::LockController(QMainWindow& window, RemoteController& remote, Pr
     qInfo().noquote() << QStringLiteral("Project indicator menu chose Release Edit Lock");
     releaseByUser();
   });
-  m_detailsAction = new QAction(tr("Edit Lock &Details..."), this);
+  m_detailsAction = new QAction(tr("Edit Lock &Details…"), this);
   m_detailsAction->setMenuRole(QAction::NoRole);
   connect(m_detailsAction, &QAction::triggered, this, [this] {
     qInfo().noquote() << QStringLiteral("Project indicator menu chose Edit Lock Details");
@@ -787,7 +787,7 @@ void LockController::stoppingSync() {
     return;
   }
   qInfo().noquote() << QStringLiteral("Edit lock: the project stops syncing");
-  releaseAll(tr("Releasing the edit lock of %1...").arg(fileName()));
+  releaseAll(tr("Releasing the edit lock of %1…").arg(fileName()));
   const QString path = m_path;
   const bool wasReadOnly = isReadOnly();
   publishLock(QJsonObject());
@@ -1302,7 +1302,7 @@ void LockController::idleTimeout() {
       return;
     }
   }
-  const QJsonObject synced = m_remote.syncNow(tr("Sending the versions of %1...").arg(fileName()));
+  const QJsonObject synced = m_remote.syncNow(tr("Sending the versions of %1…").arg(fileName()));
   const QString cls = errorClassOf(synced);
   if (cls == QLatin1String("conflict") || (!cls.isEmpty() && unreachable(cls))) {
     // A sync that needs a choice keeps the lock, marked idle, until it is
@@ -1316,7 +1316,7 @@ void LockController::idleTimeout() {
   if (m_mode != Mode::Holding) {
     return;
   }
-  if (!releaseAll(tr("Releasing the edit lock of %1...").arg(fileName()))) {
+  if (!releaseAll(tr("Releasing the edit lock of %1…").arg(fileName()))) {
     return;
   }
   m_releasedText = m_idleMinutes == 1
@@ -1386,7 +1386,7 @@ void LockController::locksTurnedOff() {
     // This session's locks and requests go.
     const QJsonObject answer =
         runNow(lockTask(QStringLiteral("lock_release"), {lockCommand("lock_release", {{QStringLiteral("all"), true}})}),
-               tr("Releasing the edit lock of %1...").arg(fileName()));
+               tr("Releasing the edit lock of %1…").arg(fileName()));
     if (errorClassOf(answer).isEmpty()) {
       qInfo().noquote() << QStringLiteral("Edit locks off: released %1")
                                .arg(answer.value(QStringLiteral("released")).toVariant().toStringList().join(
@@ -1471,7 +1471,7 @@ void LockController::showHeldDialog(const QJsonObject& lock) {
     box->setInformativeText(also);
   }
   QPushButton* readOnly = box->addButton(tr("&Continue Read-Only"), QMessageBox::RejectRole);
-  QPushButton* ask = box->addButton(tr("&Request Edit Access..."), QMessageBox::AcceptRole);
+  QPushButton* ask = box->addButton(tr("&Request Edit Access…"), QMessageBox::AcceptRole);
   box->setDefaultButton(readOnly);
   qInfo().noquote() << QStringLiteral("Edit lock dialog: %1 [Continue Read-Only, Request Edit Access...]").arg(text);
   connect(box, &QMessageBox::finished, this, [this, box, ask, generation = m_generation] {
@@ -1649,7 +1649,7 @@ void LockController::showAnswerDialog(const QJsonObject& request, const QJsonArr
                                         QMessageBox::AcceptRole);
   QPushButton* without = modified ? box->addButton(tr("Release &Without Saving"), QMessageBox::ActionRole) : nullptr;
   QPushButton* keep = box->addButton(tr("&Keep 15 More Minutes"), QMessageBox::ActionRole);
-  QPushButton* decline = box->addButton(tr("&Decline..."), QMessageBox::ActionRole);
+  QPushButton* decline = box->addButton(tr("&Decline…"), QMessageBox::ActionRole);
   box->setDefaultButton(release);
   QStringList names{release->text().remove(QLatin1Char('&'))};
   if (without != nullptr) {
@@ -1783,7 +1783,7 @@ void LockController::handOver(const QJsonObject& request, bool withoutSaving, co
       return;
     }
   }
-  const QJsonObject synced = m_remote.syncNow(tr("Sending the versions of %1 to %2...").arg(fileName(), to));
+  const QJsonObject synced = m_remote.syncNow(tr("Sending the versions of %1 to %2…").arg(fileName(), to));
   const QString cls = errorClassOf(synced);
   if (cls == QLatin1String("conflict") || (!cls.isEmpty() && unreachable(cls))) {
     qInfo().noquote() << QStringLiteral("Edit lock hand-over stopped: the sync of %1 failed (%2)").arg(fileName(), cls);
@@ -1805,7 +1805,7 @@ void LockController::handOver(const QJsonObject& request, bool withoutSaving, co
       runNow(lockTask(QStringLiteral("lock_hand_over"),
                       {lockCommand("lock_hand_over", {{QStringLiteral("path"), m_path},
                                                   {QStringLiteral("to"), str(request, "session")}})}),
-             tr("Handing the edit lock of %1 over to %2...").arg(fileName(), to));
+             tr("Handing the edit lock of %1 over to %2…").arg(fileName(), to));
   const QString failure = errorClassOf(handed);
   if (!failure.isEmpty()) {
     qInfo().noquote() << QStringLiteral("Edit lock hand-over failed (%1): %2").arg(failure, errorMessageOf(handed));
@@ -1888,7 +1888,7 @@ bool LockController::closeLock(bool quit) {
   // (the remote's work is the current project's); another project opened
   // already, they wait to be sent there.
   if (m_mode == Mode::Holding && sameFolderPath(m_host.project().root, m_root)) {
-    const QJsonObject synced = m_remote.syncNow(tr("Sending the versions of %1...").arg(fileName()));
+    const QJsonObject synced = m_remote.syncNow(tr("Sending the versions of %1…").arg(fileName()));
     const QString cls = errorClassOf(synced);
     if (cls == QLatin1String("conflict")) {
       qInfo().noquote() << QStringLiteral("Edit lock: the sync of %1 needs a choice before the release: asked")
@@ -1926,8 +1926,8 @@ bool LockController::closeLock(bool quit) {
     }
   }
   if (release) {
-    releaseAll(quit ? tr("Releasing the edit lock of %1...").arg(fileName())
-                        : tr("Closing %1: releasing its edit lock...").arg(fileName()));
+    releaseAll(quit ? tr("Releasing the edit lock of %1…").arg(fileName())
+                        : tr("Closing %1: releasing its edit lock…").arg(fileName()));
     if (m_mode == Mode::Holding) {
       publishLock(QJsonObject());
     }
@@ -1957,13 +1957,13 @@ void LockController::releaseByUser() {
       return;
     }
   }
-  const QJsonObject synced = m_remote.syncNow(tr("Sending the versions of %1...").arg(fileName()));
+  const QJsonObject synced = m_remote.syncNow(tr("Sending the versions of %1…").arg(fileName()));
   const QString cls = errorClassOf(synced);
   if (cls == QLatin1String("conflict")) {
     m_host.status(tr("The versions of %1 could not be sent: Sync needs your choice first.").arg(fileName()), true);
     return;
   }
-  if (!releaseAll(tr("Releasing the edit lock of %1...").arg(fileName()))) {
+  if (!releaseAll(tr("Releasing the edit lock of %1…").arg(fileName()))) {
     m_host.status(tr("The edit lock of %1 could not be released.").arg(fileName()), true);
     return;
   }
@@ -2321,9 +2321,9 @@ void LockController::updateBanner() {
     m_banner->clear();
     return;
   }
-  const QString request = tr("&Request Edit Access...");
+  const QString request = tr("&Request Edit Access…");
   const QString edit = tr("&Edit");
-  const QString copy = tr("Save as &Copy...");
+  const QString copy = tr("Save as &Copy…");
   const QString version = tr("Save as New &Version");
   QString text;
   QStringList buttons;
@@ -2395,7 +2395,7 @@ void LockController::updateBanner() {
     text += QLatin1Char(' ') + also;
   }
   m_banner->present(text, buttons, [this](const QString& name) {
-    if (name == QLatin1String("Request Edit Access...")) {
+    if (name == QStringLiteral("Request Edit Access…")) {
       askForAccess();
     } else if (name == QLatin1String("Edit")) {
       if (m_root.isEmpty()) {
@@ -2408,7 +2408,7 @@ void LockController::updateBanner() {
       } else {
         take();
       }
-    } else if (name == QLatin1String("Save as Copy...")) {
+    } else if (name == QStringLiteral("Save as Copy…")) {
       m_host.saveAsCopy();
     } else if (name == QLatin1String("Save as New Version")) {
       m_host.saveAsNewVersion();

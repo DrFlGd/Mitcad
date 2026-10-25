@@ -14,9 +14,11 @@
 #include <QString>
 #include <QStringList>
 #include <QToolButton>
+#include <QVariant>
 #include <QVector>
 
 #include "framework/Command.hpp"
+#include "framework/MacToolButtonStyle.hpp"
 
 namespace {
 
@@ -260,6 +262,7 @@ int selectionCreateTests() {
 
   // The row's buttons: made once, changed in place, hidden with nothing.
   SelectionCreatePanel panel;
+  installMacToolButtonStyle(&panel);
   CHECK(panel.isHidden());
   CHECK(panel.findChildren<QToolButton*>().size() == kSelectionCreateButtons);
   CHECK(panel.button(-1) == nullptr && panel.button(kSelectionCreateButtons) == nullptr);
@@ -281,6 +284,11 @@ int selectionCreateTests() {
   CHECK(panel.button(0)->toolTip() == QStringLiteral("Extrude\nPushes"));
   CHECK(panel.button(1)->toolTip() == QStringLiteral("Revolve"));
   CHECK(panel.button(0)->toolButtonStyle() == Qt::ToolButtonTextUnderIcon);
+  CHECK(panel.button(0)->autoRaise());
+  CHECK(panel.button(0)->iconSize() == QSize(24, 24));
+#ifdef Q_OS_MACOS
+  CHECK(panel.button(0)->property("macFlatToolButton").toBool());
+#endif
   CHECK(!panel.setEntries({extrudeEntry, revolveEntry, sweepEntry})); // the same: nothing changes
   QToolButton* first = panel.button(0);
   CHECK(panel.setEntries({extrudeEntry, sketchEntry, revolveEntry, sweepEntry, loftEntry}));
@@ -302,6 +310,39 @@ int selectionCreateTests() {
   requested.clear();
   panel.button(0)->click(); // a hidden button asks for nothing
   CHECK(requested.isEmpty());
+
+  // Whole-body shortcuts reuse those same controls and route their exact
+  // command IDs even when two-word captions are wrapped below their icons.
+  const Entry rectangularEntry{QStringLiteral("solid.rectangular_pattern"), QStringLiteral("Rectangular Pattern"),
+                               QStringLiteral("rectangular-pattern"), QStringLiteral("Copies in rows")};
+  const Entry circularEntry{QStringLiteral("solid.circular_pattern"), QStringLiteral("Circular Pattern"),
+                            QStringLiteral("circular-pattern"), QString()};
+  const Entry mirrorEntry{QStringLiteral("solid.mirror"), QStringLiteral("Mirror"), QStringLiteral("mirror"), QString()};
+  const Entry combineEntry{QStringLiteral("solid.combine"), QStringLiteral("Combine"), QStringLiteral("combine"), QString()};
+  CHECK(panel.setEntries({rectangularEntry, circularEntry, mirrorEntry, combineEntry}));
+  CHECK(panel.button(0) == first);
+  CHECK(panel.button(0)->text() == QStringLiteral("Rectangular\nPattern"));
+  CHECK(panel.button(1)->text() == QStringLiteral("Circular\nPattern"));
+  CHECK(panel.button(0)->accessibleName() == QStringLiteral("Rectangular Pattern"));
+  CHECK(panel.button(0)->toolTip() == QStringLiteral("Rectangular Pattern\nCopies in rows"));
+  for (int index = 0; index < kSelectionCreateButtons; ++index) {
+    CHECK(!panel.button(index)->isHidden());
+    CHECK(panel.button(index)->autoRaise());
+    CHECK(panel.button(index)->toolButtonStyle() == Qt::ToolButtonTextUnderIcon);
+#ifdef Q_OS_MACOS
+    CHECK(panel.button(index)->property("macFlatToolButton").toBool());
+#endif
+    panel.button(index)->click();
+  }
+  CHECK(requested == QStringList({rectangularEntry.id, circularEntry.id, mirrorEntry.id, combineEntry.id}));
+  CHECK(panel.setEntries({sketchEntry}));
+  CHECK(panel.button(0) == first);
+  CHECK(panel.button(1)->isHidden() && panel.button(1)->accessibleName().isEmpty());
+  requested.clear();
+  panel.button(1)->click();
+  CHECK(requested.isEmpty());
+  panel.button(0)->click();
+  CHECK(requested == QStringList({sketchEntry.id}));
 
   // The Docked chrome's section title in place of the frame's.
   SelectionCreatePanel docked;

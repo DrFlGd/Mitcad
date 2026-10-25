@@ -42,7 +42,7 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "model_query",
-            "Read a document using one existing JSON model query. Read mitcad://reference/commands for query names, arguments, identities and units.",
+            "Read a document using one existing JSON model query. Read mitcad://reference/commands for query names, arguments, identities and units. print_thickness answers its summary only (thinnest wall, where, regions, thin_triangles) unless the query sets triangles (true, with max_triangles to cap them).",
             json!({"document": document, "query": {"type": "object", "description": "One JSON query object from the model API reference"}}),
             &["document", "query"],
             true,
@@ -50,8 +50,12 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "model_command",
-            "Apply one JSON model command to a document. Read mitcad://reference/commands first. Script arrays, file imports and external links are not supported through this tool. isError is true only when the command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new).",
-            json!({"document": document, "command": {"type": "object", "description": "One JSON command object; lengths use millimetres unless explicitly specified"}}),
+            "Apply a JSON model command, or an array of them in order, to a document. Read mitcad://reference/commands first. An array stops at the first refused entry (the entries before it are undone, nothing of the array stays; the result names the entry) or at the first entry whose added or edited feature fails (applied; stopped_at names it). File imports and external links are not supported through this tool. isError is true only when a command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new). The result holds the document's state and what the command changed (changes: features added, changed, recomputed or failed, bodies added or changed, what was removed); timeline: full gives the whole timeline and bodies instead, none neither.",
+            json!({
+                "document": document,
+                "command": command_schema(),
+                "timeline": timeline_schema()
+            }),
             &["document", "command"],
             false,
             true,
@@ -87,13 +91,35 @@ pub(crate) fn tools() -> Vec<Value> {
     ]
 }
 
+/// `model_command`'s command: an object, or an array of them run in order
+/// (mitcad#689).
+fn command_schema() -> Value {
+    json!({
+        "type": ["object", "array"],
+        "items": {"type": "object"},
+        "minItems": 1,
+        "maxItems": 1000,
+        "description": "One JSON command object, or an array of them run in order; lengths use millimetres unless explicitly specified"
+    })
+}
+
+/// How much of the document `model_command` answers with (mitcad#689).
+fn timeline_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["changed", "full", "none"],
+        "default": "changed",
+        "description": "changed: what the command changed (default); full: the whole timeline and bodies; none: only the document's state"
+    })
+}
+
 pub(crate) fn live_tools() -> Vec<Value> {
     let mut tools: Vec<Value> = tools()
         .into_iter()
         .filter(|tool| {
             matches!(
                 tool["name"].as_str(),
-                Some("document_list" | "model_query" | "model_command")
+                Some("document_list" | "model_query" | "model_command" | "model_export")
             )
         })
         .collect();
@@ -111,7 +137,17 @@ pub(crate) fn live_tools() -> Vec<Value> {
             }
             Some("model_command") => {
                 tool["description"] = json!(
-                    "Apply one JSON model command to the open document through its normal undo workflow; the change is labelled (agent) in the undo text. While a sketch is open, sketch.* commands on it (and edit_feature of it, undo, redo) go through the sketch session as the user's would; other commands wait until it is finished. Read mitcad://reference/commands first. File, remote and internal commands are refused. isError is true only when the command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new)."
+                    "Apply a JSON model command, or an array of them in order, to the open document through its normal undo workflow; the change is one undo step labelled (agent) in the undo text. While a sketch is open, sketch.* commands on it (and edit_feature of it, undo, redo) go through the sketch session as the user's would; other commands wait until it is finished. Read mitcad://reference/commands first. File, remote and internal commands are refused. An array stops at the first refused entry (the entries before it are undone, nothing of the array stays; the result names the entry) or at the first entry whose added or edited feature fails (applied; stopped_at names it); undo and redo run alone. isError is true only when a command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new). The result holds the document's state and what the command changed (changes: features added, changed, recomputed or failed, bodies added or changed, what was removed); timeline: full gives the whole timeline and bodies instead, none neither."
+                );
+            }
+            // Into the folders the user allows agents (mitcad#689), as
+            // document_save's path.
+            Some("model_export") => {
+                tool["description"] = json!(
+                    "Export the open document's geometry to a new file in a folder the user allows agents to use (document_list lists them); the document does not change. An existing file is refused. bodies selects what is written (for example leaving out a helper body). DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing is given. PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options of mitcad://reference/commands. Refused while a command panel is open or the document has failed features. Defaults are metric."
+                );
+                tool["inputSchema"]["properties"]["path"]["description"] = json!(
+                    "A new file in a folder the user allows agents to use (Preferences > Agents, or the application's --mcp-folder), with the format's extension; a relative path is relative to the first allowed folder; '..' is refused"
                 );
             }
             _ => {}
@@ -206,13 +242,20 @@ fn ui_tools() -> Vec<Value> {
         ),
         tool(
             "ui_screenshot",
-            "A PNG of the 3D view as the user sees it, including the sketch overlay, or of the whole window; scaled to fit max_size pixels and the response limit. The image is base64 in png_base64.",
+            "An image of the 3D view as the user sees it, including the sketch overlay, or of the whole window, scaled to fit max_size pixels and the response limit, returned as an MCP image (PNG, or JPEG with format). With path it is written to that file in a folder the user allows agents to use, and only the path, the size and the bytes are returned. width and height, or aspect, render the 3D view offscreen at that size, without the widgets over it, so the picture does not take the window's shape; frame it first with ui_camera's aspect.",
             json!({
                 "window": {"type": "boolean", "default": false, "description": "The whole window instead of the 3D view"},
-                "max_size": {"type": "integer", "minimum": 64, "maximum": 4096, "default": 1280, "description": "The longer side's largest size in pixels"}
+                "max_size": {"type": "integer", "minimum": 64, "maximum": 4096, "default": 1280, "description": "The longer side's largest size in pixels"},
+                "format": {"type": "string", "enum": ["png", "jpeg"], "description": "png (the default, or by the path's extension) or jpeg"},
+                "quality": {"type": "integer", "minimum": 1, "maximum": 100, "default": 90, "description": "A JPEG's quality"},
+                "width": {"type": "integer", "minimum": 16, "maximum": 4096, "description": "Pixels across an offscreen render of the 3D view (with height, or with aspect)"},
+                "height": {"type": "integer", "minimum": 16, "maximum": 4096, "description": "Pixels down an offscreen render of the 3D view (with width, or with aspect)"},
+                "aspect": {"type": "number", "minimum": 0.1, "maximum": 10, "description": "Width / height of an offscreen render of the 3D view; max_size on its longer side unless width or height is given"},
+                "path": {"type": "string", "minLength": 1, "description": "A .png or .jpg file in a folder the user allows agents to use (Preferences > Agents, or the application's --mcp-folder) to write the image to instead of returning it; a relative path is relative to the first allowed folder; '..' is refused"},
+                "overwrite": {"type": "boolean", "default": false, "description": "Explicitly allow replacement of an existing file at path"}
             }),
             &[],
-            true,
+            false,
             false,
         ),
         tool(
@@ -258,7 +301,8 @@ fn ui_tools() -> Vec<Value> {
                     "required": ["min", "max"],
                     "additionalProperties": false
                 },
-                "frame": {"type": "string", "enum": ["none", "shown", "selection"], "default": "none", "description": "shown: the shown bodies (the isolated ones when some are isolated); selection: the selected entities"}
+                "frame": {"type": "string", "enum": ["none", "shown", "selection"], "default": "none", "description": "shown: the shown bodies (the isolated ones when some are isolated); selection: the selected entities"},
+                "aspect": {"type": "number", "minimum": 0.1, "maximum": 10, "description": "Frame box or frame for a picture of this width / height (ui_screenshot's aspect, or its width and height) instead of the view's own shape"}
             }),
             &[],
             false,
@@ -295,13 +339,19 @@ fn tool(
 /// Validate the small, fixed schema vocabulary used by our tool catalog.
 /// CAD command and query contents remain the document backend's responsibility.
 pub(crate) fn validate(value: &Value, schema: &Value, path: &str) -> Result<(), String> {
-    let valid_type = match schema.get("type").and_then(Value::as_str) {
-        Some("object") => value.is_object(),
-        Some("array") => value.is_array(),
-        Some("string") => value.is_string(),
-        Some("boolean") => value.is_boolean(),
-        Some("integer") => value.is_i64() || value.is_u64(),
-        Some("number") => value.is_number(),
+    let of_type = |name: &str| match name {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "number" => value.is_number(),
+        _ => true,
+    };
+    // One type, or a list of them (mitcad#689: a command or an array).
+    let valid_type = match schema.get("type") {
+        Some(Value::String(name)) => of_type(name.as_str()),
+        Some(Value::Array(names)) => names.iter().filter_map(Value::as_str).any(of_type),
         _ => true,
     };
     if !valid_type {

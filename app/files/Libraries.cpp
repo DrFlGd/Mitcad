@@ -67,7 +67,7 @@ QList<QJsonObject> fetchLibraries(QWidget* parent, const QStringList& urls) {
   // fetches into one cache at once are not wanted.
   LibraryAutoUpdate::instance().cancel();
   QList<QJsonObject> answers;
-  QProgressDialog progress(QObject::tr("Fetching libraries..."), QObject::tr("Cancel"), 0, int(urls.size()), parent);
+  QProgressDialog progress(QObject::tr("Fetching libraries…"), QObject::tr("Cancel"), 0, int(urls.size()), parent);
   progress.setWindowTitle(QObject::tr("Fetch Libraries"));
   prepareModal(&progress);
   prepareProgressDialog(&progress);

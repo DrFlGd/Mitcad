@@ -560,7 +560,7 @@ pub struct BossDef<P = ParamId> {
     /// The root's rounding radius; none without.
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub fillet: Option<P>,
-    /// How many ribs, 0 to 64 (rounded); none without.
+    /// How many ribs, a whole number from 0 to 64; none without.
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub ribs: Option<P>,
     /// Default 0.3 times the radius.
@@ -644,10 +644,15 @@ impl BossSizes {
         };
         let ribs = match def.ribs {
             Some(id) => {
-                let n = value(id).round();
-                if !(0.0..=64.0).contains(&n) {
-                    return Err(format!("a boss has 0 to 64 ribs, got {n}"));
+                // A whole number: counts are not rounded (mitcad#662).
+                let n = value(id);
+                if !(0.0..=64.0).contains(&n) || (n - n.round()).abs() > 1e-9 {
+                    return Err(crate::parameters::count_error(
+                        format!("a boss has a whole number of ribs from 0 to 64, got {n}"),
+                        n,
+                    ));
                 }
+                let n = n.round();
                 let thickness = value_of(value, def.rib_thickness).unwrap_or(radius * 0.3);
                 let length = value_of(value, def.rib_length).unwrap_or(radius);
                 let offset = value_of(value, def.rib_offset).unwrap_or(0.0);

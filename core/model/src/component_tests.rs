@@ -1124,3 +1124,241 @@ fn activating_as_the_document_opens_is_no_undo_step_and_no_change() {
         .to_string();
     assert!(error.contains("does not exist"), "{error}");
 }
+
+/// A 10 x 10 x 10 box at the origin of the active component, with the
+/// vertex at its corner (10, 0, 10) set in the mock kernel: the box's body
+/// and the vertex's name.
+fn box_with_vertex(doc: &mut Document<MockKernel>) -> (BodyUid, String) {
+    let uid = doc
+        .add_feature(
+            &def(
+                json!({"type": "box", "plane": "xy", "corner": [0, 0], "length": 10,
+                        "width": 10, "height": 10, "operation": "new_body"}),
+            ),
+            None,
+        )
+        .unwrap()
+        .uid;
+    let vertex = format!("V{{{uid}:side0|{uid}:side1|{uid}:top}}")
+        .parse::<crate::topo::VertexName>()
+        .unwrap()
+        .to_string();
+    doc.kernel()
+        .vertex_points
+        .borrow_mut()
+        .insert(vertex.clone(), [10.0, 0.0, 10.0]);
+    (BodyUid::new(uid, 0), vertex)
+}
+
+fn assert_ok(doc: &Document<MockKernel>, uid: FeatureUid) {
+    let status = doc.status(uid).unwrap();
+    assert!(matches!(status, FeatureStatus::Ok), "{status:?}");
+}
+
+/// Point to Point takes each point where its occurrence places it
+/// (mitcad#699): a vertex of A to a vertex of B, both components placed
+/// away from the origin, puts the two vertices together.
+#[test]
+fn a_move_of_an_occurrence_takes_points_where_their_occurrences_place_them() {
+    let mut doc = Document::new(MockKernel::default());
+    let (_, a) = doc
+        .create_component(Some("A"), shift(100.0, 0.0, 0.0), true)
+        .unwrap();
+    let (a_body, a_vertex) = box_with_vertex(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let (_, b) = doc
+        .create_component(Some("B"), shift(0.0, 50.0, 20.0), true)
+        .unwrap();
+    let (b_body, b_vertex) = box_with_vertex(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    // A's vertex is at (110, 0, 10) in the design, B's at (10, 50, 30).
+    let moved = doc
+        .add_feature(
+            &def(json!({"type": "move_occurrence", "occurrences": [a],
+                "transform": {"type": "point_to_point",
+                    "from": {"body": a_body, "vertex": a_vertex}, "from_occurrence": a.to_string(),
+                    "to": {"body": b_body, "vertex": b_vertex}, "to_occurrence": b.to_string()}})),
+            None,
+        )
+        .unwrap();
+    assert_ok(&doc, moved.uid);
+    assert!(
+        near(doc.placement(a).unwrap().translation, [0.0, 50.0, 20.0]),
+        "{:?}",
+        doc.placement(a)
+    );
+    assert!(near(
+        doc.placement(b).unwrap().translation,
+        [0.0, 50.0, 20.0]
+    ));
+    // The occurrences are kept as written, and come back from the file.
+    let saved = query(&doc, json!({"query": "feature", "uid": moved.uid}));
+    assert_eq!(saved["def"]["transform"]["from_occurrence"], a.to_string());
+    assert_eq!(saved["def"]["transform"]["to_occurrence"], b.to_string());
+    // The reopened document's kernel knows the vertices as the first one does.
+    let kernel = MockKernel::default();
+    for vertex in [&a_vertex, &b_vertex] {
+        kernel
+            .vertex_points
+            .borrow_mut()
+            .insert(vertex.clone(), [10.0, 0.0, 10.0]);
+    }
+    let mut reopened = Document::from_json(&doc.to_json(), kernel).unwrap();
+    reopened.recompute();
+    assert!(near(
+        reopened.placement(a).unwrap().translation,
+        [0.0, 50.0, 20.0]
+    ));
+    // B placed elsewhere: the move follows it.
+    doc.set_occurrence_transform(b, shift(0.0, 0.0, 5.0), false)
+        .unwrap();
+    assert!(near(doc.placement(a).unwrap().translation, [0.0, 0.0, 5.0]));
+}
+
+/// A component placed twice: the vertex of the second copy names that
+/// copy, so a copy can be moved onto the other one (mitcad#699).
+#[test]
+fn a_move_of_an_occurrence_tells_the_copies_of_a_component_apart() {
+    let mut doc = Document::new(MockKernel::default());
+    let (_, first) = doc
+        .create_component(Some("Part"), shift(100.0, 0.0, 0.0), true)
+        .unwrap();
+    let (body, vertex) = box_with_vertex(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let second = doc
+        .copy_occurrence(first, Some(shift(0.0, 40.0, 0.0)))
+        .unwrap();
+    // The vertex is at (110, 0, 10) in Part:1 and at (10, 40, 10) in Part:2.
+    let point = json!({"body": body, "vertex": vertex});
+    let moved = doc
+        .add_feature(
+            &def(json!({"type": "move_occurrence", "occurrences": [second],
+                "transform": {"type": "point_to_point",
+                    "from": point, "from_occurrence": second.to_string(),
+                    "to": point, "to_occurrence": first.to_string()}})),
+            None,
+        )
+        .unwrap();
+    assert_ok(&doc, moved.uid);
+    assert!(
+        near(
+            doc.placement(second).unwrap().translation,
+            [100.0, 0.0, 0.0]
+        ),
+        "{:?}",
+        doc.placement(second)
+    );
+    assert!(near(
+        doc.placement(first).unwrap().translation,
+        [100.0, 0.0, 0.0]
+    ));
+    // Point to Position with the point in the second copy, where the move
+    // before put it: (110, 0, 10) to the origin.
+    let positioned = doc
+        .add_feature(
+            &def(json!({"type": "move_occurrence", "occurrences": [second],
+                "transform": {"type": "point_to_position", "point": point,
+                    "point_occurrence": second.to_string(), "x": 0, "y": 0, "z": 0}})),
+            None,
+        )
+        .unwrap();
+    assert_ok(&doc, positioned.uid);
+    assert!(near(
+        doc.placement(second).unwrap().translation,
+        [-10.0, 0.0, -10.0]
+    ));
+}
+
+/// Sketches and construction geometry of another component are taken
+/// where an occurrence places them; without one they are still refused
+/// (mitcad#699).
+#[test]
+fn a_move_takes_a_sketch_point_of_another_component_by_its_occurrence() {
+    let mut doc = Document::new(MockKernel::default());
+    let (_, a) = doc
+        .create_component(Some("A"), shift(100.0, 0.0, 0.0), true)
+        .unwrap();
+    box_with_vertex(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let (_, b) = doc
+        .create_component(Some("B"), shift(0.0, 50.0, 0.0), true)
+        .unwrap();
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    command(
+        &mut doc,
+        json!({"cmd": "sketch.add_point", "sketch": sketch, "at": [5, 5]}),
+    );
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let point = json!({"sketch": sketch, "point": "p1"});
+    let error = doc
+        .add_feature(
+            &def(json!({"type": "move_occurrence", "occurrences": [a],
+                "transform": {"type": "point_to_point",
+                    "from": {"point": [100, 0, 0]}, "to": point}})),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("is in B"), "{error}");
+    let moved = doc
+        .add_feature(
+            &def(json!({"type": "move_occurrence", "occurrences": [a],
+                "transform": {"type": "point_to_point",
+                    "from": {"point": [100, 0, 0]}, "to": point,
+                    "to_occurrence": b.to_string()}})),
+            None,
+        )
+        .unwrap();
+    assert_ok(&doc, moved.uid);
+    // The sketch point is at (5, 55, 0) in the design.
+    assert!(near(
+        doc.placement(a).unwrap().translation,
+        [5.0, 55.0, 0.0]
+    ));
+}
+
+/// A definition without occurrences (earlier versions, imports) means
+/// what it meant: its points in the feature's component (mitcad#699).
+#[test]
+fn a_move_without_occurrences_takes_its_points_in_its_component_as_before() {
+    let mut doc = Document::new(MockKernel::default());
+    let (root_body, root_vertex) = box_with_vertex(&mut doc);
+    let (_, a) = doc
+        .create_component(Some("A"), shift(100.0, 0.0, 0.0), true)
+        .unwrap();
+    let (a_body, a_vertex) = box_with_vertex(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let moved = doc
+        .add_feature(
+            &def(json!({"type": "move_occurrence", "occurrences": [a],
+                "transform": {"type": "point_to_point", "from": {"point": [100, 0, 0]},
+                    "to": {"body": root_body, "vertex": root_vertex}}})),
+            None,
+        )
+        .unwrap();
+    assert_ok(&doc, moved.uid);
+    assert!(near(
+        doc.placement(a).unwrap().translation,
+        [10.0, 0.0, 10.0]
+    ));
+    // Written back without occurrences.
+    let saved = query(&doc, json!({"query": "feature", "uid": moved.uid}));
+    let transform = saved["def"]["transform"].as_object().unwrap();
+    assert!(!transform.contains_key("from_occurrence"), "{transform:?}");
+    assert!(!transform.contains_key("to_occurrence"), "{transform:?}");
+    // A body of another component without its occurrence fails, as before.
+    let other = doc
+        .add_feature(
+            &def(json!({"type": "move_occurrence", "occurrences": [a],
+                "transform": {"type": "point_to_point",
+                    "from": {"body": a_body, "vertex": a_vertex},
+                    "to": {"point": [0, 0, 0]}}})),
+            None,
+        )
+        .unwrap();
+    let status = doc.status(other.uid).unwrap();
+    assert!(
+        matches!(status, FeatureStatus::Failed(m) if m.contains("belongs to A")),
+        "{status:?}"
+    );
+}

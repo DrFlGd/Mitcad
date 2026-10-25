@@ -245,6 +245,7 @@ private:
   // The stars changed (any grid's): the tiles' and the groups' stars are
   // painted again without moving anything (mitcad#517).
   void refreshStars();
+  void refreshStarButton();
   // "Part picker tiles[ kept]: <tile> [xN], ..." for UI tests: the tiles in
   // their order (the first 24) with their use counts.
   void logTiles(bool kept) const;

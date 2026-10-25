@@ -481,7 +481,7 @@ IssueLink issueLink(const QString& tracker, const QString& title, const QString&
   const QString note = QStringLiteral(
       "> **The whole report is on the clipboard:** it was too long for the link. Select this text and paste "
       "the report over it.\n\n");
-  const QString cut = QStringLiteral("\n\n[... cut: the rest is on the clipboard]\n");
+  const QString cut = QStringLiteral("\n\n[… cut: the rest is on the clipboard]\n");
   // The longest beginning of the body, at a line's end, that fits.
   QStringList lines = body.split(QLatin1Char('\n'));
   qsizetype low = 0;

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+# A half-millimetre strip fits inside the opposing edges' pick widths.
+wait-idle 30
+window-resize 1280 900
+command view.top
+command view.fit
+expect-viewport
+command solid.fillet
+type-in 'Panel Fillet input sets.0.radius at' '0.1 mm'
+expect-pick-offset 'face F1.b0/F1:top' 0 0 '^face F1:top of F1.b0$'
+mark
+click-pick-offset 'face F1.b0/F1:top' 0 0 '^face F1:top of F1.b0$'
+expect-log 'Fillet Edges: 1 face'
+expect-log 'Preview Fillet: ok' 30
+expect-viewport
+# After selection its highlight must not change the narrow-face rule.
+expect-pick-offset 'face F1.b0/F1:top' 0 0 '^face F1:top of F1.b0$'
+screenshot '${MITCAD_TEST_WORK}/narrow-face.png'
+mark
+click-pick-offset 'face F1.b0/F1:top' 0 0 '^face F1:top of F1.b0$'
+expect-log 'Fillet Edges: nothing'
+key Escape
+expect-never 'TestDriver: FAIL|OCCT view event failed'

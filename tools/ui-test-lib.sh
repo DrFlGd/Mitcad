@@ -378,10 +378,11 @@ ui_step() {
   echo "ok   $name"
 }
 
-# ui_expect_log "text" "description": waits for a line in the application log.
+# ui_expect_log "text" "description": waits for a line in the application log
+# (a single ellipsis and three dots match each other, mitcad#645).
 ui_expect_log() {
   for _ in $(seq 1 30); do
-    grep -qF -- "$1" "$UI_LOG" && { echo "ok   $2"; return; }
+    sed "s/…/.../g" "$UI_LOG" | grep -qF -- "${1//…/...}" && { echo "ok   $2"; return; }
     sleep 0.2
   done
   ui_fail "$2: '$1' not in the log"
@@ -464,7 +465,8 @@ ui_view_drag() {
 # a row of the browser scrolled away, folded, or gone).
 ui_place_valid() {
   local last
-  last=$(grep -F -e "$1 at " -e "$1 out of sight" "$UI_LOG" | tail -1)
+  # (A single ellipsis and three dots match each other, mitcad#645.)
+  last=$(sed "s/…/.../g" "$UI_LOG" | grep -F -e "${1//…/...} at " -e "${1//…/...} out of sight" | tail -1)
   [ -n "$last" ] && [[ $last != *" out of sight" ]]
 }
 
@@ -551,7 +553,8 @@ ui_logged_at() {
     "Browser "*) ui_browser_reveal "$1" ;;
     "Panel "*" input "*) ui_panel_reveal "$1" ;;
   esac
-  last=$(grep -F -e "$1 at " -e "$1 out of sight" "$UI_LOG" | tail -1)
+  # (A single ellipsis and three dots match each other, mitcad#645.)
+  last=$(sed "s/…/.../g" "$UI_LOG" | grep -F -e "${1//…/...} at " -e "${1//…/...} out of sight" | tail -1)
   [[ $last != *" out of sight" ]] || ui_fail "'$1' is out of sight (scrolled away, folded or gone)"
   at=$(sed -n 's/.* at \([0-9]*\),\([0-9]*\).*/\1 \2/p' <<< "$last")
   [ -n "$at" ] || ui_fail "no position logged for '$1'"
@@ -581,7 +584,9 @@ ui_command() {
 # on the origin plane (default xy) it asks for.
 ui_create_sketch() {
   local plane=${1:-xy} before
-  before=$(grep -c "Sketch started on" "$UI_LOG")
+  # The sketches started on this plane before (counting every plane's would
+  # wait for one too many after a sketch on another plane).
+  before=$(grep -c "Sketch started on $plane" "$UI_LOG")
   ui_command "Create Sketch"
   ui_expect_log "Create Sketch: select a plane" "Create Sketch asks for a plane" > /dev/null
   ui_sync
@@ -643,7 +648,8 @@ ui_menu_choose() {
       index=$((index + 1))
       item=${item# }
       item=${item% }
-      if [ "$item" = "$wanted" ]; then
+      # The labels' single ellipsis (mitcad#645) matches three dots too.
+      if [ "${item//…/...}" = "${wanted//…/...}" ]; then
         found=$index
         break
       fi
@@ -812,11 +818,12 @@ ui_type_path() {
 
 # ui_mark; ...; ui_expect_new "text" "description" [seconds]: like
 # ui_expect_log, but only lines logged after the mark count; waits up to
-# 6 s, or as long as given (slow geometry such as modelled threads).
+# 6 s, or as long as given (slow geometry such as modelled threads). A single
+# ellipsis and three dots match each other (mitcad#645).
 ui_mark() { UI_MARK=$(wc -l < "$UI_LOG"); }
 ui_expect_new() {
   for _ in $(seq 1 $((${3:-6} * 5))); do
-    tail -n +$((${UI_MARK:-0} + 1)) "$UI_LOG" | grep -qF -- "$1" && { echo "ok   $2"; return; }
+    tail -n +$((${UI_MARK:-0} + 1)) "$UI_LOG" | sed "s/…/.../g" | grep -qF -- "${1//…/...}" && { echo "ok   $2"; return; }
     sleep 0.2
   done
   ui_fail "$2: '$1' not in the log since the mark"
@@ -923,4 +930,18 @@ ui_finish() {
     ui_fail "OCCT reported a failed view operation"
   fi
   echo "PASS: $1"
+}
+
+# ui_place_on_xy Command: places a part that waits for a pick (mitcad#656:
+# Pulley, Gear, Bearing) on the XY plane at the origin: a click on the
+# plane while Place On takes picks, then both distances 0 in the panel.
+ui_place_on_xy() {
+  ui_mark
+  ui_step "Place On: the XY plane"         ui_click_logged "Datum xy"
+  ui_expect_new "Place $1: face plane xy, " "placed on the XY plane" 30
+  ui_step "Distance 1: 0"                  ui_type_in "Panel $1 input at_offset1" "0"
+  ui_step "Distance 2: 0"                  ui_type_in "Panel $1 input at_offset2" "0"
+  ui_expect_new "$1 Distance 1: 0 = 0 mm" "Distance 1 typed" 30
+  ui_expect_new "$1 Distance 2: 0 = 0 mm" "Distance 2 typed" 30
+  ui_expect_new "Preview $1: ok" "previewed at the origin" 30
 }

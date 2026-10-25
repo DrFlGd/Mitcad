@@ -2,15 +2,19 @@
 //! Commands and queries of typed property sets (mitcad#496, see
 //! `commands.md`, "Properties").
 
+use std::path::Path;
+
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 
 use super::ApiError;
 use super::dispatch::named_enum;
-use crate::document::{Document, PropertyTypeChange};
+use crate::document::{Document, PropertyTypeChange, library_kind};
 use crate::ids::ComponentUid;
 use crate::kernel::Kernel;
-use crate::properties::{BaseType, PropertyOwner, Source};
+use crate::print_library::ItemKind;
+use crate::print_profile::{PROFILE_KEY, PrintPropertySet, ProfileKind, print_set_of};
+use crate::properties::{BaseType, PropertyOwner, Source, same_name};
 
 /// A field given, also as `null` (`Some(Value::Null)`), told from one left
 /// out (`None`).
@@ -35,6 +39,14 @@ named_enum! {
             unit: Option<String>,
             #[serde(default)]
             source: Option<Source>,
+            /// The `profile` of `Print Printer` or `Print Process` as a
+            /// library's item (`base`, `user` or `project`): copied in, or
+            /// the design's copy reused, in the same undo step (mitcad#655).
+            #[serde(default)]
+            library: Option<String>,
+            /// The project's folder, when the design is in one.
+            #[serde(default)]
+            project: Option<String>,
         },
         "remove_property" => RemoveProperty {
             owner: String,
@@ -151,17 +163,68 @@ impl<K: Kernel> Document<K> {
                 ty,
                 unit,
                 source,
+                library,
+                project,
             } => {
                 let owner = self.property_owner_ref(&owner)?;
-                let property = self.set_property(
-                    owner,
-                    &set,
-                    &key,
-                    ty.as_deref(),
-                    value.as_ref(),
-                    unit.as_deref(),
-                    source.unwrap_or(Source::User),
-                )?;
+                let source = source.unwrap_or(Source::User);
+                let property = match library.as_deref() {
+                    Some(library) => {
+                        // A library's printer or process chosen: copied in
+                        // first, in the same undo step (mitcad#655).
+                        let kind = match print_set_of(&set) {
+                            Some(PrintPropertySet::Layer(layer))
+                                if same_name(&key, PROFILE_KEY) =>
+                            {
+                                ProfileKind::of_set(layer)
+                            }
+                            _ => None,
+                        }
+                        .ok_or_else(|| {
+                            ApiError(
+                                "a library is given only for the profile of Print Printer or \
+                                 Print Process"
+                                    .to_owned(),
+                            )
+                        })?;
+                        let id = value
+                            .as_ref()
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .ok_or_else(|| {
+                                ApiError(format!("the {} profile is given by its id", kind.id()))
+                            })?
+                            .to_owned();
+                        let library = library_kind(library)?;
+                        let libraries = self.print_libraries(project.as_deref().map(Path::new));
+                        self.as_one_step(|doc| {
+                            let copy = doc.library_item_in_design(
+                                &libraries,
+                                library,
+                                ItemKind::of_profile(kind),
+                                &id,
+                            )?;
+                            doc.set_property(
+                                owner,
+                                &set,
+                                &key,
+                                ty.as_deref(),
+                                Some(&json!(copy)),
+                                unit.as_deref(),
+                                source,
+                            )
+                        })?
+                    }
+                    None => self.set_property(
+                        owner,
+                        &set,
+                        &key,
+                        ty.as_deref(),
+                        value.as_ref(),
+                        unit.as_deref(),
+                        source,
+                    )?,
+                };
                 json!({"owner": owner, "set": set, "key": property.key,
                        "type": property.ty, "value": property.value.to_json(),
                        "edited": property.edited()})

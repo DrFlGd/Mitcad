@@ -412,7 +412,8 @@ item:
   its pieces, a seam it added to a closed face with the face). The build
   of the body in the next state that changes it takes the faces it shares
   with that build (its base: the same ASM record in the blob's state
-  before, `StoredFile::bases`) as copies of those healed there, builds the
+  before, `StoredFile::bases`; since mitcad#642 the nearest state before
+  that the replay asks for by the timeline) as copies of those healed there, builds the
   others from its data,
   heals only those with ShapeFix (their edges made same-parameter and their
   vertex tolerances fixed where they meet the copies) and checks the whole
@@ -542,11 +543,14 @@ above one the work that does not depend on the replay runs beside it
   chosen design's named inputs are then looked up in the bodies' history
   (`resolve_inputs`), its items on several threads (each item reads the
   history's blobs only, read once for all). That runs at the same time
-  as the conversion of the bodies of every history state to the neutral
-  model (`StoredFile::new`), whose states are converted on several
-  threads and taken in order as before (`mitcad_import::in_order`), so
-  that the same bodies are kept once each. The two share the threads
-  half and half. On a large design of the private corpus reading took
+  as the reading of the bodies' history (`StoredFile::new`): which states
+  hold the same bodies, so that the same bodies are kept once each, and
+  the conversion to the neutral model of the bodies of the states the
+  replay asks for by the timeline, on several threads; the other states'
+  bodies are converted when they are asked for ([*Only the states asked
+  for converted*](#only-the-states-asked-for-converted-mitcad675)). The
+  two share the threads half and half. On a large design of the private
+  corpus reading took
   about 140 s on one thread (80 s finding the inputs, 60 s converting);
   with eight threads about 20 s. An item's inputs are looked up in one
   named history state at a time (the state before the item, then up to
@@ -579,9 +583,13 @@ above one the work that does not depend on the replay runs beside it
   and ticks the watchdog with its progress, and its thread counts in
   `abandoned_imports()`. A body that does not build, or whose variant is
   not the converted one, is left to the replay. With one converting
-  thread nothing is healed while reading.
+  thread nothing is healed while reading. So are the large bodies
+  without a base of the first five states the replay asks for by the
+  timeline, those its first item builds ahead
+  ([mitcad#676](#the-first-states-large-bodies-healed-while-reading-mitcad676)).
 - **The history's bodies built ahead.** When the replay asks for a
-  history state, the bodies of the next four states that it has not built
+  history state, the bodies of the next four states that it asks for by
+  the timeline (items' states and starts, mitcad#642) and has not built
   yet are built (healed) and measured on other threads
   (`F3dGeometry::build_ahead`, `mitcad-ffi`): the replay finds them
   built when it comes to them (the same bodies; a shape keeps what it
@@ -646,3 +654,144 @@ which keeps the projections it set up between calls; asked in another
 order on other threads, the same answers are not assured, so it stays on
 the import's thread.
 
+## A bin of 372 patterned ribs (mitcad#658)
+
+After mitcad#642 the bin (`b832916a`) took 75 s to import (80 s to open
+in the application); now 41 s (45 s), with one item more parametric. In
+the order of their cost:
+
+- **No look ahead past an item's own state.** The look ahead for an
+  item's definitions (the regions an extrusion's next states change, the
+  ranking of its definitions by the volume they change, the combines and
+  patterns the history guesses: `Importer::lookahead`, `rank`) ends at
+  the item's own state where the history names it: the states after it
+  are the later items'. The extrusion right before the pattern built two
+  of the copies' states (bodies of 5 200 faces) for them, 7.7 s of its
+  7.7 s; now 0.02 s. A fillet's edge guesses still look past it while
+  the item's own state lost no edges.
+- **The faces a change made, measured near it only.** Which faces of a
+  result its bodies before did not have (`new_faces`, the geometric check,
+  a body's distance from a stored one, the measured deviations) and the
+  volume the changed faces bound (`changed_volume`) compare each face
+  with the faces before it by surface kind, area and centre; every face
+  before it was integrated for that, thousands on a large body (5 s a side
+  for the last extrusion's measured deviation). Only the faces whose
+  boxes (kept with each shape, `face_boxes`) hold the centre of a face to
+  compare are integrated now, on all cores; the result is the same.
+- **An extrusion on its state by its faces.** The cut down the wall came
+  within the tolerance of its state only (volume 6.1e-4 off) and tried
+  eight more definitions on the body of 8 000 faces (11 s) before taking
+  the first; its faces lie on the file's, and the changed faces account
+  for the volume, so it is taken at once ([*The history as the
+  reference*](f3d-history.md#the-history-as-the-reference)). Its own
+  boolean (an intersection with the walls of 372 ribs, 8.8 s, most of it
+  in OCCT's pave filler) is the costliest step left: an intersection
+  removes everything outside its tool, so no part of the body can be left
+  out of it.
+- **A body's lumps are cut one by one** (`features::base`, commands.md
+  *Extrude*): the last cut, into a combined body of 18 lumps, made 18
+  bodies where the file keeps one, measured that result for 10 s and fell
+  back; it is parametric now (0.2 s).
+- **An item that does not translate is not tried again from its last copy
+  but one** ([*The history as the reference*](f3d-history.md#the-history-as-the-reference)):
+  the pattern, whose path is not decoded, built that state's body of
+  8 000 faces (6.6 s) for nothing.
+
+What is left: reading the file (9.5 s; converting the bodies of all 389
+history states, 372 of them the pattern's copies, which the replay never
+asks for; 2.1 s since [mitcad#675](#only-the-states-asked-for-converted-mitcad675)), the pattern's fallback (6.3 s, building its state's body of
+8 000 faces), the cut's boolean above, and a combine that falls back
+(3.8 s) because 31 of its 48 tool bodies are bodies the file no longer has
+(copies of a larger grid, before a parameter made the grid smaller).
+
+## Only the states asked for converted (mitcad#675)
+
+Reading a file kept one body per distinct body of each history blob by
+converting the bodies of every state of the history to the neutral model
+and comparing each state's with the state after it. On the bin above that
+was 8.3 s of its 9.5 s of reading (and most of its 4.7 GB peak): the path
+pattern makes two operations per copy, and every state's body of about
+7 000 faces was converted, in 760 states (389 distinct), though the
+replay asks for 18.
+
+The distinct bodies are now told from the history
+(`mitcad_f3d::history_states`), with the same answers as converting and
+comparing them:
+
+- **What an operation changed, as the conversion reads it.** Rolling one
+  more operation back changes only the entities of its bulletins. The
+  conversion reads a record's type and its fields past the entity header,
+  follows only the pointers there, and never reads an attribute; so an
+  entity whose two records agree in all that, or that no record but an
+  attribute points at past the attribute field, changes no body. Each
+  copy's second operation changes only the attributes of eight edges and
+  the edges' attribute pointers: its state is the state before, without
+  converting anything.
+- **The bodies the changed entities belong to.** A body none of whose
+  entities (all its pointers reach, past the attribute field) is among
+  the changed ones is the same as before.
+- **The others side by side, first faces first.** The two states' bodies
+  are converted up to 16 faces and 64 edges (`convert_body_prefix`; one
+  face of the bin's floor has thousands of edges round the ribs), then
+  eight times as many, until they differ or both are whole. A
+  conversion only appends to the body's lists, so lists that differ as
+  far as both go differ in the whole bodies too. An operation's new faces
+  lead their shell's list, so a copy's state differs from the one before
+  in its first vertex: about 0.5 ms a state.
+
+Then the bodies of the states the replay asks for by the timeline (the
+anchors of [*Work beside the replay*](#work-beside-the-replay)) are
+converted on the converting threads, and any other body when it is first
+asked for (a look ahead, a retry from the state before an item, the
+healing base of a state asked for). Whether a body not converted has the
+faces to reuse healed ones, which decides whether its base's build keeps
+them, is told by converting its first 256 faces. The history's ASM data
+stays in memory for these conversions (`StoredFile::sources`).
+
+On the bin (release build, quiet machine, load about 2, medians of 3):
+
+| | before | now |
+|---|---|---|
+| CLI import (`mitcad-cli import-f3d`) | 40.9 s | 33.5 s |
+| app open, to the first frame showing the design | 44.8 s | 37.4 s |
+| reading: bodies converted / inputs found (at the same time) | 8.3 / 1.2 s | 0.9 / 1.2 s |
+| replay / appearances / display | 31.2 / 0 / 0.48 s | 31.2 / 0 / 0.47 s |
+| bodies converted while reading | every state's (476 distinct) | 105 of the 476 |
+| peak memory | 4.7 GB | 1.9 GB |
+
+The items and bodies are the same, as are those of three other corpus
+designs (`e3c34193`, `db73863f`, `b35176e6`).
+
+
+## The first states' large bodies healed while reading (mitcad#676)
+
+On the bin above, the path pattern is the fourth item, and its own state
+(after its 372 copies) holds a body of 8 191 faces. The replay asks for
+the states by the timeline, and its first item builds the bodies of the
+next four of them ahead ([*Work beside the replay*](#work-beside-the-replay)):
+the pattern's state is one of them. Its body has no base (the state
+before the pattern has 37 faces), so it was healed as a whole, 6.7 s from
+the replay's start; the three items before the pattern took 0.3 s, and
+the pattern waited the other 6.4 s for the body before it evaluated
+anything (it compares its definitions with that state). Of the item's
+18.6 s, 12.1 s is its own evaluation.
+
+The bodies of the first five states the replay asks for
+(`first_asked`: the state its first item asks for and the four it then
+builds ahead) are now converted first while the file is read, before the
+other states asked for, and those of 1 000 faces or more without a base
+are healed at once on a thread taken from the converting ones, as a
+history's oldest state's are (*The first state's large bodies healed
+while reading* above; `StoredFile::heal_first_asked`, within the same
+100 000 faces). A body's base is the same body in an earlier state the
+replay asks for, so the bases of these states' bodies are known from the
+states up to them alone; a body with a base is left to the build ahead,
+which takes the faces it shares with its base as healed there. The
+healing is the replay's build of the body (the same data, no base), and a
+try that asks for it waits for it as for a body built ahead, so the items
+and bodies stay the same.
+
+The healing starts while the rest of the bodies are converted and the
+inputs are found (1.1 and 1.4 s at the same time on the bin), instead of
+at the replay's start, so the item waits that much less; the rest of the
+healing still comes before the pattern's evaluation.

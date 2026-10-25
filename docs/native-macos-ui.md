@@ -114,6 +114,95 @@ alone do not establish AppKit keyboard focus (mitcad#559). This scoped run
 does not complete the full keyboard matrix. Outstanding manual scenarios
 remain in [the macOS checklist](macos-trackpad-checklist.md).
 
+## Qt cards on macOS
+
+Every Qt tool button owned by the main window uses the shared
+`MacToolButtonStyle`, in Floating and Docked chrome, including controls
+created later and buttons in owned menus and dialogs. Its resting surface
+is transparent; hover and press use quiet rounded fills, checked controls
+use the palette's accent, and keyboard focus keeps an accent ring. Native
+label/icon rendering, disabled artwork and split-menu hit regions retain
+the platform style's metrics. Custom-painted ribbon, capsule and view
+navigation buttons keep their own painting. Other platforms are unchanged.
+The `app.ui-macos-tool-buttons` check audits all owned buttons, including
+hidden ones, and checks every ordinary button's actual effective style,
+including stylesheet overrides, for resting pixels on the native platform at
+Qt device pixel ratios 1 and 2 in both appearances. These scale checks do
+not claim a change to the physical screen's backing scale.
+The exact warning/error badge roles retain their semantic colored capsule
+outlines, and the command panel's choice tiles retain their content outline;
+these declared roles are the audit's only surface exceptions.
+
+Qt remains the default macOS frontend. Its Floating cards are native tool
+windows when system glass is available. A tool window can be taller than
+its requested rectangle because Qt honours the content layout's minimum
+size. `GlassCard::slot()` therefore reports the window's accepted size,
+and `FloatingLayout` follows later card resizes. Projects and Browser stack
+against those bounds, including after expanding project rows, folding a
+card, changing the window size or showing Projects again. Layout constraints
+are activated before assigning a slot so folding also releases the old
+minimum height.
+
+The Projects toolbar and tree icons use 16 logical pixels; the tree shares
+Browser's 16-pixel indentation. Qt's macOS style supplies the row selection
+and disclosure rendering, and both trees inherit the platform font and
+palette. Project lock marks use the themed icon set; selected status marks
+use the palette's highlighted-text colour to remain visible over the accent.
+The Qt Mac ribbon uses
+26-pixel icons in 36-pixel buttons, with separate group captions and menu
+chevrons; the title bar keeps the compact Undo/Redo and Solid/Build controls.
+Card titles keep their system-font metrics inside a 30-pixel header with
+20-pixel collapse controls.
+The Floating Projects toolbar has a transparent background, so its native
+buttons sit on the same glass material as the rows in both appearances.
+
+`app.ui-macos-projects-cards` checks both requested slots and actual native
+window bounds, plus toolbar/button containment, with zero, one and 24 local
+synthetic projects. It covers project expansion, window resizes, card
+folding and visibility, in Floating and Docked chrome at Qt scales 1 and 2.
+Scale overrides exercise Qt's high-density layout and artwork; they do not
+establish physical Retina-display acceptance. Screenshots of each state
+support the visual pass over the toolbar, rows, card titles and ribbon.
+
+The selection card's Create row uses the shared macOS tool-button style:
+borderless icon-over-label controls with hover and pressed highlights. A
+change of selection reuses those controls, including their style and
+accessible command names. `app.ui-macos-selection-create` covers a body
+and a planar face, starts Rectangular Pattern and Extrude through their
+actual buttons, and checks that the selection reaches each command. It
+runs in Floating and Docked chrome, light and dark appearance, at device
+pixel ratios 1 and 2, with captures for visual review. Qt scale overrides
+exercise dense layout and artwork without changing the physical display.
+
+Browser, Projects and the other panel trees share `TreeItemDelegate` for
+inline renaming. A string editor paints an opaque application Base behind
+its text, without a native line-edit frame, and stays within the row. The
+editor explicitly resolves the platform's Text and selection colour pair
+for active, inactive and disabled groups, so a transparent tree selection
+and the Docked window's accent-text colour cannot replace them. The Browser
+places it after its custom bulb/icon decoration. While an editor
+is open, the delegate omits the underlying name; the Browser also omits
+the component radio button until editing ends. Non-string cells retain
+Qt's normal editor factory. `app.ui-macos-tree-rename` exercises body,
+component and measurement names, double-click/F2/slow-click entry and
+Projects renaming in both chromes and appearances at absolute DPR 1 and 2,
+including committing a typed name and discarding a later draft with Esc.
+Its guard renders the actual delegate with two text colours and requires
+identical pixels while editing, and checks the editor's opaque pixels,
+selection, row containment, coverage of the actual old name's ink rectangle
+and horizontal text alignment. These scale overrides cover layout and
+artwork; physical Retina acceptance requires a display with that backing
+scale.
+
+Finish Sketch appears in the ribbon and the Sketch Palette while a sketch
+is open; the Qt title row keeps its normal search control as its final
+item. `app.ui-macos-sketch-finish-layout` checks the title layout and mask,
+then finishes through the ribbon button, the palette button, the collapsed
+ribbon group's menu and the standard shortcut. Floating and Docked chrome,
+light and dark appearance, and wide and narrow windows are covered. The
+AppKit toolbar's default items already omit Finish Sketch; its native
+ribbon retains the Finish Sketch group when other groups collapse.
+
 ## Viewport anti-aliasing measurements
 
 The normal shaded viewport retains four MSAA samples on every backing
@@ -298,7 +387,7 @@ activation for sketches and features, row renaming and command isolation.
 The toolbar regression upgrades an older saved layout, checks live status
 after a customization-palette request, removes Project, changes projects,
 and verifies that removal persists in a second application process.
-The secondary workflow checks BUILD direction buttons and the reusable
+The secondary workflow checks Build direction buttons and the reusable
 form contract for exclusive icon choices and expanding/collapsing rows.
 Model-volume assertions check the persisted result. The native test bridge
 uses AppKit target/action and the field editor without external

@@ -16,6 +16,7 @@ mod threads;
 mod sketch;
 // Value inputs of command panels (U1).
 mod evaluate;
+mod formula_help;
 // The caches of computed results (P7d).
 mod cache;
 // Joints between occurrences (mitcad#55).
@@ -57,6 +58,25 @@ mod seats;
 mod dispatch;
 // Print Analysis: overhangs, thin walls and a print estimate (mitcad#620).
 mod print;
+// Materials as objects, component default materials and the print key
+// map (mitcad#640).
+mod materials;
+// Printer and process profiles, print settings and the build volume
+// (mitcad#640).
+mod print_profiles;
+// Measure's angles and distances with axes (mitcad#647).
+mod measure_axes;
+// Placement by picked geometry, Gear Pair and Belt Drive (mitcad#656).
+mod drives;
+// Measurement objects kept in the design (mitcad#649).
+mod measurements;
+// Parameter limits: min, max, step and strict (mitcad#665).
+mod limits;
+
+// The parameters as CSV (mitcad#666).
+mod parameters_csv;
+// A two-sided extrusion's negative distance refused in commands (mitcad#693).
+mod two_sides;
 // Section Analysis worked out without the document, off the UI thread
 // (mitcad#438).
 pub use analysis::{PreparedClips, PreparedQuery};
@@ -170,6 +190,15 @@ named_enum! {
             unit: Option<String>,
             #[serde(default)]
             comment: String,
+            // Limits (mitcad#665, `limits.rs`).
+            #[serde(default, deserialize_with = "limits::present")]
+            min: Option<Value>,
+            #[serde(default, deserialize_with = "limits::present")]
+            max: Option<Value>,
+            #[serde(default, deserialize_with = "limits::present")]
+            step: Option<Value>,
+            #[serde(default)]
+            strict: Option<bool>,
         },
         "set_parameter" => SetParameter {
             name: String,
@@ -184,6 +213,15 @@ named_enum! {
             /// A favourite (P9: Change Parameters' star).
             #[serde(default)]
             favorite: Option<bool>,
+            // Limits (mitcad#665, `limits.rs`): null or "" removes one.
+            #[serde(default, deserialize_with = "limits::present")]
+            min: Option<Value>,
+            #[serde(default, deserialize_with = "limits::present")]
+            max: Option<Value>,
+            #[serde(default, deserialize_with = "limits::present")]
+            step: Option<Value>,
+            #[serde(default)]
+            strict: Option<bool>,
         },
         "set_units" => SetUnits {
             length: String,
@@ -207,6 +245,18 @@ named_enum! {
             uid: BodyUid,
             #[serde(default)]
             material: Option<String>,
+            /// `replace` or `keep` the body's appearance; left out: replace
+            /// unless it was set by hand (mitcad#640).
+            #[serde(default)]
+            appearance: Option<String>,
+            /// `base`, `user` or `project`: the material is that library's
+            /// item, copied in (or the design's copy reused) in the same
+            /// undo step (mitcad#655).
+            #[serde(default)]
+            library: Option<String>,
+            /// The project's folder, when the design is in one.
+            #[serde(default)]
+            project: Option<String>,
         },
         "set_body_appearance" => SetBodyAppearance {
             uid: BodyUid,
@@ -410,6 +460,7 @@ named_enum! {
         "timeline" => Timeline,
         // Value inputs of command panels (U1, `evaluate.rs`).
         "evaluate" => Evaluate(evaluate::EvaluateQuery),
+        "formula_help" => FormulaHelp(formula_help::FormulaHelpQuery),
         "parameters" => Parameters,
         "printed_fit_parameters" => PrintedFitParameters,
         "bodies" => Bodies {
@@ -419,6 +470,10 @@ named_enum! {
             // what a command changed, without listing faces and edges).
             #[serde(default)]
             volumes: bool,
+            // Each body's shape version (mitcad#689: MCP's command results
+            // list the bodies a command changed).
+            #[serde(default)]
+            versions: bool,
         },
         "profiles" => Profiles {
             // A hash of each region's geometry and sketch frame (W1: the
@@ -624,6 +679,29 @@ named_enum! {
         "print_overhangs" => PrintOverhangs(print::OverhangsQuery),
         "print_thickness" => PrintThickness(print::ThicknessQuery),
         "print_estimate" => PrintEstimate(print::EstimateQuery),
+        // Materials (mitcad#640, `materials.rs`).
+        "materials" => Materials,
+        "body_material" => BodyMaterial(materials::BodyMaterialQuery),
+        "material_conflicts" => MaterialConflicts(materials::MaterialConflictsQuery),
+        "print_keys" => PrintKeys(materials::PrintKeysQuery),
+        // Print profiles and settings (mitcad#640, `print_profiles.rs`).
+        "print_profiles" => PrintProfiles,
+        "print_settings" => PrintSettings(print_profiles::PrintSettingsQuery),
+        "build_volume" => BuildVolume,
+        "print_library" => PrintLibrary(print_profiles::PrintLibraryQuery),
+        // Placement by picked geometry, Gear Pair and Belt Drive (mitcad#656,
+        // `drives.rs`).
+        "place_frame" => PlaceFrame(Box<drives::PlaceFrameQuery>),
+        "gear_pair" => GearPair(Box<drives::GearPairQuery>),
+        "belt_drive" => BeltDrive(Box<drives::BeltDriveQuery>),
+        "belt_check" => BeltCheck(drives::BeltCheckQuery),
+        // Choosable materials and profiles where they live (mitcad#655).
+        "library_items" => LibraryItems(print_profiles::LibraryItemsQuery),
+        // Measurement objects (mitcad#649, `measurements.rs`).
+        "measurements" => Measurements,
+        // The parameters as CSV (mitcad#666, `parameters_csv.rs`).
+        "parameters_csv" => ParametersCsv,
+        "parameters_csv_preview" => ParametersCsvPreview(parameters_csv::ParametersCsvQuery),
     }
 }
 
@@ -732,6 +810,7 @@ impl<K: Kernel> Document<K> {
                     ),
                     (None, index) => index,
                 };
+                self.check_two_side_distances(&def, None)?;
                 let added = match position {
                     Some(position) => {
                         self.add_feature_at(&def, name.as_deref(), component, position)?
@@ -749,6 +828,7 @@ impl<K: Kernel> Document<K> {
             }
             Command::EditFeature { uid, def } => {
                 let before = self.assembly().created_by(uid);
+                self.check_two_side_distances(&def, Some(uid))?;
                 let created = self.edit_feature(uid, &def)?;
                 let mut reply = json!({"parameters": names(&created)});
                 // A new component the edit made, placed beside a part (mitcad#292).
@@ -797,18 +877,29 @@ impl<K: Kernel> Document<K> {
                 expression,
                 unit,
                 comment,
+                min,
+                max,
+                step,
+                strict,
             } => {
                 let unit = unit.as_deref().map(parse_unit).transpose()?;
+                let limits = limits::LimitInput {
+                    min,
+                    max,
+                    step,
+                    strict,
+                }
+                .apply_to(crate::expr::ParamLimits::default())?;
                 match expression_of(value, expression)? {
                     Expression::Number(value) => {
                         let unit = unit.unwrap_or(Unit::of_length(
                             self.parameters().context().default_length_unit,
                         ));
                         let text = value_to_expression(value, unit);
-                        self.add_parameter_expression(&name, &text, Some(unit), &comment)?;
+                        self.add_parameter_with_limits(&name, &text, Some(unit), &comment, limits)?;
                     }
                     Expression::Text(text) => {
-                        self.add_parameter_expression(&name, &text, unit, &comment)?;
+                        self.add_parameter_with_limits(&name, &text, unit, &comment, limits)?;
                     }
                 }
                 json!({})
@@ -820,10 +911,44 @@ impl<K: Kernel> Document<K> {
                 unit,
                 comment,
                 favorite,
+                min,
+                max,
+                step,
+                strict,
             } => {
                 let unit = unit.as_deref().map(parse_unit).transpose()?;
                 let mut changed = Vec::new();
-                if value.is_some() || expression.is_some() || unit.is_some() {
+                let limits = limits::LimitInput {
+                    min,
+                    max,
+                    step,
+                    strict,
+                };
+                if limits.is_given() {
+                    // With the expression and unit in one step (mitcad#665).
+                    let current = self
+                        .parameters()
+                        .find(&name)
+                        .and_then(|id| self.parameters().get(id))
+                        .map(|p| p.limits().clone())
+                        .ok_or_else(|| ApiError(format!("unknown parameter '{name}'")))?;
+                    let limits = limits.apply_to(current)?;
+                    let expression = match (value, expression) {
+                        (None, None) => None,
+                        (value, expression) => Some(match expression_of(value, expression)? {
+                            Expression::Number(value) => {
+                                let id = self.parameters().find(&name).expect("found above");
+                                let unit = unit.unwrap_or_else(|| {
+                                    self.parameters().get(id).expect("found").unit()
+                                });
+                                value_to_expression(value, unit)
+                            }
+                            Expression::Text(text) => text,
+                        }),
+                    };
+                    changed =
+                        self.set_parameter_limits(&name, limits, expression.as_deref(), unit)?;
+                } else if value.is_some() || expression.is_some() || unit.is_some() {
                     changed = if value.is_none() && expression.is_none() {
                         // Only a new unit: the expression stays.
                         let expression = self
@@ -893,8 +1018,41 @@ impl<K: Kernel> Document<K> {
                 self.set_body_visible(uid, visible)?;
                 json!({})
             }
-            Command::SetBodyMaterial { uid, material } => {
-                self.set_body_material(uid, material.as_deref())?;
+            Command::SetBodyMaterial {
+                uid,
+                material,
+                appearance,
+                library,
+                project,
+            } => {
+                let choice = match appearance.as_deref() {
+                    Some(text) => crate::document::AppearanceChoice::parse(text)?,
+                    None => crate::document::AppearanceChoice::Auto,
+                };
+                match (library.as_deref(), material) {
+                    (Some(library), Some(material)) => {
+                        let library = crate::document::library_kind(library)?;
+                        let libraries =
+                            self.print_libraries(project.as_deref().map(std::path::Path::new));
+                        self.as_one_step(|doc| {
+                            let id = doc.library_item_in_design(
+                                &libraries,
+                                library,
+                                crate::print_library::ItemKind::Material,
+                                &material,
+                            )?;
+                            doc.set_body_material_with(uid, Some(id.as_str()), choice)
+                        })?;
+                    }
+                    (Some(_), None) => {
+                        return Err(ApiError(
+                            "a library is given with the material it has".to_owned(),
+                        ));
+                    }
+                    (None, material) => {
+                        self.set_body_material_with(uid, material.as_deref(), choice)?
+                    }
+                }
                 json!({})
             }
             Command::SetBodyAppearance { uid, appearance } => {
@@ -1093,7 +1251,17 @@ impl<K: Kernel> Document<K> {
             let (rules, face, name) = face_with_rules(rules, &value)?;
             self.preview_face_with_rules(&rules, &face, name.as_deref())?
         } else {
-            match parse::<PreviewCommand>(value, "preview command")? {
+            let command = parse::<PreviewCommand>(value, "preview command")?;
+            // As the command would (mitcad#693).
+            match &command {
+                PreviewCommand::AddFeature { def, .. } => {
+                    self.check_two_side_distances(def, None)?;
+                }
+                PreviewCommand::EditFeature { uid, def, .. } => {
+                    self.check_two_side_distances(def, Some(*uid))?;
+                }
+            }
+            match command {
                 PreviewCommand::AddFeature {
                     def,
                     name,
@@ -1154,6 +1322,11 @@ impl<K: Kernel> Document<K> {
                 if self.hybrid_assembly() {
                     value["hybrid_assembly"] = json!(true);
                 }
+                // The parameters a limit changed (mitcad#665).
+                let limited = limits::limited_parameters(self.parameters());
+                if !limited.is_empty() {
+                    value["limited_parameters"] = json!(limited);
+                }
                 let assembly = self.assembly();
                 if !assembly.is_empty() {
                     value["components"] = json!(assembly.components.len());
@@ -1165,9 +1338,12 @@ impl<K: Kernel> Document<K> {
             Query::Timeline => self.timeline_json(),
             // Value inputs of command panels (U1, `evaluate.rs`).
             Query::Evaluate(query) => self.evaluate_json(&query)?,
+            Query::FormulaHelp(query) => self.formula_help_json(&query)?,
             Query::PrintedFitParameters => crate::print_fits::json(),
             Query::Parameters => {
                 let params = self.parameters();
+                // The features' own limits of the parameters' slots (mitcad#665).
+                let intrinsic = self.intrinsic_limits();
                 Value::Array(
                     params
                         .iter()
@@ -1187,6 +1363,7 @@ impl<K: Kernel> Document<K> {
                                     "angle": context.default_angle_unit.symbol(),
                                 });
                             }
+                            limits::add_fields(&mut value, p, intrinsic.get(&p.id()));
                             value
                         })
                         .collect(),
@@ -1195,7 +1372,14 @@ impl<K: Kernel> Document<K> {
             Query::Bodies {
                 properties,
                 volumes,
-            } => self.bodies_json(properties, volumes)?,
+                versions,
+            } => {
+                let mut bodies = self.bodies_json(properties, volumes)?;
+                if versions {
+                    self.add_body_versions(&mut bodies);
+                }
+                bodies
+            }
             Query::Profiles { hashes } => Value::Array(
                 self.profiles()
                     .into_iter()
@@ -1301,7 +1485,9 @@ impl<K: Kernel> Document<K> {
             }
             Query::CompareStep(query) => self.compare_step_json(&query)?,
             Query::Threads => self.threads_json(),
-            Query::Sketch { uid } => self.sketch_json(uid)?,
+            // Answered as before while nothing it is made from changed
+            // (mitcad#679).
+            Query::Sketch { uid } => return self.sketch_answer(uid),
             Query::Components => self.components_json(),
             Query::Instances(query) => self.instances_json(&query)?,
             // Browser and timeline (U3).
@@ -1435,6 +1621,28 @@ impl<K: Kernel> Document<K> {
             Query::PrintOverhangs(query) => self.print_overhangs_json(&query)?,
             Query::PrintThickness(query) => self.print_thickness_json(&query)?,
             Query::PrintEstimate(query) => self.print_estimate_json(&query)?,
+            // Materials (mitcad#640).
+            Query::Materials => self.materials_json(),
+            Query::BodyMaterial(query) => self.body_material_query(&query)?,
+            Query::MaterialConflicts(query) => self.material_conflicts_json(&query)?,
+            Query::PrintKeys(query) => materials::print_keys_json(&query)?,
+            // Print profiles and settings (mitcad#640).
+            Query::PrintProfiles => self.print_profiles_json(),
+            Query::PrintSettings(query) => self.print_settings_query(&query)?,
+            Query::BuildVolume => self.build_volume_json(),
+            Query::PrintLibrary(query) => self.print_library_query(&query),
+            // Placement by picked geometry, Gear Pair and Belt Drive (mitcad#656).
+            Query::PlaceFrame(query) => self.place_frame_json(&query)?,
+            Query::GearPair(query) => self.gear_pair_json(&query)?,
+            Query::BeltDrive(query) => self.belt_drive_json(&query)?,
+            Query::BeltCheck(query) => self.belt_check_json(&query)?,
+            // Choosable materials and profiles where they live (mitcad#655).
+            Query::LibraryItems(query) => self.library_items_query(&query)?,
+            // Measurement objects (mitcad#649).
+            Query::Measurements => self.measurements_json(),
+            // The parameters as CSV (mitcad#666).
+            Query::ParametersCsv => self.parameters_csv_json(),
+            Query::ParametersCsvPreview(query) => self.parameters_csv_preview_json(&query)?,
         };
         Ok(result.to_string())
     }
@@ -1554,6 +1762,20 @@ impl<K: Kernel> Document<K> {
             bodies.push(value);
         }
         Ok(Value::Array(bodies))
+    }
+
+    /// Adds each body's shape version (`version`, hexadecimal text): it
+    /// changes whenever the body's shape does (mitcad#689).
+    fn add_body_versions(&self, bodies: &mut Value) {
+        for body in bodies.as_array_mut().into_iter().flatten() {
+            let version = body["uid"]
+                .as_str()
+                .and_then(|uid| uid.parse::<BodyUid>().ok())
+                .and_then(|uid| self.body_version(uid));
+            if let Some(version) = version {
+                body["version"] = json!(format!("{version:032x}"));
+            }
+        }
     }
 }
 
@@ -1725,6 +1947,20 @@ fn preview_json(report: &PreviewReport) -> Value {
             .collect();
         value["placements"] = json!(placements);
     }
+    // Where the tool is in the design: its component's occurrences
+    // (mitcad#636).
+    if !report.tool_instances.is_empty() {
+        let instances: Vec<Value> = report
+            .tool_instances
+            .iter()
+            .map(|(path, t, visible)| {
+                let path: Vec<String> = path.iter().map(ToString::to_string).collect();
+                json!({"occurrence": path.join("/"), "transform": crate::assembly::matrix4(t),
+                       "visible": visible})
+            })
+            .collect();
+        value["tool_instances"] = json!(instances);
+    }
     value
 }
 
@@ -1799,6 +2035,19 @@ mod sketch_axes_tests;
 // Print Analysis kept in the document and its queries (mitcad#620).
 #[cfg(test)]
 mod print_tests;
+// Measure in the design's coordinates and the offset of parallel planes
+// (mitcad#646).
+#[cfg(test)]
+mod measure_tests;
+// Parameter limits (mitcad#665).
+#[cfg(test)]
+mod parameter_limits_tests;
+// One solve per sketch edit and query (mitcad#679).
+#[cfg(test)]
+mod sketch_solve_once_tests;
+// Text parameters and the sketch texts that follow them (mitcad#664).
+#[cfg(test)]
+mod text_parameter_tests;
 
 /// The feature a command edits by name (mitcad#401): `edit_feature`,
 /// `suppress_feature` and `reorder_feature` its `uid`, a sketch command

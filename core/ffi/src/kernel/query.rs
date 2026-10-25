@@ -50,5 +50,7 @@ pub mod ffi {
         fn count_faces(shape: &Shape, name: &str) -> usize;
         /// The solids with their face names, in geometric order.
         fn solids(shape: &Shape) -> Result<UniquePtr<ShapeList>>;
+        /// How many solids the shape holds (mitcad#658).
+        fn solid_count(shape: &Shape) -> usize;
     }
 }

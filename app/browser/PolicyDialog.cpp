@@ -28,7 +28,7 @@ QString presetText(const QString& preset) {
     return QObject::tr("Assembly");
   }
   if (preset == QStringLiteral("part")) {
-    return QObject::tr("Part");
+    return QObject::tr("Component");
   }
   // `defaults` is the Hybrid preset's name before mitcad#421.
   if (preset == QStringLiteral("hybrid") || preset == QStringLiteral("defaults")) {
@@ -69,7 +69,7 @@ PolicyDialog::PolicyDialog(Query query, const QString& component, QWidget* paren
   presets->addStretch(1);
   const std::pair<QString, QString> presetButtons[] = {
       {QStringLiteral("hybrid"), tr("&Hybrid")},
-      {QStringLiteral("part"), tr("&Part")},
+      {QStringLiteral("part"), tr("Compo&nent")},
       {QStringLiteral("assembly"), tr("&Assembly")},
   };
   for (const auto& [preset, text] : presetButtons) {
@@ -79,8 +79,8 @@ PolicyDialog::PolicyDialog(Query query, const QString& component, QWidget* paren
     presets->addWidget(button);
   }
   layout->addLayout(presets);
-  auto* presetHelp = new QLabel(tr("Hybrid (the defaults): everything allowed. Part: sketches and features, no "
-                                   "components. Assembly: components only. Part and Assembly refuse sketch "
+  auto* presetHelp = new QLabel(tr("Hybrid (the defaults): everything allowed. Component: sketches and features, no "
+                                   "components. Assembly: components only. Component and Assembly refuse sketch "
                                    "attachment in both directions, except a component's first sketch, and allow "
                                    "references."),
                                 this);

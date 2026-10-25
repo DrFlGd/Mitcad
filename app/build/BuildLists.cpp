@@ -42,6 +42,8 @@
 #include "../framework/Json.hpp"
 #include "BuildModel.hpp"
 
+#include "../platform/MacDialogs.hpp"
+
 namespace mitcad::build {
 namespace {
 
@@ -216,6 +218,7 @@ QTableWidget* newTable(const QString& name) {
   table->setSelectionBehavior(QAbstractItemView::SelectRows);
   table->horizontalHeader()->setStretchLastSection(true);
   table->verticalHeader()->setVisible(false);
+  mac::styleListTable(table);
   return table;
 }
 
@@ -563,20 +566,16 @@ BuildListsDialog::BuildListsDialog(const CommandContext& model, const QString& d
   m_tabs->addTab(partsPage, tr("Parts List"));
   m_tabs->setCurrentIndex(page == Page::CutList ? 0 : 1);
 
-  auto* buttons = new QHBoxLayout;
-  auto* copy = new QPushButton(tr("Copy as &CSV"));
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+  auto* copy = buttons->addButton(tr("Copy as &CSV"), QDialogButtonBox::ActionRole);
   copy->setObjectName(QStringLiteral("listCopyCsv"));
-  auto* pdf = new QPushButton(tr("Save as &PDF..."));
+  auto* pdf = buttons->addButton(tr("Save as &PDF…"), QDialogButtonBox::ActionRole);
   pdf->setObjectName(QStringLiteral("listSavePdf"));
-  auto* close = new QDialogButtonBox(QDialogButtonBox::Close);
-  buttons->addWidget(copy);
-  buttons->addWidget(pdf);
-  buttons->addStretch(1);
-  buttons->addWidget(close);
-  layout->addLayout(buttons);
+  mac::styleDialogButtons(buttons);
+  layout->addWidget(buttons);
   connect(copy, &QPushButton::clicked, this, &BuildListsDialog::copyCsv);
   connect(pdf, &QPushButton::clicked, this, &BuildListsDialog::savePdf);
-  connect(close, &QDialogButtonBox::rejected, this, &QDialog::reject);
+  connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
   connect(m_kerf, &QDoubleSpinBox::valueChanged, this, [this] { load(); });
   connect(m_columns, &QLineEdit::editingFinished, this, [this] {
     if (propertyKeys(m_columns->text()) != propertyKeys(lastPropertyColumns())) {
@@ -589,6 +588,7 @@ BuildListsDialog::BuildListsDialog(const CommandContext& model, const QString& d
     QTimer::singleShot(0, this, &BuildListsDialog::logLayout);
   });
   load();
+  mac::styleDialog(this);
 }
 
 void BuildListsDialog::load() {

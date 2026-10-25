@@ -2,7 +2,7 @@
 # check-all sources: app/commands/BearingCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/printable_bearing.rs core/model/src/features/bearing_sizes.rs
 # check-all sources: core/model/src/api/bearings.rs tools/cli
-# check-all sources: app/commands/SeatInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs
+# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs
 # Input-driven Windows UI test of Bearing (mitcad#577) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted), on a design
 # mitcad-cli makes: a shaft 10 mm across and 20 long at (60, 0)
@@ -11,7 +11,8 @@
 # block 40 x 40 x 10 at (0, 120) with a 22 mm hole through it (Extrude2
 # F5.b0, the hole's wall F7:side(c1)). The Linux counterpart is
 # tools/ui-bearing-test.sh:
-#   1. Bearing: the panel starts on XY with a 608 of dumbbells; its note
+#   1. Bearing, placed by a click on the XY plane and both distances 0
+#      (it waits for a pick, mitcad#656): a 608 of dumbbells; its note
 #      shows the model's values (15 mm pitch diameter, 10 elements of 3.8
 #      mm, walls 1.2 mm, the flanks' gap 0.4 / sqrt(2)). 12 elements are
 #      too many (the note says so), 8 are fine; as a New Body, OK makes
@@ -20,9 +21,9 @@
 #   3. Bearing again, Groove Into the shaft's round face: the 608's outer
 #      race on the shaft, the raceway cut into it (7 dumbbells of 4.9333 mm
 #      on a 13.2667 mm pitch circle, the outer race's wall 1.5 mm). OK.
-#   4. On a shaft's end (mitcad#578): Shaft the cylinder's top edge takes
+#   4. On a shaft's end (mitcad#578): Place On the cylinder's top edge takes
 #      the 608 (its bore fits the 8 mm shaft), 5 mm down the shaft. OK.
-#   5. In a hole: Shaft the hole's top rim takes the 608 by its outside
+#   5. In a hole: Place On the hole's top rim takes the 608 by its outside
 #      (22 mm), flush with the block's top face. OK.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-bearing-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
@@ -91,7 +92,7 @@ function Answer-Hybrid {
 Write-Host '--- 1. A 608 of dumbbells on XY'
 Ui-Mark
 Ui-Step 'bearing (F7)'                   { Ui-Key 'F7' }
-Ui-ExpectNew 'Preview Bearing: ok' 'the bearing previewed' 30
+Ui-PlaceOnXy 'Bearing'
 Ui-ExpectNew 'Panel Bearing note: Pitch diameter 15 mm, 10 elements of 3.8 mm, walls 1.2 mm and 1.2 mm, least gap 0.2828 mm' 'its values shown' 30
 Ui-Mark
 Ui-Step 'elements 12'                    { Ui-TypeIn 'Panel Bearing input element_count' '12' }
@@ -124,7 +125,7 @@ Write-Host '--- 3. A raceway cut into the shaft'
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
 Ui-Mark
 Ui-Step 'bearing (F7)'                   { Ui-Key 'F7' }
-Ui-ExpectNew 'Preview Bearing: ok' 'the panel open' 30
+Ui-ExpectNew 'Command Bearing started' 'the panel opened, waiting for a pick' 30
 Ui-Mark
 Ui-Step 'Groove Into'                    { Ui-ClickLogged 'Panel Bearing input groove' }
 Ui-ExpectNew 'Pick places:' 'the picks are logged'
@@ -142,9 +143,9 @@ Write-Host "--- 4. On the cylinder's top end, 5 mm down (mitcad#578)"
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
 Ui-Mark
 Ui-Step 'bearing (F7)'                   { Ui-Key 'F7' }
-Ui-ExpectNew 'Preview Bearing: ok' 'the panel open' 30
+Ui-ExpectNew 'Command Bearing started' 'the panel opened, waiting for a pick' 30
 Ui-Mark
-Ui-Step 'Shaft'                          { Ui-ClickLogged 'Panel Bearing input shaft' }
+Ui-Step 'Place On'                       { Ui-ClickLogged 'Panel Bearing input at' }
 Ui-ExpectNew 'Pick places:' 'the picks are logged'
 Ui-ExpectNew 'Pick edge F3.b0/E{F3:side0|F3:top} at' "the cylinder's top edge can be picked"
 Ui-Mark
@@ -152,7 +153,8 @@ Ui-Step 'click the top edge'             { Ui-ClickPick 'edge F3.b0/E{F3:side0|F
 Ui-ExpectNew 'Preview Bearing: ok' 'the bearing previewed on the shaft' 30
 Ui-ExpectNew 'on a 8 mm shaft' 'the size whose bore fits the 8 mm shaft' 30
 Ui-Mark
-Ui-Step 'offset 5'                       { Ui-TypeIn 'Panel Bearing input seat_offset' '5' }
+Ui-Step 'More'                           { Ui-ClickLogged 'Panel Bearing input at_more' }
+Ui-Step 'offset 5'                       { Ui-TypeIn 'Panel Bearing input at_offset' '5' }
 Ui-ExpectNew 'Preview Bearing: ok' '5 mm down the shaft previewed' 30
 Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
@@ -163,9 +165,9 @@ Write-Host "--- 5. In the hole, flush with the block's top face"
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
 Ui-Mark
 Ui-Step 'bearing (F7)'                   { Ui-Key 'F7' }
-Ui-ExpectNew 'Preview Bearing: ok' 'the panel open' 30
+Ui-ExpectNew 'Command Bearing started' 'the panel opened, waiting for a pick' 30
 Ui-Mark
-Ui-Step 'Shaft'                          { Ui-ClickLogged 'Panel Bearing input shaft' }
+Ui-Step 'Place On'                       { Ui-ClickLogged 'Panel Bearing input at' }
 Ui-ExpectNew 'Pick places:' 'the picks are logged'
 Ui-ExpectNew 'Pick edge F5.b0/E{' "the block's edges can be picked"
 $rim = Ui-LastMatch 'Pick edge F5\.b0/(E\{[^ ]*F5:end\([^ ]*F7:side\(c1\)[^ ]*\}|E\{[^ ]*F7:side\(c1\)[^ ]*F5:end\([^ ]*\}) at'

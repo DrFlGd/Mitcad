@@ -255,6 +255,11 @@ pub struct PathPatternDef<P = ParamId> {
     /// Where the original sits on the path, 0 at its start and 1 at its end.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub start: f64,
+    /// Where the original sits on the path given by a point instead of
+    /// `start` (mitcad#673): the path's point nearest to it (mm). The `.f3d`
+    /// import's patterns keep their objects' centre.
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub start_point: Option<[f64; 3]>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub flip: bool,
     /// Turns the copies with the path's direction (`isOrientationAlongPath`
@@ -277,7 +282,9 @@ pub struct PathPatternDef<P = ParamId> {
     /// As [`RectangularPatternDef::scale_groups`].
     #[serde(default = "none", skip_serializing_if = "Option::is_none")]
     pub scale_groups: Option<P>,
-    /// As [`RectangularPatternDef::combine`].
+    /// As [`RectangularPatternDef::combine`]; for features too (mitcad#673):
+    /// the bodies the copies make (copies of a feature that made a new
+    /// body) join the body of the features, where they touch it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub combine: bool,
     /// As [`RectangularPatternDef::scale_copies`].
@@ -464,6 +471,7 @@ impl<P> PathPatternDef<P> {
             distance: param,
             distance_type: copy,
             start: copy,
+            start_point: copy,
             flip: copy,
             along_path: copy,
             symmetric: copy,
@@ -650,8 +658,9 @@ pub(super) fn check_suppressed(suppressed: &[u32]) -> Result<(), String> {
 pub(super) fn quantity(what: &str, value: f64) -> Result<u32, String> {
     let rounded = value.round();
     if !value.is_finite() || (value - rounded).abs() > 1e-9 || rounded < 1.0 {
-        return Err(format!(
-            "{what} must be a whole number of at least 1, got {value}"
+        return Err(crate::parameters::count_error(
+            format!("{what} must be a whole number of at least 1, got {value}"),
+            value,
         ));
     }
     if rounded > f64::from(MAX_ELEMENTS) {
@@ -1584,14 +1593,20 @@ impl PathPatternDef {
         let all: Vec<Transform> = if let PathRef::SketchCurves { sketch, curves } = &self.path {
             // Along a chain of lines and arcs (mitcad#464).
             let chain = PathChain::of_sketch(ctx, *sketch, curves)?;
-            let s0 = self.start * chain.length();
+            let s0 = match self.start_point {
+                Some(p) => chain.nearest(p),
+                None => self.start * chain.length(),
+            };
             positions(q, self.symmetric)
                 .into_iter()
                 .map(|i| chain_transform(&chain, s0, s0 + i * step, self.along_path))
                 .collect()
         } else {
             let curve = path_curve(ctx, &self.path)?;
-            let s0 = self.start * curve.length();
+            let s0 = match self.start_point {
+                Some(p) => curve.nearest(p),
+                None => self.start * curve.length(),
+            };
             positions(q, self.symmetric)
                 .into_iter()
                 .map(|i| path_transform(&curve, s0, s0 + i * step, self.along_path))
@@ -1873,6 +1888,9 @@ pub(crate) fn repeat<K: Kernel>(
                     copying.by_elements(ctx, &mut set, elements)?;
                 }
                 Err(e) => return Err(e),
+            }
+            if combine {
+                join_copies(ctx, &mut set, &places)?;
             }
             Ok(FeatureOutput {
                 changes: set.changes(),
@@ -2233,6 +2251,55 @@ impl Copying<'_> {
         }
         Ok(reached)
     }
+}
+
+/// A pattern of features with `combine` (mitcad#673): the bodies its
+/// copies made (copies of a feature that made a new body, with their
+/// fillets and chamfers) joined to the one body the features made or
+/// changed, as it is at the pattern, in one operation; a copy that touches
+/// nothing stays a body of its own. The `.f3d` designs whose pattern of
+/// such a feature makes no body keep the copies in the original's body.
+fn join_copies<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    set: &mut BodySet<K::Shape>,
+    places: &[Placed],
+) -> Result<(), String> {
+    let made = set.made();
+    if made.is_empty() {
+        return Ok(());
+    }
+    let mut targets: Vec<BodyUid> = Vec::new();
+    for place in places {
+        for body in changed_bodies(ctx, place.feature, set)? {
+            if set.was_there(body) && !targets.contains(&body) {
+                targets.push(body);
+            }
+        }
+    }
+    let [target] = targets[..] else {
+        return Err(format!(
+            "the copies are joined to the body of the patterned features, but they changed {} \
+             bodies that are there",
+            targets.len()
+        ));
+    };
+    let shapes: Vec<K::Shape> = made.iter().filter_map(|b| set.get(*b).cloned()).collect();
+    // The bodies are apart (each a solid of the copies' union, or of a body
+    // the copies did not reach), so one compound of them is the tool; a
+    // union of them again took 4 s for 372 copies.
+    let tool = match ctx.kernel.compound(&shapes) {
+        Ok(tool) => tool,
+        Err(KernelError::Unsupported(_)) => {
+            let refs: Vec<&K::Shape> = shapes.iter().collect();
+            ctx.kernel.unite(&refs).map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
+    for body in made {
+        set.remove(body);
+    }
+    apply_tool(ctx, set, Operation::Join, &[target], &tool)?;
+    Ok(())
 }
 
 /// The bodies feature `uid` changed (set or removed) that are still there,
@@ -2690,13 +2757,23 @@ impl FeatureInfo for PathPatternDef {
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
         self.objects.check(ctx)?;
         self.path.check(ctx)?;
-        if !self.start.is_finite() {
+        if !self.start.is_finite()
+            || self
+                .start_point
+                .is_some_and(|p| p.iter().any(|v| !v.is_finite()))
+        {
             return Err("the start of the path pattern must be finite".to_owned());
+        }
+        // A path pattern's copies of features join the body of the features
+        // with `combine` too (mitcad#673).
+        let features = matches!(self.objects, PatternObjects::Features { .. });
+        if self.combine && matches!(self.objects, PatternObjects::Faces { .. }) {
+            return Err("combine applies to bodies and features only".to_owned());
         }
         check_options(
             ctx,
             &self.objects,
-            self.combine,
+            self.combine && !features,
             &self.scale_spec(),
             &self.skipped_copies,
         )?;

@@ -771,6 +771,14 @@ pub(crate) struct Importer<'a, K: Kernel> {
     /// approximation (mitcad#181): only its decoded definitions there, its
     /// guesses on the state before it exactly ([`Importer::verified_at`]).
     defer_guesses: bool,
+    /// The history state of the item being verified, where the history
+    /// names it ([`Importer::verified`]): the states after it are later
+    /// items', so the look ahead for its definitions ends there
+    /// ([`Importer::lookahead`], mitcad#658).
+    own_state: Option<usize>,
+    /// Why the item's last try ([`Importer::try_state`]) had no definitions
+    /// at all (its translation failed); None when it had some.
+    untranslated: Option<String>,
     /// Set by [`Importer::try_state`] when a definition of the item failed
     /// in the geometry kernel ([`kernel_failure`]): the item is then tried
     /// again on the file's state before it exactly ([`Importer::verified_at`]).
@@ -873,6 +881,8 @@ impl<'a, K: Kernel> Importer<'a, K> {
             alternatives: HashMap::new(),
             guesses: None,
             defer_guesses: false,
+            own_state: None,
+            untranslated: None,
             kernel_failed: false,
             start_bases: HashMap::new(),
             deadline: None,
@@ -1046,6 +1056,15 @@ fn symptom(error: &str) -> bool {
         || error.contains("does not cut into any participant body")
         || error.contains("does not touch any participant body")
         || error.contains("no bodies in the extrude direction")
+}
+
+/// Whether an item's translation failed because inputs of it were not
+/// decoded ("its path was not decoded"), and not after looking for them in
+/// the history's next states ("... and no next history state lost faces"):
+/// it fails so on any bodies.
+fn undecoded(error: &str) -> bool {
+    (error.contains(" was not decoded") || error.contains(" were not decoded"))
+        && !error.contains("history")
 }
 
 /// Whether a definition's error is the geometry kernel's: an operation that
@@ -3055,6 +3074,38 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// among them, stay as they are: they were imported correctly
     /// (mitcad#285).
     #[allow(clippy::too_many_arguments)]
+    /// Whether an extrusion's result, which came within the tolerance of
+    /// its state only approximately, lies on the state by its faces
+    /// ([`Importer::faces_on_state`]; `change`: the file's change for the
+    /// item and the bodies' measures now). A result evaluated ahead is
+    /// taken into the document first, and `evaluated` then names it there.
+    /// (`candidate`: the item's timeline index, the candidate and the
+    /// item's name.)
+    fn extrusion_on_state(
+        &mut self,
+        candidate: (i64, &Candidate, Option<&str>),
+        evaluated: &mut ahead::Evaluated,
+        before: &[(BodyUid, K::Shape)],
+        states: geometric::States,
+        change: (Option<&history::Change>, &[Sig]),
+    ) -> bool {
+        let (index, c, item_name) = candidate;
+        if evaluated.ahead() {
+            match self.take_over(index, c, item_name, evaluated) {
+                Ok(uids) => {
+                    *evaluated = ahead::Evaluated {
+                        result: Ok(uids),
+                        bodies: None,
+                        ran: evaluated.ran,
+                    };
+                }
+                Err(_) => return false,
+            }
+        }
+        self.faces_on_state(item_name.unwrap_or("?"), before, states, change.0, change.1)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn after_match(
         &mut self,
         at: usize,
@@ -3303,7 +3354,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// they start from (edges found against a fallback's bodies).
     fn verified(&mut self, at: usize, index: i64, item: &TimelineItem) {
         if let Some(state) = self.oracle.item_state(index) {
+            self.own_state = Some(state);
             self.verified_at(at, index, item, state);
+            self.own_state = None;
             return;
         }
         // The state of the next item that has one is that item's: this one
@@ -3794,15 +3847,28 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         // state the replay is at: tried first as the item's own (each copy
         // of a pattern is an operation of its own, mitcad#156), so that no
         // base feature takes the place of the copies before the last.
+        // An item whose inputs the file does not decode fails from any
+        // state: it is not tried again from the state right before its own
+        // as below, where that state is one of its own operations' (each copy
+        // of a pattern of 372 copies, mitcad#658: building that state's body
+        // of 8 000 faces took 6.6 s for nothing).
+        let mut undecoded_from = None;
+        self.untranslated = None;
         if let Some(own) = self
             .oracle
             .item_start(index)
             .filter(|&b| self.pending.is_empty() && self.oracle.cursor == Some(b) && b + 1 < state)
-            && self.tried_from_own_start(at, index, item, own, state)
         {
-            return;
+            if self.tried_from_own_start(at, index, item, own, state) {
+                return;
+            }
+            if self.untranslated.as_deref().is_some_and(undecoded) {
+                undecoded_from = Some(own);
+            }
         }
-        let start = if self.oracle.cursor == Some(state) {
+        let start = if undecoded_from.is_some() {
+            undecoded_from
+        } else if self.oracle.cursor == Some(state) {
             Some(state)
         } else {
             state.checked_sub(1)
@@ -4155,6 +4221,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         let state = states.after;
         let name = item_name(item);
         let mut last_error = String::from("no definition gave the file's result");
+        self.untranslated = None;
         // The volume the item adds or removes must be the file's too, not
         // only the bodies' measures (mitcad#121).
         let own = reference.and_then(|r| history::Change::new(r, &self.current_sigs(), target));
@@ -4523,12 +4590,25 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                 }
                             }
                             // (Not for a difference the bodies before it
-                            // carried: no definition comes closer.)
+                            // carried: no definition comes closer. Nor for
+                            // an extrusion, the first to come close, whose
+                            // faces lie on its state within the geometric
+                            // tolerance: no other set of regions comes
+                            // closer than that, mitcad#658.)
                             if let Some((d, _)) = matched
                                 && seeks_closer(c)
                                 && introduced(d, carried)
                                 && loose.is_none_or(|(_, l)| closer(c, d, l))
                                 && closer_tries < LOOSE_RETRIES
+                                && !(is_extrusion(c)
+                                    && loose.is_none()
+                                    && self.extrusion_on_state(
+                                        (index, c, item.name()),
+                                        &mut evaluated,
+                                        &before_shapes,
+                                        states,
+                                        (own.as_ref(), &current),
+                                    ))
                             {
                                 trace!(
                                     "{name}: {} -> its state {state} only within {d:.1e}; \
@@ -4715,6 +4795,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             }
             Err(e) => {
                 trace!("{name}: {e}");
+                self.untranslated = Some(e.clone());
                 last_error = e;
             }
         }
@@ -4926,7 +5007,23 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// The history states the guesses for an item look at: the next `n`.
     pub(crate) fn lookahead(&self, n: usize) -> std::ops::Range<usize> {
         let from = self.oracle.next_index();
-        from..self.oracle.count().min(from + n)
+        from..self.lookahead_end(from + n)
+    }
+
+    /// Where a look ahead of the history's states that would end at `end`
+    /// (exclusive) ends: at the last state, and at the state of the item
+    /// being verified where the history names it. The states after an
+    /// item's own are the later items' and tell nothing of its definitions,
+    /// while building them costs seconds a state on large bodies (mitcad#658:
+    /// an extrusion right before a pattern of 372 copies built two of the
+    /// copies' states of 5 000 faces to probe its regions and rank its
+    /// definitions, 7.6 s of its 7.7 s).
+    fn lookahead_end(&self, end: usize) -> usize {
+        let end = self.oracle.count().min(end);
+        match self.own_state {
+            Some(own) => end.min(own + 1),
+            None => end,
+        }
     }
 
     /// The import moves on (for the watchdog).
@@ -5004,7 +5101,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             let kernel = self.doc.kernel();
             let volume = |sigs: &[Sig]| sigs.iter().map(|s| s.volume).sum::<f64>();
             let now = volume(&self.current_sigs());
-            let end = self.oracle.count().min(from + 4);
+            let end = self.lookahead_end(from + 4);
             let changes: Vec<f64> = (from..end)
                 .map(|q| volume(&self.oracle.sigs(kernel, q)) - now)
                 .collect();

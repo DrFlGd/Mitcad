@@ -11,6 +11,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include <QColor>
@@ -29,6 +30,7 @@
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 
+#include "DragProxy.hpp"
 #include "Selection.hpp"
 #include "mitcad/geometry/shape.hpp"
 
@@ -106,9 +108,26 @@ struct Manipulator {
   // Arrow: millimetres along the arrow per unit of the value (a diameter's
   // handle sits at the radius: 0.5).
   double factor = 1.0;
+  // Arrow: the smallest value a drag gives; the handle stops there (a Two
+  // Sides extrusion's distance at its start, mitcad#693).
+  double minimum = -std::numeric_limits<double>::infinity();
   // Toggle: the element it stands for and whether it is on.
   int element = -1;
   bool on = true;
+  // Arrow and Ring: the value in a box at the handle (mitcad#656): an
+  // arrow is drawn as a dimension line from its origin (the reference it
+  // measures from) with the box at its middle, a ring with the box beside
+  // its knob. A click on the box opens a field there that edits the value
+  // as the panel's field does.
+  bool valueBox = false;
+  // With valueBox: whether the box shows while the value is 0 (an Offset
+  // or an Angle not used: only while its handle or the box is under the
+  // mouse, mitcad#656).
+  bool boxAtZero = true;
+  // With valueBox on an arrow: the box beyond its tip, as a size reads (a
+  // box's length, a hole's depth, mitcad#656), not on the line as a
+  // distance from a reference does.
+  bool boxAtTip = false;
 };
 
 // A labelled, non-interactive point from a successful feature preview,
@@ -117,6 +136,43 @@ struct PreviewMarker {
   QString label;
   gp_Pnt point;
 };
+
+// An InputNote action's "icon" that shows it as a link (mitcad#655): after
+// the text buttons on their line, else on a row of its own.
+inline QString linkActionIcon() { return QStringLiteral("__link"); }
+
+// What a note row shows (InputDef::Type::Note, mitcad#655): a short text,
+// wrapped, never clipped, and the buttons under it by their texts (3D
+// Print's "[Import from slicer…] plate.3mf imported", its link beside the
+// button). A row with neither is hidden.
+struct InputNote {
+  QString text;
+  QStringList actions;
+  // An action's small icon (app/icons), by its index: shown as an icon
+  // button on the text's line with the action's text as its tooltip (3D
+  // Print's Edit pencil); none: a button under the text; linkActionIcon():
+  // a link on the text's line (3D Print's own settings: each body's name).
+  QStringList icons;
+  // The text on one line, elided, its whole text the tooltip (mitcad#655:
+  // 3D Print's Materials summary); else wrapped.
+  bool oneLine = false;
+
+  bool isEmpty() const { return text.isEmpty() && actions.isEmpty(); }
+};
+
+// A small icon beside an option of a drop-down (InputDef::choiceIcon,
+// mitcad#655): its name in app/icons (none when empty) and what hovering
+// over it says.
+struct ChoiceIcon {
+  QString icon;
+  QString tooltip;
+};
+
+// A choice whose value starts with this is a heading of the options after
+// it (mitcad#655: 3D Print's places, Built-in, My library, ...), shown as
+// a small disabled line that cannot be chosen; a frontend without headings
+// lists it, and choosing it changes nothing.
+inline QString choiceHeadingPrefix() { return QStringLiteral("__heading/"); }
 
 // One input of a feature command's panel.
 struct InputDef {
@@ -129,6 +185,7 @@ struct InputDef {
     Text, // plain text, not evaluated (names, thread designations)
     CutTargets, // persistent assembly-cut scope and preview-fed checklist
     List, // rows of the `children` inputs (fillet sets, hole positions)
+    Note, // a line of text and its buttons, no value (noteFor, onNoteAction)
   };
 
   Type type = Type::Value;
@@ -204,6 +261,14 @@ struct InputDef {
   // empty: the count. Called with the picks, the state and the model
   // whenever a selection changes.
   std::function<QString(const Selection&, const CommandState&, const CommandContext&)> itemsText;
+  // Selection: what an empty row's button says instead of "None", with the
+  // colour of its swatch then (mitcad#656: an empty Align is Reference 1,
+  // in Reference 1's green); an empty text: "None" and its own colour.
+  std::function<std::pair<QString, QColor>(const CommandState&)> emptyShows;
+  // Selection: its picks only say where a creation command's part goes
+  // (the placement input, mitcad#656): the view's context menu offers the
+  // command under More for them, as for a face or a plane.
+  bool places = false;
   // Selection of bodies the command consumes (Combine's tools without Keep
   // Tools, mitcad#561): while the input is active, a picked body that the
   // preview removes stays drawn where other occurrences show it, as a tool
@@ -263,6 +328,16 @@ struct InputDef {
   QString buttonText;
   QString buttonTooltip;
   std::function<void(const CommandState&, const CommandContext&)> onButton;
+  // The button as a small icon (its name in app/icons) instead of its text,
+  // the text then its accessible name (mitcad#655: 3D Print's Edit).
+  QString buttonIcon;
+  // A note row without a label in the field column, under the fields
+  // above it, not across the panel (mitcad#655: 3D Print's Import from
+  // slicer… and Overrides under Process).
+  bool fieldColumn = false;
+  // The button enabled only while this holds (mitcad#655: Edit on Slicer
+  // default is disabled); always when unset.
+  std::function<bool(const CommandState&)> buttonEnabled;
   // Choice: shown as a tile instead of the drop-down and its button
   // (BUILD's part, mitcad#427): the chosen option's picture, name and a
   // smaller line under it, from the state. A click on it, or Enter or Space
@@ -271,6 +346,24 @@ struct InputDef {
   // that Enter after a click still confirms the command. A frontend without
   // tiles shows the drop-down and its button.
   std::function<ChoiceTile(const CommandState&)> choiceTile;
+  // Choice: shown as a list of rows under these column headings instead of
+  // a drop-down (Gear Pair's candidates, mitcad#656), the chosen row
+  // selected; each option's label holds its columns separated by tabs. A
+  // frontend without such a list shows the drop-down.
+  QStringList choiceColumns;
+  // The headings in a state, when they carry a value (Gear Pair's "Centre
+  // distance 60 mm", mitcad#656); choiceColumns when unset.
+  std::function<QStringList(const CommandState&)> choiceColumnsFor;
+  // Choice shown as a drop-down: a small icon beside each option (by its
+  // value), its tooltip on the option (mitcad#655: the place of a printer,
+  // a lock for Mitcad's own). A frontend without icons shows the labels.
+  std::function<ChoiceIcon(const QString&)> choiceIcon;
+  // Note (mitcad#655): what the row shows in a state, and what a click on
+  // its button `action` (the index in InputNote::actions) does, with the
+  // row's state and the model; the panel shows the inputs again afterwards
+  // (CommandDef::modelChanged first).
+  std::function<InputNote(const CommandState&)> noteFor;
+  std::function<void(int action, const CommandState&, const CommandContext&)> onNoteAction;
   // Value: also a box at the cursor in the view (BUILD's length), in step
   // with the panel's field: what is typed in either is the input's text.
   // With several, the box is the first shown one's, or the one whose
@@ -294,6 +387,10 @@ struct InputDef {
 
   // Shown only while this holds (for a list's input: of its row's state).
   std::function<bool(const CommandState&)> visible;
+  // Enabled only while this holds (mitcad#655: 3D Print's Printer and
+  // Process with STL show disabled rather than hidden); frontends without
+  // it show the row enabled.
+  std::function<bool(const CommandState&)> enabled;
 
   // The label in a state, where it follows other inputs (a pattern's length
   // row says Spacing or Extent by its Distance Type, mitcad#545); `label`
@@ -304,6 +401,23 @@ struct InputDef {
   // A bold heading above the row, shown and hidden with it: the first
   // input of a group of inputs (a thread's Extra clearance).
   QString heading;
+  // Shown on the line of the input before it, after its field and without
+  // a label of its own (mitcad#656: a reference's distance beside the
+  // edge it is measured from, Flip beside Offset), hidden and shown on
+  // its own. A frontend without such lines shows it as a row of its own.
+  bool besidePrevious = false;
+  // Value: its handle stays in the view while the input is hidden (folded
+  // away under More, mitcad#656: a placement's Offset and Angle).
+  bool handleWhenHidden = false;
+  // Text under the row, in grey, read after each preview that succeeded
+  // (mitcad#656: Check Belt's belt length, nearest belt and travel, one
+  // per line); none when empty.
+  std::function<QString(const CommandState&, const CommandContext&)> rowNote;
+  // Value: may be left empty, which means the model works it out (mitcad#656:
+  // "0 means automatic" made explicit); the empty field shows this text as
+  // its placeholder, read after each preview that succeeded ("Auto (24.5
+  // mm)", the worked-out value; "Auto" when it returns nothing).
+  std::function<QString(const CommandState&, const CommandContext&)> autoText;
 
   InputDef& withTooltip(const QString& tip) {
     tooltip = tip;
@@ -331,6 +445,10 @@ struct InputDef {
   }
   InputDef& withVisible(std::function<bool(const CommandState&)> shown) {
     visible = std::move(shown);
+    return *this;
+  }
+  InputDef& withEnabled(std::function<bool(const CommandState&)> on) {
+    enabled = std::move(on);
     return *this;
   }
   InputDef& withLabel(std::function<QString(const CommandState&)> shown) {
@@ -437,6 +555,51 @@ struct InputDef {
     choiceTile = std::move(tile);
     return *this;
   }
+  InputDef& withChoiceColumns(const QStringList& headings) {
+    choiceColumns = headings;
+    return *this;
+  }
+  InputDef& withChoiceColumns(const QStringList& headings, std::function<QStringList(const CommandState&)> now) {
+    choiceColumns = headings;
+    choiceColumnsFor = std::move(now);
+    return *this;
+  }
+  InputDef& withPlaces() {
+    places = true;
+    return *this;
+  }
+  InputDef& withBesidePrevious() {
+    besidePrevious = true;
+    return *this;
+  }
+  InputDef& withHandleWhenHidden() {
+    handleWhenHidden = true;
+    return *this;
+  }
+  InputDef& withRowNote(std::function<QString(const CommandState&, const CommandContext&)> note) {
+    rowNote = std::move(note);
+    return *this;
+  }
+  InputDef& withAuto(std::function<QString(const CommandState&, const CommandContext&)> text) {
+    autoText = std::move(text);
+    return *this;
+  }
+  InputDef& withChoiceIcon(std::function<ChoiceIcon(const QString&)> icon) {
+    choiceIcon = std::move(icon);
+    return *this;
+  }
+  InputDef& withButtonIcon(const QString& icon) {
+    buttonIcon = icon;
+    return *this;
+  }
+  InputDef& withFieldColumn() {
+    fieldColumn = true;
+    return *this;
+  }
+  InputDef& withButtonEnabled(std::function<bool(const CommandState&)> on) {
+    buttonEnabled = std::move(on);
+    return *this;
+  }
 
   // A choice's options in a state.
   QVector<QPair<QString, QString>> choicesIn(const CommandState& state) const {
@@ -467,6 +630,11 @@ InputDef flipInput(const QString& id, const QString& label);
 InputDef textInput(const QString& id, const QString& label, const QString& defaultText = QString());
 InputDef listInput(const QString& id, const QString& label, std::vector<InputDef> children,
                    const QString& addLabel, const QString& rowLabel, int minRows = 1);
+// A note row (mitcad#655): the text and buttons `note` gives, the whole
+// width of the panel, or beside `label` when one is given.
+InputDef noteInput(const QString& id, std::function<InputNote(const CommandState&)> note,
+                   std::function<void(int action, const CommandState&, const CommandContext&)> onAction,
+                   const QString& label = QString());
 
 // The current values of a command's inputs. The inputs of a list's rows
 // are kept under "<list>.<row>.<input>"; row() gives a row's state with
@@ -595,6 +763,16 @@ struct Inspection {
   // printOverlayJson), drawn over the bodies (CommandHost::showPrintAnalysis);
   // empty: nothing drawn.
   QJsonObject printOverlay;
+  // A finished measurement for the panel's history (Measure, mitcad#648):
+  // what was picked ("Face of Body1 ↔ Edge of Body2"), its main values
+  // ("Distance 40 mm", "Angle 90°") and the selection inputs that hold the
+  // picks; none when `picked` is empty.
+  struct Record {
+    QString picked;
+    QStringList values;
+    QStringList inputs;
+  };
+  Record record;
 };
 
 struct CommandDef {
@@ -649,6 +827,13 @@ struct CommandDef {
   // {"commands": [...]}) instead of a feature definition; the preview runs
   // it and takes it back, OK keeps it as one undo step.
   bool sketchCommand = false;
+  // Sketch commands that make parts (mitcad#656: Gear Pair, Belt Drive):
+  // the preview applies the commands, keeps the bodies they make and takes
+  // them back at once, then draws those bodies as a preview draws a new
+  // body (see-through blue, not picked, not in the browser), the first
+  // time framed in the view's free area; OK applies them again. The
+  // AppKit frontend (asynchronous commands) shows them applied.
+  bool previewAsNew = false;
   // Sketch commands: the preview's answer once it applied, and an empty
   // object when it is taken back or failed, e.g. to draw what the command
   // removes (Clean Up Stale Projections, mitcad#252).
@@ -704,6 +889,11 @@ struct CommandDef {
   // Defaults that depend on the model (the newest profile, ...), after the
   // inputs' own defaults and the selection made before the command.
   std::function<void(CommandState&, const CommandContext&)> init;
+  // Called when the model changed outside the inputs while the panel is
+  // open (a note row's button, a window beside the panel: mitcad#655, 3D
+  // Print's Printer and Process follow the design's), before the panel
+  // shows the inputs again: the inputs that show the model follow it.
+  std::function<void(CommandState&, const CommandContext&)> modelChanged;
   // Called once when the command ends (OK, Cancel, Close or discarded),
   // with whether it was committed: what it opened beside its panel goes
   // with it (BUILD's part picker, mitcad#418).
@@ -720,6 +910,15 @@ struct CommandDef {
   // (mitcad#475: a new cut's hidden targets start unchecked). It must not
   // query the model: the preview may still be applied.
   std::function<bool(QJsonObject& report, CommandState&)> previewReported;
+  // A provisional presentation while a handle is dragged (mitcad#636,
+  // framework/DragProxy.hpp): what dragging value input `key` to `value`
+  // does to the tool of the exact preview computed from the inputs
+  // `shown`, the inputs being `now` otherwise. None: no proxy, the exact
+  // preview only (an unsupported case, or other inputs changed since).
+  // It must not query the model: it runs while the model computes.
+  std::function<std::optional<DragProxyRule>(const CommandState& shown, const CommandState& now,
+                                             const QString& key, double value)>
+      dragProxy;
   // The mouse moved onto another item of the view (an invalid one: off the
   // bodies); true when it changed the state, so that the markers are drawn
   // again (no preview is computed for it).
@@ -743,6 +942,10 @@ struct CommandDef {
   // as an error, before the feature's warnings (Gear, mitcad#472: the
   // derived diameters and the centre distance of a mesh); none when empty.
   std::function<QString(const CommandState&, const CommandContext&)> note;
+  // Lines drawn over the view while the panel is open, in design
+  // coordinates (mitcad#656: the belt's pitch line of a Pulley's Check
+  // Belt); asked again with the handles, when the model is idle.
+  std::function<std::vector<std::vector<gp_Pnt>>(const CommandState&, const CommandContext&)> viewLines;
   // Whether describe reads the model as it was before OK (edges a fillet
   // rounds are gone after it), not after (the datum a feature added).
   bool describeBefore = false;
@@ -777,7 +980,8 @@ struct CommandDef {
   // first selection input takes all of it and as many as it needs, every
   // other selection input shown at the start can stay empty, and, unless
   // `completes` decides, it is no creation command (group CREATE) given a
-  // face or a plane, which would only be where it goes.
+  // face or a plane, or anything its first input takes only as where the
+  // part goes (InputDef::places), which would only be where it goes.
   bool completedBy(const Selection& selection) const;
 };
 

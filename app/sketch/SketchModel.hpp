@@ -76,6 +76,13 @@ struct DimensionData {
   // A signed horizontal or vertical distance (mitcad#404): the offset b - a,
   // which may be negative.
   bool signedOffset = false;
+  // A drawing tool's angular sector, preserving signed/reflex input.
+  // Transient preview data only; never read from or written to a sketch.
+  std::optional<double> previewSweep;
+  // Which limit of its parameter changed the value ("min", "max", "step";
+  // empty when none did) and the model's words for it (mitcad#665).
+  QString limited;
+  QString limitMessage;
 
   bool isAxisDistance() const {
     return type == QStringLiteral("horizontal_distance") || type == QStringLiteral("vertical_distance");
@@ -106,6 +113,10 @@ struct TextData {
   // lower left corner; `ecc` its error correction (L, M, Q, H).
   bool code = false;
   QString ecc;
+  // The text parameter its text follows (mitcad#664), as the Edit Text
+  // panel shows it: the parameter's name, or the expression of the
+  // sketch's own one; empty when it follows none.
+  QString value;
 };
 
 // A pattern of the sketch (commands.md, `sketch.circular_pattern`).

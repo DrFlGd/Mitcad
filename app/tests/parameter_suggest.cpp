@@ -146,7 +146,14 @@ void nameTests() {
   CHECK(!isValidParameterName(QStringLiteral("deg")));
   CHECK(!isValidParameterName(QStringLiteral("sin")));
   CHECK(!isValidParameterName(QStringLiteral("PI")));
-  CHECK(isValidParameterName(QStringLiteral("pi"))); // case-sensitive
+  // Functions and PI in any case (mitcad#663); units and E only as written.
+  CHECK(!isValidParameterName(QStringLiteral("pi")));
+  CHECK(!isValidParameterName(QStringLiteral("Max")));
+  CHECK(!isValidParameterName(QStringLiteral("SUM")));
+  CHECK(!isValidParameterName(QStringLiteral("value")));
+  CHECK(isValidParameterName(QStringLiteral("MM")));
+  CHECK(isValidParameterName(QStringLiteral("e")));
+  CHECK(isValidParameterName(QStringLiteral("maximum")));
   CHECK(kindOfUnit(QString()) == ParameterKind::Unitless);
   CHECK(kindOfUnit(QStringLiteral("deg")) == ParameterKind::Angle);
   CHECK(kindOfUnit(QStringLiteral("rad")) == ParameterKind::Angle);
@@ -160,6 +167,14 @@ void nameTests() {
   CHECK(kindProblem(ParameterKind::Angle, ParameterKind::Angle).isEmpty());
   CHECK(!kindProblem(ParameterKind::Angle, ParameterKind::Length).isEmpty());
   CHECK(!kindProblem(ParameterKind::Unitless, ParameterKind::Length).isEmpty());
+  // Texts (mitcad#664): a text field takes texts only, a number field no text.
+  CHECK(kindOfUnit(QStringLiteral("Text")) == ParameterKind::Text);
+  CHECK(kindProblem(ParameterKind::Text, ParameterKind::Text).isEmpty());
+  CHECK(!kindProblem(ParameterKind::Text, ParameterKind::Unitless).isEmpty());
+  CHECK(!kindProblem(ParameterKind::Length, ParameterKind::Text).isEmpty());
+  CHECK(!kindProblem(ParameterKind::Unitless, ParameterKind::Text).isEmpty());
+  CHECK(isValidParameterName(QStringLiteral("Left")));
+  CHECK(isValidParameterName(QStringLiteral("len")));
   CHECK(numberWithUnit(QStringLiteral("30"), QStringLiteral("mm")) == QStringLiteral("30 mm"));
   CHECK(numberWithUnit(QStringLiteral("2,5"), QStringLiteral("mm")) == QStringLiteral("2.5 mm"));
   CHECK(numberWithUnit(QStringLiteral("d1 * 2"), QStringLiteral("mm")) == QStringLiteral("d1 * 2"));

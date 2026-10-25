@@ -49,7 +49,18 @@ with a test that writes the layout found field by field:
   touching both supports (surfaces, or an edge's curve), walked by OCCT's
   blend machinery and approximated to a B-spline
   (`geometry/src/blend_surfaces.cpp`); the curves on such a blend are the
-  blend along their parameter curves.
+  blend along their parameter curves. So are blends stored with an
+  approximation farther off than the import's tolerance (mitcad#622: fit
+  tolerances of 0.0043 in, a tenth of a millimetre, left the boundary of a
+  blend face round a whole rim open), with their contact curves
+  (`blend_int_cur`) as the blend along their parameter curves. Where such
+  a blend cannot be made (OCCT's walk fails, or its radius varies), the
+  file's approximation stays its surface, as before, and the import report
+  says so with a warning per face: the 3DSOLID and body, the face record,
+  the approximation's fit tolerance in mm and why. Since mitcad#639 (a
+  ball rolling on a circular rim level with its centre, slices starting a
+  few micrometres off the ball's centre, a ball rolled once round a blend
+  of its own) no blend of the sample drawings keeps its approximation.
 
 The R2007 container and compression were met later, in drawings of user
 reports (mitcad#563, mitcad#589). Not met in the trial drawings, so still

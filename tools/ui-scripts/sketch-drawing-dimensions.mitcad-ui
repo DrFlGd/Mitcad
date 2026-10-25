@@ -1,0 +1,163 @@
+# SPDX-License-Identifier: MIT
+# Geometry assertions inspect the actual preview dimension, its editor,
+# extension/arrow graphics and separation from the other visible editors.
+expect-ever 'View area'
+sleep 800
+command sketch.create
+click-logged 'Datum xy'
+expect-log 'Sketch started on xy'
+
+# Both fields follow their own rectangle side, and remain locked while
+# the pointer moves. Tab/Backtab must keep editing the expected value.
+command sketch.rectangle
+sketch-click 0 0
+type 40
+key Tab
+type 25
+sketch-move 60 40
+expect-widget-property sketchField_width text 40
+expect-widget-property sketchField_height text 25
+expect-sketch-field-dimension width length 40
+expect-sketch-field-dimension height length 25
+screenshot '${MITCAD_TEST_WORK}/rectangle-fields.png'
+key shift+Tab
+type 45
+expect-sketch-field-dimension width length 45
+key Return
+expect-log 'Added rectangle 45 x 25 mm'
+
+command sketch.rectangle_center
+sketch-click -40 20
+type 30
+key Tab
+type 20
+expect-sketch-field-dimension width length 30
+expect-sketch-field-dimension height length 20
+# Both default positions now lie beyond the viewport. Bounded layout
+# must still keep the complete editors separate after clamping.
+key shift+Tab
+type 10000
+key Tab
+type 10000
+expect-sketch-field-dimension width length 10000
+expect-sketch-field-dimension height length 10000
+key Escape
+
+command sketch.rectangle_3pt
+sketch-click -60 0
+sketch-move -20 0
+type 40
+expect-sketch-field-dimension length length 40
+key Return
+sketch-move -20 20
+type 20
+expect-sketch-field-dimension height length 20
+key Escape
+key Escape
+
+command sketch.line
+sketch-click 0 -40
+sketch-move 30 -40
+expect-widget-property sketchField_angle sketchDimensionPreview false
+expect-widget-property sketchFieldLabel_angle visible true
+type 30
+key Tab
+type 270
+expect-sketch-field-dimension length length 30
+expect-sketch-field-dimension angle arc_length 4.71238898038469
+screenshot '${MITCAD_TEST_WORK}/line-reflex-angle.png'
+key ctrl+a
+type -90
+expect-sketch-field-dimension angle arc_length -1.5707963267948966
+key ctrl+a
+type 450
+expect-sketch-field-dimension angle arc_length 7.853981633974483
+key Escape
+
+command sketch.circle
+sketch-click -70 -40
+type 24
+expect-sketch-field-dimension diameter diameter 24
+key Escape
+
+command sketch.circle_2pt
+sketch-click -70 -40
+type 24
+expect-sketch-field-dimension diameter diameter 24
+key Escape
+
+command sketch.arc_center
+sketch-click -30 -40
+sketch-move -10 -40
+type 20
+expect-sketch-field-dimension radius radius 20
+key Return
+type 270
+expect-sketch-field-dimension angle arc_length 4.71238898038469
+screenshot '${MITCAD_TEST_WORK}/arc-reflex-angle.png'
+key Escape
+key Escape
+
+command sketch.polygon
+sketch-click 30 -40
+type 20
+key Tab
+type 6
+expect-sketch-field-dimension radius radius 20
+expect-widget-property sketchFieldLabel_sides text Sides
+expect-widget-property sketchFieldLabel_sides visible true
+screenshot '${MITCAD_TEST_WORK}/polygon-fields.png'
+key Escape
+
+command sketch.polygon_inscribed
+sketch-click 30 -40
+type 20
+expect-sketch-field-dimension radius radius 20
+key Escape
+
+command sketch.polygon_edge
+sketch-click 30 -40
+type 20
+expect-sketch-field-dimension length length 20
+expect-widget-property sketchFieldLabel_sides visible true
+key Escape
+
+command sketch.slot
+sketch-click 0 -40
+sketch-move 30 -40
+type 30
+expect-sketch-field-dimension length length 30
+key Return
+sketch-move 30 -30
+type 20
+expect-sketch-field-dimension width length 20
+key Escape
+key Escape
+
+command sketch.ellipse
+sketch-click -70 -40
+sketch-move -40 -40
+type 30
+expect-sketch-field-dimension major major_radius 30
+key Return
+sketch-move -70 -25
+type 15
+expect-sketch-field-dimension minor minor_radius 15
+key Escape
+key Escape
+
+command sketch.text
+sketch-click 20 -40
+type Preview
+key Tab
+type 12
+expect-widget-property sketchFieldLabel_text text Text
+expect-widget-property sketchFieldLabel_text visible true
+expect-sketch-field-dimension height length 12
+view-pointer move 0 90 none
+expect-sketch-field-dimension height length 12
+screenshot '${MITCAD_TEST_WORK}/text-fields.png'
+key Return
+expect-log 'Added text .*Preview'
+command sketch.finish
+expect-log 'Sketch finished'

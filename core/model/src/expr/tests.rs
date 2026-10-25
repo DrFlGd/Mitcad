@@ -215,11 +215,11 @@ fn equality_ignores_positions() {
 
 #[test]
 fn names_are_case_sensitive() {
-    assert_eq!(parse("pi").references(), ["pi"]);
-    assert_eq!(
-        parse_err("Sin(30)").kind,
-        ParseErrorKind::UnknownFunction("Sin".into())
-    );
+    // Parameter names and units are; function names and PI are not
+    // (mitcad#663), and E is (`e` is a name).
+    assert_eq!(num("pi"), PI);
+    assert_close(num("Sin(30)"), 0.5);
+    assert_eq!(parse("e").references(), ["e"]);
     let vars = [("d1", len(1.0)), ("D1", len(2.0))];
     assert_eq!(try_eval("D1 - d1", &vars), Ok(len(1.0)));
     assert_eq!(
@@ -238,6 +238,21 @@ fn valid_names() {
         "Gravity", "°",
     ] {
         assert!(!is_valid_name(name), "{name}");
+    }
+}
+
+#[test]
+fn function_and_constant_names_are_reserved_in_any_case() {
+    for name in [
+        "Max", "MAX", "Sin", "IF", "pi", "Pi", "SUM", "value", "Value", "Let", "iferror", "RANDOM",
+        "gravity",
+    ] {
+        assert!(is_reserved_name(name), "{name}");
+        assert!(!is_valid_name(name), "{name}");
+    }
+    // Units and E only as written.
+    for name in ["MM", "Deg", "IN", "e", "maximum", "sums", "values", "d1"] {
+        assert!(is_valid_name(name), "{name}");
     }
 }
 
@@ -619,13 +634,41 @@ fn bare_numbers_take_the_default_unit() {
             found: Dims::AREA
         })
     );
+    // A unitless value that is a length or an angle says how to write a
+    // number (mitcad#662).
     assert_eq!(
         eval_as("5 mm", &[], Unit::NONE),
-        Err(EvalError::WrongDimension {
-            expected: Dims::NONE,
-            found: Dims::LENGTH
+        Err(EvalError::NotUnitless {
+            found: Dims::LENGTH,
+            hint: "the result is a length (5 mm); for a count write `5`".to_owned()
         })
     );
+    assert_eq!(
+        eval_as("d1 / 3", &[("d1", len(15.0))], Unit::NONE)
+            .unwrap_err()
+            .to_string(),
+        "the result is a length (5 mm); for a count write `d1 / 3 mm`"
+    );
+    assert_eq!(
+        eval_as("d1 / 3 mm", &[("d1", len(15.0))], Unit::NONE),
+        Ok(Quantity::unitless(5.0))
+    );
+    assert_eq!(
+        eval_as("d1 * 2", &[("d1", len(15.0))], Unit::NONE)
+            .unwrap_err()
+            .to_string(),
+        "the result is a length (30 mm); for a count write `d1 * 2 / 1 mm`"
+    );
+    assert_eq!(
+        eval_as("90 deg / 3", &[], Unit::NONE)
+            .unwrap_err()
+            .to_string(),
+        "the result is an angle (30 deg); for a count write `90 deg / 3 deg`"
+    );
+    assert!(matches!(
+        eval_as("d1 * d1", &[("d1", len(15.0))], Unit::NONE),
+        Err(EvalError::WrongDimension { .. })
+    ));
     assert!(eval_as("30 deg", &[], Unit::MM).is_err());
     // The document's unit applies when the parameter's unit has no length.
     let inch_doc = EvalContext::new(LengthUnit::Inch, AngleUnit::Degree);
@@ -966,6 +1009,7 @@ fn random_node(rng: &mut Rng, depth: usize) -> Node {
                 let count = match function.arity() {
                     Arity::Exact(n) => n,
                     Arity::AtLeast(n) => n + rng.below(2),
+                    Arity::Range(min, max) => min + rng.below(max - min + 1),
                 };
                 NodeKind::Call {
                     function,
@@ -1537,4 +1581,924 @@ fn f3d_internal_units() {
         f3d::check_parameter("6 mm", "xx", 0.6, &(), &ctx(), 1e-12),
         Err(f3d::CheckError::Unit(_))
     ));
+}
+
+// ------------------------------------- spreadsheet-style formulas (mitcad#663)
+
+#[test]
+fn existing_expressions_read_as_before() {
+    // The functions of .f3d expressions keep their names and printing;
+    // only more spellings are accepted.
+    for name in [
+        "sin", "atan2", "sqrt", "sign", "floor", "ceil", "round", "min", "max", "pow", "if", "and",
+        "or", "not",
+    ] {
+        assert_eq!(Function::from_name(name).map(Function::name), Some(name));
+    }
+    for (text, printed) in [
+        ("floor(d1)", "floor(d1)"),
+        ("Round(x)", "round(x)"),
+        ("MAX(a, b)", "max(a; b)"),
+        ("a == b", "a == b"),
+        ("max(1,5; 2)", "max(1.5; 2)"),
+    ] {
+        assert_eq!(parse(text).to_string(), printed, "{text}");
+    }
+}
+
+#[test]
+fn single_equals_compares_inside_parentheses() {
+    assert_eq!(num("if(2 = 2; 10; 20)"), 10.0);
+    assert_eq!(num("IF(2 = 3; 10; 20)"), 20.0);
+    assert_eq!(num("(1 = 1) + 1"), 2.0);
+    assert_eq!(num("not(1 = 2)"), 1.0);
+    assert_eq!(num("(1 == 1)"), 1.0);
+    let vars = [
+        ("GridX", Quantity::unitless(6.0)),
+        ("a", len(1.0)),
+        ("b", len(2.0)),
+    ];
+    assert_eq!(
+        eval_as("IF(GridX = 6; a; b)", &vars, Unit::MM),
+        Ok(len(1.0))
+    );
+    // The same comparison as `==`, and printed as it.
+    assert_eq!(parse("if(a = b; 1; 2)"), parse("if(a == b; 1; 2)"));
+    assert_eq!(parse("if(a = b; 1; 2)").to_string(), "if(a == b; 1; 2)");
+    // At the top level a single `=` is still an error: `name = expression`
+    // is split off before parsing (mitcad#231).
+    assert_eq!(parse_err("a = 1").kind, ParseErrorKind::SingleEquals);
+    assert_eq!(parse_err("(a) = 1").kind, ParseErrorKind::SingleEquals);
+    assert_eq!(
+        crate::document::split_named("w = if(a = 1; 2; 3)"),
+        Some(("w", "if(a = 1; 2; 3)"))
+    );
+    assert_eq!(crate::document::split_named("if(a = 1; 2; 3)"), None);
+}
+
+#[test]
+fn rounding_to_digits_and_steps() {
+    // Decimals of the default unit of the value's dimension.
+    assert_close(num("round(2.345; 2)"), 2.35);
+    assert_close(num("ROUND(1.005; 2)"), 1.01);
+    assert_close(num("Round(1234.5; -2)"), 1200.0);
+    assert_close(num("roundup(0.1 + 0.2; 1)"), 0.3);
+    assert_eq!(num("ROUNDUP(2.1)"), 3.0);
+    assert_eq!(num("roundup(-2.1)"), -3.0);
+    assert_eq!(num("ROUNDDOWN(-2.9)"), -2.0);
+    assert_close(num("rounddown(2.97; 1)"), 2.9);
+    assert_eq!(num("TRUNC(-2.7)"), -2.0);
+    assert_close(num("trunc(2.789; 2)"), 2.78);
+    assert_eq!(num("INT(2.9)"), 2.0);
+    assert_eq!(num("int(-2.5)"), -3.0);
+    assert_close(eval("round(12.345 mm; 1)").value, 12.3);
+    assert_eq!(eval("round(12.345 mm; 1)").dims, Dims::LENGTH);
+    let inch = EvalContext::new(LengthUnit::Inch, AngleUnit::Degree);
+    assert_close(
+        parse("round(10 mm; 2)").eval(&(), &inch).unwrap().value,
+        0.39 * 25.4,
+    );
+    // A step: a multiple of it, in the value's dimension.
+    assert_eq!(eval("FLOOR(12.7 mm; 0.5 mm)"), len(12.5));
+    assert_eq!(eval("ceiling(12.1 mm; 0.5 mm)"), len(12.5));
+    assert_eq!(eval("floor(12.7 mm; 0.5)"), len(12.5));
+    let vars = [("d1", len(15.3))];
+    assert_eq!(eval_as("FLOOR(d1; 0.5 mm)", &vars, Unit::MM), Ok(len(15.0)));
+    assert_close(
+        parse("floor(1 in; 0.3)").eval(&(), &inch).unwrap().value,
+        3.0 * 0.3 * 25.4,
+    );
+    assert_eq!(eval("mround(13 mm; 5 mm)"), len(15.0));
+    assert_eq!(eval("MROUND(12.4 mm; 5 mm)"), len(10.0));
+    assert_eq!(eval("mround(12.5 mm; 5 mm)"), len(15.0));
+    assert_eq!(num("CEILING(2.1)"), 3.0);
+    assert_eq!(num("ceiling(-2.5; 1)"), -2.0);
+    // The sign of the step does not matter.
+    assert_eq!(num("floor(7; -2)"), 6.0);
+    // Floating point noise does not cross a step.
+    assert_close(num("ceiling(0.3; 0.1)"), 0.3);
+    // With one argument as before.
+    assert_eq!(num("floor(2.9999999999999996)"), 2.0);
+    // Errors.
+    assert!(matches!(
+        eval_err("floor(1 mm; 1 deg)"),
+        EvalError::DimensionMismatch { .. }
+    ));
+    assert!(matches!(
+        eval_err("FLOOR(5; 0)"),
+        EvalError::DivisionByZero { .. }
+    ));
+    assert!(matches!(
+        eval_err("round(1; 1 mm)"),
+        EvalError::NotDimensionless {
+            operation: "round",
+            ..
+        }
+    ));
+    assert_eq!(
+        parse_err("ROUND(1; 2; 3)").kind,
+        ParseErrorKind::WrongArgumentCount {
+            function: "round",
+            expected: Arity::Range(1, 2),
+            found: 3,
+            suggestion: None,
+        }
+    );
+    assert_eq!(
+        parse_err("round(1; 2; 3)").to_string(),
+        "'round' takes 1 to 2 arguments, found 3 at byte 0"
+    );
+    assert!(matches!(
+        parse_err("mround(1)").kind,
+        ParseErrorKind::WrongArgumentCount {
+            function: "mround",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn integer_functions() {
+    // `mod` has the sign of the divisor; `%` keeps the dividend's.
+    assert_eq!(num("mod(10; 3)"), 1.0);
+    assert_eq!(num("MOD(-10; 3)"), 2.0);
+    assert_eq!(num("mod(10; -3)"), -2.0);
+    assert_eq!(num("-10 % 3"), -1.0);
+    assert_eq!(eval("mod(10 mm; 3 mm)"), len(1.0));
+    assert_eq!(eval("mod(10 mm; 3)"), len(1.0));
+    assert!(matches!(
+        eval_err("mod(1; 0)"),
+        EvalError::DivisionByZero { .. }
+    ));
+    assert!(matches!(
+        eval_err("mod(1 mm; 1 deg)"),
+        EvalError::DimensionMismatch { .. }
+    ));
+    assert_eq!(num("quotient(10; 3)"), 3.0);
+    assert_eq!(num("QUOTIENT(-10; 3)"), -3.0);
+    assert_eq!(eval("quotient(10 mm; 3 mm)"), Quantity::unitless(3.0));
+    assert_eq!(eval("quotient(10 mm; 3)"), len(3.0));
+    assert!(matches!(
+        eval_err("quotient(1; 0)"),
+        EvalError::DivisionByZero { .. }
+    ));
+    for (text, expected) in [
+        ("even(1.5)", 2.0),
+        ("EVEN(3)", 4.0),
+        ("even(2)", 2.0),
+        ("even(-1)", -2.0),
+        ("even(0)", 0.0),
+        ("odd(1.5)", 3.0),
+        ("ODD(2)", 3.0),
+        ("odd(1)", 1.0),
+        ("odd(0)", 1.0),
+        ("odd(-2)", -3.0),
+    ] {
+        assert_eq!(num(text), expected, "{text}");
+    }
+    assert_eq!(eval("even(3 mm)"), len(4.0));
+}
+
+#[test]
+fn aggregates() {
+    assert_eq!(num("SUM(1; 2; 3)"), 6.0);
+    assert_eq!(num("sum(5)"), 5.0);
+    assert_close(eval("sum(1 mm; 2; 1 in)").value, 28.4);
+    assert_eq!(eval("sum(1 mm; 2; 1 in)").dims, Dims::LENGTH);
+    assert_eq!(num("average(1; 2; 3; 4)"), 2.5);
+    assert_eq!(eval("AVERAGE(10 mm; 20 mm)"), len(15.0));
+    assert_eq!(num("median(3; 1; 2)"), 2.0);
+    assert_eq!(num("MEDIAN(4; 1; 3; 2)"), 2.5);
+    assert_eq!(eval("median(1 mm; 5 mm; 2 mm)"), len(2.0));
+    assert_eq!(num("product(2; 3; 4)"), 24.0);
+    assert_eq!(eval("PRODUCT(2 mm; 3 mm)"), Quantity::new(6.0, Dims::AREA));
+    assert_eq!(eval("product(2 mm; 3)"), len(6.0));
+    assert!(matches!(
+        eval_err("sum(1 mm; 1 deg)"),
+        EvalError::DimensionMismatch {
+            operation: "sum",
+            ..
+        }
+    ));
+    assert!(matches!(
+        parse_err("sum()").kind,
+        ParseErrorKind::WrongArgumentCount {
+            function: "sum",
+            found: 0,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn clamp_function() {
+    assert_eq!(num("CLAMP(5; 1; 3)"), 3.0);
+    assert_eq!(num("clamp(-1; 1; 3)"), 1.0);
+    assert_eq!(num("clamp(2; 1; 3)"), 2.0);
+    let vars = [("d", len(10.0))];
+    assert_eq!(
+        eval_as("clamp(d; 2 mm; 8 mm)", &vars, Unit::MM),
+        Ok(len(8.0))
+    );
+    assert_eq!(eval("clamp(5 mm; 1; 3)"), len(3.0));
+    assert!(matches!(
+        eval_err("clamp(1; 3; 1)"),
+        EvalError::Domain {
+            operation: "clamp",
+            ..
+        }
+    ));
+    assert!(matches!(
+        eval_err("clamp(1 mm; 1 deg; 2)"),
+        EvalError::DimensionMismatch { .. }
+    ));
+}
+
+#[test]
+fn ifs_switch_choose_and_iferror() {
+    assert_eq!(num("IFS(0; 1; 1; 2)"), 2.0);
+    assert_eq!(eval("ifs(1 > 2; 10 mm; 1 < 2; 20 mm)"), len(20.0));
+    let vars = [("x", Quantity::unitless(15.0))];
+    assert_eq!(
+        eval_as("ifs(x < 10; 1; x < 20; 2; 1; 3)", &vars, Unit::NONE),
+        Ok(Quantity::unitless(2.0))
+    );
+    assert!(matches!(
+        eval_err("ifs(0; 1)"),
+        EvalError::NoMatch {
+            function: "ifs",
+            ..
+        }
+    ));
+    // As with `if`, a value error counts only in the branch taken, and the
+    // branches agree in dimensions.
+    assert_eq!(num("ifs(1; 5; 1; 1 / 0)"), 5.0);
+    assert!(matches!(
+        eval_err("ifs(1; 1 / 0; 1; 5)"),
+        EvalError::DivisionByZero { .. }
+    ));
+    assert!(matches!(
+        eval_err("ifs(1; 1 mm; 0; 1 deg)"),
+        EvalError::DimensionMismatch { .. }
+    ));
+    assert!(matches!(
+        eval_err("ifs(1 mm; 1; 1; 2)"),
+        EvalError::NotDimensionless {
+            operation: "ifs",
+            ..
+        }
+    ));
+    assert_eq!(
+        parse_err("ifs(1; 2; 3)").kind,
+        ParseErrorKind::UnpairedArguments {
+            function: "ifs",
+            found: 3
+        }
+    );
+    // `switch`: the value after the first equal key, else the default.
+    assert_eq!(num("SWITCH(2; 1; 10; 2; 20; 30)"), 20.0);
+    assert_eq!(num("switch(5; 1; 10; 2; 20; 30)"), 30.0);
+    assert!(matches!(
+        eval_err("switch(5; 1; 10; 2; 20)"),
+        EvalError::NoMatch {
+            function: "switch",
+            ..
+        }
+    ));
+    assert_eq!(num("switch(1 in; 25.4 mm; 1; 2)"), 1.0);
+    assert!(matches!(
+        eval_err("switch(1 mm; 1 deg; 1; 2)"),
+        EvalError::DimensionMismatch { .. }
+    ));
+    // `choose`: counting from 1, a fraction cut off.
+    assert_eq!(num("CHOOSE(2; 10; 20; 30)"), 20.0);
+    assert_eq!(num("choose(2.9; 10; 20; 30)"), 20.0);
+    assert_eq!(eval("choose(1; 5 mm; 7)"), len(5.0));
+    assert_eq!(num("choose(1; 5; 1 / 0)"), 5.0);
+    for text in ["choose(0; 1; 2)", "choose(4; 1; 2; 3)"] {
+        assert!(
+            matches!(
+                eval_err(text),
+                EvalError::Domain {
+                    operation: "choose",
+                    ..
+                }
+            ),
+            "{text}"
+        );
+    }
+    // `iferror`: a value error gives the fallback; other errors stay.
+    assert_eq!(num("IFERROR(1 / 0; 5)"), 5.0);
+    assert_eq!(num("iferror(4; 5)"), 4.0);
+    assert_eq!(eval("iferror(sqrt(-1); 2 mm)"), len(2.0));
+    assert_eq!(num("iferror(ifs(0; 1); 7)"), 7.0);
+    assert_eq!(num("iferror(choose(9; 1; 2); 7)"), 7.0);
+    assert!(matches!(
+        eval_err("iferror(nothing; 1)"),
+        EvalError::UnknownReference { .. }
+    ));
+    assert!(matches!(
+        eval_err("iferror(1 mm + 1 deg; 1)"),
+        EvalError::DimensionMismatch { .. }
+    ));
+    assert!(matches!(
+        eval_err("iferror(1 mm; 1 deg)"),
+        EvalError::DimensionMismatch { .. }
+    ));
+}
+
+#[test]
+fn let_names_values_inside_one_formula() {
+    assert_eq!(num("let(x; 2; x * 3)"), 6.0);
+    assert_eq!(num("LET(a; 2; b; a + 1; a * b)"), 6.0);
+    let vars = [("d1", len(10.0))];
+    assert_close(
+        eval_as(
+            "let(r; d1 / 2; PI * r ^ 2)",
+            &vars,
+            Unit::parse("mm^2").unwrap(),
+        )
+        .unwrap()
+        .value,
+        25.0 * PI,
+    );
+    // Nested: an inner name may hide an outer one.
+    assert_eq!(num("let(x; 1; let(y; x + 1; x + y))"), 3.0);
+    assert_eq!(num("let(x; 1; let(x; 5; x) + x)"), 6.0);
+    // The names are not parameter references.
+    let e = parse("let(x; d1; x * 2)");
+    assert_eq!(e.references(), ["d1"]);
+    assert_eq!(e.to_string(), "let(x; d1; x * 2)");
+    assert_eq!(parse(&e.to_string()), e);
+    assert_eq!(parse("LET(x;1;x+1)").to_string(), "let(x; 1; x + 1)");
+    // A name holds from after its value on, and only inside the `let`.
+    assert!(matches!(
+        try_eval("let(x; 1; x) + x", &[]),
+        Err(EvalError::UnknownReference { .. })
+    ));
+    assert!(matches!(
+        try_eval("let(x; x + 1; x)", &[]),
+        Err(EvalError::UnknownReference { .. })
+    ));
+    // A name must not hide a parameter.
+    assert_eq!(
+        try_eval("let(d1; 2; d1)", &vars),
+        Err(EvalError::LocalShadowsParameter {
+            name: "d1".into(),
+            span: Span::new(4, 6)
+        })
+    );
+    // Errors in the names and the pairs.
+    let cases = [
+        (
+            "let(sin; 1; sin)",
+            ParseErrorKind::ReservedLocalName("sin".into()),
+        ),
+        (
+            "let(Max; 1; 2)",
+            ParseErrorKind::ReservedLocalName("Max".into()),
+        ),
+        (
+            "let(x; 1; x; 2; x)",
+            ParseErrorKind::DuplicateLocalName("x".into()),
+        ),
+        (
+            "let(x; 1; y; 2)",
+            ParseErrorKind::UnpairedArguments {
+                function: "let",
+                found: 4,
+            },
+        ),
+        (
+            "let(2; 1; 3)",
+            ParseErrorKind::Unexpected {
+                found: "2".into(),
+                expected: "a name",
+            },
+        ),
+    ];
+    for (text, kind) in cases {
+        assert_eq!(parse_err(text).kind, kind, "{text}");
+    }
+    assert!(matches!(
+        parse_err("let(x; 1)").kind,
+        ParseErrorKind::WrongArgumentCount {
+            function: "let",
+            ..
+        }
+    ));
+    // In the parameter table only real references are dependencies.
+    let t = ParameterTable::build(
+        ctx(),
+        [
+            spec("width", "10 mm", Unit::MM),
+            spec("height", "4 mm", Unit::MM),
+            spec(
+                "area",
+                "let(h; height / 2; width * h)",
+                Unit::parse("mm^2").unwrap(),
+            ),
+        ],
+    )
+    .unwrap();
+    let area = t.find("area").unwrap();
+    assert_eq!(t.value(area), 20.0);
+    assert_eq!(
+        names(&t, t.get(area).unwrap().dependencies().to_vec()),
+        ["height", "width"]
+    );
+}
+
+#[test]
+fn value_gives_the_number_in_a_unit() {
+    let vars = [("d1", len(15.0))];
+    assert_eq!(
+        eval_as("VALUE(d1; \"mm\")", &vars, Unit::NONE),
+        Ok(Quantity::unitless(15.0))
+    );
+    assert_close(
+        eval_as("value(d1; \"cm\")", &vars, Unit::NONE)
+            .unwrap()
+            .value,
+        1.5,
+    );
+    assert_close(num("value(1 in; \"mm\")"), 25.4);
+    assert_close(num("value(90 deg; \"rad\")"), PI / 2.0);
+    assert_close(num("value(10 mm^2; \"mm^2\")"), 10.0);
+    assert_eq!(
+        try_eval("value(d1; 1 mm)", &vars),
+        Ok(Quantity::unitless(15.0))
+    );
+    // A plain number is read in the default unit first.
+    assert_close(num("value(5; \"in\")"), 5.0 / 25.4);
+    assert!(matches!(
+        eval_err("value(1 mm; \"deg\")"),
+        EvalError::DimensionMismatch { .. }
+    ));
+    assert!(matches!(
+        eval_err("value(1; 0 mm)"),
+        EvalError::DivisionByZero { .. }
+    ));
+    let e = parse("VALUE(d1;\"mm\")");
+    assert_eq!(e.to_string(), "value(d1; \"mm\")");
+    assert_eq!(parse(&e.to_string()), e);
+    assert_eq!(e.references(), ["d1"]);
+    // Errors in the unit text are at their place.
+    let cases = [
+        (
+            "value(1; \"xyz\")",
+            ParseErrorKind::UnknownUnit("xyz".into()),
+            Span::new(10, 13),
+        ),
+        (
+            "value(1; \"\")",
+            ParseErrorKind::UnknownUnit(String::new()),
+            Span::new(9, 11),
+        ),
+        (
+            "value(1; \"mm",
+            ParseErrorKind::UnterminatedText,
+            Span::new(9, 12),
+        ),
+    ];
+    for (text, kind, span) in cases {
+        let e = parse_err(text);
+        assert_eq!((&e.kind, e.span), (&kind, span), "{text}");
+    }
+}
+
+#[test]
+fn radians_degrees_and_pi() {
+    assert_eq!(num("PI()"), PI);
+    assert_eq!(num("pi()"), PI);
+    assert_eq!(parse("PI()").to_string(), "PI");
+    assert_eq!(parse("2 * Pi() * r").to_string(), "2 * PI * r");
+    assert_eq!(
+        parse_err("PI(1)").kind,
+        ParseErrorKind::UnknownFunction("PI".into())
+    );
+    // Both give an angle: a plain number is in degrees for `radians` and in
+    // radians for `degrees`, so `sin(radians(30))` is 0.5.
+    assert_close(eval("RADIANS(180)").value, PI);
+    assert_eq!(eval("radians(180)").dims, Dims::ANGLE);
+    assert_close(num("sin(RADIANS(30))"), 0.5);
+    assert_close(eval("degrees(PI)").in_unit(Unit::DEG).unwrap(), 180.0);
+    assert_eq!(eval("radians(30 deg)"), eval("30 deg"));
+    assert_eq!(eval("DEGREES(1 rad)"), Quantity::angle(1.0));
+    assert_close(num("value(radians(180); \"rad\")"), PI);
+    assert_close(
+        eval_as("degrees(PI / 2)", &[], Unit::DEG).unwrap().value,
+        PI / 2.0,
+    );
+    assert!(matches!(
+        eval_err("radians(1 mm)"),
+        EvalError::NotAngle {
+            function: "radians",
+            ..
+        }
+    ));
+}
+
+#[test]
+fn renaming_names_in_older_expressions() {
+    // For files whose parameter names became reserved: by tokens, as the
+    // text no longer parses.
+    let renamed = HashMap::from([("Max".to_owned(), "Max_1".to_owned())]);
+    assert_eq!(
+        rename_names("Max * 2 + max(Max; 1) + 2e3 + Maxi", &renamed),
+        "Max_1 * 2 + max(Max_1; 1) + 2e3 + Maxi"
+    );
+    assert_eq!(rename_names("1 + $", &renamed), "1 + $");
+    // Units are never renamed, as names or in the place of a unit.
+    let renamed = HashMap::from([
+        ("Max".to_owned(), "Max_1".to_owned()),
+        ("mm".to_owned(), "mm_1".to_owned()),
+    ]);
+    assert_eq!(
+        rename_names("Max * 5 mm + (Max + 1) mm + 2 Max", &renamed),
+        "Max_1 * 5 mm + (Max_1 + 1) mm + 2 Max"
+    );
+    // Only names reserved since mitcad#663 are renamed in such files.
+    for name in ["Max", "pi", "Pi", "sum", "Value", "SIN", "Random"] {
+        assert!(is_newly_reserved(name), "{name}");
+    }
+    for name in [
+        "mm", "MM", "in", "sin", "max", "PI", "E", "e", "random", "d1",
+    ] {
+        assert!(!is_newly_reserved(name), "{name}");
+    }
+}
+
+// --------------------------------------------------------- texts (mitcad#664)
+
+/// Parameters with numbers and texts.
+struct Params(Vec<(&'static str, Value)>);
+
+impl Lookup for Params {
+    fn lookup(&self, name: &str) -> Option<Quantity> {
+        self.0
+            .iter()
+            .find(|(n, _)| *n == name)
+            .and_then(|(_, v)| v.as_number())
+    }
+
+    fn lookup_text(&self, name: &str) -> Option<String> {
+        self.0
+            .iter()
+            .find(|(n, _)| *n == name)
+            .and_then(|(_, v)| v.as_text().map(str::to_owned))
+    }
+}
+
+fn params() -> Params {
+    Params(vec![
+        ("GridX", Value::Number(Quantity::unitless(6.0))),
+        ("GridY", Value::Number(Quantity::unitless(4.0))),
+        ("Width", Value::Number(len(15.0))),
+        ("Angle", Value::Number(Quantity::from_unit(30.0, Unit::DEG))),
+        ("Label", Value::Text("6qt".to_owned())),
+    ])
+}
+
+/// The text of `expression` with [`params`].
+fn txt(expression: &str) -> String {
+    parse(expression)
+        .eval_text(&params(), &ctx())
+        .unwrap_or_else(|e| panic!("{expression:?}: {e}"))
+}
+
+/// The number of `expression` with [`params`].
+fn num_with(expression: &str) -> f64 {
+    parse(expression)
+        .eval(&params(), &ctx())
+        .unwrap_or_else(|e| panic!("{expression:?}: {e}"))
+        .value
+}
+
+fn value_err(expression: &str) -> EvalError {
+    parse(expression)
+        .eval_value(&params(), &ctx())
+        .expect_err(expression)
+}
+
+#[test]
+fn text_literals_and_their_quotes() {
+    assert_eq!(txt("'6qt'"), "6qt");
+    assert_eq!(txt("\"Box\""), "Box");
+    // A quote of the same kind is doubled; the other kind is a character.
+    assert_eq!(txt("'It''s'"), "It's");
+    assert_eq!(txt("\"say \"\"hi\"\"\""), "say \"hi\"");
+    assert_eq!(txt("\"It's\""), "It's");
+    assert_eq!(txt("''"), "");
+    assert_eq!(txt("'  spaced  '"), "  spaced  ");
+    // Printed in single quotes; the printing parses back.
+    let e = parse("\"It's\" & 'x'");
+    assert_eq!(e.to_string(), "'It''s' & 'x'");
+    assert_eq!(parse(&e.to_string()), e);
+    assert_eq!(parse_err("'open").kind, ParseErrorKind::UnterminatedText);
+    // A text names no parameter.
+    assert!(parse("'GridX'").is_constant());
+    assert_eq!(
+        parse("Label & 'Label'").references(),
+        ["Label"],
+        "only the name outside the quotes"
+    );
+}
+
+#[test]
+fn ampersand_joins_texts_and_numbers() {
+    assert_eq!(txt("\"Box \" & GridX & \"x\" & GridY"), "Box 6x4");
+    assert_eq!(txt("Label & ' lid'"), "6qt lid");
+    // Numbers as `text(x)` writes them: in the default unit of their
+    // dimension, at most six decimals.
+    assert_eq!(txt("'W' & Width"), "W15 mm");
+    assert_eq!(txt("'' & Angle"), "30 deg");
+    assert_eq!(txt("'' & 1 / 3"), "0.333333");
+    // Below `+` and `-`, above comparisons.
+    assert_eq!(txt("'n = ' & GridX + 1"), "n = 7");
+    assert_eq!(parse("'a' & b + 1").to_string(), "'a' & b + 1");
+    assert_eq!(parse("('a' & b) + 1").to_string(), "('a' & b) + 1");
+    assert_eq!(num_with("('a' & 'b') == 'ab'"), 1.0);
+    // An inch document writes lengths in inches.
+    let inch = EvalContext::new(LengthUnit::Inch, AngleUnit::Degree);
+    let text = parse("'' & Width").eval_text(&params(), &inch).unwrap();
+    assert_eq!(text, "0.590551 in");
+}
+
+#[test]
+fn text_functions() {
+    assert_eq!(txt("CONCAT('Box '; GridX; 'x'; GridY)"), "Box 6x4");
+    assert_eq!(txt("concat(Label)"), "6qt");
+    assert_eq!(txt("TEXT(GridX)"), "6");
+    assert_eq!(txt("text(Width)"), "15 mm");
+    assert_eq!(txt("text(Width; \"0.00\")"), "15.00 mm");
+    assert_eq!(txt("text(Width; '0.0 in')"), "0.6 in");
+    assert_eq!(txt("text(Width; 'cm')"), "1.5 cm");
+    assert_eq!(txt("text(value(Width; 'mm'); '000')"), "015");
+    assert_eq!(txt("text(2.5; '0')"), "3");
+    assert_eq!(txt("text(-2.5; '0')"), "-3");
+    assert_eq!(txt("text(1.5; '0.0#')"), "1.5");
+    assert_eq!(txt("text(1.234; '0.0#')"), "1.23");
+    assert_eq!(txt("text(-0.001; '0.0')"), "0.0");
+    // A unitless value is read in the format's unit.
+    assert_eq!(txt("text(5; '0 mm')"), "5 mm");
+    assert_eq!(txt("LEFT('Hello'; 2)"), "He");
+    assert_eq!(txt("left('Hello')"), "H");
+    assert_eq!(txt("right('Hello'; 3)"), "llo");
+    assert_eq!(txt("Right('Hello'; 10)"), "Hello");
+    assert_eq!(txt("left('äöü'; 2)"), "äö");
+    assert_eq!(txt("left('Hello'; 2.9)"), "He");
+    assert_eq!(txt("left(Label; 0)"), "");
+    assert_eq!(num_with("LEN(Label)"), 3.0);
+    assert_eq!(num_with("len('äöü') + 1"), 4.0);
+    assert!(matches!(
+        value_err("left('a'; -1)"),
+        EvalError::Domain {
+            operation: "left",
+            ..
+        }
+    ));
+    for format in ["'abc'", "'0.0.0'", "'Text'"] {
+        let text = format!("text(Width; {format})");
+        assert!(
+            matches!(value_err(&text), EvalError::InvalidFormat { .. }),
+            "{text}"
+        );
+    }
+    assert!(matches!(
+        value_err("text(Width; '0.0 deg')"),
+        EvalError::DimensionMismatch { .. }
+    ));
+    assert!(matches!(
+        parse_err("left()").kind,
+        ParseErrorKind::WrongArgumentCount { .. }
+    ));
+}
+
+#[test]
+fn texts_and_numbers_do_not_mix() {
+    let e = value_err("Label + 1");
+    assert_eq!(
+        e,
+        EvalError::NotNumber {
+            span: Span::new(0, 5)
+        }
+    );
+    assert_eq!(e.to_string(), "text where a number is expected at byte 0");
+    assert!(matches!(value_err("'5' * 2"), EvalError::NotNumber { .. }));
+    assert!(matches!(
+        value_err("sin(Label)"),
+        EvalError::NotNumber { .. }
+    ));
+    assert!(matches!(
+        value_err("max(Label; 1)"),
+        EvalError::NotNumber { .. }
+    ));
+    assert!(matches!(value_err("-Label"), EvalError::NotNumber { .. }));
+    assert!(matches!(value_err("Label mm"), EvalError::NotNumber { .. }));
+    assert!(matches!(value_err("left(5; 1)"), EvalError::NotText { .. }));
+    assert!(matches!(value_err("len(GridX)"), EvalError::NotText { .. }));
+    assert!(matches!(
+        value_err("text(Label)"),
+        EvalError::NotNumber { .. }
+    ));
+    assert!(matches!(
+        value_err("text(Width; 2)"),
+        EvalError::NotText { .. }
+    ));
+    assert!(matches!(
+        value_err("Label < 'a'"),
+        EvalError::NotNumber { .. }
+    ));
+    assert!(matches!(
+        value_err("Label == 1"),
+        EvalError::MixedValues { .. }
+    ));
+    assert!(matches!(
+        value_err("if(GridX > 1; 'a'; 2)"),
+        EvalError::MixedValues { .. }
+    ));
+    assert!(matches!(
+        value_err("if(Label; 1; 2)"),
+        EvalError::NotNumber { .. }
+    ));
+    // A number parameter with a text expression; a text one with a number.
+    let e = parse("'6qt'")
+        .eval_as(&params(), &ctx(), Unit::MM)
+        .unwrap_err();
+    assert!(matches!(e, EvalError::NotNumber { .. }), "{e}");
+    let e = parse("GridX * 2").eval_text(&params(), &ctx()).unwrap_err();
+    assert!(
+        e.to_string()
+            .starts_with("a number where text is expected: make text of it with text(…) or &"),
+        "{e}"
+    );
+    // A text unit is no unit for numbers.
+    assert!(parse("5").eval_as(&params(), &ctx(), Unit::TEXT).is_err());
+}
+
+#[test]
+fn choices_and_comparisons_of_texts() {
+    assert_eq!(txt("if(GridX = 6; 'six'; 'other')"), "six");
+    assert_eq!(
+        txt("IFS(GridX > 10; 'big'; GridX > 3; 'medium'; 1; 'small')"),
+        "medium"
+    );
+    assert_eq!(
+        txt("switch(Label; '4qt'; 'small'; '6qt'; 'large'; 'unknown')"),
+        "large"
+    );
+    assert_eq!(txt("switch(Label; '4qt'; 'small'; 'unknown')"), "unknown");
+    assert_eq!(txt("choose(2; 'a'; 'b'; 'c')"), "b");
+    assert_eq!(txt("iferror(1 / 0 & 'x'; 'none')"), "none");
+    assert_eq!(txt("let(n; GridX * 2; 'n' & n)"), "n12");
+    assert_eq!(txt("let(t; Label; t & t)"), "6qt6qt");
+    assert_eq!(num_with("if(Label = '6qt'; 1; 2)"), 1.0);
+    // Case matters.
+    assert_eq!(num_with("Label <> '6QT'"), 1.0);
+    assert!(matches!(
+        value_err("switch(Label; 1; 'a'; 'b')"),
+        EvalError::MixedValues { .. }
+    ));
+    assert!(matches!(
+        value_err("let(Label; 1; Label)"),
+        EvalError::LocalShadowsParameter { .. }
+    ));
+    // Numbers in choices are as before.
+    assert_eq!(num_with("if(GridX = 6; 1 mm; 2)"), 1.0);
+}
+
+#[test]
+fn text_function_names_stay_parameter_names() {
+    for name in ["Text", "text", "Left", "RIGHT", "len", "Concat"] {
+        assert!(is_valid_name(name), "{name}");
+        assert!(!is_reserved_name(name), "{name}");
+        assert!(!is_newly_reserved(name), "{name}");
+    }
+    // A function before `(`, a name elsewhere.
+    let e = parse("len(Label) + len * 2");
+    assert_eq!(e.references(), ["Label", "len"]);
+    let vars = Params(vec![
+        ("Label", Value::Text("ab".to_owned())),
+        ("len", Value::Number(Quantity::unitless(3.0))),
+    ]);
+    assert_eq!(e.eval(&vars, &ctx()), Ok(Quantity::unitless(8.0)));
+    assert_eq!(e.to_string(), "len(Label) + len * 2");
+}
+
+#[test]
+fn expressions_without_texts_read_as_before() {
+    for text in [
+        "d1 * 2 + 5 mm",
+        "max(1,5; 2)",
+        "value(d1; \"mm\")",
+        "if(a = b; 1; 2)",
+        "-2 ^ 2",
+    ] {
+        let e = parse(text);
+        assert_eq!(parse(&e.to_string()), e, "{text}");
+    }
+    // The unit of `value` in quotes is a unit, in either quotes.
+    assert_eq!(parse("value(d1; 'mm')"), parse("value(d1; \"mm\")"));
+    assert_eq!(num("value(25.4 mm; 'in')"), 1.0);
+}
+
+#[test]
+fn texts_have_a_length_limit() {
+    let vars = Params(vec![("Big", Value::Text("x".repeat(MAX_TEXT_BYTES)))]);
+    let e = parse("Big & 'y'").eval_value(&vars, &ctx()).unwrap_err();
+    assert!(matches!(e, EvalError::TextTooLong { .. }), "{e}");
+    let e = parse("concat(Big; 'y')")
+        .eval_value(&vars, &ctx())
+        .unwrap_err();
+    assert!(matches!(e, EvalError::TextTooLong { .. }), "{e}");
+}
+
+#[test]
+fn text_parameters_in_a_table() {
+    let mut table = ParameterTable::new(ctx());
+    let gx = table.add(spec("GridX", "6", Unit::NONE)).unwrap();
+    let label = table
+        .add(spec("Label", "'Box ' & GridX & 'x' & GridX", Unit::TEXT))
+        .unwrap();
+    let p = table.get(label).unwrap();
+    assert!(p.is_text());
+    assert_eq!(p.text(), Some("Box 6x6"));
+    assert_eq!(p.formatted_value(3), "Box 6x6");
+    assert_eq!(p.unit().to_string(), "Text");
+    assert_eq!(p.dependencies(), [gx]);
+    // A change follows.
+    let changed = table.set_expression(gx, "4").unwrap();
+    assert!(changed.contains(&label), "{changed:?}");
+    assert_eq!(table.get(label).unwrap().text(), Some("Box 4x4"));
+    // Another text parameter uses it; a number cannot.
+    let lid = table
+        .add(spec("Lid", "Label & ' lid'", Unit::TEXT))
+        .unwrap();
+    assert_eq!(table.get(lid).unwrap().text(), Some("Box 4x4 lid"));
+    let e = table.add(spec("w", "Label * 2", Unit::MM)).unwrap_err();
+    assert!(
+        e.to_string().contains("text where a number is expected"),
+        "{e}"
+    );
+    let e = table.add(spec("t", "GridX", Unit::TEXT)).unwrap_err();
+    assert!(
+        e.to_string().contains("a number where text is expected"),
+        "{e}"
+    );
+    // The same text again changes nothing.
+    assert!(
+        table
+            .set_expression(label, "'Box ' & GridX & 'x' & GridX")
+            .unwrap()
+            .is_empty()
+    );
+    // A rename follows the references, not the texts.
+    table.rename(gx, "Count").unwrap();
+    assert_eq!(
+        table.get(label).unwrap().expression(),
+        "'Box ' & Count & 'x' & Count"
+    );
+    // A text parameter has no limits.
+    let e = table
+        .set_limits(
+            label,
+            ParamLimits {
+                max: Some("5".to_owned()),
+                ..ParamLimits::default()
+            },
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            TableError::Limit {
+                error: LimitError::Text,
+                ..
+            }
+        ),
+        "{e}"
+    );
+    assert!(
+        e.to_string().contains("a text parameter has no minimum"),
+        "{e}"
+    );
+    // The unit changes to a number's and back.
+    table.update(lid, "5", Unit::MM).unwrap();
+    assert_eq!(table.get(lid).unwrap().text(), None);
+    assert_eq!(table.value(lid), 5.0);
+    table.update(lid, "Label", Unit::TEXT).unwrap();
+    assert_eq!(table.get(lid).unwrap().text(), Some("Box 4x4"));
+    // Loaded in any order.
+    let table = ParameterTable::build(
+        ctx(),
+        [
+            spec("Label", "Name & '!'", Unit::TEXT),
+            spec("Name", "'Lid'", Unit::TEXT),
+        ],
+    )
+    .unwrap();
+    assert_eq!(table.lookup_text("Label").as_deref(), Some("Lid!"));
+    assert_eq!(table.lookup("Label"), None);
+    assert_eq!(table.evaluate_text("Label & Name").unwrap(), "Lid!Lid");
 }

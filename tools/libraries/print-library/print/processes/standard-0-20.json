@@ -1,0 +1,18 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "profile": {
+    "id": "standard-0-20",
+    "name": "Standard 0.20 mm (0.4 nozzle)",
+    "kind": "process",
+    "values": {
+      "layer_height": 0.2,
+      "first_layer_height": 0.2,
+      "perimeters": 2,
+      "top_solid_layers": 5,
+      "bottom_solid_layers": 4,
+      "fill_density": 15
+    },
+    "version": 1
+  }
+}

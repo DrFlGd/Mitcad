@@ -45,6 +45,14 @@ struct ToolPreview {
   // The sketch `dimension` refers to: a tool's own view of it with the body
   // edges and vertices it picks (mitcad#256); the sketch's when null.
   const SketchModel* model = nullptr;
+  // Drawing-tool values use the same geometry and graphics as placed
+  // dimensions. Their small models contain only the preview geometry.
+  struct FieldDimension {
+    QString field;
+    DimensionData dimension;
+    SketchModel model;
+  };
+  std::vector<FieldDimension> fieldDimensions;
   // The auto constraints the next click adds (mitcad#189), shown in a row
   // beside `marksAt`.
   QStringList marks;

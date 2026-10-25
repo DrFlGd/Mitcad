@@ -1010,7 +1010,7 @@ void LiveController::testBroker(QWidget* parent, const QString& broker, const QS
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->setWindowTitle(tr("Test Live Updates"));
     auto* layout = new QVBoxLayout(dialog);
-    auto* label = new QLabel(tr("Testing live updates through %1...").arg(broker));
+    auto* label = new QLabel(tr("Testing live updates through %1…").arg(broker));
     label->setTextFormat(Qt::PlainText);
     label->setWordWrap(true);
     label->setMinimumWidth(360);

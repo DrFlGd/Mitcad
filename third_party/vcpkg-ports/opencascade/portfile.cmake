@@ -220,6 +220,8 @@ vcpkg_from_github(
         1011-chfi3d-intersection-at-end-across-the-end-faces-seam-in-one-period.patch
         1020-chfi3d-kink-into-a-face-going-on-smoothly-into-the-end-face-also-at-a-pieces-start.patch
         1030-geomfill-guide-trihedron-ac-second-derivative-of-the-binormal.patch
+        1040-shapeupgrade-unifysamedomain-signed-angle-to-a-reversed-axis.patch
+        1050-shapefix-self-intersecting-wire-edges-read-once.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

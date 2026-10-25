@@ -58,8 +58,17 @@ pub fn configure_libraries(json: &str) -> Result<String, VcsError> {
             .unwrap_or_default(),
     );
     LibraryResolver::install(cache.clone());
+    // The user's library of materials and print profiles (mitcad#640):
+    // `print_library`, else beside the fetched libraries.
+    let print_library = value
+        .get("print_library")
+        .and_then(Value::as_str)
+        .filter(|p| !p.trim().is_empty())
+        .map_or_else(LibraryCache::default_print_library, PathBuf::from);
+    mitcad_model::print_library::set_user_library(Some(print_library.clone()));
     let answer = json!({"root": cache.root.to_string_lossy(),
-                        "extra": cache.extra.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>()});
+                        "extra": cache.extra.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+                        "print_library": print_library.to_string_lossy()});
     *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some(cache);
     Ok(answer.to_string())
 }

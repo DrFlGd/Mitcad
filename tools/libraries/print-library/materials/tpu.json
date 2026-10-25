@@ -1,0 +1,20 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "material": {
+    "id": "tpu",
+    "name": "TPU",
+    "density": 1.21,
+    "appearance": "plastic_blue",
+    "filament": {
+      "filament_type": "TPU",
+      "filament_diameter": 1.75,
+      "temperature": 225,
+      "first_layer_temperature": 225,
+      "bed_temperature": 40,
+      "first_layer_bed_temperature": 40,
+      "max_fan_speed": 100
+    },
+    "version": 1
+  }
+}

@@ -14,6 +14,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+use std::sync::{Arc, Mutex};
 
 /// Sparse matrix in compressed row form.
 #[derive(Clone, Debug, Default)]
@@ -76,6 +77,15 @@ impl Symbolic {
 
     pub fn nnz(&self) -> usize {
         self.li.len()
+    }
+
+    /// Slot of the entry in column position `c`, row position `r > c`.
+    fn slot_at(&self, c: usize, r: usize) -> Option<usize> {
+        let s = self.lp[c];
+        self.li[s..self.lp[c + 1]]
+            .binary_search(&r)
+            .ok()
+            .map(|k| s + k)
     }
 }
 
@@ -263,6 +273,60 @@ impl Factor {
             b[j] = s;
         }
     }
+
+    /// The entries of the inverse `Z` of the factored matrix on the
+    /// pattern of `L` (a selected inverse, mitcad#677), restricted to the
+    /// accepted pivots: rows and columns of skipped pivots are zero, so
+    /// `b^T Z b` is what [`Factor::forward`] gives as
+    /// `sum (L^-1 b)_j^2 / d_j` over the accepted `j`. Returns the diagonal
+    /// (by position) and the entries below it (at `L`'s slots).
+    ///
+    /// The textbook recursion (Takahashi's equations) from the last column
+    /// back: `Z_ij = -sum_k L_kj Z_ik` over the rows `k` of column `j`, and
+    /// `Z_jj = 1/d_j - sum_k L_kj Z_kj`. Every pair of rows of a column lies
+    /// in the pattern (the filled graph makes them a clique), so the cost is
+    /// the sum of the squared column counts, linear for a banded or
+    /// tree-like matrix where forward solves for many right-hand sides cost
+    /// a full pass each.
+    pub fn selected_inverse(&self, sym: &Symbolic) -> (Vec<f64>, Vec<f64>) {
+        let n = sym.n();
+        let mut zdiag = vec![0.0; n];
+        let mut zx = vec![0.0; sym.nnz()];
+        let mut col: Vec<f64> = Vec::new();
+        for j in (0..n).rev() {
+            if self.skipped[j] {
+                continue;
+            }
+            let (s, e) = (sym.lp[j], sym.lp[j + 1]);
+            // Z between the later rows of the column, from earlier passes.
+            let z = |zdiag: &[f64], zx: &[f64], a: usize, b: usize| -> f64 {
+                if a == b {
+                    return zdiag[a];
+                }
+                let (c, r) = if a < b { (a, b) } else { (b, a) };
+                sym.slot_at(c, r).map_or(0.0, |p| zx[p])
+            };
+            col.clear();
+            for p in s..e {
+                let i = sym.li[p];
+                let mut v = 0.0;
+                for q in s..e {
+                    let l = self.lx[q];
+                    if l != 0.0 {
+                        v -= l * z(&zdiag, &zx, i, sym.li[q]);
+                    }
+                }
+                col.push(v);
+            }
+            let mut dj = 1.0 / self.d[j];
+            for (k, p) in (s..e).enumerate() {
+                zx[p] = col[k];
+                dj -= self.lx[p] * col[k];
+            }
+            zdiag[j] = dj;
+        }
+        (zdiag, zx)
+    }
 }
 
 /// Precomputed assembly of `G = J D J^T` into a factor.
@@ -361,6 +425,71 @@ impl GramPlan {
                 *d = if *d > 0.0 { 1.0 } else { 0.0 };
             }
         }
+    }
+}
+
+// Plans shared between systems of the same structure (mitcad#677).
+
+/// The structure a plan is made for: the columns of every row, the column
+/// count and the order.
+#[derive(PartialEq)]
+struct PlanKey {
+    n_cols: usize,
+    order: Option<Vec<usize>>,
+    ptr: Vec<usize>,
+    cols: Vec<usize>,
+}
+
+/// Recently made plans, the latest first. A sketch is solved from a new
+/// system for every edit and drag step, with the same equations as the
+/// step before; the plan (the minimum degree order and the symbolic
+/// factorization) depends on their structure only, so it is taken from
+/// here instead of being made again.
+static PLANS: Mutex<Vec<(PlanKey, Arc<GramPlan>)>> = Mutex::new(Vec::new());
+/// How many plans are kept.
+const PLANS_KEPT: usize = 32;
+/// Smaller systems make their plans each time: it costs less than a
+/// cache entry.
+const PLAN_SHARED_ROWS: usize = 64;
+
+impl GramPlan {
+    /// [`GramPlan::new`], or the same plan made earlier for the same
+    /// structure (by this or another system).
+    pub fn shared(
+        row_cols: &[Vec<usize>],
+        n_cols: usize,
+        order: Option<&[usize]>,
+    ) -> Arc<GramPlan> {
+        if row_cols.len() < PLAN_SHARED_ROWS {
+            return Arc::new(GramPlan::new(row_cols, n_cols, order));
+        }
+        let mut ptr = Vec::with_capacity(row_cols.len() + 1);
+        let mut cols = Vec::new();
+        ptr.push(0);
+        for r in row_cols {
+            cols.extend_from_slice(r);
+            ptr.push(cols.len());
+        }
+        let key = PlanKey {
+            n_cols,
+            order: order.map(<[usize]>::to_vec),
+            ptr,
+            cols,
+        };
+        {
+            let mut plans = PLANS.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(k) = plans.iter().position(|(k, _)| *k == key) {
+                let hit = plans.remove(k);
+                let plan = Arc::clone(&hit.1);
+                plans.insert(0, hit);
+                return plan;
+            }
+        }
+        let plan = Arc::new(GramPlan::new(row_cols, n_cols, order));
+        let mut plans = PLANS.lock().unwrap_or_else(|e| e.into_inner());
+        plans.insert(0, (key, Arc::clone(&plan)));
+        plans.truncate(PLANS_KEPT);
+        plan
     }
 }
 
@@ -473,6 +602,111 @@ mod tests {
                     assert_eq!(limited, unlimited, "n={n} h={h}");
                 }
             }
+        }
+    }
+
+    /// `b^T Z b` with the selected inverse equals the forward solve's
+    /// `sum (L^-1 b)_j^2 / d_j` over accepted pivots, also with skipped
+    /// (dependent) rows (mitcad#677).
+    #[test]
+    fn selected_inverse_matches_forward_solves() {
+        let mut seed = 677u64;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 10_000) as f64 / 10_000.0
+        };
+        for &(m, n) in &[(6usize, 9usize), (40, 30), (60, 45)] {
+            let mut row_cols = Vec::new();
+            let mut vals = Vec::new();
+            for i in 0..m {
+                let mut cols = vec![i % n, (i * 7 + 3) % n, (i * 13 + 5) % n];
+                cols.sort_unstable();
+                cols.dedup();
+                vals.push(cols.iter().map(|_| rnd() - 0.5).collect::<Vec<_>>());
+                row_cols.push(cols);
+            }
+            // A row that repeats an earlier one: a skipped pivot.
+            row_cols.push(row_cols[1].clone());
+            vals.push(vals[1].clone());
+            let m = m + 1;
+            let jac = rows_of(&row_cols, &vals);
+            for order in [None, Some((0..m).collect::<Vec<_>>())] {
+                let plan = GramPlan::new(&row_cols, n, order.as_deref());
+                let sym = &plan.sym;
+                let mut f = Factor::new(sym);
+                let mut w = Vec::new();
+                plan.fill(&jac, &vec![1.0; n], &mut f, &mut w, true);
+                let skipped = f.factor_limited(sym, 0.0, 1e-10, n);
+                // At least the repeated row, and every row past the rank.
+                assert!(skipped > m.saturating_sub(n + 1));
+                let (zdiag, zx) = f.selected_inverse(sym);
+                let z = |a: usize, b: usize| {
+                    let (pa, pb) = (sym.pos[a], sym.pos[b]);
+                    if pa == pb {
+                        zdiag[pa]
+                    } else {
+                        sym.slot(a, b).map_or(0.0, |p| zx[p])
+                    }
+                };
+                // The right-hand sides: one column of J each, as the
+                // analysis builds them (only rows sharing a column).
+                for c in 0..n {
+                    let rows: Vec<(usize, f64)> = (0..m)
+                        .filter_map(|i| {
+                            let k = row_cols[i].iter().position(|&x| x == c)?;
+                            Some((i, vals[i][k]))
+                        })
+                        .collect();
+                    let mut b = vec![0.0; m];
+                    for &(i, v) in &rows {
+                        b[sym.pos[i]] = v;
+                    }
+                    f.forward(sym, &mut b);
+                    let want: f64 = (0..m)
+                        .filter(|&j| !f.skipped[j])
+                        .map(|j| b[j] * b[j] / f.d[j])
+                        .sum();
+                    let mut got = 0.0;
+                    for (k, &(i, vi)) in rows.iter().enumerate() {
+                        got += vi * vi * z(i, i);
+                        for &(j, vj) in &rows[..k] {
+                            got += 2.0 * vi * vj * z(i, j);
+                        }
+                    }
+                    assert!(
+                        (got - want).abs() < 1e-8 * want.abs().max(1.0),
+                        "m={m} column {c}: {got} vs {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Copies bound to a neighbour (a chain) keep the factor sparse where
+    /// copies bound to one original (a star) fill it (mitcad#677).
+    #[test]
+    fn chained_bindings_factor_with_linear_fill() {
+        // Rows `x_k - x_from(k)`, k = 1..m: unknown 0 is the original.
+        let fill = |m: usize, chain: bool, order: Option<&[usize]>| {
+            let row_cols: Vec<Vec<usize>> = (1..=m)
+                .map(|k| vec![if chain { k - 1 } else { 0 }, k])
+                .collect();
+            GramPlan::new(&row_cols, m + 1, order).sym.nnz()
+        };
+        for m in [50usize, 200, 400] {
+            let order: Vec<usize> = (0..m).collect();
+            for o in [None, Some(order.as_slice())] {
+                assert!(
+                    fill(m, true, o) <= m,
+                    "chain, {m} rows: {}",
+                    fill(m, true, o)
+                );
+            }
+            // The star's Gram matrix is dense: m (m - 1) / 2 below the
+            // diagonal in any order.
+            assert_eq!(fill(m, false, Some(&order)), m * (m - 1) / 2);
         }
     }
 

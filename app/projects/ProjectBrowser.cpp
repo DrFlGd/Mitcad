@@ -12,6 +12,7 @@
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QEvent>
 #include <QHBoxLayout>
@@ -41,6 +42,7 @@
 #include "../framework/Dialogs.hpp"
 #include "../framework/Icons.hpp"
 #include "../framework/TestSync.hpp"
+#include "../platform/MacDialogs.hpp"
 #include "ProjectBrowserData.hpp"
 #include "ProjectRowText.hpp"
 #include "ProjectsTree.hpp"
@@ -78,7 +80,7 @@ protected:
 
 // A button's text without its mnemonic and dots ("Another File").
 QString buttonName(const QAbstractButton* button) {
-  return button->text().remove(QLatin1Char('&')).remove(QStringLiteral("...")).trimmed();
+  return button->text().remove(QLatin1Char('&')).remove(QStringLiteral("...")).remove(QChar(0x2026)).trimmed();
 }
 
 // The window the UI tests' places are relative to: the main window.
@@ -186,9 +188,10 @@ BrowserDialog::BrowserDialog(QWidget* parent, ProjectBrowserOptions options)
   m_pathLayout->setContentsMargins(0, 0, 0, 0);
   m_pathLayout->setSpacing(2);
   top->addWidget(m_pathBar, 1);
-  auto* searchLabel = new QLabel(tr("&Search:"));
+  auto* searchLabel = new QLabel(tr("&Search:"), this);
   m_search = new QLineEdit;
   m_search->setClearButtonEnabled(true);
+  m_search->setAccessibleName(tr("Search designs"));
   m_search->setPlaceholderText(tr("Design name"));
   m_search->setToolTip(tr("Lists the designs whose name holds the text, as you type"));
   m_search->setMinimumWidth(180);
@@ -199,7 +202,12 @@ BrowserDialog::BrowserDialog(QWidget* parent, ProjectBrowserOptions options)
   m_scope->addItem(tr("This Project"));
   m_scope->setToolTip(tr("Where the search looks: every project, or the project shown"));
   scopeLabel->setBuddy(m_scope);
+#ifdef Q_OS_MACOS
+  searchLabel->hide();
+#else
   top->addWidget(searchLabel);
+#endif
+  mac::styleSearchField(m_search);
   top->addWidget(m_search);
   top->addWidget(scopeLabel);
   top->addWidget(m_scope);
@@ -236,23 +244,24 @@ BrowserDialog::BrowserDialog(QWidget* parent, ProjectBrowserOptions options)
   splitter->setStretchFactor(1, 3);
   splitter->setSizes({220, 600});
   layout->addWidget(splitter, 1);
-  m_status = new QLabel(tr("Reading the projects..."));
+  m_status = new QLabel(tr("Reading the projects…"));
   m_status->setWordWrap(true);
   m_status->setTextFormat(Qt::PlainText);
   layout->addWidget(m_status);
 
-  // Another File... left; Read-only, Open and Cancel right.
-  auto* buttons = new QHBoxLayout;
+  // A helper at the left; platform-ordered Open/Cancel at the right.
+  auto* bottom = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
   if (!m_options.otherText.isEmpty()) {
     m_other = new QPushButton(m_options.otherText);
     m_other->setAutoDefault(false);
-    buttons->addWidget(m_other);
+    bottom->addWidget(m_other);
   }
-  buttons->addStretch(1);
+  bottom->addStretch(1);
   if (!m_options.readOnlyText.isEmpty()) {
     m_readOnly = new QCheckBox(m_options.readOnlyText);
     m_readOnly->setToolTip(tr("Opens the design without its edit lock: to look at it while someone else edits it"));
-    buttons->addWidget(m_readOnly);
+    bottom->addWidget(m_readOnly);
     connect(m_readOnly, &QCheckBox::toggled, this, [](bool on) {
       qInfo().noquote() << QStringLiteral("Project browser read-only: %1").arg(on ? QStringLiteral("on")
                                                                                   : QStringLiteral("off"));
@@ -263,9 +272,14 @@ BrowserDialog::BrowserDialog(QWidget* parent, ProjectBrowserOptions options)
   m_open->setEnabled(false);
   m_cancel = new QPushButton(tr("Cancel"));
   m_cancel->setAutoDefault(false);
-  buttons->addWidget(m_open);
-  buttons->addWidget(m_cancel);
-  layout->addLayout(buttons);
+  buttons->addButton(m_open, QDialogButtonBox::AcceptRole);
+  buttons->addButton(m_cancel, QDialogButtonBox::RejectRole);
+  bottom->addWidget(buttons);
+  layout->addLayout(bottom);
+  mac::styleDialogButtons(buttons, m_open, true);
+  mac::styleListTree(m_folders);
+  mac::styleListTree(m_contents);
+  mac::styleDialog(this);
 
   // Enter on the folders' tree goes on to the contents; on the contents it
   // goes into a folder or opens a design; Backspace (and Alt+Up) goes up.
@@ -421,7 +435,7 @@ void BrowserDialog::fill(const QJsonObject& answer) {
   if (!error.isEmpty()) {
     m_status->setText(tr("The projects could not be read: %1").arg(error));
   } else if (m_projects.isEmpty()) {
-    m_status->setText(tr("No projects with versions are listed: Another File... opens any design."));
+    m_status->setText(tr("No projects with versions are listed: Another File… opens any design."));
   }
   m_status->setVisible(!error.isEmpty() || m_projects.isEmpty());
   if (m_projects.isEmpty()) {

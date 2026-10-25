@@ -542,7 +542,7 @@ DimensionShape dimensionShape(const DimensionData& d, const SketchModel& model,
       return shape;
     }
     const double radius = std::max(dist(at, c->curve.center), 1e-6);
-    const double span = sweep(c->curve.start, c->curve.end);
+    const double span = d.previewSweep.value_or(sweep(c->curve.start, c->curve.end));
     QPolygonF arc;
     for (int i = 0; i <= 32; ++i) {
       arc << S(c->curve.center + polar(c->curve.start + span * i / 32.0, radius));
@@ -552,8 +552,9 @@ DimensionShape dimensionShape(const DimensionData& d, const SketchModel& model,
       shape.lines.emplace_back(S(c->curve.center + polar(angle, c->curve.radius)),
                                S(c->curve.center + polar(angle, radius)));
     }
-    arrow(c->curve.center + polar(c->curve.start, radius), -perp(polar(c->curve.start)));
-    arrow(c->curve.center + polar(c->curve.start + span, radius), perp(polar(c->curve.start + span)));
+    const double sign = span >= 0.0 ? 1.0 : -1.0;
+    arrow(c->curve.center + polar(c->curve.start, radius), -perp(polar(c->curve.start)) * sign);
+    arrow(c->curve.center + polar(c->curve.start + span, radius), perp(polar(c->curve.start + span)) * sign);
     shape.valid = true;
     return shape;
   }
@@ -651,6 +652,13 @@ QString SketchOverlay::dimensionTooltip(const DimensionData& d) const {
   }
   if (!d.comment.isEmpty()) {
     text += QStringLiteral(" (%1)").arg(d.comment);
+  }
+  // A limit of its parameter took effect (mitcad#665).
+  if (!d.limited.isEmpty()) {
+    const QString mark = d.limited == QStringLiteral("max")   ? QStringLiteral("▲max")
+                         : d.limited == QStringLiteral("min") ? QStringLiteral("▼min")
+                                                              : QStringLiteral("◆step");
+    text += QStringLiteral(" %1\n%2").arg(mark, d.limitMessage);
   }
   return text;
 }
@@ -1091,6 +1099,20 @@ void SketchOverlay::paintPreview(QPainter& painter, const ToolPreview& preview) 
       paintDimensionHalo(painter, shape, m_c.viewer().sketchHaloColor());
       paintDimension(painter, shape, textRect(shape.textAt, shape.text), kPreviewColor, kPreviewColor,
                      false);
+    }
+  }
+  for (const auto& value : preview.fieldDimensions) {
+    const QRectF field = m_c.fieldRect(value.field);
+    const auto at = m_c.sketchAtF(field.center());
+    if (field.isEmpty() || !at) {
+      continue;
+    }
+    DimensionData dimension = value.dimension;
+    dimension.text = *at;
+    const auto shape = dimensionShape(dimension, value.model, projection(), QString());
+    if (shape.valid) {
+      paintDimensionHalo(painter, shape, m_c.viewer().sketchHaloColor());
+      paintDimension(painter, shape, field, kPreviewColor, kPreviewColor, false);
     }
   }
   if (!preview.glyph.isEmpty() && m_c.cursorInView()) {

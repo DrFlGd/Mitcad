@@ -235,6 +235,18 @@ InputDef listInput(const QString& id, const QString& label, std::vector<InputDef
   return input;
 }
 
+InputDef noteInput(const QString& id, std::function<InputNote(const CommandState&)> note,
+                   std::function<void(int action, const CommandState&, const CommandContext&)> onAction,
+                   const QString& label) {
+  InputDef input;
+  input.type = InputDef::Type::Note;
+  input.id = id;
+  input.label = label;
+  input.noteFor = std::move(note);
+  input.onNoteAction = std::move(onAction);
+  return input;
+}
+
 const Selection& CommandState::items(const QString& id) const {
   const auto it = m_items.constFind(key(id));
   return it == m_items.cend() ? kNoItems : it.value();
@@ -338,6 +350,7 @@ void setDefault(const InputDef& input, const QString& key, CommandState& state) 
     break;
   case InputDef::Type::Selection:
   case InputDef::Type::CutTargets:
+  case InputDef::Type::Note:
     break;
   }
 }
@@ -393,7 +406,9 @@ bool CommandDef::completedBy(const Selection& selection) const {
   }
   // A face or a plane is only where a creation command goes (a box on it,
   // a hole in it): its sizes and places are picked next.
-  const bool places = std::any_of(selection.begin(), selection.end(), [](const SelectionItem& item) {
+  // So is a shaft, an axis or a point the placement input takes
+  // (InputDef::places, mitcad#656).
+  const bool places = first->places || std::any_of(selection.begin(), selection.end(), [](const SelectionItem& item) {
     return item.kind == SelectKind::Face || item.kind == SelectKind::Plane;
   });
   return !(group == QStringLiteral("CREATE") && places);

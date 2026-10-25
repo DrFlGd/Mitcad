@@ -96,6 +96,18 @@ pub(super) struct ThicknessQuery {
     minimum: f64,
     #[serde(default)]
     deviation: Option<f64>,
+    /// The thin triangles' corners per body; false answers the summary
+    /// only (mitcad#689: their count stays in `thin_triangles`).
+    #[serde(default = "default_triangles")]
+    triangles: bool,
+    /// At most this many triangles per body; the rest are left out and
+    /// the body says `truncated`.
+    #[serde(default)]
+    max_triangles: Option<usize>,
+}
+
+fn default_triangles() -> bool {
+    true
 }
 
 /// The fields of a print analysis' `estimate` with the bodies; `enabled`
@@ -363,9 +375,11 @@ impl<K: Kernel> Document<K> {
         let mut results = Vec::with_capacity(bodies.len());
         let mut thinnest: Option<(f64, Value)> = None;
         let mut regions = 0;
+        let mut thin_triangles = 0;
+        let mut truncated = false;
         for body in &bodies {
             self.print_stop()?;
-            let key = result_key("print-thickness-v1", body, &tolerance, &settings);
+            let key = result_key("print-thickness-v2", body, &tolerance, &settings);
             let value = match self.print_cache().result(key) {
                 Some(value) => value,
                 None => {
@@ -399,19 +413,41 @@ impl<K: Kernel> Document<K> {
                 thinnest = Some((wall, value["at"].clone()));
             }
             regions += value["regions"].as_u64().unwrap_or_default();
-            results.push(named(&value, body));
+            // The summary, or the triangles up to the cap (mitcad#689).
+            let mut result = named(&value, body);
+            let count = value["triangles"].as_array().map_or(0, Vec::len);
+            thin_triangles += count;
+            result["thin_triangles"] = json!(count);
+            if !query.triangles {
+                if let Some(fields) = result.as_object_mut() {
+                    fields.remove("triangles");
+                }
+            } else if let Some(cap) = query.max_triangles
+                && count > cap
+                && let Some(list) = result["triangles"].as_array_mut()
+            {
+                list.truncate(cap);
+                result["truncated"] = json!(true);
+                truncated = true;
+            }
+            results.push(result);
         }
         let (wall, at) = match thinnest {
             Some((wall, at)) => (json!(wall), at),
             None => (Value::Null, Value::Null),
         };
-        Ok(json!({
+        let mut answer = json!({
             "minimum": query.minimum,
             "bodies": results,
             "thinnest": wall,
             "at": at,
             "regions": regions,
-        }))
+            "thin_triangles": thin_triangles,
+        });
+        if truncated {
+            answer["truncated"] = json!(true);
+        }
+        Ok(answer)
     }
 
     /// `print_estimate`: per body and in total the volume, area, shell,
@@ -429,20 +465,25 @@ impl<K: Kernel> Document<K> {
         };
         let mut results = Vec::with_capacity(bodies.len());
         let mut total = print_analysis::Estimate::default();
-        let mut materials: Vec<&'static analysis::Material> = Vec::new();
+        let mut materials: Vec<Made> = Vec::new();
         for body in &bodies {
             self.print_stop()?;
-            // The body's own material when it has one of the library,
-            // else PLA.
-            let material = chosen
-                .or_else(|| {
-                    self.body_attributes(body.uid)
-                        .material
-                        .as_deref()
-                        .and_then(analysis::material)
-                })
-                .or_else(|| analysis::material(print_analysis::DEFAULT_MATERIAL))
-                .expect("PLA is a material of the library");
+            // The body's own material or its component's default
+            // (mitcad#640), else PLA.
+            let material = match chosen {
+                Some(m) => Made::of_library(m),
+                None => match self.body_material(body.uid, None) {
+                    (_, crate::document::MaterialSource::Default) => Made::of_library(
+                        analysis::material(print_analysis::DEFAULT_MATERIAL)
+                            .expect("PLA is a material of the library"),
+                    ),
+                    (m, _) => Made {
+                        id: m.id.clone(),
+                        name: m.name.clone(),
+                        density: m.density,
+                    },
+                },
+            };
             let (volume, area) = match self.print_measures(body) {
                 Ok(measures) => measures,
                 Err(error) => return Ok(json!({"error": error})),
@@ -460,13 +501,13 @@ impl<K: Kernel> Document<K> {
                 (None, b) => b,
                 (a, None) => a,
             };
-            if !materials.iter().any(|m| m.id == material.id) {
-                materials.push(material);
-            }
-            let mut value = estimate_json(&estimate, material);
+            let mut value = estimate_json(&estimate, &material);
             value["body"] = json!(body.uid);
             value["name"] = json!(body.name);
             results.push(value);
+            if !materials.iter().any(|m| m.id == material.id) {
+                materials.push(material);
+            }
         }
         if results.is_empty() {
             total.cost = settings.price_per_kg.map(|_| 0.0);
@@ -474,14 +515,14 @@ impl<K: Kernel> Document<K> {
         // One material, or the names of several with the density of the
         // filament they make together.
         let (name, id, density) = match materials.as_slice() {
-            [one] => (one.name.to_owned(), json!(one.id), one.density),
+            [one] => (one.name.clone(), json!(one.id), one.density),
             [] => {
                 let pla = analysis::material(print_analysis::DEFAULT_MATERIAL)
                     .expect("PLA is a material of the library");
                 (pla.name.to_owned(), json!(pla.id), pla.density)
             }
             several => {
-                let names: Vec<&str> = several.iter().map(|m| m.name).collect();
+                let names: Vec<&str> = several.iter().map(|m| m.name.as_str()).collect();
                 let density = if total.filament_volume > 0.0 {
                     total.mass / total.filament_volume * 1000.0
                 } else {
@@ -528,7 +569,25 @@ impl<K: Kernel> Document<K> {
     }
 }
 
-fn estimate_json(estimate: &print_analysis::Estimate, material: &analysis::Material) -> Value {
+/// The material an estimate is for: a built-in's or the document's.
+struct Made {
+    id: String,
+    name: String,
+    /// g/cm³.
+    density: f64,
+}
+
+impl Made {
+    fn of_library(material: &analysis::Material) -> Self {
+        Self {
+            id: material.id.to_owned(),
+            name: material.name.to_owned(),
+            density: material.density,
+        }
+    }
+}
+
+fn estimate_json(estimate: &print_analysis::Estimate, material: &Made) -> Value {
     json!({
         "volume": estimate.volume,
         "area": estimate.area,

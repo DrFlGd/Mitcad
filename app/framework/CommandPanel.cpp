@@ -5,15 +5,18 @@
 #include <functional>
 #include <iterator>
 #include <utility>
+#include <vector>
 
 #include <QAbstractScrollArea>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDialogButtonBox>
 #include <QEvent>
 #include <QFont>
 #include <QFormLayout>
 #include <QFrame>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QImage>
@@ -21,13 +24,18 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QStyle>
+#include <QStyleOptionComboBox>
+#include <QStylePainter>
 #include <QListWidget>
 #include <QPixmap>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSignalBlocker>
+#include <QStandardItem>
+#include <QStandardItemModel>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtLogging>
 
@@ -36,9 +44,12 @@
 #include "CutTargetsPanel.hpp"
 #include "GlassCard.hpp"
 #include "Icons.hpp"
+#include "NoteRow.hpp"
 #include "ParameterField.hpp"
 #include "TestSync.hpp"
 #include "Theme.hpp"
+
+#include "../platform/MacDialogs.hpp"
 
 namespace mitcad {
 namespace {
@@ -53,7 +64,9 @@ QColor paletteColor(int index) {
 
 QString countText(const InputDef& input, int count) {
   if (count == 0) {
-    return input.min > 0 ? QObject::tr("Select") : QObject::tr("None (all)");
+    // An optional pick of one item is just none (mitcad#656: Align to
+    // Edge); none of several takes them all (a cut's objects).
+    return input.min > 0 ? QObject::tr("Select") : input.max == 1 ? QObject::tr("None") : QObject::tr("None (all)");
   }
   return QObject::tr("%1 selected").arg(count);
 }
@@ -80,6 +93,14 @@ QToolButton* smallButton(const QString& text, const QString& tip) {
   button->setToolTip(tip);
   button->setFocusPolicy(Qt::NoFocus);
   button->setAutoRaise(true);
+  if (text == QStringLiteral("▲")) {
+    mac::styleIconToggle(button, QStringLiteral("arrow.up"));
+  } else if (text == QStringLiteral("▼")) {
+    mac::styleIconToggle(button, QStringLiteral("arrow.down"));
+  } else if (text == QStringLiteral("✕")) {
+    mac::styleIconToggle(button, QStringLiteral("xmark"));
+  }
+  button->setAccessibleName(tip);
   if (chromeStyle() == ChromeStyle::Floating) {
     setFlatCardButton(button);
     button->setFixedSize(24, 24);
@@ -94,6 +115,10 @@ QToolButton* smallButton(const QString& text, const QString& tip) {
 void styleToggle(QToolButton* button, const QColor& accent) {
   button->setAutoRaise(true);
   button->setFixedSize(30, 26);
+#ifdef Q_OS_MACOS
+  Q_UNUSED(accent);
+  setFlatCardButton(button);
+#else
   button->setStyleSheet(QStringLiteral(
       "QToolButton { border: 1px solid rgba(128, 128, 128, 70); background: rgba(128, 128, 128, 25);"
       " border-radius: 7px; padding: 1px; }"
@@ -101,6 +126,7 @@ void styleToggle(QToolButton* button, const QColor& accent) {
       "QToolButton:pressed { background: rgba(128, 128, 128, 90); }"
       "QToolButton:checked { border: 1px solid %1; background: rgba(128, 128, 128, 55); }")
                             .arg(accent.name()));
+#endif
 }
 
 // The selection button: a capsule that is filled with the accent colour
@@ -128,6 +154,30 @@ void styleLineEdit(QLineEdit* edit, const QColor& accent, const QColor& error) {
                           .arg(accent.name(), error.name()));
 }
 
+// A drop-down whose chosen text is cut in the middle, and only when it
+// must, so that a long name keeps its start and its end (mitcad#655: 3D
+// Print's printer and process); it may be narrower than its longest
+// option.
+class MiddleElideComboBox : public QComboBox {
+public:
+  MiddleElideComboBox() {
+    setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    setMinimumContentsLength(8);
+  }
+
+protected:
+  void paintEvent(QPaintEvent*) override {
+    QStylePainter painter(this);
+    QStyleOptionComboBox option;
+    initStyleOption(&option);
+    painter.drawComplexControl(QStyle::CC_ComboBox, option);
+    const QRect field = style()->subControlRect(QStyle::CC_ComboBox, &option, QStyle::SC_ComboBoxEditField, this);
+    const int icon = option.currentIcon.isNull() ? 0 : option.iconSize.width() + 4;
+    option.currentText = fontMetrics().elidedText(option.currentText, Qt::ElideMiddle, std::max(0, field.width() - icon));
+    painter.drawControl(QStyle::CE_ComboBoxLabel, option);
+  }
+};
+
 // A choice shown as a tile (InputDef::choiceTile, mitcad#427): the chosen
 // option's picture, its name and a smaller line under it. A click, or Enter
 // or Space while it has the keyboard, calls `activated`. It takes the
@@ -135,6 +185,9 @@ void styleLineEdit(QLineEdit* edit, const QColor& accent, const QColor& error) {
 class TileButton : public QToolButton {
 public:
   explicit TileButton(std::function<void()> activated) : m_activated(std::move(activated)) {
+    // A choice tile's persistent outline identifies its selectable content;
+    // it is not a tool button bezel (also distinguished by UI style audits).
+    setProperty("commandChoiceTile", true);
     setFocusPolicy(Qt::TabFocus);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Minimum);
     auto* box = new QHBoxLayout(this);
@@ -305,6 +358,12 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
       call(key);
     }
   });
+  connect(this, &CommandPanel::noteActionClicked, this, [this](const QString& key, int index) {
+    auto call = CommandPresenter::actions().noteAction;
+    if (call) {
+      call(key, index);
+    }
+  });
   connect(this, &CommandPanel::accepted, this, [this] {
     auto call = CommandPresenter::actions().accepted;
     if (call) {
@@ -356,8 +415,39 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
       ++selectionIndex;
     }
   }
+  Row* previous = nullptr;
   for (const InputDef& input : def.inputs) {
-    createRow(input, input.id, m_form, state, QString(), -1);
+    const bool flat = input.type != InputDef::Type::List && input.type != InputDef::Type::CutTargets;
+    if (input.besidePrevious && flat && previous != nullptr && previous->form != nullptr &&
+        previous->field != nullptr && previous->field->layout() != nullptr) {
+      // On the previous row's line, after its field (InputDef::besidePrevious,
+      // mitcad#656): the line gets a box of its own the first time.
+      Row* cell = createRow(input, input.id, nullptr, state, QString(), -1);
+      delete cell->label;
+      cell->label = nullptr;
+      auto* column = qobject_cast<QVBoxLayout*>(previous->field->layout());
+      if (column != nullptr && column->count() > 0) {
+        QWidget* first = column->itemAt(0)->widget();
+        QWidget* line = first != nullptr && first->objectName() == QStringLiteral("besideLine") ? first : nullptr;
+        if (line == nullptr) {
+          line = new QWidget;
+          line->setObjectName(QStringLiteral("besideLine"));
+          auto* box = new QHBoxLayout(line);
+          box->setContentsMargins(0, 0, 0, 0);
+          box->setSpacing(4);
+          if (first != nullptr) {
+            column->removeWidget(first);
+            box->addWidget(first, 1);
+          }
+          column->insertWidget(0, line);
+        }
+        // Wide enough to type in beside its fx button (mitcad#656).
+        cell->field->setMinimumWidth(100);
+        static_cast<QHBoxLayout*>(line->layout())->addWidget(cell->field, 1);
+      }
+      continue;
+    }
+    previous = createRow(input, input.id, m_form, state, QString(), -1);
   }
   layout->addLayout(m_form);
 
@@ -390,7 +480,8 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   m_message->setObjectName(QStringLiteral("commandMessage"));
   layout->addWidget(m_message);
 
-  auto* buttons = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
+  m_buttonBox = buttons;
   m_ok = new QPushButton(def.okLabel.isEmpty() ? tr("OK") : def.okLabel);
   m_ok->setObjectName(QStringLiteral("commandOk"));
   // A command that repeats (BUILD's Place, mitcad#375) keeps what it
@@ -411,10 +502,9 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   cancel->setToolTip(def.repeats ? tr("Close; what was placed stays (Esc)") : tr("Close without changes (Esc)"));
   connect(m_ok, &QPushButton::clicked, this, &CommandPanel::accepted);
   connect(cancel, &QPushButton::clicked, this, &CommandPanel::rejected);
-  buttons->addStretch();
-  buttons->addWidget(m_ok);
-  buttons->addWidget(cancel);
-  layout->addLayout(buttons);
+  buttons->addButton(m_ok, QDialogButtonBox::AcceptRole);
+  buttons->addButton(cancel, QDialogButtonBox::RejectRole);
+  layout->addWidget(buttons);
   layout->addStretch();
 
   applyControlStyles();
@@ -507,13 +597,21 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     if (input.ordered) {
       // The picks in order, with buttons that move them.
       auto* ordered = new QWidget;
+#ifdef Q_OS_MACOS
+      auto* orderedBox = new QVBoxLayout(ordered);
+#else
       auto* orderedBox = new QHBoxLayout(ordered);
+#endif
       orderedBox->setContentsMargins(0, 0, 0, 0);
       row.order = new QListWidget;
       row.order->setFocusPolicy(Qt::NoFocus);
       row.order->setMaximumHeight(90);
       row.order->setObjectName(QStringLiteral("order_") + key);
+#ifdef Q_OS_MACOS
+      auto* moves = new QHBoxLayout;
+#else
       auto* moves = new QVBoxLayout;
+#endif
       moves->setSpacing(0);
       QListWidget* items = row.order;
       auto* up = smallButton(QStringLiteral("▲"), tr("Move up"));
@@ -552,6 +650,7 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
   case InputDef::Type::Value:
   case InputDef::Type::Text: {
     row.edit = new QLineEdit(scope.text(input.id));
+    row.edit->setCursorPosition(0); // a long expression from its start
     if (input.type == InputDef::Type::Value) {
       row.edit->setToolTip(input.tooltip.isEmpty()
                                ? tr("A value or an expression, such as 20, 2 in or d1 * 2")
@@ -561,6 +660,10 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     }
     connect(row.edit, &QLineEdit::textEdited, this,
             [this, key](const QString& text) { emit textEdited(key, text); });
+    if (input.type == InputDef::Type::Value && input.autoText) {
+      // Empty: the model works it out (mitcad#656), shown once a preview has it.
+      row.edit->setPlaceholderText(tr("Auto"));
+    }
     if (input.type == InputDef::Type::Value) {
       connect(row.edit, &QLineEdit::editingFinished, this, [this, key] { emit valueCommitted(key); });
       row.edit->installEventFilter(this); // its keyboard focus (mitcad#250)
@@ -586,6 +689,43 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
       tile->setToolTip(input.tooltip);
       row.tile = tile;
       field = tile;
+      break;
+    }
+    if (!input.choiceColumns.isEmpty()) {
+      // Rows under column headings, the chosen one selected (mitcad#656:
+      // Gear Pair's candidates); refreshRow fills them.
+      auto* table = new QTreeWidget;
+      table->setColumnCount(static_cast<int>(input.choiceColumns.size()));
+      table->setHeaderLabels(input.choiceColumns);
+      table->setRootIsDecorated(false);
+      table->setUniformRowHeights(true);
+      table->setVerticalScrollMode(QAbstractItemView::ScrollPerItem); // a row per step: its logged place
+      table->setSelectionMode(QAbstractItemView::SingleSelection);
+      // The keyboard: a click gives it the list, the arrow keys step the
+      // rows, each row chosen as it becomes the current one.
+      table->setFocusPolicy(Qt::StrongFocus);
+      table->setToolTip(input.tooltip);
+      // Six rows and the headings in sight, floating or docked.
+      const int rowHeight = table->fontMetrics().height() + 8;
+      table->setMinimumHeight(table->header()->sizeHint().height() + 6 * rowHeight + 2 * table->frameWidth() + 4);
+      // The columns share the panel's width: no scrolling sideways.
+      table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+      table->setTextElideMode(Qt::ElideRight);
+      // Each column as wide as its cells (short ones, mitcad#656), the list
+      // at least as wide as its columns: nothing clipped.
+      table->setIndentation(0);
+      table->header()->setStretchLastSection(false);
+      table->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
+      // The chosen row stands out also while the list has no keyboard.
+      table->setStyleSheet(QStringLiteral("QTreeWidget::item:selected { background: palette(highlight);"
+                                          " color: palette(highlighted-text); }"));
+      connect(table, &QTreeWidget::currentItemChanged, this, [this, key](QTreeWidgetItem* item, QTreeWidgetItem*) {
+        if (item != nullptr) {
+          emit choiceChanged(key, item->data(0, Qt::UserRole).toString());
+        }
+      });
+      row.table = table;
+      field = table;
       break;
     }
     if (!input.choiceIcons.isEmpty() && !input.choicesFor) {
@@ -616,7 +756,7 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
       field = line;
       break;
     }
-    row.combo = new QComboBox;
+    row.combo = input.choiceIcon ? new MiddleElideComboBox : new QComboBox;
     // No keyboard focus: choosing leaves it in the value field, where the
     // typed value goes.
     row.combo->setFocusPolicy(Qt::NoFocus);
@@ -641,7 +781,15 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
       box->setContentsMargins(0, 0, 0, 0);
       box->setSpacing(4);
       row.button = new QToolButton;
-      row.button->setText(input.buttonText);
+      if (input.buttonIcon.isEmpty()) {
+        row.button->setText(input.buttonText);
+      } else {
+        // A small icon (mitcad#655): the text is its accessible name.
+        row.button->setIcon(themeIcon(input.buttonIcon));
+        row.button->setIconSize(QSize(16, 16));
+        row.button->setAutoRaise(true);
+        row.button->setAccessibleName(input.buttonText);
+      }
       row.button->setToolTip(input.buttonTooltip);
       row.button->setFocusPolicy(Qt::NoFocus);
       row.button->setObjectName(QStringLiteral("button_") + key);
@@ -715,11 +863,21 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     if (!input.addLabel.isEmpty()) {
       row.add = new QPushButton(themeIcon(QStringLiteral("add")), input.addLabel);
       row.add->setFocusPolicy(Qt::NoFocus);
+      mac::auxiliaryButton(row.add);
+      mac::styleIconToggle(row.add, QStringLiteral("plus"));
       row.add->setObjectName(QStringLiteral("add_") + key);
       connect(row.add, &QPushButton::clicked, this, [this, key] { emit rowAdded(key); });
       boxLayout->addWidget(row.add, 0, Qt::AlignLeft);
     }
     field = box;
+    break;
+  }
+  case InputDef::Type::Note: {
+    // A line of text and its buttons (mitcad#655): 3D Print's update bar
+    // and import line.
+    row.noteRow = new NoteRow;
+    connect(row.noteRow, &NoteRow::actionClicked, this, [this, key](int index) { emit noteActionClicked(key, index); });
+    field = row.noteRow;
     break;
   }
   }
@@ -733,8 +891,10 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
   column->addWidget(row.note);
   row.field = container;
 
-  if (input.type == InputDef::Type::List || input.type == InputDef::Type::CutTargets) {
-    // A list's rows take the whole width, under its name.
+  if (input.type == InputDef::Type::List || input.type == InputDef::Type::CutTargets ||
+      (input.type == InputDef::Type::Choice && !input.choiceColumns.isEmpty() && form != nullptr)) {
+    // A list's rows take the whole width, under its name (a choice's
+    // columns too, mitcad#656: nothing clipped beside a label).
     auto* title = new QLabel(QStringLiteral("<b>%1</b>").arg(input.label.toHtmlEscaped()));
     title->setToolTip(input.tooltip);
     row.title = title;
@@ -746,6 +906,13 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
       auto* heading = new QLabel(QStringLiteral("<b>%1</b>").arg(input.heading.toHtmlEscaped()));
       row.title = heading;
       form->addRow(heading);
+    }
+    if (input.type == InputDef::Type::Note && input.label.isEmpty() && !input.fieldColumn && form != nullptr) {
+      // A note row without a label takes the panel's whole width
+      // (mitcad#655): its text is not squeezed beside the labels.
+      form->addRow(container);
+      updateNote(row);
+      return &row;
     }
     // A disclosure button carries its label itself.
     row.label = new QLabel(input.disclosure ? QString() : input.label);
@@ -891,7 +1058,10 @@ void CommandPanel::refreshRows(const CommandState& state) {
 
 void CommandPanel::refreshRow(Row& row, const CommandState& scope, const CommandState& state) {
   const InputDef& input = *row.input;
-  const bool shown = isShown(input, scope);
+  // A note row with nothing to say is hidden (mitcad#655).
+  const InputNote note =
+      input.type == InputDef::Type::Note && input.noteFor ? input.noteFor(scope) : InputNote();
+  const bool shown = isShown(input, scope) && (input.type != InputDef::Type::Note || !note.isEmpty());
   if (input.type == InputDef::Type::List || input.type == InputDef::Type::CutTargets) {
     row.form->setRowVisible(row.title, shown);
     row.form->setRowVisible(row.field, shown);
@@ -904,8 +1074,30 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
       row.form->setRowVisible(row.title, shown);
     }
   } else {
-    row.label->setVisible(shown);
+    if (row.label != nullptr) { // none on a line beside another (besidePrevious)
+      row.label->setVisible(shown);
+    }
     row.field->setVisible(shown);
+  }
+  // The button beside a field enabled while InputDef::buttonEnabled says so
+  // (mitcad#655).
+  if (input.buttonEnabled && row.button != nullptr) {
+    row.button->setEnabled(input.buttonEnabled(scope));
+  }
+  // Disabled rather than hidden while InputDef::enabled says no (mitcad#655).
+  if (input.enabled && row.field != nullptr) {
+    const bool on = input.enabled(scope);
+    if (row.field->isEnabled() != on) {
+      qDebug().noquote() << QStringLiteral("Panel %1 input %2 %3")
+                                .arg(m_def.name, row.key, on ? QStringLiteral("enabled") : QStringLiteral("disabled"));
+    }
+    row.field->setEnabled(on);
+    if (row.label != nullptr) {
+      row.label->setEnabled(on);
+    }
+    if (row.title != nullptr) {
+      row.title->setEnabled(on);
+    }
   }
   const QString& id = input.id;
   // A label that follows other inputs (InputDef::labelFor, mitcad#545): a
@@ -928,7 +1120,18 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
     // occurrences, mitcad#544), else their count.
     const QString listed = items.isEmpty() ? QString() : scope.itemsText(id);
     const QString tip = input.tooltip.isEmpty() ? tr("Click to pick %1").arg(input.label) : input.tooltip;
-    if (listed.isEmpty()) {
+    // An empty row may stand for something (InputDef::emptyShows): its
+    // text and swatch then.
+    const auto empty = items.isEmpty() && input.emptyShows ? input.emptyShows(scope) : std::pair<QString, QColor>();
+    const QColor swatch = empty.first.isEmpty() || !empty.second.isValid() ? colorOf(row.key) : empty.second;
+    if (row.select->property("swatch").toString() != swatch.name()) {
+      row.select->setProperty("swatch", swatch.name());
+      row.select->setIcon(swatchIcon(swatch));
+    }
+    if (!empty.first.isEmpty()) {
+      row.select->setText(empty.first);
+      row.select->setToolTip(tip);
+    } else if (listed.isEmpty()) {
       row.select->setText(countText(input, static_cast<int>(items.size())));
       row.select->setToolTip(tip);
     } else {
@@ -957,6 +1160,11 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
   case InputDef::Type::Text:
     if (row.edit->text() != scope.text(id)) {
       row.edit->setText(scope.text(id));
+      if (!row.edit->hasFocus()) {
+        // The start of a long expression in sight, not its end (mitcad#656:
+        // "shaft_bore_clearance", not "aft_bore_clearance").
+        row.edit->setCursorPosition(0);
+      }
     }
     // Its own parameter is not offered to it (mitcad#567).
     if (ParameterField* suggest = ParameterField::of(row.edit)) {
@@ -996,6 +1204,80 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
       }
       break;
     }
+    if (row.table != nullptr) {
+      // Rows of columns (InputDef::choiceColumns, mitcad#656): filled
+      // again when the options change, the chosen one selected.
+      const QSignalBlocker blockTable(row.table);
+      if (input.choiceColumnsFor) {
+        // Headings with a value in them (InputDef::choiceColumnsFor).
+        const QStringList headings = input.choiceColumnsFor(scope);
+        if (headings.size() == row.table->columnCount()) {
+          for (int column = 0; column < headings.size(); ++column) {
+            if (row.table->headerItem()->text(column) != headings[column]) {
+              row.table->headerItem()->setText(column, headings[column]);
+            }
+          }
+        }
+      }
+      const QVector<QPair<QString, QString>> options = input.choicesIn(scope);
+      bool same = row.table->topLevelItemCount() == options.size();
+      for (int i = 0; same && i < options.size(); ++i) {
+        const QTreeWidgetItem* item = row.table->topLevelItem(i);
+        same = item->data(0, Qt::UserRole).toString() == options[i].first &&
+               item->data(0, Qt::UserRole + 1).toString() == options[i].second;
+      }
+      if (!same) {
+        row.table->clear();
+        QStringList labels;
+        const QChar warningSign(0x26A0);
+        std::vector<bool> used(static_cast<std::size_t>(row.table->columnCount()), false);
+        for (const auto& [value, label] : options) {
+          QStringList cells = label.split(QLatin1Char('\t'));
+          auto* item = new QTreeWidgetItem;
+          for (int column = 0; column < cells.size() && column < row.table->columnCount(); ++column) {
+            QString cell = cells[column];
+            if (cell.startsWith(warningSign)) {
+              // A warning sign leading a cell is shown as the warning icon
+              // (mitcad#656: an undercut gear's teeth).
+              item->setIcon(column, style()->standardIcon(QStyle::SP_MessageBoxWarning));
+              cell = cell.mid(1).trimmed();
+            }
+            item->setText(column, cell);
+            if (!cells[column].isEmpty()) {
+              used[static_cast<std::size_t>(column)] = true;
+            }
+          }
+          item->setData(0, Qt::UserRole, value);
+          item->setData(0, Qt::UserRole + 1, label);
+          row.table->addTopLevelItem(item);
+          labels << QString(label).replace(QLatin1Char('\t'), QStringLiteral(", "));
+        }
+        for (int column = 0; column < row.table->columnCount(); ++column) {
+          // A column empty in every row is left out (a ratio met exactly).
+          row.table->setColumnHidden(column, !options.isEmpty() && !used[static_cast<std::size_t>(column)]);
+          row.table->resizeColumnToContents(column);
+        }
+        int width = 2 * row.table->frameWidth() + row.table->verticalScrollBar()->sizeHint().width();
+        for (int column = 0; column < row.table->columnCount(); ++column) {
+          if (!row.table->isColumnHidden(column)) {
+            width += row.table->columnWidth(column);
+          }
+        }
+        row.table->setMinimumWidth(width);
+        qDebug().noquote() << QStringLiteral("Panel %1 options %2: %3")
+                                  .arg(m_def.name, row.key, labels.join(QStringLiteral(" | ")));
+        scheduleLogLayout(); // where its rows are now, for UI tests
+      }
+      for (int i = 0; i < row.table->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = row.table->topLevelItem(i);
+        const bool chosen = item->data(0, Qt::UserRole).toString() == scope.choice(id);
+        item->setSelected(chosen);
+        if (chosen) {
+          row.table->setCurrentItem(item);
+        }
+      }
+      break;
+    }
     if (row.combo == nullptr) {
       // Icon buttons: the chosen one pressed; those not offered hidden
       // (InputDef::choiceOffered, mitcad#524).
@@ -1027,11 +1309,30 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
         for (const auto& [value, label] : options) {
           // A picture beside each option that has one (InputDef::choiceImage).
           const QImage image = input.choiceImage ? input.choiceImage(value) : QImage();
-          if (image.isNull()) {
+          if (input.choiceIcon) {
+            // A small icon and its tooltip (InputDef::choiceIcon, mitcad#655).
+            const ChoiceIcon icon = input.choiceIcon(value);
+            row.combo->addItem(icon.icon.isEmpty() ? QIcon() : themeIcon(icon.icon), label, value);
+            row.combo->setItemData(row.combo->count() - 1, icon.tooltip, Qt::ToolTipRole);
+          } else if (image.isNull()) {
             row.combo->addItem(label, value);
           } else {
             row.combo->addItem(QIcon(QPixmap::fromImage(image)), label, value);
             ++pictures;
+          }
+          if (value.startsWith(choiceHeadingPrefix())) {
+            // A heading of the options after it (mitcad#655): small, bold,
+            // not a choice.
+            if (auto* model = qobject_cast<QStandardItemModel*>(row.combo->model())) {
+              QStandardItem* heading = model->item(row.combo->count() - 1);
+              heading->setFlags(heading->flags() & ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+              QFont font = row.combo->font();
+              font.setBold(true);
+              if (font.pointSizeF() > 0.0) {
+                font.setPointSizeF(font.pointSizeF() * 0.9);
+              }
+              heading->setFont(font);
+            }
           }
         }
         QStringList labels;
@@ -1061,6 +1362,18 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
     }
     break;
   }
+  case InputDef::Type::Note:
+    if (row.noteRow->setNote(note.text, note.actions, note.icons, note.oneLine) && !note.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Panel %1 note %2: %3%4")
+                                .arg(m_def.name, row.key, note.text,
+                                     note.actions.isEmpty()
+                                         ? QString()
+                                         : QStringLiteral(" [%1]").arg(note.actions.join(QStringLiteral("] ["))));
+      if (!m_shownRows.isEmpty()) {
+        scheduleLogLayout(); // its buttons moved or came
+      }
+    }
+    break;
   case InputDef::Type::List:
   case InputDef::Type::CutTargets:
     break;
@@ -1089,6 +1402,15 @@ void CommandPanel::setValueHint(const QString& key, const QString& hint) {
   if (Row* row = m_byKey.value(key)) {
     updateNote(*row);
   }
+}
+
+void CommandPanel::setPlaceholder(const QString& key, const QString& text) {
+  Row* row = m_byKey.value(key);
+  if (row == nullptr || row->edit == nullptr || row->edit->placeholderText() == text) {
+    return;
+  }
+  row->edit->setPlaceholderText(text);
+  qDebug().noquote() << QStringLiteral("Panel %1 placeholder %2: %3").arg(m_def.name, key, text);
 }
 
 void CommandPanel::updateNote(Row& row) {
@@ -1175,6 +1497,12 @@ void CommandPanel::logFit() const {
 void CommandPanel::setResult(const QString& text) { m_result->setText(text); }
 
 void CommandPanel::setOkEnabled(bool enabled) { m_ok->setEnabled(enabled); }
+
+QWidget* CommandPanel::takeButtons() {
+  QWidget* buttons = m_buttonBox;
+  m_buttonBox = nullptr;
+  return buttons;
+}
 
 void CommandPanel::setPreviewReport(const QJsonObject& report) {
   for (const auto& row : m_rows) {
@@ -1284,13 +1612,22 @@ QStringList CommandPanel::layoutLines() const {
   // Rows made or shown just now are placed first.
   QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
   const auto position = [](const QWidget* widget) {
-    const QPoint center = GlassCard::mapToHost(widget, widget->rect().center());
+    QRect area = widget->rect();
+    if (const auto* edit = qobject_cast<const QLineEdit*>(widget)) {
+      // The middle of where the text is typed: not on the field's trailing
+      // buttons (the fx of a value, mitcad#656: a narrow distance field
+      // beside its reference had its middle on it).
+      const int trailing = 22 * static_cast<int>(edit->actions().size());
+      area.setWidth(std::max(8, area.width() - trailing));
+    }
+    const QPoint center = GlassCard::mapToHost(widget, area.center());
     return QStringLiteral("%1,%2").arg(center.x()).arg(center.y());
   };
   for (const Row* row : orderedRows()) {
     const QWidget* widget = row->select != nullptr  ? static_cast<QWidget*>(row->select)
                             : row->edit != nullptr  ? static_cast<QWidget*>(row->edit)
                             : row->combo != nullptr ? static_cast<QWidget*>(row->combo)
+                            : row->table != nullptr ? static_cast<QWidget*>(row->table)
                             : row->check != nullptr ? static_cast<QWidget*>(row->check)
                             : row->add != nullptr   ? static_cast<QWidget*>(row->add)
                                                     : row->field;
@@ -1307,10 +1644,52 @@ QStringList CommandPanel::layoutLines() const {
         lines << QStringLiteral("Panel %1 input %2=%3 at %4")
                                   .arg(m_def.name, row->key, it.key(), position(it.value()));
       }
+      if (row->table != nullptr) {
+        // Each row of a choice shown as rows of columns (mitcad#656), by
+        // its value; the rows scrolled out of the list are not logged.
+        // The list lays its rows out later by itself (a timer of the item
+        // view): now, so that the rows have their places.
+        // Before the list is shown its columns can still be 0 wide (an
+        // empty item rect): a row's place is then the middle of the list's
+        // width at the row's height (rows of one height, one per scroll
+        // step).
+        QTreeWidget* table = row->table;
+        table->doItemsLayout();
+        const QWidget* viewport = table->viewport();
+        const int width = viewport->width() > 0 ? viewport->width() : table->width();
+        const int height = viewport->height() > 0 ? viewport->height() : table->height() - table->header()->height();
+        const int first = table->verticalScrollBar()->value();
+        for (int i = 0; i < table->topLevelItemCount(); ++i) {
+          const QTreeWidgetItem* item = table->topLevelItem(i);
+          const QRect rect = table->visualItemRect(item);
+          int y = rect.center().y();
+          if (rect.height() <= 0) {
+            const int step = std::max(table->sizeHintForRow(i), table->fontMetrics().height() + 4);
+            y = (i - first) * step + step / 2;
+          }
+          if (y < 0 || y >= height) {
+            continue;
+          }
+          const QPoint center = GlassCard::mapToHost(viewport, QPoint(width / 2, y));
+          lines << QStringLiteral("Panel %1 input %2=%3 at %4,%5")
+                       .arg(m_def.name, row->key, item->data(0, Qt::UserRole).toString())
+                       .arg(center.x())
+                       .arg(center.y());
+        }
+      }
       if (row->button != nullptr) {
         // The button beside a choice (InputDef::onButton).
         lines << QStringLiteral("Panel %1 button_%2 at %3")
                                   .arg(m_def.name, row->key, position(row->button));
+      }
+      if (row->noteRow != nullptr) {
+        // A note row's buttons by their index (InputDef::onNoteAction).
+        for (std::size_t i = 0; i < row->noteRow->buttons().size(); ++i) {
+          lines << QStringLiteral("Panel %1 action %2.%3 at %4")
+                       .arg(m_def.name, row->key)
+                       .arg(i)
+                       .arg(position(row->noteRow->buttons()[i]));
+        }
       }
     }
     if (row->order != nullptr && !hidden) {
@@ -1334,6 +1713,10 @@ QStringList CommandPanel::layoutLines() const {
                                   .arg(position(row->removes[i]));
       }
     }
+  }
+  // The sections' own places (addSection, mitcad#648).
+  for (const auto& places : m_sectionPlaces) {
+    lines << places();
   }
   lines << QStringLiteral("Panel %1 OK at %2").arg(m_def.name, position(m_ok));
   // Wider than the page would cut its right side off (mitcad#198).
@@ -1382,6 +1765,12 @@ bool CommandPanel::eventFilter(QObject* watched, QEvent* event) {
   const bool pressed = event->type() == QEvent::MouseButtonPress;
   if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut || pressed) {
     for (const auto& row : m_rows) {
+      if (row->edit == watched && event->type() == QEvent::FocusOut) {
+        // Left, a long expression shows from its start again (mitcad#656);
+        // a name picked from the view still goes where the cursor was.
+        row->leftAt = row->edit->cursorPosition();
+        row->edit->home(false);
+      }
       if (row->edit == watched && row->input->type == InputDef::Type::Value) {
         auto call = CommandPresenter::actions().valueFocused;
         if (call && (!pressed || row->edit->hasFocus())) {
@@ -1400,7 +1789,11 @@ bool CommandPanel::insertIntoValue(const QString& key, const QString& text) {
     return false;
   }
   // Back where it was: the cursor stays where the view's click left it.
+  const int at = row->edit->hasFocus() ? -1 : row->leftAt;
   row->edit->setFocus(Qt::OtherFocusReason);
+  if (at >= 0) {
+    row->edit->setCursorPosition(std::min(at, static_cast<int>(row->edit->text().size())));
+  }
   row->edit->insert(text);
   const QString now = row->edit->text();
   qDebug().noquote() << QStringLiteral("Panel %1 input %2: inserted %3, now %4").arg(m_def.name, key, text, now);

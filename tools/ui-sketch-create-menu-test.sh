@@ -19,8 +19,9 @@
 #   - in a narrow window the groups stay within it;
 #   - the SOLID CREATE menu in its sections with separators (mitcad#579):
 #     Create Sketch; from profiles; on a body's faces; the primitives; the
-#     Pattern submenu and Mirror; the Machine Elements submenu (Gear,
-#     Pulley, Bearing), from which Gear starts by the keyboard.
+#     Pattern submenu and Mirror; the Machine Elements submenu (Gear, Gear
+#     Pair, Pulley, Belt Drive, Bearing), from which Gear starts by the
+#     keyboard.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-create-menu-test.sh
@@ -44,7 +45,7 @@ SOLID_CREATE="Create Sketch | - | Extrude | Revolve | Sweep | Loft | Rib | Web |
 SOLID_CREATE="$SOLID_CREATE | - | Hole | Thread | Plastic Feature"
 SOLID_CREATE="$SOLID_CREATE | - | Box | Cylinder | Sphere | Torus | Coil | Helix | Pipe"
 SOLID_CREATE="$SOLID_CREATE | - | Pattern > [$SOLID_PATTERNS] | Mirror"
-SOLID_CREATE="$SOLID_CREATE | - | Machine Elements > [Gear | Pulley | Bearing"
+SOLID_CREATE="$SOLID_CREATE | - | Machine Elements > [Gear | Gear Pair | Pulley | Belt Drive | Bearing"
 
 # last_line "prefix": the last log line starting with the prefix, without it.
 last_line() {
@@ -177,7 +178,7 @@ esac
 # submenu's first entry Gear.
 ui_mark
 ui_step "Machine Elements > Gear"          ui_key Up Right Return
-ui_expect_new "Ribbon menu SOLID/CREATE/Machine Elements: Gear | Pulley | Bearing" "the Machine Elements submenu opened"
+ui_expect_new "Ribbon menu SOLID/CREATE/Machine Elements: Gear | Gear Pair | Pulley | Belt Drive | Bearing" "the Machine Elements submenu opened"
 ui_expect_new "Command Gear started" "Gear from the Machine Elements submenu"
 ui_step "cancel (Esc)"                     ui_key Escape
 ui_expect_new "Command Gear cancelled" "Gear cancelled"

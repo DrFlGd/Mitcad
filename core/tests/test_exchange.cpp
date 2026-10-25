@@ -409,8 +409,12 @@ void test_ipt_import(const fs::path& dir) {
     };
     const auto verifyImported = [&] {
       const int before = failures;
-      CHECK(!std::regex_search(importReport, std::regex(R"re("uid"\s*:\s*"F1\.b0")re")));
-      CHECK(std::regex_search(importReport, std::regex(R"re("hidden"\s*:\s*true)re")));
+      // Outside CHECK: its #expr turns the raw strings' backslashes into
+      // escapes MSVC warns about (C4129).
+      const std::regex existingUid(R"re("uid"\s*:\s*"F1\.b0")re");
+      const std::regex hiddenBody(R"re("hidden"\s*:\s*true)re");
+      CHECK(!std::regex_search(importReport, existingUid));
+      CHECK(std::regex_search(importReport, hiddenBody));
       CHECK(near(volume(*seeded, "F1.b0"), 1000.0, 1e-6));
       CHECK(contains(std::string(seeded->query(R"({"query":"bodies"})")), original.substr(1, original.size() - 2)));
       try {

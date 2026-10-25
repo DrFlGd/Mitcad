@@ -205,7 +205,7 @@ void TextureBrowser::search(TextureSource* source, const QString& text, const QS
   if (source == nullptr) {
     return;
   }
-  setMessage(tr("Searching..."), false);
+  setMessage(tr("Searching…"), false);
   const QString sourceId = source->id();
   source->search(text, category, this, [this, ticket, sourceId, text, category](const QVector<TextureAsset>& assets,
                                                                                 const QString& error) {

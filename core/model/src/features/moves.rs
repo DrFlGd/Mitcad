@@ -6,24 +6,41 @@
 //! new bodies, `<move>.b<j>` with faces `<move>:inst1(<name>)`; a copy that
 //! does not move is a copy and paste of bodies.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 use super::geom_ref::{GeomRef, Want};
 use super::mapping::map_params;
+use super::point_pattern::{axis_in, placement, point_in};
 use super::{
-    BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
-    is_false,
+    BodyChange, CheckContext, EvalContext, Evaluate, FeatureEntry, FeatureInfo, FeatureOutput,
+    OccurrencePath, References, is_false,
 };
 use mitcad_vec3::{scale as scaled, sub};
 
-use crate::ids::BodyUid;
+use crate::assembly::{Assembly, inverse};
+use crate::datum::{DatumAxis, Vec3};
+use crate::ids::{BodyUid, ComponentUid};
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::transform::{Instance, Transform};
 
 /// The motion of a move. Distances in millimetres, angles in radians.
+///
+/// A point or an axis may be geometry of a component where an occurrence
+/// places it (mitcad#699): `from_occurrence`, `to_occurrence`,
+/// `point_occurrence` and `axis_occurrence` beside the reference give the
+/// occurrence's absolute path from the root (`"O1/O4"`; `""` the root), as
+/// Pattern at Points' points do. The reference is then resolved in that
+/// occurrence's component and placed where the occurrence puts it at the
+/// feature's point of the timeline (an occurrence the feature moves: where
+/// it was before this motion), then taken into the coordinates of the
+/// feature's component (its first occurrence). Without one, the reference
+/// is in the feature's component's coordinates, as before.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[allow(clippy::large_enum_variant)]
 pub enum MoveSpec<P = ParamId> {
     /// Rows of a rotation and a translation, `[[r00, r01, r02, tx], …]`
     /// (the `defineAsFreeMove` matrix of .f3d designs, in millimetres).
@@ -31,13 +48,37 @@ pub enum MoveSpec<P = ParamId> {
     /// Along the model axes.
     TranslateXyz { x: P, y: P, z: P },
     /// Along an axis (an edge's own direction).
-    TranslateAlong { axis: GeomRef, distance: P },
+    TranslateAlong {
+        axis: GeomRef,
+        distance: P,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        axis_occurrence: Option<OccurrencePath>,
+    },
     /// About an axis, right-handed.
-    Rotate { axis: GeomRef, angle: P },
+    Rotate {
+        axis: GeomRef,
+        angle: P,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        axis_occurrence: Option<OccurrencePath>,
+    },
     /// Takes `from` onto `to`.
-    PointToPoint { from: GeomRef, to: GeomRef },
+    PointToPoint {
+        from: GeomRef,
+        to: GeomRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_occurrence: Option<OccurrencePath>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_occurrence: Option<OccurrencePath>,
+    },
     /// Takes `point` to the position.
-    PointToPosition { point: GeomRef, x: P, y: P, z: P },
+    PointToPosition {
+        point: GeomRef,
+        x: P,
+        y: P,
+        z: P,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        point_occurrence: Option<OccurrencePath>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,40 +117,126 @@ impl<P> MoveSpec<P> {
                 y: f("transform.y", y)?,
                 z: f("transform.z", z)?,
             },
-            MoveSpec::TranslateAlong { axis, distance } => MoveSpec::TranslateAlong {
+            MoveSpec::TranslateAlong {
+                axis,
+                distance,
+                axis_occurrence,
+            } => MoveSpec::TranslateAlong {
                 axis: axis.clone(),
                 distance: f("transform.distance", distance)?,
+                axis_occurrence: axis_occurrence.clone(),
             },
-            MoveSpec::Rotate { axis, angle } => MoveSpec::Rotate {
+            MoveSpec::Rotate {
+                axis,
+                angle,
+                axis_occurrence,
+            } => MoveSpec::Rotate {
                 axis: axis.clone(),
                 angle: f("transform.angle", angle)?,
+                axis_occurrence: axis_occurrence.clone(),
             },
-            MoveSpec::PointToPoint { from, to } => MoveSpec::PointToPoint {
+            MoveSpec::PointToPoint {
+                from,
+                to,
+                from_occurrence,
+                to_occurrence,
+            } => MoveSpec::PointToPoint {
                 from: from.clone(),
                 to: to.clone(),
+                from_occurrence: from_occurrence.clone(),
+                to_occurrence: to_occurrence.clone(),
             },
-            MoveSpec::PointToPosition { point, x, y, z } => MoveSpec::PointToPosition {
+            MoveSpec::PointToPosition {
+                point,
+                x,
+                y,
+                z,
+                point_occurrence,
+            } => MoveSpec::PointToPosition {
                 point: point.clone(),
                 x: f("transform.x", x)?,
                 y: f("transform.y", y)?,
                 z: f("transform.z", z)?,
+                point_occurrence: point_occurrence.clone(),
             },
         })
+    }
+
+    /// The references to geometry with the occurrences they were picked
+    /// in (mitcad#699), in the order of the fields.
+    pub(crate) fn placed_references(&self) -> Vec<(&GeomRef, Option<&OccurrencePath>)> {
+        match self {
+            MoveSpec::TranslateAlong {
+                axis,
+                axis_occurrence,
+                ..
+            }
+            | MoveSpec::Rotate {
+                axis,
+                axis_occurrence,
+                ..
+            } => vec![(axis, axis_occurrence.as_ref())],
+            MoveSpec::PointToPoint {
+                from,
+                to,
+                from_occurrence,
+                to_occurrence,
+            } => vec![
+                (from, from_occurrence.as_ref()),
+                (to, to_occurrence.as_ref()),
+            ],
+            MoveSpec::PointToPosition {
+                point,
+                point_occurrence,
+                ..
+            } => vec![(point, point_occurrence.as_ref())],
+            MoveSpec::Free { .. } | MoveSpec::TranslateXyz { .. } => Vec::new(),
+        }
+    }
+
+    /// [`MoveSpec::placed_references`], to change.
+    pub(crate) fn placed_references_mut(
+        &mut self,
+    ) -> Vec<(&mut GeomRef, &mut Option<OccurrencePath>)> {
+        match self {
+            MoveSpec::TranslateAlong {
+                axis,
+                axis_occurrence,
+                ..
+            }
+            | MoveSpec::Rotate {
+                axis,
+                axis_occurrence,
+                ..
+            } => vec![(axis, axis_occurrence)],
+            MoveSpec::PointToPoint {
+                from,
+                to,
+                from_occurrence,
+                to_occurrence,
+            } => vec![(from, from_occurrence), (to, to_occurrence)],
+            MoveSpec::PointToPosition {
+                point,
+                point_occurrence,
+                ..
+            } => vec![(point, point_occurrence)],
+            MoveSpec::Free { .. } | MoveSpec::TranslateXyz { .. } => Vec::new(),
+        }
+    }
+
+    /// The occurrence paths the points and axes were picked in.
+    pub(crate) fn occurrence_paths(&self) -> Vec<&OccurrencePath> {
+        self.placed_references()
+            .into_iter()
+            .filter_map(|(_, path)| path)
+            .collect()
     }
 }
 
 impl MoveSpec {
     pub(crate) fn add_references(&self, references: &mut References) {
-        match self {
-            Self::TranslateAlong { axis, .. } | Self::Rotate { axis, .. } => {
-                axis.add_to(references);
-            }
-            Self::PointToPoint { from, to } => {
-                from.add_to(references);
-                to.add_to(references);
-            }
-            Self::PointToPosition { point, .. } => point.add_to(references),
-            Self::Free { .. } | Self::TranslateXyz { .. } => {}
+        for (reference, _) in self.placed_references() {
+            reference.add_to(references);
         }
     }
 
@@ -120,12 +247,52 @@ impl MoveSpec {
             Self::TranslateAlong { axis, .. } | Self::Rotate { axis, .. } => {
                 axis.check(ctx, Want::Axis)
             }
-            Self::PointToPoint { from, to } => {
+            Self::PointToPoint { from, to, .. } => {
                 from.check(ctx, Want::Point)?;
                 to.check(ctx, Want::Point)
             }
             Self::PointToPosition { point, .. } => point.check(ctx, Want::Point),
         }
+    }
+
+    /// The check of components (instead of the general one in
+    /// `document.rs`): sketches and construction geometry a point or an
+    /// axis names must be in the component its occurrence path ends in, or
+    /// without a path in the feature's. A path that leads nowhere now is
+    /// left to recompute, which reports it.
+    pub(crate) fn check_components(
+        &self,
+        assembly: &Assembly,
+        features: &[Arc<FeatureEntry>],
+        entry: &FeatureEntry,
+    ) -> Result<(), String> {
+        for (reference, path) in self.placed_references() {
+            let component = match path {
+                Some(path) => {
+                    match crate::joints::path_component(assembly, ComponentUid::ROOT, &path.0) {
+                        Ok(component) => component,
+                        Err(_) => continue,
+                    }
+                }
+                None => entry.component,
+            };
+            let mut references = References::default();
+            reference.add_to(&mut references);
+            for uid in references.features {
+                if let Some(other) = features.iter().find(|f| f.uid == uid)
+                    && crate::joints::placed_geometry(&other.def)
+                    && other.component != component
+                {
+                    return Err(format!(
+                        "{} is in {}, not in {}",
+                        other.name,
+                        assembly.name(other.component),
+                        assembly.name(component)
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn resolve<K: Kernel>(
@@ -137,21 +304,41 @@ impl MoveSpec {
             Self::TranslateXyz { x, y, z } => {
                 Transform::translation([ctx.param(*x)?, ctx.param(*y)?, ctx.param(*z)?])
             }
-            Self::TranslateAlong { axis, distance } => {
-                let axis = ctx.axis(axis)?;
+            Self::TranslateAlong {
+                axis,
+                distance,
+                axis_occurrence,
+            } => {
+                let axis = placed_axis(ctx, axis, axis_occurrence.as_ref())?;
                 Transform::translation(scaled(axis.direction, ctx.param(*distance)?))
             }
-            Self::Rotate { axis, angle } => {
-                let axis = ctx.axis(axis)?;
+            Self::Rotate {
+                axis,
+                angle,
+                axis_occurrence,
+            } => {
+                let axis = placed_axis(ctx, axis, axis_occurrence.as_ref())?;
                 Transform::rotation(axis.origin, axis.direction, ctx.param(*angle)?)
                     .expect("a unit axis direction")
             }
-            Self::PointToPoint { from, to } => {
-                let (from, to) = (ctx.point(from)?, ctx.point(to)?);
+            Self::PointToPoint {
+                from,
+                to,
+                from_occurrence,
+                to_occurrence,
+            } => {
+                let from = placed_point(ctx, from, from_occurrence.as_ref())?;
+                let to = placed_point(ctx, to, to_occurrence.as_ref())?;
                 Transform::translation(sub(to, from))
             }
-            Self::PointToPosition { point, x, y, z } => {
-                let point = ctx.point(point)?;
+            Self::PointToPosition {
+                point,
+                x,
+                y,
+                z,
+                point_occurrence,
+            } => {
+                let point = placed_point(ctx, point, point_occurrence.as_ref())?;
                 let position = [ctx.param(*x)?, ctx.param(*y)?, ctx.param(*z)?];
                 Transform::translation(sub(position, point))
             }
@@ -160,6 +347,45 @@ impl MoveSpec {
             Ok(transform)
         } else {
             Err("the move is not finite".to_owned())
+        }
+    }
+}
+
+/// From the design's coordinates into the feature's component's: the
+/// inverse of where its first occurrence places it (identity in the root).
+fn from_world<K: Kernel>(ctx: &mut EvalContext<'_, K>) -> Result<Transform, String> {
+    let path = crate::links::first_path(ctx.env.assembly, ctx.component(), None)?;
+    Ok(inverse(&placement(ctx, &OccurrencePath(path))?))
+}
+
+/// A move's point in the feature's coordinates: picked in an occurrence,
+/// where the occurrence places it now (mitcad#699); else as the feature's
+/// component has it.
+fn placed_point<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    point: &GeomRef,
+    occurrence: Option<&OccurrencePath>,
+) -> Result<Vec3, String> {
+    match occurrence {
+        None => ctx.point(point),
+        Some(path) => {
+            let from_world = from_world(ctx)?;
+            point_in(ctx, point, path, &from_world)
+        }
+    }
+}
+
+/// A move's axis in the feature's coordinates, as [`placed_point`].
+fn placed_axis<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    axis: &GeomRef,
+    occurrence: Option<&OccurrencePath>,
+) -> Result<DatumAxis, String> {
+    match occurrence {
+        None => ctx.axis(axis),
+        Some(path) => {
+            let from_world = from_world(ctx)?;
+            axis_in(ctx, axis, path, &from_world)
         }
     }
 }

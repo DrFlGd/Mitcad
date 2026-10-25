@@ -70,7 +70,8 @@ native macOS frontend's group menus have the same separators
 menu do not use sections or subgroups.
 
 The SOLID CREATE menu's sections, in this order (`CreateCommands.cpp`,
-then Gear, Pulley and Bearing from `MainWindow::registerCommands`):
+then Gear, Pulley, Bearing, Gear Pair and Belt Drive from
+`MainWindow::registerCommands`):
 
 | Section | Commands |
 |---|---|
@@ -79,11 +80,11 @@ then Gear, Pulley and Bearing from `MainWindow::registerCommands`):
 | `faces` | Hole, Thread, Plastic Feature |
 | `primitives` | Box, Cylinder, Sphere, Torus, Coil, Helix, Pipe |
 | `patterns` | the Pattern submenu (`subgroup` `"Pattern"`: Rectangular Pattern, Circular Pattern, Pattern on Path, Pattern at Points), then Mirror |
-| `machine` | the Machine Elements submenu (`subgroup` `"Machine Elements"`: Gear, Pulley, Bearing) |
+| `machine` | the Machine Elements submenu (`subgroup` `"Machine Elements"`: Gear, Pulley, Bearing, Gear Pair, Belt Drive) |
 
 A new machine element sets `def.group = "CREATE"`, `def.section =
 "machine"` and `def.subgroup = "Machine Elements"`, and is registered
-after Bearing. None of these commands is pinned, so the submenus have no
+after Belt Drive. None of these commands is pinned, so the submenus have no
 split buttons: the group's buttons are Create Sketch, Extrude, Revolve and
 Hole (`tools/ui-sketch-create-menu-test.sh`,
 `tools/ui-windows-pattern-options-test.ps1`).
@@ -120,6 +121,10 @@ Modifiers:
 - `withVisible(test)`: the row is shown only while `test(state)` holds;
   hidden inputs are not checked and not highlighted. A list's child gets
   its row's state (`state.row(list, i)`).
+- `withEnabled(test)` (mitcad#655): the row is shown but disabled while
+  `test(state)` does not hold (3D Print's Printer, Process and Materials
+  with STL), logged `Panel <command> input <key> enabled|disabled` when
+  it changes; frontends without it show the row enabled.
 - `withLabel(text)`: the row's label follows the state (`labelIn(state)`,
   `label` without it; mitcad#545: a pattern's length row says Spacing or
   Extent by its Distance Type). The Qt panel changes it as the state
@@ -222,14 +227,72 @@ Modifiers:
   has the keyboard (it takes it by Tab only, so that Enter after a click
   still confirms the command), calls the button's `call`. Frontends
   without tiles (AppKit, the web) show the drop-down and its button.
+- `withChoiceColumns(headings)` (mitcad#656): a choice shown as rows of a
+  list under these column headings instead of a drop-down (Gear Pair's
+  and Belt Drive's candidates), the chosen row selected; each option's
+  label holds its columns separated by tabs. A click on a row chooses it
+  (logged `<command>: <label> = <the row's text>`). The options are
+  logged `Panel <command> options <key>: <row> | <row> ...` (columns
+  joined by commas) when they change, each row shown `Panel <command>
+  input <key>=<value> at x,y`. Frontends without such a list (AppKit)
+  show the drop-down. The list shows six rows and its headings, its
+  columns as wide as their cells and itself as wide as its columns
+  (nothing clipped, so the cells are kept short); a column empty in
+  every row is left out (Gear Pair's and Belt Drive's Ratio when every
+  row meets the ratio), and a cell led by a warning sign (U+26A0) shows the warning
+  icon before its text (an undercut gear's teeth).
+- `withChoiceIcon(icon)` (mitcad#655): a drop-down whose options each have
+  a small icon, `icon(value)` gives its name in `app/icons` and the
+  option's tooltip (`ChoiceIcon`). Such a drop-down keeps the panel's width and elides
+  a long name in the middle only when it must (`MiddleElideComboBox` in
+  `framework/CommandPanel.cpp`; its list shows the full names).
+- `noteInput(id, note, action, label)` (mitcad#655, `framework/NoteRow.*`): a
+  note row, no value: `note(state)` gives an `InputNote`, a short text
+  (wrapped, never clipped) and its buttons under it by their texts; an
+  action with an icon in `InputNote::icons` is a small icon button on the
+  text's line instead, its text the tooltip (3D Print's Materials row and
+  its pencil); a link (`linkActionIcon()`) has a row of its own under
+  the buttons, the note's width, wrapped at its words, never cut;
+  `InputNote::oneLine` keeps the text on one line, elided in the middle,
+  its whole text the tooltip; a row with neither text nor actions is
+  hidden. Without a label it takes the panel's whole
+  width. A click calls `action(index, state, context)` once the model is
+  idle (the presenter's `noteAction`, logged `<command>: <key> action
+  <index>`), then the panel shows the inputs again after
+  `CommandDef::modelChanged` (the inputs that show the model follow it;
+  `CommandSession::refreshInputs`, which a window beside the panel also
+  calls through `DocumentHost::commandInputsChanged`). Logged `Panel
+  <command> note <key>: <text> [<button>] ...` when it changes, the
+  buttons' places `Panel <command> action <key>.<index> at x,y`. 3D
+  Print's Materials and Own settings rows and Import from slicer… with
+  its line under it; the AppKit form shows the text and native buttons.
+- `withButtonIcon(icon)` (mitcad#655): the button of `withButton` as a small
+  icon (`app/icons`) with its tooltip, the text its accessible name: 3D
+  Print's Edit.
+- `withButtonEnabled(test)` (mitcad#655): the button of `withButton` enabled
+  only while `test(state)` holds (3D Print's Edit, disabled on Slicer
+  default).
+- `withFieldColumn()` (mitcad#655): a note row without a label in the field
+  column, under the fields above it, rather than across the panel (3D
+  Print's Import from slicer…).
+- A choice whose value starts with `choiceHeadingPrefix()` (`__heading/`)
+  is a heading of the options after it (mitcad#655): the Qt panel shows it
+  small, bold and not choosable; a frontend without headings lists it,
+  and choosing it changes nothing (none uses it since 3D Print's boxes
+  show no places).
 - `Inspection::viewHint`: a line over the top of the view while the
   command waits for something there (BUILD's first part: `Click a plane
   or a face, or press Enter`), logged `View hint <command>: <text>`.
 - `withOnPick(call, keep)`: called after a pick, with `item.at` where the
   click hit, in its component's coordinates. With `keep`, picking an item
-  already selected keeps it and still calls back (Hole adds a position
-  per click; primitives and Coil put their centre at the click,
-  `cmd::placeAt`).
+  already selected keeps it and still calls back (Place On places again
+  where the same face is clicked again, [Placement by picked
+  geometry](#notes-on-particular-commands)).
+- `withPlaces()` (mitcad#656): a selection input whose picks only say
+  where a creation command's part goes (Place On, Gear Pair's and Belt
+  Drive's axes): the view's context menu offers the command under More
+  for them, as for a face or a plane ([The view's context
+  menu](#the-views-context-menu)).
 - `withManipulator(handle)`: a value input with a handle in the view.
   `handle(state, context)` returns a `Manipulator` (or none): an arrow
   from `origin` along `direction`, knob at `origin + (value - base) *
@@ -237,6 +300,79 @@ Modifiers:
   angle 0 towards `reference` (`cmd::arrow`, `cmd::ring`). Dragging sets
   the value rounded to a zoom-dependent step (whole degrees for rings) in
   the document's unit; a click without a drag picks what lies under it.
+  An arrow's `minimum` is the smallest value a drag gives: the handle
+  stops there (a Two Sides extrusion's distances at the start,
+  mitcad#693). With `valueBox` (mitcad#656) the handle shows its value in a box: an
+  arrow is drawn as a dimension, a solid line from its origin (the
+  reference it is measured from, a short bar across it there) with the
+  box at its middle (a short dimension's text on its line beyond the
+  reference, away from the point), a ring with its zero line along
+  `reference`, an arc to the knob and the box beyond the knob. A layout
+  pass then pushes the boxes off each other and out of the panels
+  floating over the view (`CommandHost::coveredRects`; the boxes count as
+  covered for the view's picks); a box the pass moved gets a thin leader
+  line back to where it belongs. With `boxAtTip` an arrow's box sits
+  beyond its tip, as a size reads (a box's length, width and height, a
+  coil's height, a hole's depth), not on its line as a distance from a
+  reference. With `boxAtZero = false` a box of a
+  value that is 0 shows only while its handle or the box is under the
+  mouse or dragged (a placement's Offset and Angle). A click on the box
+  opens a field over the view at it (`CommandSession::openValueBox`, not
+  in the AppKit frontend), styled as the boxes are, that edits the value
+  as the panel's field does: what is typed is the input's text (a bare
+  number gets the document's unit, `15` becomes `15 mm` in the panel, an
+  angle `30°`; a ring's drag writes its angle so too, and the
+  placement's and the gears' angles start so, `0°`, `20°`),
+  Enter or a click elsewhere keeps it, Esc puts the value back, Tab and
+  Shift+Tab keep it and open the next or previous box; none of them
+  reaches the window's OK or Cancel. Logged `Value box <command> <key> at
+  x,y: <text>` with the handles' places (a hidden box is not logged),
+  `Value box <command> <key> clicked`, `... opened: <text> at x,y` and
+  `... closed: <text>`.
+- `withHandleWhenHidden()` (mitcad#656): a value input whose handle stays
+  in the view while its row is hidden (a placement's Offset and Angle
+  folded under More).
+- `withBesidePrevious()` (mitcad#656): the input on the line of the one
+  before it, after its field and without a label of its own (a
+  reference's distance beside the edge it is measured from, Flip beside
+  Offset, the hole's Flip beside Placement), hidden and shown on its own
+  but inside the row before it. Frontends without such lines (AppKit)
+  show it as a row of its own.
+- `withRowNote(note)` (mitcad#656): grey text under the row,
+  `note(state, context)` read after each preview that succeeds, one line
+  per `\n`, or rich text (Pulley's Check Belt: its verdict in bold, belt
+  length, nearest belt, travel); logged `Panel <command> <key> note:
+  <lines joined by "; ", without markup>` when it changes. Shown through
+  the presenter's `setValueHint`.
+- `withAuto(text)` (mitcad#656, `InputDef::autoText`): a value that may be
+  left empty, which the definition then leaves out and the model works
+  out ("0 means automatic" made explicit). The empty field's placeholder
+  is `Auto`, then `Auto (<text(state, context)>)` after each preview that
+  succeeds, the value the model worked out (the presenter's
+  `setPlaceholder`, logged `Panel <command> placeholder <key>: Auto
+  (24.4 mm)`); evaluated it is NaN with no error, logged `<command>
+  <label>:  = auto`. A definition's slot that is missing or 0 loads as
+  empty (`zeroOrNone`).
+- A bare number typed in a value field gets its unit when the field is
+  left or Enter is pressed (`15` becomes `15 mm`, mitcad#656), as a value
+  box does.
+  A field the keyboard is not in shows a long expression from its start
+  (`shaft_bore_clearance`, not its end): when its text is set, and again
+  when it loses the keyboard. A name picked from the view still goes in
+  where the cursor was as the field lost the keyboard.
+- `InputDef::emptyShows` (mitcad#656): what an empty selection row's
+  button says instead of `None`, with its swatch's colour then (Align on
+  a face: `Reference 1` in Reference 1's green).
+- The first pick of a placement input (`withPlaces`) whose preview is
+  drawn moves the view sideways, as little as it takes, so that the part
+  is clear of the panels floating over the view
+  (`OcctViewer::bringClearOfPanels`, logged `View moved dx,dy px: the
+  part clear of the panels`); the pick places are logged again once the
+  view rests.
+- `CommandDef::viewLines` (mitcad#656): polylines in model coordinates the
+  manipulator overlay draws while the command runs (Pulley's belt pitch
+  line round it and the Check Belt pulley); logged `Lines <command>: n`
+  when their number changes.
 - `withToggles(made)`: a text input with dots in the view;
   `made(state, context, preview)` builds them from the preview's report
   (`Manipulator::Kind::Toggle` with `element` and `on`); a click on a dot
@@ -300,11 +436,10 @@ Values:
   `DecimalSpinBox`. Tests: `tools/ui-decimal-test.sh`, ctest `app.unit`.
 - A 0 that would only make a parameter (a taper) can be left out of the
   definition (`cmd::nonZero`, as Extrude does).
-- Counts and factors in slots the model reads as lengths (pattern
-  quantities, scale factors, a construction path's fraction) go as plain
-  numbers (`cmd::countValue`) and come back with `cmd::loadCount`;
-  fractions of sweeps and pipes and coil revolutions are unitless slots
-  and take the expression.
+- Counts, factors and fractions (pattern quantities, scale factors, a
+  construction path's fraction, teeth, ribs) are unitless slots in the
+  model (mitcad#662): `ValueKind::Unitless` inputs that take the
+  expression (`state.expression`) and come back with `cmd::loadCount`.
 
 A required selection that a choice reveals and that is still empty
 becomes the active one (Extrude's To Object).
@@ -346,7 +481,11 @@ becomes the active one (Extrude's To Object).
   made before the command once its items went to the inputs that take
   them (without `preselect`), before `init` (Extrude: a selected face that
   is not planar becomes the profile all the same, so that the panel
-  refuses it and no unused profile stands in for it, mitcad#535).
+  refuses it and no unused profile stands in for it, mitcad#535; Thread:
+  the first cylindrical face suggests the size and class, as a face
+  picked in the open panel does through `onPick`, mitcad#691). A command
+  whose `onPick` sets other inputs from the first pick needs it: items
+  selected before the command reach the inputs without `onPick`.
 - `rolledBack(state, context)`: editing, called once the timeline is
   rolled back to the edited feature (at once, or after `startAsync`'s
   deferred rollback). `load` runs before that, on the model after the
@@ -361,8 +500,8 @@ becomes the active one (Extrude's To Object).
 Three other kinds of panels:
 
 - `modelCommand`: `build` gives `{"commands": [...], "label": "..."}`, run
-  on OK as one undo step through `CommandHost::runCommands` (Physical
-  Material, Appearance, New Component); no preview, outside the timeline.
+  on OK as one undo step through `CommandHost::runCommands` (Appearance,
+  New Component); no preview, outside the timeline.
 - `accept(state, context)` (mitcad#234): an application command with a
   panel (3D Print). The inputs are picked and checked as a feature's are,
   and the view highlights the selections; `build` gives an empty
@@ -370,7 +509,10 @@ Three other kinds of panels:
   OK calls `accept`, which does the work outside the model's history
   (files, other programs) and returns false to keep the panel open; then
   `Done <command>` is logged. `okLabel` names the OK button (Send).
-- `inspect(state, context)` instead of `build`: an `Inspection` (rich
+  In every panel OK and Cancel stay in view under the inputs, which
+  scroll above them (mitcad#655: `CommandPanel::takeButtons`, laid out
+  by the main window's command page; a long 3D Print panel in the
+  Floating card).- `inspect(state, context)` instead of `build`: an `Inspection` (rich
   text, a log line, a shape drawn over the view, red for a problem, a
   section plane) computed while inputs change; OK closes the panel
   (Measure, Interference, Section Analysis). With `keepsSection` the
@@ -446,6 +588,24 @@ References (`commands/CommandSupport`):
   display name above its measurements. Root bodies omit the Component
   line. Every displayed item's block names its own owners, including
   selections spanning several bodies or occurrences.
+- With exactly two faces selected, the same card/panel also shows
+  **Between faces** automatically. Parallel planar faces show their
+  perpendicular **Distance**; when their bounds do not overlap across
+  that normal, **Minimum distance** also shows the longer actual gap.
+  Other pairs show the actual bounded **Minimum distance** and
+  **Maximum distance**. The maximum means the largest distance from a
+  point of either face to its nearest point on the other face (the
+  symmetric Hausdorff distance), rather than the longest point-to-point
+  diagonal. This exact maximum is available for bounded convex planar
+  faces with straight edges and no holes. Curved, concave or holed faces
+  show `Maximum distance: unavailable (requires convex planar polygons)`
+  while keeping their exact minimum; no mesh approximation is substituted.
+  The measurements use each occurrence's design placement, the document's
+  length units and the usual dimension display precision. Selection,
+  geometry, placement, undo and unit changes invalidate the cached values;
+  a failed query displays `Measurements unavailable`, and selecting any
+  other combination removes the pair block. Both Floating and Docked
+  layouts keep the existing owner and area details beside these values.
 - In Solid mode, `AutoselectPanel` offers the last unused sketch's profile
   groups from the model's `autoselect_profiles` query. Group clicks apply
   the viewport's per-item Ctrl-toggle semantics to the current selection;
@@ -583,6 +743,7 @@ Construct  >  ...                                      | More > ...
 Create Sketch, Edit <feature>, Edit Sketch, Save As DXF
 Measure (and the other INSPECT commands that take the selection)
 Appearance...
+Material... (the Materials window: the bodies' material; for a component alone its default material)
 Property Sets... (a body's, or a component's, with its occurrence and definition)
 Delete     >  Member, Spacing Set, Body, Component, Feature
 Hide       >  Body, Component
@@ -602,7 +763,9 @@ Clear Selection, Undo, Fit, Command Search
   inputs' defaults, a list's first rows) may stay empty, and it is no
   creation command (group CREATE) given a face or a plane, which would
   only be where it goes (Box, Cylinder, Hole, Coil, Gear, Pulley, Bearing, Plastic
-  Feature).
+  Feature), or given anything a placement input takes (`withPlaces`,
+  mitcad#656: a shaft's edge, an axis or a point for Place On, the axes
+  of Gear Pair and Belt Drive).
   Otherwise, needing further picks, it is under **More**, the submenu's
   last entry. In each, the commands keep the registry's (the ribbon's)
   order. A definition says what its inputs cannot:
@@ -648,7 +811,29 @@ also start in a sketch: the sketch is finished first and its selected
 profiles go to the command. Measure is `Mode::Any`: in a sketch, the
 sketch pauses as for sketch panels; sketch curves and points are measured
 in the application on the shapes the view shows, the rest by the model's
-`measure` query.
+`measure` query. Each pick goes to the query with its occurrence
+(`SelectionItem::occurrence`, mitcad#646), as do the selection card's
+measurements, so that the model measures bodies and datums of components
+where the view shows them (in the design's coordinates). For two parallel
+planar faces or planes the panel shows `Offset: <d> mm`, their distance
+along the normal, under the closest distance and the angle.
+
+Axes in Measure (mitcad#647): a pick with an axis (a cylindrical,
+conical or toroidal face, a circle or an arc, a construction axis) shows
+`Axis: through (x, y, z), direction (dx, dy, dz)` (its point, the centre
+of a round face or a circle), and the view draws the axis as a line
+through the pick while the panel is open (with the closest distance's
+line and the axis distance's). Every pair with an axis, a straight edge
+or a normal has an `Angle` (axes and edges 0 to 90°, against a plane
+from the plane). With an axis on one side the panel adds `Axis distance:
+<d> mm` and `Axis from (…) to (…)`: parallel axes their distance, skew
+ones the common perpendicular, meeting ones 0 and the point, an axis and
+a vertex or a construction point the perpendicular distance, an axis and
+a plane parallel to it the offset; two circles or arcs also `Centre
+distance: <d> mm`. The closest distance stays above them. The log line
+(`Inspect Measure: …`) adds `axis (x, y, z) along (dx, dy, dz)` per pick,
+`axis distance <d>`, `center distance <d>` and `axis lines <n>` (the axes
+drawn).
 
 View and file commands are `Action`s with an empty tab (menus, search,
 shortcuts).
@@ -666,6 +851,143 @@ move to the application menu get no role (`MainWindow::createMenus`);
 Exit, Preferences (Cmd+,) and About have their roles, and macOS has a
 Window menu.
 
+### Measure's history
+
+Each finished measurement of the Measure panel (one or two picks with a
+result) is a row of its history (mitcad#648; `commands/MeasureHistory`,
+`commands/MeasureHistoryView`, `MainWindowMeasureHistory.cpp`). The
+inspection gives the row (`Inspection::record`: what was picked, its main
+values, the inputs that hold the picks) and the session hands it to the
+host when the panel shows it (`CommandHost::inspectionRecorded`); the
+window keeps the rows and the panel shows them above its result
+(`CommandPanel::addSection`), in the Floating and the Docked layout.
+
+- **Rows.** Newest first, each with its number, what was picked (`Face of
+  Body1 ↔ Edge of Body2`; a body's name, a construction feature's name,
+  `Plane XY` for the origin's) and its main values (`Distance 40 mm`,
+  `Angle 90°`, `Offset`, `Axis distance`, `Centre distance`, the circles'
+  `Radius` and `Diameter`; of a single pick also its `Length`, `Area`,
+  `Volume` or `Position`). The first pick's row becomes the pair's when the
+  second pick follows in the same panel; a pick that replaces the second
+  makes a new row; the same picks again (a row shown again) update their
+  row in place. The list scrolls past four rows, so the panel does not
+  grow past the screen.
+- **Show again.** A click on a row puts its picks back into the panel's
+  inputs (`CommandSession::restoreInputs`, with the Selection Filter they
+  were made with): the panel measures them again, highlights them and
+  draws its lines. A row whose picks the view no longer has (a body or a
+  face gone) is grey and says `The geometry is not there any more.`; a
+  click on it measures nothing. The rows are checked when a Measure panel
+  opens and when one is clicked (not while the model computes).
+- **Copy, Copy All, Clear.** Copy puts the row clicked last on the
+  clipboard as tab-separated text (number, picks, each value), Copy All
+  every row, one per line, newest first; Clear empties the history and
+  its numbers start from 1 again.
+- **Lifetime.** The history lasts while the design is open, also across
+  closing and opening the panel; opening or creating another design
+  empties it. It is not saved with the design. The macOS AppKit form
+  (`MITCAD_MACOS_NATIVE_UI`) has no history.
+- **Log.** `Measure history: <n> rows` and `Measure history row <n>:
+  <picks>: <values>` (` (gone)`) whenever the rows change; their places
+  `Measure history row <n> at x,y` (`… out of sight` scrolled away) and
+  `Measure history Copy|Copy All|Clear at x,y` (` (disabled)`) with the
+  panel's places; `Measure history showed row <n>`, `Measure history row
+  <n>: gone`, `Measure history copied row <n>: <text>` and `Measure
+  history copied <n> rows: <text>` (tabs as ` | `, lines as ` / `),
+  `Measure history cleared`.
+
+Tests: `app/tests/measure_history.cpp` (the rows' rules),
+`tools/ui-measure-test.sh` and `tools/ui-windows-measure-test.ps1` (three
+measurements, three rows, the first shown again, copied, cleared; one row
+in the Floating layout).
+
+### Measurement objects
+
+A measurement kept in the design (mitcad#649; the model's *Measurement
+objects* in `core/model/src/api/commands.md`; `MainWindowMeasurements.cpp`,
+`view/MeasurementDrawing`, `view/MeasurementOverlay`, `view/Snapshot.cpp`,
+`view/SnapshotDialog`, `view/ViewSnapshot.cpp`).
+
+- **Keep.** The Measure panel's history section has **Keep** at its top:
+  the measurement the panel shows becomes a measurement object
+  (`add_measurement` with its picks and their occurrences; the model
+  chooses the kind — a round pick's diameter, an arc's radius, of two
+  picks their offset, axis distance, centre distance, distance or angle —
+  the name `Distance1`, `Angle1`, … and the next of six colours). **Keep
+  Row** beside it keeps the history row clicked last (its picks as the
+  row has them). Keep is enabled once the panel shows a result of the
+  model's picks: sketch curves and points, which the panel measures
+  itself, cannot be kept (a hint says so). The change runs outside the
+  panel's undo range as a light bulb's does (`CommandSession::runVisibility`):
+  it stays when the panel is cancelled and is an undo step of its own.
+  The macOS AppKit form (`MITCAD_MACOS_NATIVE_UI`), which has no history,
+  has no Keep either; the browser, the view and the snapshot work there.
+- **Browser.** The root's **Measurements** folder lists them in the order
+  kept: a light bulb (in every mode, as bodies' are), a swatch of the
+  colour, the name, and the value in the document's unit in the tooltip
+  (`Distance1 = 40 mm`). A measurement whose pick is gone (deleted, rolled
+  back, renamed away) shows the warning icon in the failure colour with the
+  model's reason in its tooltip (`Distance1: broken: a pick is not there:
+  …`); it comes back when the pick does. F2, a slow second click or a
+  double-click renames it; Delete deletes it. Its menu: **Colour…** (a list
+  of Orange, Blue, Green, Magenta, Violet, Amber, Red, Black, White, and
+  Other… with the colour dialog), **Kind…** (the values its picks have:
+  Distance, Angle, Offset, Axis distance, Centre distance, Radius,
+  Diameter; only when there is more than one), Hide/Show, Rename, Delete.
+  The folder's menu has Measure.
+- **In the view.** Every shown measurement with a value is drawn over the
+  view in its colour (`OcctViewer::setMeasurements`, a widget over the
+  view that lets the mouse through, drawn with QPainter in the view's
+  pixels as the camera moves): a length (distance, offset, axis or centre
+  distance) as a dimension line parallel to its two ends, above them on the
+  screen, with extension lines and an arrow at each end (outside when it is
+  short); a radius from the centre (a centre mark) to the point of the
+  circle that shows farthest from it; a diameter across the circle there;
+  an angle as an arc of 42 pixels about its corner between its rays, the
+  rays drawn past it. The label `<name> = <value>` is on a card. Lines,
+  arrows and cards have the halo of sketch dimensions (mitcad#633, the
+  view's halo tone, `OcctViewer::sketchHaloColor`), all halos before any
+  line, so they read over light and dark faces.
+- **Export Snapshot** (View menu, command search; `view.export_snapshot`,
+  also in read-only designs): a dialog with the file (PNG or JPEG, Browse…),
+  **Size** (2 × or 4 × the view, or **Width** in pixels with the view's
+  aspect; at most 16384 pixels a side), **Transparent background** (PNG)
+  and **Measurements** (the shown ones drawn over it), remembered in the
+  settings group `snapshot`. Once the model is idle the view is rendered
+  offscreen at that size (`OcctViewer::snapshot`: OCCT's
+  `V3d_View::ToPixMap`, without the orientation cube; a transparent
+  background from a render over black and one over white) and the
+  measurements are drawn over it at the picture's scale.
+- **Render Image** draws the shown measurements over the saved PNG or JPEG
+  image (its **Measurements** check, on by default; not over OpenEXR),
+  through the render's camera (`renderViewProjection` of the job's view).
+- **Log.** `Measurements: <name> <kind>[ (hidden)] | <name> broken: <why>`
+  (`none`) when they change; `Measurements drawn: <name> = <value> (#rrggbb)
+  | …` (`none`) and `Measurement label <name> at x,y` when what is drawn
+  changes; `Measure Keep enabled|disabled`, `Measure Keep at x,y`
+  (` (disabled)`) and `Measure history Keep at x,y` with the panel's
+  places; `Measure Keep clicked`, `Measure history Keep clicked: row <n>`,
+  `Measurement kept: <name>`, `Measurement not kept (<what>): <why>`;
+  `Measurement colour dialog opened: <name> <#rrggbb> (<names>)`,
+  `Measurement <name> colour <#rrggbb>`, `Measurement kind dialog opened:
+  <name> <kind> (<kinds>)`, `Measurement <name> kind <kind>`, `Deleted
+  measurement <name>`; `Snapshot dialog opened: size <2x|4x|width>,
+  transparent <on|off>, measurements <on|off> (<n> shown)`, `Snapshot dialog
+  <field> at x,y` (the dialog's own coordinates), `Snapshot dialog: size =
+  …`, `… transparent = …`, `… measurements = …`, `Snapshot dialog: <size>
+  <w> x <h> to <path>`, `Snapshot saved <path>: <w> x <h>,
+  transparent|opaque, <n> measurement(s)`; `Render image measurements
+  on|off`, `Render image saved <path> with <n> measurement(s)`.
+
+Tests: `app/tests/measurement_drawing.cpp` (the query's entries to what is
+drawn, values in words, the layouts and their scale, painting, a render
+camera's projection); `tools/ui-measurement-objects-test.sh` and
+`tools/ui-windows-measurement-objects-test.ps1`
+(`app.ui-windows-measurement-objects`: two round faces kept from the panel,
+a rim's row kept from the history, renamed, recoloured, hidden and shown,
+a 4 × snapshot with a transparent background written, saved and opened
+again).
+
 ## Sketch mode
 
 Create Sketch (`MainWindow::startSketch`) sketches on the selected plane or
@@ -681,6 +1003,18 @@ the origin planes, which can then be picked. Light bulbs work during the
 pick (mitcad#295): hiding a body lets the faces behind it be picked, and
 the pick places are logged again. Logs: `Create Sketch: origin planes
 shown` (`not shown (the design has components)`).
+
+The new sketch opens upright (mitcad#692): `MainWindow::createSketch`
+sends `sketch.create` with `upright`, and the model stores the own frame
+whose y axis is the design's +Z projected onto the plane (+Y on a
+horizontal plane), keeping the plane's normal (commands.md, "An upright
+sketch frame"). Entering the sketch looks along its frame's normal with
+its y axis up (`OcctViewer::lookAtSketchPlane`), so the screen's
+horizontal is the sketch's x and Horizontal, Vertical, the grid and the
+dimensions stay level. Editing a sketch again, Look At on it and the
+axes indicator use the stored frame, so existing and imported sketches
+keep theirs. `tools/ui-sketch-view-test.sh` checks XZ, YZ and a face
+facing -Y (`Sketch frame in the design`, `Sketch view`).
 
 While it waits for the plane (mitcad#474), a banner at the top of the 3D
 view says so, `Create Sketch: pick a plane or a planar face. Esc
@@ -756,10 +1090,34 @@ split buttons and Sketch Dimension (`tools/ui-sketch-create-menu-test.sh`).
 - `paint(ToolPreview&)` gives the rubber band in sketch coordinates (with
   `glyph` for an inferred constraint, `dimension` for one being placed).
 - `controller.setFields({{"length", tr("Length"), Kind::Length}, ...})`
-  shows value boxes at the cursor (Tab moves, Enter calls `confirm()`);
+  shows value boxes beside the geometry they measure (Tab moves, Enter calls `confirm()`);
   `setLive` shows the cursor's value while nothing is typed;
   `fieldValue`/`fieldExpression` give a typed one (evaluated by the
   model's `evaluate` query).
+  Drawing tools provide `ToolPreview::fieldDimensions`, each with its
+  field id, dimension definition and temporary preview geometry.
+  `SketchController::placeFields` puts the editor in the dimension line,
+  and `SketchOverlay` draws its extension lines, arrows and angle arc
+  through the same `dimensionShape` renderer as placed dimensions.
+  Rectangle width is above its horizontal side and height beside its
+  vertical side; other lengths follow their side or axis, radius and
+  diameter values follow their circle, and angular values sit on their
+  sector (including reflex angles). Sides and Text retain visible labels.
+  Degenerate geometry also falls back to a labelled editor until there
+  is a dimension to draw. Fields stay inside the view and avoid one
+  another, including while typed values lock the preview geometry.
+  `tools/ui-macos-sketch-drawing-dimensions-test.sh` checks actual preview
+  measurements, graphics, editor separation, labels, locking and Tab in
+  Floating and Docked layouts; its screenshots support visual review.
+  The tool's next click goes where the pointer is (mitcad#671): a field
+  whose place would cover the pointer, with 12 px to spare, moves to the
+  nearest free place, preferring the side away from the pointer (the
+  dimension graphics follow the field). A field the user has not typed
+  into nor reached with Tab passes the left button and the pointer's moves
+  over it (also on its fx button) to the view (`fieldMouse`), so a field
+  placed for the pointer's last place cannot take a click meant for the
+  view; the right button keeps its menu. Section 6 of
+  `tools/ui-sketch-tools-test.sh` clicks where the fields are.
 - `confirm()` (Enter) and `cancel()` (Esc: one step back; false at the
   start ends the tool). Esc in the value editor of the Dimension tool also
   steps the tool back; in an editor opened from the context menu (Edit
@@ -803,6 +1161,14 @@ the body edge E{…} of F2.b0: c9`); the projection is part of the action's
 one undo step, named after what the action makes.
 
 - **Sketch Dimension** (`DimensionTool`) picks with
+  the current selection first (mitcad#660): one line, circle or arc, or
+  two supported sketch entities, go straight to placing the value after
+  **D**, without picking again. Its usual cursor-dependent choice of a
+  length, distance or angle and its value editor apply unchanged. An
+  unsupported selection is cleared with the existing hint; no selection
+  starts picking as usual, and three or more spacing anchors still open
+  Equal Spacing Dimension. Pending viewport picks are delivered before
+  reading the selection. Interactive picking uses
   `entityAt(screen, PickAll | PickBody)`: body vertices and the centres of
   body circles and arcs as points, body edges as curves, with the same
   pixel tolerances as sketch entities, which win ties (a body item counts
@@ -813,6 +1179,11 @@ one undo step, named after what the action makes.
   entities they project to (`BodyGeometry::addTo`; `ToolPreview::model`),
   so the dimension types follow as for sketch geometry. A body pick is
   logged `Sketch Dimension picked the body edge E{…} of F2.b0 (body:3)`.
+  Selected body edges and vertices are matched against the same in-plane
+  geometry by body, topological source and occurrence link before the
+  tool starts placement; unmatched or out-of-plane items are refused.
+  Own-component body selections must also belong to the occurrence being
+  edited, rather than another placement of that same component definition.
   When the value is entered, one `SketchOp` projects each body pick
   (once each) and adds the dimension on the projected entities (a line's
   end by where the edge's is); a dimension between projected (fixed)
@@ -1011,6 +1382,17 @@ Texts, patterns and offsets stay editable:
   panels on the picked text, pattern curve or offset curve; `init` fills
   them from `SketchModel::text`, `patternOf`, `offsetOf`. A double-click
   on such a selected curve opens its panel (`SketchHost::trigger`).
+- Edit Text's **Text Parameter** (mitcad#664): a text parameter's name or
+  a text expression (`'Box ' & GridX`) the text follows, sent as `value`
+  (`TextData::value`, from the `sketch` query's text `value`: the name, or
+  the expression of the sketch's own parameter); clearing it sends `""`,
+  and the text then keeps its string. With a parameter the **Text** field
+  may be empty. Change Parameters lists text parameters with the unit
+  `Text` and their text in Value (Add User Parameter offers the unit
+  **Text**); their Min, Max, Step and Strict cells and slider are off, a
+  bare number in their expression gets no unit, and parameter fields
+  treat them as a kind of their own (`ParameterKind::Text`: a text field
+  takes only texts, a number field no text).
 - Edit Text's font (mitcad#473, `sketch/FontFiles.*`): the choice lists
   Droid Sans, the installed families (as the system has them before any
   font file is loaded into the application) and the font files of the
@@ -1595,6 +1977,342 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   text, the column layout) is plain Qt Core; the window logs
   `Parameters <name> value|expression decimal at x,y` and `... unit at x,y`
   for the UI test.
+- **Materials and print settings** (mitcad#640, mitcad#655;
+  `app/print/`): **Materials** and **Printers and Processes** are library
+  windows of one layout (the list on the left, no search or filter of its
+  own; the selected item's editor on the right, whose settings search is
+  the window's one search; New, Duplicate and Delete under
+  the list, Close on the right); 3D Print's Printer, Process and
+  Materials rows choose and open them; **Print settings** is in Property
+  Sets. The user never handles a copy: choosing an item copies it into
+  the design, editing an item edits it where it lives. Every list reads
+  the model's `library_items` query (`print/PrintLibrary.*`,
+  `LibraryItem`): one row per item, and the user sees two states only
+  (the owner's option A): built-in (the built-in materials and the base
+  library, read only) or the user's own, saved in My library or the
+  project's library or not yet; the lists and the boxes of 3D Print and
+  Property Sets show no places, and the editor's header says `Built-in`
+  for a built-in item only. The design's printer and
+  process, and the materials its bodies use, are bold with a small
+  filled dot (`markInDesign`, `usedByDesign`): one mark, one meaning,
+  "used in this design", said in words too, the same in both windows:
+  the header shows `● Used in this design` next to the name, and Use in
+  this design shows only for an item the design does not use. A name
+  is never shown twice: the model gives a clashing new or saved item a
+  counter (`Fine 2`).
+  No ids, no versions and no raw slicer keys are shown. Commands name a
+  library's item with its `library` and the project (`nameItem`); the
+  design's and the built-ins by id alone. The lists' selected row is at
+  full strength, with the keyboard or without (`styleItemList`).
+  - **The settings form** (`print/SettingsForm.*`, `print/SettingField.*`,
+    `print/PrintKeys.*`): one widget wherever print settings are edited.
+    Search settings (the plain names, advanced ones too) and Advanced
+    (remembered, `print/advancedSettings`) on top; the categories of the
+    set as tabs, their sub-groups as headed sections in the key table's
+    order (`print_keys`' `category`, `group` and `layout`; without a
+    layout the keys' own); a row per key with its plain name. Advanced off
+    hides the advanced keys unless the item sets them; a sub-group or tab
+    with nothing to show is hidden. A field per kind of value, the same
+    everywhere and of the same widths, set or not: a Yes/No drop-down, a
+    number field with its unit (`%` for a percentage; a [mm | %] box wide
+    enough for its unit only for a key that takes a number or a
+    percentage, and only where the design's slicer takes the percentage:
+    `print_keys`' `percent`, `PrintKey::takesPercent`, `designDialectOf`;
+    elsewhere the unit as a label, `%` only for a percentage already set), a drop-down of the choices' plain names, a colour as
+    a field drawn as the others (their frame and white fill) with a swatch
+    of its height at the left and words after it, which opens the colour
+    picker, never a code to type (the swatch solid with a neutral border,
+    a checker only under transparency; unset: the swatch of the colour
+    used instead and its words in the placeholder's grey, Materials' the
+    appearance's name; without one a checker with `Slicer default`), a
+    text field, an outline as `256 × 256 mm` in a read-only field of the
+    standard width (unset: empty with `Slicer default`) with Edit… (width, depth and origin for a rectangle, else a table of
+    points); a value per slicer (a printer preset's name) is not shown.
+    Values are in the key's own unit, not the
+    design's, and its range (`printRange`: lengths, speeds, counts, times
+    and temperatures not negative except a compensation, an offset or a
+    shift; a percentage 0 to 100 unless a flow, a ratio, a speed or an
+    overlap). An unset value is the same empty field with the grey
+    placeholder `Slicer default` (a drop-down with no choice made), or what
+    stands for it (`setPlaceholderValues`: Materials' filament colour shows
+    the appearance's colour, which is what is exported, with the
+    appearance's name in the placeholder's grey); a click
+    leaves it empty, nothing is guessed, and Enter on an empty field sets
+    nothing. A field is saved at Enter or when it is left after a change
+    (a choice, a colour at once), as one model command and undo step;
+    emptying a set field clears it, and ↺ (tooltip Reset, in one column
+    after the fields) clears a set value; a plain unit is a label set where
+    a [mm | %] box shows its text, and an unset field shows its unit as
+    text until a value is typed; typed text that is not a value of the key, and the
+    model's refusal of it, show under the field as an instruction (`Use a
+    value of 0 or more`, `Use a value from 0 to 100`, `Use a colour`;
+    logged `Setting <key> refused: <reason>`). The own values that
+    bodies, occurrences or components set of a key show as a grey note
+    after it (`4 on Body1, 3 on Arm`, `setOwnValues`: the process editor on the
+    design's process). A window's
+    own fields can be a first tab beside the settings' (`setGeneralPage`:
+    Materials' General), and `setPrintShown(false)` shows that page alone;
+    Search settings stays on every tab and finds the page's fields too
+    (`setGeneralNames`), Advanced wherever there are print settings. Drop-downs take the mouse wheel only while they
+    have the keyboard: the wheel scrolls the form. The selected tab is
+    bold and underlined in the highlight colour. A slicer's own keys are
+    not shown. Wherever a key or a model's message would show a raw slicer
+    key, the key table's plain name stands for it (`PrintKeyTable::
+    plainName`, `plainText`); keys with no plain name are counted, never
+    listed (`3 other settings`). The windows have no OK and no default
+    button: Enter saves the field it is in. The model's refusals reach the
+    message line in plain words with a next step (`plainModelError`, the
+    model's known messages matched whole: a write failure `Could not save
+    to My library. Check that its folder can be written.`, a removed item,
+    a built-in one (`Not changed: the item is built in.`, no rule), no
+    project, an item from no library (`Shop PETG is up to date.`); any other in its own words by plain names, paths left
+    out, when short, else `Could not change Shop PETG. Check its values
+    and try again.`). Every line field has one white fill, set or
+    empty (only the placeholder is grey); a disabled field's grey fill is
+    for read only. New items are named alike: `New Printer`, `New
+    Process`, `New Material`, then `… 2`.
+  - **Two states** (mitcad#655, the owner's option A): an item is
+    built-in (Mitcad's, read-only) or the user's own; the lists and the 3D
+    Print and Property Sets boxes show no places, no place icons or
+    headings. Both windows have one header above the tabs (`itemHeader`):
+    the item's name to edit (bold), then its states as quiet grey text
+    next to it: `● Used in this design`, `In My library` or `In this
+    project's library` for a saved one (`showSavedState`), `Built-in` with
+    a lock and a **Duplicate** button for a built-in item (no tooltip);
+    else Save to. The design's copy of a library item is never
+    shown as such: the editors show the values the design prints with
+    (`designFields`). Read only disables the fields, never hides them.
+    The editor side is never blank: Default shows its name and swatch,
+    read only; nothing selected a quiet line (`No material selected`, `No
+    printer or process selected`).
+  - **New and Duplicate** make the item in this design and make it the
+    design's at once, in one undo step: a new or duplicated printer or
+    process becomes the design's (`create_print_profile` with `choose`), a
+    material is selected in Materials (Assign gives it to the bodies). A
+    copy is named after its source (`PLA Plastic 2`). Nothing is written
+    to a library until Save to; Duplicate of a built-in item is the way to
+    change one.
+  - **Save to** shows only for the user's own item that is in no library
+    yet (`LibraryItem::unsaved`): `Save to My library` without a project,
+    in a project `Save to ▾`, a menu of My library and This project's
+    library that starts on the place chosen last (`print/creationPlace`),
+    logged `<window> menu: My library | This project's library`
+    (`choosePlace`). A saved item shows its state instead. Its edits change the library's file and the design's copy as
+    one undo step: Undo restores the file too.
+  - **Delete** is always asked, the same in both windows
+    (`confirmDelete`), box titled Delete, one verb with the button, and
+    says who it concerns and what follows, never the root as a component
+    and never a rule. An item saved in a library is removed from there:
+    `Delete Shop PETG from My library? This design keeps using it.` (the
+    second sentence while the design uses it); the design keeps using its
+    copy as its own unsaved item (Save to shows again). The design's
+    printer or process: `Delete Fine from this design? This design then
+    uses Slicer default.`; its material: `Delete Shop PETG? Body1 and
+    Body2 then use Default (Steel).` (`3 bodies` for more; the bodies
+    without a material of their own when it is the root's default).
+    Logged `<window> delete:
+    <question>` and `<window> delete cancelled`.
+  - **Changed in another design**: a saved item whose library item
+    another design changed (the row's `changed`) is asked about once,
+    when the design uses it (`usedByDesign`: a window shows it, 3D Print
+    has it as the design's printer or process) or it is edited, never on
+    a mere selection (`askChangedElsewhere`): `Shop PETG was changed in
+    another design. Use the changes or keep this design's settings?` in a
+    box titled Changed in Another Design, **Use the changes**
+    (`update_from_print_library`) or **Keep this design's settings** (the default, also
+    Escape; `decline_print_library_update`, which the design
+    remembers until the library changes again), one undo step either way;
+    not asked again in the session. Logged `<window> changed elsewhere:
+    <name>` and `<window> changed elsewhere: use|keep`.
+- **Edit Materials** (`solid.materials`, SOLID › MODIFY next to Edit
+  Appearances; the selected bodies are its targets,
+  `MainWindow::openMaterialsForSelection`; Physical Material's old id
+  `solid.material` is an alias of it, mitcad#655: one command for the
+  window) and **Material...**
+  (the browser's menus of a body after Appearance... and of a component
+  after Design Policy...; the view's menu after Appearance...: the bodies
+  of the selected bodies, faces, edges and vertices, a component selected
+  alone its default material) call `BrowserController::openMaterial`:
+  `MaterialsDialog` (`print/MaterialsDialog.*`, a non-modal window titled
+  Materials that follows the model). On the left the materials grouped
+  by their class in Metals, Plastics (the filaments too) and Other (the
+  rows' `group`; print settings never move one), the built-in ones
+  first, then by name, each with its appearance's swatch; the list is
+  narrow. Opened for targets the top row is
+  Default with what it gives and its swatch (`Default (Steel)`, or the
+  root's default material for a part of a component: no material of its
+  own, the same word for bodies and components), a line under it, the
+  targets' material selected; bodies of different materials select
+  nothing and show `2 materials` beside Assign, which waits for a choice
+  (never Default, which would give them all the same; logged `Materials
+  for bodies …: mixed, 2 materials`). **Assign** reads `Assign to 2
+  bodies`, `Assign to Body1` or `Assign to Arm` (a double-click only
+  selects): for bodies it asks, when
+  the material's appearance would replace one set by hand (the `bodies`
+  query's `appearance_set_by_hand`), in a box titled Replace Appearance
+  (Replace, Keep, Cancel), then `set_body_material` per body with
+  `appearance` and the item's library (one undo step `Material`; a single
+  body `Set Material of Body1`), for a component
+  `set_component_material`; Assign closes the window (not when opened from
+  3D Print's Assign…). On the right the
+  header (the name to edit, F2 on a row puts the keyboard there;
+  Built-in; Save to), then the tabs: **General** (Class, Metal, Plastic or Other,
+  `edit_material`'s `class`; Density in g/cm³, a value that is not above
+  0 refused under the field; Appearance, the appearances' swatches with
+  a search, None first, Edit Appearances… last) and, for a plastic only, the
+  settings form of the filament set (Filament, Cooling, ...), without
+  `filament_density` (Density stands for it). A metal or an other shows
+  General alone: no print settings. Each change is
+  `edit_material` with the item's library (the library's file and the
+  design's copy, one undo step). Built-in ones are read only: their
+  fields and Delete are disabled, Duplicate is the way on. **New ▾** asks
+  the class (`Materials new menu: Metal | Plastic | Other`):
+  `create_material` in this design with `class` and its class's typical
+  density (7.85 g/cm³ for a metal, 1.24 for a plastic; another material
+  has none typical, so Density takes the keyboard); **Duplicate**
+  `create_material` in this design with `based_on` (the copy keeps the
+  source's class; the design's copy's id when it has one, else
+  `{library, id}` of a library's item, else its id; the model names the
+  copy `PLA Plastic 2`); the new row is selected and its Name takes the
+  keyboard. Delete is `delete_material` with the library. Logs `Materials
+  opened` (`for bodies F1.b0`, `for component C0`), `Materials for bodies
+  F1.b0: <material id>` (`default`), `Materials assign label: Assign to
+  Body1`, `Materials: <n> items` with `Materials row: <group>/<id> <name>
+  (<place>)[ changed]`, `Material <name> value <key> = <text>`, `Materials
+  item <name> at x,y` (`default` for Default), `Materials <what> at x,y`
+  (`name`, `save_to`, `header_duplicate` beside Built-in; `class`,
+  `density`, `appearance` on General;
+  `new`, `duplicate`, `delete`, `assign`, `close`),
+  the form's `Materials settings field <key> at x,y` (`clear <key>`, `tab
+  <category>` with `tab general`, `search`, `advanced`), `Material selected: <name>
+  (<place>)`, `Material <name> (<place>) <field> = <value>`, `Material
+  created: <id> in design`, `Material duplicated: <name> as <id> in
+  design`, `Material deleted: <name> (<place>)`, `Material saved to
+  <library>: <name>`, `Materials changed elsewhere: <name>` (`use`,
+  `keep`) with `Material <name>: <cmd>`, `Material: replace the
+  appearance of <names>?`, `Material <id> set for <n> body(ies),
+  appearance replace|keep`, `Default material of <component>: <id>`, and
+  refusals `Materials: <cmd> refused: <reason>`
+  (`tools/ui-material-test.sh`, `tools/ui-print-settings-test.sh`,
+  `tools/ui-modify-test.sh`).
+- **Printers and Processes** (`make.printers`, Edit Printers and
+  Processes… in MAKE next to 3D Print, `MainWindow::printersCommand`:
+  the design's process selected, else its printer; Edit of 3D Print's
+  and Property Sets' Printer and Process rows,
+  `BrowserController::openProfiles`; `print/ProfilesDialog.*`): a
+  non-modal window laid out as Materials that follows the model. On the
+  left the items under Printers and Processes by name, the design's
+  choice marked (no filter); on the right, with the values the design
+  prints with, the header as Materials' and the settings
+  form of the printer set (one category, Printer: printable space and
+  nozzle, without a tab bar: a form shows its tabs only when there are
+  two or more) or the process set (Quality, Strength, Speed, Support,
+  Others). Each field is
+  `edit_print_profile` with the item's library and kind (undo step `Edit
+  Process 0.20 mm Standard`; a saved one's file and the design's copy
+  together). Under the list: **New ▾** (Printer or Process:
+  `create_print_profile` in this design with `choose`, the design's
+  choice in the same undo step), **Duplicate** (`create_print_profile`
+  with `based_on` and `choose`: the user's own copy, the design's
+  choice), **Delete** (`delete_print_profile`, asked); **Use in this design** on the
+  right makes the selected one the design's printer or process
+  (`set_property` of the root's `profile`, one undo step; shown only
+  for an item the design does not use; logged `Profile used in this design: <kind>
+  <name>`, its place `Profiles use at x,y`). Edit on Slicer default opens
+  the window with nothing selected, the same from 3D Print and Property
+  Sets. Logs `Printers and processes
+  opened`, `Profiles: <n> items` with `Profiles row: <kind>/<id> <name>
+  (<place>)[, the design's]`, `Profile selected: <kind> <name> (<place>)`,
+  `Profile shown: <kind> <name> (<place>)[, read only]` with `Profile
+  <name> value <key> = <text>`, `Profiles item <name> at x,y`, `Profiles
+  <what> at x,y` (`name`, `save_to`, `header_duplicate`, `new`, `duplicate`, `delete`,
+  `use`, `close`), the form's
+  `Profiles settings field <key> at x,y` (as Materials'), `Profiles new
+  menu: Printer | Process`, `Profile <name> (<place>) <key> = <text>`,
+  `Profile created: <kind> <id> in design`, `Profile duplicated: <name>
+  as <id> in design`, `Profile saved to <library>: <name>`,
+  `Profile deleted: <name> (<place>)`, `Profiles changed elsewhere:
+  <name>` (`use`, `keep`) with `Profile <name>: <cmd>` and
+  refusals `Profiles: <cmd> refused: <reason>`
+  (`tools/ui-print-settings-test.sh`).
+- **Property Sets' print settings** (mitcad#640, mitcad#655): under the
+  levels, **Print settings** sums up what the most specific level prints
+  with (`print_settings` of the body in its occurrence, the occurrence or
+  the component), read only: the values are edited in the settings form.
+  Process shows the profile chosen: a click opens a drop-down of the
+  choosable items by name, no places (choosing sets that
+  level's `profile`, with the item's library), **Edit…** after it opens
+  the process in Printers and Processes, ↺ takes a choice of that level
+  away. Below the root the process lists its own values only, and a row
+  **Own settings** of its own names what bodies and components set of
+  their own (`Walls`, `3 settings`, `None`; logged `print Print
+  Process/own_settings = Walls`), with those values as rows under it,
+  each owner as its Source; its pencil opens the level's own values in
+  the settings form (`openOwnSettings`, below); the root has none, its
+  values are the process. Printer at the root likewise, its Edit… opening Printers and
+  Processes; below the root, a plate having one printer, it is one line
+  without values (`Bench X`).
+  Material shows the body's material (not again in Source): a click or
+  Edit opens Materials for the body or the component. Below Printer (at
+  the root), Process and Material the values under one heading line per
+  category › sub-group (small and bold on a band of the row's width, so
+  it does not read as a value), in the key table's order, in the key's own
+  unit (a colour as a bordered swatch with its appearance's name, the
+  appearance's when unset; Yes and No as in the editors; a value per
+  slicer and the filament's density not shown), no Type, and the source
+  once: the group's on its row, a row's own where an owner sets it (the
+  level shown too: `Body1`), in words with its kind's icon; the name column as
+  wide as the names. The level's own values are bold on a tinted row;
+  unset ones are the placeholder's grey in italics; computed ones (the
+  levels') grey upright; the computed values do not repeat the material.
+  A body's level is headed by its name alone (`Body1`). The per-level
+  `Print Printer`, `Print Process`, `Print Filament` and `Print Slicer
+  (…)` sets are not listed again among the levels. The row names are
+  `print <set>/<key>` in the log (`Property sets row: print Print
+  Process/layer_height = 0.2 mm (profile Standard (Root))`); the places
+  `Property sets print <set>/<key> value at x,y`, `… edit at x,y`, `…
+  clear at x,y` (`print Print Process/profile`, `print Print
+  Filament/material`).
+- **Own settings** (mitcad#655; `print/OwnSettingsDialog.*`,
+  `BrowserController::openOwnSettings`): a body's, an occurrence's or a
+  component's own process values in the same tabbed settings form as a
+  process, as a slicer's per-object settings, in a small non-modal window
+  titled `Body1 · Own settings` that follows the model. Every process key can
+  be set from its tab; the owner's own values show set, the others show
+  what it prints with as their placeholders. A change is `set_property`
+  of the owner's `Print Process`, emptying a field or ↺ `remove_property`,
+  one undo step each. Opened from 3D Print's own-settings links and
+  Property Sets' Own settings. Logs `Own settings opened: <title>`,
+  `Own setting <owner> <key> = <text>` (`cleared`), refusals `Own
+  settings: <key> refused: <reason>`, the form's `Own settings field <key>
+  at x,y` (`clear <key>`, `tab <category>`, `search`, `advanced`) and `Own
+  settings close at x,y` (`tools/ui-print-settings-test.sh`).
+- **Change Parameters, limits** (mitcad#665; the model's side:
+  [Parameter limits](../core/model/src/api/commands.md#parameter-limits)):
+  the columns Min, Max, Step, Strict and Slider come after the star (the
+  first six keep their numbers, which UI scripts use). Min, Max and Step
+  are expressions edited in place (`set_parameter` `min`/`max`/`step`; an
+  emptied cell removes the limit); Strict is a check box (`strict`). A
+  parameter without a limit of its own shows the limits of the feature
+  that uses it (the query's `intrinsic`, such as a pattern's quantity: 1
+  to 10000, whole) in grey, with the feature in the tooltip; leaving such
+  a cell unchanged sets nothing. A limited value is marked in its Value
+  cell (`372 mm → 300 mm ▲max`, `▼min`, `◆step`) with the model's
+  `limit_message`, the limit's expression and the parameters it uses in
+  the tooltip, and the message line says it after the change. While an
+  expression of a parameter with limits is typed, the `evaluate` query
+  with `parameter` says at once that it will be limited, or refused by a
+  strict parameter. A parameter with a minimum and a maximum of its own
+  gets a `QSlider` (its steps when it has a step and at most 10000 of
+  them, else 1000 positions); a released handle or a key sets the
+  expression to the number in the parameter's unit, a click on the handle
+  alone sets nothing. "Only limited" shows only the rows a limit changed.
+  A feature panel's value field whose own parameter (when editing) has
+  limits shows the same mark as its hint (`→ 300 mm ▲max`) and says it in
+  its tooltip (`CommandSession::limitHint`), and a limited sketch
+  dimension's tooltip ends with the mark and the model's message (the
+  `sketch` query's `limited` and `limit_message`). Test:
+  `tools/ui-parameter-limits-test.sh`.
 - **Property Sets** (mitcad#496): `view.property_sets` (the command
   search: the selected body or component, else the root), the browser's
   menus of a body (after Appearance...) and of a component (after Design
@@ -2257,7 +2975,7 @@ list: <n> row(s)`, `Build list CSV: <line>`, `Build list copied as CSV:
 ### Timber
 
 Timber construction (mitcad#478; the model's side in commands.md, "BUILD:
-timber construction"; the parts in [docs/libraries.md](../docs/libraries.md#timber-parts))
+timber construction"; the parts in [docs/libraries.md](../docs/libraries.md#timber-components))
 has a group of its own on the BUILD tab, **TIMBER** (mitcad#520, between
 PROFILE and CONNECT), with three tools split by what they build:
 **Timber** (`build.timber`: loose members, on a member, at a spacing or by
@@ -2823,6 +3541,19 @@ settings in the user's settings (`ViewSettings`, group `view`);
   it on leaves the rendered view; entering the rendered view turns it off.
   Logs `Component colors on` / `Component colors off`; checked in
   `tools/ui-windows-test.ps1` (`app.ui-windows`).
+- **Show Build Volume** (`view.build_volume`, View menu, mitcad#640;
+  `view/BuildVolume.cpp`): draws the design printer's bed (the
+  `build_volume` query: the root's effective printer, its bed moved so
+  that its middle is on the origin, its surface at Z = 0), its excluded
+  areas and its printable height as lines (`OcctViewer::setBuildVolume`,
+  not pickable), and the boxes of the shown bodies that do not fit as
+  dashed lines in the warning colour; drawn again after each change of
+  the model (`MainWindow::showBodies`) while on. A view setting of the
+  window's session, not part of the document. Logs `Show build volume
+  on|off` and, when what is drawn changes, `Build volume: <printer> 256 x
+  256 x 250 mm, outside: Body2, Pin (Arm:1)` (`none`), `Build volume: the
+  design's printer has no bed` or `Build volume: hidden`
+  (`tools/ui-print-settings-test.sh`).
 - **Layout grid** (`LayoutGrid`): on XY, or the sketch plane in sketch
   mode, in a layer under everything, left out of Fit. Automatic spacing:
   the largest 1 or 5 × 10ⁿ mm whose lines are at most 35 px apart
@@ -2837,13 +3568,38 @@ settings in the user's settings (`ViewSettings`, group `view`);
   Alt or Ctrl + scroll zooms; the same pan, pinch and mouse buttons).
   Pinch, rotation and two-finger double tap
   work in every scheme (`OcctViewer::event`).
+  **Custom** keeps a table of button and modifier bindings alongside these
+  presets. **Start from** copies the chosen preset; editing any preset row
+  switches to Custom while keeping its other bindings. Left drags reserved
+  for selection and component movement cannot be assigned; the orientation
+  cube retains its gestures. The table includes two-finger scroll with
+  modifiers and F4 + left drag. `view/navigationBindings` stores the table;
+  old preset ids and the legacy index continue to load.
+  Navigation's mouse and trackpad drawing shows the primary gestures; its
+  table lists all modifier combinations. Orbit turns around the model,
+  Pan slides the view and Zoom moves closer or farther. Constrained orbit
+  keeps Z upright. **Orbit speed**, **Pan speed**, **Zoom speed** and
+  **Trackpad scroll speed** range from 0.10× to 4.00×, each with **Reset**
+  to 1.00× (the original behavior). They are stored in `view/orbitSpeed`,
+  `view/panSpeed`, `view/zoomSpeed` and `view/trackpadSpeed` and preview
+  immediately without restarting. On macOS Settings saves navigation
+  changes immediately; elsewhere Preferences saves with OK and Cancel
+  restores the previous navigation settings.
 - **Preferences** (`tools.preferences`): one page per group (General,
   Navigation, Display with the window's Layout, Cache, Cloud, Updates, 3D
   Print, Diagnostics, Textures: `TexturePreferencesBox`, the texture
   folders, mitcad#315, Agents, Fonts: `sketch::FontPreferencesBox`, the
   folders of font files Edit Text offers, mitcad#473) so the window fits 1366 × 768; each page is also a command
   `tools.preferences.<page>` that the search finds by its settings. OK
-  saves every page. On macOS the pages are the panes of `SettingsWindow`
+  saves every page. The window opens at its largest page's size, never
+  larger than the screen's available area, with its frame on the screen;
+  only the page shown sets its minimum size (the hidden pages are
+  `Ignored`), so it can be made smaller (mitcad#690). The page list is
+  measured once the dialog is polished, with room for a scroll bar. Texts
+  that come from the system do not size the window: the Cloud page's git
+  status wraps at about 60 characters (git's not-installed message is some
+  330), and the render device and slicer drop-downs are 32 characters
+  wide, not as wide as their longest entry. On macOS the pages are the panes of `SettingsWindow`
   (Settings, Cmd+,), whose changes apply as they are made. In builds with
   the render worker, Display also has the **render device** (mitcad#50,
   the setting `render/device`: Automatic, the CPU or a GPU the worker
@@ -3139,7 +3895,12 @@ timeline's and Change Parameters' commands) and every preview
 run as jobs on the model's worker thread (`MainWindow::runJob`,
 `installDocument`, `command()`; design in
 [docs/architecture.md](../docs/architecture.md)). Callers stay
-synchronous; a job under 50 ms behaves as inline. Rules:
+synchronous; a job under 50 ms behaves as inline. A feature panel's
+preview is the exception (mitcad#634): it computes in the background,
+without a wait cursor or progress dialog, while the window takes input;
+Esc or Cancel stops it with the command, a newer choice or selection
+replaces it, a number typed meanwhile waits for it and is previewed
+next, and OK waits for it. Rules:
 
 - The caller waits in a nested event loop where timers and queued
   signals still run. Everything that reads the document goes through
@@ -3164,8 +3925,10 @@ synchronous; a job under 50 ms behaves as inline. Rules:
   `lastCancelled()`), `runModelCommands` undoes the commands before it,
   Change Parameters keeps the old value, OK leaves its panel open, Finish
   Sketch stays in the sketch, Cancel of an edit panel whose roll-forward
-  is cancelled closes with the timeline rolled back. A cancelled preview
-  is not cached; OK then computes the command itself. A cancel inside a
+  is cancelled closes with the timeline rolled back. A preview stopped
+  while its panel stays open (the worker control of the test driver's
+  `cancel-model-job`; the window has no control for that alone) is not
+  cached; OK then computes the command itself. A cancel inside a
   single kernel call ends when it returns ("Cancelling...").
 - A cancelled open keeps the previous document; closing the window during
   a job cancels it and closes when it is back.
@@ -3223,12 +3986,14 @@ UI thread.
 | `commands/SweepCommands.cpp` | Sweep, Loft, Rib, Web, Coil, Pipe, Helix |
 | `commands/HoleCommands.cpp` | Hole, Thread |
 | `commands/PrimitiveCommands.cpp` | New Component, Box, Cylinder, Sphere, Torus |
+| `commands/PlaceInputs.*`, `commands/PlaceGeometry.*` | placement by picked geometry (mitcad#656): Place On and the inputs it brings for every part placed by a pick, the `at` they make, earlier placements read into them; snapping, the nearest edges and the point at two distances |
+| `commands/DriveCommands.cpp` | Gear Pair and Belt Drive (mitcad#656): the candidates of a ratio between two axes, both parts made |
 | `commands/PatternCommands.cpp` | Rectangular, Circular and Path Pattern, Mirror |
 | `commands/PointPatternCommands.cpp` | Pattern at Points: sources and referenced targets, optional anchor, model-reported preview marker |
 | `commands/ModifyCommands.cpp` | `registerModifyCommands`: the MODIFY group in menu order |
 | `commands/FilletCommands.cpp` | Press Pull, Fillet and Chamfer |
 | `commands/FaceCommands.cpp` | Shell, Draft, Offset Face, Replace Face, Split Face, Split Body, Delete Face |
-| `commands/MoveCommands.cpp` | Scale, Combine, Move/Copy, Move Face (its summary in `commands/MoveFaceText`), Align, Physical Material, Appearance |
+| `commands/MoveCommands.cpp` | Scale, Combine, Move/Copy, Move Face (its summary in `commands/MoveFaceText`), Align, Appearance |
 | `commands/ConstructCommands.cpp` | `registerConstructCommands`: every construction plane, axis and point, from a table |
 | `commands/InspectCommands.cpp` | `registerInspectCommands`: Measure, Interference, Section Analysis, Print Analysis, Physical Properties |
 | `commands/PrintAnalysis.cpp` | Print Analysis (mitcad#620): the settings group `print_analysis`, the `print` definition, its three queries, the answers in words and in the log, the overlay's data |
@@ -3261,7 +4026,7 @@ UI thread.
 | `view/ViewController.*` | the View menu: standard views, Look At, camera, visual styles, grid and snaps, environment, named views, the cube's menu, Preferences, the keyboard and mouse overview; `ViewSettings` |
 | `render/` | [docs/rendering.md](../docs/rendering.md): View > Rendered (`RenderMode`, `RenderClient`, `FrameMemory`), Render Environment, Render Image (`RenderImageDialog`, `RenderBatch`: the final render's scene, camera, job and worker process); the worker `mitcad-render` (`RenderWorker`, `CyclesRenderer`, `RenderOutput`) |
 | `LayoutGrid.*` | the layout grid |
-| `files/MainWindowFiles.cpp` | the File menu (mitcad#175; groups: New Design, Open, Open from Project (mitcad#530), Open Recent, Open Read-Only, Close; Save, Save As, Save to Project (mitcad#503), Save with Description, Version History; the Project submenu with New Project, Open Project, Open from Cloud, Sync, Check for Newer Versions, Open in Browser, Project Settings; Import, Export; Recover Documents; Exit. 3D Print, Insert Component and Render Image are on the ribbon only): open, recent files, close, import, export, Insert Component, drops |
+| `files/MainWindowFiles.cpp` | the File menu (mitcad#175; groups: New Design, Open, Open from Project (mitcad#530), Open Recent, Open Read-Only, Close; Save, Save As, Save to Project (mitcad#503), Save with Description, Version History; the Project submenu with New Project, Open Project, Open from Cloud, Sync, Check for Newer Versions, Open in Browser, Project Settings; Import, Export; Recover Designs; Exit. 3D Print, Insert Component and Render Image are on the ribbon only): open, recent files, close, import, export, Insert Component, drops |
 | `files/FileFormats.*`, `files/FileDialogs.*` | file kinds by extension and dialog filters; Export, Insert DXF, Insert Mesh, linked or copy, the import report |
 | `framework/DialogFolders.*` | the file dialogs' folders per group, remembered across restarts ([below](#file-dialogs-folders), mitcad#498) |
 | `files/F3dImport.*` | `.f3d`, FreeCAD, `.ipt` and `.iam` import in a worker process behind a progress dialog |
@@ -3273,7 +4038,11 @@ UI thread.
 | `files/ProjectIndicator.*` | the project indicator and its menu |
 | `projects/` | the Projects panel (mitcad#145, [below](#projects-panel)): `ProjectsPanel` (the tree, names typed in place, drags), `ProjectsTree` (the projects read with `project_tree`, their names), `ProjectRowText` (the rows' marks and the middle elision, mitcad#529), `MainWindowProjectsPanel.cpp` (its dock or card, View › Projects, File › New Design, what the panel asks for); the [project picker](#project-picker) (`ProjectPicker`) and File › Open from Project's [project browser](#project-browser) (`ProjectBrowser`, `ProjectBrowserData`, mitcad#530) |
 | `files/Remote*.*` | the current Cloud project's remote: sync, check for newer versions, open in browser, sending versions, Resolve Sync Conflicts, Preferences' Cloud page; `RemoteTask` runs one operation (a project's or a projects command) on a thread of its own |
-| `files/Print3d.*`, `files/MainWindowPrint.cpp` | 3D Print: slicers found, settings, file names, the start bodies and the Slicer row's choices, the Preferences group; the command's panel (`print3dCommand`) and its send (`sendToSlicer`) |
+| `files/Print3d.*`, `files/MainWindowPrint.cpp` | 3D Print: slicers found, settings, file names, the start bodies and the Slicer row's choices, a slicer's dialect of print settings, the Preferences group; the command's panel (`print3dCommand`) and its send (`sendToSlicer`); the Printer and Process rows (a changed library item asked about once) and Import from slicer… with its line (mitcad#655) |
+| `print/PrintKeys.*`, `print/PrintLibrary.*`, `print/SettingField.*`, `print/SettingsForm.*` | the key table's categories and values, the choosable items and their places, the settings form and its fields (mitcad#655) |
+| `print/MaterialsDialog.*`, `print/ProfilesDialog.*` | Materials (Edit Materials, Material...) and Printers and Processes (Edit Printers and Processes, Edit of Printer and Process) (mitcad#655) |
+| `print/PrintImportSummary.*`, `print/ImportDetailsDialog.*` | an import's line under Import from slicer… and Details…, each distinct problem once with the number of profiles that had it (mitcad#654, mitcad#655) |
+| `framework/NoteRow.*`, `view/BuildVolume.cpp` | the panel's note row (mitcad#655); Show Build Volume (mitcad#640) |
 | `update/` | automatic updates ([docs/updates.md](../docs/updates.md)); the download in a private, random-named temp folder on Windows and macOS; on Windows, `mitcad-updater.exe` hashes the installer again through a handle without write or delete sharing and runs it only when it matches `--sha256` from the verified manifest (mitcad#603, `UpdaterChecks.hpp`); on macOS, verified disk image, read-only mount, signature-preserving copy, atomic bundle exchange after quit, rollback and Launch Services relaunch |
 | `report/` | feedback and error reports ([below](#feedback-and-error-reports)): `ReportCenter` (Help › Send Feedback, the offers, the delivery), `ReportDialogs` (the form, the screenshot's crop, the preview), `ReportText` (masking, crash files, duplicate keys, the issue form's address; Qt Core, `app.unit`), `CrashHandler` (the signal and exception handlers, plain C++, also in `mitcad-render`) |
 | `MainWindow.*` | the host: document, modes (idle, picking a sketch plane, sketch, command), selection, context menu, actions |
@@ -3436,17 +4205,108 @@ sizes and a hole table (PDF, SVG, DXF): File › Export Drawing
   sheet and empty bodies cannot be picked, and those of the start
   selection are left out with a warning.
 - **Format** (STL, 3MF), **Refinement** (Low, Medium, High, Custom with
-  **Deviation** and **Angle**, checked in `build`), **Slicer** (none: open
-  the folder; the settings' slicer, the ones found, Other program... with
+  **Deviation** and **Angle**, checked in `build`), **Open in** (mitcad#655:
+  Folder only, the files' folder; the settings' slicer, the ones found, Other program... with
   a file dialog in its `withOnChange`; a choice is the slicer as JSON,
   `slicerChoice`). They start with the settings, group `print`: `format`,
   `refinement`, `deviation`, `angle`, `slicerName`, `slicerProgram`,
-  `slicerArguments`, `slicerArgumentsAfter`; Send (Enter) saves them.
+  `slicerArguments`, `slicerArgumentsAfter`; Send (Enter) saves them, the
+  format also as soon as it is chosen (3MF the first time, mitcad#655).
 - Send writes the files and starts the slicer (`sendToSlicer`): each body
   once; of a body shown more than once, STL files for the placements
   picked (all when none is); 3MF takes every shown placement of a body
   picked (one `export`). Left room for filament assignment (mitcad#21):
   further rows of the panel.
+- **Format** is `STL` or `3MF`; the panel's tooltips and choices are
+  plain values (Open in: `Folder only`, the slicers, `Other program…`).
+- **Printer, Process, Materials** (mitcad#640, mitcad#655), enabled with
+  3MF only (disabled, not hidden, with STL: `withEnabled`): Printer and
+  Process each a box of `Slicer default` (always first; choosing it takes
+  the design's choice away, `remove_property`) and the choosable printers
+  or processes (`library_items`) by name in a steady order, no places, so a choice never moves them, the full name shown
+  (elided in the middle only when it must), and last **New printer…** /
+  **New process…** (`MainWindow::newDesignProfile`: a new profile in this
+  design, `create_print_profile` with `choose`: its choice in the same
+  undo step, nothing written to a library (Save to puts it in one), and
+  opened in Printers and Processes; logged `3D Print <kind> new: <name> (<key>)`). A
+  choice changes the design at once, one undo step (`set_property` of the
+  root's `Print Printer`/`Print Process` `profile` with the item's
+  library: `Use Printer <name>`); Cancel does not take it back (the
+  owner's decision). **Edit** (the same small pencil, tooltip Edit, on
+  the Printer, Process and Materials rows) beside each opens Printers and
+  Processes on the chosen item; on Slicer default it is disabled
+  (`withButtonEnabled`). Under Process the row **Own settings**, always
+  shown, as the other rows: its value on the label's line, what bodies,
+  occurrences or components set of their own in the one wording,
+  `Body1: Walls; Arm: 3 settings` (`None` without any; the chosen row's
+  `overrides`, `MainWindow::processOwnSettings`), and the pencil at the
+  right edge (`Panel 3D Print action process_overrides.0`): with one body
+  printed its own settings in the settings form (Own settings), with
+  more a menu of the printed bodies' names (logged `3D Print own
+  settings menu: Body1 | Body2`); the process editor shows their values
+  beside each field (`4 on Body1`).
+  **Materials** sums up the bodies' materials, wrapped only between
+  names (`Shop PETG, PLA Plastic ×2`: no-break spaces in each name; a
+  count only above one; a body without a material of its own `Default
+  (Steel)`; the
+  `body_material` query of each body); its pencil (`Panel 3D Print action materials.0`)
+  opens Materials for those bodies; after an import that added materials
+  a plain action **Assign…** (`materials.1`) opens it
+  for the panel's bodies and stays open after each Assign
+  (`openMaterial`'s `keepOpen`), so several materials go to different
+  bodies. The design's printer or process saved in a library that
+  another design changed is asked about once when the panel opens or it
+  is chosen (`askChangedElsewhere`, logged `3D Print changed elsewhere:
+  <name>`). **Import from slicer…**, the first print row (it fills Printer,
+  Process and Materials), the one button in the field column, never clipped (`withFieldColumn`; a file dialog
+  titled Import from Slicer: `.3mf`, `.json`, `.ini`, `.bbscfg`,
+  `.bbsflmt`, `.zip`) runs `import_print_profile` into the design (the
+  root chooses what it read; one undo step); under it, on a line of its
+  own as wide as the panel, one short line
+  names the file and counts only what failed (`mount.3mf imported`,
+  `mount.3mf imported. 1 setting not read`; `print/PrintImportSummary.*`),
+  itself the link to Details (`import.1`); the line goes when the panel
+  closes. Details shows the whole report in a small read-only view titled Import
+  Details (Copy, Close), each section only when it has something:
+  what came in by name under the title, without a heading of its own (a
+  heading in the singular for one, and the same count of what failed),
+  Left out, Not read (by plain names,
+  each distinct problem once with `(4 times)`, the settings with no
+  plain name counted as `3 other settings`). The rows
+  follow the design when Printers and Processes, an import or Update changes
+  it (`CommandDef::modelChanged`). The rows are note rows and choices of
+  the panel (`noteInput`, `withChoiceIcon`, `withButton`); while 3D Print
+  is open the print windows may change the design
+  (`DocumentHost::canChangePrintSettings`). 3D Print has no print
+  settings of its own: the printer, the process and the filaments are the
+  design's. A 3MF to a slicer whose
+  dialect is known (`slicerDialect`: Bambu Studio, OrcaSlicer, QIDI
+  Studio, PrusaSlicer, UltiMaker Cura by the slicer's name or program)
+  goes with `export`'s `dialect`: each body's effective settings in the
+  slicer's own files ([commands.md](../core/model/src/api/commands.md#print-profiles));
+  with Slicer None (open the folder) a 3MF still carries the printer, the
+  process and the materials, in the dialect of the design's printer (the
+  slicer named in its `printer_settings_id`, else the first of its
+  `raw_slicers`), else Bambu Studio's (`MainWindow::designDialect`):
+  nothing is dropped silently;
+  the log adds `3D Print: print settings for <dialect>, filaments 1,2`
+  and the warnings (more materials than the printer's slots), which the
+  status line shows in the warning colour, one per line, with the last
+  line of the send, by plain names and the slicers' titles, as the
+  import's report (`PrintKeyTable::plainText`; logged `3D Print warnings:
+  <text>`). STL carries no settings (its choice says so).
+  The panel logs `3D Print printer: <name>` (`Slicer default`; the root's
+  effective printer, `designPrinterName`), `3D Print printer: <place>/<id>`
+  (`process`; `slicer default`) when a row follows the design, `Imported
+  print settings from <file>: printers: …; processes: …; materials: …;
+  mapped <n>, kept <n>, left out: …[; not read: …]`, `3D Print import:
+  <the line>`, `Import details opened: <n> lines` with `Import details:
+  <line>` and `Import details closed`, `3D Print printer update not now:
+  <name>`, `3D Print printer updated: <name>`
+  (`tools/ui-print-settings-test.sh`,
+  `tools/ui-windows-print-settings-test.ps1`). QIDI Studio is found as the
+  others (`kKnownSlicers`: `QIDIStudio\qidi-studio.exe`, `qidi-studio`
+  on PATH, `QIDIStudio.app`; no Flatpak).
 
 - Files go to `<QDir::tempPath()>/mitcad-print/<design>`
   (`preparePrintFolder`: emptied before each send; `mitcad-print` is made
@@ -3664,7 +4524,7 @@ a crash leaves them. An imported `.f3d` design is written at once.
 
 `files/Recovery`, `files/MainWindowAutosave.cpp`. When the window shows
 (`main.cpp`; not with `--no-recovery` or `--screenshot`; after an `.f3d`
-given with `--open` has come in) and by File › Recover Documents
+given with `--open` has come in) and by File › Recover Designs
 (`file.recover`), sessions whose lock `QLockFile::tryLock(0)` takes are
 found and held until the user decides (a running instance's sessions are
 never offered). A lock without files is removed. A session whose metadata
@@ -4165,8 +5025,8 @@ SOLID tab's ASSEMBLE group.
 
 | Command | What it does | Model command / bridge |
 |---|---|---|
-| `insert.library_component` Insert from Library | `LibraryBrowser`: search (words, a licence filter, items without a licence only when asked), the results as the part picker's grid (`PartGrid`, [Part picker](#part-picker): groups with Favourites and In this design, the libraries' groups as a tree (mitcad#527), stars, the tiles' size, the hover's larger picture; an index's libraries not fetched in "Libraries to get"; a double click or Return inserts), details with the licence and the attribution, the version (newest first) and the size (cascaded combo boxes per selector, `SizeChooser`), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317); a part whose manifest lists mount frames goes on to Place Part (below, mitcad#525), any other is dropped in at the origin as before | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`; then `insert_component` with `library` |
-| `insert.mount_part` Place Part (mitcad#525, `commands/MountCommands.cpp`) | Insert from Library starts it for a part whose manifest lists mount frames (`mounts`, [docs/libraries.md](../docs/libraries.md#mount-frames)); not in the ribbon. Place On (a flat face or a plane for a face or grid frame; for a foot frame any face of the part with the grid, the cell under the click, so that the planes of the frames of the parts already placed, which lie in the cells' faces, take no clicks; a round face, a circular edge or an axis for a shaft or hole frame; none: a drop-in), Mount Frame (the part's frames, the first chosen), Rotate (about the frame's z; on a grid quarter turns), Offset, Flip (a plane's other side, a hole's other end). A click snaps the frame to the pick face to face, its way towards the viewer kept with it (`towardViewer`: a hole's end); the preview shows the part there (`analysis_shape` `mount_preview`) with a marker on its frame, the panel the frame, where it goes (a grid's cells) and how it may move, or why it cannot (a taken cell). **Place** (Enter) places it and the panel stays for the next one; **Shift + click** places at once; Enter without a pick drops it in at the origin as before, to be joined later with Joint, whose origins take its frames (its component's joint origins, the browser's Joints rows); **Close** (Esc) keeps what was placed | `mount_preview` while the inputs change; `insert_component` with `mount` (without: as before) |
+| `insert.library_component` Insert from Library | `LibraryBrowser`: search (words, a licence filter, items without a licence only when asked), the results as the part picker's grid (`PartGrid`, [Part picker](#part-picker): groups with Favourites and In this design, the libraries' groups as a tree (mitcad#527), stars, the tiles' size, the hover's larger picture; an index's libraries not fetched in "Libraries to get"; a double click or Return inserts), details with the licence and the attribution, the version (newest first) and the size (cascaded combo boxes per selector, `SizeChooser`), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317); a part whose manifest lists mount frames goes on to Place Component (below, mitcad#525), any other is dropped in at the origin as before | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`; then `insert_component` with `library` |
+| `insert.mount_part` Place Component (mitcad#525, `commands/MountCommands.cpp`) | Insert from Library starts it for a part whose manifest lists mount frames (`mounts`, [docs/libraries.md](../docs/libraries.md#mount-frames)); not in the ribbon. Place On (a flat face or a plane for a face or grid frame; for a foot frame any face of the part with the grid, the cell under the click, so that the planes of the frames of the parts already placed, which lie in the cells' faces, take no clicks; a round face, a circular edge or an axis for a shaft or hole frame; none: a drop-in), Mount Frame (the part's frames, the first chosen), Rotate (about the frame's z; on a grid quarter turns), Offset, Flip (a plane's other side, a hole's other end). A click snaps the frame to the pick face to face, its way towards the viewer kept with it (`towardViewer`: a hole's end); the preview shows the part there (`analysis_shape` `mount_preview`) with a marker on its frame, the panel the frame, where it goes (a grid's cells) and how it may move, or why it cannot (a taken cell). **Place** (Enter) places it and the panel stays for the next one; **Shift + click** places at once; Enter without a pick drops it in at the origin as before, to be joined later with Joint, whose origins take its frames (its component's joint origins, the browser's Joints rows); **Close** (Esc) keeps what was placed | `mount_preview` while the inputs change; `insert_component` with `mount` (without: as before) |
 | `tools.library_parts` Library Parts... | `LibraryPartsDialog`: each part's recorded version and size, another version or size, Show Changes, Update; Check for Newer Versions and Get Missing Libraries fetch (the latter after showing the addresses, which come from the design); the Parts List tab (Copy as CSV) | `library_parts`, `parts_list`, `library_show`, `library_diff`, `library_fetch`; then `update_library_parts` |
 | `tools.libraries` Libraries... | `LibrariesDialog`: the sources (settings `libraries/sources`: URL or folder, on or off, and Auto-update, mitcad#576; the defaults are Mitcad's fastener library and the community index, both with Auto-update off), the columns On, Auto-update (tooltip "Fetch this library when Mitcad starts"; greyed out, its state kept, while the source is off), Source, Library, Versions, Licence; Add URL, Add Folder, Remove, Fetch Selected, Fetch All | `library_list`, `library_fetch` |
 | `tools.community_library` Community Library... | the browser with the indexes' libraries first; Get Library adds a library an index lists to the sources and fetches it after a question with its address and licence | as Insert from Library |
@@ -4223,9 +5083,9 @@ fetched|not fetched`), `Library size <row>`, `Inserted component <name>
 Part with `, dropped in; bodies <uids>; mount frames <name> (<kind>), ...`;
 mitcad#525), `Insert from Library: <library>/<component> has mount frames
 <name> (<kind>, <how it moves>): Place Part`, `Place Part <name> from
-<library> <version>: frames ...`, `Inspect Place Part: place part <name>:
+<library> <version>: frames ...`, `Inspect Place Component: place part <name>:
 frame <frame> (<kind>), <joint> joint, on <target>[, cell (1, 0)|, cells
-(0, 0) and (0, 1)]` (`Inspect Place Part: failed: <why>`, `place part
+(0, 0) and (0, 1)]` (`Inspect Place Component: failed: <why>`, `place part
 <name>: no pick, Enter drops it in`), `Placed part <name> (linked|copy)
 from <library> <version> as <component> (<occurrence>) by its frame
 <frame> on <target>[, cells ...]: <joint> joint <Joint3> at (x, y, z);
@@ -4237,7 +5097,7 @@ part <name>: <library> <version>, size <row>, <status>`, `Library changes:
 sources' settings with and without the Auto-update key in
 `tests/library_settings.cpp` (test_app), and `ui-library` checks that no
 start-up fetch runs with the defaults;
-Place Part and Joint Origin's Mount Frame `tools/ui-mount-test.sh` and
+Place Component and Joint Origin's Mount Frame `tools/ui-mount-test.sh` and
 `tools/ui-windows-mount-test.ps1` (ctest `app.ui-windows-mount`: synthetic
 Gridfinity bins on a baseplate's cells, a taken cell refused, a lamp free
 on a face, an own screw's frame made, published and placed into a hole, a
@@ -4738,6 +5598,14 @@ SVG at several sizes (`themeIcon`).
   (the wall's angle to the axis), left out when 0 and hidden for tapped
   holes, which the model refuses to taper. Thread and Hole take sizes
   from the model's `thread_sizes`.
+  By Pick (mitcad#656) is one hole where Place On puts it ([Placement by
+  picked geometry](#notes-on-particular-commands)): into a face at
+  distances from two of its edges, at a point, or along a shaft's or a
+  hole's axis into it (`placement` `{"type": "at", "at": {...}}`); a
+  face hole of one position written before opens on its face from the
+  origin axes and saves `at`, one of several positions keeps them as
+  Placement Earlier Positions until By Pick is chosen. Flip is on the
+  Placement line.
 - **Press Pull** on one face of a fillet opens the fillet for the radius
   of the set that rounds its edge (`Built::editing`).
 - **Fillet and Chamfer handles** (`withManipulator`, mitcad#534): each
@@ -4778,6 +5646,25 @@ SVG at several sizes (`themeIcon`).
   Reference Face, with Flip; a convex edge's Radius; each arrow's way
   checked against the camera, the bracket's volume against the dragged
   sizes).
+- **Move/Copy's points and axes in occurrences** (`solid.move` and
+  `solid.move_face`, `MoveCommands.cpp`, mitcad#699; the model's side in
+  commands.md, "move, align, scale"): Origin Point, Target Point, Point
+  to Position's Point and Rotate's (Translate Along's) Axis picked in an
+  occurrence of another component than the move's (a vertex of another
+  part, or of either copy of a part placed twice) go into the
+  definition with `from_occurrence`, `to_occurrence`, `point_occurrence`
+  or `axis_occurrence`, the item's occurrence path (`addPickedOccurrence`);
+  geometry of the move's own component, or of no occurrence, goes as
+  before, without one. The move's component is a hidden text input,
+  `component`: the active one when the command starts (`init`), the
+  feature's own when an edit loads it (`loadTransform`, the `feature`
+  query). An edit gives each point its occurrence back
+  (`pickedItemOf`), so the panel shows it on the copy it was picked on
+  (`Move/Copy Origin Point: 1 vertex [vertex … of F2.b0 in O2]`). No pick
+  rule keeps these inputs to the active component: other components'
+  bodies (ghosts too) take the picks. Tested by the last part of
+  `tools/ui-component-combine-test.sh` and
+  `tools/ui-windows-component-combine-test.ps1`.
 - **Move Face** (`solid.move_face`, MODIFY, `MoveCommands.cpp`,
   mitcad#531; the model's side in commands.md, "Move face"): Faces (of one
   body, no meshes: `oneBody`) and the motion with Move/Copy's own inputs
@@ -5012,17 +5899,27 @@ SVG at several sizes (`themeIcon`).
   is not editable. Test: `tools/ui-plastic-test.sh`.
 - **Gear** (`solid.gear`, `GearCommands.cpp`, mitcad#472; registered by
   `registerGearCommands` with the main window as its `DocumentHost`, at
-  the end of CREATE): Type (`kind`, a row of icon buttons
-  `Panel Gear input kind=rack`), Mesh With (a gear: a face it made or its
-  feature, `withConvert`; `onPick` reads the gear's kind so that Mesh
-  Angle or, along a rack, Position shows), Plane (XY at the start, `init`),
-  Center X and Y and Angle (without Mesh With), Module, Teeth, Pressure
-  Angle (20, 14.5 or 25 degrees), Face Width, and as the kind takes them
-  Helical Teeth (rings and racks), Helix Angle, Left-Handed, Gap, Rim
-  Thickness, Height, Length (0: left out), Shaft Angle, Mate Teeth, Make
-  the Pair, then Backlash, Profile Shift, Bore (None, Plain, Thread with
-  Thread Size), Keyway, Hub with its diameter and length, and the
-  operation (commands.md, *Gears*). Values left at 0 are left out
+  the end of CREATE): Place On and the inputs it brings ([Placement by
+  picked geometry](#notes-on-particular-commands) below; nothing placed
+  before a pick, mitcad#656, Angle the gear's phase while it meshes with
+  nothing, Bore Clearance on a shaft), Type (`kind`, a row of icon buttons
+  `Panel Gear input kind=rack`), Module, Teeth, Pressure Angle (20, 14.5
+  or 25 degrees), Face Width, then Mesh With (below the gear's own sizes,
+  mitcad#656; a gear: a face it made or its
+  feature, `withConvert`; `onPick` reads the gear's kind; it only sets
+  the phase: the gear Place On places is turned by the mesh to engage,
+  `mesh_with` without `angle`, and a new gear needs that pick, `Pick
+  where the gear goes`; a rack and its pinion are placed by the mesh
+  alone, along a rack by Position; Toward, `mesh_with.toward`, shows only
+  for a gear of an earlier version written beside its mate toward a point
+  or an axis, `toward_kept`), and as the kind takes them Helical Teeth
+  (rings and racks), Helix Angle, Left-Handed, Gap, Rim Thickness,
+  Height, Length (`withAuto`: empty, the pitch line), Shaft Angle, Mate
+  Teeth, Make the Pair, then Backlash, Profile Shift, Bore (None, Plain,
+  Thread with Thread Size), Keyway, Hub with its diameter (`withAuto`:
+  the model's `hub_diameter`) and length, and the operation (commands.md,
+  *Gears*). Off a face its Angle is offered only once Align to has an
+  edge or a flat face, keyway or not. No tooltips that state rules. Values left at 0 are left out
   (`nonZero`). `CommandDef::note` (the framework's line under the inputs
   after a successful preview, before the warnings; logged `Panel Gear
   note: ...`) shows the model's `gear_values` of the definition: `Pitch
@@ -5032,104 +5929,288 @@ SVG at several sizes (`themeIcon`).
   it when the model's `gear_link` gives an `add_motion_link` (both gears'
   components on joints, not linked yet), run when the model is idle;
   logged `Gear F4 linked to its mate's joint` or `Gear F4 not linked:
-  <reason>`. A definition on a plane the panel cannot show, or with a
-  thread of another standard, is not editable. Logged `Added gear (Spur),
-  20 teeth, module 2`. A gear with a bore (not meshed, not a bevel pair)
-  can sit on a shaft instead of the plane: the seat's inputs (*Seats on
-  shafts* below) before Plane; on a shaft Plane, Center X and Y hide, Bore
-  Diameter hides (a Plain bore, or None, is the shaft's) and the note adds
-  `bore 8.2 mm (shaft 8 mm)`. Tests: `tools/ui-gear-test.sh` and `app.ui-windows-gear`
+  <reason>`. A definition whose placement the panel cannot show, or with
+  a thread of another standard, is not editable. Logged `Added gear
+  (Spur), 20 teeth, module 2`. On a shaft's round face or edge Bore
+  Diameter hides (a Plain bore, or None, is the shaft's) and the note
+  adds `bore 8.2 mm (shaft 8 mm)`. A rack and a bevel pair keep their
+  `plane` and `center` (the model takes no `at` for them): Place On on a
+  face or a plane gives them (`planeCenterOf`); a rack runs along
+  Reference 1, its `angle` Reference 1's direction on the face
+  (`referenceAngle`) plus Angle. A gear written with
+  `mesh_with.angle` opens placed where it is (`builtFrame`,
+  `placeAtFrame`: on its mate's plane, or the origin plane square to its
+  axis, measured from the origin axes) and meshing its mate; it is saved
+  as it was (`keepEarlierForm`) until its placement or its mate changes,
+  then with `at` (a rack beside its pinion keeps its angle until Toward is
+  picked). Tests:
+  `tools/ui-gear-test.sh` and `app.ui-windows-gear`
   (`tools/ui-windows-gear-test.ps1`: a spur gear, then a rack meshing it,
-  then a spur gear on a shaft's top edge with an offset).
+  then a spur gear on a shaft's top edge with an offset; the Linux test
+  also a Gear Pair), `tools/ui-place-test.sh`.
 - **Pulley** (`solid.pulley`, `PulleyCommands.cpp`, mitcad#562; registered
-  by `registerPulleyCommands` after Gear, at the end of CREATE): Type
-  (`kind`, a row of icon buttons `Panel Pulley input kind=idler`: Toothed,
-  Idler, Toothed Idler), Belt With (a pulley: a face it made or its
-  feature, `withConvert`; `onPick` reads the feature, refuses another
-  type in `build` and takes its belt profile), Centre Distance and
-  Direction (with Belt With: the model's `belt_with` `center_distance`
-  and `angle`), Plane (XY at the start, `init`), Center X and Y and Angle
-  (without Belt With), then Belt Profile (GT2 2 mm, GT2 3 mm, HTD 3M,
+  by `registerPulleyCommands` after Gear, at the end of CREATE): Place On
+  and the inputs it brings ([Placement by picked
+  geometry](#notes-on-particular-commands) below; nothing placed before
+  a pick, mitcad#656, Angle and Align with a keyway or set screws, which
+  lie in its direction, Bore Clearance on a shaft), Check Belt right under
+  Place On (mitcad#656: another pulley, a face it made or its feature,
+  `withConvert`; kept with the pulley as `belt_check: {"pulley": "F3"}`,
+  which places nothing) with Belts (`catalogue`: Library, the parts
+  library's closed belts, or Whole Teeth, any whole number of teeth; not
+  stored), Type (`kind`, a row of icon
+  buttons `Panel Pulley input kind=idler`: Toothed, Idler, Toothed
+  Idler), then Belt Profile (GT2 2 mm, GT2 3 mm, HTD 3M,
   HTD 5M, T5, XL) and Teeth for the toothed kinds or Diameter for an
-  idler, Belt Width, Clearance (always given), Pitch Correction, Flanges
-  (None, One, Both; None leaves `flanges` out) with Flange Diameter and
-  Thickness, Bore (None, Plain, Thread with Thread Size), Keyway, and for
-  a toothed pulley only Hub with its diameter and length and Set Screws
-  with their count, size (a thread designation) and position (0: left
-  out, the middle of the hub), then Catalogue Lengths (with Belt With: belt
-  lengths in the document's unit, separated by commas; only for the note,
-  not stored) and the operation (commands.md, *Pulleys*). Values left at
-  0 are left out (`nonZero`); every value is an expression the model keeps
-  as the feature's parameter. `CommandDef::note` (logged `Panel Pulley
-  note: ...`) shows the model's `pulley_values` of the definition (with
-  `belt_lengths`): `Pitch diameter 12.7324 mm, outside 12.2244 mm`, an
-  idler's diameter, and with Belt With `centre distance 80 mm, belt length
-  200 mm (100 teeth), nearest catalogue length 202 mm, 10 teeth in mesh`,
-  or the model's `error`. A definition with a kind, belt profile or
-  flange side the panel does not list, a plane it cannot show, a thread of
-  another standard, or a hub or set screws on an idler (or set screws
-  without a hub) is not editable. Logged `Added pulley (Toothed), GT2 2
-  mm, 20 teeth` or `Added pulley (Idler), diameter 20 mm`. Without Belt
-  With a pulley can sit on a shaft instead of the plane: the seat's inputs
-  (*Seats on shafts* below) before Plane; on a shaft Plane, Center X and Y
-  hide, Bore Diameter hides (a Plain bore, or None, is the shaft's; a
-  Keyway goes into it) and the note adds `bore 8.2 mm (shaft 8 mm)`.
-  Tests: `tools/ui-pulley-test.sh` and `app.ui-windows-pulley`
-  (`tools/ui-windows-pulley-test.ps1`): a GT2 pulley, its teeth and
-  flanges changed in the preview, edited, then a second pulley on the belt
-  with its belt length and nearest catalogue length, then a pulley on a
-  shaft's top edge with an offset and a bore clearance.
+  idler, Belt Width, Belt Clearance (`clearance`, always given), Pitch Correction, Flanges
+  (None, One, Both; None leaves `flanges` out) with Flange Diameter
+  (`withAuto`: the model's `flange_diameter`) and Thickness, Bore (None,
+  Plain, Thread with Thread Size), Keyway, and for a toothed pulley only
+  Hub with its diameter (`withAuto`: the model's `hub_diameter`) and
+  length and Set Screws with their count, size (a thread designation)
+  and position (`withAuto`: the middle of the hub), and the operation
+  (commands.md, *Pulleys*). No tooltips that state rules. Values left at 0 are left out (`nonZero`);
+  every value is an expression the model keeps as the feature's
+  parameter. `CommandDef::note` (logged `Panel Pulley note: ...`) shows
+  the model's `pulley_values` of the definition: `Pitch diameter 12.7324
+  mm, outside 12.2244 mm`, an idler's diameter, `bore 8.2 mm (shaft 8
+  mm)` on a shaft, or the model's `error`. Check Belt's rows under it
+  (`withRowNote`) give the belt round both pulleys as they are now, one
+  per line, values to 0.1 mm: the verdict in a word, bold, from the
+  model's `fit` (`Fits`, `Needs a tensioner`, `Belt too short`), `Belt
+  length 200 mm (100 teeth), 10 teeth in mesh`, `Nearest belt GT2 200
+  mm, 6 mm wide` (`beltText`: the profile, the length and the library
+  belt's width, else its teeth), `Travel 1 mm apart` (`6 mm closer`:
+  the axes must move so far for that belt), then the model's `warning`
+  when the pulleys are not in one plane (the
+  model's `belt_drive` for the two placements, pinned to the two tooth
+  counts with any teeth in mesh, the other pulley's placement as
+  `atOfFeature` gives it; for an edited pulley where that does not apply,
+  `belt_check` of the two as built; Whole Teeth asks with
+  `whole_teeth`); logged `Pulley belt check with F1: ...` (the verdict
+  last, in lower case) and `Panel Pulley
+  check_belt note: ...`. The view draws the belt's pitch line round both
+  pitch circles (`viewLines`, logged `Lines Pulley: 1`). A definition with a kind, belt profile or flange side the
+  panel does not list, a placement it cannot show, a thread of another
+  standard, or a hub or set screws on an idler (or set screws without a
+  hub) is not editable. Logged `Added pulley (Toothed), GT2 2 mm, 20
+  teeth` or `Added pulley (Idler), diameter 20 mm`. On a shaft's round
+  face or edge Bore Diameter hides (a Plain bore, or None, is the shaft's;
+  a Keyway goes into it). A pulley written with `belt_with` opens placed
+  where it is (`builtFrame`, `placeAtFrame`) with the other pulley as its
+  Check Belt, and is saved as it was until its placement or Check Belt
+  changes. Tests: `tools/ui-pulley-test.sh` and
+  `app.ui-windows-pulley` (`tools/ui-windows-pulley-test.ps1`): a GT2
+  pulley on XY, its teeth and flanges changed in the preview, edited,
+  then a second pulley 80 mm along X typed in Distance 1's value box in
+  the view with the belt round both, its pitch line and the nearest
+  catalogue belt, the check kept after OK, then a pulley
+  on a shaft's top edge with an offset and a bore clearance (the Linux
+  test also a Belt Drive); `tools/ui-place-test.sh`.
 - **Bearing** (`solid.bearing`, `BearingCommands.cpp`, mitcad#577;
   registered by `registerBearingCommands` after Pulley, in Machine
   Elements): a printable bearing (commands.md, *Printable bearings*).
-  Element (Dumbbell, Roller, Ball, Airsoft), Groove Into (a round face of
-  a body, a cylinder: the model's `groove`, with Offset; the bearing then
-  takes no plane and is made as new bodies), Plane (XY at the start,
-  `init`), Center X and Y and Angle (without Groove Into), Size (the
+  Place On and the inputs it brings ([Placement by picked
+  geometry](#notes-on-particular-commands) below; nothing placed before
+  a pick, mitcad#656; not with Groove Into), Element (Dumbbell, Roller, Ball,
+  Airsoft), Groove Into (a round face of a body, a cylinder: the model's
+  `groove`, with Offset; the bearing then takes no placement and is made
+  as new bodies), Fit Clearance (on a shaft or in a hole), Size (the
   model's `bearing_sizes`, read once, `608 (8 x 22 x 7)`, then Custom
   with Bore, Outside Diameter and Width), Flange with its diameter and
   thickness, then Printing: Radial Clearance, Axial Clearance, Chamfer,
   Smallest Wall and Flank Angle (always given), Element Gap, Elements and
-  Element Diameter (0: left out, the model's default, the most that fit,
-  the largest that leaves the walls), and Operation (New Component, the
+  Element Diameter (`withAuto`: empty, the model's default, the most that
+  fit, the largest that leaves the walls, shown from its
+  `bearing_values`), and Operation (New Component, the
   default, or New Body). Every value is an expression the model keeps as
   the feature's parameter. `CommandDef::note` (logged `Panel Bearing
   note: ...`) shows the model's `bearing_values` of the definition:
   `Pitch diameter 15 mm, 10 elements of 3.8 mm, walls 1.2 mm and 1.2 mm,
   least gap 0.2828 mm` (airsoft balls also `buy 8 x Airsoft ball 6 mm`),
   or the model's `error` (a printability check), capitalized. A
-  definition with a size the panel does not list or a plane or face it
-  cannot show is not editable. Logged `Added bearing (Dumbbell), 608`,
+  definition with a size the panel does not list or a placement or face
+  it cannot show is not editable. Logged `Added bearing (Dumbbell), 608`,
   `Added bearing (Roller), 10 mm x 30 mm x 9 mm`, `Added bearing
   (Dumbbell), 608, groove into a face`, `Added bearing (Dumbbell), 608, on
-  a shaft or in a hole`. On a shaft or in a hole (mitcad#578): the seat's
-  inputs (`seatInputs`, without Bore Clearance, offered without Groove
-  Into) before Plane, and Fit Clearance (0.5 mm); a picked shaft or hole
-  also sets Size to the one that fits it (the model's `seat_frame`, then
-  `bearing_sizes` by the bore on a shaft, by the outside diameter in a
-  hole, the nearest), which the user may change; the definition always
-  has the size, so the component is named after it. The note adds `on a
-  8 mm shaft` or `in a 22 mm hole`, and `no standard size fits it` when
-  none does. Tests: `tools/ui-bearing-test.sh` and `app.ui-windows-bearing`
+  a shaft or in a hole`. On a shaft or in a hole (mitcad#578, Place On a
+  round face or edge): Fit Clearance (0.5 mm); the pick also sets Size to
+  the one that fits it (`shaftSeat`: the model's `place_frame` seat, or
+  `seat_frame` for another component's shaft, then `bearing_sizes` by the
+  bore on a shaft, by the outside diameter in a hole, the nearest), which
+  the user may change; the definition always has the size, so the
+  component is named after it. The note adds `on a 8 mm shaft` or `in a
+  22 mm hole`, and `no standard size fits it` when none does. Tests:
+  `tools/ui-bearing-test.sh` and `app.ui-windows-bearing`
   (`tools/ui-windows-bearing-test.ps1`): on XY with too many elements and
   an edit, Groove Into a shaft, on a cylinder's top edge with an offset,
   in a hole's top rim.
-- **Seats on shafts** (`SeatInputs.hpp`, mitcad#578; commands.md, *Seats
-  on shafts*): the inputs every part that sits on a shaft shares (Pulley,
-  Gear, the printable bearing): `seatInputs(SeatPanel)` gives Shaft (a
-  circular edge or a cylindrical face, `withAccepts`; a click on a face
-  keeps where it hit, the `seat`'s `near`, which end the offset is
-  measured from), Offset, Flip and Bore Clearance (shown once a shaft is
-  picked; `SeatPanel::offered` says when the part can sit on one,
-  `clearance` whether it has Bore Clearance); `initSeat` in `init` notes
-  where the active component is seen; `addSeat` puts `seat` (with
-  `link` `{"source": <the pick's occurrence>, "target": <where the
-  feature's component is seen>}` for another component's shaft, a BUILD
-  shaft or a library part) and `bore_clearance` into the definition;
-  `loadSeat` fills them from one, `seatShowable` in `canEdit`, `seatNote`
-  the note's words from the values query. A shaft cleared again puts
-  Plane (an origin plane square to the shaft when there is one) and
-  Center X and Y where the seat had the part (the model's `seat_frame`).
+- **Placement by picked geometry** (`PlaceInputs.hpp`, the plane geometry
+  in `PlaceGeometry.hpp`, mitcad#656; commands.md, *Placement by picked
+  geometry*): the inputs every part placed by a pick shares (Pulley,
+  Gear, Bearing, Coil, Box, Cylinder, Sphere, Torus, and Hole's On Face),
+  `placeInputs(PlacePanel)`. No typed coordinates: where the part goes
+  comes from what is picked, distances are dimensions to lines in sight.
+  - **Place On** (`at`, `withPlaces`, keeps a face picked again): a
+    shaft's cylindrical face or circular edge, a hole's wall or rim, a
+    construction or origin axis, a sketch line, circle or arc give
+    `at.axis` (a click on a face keeps where it hit, `near`: the end the
+    offset is measured from); a sketch point, a vertex, a construction
+    point give `at.point` (a vertex or construction point on the origin
+    plane facing the viewer most, `at.plane`, shown in a **Plane** row,
+    `at_on_plane`, where another plane or planar face can be picked); a
+    click on a planar face
+    or a plane gives `at.face`: the point snaps to the face's vertices,
+    circle centres and edge middles within 10 pixels, and is measured
+    from the two nearest straight edges of a body's face (crossing at a
+    degree or more; the origin axes along the face when it has no two),
+    from an origin plane's own axes (`offset1` along its x, `offset2`
+    along its y, no edges), or from the origin axes along a construction
+    plane (with `near`). Each reference's positive side is the face's
+    middle's on a body face (as the model's `place_frame` confirms with a
+    point 1 mm from both) and the click's on a plane. A straight edge, a
+    sketch line or an axis along the face clicked while Place On takes
+    picks becomes the reference it runs with most nearly, the point kept
+    where it is (`Place <command>: edge ... is a reference now`); Place
+    On keeps the face.
+  - **Reference 1**, **Distance 1**, **Reference 2**, **Distance 2**
+    (`at_edge1`, `at_offset1`, `at_edge2`, `at_offset2`; on a face): the
+    lines and the point's distances from them, rounded for a click to
+    the step a drag takes at that zoom (1, 2 or 5 times a power of ten,
+    about three pixels; exact for a snap); each distance a dimension in the view with
+    its value box (`Manipulator::valueBox`), dragged or edited there or
+    typed in the panel. Picking another line in a Reference row makes it
+    that reference. Each reference and its distance are one line of the
+    panel (`withBesidePrevious`): the colour swatch, the line picked
+    (`Edge`, `X axis`, `Sketch line`) and the distance.
+  - **More** (`at_more`, a disclosure): Offset, Flip, Angle and Align to
+    Edge folded away unless they are in use (not 0, Flip on, Align picked
+    by the user), so that the part's own sizes are in sight; their handles
+    stay in the view (`withHandleWhenHidden`), their value boxes only when
+    not 0 or under the mouse (`boxAtZero = false`).
+  - **Offset** and **Flip** (`at_offset`, `at_flip` beside it;
+    `PlacePanel::along`, not Hole's, which has its own Flip on the
+    Placement line): along the axis or the normal, an arrow with its value
+    box from where the part starts without it.
+  - **Angle** and **Align to** (`at_angle`, `at_align`; an edge or a
+    face;
+    while `PlacePanel::turns` says the turn matters: a box, a gear's
+    phase, a pulley's keyway and set screws): a ring about the part's
+    axis with its value box, its zero line drawn along the part's x axis
+    and an arc to the angle; Align is the line (or a planar face's
+    normal) the x axis runs along. On a face an empty Align is always
+    Reference 1 (`atOf` writes Reference 1 as `align`; there is no
+    hidden axis and nothing to clear: clearing a picked edge returns to
+    Reference 1), and its empty button says `Reference 1` in Reference
+    1's green (`InputDef::emptyShows`); on an origin plane, whose
+    distances are from the origin axes, it is the plane's own x, the X
+    axis, Reference 2, and the button says so. Off a face (a shaft, an
+    axis, a point) Angle and its ring are offered only once Align has an
+    edge or a face; a pulley's keyway or first set screw, a gear's
+    keyway then lie at the angle from it. No angle is measured from the
+    projected +X. Reference 1 and 2 have fixed colours (green, purple)
+    and an edge picked in Align one outside the panel's palette (pink),
+    so that none looks like another (`InputDef::color`). Picking
+    another line for a reference never turns the part: on an origin
+    plane, where the empty Align is the plane's X axis, the X axis is
+    pinned in Align as soon as the distances are measured from picked
+    lines (`place::keepsPlaneX`), and a definition loaded so without an
+    `align` gets it the same way. A line's direction is taken into the
+    face: `atOf` writes `align_side` (Reference 1's side toward the
+    point), so that a part placed from the face's far edge grows into
+    the face (`place::intoFace`); a definition written without it keeps
+    its line's direction (`at_no_align_side`) until Place On or Align is
+    picked again. Tests: `place_geometry` in app.unit. Align
+    takes any straight edge, an axis, a sketch line or a planar face
+    (the x axis along its normal, put square to the part's axis). A
+    shaft picked in Place On whose body has a flat (a planar face along
+    the axis, nearer it than the shaft's radius, `shaftFlat`) is aligned
+    to it at once (logged `Place Pulley: aligned to the flat face ...`),
+    so that a set screw turns without an edge drawn first; that align
+    goes with the shaft when another is picked.
+  - **Bore Clearance** (`PlacePanel::clearance`; on a shaft or in a hole).
+  `initPlace` in `init`: where the feature's component is seen, a pick
+  made before the command placed as a click in its middle; nothing is
+  placed without a pick (mitcad#656: no part starts on XY at the origin,
+  where Enter would make a part floating there). `addPlace` writes `at` (a
+  shaft of another component, a BUILD shaft or a library part, `seat`
+  with its `link` `{"source": <the pick's occurrence>, "target": <where
+  the feature's component is seen>}`) and `bore_clearance`; `loadPlace`
+  fills the inputs from `at`, `seat`, or an earlier `plane` and `center`
+  (a box's `corner`): that plane with distances from the origin axes, an
+  angle beside it as Angle (a coordinate given as an expression, a
+  parameter of the primitive since mitcad#689, places the point by its
+  value, and its distance shows the expression, negated when the
+  distance runs the other way); what the panel does not show of an `at` (a
+  bearing's angle, a hole's offset) is kept as it was (`at_extra`). An
+  earlier form (`plane` and `center`, a `seat` of the feature's own
+  component, a gear's `mesh_with.angle`, a pulley's `belt_with`, a hole's
+  one position on a face) is saved as it was while the inputs still make
+  the `at` they made of it on load (`keepEarlierForm`, `keptEarlierForm`;
+  `at_legacy`): a relation is not frozen into numbers unless the
+  placement is changed.
+  `placeShowable` in `canEdit`; `placeFrame` (the model's `place_frame`)
+  for the parts' own handles; `shaftNote` the note's `bore 8.2 mm (shaft
+  8 mm)`; `builtFrame` and `placeAtFrame` where an earlier `belt_with` or
+  `mesh_with.angle` put a part; `atOfFeature` an `at` for a part made
+  before (Check Belt). Logged `Place <command>: face plane xy, 100 mm
+  from axis y, 0 mm from axis x (point 100, 0, 0)`, `Place <command>:
+  axis edge E{...} of F1.b0`, `Place <command>: point ...`, `Place
+  <command>: none`.
+- **Gear Pair** and **Belt Drive** (`solid.gear_pair`,
+  `solid.belt_drive`, `DriveCommands.cpp`, mitcad#656; registered beside
+  Gear and Pulley, `Gear | Gear Pair | Pulley | Belt Drive | Bearing` in
+  Machine Elements): First Axis and Second Axis (a shaft's round face or
+  edge, a hole's, an axis, a sketch line, circle or arc; `withPlaces`),
+  Ratio (typed `1 : 2`, the first part's teeth to the second's, or the
+  second number alone), Belt Drive's Belt Profile, the list of what fits
+  right after them, then More (`drive_more`): each axis's Offset
+  (`first_offset`, `second_offset`: an arrow with its value box along
+  the axis, shown once the axis is picked, so that both parts lie in one
+  plane; folded unless not 0, its handle in the view all the same) and
+  Gear Pair's Type (Spur or Helical, Spur, Helical), Pressure Angle and
+  Modules (All Standard, or From To with the two modules), folded unless
+  one of them is changed; each of them asks the model again (`gear_pair`,
+  `belt_drive`), logged `Gear Pair candidates: 12, centre distance 60 mm`
+  or `... none: <why>`. The candidates are rows under columns
+  (`withChoiceColumns`, the chosen row selected and the list taking the
+  arrow keys): Module, Teeth (`20:40`, the warning icon when a gear is
+  undercut), Ratio (how far the pair is off the ratio asked, only where
+  it is; the column left out when no row has one), Centre distance (how
+  the pair meets it: `exact`, `exact, corrected` for a pair the model
+  shifted only against undercut, `shifted`, `helix 12°`); the list takes
+  the panel's whole width under its name, Centre distance's heading
+  with the axes' distance in it (`Centre distance 60 mm`,
+  `withChoiceColumns(headings, now)`, `InputDef::choiceColumnsFor`);
+  Teeth, Ratio (the model's `ratio_deviation`, only where a row has one),
+  Belt (`GT2 200 mm`), Travel (`0.4 mm apart`, `0.3 mm closer`, to 0.1
+  mm), with the chosen
+  row's verdict, belt and travel under the list as Check Belt gives them
+  (`withRowNote`) and its belt's pitch line drawn (`viewLines`); the best first, chosen at the start. Gear Pair's note adds the
+  chosen pair's `Profile shift +0.10 / -0.10` and `A gear is undercut`
+  (the centre distance is in the list's heading only); Belt Drive's says
+  in Check Belt's words `Belt length 200 mm (100 teeth), 10 teeth in
+  mesh` (its centre distance in the Travel heading, `Travel from 60 mm`;
+  the verdict and the belt's width under the list, the belt and its
+  travel in the row, logged `Belt Drive belt: GT2 200 mm, 6 mm wide,
+  travel 0 mm, fits`);
+  both the model's `warning` when the two
+  placements are not in one plane (an axial offset of 0.0005 mm or
+  more). The row
+  chosen is previewed (`sketchCommand` with `previewAsNew`: `add_gear_pair`
+  / `add_belt_drive` applied, the bodies they make kept and taken back at
+  once, then drawn as a preview's new bodies, see-through blue and not in
+  the browser, logged `Preview Gear Pair: 2 new bodies shown as a
+  preview`; the first preview framed in the view's free area, zoomed out
+  when it does not fit, `View fitted: the parts clear of the panels`) and
+  OK applies it again as one undo step; each part is on its axis (`at.axis`) with the candidate's
+  fields, Face Width or Belt Width, Bore Clearance on a shaft, and the
+  operation (New Component or New Body). Belt Drive's note: `Belt
+  length 200 mm (100 teeth), 10 teeth in mesh`. Gears made as components have their joints linked after OK
+  (`linkLater`). Logged `Added gear pair, module 2, 20 and 40 teeth
+  (exact)`, `Added belt drive (gt2_2mm), 20 and 40 teeth`. Tests:
+  `tools/ui-gear-test.sh`, `tools/ui-pulley-test.sh` and
+  `app.ui-windows-drives` (`tools/ui-windows-drives-test.ps1`).
 - **Expression fields' parameters** (mitcad#567, mitcad#568;
   `framework/ParameterField.*` for the list, the fx button and Create
   User Parameter, `framework/ParameterSuggest.*` for the text rules). One
@@ -5314,7 +6395,7 @@ next screenshot.
 | `Ribbon menu SKETCH/CREATE: Line \| Rectangles > [2-Point Rectangle \| …] \| … \| Sketch Dimension`, `Ribbon menu SKETCH/CREATE/Circles: Center Diameter Circle \| …` | a group menu or a subgroup's submenu as it opens (`-` a separator, a submenu as `Name > [its entries]`; the SOLID CREATE menu: `Create Sketch \| - \| Extrude \| … \| - \| Pattern > [Rectangular Pattern \| …] \| Mirror \| - \| Machine Elements > [Gear | Pulley | Bearing]`, mitcad#579)\| Pulley]`, mitcad#579) |
 | `Panel <command> input <id> at x,y [(hidden)]`, `Panel <command> OK at x,y` | a panel opened; again whenever its places move (mitcad#528: the panel, a row's field or a widget it is in moved or was resized, a tile's picture read, the dock laid out again: 50 ms after it settles, a timer the sync waits for, only when a place differs from those logged last), so the last line logged is where the input is; the part picker's places likewise when its window moves or is resized; the in-process test driver's `click-logged` (macOS) waits for these timers (`TestSync::settling`, up to 5 s) before it reads a place |
 | `Panel <command> view y 160 to 668, scrolled 0 of 297, bar at 1015,414` | with a panel's places: the part of the window its page shows, how far it is scrolled, and its scroll bar while it scrolls (a long panel in a low window); the places are logged again when it scrolls (`Ui-PanelReveal` in `tools/ui-windows-lib.ps1`) |
-| `Datum xy at x,y`, `Sketch entity F1/c4 at x,y` | an input that takes them became active |
+| `Datum xy at x,y`, `Sketch entity F1/c4 at x,y` | an input that takes them became active; the datum places are tried again with each input (a placement input puts the planes behind the model and the axes, mitcad#656), and an origin plane covered along its diagonals by an axis gets a place off them |
 | `Datum F4 at x,y`, `Datum F4 in O1 at x,y` | with `MITCAD_LOG_PICKS`: where a click picks a shown construction feature, a component's where its occurrence places it (mitcad#432) |
 | `View highlight places: face F2.b0/F2:side(c1) in O1 at 60.0,0.0,10.0; plane F4 in O1 at …` (`none`) | with `MITCAD_LOG_PICKS`: the highlighted faces, edges, vertices and datums changed: each with its occurrence and the middle of its bounding box in the design (mitcad#432: a loaded face of a placed component drawn where the view shows it) |
 | `Command <name> started`, `Editing F2 with <name>`, `Editing analysis Section1 with <name>`, `Command <name> cancelled` | |
@@ -5337,10 +6418,12 @@ next screenshot.
 | `Context menu Hide: Hide Body \| Hide Component` (`Hide 2 Bodies`, `Hide 2 Components`; the submenu of the view's context menu, mitcad#347), `Hid body Body2`, `Hid component Component1:1` | Hide > Hide Body / Hide Component: `set_body_visible` for the bodies of the selected faces, edges, vertices and bodies, `set_occurrence_visible` for their occurrences (none for the root's bodies, so no Hide Component), each once, as the browser's light bulbs do (`BrowserController::hideBodies`, `hideOccurrences`), one undo step; `tools/ui-hide-menu-test.sh` |
 | `Find in Design opened`, `Find in Design found: 5 bodies, 0 components`, `Find in Design: hid 3 bodies` (`showed`, `1 component`; `selected …`, `appearance for N bodies`), `Find in Design button at x,y`, `Find in Design field\|components\|bodies\|visibility\|show\|hide\|appearance\|select\|all\|none\|close at x,y`, `Find in Design row N at x,y` | the Find in Design window (mitcad#350): the results after each search, what each button did (bodies by uid and components by occurrence, each once), and where the controls and the rows in sight are; the field is also logged as `Dialog field Find in Design: <text>`; `tools/ui-find-in-design-test.sh` |
 | `Create Sketch: select a plane`, `Create Sketch: origin planes shown` (`not shown (the design has components)`), `Create Sketch picked …`, `Sketch started on xy, origin (0, 0, 0)`, `Editing sketch F1 (Sketch1)`, `Sketch finished` | sketch mode |
+| `Browser offers the origin planes: Root/Origin open; XY, XZ, YZ pickable`, `Browser no longer offers the origin planes: Root/Origin folded` (`open`, as it was before) | Create Sketch waits for a plane that the view does not show (mitcad#694: the design has components and the Origin's light bulb is off): the browser's Origin folder is opened and its XY, XZ and YZ rows are not greyed for the pick (a click on one starts the sketch on it), then folded back as it was when the pick ends (`BrowserPanel::offerOriginPlanes`; `tools/ui-visibility-test.sh`, `app.ui-windows-visibility`) |
 | `Sketch view x0,y0 x1,y1 x2,y2` | where sketch points (0, 0), (100, 0), (0, 100) are in the window, when it changed (`ui_sketch_click x y`) |
 | `Sketch frame in the design (at O1): origin (100.000000, -10.000000, 50.000000), normal (0.000000, -1.000000, 0.000000), x axis (…)`, `Sketch view along (0.000000, 1.000000, 0.000000)`, `Line c1 in the design from (x, y, z) to (x, y, z)` | a sketch edit started: its frame where the view shows it (a component's sketch placed by the occurrence named, mitcad#505) and the direction Look At turned the view to; a line the Line tool added, its ends in the design; `tools/ui-occurrence-face-sketch-test.sh` |
 | `Sketch origin at 0.00, 0.00, 20.00 mm in the design; the design origin at x 0.00, y 0.00 mm in the sketch` | a sketch edit started: where its origin lies in the design and where the design origin lies on its plane, in the document's length unit (mitcad#254) |
 | `Sketch pointer x 30.00, y -12.50 mm` | in sketch mode, the pointer's place in sketch coordinates that the view shows above the status badge (where a tool snaps it), once the pointer rests at a new place (mitcad#254) |
+| `Sketch field length at x,y` | a drawing tool's value field: the centre of its box in the main window's coordinates, for each field shown, once the pointer rests and the fields have moved since (mitcad#671) |
 | `Selection filter sketch defaults: sketch-geometry=cross, …`, `Selection filter sketch visible-edges cross: …`, `… reset: …`, `Selection filter project defaults: …`, `Selection filter sketch restored: …`, `Selection filter button at x,y`, `Selection filter row visible-edges at x,y`, `Selection filter reset at x,y`, `Selection filter widened (Shift)`, `Selection filter as set` | sketch selection filters (mitcad#217): the rows when a sketch edit or Project starts, a row clicked, the sketch's rows back after Project, where the control and its rows are (the rows when its menu opens), Shift down and up |
 | `Sketch hover: edge E{…} of F1.b0` / `nothing`, `Sketch pick places:` then `Sketch pick edge F1.b0/E{…} visible at x,y` (`occluded`) | with `MITCAD_LOG_PICKS`: what a click would take under the pointer in sketch mode and Project; with `MITCAD_LOG_EDGE_PLACES` (`tools/ui-sketch-select-test.sh`; every edge is tried) where a click hits each body edge in sight and behind faces once the camera rests in sketch mode |
 | `Sketch Sketch1: 2 DOF`, `… 0 DOF, fully constrained`, `…, conflicts k3+k5` | the sketch's status changed |
@@ -5369,6 +6452,7 @@ next screenshot.
 | `Timeline search opened` / `closed`, `Timeline search field at x,y`, `Timeline button search at x,y` (`search-previous`, `search-next`), `Timeline search "fillet in:cover": 2 matches: Fillet2 (Cover), Fillet7 (Cover)` (`no matches`, `unknown filter is:x`), `Timeline search result Fillet2 (Cover) at x,y`, `Timeline search results hidden`, `Timeline search match 1 of 2: Fillet2 (Cover)`, `Timeline search cleared` / `cleared: selected Plane1 again, scrolled to 0`, `Selection restored after the timeline search: 1 item(s)` | the timeline search (mitcad#179): its field, the matches (when they change), the listed ones in sight, a step, the end and what it restored |
 | `Timeline colours: dark, marker #c8d0da, buttons #f0f0f0, window #1f2024, handle #5aa2ff` (`light, marker #2b3a4a, buttons the style's, …`), `Asking the platform for the dark colour scheme` | the timeline's palette colours at start and when the theme changes (the marker's handle: the Docked window's accent colour, orange in the Floating chrome); the switch of `MITCAD_TEST_COLOR_SCHEME` |
 | `Window style: dark, window #141518, panels #1f2024, accent #5aa2ff, font Segoe UI Variable Text` (`light, …`; `font the platform's`), `Window frame: Windows 11 caption colour, Mica, rounded corners` (`skipped (Windows build 19045)`, `not applied (DWM error 0x…)`) | the Docked window's style at start and when the theme changes (mitcad#251, `framework/WindowStyle`); on Windows what the window frame got, when the window shows and at each change of theme |
+| `Timeline hover highlighted: F3 1, F4 2` / `none` | timeline hover preview, without changing selection; folded groups include every active member |
 | `Feature faces highlighted: F3 1, F4 2` / `none` | the faces of the features selected on the timeline (uid and number of faces), when they change |
 | `Selection card create: Extrude \| Revolve \| Sweep` / `none`, `Selection card create Extrude at x,y`, `Selection card create chose Extrude` | the selection card's Create row changed, where each of its buttons is (300 ms after the change), and a click on one (mitcad#619) |
 | `Timeline group Group1 at x,y` (its band, or its folded cell), `Timeline group Group1 collapsed` / `expanded`, `Timeline selected: F1, F2, F4` (a Shift+click run, or what the browser's rows selected; `nothing`), `Grouped Sketch1, Extrude1 as Group1`, `Renamed group Group1 to Body`, `Ungrouped Body` | timeline groups |
@@ -5387,20 +6471,25 @@ next screenshot.
 | `Drag of Pin:1 started at (x, y, z)`, `Dragged Pin:1 to (x, y, z): Joint1 rz 63.2 deg`, `Drag of Pin:1 cancelled`, `Animating Joint1 rz: 36 frames from 45 deg to 45 deg`, `Animated Joint1: 36 frames`, `Animation of Joint1 stopped: <why>` | dragging a component the joints move (points in its parent's coordinates) and Animate Joint |
 | `Parameters favorites: width` / `none`, `Parameters width favorite at x,y`, `Parameter width favorite: on = 30 mm` | favourites |
 | `Parameters dialog opened`, `Parameters: d1 = width + 5 mm (35 mm); …`, `Parameters d1 expression at x,y` (name, unit, expression, comment), `Parameters add/delete/OK at x,y`, `Added parameter width = 30 mm`, `Parameter d1 expression: width + 5 mm = 35 mm`, `Parameter width expression: d2 / 2 refused: <reason>`, `Delete parameter w refused: <reason>` | Change Parameters (places in the main window's coordinates) |
+| `Parameters d1 min\|max\|step\|strict at x,y`, `Parameters d1 slider at x,y`, `Parameters d1 slider handle at x,y`, `Parameters only limited at x,y`, `Parameter d1 max: 50 = 50 mm`, `Parameter d1 limited: <the model's limit_message>`, `Parameters: d1 = 60 mm (50 mm ▲max); …`, `Parameters limited: d1 = 60 mm → 50 mm ▲max (<the Value cell's tooltip, lines joined with "; ">)` / `none`, `Parameter d1 typed 70 mm: d1: 70 mm will be limited to 50 mm (▲max)` (`within its limits`, `will be refused: <reason>`), `Parameter d1 slider: 40 mm = 40 mm`, `Parameters only limited: on: d1` | Change Parameters' limits (mitcad#665); `tools/ui-parameter-limits-test.sh` |
 | `Parameters during command Extrude editing Extrude1`, `Parameters closed: back to Extrude`, `Panel Extrude parameters at x,y`, `Sketch Sketch1 dimensions after the parameter change: width 50.000, d2 40.000`, `Extrude: parameter depth changed; the preview follows`, `Command Extrude: 1 parameter change(s) kept`, `Parameter d3 is held by the open panel of Extrude1` | Change Parameters while a sketch or a feature is edited (mitcad#564, [Browser, timeline and parameters](#browser-timeline-and-parameters)) |
 | `Property Sets opened for F2.b0, O1`, `Property sets of Body Panel, Occurrence Wall:1, Component Wall: N properties`, `Property sets row: component Identity/Mark = W-12 (user)` (`(user, inherited)`, `(ifc, edited)`, `(computed)`), `Property sets <level> <set>/<key> value at x,y`, `Property sets add\|remove\|types\|computed\|close at x,y`, `Editing property <level> <set>/<key>` (`as a choice: EI30 \| EI60 \| EI90`), `Property sets choice at x,y`, `Property <level> <set>/<key> set: W-20`, `… chosen: EI60`, `…: <text> refused: <reason>`, `Added property <set>/<key> (<type>)`, `Removed property …`, `Property type defined: <name> (<base>)`, `Property type removed: <name>`, `Find in Design property search: <reason>` | Property Sets and its property search (mitcad#496; places in the main window's coordinates); `tools/ui-property-sets-test.sh`, `tools/ui-windows-property-sets-test.ps1` |
 | `Build parts list columns: Mark, FireRating`, `Build parts list row: Wall: W-20 \| EI60`, `Parts list columns at x,y` | the Parts List's property columns (mitcad#496): the keys and each row's values; the field's place |
 | `Panel Fillet input sets.1.radius at x,y`, `Panel Fillet input add sets at x,y`, `… input remove sets.1 at x,y`, `… input up_sections.2 at x,y`, `… input down_sections.0 at x,y` | a list's rows and buttons, an ordered selection's buttons |
 | `Panel Profile button_part at x,y` (a frontend without tiles), `Panel Profile tile part: <name>`; `Part picker place search at x,y; in the picker x,y` (also `star`, `pin`), `Part picker group row Profiles at …`, `Part picker tile <library>/<component> at …` | the button beside a choice (`withButton`, mitcad#418); the part picker's places, in the main window and in the picker ([Part picker](#part-picker)) |
 | `Panel Extrude width 284 of 284` (after its places), `Panel Extrude message 284x36, panel width 284 of 284` (`message hidden`; `284x96 scrolling`) | the panel's width and its page's (mitcad#198): with its places, and once laid out after its message or a note under a field changed (`tools/ui-panel-message-test.sh`) |
-| `Pick places:` then `Pick face F2.b0/F2:end(…) at x,y`, `Pick edge …`, `Pick vertex …`, `Pick profile F1/r{…} at x,y` | an input became active (with `MITCAD_LOG_PICKS=1`, which the tests set): where a click picks each item it takes (`ui_click_pick`) |
+| `Pick places:` then `Pick face F2.b0/F2:end(…) at x,y`, `Pick edge …`, `Pick vertex …`, `Pick profile F1/r{…} at x,y` | an input became active (with `MITCAD_LOG_PICKS=1`, which the tests set): where a click picks each item it takes (`ui_click_pick`); again after a pick when the input's test depends on the picks (Place On takes a body's straight edges once it has a face, mitcad#697). Each pixel is picked once while the places are tried |
 | `View ghosts: O2 (1 body)`, `View ghosts: none` | the occurrences a command draws as ghosts changed (`withGhosts`, mitcad#147); logged before the pick places of the input that picks through them |
 | `View inactive ghosts: 2 bodies (active Bracket:1)`, `View inactive ghosts: none`, `Pick priority: active Bracket:1` | the bodies drawn as ghosts outside the active component changed (mitcad#420; `none`: the root active or the setting off); a click took the active component's item before a nearer one of another component |
 | `View body highlights: F1.b0, F2.b0 in O1`, `View body highlights: none` | the bodies highlighted whole changed (a selection input of bodies, such as 3D Print's, mitcad#234) |
 | `Hover chain: 3 edge(s) of F2.b0` (`face(s)`), `Tangent chains of F2.b0 (edges): 2 in 3 ms` | the hover of an input with `withHoverChain` over an edge or face changed how many it shows (the tangent chain with its check on, else 1); a body's chains asked the first time (mitcad#290) |
 | `Manipulator <command> <input> at x,y`, `Manipulator <command> <input> dragged to <value>` | a handle's knob, a drag ended |
+| `Value box <command> <input> at x,y: <text>`, `Value box <command> <input> opened: <text> at x,y`, `... closed: <text>` | a handle's value box (mitcad#656) and the field a click on it opens over the view |
+| `Place <command>: face plane xy, 80 mm from axis y, 0 mm from axis x (point 80, 0, 0)`, `Place <command>: axis edge E{...} of F1.b0`, `Place <command>: edge ... is a reference now`, `Place <command>: none` | where Place On puts the part (mitcad#656), after a pick, a reference picked or a placement loaded |
+| `Gear Pair candidates: 12, centre distance 60 mm`, `Belt Drive candidates: ...`, `Pulley belt check with F1: ...` | the candidates the model found for two axes, a pulley's belt check (mitcad#656) |
 | `Manipulator Circular Pattern suppressed.2 at x,y` (`… (off) at` when suppressed), `Manipulator Circular Pattern suppressed.2 toggled`, `Circular Pattern Suppressed: 2` | a pattern's instance dots |
-| `Inspect <command>: <log>`, `Closed <command>` | an inspection's result (Measure: `area 2400, distance 45, angle 90 deg`, of a circle or arc `length 31.416, radius 5, diameter 10`; Interference: `Body1 x Body2: <volume>` or `none`; Section Analysis: `measuring`, then `area …, length …` once measured after the view's update, mitcad#438) |
+| `Inspect <command>: <log>`, `Closed <command>` | an inspection's result (Measure: `area 2400, distance 45, angle 90 deg`, of a circle or arc `length 31.416, radius 5, diameter 10, axis (0, 0, 20) along (0, 0, 1)`, with axes `axis distance 50, center distance 50, axis lines 2` (mitcad#647); Interference: `Body1 x Body2: <volume>` or `none`; Section Analysis: `measuring`, then `area …, length …` once measured after the view's update, mitcad#438) |
+| `Measure history: 3 rows`, `Measure history row 3: <picks>: <values>`, `Measure history row 3 at x,y`, `Measure history Copy at x,y`, `Measure history showed row 1`, `Measure history copied row 1: 1 \| …`, `Measure history cleared` | Measure's history (mitcad#648, *Measure's history*) |
 | `Computing section view started`, `Computing section view done in 12 ms` (`cancelled after`; `measure`), `Section clips at {"plane":…} off the UI thread (section worker): 3 bodies, 3 new, 3 meshed in 40 ms`, `Section measured off the UI thread (section worker)`, `Section view ready at {"plane":…}: 3 bodies from the section worker`, `Section round view superseded`, `Section round view replaced` | Section Analysis' rounds off the UI thread (mitcad#438, `framework/SectionWorker.hpp`): started and ended, what the worker's thread clipped and meshed, the view about to show them, a running round stopped by a newer one, a waiting one dropped |
 | `Kept Section Analysis as Section1`, `Edited analysis Section1`, `Deleted analysis Section1`, `Section analysis at {"plane":{"normal":[1,0,0],"origin":[10,0,0]}}`, `Section analysis off` | Section Analysis kept in the document (mitcad#41); the plane the bodies are cut at changed |
 | `Inspect Print Analysis: Body1 overhang 412.5 mm^2 (6.2 %), thinnest 0.50 mm, 3 thin region(s), estimate 41.5 g 13.9 m` (`, cost 1.04` with a price; bodies separated by `; `), `Kept Print Analysis as Print1`, `Print analysis Print1: <the same words>` (`failed: <reason>`, `cancelled`) | Print Analysis (mitcad#620): the panel's result, and the shown analysis computed again (after OK, a light bulb, an edit, a change of its bodies) |
@@ -5415,14 +6504,14 @@ next screenshot.
 | `Visual style Shaded with Hidden Edges`, `Camera perspective`, `Background #525761 #1f2126`, `Layout grid off`, `Snap to grid on`, `Grid spacing 10 mm` | display settings |
 | `Saved named view NamedView1`, `View NamedView1`, `Deleted named view …` | named views |
 | `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug; a view sent to the worker, once a navigation of the view ends, mitcad#214), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render image dropped: camera moved` (debug; `size changed`, `animation`: the view draws the bodies shaded from this frame, once per navigation, mitcad#216), `Render view 3: 64 samples in 2.91 s`, `Render mesh F2.b0: 12 of 12 triangles turned to face outwards` (debug; a triangulation wound inwards, mitcad#319), `Render material swap F2.b0: default (transmission 0, opacity 1) -> glass_clear (transmission 1, opacity 1); mesh reused (the worker holds it)` (debug; `meshed again`, `sent again`), `Render brightness view 3 samples 16: 0.412 over 5321 pixels` (debug; the mean linear brightness of what the frame covers, `tools/ui-render-glass-test.sh`), `Render worker: render-ground off: the camera looks at the ground from below` (debug; `render-ground on: the camera is above the ground again`: the ground dropped and built again as the camera crosses its plane, mitcad#320, `tools/ui-render-ground-test.sh`), `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`tools/ui-render-test.sh`) |
-| `Preferences opened: General, 640 x 330` (the page shown and the size the window asks for), `Preferences: navigation middle-orbit, zoom to cursor on, …, autosave every 5 min` (or `…, autosave off`), `Shortcut overview: 23 command shortcuts` | the dialogs |
+| `Preferences opened: General, 640 x 330` (the page shown and the size the window asks for), `Preferences page: General, minimum 520 x 300` (a page chosen and the minimum size it sets), `Preferences frame 700 x 420 at 330,170 on a screen of 1600 x 768 at 0,0` (once shown: the frame and the screen's available area), `Preferences minimum 520 x 300, resizable` (or `fixed`), `Preferences page list 140 wide, its entries 118` (the list's room and what its entries need; `tools/ui-preferences-test.sh`, mitcad#690), `Preferences: navigation middle-orbit, zoom to cursor on, …, autosave every 5 min` (or `…, autosave off`), `Shortcut overview: 23 command shortcuts` | the dialogs |
 | `Section caps: 2 face(s) at {"normal":[1,0,0],"origin":[30,…]}`, `Section caps: none` | the caps of Section Analysis or Hide Above Sketch drawn (when they change), and gone again (the bodies whole) |
 | `Section: F2.b0 shown whole: section: clip: SIGSEGV 'segmentation violation' detected. …` (warning) | a body whose clip failed, shown uncut (mitcad#392) |
 | `Section caps: 3 colour(s) [#e0892a hatch #4b2d0b at 135 deg, 12 lines; …] in Shaded, bodies in appearance colours` | the viewer's caps (mitcad#382): per colour group the cap colour (the component's timeline colour, the default orange for the root), the hatch's colour, direction and line count; again when the visual style or Component Colors change |
 | `Hide Above Sketch on`/`off`, `In front of the sketch plane: F2.b0 5.0, F5.b0 10.0` | the sketch palette's option; in sketch mode (also while a sketch command's panel is open), how far each shown body reaches in front of the sketch plane (mm, when it changes; 0 or less once cut, a body cut away entirely is left out) |
 | `Exported <path>: dxf flat pattern of Body1, 5 entities (CUT_OUTER 4, BEND_DOWN 1), mm`, `Export of the flat pattern of Body1 refused: <reasons>`, `Flat pattern of Body1 shown` (`folded`), `Flat pattern of Body1: valid, area 1086.39 mm2, 1 bend(s)`, `Deleted the flat pattern of Body1`, `Added sheet face of 1 profile(s), new rules, thickness 2`, `Added flange, length 15 (tangent), angle 90 deg`, `Sheet rules: thickness …` | sheet metal (mitcad#210): the Flat Pattern's export, display and item, the commands' describe lines |
 | `Export dialog: STEP AP214 (*.step) to <path>`, `Exported <path>: step, 1 body(ies), mm` (with occurrences `…, mm, design coordinates` or `component coordinates`), `Exported <path>: usdz, 1 body(ies), 1 material(s)`, `Exported <path>: dxf, 4 entities` | export |
-| `3D Print panel: 3 visible: Plate, Cube, Pin; format stl, refinement high, slicer Fake slicer (/path <files>); slicers None: … \| …` (`1 selected: Cube`), `3D Print Bodies: 2 bodies [body F1.b0; body F2.b0]` (the input, as every selection input logs), `3D Print: Format = 3MF, one object with parts`, `3D Print: left out Surface1 (a surface body)`, `3D Print: no solid or mesh bodies`, `3D Print: 3 bodies as stl (high) to <folder>: Plate.stl, Cube.stl, Pin.stl` (a body shown twice: `Pin (Pin_1).stl, Pin (Pin_2).stl`; 3MF: `parts.3mf`… per body `Plate 12 triangles, 1000.000 mm3`), `3D Print: started <program> <arguments>`, `3D Print: <slicer> did not start`, `3D Print: opened <folder>`, `Done 3D Print`, `Command 3D Print cancelled`, `Preferences: slicer <slicer>` (or `automatic`) | 3D Print (mitcad#234: the panel replaced the dialog, whose `3D Print dialog: …` and `3D Print cancelled` lines are gone) |
+| `3D Print panel: 3 visible: Plate, Cube, Pin; format stl, refinement high, slicer Fake slicer (/path <files>); slicers None \| …` (`1 selected: Cube`), `3D Print Bodies: 2 bodies [body F1.b0; body F2.b0]` (the input, as every selection input logs), `3D Print: Format = 3MF`, `3D Print: left out Surface1 (a surface body)`, `3D Print: no solid or mesh bodies`, `3D Print: 3 bodies as stl (high) to <folder>: Plate.stl, Cube.stl, Pin.stl` (a body shown twice: `Pin (Pin_1).stl, Pin (Pin_2).stl`; 3MF: `parts.3mf`… per body `Plate 12 triangles, 1000.000 mm3`), `3D Print: started <program> <arguments>`, `3D Print: <slicer> did not start`, `3D Print: opened <folder>`, `Done 3D Print`, `Command 3D Print cancelled`, `Preferences: slicer <slicer>` (or `automatic`) | 3D Print (mitcad#234: the panel replaced the dialog, whose `3D Print dialog: …` and `3D Print cancelled` lines are gone) |
 | `Export dialog opened: unit mm (mm \| cm \| m \| in \| ft)` (with occurrences also `, coordinates design (design \| component)`), `Insert Mesh dialog opened: unit …`, `Insert DXF dialog opened: unit …`, `Units dialog opened: mm (…)`, `Add User Parameter dialog opened: unit mm`, `Grid settings dialog opened: automatic, fixed spacing 10 mm` | a dialog that offers units opened, with its default first |
 | `Panel Hole choices: placement=face, …, standard=iso_metric, size=6, designation=M6x1, class=6H`, `Panel Hole options size: 1 \| 1.1 \| …`, `Panel Circular Pattern checks: symmetric=on`, `Panel Rectangular Pattern label distance1: Extent` | a panel's choices and check boxes when it starts; the options of a `withChoices` input when they change; a `withLabel` input's label when it changes (mitcad#545) |
 | `Imported block.step as Base1: 1 body(ies)`, `Inserted drawing.dxf into Sketch2: 4 curves, 4 points, 0 texts, 1 profiles, 0 warnings`, `Inserted component block (linked) from block.mitcad` | import |
@@ -5434,8 +6523,12 @@ next screenshot.
 | `Recent files: a.mitcad \| b.step`, `Dropped <paths>`, `Document closed`, `File menu: New Design \| Open \| Open Recent > \| … \| - \| Project > [New Project \| … \| Project Settings] \| … \| Exit` (debug, as it opens: `-` a separator, names without underlines and dots, mitcad#175) | the File menu |
 | `Remote status: synced` (`ahead N`, `behind N`, `push`, `fetch`, `sync`, `conflict`, `offline`, `sign-in needed`, `remote not found`), `Remote task <command> started\|done\|failed (<class>): <message>`, `Remote push: sent N version(s) to origin/main`, `Remote check: ahead N, behind M`, `Remote notice: <text> [Sync Now, Dismiss]`, `Sync: <case>[ (<class>)], N replayed, sent\|nothing sent`, `Sync conflict: <path> (<kind>): <choice>`, `Sync done: <text>` | the current Cloud project's remote: its state (the indicator shows it), a remote task, a push, a check, the notice, a sync and its conflicts |
 | `Computing part.mitcad started`, `Computing part.mitcad: 57 of 196, Extrude6` (when the feature changes, at most 5 a second, after the first 50 ms), `Progress dialog shown: part.mitcad`, `Computing part.mitcad: cancel requested after <ms> ms`, `Computing part.mitcad cancelled after <ms> ms`, `Computing part.mitcad done in <ms> ms (<n> evaluated)`, `Opening part.mitcad cancelled` | a job on the model's worker thread (opening a design, an imported design, New, Close) |
-| `Computing set_parameter started` … `Computing set_parameter done in <ms> ms (<n> evaluated)` (a model command's job is named by its `cmd` and logged only when it takes over 50 ms; `Computing preview …` for a panel's preview), `Command set_parameter cancelled`, `Command undo refused: the model is busy computing`, `Preview Extrude: cancelled`, `Extrude: OK cancelled`, `Extrude: OK not done`, `Parameter d1 expression: 70 cancelled`, `Finish Sketch cancelled: Sketch1 stays open`, `Command Extrude: the timeline stays rolled back`, `Drag of p3 ended by a dialog`, `Manipulator Extrude distance dragged to 25 (ended by a dialog)`, `Context menu dropped: the model is computing` | commands and previews as jobs: a cancel, a call that came while a job ran (refused, or waiting until it is done), a drag the progress dialog ended |
-| `Display meshes of part.mitcad: 2 bodies in <ms> ms on the model's thread` (also `of <cmd>`, `of preview`; only when it meshed any) | the view's meshes of the shown, previewed and tool bodies made at the end of the job (`framework/DisplayMeshes`, mitcad#398; the job's stage reads "Meshing the bodies for display") |
+| `Computing set_parameter started` … `Computing set_parameter done in <ms> ms (<n> evaluated)` (a model command's job is named by its `cmd` and logged only when it takes over 50 ms; `Computing preview …` for a panel's preview, which has no progress dialog (mitcad#634) and logs `Computing preview: cancel requested after <ms> ms` when Esc, Cancel or a newer input stops it), `Command set_parameter cancelled`, `Command undo refused: the model is busy computing`, `Preview Extrude: cancelled`, `Extrude: OK cancelled`, `Extrude: OK not done`, `Parameter d1 expression: 70 cancelled`, `Finish Sketch cancelled: Sketch1 stays open`, `Command Extrude: the timeline stays rolled back`, `Drag of p3 ended by a dialog`, `Manipulator Extrude distance dragged to 25 (ended by a dialog)`, `Context menu dropped: the model is computing` | commands and previews as jobs: a cancel, a call that came while a job ran (refused, or waiting until it is done), a drag the progress dialog ended |
+| `Display meshes of part.mitcad: 2 bodies in <ms> ms on the model's thread` (also `of <cmd>`, `of preview`, `of preview refinement`; only when it meshed any; a preview's end in ` (interactive)`) | the view's meshes of the shown, previewed and tool bodies made at the end of the job (`framework/DisplayMeshes`, mitcad#398; the job's stage reads "Meshing the bodies for display"). A preview's are the interactive tier's (mitcad#635): stand-ins, copies of its bodies meshed with planes through a faster triangulation (the same nodes and deviation), the bodies themselves left for the final tier |
+| `Drag proxy Extrude: shown for distance 12 mm (the exact preview at 5 mm) at 60.000,50.000,26.000`, `Drag proxy Extrude: hidden: <why>` (`the exact preview shows 12 mm`, `a value was typed`, `an input changed the command's structure`, `no exact preview is shown`, `the command was committed`, `the command was cancelled`), `Drag proxy Extrude: not shown: <why>` (`not for these inputs`: a taper, an extent to an object or through all, a wrap, a start at an object, another input changed; `the exact preview's tool is not the prism of its values`), `Drag proxy Extrude distance: 44 inputs, 44 proxy updates (every 64.0 ms median, 81.0 ms p95), 5 exact previews (every 560.0 ms median, 610.0 ms p95), 120 frames in 3120 ms; proxy update 0.150 ms median, 0.400 ms max` (at the release), `Drag proxy Extrude: the exact preview of 27.5 mm replaced it 540 ms after the release`; with `MITCAD_LOG_TIMING=1` each update: `Drag proxy Extrude distance: 12 mm over the exact 5 mm at 60.000,50.000,26.000 in 0.120 ms` | Extrude's provisional tool while a handle is dragged (mitcad#636, `framework/CommandSessionProxy.cpp`): the exact preview's tool changed to the dragged value at once, amber and see-through with dashed edges, where its component's occurrences put it, until the exact preview of that value replaces it. A drag's line counts what was delivered (snapped inputs), the proxy updates drawn, the exact previews shown while the button was held and the frames submitted (`OcctViewer::framesDrawn`, not fenced) apart; `tools/ui-drag-proxy-test.sh` |
+| `Preview tool at 60.000,50.000,22.500` (`none`) | where the preview draws its tool, the middle of its box in the design: at each placement of its component's occurrences (the report's `tool_instances`, mitcad#636) |
+| `Preview Extrude: refining the display meshes of 2 bodies`, `Preview Extrude: display meshes refined` | a preview shown in the interactive tier, once a drag has ended and no input changed for 250 ms: its bodies meshed in the final tier in a job of their own (`Display meshes of preview refinement: …`), which changes nothing in the model, and drawn instead of their stand-ins (mitcad#635). OK meshes them in its own job when this has not happened yet |
+| `Mesh trace preview interactive: 0 bodies ready, 2 meshed, 88 faces reused; faces=99 kept=88 meshed=11 failed=0 build=… edges=… heal=… check=… triangulate=… write=… total=… ms; meshed plane 7, …; slowest plane wires=85 points=11960 31.4 ms, …` (`final` for a command's, an open's or a refinement's), on standard error `mesh-trace: presentation faces=… kept=… meshed=…` | with `MITCAD_MESH_TRACE=1` (mitcad#635): each display meshing of a job (bodies that had meshes or stand-ins, bodies meshed, faces taken from the bodies as shown, then BRepMesh's faces kept and meshed, its phases and the slowest faces), and each meshing a presentation asks for on the UI thread (none is expected for a body a job meshed); `tools/ui-preview-meshing-test.sh`, `app.preview_meshing` |
 | `Display meshes of 2.dwg: 4 bodies with faces that could not be meshed (not drawn)` (a warning) | bodies with faces OCCT's mesher failed on when the job meshed them for display: those faces are not drawn, and neither the job nor the view meshes those bodies again (meshing such a face again took without end, on the UI thread, mitcad#589; `viewMeshes` in `view/ViewTessellation.hpp`) |
 | `Autosave every 300 s to <folder>`, `Autosave off`, `Autosaved block.mitcad: 2865 bytes to <folder>`, `Autosave removed for block.mitcad`, `Autosave skipped: busy` (or `previewing`), `Autosave of block.mitcad failed: <reason>` | autosave: the timer set at start and by Preferences, a write, the session's files removed, a write put off (`MITCAD_TEST_AUTOSAVE_SECONDS` for tests; `tools/ui-autosave-test.sh`) |
 | `Recovery: none`, `Recovery: 2 document(s) found`, `Recoverable block.mitcad: /path/block.mitcad, autosaved 2026-10-05T03:12:00Z, 2865 bytes` (`never saved`; `, the file has changed since`, `, the file is gone`, `, damaged: <why>`), `Recovery: removed the lock of session <id>`, `Recovery: later, 1 document(s) kept`, `Discarded recovery of block.mitcad`, `Recovered block.mitcad from autosave of 2026-10-05T03:12:00Z`, `Recovered session <id> removed`, `Recovering block.mitcad cancelled`, `Recovery of block.mitcad failed: <reason>`, `Save conflict: <path> changed since it was opened`, `Save conflict: overwrite` (`save as`, `cancelled`) | recovery: what was found, each session, the dialog's choices, the earlier session's files removed once this session wrote the document, and Save over a recovered document's changed file |
@@ -5621,3 +6714,132 @@ In the Bearing panel a typed number 0 in Element Gap or Element Diameter
 still leaves the model's choice (the field is left out of the
 definition); an expression naming a parameter stays in it even when the
 parameter is zero.
+
+## Parameters as CSV
+
+Change Parameters has **Import...** and **Export...** at the left of its
+bottom row (`ParametersDialog::importParameters`, `exportParameters`;
+mitcad#666). The model reads and writes the CSV
+([commands.md, "Parameters as CSV"](../core/model/src/api/commands.md#parameters-as-csv));
+the dialog only reads and writes the file (UTF-8) in Qt's or the
+platform's file dialog of the Import or Export group
+(`framework/DialogFolders`).
+
+- **Export...** asks for a file (`Export Parameters to CSV`, suggesting
+  `parameters.csv`) and writes the `parameters_csv` query's table:
+  Mitcad's own (`name,kind,unit,expression,value,comment,favorite,min,max,step,strict`,
+  with the limits of mitcad#665). The status bar says how many parameters
+  it wrote.
+- **Import...** asks for a file (`Import Parameters from CSV`), Mitcad's
+  table or the parameter table CSV of the `.f3d` application
+  (`Name,Unit,Expression,Value,Comments,Favorite`), and shows the
+  `parameters_csv_preview` query's answer in the **Import Parameters**
+  dialog (`parametersImportPreview`): the file and its format, the counts
+  (`5 to add, 1 to change, 1 renamed, 1 refused, 1 skipped`) and a row per
+  row of the file: its name (`mil → mil_1` when renamed), the action
+  (Add, Change: expression, limits, comment, Unchanged, Refused, Skipped),
+  the expression and the value after the import (`35 mm (limited by its
+  max)`), the limits after it (`min 10, max count * 20 mm, step 0.5 mm,
+  strict`), and a note (the reason, `From
+  its value: <why the expression was not used>`, what a model parameter
+  kept); refused and skipped rows in red. Nothing changes until **Import**
+  (the default button; disabled when nothing would change) runs
+  `import_parameters_csv`, one undo step `Import Parameters`; Cancel
+  leaves the design as it is. A table that is not a parameter CSV shows
+  the model's reason under the table, and nothing opens.
+- Import is disabled while a sketch or a command's panel is open
+  (mitcad#564: they hold parameters); Export works then too.
+
+Logs: `Parameters import at x,y`, `Parameters export at x,y`, `Exported
+parameters to <path>: 3 parameter(s)`, `Parameters import preview of
+table.csv: <counts>`, `Parameters import row d1: change (expression) Width
++ 5 mm = 35 mm`, `Parameters import row mil as mil_1: add 2 mm = 2 mm`,
+`Parameters import row Label: skip: <reason>`, `Parameters import row
+Broken: add 12 mm = 12 mm, from its value: <reason>`, `Parameters import
+row d2: change (limits) 40 mm = 35 mm, limits: max 35 mm, limited by max`,
+`Import of parameters
+from table.csv cancelled`, `Imported parameters from table.csv: <counts>`,
+`Import of parameters from table.csv refused: <reason>`. Test:
+`tools/ui-parameters-csv-test.sh`.
+
+### Timeline feature inspection (mitcad#695)
+
+`TimelineWidget::featuresHovered` previews the active feature or every active
+member of a folded group. Leaving, rebuilding, dragging or blocking the strip
+clears the preview. Failed, suppressed and rolled-back entries never reuse
+cached geometry. The strip has a 350 ms tooltip timer of its own.
+
+The tooltip and idle selection card share `FeaturePresentation`: the command
+registry supplies the feature kind and its loader supplies the main visible
+dimensions, with their editor labels. The component is named from the snapshot.
+Timeline selection retains its established body/sketch/datum selection semantics;
+the card adds the selected timeline feature names rather than exposing uids.
+Debug selection and highlight logs retain uids for diagnosis.
+
+`HighlightDisplay::throughSolid` adds a subdued, dashed, non-pickable boundary
+in OCCT's Topmost layer, whose independent depth buffer makes enclosed or rear
+features visible. The ordinary depth-tested shaded highlight is retained. This
+inspection overlay does not alter body visibility or ordinary viewport picks.
+The portable `timeline-inspection.mitcad-ui` fixture checks real tooltip/card
+widgets and compares the actual OCCT framebuffer for two boxes wholly enclosed
+by an outer body, in both Docked and Floating layouts.
+
+Agents should name features and use `group_features` for contiguous modeling
+stages, as described in [the MCP guide](../docs/mcp.md#keep-an-agent-built-timeline-readable).
+
+## Formula builder (mitcad#668)
+
+`ParameterSource::query` lets expression fields use the read-only `formula_help`
+query. The Rust tokenizer finds the active call even while the formula is
+incomplete; the AST supplies sub-expression ranges, units and errors, retaining
+enclosing `LET` bindings. The function catalog comes from the same set of
+functions the parser accepts. Qt converts UTF-16 cursor positions to UTF-8 byte
+ranges at this boundary.
+
+`FormulaEditor` is shared by the fx list, a field's **Edit Formula…** context
+action and Change Parameters' **Edit Formula…** button. It contains searchable
+functions, plain-text templates, multiline text, **Indent LET**, a live signature,
+selected/hovered sub-expression values, error ranges and actual parameter limits.
+It returns formula text and, when limits change, a `set_parameter` command;
+the existing parameter-command route retains the normal undo and edit ownership.
+No builder-specific state is stored in a design.
+
+The portable `formula-builder.mitcad-ui` fixture runs through both entry points,
+checks a partial signature, the real model value of a selected ratio, a template
+and saved limits, and leaves an edited command field for normal confirmation.
+The same fixture is registered on macOS, Windows and Linux with the existing
+platform UI infrastructure. Root runs the implementation platform's checks.
+
+## Connect AI Assistant (mitcad#682)
+
+`help.connect_assistant` is an Any-mode action, visible in Help, command
+search, the project indicator and Preferences › Agents. The shared dialog
+offers Claude Desktop, Claude Code, Codex / ChatGPT Desktop local MCP, and
+generic clients. It resolves the installed native CLI rather than depending
+on a terminal's working directory or a development checkout.
+
+Claude Desktop receives a runtime `.mcpb` with manifest 0.3 and a standalone
+native `mitcad-mcp-launcher`; the launcher starts the installed CLI without a
+shell, retaining its own runtime library paths. Opening installation does
+not establish installed or connected state. Claude Code registration uses
+`claude mcp add --scope user mitcad -- <bridge> mcp --connect`.
+
+Codex registration uses `codex mcp add mitcad-desktop -- <bridge> mcp --connect`
+against a private staged `CODEX_HOME` and verifies the result before an
+atomic, backed-up update of the actual selected file. With no CLI, the same
+Rust TOML planner supplies the update directly. Settings and comments outside
+the Mitcad entry are preserved; conflicts need explicit replacement, and
+managed/disabled configurations remain blocked. Repeated matching setup is a
+no-op. The setup never stores an instance id or changes model/undo state.
+
+The dialog separately grants agent folders and explains multiple-window and
+host boundaries. LiveServer retains bounded, plain-text `clientInfo.name`
+labels after `notifications/initialized`; the project indicator and dialog
+show all initialized clients. `ui_state.agent_clients` exposes those labels
+beside the existing `agents` count; disconnect preserves the design.
+
+Tests: `app.unit` helper checks, the portable `app.ui-*-assistant-setup`
+fixtures with compiled stub clients and private configuration homes, and the
+existing MCP integration suites. They cover direct and CLI setup, malformed
+and managed configuration, idempotence, backups, failed/corrupt clients,
+concurrent edits, bundle metadata, explicit folders and connection state.

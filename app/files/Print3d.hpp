@@ -41,6 +41,12 @@ struct Slicer {
   QString location() const;
 };
 
+// The dialect of a slicer's print settings (mitcad#640, the model's
+// `export` with `dialect`): bambu_studio, orcaslicer, qidi_studio,
+// prusaslicer or cura by its name (or its program's), empty for another
+// program.
+QString slicerDialect(const Slicer& slicer);
+
 // A slicer for a program the user chose: a macOS application bundle
 // (Name.app) starts with `open -a`, which hands it the files; any other
 // program takes them on its command line.
@@ -69,8 +75,8 @@ struct SlicerSearch {
   static SlicerSearch system();
 };
 
-// The slicers found, each once: Bambu Studio, OrcaSlicer, PrusaSlicer and
-// UltiMaker Cura in their usual install folders and the registry
+// The slicers found, each once: Bambu Studio, OrcaSlicer, QIDI Studio,
+// PrusaSlicer and UltiMaker Cura in their usual install folders and the registry
 // (Windows), as application bundles (macOS), on PATH, as Flatpaks and in
 // desktop files (Linux).
 QVector<Slicer> findSlicers(const SlicerSearch& search = SlicerSearch::system());
@@ -78,7 +84,7 @@ QVector<Slicer> findSlicers(const SlicerSearch& search = SlicerSearch::system())
 // The settings of 3D Print (group "print"), remembered between sends.
 struct PrintSettings {
   Slicer slicer;              // none: the first one found
-  QString format = "stl";     // "stl": a file per body; "3mf": one file
+  QString format = "3mf";     // "3mf": one file (the first time, mitcad#655); "stl": a file per body
   QString refinement = "high"; // low, medium, high or custom
   double deviation = 0.01;     // custom: mm
   double angle = 8.0;          // custom: degrees

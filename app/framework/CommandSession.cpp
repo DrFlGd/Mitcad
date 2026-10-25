@@ -5,8 +5,12 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <set>
+#include <string>
+#include <memory>
 #include <utility>
 
+#include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
 #include <Bnd_Box.hxx>
 
@@ -21,6 +25,7 @@
 #include <QtLogging>
 
 #include "Diagnostics.hpp"
+#include "DisplayMeshes.hpp"
 #include "HybridAssembly.hpp"
 #include "Json.hpp"
 #include "ManipulatorOverlay.hpp"
@@ -37,6 +42,9 @@ namespace {
 constexpr int kPreviewDelayMs = 150;
 // Previews kept per command.
 constexpr int kCachedPreviews = 24;
+// A preview shown in the interactive tier is meshed in the final one once
+// no input changed for this long and no drag goes on (mitcad#635).
+constexpr int kRefineDelayMs = 250;
 constexpr double kDegreesPerRadian = 57.29577951308232;
 
 const QColor kFailedColor(0xd0, 0x20, 0x20);
@@ -151,6 +159,10 @@ CommandSession::CommandSession(const CommandDef& def, CommandHost& host, const Q
   m_previewTimer.setInterval(kPreviewDelayMs);
   connect(&m_previewTimer, &QTimer::timeout, this, &CommandSession::runPreview);
   TestSync::watch(&m_previewTimer);
+  m_refineTimer.setSingleShot(true);
+  m_refineTimer.setInterval(kRefineDelayMs);
+  connect(&m_refineTimer, &QTimer::timeout, this, &CommandSession::refinePreview);
+  TestSync::watch(&m_refineTimer);
   // The hover of a tangent chain (mitcad#290); emitted while the view paints.
   connect(&m_host.viewer(), &OcctViewer::hovered, this, &CommandSession::hovered, Qt::QueuedConnection);
   // The point under the mouse, for a command that previews a click there
@@ -159,6 +171,10 @@ CommandSession::CommandSession(const CommandDef& def, CommandHost& host, const Q
 }
 
 CommandSession::~CommandSession() {
+  if (m_proxyShown && m_proxyViewer) {
+    // Gone without finishing (the window closes): no proxy stays drawn.
+    m_proxyViewer->setProvisional(nullptr, {});
+  }
   if (m_presenter != nullptr) {
     m_presenter->setActions({});
   }
@@ -253,6 +269,7 @@ void CommandSession::setDefaults(const InputDef& input, const QString& key) {
     break;
   case InputDef::Type::Selection:
   case InputDef::Type::CutTargets:
+  case InputDef::Type::Note:
     break;
   }
 }
@@ -551,11 +568,13 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     inputsChanged();
   };
   // A value entered with decimal commas shows them as points, as the model
-  // keeps it ("12,5" becomes "12.5 mm"; mitcad#2).
+  // keeps it ("12,5" becomes "12.5 mm"; mitcad#2), and a bare number gets
+  // its unit ("15" becomes "15 mm", mitcad#656, as the value boxes do).
   actions.valueCommitted = [this](const QString& key) {
     const QString text = m_state.text(key).trimmed();
     const QString expression = m_state.expression(key);
-    if (m_done || !std::isfinite(m_state.value(key)) || !text.contains(QLatin1Char(',')) ||
+    const bool bare = parsePlainNumber(text).has_value();
+    if (m_done || !std::isfinite(m_state.value(key)) || (!text.contains(QLatin1Char(',')) && !bare) ||
         expression.isEmpty() || expression == text) {
       return;
     }
@@ -683,6 +702,9 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     actions.textEdited = [this, action](const QString& key, const QString& value) {
       const auto slot = slotOf(key);
       if (slot && slot->def->type == InputDef::Type::Value) {
+        // Typing takes over from a drag: nothing provisional of the drag
+        // stays (mitcad#636).
+        hideDragProxy(QStringLiteral("a value was typed"), true);
         numericInputAction(key, [action, key, value] { action(key, value); });
       } else {
         inputAction([action, key, value] { action(key, value); });
@@ -769,6 +791,21 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
         },
         false);
   };
+  // A note row's button (InputDef::onNoteAction, mitcad#655): once the
+  // model is idle, with the row's state; the inputs that show the model
+  // follow it (CommandDef::modelChanged) and are shown again.
+  actions.noteAction = [this](const QString& key, int index) {
+    inputAction(
+        [this, key, index] {
+          const auto slot = slotOf(key);
+          if (slot && slot->def->onNoteAction) {
+            qDebug().noquote() << QStringLiteral("%1: %2 action %3").arg(m_def.name, key).arg(index);
+            slot->def->onNoteAction(index, scopeOf(*slot), m_host);
+          }
+          refreshInputs();
+        },
+        false);
+  };
   actions.detached = [this] { presenterDetached(); };
   // A link of an inspection's result ("point:x,y,z", Print Analysis'
   // thinnest wall, mitcad#620): the view shows that point of the design,
@@ -814,7 +851,8 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
   if (m_def.inspect) {
     m_sectionBefore = m_host.section();
   }
-  bool handles = static_cast<bool>(m_def.previewMarkers) || static_cast<bool>(m_def.previewMarkersIn);
+  bool handles = static_cast<bool>(m_def.previewMarkers) || static_cast<bool>(m_def.previewMarkersIn) ||
+                 static_cast<bool>(m_def.viewLines);
   for (const Slot& slot : slotsOf(false)) {
     handles = handles || static_cast<bool>(slot.def->manipulator) || static_cast<bool>(slot.def->toggles);
   }
@@ -822,8 +860,15 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     m_manipulators = new ManipulatorOverlay(m_host.viewer(), m_def.name);
     connect(m_manipulators, &ManipulatorOverlay::dragged, this,
             &CommandSession::manipulatorDragged);
-    connect(m_manipulators, &ManipulatorOverlay::dragFinished, this, [this] { schedulePreview(0); });
+    connect(m_manipulators, &ManipulatorOverlay::dragFinished, this, [this](const QString& key) {
+      dragProxyFinished(key);
+      schedulePreview(0);
+      scheduleRefinement();
+    });
     connect(m_manipulators, &ManipulatorOverlay::toggled, this, &CommandSession::toggleElement);
+    // A dimension's or an angle's value box clicked: a field there edits
+    // it (mitcad#656).
+    connect(m_manipulators, &ManipulatorOverlay::valueBoxClicked, this, &CommandSession::openValueBox);
   }
   // Tab steps a choice with a cycle wherever the window has the keyboard
   // (mitcad#375: BUILD's auto length).
@@ -917,6 +962,9 @@ void CommandSession::activate(const QString& key) {
     m_presenter->setActiveSelection(m_active);
   }
   OcctViewer& viewer = m_host.viewer();
+  // A placement input picks the model before the planes in front of it
+  // (mitcad#656).
+  viewer.setPlanesBehind(input != nullptr && input->places);
   if (input == nullptr) {
     viewer.setPickFilter(SelectFilter());
     updateGhosts();
@@ -936,8 +984,15 @@ void CommandSession::activate(const QString& key) {
     viewer.setHoverColor(m_presenter->colorOf(m_active).lighter(130));
   }
   showActiveKinds(input);
-  m_host.showHint(tr("%1: select %2.").arg(m_def.name, input->label.toLower()));
+  m_host.showHint(selectionHint(tr("%1: select %2.").arg(m_def.name, input->label.toLower())));
   updateHoverChain();
+}
+
+QString CommandSession::selectionHint(QString hint) const {
+  if (const InputDef* input = activeInput(); input && !input->keepOnRepick) {
+    hint += tr(" Click a selected item to remove it; ✕ clears this input.");
+  }
+  return hint;
 }
 
 SelectFilter CommandSession::activeKinds(const InputDef* input) const {
@@ -954,8 +1009,23 @@ void CommandSession::showActiveKinds(const InputDef* input) {
     qDebug().noquote() << QStringLiteral("%1 %2 takes now: %3").arg(m_def.name, input->label, selectFilterText(kinds));
   }
   m_activeFilter = kinds;
+  m_shownPickedState = pickedState();
   m_host.setConstructionHidden(input->hidesConstruction && !(m_activeFilter & kConstructionGeometry));
   m_host.inputActivated(input->showsOrigin ? m_activeFilter : m_activeFilter & ~kConstructionGeometry);
+}
+
+QString CommandSession::pickedState() const {
+  QStringList picks;
+  for (const Slot& slot : slotsOf(false)) {
+    if (slot.def->type != InputDef::Type::Selection) {
+      continue;
+    }
+    picks << slot.key;
+    for (const SelectionItem& item : m_state.items(slot.key)) {
+      picks << item.describe();
+    }
+  }
+  return picks.join(QLatin1Char('\n'));
 }
 
 void CommandSession::followActiveKinds() {
@@ -964,6 +1034,11 @@ void CommandSession::followActiveKinds() {
     return;
   }
   if (activeKinds(input) != m_activeFilter) {
+    applyPickFilter(input);
+    showActiveKinds(input);
+  } else if (input->testNow && pickedState() != m_shownPickedState) {
+    // The same kinds, another test after a pick: what a click takes, and
+    // so the pick places, may differ.
     applyPickFilter(input);
     showActiveKinds(input);
   } else {
@@ -1096,6 +1171,9 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
     }
     if (input->onPick && containsEntry(selection, item, resolve)) {
       input->onPick(raw.first(), m_state, m_host);
+      if (input->places && !m_clearedOnce) {
+        m_clearAfterPick = true;
+      }
       if (m_presenter) {
         m_presenter->refresh(m_state);
       }
@@ -1226,6 +1304,11 @@ void CommandSession::updateHighlights() {
     return;
   }
   std::vector<HighlightDisplay> highlights;
+  // An item in two inputs is drawn once, in the first one's colour
+  // (mitcad#656: Align following Reference 1 keeps its edge green).
+  QSet<QString> drawn;
+  // Each sketch read once for its selected curves and points (mitcad#679).
+  std::shared_ptr<void> batch = m_host.itemShapeBatch();
   for (const Slot& slot : slotsOf(true)) {
     if (slot.def->type != InputDef::Type::Selection) {
       continue;
@@ -1236,7 +1319,18 @@ void CommandSession::updateHighlights() {
       if (!onShownBody(item)) {
         continue; // selected still, on a body hidden meanwhile (mitcad#295)
       }
-      highlights.push_back({item, m_host.itemShape(item), color});
+      const QString identity = QStringLiteral("%1|%2|%3|%4")
+                                   .arg(static_cast<int>(item.kind))
+                                   .arg(item.owner, item.name, item.occurrence);
+      if (drawn.contains(identity)) {
+        continue;
+      }
+      drawn.insert(identity);
+      HighlightDisplay shown{item, m_host.itemShape(item), color};
+      if (item.kind == SelectKind::Face || item.kind == SelectKind::Edge) {
+        shown.body = m_host.bodyShape(item.owner);
+      }
+      highlights.push_back(std::move(shown));
     }
   }
   for (const SelectionItem& item : m_previewHighlights) {
@@ -1252,6 +1346,7 @@ void CommandSession::updateHighlights() {
     }
     highlights.push_back({item, m_host.itemShape(item), QColor(0xff, 0x8c, 0x00)});
   }
+  batch.reset();
   m_host.viewer().setHighlights(highlights);
   updateGhosts();
 }
@@ -1308,7 +1403,11 @@ void CommandSession::evaluate(const QString& key) {
   QString problem;
   QString hint;
   QString shown;
-  if (text.isEmpty()) {
+  if (text.isEmpty() && input.autoText) {
+    // Left empty: the model works it out (InputDef::autoText, mitcad#656).
+    m_state.setExpression(key, QString());
+    shown = QStringLiteral("auto");
+  } else if (text.isEmpty()) {
     problem = tr("Enter a value.");
   } else {
     try {
@@ -1335,6 +1434,12 @@ void CommandSession::evaluate(const QString& key) {
     }
   }
   describeParameter(key, rename, text, problem.isEmpty() ? shown : QString());
+  if (problem.isEmpty()) {
+    // The field's own parameter's limits (mitcad#665).
+    if (const QString limit = limitHint(key, text); !limit.isEmpty()) {
+      hint = limit;
+    }
+  }
   if (m_presenter) {
     m_presenter->setInputError(key, problem);
     m_presenter->setValueHint(key, hint);
@@ -1378,6 +1483,7 @@ void CommandSession::inputsChanged() {
   }
   updateManipulators();
   schedulePreview();
+  updateDragProxy(); // still of the inputs as they are (mitcad#636)
   updateHoverChain(); // Tangent Chain turned on or off (mitcad#290)
   updateCursorBox();  // its input shown or hidden, its text (mitcad#375)
   followActiveKinds(); // what the active input takes now (mitcad#394)
@@ -1402,7 +1508,12 @@ void CommandSession::updateManipulators() {
       handles.push_back({QStringLiteral("preview_anchor"), marker.label, point, 0.0});
     }
   }
-  for (const Slot& slot : slotsOf(true)) {
+  for (const Slot& slot : slotsOf(false)) {
+    // The shown inputs' handles, and those that stay while folded away
+    // (InputDef::handleWhenHidden, mitcad#656).
+    if (!isShown(slot) && !slot.def->handleWhenHidden) {
+      continue;
+    }
     if (slot.def->toggles && !m_shownReport.isEmpty()) {
       try {
         for (const Manipulator& toggle : slot.def->toggles(scopeOf(slot), m_host, m_shownReport)) {
@@ -1426,18 +1537,136 @@ void CommandSession::updateManipulators() {
       handle.reset(); // the model could not place it
     }
     if (handle) {
-      handles.push_back({slot.key, slot.def->label, *handle, value});
+      // The value as a box shows it (mitcad#656): the number in the
+      // document's unit, as a drag writes it.
+      QString text;
+      if (handle->valueBox) {
+        switch (slot.def->valueKind) {
+        case ValueKind::Length:
+          text = plain(value / m_host.unitMillimetres(), 4) + QLatin1Char(' ') + m_host.lengthUnit();
+          break;
+        case ValueKind::Angle:
+          text = plain(value * kDegreesPerRadian, 2) + QChar(0x00B0); // a degree sign (mitcad#656)
+          break;
+        case ValueKind::Unitless:
+          text = plain(value, 4);
+          break;
+        }
+      }
+      handles.push_back({slot.key, slot.def->label, *handle, value, text});
+    }
+  }
+  if (m_def.viewLines) {
+    // The command's own lines (mitcad#656: a belt's pitch line).
+    try {
+      m_manipulators->setLines(m_def.viewLines(m_state, m_host));
+    } catch (const std::exception&) {
+      m_manipulators->setLines({});
     }
   }
   m_manipulators->setHandles(std::move(handles));
 }
 
+void CommandSession::openValueBox(const QString& key, const QPoint& at) {
+  if (m_done || m_host.asynchronousCommands() || (m_presenter && !m_presenter->inputEnabled(key))) {
+    return;
+  }
+  const auto slot = slotOf(key);
+  if (!slot || slot->def->type != InputDef::Type::Value) {
+    return;
+  }
+  closeValueBox(true);
+  auto* box = new QLineEdit(&m_host.viewer());
+  box->setObjectName(QStringLiteral("manipulatorValueBox"));
+  // As the value boxes in the view look (ManipulatorOverlay).
+  box->setFixedWidth(96);
+  box->setStyleSheet(QStringLiteral("QLineEdit { background: rgba(255, 255, 255, 245); color: #2b3a4a;"
+                                    " border: 1.5px solid #1f7aff; border-radius: 4px; padding: 1px 5px; }"));
+  box->setText(m_state.text(key));
+  const QWidget* viewer = &m_host.viewer();
+  const QSize size = box->sizeHint().expandedTo(QSize(box->width(), 0));
+  box->move(std::clamp(at.x() - size.width() / 2, 0, std::max(0, viewer->width() - size.width())),
+            std::clamp(at.y() - size.height() / 2, 0, std::max(0, viewer->height() - size.height())));
+  box->installEventFilter(this);
+  connect(box, &QLineEdit::textEdited, this, [this, key](const QString& text) {
+    if (!m_done && m_presenter != nullptr && m_presenter->actions().textEdited) {
+      m_presenter->actions().textEdited(key, text);
+    }
+  });
+  m_valueBox = box;
+  m_valueBoxKey = key;
+  m_valueBoxBefore = m_state.text(key);
+  box->show();
+  box->raise();
+  box->setFocus();
+  box->selectAll();
+  const QPoint centre = box->mapTo(box->window(), box->rect().center());
+  qDebug().noquote() << QStringLiteral("Value box %1 %2 opened: %3 at %4,%5")
+                            .arg(m_def.name, key, box->text())
+                            .arg(centre.x())
+                            .arg(centre.y());
+}
+
+void CommandSession::stepValueBox(bool back) {
+  if (!m_valueBox || !m_manipulators) {
+    return;
+  }
+  const QString from = m_valueBoxKey;
+  closeValueBox(true);
+  const QStringList keys = m_manipulators->boxKeys();
+  const qsizetype at = keys.indexOf(from);
+  if (keys.isEmpty()) {
+    return;
+  }
+  const qsizetype step = back ? keys.size() - 1 : 1;
+  const QString next = keys.at(((at < 0 ? 0 : at) + step) % keys.size());
+  if (const auto centre = m_manipulators->boxCentre(next)) {
+    openValueBox(next, *centre);
+  }
+}
+
+void CommandSession::closeValueBox(bool keep) {
+  if (!m_valueBox) {
+    return;
+  }
+  QLineEdit* box = m_valueBox;
+  m_valueBox = nullptr;
+  const QString key = std::exchange(m_valueBoxKey, QString());
+  if (!keep && !m_done && m_presenter != nullptr && m_presenter->actions().textEdited &&
+      m_state.text(key) != m_valueBoxBefore) {
+    m_presenter->actions().textEdited(key, m_valueBoxBefore);
+  }
+  if (keep && !m_done && m_presenter != nullptr && m_presenter->actions().textEdited) {
+    // A bare number keeps its unit in the panel ("15" is "15 mm").
+    const auto slot = slotOf(key);
+    const QString typed = m_state.text(key).trimmed();
+    if (slot && slot->def->valueKind != ValueKind::Unitless && parsePlainNumber(typed)) {
+      // An angle with a degree sign, a length as "15 mm" (mitcad#656).
+      const QString unit = slot->def->valueKind == ValueKind::Angle ? QString(QChar(0x00B0))
+                                                                    : QLatin1Char(' ') + m_host.lengthUnit();
+      m_presenter->actions().textEdited(key, typed + unit);
+    }
+  }
+  if (keep && !m_done && m_presenter != nullptr && m_presenter->actions().valueCommitted) {
+    m_presenter->actions().valueCommitted(key);
+  }
+  box->removeEventFilter(this);
+  box->hide();
+  box->deleteLater();
+  qDebug().noquote() << QStringLiteral("Value box %1 %2 closed: %3")
+                            .arg(m_def.name, key, m_done ? QString() : m_state.text(key));
+}
+
 void CommandSession::manipulatorDragged(const QString& key, double value) {
   if (m_presenter && !m_presenter->inputEnabled(key)) { return; }
+  // The provisional tool follows at once, also while the model computes
+  // (mitcad#636).
+  dragProxyMoved(key, value);
   if (m_host.modelBusy()) {
     numericInputAction(key, [this, key, value] { manipulatorDragged(key, value); });
     return;
   }
+  supersedePendingNumbers(key);
   ++m_generation;
   const auto slot = slotOf(key);
   if (!slot || m_done) {
@@ -1449,7 +1678,7 @@ void CommandSession::manipulatorDragged(const QString& key, double value) {
     text = plain(value / m_host.unitMillimetres(), 4) + QLatin1Char(' ') + m_host.lengthUnit();
     break;
   case ValueKind::Angle:
-    text = plain(value * kDegreesPerRadian, 2) + QStringLiteral(" deg");
+    text = plain(value * kDegreesPerRadian, 2) + QChar(0x00B0); // as a value box writes it (mitcad#656)
     break;
   case ValueKind::Unitless:
     text = plain(value, 4);
@@ -1505,6 +1734,7 @@ void CommandSession::toggleElement(const QString& key, int element) {
 }
 
 void CommandSession::schedulePreview(int delay) {
+  m_refineTimer.stop();
   if (!m_done && !m_cancelRequested && !m_committing) {
     // Throttle from the first change; continuous input must not postpone
     // the timer forever. A completed job drains its latest input at once.
@@ -1522,7 +1752,9 @@ bool CommandSession::previewReady(QString& message, bool& error) {
       error = false;
       return false;
     }
-    if (input.type == InputDef::Type::Value && std::isnan(m_state.value(slot.key))) {
+    // An empty Auto field is NaN on purpose: the model works it out.
+    if (input.type == InputDef::Type::Value && std::isnan(m_state.value(slot.key)) &&
+        !(input.autoText && m_state.text(slot.key).trimmed().isEmpty())) {
       message = tr("%1: check the value.").arg(input.label);
       error = true;
       return false;
@@ -1558,6 +1790,7 @@ void CommandSession::runInspection() {
   if (m_host.asynchronousCommands()) {
     std::vector<InspectionShape> shapes;
     try {
+      const std::shared_ptr<void> batch = m_host.itemShapeBatch(); // mitcad#679
       for (const Slot& slot : slotsOf(true)) {
         if (slot.def->type != InputDef::Type::Selection) { continue; }
         for (const SelectionItem& item : m_state.items(slot.key)) {
@@ -1647,6 +1880,10 @@ void CommandSession::acceptInspection(const Inspection& result) {
                                                       : result.log);
   m_previewOk = true;
   m_shownKey = QByteArrayLiteral("inspection");
+  // A finished measurement goes into the panel's history (mitcad#648).
+  if (!m_failed && !result.record.picked.isEmpty()) {
+    m_host.inspectionRecorded(m_def, m_state, result);
+  }
   // Commands with their own model commands (mitcad#375): OK applies only
   // what the model would take.
   m_presenter->setOkEnabled(!m_def.apply || !m_failed);
@@ -1750,7 +1987,7 @@ void CommandSession::runPreview() {
     m_failed = false;
     m_presenter->setMessage(QString(), false);
     m_presenter->setOkEnabled(true);
-    m_host.showHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name));
+    m_host.showHint(selectionHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name)));
     updateHighlights();
     return;
   }
@@ -1782,10 +2019,17 @@ void CommandSession::runPreview() {
     m_presenter->setOkEnabled(m_previewOk);
     // An input only the note reads changes no definition (mitcad#562: a
     // pulley's catalogue belt lengths): the note again when it differs.
-    if (m_previewOk && m_def.note && m_def.note(m_state, m_host) != m_shownNote) {
+    const bool rowsChanged = m_previewOk && refreshRowNotes();
+    if (m_previewOk && m_def.note && (rowsChanged || m_def.note(m_state, m_host) != m_shownNote)) {
       m_presenter->setMessage(okMessage(cached.value().report), false);
     }
     resumePendingCommit();
+    // This turn stopped a refinement the preview shown had scheduled (a
+    // release while its job ran, the release's preview turn after it):
+    // schedule it again (mitcad#635, seen in mitcad#636's checks).
+    if (m_previewOk) {
+      scheduleRefinement();
+    }
     return; // already shown
   }
   m_previewCancelled = false;
@@ -1794,6 +2038,13 @@ void CommandSession::runPreview() {
     resumePendingCommit();
     return;
   }
+  // The inputs the preview is computed from: a drag proxy's basis
+  // (mitcad#636).
+  const auto computedFrom = [requested = m_state, structure = m_structureGeneration](Preview preview) {
+    preview.state = requested;
+    preview.structure = structure;
+    return preview;
+  };
   if (m_host.asynchronousPreviews()) {
     const quint64 generation = m_generation;
     const quint64 structure = m_structureGeneration;
@@ -1801,7 +2052,7 @@ void CommandSession::runPreview() {
     m_presenter->setMessage(tr("Computing preview…"), false);
     m_presenter->setOkEnabled(false);
     const bool started = m_host.modelPreviewAsync(key, m_def.name, this,
-        [this, generation, structure, key, built](const CommandHost::AsyncResult& result) {
+        [this, generation, structure, key, built, computedFrom](const CommandHost::AsyncResult& result) {
           if (!asyncPresenterAvailable()) { return; }
           m_asyncPending = false;
           if (m_cancelRequested) {
@@ -1817,7 +2068,7 @@ void CommandSession::runPreview() {
                 result.answer.value(QStringLiteral("status")) == QStringLiteral("ok")) {
               const QString operation = result.answer.value(QStringLiteral("auto_operation")).toObject()
                   .value(QStringLiteral("operation")).toString(built.def.value(QStringLiteral("operation")).toString());
-              showPreview(previewFromReport(result.answer), operation);
+              showPreview(computedFrom(previewFromReport(result.answer)), operation);
               qDebug().noquote() << QStringLiteral("Preview %1: intermediate numeric result").arg(m_def.name);
             }
             schedulePreview(0);
@@ -1829,7 +2080,7 @@ void CommandSession::runPreview() {
             const QJsonObject report = result.error.isEmpty() ? result.answer
                 : QJsonObject{{QStringLiteral("status"), QStringLiteral("error")},
                               {QStringLiteral("error"), result.error}};
-            acceptFeaturePreview(key, built, previewFromReport(report), true);
+            acceptFeaturePreview(key, built, computedFrom(previewFromReport(report)), true);
           }
           resumePendingCommit();
         });
@@ -1849,7 +2100,7 @@ void CommandSession::runPreview() {
     report = {{QStringLiteral("status"), QStringLiteral("error")},
               {QStringLiteral("error"), errorText(error)}};
   }
-  acceptFeaturePreview(key, built, previewFromReport(report), true);
+  acceptFeaturePreview(key, built, computedFrom(previewFromReport(report)), true);
 }
 
 CommandSession::Preview CommandSession::previewFromReport(
@@ -1894,7 +2145,28 @@ CommandSession::Preview CommandSession::previewFromReport(
       preview.removed.push_back(displays[static_cast<std::size_t>(index)]);
     }
     if (const auto tool = m_host.previewToolShape()) {
-      preview.tool = tool->occt();
+      preview.toolShape = tool;
+      // In its feature's component: where that component's occurrences
+      // place it (mitcad#636); unplaced from a model without the list.
+      const QJsonValue instances = preview.report.value(QStringLiteral("tool_instances"));
+      if (instances.isArray()) {
+        for (const QJsonValue& value : instances.toArray()) {
+          const QJsonObject instance = value.toObject();
+          if (instance.value(QStringLiteral("visible")).toBool(true)) {
+            const QJsonArray rows = instance.value(QStringLiteral("transform")).toArray();
+            preview.toolPlacements.push_back(isIdentity(rows) ? gp_Trsf() : trsfOf(rows));
+          }
+        }
+      } else {
+        preview.toolPlacements.push_back(gp_Trsf());
+      }
+      preview.tool = placedTool(tool->occt(), preview.toolPlacements);
+      if (m_def.dragProxy) {
+        // The tool's mesh, which its job made and nothing changes any more
+        // (a stand-in, DisplayMeshes.hpp), copied now that the job is over:
+        // a drag changes the copy (mitcad#636).
+        preview.toolMesh = proxyMeshOf(tool->occt());
+      }
     } else if (preview.report.contains(QStringLiteral("datum"))) {
       // A construction feature shows its plane, axis or point.
       preview.tool = datumShape(preview.report.value(QStringLiteral("datum")).toObject(), 100.0);
@@ -1903,10 +2175,66 @@ CommandSession::Preview CommandSession::previewFromReport(
   return preview;
 }
 
+bool CommandSession::refreshRowNotes() {
+  bool changed = false;
+  for (const InputDef& input : m_def.inputs) {
+    if (input.autoText) {
+      // An empty field's placeholder: what the model works out.
+      QString worked;
+      try {
+        worked = input.autoText(m_state, m_host);
+      } catch (const std::exception&) {
+        worked.clear();
+      }
+      const QString placeholder = worked.isEmpty() ? tr("Auto") : tr("Auto (%1)").arg(worked);
+      const QString autoKey = QStringLiteral("auto:") + input.id;
+      if (m_rowNotes.value(autoKey) != placeholder) {
+        m_rowNotes.insert(autoKey, placeholder);
+        if (m_presenter) {
+          m_presenter->setPlaceholder(input.id, placeholder);
+        }
+      }
+    }
+    if (!input.rowNote) {
+      continue;
+    }
+    QString text;
+    if (!input.visible || input.visible(m_state)) {
+      try {
+        text = input.rowNote(m_state, m_host);
+      } catch (const std::exception&) {
+        text.clear();
+      }
+    }
+    if (m_rowNotes.value(input.id) == text) {
+      continue;
+    }
+    m_rowNotes.insert(input.id, text);
+    changed = true;
+    if (m_presenter) {
+      m_presenter->setValueHint(input.id, text);
+    }
+    if (!text.isEmpty()) {
+      // As plain text: lines (or <br>) joined by "; ", no markup.
+      static const QRegularExpression tags(QStringLiteral("<[^>]*>"));
+      QString plain = text;
+      plain.replace(QStringLiteral("<br>"), QStringLiteral("; ")).replace(QLatin1Char('\n'), QStringLiteral("; "));
+      plain.remove(tags);
+      plain.replace(QStringLiteral("&amp;"), QStringLiteral("&"))
+          .replace(QStringLiteral("&lt;"), QStringLiteral("<"))
+          .replace(QStringLiteral("&gt;"), QStringLiteral(">"))
+          .replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+      qDebug().noquote() << QStringLiteral("Panel %1 %2 note: %3").arg(m_def.name, input.id, plain);
+    }
+  }
+  return changed;
+}
+
 QString CommandSession::okMessage(const QJsonObject& report) {
   // A feature that succeeds with a caveat says so (P9), not in red.
   QStringList message = report.value(QStringLiteral("warnings")).toVariant().toStringList();
   m_shownNote.clear();
+  refreshRowNotes();
   if (m_def.note) {
     // The command's own note first (mitcad#472: a gear's derived values).
     m_shownNote = m_def.note(m_state, m_host);
@@ -1951,10 +2279,11 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
   m_failed = !m_previewOk;
   if (m_previewOk) {
     showPreview(preview, built.def.value(QStringLiteral("operation")).toString());
+    scheduleRefinement();
     // A feature that succeeds with a caveat says so (P9), not in red.
     const QStringList warnings = preview.report.value(QStringLiteral("warnings")).toVariant().toStringList();
     m_presenter->setMessage(okMessage(preview.report), false);
-    m_host.showHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name));
+    m_host.showHint(selectionHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name)));
     qDebug().noquote() << QStringLiteral("Preview %1: ok%2")
                               .arg(m_def.name, warnings.isEmpty()
                                                    ? QString()
@@ -2030,6 +2359,39 @@ void CommandSession::showPreview(const Preview& preview, const QString& operatio
     m_loggedPreviewBodies = logged;
     qDebug().noquote() << QStringLiteral("Preview bodies: %1").arg(logged);
   }
+  // Where the tool is drawn (its box's middle in the design), for UI tests:
+  // placed where its component's occurrences put it (mitcad#636).
+  QString toolAt = QStringLiteral("none");
+  if (!preview.tool.IsNull() && !preview.report.contains(QStringLiteral("datum"))) {
+    Bnd_Box box;
+    BRepBndLib::Add(preview.tool, box);
+    if (!box.IsVoid()) {
+      const gp_XYZ middle = (box.CornerMin().XYZ() + box.CornerMax().XYZ()) / 2.0;
+      const auto coordinate = [](double value) {
+        return QString::number(std::abs(value) < 1e-6 ? 0.0 : value, 'f', 3);
+      };
+      toolAt = QStringLiteral("%1,%2,%3").arg(coordinate(middle.X()), coordinate(middle.Y()), coordinate(middle.Z()));
+      if (m_clearAfterPick) {
+        // The part just placed, clear of the floating panels (mitcad#656).
+        m_clearAfterPick = false;
+        m_clearedOnce = true;
+        if (m_host.viewer().bringClearOfPanels(box)) {
+          // The picks' places again where the view put them once it rests.
+          auto connection = std::make_shared<QMetaObject::Connection>();
+          *connection = connect(&m_host.viewer(), &OcctViewer::cameraRested, this, [this, connection] {
+            disconnect(*connection);
+            if (const InputDef* current = activeInput(); current != nullptr && !m_done) {
+              showActiveKinds(current);
+            }
+          });
+        }
+      }
+    }
+  }
+  if (toolAt != m_loggedPreviewTool) {
+    m_loggedPreviewTool = toolAt;
+    qDebug().noquote() << QStringLiteral("Preview tool at %1").arg(toolAt);
+  }
   // New bodies show as see-through bodies; a tool that joins, cuts or
   // intersects shows over the result, red for a cut; so does
   // a construction feature's datum.
@@ -2042,6 +2404,80 @@ void CommandSession::showPreview(const Preview& preview, const QString& operatio
     viewer.setPreview(preview.tool, OcctViewer::PreviewStyle::Datum);
   } else {
     viewer.setPreview(preview.tool, OcctViewer::PreviewStyle::Add);
+  }
+  exactPreviewShown(preview);
+}
+
+// The preview shown is drawn through stand-ins of the interactive tier
+// (framework/DisplayMeshes, mitcad#635); once a drag has ended and no
+// input changed for a moment, the bodies behind them are meshed in the
+// final tier and drawn instead.
+void CommandSession::scheduleRefinement() {
+  if (!m_done && !(m_manipulators && m_manipulators->isDragging())) {
+    m_refineTimer.start();
+  }
+}
+
+void CommandSession::refinePreview() {
+  if (m_done || m_refining || !m_previewOk || m_previewTimer.isActive() || m_asyncPending || m_committing ||
+      m_cancelRequested || (m_manipulators && m_manipulators->isDragging())) {
+    return;
+  }
+  if (m_host.modelBusy()) {
+    m_refineTimer.start();
+    return;
+  }
+  const auto shown = m_cache.constFind(m_shownKey);
+  if (shown == m_cache.cend()) {
+    return;
+  }
+  std::vector<std::shared_ptr<geometry::Shape>> drawn;
+  for (const BodyDisplay& body : shown.value().bodies) {
+    drawn.push_back(body.shape);
+  }
+  drawn.push_back(shown.value().toolShape);
+  const std::vector<std::shared_ptr<geometry::Shape>> bodies = refinableShapes(drawn);
+  if (bodies.empty()) {
+    return;
+  }
+  const QByteArray key = m_shownKey;
+  qDebug().noquote() << QStringLiteral("Preview %1: refining the display meshes of %2 bodies")
+                            .arg(m_def.name)
+                            .arg(static_cast<qulonglong>(bodies.size()));
+  m_refining = true;
+  const bool started = m_host.refinePreviewDisplay(bodies, this, [this, key](bool refined) {
+    m_refining = false;
+    if (!refined || m_done || key != m_shownKey) {
+      return;
+    }
+    const auto entry = m_cache.find(key);
+    if (entry == m_cache.end()) {
+      return;
+    }
+    Preview& preview = entry.value();
+    const auto own = [](const std::shared_ptr<geometry::Shape>& shape) {
+      std::shared_ptr<geometry::Shape> body = shape && shape->display_interactive() ? shape->stand_in_for() : nullptr;
+      return body && body->display_meshed() ? body : nullptr;
+    };
+    bool changed = false;
+    for (BodyDisplay& body : preview.bodies) {
+      if (const auto meshed = own(body.shape)) {
+        body.shape = meshed;
+        changed = true;
+      }
+    }
+    if (const auto meshed = own(preview.toolShape)) {
+      preview.toolShape = meshed;
+      preview.tool = placedTool(meshed->occt(), preview.toolPlacements);
+      changed = true;
+    }
+    if (changed) {
+      showPreview(preview, m_shownOperation);
+      qDebug().noquote() << QStringLiteral("Preview %1: display meshes refined").arg(m_def.name);
+    }
+  });
+  if (!started) {
+    m_refining = false;
   }
 }
 
@@ -2118,12 +2554,22 @@ int CommandSession::undoDepth() const {
   }
 }
 
-void CommandSession::showSketchPreview(const Built& built) {
+void CommandSession::showSketchPreview(const Built& built, bool keep) {
   const QByteArray key = compactJson(built.def);
-  if (key == m_shownKey && m_appliedDepth >= 0) {
+  if (key == m_shownKey && (m_appliedDepth >= 0 || (m_def.previewAsNew && !keep && m_previewOk))) {
     return;
   }
   takeBackSketchPreview();
+  // The bodies there before, to tell the ones the commands make; an
+  // earlier preview's drawn bodies gone.
+  std::set<std::string> before;
+  if (m_def.previewAsNew && !keep) {
+    const std::vector<BodyDisplay> bodies = m_host.modelBodies();
+    for (const BodyDisplay& body : bodies) {
+      before.insert(body.uid + "@" + body.occurrence);
+    }
+    m_host.viewer().setBodies(bodies);
+  }
   const QJsonArray commands = built.def.contains(QStringLiteral("commands"))
                                   ? built.def.value(QStringLiteral("commands")).toArray()
                                   : QJsonArray{built.def};
@@ -2166,12 +2612,52 @@ void CommandSession::showSketchPreview(const Built& built) {
   if (m_def.sketchPreviewShown) {
     m_def.sketchPreviewShown(m_previewOk ? answer : QJsonObject());
   }
+  if (m_def.previewAsNew && !keep && m_previewOk) {
+    // The parts as a preview (mitcad#656): their bodies kept, the commands
+    // taken back, the bodies drawn as new ones over the design as it is.
+    std::vector<BodyDisplay> made;
+    for (BodyDisplay& body : m_host.modelBodies()) {
+      if (before.count(body.uid + "@" + body.occurrence) == 0) {
+        body.style = BodyDisplay::Style::New;
+        made.push_back(body);
+      }
+    }
+    takeBackSketchPreview();
+    m_shownKey = key;
+    std::vector<BodyDisplay> shown = m_host.modelBodies();
+    Bnd_Box box;
+    for (const BodyDisplay& body : made) {
+      shown.push_back(body);
+      if (body.shape) {
+        BRepBndLib::Add(body.shape->occt().Moved(body.placement), box);
+      }
+    }
+    m_host.viewer().setBodies(shown);
+    qDebug().noquote() << QStringLiteral("Preview %1: %2 new bodies shown as a preview")
+                              .arg(m_def.name)
+                              .arg(static_cast<qlonglong>(made.size()));
+    if (!m_framedNew && !box.IsVoid()) {
+      // Both parts in the view's free area, the first time.
+      m_framedNew = true;
+      m_host.viewer().bringClearOfPanels(box, true);
+    }
+  }
   if (m_previewOk) {
     // What the command says the user is to know before keeping it
     // (Clean Up Projections, mitcad#232), not in red.
     const QStringList warnings = answerWarnings(answer);
-    m_presenter->setMessage(warnings.join(QLatin1Char('\n')), false);
-    m_host.showHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name));
+    QStringList shown = warnings;
+    // The command's own values first, as a feature's (mitcad#656: Belt
+    // Drive's belt).
+    if (m_def.note) {
+      if (const QString note = m_def.note(m_state, m_host); !note.isEmpty()) {
+        shown.prepend(note);
+        qDebug().noquote() << QStringLiteral("Panel %1 note: %2").arg(m_def.name, note);
+      }
+    }
+    refreshRowNotes(); // the rows under the inputs (Belt Drive's belt, mitcad#656)
+    m_presenter->setMessage(shown.join(QLatin1Char('\n')), false);
+    m_host.showHint(selectionHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name)));
     qDebug().noquote() << QStringLiteral("Preview %1: ok%2").arg(m_def.name, warningsLog(warnings));
   } else {
     m_presenter->setMessage(problem, true);
@@ -2222,11 +2708,16 @@ void CommandSession::takeBackSketchPreview() {
 void CommandSession::clearPreview() {
   if (m_def.sketchCommand) {
     takeBackSketchPreview();
+    if (m_def.previewAsNew) {
+      m_host.viewer().setBodies(m_host.modelBodies()); // the parts drawn as a preview gone
+    }
     return;
   }
   if (m_def.modelCommand || m_def.accept) {
     return;
   }
+  m_proxyBasis.reset();
+  hideDragProxy(QStringLiteral("no exact preview is shown"), true);
   m_host.clearModelPreview();
   m_host.viewer().setBodies(m_host.modelBodies());
   m_host.viewer().setPreview(TopoDS_Shape());
@@ -2315,13 +2806,14 @@ void CommandSession::inputAction(std::function<void()> action, bool invalidatesP
   if (invalidatesPreview) {
     ++m_generation;
     ++m_structureGeneration;
+    hideDragProxy(QStringLiteral("an input changed the command's structure"), true);
     // Preserve ordering across a structural edit: earlier numeric slots
     // still drain first, later edits get new slots after this barrier.
     m_pendingNumbers.clear();
     m_commitRequested = false;
   }
   if (m_host.modelBusy()) {
-    if (invalidatesPreview && m_host.asynchronousPreviews() && m_asyncPending) {
+    if (invalidatesPreview && m_host.asynchronousPreviews() && (m_asyncPending || m_refining)) {
       m_host.cancelModelJob();
     }
     m_host.whenIdle(this, [this, action = std::move(action), rejected = std::move(rejected)] {
@@ -2344,8 +2836,14 @@ void CommandSession::numericInputAction(const QString& key, std::function<void()
     m_presenter->setPreviewReport({});
   }
   if (!m_host.modelBusy()) {
+    supersedePendingNumbers(key);
     action();
     return;
+  }
+  if (m_refining) {
+    // A refinement would only hold the new value's preview back; the faces
+    // it meshed are kept for the next one (mitcad#635).
+    m_host.cancelModelJob();
   }
   if (const auto pending = m_pendingNumbers.value(key)) {
     *pending = std::move(action);
@@ -2354,14 +2852,46 @@ void CommandSession::numericInputAction(const QString& key, std::function<void()
   }
   auto pending = std::make_shared<std::function<void()>>(std::move(action));
   m_pendingNumbers.insert(key, pending);
+  m_scheduledNumbers[key].push_back(pending);
   if (timingLogged()) { qDebug() << "Preview numeric queued:" << key << "pending=" << m_pendingNumbers.size(); }
   m_host.whenIdle(this, [this, key, pending] {
     if (m_pendingNumbers.value(key) == pending) { m_pendingNumbers.remove(key); }
+    auto& scheduled = m_scheduledNumbers[key];
+    scheduled.erase(std::remove(scheduled.begin(), scheduled.end(), pending), scheduled.end());
     if (m_done || m_cancelRequested || m_committing) { return; }
-    if (timingLogged()) { qDebug() << "Preview numeric drained:" << key; }
-    (*pending)();
+    if (*pending) {
+      if (timingLogged()) { qDebug() << "Preview numeric drained:" << key; }
+      // Not newer than the values still waiting after it (a structural
+      // barrier between them): they stay.
+      const bool draining = m_drainingNumber;
+      m_drainingNumber = true;
+      (*pending)();
+      m_drainingNumber = draining;
+    } else if (timingLogged()) {
+      qDebug() << "Preview numeric superseded:" << key;
+    }
     schedulePreview(0);
   });
+}
+
+// A value taken at once (the model idle) is newer than any value of the
+// same input still waiting for the model: those must not run after it and
+// put an older value back (mitcad#636: a drag's last move came between a
+// job's end and the drain of its pending move, which then set the value
+// before it again).
+void CommandSession::supersedePendingNumbers(const QString& key) {
+  if (m_drainingNumber) {
+    return;
+  }
+  m_pendingNumbers.remove(key);
+  const auto scheduled = m_scheduledNumbers.find(key);
+  if (scheduled == m_scheduledNumbers.end()) {
+    return;
+  }
+  for (const auto& pending : scheduled.value()) {
+    *pending = {};
+  }
+  m_scheduledNumbers.erase(scheduled);
 }
 
 void CommandSession::structuralInputAction(const QString& key, std::function<void()> action) {
@@ -3013,8 +3543,10 @@ bool CommandSession::commit() {
   }
   if (m_def.sketchCommand) {
     if (m_appliedDepth < 0) {
-      // Its preview was cancelled: OK applies it now.
-      showSketchPreview(m_def.build(m_state, m_host));
+      // Its preview was cancelled, or shown as a preview only
+      // (previewAsNew): OK applies it now.
+      m_shownKey.clear();
+      showSketchPreview(m_def.build(m_state, m_host), true);
       if (m_appliedDepth < 0) {
         qDebug().noquote() << QStringLiteral("%1: OK not done").arg(m_def.name);
         return false;
@@ -3230,6 +3762,33 @@ bool CommandSession::cycleChoice() {
 
 bool CommandSession::eventFilter(QObject* watched, QEvent* event) {
   if (m_done) {
+    return QObject::eventFilter(watched, event);
+  }
+  if (m_valueBox && watched == m_valueBox) {
+    // A handle's value box (mitcad#656): Enter keeps what was typed, Esc
+    // puts the value back; neither reaches the window's OK or Cancel.
+    const auto* key = event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride
+                          ? static_cast<const QKeyEvent*>(event)
+                          : nullptr;
+    const bool closing = key != nullptr && (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter ||
+                                            key->key() == Qt::Key_Escape);
+    // Tab and Shift+Tab: the next or the previous dimension's box.
+    const bool stepping = key != nullptr && (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab);
+    if ((closing || stepping) && event->type() == QEvent::ShortcutOverride) {
+      event->accept();
+      return true;
+    }
+    if (closing) {
+      closeValueBox(key->key() != Qt::Key_Escape);
+      return true;
+    }
+    if (stepping) {
+      stepValueBox(key->key() == Qt::Key_Backtab || key->modifiers().testFlag(Qt::ShiftModifier));
+      return true;
+    }
+    if (event->type() == QEvent::FocusOut) {
+      QTimer::singleShot(0, this, [this] { closeValueBox(true); });
+    }
     return QObject::eventFilter(watched, event);
   }
   QWidget* viewer = &m_host.viewer();
@@ -3505,6 +4064,11 @@ bool CommandSession::rollForward() {
 
 void CommandSession::finish(bool committed) {
   if (m_done) { return; }
+  // Before the checkpoint is restored or released: nothing provisional
+  // stays drawn over what the command leaves (mitcad#636).
+  hideDragProxy(committed ? QStringLiteral("the command was committed") : QStringLiteral("the command was cancelled"),
+                true);
+  m_proxyBasis.reset();
   if (m_host.asynchronousCommands() && m_checkpoint.isString()) {
     if (m_finalizing) { return; }
     m_finalizing = true;
@@ -3558,6 +4122,7 @@ void CommandSession::finish(bool committed) {
     m_cursorBox->hide();
     m_cursorBox->deleteLater();
   }
+  closeValueBox(true);
   m_host.clearModelPreview();
   if (m_manipulators) {
     m_manipulators->hide();
@@ -3565,6 +4130,8 @@ void CommandSession::finish(bool committed) {
   }
   OcctViewer& viewer = m_host.viewer();
   viewer.setPreview(TopoDS_Shape());
+  viewer.setPlanesBehind(false);
+  viewer.setHandleBoxes({}); // the handles' value boxes went with them
   viewer.setHighlights({});
   viewer.setGhosts({});
   viewer.setHoverChain(TopoDS_Shape());
@@ -3575,6 +4142,16 @@ void CommandSession::finish(bool committed) {
   }
   if (m_cancelRequested) { emit cancelFinished(true); }
   emit finished(committed);
+}
+
+void CommandSession::refreshInputs() {
+  if (m_done || m_presenter == nullptr) {
+    return;
+  }
+  if (m_def.modelChanged) {
+    m_def.modelChanged(m_state, m_host);
+  }
+  m_presenter->refresh(m_state);
 }
 
 } // namespace mitcad

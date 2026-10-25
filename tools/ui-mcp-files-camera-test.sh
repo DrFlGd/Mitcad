@@ -10,6 +10,10 @@
 #     document_open opens another design from the folder in place of the
 #     open one (a new handle; the old one refused), and refuses while there
 #     are unsaved changes unless discard is true;
+#   - mitcad#689: a command array is one undo step labelled (agent), a
+#     refused entry undoes the entries before it, results list what changed,
+#     model_export writes a chosen body into the allowed folder, screenshots
+#     come as image blocks or JPEG files of an asked size;
 #   - mitcad#405: ui_camera reads the camera, sets eye, target, up and
 #     height (the reply says where it is), frames a box: two equal blocks
 #     500 mm apart framed one after the other give the same screenshot,
@@ -113,7 +117,8 @@ NEAR='def near(v; e; t): ((v - e) | if . < 0 then -. else . end) <= t;'
 # screenshot file: the 3D view as a PNG.
 screenshot() {
   mcp_tool ui_screenshot '{"max_size": 640}'
-  jq -r '.png_base64' "$WORK/result.json" | base64 -d > "$1"
+  # An MCP image block after the text (mitcad#689).
+  jq -r '.result.content[] | select(.type == "image") | .data' "$WORK/answer.json" | base64 -d > "$1"
   [ -s "$1" ] || ui_fail "no screenshot in $1"
 }
 
@@ -237,6 +242,70 @@ mcp_tool ui_camera '{"frame": "selection"}' true
 expect '.error | contains("selected")' "framing an empty selection is refused"
 mcp_tool ui_camera '{"eye": [0, 0, 0], "target": [0, 0, 0]}' true
 expect '.error | contains("apart")' "an eye on the target is refused"
+
+echo "--- Agent modelling: arrays, compact results, export, screenshots (mitcad#689)"
+mcp_tool ui_state '{}'
+DEPTH=$(jq -r '.undo_depth' "$WORK/result.json")
+mcp_tool model_command "$(jq -cn --arg d "$DOC" '{document: $d, command: [
+  {cmd: "add_parameter", name: "Lid", expression: "30 mm"},
+  {cmd: "add_parameter", name: "Gap", expression: "4 mm"},
+  {cmd: "add_feature", def: {type: "box", plane: {type: "origin", plane: "xy"}, corner: ["-Lid/2", "Gap + 40 mm"],
+   length: "Lid", width: 10, height: 5, operation: "new_body"}}]}')"
+expect '.ran == 3 and (.timeline | not) and ([.changes.features[] | select(.change == "added")] | length == 1)
+  and ([.changes.bodies[] | select(.change == "added")] | length == 1)' "an array of commands runs, the result lists what changed"
+mcp_tool ui_state '{}'
+expect '.undo_depth == ($depth | tonumber) + 1 and (.undo | endswith("(agent)"))' \
+  "the array is one undo step labelled (agent)" --arg depth "$DEPTH"
+mcp_tool model_query "$(jq -cn --arg d "$DOC" '{document: $d, query: {query: "bodies", properties: true}}')"
+expect "$NEAR"' [.result[] | select(near(.bbox.min[0]; -15; 1e-6) and near(.bbox.min[1]; 44; 1e-6))] | length == 1' \
+  "the box is placed by its expressions"
+LID=$(jq -r '[.result[] | select(.bbox.min[1] > 43)][0].uid' "$WORK/result.json")
+mcp_tool model_command "$(jq -cn --arg d "$DOC" --arg b "$LID" '{document: $d, command: {cmd: "set_body_visible", uid: $b, visible: false}}')"
+expect '(.changes.features | length == 0) and ([.changes.bodies[].uid] == [$b]) and (tostring | length < 2048)' \
+  "a command that recomputes nothing answers only its body" --arg b "$LID"
+mcp_tool model_command "$(jq -cn --arg d "$DOC" --arg b "$LID" '{document: $d, command: {cmd: "set_body_visible", uid: $b, visible: true}, timeline: "full"}')"
+expect '(.timeline.features | length > 0) and (.bodies | length == 3)' "timeline: full gives the whole timeline and bodies"
+mcp_tool ui_state '{}'
+DEPTH=$(jq -r '.undo_depth' "$WORK/result.json")
+mcp_tool model_command "$(jq -cn --arg d "$DOC" '{document: $d, command: [
+  {cmd: "add_parameter", name: "Spare", expression: "1 mm"}, {cmd: "add_parameter", name: "Spare", expression: "2 mm"}]}')" true
+expect '.entry == 1 and .applied == false and .undone == 1 and (.error | contains("commands[1]"))' "a refused entry is named"
+mcp_tool ui_state '{}'
+expect '.undo_depth == ($depth | tonumber)' "and the entries before it are undone" --arg depth "$DEPTH"
+
+mcp_tool ui_state '{}'
+MODIFIED=$(jq -r '.modified' "$WORK/result.json")
+mcp_tool model_export "$(jq -cn --arg d "$DOC" --arg b "$LID" '{document: $d, path: "lid.stl", format: "stl", bodies: [$b]}')"
+expect '.exported == true and (.path | endswith("/allowed/lid.stl"))' "model_export writes the chosen body into the allowed folder"
+[ -s "$ALLOWED/lid.stl" ] || ui_fail "lid.stl was not written"
+mcp_tool ui_state '{}'
+expect '.modified == ($modified == "true")' "the export does not change the document" --arg modified "$MODIFIED"
+mcp_tool model_export "$(jq -cn --arg d "$DOC" '{document: $d, path: "lid.stl", format: "stl"}')" true
+expect '.error | contains("already exists")' "an existing file is refused"
+mcp_tool model_export "$(jq -cn --arg d "$DOC" --arg p "$OUTSIDE/lid.step" '{document: $d, path: $p, format: "step"}')" true
+expect '.error | contains("not in a folder agents may use")' "an export outside the folder is refused"
+[ -e "$OUTSIDE/lid.step" ] && ui_fail "a refused export wrote a file outside the folder"
+
+mcp_tool ui_camera '{"frame": "shown", "aspect": 1.5}'
+expect '.framed == "shown" and .aspect == 1.5' "ui_camera frames for a picture's aspect"
+mcp_tool ui_screenshot '{"path": "shots-view.jpg", "format": "jpeg", "quality": 80, "width": 600, "height": 400}'
+expect '.width == 600 and .height == 400 and .format == "jpeg" and (.path | endswith("/allowed/shots-view.jpg"))
+  and (.image_base64 | not)' "ui_screenshot writes a JPEG of the asked size into the allowed folder"
+[ "$(head -c 3 "$ALLOWED/shots-view.jpg" | od -An -tx1 | tr -d ' \n')" = "ffd8ff" ] ||
+  ui_fail "shots-view.jpg is not a JPEG"
+jq -e '[.result.content[] | select(.type == "image")] | length == 0' "$WORK/answer.json" > /dev/null ||
+  ui_fail "a screenshot written to a file still returned the image"
+mcp_tool ui_screenshot '{"path": "shots-view.jpg"}' true
+expect '.error | contains("overwrite")' "an existing screenshot file needs overwrite"
+mcp_tool ui_screenshot '{"aspect": 2, "max_size": 512}'
+expect '.width == 512 and .height == 256 and .mime_type == "image/png"' "aspect renders the view offscreen at that shape"
+jq -e '[.result.content[] | select(.type == "image" and .mimeType == "image/png")] | length == 1' \
+  "$WORK/answer.json" > /dev/null || ui_fail "ui_screenshot did not return an image block"
+echo "ok   the screenshot is an MCP image block"
+
+mcp_tool model_query "$(jq -cn --arg d "$DOC" '{document: $d, query: {query: "print_thickness", minimum: 6}}')"
+expect '(.result.bodies[0] | has("triangles") | not) and .result.thin_triangles > 0' \
+  "print_thickness answers its summary over MCP"
 
 bridge_close
 ui_crashed && ui_fail "the application crashed"

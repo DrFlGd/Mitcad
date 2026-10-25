@@ -152,6 +152,7 @@ function Cards-BelowBar([string]$Description, [int]$Min, [int]$Max) {
   }
   if (-not $entries.ContainsKey('titleRow')) { Ui-Fail "${Description}: no title row in '$line'" }
   if ($entries.ContainsKey('titleCard')) { Ui-Fail "${Description}: a title card in '$line'" }
+  if ($entries.ContainsKey('titleFinishSketch')) { Ui-Fail "${Description}: duplicate Finish Sketch in the title row: '$line'" }
   foreach ($part in @('titleHistory', 'titleTabs', 'titleSearch')) {
     if (-not $entries.ContainsKey($part)) { Ui-Fail "${Description}: no $part in '$line'" }
   }
@@ -225,6 +226,30 @@ function Click-TitleRow($Entries) {
   Ui-ExpectNew 'Selected: 1 face [face F2:' "the click on the title row reached the view: the plate's face"
 }
 
+# Click-PaletteFinish: the Sketch Palette's Finish Sketch, its last row. The
+# palette scrolls in its place, and in session 0's 1024x768 window that row
+# is below the place's edge (mitcad#696): wheel steps over the palette scroll
+# it to its end, and it logs its places again when it scrolls.
+function Click-PaletteFinish {
+  Ui-WheelLogged 'Palette paletteHideAbove' -10
+  Start-Sleep -Milliseconds 300
+  Ui-Sync
+  Ui-ClickLogged 'Palette Finish Sketch'
+}
+
+# Sketch-OnBrowserXY: Create Sketch on XY in part.mitcad, whose Part1:1
+# keeps the origin planes out of the view (mitcad#294): the browser offers
+# them for the pick (mitcad#694), and a click on its XY row starts the sketch.
+function Sketch-OnBrowserXY {
+  Ui-Mark
+  Ui-Key 'alt+s'
+  Ui-ExpectNew 'Browser offers the origin planes' 'the browser offers the origin planes' | Out-Null
+  Start-Sleep -Milliseconds 300
+  Ui-Sync
+  Ui-ClickLogged 'Browser Root/Origin/XY'
+  Ui-ExpectNew 'Sketch started on xy' 'sketch started on xy' | Out-Null
+}
+
 Write-Host '--- 1. Without a choice Floating with Rows; the cards; Docked chosen, Later'
 Ui-StartApp 'chrome-layout' @('--open', $plate) -DefaultChrome
 Ui-ExpectLog "Chrome: floating (the platform's default)" 'Floating without a choice'
@@ -258,8 +283,16 @@ Ui-Step 'first corner at the origin'     { Ui-SketchClick 0 0 }
 Ui-Step 'width 40 (Tab) height 25'       { Ui-Type '40'; Ui-Key 'Tab'; Ui-Type '25' }
 Ui-Step 'confirm (Enter)'                { Ui-Key 'Return' }
 Ui-ExpectLog 'Added rectangle 40 x 25 mm at (0, 0)' 'a rectangle: a change to save'
-Ui-Step 'finish the sketch (Ctrl+Enter)'   { Ui-Key 'ctrl+Return' }
+Cards-BelowBar 'while sketching' 1 100000 | Out-Null
+Ui-Mark
+Ui-Step 'finish the sketch from ribbon'   { Ui-ClickLogged 'Ribbon button sketch.finish' }
 Ui-ExpectLog 'Sketch finished' 'a change to save'
+Ui-Step 'create another sketch'           { Ui-CreateSketch 'alt+s' 'xy' }
+Ui-ExpectNew 'Palette Finish Sketch at' 'palette Finish Sketch is laid out'
+Cards-BelowBar 'in the next sketch' 1 100000 | Out-Null
+Ui-Mark
+Ui-Step 'finish the sketch from palette'  { Click-PaletteFinish }
+Ui-ExpectNew 'Sketch finished' 'the palette still finishes a sketch'
 Choose-Layout 'Home'
 Ui-ExpectNew 'Layout preference: docked (restart asked)' 'a restart asked'
 # The message boxes titled "Mitcad" are new windows (Ui-FocusDialog).
@@ -307,6 +340,15 @@ Write-Host '--- 5. The next start: Docked by the preference; Floating and the Ca
 Ui-StartApp 'chrome-layout-docked-pref' @('--open', $file) -DefaultChrome
 Ui-ExpectLog 'Chrome: docked (the preference)' 'Docked by the preference'
 if (Has-Line 'Floating cards: ') { Ui-Fail 'Floating cards in the Docked layout' }
+Ui-Step 'create a Docked sketch'          { Sketch-OnBrowserXY }
+Ui-ExpectNew 'Palette Finish Sketch at' 'Docked palette finish is laid out'
+Ui-Mark
+Ui-Step 'finish Docked sketch from palette' { Click-PaletteFinish }
+Ui-ExpectNew 'Sketch finished' 'Docked palette still finishes a sketch'
+Ui-Step 'create another Docked sketch'    { Sketch-OnBrowserXY }
+Ui-Mark
+Ui-Step 'finish Docked sketch from ribbon' { Ui-ClickLogged 'Ribbon button sketch.finish' }
+Ui-ExpectNew 'Sketch finished' 'Docked ribbon still finishes a sketch'
 Choose-Layout 'End' 'Home'
 Ui-ExpectNew 'Preferences: browser background card' 'the Card background chosen while Docked'
 Ui-ExpectNew 'Layout preference: floating (restart asked)' 'Floating chosen, a restart asked'

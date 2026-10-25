@@ -2060,7 +2060,16 @@ fn functions_units_and_precedence_translate() {
         false,
     );
     for (alias, _, text, value) in cases {
-        let p = parameter(&report, alias);
+        // `Sum` is a function name in any case (mitcad#663): the alias gets
+        // its sheet's name before it, as a taken name does.
+        let p = if *alias == "Sum" {
+            let p = parameter(&report, "Sheet_Sum");
+            assert!(report.parameters.iter().all(|p| p.name != "Sum"));
+            assert!(p.describe.ends_with("(Sum)"), "{p:?}");
+            p
+        } else {
+            parameter(&report, alias)
+        };
         if text.is_empty() {
             // Not FreeCAD's syntax: no parameter, and why.
             assert_eq!(p.outcome, ExpressionOutcome::Skipped, "{p:?}");

@@ -619,6 +619,7 @@ fn live_catalog_has_only_supported_tools_and_live_handles() {
             "document_list",
             "model_query",
             "model_command",
+            "model_export",
             "document_save",
             "document_open",
             "ui_state",
@@ -667,11 +668,32 @@ fn live_catalog_has_only_supported_tools_and_live_handles() {
             .unwrap()
             .contains("allow")
     );
-    for name in ["document_create", "document_close", "model_export"] {
+    for name in ["document_create", "document_close"] {
         let response = live_response(session.prepare(call(name, json!({}))).unwrap()).unwrap();
         assert_eq!(response["error"]["code"], -32602);
         assert!(session.finish(json!({}), false).is_err());
     }
+    // The live export writes into the folders agents may use (mitcad#689).
+    let export = tools
+        .iter()
+        .find(|tool| tool["name"] == "model_export")
+        .unwrap();
+    assert!(
+        export["description"]
+            .as_str()
+            .unwrap()
+            .contains("allows agents")
+    );
+    assert!(
+        export["inputSchema"]["properties"]["path"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("allows agents")
+    );
+    assert_eq!(
+        export["inputSchema"]["required"],
+        json!(["document", "path", "format"])
+    );
 }
 
 #[test]
@@ -682,6 +704,12 @@ fn live_ui_tools_validate_their_arguments_before_the_application_runs_them() {
         ("ui_log", json!({"limit": "10"})),
         ("ui_screenshot", json!({"max_size": 10})),
         ("ui_screenshot", json!({"window": "yes"})),
+        ("ui_screenshot", json!({"format": "gif"})),
+        ("ui_screenshot", json!({"quality": 0})),
+        ("ui_screenshot", json!({"width": 8, "height": 600})),
+        ("ui_screenshot", json!({"aspect": 20})),
+        ("ui_screenshot", json!({"path": ""})),
+        ("ui_camera", json!({"aspect": 0})),
         ("ui_select", json!({"document": "live-1"})),
         (
             "ui_select",
@@ -728,6 +756,13 @@ fn live_ui_tools_validate_their_arguments_before_the_application_runs_them() {
         ("ui_state", json!({})),
         ("ui_log", json!({"since": 12, "limit": 50})),
         ("ui_screenshot", json!({"window": true, "max_size": 800})),
+        (
+            "ui_screenshot",
+            json!({"path": "shots/view.jpg", "format": "jpeg", "quality": 80, "width": 800,
+                   "height": 600, "overwrite": true}),
+        ),
+        ("ui_screenshot", json!({"aspect": 1.5, "max_size": 1024})),
+        ("ui_camera", json!({"frame": "shown", "aspect": 1.333})),
         (
             "ui_select",
             json!({"document": "live-1", "items": [{"kind": "sketch_curve", "owner": "F4", "name": "c3"}],
@@ -1014,4 +1049,294 @@ fn live_model_command_is_not_an_error_for_a_failure_elsewhere() {
         response["result"]["structuredContent"],
         json!({"documents": []})
     );
+}
+
+// Agent modelling (mitcad#689): command arrays, compact command results,
+// the print_thickness summary and screenshots as image blocks.
+
+#[test]
+fn model_command_takes_an_object_or_an_array_and_a_timeline_mode() {
+    let mut session = ready();
+    let array = json!([
+        {"cmd": "add_parameter", "name": "L", "expression": "40 mm"},
+        {"cmd": "add_parameter", "name": "W", "expression": "20 mm"}
+    ]);
+    for arguments in [
+        json!({"document": "doc1", "command": {"cmd": "recompute"}}),
+        json!({"document": "doc1", "command": array.clone()}),
+        json!({"document": "doc1", "command": array, "timeline": "full"}),
+        json!({"document": "doc1", "command": {"cmd": "recompute"}, "timeline": "none"}),
+    ] {
+        let response = session
+            .handle(call("model_command", arguments.clone()))
+            .unwrap();
+        assert!(response.get("result").is_some(), "{response}");
+        assert_eq!(session.backend.calls.last().unwrap().1, arguments);
+    }
+    for arguments in [
+        json!({"document": "doc1", "command": []}),
+        json!({"document": "doc1", "command": [{"cmd": "recompute"}, 4]}),
+        json!({"document": "doc1", "command": "recompute"}),
+        json!({"document": "doc1", "command": {"cmd": "recompute"}, "timeline": "all"}),
+    ] {
+        let response = session.handle(call("model_command", arguments)).unwrap();
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+    }
+    assert_eq!(session.backend.calls.len(), 4);
+    let tools = catalog::tools();
+    let command = tools
+        .iter()
+        .find(|tool| tool["name"] == "model_command")
+        .unwrap();
+    assert!(
+        !command["description"]
+            .as_str()
+            .unwrap()
+            .contains("not supported through this tool. Script arrays")
+    );
+    assert_eq!(
+        command["inputSchema"]["properties"]["command"]["type"],
+        json!(["object", "array"])
+    );
+}
+
+#[test]
+fn print_thickness_answers_its_summary_over_mcp_unless_triangles_are_asked() {
+    let mut session = ready();
+    session
+        .handle(call(
+            "model_query",
+            json!({"document": "doc1", "query": {"query": "print_thickness", "minimum": 0.4}}),
+        ))
+        .unwrap();
+    assert_eq!(
+        session.backend.calls.last().unwrap().1["query"],
+        json!({"query": "print_thickness", "minimum": 0.4, "triangles": false})
+    );
+    for query in [
+        json!({"query": "print_thickness", "triangles": true, "max_triangles": 100}),
+        json!({"query": "print_overhangs"}),
+        json!({"query": "bodies"}),
+    ] {
+        session
+            .handle(call(
+                "model_query",
+                json!({"document": "doc1", "query": query.clone()}),
+            ))
+            .unwrap();
+        assert_eq!(session.backend.calls.last().unwrap().1["query"], query);
+    }
+    // The live server's query gets the same default.
+    let mut live = ready_live();
+    assert!(matches!(
+        live.prepare(call("model_query", json!({"document": "live-1",
+            "query": {"query": "print_thickness"}}))).unwrap(),
+        PreparedMessage::Tool { arguments, .. }
+            if arguments["query"]["triangles"] == false
+    ));
+}
+
+#[test]
+fn live_screenshots_are_image_blocks_after_their_text() {
+    let mut session = ready_live();
+    assert!(matches!(
+        session
+            .prepare(call("ui_screenshot", json!({"max_size": 640})))
+            .unwrap(),
+        PreparedMessage::Tool { .. }
+    ));
+    let response = session
+        .finish(
+            json!({"format": "png", "mime_type": "image/png", "width": 640, "height": 480,
+                   "bytes": 4, "image_base64": "iVBORw=="}),
+            false,
+        )
+        .unwrap();
+    let result = &response["result"];
+    assert_eq!(result["isError"], false);
+    let content = result["content"].as_array().unwrap();
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0]["type"], "text");
+    let text: Value = serde_json::from_str(content[0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, result["structuredContent"]);
+    assert!(result["structuredContent"].get("image_base64").is_none());
+    assert_eq!(result["structuredContent"]["width"], 640);
+    assert_eq!(
+        content[1],
+        json!({"type": "image", "data": "iVBORw==", "mimeType": "image/png"})
+    );
+    // Written to a file: the path and the size, no image.
+    session
+        .prepare(call(
+            "ui_screenshot",
+            json!({"path": "view.jpg", "format": "jpeg"}),
+        ))
+        .unwrap();
+    let written = json!({"format": "jpeg", "mime_type": "image/jpeg", "path": "/agents/view.jpg",
+                         "bytes": 1234, "width": 640, "height": 480});
+    let response = session.finish(written.clone(), false).unwrap();
+    assert_eq!(response["result"]["content"].as_array().unwrap().len(), 1);
+    assert_eq!(response["result"]["structuredContent"], written);
+}
+
+/// A timeline of `n` features and `bodies` bodies, as the queries answer.
+fn snapshot(features: usize, bodies: usize) -> Value {
+    let features: Vec<Value> = (1..=features)
+        .map(|i| {
+            json!({"uid": format!("F{i}"), "name": format!("Feature{i}"), "type": "extrude",
+                   "suppressed": false, "status": "ok", "error": null, "sketches": [format!("F{}", i + 1000)]})
+        })
+        .collect();
+    let bodies: Vec<Value> = (1..=bodies)
+        .map(|i| {
+            json!({"uid": format!("F{i}.b0"), "name": format!("Body{i}"), "visible": true,
+                   "material": "steel", "appearance": null, "version": format!("{i:032x}")})
+        })
+        .collect();
+    json!({
+        "state": {"features": features.len(), "undo": "Add Feature100", "undo_depth": 100},
+        "timeline": {"marker": features.len(), "features": features},
+        "bodies": bodies
+    })
+}
+
+#[test]
+fn a_command_that_recomputes_nothing_answers_only_what_it_changed() {
+    // About 100 features: set_body_visible changes one body's attributes
+    // and recomputes nothing.
+    let before = snapshot(100, 40);
+    let mut after = before.clone();
+    after["bodies"][3]["visible"] = json!(false);
+    after["state"]["undo"] = json!("Hide Body4");
+    let compact = Value::Object(command_document(
+        TimelineMode::Changed,
+        Some(&before),
+        &after,
+        &[],
+    ));
+    let changes = &compact["changes"];
+    assert_eq!(changes["features"], json!([]));
+    assert_eq!(changes["removed_features"], json!([]));
+    assert_eq!(changes["removed_bodies"], json!([]));
+    let bodies = changes["bodies"].as_array().unwrap();
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(bodies[0]["uid"], "F4.b0");
+    assert_eq!(bodies[0]["change"], "changed");
+    assert_eq!(bodies[0]["visible"], false);
+    assert!(bodies[0].get("version").is_none());
+    assert_eq!(changes["feature_count"], 100);
+    assert_eq!(changes["body_count"], 40);
+    assert_eq!(compact["state"]["undo"], "Hide Body4");
+    assert!(compact.get("timeline").is_none() && compact.get("bodies").is_none());
+    // The old full answer is there when asked for, and much larger.
+    let full = Value::Object(command_document(TimelineMode::Full, None, &after, &[]));
+    assert_eq!(full["timeline"], after["timeline"]);
+    assert_eq!(full["bodies"].as_array().unwrap().len(), 40);
+    assert!(full["bodies"][0].get("version").is_none());
+    let (small, large) = (compact.to_string().len(), full.to_string().len());
+    assert!(
+        small < 1024 && large > 10 * 1024,
+        "compact {small} bytes, full {large}"
+    );
+    let none = Value::Object(command_document(TimelineMode::None, None, &after, &[]));
+    assert_eq!(none, json!({"state": after["state"]}));
+}
+
+#[test]
+fn changes_list_added_changed_recomputed_failed_and_removed_items() {
+    let before = snapshot(5, 3);
+    let mut after = snapshot(5, 3);
+    // F6 added with a body; F2's name changed; F3 recomputed alike; F4
+    // left failed from before; F5 removed; F3's body removed and F1's
+    // changed.
+    let features = after["timeline"]["features"].as_array_mut().unwrap();
+    features[1]["name"] = json!("Renamed");
+    features.remove(4);
+    features.push(
+        json!({"uid": "F6", "name": "Box1", "type": "box", "suppressed": false,
+                         "status": "ok", "error": null}),
+    );
+    let mut before = before;
+    before["timeline"]["features"][3]["status"] = json!("error");
+    after["timeline"]["features"][3]["status"] = json!("error");
+    after["bodies"][0]["version"] = json!("ff");
+    let bodies = after["bodies"].as_array_mut().unwrap();
+    bodies.pop();
+    bodies.push(json!({"uid": "F6.b0", "name": "Body6", "visible": true, "version": "1"}));
+    let compact = Value::Object(command_document(
+        TimelineMode::Changed,
+        Some(&before),
+        &after,
+        &["F3".to_owned(), "F6".to_owned()],
+    ));
+    let changes = &compact["changes"];
+    let listed: Vec<(String, String)> = changes["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["uid"].as_str().unwrap().to_owned(),
+                f["change"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("F2".to_owned(), "changed".to_owned()),
+            ("F3".to_owned(), "recomputed".to_owned()),
+            ("F4".to_owned(), "failed".to_owned()),
+            ("F6".to_owned(), "added".to_owned()),
+        ]
+    );
+    assert_eq!(changes["removed_features"], json!(["F5"]));
+    let bodies: Vec<(&str, &str)> = changes["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["uid"].as_str().unwrap(), b["change"].as_str().unwrap()))
+        .collect();
+    assert_eq!(bodies, [("F1.b0", "changed"), ("F6.b0", "added")]);
+    assert_eq!(changes["removed_bodies"], json!(["F3.b0"]));
+    assert_eq!(changes["marker"], 5);
+}
+
+#[test]
+fn array_entries_stop_on_their_own_failed_features_and_recomputes_name_features() {
+    assert!(entry_failed(
+        &json!({"failed_features": [failed_feature("F5", true)]})
+    ));
+    assert!(!entry_failed(
+        &json!({"failed_features": [failed_feature("F5", false)]})
+    ));
+    assert!(!entry_failed(&json!({"recomputed": 3, "error": null})));
+    assert!(recomputed(&json!({"recomputed": 2})));
+    assert!(!recomputed(&json!({"recomputed": 0})));
+    let times = [
+        json!({"features": [{"uid": "F2", "ms": 1.0}, {"uid": "F3", "ms": 2.0}], "ms": 3.0}),
+        json!({"features": [{"uid": "F3", "ms": 1.0}, {"uid": "F4", "ms": 1.0}], "ms": 2.0}),
+    ];
+    assert_eq!(evaluated_features(&times), ["F2", "F3", "F4"]);
+    assert_eq!(TimelineMode::of(&json!({})), Ok(TimelineMode::Changed));
+    assert_eq!(
+        TimelineMode::of(&json!({"timeline": "full"})),
+        Ok(TimelineMode::Full)
+    );
+    assert_eq!(
+        TimelineMode::of(&json!({"timeline": "none"})),
+        Ok(TimelineMode::None)
+    );
+    assert!(TimelineMode::of(&json!({"timeline": "all"})).is_err());
+    assert!(TimelineMode::Changed.needs_before() && !TimelineMode::Full.needs_before());
+}
+
+#[test]
+fn the_validator_takes_a_list_of_types() {
+    let schema = json!({"type": ["object", "array"], "items": {"type": "object"}, "minItems": 1});
+    assert!(catalog::validate(&json!({"cmd": "x"}), &schema, "command").is_ok());
+    assert!(catalog::validate(&json!([{"cmd": "x"}]), &schema, "command").is_ok());
+    assert!(catalog::validate(&json!([]), &schema, "command").is_err());
+    assert!(catalog::validate(&json!([1]), &schema, "command").is_err());
+    assert!(catalog::validate(&json!("x"), &schema, "command").is_err());
 }

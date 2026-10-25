@@ -95,6 +95,30 @@ mod mounts;
 pub use mounts::{
     GridPlace, Inserted, MountAt, MountFrame, MountInput, MountPlan, MountPreview, MountSource,
 };
+// Materials as objects, component default materials (mitcad#640).
+mod materials;
+pub use materials::{AppearanceChoice, DeletedMaterial, MaterialSource};
+// Printer and process profiles, the Print property sets and what a body
+// prints with (mitcad#640, part 3).
+mod print_settings;
+pub use print_settings::{EffectivePrint, PrintFrom, PrintTarget, print_key_name};
+// The design's copies of library materials and profiles (mitcad#640, part
+// 4).
+mod print_library;
+pub use print_library::LibraryUpdate;
+// Importing a slicer's print settings (mitcad#640, part 5).
+mod print_import;
+pub use print_import::read_print_file;
+// Materials and print profiles listed, edited and chosen where they live
+// (mitcad#655).
+mod library_items;
+pub(crate) use library_items::{library_kind, writable_library};
+// Measurement objects: measurements kept in the design (mitcad#649).
+mod measurements;
+pub use measurements::{MEASUREMENT_COLORS, MeasureKind, MeasurePick, Measurement, NewMeasurement};
+// The parameters exported to and imported from CSV (mitcad#666).
+mod parameters_csv;
+pub use parameters_csv::{CsvAction, CsvImport, CsvLimits, CsvRowOutcome};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -115,6 +139,7 @@ pub use views::NamedView;
 
 use crate::appearance::Appearance;
 use crate::assembly::Assembly;
+use crate::expr::ParamLimits;
 use crate::expr::{
     LengthUnit, ParamSpec, Unit, is_valid_name, value_to_expression, with_decimal_points,
 };
@@ -258,6 +283,16 @@ pub struct DocState {
     /// Own property types and the properties of components, occurrences
     /// and bodies (mitcad#496).
     pub(crate) properties: crate::properties::PropertyStore,
+    /// The document's own materials (mitcad#640), in the order they were
+    /// made; one with a built-in's id takes its place.
+    pub(crate) materials: Vec<crate::material::Material>,
+    /// Default materials of components (C0: the root's), by component.
+    pub(crate) component_materials: BTreeMap<ComponentUid, String>,
+    /// The design's printer and process profiles (mitcad#640, part 3), in
+    /// the order they were made.
+    pub(crate) print_profiles: Vec<crate::print_profile::PrintProfile>,
+    /// Measurement objects (mitcad#649), in the order they were added.
+    pub(crate) measurements: Vec<Measurement>,
 }
 
 impl Default for DocState {
@@ -288,6 +323,10 @@ impl Default for DocState {
             motion_studies: Vec::new(),
             contact_sets: Vec::new(),
             properties: Default::default(),
+            materials: Vec::new(),
+            component_materials: BTreeMap::new(),
+            print_profiles: Vec::new(),
+            measurements: Vec::new(),
         }
     }
 }
@@ -882,6 +921,10 @@ pub(crate) fn check_components(
     if let FeatureDef::PatternAtPoints(def) = &entry.def {
         return def.check_components(assembly, features, entry);
     }
+    // A move's points and axes may be picked in occurrences (mitcad#699).
+    if let Some(spec) = entry.def.move_spec() {
+        return spec.check_components(assembly, features, entry);
+    }
     // Joints use geometry of the components their occurrences place
     // (mitcad#55).
     if let Some(result) = crate::joints::check_components(assembly, features, entry) {
@@ -969,7 +1012,10 @@ pub(crate) fn resolve_value(
             }
             if let Some(id) = params.find(text.trim()) {
                 let param = params.get(id).expect("found");
-                if !fits_slot(param.unit(), unit) {
+                // A design from before mitcad#662 may use a length parameter
+                // in a count slot (its load warning says so); the slot keeps
+                // it until it is changed.
+                if !fits_slot(param.unit(), unit) && old != Some(&id) {
                     return Err(invalid(format!(
                         "{slot}: parameter '{}' is {}, not {}",
                         param.name(),
@@ -1177,6 +1223,12 @@ pub struct PreviewReport {
     /// new placement in the design. An occurrence inside a moved one is
     /// listed too.
     pub placements: Vec<(Vec<OccurrenceUid>, crate::transform::Transform)>,
+    /// Where the tool body (`tool`) is in the design (mitcad#636): the
+    /// tool is in its feature's component's coordinates, so one entry per
+    /// occurrence of that component (the root: one, unplaced), each path
+    /// from the root, its placement in the design and whether every
+    /// occurrence on the path is shown. Empty without a tool.
+    pub tool_instances: Vec<(Vec<OccurrenceUid>, crate::transform::Transform, bool)>,
 }
 
 struct Preview<S> {
@@ -1190,12 +1242,14 @@ struct Preview<S> {
 pub(crate) type ResultVersions = (Vec<(FeatureUid, Option<u128>)>, Vec<(BodyUid, u128)>);
 
 /// An undo or redo step: the command's label and the state on the other
-/// side of it, with that state's revision.
+/// side of it, with that state's revision, and the library files the
+/// command wrote (mitcad#655), which undo and redo write back.
 #[derive(Clone)]
 struct Step {
     label: String,
     state: DocState,
     revision: u64,
+    files: Vec<library_items::FileWrite>,
 }
 
 /// Definition/history retained while an asynchronous frontend command is
@@ -1262,7 +1316,27 @@ pub struct Document<K: Kernel> {
     /// The component BUILD places parts in while a timber frame drives the
     /// fasteners of its own component (mitcad#522). Runtime context only.
     build_host_override: Option<ComponentUid>,
+    /// The last answers of the `sketch` query with what they were made
+    /// from (mitcad#679), the newest first. Runtime context only.
+    sketch_answers: std::sync::Mutex<Vec<SketchAnswer>>,
 }
+
+/// A `sketch` query's answer with what it was made from (mitcad#679): the
+/// sketch's definition (held, so that a changed one is another entry, see
+/// [`Document::known_sketch_answer`]), its last evaluation's status and
+/// version, its warnings and the parameters (names, expressions, values,
+/// limits).
+pub(crate) struct SketchAnswer {
+    uid: FeatureUid,
+    entry: Arc<FeatureEntry>,
+    result: Option<(FeatureStatus, Option<crate::recompute::Version>)>,
+    warnings: Vec<String>,
+    params: Parameters,
+    answer: String,
+}
+
+/// How many sketches' answers a document keeps.
+const SKETCH_ANSWERS: usize = 4;
 
 impl<K: Kernel> Document<K> {
     /// An empty document; it is not modified (there is nothing to save).
@@ -1302,6 +1376,7 @@ impl<K: Kernel> Document<K> {
             policy_checks: false,
             policy_suspended: false,
             build_host_override: None,
+            sketch_answers: Default::default(),
         }
     }
 
@@ -1545,6 +1620,7 @@ impl<K: Kernel> Document<K> {
             policy_checks: false,
             policy_suspended: self.policy_suspended,
             build_host_override: None,
+            sketch_answers: Default::default(),
         })
     }
 
@@ -1890,6 +1966,107 @@ impl<K: Kernel> Document<K> {
         crate::sketch::project::with_moved(def, &output.moved)
     }
 
+    /// The solve of a sketch's last evaluation when it is the solve of its
+    /// definition with the parameters' values now (mitcad#679): the
+    /// evaluation succeeded, was made from this very definition (the one
+    /// the cache keeps with it, else by fingerprint) and read the values
+    /// the parameters have now. The
+    /// `sketch` query then shows it instead of solving again; the solve
+    /// is the same, as the same definition and values always solve the
+    /// same. None for a sketch with projections (its evaluation solves
+    /// what its links follow, the query the definition as it evaluated),
+    /// and when anything differs: the caller solves.
+    pub(crate) fn evaluated_solve(
+        &self,
+        sketch: FeatureUid,
+    ) -> Option<Arc<crate::sketch::solve::Solved>> {
+        let entry = self.feature(sketch)?;
+        let FeatureDef::Sketch(def) = &entry.def else {
+            return None;
+        };
+        if !def.projections.is_empty() {
+            return None;
+        }
+        let result = self.result.result(sketch)?;
+        if !result.status.is_ok() {
+            return None;
+        }
+        let output = result.output.as_ref()?;
+        let solved = &output.sketch.as_ref()?.value.solved;
+        let params = &self.state.parameters;
+        let same_values = output.reads.iter().all(|read| match read {
+            // A number's bits, a text's hash (mitcad#664).
+            crate::recompute::Read::Param(id, bits) => params.read_bits(*id) == *bits,
+            _ => true,
+        });
+        // The definition it was made from, as the cache keeps it (a rename
+        // changes no definition), else by its fingerprint.
+        let same_def = match self.cache.definition_of(sketch, output) {
+            Some(made_from) => *made_from == entry.def,
+            None => crate::recompute::def_fingerprint(&entry.def, params) == output.def_fp,
+        };
+        (same_values && same_def).then(|| solved.clone())
+    }
+
+    /// What a `sketch` query's answer is made from now: the sketch's entry,
+    /// its last evaluation's status and version, and its warnings.
+    #[allow(clippy::type_complexity)]
+    fn sketch_answer_inputs(
+        &self,
+        sketch: FeatureUid,
+    ) -> Option<(
+        &Arc<FeatureEntry>,
+        Option<(&FeatureStatus, Option<crate::recompute::Version>)>,
+        &[String],
+    )> {
+        let entry = self.state.features.iter().find(|f| f.uid == sketch)?;
+        let result = self
+            .result
+            .result(sketch)
+            .map(|r| (&r.status, r.output.as_ref().map(|o| o.version)));
+        Some((entry, result, self.warnings(sketch)))
+    }
+
+    /// The `sketch` query's last answer for `sketch` while nothing it is
+    /// made from changed (mitcad#679): the same definition (the entry
+    /// itself: an edit makes a new one, as the answer holds the old), the
+    /// same evaluation, warnings and parameters. The application asks it
+    /// several times per refresh, and a large sketch's answer takes long.
+    pub(crate) fn known_sketch_answer(&self, sketch: FeatureUid) -> Option<String> {
+        let (entry, result, warnings) = self.sketch_answer_inputs(sketch)?;
+        let answers = self.sketch_answers.lock().ok()?;
+        answers
+            .iter()
+            .find(|a| {
+                a.uid == sketch
+                    && Arc::ptr_eq(&a.entry, entry)
+                    && a.result.as_ref().map(|(s, v)| (s, *v)) == result
+                    && a.warnings == warnings
+                    && a.params == self.state.parameters
+            })
+            .map(|a| a.answer.clone())
+    }
+
+    /// Keeps a `sketch` query's answer for [`Self::known_sketch_answer`].
+    pub(crate) fn keep_sketch_answer(&self, sketch: FeatureUid, answer: &str) {
+        let Some((entry, result, warnings)) = self.sketch_answer_inputs(sketch) else {
+            return;
+        };
+        let kept = SketchAnswer {
+            uid: sketch,
+            entry: entry.clone(),
+            result: result.map(|(s, v)| (s.clone(), v)),
+            warnings: warnings.to_vec(),
+            params: self.state.parameters.clone(),
+            answer: answer.to_owned(),
+        };
+        if let Ok(mut answers) = self.sketch_answers.lock() {
+            answers.retain(|a| a.uid != sketch);
+            answers.insert(0, kept);
+            answers.truncate(SKETCH_ANSWERS);
+        }
+    }
+
     // Commands.
 
     /// Runs a command on a copy of the state; on success the copy becomes
@@ -2000,6 +2177,7 @@ impl<K: Kernel> Document<K> {
             label,
             state: std::mem::replace(&mut self.state, next),
             revision: std::mem::replace(&mut self.revision, revision),
+            files: Vec::new(),
         });
         self.redo.clear();
         self.preview = None;
@@ -2226,7 +2404,8 @@ impl<K: Kernel> Document<K> {
 
     /// Adds a user parameter with an expression, such as `d1 * 2 + 5 mm`.
     /// Without a unit, it gets one for the expression's value: the
-    /// document's length unit, degrees, or none.
+    /// document's length unit, degrees, none, or `Text` for a text
+    /// (`'6qt'`, mitcad#664).
     pub fn add_parameter_expression(
         &mut self,
         name: &str,
@@ -2234,16 +2413,36 @@ impl<K: Kernel> Document<K> {
         unit: Option<Unit>,
         comment: &str,
     ) -> Result<(), ModelError> {
+        self.add_parameter_with_limits(name, expression, unit, comment, ParamLimits::default())
+    }
+
+    /// [`Document::add_parameter_expression`] with limits (mitcad#665):
+    /// the parameter's value is its expression's result clamped to them,
+    /// or, strict, refused outside them.
+    pub fn add_parameter_with_limits(
+        &mut self,
+        name: &str,
+        expression: &str,
+        unit: Option<Unit>,
+        comment: &str,
+        limits: ParamLimits,
+    ) -> Result<(), ModelError> {
         self.apply(|state| {
             let unit = match unit {
                 Some(unit) => unit,
+                // A text expression makes a text parameter (mitcad#664).
+                None if crate::parameters::expression_is_text(&state.parameters, expression) => {
+                    Unit::TEXT
+                }
                 None => {
                     let dims = expression_dims(&state.parameters, expression)?;
                     unit_for(dims, &state.parameters.context())
                         .ok_or_else(|| invalid(format!("'{expression}' has no unit; give one")))?
                 }
             };
-            let spec = ParamSpec::user(name, expression, unit).with_comment(comment);
+            let spec = ParamSpec::user(name, expression, unit)
+                .with_comment(comment)
+                .with_limits(limits);
             state.parameters.add(spec, None)?;
             Ok((format!("Add Parameter {name}"), ()))
         })
@@ -2262,7 +2461,13 @@ impl<K: Kernel> Document<K> {
     /// no command at all.
     pub fn set_parameter(&mut self, name: &str, value: f64) -> Result<(), ModelError> {
         let id = self.param_id(name)?;
-        if self.state.parameters.value(id) == Some(value) {
+        // A limited value is the same only when its result was too.
+        let unchanged = self
+            .state
+            .parameters
+            .get(id)
+            .is_some_and(|p| p.value() == value && p.unclamped() == value);
+        if unchanged {
             return Ok(());
         }
         self.apply(|state| {
@@ -2300,6 +2505,48 @@ impl<K: Kernel> Document<K> {
             Ok((format!("Change {name}"), names, recompute))
         })?;
         Ok(changed)
+    }
+
+    /// Changes a parameter's limits (mitcad#665) and, when given, its
+    /// expression and unit in the same undo step, so a new expression is
+    /// checked against the new limits. Returns the parameters whose values
+    /// changed; the same limits and expression are no command at all.
+    pub fn set_parameter_limits(
+        &mut self,
+        name: &str,
+        limits: ParamLimits,
+        expression: Option<&str>,
+        unit: Option<Unit>,
+    ) -> Result<Vec<String>, ModelError> {
+        let id = self.param_id(name)?;
+        let param = self.state.parameters.get(id).expect("found");
+        let unit = unit.unwrap_or(param.unit());
+        let expression = expression.map_or_else(
+            || param.expression().to_owned(),
+            |e| with_decimal_points(e).into_owned(),
+        );
+        if param.limits() == &limits && param.expression() == expression && param.unit() == unit {
+            return Ok(Vec::new());
+        }
+        if unit != param.unit() {
+            self.state.check_unit_change(id, unit)?;
+        }
+        let label = if param.limits() == &limits {
+            format!("Change {name}")
+        } else {
+            format!("Change Limits of {name}")
+        };
+        self.apply_with(|state| {
+            let changed = state
+                .parameters
+                .redefine(id, &expression, unit, Some(limits))?;
+            let names = changed
+                .iter()
+                .map(|id| state.parameters.name(*id))
+                .collect::<Vec<_>>();
+            let recompute = !changed.is_empty();
+            Ok((label, names, recompute))
+        })
     }
 
     pub fn set_parameter_comment(&mut self, name: &str, comment: &str) -> Result<(), ModelError> {
@@ -2896,6 +3143,13 @@ impl<K: Kernel> Document<K> {
                 return Err(error);
             }
         };
+        // The library files the step's command wrote go back too
+        // (mitcad#655); a file that cannot be written keeps the step.
+        if let Err(error) = library_items::write_files(&step.files, back) {
+            let from = if back { &mut self.undo } else { &mut self.redo };
+            from.push(step);
+            return Err(error);
+        }
         let label = step.label.clone();
         let current = self.restore(step);
         if back {
@@ -2915,6 +3169,7 @@ impl<K: Kernel> Document<K> {
             label: step.label,
             state: std::mem::replace(&mut self.state, step.state),
             revision: std::mem::replace(&mut self.revision, step.revision),
+            files: step.files,
         }
     }
 
@@ -2941,9 +3196,15 @@ impl<K: Kernel> Document<K> {
         if self.undo.len() <= depth {
             return;
         }
-        // The state and its revision stay: only the steps in between go.
+        // The state and its revision stay: only the steps in between go,
+        // the library files they wrote joining the first (mitcad#655).
+        let files: Vec<library_items::FileWrite> = self.undo[depth..]
+            .iter_mut()
+            .flat_map(|step| std::mem::take(&mut step.files))
+            .collect();
         self.undo.truncate(depth + 1);
         self.undo[depth].label = label.to_owned();
+        self.undo[depth].files = files;
         self.redo.clear();
     }
 
@@ -3135,6 +3396,35 @@ impl<K: Kernel> Document<K> {
             .iter()
             .map(|i| (i.path.clone(), i.body))
             .collect();
+        let tool = result
+            .result(uid)
+            .and_then(|r| r.output.as_ref())
+            .is_some_and(|o| o.tool.is_some());
+        // The tool's component in each of its occurrences (mitcad#636).
+        let tool_component = state.entry(uid).map(|f| f.component).filter(|_| tool);
+        let tool_instances = match tool_component {
+            Some(component) => assembly
+                .instances(
+                    &|o| {
+                        result
+                            .placements
+                            .get(&o)
+                            .copied()
+                            .unwrap_or(crate::transform::Transform::IDENTITY)
+                    },
+                    &|c| {
+                        if c == component {
+                            vec![BodyUid::new(uid, 0)]
+                        } else {
+                            Vec::new()
+                        }
+                    },
+                )
+                .into_iter()
+                .map(|i| (i.path, i.transform, i.visible))
+                .collect(),
+            None => Vec::new(),
+        };
         let report = PreviewReport {
             sheet_states: crate::sheet::state_query(&result, None),
             uid,
@@ -3177,11 +3467,9 @@ impl<K: Kernel> Document<K> {
                 .filter(|body| !result.bodies.contains_key(body))
                 .copied()
                 .collect(),
-            tool: result
-                .result(uid)
-                .and_then(|r| r.output.as_ref())
-                .is_some_and(|o| o.tool.is_some()),
+            tool,
             placements: self.moved_occurrences(&state, &result),
+            tool_instances,
         };
         self.preview = Some(Preview { uid, state, result });
         Ok(report)

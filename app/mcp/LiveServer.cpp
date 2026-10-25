@@ -45,6 +45,8 @@ struct LiveServer::State {
     bool authenticated = false;
     // Initialized an MCP session: an agent is connected (mitcad#265).
     bool initialized = false;
+    bool initializeAccepted = false;
+    QString displayName;
     rust::Box<LiveMcpSession> session = new_live_mcp_session();
   };
 
@@ -61,14 +63,14 @@ struct LiveServer::State {
   // The window shows whether agents are connected and can disconnect them
   // (mitcad#265).
   void updateAgents() {
-    int count = 0;
+    QStringList names;
     for (const auto& client : clients) {
       if (client->initialized && client->socket && client->socket->state() == QAbstractSocket::ConnectedState) {
-        ++count;
+        names << client->displayName;
       }
     }
     if (window) {
-      window->setMcpAgents(count, [this] { disconnectAll(); });
+      window->setMcpAgents(names, [this] { disconnectAll(); });
     }
   }
 
@@ -113,16 +115,28 @@ struct LiveServer::State {
       const auto plan = QJsonDocument::fromJson(QByteArray::fromStdString(planText)).object();
       if (plan.contains(QStringLiteral("response"))) {
         const auto response = plan.value(QStringLiteral("response"));
+        const auto request = QJsonDocument::fromJson(message).object();
         if (!response.isNull()) {
           // The Rust dispatcher serializes IDs losslessly, including u64.
           write(client, response.toString().toUtf8() + '\n');
-          if (!client.initialized &&
-              QJsonDocument::fromJson(message).object().value(QStringLiteral("method")).toString() ==
+          if (!client.initializeAccepted &&
+              request.value(QStringLiteral("method")).toString() ==
                   QStringLiteral("initialize") &&
               QJsonDocument::fromJson(response.toString().toUtf8()).object().contains(QStringLiteral("result"))) {
-            client.initialized = true;
-            updateAgents();
+            client.initializeAccepted = true;
+            QString name = request.value(QStringLiteral("params")).toObject()
+                .value(QStringLiteral("clientInfo")).toObject().value(QStringLiteral("name")).toString();
+            for (QChar& character : name) if (!character.isPrint()) character = QLatin1Char(' ');
+            client.displayName = name.simplified().left(80);
+            if (client.displayName.isEmpty()) client.displayName = QObject::tr("Unnamed client");
           }
+        } else if (!client.initialized && client.initializeAccepted &&
+                   request.value(QStringLiteral("jsonrpc")).toString() == QStringLiteral("2.0") &&
+                   !request.contains(QStringLiteral("id")) &&
+                   (!request.contains(QStringLiteral("params")) || request.value(QStringLiteral("params")).isObject()) &&
+                   request.value(QStringLiteral("method")).toString() == QStringLiteral("notifications/initialized")) {
+          client.initialized = true;
+          updateAgents();
         }
         return;
       }
@@ -246,7 +260,7 @@ LiveServer::LiveServer(MainWindow* window, QObject* parent)
 LiveServer::~LiveServer() {
   m_state->listener.close();
   if (m_state->window) {
-    m_state->window->setMcpAgents(0, {});
+    m_state->window->setMcpAgents({}, {});
   }
   for (const auto& client : m_state->clients) {
     if (client->socket) {

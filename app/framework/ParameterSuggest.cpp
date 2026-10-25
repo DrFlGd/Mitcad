@@ -23,15 +23,13 @@ bool isNameStart(QChar c) { return c.isLetter() || c == QLatin1Char('_'); }
 bool isNameChar(QChar c) { return c.isLetterOrNumber() || c == QLatin1Char('_'); }
 
 // The model's reserved words (core/model/src/expr: units.rs UNIT_NAMES,
-// ast.rs FUNCTIONS and Constant, mod.rs UNSUPPORTED_NAMES).
+// ast.rs FUNCTIONS and Constant, mod.rs UNSUPPORTED_NAMES). Units and the
+// constant E are reserved as written.
 const QSet<QString>& reservedNames() {
   static const QSet<QString> names = [] {
     QSet<QString> all;
-    for (const char* name :
-         {"um", "micron", "mm", "cm", "m", "km", "in", "inch", "ft", "foot", "yd", "mi", "mil", "rad", "deg", "grad",
-          "sin", "cos", "tan", "asin", "acos", "atan", "atan2", "sinh", "cosh", "tanh", "asinh", "acosh", "atanh",
-          "sqrt", "abs", "sign", "exp", "ln", "log", "floor", "ceil", "round", "min", "max", "pow", "if", "and",
-          "or", "not", "PI", "E", "random", "Gravity", "SpeedOfLight"}) {
+    for (const char* name : {"um", "micron", "mm", "cm", "m", "km", "in", "inch", "ft", "foot", "yd", "mi", "mil",
+                             "rad", "deg", "grad", "E"}) {
       all.insert(QString::fromLatin1(name));
     }
     all.insert(QStringLiteral("µm")); // micro sign
@@ -40,6 +38,38 @@ const QSet<QString>& reservedNames() {
     return all;
   }();
   return names;
+}
+
+// Function names, PI and the unsupported names are reserved in any case
+// (mitcad#663: `Max`, `SUM`, `pi`); kept in lower case.
+const QSet<QString>& reservedNamesInAnyCase() {
+  static const QSet<QString> names = [] {
+    QSet<QString> all;
+    for (const char* name :
+         {"sin",     "cos",     "tan",     "asin",    "acos",   "atan",    "atan2",     "sinh",     "cosh",
+          "tanh",    "asinh",   "acosh",   "atanh",   "sqrt",   "abs",     "sign",      "exp",      "ln",
+          "log",     "floor",   "ceil",    "round",   "min",    "max",     "pow",       "if",       "and",
+          "or",      "not",     "ceiling", "roundup", "mround", "trunc",   "rounddown", "int",      "mod",
+          "even",    "odd",     "sum",     "average", "product", "median", "clamp",     "quotient", "ifs",
+          "switch",  "choose",  "iferror", "let",     "value",  "radians", "degrees",   "pi",       "random",
+          "gravity", "speedoflight"}) {
+      all.insert(QString::fromLatin1(name));
+    }
+    return all;
+  }();
+  return names;
+}
+
+// ASCII letters in lower case, others as they are, as the model compares
+// names in any case.
+QString asciiLower(const QString& name) {
+  QString lower = name;
+  for (QChar& c : lower) {
+    if (c.unicode() < 128) {
+      c = c.toLower();
+    }
+  }
+  return lower;
 }
 
 // The first character before `at` that is not white space, or a null
@@ -69,6 +99,8 @@ QString article(ParameterKind kind) {
     return tr("An angle");
   case ParameterKind::Unitless:
     return tr("A number without a unit");
+  case ParameterKind::Text:
+    return tr("A text");
   case ParameterKind::Length:
     break;
   }
@@ -109,6 +141,9 @@ ParameterKind kindOfUnit(const QString& unit) {
   if (u.isEmpty()) {
     return ParameterKind::Unitless;
   }
+  if (u.compare(QStringLiteral("Text"), Qt::CaseInsensitive) == 0) {
+    return ParameterKind::Text;
+  }
   if (u == QStringLiteral("rad") || u == QStringLiteral("deg") || u == QStringLiteral("grad") ||
       u == QStringLiteral("°")) {
     return ParameterKind::Angle;
@@ -122,13 +157,17 @@ QString parameterKindName(ParameterKind kind) {
     return tr("angle");
   case ParameterKind::Unitless:
     return tr("number");
+  case ParameterKind::Text:
+    return tr("text");
   case ParameterKind::Length:
     break;
   }
   return tr("length");
 }
 
-bool isReservedName(const QString& name) { return reservedNames().contains(name); }
+bool isReservedName(const QString& name) {
+  return reservedNames().contains(name) || reservedNamesInAnyCase().contains(asciiLower(name));
+}
 
 bool isValidParameterName(const QString& name) {
   if (name.isEmpty() || !isNameStart(name.front())) {
@@ -206,7 +245,10 @@ QString expressionPart(const QString& text) {
 }
 
 QString kindProblem(ParameterKind field, ParameterKind parameter) {
-  if (parameter == ParameterKind::Unitless || parameter == field) {
+  // A number's field takes a unitless parameter; a text and a number
+  // never stand for each other (mitcad#664).
+  const bool text = field == ParameterKind::Text || parameter == ParameterKind::Text;
+  if (parameter == field || (parameter == ParameterKind::Unitless && !text)) {
     return QString();
   }
   return tr("%1: this field takes a %2").arg(article(parameter), parameterKindName(field));

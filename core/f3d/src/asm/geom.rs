@@ -403,6 +403,16 @@ pub enum IntGeom {
         /// The approximation's knots (summary form; empty otherwise).
         params: Vec<f64>,
     },
+    /// A `blend_int_cur` stored with its approximation on a rolling-ball
+    /// blend: the approximation, how far it may be from the curve (its fit
+    /// tolerance, model units), and the curve as the blend along its
+    /// parameter curve ([`IntGeom::OnSurface`]), for where the
+    /// approximation is too far off (mitcad#622).
+    Approximated {
+        approx: Bs3Curve,
+        fit: f64,
+        exact: Box<IntGeom>,
+    },
     Unsupported(String),
 }
 
@@ -585,8 +595,9 @@ pub enum SplineGeom {
     HelixLine(Box<HelixLine>),
     /// `helix_spl_circ`: a circular arc swept along a helix.
     HelixCircle(Box<HelixCircle>),
-    /// `rb_blend_spl_sur` stored without its approximation: the rolling
-    /// ball's definition (mitcad#621).
+    /// `rb_blend_spl_sur` (revision-gated layout): the rolling ball's
+    /// definition (mitcad#621), with its stored approximation if any
+    /// (mitcad#622).
     RollingBall(Box<RollingBall>),
     /// `sum_spl_sur` stored without its approximation: `S(u, v) = a(u) +
     /// b(v) - origin` (mitcad#621).
@@ -614,8 +625,7 @@ pub struct BlendSide {
     pub contact: Option<Bs2Curve>,
 }
 
-/// `rb_blend_spl_sur` (revision-gated layout) without its approximation:
-/// a ball of radius `|offsets[0]|` whose centre runs along the `spine` (the
+/// `rb_blend_spl_sur` (revision-gated layout): a ball of radius `|offsets[0]|` whose centre runs along the `spine` (the
 /// slice curve) touching both supports. The surface's `u` runs across the
 /// section from the first side's contact (0) to the second's (1), its `v`
 /// is the spine's parameter.
@@ -625,9 +635,14 @@ pub struct RollingBall {
     pub spine: AsmCurve,
     /// The two signed offsets (the radius on each side).
     pub offsets: [f64; 2],
-    /// The spine parameters the surface spans: the summary's v knots, or
-    /// the v interval of a record stored with neither (tail form 2).
+    /// The spine parameters the surface spans: the v knots of the stored
+    /// approximation or of its summary, or the v interval of a record
+    /// stored with neither (tail form 2).
     pub v_range: [f64; 2],
+    /// The stored approximation (tail form 0), if any, and how far it may
+    /// be from the surface (its fit tolerance, model units; mitcad#622).
+    pub approx: Option<Box<Bs3Surface>>,
+    pub fit: f64,
 }
 
 /// Upper bound for nested `ref` and embedded definitions.
@@ -746,6 +761,9 @@ pub fn int_curve_subtype(file: &AsmFile, pos: usize, depth: usize) -> Result<(St
             match (form, c.peek()) {
                 (_, Some(Token::Ident(k))) if k == "nubs" || k == "nurbs" => {
                     match bs3_curve(&mut c)? {
+                        Some(b) if name == "blend_int_cur" || name == "bldcur" => {
+                            blend_curve(file, &mut c, depth, &name, b)
+                        }
                         Some(b) => IntGeom::BSpline(b),
                         None => IntGeom::Unsupported(format!("{name} without a B-spline")),
                     }
@@ -804,6 +822,38 @@ fn curve_on_surface(
             "{name} without an approximation, a support surface and its parameter curve"
         )),
     })
+}
+
+/// A `blend_int_cur` stored with its approximation `approx` (the cursor
+/// after it): with its fit tolerance and, where its support is a
+/// rolling-ball blend and its parameter curve on it is stored, the curve as
+/// that blend along the parameter curve (a contact curve of the ball, an
+/// iso-parameter line of the blend; mitcad#622). Otherwise, or where the
+/// rest does not read, the approximation alone.
+fn blend_curve(
+    file: &AsmFile,
+    c: &mut Cursor,
+    depth: usize,
+    name: &str,
+    approx: Bs3Curve,
+) -> IntGeom {
+    let fit = match c.double() {
+        Ok(fit) => fit,
+        Err(_) => return IntGeom::BSpline(approx),
+    };
+    match curve_on_surface(file, c, depth, name, Vec::new()) {
+        Ok(
+            exact @ IntGeom::OnSurface {
+                chart: Chart::Procedural(_),
+                ..
+            },
+        ) => IntGeom::Approximated {
+            approx,
+            fit,
+            exact: Box::new(exact),
+        },
+        _ => IntGeom::BSpline(approx),
+    }
 }
 
 fn unit3(v: P3) -> P3 {
@@ -990,8 +1040,9 @@ fn sum_surface(file: &AsmFile, c: &mut Cursor, depth: usize) -> Result<Option<Sp
 /// Reads a revision-gated `rb_blend_spl_sur` after its revision integer
 /// (the layout of the published format notes): two sides, the slice
 /// (spine) curve, the two offsets, the radius selector, the u and v
-/// ranges, the shape fields and the shared surface tail. `None` when it
-/// stores its approximation (tail form 0), which is then the surface.
+/// ranges, the shape fields and the shared surface tail: its stored
+/// approximation and fit tolerance (tail form 0), the summary of one (1)
+/// or neither (2). `None` when tail form 0 holds no approximation.
 fn rolling_ball(file: &AsmFile, c: &mut Cursor, depth: usize) -> Result<Option<RollingBall>> {
     let side = |c: &mut Cursor| -> Result<BlendSide> {
         let kind = c.string()?.to_string();
@@ -1024,8 +1075,20 @@ fn rolling_ball(file: &AsmFile, c: &mut Cursor, depth: usize) -> Result<Option<R
     c.double()?;
     c.double()?;
     c.int()?;
+    let mut approx = None;
+    let mut fit = 0.0;
     let v_range = match c.enumeration()? {
-        0 => return Ok(None),
+        // The approximation and its fit tolerance (mitcad#622: it may be
+        // a tenth of a millimetre off the surface).
+        0 => {
+            let Some(s) = bs3_surface(c)? else {
+                return Ok(None);
+            };
+            fit = c.double()?;
+            let range = [s.v_knots[0], s.v_knots[s.v_knots.len() - 1]];
+            approx = Some(Box::new(s));
+            range
+        }
         // The summary: the approximation's u and v knots, its fit
         // tolerance, closures and singularities.
         1 => {
@@ -1054,6 +1117,8 @@ fn rolling_ball(file: &AsmFile, c: &mut Cursor, depth: usize) -> Result<Option<R
         spine,
         offsets,
         v_range,
+        approx,
+        fit,
     }))
 }
 
@@ -1236,8 +1301,10 @@ pub fn spline_surface_subtype(
             }
         }
         _ => {
-            // A rolling ball stored without its approximation (revision-
-            // gated layout): its definition (mitcad#621).
+            // A rolling ball (revision-gated layout): its definition
+            // (mitcad#621), with its approximation where stored
+            // (mitcad#622); a sum surface stored without its
+            // approximation.
             let mut definition = Ok(None);
             if let Some(Token::Int(_)) = c.peek() {
                 match name.as_str() {
@@ -1366,7 +1433,7 @@ pub fn surface_record(file: &AsmFile, record: usize) -> Result<AsmSurface> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::asm::writer::Writer;
 
@@ -1806,12 +1873,50 @@ mod tests {
     /// and the tail in the given form (1 the summary, 2 none), then the
     /// face's ranges.
     fn summary_rolling_ball(w: &mut Writer, form: i32, first_side: impl FnOnce(&mut Writer)) {
-        w.record("spline-surface")
-            .head()
-            .bool(false)
-            .sub_start()
-            .ident("rb_blend_spl_sur")
-            .int(20900);
+        w.record("spline-surface").head().bool(false);
+        rolling_ball_subtype(w, form, first_side);
+        w.bool(true).dbl(0.0).bool(true).dbl(1.0);
+        w.bool(true).dbl(2.0).bool(true).dbl(7.0);
+        w.bool(false).bool(false).bool(false).end();
+    }
+
+    /// The subtype of [`summary_rolling_ball`] (braces included); form 0
+    /// stores the approximation (the bilinear patch over u in [0, 1], v in
+    /// [0, 10] of the poles (0, 0, 2) (2, 0, 0) (0, 10, 2) (2, 10, 0)) and
+    /// its fit tolerance 0.0043 (mitcad#622).
+    fn rolling_ball_subtype(w: &mut Writer, form: i32, first_side: impl FnOnce(&mut Writer)) {
+        rolling_ball_subtype_with(w, form, [-2.0, -2.0], first_side);
+    }
+
+    /// A file of a face (record 2, without loops) on a rolling-ball blend
+    /// (record 1) stored with its approximation, of fit tolerance 0.0043
+    /// (0.043 mm in cm), with these offsets (mitcad#622).
+    pub(crate) fn coarse_blend_face_file(offsets: [f64; 2]) -> AsmFile {
+        file_with(|w| {
+            w.record("spline-surface").head().bool(false);
+            rolling_ball_subtype_with(w, 0, offsets, floor_side);
+            w.bool(false).bool(false).bool(false).bool(false);
+            w.bool(false).bool(false).bool(false).end();
+            w.record("face")
+                .head()
+                .ptr(-1)
+                .ptr(-1)
+                .ptr(-1)
+                .ptr(-1)
+                .ptr(1)
+                .bool(false)
+                .bool(false)
+                .end();
+        })
+    }
+
+    fn rolling_ball_subtype_with(
+        w: &mut Writer,
+        form: i32,
+        offsets: [f64; 2],
+        first_side: impl FnOnce(&mut Writer),
+    ) {
+        w.sub_start().ident("rb_blend_spl_sur").int(20900);
         rolling_ball_side(w, first_side);
         rolling_ball_side(w, |w| {
             w.str("blend_support_surface");
@@ -1823,7 +1928,7 @@ mod tests {
             .vec([0.0, 1.0, 0.0])
             .bool(false)
             .bool(false);
-        w.dbl(-2.0).dbl(-2.0).en(-1);
+        w.dbl(offsets[0]).dbl(offsets[1]).en(-1);
         w.bool(true)
             .dbl(0.0)
             .bool(true)
@@ -1831,7 +1936,34 @@ mod tests {
             .bool(false)
             .bool(false);
         w.int(1).dbl(0.05).dbl(0.01).int(1).en(form);
-        if form == 1 {
+        if form == 0 {
+            w.ident("nubs")
+                .int(1)
+                .int(1)
+                .en(0)
+                .en(0)
+                .en(0)
+                .en(0)
+                .int(2)
+                .int(2);
+            w.dbl(0.0)
+                .int(1)
+                .dbl(1.0)
+                .int(1)
+                .dbl(0.0)
+                .int(1)
+                .dbl(10.0)
+                .int(1);
+            for p in [
+                [0.0, 0.0, 2.0],
+                [2.0, 0.0, 0.0],
+                [0.0, 10.0, 2.0],
+                [2.0, 10.0, 0.0],
+            ] {
+                w.dbl(p[0]).dbl(p[1]).dbl(p[2]);
+            }
+            w.dbl(0.0043);
+        } else if form == 1 {
             w.int(3).dbl(0.0).dbl(0.5).dbl(1.0);
             w.int(3).dbl(0.0).dbl(5.0).dbl(10.0);
             w.dbl(0.01);
@@ -1839,14 +1971,13 @@ mod tests {
             w.bool(true).dbl(0.0).bool(true).dbl(1.0);
             w.bool(true).dbl(0.0).bool(true).dbl(10.0);
         }
-        w.en(0).en(0).en(0).en(0);
+        if form != 0 {
+            w.en(0).en(0).en(0).en(0);
+        }
         for _ in 0..6 {
             w.int(0);
         }
         w.bool(false).int(0).int(0).int(0).sub_end();
-        w.bool(true).dbl(0.0).bool(true).dbl(1.0);
-        w.bool(true).dbl(2.0).bool(true).dbl(7.0);
-        w.bool(false).bool(false).bool(false).end();
     }
 
     #[test]
@@ -1889,6 +2020,7 @@ mod tests {
                 BlendSupport::Surface(AsmSurface::Plane { normal, .. }) if *normal == [1.0, 0.0, 0.0]
             ));
             assert!(rb.sides.iter().all(|s| s.contact.is_none()));
+            assert!(rb.approx.is_none());
         }
         // A ball rolling on an edge (a circle) on its first side.
         let f = file_with(|w| {
@@ -1915,6 +2047,104 @@ mod tests {
             &rb.sides[0].support,
             BlendSupport::Curve(AsmCurve::Ellipse { ratio, .. }) if *ratio == 1.0
         ));
+    }
+
+    fn floor_side(w: &mut Writer) {
+        w.str("blend_support_surface");
+        embedded_plane(w, [0.0; 3], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
+        w.ident("null_curve");
+    }
+
+    #[test]
+    fn decodes_rolling_balls_with_their_approximation() {
+        // mitcad#622: the definition, and the approximation with its fit
+        // tolerance; the surface spans the approximation's v.
+        let f = file_with(|w| summary_rolling_ball(w, 0, floor_side));
+        let s = surface_record(&f, 1).unwrap();
+        let AsmSurface::Spline {
+            geom: SplineGeom::RollingBall(rb),
+            ranges,
+            ..
+        } = s
+        else {
+            panic!("{s:?}")
+        };
+        assert_eq!(ranges, [[Some(0.0), Some(1.0)], [Some(2.0), Some(7.0)]]);
+        assert_eq!(rb.offsets, [-2.0, -2.0]);
+        assert_eq!(rb.v_range, [0.0, 10.0]);
+        assert_eq!(rb.fit, 0.0043);
+        let approx = rb.approx.expect("the approximation");
+        assert_eq!((approx.nu, approx.nv), (2, 2));
+        assert_eq!(approx.ctrl[1], [2.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn decodes_contact_curves_of_rolling_balls_with_their_approximation() {
+        // mitcad#622: a blend_int_cur stored with its approximation (fit
+        // tolerance 0.0043) on such a blend, whose parameter curve on it
+        // (u = 1 over v in [2, 7]) is stored: the approximation, its fit
+        // tolerance and the curve as the blend along the parameter curve.
+        let f = file_with(|w| {
+            w.record("intcurve-curve")
+                .head()
+                .bool(false)
+                .sub_start()
+                .ident("blend_int_cur")
+                .int(20900)
+                .en(0);
+            w.ident("nubs")
+                .int(1)
+                .en(0)
+                .int(2)
+                .dbl(2.0)
+                .int(1)
+                .dbl(7.0)
+                .int(1);
+            w.dbl(2.0).dbl(2.0).dbl(0.0).dbl(2.0).dbl(7.0).dbl(0.0);
+            w.dbl(0.0043);
+            w.ident("spline").bool(false);
+            rolling_ball_subtype(w, 0, floor_side);
+            w.bool(false).bool(false).bool(false).bool(false);
+            w.ident("null_surface");
+            w.ident("nubs")
+                .int(1)
+                .en(0)
+                .int(2)
+                .dbl(2.0)
+                .int(1)
+                .dbl(7.0)
+                .int(1);
+            w.dbl(1.0).dbl(2.0).dbl(1.0).dbl(7.0);
+            w.ident("nullbs")
+                .bool(false)
+                .bool(false)
+                .int(0)
+                .int(0)
+                .int(0)
+                .int(0)
+                .bool(true);
+            w.sub_end().bool(false).bool(false).end();
+        });
+        let c = curve_record(&f, 1).unwrap();
+        let AsmCurve::Int {
+            subtype,
+            geom: IntGeom::Approximated { approx, fit, exact },
+            ..
+        } = c
+        else {
+            panic!("{c:?}")
+        };
+        assert_eq!(subtype, "blend_int_cur");
+        assert_eq!(fit, 0.0043);
+        assert_eq!(approx.ctrl[1], [2.0, 7.0, 0.0, 1.0]);
+        let IntGeom::OnSurface { chart, pcurve, .. } = *exact else {
+            panic!("{exact:?}")
+        };
+        assert!(matches!(
+            chart,
+            Chart::Procedural(s) if matches!(&*s, AsmSurface::Spline { geom: SplineGeom::RollingBall(_), .. })
+        ));
+        assert_eq!(pcurve.ctrl, vec![[1.0, 2.0, 1.0], [1.0, 7.0, 1.0]]);
     }
 
     #[test]

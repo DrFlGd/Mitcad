@@ -12,8 +12,13 @@
 #   3. Change Parameters: a change computed with the progress dialog over
 #      the Parameters window, cancelled there (the parameter, the volume and
 #      the undo steps stay), then done; undo.
-#   4. Editing a feature: its preview cancelled (OK computes the edit
-#      itself), a preview cancelled and another input previewed again.
+#   4. Editing a feature: its preview computes without a progress dialog
+#      and the window takes input meanwhile (mitcad#634); Esc cancels the
+#      preview with the command (nothing shown, nothing edited); OK while
+#      a preview computes waits for it and makes the edit; a newer choice
+#      cancels the preview, which is made again for it; a number typed
+#      while a preview computes replaces the pending value without a
+#      cancel and is previewed after it.
 #   5. --open at start-up: the dialog shows before the window; cancelled,
 #      the window starts with an empty document.
 #   6. Undo that computes (its results gone from the cache after eight
@@ -23,13 +28,19 @@
 #      and a change computes on them; Help > Diagnostics (Clear Memory,
 #      Export Report); Preferences' Cache: Clear, and the store off.
 #   8. A long kernel operation (P7e), without the test delay: the preview
-#      of a modelled thread and OK of its edit, each cancelled while OCCT
-#      sweeps and cuts the groove, stop within a second of the request;
-#      then OK computes the thread.
+#      of a modelled thread, cancelled with Esc while OCCT sweeps and cuts
+#      the groove, stops within a second of the request; OK while its
+#      preview computes makes the thread.
 #   9. The wait cursor (mitcad#268): every wait's "Wait cursor on" has
 #      its "off" (the progress dialog's or the end's), none is left on
 #      once idle; a wait nested in a wait (a test hook) with its progress
 #      dialog; a cursor left on (a test hook) is cleared once idle.
+#  10. A preview interrupted with its panel open (the worker control of
+#      the in-process test driver, tools/ui-scripts/
+#      compute-interrupted-preview.mitcad-ui: the window has no control
+#      that stops only a preview): it shows nothing; OK computes the edit
+#      itself, in its progress dialog, cancelled there inside the kernel;
+#      each cancel stops within a second; then OK computes the thread.
 #
 # The result store is off (ui-test-lib.sh) but in part 7.
 #
@@ -37,6 +48,8 @@
 # dialog (--no-native-dialogs), so a path can be typed into it.
 # Usage: tools/ui-compute-test.sh
 # check-all sources: tools/cli
+# check-all sources: app/framework/CommandSession.cpp app/framework/DocumentSession.cpp app/framework/TestDriver.cpp
+# check-all sources: tools/ui-scripts/compute-interrupted-preview.mitcad-ui
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
@@ -144,6 +157,32 @@ no_new() {
   echo "ok   $2"
 }
 
+# none_before "text" "later" description: since the mark, the text was not
+# logged before the first line with "later" (which was logged).
+none_before() {
+  local lines
+  lines=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -nF -m1 -- "$2" | cut -d: -f1)
+  [ -n "$lines" ] || ui_fail "$3: '$2' not in the log since the mark"
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | head -n "$lines" | grep -qF -- "$1" && ui_fail "$3"
+  echo "ok   $3"
+}
+
+# stopped_soon label: the job named label stopped within a second of its
+# cancel request (both logged since the mark: the progress dialog's Cancel
+# or, for a job without one such as a preview, the cancel itself).
+stopped_soon() {
+  local requested stopped
+  ui_expect_new "Computing $1 cancelled after" "$1 cancelled" 30
+  requested=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
+    sed -n "s/.*Computing $1: cancel requested after \([0-9]*\) ms.*/\1/p" | tail -1)
+  stopped=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
+    sed -n "s/.*Computing $1 cancelled after \([0-9]*\) ms.*/\1/p" | tail -1)
+  [ -n "$requested" ] && [ -n "$stopped" ] || ui_fail "$1: no times of the cancel logged"
+  [ $((stopped - requested)) -lt 1000 ] ||
+    ui_fail "$1 stopped $((stopped - requested)) ms after the cancel request (at $requested ms)"
+  echo "ok   $1 stopped $((stopped - requested)) ms after the cancel request (at $requested ms)"
+}
+
 # expect_volume_change mm3 description: Body1's volume changed by that much
 # (the last change logged since the mark).
 expect_volume_change() {
@@ -231,7 +270,10 @@ ui_step "undo again (Ctrl+Z)"            ui_key ctrl+z
 sleep 1
 no_new "Undo: " "the cancelled change made no undo step"
 
-echo "--- Editing a feature: its preview cancelled, OK computes the edit"
+# A feature's preview computes in the background without a progress dialog
+# (mitcad#634): the steps below that give input while it computes are not
+# ui_step, which would wait for it.
+echo "--- Editing a feature: its preview computes without a dialog, Esc cancels it with the command"
 ui_mark
 ui_step "edit Extrude1 (double-click)"   ui_double_click_logged "Timeline Extrude1"
 ui_expect_new "Editing F2 with Extrude" "editing Extrude1"
@@ -239,30 +281,61 @@ ui_expect_new "Panel Extrude input distance at" "its panel"
 ui_wait_idle # the panel's first preview (1.5 s here) ends before the mark
 ui_mark
 ui_step "distance 25"                    ui_type_in "Panel Extrude input distance" "25"
-cancel_job preview
-ui_expect_new "Preview Extrude: cancelled" "the preview was cancelled"
-no_new "Preview Extrude: ok" "no preview shown"
-ui_focus_main
-ui_mark
-ui_step "OK (Enter)"                     ui_key Return
-ui_expect_new "Computing edit_feature done in" "OK computed the edit" 10
-ui_expect_new "Edited F2" "Extrude1 edited"
-ui_expect_new "Body Body1 (F2.b0): volume" "the volume changed"
+ui_expect_new "Computing preview started" "the preview is a job"
+ui_key Escape # Esc while the preview computes
+ui_expect_new "Computing preview: cancel requested after" "Esc asks the preview to stop"
+ui_expect_new "Computing preview cancelled after" "the preview stopped" 10
+ui_expect_new "Command Extrude cancelled" "the command cancelled with it"
+no_new "Progress dialog shown: preview" "no progress dialog for the preview"
+no_new "Preview Extrude: ok" "nothing previewed"
+sleep 1
+no_new "Edited F2" "nothing edited"
+no_new "Body Body1 (F2.b0): volume" "the volume stays"
 
-echo "--- A preview cancelled, and made again when an input changes"
+echo "--- OK while the preview computes: the edit waits for it"
 ui_mark
 ui_step "edit Extrude1 (double-click)"   ui_double_click_logged "Timeline Extrude1"
 ui_expect_new "Editing F2 with Extrude" "editing Extrude1 again"
 ui_wait_idle # the panel's first preview ends before the mark
 ui_mark
+ui_step "distance 25"                    ui_type_in "Panel Extrude input distance" "25"
+ui_expect_new "Computing preview started" "the preview computes"
+ui_key Return # OK while the preview computes
+ui_expect_new "Computing preview done in" "the preview ran to its end" 10
+ui_expect_new "Edited F2" "Extrude1 edited" 10
+ui_expect_new "Body Body1 (F2.b0): volume" "the volume changed"
+no_new "Computing preview cancelled" "OK did not cancel the preview"
+no_new "Progress dialog shown: preview" "no progress dialog for the preview"
+
+echo "--- A preview cancelled by a newer choice, and made again for it"
+ui_mark
+ui_step "edit Extrude1 (double-click)"   ui_double_click_logged "Timeline Extrude1"
+ui_expect_new "Editing F2 with Extrude" "editing Extrude1 a third time"
+ui_wait_idle # the panel's first preview ends before the mark
+ui_mark
 ui_step "distance 30"                    ui_type_in "Panel Extrude input distance" "30"
-cancel_job preview
-ui_expect_new "Preview Extrude: cancelled" "the preview was cancelled"
-ui_focus_main
+ui_expect_new "Computing preview started" "the preview computes"
+ui_choose "Panel Extrude input direction" 2 # Symmetric, while the preview computes
+ui_expect_new "Computing preview cancelled after" "the newer choice cancelled the preview" 10
+ui_expect_new "Extrude: Direction = Symmetric" "Symmetric chosen"
+ui_expect_new "Preview Extrude: ok" "previewed again" 10
+none_before "Preview Extrude: ok" "Computing preview cancelled after" "the cancelled preview showed nothing"
+none_before "Preview Extrude: intermediate" "Computing preview cancelled after" "nor its intermediate result"
+no_new "Progress dialog shown: preview" "no progress dialog for the previews"
+
+echo "--- A number typed while the preview computes: no cancel, previewed after it"
+ui_wait_idle
 ui_mark
 ui_step "distance 31"                    ui_type_in "Panel Extrude input distance" "31"
-ui_expect_new "Computing preview done in" "previewed again" 10
-ui_expect_new "Preview Extrude: ok" "the preview shown"
+ui_expect_new "Computing preview started" "the preview computes"
+ui_type_in "Panel Extrude input distance" "32" # while the preview computes
+ui_expect_new "Preview Extrude: ok" "the latest value previewed" 10
+ui_wait_idle
+[ "$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -c 'Computing preview started$')" -ge 2 ] ||
+  ui_fail "the number typed during the preview was not previewed after it"
+echo "ok   previewed again after the first one"
+no_new "Computing preview cancelled" "the number did not cancel the preview"
+ui_focus_main
 ui_mark
 ui_step "cancel the command (Esc)"       ui_key Escape
 ui_expect_new "Command Extrude cancelled" "the command cancelled"
@@ -437,51 +510,39 @@ EOF
 "$CLI" run "$WORK/rod.json" --save "$WORK/rod.mitcad" > "$WORK/cli.log" 2>&1 ||
   { cat "$WORK/cli.log"; ui_fail "mitcad-cli rod"; }
 
-# cancel_soon label: Esc in the progress dialog of the job named label a
-# second after it shows; the job stops within a second of the request.
-cancel_soon() {
-  local requested stopped
-  ui_expect_new "Progress dialog shown: $1" "the progress dialog of $1" 30
-  sleep 1
-  ui_focus_dialog '^Computing$'
-  ui_key Escape
-  ui_expect_new "Computing $1 cancelled after" "$1 cancelled" 30
-  requested=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
-    sed -n "s/.*Computing $1: cancel requested after \([0-9]*\) ms.*/\1/p" | tail -1)
-  stopped=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
-    sed -n "s/.*Computing $1 cancelled after \([0-9]*\) ms.*/\1/p" | tail -1)
-  [ -n "$requested" ] && [ -n "$stopped" ] || ui_fail "$1: no times of the cancel logged"
-  [ $((stopped - requested)) -lt 1000 ] ||
-    ui_fail "$1 stopped $((stopped - requested)) ms after the cancel request (at $requested ms)"
-  echo "ok   $1 stopped $((stopped - requested)) ms after the cancel request (at $requested ms)"
-}
-
 ui_start_app --open "$WORK/rod.mitcad"
 ui_step "fit (F6)"                       ui_key F6
 ui_step "edit Thread1 (double-click)"    ui_double_click_logged "Timeline Thread1"
 ui_expect_log "Editing F3 with Thread" "editing Thread1"
+ui_wait_idle
 ui_mark
 ui_step "Modeled"                        ui_click_logged "Panel Thread input modeled"
 ui_expect_new "Thread: Modeled = on" "modelled"
-cancel_soon preview
-ui_expect_new "Preview Thread: cancelled" "the preview was cancelled"
-ui_focus_main
-ui_mark
-ui_step "OK (Enter)"                     ui_key Return
-cancel_soon edit_feature
-ui_expect_new "Thread: OK cancelled" "OK was cancelled"
+ui_expect_new "Computing preview started" "the preview computes" 30
+sleep 1
+# Not ui_focus_main, which waits for the preview: the panel has the keyboard.
+ui_key Escape # Esc a second into the preview
+stopped_soon preview
+ui_expect_new "Command Thread cancelled" "the command cancelled with it"
+no_new "Progress dialog shown: preview" "no progress dialog for the preview"
+no_new "Preview Thread: ok" "nothing previewed"
 no_new "Edited F3" "Thread1 stays cosmetic"
-ui_focus_main
+ui_step "edit Thread1 (double-click)"    ui_double_click_logged "Timeline Thread1"
+ui_expect_new "Editing F3 with Thread" "editing Thread1 again"
+ui_wait_idle
 ui_mark
-ui_step "OK again (Enter)"               ui_key Return
-ui_expect_new "Computing edit_feature done in" "OK computed the thread" 120
-ui_expect_new "Edited F3" "Thread1 edited"
-# What the cancels stopped short was not kept: the groove is cut in.
+ui_step "Modeled"                        ui_click_logged "Panel Thread input modeled"
+ui_expect_new "Computing preview started" "the preview computes" 30
+ui_key Return # OK while the preview computes
+ui_expect_new "Computing preview done in" "the preview ran to its end" 120
+ui_expect_new "Edited F3" "OK made the thread" 120
+# What the cancel stopped short was not kept: the groove is cut in.
 ui_expect_volume "Body Body1 (F2.b0): volume 11780.972 -> \([0-9.]*\) mm3" 9771.222684120039 \
   "the groove cut in" 1e-3
 grep -q "The document was read while a job computes it" "$UI_LOG" && ui_fail "the document was read during a job"
 ui_crashed && ui_fail "crashed"
-wait_cursor_balanced "the cancels inside the kernel"
+# The previews take no wait cursor (no job here waits for the worker);
+# the nested waits below check this log's wait cursors.
 
 echo "--- The wait cursor (mitcad#268): a wait nested in a wait, with its progress dialog"
 # Nested Wait (Test): a job of two seconds; 200 ms into its wait, while
@@ -509,5 +570,42 @@ ui_step "leave a wait cursor on (search)" ui_command "Leave Wait Cursor On"
 ui_expect_new "Wait cursor left on for a test: test hook" "an override cursor set and left (the test hook)"
 ui_expect_new "Wait cursor left on after test hook: cleared" "cleared once idle"
 ui_expect_new "Wait cursor at idle: none set" "none left"
+ui_crashed && ui_fail "crashed"
+grep -q "OCCT view event failed" "$UI_LOG" && ui_fail "OCCT reported a failed view operation"
+ui_stop_app
+
+echo "--- A preview interrupted with its panel open: OK computes the edit itself"
+# The window has no control that stops a preview and keeps its panel
+# (mitcad#634: Esc and Cancel end the command, a newer input replaces the
+# preview); the in-process test driver stops it through the worker, as a
+# failed or interrupted computation would. The script: a second into the
+# modelled thread's preview, it is stopped (nothing shown, OK enabled);
+# OK computes the edit itself in its progress dialog, cancelled there a
+# second in; OK again computes the thread.
+MITCAD_TEST_INPUT=$(cd "$(dirname "$0")" && pwd)/ui-scripts/compute-interrupted-preview.mitcad-ui \
+  ui_start_app --open "$WORK/rod.mitcad"
+for _ in $(seq 1 1500); do
+  kill -0 "$UI_RUNNER" 2> /dev/null || break
+  sleep 0.2
+done
+kill -0 "$UI_RUNNER" 2> /dev/null && ui_fail "the test script did not end in 300 s"
+wait "$UI_RUNNER"
+status=$?
+UI_RUNNER=""
+grep -q '^TestDriver: done' "$UI_LOG" && [ "$status" = 0 ] ||
+  ui_fail "the test script failed (exit $status): $(grep -m1 'TestDriver: FAIL' "$UI_LOG")"
+echo "ok   the script ran to its end"
+UI_MARK=0
+ui_expect_new "Preview Thread: cancelled" "the interrupted preview showed nothing"
+stopped_soon preview
+ui_expect_new "Progress dialog shown: edit_feature" "OK computed the edit itself, with its progress dialog"
+stopped_soon edit_feature
+ui_expect_new "Thread: OK cancelled" "OK was cancelled"
+ui_expect_new "Computing edit_feature done in" "OK again computed the thread"
+ui_expect_volume "Body Body1 (F2.b0): volume 11780.972 -> \([0-9.]*\) mm3" 9771.222684120039 \
+  "the groove cut in" 1e-3
+no_new "Progress dialog shown: preview" "no progress dialog for the previews"
+grep -q "The document was read while a job computes it" "$UI_LOG" && ui_fail "the document was read during a job"
+grep -qE "SIGSEGV|SIGABRT|terminate called|Aborted|Segmentation fault" "$UI_LOG" && ui_fail "crashed"
 
 ui_finish "UI compute test"

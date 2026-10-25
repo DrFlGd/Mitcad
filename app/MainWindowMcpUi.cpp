@@ -21,6 +21,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
 #include <QEventLoop>
 #include <QImage>
 #include <QJsonArray>
@@ -55,6 +57,7 @@
 #include "framework/ChromeStyle.hpp"
 #include "framework/CommandRegistry.hpp"
 #include "framework/ResultCache.hpp"
+#include "mcp/AgentFolders.hpp"
 #include "mcp/LiveErrors.hpp"
 #include "mcp/LogRing.hpp"
 #include "mcp/ModalGuard.hpp"
@@ -236,6 +239,56 @@ quint64 logNext() {
   return next;
 }
 
+// The camera seen along `camera`'s direction that frames `box` in a
+// picture `aspect` wide for its height, with a small margin (ui_camera's
+// aspect, mitcad#689): the box's middle at the target, the height the
+// larger of the box's height and its width over the aspect; a perspective
+// camera moves back to show that height at the target in `fov` degrees.
+CameraState framedFor(CameraState camera, const Bnd_Box& box, double aspect, double fov) {
+  const gp_Dir direction(gp_Vec(camera.eye, camera.target));
+  gp_Vec across = gp_Vec(direction).Crossed(gp_Vec(camera.up));
+  if (across.Magnitude() <= 1e-12) {
+    across = gp_Vec(direction).Crossed(std::abs(direction.Z()) < 0.9 ? gp_Vec(0, 0, 1) : gp_Vec(0, 1, 0));
+  }
+  const gp_Dir right(across);
+  const gp_Dir up = right.Crossed(direction);
+  double x0 = 0.0;
+  double y0 = 0.0;
+  double z0 = 0.0;
+  double x1 = 0.0;
+  double y1 = 0.0;
+  double z1 = 0.0;
+  box.Get(x0, y0, z0, x1, y1, z1);
+  double low[3] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+                   std::numeric_limits<double>::max()};
+  double high[3] = {std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(),
+                    std::numeric_limits<double>::lowest()};
+  for (const double x : {x0, x1}) {
+    for (const double y : {y0, y1}) {
+      for (const double z : {z0, z1}) {
+        const gp_Vec corner(x, y, z);
+        const double along[3] = {corner.Dot(gp_Vec(right)), corner.Dot(gp_Vec(up)), corner.Dot(gp_Vec(direction))};
+        for (int i = 0; i < 3; ++i) {
+          low[i] = std::min(low[i], along[i]);
+          high[i] = std::max(high[i], along[i]);
+        }
+      }
+    }
+  }
+  const gp_XYZ middle = right.XYZ() * ((low[0] + high[0]) / 2.0) + up.XYZ() * ((low[1] + high[1]) / 2.0) +
+                        direction.XYZ() * ((low[2] + high[2]) / 2.0);
+  const double height = std::max({high[1] - low[1], (high[0] - low[0]) / aspect, 1e-3}) * 1.1;
+  double distance = camera.eye.Distance(camera.target);
+  if (camera.perspective) {
+    distance = height / (2.0 * std::tan(fov * kPi / 360.0)) + (high[2] - low[2]) / 2.0;
+  }
+  camera.target = gp_Pnt(middle);
+  camera.eye = gp_Pnt(middle - direction.XYZ() * distance);
+  camera.up = up;
+  camera.height = height;
+  return camera;
+}
+
 } // namespace
 
 QJsonObject MainWindow::mcpUiState() {
@@ -259,6 +312,7 @@ QJsonObject MainWindow::mcpUiState() {
       // An error is shown red (setErrorStyleSheet), a hint plain.
       {QStringLiteral("hint_is_error"), m_mode != Mode::PickPlane && !m_statusLabel->styleSheet().isEmpty()},
       {QStringLiteral("agents"), m_mcpAgents},
+      {QStringLiteral("agent_clients"), QJsonArray::fromStringList(m_mcpAgentNames)},
       {QStringLiteral("editable"), mcpBlockedReason(true).isEmpty()}};
   if (m_mode == Mode::PickPlane && !m_statusLabel->text().isEmpty() && m_statusLabel->text() != pickPlaneText()) {
     state.insert(QStringLiteral("status_line"), m_statusLabel->text());
@@ -339,6 +393,33 @@ QJsonObject MainWindow::mcpScreenshot(const QJsonObject& arguments) {
     refuseWith(tr("busy: the view is drawing; retry in 100 ms"),
                {{QStringLiteral("busy"), true}, {QStringLiteral("retry_after_ms"), 100}});
   }
+  // The format, a file to write, a size of its own (mitcad#689).
+  const QString given = arguments.value(QStringLiteral("path")).toString();
+  QString format = arguments.value(QStringLiteral("format")).toString();
+  if (format.isEmpty()) {
+    const QString suffix = QFileInfo(given).suffix().toLower();
+    format = suffix == QStringLiteral("jpg") || suffix == QStringLiteral("jpeg") ? QStringLiteral("jpeg")
+                                                                                 : QStringLiteral("png");
+  }
+  if (format != QStringLiteral("png") && format != QStringLiteral("jpeg")) {
+    refuse(tr("format must be png or jpeg."));
+  }
+  const bool jpeg = format == QStringLiteral("jpeg");
+  const int quality = std::clamp(arguments.value(QStringLiteral("quality")).toInt(90), 1, 100);
+  QString target;
+  if (!given.isEmpty()) {
+    QString reason;
+    target = mcp::agentOutputPath(given, arguments.value(QStringLiteral("overwrite")).toBool(false), reason,
+                                  jpeg ? QStringList{QStringLiteral("jpg"), QStringLiteral("jpeg")}
+                                       : QStringList{QStringLiteral("png")});
+    if (target.isEmpty()) {
+      refuse(reason);
+    }
+  }
+  const std::optional<QSize> offscreen = mcpScreenshotSize(arguments, maxSize);
+  if (offscreen && whole) {
+    refuse(tr("width, height and aspect render the 3D view, not the whole window."));
+  }
   // The view's frame with the widgets over it (the sketch overlay, the
   // orientation cube's buttons), as the user sees it.
   const auto viewImage = [this] {
@@ -356,7 +437,15 @@ QJsonObject MainWindow::mcpScreenshot(const QJsonObject& arguments) {
   };
   QImage image;
   QString what = QStringLiteral("view");
-  if (!whole) {
+  if (offscreen) {
+    // Offscreen at that size, so the picture does not take the window's
+    // shape (mitcad#689); the model must not be computing meanwhile.
+    if (modelBusy()) {
+      refuseWith(tr("busy: the model is computing; retry in 1000 ms"),
+                 {{QStringLiteral("busy"), true}, {QStringLiteral("retry_after_ms"), 1000}});
+    }
+    image = m_viewer->snapshot(*offscreen, false, true);
+  } else if (!whole) {
     image = viewImage();
   } else if (m_nativeUi) {
     // AppKit draws the window: as the window server composes it.
@@ -395,42 +484,101 @@ QJsonObject MainWindow::mcpScreenshot(const QJsonObject& arguments) {
   }
   const int fullWidth = image.width();
   const int fullHeight = image.height();
-  // Within max_size and well within the 8 MiB frame once in base64.
+  const auto encode = [jpeg, quality](const QImage& picture) {
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    const bool saved = jpeg ? picture.convertToFormat(QImage::Format_RGB32).save(&buffer, "JPEG", quality)
+                            : picture.save(&buffer, "PNG");
+    return saved ? bytes : QByteArray();
+  };
+  // Within max_size (an explicit size is kept) and, returned in the
+  // response, well within the 8 MiB frame once in base64; a file takes it
+  // at its size.
   constexpr qsizetype kBudget = 5 * 1024 * 1024;
-  int limit = maxSize;
-  QByteArray png;
+  const qsizetype budget = target.isEmpty() ? kBudget : std::numeric_limits<qsizetype>::max();
+  int limit = offscreen ? std::max(image.width(), image.height()) : maxSize;
+  QByteArray bytes;
   for (int attempt = 0; attempt < 8; ++attempt) {
     QImage scaled = image;
     if (scaled.width() > limit || scaled.height() > limit) {
       scaled = image.scaled(limit, limit, Qt::KeepAspectRatio, Qt::SmoothTransformation);
     }
-    png.clear();
-    QBuffer buffer(&png);
-    buffer.open(QIODevice::WriteOnly);
-    scaled.save(&buffer, "PNG");
-    if (png.size() <= kBudget) {
-      image = scaled;
+    bytes = encode(scaled);
+    if (bytes.isEmpty()) {
+      refuse(tr("The image could not be written as %1.").arg(format.toUpper()));
+    }
+    image = scaled;
+    if (bytes.size() <= budget) {
       break;
     }
     limit = std::max(64, std::max(scaled.width(), scaled.height()) * 7 / 10);
-    image = scaled;
   }
-  if (png.size() > kBudget) {
+  if (bytes.size() > budget) {
     refuse(tr("The image of the %1 is too large even when scaled down.").arg(what));
   }
-  qInfo().noquote() << QStringLiteral("MCP: screenshot of the %1, %2 x %3, %4 bytes")
+  const QString mime = jpeg ? QStringLiteral("image/jpeg") : QStringLiteral("image/png");
+  QJsonObject result{{QStringLiteral("format"), format},
+                     {QStringLiteral("mime_type"), mime},
+                     {QStringLiteral("of"), what},
+                     {QStringLiteral("width"), image.width()},
+                     {QStringLiteral("height"), image.height()},
+                     {QStringLiteral("full_width"), fullWidth},
+                     {QStringLiteral("full_height"), fullHeight},
+                     {QStringLiteral("bytes"), static_cast<qint64>(bytes.size())}};
+  if (!target.isEmpty()) {
+    // Into the allowed folder: only the path and the size go back.
+    QFile file(target);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(bytes) != bytes.size()) {
+      refuse(tr("Could not write %1: %2").arg(QDir::toNativeSeparators(target), file.errorString()));
+    }
+    file.close();
+    result.insert(QStringLiteral("path"), target);
+  } else {
+    // An MCP image block (finish_mcp moves it out of the JSON).
+    result.insert(QStringLiteral("image_base64"), QString::fromLatin1(bytes.toBase64()));
+  }
+  qInfo().noquote() << QStringLiteral("MCP: screenshot of the %1, %2 x %3, %4, %5 bytes%6")
                            .arg(what)
                            .arg(image.width())
                            .arg(image.height())
-                           .arg(png.size());
-  return {{QStringLiteral("format"), QStringLiteral("png")},
-          {QStringLiteral("of"), what},
-          {QStringLiteral("width"), image.width()},
-          {QStringLiteral("height"), image.height()},
-          {QStringLiteral("full_width"), fullWidth},
-          {QStringLiteral("full_height"), fullHeight},
-          {QStringLiteral("bytes"), static_cast<qint64>(png.size())},
-          {QStringLiteral("png_base64"), QString::fromLatin1(png.toBase64())}};
+                           .arg(format)
+                           .arg(bytes.size())
+                           .arg(target.isEmpty() ? QString() : QStringLiteral(", to ") + target);
+  return result;
+}
+
+std::optional<QSize> MainWindow::mcpScreenshotSize(const QJsonObject& arguments, int maxSize) const {
+  // width and height, or aspect with one of them or with max_size on the
+  // longer side (mitcad#689); none: the view as it is.
+  const bool hasWidth = arguments.contains(QStringLiteral("width"));
+  const bool hasHeight = arguments.contains(QStringLiteral("height"));
+  const bool hasAspect = arguments.contains(QStringLiteral("aspect"));
+  if (!hasWidth && !hasHeight && !hasAspect) {
+    return std::nullopt;
+  }
+  if (hasWidth && hasHeight && hasAspect) {
+    refuse(tr("Give width and height, or aspect with at most one of them."));
+  }
+  const double viewAspect =
+      m_viewer->height() > 0 ? static_cast<double>(m_viewer->width()) / m_viewer->height() : 1.0;
+  int across = arguments.value(QStringLiteral("width")).toInt(0);
+  int down = arguments.value(QStringLiteral("height")).toInt(0);
+  const double aspect = hasAspect ? arguments.value(QStringLiteral("aspect")).toDouble()
+                        : hasWidth && hasHeight && down > 0 ? static_cast<double>(across) / down
+                                                              : viewAspect;
+  if (!std::isfinite(aspect) || aspect < 0.1 || aspect > 10.0) {
+    refuse(tr("aspect must be between 0.1 and 10."));
+  }
+  if (hasWidth && !hasHeight) {
+    down = static_cast<int>(std::lround(across / aspect));
+  } else if (hasHeight && !hasWidth) {
+    across = static_cast<int>(std::lround(down * aspect));
+  } else if (!hasWidth && !hasHeight) {
+    across = aspect >= 1.0 ? maxSize : static_cast<int>(std::lround(maxSize * aspect));
+    down = aspect >= 1.0 ? static_cast<int>(std::lround(maxSize / aspect)) : maxSize;
+  }
+  return QSize(std::clamp(across, 16, 4096), std::clamp(down, 16, 4096));
 }
 
 QJsonObject MainWindow::mcpSelect(const QJsonObject& arguments) {
@@ -496,7 +644,7 @@ QJsonObject MainWindow::mcpSelect(const QJsonObject& arguments) {
     std::vector<gp_Pnt> places;
     QString missing;
     if (!mcpItemCorners(items, places, &missing)) {
-      refuse(tr("Not in the model: %1").arg(missing));
+      refuse(tr("Not in the design: %1").arg(missing));
     }
     setSelection(items);
     if (reveal != QStringLiteral("none")) {
@@ -687,6 +835,15 @@ QJsonObject MainWindow::mcpCamera(const QJsonObject& arguments) {
   } else if (frame != QStringLiteral("none")) {
     refuse(tr("frame must be none, shown or selection."));
   }
+  // Framed for a picture of that shape (ui_screenshot's aspect, mitcad#689).
+  const bool hasAspect = arguments.contains(QStringLiteral("aspect"));
+  const double aspect = arguments.value(QStringLiteral("aspect")).toDouble(0.0);
+  if (hasAspect && (!std::isfinite(aspect) || aspect < 0.1 || aspect > 10.0)) {
+    refuse(tr("aspect must be between 0.1 and 10."));
+  }
+  if (hasAspect && box.IsVoid()) {
+    refuse(tr("aspect frames a box or frame (shown or selection): give one of them."));
+  }
   // All refusals above leave the live viewer (including animation) alone.
   m_viewer->settleCamera();
   if (hasFov) {
@@ -696,12 +853,18 @@ QJsonObject MainWindow::mcpCamera(const QJsonObject& arguments) {
     m_viewer->setCamera(camera);
     m_viewer->settleCamera();
   }
-  if (!box.IsVoid()) {
+  if (!box.IsVoid() && hasAspect) {
+    m_viewer->setCamera(framedFor(m_viewer->pendingCamera(), box, aspect, m_viewer->fieldOfView()));
+    m_viewer->settleCamera();
+  } else if (!box.IsVoid()) {
     m_viewer->frameBox(box);
     m_viewer->settleCamera();
   }
-  const QJsonObject result{{QStringLiteral("camera"), mcpCameraJson()}, {QStringLiteral("framed"), framed},
-                           {QStringLiteral("changed"), set || framed != QStringLiteral("none")}};
+  QJsonObject result{{QStringLiteral("camera"), mcpCameraJson()}, {QStringLiteral("framed"), framed},
+                     {QStringLiteral("changed"), set || framed != QStringLiteral("none")}};
+  if (hasAspect) {
+    result.insert(QStringLiteral("aspect"), aspect);
+  }
   if (set || framed != QStringLiteral("none")) {
     const QJsonObject now = result.value(QStringLiteral("camera")).toObject();
     qInfo().noquote() << QStringLiteral("MCP: an agent set the camera: target %1, height %2 mm, %3%4")
@@ -717,7 +880,7 @@ QJsonObject MainWindow::mcpCamera(const QJsonObject& arguments) {
 QJsonObject MainWindow::mcpUiCommand(const QJsonObject& arguments) {
   mcpRefuseBusy();
   if (m_closePending || QApplication::activeModalWidget() != nullptr) {
-    refuse(tr("The document is closing or waiting for a dialog."));
+    refuse(tr("The design is closing or waiting for a dialog."));
   }
   const QString id = arguments.value(QStringLiteral("id")).toString();
   const QString edit = arguments.value(QStringLiteral("edit")).toString();
@@ -850,7 +1013,7 @@ QJsonObject MainWindow::mcpUiCommand(const QJsonObject& arguments) {
       refuse(readOnlyReason());
     }
     if (!sketchExists(edit)) {
-      refuse(tr("No feature %1 in the document.").arg(edit));
+      refuse(tr("No feature %1 in the design.").arg(edit));
     }
     result.insert(QStringLiteral("command"), QStringLiteral("edit"));
     editFeature(edit);

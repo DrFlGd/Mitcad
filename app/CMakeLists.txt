@@ -114,9 +114,6 @@ qt_add_executable(mitcad
   commands/Commands.hpp
   commands/CommandSupport.cpp
   commands/CommandSupport.hpp
-  # Seats on shafts: the panels' shared inputs (mitcad#578).
-  commands/SeatInputs.cpp
-  commands/SeatInputs.hpp
   commands/ConstructCommands.cpp
   commands/CreateCommands.cpp
   commands/ExtrudeCommands.cpp
@@ -428,6 +425,15 @@ target_link_libraries(mitcad PRIVATE mitcad_geometry_io)
 target_sources(mitcad PRIVATE
   framework/DisplayMeshes.cpp
   framework/DisplayMeshes.hpp)
+# A dragged Extrude's provisional tool while its exact preview computes
+# (mitcad#636): an owned copy of the tool's mesh, changed on each move.
+target_sources(mitcad PRIVATE
+  framework/CommandSessionProxy.cpp
+  framework/DragProxy.cpp
+  framework/DragProxy.hpp
+  commands/ExtrudeDragProxy.cpp
+  commands/ExtrudeDragProxy.hpp
+  view/ProvisionalMesh.cpp)
 
 if(WIN32)
   # wglGetCurrentDC() in OcctViewer.cpp
@@ -500,6 +506,22 @@ target_sources(mitcad PRIVATE
 # Live MCP's Save As and Open into the folders the user allows agents
 # (mitcad#402).
 target_sources(mitcad PRIVATE mcp/AgentFolders.cpp mcp/AgentFolders.hpp)
+target_sources(mitcad PRIVATE
+  mcp/AssistantSetup.cpp mcp/AssistantSetup.hpp
+  mcp/ConnectAssistantDialog.cpp mcp/ConnectAssistantDialog.hpp
+  mcp/MainWindowAssistant.cpp
+  framework/TestDriverAssistant.cpp)
+# The MCP Bundle contains this Qt-free launcher, which starts the installed
+# CLI directly so its own runtime paths remain valid after extraction.
+add_executable(mitcad-mcp-launcher mcp/AssistantLauncher.cpp)
+target_link_libraries(mitcad-mcp-launcher PRIVATE mitcad_warnings)
+mitcad_utf8_code_page(mitcad-mcp-launcher)
+if(WIN32)
+  set_target_properties(mitcad-mcp-launcher PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+elseif(APPLE)
+  set_target_properties(mitcad-mcp-launcher PROPERTIES RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:mitcad>")
+endif()
+add_dependencies(mitcad mitcad-mcp-launcher)
 if(WIN32)
   target_sources(mitcad PRIVATE mcp/WindowsEndpointSecurity.cpp mcp/WindowsEndpointSecurity.hpp)
   target_link_libraries(mitcad PRIVATE advapi32)
@@ -687,6 +709,8 @@ if(BUILD_TESTING)
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
   if(APPLE)
     target_link_libraries(test_app PRIVATE mitcad_mac_work)
+    # Widget helpers used by unit tests render the same SF Symbols as the app.
+    target_sources(test_app PRIVATE platform/macos/MacChrome.mm)
   endif()
   add_test(NAME app.unit COMMAND test_app)
   add_test(NAME app.default_shortcuts COMMAND mitcad --ui=qt --no-recovery --no-mcp)
@@ -705,6 +729,27 @@ if(BUILD_TESTING)
   target_link_libraries(test_view_tessellation PRIVATE mitcad_geometry_io mitcad_geometry TKV3d TKPrim TKBO mitcad_warnings)
   add_test(NAME app.view_tessellation COMMAND test_view_tessellation
     "${CMAKE_CURRENT_BINARY_DIR}/view-tessellation-files")
+  # A dragged Extrude's preview meshes on the synthetic 83-hole fixture
+  # (mitcad#635): the model's commands and the preview job's meshing,
+  # without a window; `--bench` times them.
+  add_executable(test_preview_meshing tests/preview_meshing.cpp framework/DisplayMeshes.cpp)
+  target_include_directories(test_preview_meshing PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(test_preview_meshing PRIVATE Qt6::Core mitcad_ffi mitcad_geometry mitcad_geometry_io
+    TKMesh TKTopAlgo TKBRep TKV3d mitcad_warnings)
+  # A dragged Extrude's provisional tool (mitcad#636): the owned mesh copy,
+  # its stretches and moves, and Extrude's rules, without a window.
+  add_executable(test_drag_proxy tests/drag_proxy.cpp framework/DragProxy.cpp commands/ExtrudeDragProxy.cpp
+    framework/Command.cpp)
+  target_include_directories(test_drag_proxy PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(test_drag_proxy PRIVATE Qt6::Core Qt6::Gui mitcad_geometry TKMesh TKPrim TKTopAlgo TKBRep
+    mitcad_warnings)
+  add_test(NAME app.drag_proxy COMMAND test_drag_proxy)
+  set_tests_properties(app.drag_proxy PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  add_test(NAME app.preview_meshing COMMAND test_preview_meshing)
+  set_tests_properties(app.preview_meshing PROPERTIES TIMEOUT 300
+    ENVIRONMENT "MITCAD_RESULT_STORE=off"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   # Check renderer device policy and fallback independently of UI helpers.
   add_test(NAME app.render_devices COMMAND test_app --render-devices)
   set_tests_properties(app.unit app.render_devices PROPERTIES
@@ -1414,4 +1459,131 @@ if(BUILD_TESTING)
   # Qt Core and Gui.
   target_sources(test_app PRIVATE tests/print_analysis.cpp commands/PrintAnalysis.cpp
                  commands/PrintAnalysis.hpp)
+endif()
+
+target_sources(mitcad PRIVATE framework/TestDriverManipulators.cpp)
+target_sources(mitcad PRIVATE framework/TestDriverChrome.cpp)
+target_sources(mitcad PRIVATE framework/MacToolButtonStyle.cpp framework/MacToolButtonStyle.hpp
+               framework/TestDriverMacControls.cpp)
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/mac_tool_buttons.cpp framework/MacToolButtonStyle.cpp
+                 framework/MacToolButtonStyle.hpp)
+endif()
+target_sources(mitcad PRIVATE framework/TestDriverDialogs.cpp platform/MacDialogs.hpp)
+
+
+# Measure's history (mitcad#648, app/COMMANDS.md "Measure's history"): the
+# rows kept while the design is open and their list in the Measure panel.
+target_sources(mitcad PRIVATE
+  MainWindowMeasureHistory.cpp
+  commands/MeasureHistory.cpp
+  commands/MeasureHistory.hpp
+  commands/MeasureHistoryView.cpp
+  commands/MeasureHistoryView.hpp)
+if(BUILD_TESTING)
+  # Rows added, extended and updated, gone, cleared, copied: plain Qt Core.
+  target_sources(test_app PRIVATE tests/measure_history.cpp commands/MeasureHistory.cpp
+                 commands/MeasureHistory.hpp)
+endif()
+
+# Print settings and materials (mitcad#640, mitcad#654, mitcad#655;
+# app/COMMANDS.md "Materials and print settings"): the key table's
+# categories and values, the shared settings form and its fields, the
+# Materials window, the profile editor, the import's summary and Details…,
+# the command panel's note row (3D Print's update bar and import line) and
+# Show Build Volume in the view.
+target_sources(mitcad PRIVATE
+  framework/NoteRow.cpp
+  framework/NoteRow.hpp
+  print/PrintKeys.cpp
+  print/PrintKeys.hpp
+  print/PrintLibrary.cpp
+  print/PrintLibrary.hpp
+  print/SettingField.cpp
+  print/SettingField.hpp
+  print/SettingsForm.cpp
+  print/SettingsForm.hpp
+  print/PrintImportSummary.cpp
+  print/PrintImportSummary.hpp
+  print/ImportDetailsDialog.cpp
+  print/ImportDetailsDialog.hpp
+  print/MaterialsDialog.cpp
+  print/MaterialsDialog.hpp
+  print/ProfilesDialog.cpp
+  print/ProfilesDialog.hpp
+  print/OwnSettingsDialog.cpp
+  print/OwnSettingsDialog.hpp
+  view/BuildVolume.cpp)
+if(BUILD_TESTING)
+  # The import's line and report (plain Qt Core); the key table's layout
+  # and values, and the settings form's rows (Qt Widgets).
+  target_sources(test_app PRIVATE tests/print_import_summary.cpp tests/print_settings_form.cpp
+                 print/PrintImportSummary.cpp print/PrintImportSummary.hpp print/PrintKeys.cpp
+                 print/PrintKeys.hpp print/SettingField.cpp print/SettingField.hpp print/SettingsForm.cpp
+                 print/SettingsForm.hpp)
+endif()
+
+# Placement by picked geometry (mitcad#656, app/COMMANDS.md "Placement by
+# picked geometry"): the placement input every part placed by a pick
+# shares, its plane geometry, and Gear Pair and Belt Drive.
+target_sources(mitcad PRIVATE
+  commands/DriveCommands.cpp
+  commands/PlaceGeometry.cpp
+  commands/PlaceGeometry.hpp
+  commands/PlaceInputs.cpp
+  commands/PlaceInputs.hpp)
+if(BUILD_TESTING)
+  # Snapping, the two nearest edges and the point at two distances: OCCT's
+  # geometry types.
+  target_sources(test_app PRIVATE tests/place_geometry.cpp commands/PlaceGeometry.cpp commands/PlaceGeometry.hpp)
+endif()
+
+# Measurement objects (mitcad#649, app/COMMANDS.md "Measurement objects"):
+# Keep in the Measure panel, the browser's Measurements, the dimensions
+# over the view, View > Export Snapshot and the measurements over Render
+# Image's image.
+target_sources(mitcad PRIVATE
+  MainWindowMeasurements.cpp
+  view/MeasurementDrawing.cpp
+  view/MeasurementDrawing.hpp
+  view/MeasurementOverlay.cpp
+  view/MeasurementOverlay.hpp
+  view/Snapshot.cpp
+  view/SnapshotDialog.cpp
+  view/SnapshotDialog.hpp
+  view/ViewSnapshot.cpp)
+if(BUILD_TESTING)
+  # The query's entries to dimensions, their layout through a projection and
+  # at a picture's scale, painting, the values in words, a render camera's
+  # projection: plain Qt Gui and OCCT's points.
+  target_sources(test_app PRIVATE tests/measurement_drawing.cpp view/MeasurementDrawing.cpp
+                 view/MeasurementDrawing.hpp)
+endif()
+
+# Opaque, correctly placed rename editors on transparent trees (mitcad#685).
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/tree_item_delegate.cpp framework/TreeItemDelegate.hpp)
+endif()
+
+# Navigation settings and actual camera input (mitcad#688).
+target_sources(mitcad PRIVATE framework/TestDriverNavigation.cpp)
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/navigation_preferences.cpp)
+endif()
+
+# Text-based formula assistance and the shared larger editor (mitcad#668).
+target_sources(mitcad PRIVATE framework/FormulaEditor.cpp framework/FormulaEditor.hpp
+                 framework/TestDriverFormula.cpp)
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/formula_editor.cpp framework/FormulaEditor.cpp
+                 framework/FormulaEditor.hpp)
+endif()
+
+# Isolated assistant setup plans, quoting and atomic configuration writes.
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/assistant_setup.cpp mcp/AssistantSetup.cpp)
+  add_executable(test_assistant_client tests/assistant_client.cpp)
+  target_link_libraries(test_assistant_client PRIVATE Qt6::Core mitcad_warnings)
+  mitcad_utf8_code_page(test_assistant_client)
+  add_dependencies(mitcad test_assistant_client)
 endif()

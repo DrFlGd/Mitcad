@@ -7,6 +7,7 @@
 #include <QHeaderView>
 #include <QKeySequenceEdit>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
@@ -15,6 +16,8 @@
 #include "CommandRegistry.hpp"
 
 #include "Dialogs.hpp"
+
+#include "../platform/MacDialogs.hpp"
 
 namespace mitcad {
 
@@ -33,7 +36,15 @@ ShortcutDialog::ShortcutDialog(CommandRegistry& registry, QWidget* parent)
     warning->setWordWrap(true);
     layout->addWidget(warning);
   }
+  auto* search = new QLineEdit;
+  search->setObjectName(QStringLiteral("shortcutSearch"));
+  search->setPlaceholderText(tr("Search commands or shortcuts"));
+  search->setClearButtonEnabled(true);
+  mac::styleSearchField(search);
+  layout->addWidget(search);
   m_table = new QTableWidget(0, 2);
+  m_table->setObjectName(QStringLiteral("shortcutTable"));
+  mac::styleListTable(m_table);
   m_table->setHorizontalHeaderLabels({tr("Command"), tr("Shortcut")});
   m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
   m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -54,6 +65,20 @@ ShortcutDialog::ShortcutDialog(CommandRegistry& registry, QWidget* parent)
     m_table->setCellWidget(row, 1, edit);
   }
   layout->addWidget(m_table);
+  const auto filter = [this, search] {
+    const QString needle = search->text().trimmed();
+    for (int row = 0; row < m_table->rowCount(); ++row) {
+      const auto* editor = static_cast<QKeySequenceEdit*>(m_table->cellWidget(row, 1));
+      const bool match = needle.isEmpty() || m_table->item(row, 0)->text().contains(needle, Qt::CaseInsensitive) ||
+                         editor->keySequence().toString(QKeySequence::NativeText).contains(needle, Qt::CaseInsensitive);
+      m_table->setRowHidden(row, !match);
+    }
+  };
+  connect(search, &QLineEdit::textChanged, this, filter);
+  for (int row = 0; row < m_table->rowCount(); ++row) {
+    connect(static_cast<QKeySequenceEdit*>(m_table->cellWidget(row, 1)), &QKeySequenceEdit::keySequenceChanged,
+            this, filter);
+  }
 
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel |
                                        QDialogButtonBox::RestoreDefaults);
@@ -62,6 +87,8 @@ ShortcutDialog::ShortcutDialog(CommandRegistry& registry, QWidget* parent)
   connect(buttons->button(QDialogButtonBox::RestoreDefaults), &QPushButton::clicked, this,
           &ShortcutDialog::resetAll);
   layout->addWidget(buttons);
+  mac::styleDialogButtons(buttons, nullptr, true);
+  mac::styleDialog(this);
   resize(460, 520);
 }
 

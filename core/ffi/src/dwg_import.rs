@@ -250,6 +250,17 @@ impl Document {
                         }
                         let data = to_ffi(&source, body);
                         let r = build_brep_body(&data, list.pin_mut());
+                        // Faces whose rolling-ball blend is the file's
+                        // approximation, too far off it (mitcad#622).
+                        for blend in &body.stored_blends {
+                            if let Some(why) = blend.reason(&r.messages) {
+                                warnings.push(format!(
+                                    "{place}/{}: {}",
+                                    body.record,
+                                    blend.note(&why)
+                                ));
+                            }
+                        }
                         // A body none of whose faces could be built is
                         // not built: an empty body ended the whole import
                         // (mitcad#589).

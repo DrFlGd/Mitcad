@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/OcctViewer.cpp app/OcctViewer.hpp app/view app/MainWindow.cpp tools/cli
+# check-all sources: core/model/src/api/sketch.rs core/model/src/features/sketch.rs
 # How sketch mode shows its geometry, through the real UI:
 #   - A sketch on XY: its origin is the design's (mitcad#254).
 #   - A rectangle from the origin, its width and height dimensioned: fully
@@ -28,6 +29,11 @@
 #     the line's own tone between rows of its halo, dark ones in the dark
 #     theme and light ones in the light theme, its dimensions' halos tone
 #     logged ("Sketch dimension halos:"; mitcad#633).
+#   - New sketches open with the design's Z up (mitcad#692): Create Sketch
+#     on XZ, on YZ and on a block's face that faces -Y: each frame's
+#     normal and x axis as commands.md "An upright sketch frame" gives
+#     them, and the view shows the sketch's y axis up and its x axis to
+#     the right, level (so a Horizontal line is horizontal on the screen).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-view-test.sh [screenshot.png]
@@ -380,5 +386,73 @@ check light "MIN <= 110" "the circle over the light background is dark"
 # face's light grey (about 223).
 expect_dimension_halos light
 line_in_halo light -16 16 "$DIMENSION" "l <= 150" "l >= 240" "the dimension line on the face"
+
+echo "--- New sketches open with the design's Z up (mitcad#692)"
+# A 40 x 30 x 20 block behind the origin as the isometric view sees it
+# (x -80 to -40, y 40 to 70), clear of the origin planes; its side0 faces
+# -Y at y = 40.
+cat > "$WORK/upright.json" << 'EOF'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-80, 40],
+    "length": 40, "width": 30, "height": 20, "operation": "new_body"}}
+]
+EOF
+"$CLI" run "$WORK/upright.json" --save "$WORK/upright.mitcad" > "$WORK/cli.log" 2>&1 ||
+  { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+
+# expect_upright where "normal" "x axis": the sketch just started lies in
+# the design with that normal and x axis (as the "Sketch frame in the
+# design" line writes them), and within six seconds the view shows its
+# sketch point (100, 0) to the right of (0, 0) at its height and (0, 100)
+# straight above it: the sketch's y up, its x level.
+expect_upright() {
+  local frame view
+  ui_expect_new "Sketch frame in the design" "$1: the sketch's frame logged"
+  frame=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "Sketch frame in the design" | tail -1)
+  [[ $frame == *"normal ($2), x axis ($3)"* ]] ||
+    ui_fail "$1: '$frame', expected normal ($2), x axis ($3)"
+  echo "ok   $1: normal ($2), x axis ($3)"
+  for _ in $(seq 1 30); do
+    ui_sync
+    view=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -o "Sketch view [-0-9.,]* [-0-9.,]* [-0-9.,]*" | tail -1)
+    if [ -n "$view" ] && awk -v view="$view" 'BEGIN {
+      split(view, part, " "); split(part[3], o, ","); split(part[4], a, ","); split(part[5], b, ",")
+      t = sqrt((a[1] - o[1]) ^ 2 + (a[2] - o[2]) ^ 2) / 100
+      exit !(a[1] > o[1] && (a[2] - o[2]) ^ 2 <= t ^ 2 && b[2] < o[2] && (b[1] - o[1]) ^ 2 <= t ^ 2) }'; then
+      echo "ok   $1: the sketch's y up and its x level to the right ($view)"
+      return
+    fi
+    sleep 0.2
+  done
+  ui_fail "$1: the view does not show the sketch's y up and its x to the right: '$view'"
+}
+
+ui_stop_app
+ui_start_app --open "$WORK/upright.mitcad"
+ui_step "fit (F6)"                       ui_key F6
+ui_mark
+ui_step "create sketch on XZ"            ui_create_sketch xz
+expect_upright "XZ" "0.000000, 1.000000, 0.000000" "-1.000000, 0.000000, 0.000000"
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_log "Sketch finished" "the XZ sketch finished"
+ui_mark
+ui_step "create sketch on YZ"            ui_create_sketch yz
+expect_upright "YZ" "1.000000, 0.000000, 0.000000" "0.000000, 1.000000, 0.000000"
+ui_mark
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_new "Sketch finished" "the YZ sketch finished"
+ui_step "front view (search)"            ui_command "Front View"
+ui_step "fit (F6)"                       ui_key F6
+ui_sync
+ui_mark
+ui_step "create sketch (search)"         ui_command "Create Sketch"
+ui_expect_new "Pick face F1.b0/F1:side0 at" "the block's -Y face can be picked"
+ui_step "pick the -Y face"               ui_click_pick "face F1.b0/F1:side0"
+ui_expect_new 'Sketch started on {"body":"F1.b0","face":"F1:side0"}' "a sketch on the -Y face"
+expect_upright "the -Y face" "0.000000, -1.000000, 0.000000" "1.000000, 0.000000, 0.000000"
+ui_mark
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_new "Sketch finished" "the face's sketch finished"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 
 ui_finish "UI sketch view test"

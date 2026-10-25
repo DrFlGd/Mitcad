@@ -136,7 +136,7 @@ insert() {
   fi
   ui_step "Insert (Alt+I)"                 ui_key alt+i
   ui_focus_main
-  ui_expect_new "Command Place Part started" "Place Part started"
+  ui_expect_new "Command Place Component started" "Place Part started"
 }
 
 # The bodies a placement or a drop-in made, from its log line.
@@ -166,7 +166,7 @@ echo "--- 1. Gridfinity: a baseplate dropped in, bins on its cells"
 insert "Baseplate" test-mounts/baseplate copy
 ui_expect_new "Insert from Library: test-mounts/baseplate has mount frames grid (a grid, fixed): Place Part" \
   "a part with frames: Place Part"
-ui_expect_new "View hint Place Part: Click where Baseplate mounts" "the view says to click or press Enter"
+ui_expect_new "View hint Place Component: Click where Baseplate mounts" "the view says to click or press Enter"
 ui_mark
 ui_step "drop it in (Enter)"               ui_key Return
 ui_expect_new "Inserted component Baseplate (copy) from test-mounts v1.0.0 (" "dropped in as before" 30
@@ -203,7 +203,7 @@ ui_expect_new "Place Part Bin 1x1 from test-mounts v1.0.0 (" "Place Part with th
 ui_expect_new ": frames foot (on a grid, fixed)" "the bin's foot frame"
 ui_mark
 ui_step "click cell (2, 1)"                ui_click_pick "$(cell "${CELLS[5]}")"
-ui_expect_new "Inspect Place Part: place part Bin 1x1: frame foot (foot), rigid joint, on Baseplate:1, cell (2, 1)" \
+ui_expect_new "Inspect Place Component: place part Bin 1x1: frame foot (foot), rigid joint, on Baseplate:1, cell (2, 1)" \
   "the foot snaps to the cell clicked" 20
 ui_mark
 ui_step "Place (Enter)"                    ui_key Return
@@ -213,7 +213,7 @@ BIN1=$(bodies_of 'Placed part Bin 1x1')
 ui_step "close (Escape)"                   ui_key Escape
 
 insert "Bin 2x1" test-mounts/bin2x1
-ui_step "Rotate 90"                        ui_type_in "Panel Place Part input rotate" "90"
+ui_step "Rotate 90"                        ui_type_in "Panel Place Component input rotate" "90"
 ui_mark
 ui_step "click cell (2, 0)"                ui_click_pick "$(cell "${CELLS[2]}")"
 ui_expect_new "the cell (2, 1) of Baseplate:1's grid is taken by Bin 1x1:1" \
@@ -271,7 +271,7 @@ print(first("grid").replace(" ", "_"), first("foot").replace(" ", "_"))' "$MITCA
   ui_step "search $GRID_NAME"              xdotool type --delay 40 "$GRID_NAME"
   ui_step "a copy (Alt+P), Insert (Alt+I)" eval 'ui_key alt+p; ui_sync; ui_key alt+i'
   ui_focus_main
-  ui_expect_new "Command Place Part started" "Place Part with the model's baseplate"
+  ui_expect_new "Command Place Component started" "Place Part with the model's baseplate"
   ui_mark
   ui_step "drop it in (Enter)"             ui_key Return
   ui_expect_new "Inserted component $GRID_NAME (copy)" "the model's baseplate dropped in" 60
@@ -283,10 +283,10 @@ print(first("grid").replace(" ", "_"), first("foot").replace(" ", "_"))' "$MITCA
   ui_step "search $FOOT_NAME"              xdotool type --delay 40 "$FOOT_NAME"
   ui_step "Insert (Alt+I)"                 ui_key alt+i
   ui_focus_main
-  ui_expect_new "Command Place Part started" "Place Part with the model's bin"
+  ui_expect_new "Command Place Component started" "Place Part with the model's bin"
   ui_mark
   ui_step "click the baseplate"            ui_click_pick "face $GRID_BODY/"
-  ui_expect_new "Inspect Place Part: place part $FOOT_NAME: frame " "the model's bin on the model's grid" 60
+  ui_expect_new "Inspect Place Component: place part $FOOT_NAME: frame " "the model's bin on the model's grid" 60
   ui_mark
   ui_step "Place (Enter)"                  ui_key Return
   ui_expect_new "Placed part $FOOT_NAME (linked)" "the model's bin placed" 60
@@ -301,7 +301,7 @@ ui_expect_new ": frames base (on a face, free on the face)" "the lamp's frame"
 ui_mark
 # Shift + click: the pick and Place in one (as BUILD's, mitcad#451).
 ui_step "Shift+click on the plate's top"   eval 'xdotool keydown shift; ui_click_pick "face F1.b0/F1:top"; xdotool keyup shift'
-ui_expect_new "Inspect Place Part: place part Lamp: frame base (face), planar joint, on Plate:1" \
+ui_expect_new "Inspect Place Component: place part Lamp: frame base (face), planar joint, on Plate:1" \
   "the lamp lies where clicked, free on the face" 20
 ui_expect_new "Placed part Lamp (linked) from test-mounts" "Shift+click placed it at once" 30
 LAMP=$(bodies_of 'Placed part Lamp')
@@ -377,7 +377,7 @@ ui_expect_new "Library browser selected my-screws/screw-m8" "the own screw"
 ui_step "Insert (Alt+I)"                   ui_key alt+i
 ui_focus_main
 ui_expect_new "frames head (into a hole, turns and slides)" "Place Part with the screw's frame"
-ui_expect_new "Command Place Part started" "Place Part started"
+ui_expect_new "Command Place Component started" "Place Part started"
 ui_mark
 # The hole's wall (F2's face), else its rim on the plate's top: whichever
 # the view shows (the wall's middle can be out of sight in the hole).
@@ -390,7 +390,7 @@ hole_pick() {
 HOLE=$(hole_pick)
 [ -n "$HOLE" ] || ui_fail "neither the hole's wall nor its rim among the pick places"
 ui_step "click the hole ($HOLE)"           ui_click_pick "$HOLE at"
-ui_expect_new "Inspect Place Part: place part Screw M8: frame head (shaft), cylindrical joint, on Plate:1" \
+ui_expect_new "Inspect Place Component: place part Screw M8: frame head (shaft), cylindrical joint, on Plate:1" \
   "the screw goes into the hole" 20
 ui_mark
 ui_step "Place (Enter)"                    ui_key Return

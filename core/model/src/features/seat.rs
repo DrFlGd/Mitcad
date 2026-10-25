@@ -16,6 +16,11 @@
 //! - `origin`: `offset` along the axis from that end;
 //! - `diameter`: the shaft's (the hole's), which a bore follows.
 //!
+//! The shaft may also be an axis of its own (mitcad#656): an origin or
+//! construction axis, a sketch line, circle or arc, a fixed axis. It is
+//! measured from its origin point along its direction and has no length
+//! and no diameter (NaN): a seated part keeps its own bore.
+//!
 //! A part seated so lies on the plane through `origin` normal to `axis`
 //! and runs along `axis` from it: a pulley at offset 0 from a shaft's end
 //! starts at the end and runs along the shaft; flipped, it starts at the
@@ -104,9 +109,24 @@ impl<P> Seat<P> {
     /// Checks the shaft before the feature: an edge or a face of a body
     /// before it (whether it is round only evaluation can tell).
     pub fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+        // A body's edge or face, or an axis of its own (mitcad#656).
+        let on_body = self.body().is_some();
         self.shaft
-            .check(ctx, Want::EdgeOrFace)
+            .check(
+                ctx,
+                if on_body {
+                    Want::EdgeOrFace
+                } else {
+                    Want::Axis
+                },
+            )
             .map_err(|e| format!("shaft: {e}"))?;
+        if !on_body && self.link.is_some() {
+            return Err(
+                "an axis of its own takes no link: only a body's shaft is another component's"
+                    .to_owned(),
+            );
+        }
         if self.near.is_some_and(|p| p.iter().any(|v| !v.is_finite())) {
             return Err("the seat's picked point must be finite".to_owned());
         }
@@ -307,6 +327,24 @@ pub(crate) fn round_of<R: Resolver>(r: &mut R, shaft: &GeomRef) -> Result<Round,
             Err(format!(
                 "edge {edge} does not end a cylindrical face: {NOT_ROUND}"
             ))
+        }
+        // An axis of its own (mitcad#656): from its origin point along it,
+        // without a length or a diameter.
+        GeomRef::Origin(_)
+        | GeomRef::Datum(_)
+        | GeomRef::SketchCurves { .. }
+        | GeomRef::FixedAxis { .. }
+        | GeomRef::Mount { .. } => {
+            let line = super::geom_ref::resolve_axis(r, shaft)
+                .map_err(|e| format!("{e}: {NOT_ROUND}, or an axis"))?;
+            Ok(Round {
+                low: line.origin,
+                axis: unit(line.direction).ok_or("the axis has no direction")?,
+                length: 0.0,
+                diameter: f64::NAN,
+                hole: false,
+                picked_high: Some(false),
+            })
         }
         other => Err(format!("{other} is not a shaft: {NOT_ROUND}")),
     }

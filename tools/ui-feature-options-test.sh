@@ -140,9 +140,7 @@ ui_expect_new "Preview Pattern on Path: ok" "previewed"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_volume "New body [A-Za-z0-9]* (F6.b1): volume \([0-9.]*\) mm3" \
   "$(awk -v pi=$PI 'BEGIN { printf "%.6f", pi * 50 / 3 * (16 + 8 + 4) }')" "the copy on the second line" 1e-5
-ui_mark
-ui_step "double-click the pattern"         ui_double_click_logged "Timeline PathPattern1"
-ui_expect_new "Editing F6 with Pattern on Path" "editing the pattern"
+ui_double_click_expect "Timeline PathPattern1" "Editing F6 with Pattern on Path" "editing the pattern"
 ui_expect_new "Pattern on Path Path: 2 sketch curves" "the chain loaded"
 ui_step "cancel (Esc)"                     ui_key Escape
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"

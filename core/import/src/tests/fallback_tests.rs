@@ -1117,3 +1117,21 @@ fn symptoms_and_kernel_failures_of_definitions() {
         "the extrusion does not cut into any participant body"
     ));
 }
+
+#[test]
+fn inputs_not_decoded_fail_on_any_bodies() {
+    // An item without definitions for want of decoded inputs is not tried
+    // again from another state (mitcad#658) ...
+    assert!(undecoded("its path was not decoded"));
+    assert!(undecoded("its faces were not decoded"));
+    // ... unless the history's next states were looked at for them, or
+    // inputs were decoded but not found.
+    assert!(!undecoded(
+        "its source faces were not decoded, and no next history state lost faces"
+    ));
+    assert!(!undecoded(
+        "its faces were not decoded (no history to find them)"
+    ));
+    assert!(!undecoded("an edge of its path was not found"));
+    assert!(!undecoded(NOT_IN_HISTORY));
+}

@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
@@ -42,6 +43,7 @@
 #include "../platform/NativeDialogs.hpp"
 #include "../materials/TextureBrowser.hpp"
 #include "../materials/TextureUse.hpp"
+#include "../platform/MacDialogs.hpp"
 #include "DocumentHost.hpp"
 
 namespace mitcad {
@@ -90,6 +92,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   m_search->setObjectName(QStringLiteral("appearanceSearch"));
   m_search->setPlaceholderText(tr("Search"));
   m_search->setClearButtonEnabled(true);
+  mac::styleSearchField(m_search);
   m_category = new QComboBox;
   m_category->setToolTip(tr("Show one category only"));
   searchRow->addWidget(m_search, 1);
@@ -144,7 +147,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   m_texturePath->setPlaceholderText(tr("No image"));
   m_texturePath->setToolTip(
       tr("A PNG or JPEG image for the base colour, relative to the design's folder or absolute"));
-  m_textureChoose = new QPushButton(tr("Choose..."));
+  m_textureChoose = new QPushButton(tr("Choose…"));
   m_textureRemove = new QPushButton(tr("Remove"));
   m_textureRemove->setToolTip(tr("No texture: the base colour only"));
   // Enter in a field changes it, it does not press these.
@@ -215,7 +218,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   setErrorStyleSheet(m_message);
   layout->addWidget(m_message);
 
-  auto* buttons = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
   m_new = new QPushButton(themeIcon(QStringLiteral("add")), tr("New"));
   m_new->setToolTip(tr("A copy of the selected appearance in this design, to edit"));
   m_delete = new QPushButton(themeIcon(QStringLiteral("delete")), tr("Delete"));
@@ -228,13 +231,26 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   for (QPushButton* button : {m_new, m_delete, m_assign, m_assignBodies, m_close}) {
     button->setAutoDefault(false);
   }
-  buttons->addWidget(m_new);
-  buttons->addWidget(m_delete);
-  buttons->addStretch(1);
-  buttons->addWidget(m_assign);
-  buttons->addWidget(m_assignBodies);
-  buttons->addWidget(m_close);
-  layout->addLayout(buttons);
+#ifdef Q_OS_MACOS
+  auto* controls = new QHBoxLayout;
+  controls->setSpacing(0);
+  controls->addWidget(m_new);
+  controls->addWidget(m_delete);
+  controls->addStretch(1);
+  left->addLayout(controls);
+#else
+  buttons->addButton(m_new, QDialogButtonBox::ResetRole);
+  buttons->addButton(m_delete, QDialogButtonBox::ResetRole);
+#endif
+  mac::styleListButtons(m_new, m_delete);
+  mac::stylePreview(m_list);
+  mac::stylePreview(m_faces);
+  buttons->addButton(m_assign, QDialogButtonBox::ActionRole);
+  buttons->addButton(m_assignBodies, QDialogButtonBox::ActionRole);
+  buttons->addButton(m_close, QDialogButtonBox::RejectRole);
+  layout->addWidget(buttons);
+  mac::styleDialogButtons(buttons, m_close);
+  mac::styleDialog(this);
 
   connect(m_close, &QPushButton::clicked, this, &QDialog::accept);
   connect(m_new, &QPushButton::clicked, this, &AppearanceDialog::newAppearance);
@@ -501,13 +517,13 @@ void AppearanceDialog::useTexture(const TextureAsset& asset, const QString& reso
   qDebug().noquote() << QStringLiteral("Texture fetching %1 %2 %3")
                             .arg(sourceId, asset.recorded(),
                                  resolution.isEmpty() ? QStringLiteral("original") : resolution);
-  m_textures->setBusy(tr("Fetching %1...").arg(asset.name));
+  m_textures->setBusy(tr("Fetching %1…").arg(asset.name));
   source->fetch(
       asset, resolution, this,
       [this, name = asset.name](qint64 done, qint64 total) {
-        m_textures->setBusy(total > 0 ? tr("Fetching %1: %2 of %3...")
+        m_textures->setBusy(total > 0 ? tr("Fetching %1: %2 of %3…")
                                             .arg(name, textureBytesText(done), textureBytesText(total))
-                                      : tr("Fetching %1: %2...").arg(name, textureBytesText(done)));
+                                      : tr("Fetching %1: %2…").arg(name, textureBytesText(done)));
       },
       [this, sourceId, asset](const TextureFiles& files, const QString& error) {
         finishUse(sourceId, asset, files, error);

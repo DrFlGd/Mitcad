@@ -33,6 +33,7 @@
 
 class QLabel;
 class QLineEdit;
+class QWidget;
 
 namespace mitcad {
 
@@ -65,6 +66,9 @@ public:
   // `sketch` query's frame is in the component's coordinates, the view's
   // in the design's; sketch mode applies this once to the frame.
   virtual gp_Trsf sketchPlacement(const QString& /*uid*/) const { return gp_Trsf(); }
+  // The occurrence whose placement sketch mode edits; own-component body
+  // preselection must come from this occurrence as well.
+  virtual QString sketchOccurrence(const QString& /*uid*/) const { return QString(); }
 };
 
 namespace sketch {
@@ -232,6 +236,8 @@ public:
   void setShowDimensions(bool on);
   bool showConstraints() const { return m_showConstraints; }
   void setShowConstraints(bool on);
+  // Filled regions are rebuilt after a geometry drag, while curves stay live.
+  bool draggingGeometry() const { return m_dragging && m_dragDimension.isEmpty(); }
   bool showProfiles() const { return m_showProfiles; }
   void setShowProfiles(bool on);
   // The bodies shown cut at the sketch plane, without what is in front of
@@ -283,6 +289,8 @@ public:
   QPointF toScreen(const V2& p) const;
   // The sketch plane point under a view position.
   std::optional<V2> sketchAt(const QPointF& screen) const;
+  // The unrounded inverse of toScreen, for dimension/editor layout.
+  std::optional<V2> sketchAtF(const QPointF& screen) const;
   // Millimetres per pixel near the sketch origin.
   double pixel() const;
   const Snap& snapped() const { return m_snap; }
@@ -326,6 +334,7 @@ public:
   // The typed expression as the model takes it ("20" gives "20 mm").
   QString fieldExpression(const QString& id) const;
   QString fieldText(const QString& id) const;
+  QRectF fieldRect(const QString& id) const;
   // Shows what the cursor gives, while nothing is typed.
   void setLive(const QString& id, double value);
   // A value editor at a view position (a dimension's value).
@@ -394,6 +403,7 @@ signals:
   // The option toggles changed.
   void optionsChanged();
   void toolChanged(const QString& name);
+  void geometryDragStarted();
   // The auto constraint session changed: a new tool, a choice, an entity.
   void autoConstraintsChanged();
 
@@ -404,14 +414,23 @@ private:
   struct Field {
     FieldSpec spec;
     QPointer<QLineEdit> edit;
+    QPointer<QLabel> label;
     bool typed = false;
     bool valid = false;
     double value = 0.0;
     QString expression;
+    // The user types into this one: typed into it or moved to it with Tab.
+    // Until then the mouse passes it to the view (mitcad#671).
+    bool engaged = false;
   };
 
   bool viewerEvent(QEvent* event);
   bool fieldEvent(QLineEdit* edit, QEvent* event);
+  // The mouse on a field the user does not type into (`source`: the field
+  // or its fx button) goes to the view while a tool waits for a point.
+  bool fieldMouse(QLineEdit* edit, QWidget* source, QEvent* event);
+  // For UI tests: where the fields are, once the pointer rests.
+  void logFieldPlaces();
   void updateCursor(const QPointF& position);
   void placeFields();
   void fieldEdited(int index);
@@ -467,6 +486,9 @@ private:
   QString m_pointerText;
   QString m_movedPointer;
   QString m_loggedPointer;
+  QString m_loggedFieldPlaces;
+  // A left press on a field the view took (fieldMouse()), until its release.
+  QPointer<QWidget> m_fieldPress;
   QTimer m_pointerTimer;
   QString pointerTextAt(const V2& at) const;
   void setPointerText(const QString& text);

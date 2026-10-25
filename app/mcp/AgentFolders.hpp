@@ -34,6 +34,11 @@ QStringList agentFolders();
 // file (not a link out of the folder) and needs `overwrite`; otherwise the
 // file must exist.
 QString agentDesignPath(const QString& given, bool forWriting, bool overwrite, QString& reason);
+// A file an agent writes in an allowed folder (mitcad#689: model_export,
+// ui_screenshot's path), by the rules of agentDesignPath's `forWriting`:
+// a new file, or with `overwrite` an existing regular one; with one of
+// `suffixes` (any when empty). Empty with the reason when it is not one.
+QString agentOutputPath(const QString& given, bool overwrite, QString& reason, const QStringList& suffixes = {});
 
 // A group with a frame and a title, except on macOS, where the settings
 // window's panes have none: a plain widget.
@@ -53,9 +58,11 @@ public:
   // The folders as the box shows them (with one typed and not added yet),
   // to save when Preferences is accepted.
   QStringList chosen() const;
+  void includeSavedFolders();
 
 signals:
   void changed();
+  void connectRequested();
 
 private:
   void addFolder(const QString& folder);

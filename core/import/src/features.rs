@@ -127,6 +127,12 @@ fn not_translated(object_type: &str) -> Option<&'static str> {
         "ComponentFromBodies" => {
             "moves bodies into a new component: not translated (the stored bodies stand in)"
         }
+        // (mitcad#641) The derive follows the other design, which the file
+        // does not hold, and none of this design's parameters.
+        "ExternalDerived" => {
+            "bodies derived from another design, which the file does not hold: static in the \
+             source too, its stored bodies stand in"
+        }
         _ => return None,
     })
 }
@@ -182,6 +188,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let frame = sketch_frame(detail).ok_or("the sketch's placement was not decoded")?;
         let frame = copy.map_or(frame, |t| t.apply_frame(&frame));
         let mut parts = sketch::translate(detail, &self.params);
+        // The texts that follow the file's text parameters (mitcad#664).
+        let doc_params = self.doc.parameters();
+        parts.text_values = sketch::text_values(&parts, self.params.texts_of(index), &|name| {
+            doc_params
+                .find(name)
+                .and_then(|id| doc_params.text(id))
+                .map(str::to_owned)
+        });
         let name = item.name();
         let start = self.doc.undo_depth();
         let owned = self.components.is_owned(index);
@@ -422,6 +436,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     if let Some(link) = &plane_link {
                         def["plane_link"] = link.clone();
                     }
+                    // Texts that follow the file's text parameters
+                    // (mitcad#664).
+                    if !parts.text_values.is_empty() {
+                        def["text_values"] = json!(parts.text_values);
+                    }
                     if project {
                         def["projections"] = json!(resolved.projections);
                     }
@@ -452,6 +471,20 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         // uses it): the dimensions get their own (mitcad#250).
                         Err(_) if sketch::has_references(&def) => {
                             self.add(&sketch::without_references(&def), name)
+                        }
+                        other => other,
+                    };
+                    // A text parameter the model refuses for a text
+                    // (mitcad#664): the texts keep the file's strings.
+                    let added = match added {
+                        Err(_) if def.get("text_values").is_some() => {
+                            let plain = sketch::without_text_values(&def);
+                            match self.add(&plain, name) {
+                                Err(_) if sketch::has_references(&plain) => {
+                                    self.add(&sketch::without_references(&plain), name)
+                                }
+                                other => other,
+                            }
                         }
                         other => other,
                     };
@@ -1786,7 +1819,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 | "RemoveFeature"
                 | "DeleteFaceFeature"
                 | "CopyPasteBodies"
-                | "MoveFaceFeature"),
+                | "MoveFaceFeature"
+                | "AlignFeature"),
             ) => self.translate_op(t, item),
             (None, t) => Err(format!("{t}: no details decoded")),
             (_, t) => Err(format!("{t} is not supported yet")),
@@ -3015,22 +3049,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             "intersect" => None,
             _ => Some(1.0),
         };
-        let start = match d.start_extent.as_ref() {
-            Some(s) if s.definition_type.as_deref() == Some("OffsetStartDefinition") => {
-                Some(json!({"type": "offset", "offset": self.value_or(&s.offset, "start offset")?}))
-            }
-            Some(s) if s.definition_type.as_deref() == Some("FromEntityStartDefinition") => {
-                let object = self
-                    .extent_object(&s.entity, s)
-                    .ok_or("the start object was not found")?;
-                let mut v = json!({"type": "object", "object": object});
-                if !Self::is_zero(&s.offset) {
-                    v["offset"] = self.value_or(&s.offset, "start offset")?;
-                }
-                Some(v)
-            }
-            _ => None,
-        };
+        let start = self.extrude_start(d)?;
         let thin = if d.is_thin_extrude == Some(true) {
             // The file's side one lies inside the profile (towards its
             // material), side two outside it (the reference models' thin
@@ -3795,6 +3814,28 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .collect()
     }
 
+    /// An extrusion's start as the model's `start`: an offset from the
+    /// profile's plane, or an object (a face or plane) and an offset from
+    /// it; `None` on the profile's plane.
+    fn extrude_start(&self, d: &ExtrudeDetail) -> Result<Option<Value>, String> {
+        Ok(match d.start_extent.as_ref() {
+            Some(s) if s.definition_type.as_deref() == Some("OffsetStartDefinition") => {
+                Some(json!({"type": "offset", "offset": self.value_or(&s.offset, "start offset")?}))
+            }
+            Some(s) if s.definition_type.as_deref() == Some("FromEntityStartDefinition") => {
+                let object = self
+                    .extent_object(&s.entity, s)
+                    .ok_or("the start object was not found")?;
+                let mut v = json!({"type": "object", "object": object});
+                if !Self::is_zero(&s.offset) {
+                    v["offset"] = self.value_or(&s.offset, "start offset")?;
+                }
+                Some(v)
+            }
+            _ => None,
+        })
+    }
+
     /// Extrusions of planar faces of bodies (.f3d designs extrude faces
     /// too): the faces the decoder found in the profile (`decoded`,
     /// mitcad#169), all together, else the faces of the item's component
@@ -3904,6 +3945,17 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             extent["taper"] = t.clone();
         }
         let predicted = |area: f64| length.filter(|_| taper.is_none()).map(|l| sign * area * l);
+        // Where the extrusion starts (mitcad#641: a face's prism that
+        // starts on another face).
+        let Ok(start) = self.extrude_start(d) else {
+            return Vec::new();
+        };
+        let with_start = |mut def: Value| {
+            if let Some(s) = &start {
+                def["start"] = s.clone();
+            }
+            def
+        };
         // A one-sided distance goes along the sketch's normal where the
         // stream's extent kinds say so (as for the sketch's regions).
         let distance_side_read = raw
@@ -3952,12 +4004,49 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 operation,
                 Some(self.component),
             );
+            let side_read = |flip: bool| {
+                faces_read
+                    && ((distance_side_read && !flip)
+                        || (to_object_sides
+                            && object_point.is_some_and(|p| {
+                                let s = geom::dot(geom::sub(p, centre), normal);
+                                s.abs() > 1e-6 && (s < 0.0) == flip
+                            })))
+            };
+            // One face by a distance from it: the face itself as the
+            // profile (`profile_face`, mitcad#641), which follows the face
+            // when the model changes as the file's face profile does; a
+            // sketch of its boundary follows only while the face's edges
+            // come back as they were.
+            if let [(body, face, area)] = decoded
+                && start.is_none()
+                && length.is_some()
+                && self.doc.body_component(*body) == Some(self.component)
+            {
+                out.extend(flips.into_iter().flat_map(|flip| {
+                    let c = Candidate {
+                        core: CandidateCore::of(vec![json!({"type": "extrude",
+                            "profile_face": {"body": body.to_string(), "face": face.to_string()},
+                            "extent": extent.clone(), "flip": flip, "operation": operation})]),
+                        note: Some("the face of its profile as decoded".to_owned()),
+                        guess: false,
+                        predicted: predicted(*area),
+                        input_provenance: if side_read(flip) {
+                            InputProvenance::Read
+                        } else {
+                            InputProvenance::Inferred
+                        },
+                        first: true,
+                    };
+                    with_participants(&c, &options)
+                }));
+            }
             out.extend(flips.into_iter().flat_map(|flip| {
                 let defs = vec![
                     sketch.clone(),
-                    json!({"type": "extrude", "profiles": profiles,
+                    with_start(json!({"type": "extrude", "profiles": profiles,
                            "extent": extent.clone(),
-                           "flip": flip, "operation": operation}),
+                           "flip": flip, "operation": operation})),
                 ];
                 let c = Candidate {
                     core: CandidateCore::of(defs),
@@ -3967,13 +4056,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     // The faces, the distance and the taper are decoded; the
                     // side is read from the stream's sides, else chosen by
                     // the history.
-                    input_provenance: if faces_read
-                        && ((distance_side_read && !flip)
-                            || (to_object_sides
-                                && object_point.is_some_and(|p| {
-                                    let s = geom::dot(geom::sub(p, centre), normal);
-                                    s.abs() > 1e-6 && (s < 0.0) == flip
-                                }))) {
+                    input_provenance: if side_read(flip) {
                         InputProvenance::Read
                     } else {
                         InputProvenance::Inferred
@@ -4044,9 +4127,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 out.push(Candidate {
                     core: CandidateCore::of(vec![
                         sketch.clone(),
-                        json!({"type": "extrude", "profiles": profiles,
+                        with_start(json!({"type": "extrude", "profiles": profiles,
                                "extent": {"type": "distance", "distance": extent_value},
-                               "flip": flip, "operation": operation}),
+                               "flip": flip, "operation": operation})),
                     ]),
                     note: Some(format!(
                         "profile not decoded: face {face} of {body} checked against the history"
@@ -5209,7 +5292,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         };
         let mut candidates = Vec::new();
         let mut last_error = None;
-        let states = self.lookahead(4);
+        // (Past the item's own state too: below, a later state is looked
+        // at only while the item's own lost no edges.)
+        let from = self.oracle.next_index();
+        let states = from..self.oracle.count().min(from + 4);
         let count = states.len();
         for q in states.skip(skip) {
             // One state's guesses at a time: the next ones when these give

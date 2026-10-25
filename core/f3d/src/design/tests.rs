@@ -2892,7 +2892,52 @@ fn extrusion_up_to_a_face() {
         );
     }
 
+    // An extrusion that starts on a face (mitcad#641): the start face's
+    // selection takes the place of the first byte after the root part, and
+    // the fields follow it (a cut, one side by a distance, start 2).
+    d.obj(
+        970,
+        EXTRUDE,
+        cat(&[
+            &[0, 0],
+            &r(741),
+            &[0, 1],
+            &u32b(2),
+            &u32b(1),
+            &u32b(2),
+            &[0, 1],
+            &u32b(2),
+            &f64s(&[0.0, 0.0, 1.0]),
+            &[0; 7],
+            &u32b(1),
+            &[0; 9],
+            &u32b(0),
+            &[0; 6],
+            &[0],
+            &[0; 5],
+            &[0],
+            &u32b(0),
+            &[0],
+            &[0; 5],
+            &u32b(1),
+            &r(741),
+            &tail(8, "Extrude", 4, "", [0, 0, 0], 701),
+        ]),
+    );
+
     let seg = d.segment();
+    let started = decode::extrude_fields(&seg, seg.object(970).unwrap()).unwrap();
+    assert_eq!(
+        (
+            started.operation_code,
+            started.extent_a,
+            started.extent_b,
+            started.start,
+            started.start_entity,
+            started.vector
+        ),
+        (2, 1, 2, Some(2), Some(741), Some([0.0, 0.0, 1.0]))
+    );
     let sides = |id| decode::extrude_fields(&seg, seg.object(id).unwrap()).and_then(|f| f.sides);
     assert_eq!(sides(950), Some([1, 1]));
     assert_eq!(sides(951), Some([1, 1]));

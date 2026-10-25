@@ -9,6 +9,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QGuiApplication>
+#include <QDialogButtonBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelection>
@@ -26,6 +27,7 @@
 
 #include "../framework/Icons.hpp"
 #include "../framework/TestSync.hpp"
+#include "../platform/MacDialogs.hpp"
 
 namespace mitcad {
 
@@ -98,6 +100,7 @@ FindDialog::FindDialog(QWidget* parent) : QDialog(parent) {
   m_text = new QLineEdit;
   m_text->setPlaceholderText(tr("Name (* and ? are wildcards)"));
   m_text->setClearButtonEnabled(true);
+  mac::styleSearchField(m_text);
   layout->addWidget(m_text);
 
   auto* filters = new QHBoxLayout;
@@ -130,35 +133,37 @@ FindDialog::FindDialog(QWidget* parent) : QDialog(parent) {
   m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
   m_table->setColumnWidth(0, 200);
   m_table->setColumnWidth(1, 90);
+  mac::styleListTable(m_table);
   layout->addWidget(m_table, 1);
 
   m_count = new QLabel;
   layout->addWidget(m_count);
 
-  auto* buttons = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
   m_show = new QPushButton(tr("Show"));
   m_show->setToolTip(tr("Shows the selected results, or all when none is selected, in one undo step"));
   m_hide = new QPushButton(tr("Hide"));
   m_hide->setToolTip(tr("Hides the selected results, or all when none is selected, in one undo step"));
-  m_appearance = new QPushButton(tr("Appearance..."));
+  m_appearance = new QPushButton(tr("Appearance…"));
   m_appearance->setToolTip(tr("Edit Appearances with the bodies of the results as the targets"));
   m_select = new QPushButton(tr("Select"));
   m_select->setToolTip(tr("Makes the results the selection, for the commands that take one"));
   for (QPushButton* button : {m_show, m_hide, m_appearance, m_select}) {
-    buttons->addWidget(button);
+    buttons->addButton(button, QDialogButtonBox::ActionRole);
   }
-  buttons->addStretch(1);
   m_all = new QPushButton(tr("Select All"));
   m_none = new QPushButton(tr("Select None"));
   m_close = new QPushButton(tr("Close"));
-  for (QPushButton* button : {m_all, m_none, m_close}) {
-    buttons->addWidget(button);
-  }
-  layout->addLayout(buttons);
+  buttons->addButton(m_all, QDialogButtonBox::ResetRole);
+  buttons->addButton(m_none, QDialogButtonBox::ResetRole);
+  buttons->addButton(m_close, QDialogButtonBox::RejectRole);
+  layout->addWidget(buttons);
   for (QPushButton* button : {m_show, m_hide, m_appearance, m_select, m_all, m_none, m_close}) {
     button->setAutoDefault(false);
   }
 
+  mac::styleDialogButtons(buttons, m_close);
+  mac::styleDialog(this);
   m_timer = new QTimer(this);
   m_timer->setSingleShot(true);
   m_timer->setInterval(150);

@@ -4,16 +4,22 @@
 # The CREATE group (U4) through the real UI, with the volumes the model
 # reports (analytic, or tools/cli/tests/f1_*.json):
 #   - Extrude: a thin extrusion (walls centred on the profile), edited to
-#     two sides; a start offset up to the XY plane; a thin extrusion along
+#     two sides (a negative side refused, mitcad#693); a start offset up
+#     to the XY plane; a thin extrusion along
 #     an open chain of sketch curves picked in the panel (mitcad#463).
 #   - Revolve: two sides about the Y axis.
-#   - Hole: two holes clicked on a face, placed exactly in the position
-#     table, edited to counterbores through all, then to tapered
-#     counterdrills; a counterdrilled, tapered hole at a sketch's circle
+#   - Hole: a hole clicked on a face, its distances from the two nearest
+#     edges typed (mitcad#656), edited to a counterbore through all, then to
+#     a tapered counterdrill; a counterdrilled, tapered hole at a sketch's
+#     circle
 #     (as the FreeCAD import makes them) opens for editing with its values
 #     and keeps its counterdrill when its taper changes.
 #   - Thread: suggested from the cylinder, cosmetic, edited to modelled,
 #     then given extra radial and flank clearance, then end chamfers.
+#   - Thread on a 5 mm hole (mitcad#691): picked in the open command it
+#     suggests M6x1 6H, offers only a hole's classes, and keeps 6H when the
+#     size changes; selected before Thread from the view's context menu it
+#     suggests M6x1 6H too, and the modelled thread is made.
 #   - Box, Cylinder, Sphere and Torus placed with a click on XY; New
 #     Component.
 #   - Emboss (mitcad#458): a rectangle wrapped onto a rod's side and
@@ -110,7 +116,26 @@ cat > "$WORK/emboss.json" << EOF
   {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [-3, -8], "width": 6, "height": 6}
 ]
 EOF
-for model in profiles rod drilled emboss curves; do
+# A 30 x 20 block 6 high (F1, F2) with two 5 mm holes through it, the tap
+# drill of M6x1 (mitcad#691): at (-7, 0) (Sketch2 F3, cut by Extrude2 F4)
+# and at (7, 0) (Sketch3 F5, cut by Extrude3 F6).
+cat > "$WORK/bores.json" << EOF
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-15, -10], "width": 30, "height": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "$RECT"}],
+    "extent": {"type": "distance", "distance": 6}, "operation": "new_body"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F3", "center": [-7, 0], "diameter": 5},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F3", "region": "r{c1}"}],
+    "extent": {"type": "through_all"}, "operation": "cut", "participants": ["F2.b0"]}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F5", "center": [7, 0], "diameter": 5},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F5", "region": "r{c1}"}],
+    "extent": {"type": "through_all"}, "operation": "cut", "participants": ["F2.b0"]}}
+]
+EOF
+for model in profiles rod drilled emboss curves bores; do
   "$CLI" run "$WORK/$model.json" --save "$WORK/$model.mitcad" > "$WORK/cli.log" 2>&1 ||
     { cat "$WORK/cli.log"; ui_fail "mitcad-cli $model"; }
 done
@@ -148,7 +173,14 @@ ui_expect_log "Editing F6 with Extrude" "editing Extrude2"
 ui_expect_log "Extrude Wall Thickness: 2 mm" "the thickness came from the feature"
 ui_step "Two Sides"                        ui_choose "Panel Extrude input direction" 1
 ui_expect_log "Extrude: Direction = Two Sides" "two sides chosen"
+# A negative side is refused, not drawn on the other side (mitcad#693).
+ui_mark
+ui_step "side two -5"                      ui_type_in "Panel Extrude input distance2" "-5"
+ui_expect_new "Panel Extrude error: Distance 2 is on the other side: for a solid on one side of the sketch use Start: Offset" \
+  "a negative side two refused" 30
+ui_mark
 ui_step "side two 5"                       ui_type_in "Panel Extrude input distance2" "5"
+ui_expect_new "Preview Extrude: ok" "side two 5 previewed" 30
 # Side two's wall is side one's until it is changed.
 ui_expect_log "Extrude Wall Thickness 2: 2 mm" "side two's wall as side one's"
 ui_expect_log "Preview Extrude: ok" "previewed"
@@ -229,22 +261,19 @@ ui_step "hole (H)"                         ui_key h
 ui_expect_log "Command Hole started" "hole started"
 read -r hx hy <<< "$(ui_pick_at "face F2.b0/F2:end($RECT)")"
 ui_step "click the top face"               xdotool mousemove "$hx" "$hy" click 1
-ui_expect_log "Hole Face: 1 face" "the face picked"
-ui_step "click it again beside"            xdotool mousemove $((hx + 20)) "$hy" click 1
-ui_expect_log "Panel Hole input positions.1.x at" "a second row of the position table"
-for row in "0 15" "1 45"; do
-  read -r index x <<< "$row"
-  ui_step "hole $index at x $x"            ui_type_in "Panel Hole input positions.$index.x" "$x"
-  ui_step "hole $index at y 20"            ui_type_in "Panel Hole input positions.$index.y" "20"
-done
+ui_expect_log "Hole Place On: 1 face" "the face picked"
+ui_expect_log "Place Hole: face face F2:end(" "measured from two of its edges"
+ui_expect_log "Value box Hole at_offset1 at " "the distances are dimensions in the view"
+ui_step "distance 1: 15"                   ui_type_in "Panel Hole input at_offset1" "15"
+ui_step "distance 2: 20"                   ui_type_in "Panel Hole input at_offset2" "20"
 ui_step "diameter 10"                      ui_type_in "Panel Hole input diameter" "10"
 ui_expect_log "Manipulator Hole depth at" "the depth has an arrow"
 ui_expect_log "Preview Hole: ok" "previewed"
 ui_step "OK (Enter)"                       ui_key Return
-ui_expect_log "Added 2 hole(s) (simple), diameter 10" "holes added"
-# Two holes of hole_simple_distance: 864.0506 mm3 each.
+ui_expect_log "Added 1 hole(s) (simple), diameter 10" "hole added"
+# A hole of hole_simple_distance: 864.0506 mm3.
 ui_expect_volume "Body Body1 (F2.b0): volume 48000.000 -> \([0-9.]*\) mm3" \
-  "$(awk 'BEGIN { printf "%.6f", 48000 - 2 * (48000 - 47135.94936549554) }')" "two holes"
+  "$(awk 'BEGIN { printf "%.6f", 48000 - (48000 - 47135.94936549554) }')" "one hole"
 
 echo "--- Edited to counterbores through all (hole_counterbore)"
 ui_step "double-click Hole1"               ui_double_click_logged "Timeline Hole1"
@@ -258,7 +287,7 @@ ui_expect_log "Preview Hole: ok" "previewed"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_log "Edited F3" "Hole1 edited"
 ui_expect_volume "Body Body1 (F2.b0): volume [0-9.]* -> \([0-9.]*\) mm3" \
-  "$(awk 'BEGIN { printf "%.6f", 48000 - 2 * (48000 - 46926.50522389775) }')" "two counterbores"
+  "$(awk 'BEGIN { printf "%.6f", 48000 - (48000 - 46926.50522389775) }')" "a counterbore"
 
 echo "--- Edited to counterdrills, tapered 2 degrees"
 ui_mark
@@ -276,7 +305,7 @@ ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Edited F3" "Hole1 edited to counterdrills"
 ui_expect_new "Body Body1 (F2.b0): volume" "the block measured"
 ui_expect_volume "Body Body1 (F2.b0): volume [0-9.]* -> \([0-9.]*\) mm3" \
-  "$(awk -v one="$(hole_volume 2 90)" 'BEGIN { printf "%.6f", 48000 - 2 * one }')" "two tapered counterdrills"
+  "$(awk -v one="$(hole_volume 2 90)" 'BEGIN { printf "%.6f", 48000 - one }')" "a tapered counterdrill"
 ui_stop_app
 
 echo "=== An imported counterdrilled, tapered hole"
@@ -331,6 +360,71 @@ ui_expect_volume "Body Body1 (F2.b0): volume [0-9.]* -> \([0-9.]*\) mm3" 9390.57
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_stop_app
 
+echo "=== Thread on a 5 mm hole (mitcad#691)"
+BORE_A='F4:side(c1)'
+BORE_B='F6:side(c1)'
+HOLE_CLASSES="4H | 5G | 5H | 6G | 6H | 7G | 7H"
+ui_start_app --open "$WORK/bores.mitcad"
+ui_step "fit (F6)"                         ui_key F6
+
+echo "--- Picked in the open command, then another size"
+ui_mark
+ui_step "thread (search)"                  ui_command "Thread"
+ui_expect_new "Panel Thread choices: standard=iso_metric, size=10, designation=M10x1.5, class=6g" \
+  "with nothing selected, M10x1.5 6g"
+ui_expect_new "Pick face F2.b0/$BORE_A at" "the first hole can be picked"
+ui_expect_new "Pick face F2.b0/$BORE_B at" "the second hole can be picked"
+ui_mark
+ui_step "pick the second hole"             ui_click_pick "face F2.b0/$BORE_B"
+ui_expect_new "Thread Faces: 1 face [face $BORE_B of F2.b0" "the hole picked"
+ui_expect_new "Panel Thread options class: $HOLE_CLASSES" "only a hole's classes offered"
+ui_expect_new "Preview Thread: ok" "M6x1 6H previewed on the hole"
+ui_mark
+ui_step "Size: two down (8)"               ui_choose "Panel Thread input size" 2
+ui_expect_new "Thread: Size = 8" "size 8 chosen"
+ui_expect_new "Preview Thread: ok" "M8 previewed, its class still a hole's"
+ui_focus_main
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added cosmetic thread M8x1.25 6H on 1 face(s)" "the class stayed 6H for the hole"
+
+echo "--- Selected before, Thread from the view's context menu"
+ui_step "clear the selection (Esc)"        ui_key Escape
+# Thread's pick places are where a click picks the face among faces only:
+# outside a command the hole's rim in front of its wall may take that
+# click. Fillet takes edges and faces, so its place for the wall is one
+# no edge takes. Cancelled.
+ui_mark
+ui_step "fillet (search)"                  ui_command "Fillet"
+ui_expect_new "Pick face F2.b0/$BORE_A at" "the first hole's wall clear of its edges"
+ui_step "cancel (Esc)"                     ui_key Escape
+ui_expect_new "Command Fillet cancelled" "cancelled"
+at=$(ui_pick_at "face F2.b0/$BORE_A")
+ui_mark
+ui_step "right-click the first hole"       xdotool mousemove $at click 3
+ui_expect_new "Selected: 1 face [face $BORE_A of F2.b0" "the hole selected"
+ui_expect_new "Context menu: " "the context menu opened"
+ui_mark
+ui_step "Solid > Thread"                   ui_menu_choose "Solid" "Thread"
+ui_expect_new "Command Thread started" "Thread started from the menu"
+ui_expect_new "Thread Faces: 1 face [face $BORE_A of F2.b0" "the selected hole is the face"
+ui_expect_new "Panel Thread choices: standard=iso_metric, size=6, designation=M6x1, class=6H" \
+  "the hole selected before suggests M6x1 6H"
+ui_expect_new "Panel Thread options class: $HOLE_CLASSES" "only a hole's classes offered"
+ui_expect_new "Preview Thread: ok" "previewed"
+ui_mark
+ui_step "Modeled"                          ui_click_logged "Panel Thread input modeled"
+ui_expect_new "Thread: Modeled = on" "modelled"
+ui_expect_new "Preview Thread: ok" "the modelled thread previewed" 120
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "Preview Thread: failed" && ui_fail "the thread was refused"
+echo "ok   no class error"
+ui_focus_main
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added modeled thread M6x1 6H on 1 face(s)" "M6x1 6H modelled in the 5 mm hole" 60
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+ui_stop_app
+
 echo "=== Thread, primitives, New Component"
 ui_start_app --open "$WORK/rod.mitcad"
 ui_step "fit (F6)"                         ui_key F6
@@ -381,7 +475,7 @@ ui_double_click_expect "Timeline Thread1" "Editing F3 with Thread" "editing Thre
 ui_step "Chamfer Size: Custom"             ui_choose "Panel Thread input chamfer_size" 1
 ui_expect_new "Thread: Chamfer Size = Custom" "a size of its own"
 ui_expect_new "Thread Chamfer Diameter: 8.226 mm" "starting at the size's default (M10x1.5: 8.376 - 0.15)"
-ui_expect_new "Thread Chamfer Angle: 45 deg" "and 45 degrees"
+ui_expect_new "Thread Chamfer Angle: 45°" "and 45 degrees"
 ui_step "cancel (Escape)"                  ui_key Escape
 
 # primitive name volume body plane: placed with a click on an origin plane
@@ -391,9 +485,9 @@ primitive() {
   ui_expect_log "Command $1 started" "$1 started"
   case $4 in
     xy|xz|yz) ui_step "click $4"           ui_click_logged "Datum $4"
-              ui_expect_log "$1 Plane: 1 plane [plane $4]" "$4 picked" ;;
+              ui_expect_log "$1 Place On: 1 plane [plane $4]" "$4 picked" ;;
     *)        ui_step "click the face"     ui_click_pick "$4"
-              ui_expect_log "$1 Plane: 1 face" "face picked" ;;
+              ui_expect_log "$1 Place On: 1 face" "face picked" ;;
   esac
   ui_expect_log "Preview $1: ok" "$1 previewed"
   ui_step "OK (Enter)"                     ui_key Return

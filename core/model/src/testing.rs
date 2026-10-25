@@ -205,6 +205,18 @@ pub struct MockKernel {
     /// mass by the density; the print estimate, mitcad#620); otherwise the
     /// kernel has none.
     pub physical: Cell<bool>,
+    /// Measure (mitcad#646): `measure` names the selection's kind,
+    /// `measure_between` gives the closest points of the selections' boxes
+    /// (a planar face's box flattened onto its plane) and the angle of two
+    /// planar faces' normals, and `datum_shape` gives a datum's box. A
+    /// shape `transform_shape` made is measured on the shape it was moved
+    /// from (kept in `moved`), then moved. Straight extrusions' faces on
+    /// lines are planes (`face_plane`), kept in `side_planes` by face name
+    /// (the last extrusion's of that name). Otherwise none of these.
+    pub measures_selections: Cell<bool>,
+    pub side_planes: RefCell<BTreeMap<String, Plane>>,
+    #[allow(clippy::type_complexity)]
+    pub moved: RefCell<Vec<(MockShape, MockShape, Transform)>>,
 }
 
 /// The bounds of what of `b` lies on or below the plane through `point`
@@ -298,6 +310,75 @@ impl MockKernel {
 
     pub fn count(&self, op: &str) -> usize {
         self.calls.borrow().get(op).copied().unwrap_or(0)
+    }
+
+    /// Measure (mitcad#646, `measures_selections`): the planes of an
+    /// extrusion's faces on the region's lines, their normals away from
+    /// `centre` (the region's middle in the sketch).
+    fn keep_side_planes(
+        &self,
+        spec: &ExtrudeSpec<'_>,
+        region: &crate::profile::ProfileRegion,
+        centre: [f64; 2],
+    ) {
+        use mitcad_vec3::{cross, dot, sub, unit};
+        let middle = spec.frame.point(centre);
+        for segment in region.loops.iter().flat_map(|l| &l.segments) {
+            let crate::profile::SegmentGeometry::Line { start, end } = &segment.geometry else {
+                continue;
+            };
+            let origin = spec.frame.point(*start);
+            let along = sub(spec.frame.point(*end), origin);
+            let Some(mut normal) = unit(cross(along, spec.direction)) else {
+                continue;
+            };
+            if dot(normal, sub(origin, middle)) < 0.0 {
+                normal = normal.map(|v| -v);
+            }
+            let name = FaceName::side(spec.feature, segment.key.clone());
+            self.side_planes
+                .borrow_mut()
+                .insert(name.to_string(), Plane { origin, normal });
+        }
+    }
+
+    /// Measure (mitcad#646): a selection's box and, for a planar face, its
+    /// plane, in the coordinates of `shape`: a face's box flattened onto its
+    /// plane when the plane is square to an axis. A shape `transform_shape`
+    /// made is measured on the shape it was moved from, then moved.
+    fn selection_box(
+        &self,
+        shape: &MockShape,
+        name: Option<&crate::topo::TopoName>,
+    ) -> Result<(BoundingBox, Option<Plane>), KernelError> {
+        let source = self
+            .moved
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(result, _, _)| result == shape)
+            .map(|(_, source, t)| (source.clone(), *t));
+        if let Some((source, t)) = source {
+            let (bounds, plane) = self.selection_box(&source, name)?;
+            let plane = plane.map(|p| Plane {
+                origin: t.apply_point(p.origin),
+                normal: t.apply_vector(p.normal),
+            });
+            return Ok((moved_bounds(&bounds, &t), plane));
+        }
+        let bounds = shape.bounds.ok_or(KernelError::failed("no bounds"))?;
+        let Some(crate::topo::TopoName::Face(face)) = name else {
+            return Ok((bounds, None));
+        };
+        let Ok(plane) = self.face_plane(shape, face) else {
+            return Ok((bounds, None));
+        };
+        let mut flat = bounds;
+        if let Some(axis) = (0..3).find(|i| (plane.normal[*i].abs() - 1.0).abs() < 1e-9) {
+            flat.min[axis] = plane.origin[axis];
+            flat.max[axis] = plane.origin[axis];
+        }
+        Ok((flat, Some(plane)))
     }
 
     /// The cut's result with the faces of `split_faces` split in two.
@@ -556,6 +637,13 @@ impl Kernel for MockKernel {
                 faces.extend(sides);
             }
             let (min, max) = region.bounds();
+            if self.measures_selections.get() {
+                self.keep_side_planes(
+                    spec,
+                    region,
+                    [(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0],
+                );
+            }
             // Profiles are in sketch coordinates; both their frame and
             // the sweep direction are in the body's component space.
             let mut corners: Vec<[f64; 3]> = Vec::with_capacity(8);
@@ -995,6 +1083,91 @@ impl Kernel for MockKernel {
         })
     }
 
+    // Measure (mitcad#646, `measures_selections`).
+
+    fn datum_shape(
+        &self,
+        datum: &crate::datum::Datum,
+        size: f64,
+    ) -> Result<MockShape, KernelError> {
+        use crate::datum::Datum;
+        if !self.measures_selections.get() {
+            return Err(KernelError::Unsupported("datum display"));
+        }
+        let h = size / 2.0;
+        let (kind, points): (&str, Vec<[f64; 3]>) = match datum {
+            Datum::Plane(p) => (
+                "plane",
+                [(-h, -h), (h, -h), (-h, h), (h, h)]
+                    .iter()
+                    .map(|(u, v)| {
+                        std::array::from_fn(|i| p.origin[i] + u * p.x_axis[i] + v * p.y_axis[i])
+                    })
+                    .collect(),
+            ),
+            Datum::Axis(a) => (
+                "axis",
+                [-h, h]
+                    .iter()
+                    .map(|t| std::array::from_fn(|i| a.origin[i] + t * a.direction[i]))
+                    .collect(),
+            ),
+            Datum::Point(p) => ("point", vec![p.point]),
+        };
+        Ok(MockShape {
+            history: format!("datum({kind})"),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            bounds: points_box(&points),
+            parts: Vec::new(),
+        })
+    }
+
+    fn measure(
+        &self,
+        selection: &crate::analysis::Selection<'_, MockShape>,
+    ) -> Result<crate::analysis::Measurement, KernelError> {
+        use crate::topo::TopoName;
+        if !self.measures_selections.get() {
+            return Err(KernelError::Unsupported("measurement"));
+        }
+        let kind = match selection.name {
+            None => "body",
+            Some(TopoName::Face(_)) => "face",
+            Some(TopoName::Edge(_)) => "edge",
+            Some(TopoName::Vertex(_)) => "vertex",
+        };
+        Ok(crate::analysis::Measurement {
+            kind: kind.to_owned(),
+            ..crate::analysis::Measurement::default()
+        })
+    }
+
+    fn measure_between(
+        &self,
+        a: &crate::analysis::Selection<'_, MockShape>,
+        b: &crate::analysis::Selection<'_, MockShape>,
+    ) -> Result<crate::analysis::Separation, KernelError> {
+        use mitcad_vec3::{distance, dot};
+        if !self.measures_selections.get() {
+            return Err(KernelError::Unsupported("measurement"));
+        }
+        let (box_a, plane_a) = self.selection_box(a.shape, a.name)?;
+        let (box_b, plane_b) = self.selection_box(b.shape, b.name)?;
+        let (on_a, on_b) = closest_in_boxes(&box_a, &box_b);
+        let angle = match (plane_a, plane_b) {
+            (Some(pa), Some(pb)) => Some(dot(pa.normal, pb.normal).clamp(-1.0, 1.0).acos()),
+            _ => None,
+        };
+        Ok(crate::analysis::Separation {
+            distance: distance(on_a, on_b),
+            on_a,
+            on_b,
+            inside: false,
+            angle,
+        })
+    }
+
     fn curves_of(
         &self,
         shape: &MockShape,
@@ -1132,7 +1305,13 @@ impl Kernel for MockKernel {
         instance: Option<Instance>,
     ) -> Result<MockShape, KernelError> {
         self.call("transform")?;
-        Ok(transformed(shape, transform, instance))
+        let moved = transformed(shape, transform, instance);
+        if self.measures_selections.get() {
+            self.moved
+                .borrow_mut()
+                .push((moved.clone(), shape.clone(), *transform));
+        }
+        Ok(moved)
     }
 
     fn unite(&self, shapes: &[&MockShape]) -> Result<MockShape, KernelError> {
@@ -1518,6 +1697,11 @@ impl Kernel for MockKernel {
             return Err(KernelError::failed(format!("the body has no face {face}")));
         }
         let bounds = shape.bounds.ok_or(KernelError::failed("no bounds"))?;
+        if self.measures_selections.get()
+            && let Some(plane) = self.side_planes.borrow().get(&plain_face(face).to_string())
+        {
+            return Ok(*plane);
+        }
         if self.box_faces.get()
             && let Some((axis, high)) = box_side(plain_role(face))
         {
@@ -2353,6 +2537,8 @@ impl Kernel for MockKernel {
             vertices: self.vertices.clone(),
             hole_radii: self.hole_radii.clone(),
             face_spans: self.face_spans.clone(),
+            measures_selections: self.measures_selections.clone(),
+            side_planes: self.side_planes.clone(),
             ..MockKernel::default()
         })
     }
@@ -4241,6 +4427,46 @@ fn plain_role(face: &FaceName) -> &str {
         ("part", Some(RoleKey::Face(inner))) => plain_role(inner),
         (role, _) => role,
     }
+}
+
+/// The source's face of a derived part's face (`F7:part(F3:side(…))`).
+fn plain_face(face: &FaceName) -> &FaceName {
+    match (face.role.as_str(), &face.key) {
+        ("part", Some(RoleKey::Face(inner))) => plain_face(inner),
+        _ => face,
+    }
+}
+
+/// A box moved by `t`: the box of its moved corners.
+fn moved_bounds(b: &BoundingBox, t: &Transform) -> BoundingBox {
+    let corners: Vec<[f64; 3]> = b.corners().map(|c| t.apply_point(c)).collect();
+    BoundingBox {
+        min: std::array::from_fn(|i| corners.iter().map(|c| c[i]).fold(f64::INFINITY, f64::min)),
+        max: std::array::from_fn(|i| {
+            corners
+                .iter()
+                .map(|c| c[i])
+                .fold(f64::NEG_INFINITY, f64::max)
+        }),
+    }
+}
+
+/// The closest points of two boxes (mitcad#646): on each axis where they
+/// overlap, the middle of the overlap on both.
+fn closest_in_boxes(a: &BoundingBox, b: &BoundingBox) -> ([f64; 3], [f64; 3]) {
+    let mut on_a = [0.0; 3];
+    let mut on_b = [0.0; 3];
+    for i in 0..3 {
+        if a.max[i] < b.min[i] {
+            (on_a[i], on_b[i]) = (a.max[i], b.min[i]);
+        } else if b.max[i] < a.min[i] {
+            (on_a[i], on_b[i]) = (a.min[i], b.max[i]);
+        } else {
+            let middle = (a.min[i].max(b.min[i]) + a.max[i].min(b.max[i])) / 2.0;
+            (on_a[i], on_b[i]) = (middle, middle);
+        }
+    }
+    (on_a, on_b)
 }
 
 /// The shape of mock B-rep data ("<faces> <history>"), face i named

@@ -606,47 +606,183 @@ std::vector<FacePoints> face_points(const Shape& shape, int count) {
   });
 }
 
+namespace {
+
+// A face of the shapes before a change, with a box that holds it (an
+// unbounded one where none is known).
+struct KeptFace {
+  TopoDS_Face face;
+  std::array<double, 6> box;
+};
+
+constexpr double kUnboundedBox = 1e100;
+
+// Each face's key, worked out on all cores: integrating a face's area is
+// costly (mitcad#139), and a body of thousands of faces asks for thousands.
+std::vector<FaceKey> face_keys(const std::vector<TopoDS_Face>& faces) {
+  std::vector<FaceKey> keys(faces.size());
+  OSD_Parallel::For(
+      0, static_cast<int>(faces.size()),
+      [&](int i) { keys[static_cast<std::size_t>(i)] = face_key(faces[static_cast<std::size_t>(i)]); },
+      faces.size() < 8);
+  return keys;
+}
+
+// Which of `others` (none of them the same face as one of `kept`) none of
+// `kept` stands for: no face of `kept` lies on the same kind of surface with
+// the same area and centre; with each one's key (`other_keys`). The centre
+// of a face lies within its convex hull, so within any box that holds it,
+// and only the faces of `kept` whose boxes hold a centre of one of
+// `others` (within the centres' slack) are measured (mitcad#658: comparing
+// a change of a few faces against the bodies before it measured every face
+// of a body of 6 700 faces, 5 s each time).
+std::vector<bool> stood_for(const std::vector<KeptFace>& kept, const std::vector<TopoDS_Face>& others,
+                            std::vector<FaceKey>& other_keys) {
+  other_keys = face_keys(others);
+  // The kept faces that may be one of them: those whose boxes hold a
+  // centre, enlarged by twice same_face's slack of the centres.
+  constexpr double kSlack = 2e-6;
+  // (A face without a box of its own is measured whatever the centres.)
+  std::vector<bool> wanted(kept.size(), false);
+  std::vector<std::size_t> order;
+  for (std::size_t i = 0; i < kept.size(); ++i) {
+    const std::array<double, 6>& box = kept[i].box;
+    if (box[0] <= -kUnboundedBox || box[3] >= kUnboundedBox) {
+      wanted[i] = true;
+    } else {
+      order.push_back(i);
+    }
+  }
+  std::sort(order.begin(), order.end(),
+            [&](std::size_t a, std::size_t b) { return kept[a].box[0] < kept[b].box[0]; });
+  std::vector<double> lows(order.size());
+  double widest = 0.0;
+  for (std::size_t i = 0; i < order.size(); ++i) {
+    const std::array<double, 6>& box = kept[order[i]].box;
+    lows[i] = box[0];
+    widest = std::max(widest, box[3] - box[0]);
+  }
+  for (const FaceKey& key : other_keys) {
+    const gp_Pnt& c = key.center;
+    // (A box that holds the centre starts no farther left than the widest
+    // box's width.)
+    auto from = std::lower_bound(lows.begin(), lows.end(), c.X() - widest - kSlack);
+    auto to = std::upper_bound(lows.begin(), lows.end(), c.X() + kSlack);
+    for (auto it = from; it != to; ++it) {
+      const std::size_t k = order[static_cast<std::size_t>(it - lows.begin())];
+      const std::array<double, 6>& box = kept[k].box;
+      if (c.X() <= box[3] + kSlack && c.Y() >= box[1] - kSlack && c.Y() <= box[4] + kSlack &&
+          c.Z() >= box[2] - kSlack && c.Z() <= box[5] + kSlack) {
+        wanted[k] = true;
+      }
+    }
+  }
+  std::vector<TopoDS_Face> measured;
+  for (std::size_t k = 0; k < kept.size(); ++k) {
+    if (wanted[k]) {
+      measured.push_back(kept[k].face);
+    }
+  }
+  std::vector<FaceKey> keys = face_keys(measured);
+  std::sort(keys.begin(), keys.end(), [](const FaceKey& a, const FaceKey& b) { return a.area < b.area; });
+  std::vector<bool> found(others.size(), false);
+  for (std::size_t i = 0; i < others.size(); ++i) {
+    const FaceKey& key = other_keys[i];
+    // Those of about the same area, by the sorted areas.
+    const double slack = 1e-7 * std::max(std::abs(key.area), 1.0);
+    auto it = std::lower_bound(keys.begin(), keys.end(), key.area - slack,
+                               [](const FaceKey& k, double area) { return k.area < area; });
+    for (; it != keys.end() && it->area <= key.area + slack && !found[i]; ++it) {
+      found[i] = same_face(*it, key);
+    }
+  }
+  return found;
+}
+
+// new_faces over the faces of the shapes before (`kept`, each once, and
+// `in` the same as a map).
+std::vector<NewFace> new_faces_among(const std::vector<KeptFace>& kept,
+                                     const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& in,
+                                     const TopoDS_Shape& after, int count) {
+  std::vector<TopoDS_Face> others;
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> seen;
+  for (TopExp_Explorer it(after, TopAbs_FACE); it.More(); it.Next()) {
+    if (!in.Contains(it.Current()) && seen.Add(it.Current())) {
+      others.push_back(TopoDS::Face(it.Current()));
+    }
+  }
+  if (others.empty()) {
+    return {};
+  }
+  std::vector<FaceKey> other_keys;
+  const std::vector<bool> found = stood_for(kept, others, other_keys);
+  std::vector<NewFace> result;
+  for (std::size_t i = 0; i < others.size(); ++i) {
+    if (!found[i]) {
+      result.push_back({other_keys[i].area, inside_points(others[i], count)});
+    }
+  }
+  return result;
+}
+
+// The faces of the shapes, each once, with unbounded boxes, and as a map.
+std::vector<KeptFace> kept_faces(const std::vector<TopoDS_Shape>& shapes,
+                                 NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& in) {
+  std::vector<KeptFace> kept;
+  for (const TopoDS_Shape& shape : shapes) {
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+      if (in.Add(it.Current())) {
+        kept.push_back({TopoDS::Face(it.Current()),
+                        {-kUnboundedBox, -kUnboundedBox, -kUnboundedBox, kUnboundedBox, kUnboundedBox, kUnboundedBox}});
+      }
+    }
+  }
+  return kept;
+}
+
+// Each Shape's face boxes (face_boxes, kept with each shape).
+std::vector<std::vector<std::array<double, 6>>> boxes_of(const std::vector<const Shape*>& shapes) {
+  std::vector<std::vector<std::array<double, 6>>> boxes;
+  for (const Shape* shape : shapes) {
+    boxes.push_back(face_boxes(*shape));
+  }
+  return boxes;
+}
+
+// The faces of the Shapes, each once, with their boxes (boxes_of), and as a
+// map.
+std::vector<KeptFace> kept_faces(const std::vector<const Shape*>& shapes,
+                                 const std::vector<std::vector<std::array<double, 6>>>& boxes,
+                                 NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& in) {
+  std::vector<KeptFace> kept;
+  for (std::size_t s = 0; s < shapes.size(); ++s) {
+    for (int i = 0; i < shapes[s]->face_count(); ++i) {
+      const TopoDS_Face& face = shapes[s]->face(i);
+      if (in.Add(face)) {
+        kept.push_back({face, boxes[s][static_cast<std::size_t>(i)]});
+      }
+    }
+  }
+  return kept;
+}
+
+} // namespace
+
 std::vector<NewFace> new_faces(const std::vector<TopoDS_Shape>& before, const TopoDS_Shape& after,
                                int count) {
   return detail::run("new faces", [&] {
-    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> kept;
-    for (const TopoDS_Shape& shape : before) {
-      for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
-        kept.Add(it.Current());
-      }
-    }
-    // The faces of `after` that are not the same faces as those of
-    // `before`; the measures of `before`'s only when there are such.
-    std::vector<TopoDS_Face> others;
-    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> seen;
-    for (TopExp_Explorer it(after, TopAbs_FACE); it.More(); it.Next()) {
-      if (!kept.Contains(it.Current()) && seen.Add(it.Current())) {
-        others.push_back(TopoDS::Face(it.Current()));
-      }
-    }
-    std::vector<FaceKey> keys;
-    if (!others.empty()) {
-      for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(kept); it.More(); it.Next()) {
-        keys.push_back(face_key(TopoDS::Face(it.Key())));
-      }
-      std::sort(keys.begin(), keys.end(), [](const FaceKey& a, const FaceKey& b) { return a.area < b.area; });
-    }
-    std::vector<NewFace> result;
-    for (const TopoDS_Face& face : others) {
-      const FaceKey key = face_key(face);
-      // Those of about the same area, by the sorted areas.
-      const double slack = 1e-7 * std::max(std::abs(key.area), 1.0);
-      auto it = std::lower_bound(keys.begin(), keys.end(), key.area - slack,
-                                 [](const FaceKey& k, double area) { return k.area < area; });
-      bool found = false;
-      for (; it != keys.end() && it->area <= key.area + slack && !found; ++it) {
-        found = same_face(*it, key);
-      }
-      if (!found) {
-        result.push_back({key.area, inside_points(face, count)});
-      }
-    }
-    return result;
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> in;
+    const std::vector<KeptFace> kept = kept_faces(before, in);
+    return new_faces_among(kept, in, after, count);
+  });
+}
+
+std::vector<NewFace> new_faces(const std::vector<const Shape*>& before, const Shape& after, int count) {
+  const std::vector<std::vector<std::array<double, 6>>> boxes = boxes_of(before);
+  return detail::run("new faces", [&] {
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> in;
+    const std::vector<KeptFace> kept = kept_faces(before, boxes, in);
+    return new_faces_among(kept, in, after.occt(), count);
   });
 }
 
@@ -655,17 +791,12 @@ namespace {
 // The faces of `of` (each as it is used, with its orientation) that are
 // not faces of `in`, as new_faces tells them: not the same face, nor one on
 // the same kind of surface with the same area and centre.
-std::vector<TopoDS_Face> faces_not_in(const std::vector<TopoDS_Shape>& of, const std::vector<TopoDS_Shape>& in) {
-  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> kept;
-  for (const TopoDS_Shape& shape : in) {
-    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
-      kept.Add(it.Current());
-    }
-  }
+std::vector<TopoDS_Face> faces_not_in(const std::vector<TopoDS_Shape>& of, const std::vector<KeptFace>& kept,
+                                      const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& in) {
   std::vector<TopoDS_Face> others;
   for (const TopoDS_Shape& shape : of) {
     for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
-      if (!kept.Contains(it.Current())) {
+      if (!in.Contains(it.Current())) {
         others.push_back(TopoDS::Face(it.Current()));
       }
     }
@@ -673,23 +804,12 @@ std::vector<TopoDS_Face> faces_not_in(const std::vector<TopoDS_Shape>& of, const
   if (others.empty()) {
     return others;
   }
-  std::vector<FaceKey> keys;
-  for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(kept); it.More(); it.Next()) {
-    keys.push_back(face_key(TopoDS::Face(it.Key())));
-  }
-  std::sort(keys.begin(), keys.end(), [](const FaceKey& a, const FaceKey& b) { return a.area < b.area; });
+  std::vector<FaceKey> other_keys;
+  const std::vector<bool> found = stood_for(kept, others, other_keys);
   std::vector<TopoDS_Face> result;
-  for (const TopoDS_Face& face : others) {
-    const FaceKey key = face_key(face);
-    const double slack = 1e-7 * std::max(std::abs(key.area), 1.0);
-    auto it = std::lower_bound(keys.begin(), keys.end(), key.area - slack,
-                               [](const FaceKey& k, double area) { return k.area < area; });
-    bool found = false;
-    for (; it != keys.end() && it->area <= key.area + slack && !found; ++it) {
-      found = same_face(*it, key);
-    }
-    if (!found) {
-      result.push_back(face);
+  for (std::size_t i = 0; i < others.size(); ++i) {
+    if (!found[i]) {
+      result.push_back(others[i]);
     }
   }
   return result;
@@ -719,22 +839,60 @@ double edge_slack(const std::vector<TopoDS_Face>& faces, const gp_Pnt& at) {
 
 } // namespace
 
+namespace {
+
+// changed_volume of the faces of `before` and `after` (`kept_*`, each once,
+// and `in_*` the same as maps).
+ChangedVolume changed_volume_of(const std::vector<TopoDS_Shape>& before, const std::vector<TopoDS_Shape>& after,
+                                const std::vector<KeptFace>& kept_before,
+                                const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& in_before,
+                                const std::vector<KeptFace>& kept_after,
+                                const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& in_after) {
+  Bnd_Box box;
+  for (const TopoDS_Shape& shape : after) {
+    BRepBndLib::Add(shape, box);
+  }
+  for (const TopoDS_Shape& shape : before) {
+    BRepBndLib::Add(shape, box);
+  }
+  const gp_Pnt at = box.IsVoid() ? gp::Origin() : gp_Pnt((box.CornerMin().XYZ() + box.CornerMax().XYZ()) / 2.0);
+  const std::vector<TopoDS_Face> added = faces_not_in(after, kept_before, in_before);
+  const std::vector<TopoDS_Face> removed = faces_not_in(before, kept_after, in_after);
+  ChangedVolume result;
+  result.volume = analysis::faces_volume(added, at).Mass() - analysis::faces_volume(removed, at).Mass();
+  result.slack = edge_slack(added, at) + edge_slack(removed, at);
+  return result;
+}
+
+} // namespace
+
 ChangedVolume changed_volume(const std::vector<TopoDS_Shape>& before, const std::vector<TopoDS_Shape>& after) {
   return detail::run("changed volume", [&] {
-    Bnd_Box box;
-    for (const TopoDS_Shape& shape : after) {
-      BRepBndLib::Add(shape, box);
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> in_before;
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> in_after;
+    const std::vector<KeptFace> kept_before = kept_faces(before, in_before);
+    const std::vector<KeptFace> kept_after = kept_faces(after, in_after);
+    return changed_volume_of(before, after, kept_before, in_before, kept_after, in_after);
+  });
+}
+
+ChangedVolume changed_volume(const std::vector<const Shape*>& before, const std::vector<const Shape*>& after) {
+  const std::vector<std::vector<std::array<double, 6>>> boxes_before = boxes_of(before);
+  const std::vector<std::vector<std::array<double, 6>>> boxes_after = boxes_of(after);
+  return detail::run("changed volume", [&] {
+    std::vector<TopoDS_Shape> occt_before;
+    for (const Shape* shape : before) {
+      occt_before.push_back(shape->occt());
     }
-    for (const TopoDS_Shape& shape : before) {
-      BRepBndLib::Add(shape, box);
+    std::vector<TopoDS_Shape> occt_after;
+    for (const Shape* shape : after) {
+      occt_after.push_back(shape->occt());
     }
-    const gp_Pnt at = box.IsVoid() ? gp::Origin() : gp_Pnt((box.CornerMin().XYZ() + box.CornerMax().XYZ()) / 2.0);
-    const std::vector<TopoDS_Face> added = faces_not_in(after, before);
-    const std::vector<TopoDS_Face> removed = faces_not_in(before, after);
-    ChangedVolume result;
-    result.volume = analysis::faces_volume(added, at).Mass() - analysis::faces_volume(removed, at).Mass();
-    result.slack = edge_slack(added, at) + edge_slack(removed, at);
-    return result;
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> in_before;
+    NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> in_after;
+    const std::vector<KeptFace> kept_before = kept_faces(before, boxes_before, in_before);
+    const std::vector<KeptFace> kept_after = kept_faces(after, boxes_after, in_after);
+    return changed_volume_of(occt_before, occt_after, kept_before, in_before, kept_after, in_after);
   });
 }
 

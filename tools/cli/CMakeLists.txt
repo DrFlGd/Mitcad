@@ -29,6 +29,9 @@ endif()
 target_sources(mitcad-cli PRIVATE import.cpp import.hpp)
 # Drawings with views, dimensions and a hole table (mitcad#471).
 target_sources(mitcad-cli PRIVATE drawing.cpp drawing.hpp)
+# Display meshings compared face by face (mitcad#644): the view's mesh
+# options from app/view/ViewTessellation.hpp.
+target_sources(mitcad-cli PRIVATE mesh_compare.cpp mesh_compare.hpp)
 
 if(BUILD_TESTING)
   set(scripts "${CMAKE_CURRENT_SOURCE_DIR}/tests")
@@ -214,7 +217,7 @@ if(BUILD_TESTING)
 
   # Construction geometry and analysis (F5): datums checked through queries,
   # physical properties, measurement and comparison with a STEP file.
-  foreach(script construction analysis holed_block)
+  foreach(script construction analysis holed_block face_separation)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
   add_test(NAME cli.properties COMMAND mitcad-cli run "${scripts}/analysis.json" --properties)
@@ -651,11 +654,28 @@ if(BUILD_TESTING)
   # content ids under MITCAD_F3D_CORPUS and MITCAD_F3D_BACKUP: the items
   # named come in parametric, none after a retry on the file's exact state,
   # and reading the file and applying its appearances take less time than
-  # the replay; skipped without the designs.
+  # the replay, and a design with a time limit (seconds in a release build,
+  # three times that in a debug build) opens within it (mitcad#642);
+  # skipped without the designs.
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(f3d_designs_slower 3)
+  else()
+    set(f3d_designs_slower 1)
+  endif()
   add_test(NAME f3d.corpus_designs
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/f3d-designs"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/f3d-designs.cmake")
+            "-DSLOWER=${f3d_designs_slower}" -P "${CMAKE_CURRENT_SOURCE_DIR}/f3d-designs.cmake")
   set_tests_properties(f3d.corpus_designs PROPERTIES SKIP_REGULAR_EXPRESSION "f3d designs: skipped")
+
+  # .f3d designs driven by their user parameters (mitcad#641), found by
+  # their content ids likewise: imported, their parameters changed and
+  # recomputed, every feature without an error and each body's bounding box
+  # as the parameters derive it (or the reference export of the change);
+  # skipped without the designs.
+  add_test(NAME f3d.corpus_parameters
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/f3d-parameters"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/f3d-parameters.cmake")
+  set_tests_properties(f3d.corpus_parameters PROPERTIES SKIP_REGULAR_EXPRESSION "f3d parameters: skipped")
 
   # Recompute speed (P10): a generated model with the joins, patterns and
   # fillets that slowed down imported designs, saved, then opened with the
@@ -705,6 +725,28 @@ if(BUILD_TESTING)
   set_tests_properties(cli.perf_holes_recompute PROPERTIES FIXTURES_REQUIRED cli_perf_holes
     TIMEOUT ${perf_holes_limit} RUN_SERIAL TRUE
     PASS_REGULAR_EXPRESSION "F11 Extrude5 \\(extrude\\): ok.*Recompute: 11 features in [0-9.]+ ms")
+
+  # Sketches with many patterned circles (mitcad#670): one circle and a
+  # 10 x 10 rectangular sketch pattern of it, a full solve and drag steps,
+  # each step's time printed (run --timings; ctest -V). The _5 and _20
+  # scripts are the same at 25 and 400 circles, for measurements, as is
+  # tools/ui-sketch-pattern-speed-test.sh in the application. In mitcad#670
+  # the script took about 1 s in a Linux release build and 1.5 s in a Linux
+  # debug build; the limit only catches a large slowdown.
+  add_test(NAME cli.perf_sketch_pattern COMMAND mitcad-cli run "${scripts}/perf_sketch_pattern_10.json" --timings)
+  set_tests_properties(cli.perf_sketch_pattern PROPERTIES TIMEOUT 20 RUN_SERIAL TRUE
+    PASS_REGULAR_EXPRESSION "Timing steps\\[16\\] sketch\\.drag: [0-9.]+ ms.*F1 Sketch1 \\(sketch\\): ok")
+  # The same at 20 x 20, 400 circles (mitcad#677): the solver's cost grows
+  # about linearly with the copies since each copy is bound to its
+  # neighbour. The sketch query of step 18 (a solve and the analysis of the
+  # whole sketch) took 650 ms in a Linux release build with every copy
+  # bound to the original and takes about 5 ms now: it must stay under
+  # 100 ms. The drag steps also find the sketch's regions (about 0.75 s of
+  # each step in mitcad#677, mitcad#678); the time limit only catches a
+  # large slowdown.
+  add_test(NAME cli.perf_sketch_pattern_20 COMMAND mitcad-cli run "${scripts}/perf_sketch_pattern_20.json" --timings)
+  set_tests_properties(cli.perf_sketch_pattern_20 PROPERTIES TIMEOUT 120 RUN_SERIAL TRUE
+    PASS_REGULAR_EXPRESSION "Timing steps\\[18\\] expect sketch: [0-9]?[0-9]\\.[0-9]+ ms.*F1 Sketch1 \\(sketch\\): ok")
 
   # The result store (P7d): the perf model opened with an empty store fills
   # it (every result the store takes, however quick), opened again takes
@@ -1209,6 +1251,36 @@ if(BUILD_TESTING)
   set_tests_properties(cli.scoped_cut_replay_reopened PROPERTIES FIXTURES_REQUIRED cli_scoped_cut_replay)
   if(WIN32)
     set_property(TEST cli.scoped_cut_replay cli.scoped_cut_replay_reopened APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
+endif()
+
+# Measure with axes on the OCCT kernel (mitcad#647): parallel, skew and
+# meeting cylinder axes, a cone's axis against an edge, a circle against a
+# construction axis, a part placed as an occurrence.
+if(BUILD_TESTING)
+  add_test(NAME cli.measure_axes COMMAND mitcad-cli run "${CMAKE_CURRENT_SOURCE_DIR}/tests/measure_axes.json")
+  if(WIN32)
+    set_property(TEST cli.measure_axes APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
+endif()
+
+# Display meshings compared face by face (mitcad#644): the holed block's
+# seven faces meshed as the view's final tier and with planes through
+# Delabella, then the totals over that report.
+if(BUILD_TESTING)
+  set(mesh_compare "${CMAKE_CURRENT_BINARY_DIR}/mesh-compare")
+  file(MAKE_DIRECTORY "${mesh_compare}")
+  add_test(NAME cli.mesh_compare COMMAND mitcad-cli mesh-compare "${CMAKE_CURRENT_SOURCE_DIR}/tests/holed_block.json"
+    --report "${mesh_compare}/holed_block.json")
+  set_tests_properties(cli.mesh_compare PROPERTIES FIXTURES_SETUP cli_mesh_compare PASS_REGULAR_EXPRESSION
+    "1 bodies, 7 faces \\(6 planes\\), without a triangulation a 0 b 0")
+  add_test(NAME cli.mesh_compare_summary COMMAND mitcad-cli mesh-compare --summary "${mesh_compare}")
+  set_tests_properties(cli.mesh_compare_summary PROPERTIES FIXTURES_REQUIRED cli_mesh_compare
+    PASS_REGULAR_EXPRESSION "designs compared \\| 1 / 1 \\|.*faces triangulated \\(b\\) \\| 7 / 7 \\|.*planes with as many triangles in \\(b\\) \\| 6 / 6 \\|.*planes whose area differs between \\(a\\) and \\(b\\) \\| 0 / 6 \\|")
+  if(WIN32)
+    set_property(TEST cli.mesh_compare cli.mesh_compare_summary APPEND PROPERTY ENVIRONMENT_MODIFICATION
       "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
 endif()

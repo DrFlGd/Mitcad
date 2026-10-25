@@ -6,8 +6,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <utility>
 #include <vector>
 
+#include <GeomAbs_SurfaceType.hxx>
 #include <Message_ProgressRange.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Standard_Handle.hxx>
@@ -48,6 +51,15 @@ struct MeshOptions {
   // (planes having no say) and its own curve's. Smaller cylinders and
   // cones are meshed as without a limit.
   std::size_t face_triangles = 0;
+  // Planes triangulated through OCCT's Delabella base triangulation (a
+  // sweep-hull Delaunay of the boundary's points) and then the same
+  // constrained Delaunay as by default, instead of the default incremental
+  // (Watson) insertion of the points: the same nodes, edges and deviation,
+  // other triangles. The default's insertion grows much faster than
+  // linearly with the points: a plane with 83 small holes (12 000 points
+  // at the view's deviation) takes about 0.5 s, Delabella's 30 ms
+  // (mitcad#635). The view's interactive preview tier (ViewTessellation.hpp).
+  bool fast_planes = false;
 
   static MeshOptions from(Refinement refinement);
 };
@@ -70,14 +82,71 @@ double face_deviation_floor(const TopoDS_Face& face, double deviation, std::size
 // that has no surface, is returned as it is.
 TopoDS_Shape triangulate(const TopoDS_Shape& shape, const MeshOptions& options);
 
+// What one meshing did (mitcad#635): its faces, those whose triangulation
+// met the options and was kept, those meshed and those OCCT's mesher failed
+// on, how long each of BRepMesh's phases took (milliseconds: building its
+// model of the faces, discretizing the edges, healing the model and
+// raising faces to their floors, checking the triangulations there are,
+// triangulating the faces, writing the triangulations into the faces) and
+// the faces that took longest, slowest first.
+struct MeshReport {
+  std::size_t faces = 0;
+  std::size_t kept = 0;
+  std::size_t meshed = 0;
+  std::size_t failed = 0;
+  double build = 0.0;
+  double edges = 0.0;
+  double heal = 0.0;
+  double check = 0.0;
+  double triangulate = 0.0;
+  double write = 0.0;
+  double total = 0.0;
+  // Faces meshed, by surface kind ("plane 7, cylinder 2").
+  std::vector<std::pair<std::string, std::size_t>> meshed_by_surface;
+  struct FaceTime {
+    std::string surface;
+    int wires = 0;
+    int points = 0; // of its wires' discretized edges
+    double milliseconds = 0.0;
+    TopoDS_Face face; // as the mesher explored it
+  };
+  std::vector<FaceTime> slowest; // at most 5
+  // Set before the meshing: every face's time in `every_face_time`, in no
+  // particular order (a face triangulated, whether or not that succeeded;
+  // mesh_compare.hpp, mitcad#644).
+  bool every_face = false;
+  std::vector<FaceTime> every_face_time;
+  // One line: "faces=94 kept=0 meshed=94 failed=0 build=... ms; meshed
+  // plane 3, cylinder 91; slowest plane wires=84 points=6060 412.3 ms, ...".
+  std::string line() const;
+};
+
+// A surface kind's name in MeshReport's terms: "plane", "cylinder", "cone",
+// "sphere", "torus", "bezier", "bspline", "revolution", "extrusion",
+// "offset" or "other".
+const char* surface_name(GeomAbs_SurfaceType type);
+
+// Whether MITCAD_MESH_TRACE asks for a line per meshing (mitcad#635): the
+// view's meshes made on the model's thread (app/framework/DisplayMeshes)
+// and, on standard error, every meshing OCCT's presentations ask for
+// ("mesh-trace: presentation ...": on the UI thread). Off by default.
+bool mesh_tracing();
+
+// How many faces the presentations' meshing algorithm (use_bounded_
+// presentation_meshes) has triangulated in this process: a face the view
+// had to mesh itself, on the UI thread, because no job meshed it as it
+// draws it (tests, mitcad#635).
+std::size_t presentation_faces_meshed();
+
 // Triangulates the shape's own faces, as OCCT's viewer does, and keeps
 // triangulations that meet the options (each face's deviation raised to its
 // face_deviation_floor). For the shapes the 3D view shows: meshed where
 // nothing else uses them (the model's worker thread, mitcad#398), the view
 // then finds them meshed. Returns false when `range` was stopped (the faces
 // meshed so far keep their triangulations); a mesh body is left as it is.
+// `report` (optional) gets what the meshing did.
 bool mesh_in_place(const TopoDS_Shape& shape, const MeshOptions& options,
-                   const Message_ProgressRange& range = Message_ProgressRange());
+                   const Message_ProgressRange& range = Message_ProgressRange(), MeshReport* report = nullptr);
 
 // mesh_in_place for several shapes at once (the view's meshes of all the
 // bodies of a job, mitcad#438): one meshing of all their faces, which OCCT
@@ -89,9 +158,29 @@ bool mesh_in_place(const TopoDS_Shape& shape, const MeshOptions& options,
 // When the joint meshing throws, the shapes it did not finish are meshed
 // one by one and a shape OCCT fails on is left as it is. Returns how many
 // shapes were meshed (or left as they are): all of them unless `range` was
-// stopped, then those whose faces all have triangulations.
+// stopped, then those whose faces all have triangulations. `report`
+// (optional) gets what the joint meshing did.
 std::size_t mesh_all_in_place(const std::vector<TopoDS_Shape>& shapes, const MeshOptions& options,
-                              const Message_ProgressRange& range = Message_ProgressRange());
+                              const Message_ProgressRange& range = Message_ProgressRange(),
+                              MeshReport* report = nullptr);
+
+// Gives each face of `shape` that has no triangulation a copy of the
+// triangulation of the same face among `donors`, with its edges' polygons
+// (mitcad#635): a boolean's result keeps its operands' untouched faces as
+// copies sharing their surfaces, curves and parameter curves, and the
+// donors are the operands as the view shows them, meshed already. Same
+// means on the same surface and location, with the same edges in the same
+// order, each on the same curve and parameter curves over the same range
+// between the same points; a face any of whose edges has no polygon on the
+// donor's triangulation is not taken. Nothing is kept between calls (no
+// cache to invalidate): the donors are read, never written, and only the
+// nodes, parameters and triangles are read (not the normals a presentation
+// adds), so the view may draw them meanwhile; `shape` is written, and must
+// be the caller's alone. The caller passes donors meshed with the options
+// it meshes with (the view's display meshes): the meshing that follows
+// keeps a reused face only when its deviation meets the options, as for
+// any face meshed before. Returns how many faces were given one.
+std::size_t reuse_triangulations(const TopoDS_Shape& shape, const std::vector<TopoDS_Shape>& donors);
 
 // Whether every face of the shape has a triangulation.
 bool has_triangulation(const TopoDS_Shape& shape);

@@ -224,24 +224,17 @@ void stylePanelTree(QTreeView* tree) {
 
 void PanelRowDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
   paintPanelRowBand(painter, option, index);
-  QStyledItemDelegate::paint(painter, panelRowOption(option), index);
+  QStyleOptionViewItem cell = panelRowOption(option);
+  initStyleOption(&cell, index);
+  hideEditedText(cell, index);
+  const QStyle* style = cell.widget != nullptr ? cell.widget->style() : QApplication::style();
+  style->drawControl(QStyle::CE_ItemViewItem, &cell, painter, cell.widget);
 }
 
 QSize PanelRowDelegate::sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const {
   QSize size = QStyledItemDelegate::sizeHint(option, index);
   size.setHeight(std::max(size.height(), panel::kRowHeight));
   return size;
-}
-
-QWidget* PanelRowDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem& option,
-                                        const QModelIndex& index) const {
-  // The tree's base colour is transparent (stylePanelTree).
-  QWidget* editor = QStyledItemDelegate::createEditor(parent, option, index);
-  if (editor != nullptr) {
-    editor->setPalette(QApplication::palette());
-    editor->setAutoFillBackground(true);
-  }
-  return editor;
 }
 
 // ---------------------------------------------------------------------------

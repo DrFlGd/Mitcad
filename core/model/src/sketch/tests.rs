@@ -940,3 +940,126 @@ fn a_loop_just_outside_a_concave_arc_is_no_hole() {
     assert_eq!(face.profile.loops.len(), 1, "{:?}", keys(&regions));
     assert!(face.holes.is_empty());
 }
+
+/// Seeding an offset whose line meets an arc at a corner that is not
+/// tangent (mitcad#641): the shared point takes where the offset line
+/// crosses the offset circle, not the middle of their ends; once there,
+/// a second seed moves nothing, so an imported offset already in place
+/// keeps the file's positions.
+#[test]
+fn a_seeded_offset_corner_of_a_line_and_an_arc_lies_on_both() {
+    use super::offset::{SketchOffset, seed};
+    let center = [5.0, 3.0];
+    let r = (25.0f64 + 9.0).sqrt();
+    let mut b = Builder::new();
+    let line = b.line([30.0, 0.0], [0.0, 0.0]);
+    let top = [center[0], center[1] + r];
+    let arc = b.arc(center, top, [0.0, 0.0]);
+    // The results drawn roughly a millimetre off their sources.
+    let result_line = b.line([30.0, 1.3], [0.4, 1.2]);
+    let arc_top = [center[0], center[1] + r - 0.8];
+    let result_arc = b.arc(center, arc_top, [0.4, 1.2]);
+    let offsets = vec![SketchOffset {
+        id: ConstraintUid(1),
+        curves: vec![line, arc],
+        distance: ParamId::from_raw(0),
+        left: false,
+        results: vec![result_line, result_arc],
+        corners: Vec::new(),
+        helpers: Vec::new(),
+        derived: false,
+    }];
+    let at = |entities: &[Entity], id: EntityUid| match entities
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| &e.kind)
+    {
+        Some(EntityKind::Point { at }) => *at,
+        _ => panic!("no point {id:?}"),
+    };
+    let ends = |entities: &[Entity], id: EntityUid| match entities
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| &e.kind)
+    {
+        Some(EntityKind::Line { start, end, .. }) => (*start, *end),
+        Some(EntityKind::Arc { start, end, .. }) => (*start, *end),
+        _ => panic!("no curve {id:?}"),
+    };
+    let mut entities = b.def.entities.clone();
+    seed(&offsets, &mut entities, &mut |_| Ok(1.0));
+    let (a, corner) = ends(&entities, result_line);
+    let (arc_start, arc_end) = ends(&entities, result_arc);
+    assert_eq!(corner, arc_end);
+    let y = at(&entities, a)[1];
+    assert!((y.abs() - 1.0).abs() < 1e-12, "{y}");
+    assert!((at(&entities, corner)[1] - y).abs() < 1e-12);
+    // Towards the centre the circle shrinks, away from it it grows.
+    let radius = if y > 0.0 { r - 1.0 } else { r + 1.0 };
+    let from_center =
+        |p: [f64; 2]| ((p[0] - center[0]).powi(2) + (p[1] - center[1]).powi(2)).sqrt();
+    assert!((from_center(at(&entities, corner)) - radius).abs() < 1e-12);
+    // The arc's free end at its source's angle (straight up).
+    let free = at(&entities, arc_start);
+    assert!((free[0] - center[0]).abs() < 1e-12 && (free[1] - center[1] - radius).abs() < 1e-12);
+    let once = entities.clone();
+    seed(&offsets, &mut entities, &mut |_| Ok(1.0));
+    for (e, f) in once.iter().zip(&entities) {
+        if let (EntityKind::Point { at: p }, EntityKind::Point { at: q }) = (&e.kind, &f.kind) {
+            assert!(
+                (p[0] - q[0]).abs() < 1e-12 && (p[1] - q[1]).abs() < 1e-12,
+                "{:?}",
+                e.id
+            );
+        }
+    }
+}
+
+/// Seeding an offset whose line goes on tangentially into an arc
+/// (mitcad#641): the shared point takes where the offset line touches the
+/// offset circle. Their crossings lie the square root of the rounding away
+/// from it (0.4 µm for 1e-15 mm), which had moved a grid design's tangent
+/// corners enough to lose the edges its chamfers name.
+#[test]
+fn a_seeded_tangent_offset_corner_lies_where_the_line_touches_the_arc() {
+    use super::offset::{SketchOffset, seed};
+    let center = [0.0, 12.2];
+    let r = 12.2;
+    let mut b = Builder::new();
+    let line = b.line([60.0, 0.0], [0.0, 0.0]);
+    let arc = b.arc(center, [-r, 12.2], [0.0, 0.0]);
+    // The results drawn a little off their sources.
+    let result_line = b.line([60.0, 1.7], [0.1, 1.9]);
+    let result_arc = b.arc(center, [-r + 2.1, 12.2], [0.1, 1.9]);
+    let offsets = vec![SketchOffset {
+        id: ConstraintUid(1),
+        curves: vec![line, arc],
+        distance: ParamId::from_raw(0),
+        left: false,
+        results: vec![result_line, result_arc],
+        corners: Vec::new(),
+        helpers: Vec::new(),
+        derived: false,
+    }];
+    let point = |entities: &[Entity], id: EntityUid| match entities
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| &e.kind)
+    {
+        Some(EntityKind::Point { at }) => *at,
+        _ => panic!("no point {id:?}"),
+    };
+    let corner = |entities: &[Entity]| match entities
+        .iter()
+        .find(|e| e.id == result_line)
+        .map(|e| &e.kind)
+    {
+        Some(EntityKind::Line { end, .. }) => point(entities, *end),
+        _ => panic!("no line"),
+    };
+    let mut entities = b.def.entities.clone();
+    seed(&offsets, &mut entities, &mut |_| Ok(2.0));
+    let at = corner(&entities);
+    assert_eq!(at[0], 0.0, "{at:?}");
+    assert!((at[1].abs() - 2.0).abs() < 1e-12, "{at:?}");
+}

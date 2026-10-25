@@ -33,7 +33,8 @@ void registerCreateCommands(CommandRegistry& registry, const CommandContext& con
                             const CommandDef& createSketch);
 // MODIFY: Press Pull, Fillet, Chamfer, Shell, Draft, Scale, Combine,
 // Offset Face, Replace Face, Split Face, Split Body, Move/Copy, Align,
-// Delete, Physical Material, Appearance.
+// Delete, Appearance. Materials are the main window's Edit Materials
+// (mitcad#655).
 void registerModifyCommands(CommandRegistry& registry, const CommandContext& context);
 // CONSTRUCT: every construction plane, axis and point.
 void registerConstructCommands(CommandRegistry& registry, const CommandContext& context);

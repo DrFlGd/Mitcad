@@ -25,6 +25,7 @@ pub mod container;
 pub mod convert;
 pub mod design;
 pub mod flat;
+pub mod history_states;
 pub mod ids;
 pub mod names;
 pub mod ogs;

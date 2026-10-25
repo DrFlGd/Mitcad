@@ -3,12 +3,14 @@
 //! section, placed on a plane at a point in the plane's coordinates, with
 //! the operations of an extrusion. The axis is the plane's normal; the
 //! coil starts on the plane, on the side of the centre the plane's x axis
-//! points to.
+//! points to. `at` places it by picked geometry instead (mitcad#656,
+//! `place_at.rs`): its frame is the plane, its origin the centre.
 
 use serde::{Deserialize, Serialize};
 
 use super::extrude::{Operation, apply_operation, check_participants, participant_bodies};
 use super::geom_ref::{GeomRef, Want};
+use super::place_at::{PlaceAt, map_at};
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, ToolUse, is_false,
 };
@@ -44,8 +46,10 @@ pub enum Helix<P = ParamId> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CoilDef<P = ParamId> {
-    /// An origin plane, a construction plane or a planar face.
-    pub plane: GeomRef,
+    /// An origin plane, a construction plane or a planar face; none with
+    /// `at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plane: Option<GeomRef>,
     /// The centre, in the plane's coordinates.
     #[serde(default)]
     pub center: [f64; 2],
@@ -68,6 +72,10 @@ pub struct CoilDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// Placed by picked geometry instead of `plane` and `center`
+    /// (mitcad#656, `place_at.rs`).
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub at: Option<PlaceAt<P>>,
 }
 
 fn is_circular(section: &CoilSection) -> bool {
@@ -120,6 +128,7 @@ impl<P> CoilDef<P> {
             section_size: f("section_size", &self.section_size)?,
             operation: self.operation,
             participants: self.participants.clone(),
+            at: map_at(&self.at, &mut *f)?,
         })
     }
 }
@@ -191,7 +200,12 @@ fn check_values(def: &CoilDef, value: &dyn Fn(ParamId) -> f64) -> Result<(), Str
 impl FeatureInfo for CoilDef {
     fn references(&self) -> References {
         let mut references = References::default();
-        self.plane.add_to(&mut references);
+        if let Some(plane) = &self.plane {
+            plane.add_to(&mut references);
+        }
+        if let Some(at) = &self.at {
+            at.add_to(&mut references);
+        }
         for body in &self.participants {
             references.body(*body);
         }
@@ -200,7 +214,18 @@ impl FeatureInfo for CoilDef {
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
         check_participants(ctx, self.operation, &self.participants)?;
-        self.plane.check(ctx, Want::Plane)
+        // On a plane, or placed by picked geometry (mitcad#656).
+        match (&self.plane, &self.at) {
+            (Some(plane), None) => plane.check(ctx, Want::Plane),
+            (None, Some(at)) => {
+                if self.center != [0.0, 0.0] {
+                    return Err("a coil placed by at takes no centre".to_owned());
+                }
+                at.check(ctx)
+            }
+            (None, None) => Err("a coil needs a plane or a placement (at)".to_owned()),
+            (Some(_), Some(_)) => Err("a coil placed by at takes no plane".to_owned()),
+        }
     }
 
     fn check_values(&self, value: &dyn Fn(ParamId) -> f64) -> Result<(), String> {
@@ -242,10 +267,17 @@ impl<K: Kernel> Evaluate<K> for CoilDef {
         };
         check_values(self, &value)?;
         let (revolutions, pitch, spiral) = turns(&self.helix, &value)?;
-        let plane = ctx.plane(&self.plane)?.frame();
-        let frame = SketchFrame {
-            origin: plane.point(self.center),
-            ..plane
+        let frame = match (&self.plane, &self.at) {
+            // Placed by picked geometry (mitcad#656).
+            (_, Some(at)) => ctx.place_def(at)?.frame,
+            (Some(plane), None) => {
+                let plane = ctx.plane(plane)?.frame();
+                SketchFrame {
+                    origin: plane.point(self.center),
+                    ..plane
+                }
+            }
+            (None, None) => return Err("a coil needs a plane or a placement (at)".to_owned()),
         };
         let spec = CoilSpec {
             feature: ctx.uid,

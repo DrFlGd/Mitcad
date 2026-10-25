@@ -49,7 +49,12 @@ Matching rules:
   replay is at the state before them, the item is tried from there first,
   in half its time; else as above, from the state right before its own.
   Before, a base feature brought every such pattern to its last copy but
-  one (149 base features in the corpora, most before patterns).
+  one (149 base features in the corpora, most before patterns). An item
+  that has no definition there because inputs of it were not decoded (a
+  path pattern's path) is not tried again from the state right before its
+  own: it fails so on any bodies, and building that state (its last copy
+  but one) took 6.6 s for a pattern of 372 copies of a body of 8 000
+  faces (mitcad#658); its fallback brings its state from its start.
 - An item whose operation the history holds but which left every body as
   it was, and which none of its definitions reproduces (each changes the
   bodies or fails; an item without a translation, such as a base feature
@@ -85,7 +90,15 @@ Matching rules:
   carried (from an earlier approximate item, such as a fillet stored as
   splines) is not the extrusion's own: one that comes within 1.5 times
   that difference of its state is taken as it is (no definition comes
-  closer).
+  closer). Nor does any for an extrusion whose faces settle it: where
+  every face its result made or changed lies on its state within the
+  geometric tolerance, every face the file's operation made or changed
+  lies on its result, and those faces account for the volume its change
+  is off (as for the volume check below, by the faces each side changed),
+  it is taken without trying the others (mitcad#658: a cut down the wall
+  of a bin with 372 ribs, its volume 6.1e-4 off where its faces lay on
+  the file's, tried eight more definitions of 2–10 s each on a body of
+  8 000 faces before taking the first).
 - When an extrusion, or copies the history guessed (patterns and mirrors
   without decoded inputs), still gives its state only approximately, a
   base feature right after it brings the bodies that differ from the
@@ -138,6 +151,18 @@ Matching rules:
   feature or the final comparison. Before, only a combine keeping its
   tools gave such a state, and the import kept bodies the design does
   not have.
+- A combine can still select copies removed when a pattern was resized
+  (mitcad#674). A tool reference is omitted only when its named body is
+  absent from the file's own history state, has no producer and cannot
+  resolve in the replay. A document GUID must be the local target's,
+  proved by its producer's bodies. Ambiguous or unnamed recipes, body
+  geometry evidence and unknown or external documents are kept strict.
+  The remaining tools must all
+  resolve and be nonempty; their selection counts as inferred. The same
+  omission applies before consumed tools are retired, with the stored-id
+  and geometry checks above unchanged. The decoded keep-tools flag stays
+  authoritative: a cached tool in the ASM history is not evidence it was
+  kept in the design.
 - The volume an item adds or removes must be the file's too (mitcad#121,
   `history::Change`): its measures within the tolerance relative to the
   bodies let a wrong rounding of a large body pass (a few per cent of a
@@ -634,35 +659,79 @@ A path pattern item (`PathPatternFeature`) becomes Mitcad's
 | `quantity`, `distance` | `quantity`, `distance` (arc length along the path) |
 | `patternDistanceType` Spacing / Extent | `distance_type` `spacing` / `extent` |
 | `startPoint`, `isFlipDirection`, `isOrientationAlongPath`, `isSymmetric` | `start`, `flip`, `along_path`, `symmetric` |
+| the stream decoder's objects' centre (`_f3d_objects_center`, cm, mitcad#673) | `start_point` (mm): the original sits at the path's point nearest to it |
+| the stream decoder's count of the bodies the pattern made (`_f3d_new_bodies`), 0 for a pattern of features | `combine`: the copies of a feature that made a new body join its body |
 | `patternComputeOption`, `suppressedElementsIds` | `compute`, `suppressed_elements` |
 
 The stream decoder (`core/f3d/src/design/build/patterns.rs`, `path`)
 reads the item's class and its data object: the objects (the item's
 first selection), the quantity (its integer input), the distance (the
 `PathPatternDelta` parameter), the path (a list input of entity and edge
-inputs, read as a sweep's path), and after the body records the tail a
-rectangular pattern also has: the compute option, the distance type and
-the suppressed element numbers (only an empty list is read). The layout
-comes from the one reference model with a path pattern (a body patterned
-four times along a straight sketch line, spacing); the decoded fields
-are its dump's (`core/f3d/tests/design_models.rs`). None of the
-`.f3d` corpora's designs has a path pattern.
+inputs, read as a sweep's path), the flags and the objects' centre, and
+after the body records the tail a rectangular pattern also has: the
+compute option, the distance type and the suppressed element numbers
+(only an empty list is read). The data object holds, after its root
+part:
 
-Not decoded: the start point, flip, orientation and symmetry. That
-model sets none of them, and the bytes of its data object that are not
-read are all zero, so their places are not known. The import takes the
-defaults (start 0, not flipped, the copies keep the original's
-orientation, not symmetric) and reports the item's inputs as inferred,
-with a note naming the settings not decoded; where the history checks
-the item it also tries each of flip, orientation along the path and
-symmetry the other way, as guesses. A start point other than 0 is not
-guessed.
+`u8 | u32 | ref quantity holder | u32 | ref distance holder | 5 bytes |
+f64[3] centre | u8 1 | u8 flip | u8 along path | u8 symmetric | ref path
+input | f64 | ref distance holder | ref key point | 8 bytes | u32 n | n
+body records | 8 bytes | u32 compute | u32 kind | i32 -1 | …`
+
+The layout comes from two path patterns: the reference model's (a body
+patterned four times along a straight sketch line, spacing, none of the
+flags set; its decoded fields are its dump's,
+`core/f3d/tests/design_models.rs`) and the one design of the corpora
+with one (`b832916a`, mitcad#658, mitcad#673: 372 copies of a rib's
+extrusion and its rounding along the closed outline of a bin, by extent,
+identical, one body record). The reference model, without body records,
+did not tell the 8 zero bytes before the count from those after the
+records (16 bytes after the count were read before); the design's record
+places the count after the first 8. The `f64[3]` is the patterned
+objects' centre in cm (the reference model's cube's, (0.25, 0.25,
+0.25)), not a point of the path: the design's ribs' centre lies 61 mm
+above the outline, 3 mm along one of its straight sides. Of the four
+bytes before the path input, the first is 1 in both; the design sets the
+third and turns its copies along the path (without it the copies on the
+other sides stand across the wall), the reference model none. The
+second and the fourth are read as the flip and the symmetry, in the
+order the settings are listed elsewhere; both are 0 in both files, so
+neither file confirms them (along a closed path whose copies go round
+it once, flipped and symmetric copies lie at the same places). The
+`startPoint` the API gives (a fraction, 0 in the reference model's dump)
+is not found among the bytes; the 8 zero bytes before the body-record
+count may hold it.
+
+The original's place on the path is where the path comes nearest the
+objects' centre (`start_point`): the reference model's comes in as with
+`start` 0 (its line starts under the cube), the design's ribs where the
+centre lies by its side. Along a closed chain (the design's outline of
+eight lines and arcs) the copies go round it again past its end; the
+design's extent, the outline's length less 2 mm, spaces its 372 copies
+evenly round it (`commands.md` *Patterns*).
+
+The pattern makes no body (the item object's own `u32 0 | u32 n` body
+records, as a mirror's `combine`, are none) while it copies a feature
+that made a new body (the rib's extrusion, whose body the outline's
+extrusion then joined): the file keeps the copies in that body. The
+import sets `combine`, and Mitcad's pattern joins the copies' bodies to
+it in one operation (a compound of them, as they are apart). The copies
+of the feature's own solid cannot carry the rounding patterned with it,
+which that body holds at every copy, so only the definition that
+repeats the rounding on the copies is tried there (the one without it
+took 7–11 s of the item's 30 s).
 
 The reference model comes in parametric and verified against its
-history state both from its stream (the defaults, inputs inferred) and
-from its dump (every setting read): `test_f3d_import --models` (the ctest
+history state both from its stream (every setting read since
+mitcad#673; before, the defaults, inputs inferred) and from its dump
+(every setting read): `test_f3d_import --models` (the ctest
 `f3d.models_loft`) checks it with the reference lofts and sweeps, its
-four bodies' total volume against the dump's final bodies.
+four bodies' total volume against the dump's final bodies. The design's
+pattern is parametric with its inputs read (the `f3d.corpus_designs`
+entry of `b832916a`): 13 s for its 372 copies, rounded on each copy
+(2.7 s, finding each copy's edges on its own body from where the last
+was found: scanning every body for every copy took 5 s) and joined to
+the body (8.4 s, OCCT's boolean and the result's check), within 5 GB.
 
 ## What the history settles
 
@@ -950,4 +1019,97 @@ candidates against the next state:
   of a hole can never be one). The join itself works only where the image
   differs from the body (`Kernel::join_near_copy`, `commands.md`,
   *mirror*).
+
+## Grid-unit designs: pastes, aligns, counts and start faces (mitcad#641)
+
+A design driven by grid-cell counts (`b35176e6`: a base, a frame, a chute
+of stacked rings and a catch, every size a count of 28 mm cells) came in
+with 11 of its 27 items falling back: base features stood in for the
+frame, the catch and the chute's rings, so a change of the grid parameters
+reached little of the design. Each cause and its fix, all general:
+
+- **Pastes and derives keep their bodies in a base feature.** A paste of
+  bodies (`CopyPasteBodies`) and a derive from another design
+  (`ExternalDerived`, the base class of `DerivedContext`) list a base
+  feature among their sub-features, which holds the bodies they bring and
+  carries the operation they made (the item's own result number is -1).
+  The decoder gives such an item that operation (`_f3d.made_result_no`, as
+  for a component made from bodies), and a body record whose producer is
+  such a base feature names the item as its producer
+  (`build/producers.rs`): the paste's source body, the combine's target
+  and tools and the moved body of a later move resolved, where before none
+  of them did ("its source bodies were not decoded").
+- **A pattern of a paste** names the paste's base feature (an entity
+  input whose target is the sub-feature): it stands for the paste, and a
+  pattern or mirror of an item that only brings bodies (a paste, a base
+  feature, a derive) copies the bodies it brought (`ops.rs`,
+  `brings_bodies`).
+- **Aligns** (`AlignFeature`, class `359F7902`) keep the bodies they move
+  (a body input) and the motion they made (a move's rigid matrix): they
+  come in as moves by that matrix. The geometry they align (key points,
+  directions and frames of faces) is not decoded, so the move does not
+  follow it; its inputs count as inferred.
+- **A derive of another design** that the file does not hold is static in
+  the source too: its base feature's state stands in, and the report says
+  why.
+- **Pattern counts** are read from their parameters (`countU`, `CountV`;
+  every pattern of the corpora has them), not from the integer the item
+  stores: a count such as `ChuteElements = round(ChuteExtent /
+  ChuteElementHeight)` stays an expression.
+- **A pattern along an origin axis stored against it**: the file stores a
+  rectangular pattern's direction vector too; where it points against
+  the origin axis it names (the chute's rings: Z with (0, 0, -1) and a
+  negative distance, the copies going up), the distance is negated
+  (`-(d177)`), so that the copies go the file's way and follow the
+  parameter.
+- **An extrusion from a face**: a start face's selection takes the place
+  of the first byte after the extrusion's root part (class version 8), so
+  every field after it was read 10 bytes early (the operation 0, the
+  extents nonsense). It is read as `FromEntityStartDefinition` with the
+  face and its `ProfileOffset`, which the face profiles' extrusions use
+  too.
+- **Sweep paths of a body's edges** whose ends meet within the model's
+  chain tolerance (1e-6 of the path's size) but not within 1e-7 (the
+  curves of edges of a face extruded from a sketch whose solve placed
+  its curves within its tolerance) share one vertex
+  (`geometry/src/spine.cpp`, `path_wire`); before, the sweep failed with
+  "does not join the curve before it".
+
+Recomputing with the grid parameters changed needed the model to follow
+as well:
+
+- **The sketch's origin point is fixed.** Every sketch's first point is
+  its origin point (flag bytes 3 and 5 set, on exactly one point a sketch
+  in the 40 designs looked at); it came in as a free point, so a sketch
+  tied to the origin slid when a dimension changed (the base's corner
+  left the origin by 13 mm). The decoder sets `isFixed`.
+- **Offsets keep their side** (`sketch/offset.rs`, `seed`): an offset
+  made by constraints starts each solve with each result where the offset
+  of its source curve is now (a chain joined at coincident ends, as the
+  import's offsets of offsets are, by where its ends meet); before, a
+  linked projection that moved by more than the distance (28 mm against
+  2 mm and 0.2 mm) left the stale offsets on the other side, where the
+  solver kept them, and the slot's thin cut failed. A corner two results
+  share takes where their offset lines cross, or where an offset line
+  crosses an offset arc's circle, or two offset arcs' circles cross, and
+  an arc's free ends take its source's angles, so an offset already in
+  place (as imported) starts where the file has it: a first version put a
+  line-arc corner in the middle of the two ends, and a bearing design's
+  sketch (5ac5d0be, a non-tangent corner) then no longer solved with its
+  projections; a second kept an arc's ends at its own stale angles, and
+  the grid design's sketches then lost edges when a grid cell was added.
+- **A face as the profile**: an extrusion of one face the decoder found in
+  its profile, by a distance from the face, is Mitcad's extrusion of that
+  face (`profile_face`, mitcad#535), tried before a sketch on the face with
+  its boundary projected. The face follows the model as the file's face
+  profile does; the projected boundary of the chute's end face did not
+  follow when a parameter moved its edges by a grid cell ("its curves no
+  longer match the source's"), so the ring on it kept its old size.
+
+With these, the design recomputes without an error with each of `BaseX`,
+`DepthY` and `BaseZ` raised by a cell and with all three: the frame and
+the catch one cell wider and deeper, the chute one cell taller with two
+rings more (the test `f3d.corpus_parameters`, `tools/cli/f3d-parameters.cmake`;
+the boxes are derived from the design's expressions, as no reference export
+of the change exists yet).
 

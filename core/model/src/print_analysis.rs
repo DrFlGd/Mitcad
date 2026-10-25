@@ -16,7 +16,9 @@
 //!   where it leaves the material, through a bounding volume hierarchy of
 //!   the triangles. On planar walls the value is exact (next to a tangent
 //!   blend within the blend's facet angle); on curved ones it is within the
-//!   mesh's deviation.
+//!   mesh's deviation. A ray that leaves through a face meeting its start
+//!   across a sharp edge within about one sample distance measures the
+//!   edge, not a wall, and is left out (mitcad#689, [`Bvh::across_edge`]).
 //! - **Estimate** ([`estimate`]): shell, infill and filament from the
 //!   body's volume and area.
 //!
@@ -24,7 +26,7 @@
 //! tested without a kernel (`print_analysis_tests.rs`); the queries that
 //! use them are in `api/print.rs`.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -67,6 +69,17 @@ const LEAF_SIZE: usize = 4;
 /// facets differ by the mesh's angle (15° at the 3MF export's default), the
 /// faces of a box or a 45° chamfer by more.
 const SMOOTH_COS: f64 = 0.766_044_443_118_978; // cos 40°
+/// A ray that leaves through a face meeting its start across an edge
+/// within this distance (mm, about one sample distance) measures the edge,
+/// not a wall (mitcad#689, [`Bvh::across_edge`]).
+const EDGE_REACH: f64 = SAMPLE_SPACING;
+/// How far from the exit the edge is looked for (mm): a wedge's far side
+/// reaches the edge at its distance over the cosine of the wedge's angle.
+const EDGE_SEARCH: f64 = 4.0 * EDGE_REACH;
+/// Planes within about 1° of parallel never meet near a wall.
+const EDGE_SINE: f64 = 0.017_452_406_437_283_51; // sin 1°
+/// The most triangles looked at on either side of an edge.
+const EDGE_TRIANGLES: usize = 4096;
 
 /// The mesh placed in the design: its vertices moved by `transform`, and a
 /// mirroring placement's triangles turned so that they stay
@@ -355,13 +368,11 @@ fn samples(p: &[Vec3; 3]) -> Vec<(Vec3, [f64; 3])> {
 /// beside its centre, 1.3 % short at a 0.01 mm deviation); the interpolated
 /// corner normals follow the surface. The triangle's own normal where the
 /// mesh shares no vertices.
-fn corner_normals(mesh: &TriangleMesh, triangles: &[([Vec3; 3], Vec3)]) -> Vec<[Vec3; 3]> {
-    let mut incident: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
-    for (t, corners) in mesh.triangles.iter().enumerate() {
-        for v in corners {
-            incident[*v as usize].push(t);
-        }
-    }
+fn corner_normals(
+    mesh: &TriangleMesh,
+    triangles: &[([Vec3; 3], Vec3)],
+    incident: &[Vec<usize>],
+) -> Vec<[Vec3; 3]> {
     let units: Vec<Option<Vec3>> = triangles.iter().map(|(_, n)| unit(*n)).collect();
     mesh.triangles
         .iter()
@@ -383,6 +394,17 @@ fn corner_normals(mesh: &TriangleMesh, triangles: &[([Vec3; 3], Vec3)]) -> Vec<[
         .collect()
 }
 
+/// The triangles at each vertex of `mesh`.
+fn incident_triangles(mesh: &TriangleMesh) -> Vec<Vec<usize>> {
+    let mut incident: Vec<Vec<usize>> = vec![Vec::new(); mesh.vertices.len()];
+    for (t, corners) in mesh.triangles.iter().enumerate() {
+        for v in corners {
+            incident[*v as usize].push(t);
+        }
+    }
+    incident
+}
+
 /// A bounding volume hierarchy of a mesh's triangles: nodes in depth-first
 /// order, a leaf holding a run of `order`.
 struct Bvh {
@@ -393,6 +415,10 @@ struct Bvh {
     normals: Vec<[Vec3; 3]>,
     nodes: Vec<Node>,
     order: Vec<usize>,
+    /// Each triangle's vertex indices and the triangles at each vertex: the
+    /// surfaces around an edge ([`Bvh::across_edge`], mitcad#689).
+    vertices: Vec<[u32; 3]>,
+    incident: Vec<Vec<usize>>,
 }
 
 struct Node {
@@ -413,12 +439,15 @@ impl Bvh {
                 (p, area_normal(&p))
             })
             .collect();
-        let normals = corner_normals(mesh, &triangles);
+        let incident = incident_triangles(mesh);
+        let normals = corner_normals(mesh, &triangles, &incident);
         let mut bvh = Self {
             triangles,
             normals,
             nodes: Vec::new(),
             order: (0..mesh.triangles.len()).collect(),
+            vertices: mesh.triangles.clone(),
+            incident,
         };
         if !bvh.order.is_empty() {
             let count = bvh.order.len();
@@ -495,15 +524,92 @@ impl Bvh {
             if let Some((distance, triangle)) = self.first_exit(from, inward, t)
                 && best.is_none_or(|b| distance < b.distance)
             {
+                let to = add(from, scale(inward, distance));
+                // Across the edge next to it, the ray measures the edge, not
+                // a wall (mitcad#689).
+                if self.across_edge(t, from, triangle, to) {
+                    continue;
+                }
                 best = Some(Hit {
                     distance,
                     from,
-                    to: add(from, scale(inward, distance)),
+                    to,
                     triangle,
                 });
             }
         }
         best
+    }
+
+    /// Whether a ray from `from` on triangle `start` that leaves the
+    /// material at `to` on triangle `exit` only crossed the wedge at an edge
+    /// (mitcad#689): the two surfaces meet across a sharp edge within
+    /// [`EDGE_REACH`] of the start. Next to an edge whose faces meet at an
+    /// acute angle (a split plane through a fillet, the rim of a hole through
+    /// a curved wall) the ray along the normal leaves through the
+    /// neighbouring face at once; that is the edge's shape, not a wall. The
+    /// two sides of a real thin wall (a fin, a lip) are parallel or do not
+    /// meet near the start, so their walls are still found.
+    fn across_edge(&self, start: usize, from: Vec3, exit: usize, to: Vec3) -> bool {
+        let (Some(a), Some(b)) = (unit(self.triangles[start].1), unit(self.triangles[exit].1))
+        else {
+            return false;
+        };
+        // Where the two triangles' planes meet: parallel sides never do.
+        let sine = norm(cross(a, b));
+        if sine.is_nan() || sine <= EDGE_SINE {
+            return false;
+        }
+        // In each plane, the distance to that line.
+        let from_line = dot(sub(from, self.triangles[exit].0[0]), b).abs() / sine;
+        let to_line = dot(sub(to, self.triangles[start].0[0]), a).abs() / sine;
+        let near = from_line <= EDGE_REACH && to_line <= EDGE_SEARCH;
+        if !near {
+            return false;
+        }
+        // The surfaces around the start and the exit (as far as the line,
+        // each across its smooth neighbours) meet at a vertex: an edge of
+        // the body, not the far side of a wall.
+        let margin = EDGE_REACH / 4.0;
+        let near_start = self.surface_near(start, from, from_line + margin);
+        let near_exit = self.surface_near(exit, to, to_line + margin);
+        let mut ids: Vec<u32> = near_start.iter().flat_map(|&t| self.vertices[t]).collect();
+        ids.sort_unstable();
+        near_exit
+            .iter()
+            .flat_map(|&t| self.vertices[t])
+            .any(|v| ids.binary_search(&v).is_ok())
+    }
+
+    /// The triangles of the surface `seed` is on within `radius` of
+    /// `around`: neighbours across shared vertices whose normals are within
+    /// [`SMOOTH_COS`] of each other, at most [`EDGE_TRIANGLES`] of them.
+    fn surface_near(&self, seed: usize, around: Vec3, radius: f64) -> Vec<usize> {
+        let mut found = vec![seed];
+        let mut seen = HashSet::from([seed]);
+        let mut queue = VecDeque::from([seed]);
+        while let Some(t) = queue.pop_front() {
+            let Some(own) = unit(self.triangles[t].1) else {
+                continue;
+            };
+            for v in self.vertices[t] {
+                for &s in &self.incident[v as usize] {
+                    if found.len() >= EDGE_TRIANGLES {
+                        return found;
+                    }
+                    if seen.contains(&s)
+                        || !unit(self.triangles[s].1).is_some_and(|n| dot(n, own) >= SMOOTH_COS)
+                        || box_distance(&self.triangles[s].0, around) > radius
+                    {
+                        continue;
+                    }
+                    seen.insert(s);
+                    found.push(s);
+                    queue.push_back(s);
+                }
+            }
+        }
+        found
     }
 
     /// The nearest triangle but `skip` that the ray from `origin` along
@@ -546,6 +652,17 @@ impl Bvh {
         }
         found.map(|t| (nearest, t))
     }
+}
+
+/// The distance from `point` to the box around the triangle `p`: at most
+/// the distance to the triangle.
+fn box_distance(p: &[Vec3; 3], point: Vec3) -> f64 {
+    let gap: Vec3 = std::array::from_fn(|a| {
+        let low = p[0][a].min(p[1][a]).min(p[2][a]);
+        let high = p[0][a].max(p[1][a]).max(p[2][a]);
+        (low - point[a]).max(point[a] - high).max(0.0)
+    });
+    norm(gap)
 }
 
 /// Whether the ray enters the node's box nearer than `limit`.

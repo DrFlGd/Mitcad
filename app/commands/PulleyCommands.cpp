@@ -1,13 +1,25 @@
 // SPDX-License-Identifier: MIT
 // Pulley (mitcad#562; commands.md, "Pulleys"): timing belt pulleys (GT2,
-// HTD, T5, XL), smooth idlers and toothed idlers, on a plane or at a centre
-// distance from another pulley that the belt runs round (`belt_with`). The
-// panel shows the derived values (the model's `pulley_values`): the
-// diameters, and with `belt_with` the belt length, the nearest of the
-// catalogue lengths typed in the panel and the teeth in mesh. A Shaft
-// places it on a shaft instead of the plane (mitcad#578, SeatInputs.hpp),
-// its bore the shaft's diameter and the bore clearance.
+// HTD, T5, XL), smooth idlers and toothed idlers, placed by a pick
+// (mitcad#656, PlaceInputs.hpp): on a shaft, whose diameter and the bore
+// clearance give the bore, on an axis, at a point, or on a face at
+// distances from two of its edges. The panel shows the derived values (the
+// model's `pulley_values`); Check Belt, right under Place On, another
+// pulley, gives the belt round both as it is (`belt_drive` for the two
+// placements and their teeth, or `belt_check` of an edited pulley) in
+// three rows: its length, the nearest catalogue belt and the tension
+// travel; the view draws the belt's pitch line, and the pulley keeps the
+// check (`belt_check`). Belt Drive (DriveCommands.cpp) makes both pulleys
+// of a ratio. A pulley written with `belt_with` opens placed where it is,
+// the other pulley its Check Belt, and is saved as it was until either
+// changes.
+#include <algorithm>
 #include <cmath>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <utility>
+#include <vector>
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -16,12 +28,15 @@
 #include <QRegularExpression>
 #include <QString>
 #include <QStringList>
+#include <QtLogging>
+
+#include <gp_Vec.hxx>
 
 #include "../framework/CommandRegistry.hpp"
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
 #include "Commands.hpp"
-#include "SeatInputs.hpp"
+#include "PlaceInputs.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -46,12 +61,7 @@ const Choices kBores = {{QStringLiteral("none"), QStringLiteral("None")},
                         {QStringLiteral("thread"), QStringLiteral("Thread")}};
 
 bool isChoice(const Choices& choices, const QString& value) {
-  for (const auto& choice : choices) {
-    if (choice.first == value) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(choices.begin(), choices.end(), [&value](const auto& choice) { return choice.first == value; });
 }
 
 QString kindOf(const CommandState& state) { return state.choice(QStringLiteral("kind")); }
@@ -64,72 +74,211 @@ bool takesHub(const CommandState& state) { return kindOf(state) == QStringLitera
 bool hubShown(const CommandState& state) { return takesHub(state) && state.checked(QStringLiteral("hub")); }
 bool screwsShown(const CommandState& state) { return hubShown(state) && state.checked(QStringLiteral("set_screws")); }
 
-bool belted(const CommandState& state) { return !state.items(QStringLiteral("belt_with")).isEmpty(); }
-
 bool flangesShown(const CommandState& state) { return state.choice(QStringLiteral("flanges")) != QStringLiteral("none"); }
 
 bool plainBore(const CommandState& state) { return state.choice(QStringLiteral("bore")) == QStringLiteral("plain"); }
 
-// On a shaft (mitcad#578): not while running with another pulley.
-SeatPanel seatPanel() {
-  SeatPanel panel;
-  panel.offered = [](const CommandState& state) { return !belted(state); };
+// Placed by a pick (mitcad#656); its turn matters for a keyway and the set
+// screws, which lie in its direction.
+PlacePanel placePanel() {
+  PlacePanel panel;
+  panel.command = QObject::tr("Pulley");
+  panel.turns = [](const CommandState& state) {
+    return state.checked(QStringLiteral("keyway")) || screwsShown(state);
+  };
+  panel.clearance = true;
+  panel.printedFit = QStringLiteral("pulley");
   return panel;
 }
-bool onShaft(const CommandState& state) { return !belted(state) && seated(state); }
-// Placed by the plane and centre.
-bool onPlane(const CommandState& state) { return !belted(state) && !seated(state); }
+bool shaftPlaced(const CommandState& state) { return onShaft(state, placePanel()); }
 // A plain bore of its own diameter; on a shaft any bore but a thread is
 // the shaft's.
-bool ownPlainBore(const CommandState& state) { return plainBore(state) && !onShaft(state); }
+bool ownPlainBore(const CommandState& state) { return plainBore(state) && !shaftPlaced(state); }
 bool shaftBore(const CommandState& state) {
-  return onShaft(state) && state.choice(QStringLiteral("bore")) != QStringLiteral("thread");
+  return shaftPlaced(state) && state.choice(QStringLiteral("bore")) != QStringLiteral("thread");
 }
 
-// The type of the feature picked to run the belt with (kept beside the
-// inputs): a pulley's, or empty.
-QString mateType(const CommandState& state) { return state.object(QStringLiteral("mate")).value(QStringLiteral("type")).toString(); }
-
-// Remembers the feature `uid` for the inputs that follow it; a pulley's
-// belt profile becomes this one's, since one belt runs round both.
-void setMate(CommandState& state, const QString& uid, const CommandContext& context) {
-  // The feature query gives the type beside the definition ("type", "def").
-  QJsonObject feature;
-  try {
-    feature = context.queryObject({{QStringLiteral("query"), QStringLiteral("feature")}, {QStringLiteral("uid"), uid}});
-  } catch (...) {
-  }
-  const QJsonObject def = feature.value(QStringLiteral("def")).toObject();
-  const QString type = feature.value(QStringLiteral("type")).toString(def.value(QStringLiteral("type")).toString());
-  const QString profile = def.value(QStringLiteral("profile")).toString();
-  state.setObject(QStringLiteral("mate"), {{QStringLiteral("uid"), uid},
-                                           {QStringLiteral("type"), type},
-                                           {QStringLiteral("kind"), def.value(QStringLiteral("kind")).toString()},
-                                           {QStringLiteral("profile"), profile}});
-  if (type == QStringLiteral("pulley") && isChoice(kProfiles, profile)) {
-    state.setChoice(QStringLiteral("profile"), profile);
-  }
+// The pulley picked to check the belt with (kept beside the inputs).
+bool checked(const CommandState& state) { return !state.items(QStringLiteral("check_belt")).isEmpty(); }
+QString mateOf(const CommandState& state) {
+  const Selection& mate = state.items(QStringLiteral("check_belt"));
+  return mate.isEmpty() ? QString() : mate.first().owner;
 }
 
-// The catalogue belt lengths typed in the panel (in the document's unit,
-// separated by commas, semicolons or spaces), in millimetres.
-QJsonArray beltLengths(const CommandState& state, const CommandContext& context) {
-  static const QRegularExpression separators(QStringLiteral("[,;\\s]+"));
-  QJsonArray lengths;
-  const QStringList parts = state.text(QStringLiteral("belt_lengths")).split(separators, Qt::SkipEmptyParts);
-  for (const QString& part : parts) {
-    bool ok = false;
-    const double value = part.toDouble(&ok);
-    if (ok && std::isfinite(value) && value > 0.0) {
-      lengths.append(value * context.unitMillimetres());
-    }
-  }
-  return lengths;
+// The belts Check Belt chooses from (mitcad#656): the parts library's, or
+// any whole number of teeth.
+const Choices kCatalogues = {{QStringLiteral("library"), QStringLiteral("Library")},
+                             {QStringLiteral("whole_teeth"), QStringLiteral("Whole Teeth")}};
+bool wholeTeeth(const CommandState& state) {
+  return state.choice(QStringLiteral("catalogue")) == QStringLiteral("whole_teeth");
 }
+
+// The belt check as shown: plain lines for the log, and the rows under
+// Check Belt with its verdict in a word that stands out.
+struct BeltCheck {
+  QStringList lines;
+  QString shown;
+};
 
 // A thread's designation as the model takes it.
 QJsonObject threadOf(const CommandState& state, const QString& key) {
   return {{QStringLiteral("designation"), state.text(key).trimmed()}};
+}
+
+// What OK edits: the pulley's uid, for the belt check of a pulley as built.
+struct PulleyShared {
+  QString editing;
+};
+
+// The belt round this pulley and the one picked in Check Belt: from the
+// two placements and their teeth (`belt_drive`, the panel's pulley as it
+// is now), else, editing, the two as built (`belt_check`). One row each
+// (mitcad#656): the belt length, the nearest belt of the catalogue and
+// the tension travel to it, then the model's warning; a row with the
+// reason when there is no belt to tell; none without Check Belt.
+BeltCheck beltRows(const CommandState& state, const CommandContext& model, const QJsonObject& pulley,
+                   const QJsonObject& placement, const QString& editing) {
+  const QString mate = mateOf(state);
+  if (mate.isEmpty()) {
+    return {};
+  }
+  const auto plain = [](const QString& line) { return BeltCheck{{line}, line.toHtmlEscaped()}; };
+  QJsonObject mateFeature;
+  QJsonObject mateValues;
+  try {
+    mateFeature = model.queryObject({{QStringLiteral("query"), QStringLiteral("feature")}, {QStringLiteral("uid"), mate}});
+    mateValues = model.queryObject({{QStringLiteral("query"), QStringLiteral("pulley_values")}, {QStringLiteral("uid"), mate}});
+  } catch (...) {
+    return plain(QObject::tr("Check Belt needs a pulley"));
+  }
+  const QJsonObject mateDef = mateFeature.value(QStringLiteral("def")).toObject();
+  QJsonObject answer;  // center_distance, warning, catalogue
+  QJsonObject belt;    // belt_length, teeth_in_mesh, belt_teeth
+  QJsonObject nearest; // the nearest belt: length, teeth, travel, library
+  const QString profile = pulley.value(QStringLiteral("profile")).toString();
+  const double z1 = mateValues.value(QStringLiteral("teeth")).toDouble(0.0);
+  const double z2 = state.value(QStringLiteral("teeth"));
+  const QJsonObject first = atOfFeature(mateDef, mate, model);
+  const QJsonObject& second = placement;
+  QString error;
+  if (toothed(state) && z1 > 0.0 && std::isfinite(z2) && z2 > 0.0 && !first.isEmpty() && !second.isEmpty() &&
+      mateValues.value(QStringLiteral("profile")).toString() == profile) {
+    // These two tooth counts only, however few teeth are in mesh.
+    QJsonObject query{{QStringLiteral("query"), QStringLiteral("belt_drive")},
+                      {QStringLiteral("first"), first},
+                      {QStringLiteral("second"), second},
+                      {QStringLiteral("ratio"), z2 / z1},
+                      {QStringLiteral("profile"), profile},
+                      {QStringLiteral("min_teeth"), std::min(z1, z2)},
+                      {QStringLiteral("max_teeth"), std::max(z1, z2)},
+                      {QStringLiteral("min_teeth_in_mesh"), 1},
+                      {QStringLiteral("ratio_tolerance"), 1e-9},
+                      {QStringLiteral("belts"), 1},
+                      {QStringLiteral("limit"), 200}};
+    if (wholeTeeth(state)) {
+      query.insert(QStringLiteral("whole_teeth"), true);
+    }
+    try {
+      const QJsonObject drive = model.queryObject(query);
+      for (const QJsonValue& value : drive.value(QStringLiteral("candidates")).toArray()) {
+        const QJsonObject candidate = value.toObject();
+        const QJsonArray teeth = candidate.value(QStringLiteral("teeth")).toArray();
+        if (teeth.at(0).toDouble() == z1 && teeth.at(1).toDouble() == z2) {
+          answer = drive;
+          belt = candidate;
+          nearest = candidate.value(QStringLiteral("belts")).toArray().at(0).toObject();
+          break;
+        }
+      }
+    } catch (const std::exception& e) {
+      error = QString::fromUtf8(e.what());
+    }
+  }
+  if (belt.isEmpty() && !editing.isEmpty() && editing != mate) {
+    QJsonObject query{{QStringLiteral("query"), QStringLiteral("belt_check")},
+                      {QStringLiteral("pulleys"), QJsonArray{mate, editing}},
+                      {QStringLiteral("belts"), 1}};
+    if (wholeTeeth(state)) {
+      query.insert(QStringLiteral("whole_teeth"), true);
+    }
+    try {
+      belt = model.queryObject(query);
+      answer = belt;
+      nearest = belt.value(QStringLiteral("belts")).toArray().at(0).toObject();
+      error.clear();
+    } catch (const std::exception& e) {
+      error = QString::fromUtf8(e.what());
+    }
+  }
+  if (belt.isEmpty()) {
+    return plain(error.isEmpty() ? QObject::tr("No belt round both pulleys") : error);
+  }
+  // Rounded to 0.1 mm (mitcad#656).
+  QString length = QObject::tr("Belt length %1").arg(shortLength(belt.value(QStringLiteral("belt_length")).toDouble(), model));
+  const double beltTeeth = belt.value(QStringLiteral("belt_teeth")).toDouble(
+      belt.value(QStringLiteral("belt_length")).toDouble() / std::max(1e-9, mateValues.value(QStringLiteral("pitch")).toDouble(1.0)));
+  if (!profile.isEmpty() && std::isfinite(beltTeeth)) {
+    length += QObject::tr(" (%1 teeth)").arg(number(std::round(beltTeeth * 10.0) / 10.0));
+  }
+  if (belt.contains(QStringLiteral("teeth_in_mesh"))) {
+    length += QObject::tr(", %1 teeth in mesh").arg(number(belt.value(QStringLiteral("teeth_in_mesh")).toDouble()));
+  }
+  BeltCheck check;
+  check.lines << length;
+  QString verdict;
+  if (!nearest.isEmpty()) {
+    check.lines << QObject::tr("Nearest belt %1").arg(beltText(nearest, profile, model));
+    check.lines << QObject::tr("Travel %1").arg(travelText(std::round(nearest.value(QStringLiteral("travel")).toDouble() * 10.0) / 10.0, model));
+    const QString fit = nearest.value(QStringLiteral("fit")).toString(answer.value(QStringLiteral("fit")).toString());
+    verdict = beltFitText(fit);
+    if (!verdict.isEmpty()) {
+      check.lines << verdict;
+    }
+  } else {
+    check.lines << QObject::tr("No catalogue belt fits");
+  }
+  const QString warning = answer.value(QStringLiteral("warning")).toString();
+  if (!warning.isEmpty()) {
+    check.lines << warning;
+  }
+  // Shown: the verdict first, a word in bold, green when it fits.
+  QStringList shown;
+  for (const QString& line : check.lines) {
+    if (line == verdict) {
+      verdict[0] = verdict[0].toUpper();
+      const bool fits = nearest.value(QStringLiteral("fit")).toString(answer.value(QStringLiteral("fit")).toString()) ==
+                        QStringLiteral("ok");
+      shown.prepend(QStringLiteral("<b style=\"color:%1\">%2</b>")
+                        .arg(fits ? QStringLiteral("#1a7f37") : QStringLiteral("#b35900"), verdict.toHtmlEscaped()));
+    } else {
+      shown << line.toHtmlEscaped();
+    }
+  }
+  check.shown = shown.join(QStringLiteral("<br>"));
+  return check;
+}
+
+// The belt's pitch line round this pulley (`frame`, `diameter`) and the
+// one picked in Check Belt (mitcad#656): both wraps and the two spans in
+// this pulley's plane; none when it cannot be told.
+std::vector<gp_Pnt> beltLine(const PlaneFrame& frame, double diameter, const CommandContext& model, const QString& mate) {
+  QJsonObject mateDef;
+  QJsonObject mateValues;
+  try {
+    mateDef = model.queryObject({{QStringLiteral("query"), QStringLiteral("feature")}, {QStringLiteral("uid"), mate}})
+                  .value(QStringLiteral("def"))
+                  .toObject();
+    mateValues = model.queryObject({{QStringLiteral("query"), QStringLiteral("pulley_values")}, {QStringLiteral("uid"), mate}});
+  } catch (...) {
+    return {};
+  }
+  const auto other = builtFrame(mateDef, mate, model);
+  const double mateDiameter = mateValues.value(QStringLiteral("pitch_diameter"))
+                                  .toDouble(mateValues.value(QStringLiteral("diameter")).toDouble(0.0));
+  if (!other || !(diameter > 0.0) || !(mateDiameter > 0.0)) {
+    return {};
+  }
+  return beltPitchLine(frame.origin, frame.normal, diameter, other->origin, mateDiameter);
 }
 
 } // namespace
@@ -147,62 +296,54 @@ CommandDef pulleyCommand(const CommandContext& context) {
                   QStringLiteral("GT2"),         QStringLiteral("HTD"),  QStringLiteral("T5"),
                   QStringLiteral("XL"),          QStringLiteral("sheave")};
   def.featureType = QStringLiteral("pulley");
-  const auto unbelted = [](const CommandState& state) { return !belted(state); };
-  def.inputs = {
+  const auto shared = std::make_shared<PulleyShared>();
+  const PlacePanel place = placePanel();
+  // The model's values of the definition the panel makes (set once the
+  // build is known, below), for the Auto fields.
+  const auto worked = std::make_shared<std::function<QJsonObject(const CommandState&, const CommandContext&)>>();
+  const auto workedOut = [worked](const QString& key) {
+    return [worked, key](const CommandState& state, const CommandContext& model) -> QString {
+      if (!*worked) {
+        return QString();
+      }
+      const QJsonValue value = (*worked)(state, model).value(key);
+      return value.isDouble() ? shortLength(value.toDouble(), model) : QString();
+    };
+  };
+  def.inputs = placeInputs(place);
+  // Check Belt right under Place On (mitcad#656): the belt round this
+  // pulley and another made before, its rows under it; kept with the
+  // pulley (`belt_check`), nothing made.
+  def.inputs.insert(1, selectionInput(QStringLiteral("check_belt"), QObject::tr("Check Belt"),
+                                      SelectKind::Feature | SelectKind::Face, 0, 1)
+                           .withAccepts([](const SelectionItem& item) { return !item.creatingFeature().isEmpty(); })
+                           .withConvert([](const SelectionItem& item) {
+                             return SelectionItem{SelectKind::Feature, item.creatingFeature(), QString(), QString()};
+                           }));
+  def.inputs.insert(2, choiceInput(QStringLiteral("catalogue"), QObject::tr("Belts"), kCatalogues,
+                                   QStringLiteral("library"))
+                           .withVisible(checked));
+  def.inputs += {
       choiceInput(QStringLiteral("kind"), QObject::tr("Type"), kKinds, QStringLiteral("toothed"))
           .withChoiceIcons({{QStringLiteral("toothed"), QStringLiteral("pulley")},
                             {QStringLiteral("idler"), QStringLiteral("pulley-idler")},
                             {QStringLiteral("toothed_idler"), QStringLiteral("pulley-toothed-idler")}}),
-      selectionInput(QStringLiteral("belt_with"), QObject::tr("Belt With"), SelectKind::Feature | SelectKind::Face, 0, 1)
-          .withTooltip(QObject::tr("A pulley the belt also runs round: the new one sits at the centre distance from it, in its plane"))
-          .withAccepts([](const SelectionItem& item) { return !item.creatingFeature().isEmpty(); })
-          .withConvert([](const SelectionItem& item) {
-            return SelectionItem{SelectKind::Feature, item.creatingFeature(), QString(), QString()};
-          })
-          .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& model) {
-            // The pick before its conversion: a face's owner is its body,
-            // the feature is the one that made it.
-            const QString feature = item.creatingFeature();
-            setMate(state, feature.isEmpty() ? item.owner : feature, model);
-          }),
-      valueInput(QStringLiteral("center_distance"), QObject::tr("Centre Distance"), ValueKind::Length, QStringLiteral("60 mm"))
-          .withTooltip(QObject::tr("From the other pulley's axis to this one's"))
-          .withVisible(belted),
-      valueInput(QStringLiteral("belt_angle"), QObject::tr("Direction"), ValueKind::Angle, QStringLiteral("0 deg"))
-          .withTooltip(QObject::tr("Where this pulley sits around the other one, from its plane's x axis"))
-          .withVisible(belted),
-      selectionInput(QStringLiteral("plane"), QObject::tr("Plane"), kPlaneKinds, 0, 1)
-          .withTooltip(QObject::tr("A plane or planar face; a click places the centre"))
-          .withAccepts(isPlanar)
-          .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& model) {
-            placeAt(item, state, model, QStringLiteral("x"), QStringLiteral("y"));
-          })
-          .withVisible(onPlane),
-      valueInput(QStringLiteral("x"), QObject::tr("Center X"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(onPlane),
-      valueInput(QStringLiteral("y"), QObject::tr("Center Y"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(onPlane),
-      valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
-          .withTooltip(QObject::tr("Turns the pulley about its axis"))
-          .withVisible(unbelted),
       choiceInput(QStringLiteral("profile"), QObject::tr("Belt Profile"), kProfiles, QStringLiteral("gt2_2mm"))
           .withHeading(QObject::tr("Teeth"))
           .withVisible(toothed),
       valueInput(QStringLiteral("teeth"), QObject::tr("Teeth"), ValueKind::Unitless, QStringLiteral("20"))
           .withVisible(toothed),
       valueInput(QStringLiteral("diameter"), QObject::tr("Diameter"), ValueKind::Length, QStringLiteral("20 mm"))
-          .withTooltip(QObject::tr("Where the belt's back runs"))
           .withVisible([](const CommandState& s) { return !toothed(s); }),
       valueInput(QStringLiteral("belt_width"), QObject::tr("Belt Width"), ValueKind::Length, QStringLiteral("6 mm")),
-      valueInput(QStringLiteral("clearance"), QObject::tr("Clearance"), ValueKind::Length, QStringLiteral("1 mm"))
-          .withTooltip(QObject::tr("Added to the belt width: the width between the flanges")),
+      valueInput(QStringLiteral("clearance"), QObject::tr("Belt Clearance"), ValueKind::Length, QStringLiteral("1 mm")),
       valueInput(QStringLiteral("pitch_correction"), QObject::tr("Pitch Correction"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withTooltip(QObject::tr("Added to the pitch diameter (negative: a looser fit of the belt)"))
           .withVisible(toothed),
       choiceInput(QStringLiteral("flanges"), QObject::tr("Flanges"), kFlangeSides, QStringLiteral("both"))
-          .withTooltip(QObject::tr("One: on the side away from the hub"))
           .withHeading(QObject::tr("Flanges")),
-      valueInput(QStringLiteral("flange_diameter"), QObject::tr("Flange Diameter"), ValueKind::Length, QStringLiteral("18 mm"))
+      // Left empty, worked out by the model (mitcad#656): Auto with its value.
+      valueInput(QStringLiteral("flange_diameter"), QObject::tr("Flange Diameter"), ValueKind::Length, QString())
+          .withAuto(workedOut(QStringLiteral("flange_diameter")))
           .withVisible(flangesShown),
       valueInput(QStringLiteral("flange_thickness"), QObject::tr("Flange Thickness"), ValueKind::Length, QStringLiteral("1 mm"))
           .withVisible(flangesShown),
@@ -211,99 +352,53 @@ CommandDef pulleyCommand(const CommandContext& context) {
       valueInput(QStringLiteral("bore_diameter"), QObject::tr("Bore Diameter"), ValueKind::Length, QStringLiteral("5 mm"))
           .withVisible(ownPlainBore),
       textInput(QStringLiteral("thread"), QObject::tr("Thread Size"), QStringLiteral("M5x0.8"))
-          .withTooltip(QObject::tr("An ISO metric size: the bore is its tap drill"))
           .withVisible([](const CommandState& s) { return s.choice(QStringLiteral("bore")) == QStringLiteral("thread"); }),
       checkInput(QStringLiteral("keyway"), QObject::tr("Keyway"), false)
-          .withTooltip(QObject::tr("DIN 6885 for the bore's diameter"))
           .withVisible([](const CommandState& s) { return plainBore(s) || shaftBore(s); }),
       checkInput(QStringLiteral("hub"), QObject::tr("Hub"), true).withVisible(takesHub),
-      valueInput(QStringLiteral("hub_diameter"), QObject::tr("Hub Diameter"), ValueKind::Length, QStringLiteral("16 mm"))
+      valueInput(QStringLiteral("hub_diameter"), QObject::tr("Hub Diameter"), ValueKind::Length, QString())
+          .withAuto(workedOut(QStringLiteral("hub_diameter")))
           .withVisible(hubShown),
       valueInput(QStringLiteral("hub_length"), QObject::tr("Hub Length"), ValueKind::Length, QStringLiteral("7 mm"))
           .withVisible(hubShown),
       checkInput(QStringLiteral("set_screws"), QObject::tr("Set Screws"), true)
-          .withTooltip(QObject::tr("Tapped holes through the hub to the bore"))
           .withVisible(hubShown),
       valueInput(QStringLiteral("set_screw_count"), QObject::tr("Set Screw Count"), ValueKind::Unitless, QStringLiteral("2"))
-          .withTooltip(QObject::tr("Two: 90 deg apart"))
           .withVisible(screwsShown),
       textInput(QStringLiteral("set_screw_thread"), QObject::tr("Set Screw Size"), QStringLiteral("M3x0.5"))
-          .withTooltip(QObject::tr("An ISO metric size: the holes are its tap drill"))
           .withVisible(screwsShown),
-      valueInput(QStringLiteral("set_screw_position"), QObject::tr("Set Screw Position"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withTooltip(QObject::tr("From the hub's outer end; 0: the middle of the hub"))
+      valueInput(QStringLiteral("set_screw_position"), QObject::tr("Set Screw Position"), ValueKind::Length, QString())
+          .withAuto([](const CommandState&, const CommandContext&) { return QObject::tr("middle of the hub"); })
           .withVisible(screwsShown),
-      textInput(QStringLiteral("belt_lengths"), QObject::tr("Catalogue Lengths"), QString())
-          .withTooltip(QObject::tr("Belt lengths to choose from, separated by commas: the panel shows the nearest"))
-          .withHeading(QObject::tr("Belt"))
-          .withVisible(belted),
   };
-  // The shaft and its offset, flip and bore clearance (mitcad#578) before
-  // the plane and centre they stand for.
-  const SeatPanel seat = seatPanel();
-  {
-    const QVector<InputDef> seatInputList = seatInputs(seat);
-    qsizetype at = 0;
-    while (at < def.inputs.size() && def.inputs.at(at).id != QStringLiteral("plane")) {
-      ++at;
-    }
-    for (InputDef input : seatInputList) {
-      if (input.id == QStringLiteral("bore_clearance")) {
-        input.withPrintedFit(QStringLiteral("pulley"));
-      }
-      def.inputs.insert(at++, input);
-    }
-  }
   def.inputs += operationInputs();
 
-  def.init = [](CommandState& state, const CommandContext& model) {
-    initSeat(state, model);
-    // A face selected before the command runs the belt with its pulley;
-    // another feature's face is no pulley.
-    Selection& belt = state.items(QStringLiteral("belt_with"));
-    if (!belt.isEmpty()) {
-      setMate(state, belt.first().owner, model);
-      if (mateType(state) != QStringLiteral("pulley")) {
-        belt.clear();
-        state.setObject(QStringLiteral("mate"), QJsonObject());
-      }
-    }
-    if (state.items(QStringLiteral("plane")).isEmpty()) {
-      state.setItems(QStringLiteral("plane"), {itemOf(QJsonValue(QStringLiteral("xy")), model)});
-    }
+  def.init = [shared, place](CommandState& state, const CommandContext& model) {
+    shared->editing.clear();
+    initPlace(state, model, place);
   };
 
-  const auto buildPulley = [seat](const CommandState& state, const CommandContext& model) {
+  const auto buildPulley = [place](const CommandState& state, const CommandContext& model) {
     Built result;
     const QString kind = kindOf(state);
     QJsonObject pulley{{QStringLiteral("type"), QStringLiteral("pulley")}, {QStringLiteral("kind"), kind}};
-    if (belted(state)) {
-      if (mateType(state) != QStringLiteral("pulley")) {
-        return Built::failure(QObject::tr("Pick a pulley for the belt to run round"), QStringLiteral("belt_with"));
-      }
-      pulley.insert(QStringLiteral("belt_with"),
-                    QJsonObject{{QStringLiteral("pulley"), state.items(QStringLiteral("belt_with")).first().owner},
-                                {QStringLiteral("center_distance"), state.expression(QStringLiteral("center_distance"))},
-                                {QStringLiteral("angle"), state.expression(QStringLiteral("belt_angle"))}});
-    } else if (onShaft(state)) {
-      addSeat(pulley, state, model, seat);
-      if (nonZero(state, QStringLiteral("angle"))) {
-        pulley.insert(QStringLiteral("angle"), state.expression(QStringLiteral("angle")));
-      }
-    } else {
-      const Selection& plane = state.items(QStringLiteral("plane"));
-      if (plane.isEmpty()) {
-        return Built::failure(QObject::tr("Pick a plane, or a pulley for the belt to run round"), QStringLiteral("plane"));
-      }
-      pulley.insert(QStringLiteral("plane"), plane.first().reference());
-      pulley.insert(QStringLiteral("center"), QJsonArray{state.value(QStringLiteral("x")), state.value(QStringLiteral("y"))});
-      if (nonZero(state, QStringLiteral("angle"))) {
-        pulley.insert(QStringLiteral("angle"), state.expression(QStringLiteral("angle")));
-      }
+    if (!addPlace(pulley, state, model, place, result)) {
+      return result;
+    }
+    // Check Belt kept with the pulley (mitcad#656), unless an earlier
+    // `belt_with` with that pulley still places it.
+    const QString mate = mateOf(state);
+    if (pulley.contains(QStringLiteral("belt_with")) &&
+        pulley.value(QStringLiteral("belt_with")).toObject().value(QStringLiteral("pulley")).toString() != mate) {
+      pulley.remove(QStringLiteral("belt_with"));
+      pulley.insert(QStringLiteral("at"), atOf(state, model, place));
+    }
+    if (!mate.isEmpty() && !pulley.contains(QStringLiteral("belt_with"))) {
+      pulley.insert(QStringLiteral("belt_check"), QJsonObject{{QStringLiteral("pulley"), mate}});
     }
     if (toothed(state)) {
       pulley.insert(QStringLiteral("profile"), state.choice(QStringLiteral("profile")));
-      pulley.insert(QStringLiteral("teeth"), countValue(state, QStringLiteral("teeth")));
+      pulley.insert(QStringLiteral("teeth"), state.expression(QStringLiteral("teeth")));
       if (nonZero(state, QStringLiteral("pitch_correction"))) {
         pulley.insert(QStringLiteral("pitch_correction"), state.expression(QStringLiteral("pitch_correction")));
       }
@@ -312,36 +407,45 @@ CommandDef pulleyCommand(const CommandContext& context) {
     }
     pulley.insert(QStringLiteral("belt_width"), state.expression(QStringLiteral("belt_width")));
     pulley.insert(QStringLiteral("clearance"), state.expression(QStringLiteral("clearance")));
+    // An empty diameter: the model works it out (mitcad#656).
+    const auto given = [&state](const char* key) { return std::isfinite(state.value(QLatin1String(key))); };
     if (flangesShown(state)) {
-      pulley.insert(QStringLiteral("flanges"),
-                    QJsonObject{{QStringLiteral("sides"), state.choice(QStringLiteral("flanges"))},
-                                {QStringLiteral("diameter"), state.expression(QStringLiteral("flange_diameter"))},
-                                {QStringLiteral("thickness"), state.expression(QStringLiteral("flange_thickness"))}});
+      QJsonObject flanges{{QStringLiteral("sides"), state.choice(QStringLiteral("flanges"))},
+                          {QStringLiteral("thickness"), state.expression(QStringLiteral("flange_thickness"))}};
+      if (given("flange_diameter")) {
+        flanges.insert(QStringLiteral("diameter"), state.expression(QStringLiteral("flange_diameter")));
+      }
+      pulley.insert(QStringLiteral("flanges"), flanges);
     }
     if (hubShown(state)) {
-      pulley.insert(QStringLiteral("hub"),
-                    QJsonObject{{QStringLiteral("diameter"), state.expression(QStringLiteral("hub_diameter"))},
-                                {QStringLiteral("length"), state.expression(QStringLiteral("hub_length"))}});
+      QJsonObject hub{{QStringLiteral("length"), state.expression(QStringLiteral("hub_length"))}};
+      if (given("hub_diameter")) {
+        hub.insert(QStringLiteral("diameter"), state.expression(QStringLiteral("hub_diameter")));
+      }
+      pulley.insert(QStringLiteral("hub"), hub);
     }
     const QString bore = state.choice(QStringLiteral("bore"));
     if (shaftBore(state)) {
-      // The shaft's diameter and the bore clearance (the seat's).
+      // The shaft's diameter and the bore clearance.
       if (state.checked(QStringLiteral("keyway"))) {
         pulley.insert(QStringLiteral("keyway"), true);
       }
-    } else if (bore == QStringLiteral("plain")) {
-      pulley.insert(QStringLiteral("bore"), QJsonObject{{QStringLiteral("type"), QStringLiteral("plain")},
-                                                        {QStringLiteral("diameter"),
-                                                         state.expression(QStringLiteral("bore_diameter"))}});
-      if (state.checked(QStringLiteral("keyway"))) {
-        pulley.insert(QStringLiteral("keyway"), true);
+    } else {
+      pulley.remove(QStringLiteral("bore_clearance"));
+      if (bore == QStringLiteral("plain")) {
+        pulley.insert(QStringLiteral("bore"), QJsonObject{{QStringLiteral("type"), QStringLiteral("plain")},
+                                                          {QStringLiteral("diameter"),
+                                                           state.expression(QStringLiteral("bore_diameter"))}});
+        if (state.checked(QStringLiteral("keyway"))) {
+          pulley.insert(QStringLiteral("keyway"), true);
+        }
+      } else if (bore == QStringLiteral("thread")) {
+        pulley.insert(QStringLiteral("bore"), QJsonObject{{QStringLiteral("type"), QStringLiteral("thread")},
+                                                          {QStringLiteral("thread"), threadOf(state, QStringLiteral("thread"))}});
       }
-    } else if (bore == QStringLiteral("thread")) {
-      pulley.insert(QStringLiteral("bore"), QJsonObject{{QStringLiteral("type"), QStringLiteral("thread")},
-                                                        {QStringLiteral("thread"), threadOf(state, QStringLiteral("thread"))}});
     }
     if (screwsShown(state)) {
-      QJsonObject screws{{QStringLiteral("count"), countValue(state, QStringLiteral("set_screw_count"))},
+      QJsonObject screws{{QStringLiteral("count"), state.expression(QStringLiteral("set_screw_count"))},
                          {QStringLiteral("thread"), threadOf(state, QStringLiteral("set_screw_thread"))}};
       if (nonZero(state, QStringLiteral("set_screw_position"))) {
         screws.insert(QStringLiteral("position"), state.expression(QStringLiteral("set_screw_position")));
@@ -353,23 +457,30 @@ CommandDef pulleyCommand(const CommandContext& context) {
     return result;
   };
   def.build = buildPulley;
+  *worked = [buildPulley](const CommandState& state, const CommandContext& model) -> QJsonObject {
+    Built built = buildPulley(state, model);
+    if (!built.error.isEmpty()) {
+      return QJsonObject();
+    }
+    built.def.remove(QStringLiteral("type"));
+    try {
+      return model.queryObject({{QStringLiteral("query"), QStringLiteral("pulley_values")},
+                                {QStringLiteral("def"), built.def}});
+    } catch (...) {
+      return QJsonObject();
+    }
+  };
 
-  // The derived values of the definition the preview showed, with the belt
-  // round both pulleys when it runs with another.
+  // The derived values of the definition the preview showed.
   def.note = [buildPulley](const CommandState& state, const CommandContext& model) -> QString {
     Built built = buildPulley(state, model);
     if (!built.error.isEmpty()) {
       return QString();
     }
     built.def.remove(QStringLiteral("type"));
-    QJsonObject query{{QStringLiteral("query"), QStringLiteral("pulley_values")}, {QStringLiteral("def"), built.def}};
-    const QJsonArray lengths = beltLengths(state, model);
-    if (belted(state) && !lengths.isEmpty()) {
-      query.insert(QStringLiteral("belt_lengths"), lengths);
-    }
     QJsonObject values;
     try {
-      values = model.queryObject(query);
+      values = model.queryObject({{QStringLiteral("query"), QStringLiteral("pulley_values")}, {QStringLiteral("def"), built.def}});
     } catch (...) {
       return QString();
     }
@@ -383,18 +494,9 @@ CommandDef pulleyCommand(const CommandContext& context) {
     add("pitch_diameter", QObject::tr("pitch diameter %1"));
     add("outside_diameter", QObject::tr("outside %1"));
     // The bore a shaft gives (mitcad#578).
-    const QString shaft = seatNote(values, model);
+    const QString shaft = shaftNote(values, model);
     if (!shaft.isEmpty()) {
       parts << shaft;
-    }
-    add("center_distance", QObject::tr("centre distance %1"));
-    add("belt_length", QObject::tr("belt length %1"));
-    if (values.contains(QStringLiteral("belt_length")) && values.contains(QStringLiteral("belt_teeth"))) {
-      parts.last() += QObject::tr(" (%1 teeth)").arg(number(values.value(QStringLiteral("belt_teeth")).toDouble()));
-    }
-    add("catalogue_length", QObject::tr("nearest catalogue length %1"));
-    if (values.contains(QStringLiteral("teeth_in_mesh"))) {
-      parts << QObject::tr("%1 teeth in mesh").arg(number(values.value(QStringLiteral("teeth_in_mesh")).toDouble()));
     }
     const QString error = values.value(QStringLiteral("error")).toString();
     if (!error.isEmpty()) {
@@ -407,24 +509,82 @@ CommandDef pulleyCommand(const CommandContext& context) {
     return parts.join(QStringLiteral(", "));
   };
 
-  def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+  // Check Belt's rows under it (mitcad#656): its verdict, belt length,
+  // nearest belt, travel.
+  for (InputDef& input : def.inputs) {
+    if (input.id != QStringLiteral("check_belt")) {
+      continue;
+    }
+    input.rowNote = [buildPulley, shared, place](const CommandState& state, const CommandContext& model) -> QString {
+      if (!checked(state)) {
+        return QString();
+      }
+      Built built = buildPulley(state, model);
+      if (!built.error.isEmpty()) {
+        return QString();
+      }
+      built.def.remove(QStringLiteral("type"));
+      const BeltCheck check = beltRows(state, model, built.def, atOf(state, model, place, true), shared->editing);
+      if (!check.lines.isEmpty()) {
+        qDebug().noquote() << QStringLiteral("Pulley belt check with %1: %2")
+                                  .arg(mateOf(state), check.lines.join(QStringLiteral(", ")));
+      }
+      return check.shown;
+    };
+  }
+
+  // The belt's pitch line round both pulleys while Check Belt has one.
+  def.viewLines = [buildPulley, place](const CommandState& state,
+                                       const CommandContext& model) -> std::vector<std::vector<gp_Pnt>> {
+    const QString mate = mateOf(state);
+    if (mate.isEmpty()) {
+      return {};
+    }
+    const auto frame = placeFrame(state, model, place);
+    Built built = buildPulley(state, model);
+    if (!frame || !built.error.isEmpty()) {
+      return {};
+    }
+    built.def.remove(QStringLiteral("type"));
+    QJsonObject values;
+    try {
+      values = model.queryObject({{QStringLiteral("query"), QStringLiteral("pulley_values")}, {QStringLiteral("def"), built.def}});
+    } catch (...) {
+      return {};
+    }
+    const double diameter =
+        values.value(QStringLiteral("pitch_diameter")).toDouble(values.value(QStringLiteral("diameter")).toDouble(0.0));
+    std::vector<gp_Pnt> line = beltLine(*frame, diameter, model, mate);
+    if (line.empty()) {
+      return {};
+    }
+    return {std::move(line)};
+  };
+
+  def.load = [shared, place](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+    const QString uid = feature.value(QStringLiteral("uid")).toString();
+    shared->editing = uid;
     state.setChoice(QStringLiteral("kind"), feature.value(QStringLiteral("kind")).toString(QStringLiteral("toothed")));
     const QJsonObject belt = feature.value(QStringLiteral("belt_with")).toObject();
-    const bool shaft = loadSeat(feature, state, context);
-    if (shaft) {
-      loadValue(state, QStringLiteral("angle"), feature.value(QStringLiteral("angle")), feature, context);
-    } else if (!belt.isEmpty()) {
+    if (!belt.isEmpty()) {
+      // Written beside another pulley (`belt_with`): placed where it is,
+      // measured from the origin axes; the other pulley checks the belt.
+      loadPlace(QJsonObject{{QStringLiteral("uid"), uid}}, state, context, place);
+      if (const auto frame = builtFrame(feature, uid, context)) {
+        placeAtFrame(state, context, *frame);
+        logPlacement(state, context, place);
+        // Saved as it was while the placement and the pulley are unchanged.
+        keepEarlierForm(state, context, place, {{QStringLiteral("belt_with"), belt}});
+      }
       const QString mate = belt.value(QStringLiteral("pulley")).toString();
-      state.setItems(QStringLiteral("belt_with"), {SelectionItem{SelectKind::Feature, mate, QString(), QString()}});
-      setMate(state, mate, context);
-      loadValue(state, QStringLiteral("center_distance"), belt.value(QStringLiteral("center_distance")), feature, context);
-      loadValue(state, QStringLiteral("belt_angle"), belt.value(QStringLiteral("angle")), feature, context);
+      state.setItems(QStringLiteral("check_belt"), {SelectionItem{SelectKind::Feature, mate, QString(), QString()}});
     } else {
-      state.setItems(QStringLiteral("plane"), {itemOf(feature.value(QStringLiteral("plane")), context)});
-      const QJsonArray center = feature.value(QStringLiteral("center")).toArray();
-      state.setText(QStringLiteral("x"), lengthText(center.at(0).toDouble(), context));
-      state.setText(QStringLiteral("y"), lengthText(center.at(1).toDouble(), context));
-      loadValue(state, QStringLiteral("angle"), feature.value(QStringLiteral("angle")), feature, context);
+      loadPlace(feature, state, context, place);
+      // The belt kept with it (mitcad#656).
+      const QString mate = feature.value(QStringLiteral("belt_check")).toObject().value(QStringLiteral("pulley")).toString();
+      if (!mate.isEmpty()) {
+        state.setItems(QStringLiteral("check_belt"), {SelectionItem{SelectKind::Feature, mate, QString(), QString()}});
+      }
     }
     const QString profile = feature.value(QStringLiteral("profile")).toString();
     if (!profile.isEmpty()) {
@@ -445,7 +605,7 @@ CommandDef pulleyCommand(const CommandContext& context) {
     const QString boreType = bore.value(QStringLiteral("type")).toString(QStringLiteral("none"));
     // On a shaft without a bore of its own: the shaft's, a plain one.
     state.setChoice(QStringLiteral("bore"),
-                    shaft && boreType == QStringLiteral("none") ? QStringLiteral("plain") : boreType);
+                    onShaft(state, place) && boreType == QStringLiteral("none") ? QStringLiteral("plain") : boreType);
     loadValue(state, QStringLiteral("bore_diameter"), bore.value(QStringLiteral("diameter")), feature, context);
     if (boreType == QStringLiteral("thread")) {
       state.setText(QStringLiteral("thread"),
@@ -469,8 +629,10 @@ CommandDef pulleyCommand(const CommandContext& context) {
   };
 
   // Only what the panel can show: its kinds, belt profiles and flange
-  // sides, a plane it shows, threads of the ISO metric standard, and set
-  // screws only where it shows them (a pulley's hub).
+  // sides, a placement it shows (a pulley beside another where its plane
+  // or the origin plane square to its axis holds it), threads of the ISO
+  // metric standard, and set screws only where it shows them (a pulley's
+  // hub).
   def.canEdit = [&context](const QJsonObject& feature) {
     const QString kind = feature.value(QStringLiteral("kind")).toString(QStringLiteral("toothed"));
     if (!isChoice(kKinds, kind)) {
@@ -484,12 +646,16 @@ CommandDef pulleyCommand(const CommandContext& context) {
     if (!flanges.isEmpty() && !isChoice(kFlangeSides, flanges.value(QStringLiteral("sides")).toString(QStringLiteral("both")))) {
       return false;
     }
-    const QJsonValue plane = feature.value(QStringLiteral("plane"));
-    if (!plane.isUndefined() && !plane.isNull() && !isShowable(plane, context)) {
+    if (!placeShowable(feature, context)) {
       return false;
     }
-    if (!seatShowable(feature, context)) {
-      return false;
+    const QString uid = feature.value(QStringLiteral("uid")).toString();
+    if (feature.contains(QStringLiteral("belt_with")) && !uid.isEmpty()) {
+      CommandState probe;
+      const auto frame = builtFrame(feature, uid, context);
+      if (!frame || !placeAtFrame(probe, context, *frame)) {
+        return false;
+      }
     }
     const bool hub = !feature.value(QStringLiteral("hub")).toObject().isEmpty();
     const QJsonObject screws = feature.value(QStringLiteral("set_screws")).toObject();
@@ -523,6 +689,9 @@ namespace mitcad {
 
 void registerPulleyCommands(CommandRegistry& registry, const CommandContext& context) {
   registry.add(cmd::pulleyCommand(context));
+  // Belt Drive (mitcad#656, DriveCommands.cpp) beside it in the menu: both
+  // pulleys of a ratio between two axes.
+  registry.add(cmd::beltDriveCommand(context));
 }
 
 } // namespace mitcad

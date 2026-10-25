@@ -345,16 +345,16 @@ ui_expect_new "Look at plane F4" "looking at Plane1"
 [ -n "$SHOT" ] && ui_capture "$SHOT"
 
 echo "--- Units"
-ui_step "select Document Settings"       ui_click_logged "Browser Root/Document Settings"
+ui_step "select Design Settings"       ui_click_logged "Browser Root/Design Settings"
 ui_step "expand it (Right)"              ui_key Right
-ui_expect_log "Browser Root/Document Settings/Units: mm at" "the unit row"
-ui_step "double-click the unit"          ui_double_click_logged "Browser Root/Document Settings/Units: mm"
+ui_expect_log "Browser Root/Design Settings/Units: mm at" "the unit row"
+ui_step "double-click the unit"          ui_double_click_logged "Browser Root/Design Settings/Units: mm"
 ui_focus_dialog '^Units$'
 ui_mark
 ui_step "choose in (Down x3, Enter)"     ui_key Down Down Down Return
 ui_focus_main
 ui_expect_new "Units: in" "the document's unit is the inch"
-ui_expect_new "Browser Root/Document Settings/Units: in at" "the row shows it"
+ui_expect_new "Browser Root/Design Settings/Units: in at" "the row shows it"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 
 

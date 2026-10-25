@@ -59,6 +59,37 @@ def write(path, text):
         f.write(text)
 
 
+PRINT_LIBRARY = os.path.join(HERE, "print-library")
+# The folders of the materials and print profiles and their lists in the
+# manifest (mitcad#640, docs/libraries.md).
+PRINT_FOLDERS = [("materials", "materials"), ("print/printers", "printers"),
+                 ("print/processes", "processes")]
+
+
+def add_print_library(out, manifest):
+    """Copies the materials and print profiles (tools/libraries/print-library)
+    into the library and lists them in the manifest, each id once."""
+    for folder, field in PRINT_FOLDERS:
+        source = os.path.join(PRINT_LIBRARY, *folder.split("/"))
+        items = []
+        for root, _dirs, files in sorted(os.walk(source)):
+            for name in sorted(files):
+                if not name.endswith(".json"):
+                    continue
+                relative = os.path.relpath(os.path.join(root, name), PRINT_LIBRARY).replace(os.sep, "/")
+                text = read(os.path.join(root, name))
+                item = json.loads(text)
+                data = item.get("material") or item.get("profile") or {}
+                if relative != f"{folder}/{data.get('id')}.json":
+                    fail(f"{relative} is not the file of its item {data.get('id')}")
+                target = os.path.join(out, *relative.split("/"))
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                write(target, text)
+                items.append({"id": data["id"], "path": relative})
+        manifest[field] = items
+    return manifest
+
+
 def section(text, title):
     """A generator's SOURCES.md as a section of the library's: its title
     replaced, its headings one level down."""
@@ -169,11 +200,16 @@ def main():
     write(os.path.join(out, "README.md"), README_TEXT)
     write(os.path.join(out, "SOURCES.md"),
           "# Sources of the parts\n\n" + section(fasteners, "Fasteners") + "\n"
-          + section(profiles, "BUILD parts"))
+          + section(profiles, "BUILD parts") + "\n"
+          + section(read(os.path.join(PRINT_LIBRARY, "SOURCES.md")), "Materials and print profiles"))
     with open(os.path.join(out, "mitcad-library.json"), encoding="utf-8") as f:
         manifest = json.load(f)
     if manifest.get("id") != LIBRARY_ID:
         fail(f"the manifest's id is {manifest.get('id')}, not {LIBRARY_ID}")
+    # 4. The materials and print profiles (mitcad#640), listed in the
+    # manifest.
+    manifest = add_print_library(out, manifest)
+    write(os.path.join(out, "mitcad-library.json"), json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     run([args.cli, "library", "check", out], "the library check")
     if args.commit:
         identity = ["-c", "user.name=Mitcad developers", "-c", "user.email=devs@mitcad.org"]

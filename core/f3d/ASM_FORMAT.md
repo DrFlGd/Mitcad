@@ -228,7 +228,7 @@ a keyword followed by the record's fields (without the header): `plane`,
 | `exact_spl_sur` | version, enum, bs3 surface | exact B-spline |
 | `cyl_spl_sur` | version, profile (`intcurve ...` + range), direction vector, point, approximation level enum (0: bs3 surface follows; 2: none), ... | exact: linear extrusion `C(u) + v dir` |
 | `rot_spl_sur` | version, profile, axis point, axis direction, enum, bs3 approximation | approximation |
-| `rb_blend_spl_sur` | version, two sides (support kind text, support surface with its ranges or `null_surface`, support curve or `null_curve`, contact bs2 pcurve, location, bs2 pcurve, extension integer, bs2 pcurve), the slice (spine) curve with its range, two offsets, radius selector, u and v ranges, shape fields, then the tail enum: 0 bs3 approximation, 1 its knots only (summary), 2 none (the u and v intervals) | approximation; without it the rolling ball the builder walks along the spine (see below) |
+| `rb_blend_spl_sur` | version, two sides (support kind text, support surface with its ranges or `null_surface`, support curve or `null_curve`, contact bs2 pcurve, location, bs2 pcurve, extension integer, bs2 pcurve), the slice (spine) curve with its range, two offsets, radius selector, u and v ranges, shape fields, then the tail enum: 0 bs3 approximation, 1 its knots only (summary), 2 none (the u and v intervals) | approximation; without it, or with one too far off, the rolling ball the builder walks along the spine (see below) |
 | `loft_spl_sur` | version, section curves, ..., bs3 approximation | approximation |
 | `helix_spl_line` | version, three ranges, helix data as in `helix_int_cur`, two `null_surface`, two `nullbs`, line vector; no approximation | exact up to the sampling (see below) |
 | `helix_spl_circ` | version, two ranges, a phase, a range, helix data as in `helix_int_cur`, two `null_surface`, two `nullbs`, the arc's radius; no approximation | exact up to the sampling (see below) |
@@ -253,7 +253,40 @@ sides (one stores it on one side). The converter passes the definition on
 blend (`blend_int_cur` with the blend as its support) as the blend along
 their pcurve (`Curve::OnSurface`); the builder walks OCCT's rolling ball
 (`geometry/src/blend_surfaces.cpp`). On a closed slice (periodic) the
-face's v range may cross the slice's seam.
+face's v range may cross the slice's seam; over one whole period the
+builder closes the surface (periodic in v), for a face round the whole
+slice with its seam edge on both ends.
+
+The slice curve is itself an approximation (an `off_int_cur`: the
+intersection of the supports offset by the radius, its B-spline's fit
+tolerance field 1000 in the records seen), a few micrometres off the true
+path of the centre (mitcad#639: up to 0.008 mm at its start, 0.06 mm
+elsewhere). OCCT's walk solves the true ball in each plane normal to the
+slice, so the slice only parametrizes the blend; the builder takes a slice
+whose start lies within the import's tolerance of the ball's centre there.
+A curve support is walked as the restriction of a plane through it, which
+is no face of the body: the ball must never be taken for leaving the curve
+onto that plane (mitcad#639: a ball on a circular rim with its centre in
+the rim's plane stopped at its start).
+
+**`rb_blend_spl_sur` with an approximation too far off** (mitcad#622): tail
+form 0 stores the bs3 approximation, then its fit tolerance (how far it may
+be from the blend). Drawings store some a tenth of a millimetre off
+(fit tolerance 0.0043 in), and their contact curves (`blend_int_cur` with
+the blend as its support and its u = 0 or u = 1 pcurve) as approximations
+of the same fit tolerance taken from the surface's, while the vertices and
+the exact edges (the circles across the blend) lie on the true blend: the
+face's boundary then misses its surface and the solid is invalid. Where
+the fit tolerance is larger than the import's geometric tolerance
+(`convert::Options::max_fit`, 0.01 mm), the blend is made from its
+definition as above, and a `blend_int_cur` stored with its approximation
+(the approximation, its fit tolerance, its two supports and pcurves, read
+as `IntGeom::Approximated`) is the blend along its pcurve. A blend whose
+approximation is close enough stays that B-spline; one OCCT cannot walk
+keeps it too (`Surface::RollingBall::stored`; not for a slice running
+against its definition, whose v is the file's negated). Since mitcad#639
+every such blend of the sample drawings walks (the import report notes
+none).
 
 **`sum_spl_sur` without its approximation** (mitcad#621): version, the two
 curves (each with its range), the origin, then the tail enum (0 bs3
@@ -334,6 +367,16 @@ took no less memory, and the volume changed by 0.5 %.
     convert and build like the current ones.
   - Delta states are ASM operations, not timeline features: a feature can
     take several states, and some states change only attributes.
+  - Which rolled-back states hold the same bodies is told from the
+    bulletins, mostly without converting the states
+    (`history_states.rs`, mitcad#675): an operation that changed only
+    attributes, and records whose fields past the entity header stay the
+    same, change no body; a body none of whose entities (reached by its
+    pointers past the attribute field) the operation changed is the same;
+    the others are converted side by side from their first faces, where
+    an operation's new faces stand *(verified on a pattern of 372 copies:
+    each copy is two operations, one changing only the attributes of eight
+    edges and their attribute pointers)*.
 
 ## `.smb` and `.smbh`
 

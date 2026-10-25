@@ -424,6 +424,12 @@ pub(crate) fn repeat_dressup<K: Kernel>(
         .fold(Transform::IDENTITY, |done, (t, _)| t.after(&done));
     let mut work: Vec<(BodyUid, Vec<(u32, FeatureDef)>)> = Vec::new();
     let mut missing = Vec::new();
+    // Where the last copy's edge was found by its name: the copies of one
+    // element after another lie on bodies in that order (a pattern's new
+    // bodies), so the search for the next goes on from there. Scanning
+    // every body for every element took 5 s for 372 copies on bodies of
+    // their own (mitcad#673).
+    let mut last_hit = 0;
     for element in elements {
         let mut instances: Vec<Instance> = steps.iter().map(|(_, i)| *i).collect();
         instances.push(Instance {
@@ -439,13 +445,22 @@ pub(crate) fn repeat_dressup<K: Kernel>(
         };
         let transform = element.transform.after(&at);
         let mut unfound = false;
+        // The body a copied edge was found on by its name.
+        let mut hint: Option<BodyUid> = None;
         for edge in &named {
             let copy = names.edge(edge);
-            let by_name = copy != *edge
-                && changed.iter().any(|b| {
-                    set.get(*b)
+            let by_name = copy != *edge && {
+                let n = changed.len();
+                let hit = (0..n).map(|k| (last_hit + k) % n).find(|&i| {
+                    set.get(changed[i])
                         .is_some_and(|s| ctx.kernel.count_edges(s, &copy) > 0)
                 });
+                if let Some(i) = hit {
+                    last_hit = i;
+                    hint.get_or_insert(changed[i]);
+                }
+                hit.is_some()
+            };
             if by_name {
                 continue;
             }
@@ -484,10 +499,16 @@ pub(crate) fn repeat_dressup<K: Kernel>(
             missing.push(element.index);
             continue;
         };
-        let found = bodies.iter().copied().find_map(|body| {
+        // The body its edges were found on by name first, where it has the
+        // whole copy; else the bodies in order.
+        let on = |body: BodyUid| {
             let shape = set.get(body)?;
             present(ctx.kernel, shape, &copy).map(|(def, lost)| (body, def, lost))
-        });
+        };
+        let found = hint
+            .and_then(on)
+            .filter(|(_, _, lost)| !lost)
+            .or_else(|| bodies.iter().copied().find_map(on));
         let Some((body, def, lost)) = found else {
             missing.push(element.index);
             continue;

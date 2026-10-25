@@ -1,6 +1,80 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Mitcad Model Context Protocol server
 
+## Connect from Mitcad
+
+For a design already open in Mitcad, choose **Help › Connect AI Assistant…**.
+The project indicator's menu and **Preferences › Agents** offer the same
+command; command search also finds `claude`, `codex`, `chatgpt` and `mcp`.
+Choose the assistant that runs on this computer:
+
+- **Claude Desktop:** **Set up connection** generates an MCP Bundle and
+  opens its installer in Claude Desktop on macOS or Windows. Approve the
+  installation and enable the extension there, then start a new conversation.
+  If the tools are missing, fully quit and reopen Claude Desktop. The bundle
+  contains a small native launcher that starts the installed Mitcad CLI;
+  Claude's configuration file is not edited. The installer opening is not
+  proof of installation: that status is unknown until the client connects.
+- **Claude Code:** install the client if necessary using **Installation
+  instructions**, then choose **Set up connection**. Mitcad runs the supported
+  registration command with **user** scope, so the connection is available
+  across projects. Registration runs against a private `CLAUDE_CONFIG_DIR`
+  first. Mitcad verifies the entry and unchanged unrelated JSON before
+  atomically applying it to `~/.claude.json`, or `.claude.json` inside an
+  existing `CLAUDE_CONFIG_DIR`. A failed registration or closing the setup
+  dialog leaves the previous connection intact. Start a new session and check
+  `/mcp`; normal client trust approvals still apply.
+- **Codex / ChatGPT Desktop (local MCP):** choose **Set up connection**.
+  Mitcad uses the shared local Codex configuration. It respects `CODEX_HOME`;
+  use **Choose…** to select the settings file actually used by a desktop
+  client with another location. A Codex CLI is used when available, including
+  the desktop client's bundled CLI. Otherwise Mitcad updates the selected
+  TOML file directly, without requiring a separate CLI installation. Restart
+  the desktop client or start a new CLI conversation after setup. The copied
+  command includes the selected `CODEX_HOME`; for a filename other than
+  `config.toml`, the copy action provides TOML for that file instead.
+- **Other MCP client:** **Copy configuration** gives the generic
+  `mcpServers` JSON with the installed executable path. Add it through that
+  client's supported setup interface. Codex's copy action gives TOML instead;
+  these formats are deliberately distinct. **Copy command** is a fallback,
+  with platform-appropriate quoting, rather than a prerequisite.
+
+Codex registration first runs against a private settings copy. Mitcad checks
+the result and atomically changes only its own entry in the actual file,
+preserving unrelated settings and comments. Existing configuration is backed
+up before replacement; a matching entry needs no write or new backup. A
+different Mitcad entry requires explicit replacement. Invalid TOML, a
+concurrent edit, a disabled entry or detected managed policy stops setup
+without overwriting the configuration. Ask the client's administrator to
+allow the entry when managed requirements apply.
+
+In the same dialog, choose a folder and press **Allow folder** to grant Open
+and Save As access, including subfolders. The button creates the selected
+folder if needed. Without this consent those operations are refused; saving
+an open design to its existing file remains available. No access is granted
+merely by opening the connection dialog.
+
+**Configured, waiting for connection** means settings exist, not that an
+assistant is running. **Connected** appears only after the MCP initialization
+handshake completes, and lists each client's supplied display name. Names
+are labels, not authentication identities. **Disconnect Agent** retains the
+design and its unsaved edits.
+
+The existing bridge refuses to choose between several live Mitcad windows.
+Keep only the intended window open, or use `--list` and `--instance` for a
+particular bridge launch. Saved setup never records a temporary instance id.
+A WSL, remote or cloud client is not automatically on the native application's
+host. Browser and mobile conversations cannot launch this stdio bridge;
+setup does not expose a public listener or enable a tunnel.
+
+Client references: [local MCP and shared configuration](https://learn.chatgpt.com/docs/extend/mcp),
+[Codex configuration locations](https://learn.chatgpt.com/docs/config-file/config-advanced),
+[Claude Code MCP and scopes](https://code.claude.com/docs/en/mcp),
+[Claude Code configuration locations](https://code.claude.com/docs/en/mcp-quickstart#find-your-configuration-on-disk),
+and the [MCP Bundle manifest](https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md).
+
+## Manual setup and headless use
+
 `mitcad-cli mcp` gives an MCP client access to the native parametric
 model of Mitcad. Use `--connect` to edit the document in a desktop
 application that is already open. Use `--workspace DIR` to run without a
@@ -171,6 +245,7 @@ The live catalogue has these tools:
 - `document_list`
 - `model_query`
 - `model_command`
+- `model_export`
 - `document_save`
 - `document_open`
 - The application's own tools `ui_state`, `ui_log`, `ui_screenshot`,
@@ -190,8 +265,8 @@ history.
 New or Open in the GUI invalidates the previous document handle.
 `document_open` also invalidates it. List the documents again before
 you edit the replacement. These tools act on the document and take the
-handle: `model_query`, `model_command`, `document_save`, `ui_select` and
-`ui_command`. These tools read or set the window and take no handle:
+handle: `model_query`, `model_command`, `model_export`, `document_save`,
+`ui_select` and `ui_command`. These tools read or set the window and take no handle:
 `ui_state`, `ui_log`, `ui_screenshot` and `ui_camera`. `document_open`
 takes no handle, because it replaces the document.
 
@@ -208,6 +283,15 @@ Mitcad resolves symbolic links before this check. `..` is refused. A
 relative path is relative to the first folder. An existing file is
 replaced only with `overwrite: true`, and never through a link.
 
+`model_export` (mitcad#689) writes only into these folders too, by the
+same rules, and only a new file: an existing one is refused. It writes
+the formats of the headless `model_export` (3MF, STL, STEP, drawings,
+…), with `bodies` choosing what goes in, for example without a hidden
+helper body. The export does not change the document. It is refused
+while a command panel is open, while a dialog is open and when the
+document has failed features. `ui_screenshot` with a `path` writes its
+image into these folders as well.
+
 Without a `path`, `document_save` writes the document's own file as
 before, in any folder. Thus an agent that works in the untitled window
 of the user can make the work crash-safe. Call `document_save` with a
@@ -219,7 +303,12 @@ dialogs. They are refused only while the model computes, the view draws
 or an import runs. That result is an error with `busy: true`,
 `retry_after_ms` and the reason in `error`. Try again after that many
 milliseconds. `ui_state`, `ui_log` and `ui_screenshot` are never refused
-for a sketch or a command.
+for a sketch or a command. Over MCP, `print_thickness` answers its
+summary only (the thinnest wall, where it is, the regions and the
+count of thin triangles, `thin_triangles`), because the corners of
+every thin triangle can exceed a client's response limit. Give
+`"triangles": true` for them, with `max_triangles` to cap them
+(mitcad#689).
 
 **Model commands** (`model_command`) are refused, with the reason, in
 these states:
@@ -230,10 +319,37 @@ these states:
 - During drags, animations, imports and dialogs
 - When the window is read-only
 
+**Command arrays** (mitcad#689): `command` is one command object or an
+array of them. The array runs in order, as the native API runs one, and
+becomes one undo step labelled `… (agent)`. It stops at the first
+refused entry: the entries before it are undone, so nothing of the
+array stays, and the error result names the entry (`entry`, `undone`,
+`applied: false`). It also stops after the first entry whose added or
+edited feature fails; that entry is applied, and `stopped_at` names it.
+`undo` and `redo` run alone, not in an array. The result of an array has
+`ran`, `results` (each entry's native result) and `result` (the last
+one's).
+
+**Command results** (mitcad#689) hold the document's `state` and what
+the command changed, in `changes`:
+
+- `features`: the timeline entries of the features the command added,
+  whose entries changed, that it recomputed, or that are left failed,
+  each with `change` (`added`, `changed`, `recomputed`, `failed`)
+- `bodies`: the bodies it added or changed (their shape or their
+  attributes), each with `change` (`added`, `changed`)
+- `removed_features`, `removed_bodies`: the uids of what it removed
+- `marker`, `feature_count`, `body_count`
+
+A command that recomputes nothing, such as `set_body_visible`, answers
+with that one body. `"timeline": "full"` gives the whole `timeline` and
+`bodies` instead, as before; `"timeline": "none"` only `state`.
+
 **A sketch that is open for edit** takes its own commands through the
 sketch session, as if the user did them. These commands are a
 `sketch.*` command whose `sketch` is the open sketch, `edit_feature` of
-that sketch, and `undo` and `redo`. `undo` and `redo` undo and redo the
+that sketch, and `undo` and `redo`. An array of such commands runs the
+same way, as one undo step. `undo` and `redo` undo and redo the
 steps of the sketch. If you undo past its first step, the sketch stays
 as it does after the user's Undo.
 
@@ -307,15 +423,16 @@ A new bridge can connect again to the same document. `--workspace` and
 |---|---|---|
 | `document_list` | `{}` | `documents`: the document of the window, with `document`, `path`, `name`, `state`, `busy` and `editable`. `folders`: the folders that agents can save to and open from. An empty list means no folder. |
 | `model_query` | `document`, `query` | `document`. Native JSON in `result`. |
-| `model_command` | `document`, `command` | `document`, `applied`, native `result`, `failed_features`, `state`, `timeline`, `bodies`. In a sketch, also `sketch`. Refer to [failed features](#transport-errors-and-limits). |
+| `model_command` | `document`, `command` (an object or an array). Optional `timeline` (`changed` default, `full`, `none`). | `document`, `applied`, native `result`, `failed_features`, `state`, `changes` (with `full` `timeline` and `bodies` instead). For an array also `ran`, `results`, `stopped_at`. In a sketch, also `sketch`. Refer to the command arrays above and [failed features](#transport-errors-and-limits). |
+| `model_export` | `document`, `path` (a new file in a folder for agents), `format`. Optional `bodies`, `sketch`, `flat_pattern`, `drawing`, as in headless mode. | `document`, `path`, `exported`, native export `result`. |
 | `document_save` | `document`. Optional `path`. Optional `overwrite` (default false). | `document`, `path`, `saved`, `status`, `state`. `status` is the text of the status bar, with the recorded version. Refer to the text below the table. |
 | `document_open` | `path`. Optional `discard` (default false). | `document` (the new handle), `path`, `name`, `state`, `busy`, `editable`, `opened`, `replaced` (the old handle). Refer to the text below the table. |
 | `ui_state` | `{}` | `document`, `name`, `path`, `modified`, `read_only`, `read_only_reason`, `mode`, `busy`, `editable`, `active_component`, `undo`, `redo`, `undo_depth`, `selection`, `hint`, `hint_is_error`, `status_line`, `status_line_is_error`, `agents`, `sketch`, `command`, `app`. Refer to the text below the table. |
 | `ui_log` | `since` (a sequence number). `limit` (default 200, at most 2000). | `lines`, `next`, `dropped`. Refer to the text below the table. |
-| `ui_screenshot` | `window` (default false). `max_size` (default 1280, 64 to 4096). | `format` (`png`), `of`, `width`, `height`, `full_width`, `full_height`, `bytes`, `png_base64`. Refer to the text below the table. |
+| `ui_screenshot` | `window` (default false). `max_size` (default 1280, 64 to 4096). `format` (`png` default, `jpeg`), `quality` (JPEG, default 90). `width` and `height`, or `aspect`. `path`, `overwrite`. | An MCP image block, after the text: `format`, `mime_type`, `of`, `width`, `height`, `full_width`, `full_height`, `bytes`. With `path`, also `path` and no image. Refer to the text below the table. |
 | `ui_select` | `document`. `items` (entities). `reveal` (`none`, `pan` default, `fit`). | `document`, `selected`, `selection`, `view` (`none`, `pan`, `zoom`), `camera`. With a command panel open, also `picked`, `into_command` and `command`. Refer to the text below the table. |
 | `ui_command` | `document`. `id` or `edit`. `inputs`. `finish` (`ok` default, `cancel`, `keep_open`). | `document`, `command`, `panel`, `committed`, `open`, `mode`, `sketch`, `undo`, `previews`, `log`, `hint`. For a `view.*` command, also `camera`. Refer to the text below the table. |
-| `ui_camera` | `eye`, `target`, `up`, `height`, `fov`, `projection`. `box` or `frame` (`none` default, `shown`, `selection`). | `camera`, `framed` (`none`, `box`, `shown`, `selection`), `changed`. Refer to the text below the table. |
+| `ui_camera` | `eye`, `target`, `up`, `height`, `fov`, `projection`. `box` or `frame` (`none` default, `shown`, `selection`), optional `aspect` with them. | `camera`, `framed` (`none`, `box`, `shown`, `selection`), `changed`, `aspect` when given. Refer to the text below the table. |
 
 **`document_save`** without `path` saves to the document's own path, as
 File > Save does. In a project with versions, it uses the version and
@@ -377,8 +494,22 @@ refusals and `MCP refused: …`. Mitcad keeps the newest 5000 lines.
 sketch overlay. By default, it shows the 3D view. With `window`, it
 shows the whole window. In the native macOS window, this is the window
 as the window server composes it. Mitcad scales the image to fit
-`max_size`. Then it scales the image further until the PNG is under
+`max_size`. Then it scales the image further until the file is under
 5 MiB, well in the 8 MiB frame.
+
+The image comes as an MCP `image` content block after the text block,
+not as text (mitcad#689); `format` `jpeg` with `quality` makes it
+smaller. With `path`, the image is written to that `.png` or `.jpg`
+file in a folder for agents instead (an existing file only with
+`overwrite: true`), at its full size, and only the path, the size and
+the bytes come back.
+
+`width` and `height` (16 to 4096), or `aspect` (width / height, with
+`max_size` on the longer side or with one of them), render the 3D view
+offscreen at exactly that size, without the widgets over it, so the
+picture does not take the shape of the window. A wide window otherwise
+gives a wide strip. Frame the model for that shape first with
+`ui_camera`'s `aspect`.
 
 **`ui_select`** replaces the selection as clicks would. Then the user
 can press Delete or run a command on it. Each item in `items` has
@@ -416,7 +547,7 @@ stays open, as `finish` says.
 
 If OK is refused, the panel stays open and the call returns an error
 with the state of the panel. The OK of a
-command that repeats (Place, Connect and Rotate on the BUILD tab) does
+command that repeats (Place, Connect and Rotate on the Build tab) does
 it once, closes the panel and keeps what the command made.
 
 An action runs (Finish Sketch, Undo, Fit). `edit` opens a feature as a
@@ -459,7 +590,10 @@ When some bodies are isolated, it frames only the isolated ones, not the
 origin, datums or sketches. `frame: "selection"` frames the selected
 entities. The frame is along the view direction, with the margin of Fit,
 in the part of the view that no panel covers. The next `ui_screenshot`
-shows exactly that view.
+shows exactly that view. With `aspect` (mitcad#689), `box` or `frame`
+fits the box into a picture of that width over height instead, as
+`ui_screenshot` with the same `aspect` (or `width` and `height`)
+renders it.
 
 `ui_command` covers these UI-only flows:
 
@@ -496,7 +630,7 @@ required.
 | `document_open` | `path` | New `document`, canonical `path`, recomputed `state`, `timeline`, `bodies`, `applied`, `failed_features`. For a `.solidcraft` design, refer to the text below the table. |
 | `document_list` | `{}` | `documents`: objects with `document`, `path`, `state` |
 | `document_close` | `document`, `discard` (default false) | `document`, `closed`. The tool refuses unsaved changes unless `discard` is true. |
-| `model_command` | `document`, `command` (a native JSON object) | `document`, `applied`, native `result`, `failed_features`, `state`, `timeline`, `bodies`. Refer to [failed features](#transport-errors-and-limits). |
+| `model_command` | `document`, `command` (a native JSON object or an array of them), `timeline` (`changed` default, `full`, `none`) | `document`, `applied`, native `result`, `failed_features`, `state`, `changes` (with `full` `timeline` and `bodies` instead); for an array also `ran`, `results`, `stopped_at`. Refer to the command arrays and results under "Live tools" and [failed features](#transport-errors-and-limits). |
 | `model_query` | `document`, `query` (a native JSON object) | `document`, native JSON in `result` |
 | `document_save` | `document`, `path`, `overwrite` (default false) | `document`, canonical `path`, saved `state` |
 | `model_export` | `document`, `path`, `format`. Optional `bodies` (an array of names or UIDs). Optional `sketch`. For DXF, `flat_pattern`. For a drawing, `drawing`. Refer to the text below the table. | `document`, canonical `path`, native export `result` |
@@ -516,8 +650,12 @@ Each tool result includes both `structuredContent` and a text content
 block with the same JSON. For example, `model_query` with
 `{"document":"D1","query":{"query":"bodies","properties":true}}`
 returns an object whose `result` is the native bodies array. The
-`timeline` snapshot is the native timeline object, with its `features`
-array. `state` is the native `document` query.
+`timeline` snapshot (of `document_create`, `document_open` and
+`model_command` with `"timeline": "full"`) is the native timeline
+object, with its `features` array. `state` is the native `document`
+query. A `model_command` answers with `changes` by default: what the
+command changed, as "Live tools" above describes; arrays of commands
+work as there, each refused entry undoing the ones before it.
 
 The export formats are `step`, `iges`, `brep`, `stl`, `obj`, `3mf`,
 `usdz` and `dxf`. DXF must have a `sketch` name or UID and excludes
@@ -545,6 +683,20 @@ The server refuses the file IO, remote and internal ones by their class
 component refresh, raw save and export commands, disk cache access and
 remote operations.
 Files are accessed through the dedicated document and export tools.
+
+## Keep an agent-built timeline readable
+
+Give features descriptive names and group each contiguous modeling stage as it
+is completed. Use `model_command` with the ordinary model command
+`{"cmd":"group_features","features":["F1","F2"],"name":"Mounting holes"}`.
+The members must be adjacent in timeline order and must not already belong to
+another group. Query `timeline` for their actual uids; do not assume the example
+uids apply to the open design. Groups let the user fold a long timeline and
+hover over a whole stage. Prefer names that explain the design's purpose,
+such as **Housing**, **Mounting holes** and **Cable clearance**. Use
+`rename_group` with `name` and `new_name` to improve an existing name, or
+`ungroup` with `name` before regrouping a stage. These commands preserve the
+features and their modeling history.
 
 ## Example: make, edit, save and export a part
 
@@ -619,6 +771,29 @@ These are three separate calls. Send each call after the response to
 the previous one. Open the document again with `document_open` and
 `{"path":"box.mitcad"}`. Use its new handle for queries.
 
+Several commands go in one call as an array, one undo step. Positions of
+primitives take expressions like their sizes, so a box centred on the
+origin follows its parameters without a separate move:
+
+```json
+{
+  "name": "model_command",
+  "arguments": {
+    "document": "D1",
+    "command": [
+      {"cmd": "add_parameter", "name": "L", "expression": "60 mm"},
+      {"cmd": "add_parameter", "name": "W", "expression": "40 mm"},
+      {"cmd": "add_feature", "def": {
+        "type": "box", "plane": {"type": "origin", "plane": "xy"},
+        "corner": ["-L/2", "-W/2"], "length": "L", "width": "W",
+        "height": 10, "operation": "new_body"}}
+    ]
+  }
+}
+```
+
+The result lists what the array changed: the new box and its body.
+
 An existing save destination must have an explicit `"overwrite":true`.
 An export destination must be new. When you extend an existing design,
 use the actual IDs that queries returned. Native lengths are in
@@ -682,8 +857,9 @@ not fail before this command.
 
 `isError` is true only when the command was refused, or when a feature
 that it added or edited fails. That result has `isError:true` **and**
-`applied:true`, with the current state, timeline and bodies of the
-document. Examine the error of the feature. Then edit or undo. Do not
+`applied:true`, with the current state of the document and what the
+command changed, the failed feature among them (or the whole timeline
+and bodies with `"timeline": "full"`). Examine the error of the feature. Then edit or undo. Do not
 treat the result as proof that nothing changed.
 
 A failure elsewhere in the timeline is listed in `failed_features` but
@@ -743,12 +919,16 @@ computations can still use much time and memory.
   and open, STEP export, protocol errors, notifications, workspace
   boundaries, read-only mode, version negotiation, EOF cleanup,
   persisted geometry failures, symlink escapes and OBJ companion-file
-  conflicts.
+  conflicts; command arrays (a box placed by parameter expressions, a
+  refused entry undoing the ones before it), the compact command results
+  and their size, `"timeline": "full"`, and the `print_thickness`
+  summary (mitcad#689).
 - Protocol unit tests are with the Rust protocol crate, and the native
   CLI integration tests exercise the FFI backend.
 - [tools/cli/mcp-results-test.cmake](../tools/cli/mcp-results-test.cmake)
   (`cli.mcp_results`, no Python) checks `isError` and `failed_features`
-  with a failed feature in the timeline, and `add_feature` with `after`.
+  with a failed feature in the timeline, `changes` without the whole
+  timeline, and `add_feature` with `after` (with `"timeline": "full"`).
 - The macOS test `app.ui-macos-mcp`
   ([tools/ui-macos-mcp-test.py](../tools/ui-macos-mcp-test.py)) starts
   the actual GUI and the CLI bridge and checks live discovery, private
@@ -776,7 +956,13 @@ computations can still use much time and memory.
   unsaved changes, the new handle and the old one refused, `ui_camera`
   that reads and sets the camera and frames two equal blocks 500 mm
   apart with screenshots that match, the fit of `ui_select`, Fit with
-  isolation, and Home with a named view `Home`.
+  isolation, and Home with a named view `Home`. For mitcad#689 it runs a
+  command array as one undo step labelled `(agent)`, a refused entry that
+  undoes the ones before it, the compact results, `model_export` of a
+  chosen body into the folder (an existing file and another folder
+  refused, the document unchanged), `ui_camera`'s `aspect`, a JPEG
+  screenshot of an asked size written into the folder, an image block
+  and the `print_thickness` summary.
 - The unit tests of the folder rules are in `app.unit`.
 - The unit tests of the classification are in `core.model`, and those of
   the live catalogue are in `core.mcp`.

@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use super::ApiError;
 use crate::document::Document;
-use crate::expr::{self, DEFAULT_DECIMALS, Dims, Expr, Unit};
+use crate::expr::{self, DEFAULT_DECIMALS, Dims, Expr, Limited, Unit};
 use crate::kernel::Kernel;
 use crate::parameters::unit_for;
 
@@ -21,6 +21,8 @@ pub(super) enum ValueKind {
     Length,
     Angle,
     Unitless,
+    /// A text (mitcad#664): a sketch text's value input.
+    Text,
 }
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +33,10 @@ pub(super) struct EvaluateQuery {
     kind: ValueKind,
     #[serde(default)]
     printed_fits: bool,
+    /// Evaluate as this parameter's new expression, in its unit, and say
+    /// what its limits would make of it (mitcad#665).
+    #[serde(default)]
+    parameter: Option<String>,
 }
 
 impl<K: Kernel> Document<K> {
@@ -51,10 +57,35 @@ impl<K: Kernel> Document<K> {
         let dims = match query.kind {
             ValueKind::Length => Dims::LENGTH,
             ValueKind::Angle => Dims::ANGLE,
-            ValueKind::Unitless => Dims::NONE,
+            ValueKind::Unitless | ValueKind::Text => Dims::NONE,
         };
-        let unit = unit_for(dims, &context).unwrap_or(Unit::NONE);
+        let mut unit = match query.kind {
+            ValueKind::Text => Unit::TEXT,
+            _ => unit_for(dims, &context).unwrap_or(Unit::NONE),
+        };
+        // A parameter's new expression (mitcad#665): its unit and limits.
+        let parameter = match &query.parameter {
+            Some(name) => {
+                let id = params
+                    .find(name)
+                    .ok_or_else(|| ApiError(format!("unknown parameter '{name}'")))?;
+                unit = params.get(id).expect("found").unit();
+                Some(id)
+            }
+            None => None,
+        };
         let parsed = Expr::parse(&query.expression).map_err(|e| ApiError(e.to_string()))?;
+        // A text (mitcad#664): `text` is the text; no number, no limits.
+        if unit.is_text() {
+            let text = parsed
+                .eval_text(params.table(), &context)
+                .map_err(|e| ApiError(e.to_string()))?;
+            return Ok(json!({
+                "text": text,
+                "references": parsed.references(),
+                "expression": expr::with_decimal_points(&query.expression),
+            }));
+        }
         let value = parsed
             .eval_as(params.table(), &context, unit)
             .map_err(|e| ApiError(e.to_string()))?;
@@ -64,12 +95,28 @@ impl<K: Kernel> Document<K> {
                 query.expression
             )));
         }
-        Ok(json!({
+        let mut out = json!({
             "value": value.value,
             "text": expr::format_value(value.value, unit, DEFAULT_DECIMALS),
             "references": parsed.references(),
             "expression": expr::with_decimal_points(&query.expression),
-        }))
+        });
+        if let Some(id) = parameter {
+            // What its limits make of it; a strict parameter's refusal
+            // rejects the query with its reason.
+            let (limited_value, _, limited) = params
+                .table()
+                .try_expression(id, &query.expression)
+                .map_err(|e| ApiError(e.to_string()))?;
+            out["limited"] = json!(limited.map(Limited::as_str));
+            out["limited_value"] = json!(limited_value.value);
+            out["limited_text"] = json!(expr::format_value(
+                limited_value.value,
+                unit,
+                DEFAULT_DECIMALS
+            ));
+        }
+        Ok(out)
     }
 }
 
@@ -126,6 +173,40 @@ mod tests {
         assert_eq!(result["expression"], json!("d1 * 1.5 + max(d1, 2)"));
         let error = evaluate(&doc, json!({"query": "evaluate", "expression": "max(1,5)"}));
         assert!(error.unwrap_err().contains("'max(1; 5)'"));
+    }
+
+    #[test]
+    fn evaluates_texts() {
+        // mitcad#664: a text input, and a text parameter's new expression.
+        let mut doc = Document::new(MockKernel::default());
+        doc.command(r#"{"cmd": "add_parameter", "name": "GridX", "expression": "6"}"#)
+            .unwrap();
+        doc.command(r#"{"cmd": "add_parameter", "name": "Label", "expression": "'Box'"}"#)
+            .unwrap();
+        let result = evaluate(
+            &doc,
+            json!({"query": "evaluate", "expression": "Label & ' ' & GridX", "kind": "text"}),
+        )
+        .unwrap();
+        assert_eq!(result["text"], json!("Box 6"));
+        assert_eq!(result["references"], json!(["Label", "GridX"]));
+        assert!(result.get("value").is_none());
+        let result = evaluate(
+            &doc,
+            json!({"query": "evaluate", "expression": "'Lid ' & GridX", "parameter": "Label"}),
+        )
+        .unwrap();
+        assert_eq!(result["text"], json!("Lid 6"));
+        // A number is no text, a text no length.
+        let error = evaluate(
+            &doc,
+            json!({"query": "evaluate", "expression": "GridX", "kind": "text"}),
+        )
+        .unwrap_err();
+        assert!(error.contains("a number where text is expected"), "{error}");
+        let error =
+            evaluate(&doc, json!({"query": "evaluate", "expression": "Label"})).unwrap_err();
+        assert!(error.contains("text where a number is expected"), "{error}");
     }
 
     #[test]

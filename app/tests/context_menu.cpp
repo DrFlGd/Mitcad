@@ -105,6 +105,26 @@ int contextMenuTests() {
   narrowed.completes = [](const Selection& items) { return items.size() == 1; };
   CHECK(narrowed.completedBy({face}) && !narrowed.completedBy({face, side}));
 
+  // A placement input (mitcad#656): a shaft's edge, an axis or a point is
+  // only where the part goes too, so the creation command is under More;
+  // outside CREATE the rule does not apply.
+  const SelectionItem rim{SelectKind::Edge, QStringLiteral("F2.b0"), QStringLiteral("E{c|d}"), QStringLiteral("circle")};
+  const SelectionItem axis{SelectKind::Axis, QStringLiteral("z"), QString(), QStringLiteral("axis")};
+  CommandDef pulley;
+  pulley.group = QStringLiteral("CREATE");
+  pulley.inputs = {selectionInput(QStringLiteral("at"), QStringLiteral("Place On"),
+                                  SelectKind::Face | SelectKind::Edge | SelectKind::Axis | SelectKind::Point, 1, 1)
+                       .withPlaces()};
+  CHECK(!pulley.completedBy({rim}));
+  CHECK(!pulley.completedBy({axis}));
+  CHECK(!pulley.completedBy({face}));
+  CommandDef unplaced = pulley;
+  unplaced.inputs[0].places = false;
+  CHECK(unplaced.completedBy({rim}));
+  CommandDef placedElsewhere = pulley;
+  placedElsewhere.group = QStringLiteral("MODIFY");
+  CHECK(placedElsewhere.completedBy({rim}));
+
   // The state a command starts with: defaults and a list's first rows.
   const CommandState start = modes.initialState();
   CHECK(start.text(QStringLiteral("distance")) == QStringLiteral("2 mm"));

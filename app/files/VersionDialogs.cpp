@@ -124,7 +124,7 @@ std::optional<ExternalChange> askExternalChange(QWidget* parent, const QString& 
                         : QObject::tr("Save as New Version records yours on top of it; it stays in the history.");
   box.setInformativeText(details);
   QPushButton* version = box.addButton(QObject::tr("Save as &New Version"), QMessageBox::AcceptRole);
-  QPushButton* copy = box.addButton(QObject::tr("Save &As..."), QMessageBox::AcceptRole);
+  QPushButton* copy = box.addButton(QObject::tr("Save &As…"), QMessageBox::AcceptRole);
   QPushButton* compare = box.addButton(QObject::tr("C&ompare"), QMessageBox::ActionRole);
   box.setDefaultButton(copy);
   prepareModal(&box);

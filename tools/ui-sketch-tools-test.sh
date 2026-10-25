@@ -23,6 +23,9 @@
 #   5. Esc in the Dimension tool's editor sends the tool back to picking; in
 #      the editor of Edit Dimension (context menu) it only closes the editor
 #      (mitcad#354).
+#   6. A Line's clicks where its value fields are (the focused length field
+#      placed for the start, then the angle field beside the corner) end the
+#      lines there; no field covers the pointer (mitcad#671).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-tools-test.sh
@@ -71,6 +74,61 @@ expect_file() {
   local actual
   actual=$(jq -c "$1" "$FILE") || ui_fail "$3: cannot read $FILE"
   [ "$actual" = "$2" ] || ui_fail "$3: $1 is '$actual', expected '$2'"
+  echo "ok   $3"
+}
+
+# sketch_of sx sy: the sketch point (mm) at a screen place, from the last
+# logged "Sketch view" (ui_sketch_at backwards).
+sketch_of() {
+  local view
+  view=$(grep -o "Sketch view [-0-9.,]* [-0-9.,]* [-0-9.,]*" "$UI_LOG" | tail -1)
+  [ -n "$view" ] || ui_fail "the app did not log the sketch view"
+  awk -v view="$view" -v sx="$1" -v sy="$2" -v wx="$X" -v wy="$Y" -v s="$UI_SCALE" 'BEGIN {
+    split(view, part, " "); split(part[3], o, ","); split(part[4], a, ","); split(part[5], b, ",")
+    px = (sx - wx) / s - o[1]; py = (sy - wy) / s - o[2]
+    ax = (a[1] - o[1]) / 100; ay = (a[2] - o[2]) / 100; bx = (b[1] - o[1]) / 100; by = (b[2] - o[2]) / 100
+    d = ax * by - bx * ay
+    printf "%.3f %.3f\n", (px * by - bx * py) / d, (ax * py - ay * px) / d }'
+}
+
+# last_line: the start and end (mm) of the line added last since the mark.
+last_line() {
+  local last
+  last=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -o "Added line c[0-9]* from ([^)]*) to ([^)]*)" | tail -1)
+  [ -n "$last" ] || ui_fail "no line added since the mark"
+  sed 's/.* from (\([^,]*\), \([^)]*\)) to (\([^,]*\), \([^)]*\))/\1 \2 \3 \4/' <<< "$last"
+}
+
+# expect_line_end x y description: the line added last ends within 6 mm of
+# (x, y) (a snap to the grid or an inference may move it a little).
+expect_line_end() {
+  local sx sy ex ey
+  read -r sx sy ex ey <<< "$(last_line)"
+  awk -v ex="$ex" -v ey="$ey" -v x="$1" -v y="$2" 'BEGIN { exit !((ex - x) ^ 2 + (ey - y) ^ 2 <= 36) }' ||
+    ui_fail "$3: the line ends at ($ex, $ey), expected near ($1, $2)"
+  echo "ok   $3"
+}
+
+# no_browser: no field opened its parameter browser since the mark.
+no_browser() {
+  ui_sync
+  if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "Parameter browser opened"; then
+    ui_fail "a click meant for the view opened a field's parameter browser"
+  fi
+  echo "ok   no parameter browser opened"
+}
+
+# fields_clear_of sx sy description: none of the value fields logged since
+# the mark ("Sketch field <id> at x,y", their centres; 104 x 26 px at most)
+# covers the screen place (sx, sy).
+fields_clear_of() {
+  local covering
+  covering=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -o "Sketch field [a-z_]* at [0-9]*,[0-9]*" |
+    awk -v sx="$1" -v sy="$2" -v wx="$X" -v wy="$Y" -v s="$UI_SCALE" '{
+      split($5, c, ","); dx = wx + c[1] * s - sx; dy = wy + c[2] * s - sy
+      if (dx < 0) dx = -dx; if (dy < 0) dy = -dy
+      if (dx < 52 * s && dy < 13 * s) print $3 }')
+  [ -z "$covering" ] || ui_fail "$3: the field $covering covers the pointer"
   echo "ok   $3"
 }
 
@@ -203,6 +261,49 @@ ui_expect_new "Sketch value editor closed" "the editor closed"
 ui_step "line tool (L)"                  ui_key l
 ui_expect_new "Sketch tool Line" "a tool starts as usual"
 ui_step "end the tool (Esc)"             ui_key Escape
+
+echo "--- 6. A drawing tool's value fields never take its next click (mitcad#671)"
+# Each click of a drawing tool goes where the pointer is. The fields keep
+# off the pointer; one placed for the pointer's last place, under the
+# pointer when it jumps there and clicks at once, passes the click on to
+# the view while nothing is typed into it.
+ui_mark
+ui_step "line tool (L)"                  ui_key l
+ui_expect_new "Sketch tool Line" "the line tool is active"
+ui_step "start a line"                   ui_sketch_click -68 15
+ui_expect_new "Sketch field length at" "the length field is placed"
+ui_sync
+read -r FX FY <<< "$(ui_logged_at "Sketch field length")"
+read -r MX MY <<< "$(sketch_of "$FX" "$FY")"
+ui_mark
+ui_step "click where the length field is" xdotool mousemove "$FX" "$FY" click 1
+ui_expect_new "Added line c" "the click ended the line"
+expect_line_end "$MX" "$MY" "the line ends where the length field was"
+no_browser
+# The chain goes on with an angle field (not focused) beside the corner;
+# the pointer 24 mm on, turned 20 degrees from the first line, where the
+# angle's value would lie on it.
+read -r SX SY EX EY <<< "$(last_line)"
+read -r PX PY <<< "$(awk -v sx="$SX" -v sy="$SY" -v ex="$EX" -v ey="$EY" 'BEGIN {
+  a = atan2(ey - sy, ex - sx) + 20 * 3.14159265358979 / 180
+  printf "%.3f %.3f\n", ex + 24 * cos(a), ey + 24 * sin(a) }')"
+ui_sync
+ui_mark
+ui_step "point on from the corner"       xdotool mousemove $(ui_sketch_at "$PX" "$PY")
+ui_expect_new "Sketch field angle at" "the angle field is placed"
+ui_sync
+read -r AX AY <<< "$(ui_sketch_at "$PX" "$PY")"
+fields_clear_of "$AX" "$AY" "no field lies under the pointer"
+read -r FX FY <<< "$(ui_logged_at "Sketch field angle")"
+read -r MX MY <<< "$(sketch_of "$FX" "$FY")"
+ui_mark
+ui_step "click where the angle field is" xdotool mousemove "$FX" "$FY" click 1
+ui_expect_new "Added line c" "the click ended the second line"
+expect_line_end "$MX" "$MY" "the second line ends where the angle field was"
+no_browser
+ui_step "end the chain (Esc)"            ui_key Escape
+ui_step "end the tool (Esc)"             ui_key Escape
+
 ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
 ui_expect_new "Sketch finished" "Sketch2 finished"
 

@@ -12,6 +12,10 @@ pub(crate) struct Fit {
     pub comment: &'static str,
 }
 
+/// The modelled thread's flank fit: capped per thread at what its pitch
+/// allows (`features::thread::fitted_clearance`, mitcad#691).
+pub(crate) const THREAD_FLANK_CLEARANCE: &str = "thread_flank_clearance";
+
 pub(crate) const FITS: &[Fit] = &[
     Fit {
         name: "thread_radial_clearance",
@@ -21,7 +25,7 @@ pub(crate) const FITS: &[Fit] = &[
         comment: "Printed thread fit, radial; depends on dimensional accuracy",
     },
     Fit {
-        name: "thread_flank_clearance",
+        name: THREAD_FLANK_CLEARANCE,
         field: "flank_clearance",
         features: &["thread"],
         millimetres: 0.1,

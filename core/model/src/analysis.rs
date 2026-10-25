@@ -10,6 +10,52 @@
 use crate::datum::Vec3;
 use crate::topo::TopoName;
 
+/// Exact symmetric Hausdorff distance from nearest-face distances at all
+/// vertices of two bounded planar polygons (packed xyz, in boundary order).
+/// The kernel first checks planarity, straight edges and a single closed
+/// wire. Distance to a convex set is convex, so its maximum on a polygon
+/// occurs at a vertex. Reject non-convex faces instead of sampling a maximum.
+pub fn maximum_polygon_face_gap(a: &[f64], b: &[f64], distances: &[f64]) -> Option<f64> {
+    if !convex_polygon(a) || !convex_polygon(b) || distances.len() != (a.len() + b.len()) / 3 {
+        return None;
+    }
+    if distances.iter().any(|d| !d.is_finite() || *d < 0.0) {
+        return None;
+    }
+    distances.iter().copied().reduce(f64::max)
+}
+
+fn convex_polygon(coordinates: &[f64]) -> bool {
+    use mitcad_vec3::{cross, dot, sub, unit_above};
+    let (vertices, remainder) = coordinates.as_chunks::<3>();
+    if !remainder.is_empty() || vertices.len() < 3 || coordinates.iter().any(|p| !p.is_finite()) {
+        return false;
+    }
+    let origin = vertices[0];
+    let Some(normal) = (1..vertices.len() - 1).find_map(|i| {
+        unit_above(
+            cross(sub(vertices[i], origin), sub(vertices[i + 1], origin)),
+            1e-12,
+        )
+    }) else {
+        return false;
+    };
+    for i in 0..vertices.len() {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % vertices.len()];
+        let Some(direction) = unit_above(sub(b, a), 1e-12) else {
+            return false;
+        };
+        if vertices
+            .iter()
+            .any(|p| dot(cross(direction, sub(*p, a)), normal) < -1e-6)
+        {
+            return false;
+        }
+    }
+    true
+}
+
 /// Physical properties of a body.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PhysicalProperties {
@@ -291,6 +337,42 @@ pub fn combine(parts: &[PhysicalProperties]) -> PhysicalProperties {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn maximum_face_gap_requires_two_convex_polygons_and_all_vertex_distances() {
+        let square = [0., 0., 0., 20., 0., 0., 20., 20., 0., 0., 20., 0.];
+        let reversed = [0., 20., 0., 20., 20., 0., 20., 0., 0., 0., 0., 0.];
+        assert_eq!(
+            super::maximum_polygon_face_gap(&square, &reversed, &[5.; 8]),
+            Some(5.)
+        );
+        let distances = [5., 17., 17., 5., 5., 16., 16., 5.];
+        assert_eq!(
+            super::maximum_polygon_face_gap(&square, &square, &distances),
+            Some(17.)
+        );
+        let concave = [
+            0., 0., 0., 20., 0., 0., 10., 10., 0., 20., 20., 0., 0., 20., 0.,
+        ];
+        assert_eq!(
+            super::maximum_polygon_face_gap(&square, &concave, &[5.; 9]),
+            None
+        );
+        assert_eq!(
+            super::maximum_polygon_face_gap(&concave, &square, &[5.; 9]),
+            None
+        );
+        assert_eq!(
+            super::maximum_polygon_face_gap(&square, &square, &[5.; 7]),
+            None
+        );
+        let mut invalid = [5.; 8];
+        invalid[3] = f64::NAN;
+        assert_eq!(
+            super::maximum_polygon_face_gap(&square, &square, &invalid),
+            None
+        );
+    }
+
     use super::*;
 
     fn cube(center: Vec3, mass: f64, side: f64) -> PhysicalProperties {

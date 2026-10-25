@@ -17,11 +17,13 @@
 #include <QRegularExpression>
 #include <QResizeEvent>
 #include <QSettings>
+#include <QToolButton>
 #include <QToolTip>
 #include <QtLogging>
 
 #include "../OcctViewer.hpp"
 #include "../framework/CommandRegistry.hpp"
+#include "../framework/Diagnostics.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/ModelShapes.hpp"
@@ -99,6 +101,76 @@ double screenDistance(const QPointF& a, const QPointF& b) {
 }
 
 QJsonArray xy(const V2& p) { return QJsonArray{p.x, p.y}; }
+
+// A drawing tool's next click goes where the pointer is: a value field (with
+// its fx button) keeps this far from it (mitcad#671).
+constexpr double kFieldClearance = 12.0;
+
+bool coversPointer(const QRectF& row, const QPointF& pointer) {
+  return row.adjusted(-kFieldClearance, -kFieldClearance, kFieldClearance, kFieldClearance).contains(pointer);
+}
+
+bool overlapsField(const QRectF& row, const QVector<QRectF>& occupied) {
+  return std::any_of(occupied.begin(), occupied.end(),
+                     [&row](const QRectF& other) { return other.adjusted(-4, -4, 4, 4).intersects(row); });
+}
+
+// `row` moved into `bounds`; a row larger than them keeps its top left
+// corner inside.
+QRectF insideOf(QRectF row, const QRectF& bounds) {
+  row.moveLeft(std::clamp(row.left(), bounds.left(), std::max(bounds.left(), bounds.right() - row.width())));
+  row.moveTop(std::clamp(row.top(), bounds.top(), std::max(bounds.top(), bounds.bottom() - row.height())));
+  return row;
+}
+
+// The place nearest `row` inside `bounds` that keeps clear of the pointer
+// and of the fields placed already. A move towards the pointer (against
+// `away`, from the pointer to where the field belongs) counts up to twice
+// its length, so the field goes to the side away from the pointer, off the
+// geometry the pointer is still drawing. Without any such place: one that
+// keeps clear of the pointer at least.
+QRectF clearPlace(const QRectF& row, const QPointF& away, const QRectF& bounds, const QVector<QRectF>& occupied,
+                  const QPointF& pointer) {
+  constexpr int kDirections = 16;
+  constexpr double kStep = 4.0;
+  const double reach = std::hypot(bounds.width(), bounds.height());
+  const double awayLength = std::hypot(away.x(), away.y());
+  constexpr double kNone = std::numeric_limits<double>::infinity();
+  QRectF best = row;
+  double bestCost = kNone;
+  QRectF crowded = row; // clear of the pointer, over another field
+  double crowdedCost = kNone;
+  for (int i = 0; i < kDirections; ++i) {
+    const double angle = 2.0 * kPi * i / kDirections;
+    const QPointF direction(std::cos(angle), std::sin(angle));
+    for (double t = kStep; t <= reach; t += kStep) {
+      const QRectF candidate = insideOf(row.translated(direction * t), bounds);
+      if (coversPointer(candidate, pointer)) {
+        continue;
+      }
+      const QPointF moved = candidate.center() - row.center();
+      const double distance = std::hypot(moved.x(), moved.y());
+      const double towards =
+          awayLength > 1e-9 && distance > 1e-9
+              ? std::max(0.0, -(moved.x() * away.x() + moved.y() * away.y()) / (awayLength * distance))
+              : 0.0;
+      const double cost = distance * (1.0 + towards);
+      if (overlapsField(candidate, occupied)) {
+        if (cost < crowdedCost) {
+          crowded = candidate;
+          crowdedCost = cost;
+        }
+        continue;
+      }
+      if (cost < bestCost) {
+        best = candidate;
+        bestCost = cost;
+      }
+      break; // further along this direction only costs more
+    }
+  }
+  return bestCost < kNone ? best : crowded;
+}
 
 } // namespace
 
@@ -522,6 +594,7 @@ void SketchController::reload() {
   if (!isActive()) {
     return;
   }
+  ScopedTiming timing("sketch reload"); // the sketch query read again (mitcad#670)
   try {
     if (m_model.load(m_host.queryObject(
             {{QStringLiteral("query"), QStringLiteral("sketch")}, {QStringLiteral("uid"), m_uid}}))) {
@@ -1408,6 +1481,27 @@ std::optional<V2> SketchController::sketchAt(const QPointF& screen) const {
   return std::nullopt;
 }
 
+std::optional<V2> SketchController::sketchAtF(const QPointF& screen) const {
+  if (m_viewer.width() <= 0 || m_viewer.height() <= 0) {
+    return std::nullopt;
+  }
+  // Input picking uses OCCT's integer device-pixel convention. Layout
+  // instead inverts toWidgetF's continuous camera projection, including
+  // half-pixel editor centres and odd-sized viewports.
+  const double x = 2.0 * screen.x() / m_viewer.width() - 1.0;
+  const double y = 1.0 - 2.0 * screen.y() / m_viewer.height();
+  const auto& camera = m_viewer.viewCamera();
+  const gp_Pnt rayOrigin = camera->UnProject(gp_Pnt(x, y, -1.0));
+  const gp_XYZ direction = camera->UnProject(gp_Pnt(x, y, 1.0)).XYZ() - rayOrigin.XYZ();
+  const gp_XYZ normal = m_model.frame.normal().XYZ();
+  const double along = direction.Dot(normal);
+  if (std::abs(along) < 1e-9) {
+    return std::nullopt;
+  }
+  const gp_XYZ hit = rayOrigin.XYZ() + direction * ((m_model.frame.origin.XYZ() - rayOrigin.XYZ()).Dot(normal) / along);
+  return toSketch(m_model.frame, gp_Pnt(hit));
+}
+
 double SketchController::pixel() const {
   const QPointF o = toScreen(V2{});
   const double sx = screenDistance(toScreen(V2{1.0, 0.0}), o);
@@ -1627,6 +1721,9 @@ void SketchController::logPointer() {
   // window (the Windows UI tests in session 0, where no real pointer is
   // over it) are followed by a Leave at once, which hides the place before
   // the pointer rests.
+  if (isActive()) {
+    logFieldPlaces();
+  }
   if (!isActive() || m_movedPointer.isEmpty() || m_movedPointer == m_loggedPointer) {
     return;
   }
@@ -1643,6 +1740,12 @@ bool SketchController::eventFilter(QObject* watched, QEvent* event) {
   }
   if (auto* edit = qobject_cast<QLineEdit*>(watched)) {
     return fieldEvent(edit, event);
+  }
+  // A field's fx button takes its presses itself.
+  if (auto* button = qobject_cast<QToolButton*>(watched)) {
+    if (auto* edit = qobject_cast<QLineEdit*>(button->parentWidget())) {
+      return fieldMouse(edit, button, event);
+    }
   }
   return QObject::eventFilter(watched, event);
 }
@@ -1936,6 +2039,7 @@ Selection SketchController::annotationsIn(const QRectF& area, bool crossing) con
   if (!isActive()) {
     return items;
   }
+  ScopedTiming timing("sketch annotations in window");
   for (const SketchOverlay::Hit& hit : m_overlay->hitsIn(area, crossing)) {
     const SelectionItem item = annotationItem(m_uid, hit);
     if (!items.contains(item)) {
@@ -1957,6 +2061,9 @@ void SketchController::startDrag() {
   m_dragTarget = m_dragStart;
   if (!m_dragDimension.isEmpty()) {
     m_textOverride = std::make_pair(m_dragDimension, m_dragStart);
+  }
+  if (m_dragDimension.isEmpty()) {
+    emit geometryDragStarted();
   }
   hint(tr("Drag: the geometry follows as far as its constraints let it."));
 }
@@ -1993,6 +2100,12 @@ void SketchController::applyDrag() {
   } else {
     return;
   }
+  // One step of the drag (mitcad#670): the model's sketch.drag ("command")
+  // and the scene ("refresh"), which reads the sketch once for the view and
+  // sketch mode ("sketch query", "sketch reload"; mitcad#679); the frame
+  // that shows it follows ("frame").
+  ScopedTiming timing("sketch drag step");
+  timing.setDetail(m_dragEntity);
   try {
     runModel(cmd);
     ++m_dragSteps;
@@ -2000,8 +2113,7 @@ void SketchController::applyDrag() {
   } catch (const std::exception&) {
     // Fixed geometry does not move.
   }
-  reload();
-  m_host.refreshScene();
+  m_host.refreshScene(); // reloads the sketch being edited
 }
 
 void SketchController::interruptDrag() {
@@ -2062,6 +2174,7 @@ void SketchController::endDrag() {
     }
   }
   if (m_dragSteps == 0) {
+    m_host.refreshScene(); // restore profiles even when the solver refused every step
     hint(tr("Fully constrained or fixed geometry does not move."));
     qDebug().noquote() << QStringLiteral("Drag of %1 did not move it").arg(entity);
     return;
@@ -2101,9 +2214,14 @@ void SketchController::setFields(const QVector<FieldSpec>& fields) {
     edit->setObjectName(QStringLiteral("sketchField_") + spec.id);
     edit->setStyleSheet(kFieldStyle);
     edit->setFixedWidth(spec.kind == FieldSpec::Kind::Text ? 140 : 104); // with the fx button (mitcad#567)
-    edit->setToolTip(tr("%1: type a value or an expression; Tab moves on, Enter accepts")
-                         .arg(spec.label));
+    edit->setToolTip(spec.label);
     edit->setPlaceholderText(spec.label);
+    auto* label = new QLabel(spec.label, &m_viewer);
+    label->setObjectName(QStringLiteral("sketchFieldLabel_") + spec.id);
+    label->setStyleSheet(QStringLiteral("QLabel { color: #202830; background: #f5f7fa; padding: 2px 4px; }"));
+    label->setAttribute(Qt::WA_TransparentForMouseEvents);
+    label->adjustSize();
+    field.label = label;
     edit->installEventFilter(this);
     if (spec.kind != FieldSpec::Kind::Text) {
       // Parameter suggestions and the fx browser (mitcad#567).
@@ -2114,6 +2232,11 @@ void SketchController::setFields(const QVector<FieldSpec>& fields) {
       suggest.sketch = m_uid;
       suggest.label = QStringLiteral("sketch %1").arg(spec.id);
       ParameterField::attach(edit, suggest);
+      // Its fx button's presses pass to the view as the field's do
+      // (fieldMouse(), mitcad#671).
+      for (QToolButton* button : edit->findChildren<QToolButton*>()) {
+        button->installEventFilter(this);
+      }
     }
     const int index = static_cast<int>(m_fields.size());
     connect(edit, &QLineEdit::textEdited, this, [this, index] { fieldEdited(index); });
@@ -2140,6 +2263,10 @@ void SketchController::clearFields() {
         return f.edit && (f.edit->hasFocus() || nativeInlineEditorFocused(f.edit));
       });
   for (Field& field : m_fields) {
+    if (field.label) {
+      field.label->hide();
+      field.label->deleteLater();
+    }
     if (field.edit) {
       hideNativeInlineEditor(field.edit);
       field.edit->hide();
@@ -2147,6 +2274,7 @@ void SketchController::clearFields() {
     }
   }
   m_fields.clear();
+  m_loggedFieldPlaces.clear();
   if (hadFocus) {
     m_viewer.setFocus();
   }
@@ -2156,16 +2284,72 @@ void SketchController::placeFields() {
   if (m_fields.isEmpty()) {
     return;
   }
-  QPointF at = m_cursor + QPointF(20.0, 16.0);
+  ToolPreview preview;
+  if (m_tool) {
+    m_tool->paint(preview);
+  }
+  const Projection projection{[this](const V2& p) { return toScreen(p); }, pixel()};
+  QPointF fallback = m_cursor + QPointF(20.0, 16.0);
+  QVector<QRectF> occupied;
+  // While a drawing tool waits for a point, its next click goes where the
+  // pointer is: no field, nor its fx button, may lie there (mitcad#671).
+  const bool keepOff = m_tool && m_cursorValid;
+  const QRectF bounds(0.0, 0.0, m_viewer.width(), m_viewer.height());
   for (Field& field : m_fields) {
     if (!field.edit) {
       continue;
     }
     const QSize size = field.edit->sizeHint();
-    const int x = std::clamp(static_cast<int>(at.x()), 0, std::max(0, m_viewer.width() - field.edit->width()));
-    const int y = std::clamp(static_cast<int>(at.y()), 0, std::max(0, m_viewer.height() - size.height()));
-    field.edit->move(x, y);
-    at.ry() += size.height() + 3.0;
+    QPointF at = fallback;
+    bool geometric = false;
+    for (const auto& value : preview.fieldDimensions) {
+      if (value.field != field.spec.id) {
+        continue;
+      }
+      const auto shape = dimensionShape(value.dimension, value.model, projection, QString());
+      if (shape.valid) {
+        at = shape.textAt - QPointF(field.edit->width() / 2.0, size.height() / 2.0);
+        geometric = true;
+      }
+      break;
+    }
+    // Clamp the complete labelled row before resolving collisions; a
+    // label must never cover its editor at the left edge of the view.
+    const int labelWidth = !geometric && field.label ? field.label->width() + 4 : 0;
+    const int maxX = std::max(0, m_viewer.width() - field.edit->width());
+    const int maxY = std::max(0, m_viewer.height() - size.height());
+    const int x = std::clamp(static_cast<int>(at.x()), std::min(labelWidth, maxX), maxX);
+    int y = std::clamp(static_cast<int>(at.y()), 0, maxY);
+    const auto row = [&](int top) {
+      return QRectF(x - labelWidth, top, field.edit->width() + labelWidth, size.height());
+    };
+    for (const QRectF& other : occupied) {
+      if (other.adjusted(-4, -4, 4, 4).intersects(row(y))) {
+        const int below = static_cast<int>(other.bottom()) + 7;
+        y = below <= maxY ? below : std::max(0, static_cast<int>(other.top()) - size.height() - 7);
+      }
+    }
+    int left = x;
+    // The whole editor, as tall as it is shown, with its label.
+    const QRectF shown(x - labelWidth, y, field.edit->width() + labelWidth,
+                       std::max(size.height(), field.edit->height()));
+    if (keepOff && coversPointer(shown, m_cursor)) {
+      const QPointF belongs = at + QPointF(field.edit->width() / 2.0, size.height() / 2.0);
+      const QRectF clear = clearPlace(shown, belongs - m_cursor, bounds, occupied, m_cursor);
+      left = static_cast<int>(std::lround(clear.left())) + labelWidth;
+      y = static_cast<int>(std::lround(clear.top()));
+    }
+    field.edit->move(left, y);
+    occupied.append(QRectF(left - labelWidth, y, field.edit->width() + labelWidth, size.height()));
+    field.edit->setProperty("sketchDimensionPreview", geometric);
+    if (field.label) {
+      field.label->setVisible(!geometric);
+      field.label->move(std::max(0, left - field.label->width() - 4), y);
+      field.label->raise();
+    }
+    if (!geometric) {
+      fallback.ry() += size.height() + 7.0;
+    }
   }
 }
 
@@ -2176,6 +2360,7 @@ void SketchController::fieldEdited(int index) {
   Field& field = m_fields[index];
   const QString text = field.edit ? field.edit->text().trimmed() : QString();
   field.typed = !text.isEmpty();
+  field.engaged = field.engaged || field.typed;
   field.valid = false;
   QString problem;
   if (field.typed) {
@@ -2194,10 +2379,74 @@ void SketchController::fieldEdited(int index) {
   if (m_tool) {
     m_tool->fieldsEdited();
   }
+  placeFields();
   m_overlay->update();
 }
 
+bool SketchController::fieldMouse(QLineEdit* edit, QWidget* source, QEvent* event) {
+  const QEvent::Type type = event->type();
+  if (type != QEvent::MouseMove && type != QEvent::MouseButtonPress && type != QEvent::MouseButtonRelease &&
+      type != QEvent::MouseButtonDblClick) {
+    return false;
+  }
+  auto* mouse = static_cast<QMouseEvent*>(event);
+  const bool press = type == QEvent::MouseButtonPress || type == QEvent::MouseButtonDblClick;
+  if (m_fieldPress != source) {
+    // Only a field the user does not type into: placeFields() keeps the
+    // fields off the pointer, but one placed for the pointer's last place
+    // can still be under it when the pointer jumps there, or under its
+    // click (mitcad#671). The pointer resting on it moves it away; the left
+    // button is the view's, the right one keeps the field's menu (Insert
+    // Parameter…).
+    const auto field = std::find_if(m_fields.cbegin(), m_fields.cend(),
+                                    [edit](const Field& f) { return f.edit == edit; });
+    if (field == m_fields.cend() || field->engaged || !m_tool || !isActive() || m_paused || m_forwarding) {
+      return false;
+    }
+    const bool hover = type == QEvent::MouseMove && mouse->buttons() == Qt::NoButton;
+    if (!hover && !(press && mouse->button() == Qt::LeftButton)) {
+      return false;
+    }
+  }
+  if (press) {
+    m_fieldPress = source;
+  } else if (type == QEvent::MouseButtonRelease && mouse->buttons() == Qt::NoButton) {
+    m_fieldPress = nullptr;
+  }
+  const QPointer<QLineEdit> pressed(edit);
+  QMouseEvent forwarded(type, source->mapTo(&m_viewer, mouse->position()), mouse->globalPosition(),
+                        mouse->button(), mouse->buttons(), mouse->modifiers(), mouse->pointingDevice());
+  QCoreApplication::sendEvent(&m_viewer, &forwarded);
+  // The press gave the field the focus before it came here; a click in the
+  // view takes it from the fields instead.
+  if (press && pressed && pressed->isVisible() && pressed->hasFocus()) {
+    m_viewer.setFocus(Qt::MouseFocusReason);
+  }
+  return true;
+}
+
+void SketchController::logFieldPlaces() {
+  QStringList lines;
+  for (const Field& field : m_fields) {
+    if (field.edit && field.edit->isVisible()) {
+      const QPoint at = m_viewer.mapTo(m_viewer.window(), field.edit->geometry().center());
+      lines << QStringLiteral("Sketch field %1 at %2,%3").arg(field.spec.id).arg(at.x()).arg(at.y());
+    }
+  }
+  const QString logged = lines.join(QLatin1Char('\n'));
+  if (logged == m_loggedFieldPlaces) {
+    return;
+  }
+  m_loggedFieldPlaces = logged;
+  for (const QString& line : lines) {
+    qDebug().noquote() << line;
+  }
+}
+
 bool SketchController::fieldEvent(QLineEdit* edit, QEvent* event) {
+  if (fieldMouse(edit, edit, event)) {
+    return true;
+  }
   if (event->type() != QEvent::KeyPress) {
     return false;
   }
@@ -2217,6 +2466,7 @@ bool SketchController::fieldEvent(QLineEdit* edit, QEvent* event) {
   }
   const int step = key->key() == Qt::Key_Backtab ? -1 : 1;
   const int next = (index + step + static_cast<int>(m_fields.size())) % static_cast<int>(m_fields.size());
+  m_fields[next].engaged = true;
   if (QLineEdit* target = m_fields[next].edit) {
     if (!focusNativeInlineEditor(target)) {
       target->setFocus();
@@ -2247,6 +2497,11 @@ QString SketchController::fieldExpression(const QString& id) const {
 QString SketchController::fieldText(const QString& id) const {
   const int i = fieldIndex(id);
   return i >= 0 && m_fields[i].edit ? m_fields[i].edit->text() : QString();
+}
+
+QRectF SketchController::fieldRect(const QString& id) const {
+  const int i = fieldIndex(id);
+  return i >= 0 && m_fields[i].edit ? QRectF(m_fields[i].edit->geometry()) : QRectF();
 }
 
 void SketchController::setLive(const QString& id, double value) {

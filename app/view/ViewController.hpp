@@ -118,6 +118,17 @@ public:
   // The design's file name without its folder and extension (the rendered
   // image's default name).
   void setDocumentName(const QString& name) { m_documentName = name; }
+  // Show Build Volume (mitcad#640, view/BuildVolume.cpp): draws the design
+  // printer's bed and height (the `build_volume` query) and the boxes of
+  // the bodies that do not fit, after each change of the model while it is
+  // on; logs "Build volume: …" when what is drawn changes.
+  void refreshBuildVolume();
+  bool buildVolumeShown() const { return m_buildVolume; }
+  // View > Export Snapshot (mitcad#649, view/ViewSnapshot.cpp): asks for
+  // the file and the choices (SnapshotDialog), renders the view at that
+  // size with the shown measurements once the model is idle, and writes
+  // the image; logs "Snapshot saved <path>: <w> x <h>, …".
+  void exportSnapshot();
 
 signals:
   // Camera/background changed outside the non-modal Settings window.
@@ -150,6 +161,10 @@ private:
   QString m_documentName;
   void setRendered(bool on);
   QString m_preferencesPage = QStringLiteral("general"); // the page Preferences opens on
+  // Show Build Volume (mitcad#640): on or off for the window's session.
+  void setBuildVolumeShown(bool shown);
+  bool m_buildVolume = false;
+  QString m_loggedBuildVolume;
 };
 
 // The visual styles by command id and name, in menu order.

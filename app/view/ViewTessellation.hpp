@@ -30,7 +30,21 @@ constexpr double kViewAngle = 5.0 * 3.14159265358979323846 / 180.0;
 constexpr std::size_t kViewFaceTriangles = 20000;
 
 inline io::MeshOptions viewMeshOptions() {
-  return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles};
+  return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles, false};
+}
+
+// The interactive preview tier's meshes (mitcad#635, framework/
+// DisplayMeshes): the view's deviation, angle and face bound, with planes
+// through Delabella's base triangulation (io::MeshOptions::fast_planes).
+// Chosen from test_preview_meshing --compare on the synthetic 83-hole
+// block: the same 48 180 triangles and nodes as viewMeshOptions in about a
+// tenth of the time (a plane of 84 wires: 0.5 s with the default
+// insertion, 30 ms), where a coarser deviation and angle (0.05 mm, 20
+// degrees) took as long for a quarter of the triangles. Its deviation is
+// the drawers' (setViewTessellation), so a drawer finds the triangulations
+// fine enough and never meshes them again.
+inline io::MeshOptions previewMeshOptions() {
+  return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles, true};
 }
 
 // Shared by shaded face boundaries, wireframe and selection highlights.
@@ -45,9 +59,11 @@ inline void setViewTessellation(const occ::handle<Prs3d_Drawer>& drawer) {
 // to the end (DisplayMeshes) and faces were left without a triangulation.
 // Those are faces OCCT's mesher fails on, and meshing them again can take
 // without end; the view would do it on the UI thread (mitcad#589). The
-// view then draws the faces that have a triangulation.
+// view then draws the faces that have a triangulation. Nor a stand-in of
+// the interactive tier (mitcad#635): its meshes are the preview's, and
+// the final ones are made for its body by a job.
 inline bool viewMeshes(const geometry::Shape& shape) {
-  return !shape.display_meshed() || io::has_triangulation(shape.occt());
+  return !shape.display_interactive() && (!shape.display_meshed() || io::has_triangulation(shape.occt()));
 }
 
 // Makes every presentation mesh with the view's face bound (the meshing

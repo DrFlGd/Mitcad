@@ -15,7 +15,7 @@
 #      nothing asked) writes a session of its own and leaves the first's;
 #      while it opens a design on the worker, autosave waits.
 #   3. Recovery (P8c): at start-up the dialog offers the killed session;
-#      Later keeps it. File > Recover Documents offers it again, telling
+#      Later keeps it. File > Recover Designs offers it again, telling
 #      that its file changed since; Restore opens it modified, as that
 #      file, and this session writes it and removes the earlier session's
 #      files. Save over the changed file asks: Cancel writes nothing,
@@ -286,11 +286,11 @@ ui_expect_new "Recovery: later, 1 document(s) kept" "Later keeps it"
 expect_title "Untitled - Mitcad"
 expect_files "$FOLDER" "its files stay, unlocked" "$first.json" "$first_snapshot"
 
-echo "--- File > Recover Documents: the file changed since; Restore"
+echo "--- File > Recover Designs: the file changed since; Restore"
 file_d3 "$FILE" 40 # another program changes the file
 changed=$(sha256sum "$FILE")
 ui_mark
-ui_step "recover documents (search)"     ui_command "Recover Documents"
+ui_step "recover documents (search)"     ui_command "Recover Designs"
 ui_expect_new "Recovery: 1 document(s) found" "offered again"
 ui_expect_new "Recoverable block.mitcad: $FILE, autosaved " "the session"
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "Recoverable block.mitcad" | grep -qF ", the file has changed since" ||

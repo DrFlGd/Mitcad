@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
+#include <utility>
+
 #include <QHash>
 #include <QPair>
 #include <QPoint>
@@ -47,6 +50,8 @@ public:
   explicit TimelineWidget(const CommandContext& model, QWidget* parent = nullptr);
 
   void rebuild(const DocumentSnapshot& snapshot);
+  void setFeatureDetailsProvider(std::function<QString(const QString&)> provider) { m_featureDetails = std::move(provider); }
+  QStringList hoveredFeatures() const { return m_hoveredFeatures; }
   // Shows only some components' features (mitcad#98): all (an empty
   // filter), the active component's (kActiveFilter) or a component's (its
   // uid), with those of the components placed in it when `subcomponents`.
@@ -101,6 +106,8 @@ public:
 
 signals:
   void filterChanged();
+  // Preview only: leaves the selection and history marker untouched.
+  void featuresHovered(const QStringList& uids);
   // A click selected a feature, a Shift+click a run of them (in timeline
   // order).
   void featuresClicked(const QStringList& uids);
@@ -160,6 +167,8 @@ private:
   void showSearchMenu();
   void logSearchList();
 
+  std::function<QString(const QString&)> m_featureDetails;
+  QStringList m_hoveredFeatures;
   const CommandContext& m_model;
   DocumentSnapshot m_snapshot; // the last rebuild's
   QSet<QString> m_collapsed;   // folded groups

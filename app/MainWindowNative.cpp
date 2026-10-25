@@ -589,6 +589,7 @@ void MainWindow::refreshNativeWindow() {
                                    row.node.type == BrowserNode::Type::Component || row.node.type == BrowserNode::Type::Datum ||
                                    row.node.type == BrowserNode::Type::Analysis || row.node.type == BrowserNode::Type::Joint ||
                                    row.node.type == BrowserNode::Type::Feature ||
+                                   row.node.type == BrowserNode::Type::Measurement ||
                                    (row.node.type == BrowserNode::Type::NamedView && row.node.uid.startsWith(QStringLiteral("named:"))));
       item.hasVisibility = row.node.hasEye;
       // Bodies, sketches, construction and components in every mode (mitcad#295).

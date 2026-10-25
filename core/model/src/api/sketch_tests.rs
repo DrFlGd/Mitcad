@@ -1913,3 +1913,189 @@ fn a_distance_switched_after_parameter_changes_keeps_its_point() {
     set_signed(&mut d, &v, true);
     check(&d, below, "r * sin(a)");
 }
+
+/// An offset of a linked projection stays on its side when the source
+/// moves before the solve by more than the offset's distance (mitcad#641:
+/// the solver kept each distance on the side its curves started on, so the
+/// stale offset of a face edge that moved 40 mm lay on the other side of it
+/// and was solved there).
+#[test]
+fn an_offset_of_a_projection_keeps_its_side_when_the_source_moves_far() {
+    let mut d = doc();
+    command(&mut d, json!({"cmd": "sketch.create"}));
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+               "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+               "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}),
+    );
+    let face = "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})";
+    command(
+        &mut d,
+        json!({"cmd": "sketch.create", "plane": {"face": face}}),
+    );
+    let square = |size: f64| -> Vec<Curve3> {
+        let c = [[0.0, 0.0], [size, 0.0], [size, 40.0], [0.0, 40.0]];
+        (0..4)
+            .map(|i| Curve3::Line {
+                start: [c[i][0], c[i][1], 20.0],
+                end: [c[(i + 1) % 4][0], c[(i + 1) % 4][1], 20.0],
+            })
+            .collect()
+    };
+    *d.kernel().curves.borrow_mut() = square(60.0);
+    let projected = command(
+        &mut d,
+        json!({"cmd": "sketch.project", "sketch": "F3", "source": face, "linked": true}),
+    );
+    let lines: Vec<String> = projected["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e.as_str())
+        .filter(|e| e.starts_with('c'))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(lines.len(), 4);
+    command(
+        &mut d,
+        json!({"cmd": "sketch.offset", "sketch": "F3", "curves": lines, "distance": 2}),
+    );
+    // Out by 2: the face and a band round it.
+    assert_areas(&d, "F3", &[64.0 * 44.0 - 2400.0, 2400.0]);
+    *d.kernel().curves.borrow_mut() = square(100.0);
+    command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "d1", "value": 100}),
+    );
+    assert_areas(&d, "F3", &[104.0 * 44.0 - 4000.0, 4000.0]);
+}
+
+/// `sketch.create` with `upright` (mitcad#692, Create Sketch): the design's
+/// +Z is the new sketch's y on the XZ and YZ planes and on faces facing
+/// ±X and ±Y, the design's +Y on XY and on faces facing ±Z; the normal is
+/// the plane's. The own frame is stored only where it differs from the
+/// plane's, and the command stays one undo step. Without `upright` the
+/// plane's frame as before.
+#[test]
+fn upright_sketches_put_the_design_z_up() {
+    const RECT: &str = "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}";
+    let mut d = doc();
+    // A 60 x 40 x 20 block (F2.b0) whose faces face the six directions.
+    command(&mut d, json!({"cmd": "sketch.create"}));
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": RECT}],
+               "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}),
+    );
+    let top = format!("F2:end({RECT})");
+    let bottom = format!("F2:start({RECT})");
+    let faces: [(&str, [f64; 3], [f64; 3]); 6] = [
+        (&top, [30.0, 20.0, 20.0], [0.0, 0.0, 1.0]),
+        (&bottom, [30.0, 20.0, 0.0], [0.0, 0.0, -1.0]),
+        ("F2:side(c1[c4,c2])", [30.0, 0.0, 10.0], [0.0, -1.0, 0.0]),
+        ("F2:side(c2[c1,c3])", [60.0, 20.0, 10.0], [1.0, 0.0, 0.0]),
+        ("F2:side(c3[c2,c4])", [30.0, 40.0, 10.0], [0.0, 1.0, 0.0]),
+        ("F2:side(c4[c3,c1])", [0.0, 20.0, 10.0], [-1.0, 0.0, 0.0]),
+    ];
+    for (face, origin, normal) in &faces {
+        d.kernel().surfaces.borrow_mut().insert(
+            (*face).to_owned(),
+            crate::datum::SurfaceGeometry::Plane {
+                origin: *origin,
+                normal: *normal,
+            },
+        );
+    }
+    let vector =
+        |value: &Value| -> [f64; 3] { std::array::from_fn(|i| value[i].as_f64().unwrap()) };
+    let near = |a: [f64; 3], b: [f64; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-9);
+    let x = [1.0, 0.0, 0.0];
+    let y = [0.0, 1.0, 0.0];
+    let z = [0.0, 0.0, 1.0];
+    let minus = |v: [f64; 3]| v.map(|c| -c);
+    let on = |face: &str| json!({"face": face, "body": "F2.b0"});
+    // (where, plane, the sketch's x, its y, its normal, an own frame stored)
+    let cases = [
+        ("XY", json!("xy"), x, y, z, false),
+        ("XZ", json!("xz"), minus(x), z, y, true),
+        ("YZ", json!("yz"), y, z, x, true),
+        ("the top", on(&top), x, y, z, false),
+        ("the bottom", on(&bottom), minus(x), y, minus(z), true),
+        ("the -Y face", on(faces[2].0), x, z, minus(y), false),
+        ("the +X face", on(faces[3].0), y, z, x, false),
+        ("the +Y face", on(faces[4].0), minus(x), z, y, true),
+        ("the -X face", on(faces[5].0), minus(y), z, minus(x), true),
+    ];
+    for (place, plane, want_x, want_y, want_normal, stored) in cases {
+        let depth = d.undo_depth();
+        let added = command(
+            &mut d,
+            json!({"cmd": "sketch.create", "plane": plane, "upright": true}),
+        );
+        let uid = added["uid"].as_str().unwrap().to_owned();
+        let name = added["name"].as_str().unwrap().to_owned();
+        assert_eq!(d.undo_depth(), depth + 1, "{place}: one undo step");
+        assert_eq!(
+            d.undo_label(),
+            Some(format!("Add {name}").as_str()),
+            "{place}"
+        );
+        let frame = sketch(&d, &uid)["frame"].clone();
+        assert!(
+            near(vector(&frame["x_axis"]), want_x),
+            "{place}: x {}",
+            frame["x_axis"]
+        );
+        assert!(
+            near(vector(&frame["y_axis"]), want_y),
+            "{place}: y {}",
+            frame["y_axis"]
+        );
+        assert!(
+            near(vector(&frame["normal"]), want_normal),
+            "{place}: normal {}",
+            frame["normal"]
+        );
+        let def: Value = serde_json::from_str(
+            &d.query(&json!({"query": "feature", "uid": uid}).to_string())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            def["def"].get("frame").is_some(),
+            stored,
+            "{place}: {}",
+            def["def"]
+        );
+    }
+    // Without `upright` the plane's own frame: XZ's y is -Z.
+    let plain = command(&mut d, json!({"cmd": "sketch.create", "plane": "xz"}));
+    let frame = sketch(&d, plain["uid"].as_str().unwrap())["frame"].clone();
+    assert!(
+        near(vector(&frame["y_axis"]), minus(z)),
+        "{}",
+        frame["y_axis"]
+    );
+    // One undo takes an upright sketch away whole.
+    command(&mut d, json!({"cmd": "undo"}));
+    let depth = d.undo_depth();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.create", "plane": "yz", "upright": true}),
+    );
+    command(&mut d, json!({"cmd": "undo"}));
+    assert_eq!(
+        d.undo_depth(),
+        depth,
+        "the upright sketch undone in one step"
+    );
+}

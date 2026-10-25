@@ -211,8 +211,12 @@ pub struct Exported {
     /// `default look`).
     pub materials: Vec<String>,
     /// USDZ: what was written otherwise than the design has it (a texture
-    /// whose image cannot be read).
+    /// whose image cannot be read); 3MF with a slicer's settings: what the
+    /// slicer does not take as the design has it (mitcad#640).
     pub warnings: Vec<String>,
+    /// 3MF with a slicer's settings (mitcad#640): the filament slot of each
+    /// written body (0 the first).
+    pub slots: Vec<usize>,
 }
 
 /// A body's mesh in a 3MF file: its triangles and the volume they enclose
@@ -333,6 +337,9 @@ pub struct ExportOptions {
     /// USDZ: the design file's folder, which relative texture paths are
     /// relative to.
     pub design_folder: Option<PathBuf>,
+    /// 3MF: the slicer whose settings go with the bodies (mitcad#640):
+    /// each body's effective printer, process and filament in its dialect.
+    pub dialect: Option<crate::print_keys::Dialect>,
 }
 
 impl ExportOptions {
@@ -344,6 +351,7 @@ impl ExportOptions {
             refinement: Refinement::default(),
             ascii: false,
             design_folder: None,
+            dialect: None,
         }
     }
 }
@@ -703,6 +711,18 @@ impl<K: Kernel> Document<K> {
             placed_at(body).into_iter().map(|p| p.transform).collect()
         };
         if format == ExportFormat::ThreeMf {
+            // The occurrence path a body's print settings are of: its first
+            // shown placement's (mitcad#640).
+            let path_of = |body: BodyUid| -> Option<Vec<OccurrenceUid>> {
+                let mine: Vec<&InstanceView> = instances
+                    .iter()
+                    .filter(|i| i.body == body && inside(i))
+                    .collect();
+                mine.iter()
+                    .find(|i| i.visible)
+                    .or_else(|| mine.first())
+                    .map(|i| i.path.clone())
+            };
             return self.export_3mf(
                 path,
                 &chosen,
@@ -710,6 +730,12 @@ impl<K: Kernel> Document<K> {
                 &tolerance,
                 color,
                 placements,
+                options.dialect.map(|d| {
+                    (
+                        d,
+                        &path_of as &dyn Fn(BodyUid) -> Option<Vec<OccurrenceUid>>,
+                    )
+                }),
             );
         }
         if format == ExportFormat::Stl {
@@ -820,7 +846,12 @@ impl<K: Kernel> Document<K> {
     /// part, placed by `placements` (the visible occurrences of its
     /// component, all of them when none is visible), named after the body,
     /// in its colour. Sheet and empty bodies are an error when chosen, and
-    /// left out when all bodies are written (`all`).
+    /// left out when all bodies are written (`all`). With `print` (a
+    /// slicer, and the occurrence path whose settings a body prints with),
+    /// each body's effective print settings go with it in the slicer's
+    /// dialect (mitcad#640, `crate::print_files`).
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::type_complexity)]
     fn export_3mf(
         &self,
         path: &str,
@@ -829,6 +860,10 @@ impl<K: Kernel> Document<K> {
         tolerance: &MeshTolerance,
         color: impl Fn(BodyUid) -> Option<[f64; 3]>,
         placements: impl Fn(BodyUid) -> Vec<Transform>,
+        print: Option<(
+            crate::print_keys::Dialect,
+            &dyn Fn(BodyUid) -> Option<Vec<OccurrenceUid>>,
+        )>,
     ) -> Result<Exported, ModelError> {
         let mut exported = Exported::default();
         let mut parts = Vec::with_capacity(chosen.len());
@@ -873,12 +908,13 @@ impl<K: Kernel> Document<K> {
                 color: color(body.uid),
                 mesh,
                 placements,
+                metadata: Vec::new(),
             });
         }
         if parts.is_empty() {
             return Err(invalid("there are no solid or mesh bodies to export"));
         }
-        let model = mitcad_3mf::Model {
+        let mut model = mitcad_3mf::Model {
             name: Path::new(path)
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -886,7 +922,41 @@ impl<K: Kernel> Document<K> {
                 .to_owned(),
             parts,
             application: format!("Mitcad {}", env!("CARGO_PKG_VERSION")),
+            ..mitcad_3mf::Model::default()
         };
+        // The slicer's settings (mitcad#640): each body's effective ones.
+        if let Some((dialect, path_of)) = print {
+            let settings: Vec<crate::document::EffectivePrint> = exported
+                .bodies
+                .iter()
+                .map(|uid| {
+                    self.effective_print(&crate::document::PrintTarget::Body(*uid, path_of(*uid)))
+                })
+                .collect();
+            let parts: Vec<crate::print_files::ExportPart<'_>> = model
+                .parts
+                .iter()
+                .zip(&settings)
+                .map(|(part, settings)| crate::print_files::ExportPart {
+                    name: &part.name,
+                    settings,
+                    triangles: part.mesh.triangles.len(),
+                    placements: part.placements.len(),
+                })
+                .collect();
+            let written = crate::print_files::export(dialect, &model.name, &parts);
+            if let Some(application) = written.application {
+                model.application = application;
+            }
+            model.metadata = written.metadata;
+            model.namespaces = written.namespaces;
+            model.files = written.files;
+            for (part, metadata) in model.parts.iter_mut().zip(written.part_metadata) {
+                part.metadata = metadata;
+            }
+            exported.slots = written.slots;
+            exported.warnings.extend(written.warnings);
+        }
         let data = mitcad_3mf::write(&model).map_err(|e| invalid(e.to_string()))?;
         std::fs::write(path, data).map_err(|e| invalid(format!("cannot write {path}: {e}")))?;
         Ok(exported)

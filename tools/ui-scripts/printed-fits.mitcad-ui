@@ -19,7 +19,7 @@ expect-model-parameter gear_backlash absent
 
 command solid.pulley
 expect-log 'Command Pulley started'
-click-logged 'Panel Pulley input shaft at'
+click-logged 'Panel Pulley input at at'
 click-pick 'face F1\.b0/F1:side0'
 expect-input-text bore_clearance '^shaft_bore_clearance$'
 key Escape
@@ -31,7 +31,7 @@ expect-log 'Command Bearing started'
 expect-input-text radial_clearance '^bearing_radial_clearance$'
 expect-input-text axial_clearance '^bearing_axial_clearance$'
 expect-input-text element_gap '^bearing_element_gap$'
-click-logged 'Panel Bearing input shaft at'
+click-logged 'Panel Bearing input at at'
 click-pick 'face F1\.b0/F1:side0'
 expect-input-text fit_clearance '^bearing_fit_clearance$'
 key Escape

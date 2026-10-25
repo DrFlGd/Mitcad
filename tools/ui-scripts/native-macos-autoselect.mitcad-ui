@@ -11,8 +11,8 @@ mark
 native-action solid.box
 expect-log 'Command Box started'
 click-logged 'Datum xy'
-native-type input_x '-30 mm'
-native-type input_y '-15 mm'
+native-type input_at_offset1 '-30 mm'
+native-type input_at_offset2 '-15 mm'
 native-type input_length '60 mm'
 native-type input_width '30 mm'
 native-type input_height '10 mm'

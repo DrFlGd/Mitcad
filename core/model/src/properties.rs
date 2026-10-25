@@ -212,6 +212,9 @@ pub enum Source {
     Library,
     /// Worked out from the model; never stored.
     Computed,
+    /// A slicer's 3MF project or preset file (print settings, mitcad#640).
+    #[serde(rename = "3mf")]
+    ThreeMf,
 }
 
 impl Source {
@@ -224,6 +227,7 @@ impl Source {
             Self::F3d => "f3d",
             Self::Library => "library",
             Self::Computed => "computed",
+            Self::ThreeMf => "3mf",
         }
     }
 
@@ -236,6 +240,7 @@ impl Source {
             Self::F3d,
             Self::Library,
             Self::Computed,
+            Self::ThreeMf,
         ]
         .into_iter()
         .find(|s| s.as_str() == name)
@@ -370,7 +375,8 @@ impl DisplayUnit {
                 .ok_or_else(|| format!("'{text}' is not a unit of mass (kg, g, mg, t, lb, oz)"));
         }
         let unit = Unit::parse(text).map_err(|e| format!("unit '{text}': {e}"))?;
-        if unit.dims() != dims_of(base) {
+        // `Text` is a text parameter's unit (mitcad#664), no unit of measure.
+        if unit.is_text() || unit.dims() != dims_of(base) {
             return Err(format!("'{text}' is not a unit of {}", base.as_str()));
         }
         Ok(Self::Geometric(unit))

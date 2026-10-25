@@ -255,3 +255,120 @@ fixed geometry, and a final body's volume differed in the 11th digit.
 Since #243 each build's base is fixed by the file (the same body in the
 blob's state before), waited for or built when missing, so the reports with
 one thread and with several are the same.
+
+## A dragged Extrude's preview meshes (mitcad#635)
+
+The ticket's synthetic fixture: a 120 x 100 x 20 mm block with 83 through
+holes of 4 mm and a 20 x 10 mm boss joined on top (94 faces), built by
+`test_preview_meshing` through the model's commands; each sample previews a
+new distance and meshes it as the preview job does. Linux workstation
+(16-core desktop CPU, 32 threads), the `dev` build (OCCT's release
+libraries, Mitcad's own code unoptimised), not the ticket's macOS baseline.
+
+`MITCAD_MESH_TRACE=1` before the change: all 99 faces of the result and
+the tool meshed every time (the boolean's result is a copy of its operands
+without triangulations: OCCT's empty copies of faces and edges drop them),
+and almost all of the time in BRepMesh's face triangulation (507.8 of
+527.5 ms; building its model 2.0, edges 1.5, healing 11.9, writing 3.8):
+the two planes with 84 and 85 wires and about 12 000 boundary points took
+504 and 487 ms each, side by side; the 83 cylinders 3 to 7 ms each. The
+default (Watson) insertion of a plane's boundary points grows much faster
+than linearly with them.
+
+`test_preview_meshing --compare` (n = 10, from no triangulation):
+
+| Options | Median / p95 | Triangles |
+|---|---|---|
+| final: 0.01 mm, 5 degrees | 528.3 / 541.9 ms | 48 180 |
+| planes through Delabella, 0.01 mm, 5 degrees | 51.6 / 57.8 ms | 48 180 (same nodes) |
+| 0.02 mm, 10 degrees | 154.4 / 171.8 ms | 24 276 |
+| 0.05 mm, 20 degrees | 54.1 / 59.8 ms | 12 324 |
+
+The interactive tier is the second: no coarser display, a tenth of the
+time. With the untouched faces reused (88 of 94) the preview meshes 11
+faces. `--paired` (n = 20 each, interleaved, load average 10 to 17 from
+other jobs): before 794 / 896 ms, the interactive preview 81 / 106 ms,
+the final tier with reuse (a commit or a refinement) 713 / 863 ms; the
+block without holes 1.0 / 1.2, 1.8 / 2.5 and 1.1 / 1.3 ms. An earlier
+run of the old path with a load average of about 7: 531 / 588 ms.
+
+## A dragged Extrude's provisional tool (mitcad#636)
+
+`tools/ui-drag-proxy-test.sh`: the same block, with and without the 83
+holes, a 5 mm Join of the 20 x 10 mm rectangle, then a held drag of the
+distance's arrow through the X server of a hidden Xvfb display (xdotool:
+180 moves 16 ms apart, a six-tick pause half-way, about 3 s), once as the
+exact previews take and once with each preview held back 500 ms
+(`MITCAD_TEST_RECOMPUTE_DELAY_MS=0,preview=500`, about 1 s a preview).
+Linux workstation (16-core desktop CPU, 32 threads), the `dev` build
+(Mitcad's own code unoptimised, OCCT's release libraries), OpenGL by
+Mesa's software renderer (Xvfb), 4x MSAA, scale 1; a load average of 12
+to 35 from other jobs, so the counts below vary from run to run. Each
+drag's line counts apart what the app got and did while the button was
+held: snapped inputs, proxy updates drawn, exact previews shown, frames
+submitted (`paintGL` calls, not fenced: no GPU timing).
+
+| Drag (two runs) | Snapped inputs | Proxy updates, interval median / p95 | Exact previews, interval median / p95 | Frames |
+|---|---|---|---|---|
+| box | 40, 38 | 41 (67 / 82 ms), 50 (55 / 155 ms) | 14 (207 / 249 ms), 12 (208 / 333 ms) | 68, 41 |
+| 83 holes | 34, 24 | 42 (63 / 145 ms), 29 (120 / 214 ms) | 8 (258 / 520 ms), 5 (548 / 861 ms) | 31, 21 |
+| box, previews held 500 ms | 41, 41 | 43 (65 / 81 ms), 43 (68 / 88 ms) | 3 (1056 / 1193 ms), 3 (1131 / 1289 ms) | 48, 48 |
+| 83 holes, previews held 500 ms | 23, 38 | 28 (81 / 220 ms), 40 (83 / 132 ms) | 5 (382 / 404 ms), 2 (1396 ms) | 24, 36 |
+
+A proxy update (the stretched copy and its presentation) took 0.10 to
+0.16 ms median, 0.5 ms at most; it follows every snapped input (a few more
+updates than inputs: an exact preview arriving re-bases the proxy), also
+while the exact preview computes. Without the delay the box's exact
+previews came every 0.2 s, the perforated block's every 0.26 to 0.55 s
+(the job about 0.1 s, its interactive meshing about 80 ms). On the
+perforated block the frames themselves are the limit here: Mesa's
+software renderer took about 67 to 85 ms a frame for its 48 000
+triangles, Qt merged the mouse moves meanwhile (32 to 34 of the 180
+reached the view) and so fewer inputs were snapped; the box drew a frame
+in 10 to 20 ms and got 175 to 180 moves. After the release the exact
+preview of the last value replaced the proxy 8 ms (box) and 351 ms (holes)
+later, 1.4 to 1.5 s with the 500 ms hold. These are one machine's
+software-rendered timings, not a frame rate of a GPU or of the model.
+
+## Display meshing: planes through Delabella (mitcad#644)
+
+Whether the final display tier (commit, refinement, opening a design) could
+triangulate planes through Delabella as the interactive preview tier does
+(mitcad#635). `mitcad-cli mesh-compare` meshes every body of a design twice,
+all bodies together as the final tier does: (a) `viewMeshOptions`, (b) the
+same with planes through Delabella (`previewMeshOptions`). Per face it
+records the triangles, the largest distance of triangle centroids and edge
+midpoints from the surface, the triangulated area against the face's own
+(BRepGProp), triangles folded over others in the parameter plane, whether
+the face has a triangulation, and its triangulation time on the mesher's
+thread. Each meshing's copies are measured and let go before the other, so
+a large design does not hold both sets of triangulations. `--summary`
+totals reports by folder; `--dump` writes the faces the two disagree on as
+BREP files.
+
+The trial of 25.10.2026 (Linux workstation, release build, three designs
+at a time beside other jobs, each design imported as the application
+imports it, 6 GB and 20 minutes each): 1 334 of 1 392 distinct designs of
+the local corpora compared (47 without bodies, 6 over the time, 4 over the
+memory, 1 import that hung), 455 990 faces, 352 694 of them planes.
+
+| group | achieved / target |
+|---|---|
+| faces triangulated (a) | 455 956 / 455 990 |
+| faces triangulated (b) | 455 957 / 455 990 |
+| planes with as many triangles in (b) | 352 672 / 352 676 |
+| faces with a triangulation in (a), none in (b) | 4 / 455 990 |
+| faces with a triangulation in (b), none in (a) | 5 / 455 990 |
+| faces whose area is off in (b), not in (a) | 4 / 455 990 |
+| faces folded or over the deviation in (b), not in (a) | 0 / 455 990 |
+
+The planes' triangulation took 194.5 s in (a) and 35.6 s in (b) (summed
+over faces); the meshing of all designs 431 s and 400 s, as the curved
+faces, meshed the same way both times, take most of it. The designs with
+large perforated planes gained most (9.7 s to 0.6 s, 9.5 s to 1.9 s); the
+same work on curved faces varied by up to about 25 % per design between the
+two runs with the load of the machine. The faces (b) does worse are few but
+real: a quarter disc (Watson: 36 triangles) and a sliver left without a
+triangulation, and a 0.018 mm² face that (a) leaves undrawn drawn by (b)
+with 181 triangles over 11.8 mm², which nothing but the area comparison
+detects. The ticket has the tables and the faces by design content id.

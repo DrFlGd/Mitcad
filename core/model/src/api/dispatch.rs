@@ -87,7 +87,7 @@ impl<K: Kernel> Document<K> {
     /// The families of commands besides the document's own (`Command`,
     /// which takes every other name, so that its error lists its commands
     /// for an unknown one). A new family is one row here.
-    pub(super) fn command_families() -> [CommandFamily<K>; 11] {
+    pub(super) fn command_families() -> [CommandFamily<K>; 16] {
         [
             // Gears: the motion link of a mesh (mitcad#472, `gears.rs`),
             // run as the `add_motion_link` worked out from the gears. It has
@@ -180,6 +180,49 @@ impl<K: Kernel> Document<K> {
                 prefix: None,
                 run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
                     doc.run_reorient_command(parse(value, "command")?)
+                },
+            },
+            // Materials and components' default materials (mitcad#640,
+            // `materials.rs`).
+            CommandFamily {
+                names: super::materials::MaterialCommand::NAMES,
+                prefix: None,
+                run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
+                    doc.run_material_command(parse(value, "command")?)
+                },
+            },
+            // Print profiles, the print libraries and slicer files
+            // (mitcad#640, `print_profiles.rs`).
+            CommandFamily {
+                names: super::print_profiles::PrintProfileCommand::NAMES,
+                prefix: None,
+                run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
+                    doc.run_print_profile_command(parse(value, "command")?)
+                },
+            },
+            // Gear pairs and belt drives on two placements (mitcad#656,
+            // `drives.rs`).
+            CommandFamily {
+                names: super::drives::DriveCommand::NAMES,
+                prefix: None,
+                run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
+                    doc.run_drive_command(parse(value, "command")?)
+                },
+            },
+            // Measurement objects (mitcad#649, `measurements.rs`).
+            CommandFamily {
+                names: super::measurements::MeasurementCommand::NAMES,
+                prefix: None,
+                run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
+                    doc.run_measurement_command(parse(value, "command")?)
+                },
+            },
+            // The parameters as CSV (mitcad#666, `parameters_csv.rs`).
+            CommandFamily {
+                names: super::parameters_csv::ParametersCsvCommand::NAMES,
+                prefix: None,
+                run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
+                    doc.run_parameters_csv_command(parse(value, "command")?)
                 },
             },
         ]

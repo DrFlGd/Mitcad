@@ -81,7 +81,7 @@ QString kindText(const ProjectRow& row) {
 
 // The button's text without its mnemonic and dots ("Another Folder").
 QString buttonName(const QPushButton* button) {
-  return button->text().remove(QLatin1Char('&')).remove(QStringLiteral("...")).trimmed();
+  return button->text().remove(QLatin1Char('&')).remove(QStringLiteral("...")).remove(QChar(0x2026)).trimmed();
 }
 
 // The window the UI tests' places are relative to: the main window, also
@@ -151,7 +151,7 @@ std::optional<ProjectPickerResult> pickInProjects(QWidget* parent, const Project
   tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
   tree->setMinimumSize(360, 220);
   layout->addWidget(tree, 1);
-  auto* status = new QLabel(tr("Reading the projects..."));
+  auto* status = new QLabel(tr("Reading the projects…"));
   status->setWordWrap(true);
   status->setTextFormat(Qt::PlainText);
   layout->addWidget(status);

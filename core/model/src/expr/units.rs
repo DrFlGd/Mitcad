@@ -363,16 +363,28 @@ pub(crate) fn is_unit_name(name: &str) -> bool {
 /// Unit of measure: a power of one length unit times a power of one angle
 /// unit, such as `mm`, `in^2`, `deg` or `mm*deg^-1`. The default is
 /// unitless.
+///
+/// [`Unit::TEXT`] is the unit of a text parameter (mitcad#664): its value
+/// is a string, not a number. It has no dimensions, is written `Text` and
+/// never combines with other units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Unit {
     length: Option<(LengthUnit, i32)>,
     angle: Option<(AngleUnit, i32)>,
+    text: bool,
 }
 
 impl Unit {
     pub const NONE: Self = Self {
         length: None,
         angle: None,
+        text: false,
+    };
+    /// The unit of a text parameter (mitcad#664).
+    pub const TEXT: Self = Self {
+        length: None,
+        angle: None,
+        text: true,
     };
     pub const UM: Self = Self::of_length(LengthUnit::Micrometre);
     pub const MM: Self = Self::of_length(LengthUnit::Millimetre);
@@ -387,6 +399,7 @@ impl Unit {
         Self {
             length: Some((unit, 1)),
             angle: None,
+            text: false,
         }
     }
 
@@ -394,7 +407,13 @@ impl Unit {
         Self {
             length: None,
             angle: Some((unit, 1)),
+            text: false,
         }
+    }
+
+    /// Whether this is [`Unit::TEXT`], the unit of a text parameter.
+    pub const fn is_text(self) -> bool {
+        self.text
     }
 
     pub(crate) const fn of_base(unit: BaseUnit) -> Self {
@@ -414,6 +433,8 @@ impl Unit {
         self.angle
     }
 
+    /// Whether the unit has no unit of measure: unitless, and also
+    /// [`Unit::TEXT`] (see [`Unit::is_text`]).
     pub const fn is_unitless(self) -> bool {
         self.length.is_none() && self.angle.is_none()
     }
@@ -432,12 +453,17 @@ impl Unit {
         Some(Self {
             length: pow(self.length, n)?,
             angle: pow(self.angle, n)?,
+            text: self.text,
         })
     }
 
     /// The product of two units, or `None` if they use two different
-    /// length (or angle) units, such as `mm*in`, or on overflow.
+    /// length (or angle) units, such as `mm*in`, on overflow, or when one is
+    /// [`Unit::TEXT`].
     pub fn checked_mul(self, other: Self) -> Option<Self> {
+        if self.text || other.text {
+            return None;
+        }
         fn mul<U: PartialEq>(a: Option<(U, i32)>, b: Option<(U, i32)>) -> Option<Option<(U, i32)>> {
             match (a, b) {
                 (None, x) | (x, None) => Some(x),
@@ -453,6 +479,7 @@ impl Unit {
         Some(Self {
             length: mul(self.length, other.length)?,
             angle: mul(self.angle, other.angle)?,
+            text: false,
         })
     }
 
@@ -491,13 +518,33 @@ impl Unit {
         Some(Self {
             length: part(dims.length.numer()).map(|p| (LengthUnit::Millimetre, p)),
             angle: part(dims.angle.numer()).map(|p| (AngleUnit::Degree, p)),
+            text: false,
+        })
+    }
+
+    /// The unit of `dims` in the default units `length` and `angle`, such
+    /// as `in^2` for an area in an inch context. `None` for fractional
+    /// exponents, which no unit can express.
+    pub fn in_defaults(dims: Dims, length: LengthUnit, angle: AngleUnit) -> Option<Self> {
+        if !dims.length.is_integer() || !dims.angle.is_integer() {
+            return None;
+        }
+        let part = |p: i32| (p != 0).then_some(p);
+        Some(Self {
+            length: part(dims.length.numer()).map(|p| (length, p)),
+            angle: part(dims.angle.numer()).map(|p| (angle, p)),
+            text: false,
         })
     }
 
     /// Parses a unit string: empty for unitless, or unit names with
     /// optional integer powers joined by `*` and `/`, such as `mm`,
-    /// `in^2`, `deg` or `mm/deg`.
+    /// `in^2`, `deg` or `mm/deg`. `Text` (in any case) is [`Unit::TEXT`],
+    /// the unit of a text parameter (mitcad#664).
     pub fn parse(text: &str) -> Result<Self, ParseError> {
+        if text.trim().eq_ignore_ascii_case("text") {
+            return Ok(Self::TEXT);
+        }
         let tokens = lex(text)?;
         let mut unit = Self::NONE;
         let mut i = 0;
@@ -602,6 +649,9 @@ pub(crate) fn unit_power(
 
 impl fmt::Display for Unit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.text {
+            return f.write_str("Text");
+        }
         let mut first = true;
         let parts = [
             self.length.map(|(u, p)| (u.symbol(), p)),
@@ -800,6 +850,24 @@ mod tests {
         assert!(Unit::parse("mm^0").is_err());
         assert!(Unit::parse("2").is_err());
         assert_eq!("deg".parse::<Unit>(), Ok(Unit::DEG));
+    }
+
+    #[test]
+    fn the_text_unit() {
+        // mitcad#664: the unit of a text parameter.
+        assert_eq!(Unit::parse("Text"), Ok(Unit::TEXT));
+        assert_eq!(Unit::parse(" text "), Ok(Unit::TEXT));
+        assert_eq!(Unit::TEXT.to_string(), "Text");
+        assert!(Unit::TEXT.is_text() && !Unit::NONE.is_text() && !Unit::MM.is_text());
+        assert_ne!(Unit::TEXT, Unit::NONE);
+        assert_eq!(Unit::TEXT.dims(), Dims::NONE);
+        assert_eq!(Unit::TEXT.checked_mul(Unit::MM), None);
+        assert_eq!(
+            Unit::in_defaults(Dims::AREA, LengthUnit::Inch, AngleUnit::Degree)
+                .unwrap()
+                .to_string(),
+            "in^2"
+        );
     }
 
     #[test]

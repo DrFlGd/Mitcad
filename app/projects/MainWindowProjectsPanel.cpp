@@ -86,7 +86,7 @@ void MainWindow::registerProjectsPanelCommands() {
   m_registry->add(panel);
   CommandDef design;
   design.id = QStringLiteral("file.new_design");
-  design.name = tr("New Design...");
+  design.name = tr("New Design…");
   design.icon = QStringLiteral("add");
   design.tooltip = tr("A new design in the current project's selected folder, or an untitled one");
   design.kind = CommandDef::Kind::Action;
@@ -772,7 +772,7 @@ void MainWindow::addExistingProjectFolder() {
   QMessageBox box(QMessageBox::Question, tr("Add Existing Project Folder"),
                   tr("%1 is not a Mitcad project.").arg(QDir::toNativeSeparators(folder)), QMessageBox::Cancel, this);
   box.setInformativeText(tr("Make It a Project makes it one in New Project: the designs in it become the project's."));
-  QPushButton* make = box.addButton(tr("&Make It a Project..."), QMessageBox::AcceptRole);
+  QPushButton* make = box.addButton(tr("&Make It a Project…"), QMessageBox::AcceptRole);
   prepareModal(&box);
   execDialog(&box);
   if (box.clickedButton() == make) {

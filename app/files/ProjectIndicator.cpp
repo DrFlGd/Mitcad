@@ -321,19 +321,19 @@ void ProjectIndicator::fillMenu() {
   case ProjectState::Kind::Cloud:
     add(tr("S&ync Now"), "file.sync");
     add(tr("&Check for Newer Versions"), "file.check_remote");
-    add(tr("Version &History..."), "file.version_history");
-    add(tr("Project &Settings..."), "file.project_settings");
+    add(tr("Version &History…"), "file.version_history");
+    add(tr("Project &Settings…"), "file.project_settings");
     add(tr("Open in &Browser"), "file.remote_browser");
-    add(tr("New &Design..."), "file.new_design"); // mitcad#145
+    add(tr("New &Design…"), "file.new_design"); // mitcad#145
     break;
   case ProjectState::Kind::Local:
-    add(tr("Version &History..."), "file.version_history");
-    add(tr("Project &Settings..."), "file.project_settings");
-    add(tr("New &Design..."), "file.new_design"); // mitcad#145
+    add(tr("Version &History…"), "file.version_history");
+    add(tr("Project &Settings…"), "file.project_settings");
+    add(tr("New &Design…"), "file.new_design"); // mitcad#145
     break;
   case ProjectState::Kind::None:
   case ProjectState::Kind::NoHistory:
-    add(tr("&Save to Project..."), "file.save_to_project");
+    add(tr("&Save to Project…"), "file.save_to_project");
     break;
   }
   bool separated = false;

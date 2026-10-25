@@ -21,8 +21,13 @@ pub mod features;
 pub mod file;
 mod ids;
 mod kernel;
+// Materials as objects: density, appearance and filament (mitcad#640).
+pub mod material;
 mod parameters;
 mod print_fits;
+// The print settings' key map: printer, process and filament keys and
+// their slicer dialects (mitcad#640).
+pub mod print_keys;
 mod profile;
 mod recompute;
 pub mod sheet;
@@ -296,3 +301,33 @@ pub mod print_analysis;
 pub use document::{EstimateCheck, OverhangCheck, PrintAnalysis, ThinWallCheck};
 #[cfg(test)]
 mod print_analysis_tests;
+// Materials as objects and components' default materials (mitcad#640).
+pub use document::{AppearanceChoice, DeletedMaterial, MaterialSource};
+#[cfg(test)]
+mod material_tests;
+// Printer and process profiles and what a body prints with (mitcad#640,
+// part 3).
+pub mod print_profile;
+pub use document::{EffectivePrint, PrintFrom, PrintTarget};
+#[cfg(test)]
+mod print_profile_tests;
+// Libraries of materials and print profiles: base, user and project
+// (mitcad#640, part 4).
+pub mod print_library;
+pub use document::LibraryUpdate;
+#[cfg(test)]
+mod print_library_tests;
+// Slicers' settings files: import and export by dialect (mitcad#640, part
+// 5).
+pub mod print_files;
+pub use document::read_print_file;
+// Measurement objects kept in the design (mitcad#649).
+pub use document::{MEASUREMENT_COLORS, MeasureKind, MeasurePick, Measurement, NewMeasurement};
+#[cfg(test)]
+mod measurement_tests;
+// The parameters as CSV: Mitcad's table and the `.f3d` application's
+// parameter table (mitcad#666).
+pub mod parameters_csv;
+pub use document::{CsvAction, CsvImport, CsvLimits, CsvRowOutcome};
+#[cfg(test)]
+mod parameters_csv_tests;

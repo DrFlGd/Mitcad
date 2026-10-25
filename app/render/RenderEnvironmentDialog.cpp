@@ -8,6 +8,7 @@
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -42,6 +43,8 @@
 
 #include "../framework/Dialogs.hpp"
 
+#include "../platform/MacDialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -69,7 +72,7 @@ RenderEnvironmentDialog::RenderEnvironmentDialog(DocumentHost& host, OcctViewer&
   // another, so that the dialog stays narrow beside the view.
   auto* outer = new QVBoxLayout(this);
   m_rendered = new QCheckBox(tr("Rendered view"));
-  m_rendered->setToolTip(tr("View > Rendered: the view shows the bodies path traced in these settings"));
+  m_rendered->setToolTip(tr("View › Visual Style › Rendered: the view shows the bodies path traced in these settings"));
   outer->addWidget(m_rendered);
   m_pages = new QTabWidget;
   outer->addWidget(m_pages);
@@ -96,6 +99,7 @@ RenderEnvironmentDialog::RenderEnvironmentDialog(DocumentHost& host, OcctViewer&
 
   const auto group = [layout](const QString& title) {
     auto* box = new QGroupBox(title);
+    mac::styleSection(box);
     auto* form = new QFormLayout(box);
     layout->addWidget(box);
     return form;
@@ -113,7 +117,7 @@ RenderEnvironmentDialog::RenderEnvironmentDialog(DocumentHost& host, OcctViewer&
   m_image->setPlaceholderText(tr("An .hdr or .exr file"));
   m_image->setToolTip(tr("An equirectangular HDR image all around the design, relative to the design's folder or "
                          "absolute"));
-  m_browse = new QPushButton(tr("Browse..."));
+  m_browse = new QPushButton(tr("Browse…"));
   m_browse->setAutoDefault(false);
   imageRow->addWidget(m_image, 1);
   imageRow->addWidget(m_browse);
@@ -206,20 +210,18 @@ RenderEnvironmentDialog::RenderEnvironmentDialog(DocumentHost& host, OcctViewer&
   setErrorStyleSheet(m_message);
   outer->addWidget(m_message);
 
-  auto* buttons = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
   m_reset = new QPushButton(tr("Reset"));
   m_reset->setToolTip(tr("The default settings: the studio over the view's background, shadows on the ground"));
   m_close = new QPushButton(tr("Close"));
-  for (QPushButton* button : {m_reset, m_close}) {
-    button->setAutoDefault(false);
-  }
-  buttons->addWidget(m_reset);
-  buttons->addStretch(1);
-  buttons->addWidget(m_close);
-  outer->addLayout(buttons);
+  buttons->addButton(m_reset, QDialogButtonBox::ResetRole);
+  buttons->addButton(m_close, QDialogButtonBox::RejectRole);
+  mac::styleDialogButtons(buttons, m_close);
+  outer->addWidget(buttons);
   connect(m_reset, &QPushButton::clicked, this, &RenderEnvironmentDialog::reset);
-  connect(m_close, &QPushButton::clicked, this, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
   refresh();
+  mac::styleDialog(this);
 }
 
 QDoubleSpinBox* RenderEnvironmentDialog::addNumber(const QString& key, double low, double high, double step,
@@ -537,7 +539,9 @@ QWidget* RenderEnvironmentDialog::buildLights() {
   listRow->addWidget(m_lightList, 1);
   m_deleteLight = new QPushButton(tr("Delete"));
   m_deleteLight->setToolTip(tr("Deletes the chosen light"));
+#ifndef Q_OS_MACOS
   listRow->addWidget(m_deleteLight);
+#endif
   column->addLayout(listRow);
   auto* addRow = new QHBoxLayout;
   m_newLightKind = new QComboBox;
@@ -549,8 +553,17 @@ QWidget* RenderEnvironmentDialog::buildLights() {
   m_addLight = new QPushButton(tr("Add"));
   m_addLight->setToolTip(tr("Adds a light of this kind, placed at the camera and shining where it looks"));
   addRow->addWidget(m_newLightKind, 1);
+#ifdef Q_OS_MACOS
+  auto* lightButtons = new QHBoxLayout;
+  lightButtons->setSpacing(0);
+  lightButtons->addWidget(m_addLight);
+  lightButtons->addWidget(m_deleteLight);
+  addRow->addLayout(lightButtons);
+#else
   addRow->addWidget(m_addLight);
+#endif
   column->addLayout(addRow);
+  mac::styleListButtons(m_addLight, m_deleteLight);
   for (QPushButton* button : {m_addLight, m_deleteLight}) {
     button->setAutoDefault(false);
   }

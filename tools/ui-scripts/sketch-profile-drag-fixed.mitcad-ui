@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# A fixed circle keeps its geometry when dragged; its profile must still
+# return after release and cover the original interior.
+expect-ever 'View area'
+wait-idle
+dblclick-logged 'Timeline Sketch1'
+expect-log 'Editing sketch F1 \(Sketch1\)'
+command view.fit
+expect-profiles 1
+mark
+sketch-pointer press 9.5 2.5
+sketch-pointer move 7.5 2.5
+expect-profiles 0
+sketch-pointer release 7.5 2.5
+expect-log 'Dragged c1 to'
+expect-profiles 1
+sketch-click 8 3.5
+expect-selection 1 1
+expect-never 'OCCT view event failed|TestDriver: FAIL'

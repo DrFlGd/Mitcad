@@ -196,7 +196,8 @@ impl<S> FeatureResult<S> {
 pub(crate) enum Read {
     SheetRules(FeatureUid, Option<Version>),
     Sheet(BodyUid, Option<Version>),
-    /// A parameter value (as bits), None when missing.
+    /// A parameter value (as bits; a text parameter's text as its hash,
+    /// mitcad#664), None when missing.
     Param(ParamId, Option<u64>),
     Sketch(FeatureUid, Option<Version>),
     Body(BodyUid, Option<Version>),
@@ -242,7 +243,8 @@ impl Read {
                 env.sheet_rules.get(uid).map(|s| s.version) == *version
             }
             Self::Sheet(uid, version) => env.sheets.get(uid).map(|s| s.version) == *version,
-            Self::Param(id, bits) => env.params.value(*id).map(f64::to_bits) == *bits,
+            // A number's bits, a text's hash (mitcad#664).
+            Self::Param(id, bits) => env.params.read_bits(*id) == *bits,
             Self::Sketch(uid, version) => env.sketches.get(uid).map(|s| s.version) == *version,
             Self::Body(uid, version) => env.bodies.get(uid).map(|b| b.version) == *version,
             Self::AllBodies(bodies) => env
@@ -766,6 +768,21 @@ impl<S> Cache<S> {
             .collect();
         usage.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.uid.cmp(&b.uid)));
         usage
+    }
+
+    /// The definition a feature's result was evaluated from, while the
+    /// cache keeps it (mitcad#679: the `sketch` query shows a sketch's
+    /// evaluated solve while its definition is the same).
+    pub(crate) fn definition_of(
+        &self,
+        uid: FeatureUid,
+        output: &Arc<Output<S>>,
+    ) -> Option<&FeatureDef> {
+        self.entries
+            .get(&uid)?
+            .iter()
+            .find(|e| Arc::ptr_eq(&e.output, output))
+            .map(|e| &e.def)
     }
 }
 

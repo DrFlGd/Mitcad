@@ -6,8 +6,14 @@
 //! The live profile defers tool execution to the application's document owner.
 //! Calls run synchronously; cancellation of an active kernel call is not offered.
 
+pub mod assistant_setup;
 mod catalog;
 mod framing;
+// Compact command results, command arrays (mitcad#689).
+mod changes;
+pub use changes::{
+    SNAPSHOT_QUERIES, TimelineMode, command_document, entry_failed, evaluated_features, recomputed,
+};
 
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
@@ -280,10 +286,10 @@ impl<B: Backend> Session<B> {
         self.phase = Phase::AwaitingInitialized;
         let instructions = match self.profile {
             Profile::Headless => {
-                "Local headless CAD documents. Read mitcad://reference/commands for model operations. Use the explicit document handle on every call. Files are confined to the configured workspace. Commands are single objects; lengths default to millimetres. Documents last until closed or the server exits."
+                "Local headless CAD documents. Read mitcad://reference/commands for model operations. Use the explicit document handle on every call. Files are confined to the configured workspace. A model_command is one command object or an array of them run in order (stopping at the first refusal, which undoes the ones before it, or at the first failed feature); its result lists what it changed (timeline: full gives the whole timeline and bodies). Queries are single objects; lengths default to millimetres. Documents last until closed or the server exits."
             }
             Profile::Live => {
-                "Control the document already open in the Mitcad application, alongside its user. Call document_list to obtain its current handle; handles become invalid when the document is replaced. Read mitcad://reference/commands for model operations. Commands and queries are single objects; lengths default to millimetres. Queries work at any time except while the model computes (the result then says busy and when to retry). While a sketch is open, its sketch.* commands go through the sketch session; other model commands wait until the sketch or command panel is finished, and editing is refused when the document is read-only. ui_state shows what the user sees (mode, selection, Sketch Palette warnings, messages), ui_log the application's log, ui_screenshot the view; ui_select points at entities, ui_command runs the application's commands by id, ui_camera reads or sets the view's camera (and frames a box, the shown bodies or the selection) for screenshots. document_save saves to the document's own path, or with path (Save As) into a folder the user allows agents to use; document_open opens a design from such a folder in place of the open document; document_list lists the allowed folders. Changes you make are labelled (agent) in the undo text and undo with Ctrl+Z. File imports, closing and exporting are not available through this connection. Disconnecting leaves the application's document open, including unsaved changes."
+                "Control the document already open in the Mitcad application, alongside its user. Call document_list to obtain its current handle; handles become invalid when the document is replaced. Read mitcad://reference/commands for model operations. A model_command is one command object or an array of them run in order as one undo step (stopping at the first refusal, which undoes the ones before it, or at the first failed feature); its result lists what it changed (timeline: full gives the whole timeline and bodies). Queries are single objects; lengths default to millimetres. Queries work at any time except while the model computes (the result then says busy and when to retry). While a sketch is open, its sketch.* commands go through the sketch session; other model commands wait until the sketch or command panel is finished, and editing is refused when the document is read-only. ui_state shows what the user sees (mode, selection, Sketch Palette warnings, messages), ui_log the application's log, ui_screenshot the view; ui_select points at entities, ui_command runs the application's commands by id, ui_camera reads or sets the view's camera (and frames a box, the shown bodies or the selection) for screenshots. document_save saves to the document's own path, or with path (Save As) into a folder the user allows agents to use; document_open opens a design from such a folder in place of the open document; document_list lists the allowed folders; model_export writes the bodies (3MF, STL, STEP, drawings, ...) to a new file in such a folder without changing the document, and ui_screenshot can write its image there too. Changes you make are labelled (agent) in the undo text and undo with Ctrl+Z. File imports and closing are not available through this connection. Disconnecting leaves the application's document open, including unsaved changes."
             }
         };
         success(
@@ -326,9 +332,24 @@ impl<B: Backend> Session<B> {
         Dispatch::Tool {
             id: id.clone(),
             name: name.to_owned(),
-            arguments: arguments.clone(),
+            arguments: mcp_defaults(name, arguments),
         }
     }
+}
+
+/// What MCP calls default to where the model's own default is too large
+/// for a tool response (mitcad#689): `print_thickness` answers its summary
+/// only unless `triangles` is given.
+fn mcp_defaults(name: &str, arguments: &Value) -> Value {
+    let mut arguments = arguments.clone();
+    if name == "model_query"
+        && let Some(query) = arguments.get_mut("query").and_then(Value::as_object_mut)
+        && query.get("query").and_then(Value::as_str) == Some("print_thickness")
+        && !query.contains_key("triangles")
+    {
+        query.insert("triangles".to_owned(), json!(false));
+    }
+    arguments
 }
 
 struct DeferredBackend;
@@ -439,11 +460,38 @@ impl LiveSession {
         } else {
             is_error
         };
-        Ok(bounded_response(success(
-            &id,
-            tool_content(value, is_error),
-        )))
+        let content = if name == "ui_screenshot" && !is_error {
+            image_content(value)
+        } else {
+            tool_content(value, is_error)
+        };
+        Ok(bounded_response(success(&id, content)))
     }
+}
+
+/// A screenshot as an MCP image block after its text (mitcad#689): the
+/// application's `image_base64` leaves the JSON, which keeps the size,
+/// the format and `mime_type`. A result without an image (one written to
+/// a file) stays text.
+fn image_content(mut value: Value) -> Value {
+    let data = value
+        .as_object_mut()
+        .and_then(|fields| fields.remove("image_base64"));
+    let Some(Value::String(data)) = data else {
+        return tool_content(value, false);
+    };
+    let mime = value["mime_type"]
+        .as_str()
+        .unwrap_or("image/png")
+        .to_owned();
+    json!({
+        "content": [
+            {"type": "text", "text": value.to_string()},
+            {"type": "image", "data": data, "mimeType": mime}
+        ],
+        "structuredContent": value,
+        "isError": false
+    })
 }
 
 /// The outcome of a model command the model applied (mitcad#401): `value`

@@ -94,22 +94,51 @@ impl<K: Kernel> Document<K> {
     /// Runs a script; fails at the first command or expectation that fails.
     /// Returns the results of the commands as a JSON array.
     pub fn run_script(&mut self, json: &str) -> Result<String, ApiError> {
+        self.run_script_timed(json, None)
+    }
+
+    /// Runs a script as `run_script` does and, with `times`, appends how
+    /// long each step took (`mitcad-cli run --timings`, mitcad#670): one
+    /// line per command or expectation, `Timing steps[3] sketch.drag:
+    /// 1.25 ms` (an expectation's name is `expect`, with its query's name
+    /// when it has one), in the format of the application's
+    /// MITCAD_LOG_TIMING lines.
+    pub fn run_script_timed(
+        &mut self,
+        json: &str,
+        mut times: Option<&mut String>,
+    ) -> Result<String, ApiError> {
         let Value::Array(steps) = read_json(json)? else {
             return Err(ApiError("a script is a JSON array of steps".to_owned()));
         };
         let mut results = Vec::new();
         for (i, step) in steps.into_iter().enumerate() {
             let fail = |e: ApiError| ApiError(format!("steps[{i}]: {e}"));
-            if let Some(expect) = step.get("expect") {
+            let started = std::time::Instant::now();
+            let name = if let Some(expect) = step.get("expect") {
                 let expectation: Expectation = serde_json::from_value(expect.clone())
                     .map_err(|e| fail(ApiError(format!("invalid expectation: {e}"))))?;
                 self.check(&expectation).map_err(fail)?;
+                match expect.pointer("/query/query").and_then(Value::as_str) {
+                    Some(query) => format!("expect {query}"),
+                    None => "expect".to_owned(),
+                }
             } else if step.get("comment").is_some()
                 && step.as_object().is_some_and(|o| o.len() == 1)
             {
                 continue;
             } else {
+                let name = step
+                    .get("cmd")
+                    .and_then(Value::as_str)
+                    .unwrap_or("command")
+                    .to_owned();
                 results.push(self.run_command(step).map_err(fail)?);
+                name
+            };
+            if let Some(times) = times.as_deref_mut() {
+                let ms = started.elapsed().as_secs_f64() * 1e3;
+                times.push_str(&format!("Timing steps[{i}] {name}: {ms:.2} ms\n"));
             }
         }
         Ok(Value::Array(results).to_string())

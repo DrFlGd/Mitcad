@@ -110,6 +110,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/RenderService.plist" DESTINATION
   "${MITCAD_BUNDLE_DIR}/Contents/XPCServices/org.mitcad.renderer.xpc/Contents" RENAME Info.plist)
 install(CODE "set(MITCAD_BUILD_RENDER_SERVICE_EXECUTABLE [[$<TARGET_FILE:mitcad-render-service>]])")
 install(TARGETS mitcad-updater RUNTIME DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
+install(TARGETS mitcad-mcp-launcher RUNTIME DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
 install(DIRECTORY "${MITCAD_CYCLES_RUNTIME}/"
         DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/Resources/cycles")
 # The CLI target is declared after this directory. Its generated path is

@@ -62,6 +62,9 @@ mod tests;
 // Equal spacing (mitcad#221).
 #[cfg(test)]
 mod spacing_tests;
+// Regions of many loops (mitcad#678).
+#[cfg(test)]
+mod regions_tests;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -1137,6 +1140,35 @@ pub struct Projection {
     /// ([`project::join_curves`]). Each name gives one curve.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chain: Vec<TopoName>,
+}
+
+/// A sketch text whose text is a text parameter's value (mitcad#664):
+/// `{"text": "t5", "value": "Label"}` in a sketch's `text_values`. The
+/// parameter is a text parameter of the document or the sketch's own one
+/// for an expression (its slot is `texts[t5].text`); the text follows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextValue<P> {
+    #[serde(with = "text_serde")]
+    pub text: EntityUid,
+    pub value: P,
+}
+
+impl<P> TextValue<P> {
+    /// The slot of its value: `texts[t5].text`.
+    pub fn slot(&self) -> String {
+        format!("texts[t{}].text", self.text.0)
+    }
+
+    pub fn map_value<Q, E>(
+        &self,
+        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
+    ) -> Result<TextValue<Q>, E> {
+        Ok(TextValue {
+            text: self.text,
+            value: f(&self.slot(), &self.value)?,
+        })
+    }
 }
 
 /// Text: the outlines of its characters' glyphs

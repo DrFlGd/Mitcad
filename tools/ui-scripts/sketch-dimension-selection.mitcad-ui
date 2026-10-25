@@ -1,0 +1,164 @@
+# SPDX-License-Identifier: MIT
+# Each selection goes through the viewport, then D and exactly one placement
+# click. Undo checks that each typed dimension is one document action and
+# restores the same synthetic geometry for the next case.
+expect-ever 'View area'
+wait-idle
+window-resize 1400 990
+dblclick-logged 'Timeline Sketch1'
+expect-log 'Editing sketch F1 \(Sketch1\)'
+command view.fit
+capture-undo-depth baseline
+
+# One line: the placement click must open the value editor immediately.
+sketch-click 25 10
+expect-selection 1 0
+mark
+key d
+sketch-click 25 17
+expect-log 'Sketch value editor at'
+type '30 mm'
+key Return
+expect-log 'Added dimension \S+ length \S+ = 30 mm'
+expect-undo-depth ${baseline} 1
+key Escape
+key ctrl+z
+expect-undo-depth ${baseline} 0
+
+# One circle becomes a diameter; one arc becomes a radius.
+sketch-click 38 60
+expect-selection 1 0
+mark
+key d
+sketch-click 44 70
+expect-log 'Sketch value editor at'
+type '16 mm'
+key Return
+expect-log 'Added dimension \S+ diameter \S+ = 16 mm'
+expect-undo-depth ${baseline} 1
+key Escape
+key ctrl+z
+expect-undo-depth ${baseline} 0
+
+sketch-click 67.071067812 67.071067812
+expect-selection 1 0
+mark
+key d
+sketch-click 78 74
+expect-log 'Sketch value editor at'
+type '10 mm'
+key Return
+expect-log 'Added dimension \S+ radius \S+ = 10 mm'
+expect-undo-depth ${baseline} 1
+key Escape
+key ctrl+z
+expect-undo-depth ${baseline} 0
+
+# Two points retain their pick order and measure their 20 mm separation.
+sketch-click 10 85
+sketch-click 30 85 ctrl
+expect-selection 2 0
+mark
+key d
+sketch-click 20 78
+expect-log 'Sketch value editor at'
+type '20 mm'
+key Return
+expect-log 'Added dimension \S+ distance \S+ = 20 mm'
+expect-undo-depth ${baseline} 1
+key Escape
+key ctrl+z
+expect-undo-depth ${baseline} 0
+
+# Point-line distance and both line-line branches.
+sketch-click 10 85
+sketch-click 25 30 ctrl
+expect-selection 2 0
+mark
+key d
+sketch-click 5 55
+expect-log 'Sketch value editor at'
+type '55 mm'
+key Return
+expect-log 'Added dimension \S+ point_line_distance \S+ = 55 mm'
+expect-undo-depth ${baseline} 1
+key Escape
+key ctrl+z
+expect-undo-depth ${baseline} 0
+
+sketch-click 25 10
+sketch-click 25 30 ctrl
+expect-selection 2 0
+mark
+key d
+sketch-click 45 20
+expect-log 'Sketch value editor at'
+type '20 mm'
+key Return
+expect-log 'Added dimension \S+ line_distance \S+ = 20 mm'
+expect-undo-depth ${baseline} 1
+key Escape
+key ctrl+z
+expect-undo-depth ${baseline} 0
+
+sketch-click 25 10
+sketch-click 60 20 ctrl
+expect-selection 2 0
+mark
+key d
+sketch-click 62 16
+expect-log 'Sketch value editor at'
+type '45 deg'
+key Return
+expect-log 'Added dimension \S+ angle \S+ = 45 deg'
+expect-undo-depth ${baseline} 1
+key Escape
+key ctrl+z
+expect-undo-depth ${baseline} 0
+
+# A lone point cannot define a dimension: the selection is cleared and the
+# next click picks a line instead of placing a value against the old point.
+sketch-click 10 85
+expect-selection 1 0
+mark
+key d
+expect-selection 0 0
+sketch-click 25 10
+expect-no-log 'Sketch value editor at'
+sketch-click 25 17
+expect-log 'Sketch value editor at'
+type '30 mm'
+key Return
+expect-log 'Added dimension \S+ length \S+ = 30 mm'
+key Escape
+key ctrl+z
+expect-undo-depth ${baseline} 0
+
+# D with no selection still waits for the first pick.
+expect-selection 0 0
+mark
+key d
+sketch-click 25 10
+expect-no-log 'Sketch value editor at'
+sketch-click 25 17
+expect-log 'Sketch value editor at'
+type '30 mm'
+key Return
+expect-log 'Added dimension \S+ length \S+ = 30 mm'
+key Escape
+key ctrl+z
+expect-undo-depth ${baseline} 0
+
+# Three anchors keep the existing Equal Spacing Dimension workflow.
+sketch-click 10 85
+sketch-click 30 85 ctrl
+sketch-click 50 85 ctrl
+expect-selection 3 0
+mark
+key d
+expect-log 'Sketch Dimension on 3 objects: Equal Spacing Dimension'
+expect-log 'Command Equal Spacing Dimension started'
+key Escape
+expect-log 'Command Equal Spacing Dimension cancelled'
+expect-undo-depth ${baseline} 0
+expect-never 'Dimension not added:|OCCT view event failed|TestDriver: FAIL'

@@ -36,6 +36,7 @@
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "../framework/WindowStyle.hpp"
+#include "../view/MeasurementDrawing.hpp"
 
 namespace mitcad {
 namespace {
@@ -134,7 +135,7 @@ private:
 // Draws a row: the style's item with the light bulb in its decoration,
 // and the radio button right after the name, whose text is elided early
 // enough to leave room for it.
-class BrowserDelegate : public QStyledItemDelegate {
+class BrowserDelegate : public TreeItemDelegate {
 public:
   // Where a row's parts are, in the view's coordinates.
   struct Parts {
@@ -143,7 +144,7 @@ public:
     QRect radio; // the radio button (empty without one)
   };
 
-  using QStyledItemDelegate::QStyledItemDelegate;
+  using TreeItemDelegate::TreeItemDelegate;
 
   // The parts of a row whose option the view gave (its rect, font, state).
   Parts parts(const QStyleOptionViewItem& option, const QModelIndex& index) const {
@@ -152,12 +153,21 @@ public:
     return layout(opt, index);
   }
 
+  QRect nameTextRect(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    QStyleOptionViewItem opt = option;
+    initStyleOption(&opt, index);
+    const Parts at = layout(opt, index);
+    return QRect(at.name.left(), opt.rect.top() + (opt.rect.height() - opt.fontMetrics.height()) / 2,
+                 at.name.width(), opt.fontMetrics.height());
+  }
+
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
     QStyleOptionViewItem opt = option;
     initStyleOption(&opt, index);
     const Parts at = layout(opt, index);
+    hideEditedText(opt, index);
     style(opt)->drawControl(QStyle::CE_ItemViewItem, &opt, painter, opt.widget);
-    if (!at.radio.isEmpty()) {
+    if (!editing(index) && !at.radio.isEmpty()) {
       const bool active = index.data(kRadioRole).toBool();
       themeIcon(active ? QStringLiteral("radio-on") : QStringLiteral("radio-off"))
           .paint(painter, at.radio, Qt::AlignCenter,
@@ -192,6 +202,14 @@ public:
   }
 
 protected:
+  QRect editorRect(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    const Parts at = parts(option, index);
+    // Match the custom bulb/icon/name layout, rather than the style's
+    // default item editor rectangle. The radio returns when editing ends.
+    return QRect(QPoint(at.name.left() - 2, option.rect.top() + 1),
+                 QPoint(option.rect.right() - 2, option.rect.bottom() - 1));
+  }
+
   void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
     QStyledItemDelegate::initStyleOption(option, index);
     const QVariant eye = index.data(kEyeRole);
@@ -272,16 +290,6 @@ public:
     return size;
   }
 
-  QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-    // The tree's base colour is transparent; an editor needs its own.
-    QWidget* editor = BrowserDelegate::createEditor(parent, option, index);
-    if (editor != nullptr) {
-      editor->setPalette(QApplication::palette());
-      editor->setAutoFillBackground(true);
-    }
-    return editor;
-  }
-
 protected:
   void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
     BrowserDelegate::initStyleOption(option, index);
@@ -318,15 +326,6 @@ public:
     return size;
   }
 
-  QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-    // The tree's base colour is transparent; an editor needs its own.
-    QWidget* editor = BrowserDelegate::createEditor(parent, option, index);
-    if (editor != nullptr) {
-      editor->setPalette(QApplication::palette());
-      editor->setAutoFillBackground(true);
-    }
-    return editor;
-  }
 };
 
 struct OriginDatum {
@@ -1009,6 +1008,10 @@ QString BrowserPanel::keyOf(const BrowserNode& node) const {
     return QStringLiteral("contact:") + node.uid;
   case BrowserNode::Type::MotionLinks:
     return QStringLiteral("links") + at;
+  case BrowserNode::Type::Measurements:
+    return QStringLiteral("measurements");
+  case BrowserNode::Type::Measurement:
+    return QStringLiteral("measurement:") + node.uid;
   case BrowserNode::Type::None:
     break;
   }
@@ -1036,6 +1039,7 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
                          node.type == BrowserNode::Type::Feature ||
                          node.type == BrowserNode::Type::MotionStudy ||
                          node.type == BrowserNode::Type::ContactSet ||
+                         node.type == BrowserNode::Type::Measurement ||
                          (node.type == BrowserNode::Type::NamedView &&
                           node.uid.startsWith(QStringLiteral("named:")));
   if (renamable) {
@@ -1047,7 +1051,8 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
                     node.type == BrowserNode::Type::Sketches ||
                     node.type == BrowserNode::Type::Construction || node.type == BrowserNode::Type::Analyses ||
                     node.type == BrowserNode::Type::Joints || node.type == BrowserNode::Type::MotionStudies ||
-                    node.type == BrowserNode::Type::ContactSets || node.type == BrowserNode::Type::MotionLinks;
+                    node.type == BrowserNode::Type::ContactSets || node.type == BrowserNode::Type::MotionLinks ||
+                    node.type == BrowserNode::Type::Measurements;
   item->setExpanded(m_expanded.value(key, open));
   return item;
 }
@@ -1407,11 +1412,11 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
   BrowserNode node;
   node.component = rootNode.uid;
   node.type = BrowserNode::Type::Settings;
-  node.name = tr("Document Settings");
+  node.name = tr("Design Settings");
   QTreeWidgetItem* settings = addRow(rootItem, node, QStringLiteral("settings"));
   node.type = BrowserNode::Type::Units;
   node.name = tr("Units: %1").arg(snapshot.lengthUnit);
-  addRow(settings, node, QStringLiteral("units"), tr("Double-click to change the document's unit"));
+  addRow(settings, node, QStringLiteral("units"), tr("Double-click to change the design's unit"));
 
   node.type = BrowserNode::Type::NamedViews;
   node.name = tr("Named Views");
@@ -1442,20 +1447,16 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
   node.hasEye = true;
   node.visible = originShown;
   QTreeWidgetItem* origin = addRow(rootItem, node, QStringLiteral("origin"));
-  if (!originShown) {
-    origin->setForeground(kName, kHiddenText);
-  }
   for (const OriginDatum& datum : kOriginDatums) {
     BrowserNode row;
     row.type = BrowserNode::Type::OriginDatum;
     row.component = rootNode.uid;
     row.uid = QString::fromLatin1(datum.uid);
     row.name = QString::fromLatin1(datum.name);
-    QTreeWidgetItem* item = addRow(origin, row, QString::fromLatin1(datum.icon));
-    if (!originShown) {
-      item->setForeground(kName, kHiddenText);
-    }
+    addRow(origin, row, QString::fromLatin1(datum.icon));
   }
+  m_originShown = originShown;
+  styleOriginRows(origin);
 
   // The features under each sketch they use (mitcad#177): those without rows
   // of their own (sketches, construction geometry and joints have theirs),
@@ -1549,6 +1550,46 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
     }
   }
 
+  // Measurement objects (mitcad#649), each with its light bulb and a
+  // swatch of its colour; one whose picks are gone with a warning, in the
+  // failure colour, its tooltip saying why.
+  if (!snapshot.measurements.isEmpty()) {
+    BrowserNode folder;
+    folder.type = BrowserNode::Type::Measurements;
+    folder.component = rootNode.uid;
+    folder.name = tr("Measurements");
+    QTreeWidgetItem* measurements = addRow(rootItem, folder, QStringLiteral("folder"));
+    const double unit = lengthUnitMillimetres(snapshot.lengthUnit);
+    for (const QJsonValue& value : snapshot.measurements) {
+      const QJsonObject measurement = value.toObject();
+      BrowserNode row;
+      row.type = BrowserNode::Type::Measurement;
+      row.component = rootNode.uid;
+      row.uid = measurement.value(QStringLiteral("name")).toString();
+      row.name = row.uid;
+      row.visible = measurement.value(QStringLiteral("visible")).toBool(true);
+      row.hasEye = true;
+      row.featureType = measurement.value(QStringLiteral("kind")).toString();
+      const QString error = measurement.value(QStringLiteral("error")).toString();
+      const QString tooltip =
+          error.isEmpty()
+              ? QStringLiteral("%1 = %2").arg(row.name, measurementValueText(row.featureType,
+                                                                             measurement.value(QStringLiteral("value")).toDouble(),
+                                                                             snapshot.lengthUnit, unit))
+              : tr("%1: broken: %2").arg(row.name, error);
+      QTreeWidgetItem* item =
+          addRow(measurements, row, error.isEmpty() ? QStringLiteral("measure") : QStringLiteral("warning"), tooltip);
+      if (!error.isEmpty()) {
+        item->setForeground(kName, kFailedText);
+      } else {
+        item->setIcon(kName, measurementSwatch(QColor(measurement.value(QStringLiteral("color")).toString())));
+        if (!row.visible) {
+          item->setForeground(kName, kHiddenText);
+        }
+      }
+    }
+  }
+
   // Motion studies and contact sets (mitcad#454), folders of their own
   // beside the Joints.
   if (!snapshot.motionStudies.isEmpty()) {
@@ -1615,6 +1656,69 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
   emit contentHeightChanged();
   QTimer::singleShot(0, this, &BrowserPanel::logLayout);
   queueFit(); // a design opened: its rows are here now (designOpened)
+}
+
+void BrowserPanel::styleOriginRows(QTreeWidgetItem* folder) {
+  const auto style = [](QTreeWidgetItem* item, bool greyed) {
+    if (greyed) {
+      item->setForeground(kName, kHiddenText);
+    } else {
+      item->setData(kName, Qt::ForegroundRole, QVariant());
+    }
+  };
+  style(folder, !m_originShown);
+  for (int i = 0; i < folder->childCount(); ++i) {
+    QTreeWidgetItem* row = folder->child(i);
+    const bool plane = datumKind(nodeOf(row).uid) == SelectKind::Plane;
+    style(row, !m_originShown && !(m_originOffered && plane));
+  }
+}
+
+void BrowserPanel::offerOriginPlanes(bool offer) {
+  if (offer == m_originOffered) {
+    return;
+  }
+  m_originOffered = offer;
+  QTreeWidgetItem* folder = nullptr;
+  for (auto it = m_nodes.cbegin(); it != m_nodes.cend(); ++it) {
+    if (it.value().type == BrowserNode::Type::Origin) {
+      folder = it.key();
+      break;
+    }
+  }
+  BrowserNode origin;
+  origin.type = BrowserNode::Type::Origin;
+  const QString key = keyOf(origin);
+  if (offer) {
+    m_originWasExpanded = folder != nullptr ? folder->isExpanded() : m_expanded.value(key, false);
+  }
+  // Open for the pick, then as it was; remembered so, as a rebuild meanwhile
+  // keeps it.
+  const bool open = offer || m_originWasExpanded;
+  m_expanded.insert(key, open);
+  QString path = QStringLiteral("Origin");
+  if (folder != nullptr) {
+    path = nodeOf(folder).path;
+    const bool wasBuilding = m_building;
+    m_building = true; // the signals below remember nothing
+    folder->setExpanded(open);
+    m_building = wasBuilding;
+    styleOriginRows(folder);
+    if (offer && folder->childCount() > 0) {
+      // The planes in sight, the folder's row too when they fit.
+      m_tree->scrollToItem(folder->child(folder->childCount() - 1));
+      m_tree->scrollToItem(folder);
+    }
+    emit contentHeightChanged();
+    TestSync::singleShot(0, this, [this] { logLayout(); });
+  }
+  const QString state = open ? QStringLiteral("open") : QStringLiteral("folded");
+  if (offer) {
+    qDebug().noquote() << QStringLiteral("Browser offers the origin planes: %1 %2; XY, XZ, YZ pickable")
+                              .arg(path, state);
+  } else {
+    qDebug().noquote() << QStringLiteral("Browser no longer offers the origin planes: %1 %2").arg(path, state);
+  }
 }
 
 void BrowserPanel::collapseAll() {

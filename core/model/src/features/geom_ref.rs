@@ -1333,11 +1333,44 @@ impl PathChain {
         self.pieces.iter().map(PathCurve::length).sum()
     }
 
+    /// Whether the chain ends where it starts (mitcad#673): within 1e-6 of
+    /// the size of its end points, as [`sketch_chain`] joins its curves.
+    pub(crate) fn closed(&self) -> bool {
+        let (Some(first), Some(last)) = (self.pieces.first(), self.pieces.last()) else {
+            return false;
+        };
+        let (a, b) = (first.point(0.0), last.point(last.length()));
+        let size = a.iter().chain(&b).fold(1.0f64, |m, v| m.max(v.abs()));
+        self.pieces.len() > 1 && norm(sub(a, b)) <= 1e-6 * size
+    }
+
+    /// The arc length of the chain's point nearest to `p` (a vertex
+    /// between two curves counts to the first).
+    pub(crate) fn nearest(&self, p: Vec3) -> f64 {
+        let mut best = (f64::INFINITY, 0.0);
+        let mut before = 0.0;
+        for piece in &self.pieces {
+            let local = piece.nearest(p);
+            let distance = norm(sub(piece.point(local), p));
+            if distance < best.0 - 1e-12 {
+                best = (distance, before + local);
+            }
+            before += piece.length();
+        }
+        best.1
+    }
+
     /// The point and the unit tangent at arc length `s`; before the start
     /// and past the end the first and the last curve go on (straight, or
     /// around their circle), and a vertex between two curves takes the
-    /// tangent of the first.
+    /// tangent of the first. Along a closed chain `s` goes round it again
+    /// (mitcad#673).
     pub(crate) fn at(&self, s: f64) -> (Vec3, Vec3) {
+        let s = if self.closed() {
+            s.rem_euclid(self.length())
+        } else {
+            s
+        };
         let mut before = 0.0;
         for (i, piece) in self.pieces.iter().enumerate() {
             let length = piece.length();
@@ -1578,7 +1611,7 @@ impl PathCurve {
     }
 
     /// The arc length of the path point nearest to `p`.
-    fn nearest(&self, p: Vec3) -> f64 {
+    pub(crate) fn nearest(&self, p: Vec3) -> f64 {
         match self {
             Self::Line {
                 start,
@@ -2431,6 +2464,39 @@ mod tests {
         assert_eq!(before.point, [-4.0, 0.0, 0.0]);
         let near = chain_point(&chain, PathParameter::Near([12.0, 18.0, 5.0]));
         assert_eq!(near.point, [10.0, 18.0, 0.0]);
+    }
+
+    #[test]
+    fn closed_chains_go_round_again() {
+        // mitcad#673: a square 10 a side, 40 long, closed where it began.
+        let line = |a: Vec3, b: Vec3| PathCurve::line(a, b).unwrap();
+        let corners = [
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 10.0, 0.0],
+            [0.0, 10.0, 0.0],
+        ];
+        let pieces: Vec<PathCurve> = (0..4)
+            .map(|i| line(corners[i], corners[(i + 1) % 4]))
+            .collect();
+        let square = PathChain {
+            pieces: pieces.clone(),
+            normal: [0.0, 0.0, 1.0],
+        };
+        assert!(square.closed());
+        assert_eq!(square.at(45.0).0, [5.0, 0.0, 0.0]);
+        assert_eq!(square.at(-5.0).0, [0.0, 5.0, 0.0]);
+        assert_eq!(square.at(25.0), square.at(65.0));
+        // The point nearest a point, by arc length.
+        assert_eq!(square.nearest([3.0, -2.0, 4.0]), 3.0);
+        assert_eq!(square.nearest([-1.0, 7.0, 0.0]), 33.0);
+        // Open, it goes on straight past its ends.
+        let open = PathChain {
+            pieces: pieces[..3].to_vec(),
+            normal: [0.0, 0.0, 1.0],
+        };
+        assert!(!open.closed());
+        assert_eq!(open.at(45.0).0, [-15.0, 10.0, 0.0]);
     }
 
     #[test]

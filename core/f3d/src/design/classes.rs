@@ -296,6 +296,13 @@ pub const ITEM_CLASSES: &[(&str, &str)] = &[
     ("7AFA0A65-B53C-472C-ACA4-5C7C0A65001C", "FlangeFeature"),
     ("B0EEF272-DF39-419E-905C-38FDB5032817", "PCBFeature"),
     ("99F6967E-ED35-4222-B906-5CCF0AC70B53", "MeshFeature"),
+    // Bodies aligned by geometry (mitcad#641): a move of bodies whose
+    // motion the item stores as a move's matrix.
+    ("359F7902-43B0-445C-8F4B-FED1D15B2680", "AlignFeature"),
+    // Bodies derived from another design (mitcad#641; the base class of
+    // `DerivedContext`, whose record it does not share): its base feature
+    // holds the bodies.
+    ("8ACBA2E5-5A4C-4438-8351-276DE96E6982", "ExternalDerived"),
 ];
 
 /// A cylinder primitive (mitcad#154, mitcad#25): `u32 operation | u8 1 |

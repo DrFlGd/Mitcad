@@ -150,6 +150,8 @@ constexpr double kHatchLift = 5e-3;
 constexpr double kHatchWidth = 1.5;
 // Cosmetic threads' rings: darker than the body, lighter than its edges.
 const Quantity_Color kThreadColor(0.30, 0.33, 0.40, Quantity_TOC_RGB);
+// The build volume's lines (mitcad#640): a muted blue.
+const Quantity_Color kBuildVolumeColor(0.25, 0.45, 0.75, Quantity_TOC_RGB);
 
 // A left press that moves further than this is a window selection.
 constexpr double kDragPixels = 4.0;
@@ -167,6 +169,7 @@ constexpr int kCubeOffset = OcctViewer::kCubeOffset;
 // A press on the cube orbits the view (Aspect_VKeyFlags of its own, which
 // no key gives).
 constexpr Aspect_VKeyFlags kCubeDrag = Aspect_VKeyFlags_META;
+constexpr Aspect_VKeyFlags kF4Drag = Aspect_VKeyFlags_META | Aspect_VKeyFlags_ALT;
 // Ctrl+Shift with a click or a window (mitcad#217: add and widen at once).
 constexpr Aspect_VKeyFlags kCtrlShift = Aspect_VKeyFlags_CTRL | Aspect_VKeyFlags_SHIFT;
 // A trackpad's scroll goes to the view as a drag of the left button with keys
@@ -621,6 +624,17 @@ occ::handle<AIS_Shape> makeBodyObject(const geometry::Shape& named, BodyDisplay:
 // job meshed it for display is never meshed here, on the UI thread
 // (viewMeshes, mitcad#589): its presentation and selection draw the faces
 // that have a triangulation.
+// Whether a face of the shape has a triangulation (a job meshed it).
+bool hasAnyTriangulation(const TopoDS_Shape& shape) {
+  for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+    TopLoc_Location location;
+    if (!BRep_Tool::Triangulation(TopoDS::Face(it.Current()), location).IsNull()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 occ::handle<AIS_Shape> makeBody(const geometry::Shape& named, BodyDisplay::Style style, const QColor& color,
                                 const std::vector<BodyDisplay::FaceLook>& faceLooks, VisualStyle visual,
                                 const QColor& paper) {
@@ -1063,6 +1077,46 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
     const auto info = m_pickInfo.find(dynamic_cast<const AIS_InteractiveObject*>(owner->Selectable().get()));
     return info == m_pickInfo.end() || !outsideActive(info->second.item);
   });
+  // Construction planes behind the model while a placement input takes
+  // picks (mitcad#656, setPlanesBehind).
+  mitcad::setPickLast(m_context, [this](const occ::handle<SelectMgr_EntityOwner>& owner) {
+    if (!m_planesBehind || owner.IsNull()) {
+      return false;
+    }
+    const auto item = itemFor(owner);
+    return item && item->kind == SelectKind::Plane;
+  });
+  mitcad::setPickSources(m_context, [this](const occ::handle<SelectMgr_EntityOwner>& owner)
+      -> const SelectMgr_SelectableObject* {
+    const auto* selectable = owner->Selectable().get();
+    const auto info = m_pickInfo.find(dynamic_cast<const AIS_InteractiveObject*>(selectable));
+    if (info == m_pickInfo.end() || !info->second.body) { return selectable; }
+    const SelectionItem& item = info->second.item;
+    // All overlays of this exact body occurrence share the same pick
+    // identity, even when the preview no longer displays the source body.
+    for (const auto& [object, other] : m_pickInfo) {
+      if (other.body && other.item.owner == item.owner && other.item.occurrence == item.occurrence &&
+          other.body->occt().IsSame(info->second.body->occt())) {
+        return object;
+      }
+    }
+    return selectable;
+  });
+  mitcad::setPickCovers(m_context, [this](const occ::handle<SelectMgr_EntityOwner>& owner)
+      -> const SelectMgr_SelectableObject* {
+    const auto info = m_pickInfo.find(dynamic_cast<const AIS_InteractiveObject*>(owner->Selectable().get()));
+    if (info == m_pickInfo.end() || !info->second.highlight || !info->second.body) { return nullptr; }
+    const SelectionItem& item = info->second.item;
+    // The body a command's preview shows changed under the overlay: its
+    // own shape is no longer the overlay's original topology.
+    for (const auto& [object, other] : m_pickInfo) {
+      if (!other.highlight && other.body && other.item.owner == item.owner &&
+          other.item.occurrence == item.occurrence && !other.body->occt().IsSame(info->second.body->occt())) {
+        return object;
+      }
+    }
+    return nullptr;
+  });
   m_context->SetPixelTolerance(qRound(kPickTolerance * devicePixelRatioF()));
   m_pickFilter = new Filter(this);
   m_context->AddFilter(m_pickFilter);
@@ -1259,10 +1313,11 @@ void OcctViewer::display(const occ::handle<AIS_Shape>& object, int displayMode, 
     m_context->Display(object, displayMode, -1, false);
     return;
   }
-  const bool isBody = info.body != nullptr;
+  const int selectionMode = info.body
+      ? AIS_Shape::SelectionMode(info.highlight && info.item.kind == SelectKind::Edge ? TopAbs_EDGE : TopAbs_FACE)
+      : 0;
   m_pickInfo[object.get()] = std::move(info);
-  m_context->Display(object, displayMode, isBody ? AIS_Shape::SelectionMode(TopAbs_FACE) : 0,
-                     false);
+  m_context->Display(object, displayMode, selectionMode, false);
   activatePicking(object);
 }
 
@@ -1955,6 +2010,20 @@ void OcctViewer::setProfiles(const std::vector<std::pair<ProfileKey, TopoDS_Shap
   sceneChanged();
 }
 
+void OcctViewer::removeSketchProfiles(const QString& sketch) {
+  ScopedTiming timing("defer sketch profiles");
+  const std::string uid = sketch.toStdString();
+  for (auto it = m_profiles.begin(); it != m_profiles.end();) {
+    if (it->first.first == uid) {
+      remove(it->second);
+      it = m_profiles.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  sceneChanged();
+}
+
 void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entities) {
   ScopedTiming timing("display sketch entities");
   // An entity with the signature it was shown with keeps its display.
@@ -2252,7 +2321,16 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
                       .arg(faces)
                       .arg(faces == 1 ? QString() : QStringLiteral("s"));
     }
-    occ::handle<AIS_Shape> object = new AIS_Shape(highlight.shape);
+    // Named body sub-shapes are selected in local coordinates, as on the
+    // body itself. The overlay's own faces, edges and vertices remain
+    // available when its original body disappears behind a preview.
+    const bool boundaryPicks = highlight.body &&
+        (kind == SelectKind::Face || kind == SelectKind::Edge);
+    occ::handle<AIS_Shape> object = new AIS_Shape(boundaryPicks
+        ? highlight.shape.Located(TopLoc_Location()) : highlight.shape);
+    if (boundaryPicks && !highlight.shape.Location().IsIdentity()) {
+      object->SetLocalTransformation(highlight.shape.Location().Transformation());
+    }
     const Quantity_Color color = occtColor(highlight.color);
     int mode = AIS_WireFrame;
     switch (highlight.item.kind) {
@@ -2290,9 +2368,22 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
       setEdgeStyle(object, color, 3.5);
       break;
     }
+    if (highlight.throughSolid) {
+      // Topmost disables depth testing. A subdued dashed boundary locates
+      // enclosed and rear faces; the normal shaded overlay is left intact.
+      occ::handle<AIS_Shape> hidden = new AIS_Shape(highlight.shape);
+      setEdgeStyle(hidden, occtColor(highlight.color.darker(135)), 1.5, Aspect_TOL_DASH);
+      PickInfo hiddenInfo;
+      hiddenInfo.item = highlight.item;
+      hiddenInfo.highlight = true;
+      display(hidden, AIS_WireFrame, std::move(hiddenInfo), false);
+      m_context->SetZLayer(hidden, Graphic3d_ZLayerId_Topmost);
+      m_highlights.push_back(hidden);
+    }
     PickInfo info;
     info.item = highlight.item;
     info.highlight = true;
+    info.body = boundaryPicks ? highlight.body : nullptr;
     display(object, mode, std::move(info), highlight.pickable);
     // A light tint stays with the bodies, under the highlights on top.
     m_context->SetZLayer(object, highlight.light ? Graphic3d_ZLayerId_Default : Graphic3d_ZLayerId_Top);
@@ -2323,6 +2414,14 @@ void OcctViewer::setPreview(const TopoDS_Shape& shape, PreviewStyle style) {
   }
   if (!shape.IsNull()) {
     m_preview = new AIS_Shape(shape);
+    // A tool the preview's job meshed (DisplayMeshes, a stand-in in the
+    // interactive tier, mitcad#635) is drawn from those triangulations
+    // only: never meshed again here, on the UI thread, also where a face
+    // failed (mitcad#589).
+    if (hasAnyTriangulation(shape)) {
+      m_preview->Attributes()->SetAutoTriangulation(false);
+    }
+    m_previewMode = style == PreviewStyle::Failed ? AIS_WireFrame : AIS_Shaded;
     if (style == PreviewStyle::Failed) {
       setEdgeStyle(m_preview, kCutPreviewColor, 2.0, Aspect_TOL_DASH);
       m_context->Display(m_preview, AIS_WireFrame, -1, false);
@@ -2353,6 +2452,10 @@ void OcctViewer::setPreview(const TopoDS_Shape& shape, PreviewStyle style) {
       m_preview->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, -1.0f,
                                                                             -2.0f);
       m_context->Display(m_preview, AIS_Shaded, -1, false);
+    }
+    if (!m_provisional.IsNull()) {
+      // A provisional drag presentation stands in for it (mitcad#636).
+      m_context->Erase(m_preview, false);
     }
   }
   sceneChanged();
@@ -2576,9 +2679,27 @@ OcctViewer::pickedPoint(const occ::handle<SelectMgr_EntityOwner>& owner) const {
 
 std::vector<std::pair<SelectionItem, QPoint>> OcctViewer::pickPoints(SelectFilter kinds) {
   std::vector<std::pair<SelectionItem, QPoint>> found;
-  if (m_view->Window().IsNull()) {
+  // Candidate probes use the command's model-backed filter too. Respect
+  // the same worker ownership boundary as hover and actual clicks.
+  if (m_pickingSuspended || m_view->Window().IsNull()) {
     return found;
   }
+  // Each owner's test once while the points are tried (accepts()); a
+  // nested call keeps the outer one's.
+  std::map<const SelectMgr_EntityOwner*, std::pair<OwnerTest, SelectKind>> ownerTests;
+  const bool outer = m_ownerTests == nullptr;
+  if (outer) {
+    m_ownerTests = &ownerTests;
+  }
+  struct OwnerTestsEnd {
+    OcctViewer* viewer;
+    bool outer;
+    ~OwnerTestsEnd() {
+      if (outer) {
+        viewer->m_ownerTests = nullptr;
+      }
+    }
+  } ownerTestsEnd{this, outer};
   // The middle of a face's largest triangle lies on the face.
   const auto middleOf = [](const TopoDS_Face& face) -> std::optional<gp_Pnt> {
     TopLoc_Location location;
@@ -2606,6 +2727,26 @@ std::vector<std::pair<SelectionItem, QPoint>> OcctViewer::pickPoints(SelectFilte
       return std::nullopt;
     }
     return middle.Transformed(location.Transformation());
+  };
+  // The middles of `count` triangles spread over a face's triangulation.
+  const auto middlesOf = [](const TopoDS_Face& face, int count) {
+    std::vector<gp_Pnt> middles;
+    TopLoc_Location location;
+    const occ::handle<Poly_Triangulation> mesh = BRep_Tool::Triangulation(face, location);
+    if (mesh.IsNull() || mesh->NbTriangles() == 0 || count <= 0) {
+      return middles;
+    }
+    const int triangles = mesh->NbTriangles();
+    for (int k = 0; k < std::min(count, triangles); ++k) {
+      const int t = 1 + static_cast<int>(static_cast<long long>(k) * triangles / std::min(count, triangles));
+      int a = 0;
+      int b = 0;
+      int c = 0;
+      mesh->Triangle(t).Get(a, b, c);
+      const gp_Pnt middle((mesh->Node(a).XYZ() + mesh->Node(b).XYZ() + mesh->Node(c).XYZ()) / 3.0);
+      middles.push_back(middle.Transformed(location.Transformation()));
+    }
+    return middles;
   };
   // The point at the middle of a face's parameter range, when it is on the
   // face.
@@ -2648,31 +2789,106 @@ std::vector<std::pair<SelectionItem, QPoint>> OcctViewer::pickPoints(SelectFilte
       }
     }
   }
+  struct PickBody {
+    std::shared_ptr<geometry::Shape> shape;
+    gp_Trsf placement;
+    std::optional<SelectionItem> body; // its owner and occurrence, as a pick names them
+  };
+  const auto bodyItem = [this](const AIS_InteractiveObject* object) -> std::optional<SelectionItem> {
+    const auto info = m_pickInfo.find(object);
+    return info == m_pickInfo.end() ? std::nullopt : std::optional<SelectionItem>(info->second.item);
+  };
+  std::vector<PickBody> sources;
   for (const auto& [key, entry] : m_bodies) {
-    if (entry.style != BodyDisplay::Style::Normal || !entry.shape) {
-      continue;
+    (void)key;
+    if (entry.style == BodyDisplay::Style::Normal && entry.shape) {
+      sources.push_back({entry.shape, entry.placement.Transformation(), bodyItem(entry.object.get())});
     }
-    const geometry::Shape& body = *entry.shape;
-    const gp_Trsf placement = entry.placement.Transformation();
+  }
+  // Also log points on selected source topology after a preview replaced
+  // the body. The actual selector below still decides which are pickable.
+  for (const auto& highlight : m_highlights) {
+    const auto info = m_pickInfo.find(highlight.get());
+    if (info == m_pickInfo.end() || !info->second.body) { continue; }
+    const gp_Trsf placement = highlight->Transformation();
+    if (std::none_of(sources.begin(), sources.end(), [&](const PickBody& source) {
+          return source.shape == info->second.body && sameTransformation(source.placement, placement);
+        })) {
+      sources.push_back({info->second.body, placement, info->second.item});
+    }
+  }
+  // Whether the filter and the input's test take an item at all, wherever
+  // it is clicked (accepts() without the pick's own conditions): an item
+  // they refuse is not tried at its points (mitcad#697).
+  const auto mayTake = [this](const SelectionItem& item) {
+    if (!activeKinds().testFlag(item.kind)) {
+      return false;
+    }
+    if (!m_pickTest || m_untestedPicks) {
+      return true;
+    }
+    PickCase how;
+    how.expanded = m_scoped && (m_shiftHeld || m_contextPick);
+    if (item.kind != SelectKind::Edge) {
+      return m_pickTest(item, how);
+    }
+    // An edge in sight or behind a face: either may be taken.
+    for (const EdgeSight sight : {EdgeSight::Visible, EdgeSight::Occluded}) {
+      how.sight = [sight] { return sight; };
+      if (m_pickTest(item, how)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  // What a click at each pixel tried picks, the item when accepted: the
+  // points of a part small in the view (a toothed part's hundreds of faces,
+  // edges and vertices, each face tried at up to 26 points) fall on the
+  // same pixels again and again, and each try is a pick in the view.
+  std::map<std::pair<int, int>, std::optional<SelectionItem>> picked;
+  for (const PickBody& source : sources) {
+    const geometry::Shape& body = *source.shape;
+    const gp_Trsf& placement = source.placement;
     // Whether a click at the point picks the named item.
     const auto probe = [&](const gp_Pnt& local, SelectKind kind, const std::string& name) {
-      const QPointF at = toWidgetF(local.Transformed(placement));
-      if (!inside.contains(at.toPoint()) || isCovered(at)) {
+      // Probe the exact logical pixel that callers receive (the projection
+      // rounded to the nearest pixel), including its device pixels at 2x.
+      const QPoint at = toWidgetF(local.Transformed(placement)).toPoint();
+      if (!inside.contains(at) || isCovered(at)) {
         return false;
       }
-      const NCollection_Vec2<int> pixel = toDevicePixels(at);
-      m_context->MoveTo(pixel.x(), pixel.y(), m_view, false);
-      const auto item = itemFor(m_context->DetectedOwner());
-      if (item && item->kind == kind && item->name.toStdString() == name &&
-          accepts(m_context->DetectedOwner())) {
-        found.emplace_back(*item, at.toPoint());
+      auto there = picked.find({at.x(), at.y()});
+      if (there == picked.end()) {
+        const NCollection_Vec2<int> pixel = toDevicePixels(at);
+        m_context->MoveTo(pixel.x(), pixel.y(), m_view, false);
+        std::optional<SelectionItem> item = itemFor(m_context->DetectedOwner());
+        if (item && !accepts(m_context->DetectedOwner())) {
+          item.reset();
+        }
+        there = picked.emplace(std::make_pair(at.x(), at.y()), std::move(item)).first;
+      }
+      const std::optional<SelectionItem>& item = there->second;
+      if (item && item->kind == kind && item->name.toStdString() == name) {
+        found.emplace_back(*item, at);
         return true;
       }
       return false;
     };
+    // Whether a click could take the body's named face, edge or vertex.
+    const auto takes = [&source, &mayTake](SelectKind kind, const std::string& name, const QString& geometry) {
+      if (!source.body) {
+        return true; // tried at its points
+      }
+      SelectionItem item = *source.body;
+      item.kind = kind;
+      item.name = QString::fromStdString(name);
+      item.geometry = geometry;
+      return mayTake(item);
+    };
     if (kinds.testFlag(SelectKind::Face)) {
       for (int i = 0; i < body.face_count(); ++i) {
-        if (body.face_names(i).empty()) {
+        if (body.face_names(i).empty() ||
+            !takes(SelectKind::Face, body.face_names(i).front(), surfaceType(body.face(i)))) {
           continue;
         }
         // The middle of the face's parameters first: across a narrow face
@@ -2683,21 +2899,42 @@ std::vector<std::pair<SelectionItem, QPoint>> OcctViewer::pickPoints(SelectFilte
             middle && probe(*middle, SelectKind::Face, body.face_names(i).front())) {
           continue;
         }
-        if (const auto middle = middleOf(face)) {
-          probe(*middle, SelectKind::Face, body.face_names(i).front());
+        if (const auto middle = middleOf(face);
+            middle && probe(*middle, SelectKind::Face, body.face_names(i).front())) {
+          continue;
+        }
+        // Where those are hidden or covered (a curved face's far side, a
+        // preview in front of it, mitcad#656): the middles of its next
+        // largest triangles.
+        for (const gp_Pnt& middle : middlesOf(face, 24)) {
+          if (probe(middle, SelectKind::Face, body.face_names(i).front())) {
+            break;
+          }
         }
       }
     }
     if (kinds.testFlag(SelectKind::Edge)) {
       for (int i = 0; i < body.edge_count(); ++i) {
+        if (!takes(SelectKind::Edge, body.edge_name(i), curveType(body.edge(i)))) {
+          continue;
+        }
         const BRepAdaptor_Curve curve(body.edge(i));
-        probe(curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0), SelectKind::Edge,
-              body.edge_name(i));
+        // The middle first; where it is hidden or covered (a circle's far
+        // side, under a card at the top of the view), its quarters
+        // (mitcad#656: a shaft's top edge).
+        for (const double at : {0.5, 0.75, 0.25}) {
+          if (probe(curve.Value(curve.FirstParameter() + (curve.LastParameter() - curve.FirstParameter()) * at),
+                    SelectKind::Edge, body.edge_name(i))) {
+            break;
+          }
+        }
       }
     }
     if (kinds.testFlag(SelectKind::Vertex)) {
       for (int i = 0; i < body.vertex_count(); ++i) {
-        probe(BRep_Tool::Pnt(body.vertex(i)), SelectKind::Vertex, body.vertex_name(i));
+        if (takes(SelectKind::Vertex, body.vertex_name(i), QStringLiteral("point"))) {
+          probe(BRep_Tool::Pnt(body.vertex(i)), SelectKind::Vertex, body.vertex_name(i));
+        }
       }
     }
   }
@@ -2719,24 +2956,45 @@ bool OcctViewer::accepts(const occ::handle<SelectMgr_EntityOwner>& owner) const 
   if (m_pickingSuspended) {
     return false;
   }
-  const auto item = itemFor(owner);
-  if (!item || !activeKinds().testFlag(item->kind)) {
-    return false;
+  // The owner's own test: kept while pickPoints() tries its points, unless
+  // it asked which part of an edge the pick hit, which differs by point.
+  const auto tested = [this, &owner]() -> std::pair<OwnerTest, SelectKind> {
+    if (m_ownerTests != nullptr) {
+      if (const auto known = m_ownerTests->find(owner.get()); known != m_ownerTests->end()) {
+        return known->second;
+      }
+    }
+    bool sightAsked = false;
+    const auto test = [&]() -> std::pair<OwnerTest, SelectKind> {
+      const auto item = itemFor(owner);
+      if (!item || !activeKinds().testFlag(item->kind)) {
+        return {OwnerTest::Refused, SelectKind::Body};
+      }
+      if (!m_pickTest || m_untestedPicks) {
+        return {OwnerTest::Accepted, item->kind};
+      }
+      PickCase how;
+      how.window = m_windowSelecting;
+      how.expanded = m_scoped && (m_shiftHeld || m_contextPick) && !m_windowSelecting;
+      if (item->kind == SelectKind::Edge) {
+        how.sight = [this, &owner, &sightAsked] {
+          sightAsked = true;
+          return edgeSight(owner);
+        };
+      }
+      return {m_pickTest(*item, how) ? OwnerTest::Tested : OwnerTest::Refused, item->kind};
+    };
+    const std::pair<OwnerTest, SelectKind> result = test();
+    if (m_ownerTests != nullptr && !sightAsked) {
+      m_ownerTests->emplace(owner.get(), result);
+    }
+    return result;
+  };
+  const auto [verdict, kind] = tested();
+  if (verdict != OwnerTest::Tested) {
+    return verdict == OwnerTest::Accepted;
   }
-  if (!m_pickTest || m_untestedPicks) {
-    return true;
-  }
-  PickCase how;
-  how.window = m_windowSelecting;
-  how.expanded = m_scoped && (m_shiftHeld || m_contextPick) && !m_windowSelecting;
-  if (item->kind == SelectKind::Edge) {
-    how.sight = [this, owner] { return edgeSight(owner); };
-  }
-  if (!m_pickTest(*item, how)) {
-    return false;
-  }
-  const bool area = item->kind == SelectKind::Face || item->kind == SelectKind::Plane ||
-                    item->kind == SelectKind::Body;
+  const bool area = kind == SelectKind::Face || kind == SelectKind::Plane || kind == SelectKind::Body;
   if (m_scoped && !m_windowSelecting && area) {
     // A click within an edge's reach that the scope lets it take picks the
     // edge, also one behind the face or the plane (mitcad#217: occluded
@@ -2981,7 +3239,24 @@ void OcctViewer::OnSelectionChanged(const occ::handle<AIS_InteractiveContext>& c
   m_context->MainSelector()->AllowOverlapDetection(false);
   m_windowSelecting = false; // what follows is a hover or a click again
   m_clickPickedNothing = !m_windowPick && items.isEmpty();
+  if (m_windowPick && m_windowClock.isValid()) {
+    // The view's own part of a window selection (mitcad#670): from the
+    // release to the selection OCCT reports.
+    qDebug().noquote() << QStringLiteral("Timing window pick: %1 ms, %2 item(s)")
+                              .arg(static_cast<double>(m_windowClock.nsecsElapsed()) / 1.0e6, 0, 'f', 2)
+                              .arg(items.size());
+  }
   emit picked(items, m_pressModifiers, m_windowPick);
+}
+
+void OcctViewer::windowSelectionApplied() {
+  if (!m_windowClock.isValid()) {
+    return;
+  }
+  qDebug().noquote() << QStringLiteral("Timing window selection applied: %1 ms")
+                            .arg(static_cast<double>(m_windowClock.nsecsElapsed()) / 1.0e6, 0, 'f', 2);
+  m_windowShowPending = true;
+  requestFrame();
 }
 
 // ---------------------------------------------------------------------------
@@ -3028,6 +3303,68 @@ void OcctViewer::frameBox(const Bnd_Box& box) {
   m_view->Invalidate();
   cameraMoved();
   requestFrame();
+}
+
+bool OcctViewer::bringClearOfPanels(const Bnd_Box& box, bool fit) {
+  if (box.IsVoid() || (!fit && m_covered.empty()) || width() <= 0 || height() <= 0) {
+    return false;
+  }
+  // The box's corners on the screen.
+  double x0 = 0.0;
+  double y0 = 0.0;
+  double z0 = 0.0;
+  double x1 = 0.0;
+  double y1 = 0.0;
+  double z1 = 0.0;
+  box.Get(x0, y0, z0, x1, y1, z1);
+  QRectF shown;
+  for (const double x : {x0, x1}) {
+    for (const double y : {y0, y1}) {
+      for (const double z : {z0, z1}) {
+        const QPointF at = toWidgetF(gp_Pnt(x, y, z));
+        shown = shown.isNull() ? QRectF(at, QSizeF(0.001, 0.001)) : shown.united(QRectF(at, QSizeF(0.001, 0.001)));
+      }
+    }
+  }
+  const QRectF free = freeArea().adjusted(12, 12, -12, -12);
+  if (free.isEmpty() || free.contains(shown)) {
+    return false;
+  }
+  if (fit && (shown.width() > free.width() || shown.height() > free.height())) {
+    qDebug().noquote() << QStringLiteral("View fitted: the parts clear of the panels");
+    frameBox(box);
+    return true;
+  }
+  // The least move that brings it in (centred when it is larger).
+  const auto along = [](double low, double high, double freeLow, double freeHigh) {
+    if (high - low > freeHigh - freeLow) {
+      return (freeLow + freeHigh) / 2.0 - (low + high) / 2.0;
+    }
+    if (low < freeLow) {
+      return freeLow - low;
+    }
+    if (high > freeHigh) {
+      return freeHigh - high;
+    }
+    return 0.0;
+  };
+  const QPointF shift(along(shown.left(), shown.right(), free.left(), free.right()),
+                      along(shown.top(), shown.bottom(), free.top(), free.bottom()));
+  if (std::abs(shift.x()) < 1.0 && std::abs(shift.y()) < 1.0) {
+    return false;
+  }
+  occ::handle<Graphic3d_Camera> moved = new Graphic3d_Camera();
+  moved->Copy(m_view->Camera());
+  const gp_XYZ extent = moved->ViewDimensions(moved->Distance());
+  const double perPixel = extent.Y() / height();
+  const gp_Dir right = moved->Direction().Crossed(moved->Up());
+  const gp_Vec move = (gp_Vec(right) * shift.x() - gp_Vec(moved->Up()) * shift.y()) * -perPixel;
+  moved->SetEyeAndCenter(moved->Eye().Translated(move), moved->Center().Translated(move));
+  qDebug().noquote() << QStringLiteral("View moved %1,%2 px: the part clear of the panels")
+                            .arg(qRound(shift.x()))
+                            .arg(qRound(shift.y()));
+  moveCamera(moved);
+  return true;
 }
 
 Bnd_Box OcctViewer::bodiesBox() const {
@@ -3231,6 +3568,10 @@ bool OcctViewer::isCovered(const QPointF& position) const {
   // The top cards exactly: the gaps between them are narrower than the margin.
   if (std::any_of(m_topCards.begin(), m_topCards.end(),
                   [&position](const QRect& rect) { return QRectF(rect).contains(position); })) {
+    return true;
+  }
+  if (std::any_of(m_handleBoxes.begin(), m_handleBoxes.end(),
+                  [&position](const QRect& rect) { return QRectF(rect).adjusted(-3, -3, 3, 3).contains(position); })) {
     return true;
   }
   return std::any_of(m_covered.begin(), m_covered.end(), [&position](const QRect& rect) {
@@ -3556,55 +3897,75 @@ void OcctViewer::bindGestures() {
   gestures.Bind(Aspect_VKeyMouse_LeftButton | kCtrlShift, AIS_MouseGesture_SelectRectangle);
   // Dragging the orientation cube orbits.
   gestures.Bind(Aspect_VKeyMouse_LeftButton | kCubeDrag, AIS_MouseGesture_RotateOrbit);
-  const Aspect_VKeyMouse left = Aspect_VKeyMouse_LeftButton;
-  const Aspect_VKeyMouse middle = Aspect_VKeyMouse_MiddleButton;
-  const Aspect_VKeyMouse right = Aspect_VKeyMouse_RightButton;
-  switch (m_navigation.scheme) {
-  case NavigationScheme::MiddlePan:
-    gestures.Bind(middle, AIS_MouseGesture_Pan);
-    gestures.Bind(middle | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_RotateOrbit);
-    break;
-  case NavigationScheme::MiddlePanF4:
-    gestures.Bind(middle, AIS_MouseGesture_Pan);
-    gestures.Bind(middle | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_RotateOrbit);
-    // F4 held: the left button orbits (viewButtons sends it as a cube drag).
-    break;
-  case NavigationScheme::MiddleOrbit:
-    gestures.Bind(middle, AIS_MouseGesture_RotateOrbit);
-    gestures.Bind(middle | Aspect_VKeyFlags_CTRL, AIS_MouseGesture_Pan);
-    gestures.Bind(middle | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_Zoom);
-    break;
-  case NavigationScheme::AltButtons:
-    gestures.Bind(left | Aspect_VKeyFlags_ALT, AIS_MouseGesture_RotateOrbit);
-    gestures.Bind(middle | Aspect_VKeyFlags_ALT, AIS_MouseGesture_Pan);
-    gestures.Bind(right | Aspect_VKeyFlags_ALT, AIS_MouseGesture_Zoom);
-    gestures.Bind(middle, AIS_MouseGesture_Pan);
-    break;
-  case NavigationScheme::RightOrbit:
-    gestures.Bind(right, AIS_MouseGesture_RotateOrbit);
-    gestures.Bind(right | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_Pan);
-    gestures.Bind(middle, AIS_MouseGesture_Pan);
-    break;
-  case NavigationScheme::Trackpad:
-  case NavigationScheme::TrackpadShift:
-    // The two-finger scroll is passed on as a drag (trackpadScroll).
-    gestures.Bind(left | kScrollPan, AIS_MouseGesture_Pan);
-    gestures.Bind(left | kScrollOrbit, AIS_MouseGesture_RotateOrbit);
-    gestures.Bind(left | Aspect_VKeyFlags_ALT, AIS_MouseGesture_RotateOrbit);
-    gestures.Bind(left | Aspect_VKeyFlags_ALT | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_Pan);
-    gestures.Bind(middle, AIS_MouseGesture_Pan);
-    gestures.Bind(middle | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_RotateOrbit);
-    gestures.Bind(right, AIS_MouseGesture_RotateOrbit);
-    gestures.Bind(right | Aspect_VKeyFlags_SHIFT, AIS_MouseGesture_Pan);
-    break;
+  const auto gesture = [](NavigationAction action) {
+    switch (action) {
+    case NavigationAction::Orbit: return AIS_MouseGesture_RotateOrbit;
+    case NavigationAction::Pan: return AIS_MouseGesture_Pan;
+    case NavigationAction::Zoom: return AIS_MouseGesture_Zoom;
+    case NavigationAction::None: return AIS_MouseGesture_NONE;
+    }
+    return AIS_MouseGesture_NONE;
+  };
+  const auto bindings = m_navigation.scheme == NavigationScheme::Custom ? m_navigation.customBindings
+                                                                        : navigationBindings(m_navigation.scheme);
+  for (const auto& binding : bindings) {
+    if (!navigationBindingAllowed(binding) || binding.action == NavigationAction::None ||
+        binding.input == NavigationInput::TrackpadScroll) {
+      continue;
+    }
+    const Aspect_VKeyMouse button = binding.input == NavigationInput::LeftButton ? Aspect_VKeyMouse_LeftButton
+                                  : binding.input == NavigationInput::MiddleButton ? Aspect_VKeyMouse_MiddleButton
+                                                                                  : Aspect_VKeyMouse_RightButton;
+    const auto flags = binding.f4 ? kF4Drag : toVKeyFlags(binding.modifiers);
+    gestures.Bind(button | flags, gesture(binding.action));
+  }
+  if (m_navigation.scheme == NavigationScheme::Trackpad ||
+      m_navigation.scheme == NavigationScheme::TrackpadShift ||
+      m_navigation.scheme == NavigationScheme::Custom) {
+    gestures.Bind(Aspect_VKeyMouse_LeftButton | kScrollPan, AIS_MouseGesture_Pan);
+    gestures.Bind(Aspect_VKeyMouse_LeftButton | kScrollOrbit, AIS_MouseGesture_RotateOrbit);
   }
 }
 
 void OcctViewer::setNavigation(const NavigationSettings& settings) {
   endScrollDrag(); // the gestures are bound anew
+  cancelPointerInteraction();
   m_navigation = settings;
+  m_navigation.customBindings = normalizedNavigationBindings(settings.customBindings, NavigationScheme::Custom);
+  m_navigation.orbitSpeed = sanitizeNavigationSpeed(settings.orbitSpeed);
+  m_navigation.panSpeed = sanitizeNavigationSpeed(settings.panSpeed);
+  m_navigation.zoomSpeed = sanitizeNavigationSpeed(settings.zoomSpeed);
+  m_navigation.trackpadSpeed = sanitizeNavigationSpeed(settings.trackpadSpeed);
+  m_panRemainder = {};
   bindGestures();
+  SetOrbitAcceleration(float(m_navigation.orbitSpeed));
   SetLockOrbitZUp(settings.constrainedOrbit);
+}
+
+// OCCT exposes orbit acceleration, but its mouse acceleration only affects
+// first-person rotation. Pan retains OCCT's picked anchor and projection;
+// only the integer delta is scaled, carrying subpixel motion across frames.
+void OcctViewer::handlePanning(const occ::handle<V3d_View>& view) {
+  auto& pan = ChangeInputBuffer(AIS_ViewInputBufferType_GL).Panning;
+  if (pan.ToStart) {
+    m_panRemainder = {};
+  }
+  if (!pan.ToPan || m_navigation.panSpeed == 1.0) {
+    AIS_ViewController::handlePanning(view);
+    return;
+  }
+  const auto original = pan.Delta;
+  const QPointF scaled = QPointF(pan.Delta.x(), pan.Delta.y()) * m_navigation.panSpeed + m_panRemainder;
+  pan.Delta.SetValues(qRound(scaled.x()), qRound(scaled.y()));
+  m_panRemainder = scaled - QPointF(pan.Delta.x(), pan.Delta.y());
+  AIS_ViewController::handlePanning(view);
+  pan.Delta = original;
+}
+
+bool OcctViewer::UpdateZoom(const Aspect_ScrollDelta& delta) {
+  Aspect_ScrollDelta scaled = delta;
+  scaled.Delta *= m_navigation.zoomSpeed;
+  return AIS_ViewController::UpdateZoom(scaled);
 }
 
 void OcctViewer::setBackground(const QColor& top, const QColor& bottom, bool gradient) {
@@ -3812,6 +4173,28 @@ void OcctViewer::setThreads(const TopoDS_Shape& rings) {
   sceneChanged();
 }
 
+void OcctViewer::setBuildVolume(const TopoDS_Shape& frame, const TopoDS_Shape& outside, const QColor& warning) {
+  for (occ::handle<AIS_Shape>* shown : {&m_buildFrame, &m_buildOutside}) {
+    if (!shown->IsNull()) {
+      m_context->Remove(*shown, false);
+      shown->Nullify();
+    }
+  }
+  if (!frame.IsNull()) {
+    m_buildFrame = new AIS_Shape(frame);
+    setEdgeStyle(m_buildFrame, kBuildVolumeColor, 1.5);
+    m_context->Display(m_buildFrame, AIS_WireFrame, -1, false);
+  }
+  if (!outside.IsNull()) {
+    m_buildOutside = new AIS_Shape(outside);
+    setEdgeStyle(m_buildOutside,
+                 Quantity_Color(warning.redF(), warning.greenF(), warning.blueF(), Quantity_TOC_sRGB), 2.0,
+                 Aspect_TOL_DASH);
+    m_context->Display(m_buildOutside, AIS_WireFrame, -1, false);
+  }
+  sceneChanged();
+}
+
 QPoint OcctViewer::toWidget(const gp_Pnt& point) const {
   if (m_view->Window().IsNull()) {
     return QPoint(); // not shown yet
@@ -3845,8 +4228,8 @@ gp_Pnt OcctViewer::planePickPoint(const gp_Pnt& origin, const gp_Dir& normal, do
   return candidates[std::min<std::size_t>(5, candidates.size() - 1)];
 }
 
-std::vector<gp_Pnt> OcctViewer::planePickCandidates(const gp_Pnt& origin, const gp_Dir& normal,
-                                                     double size) const {
+std::vector<gp_Pnt> OcctViewer::planePickCandidates(const gp_Pnt& origin, const gp_Dir& normal, double size,
+                                                     bool offDiagonals) const {
   // In the plane, step along the two model axes that lie in it, each
   // towards the eye: other planes through the origin then lie behind the
   // point. A third of the size, or less; then the other quarters.
@@ -3862,15 +4245,29 @@ std::vector<gp_Pnt> OcctViewer::planePickCandidates(const gp_Pnt& origin, const 
     toward += step;
   }
   std::vector<gp_XYZ> directions = {toward};
-  if (axes.size() == 2) {
+  if (axes.size() == 2 && offDiagonals) {
+    // Towards the eye, nearer one axis than the other: in an isometric view
+    // the diagonal towards the eye lies along the third axis's image.
+    directions = {axes[0] + axes[1] * 0.5, axes[0] * 0.5 + axes[1], axes[0] - axes[1] * 0.5,
+                  axes[1] - axes[0] * 0.5};
+  } else if (axes.size() == 2) {
     directions.push_back(axes[0] - axes[1]);
     directions.push_back(axes[1] - axes[0]);
     directions.push_back(toward * -1.0);
   }
   std::vector<gp_Pnt> candidates;
+  const QRectF inside = QRectF(rect()).adjusted(12, 12, -12, -12);
+  const QRectF cube = cubeArea();
   for (const gp_XYZ& direction : directions) {
     for (const double fraction : {1.0 / 3.0, 0.25, 0.18, 0.12, 0.08, 0.05}) {
-      candidates.emplace_back(origin.XYZ() + direction * (size * fraction));
+      const gp_Pnt candidate(origin.XYZ() + direction * (size * fraction));
+      // Those off the diagonals only where a click reaches the plane, not
+      // the orientation cube.
+      const QPointF at = toWidgetF(candidate);
+      if (offDiagonals && (!inside.contains(at) || cube.contains(at))) {
+        continue;
+      }
+      candidates.push_back(candidate);
     }
   }
   return candidates;
@@ -4089,12 +4486,26 @@ void OcctViewer::paintGL() {
     bool& painting;
     ~Painted() { painting = false; }
   } painted{m_painting};
+  // The first frame after a window selection was applied (mitcad#670),
+  // logged once the frame is done (after "frame").
+  struct WindowShown {
+    OcctViewer& viewer;
+    ~WindowShown() {
+      if (viewer.m_windowShowPending && viewer.m_windowClock.isValid()) {
+        qDebug().noquote() << QStringLiteral("Timing window selection shown: %1 ms")
+                                  .arg(static_cast<double>(viewer.m_windowClock.nsecsElapsed()) / 1.0e6, 0, 'f', 2);
+        viewer.m_windowClock.invalidate();
+      }
+      viewer.m_windowShowPending = false;
+    }
+  } windowShown{*this};
   ScopedTiming timing("frame");
   if (m_view->Window()->NativeHandle() != occtDrawable()) {
     // Qt recreated its surface, e.g. after re-parenting: attach again.
     initializeGL();
     return;
   }
+  ++m_framesDrawn;
 
   const occ::handle<OpenGl_Context> glContext = glContextOf(m_view);
   occ::handle<OpenGl_FrameBuffer> framebuffer = glContext->DefaultFrameBuffer();
@@ -4234,10 +4645,10 @@ Aspect_VKeyMouse OcctViewer::viewButtons(Qt::MouseButtons buttons) const {
   return toVKeyMouse(m_sketchInput && !m_cubePress ? (buttons & ~Qt::LeftButton) : buttons);
 }
 
-// A drag that began on the orientation cube, or a left drag with F4 held
-// (MiddlePanF4), orbits: it is passed on with a flag of its own.
+// Cube and F4 drags use separate synthetic flags, so custom F4 actions
+// cannot replace the cube's orbit gesture.
 Aspect_VKeyFlags OcctViewer::viewFlags(Qt::KeyboardModifiers modifiers) const {
-  return m_cubePress ? kCubeDrag : toVKeyFlags(modifiers);
+  return m_f4Press ? kF4Drag : m_cubePress ? kCubeDrag : toVKeyFlags(modifiers);
 }
 
 void OcctViewer::setSketchInput(bool enabled, const QString& toolIcon) {
@@ -4306,6 +4717,8 @@ void OcctViewer::cancelPointerInteraction() {
     input.Dragging.ToAbort = true;
   }
   m_cubePress = false;
+  m_f4Press = false;
+  m_panRemainder = {};
   m_cubeClick = false;
   m_windowPick = false;
   m_windowSelecting = false;
@@ -4378,8 +4791,11 @@ void OcctViewer::mousePressEvent(QMouseEvent* event) {
   setShiftHeld(event->modifiers().testFlag(Qt::ShiftModifier), false);
   if (event->button() == Qt::LeftButton) {
     m_windowSelecting = false;
-    m_cubePress = isOnOrientationCube(event->position()) ||
-                  (m_orbitKey && m_navigation.scheme == NavigationScheme::MiddlePanF4);
+    const bool onCube = isOnOrientationCube(event->position());
+    m_f4Press = !onCube && m_orbitKey &&
+                navigationAction(m_navigation, NavigationInput::LeftButton, event->modifiers(), true) !=
+                    NavigationAction::None;
+    m_cubePress = onCube || m_f4Press;
     if (m_sketchInput && !m_cubePress) {
       return;
     }
@@ -4504,6 +4920,10 @@ void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
       m_windowRect = QRectF(m_pressPosition, event->position()).normalized();
       m_windowCrossing = moved.x() < 0;
       m_windowSelecting = !cube;
+      if (timingLogged()) {
+        m_windowClock.start();
+        m_windowShowPending = false;
+      }
     } else {
       setShiftHeld(event->modifiers().testFlag(Qt::ShiftModifier), false);
       m_clickPosition = event->position();
@@ -4512,6 +4932,7 @@ void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
   const Aspect_VKeyFlags flags = viewFlags(event->modifiers());
   if (cube) {
     m_cubePress = false;
+    m_f4Press = false;
   }
   if (UpdateMouseButtons(toDevicePixels(event->position()), viewButtons(event->buttons()), flags,
                          false)) {
@@ -4598,11 +5019,15 @@ void OcctViewer::mouseMoveEvent(QMouseEvent* event) {
 void OcctViewer::wheelEvent(QWheelEvent* event) {
   QOpenGLWidget::wheelEvent(event);
   if ((m_navigation.scheme == NavigationScheme::Trackpad ||
-       m_navigation.scheme == NavigationScheme::TrackpadShift) && isTrackpadScroll(event)) {
+       m_navigation.scheme == NavigationScheme::TrackpadShift ||
+       m_navigation.scheme == NavigationScheme::Custom) && isTrackpadScroll(event)) {
     trackpadScroll(event);
     return;
   }
   double steps = event->angleDelta().y() / 8.0;
+  if (isTrackpadScroll(event)) {
+    steps *= m_navigation.trackpadSpeed;
+  }
   if (m_navigation.reverseZoom) {
     steps = -steps;
   }
@@ -4628,22 +5053,23 @@ void OcctViewer::trackpadScroll(QWheelEvent* event) {
   if (event->phase() == Qt::ScrollBegin) {
     endScrollDrag(); // a new gesture: the momentum of the last one ends
   }
-  const QPointF delta = scrollPixels(event);
+  const QPointF delta = scrollPixels(event) * m_navigation.trackpadSpeed;
   if (delta.isNull()) {
     return;
   }
   const Qt::KeyboardModifiers keys = event->modifiers();
-  const bool shiftOrbit = m_navigation.scheme == NavigationScheme::TrackpadShift;
-  const Qt::KeyboardModifier orbitKey = shiftOrbit ? Qt::ShiftModifier : Qt::AltModifier;
-  const Qt::KeyboardModifier zoomKey = shiftOrbit ? Qt::AltModifier : Qt::ShiftModifier;
-  ScrollMode mode = (keys & (zoomKey | Qt::ControlModifier)) ? ScrollMode::Zoom
-                    : (keys & orbitKey)                     ? ScrollMode::Orbit
-                                                            : ScrollMode::Pan;
+  const NavigationAction action = navigationAction(m_navigation, NavigationInput::TrackpadScroll, keys);
+  ScrollMode mode = action == NavigationAction::Orbit ? ScrollMode::Orbit
+                    : action == NavigationAction::Pan ? ScrollMode::Pan
+                    : action == NavigationAction::Zoom ? ScrollMode::Zoom : ScrollMode::None;
   if (event->phase() == Qt::ScrollMomentum && m_scrollMode != ScrollMode::None) {
     mode = m_scrollMode; // the inertia goes on as it began, whatever the keys do now
   }
   if (mode != m_scrollMode) {
     endScrollDrag();
+  }
+  if (mode == ScrollMode::None) {
+    return;
   }
   m_scrollMode = mode;
   m_scrollTimer->start();
@@ -4701,8 +5127,8 @@ void OcctViewer::nativeGesture(QNativeGestureEvent* event) {
   case Qt::ZoomNativeGesture: {
     const double steps = event->value() * kPinchZoomSteps; // the increment of the magnification
     const bool zoomed = m_navigation.zoomToCursor
-                            ? UpdateZoom(Aspect_ScrollDelta(toDevicePixels(event->position()), steps))
-                            : UpdateZoom(Aspect_ScrollDelta(steps));
+                            ? AIS_ViewController::UpdateZoom(Aspect_ScrollDelta(toDevicePixels(event->position()), steps))
+                            : AIS_ViewController::UpdateZoom(Aspect_ScrollDelta(steps));
     if (zoomed) {
       cameraMoved();
       navigationStep();

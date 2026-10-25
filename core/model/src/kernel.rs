@@ -408,6 +408,17 @@ pub trait Kernel {
         Err(KernelError::Unsupported("measurement"))
     }
 
+    /// Symmetric Hausdorff distance of two bounded convex planar polygon
+    /// faces. `None` means the exact maximum is unavailable for this geometry.
+    /// The minimum distance remains available through `measure_between`.
+    fn maximum_face_gap(
+        &self,
+        _a: &Selection<'_, Self::Shape>,
+        _b: &Selection<'_, Self::Shape>,
+    ) -> Result<Option<f64>, KernelError> {
+        Err(KernelError::Unsupported("maximum face gap"))
+    }
+
     /// Every pair of bodies that overlap by more than `min_volume` (mm³);
     /// bodies that only touch do not interfere.
     fn interferences(
@@ -1612,6 +1623,14 @@ pub trait Kernel {
         _face: &crate::sweeps::ProfileFace<'_, Self::Shape>,
     ) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("sweeps of body faces"))
+    }
+
+    // The lumps of a body cut lump by lump (mitcad#658; `features::base`).
+
+    /// How many solids the shape holds, without making a shape of each
+    /// ([`Kernel::solids`] names every face of each).
+    fn solid_count(&self, _shape: &Self::Shape) -> Result<usize, KernelError> {
+        Err(KernelError::Unsupported("solid counts"))
     }
 }
 

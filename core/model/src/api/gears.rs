@@ -84,6 +84,14 @@ impl<K: Kernel> Document<K> {
         if let Some(Ok(frame)) = &seat {
             values.seat_bore(frame.diameter);
         }
+        // Placed by picked geometry (mitcad#656): a shaft gives the bore
+        // as a seat does.
+        let placed = values.at.clone().map(|at| self.place_frame(&at));
+        if let Some(Ok(placed)) = &placed
+            && let Some(frame) = placed.round()
+        {
+            values.seat_bore(frame.diameter);
+        }
         let mut result = gear::derived_values(&values);
         match values.check() {
             Ok(()) => {}
@@ -95,6 +103,18 @@ impl<K: Kernel> Document<K> {
                 result["seat"] = frame.to_json();
             }
             Some(Err(error)) => result["error"] = json!(format!("seat: {error}")),
+            None => {}
+        }
+        match placed {
+            Some(Ok(placed)) => {
+                if let Some(frame) = placed.round() {
+                    result["shaft_diameter"] = json!(frame.diameter);
+                }
+                if let Some(frame) = &placed.seat {
+                    result["seat"] = frame.to_json();
+                }
+            }
+            Some(Err(error)) => result["error"] = json!(format!("at: {error}")),
             None => {}
         }
         if let Some(mesh) = &values.mesh_with {

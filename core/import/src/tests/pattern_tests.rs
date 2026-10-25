@@ -39,6 +39,8 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
         alternatives: HashMap::new(),
         guesses: None,
         defer_guesses: false,
+        own_state: None,
+        untranslated: None,
         kernel_failed: false,
         start_bases: HashMap::new(),
         deadline: None,
@@ -219,6 +221,25 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
                 candidates[0].defs[0]["direction1"]["distance"]
             );
         }
+    }
+    // An origin axis whose stored vector points the other way (mitcad#641):
+    // the copies go against the axis, the distance negated.
+    for (vector, distance) in [([1.0, 0.0, 0.0], -10.0), ([-1.0, 0.0, 0.0], 10.0)] {
+        let item = serde_json::from_value(
+            json!({"index": 4, "objectType": "RectangularPatternFeature",
+            "detail": {"inputEntities": [plain.clone()],
+                       "directionOneEntity": {"kind": "construction_axis", "origin": "X"},
+                       "directionOne": vector,
+                       "quantityOne": {"kind": "parameter", "value": 2.0, "unit": ""},
+                       "distanceOne": {"kind": "parameter", "value": -1.0, "unit": "cm"}}}),
+        )
+        .unwrap();
+        let candidates = importer
+            .translate_op("RectangularPatternFeature", &item)
+            .unwrap();
+        let direction = &candidates[0].defs[0]["direction1"];
+        assert_eq!(direction["axis"], "x");
+        assert_eq!(direction["distance"].as_f64(), Some(distance), "{vector:?}");
     }
 }
 
@@ -403,6 +424,54 @@ fn a_path_pattern_follows_its_sketch_line() {
         };
         assert_eq!(item.input_provenance, Some(provenance), "{}", report.text());
     }
+}
+
+#[test]
+fn a_stream_decoded_path_pattern_reads_its_flags_centre_and_joined_copies() {
+    // mitcad#673: the stream decoder's flag bytes, the objects' centre
+    // (cm) that places the original on the path, and a pattern of a new
+    // body's feature that made no body: its copies join that body.
+    let line = json!([{"_type": "PathEntity", "entity": {"kind": "sketch_entity",
+        "objectType": "SketchLine", "sketch_timeline_index": 0, "id": "c0"}}]);
+    let mut item = path_pattern_item(line, false);
+    let detail = &mut item["detail"];
+    detail["inputEntities"] = json!([{"kind": "feature", "objectType": "ExtrudeFeature",
+                                      "name": "Extrude1", "timeline_index": 1}]);
+    detail["patternEntityType"] = json!("FeaturesPatternType");
+    detail["isFlipDirection"] = json!(false);
+    detail["isOrientationAlongPath"] = json!(true);
+    detail["isSymmetric"] = json!(false);
+    detail["_f3d_objects_center"] = json!([0.25, 0.5, 1.0]);
+    detail["_f3d_new_bodies"] = json!(0);
+    let dump = timeline_dump(vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+        item,
+    ]);
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &dump);
+    let item = &report.items[2];
+    assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+    assert_eq!(
+        item.input_provenance,
+        Some(InputProvenance::Read),
+        "{}",
+        report.text()
+    );
+    let value: Value = serde_json::from_str(
+        &doc.query(&format!(
+            r#"{{"query": "feature", "uid": "{}"}}"#,
+            item.features[0]
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let def = &value["def"];
+    assert_eq!(def["start_point"], json!([2.5, 5.0, 10.0]), "{def}");
+    assert_eq!(def["along_path"], json!(true), "{def}");
+    assert_eq!(def["combine"], json!(true), "{def}");
+    // The copies joined the extrusion's body.
+    assert_eq!(doc.bodies().len(), 1);
 }
 
 #[test]
@@ -747,4 +816,71 @@ fn patterns_with_read_inputs_or_a_missing_feature_are_not_searched() {
     // Mirrors and other items keep their suggestions.
     let decoded = Ok(vec![read(InputProvenance::Read, false)]);
     assert!(!not_searched("MirrorFeature", &decoded));
+}
+
+#[test]
+fn an_align_moves_its_bodies_and_a_pattern_of_a_paste_copies_the_pasted_bodies() {
+    // (mitcad#641) A paste of an extruded body, an align that moves the
+    // copy by the motion it stores (cm), and a pattern of the paste: the
+    // pattern copies the body the paste brought.
+    let body = |producer: i64| {
+        json!({"kind": "body", "objectType": "BRepBody",
+               "_f3d": {"producer": producer, "body_index": 0}})
+    };
+    let dump = timeline_dump(vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+        json!({"index": 2, "name": "CopyPasteBodies1", "objectType": "CopyPasteBodies",
+               "detail": {"sourceBody": [body(1)]}}),
+        json!({"index": 3, "name": "Align1", "objectType": "AlignFeature",
+               "detail": {"inputEntities": [body(2)],
+                          "transform": [[1.0, 0.0, 0.0, 1.4], [0.0, 0.0, -1.0, 0.27],
+                                        [0.0, 1.0, 0.0, 1.4], [0.0, 0.0, 0.0, 1.0]]}}),
+        json!({"index": 4, "name": "Pattern", "objectType": "RectangularPatternFeature",
+               "detail": {
+                   "inputEntities": [{"kind": "feature", "objectType": "CopyPasteBodies",
+                                      "name": "CopyPasteBodies1", "timeline_index": 2}],
+                   "patternEntityType": "FeaturesPatternType",
+                   "directionOneEntity": {"kind": "construction_axis", "origin": "X"},
+                   "directionOne": [1.0, 0.0, 0.0],
+                   "quantityOne": {"kind": "parameter", "value": 2.0, "unit": ""},
+                   "distanceOne": {"kind": "parameter", "value": 8.4, "unit": "mm"}}}),
+    ]);
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &dump);
+    let def = |i: usize| -> Value {
+        let item = &report.items[i];
+        assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+        let value: Value = serde_json::from_str(
+            &doc.query(&format!(
+                r#"{{"query": "feature", "uid": "{}"}}"#,
+                item.features[0]
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        value["def"].clone()
+    };
+    let paste = def(2);
+    assert_eq!(paste["copy"], true);
+    let align = def(3);
+    assert_eq!(align["type"], "move");
+    assert_eq!(align["bodies"], json!(["F3.b0"]));
+    assert_eq!(
+        align["transform"]["matrix"],
+        json!([
+            [1.0, 0.0, 0.0, 14.0],
+            [0.0, 0.0, -1.0, 2.7],
+            [0.0, 1.0, 0.0, 14.0]
+        ])
+    );
+    assert_eq!(
+        report.items[3].input_provenance,
+        Some(InputProvenance::Inferred)
+    );
+    let pattern = def(4);
+    assert_eq!(
+        pattern["objects"],
+        json!({"type": "bodies", "bodies": ["F3.b0"]})
+    );
 }

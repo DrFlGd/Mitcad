@@ -96,6 +96,14 @@ impl<K: Kernel> Document<K> {
         if let Some(Ok(frame)) = &seat {
             values.seat_bore(frame.diameter);
         }
+        // Placed by picked geometry (mitcad#656): a shaft gives the bore
+        // as a seat does.
+        let placed = values.at.clone().map(|at| self.place_frame(&at));
+        if let Some(Ok(placed)) = &placed
+            && let Some(frame) = placed.round()
+        {
+            values.seat_bore(frame.diameter);
+        }
         let mut result = pulley::derived_values(&values);
         if let Err(error) = values.check() {
             result["error"] = json!(error);
@@ -107,6 +115,35 @@ impl<K: Kernel> Document<K> {
             }
             Some(Err(error)) => result["error"] = json!(format!("seat: {error}")),
             None => {}
+        }
+        match placed {
+            Some(Ok(placed)) => {
+                if let Some(frame) = placed.round() {
+                    result["shaft_diameter"] = json!(frame.diameter);
+                }
+                if let Some(frame) = &placed.seat {
+                    result["seat"] = frame.to_json();
+                }
+            }
+            Some(Err(error)) => result["error"] = json!(format!("at: {error}")),
+            None => {}
+        }
+        // A belt kept checked with an earlier pulley (mitcad#656), on the
+        // pulleys as built.
+        if let (Some(check), Some(uid)) = (&values.belt_check, query.uid) {
+            result["belt_check"] = match self.belt_check_value(
+                check.pulley,
+                uid,
+                query.belt_lengths.as_deref(),
+                false,
+                3,
+            ) {
+                Ok(mut value) => {
+                    value["pulley"] = json!(check.pulley);
+                    value
+                }
+                Err(error) => json!({"pulley": check.pulley, "error": error.0}),
+            };
         }
         if let Some(belt) = &values.belt_with {
             let mate = self.pulley_values_of(belt.pulley)?;

@@ -156,7 +156,7 @@ std::optional<QJsonObject> askResolveConflicts(QWidget* parent, const QJsonArray
   chosenBox->addWidget(takeTheirs);
   chosenBox->addWidget(copy);
   chosenBox->addStretch(1);
-  auto* compareButton = new QPushButton(QObject::tr("Co&mpare..."));
+  auto* compareButton = new QPushButton(QObject::tr("Co&mpare…"));
   compareButton->setToolTip(QObject::tr("What differs between the remote's design and yours"));
   chosenBox->addWidget(compareButton);
   layout->addLayout(chosenBox);

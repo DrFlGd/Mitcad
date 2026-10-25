@@ -49,9 +49,13 @@ bool CommandSession::runOutsideRange(const QJsonArray& commands, const QString& 
     }
   };
   if (!m_host.asynchronousCommands()) {
-    const bool sketchPreview = m_appliedDepth >= 0;
+    // A previewAsNew preview is drawn only: drawn again after the change.
+    const bool sketchPreview = m_appliedDepth >= 0 || (m_def.previewAsNew && !m_shownKey.isEmpty());
     if (sketchPreview) {
       takeBackSketchPreview();
+      if (m_def.previewAsNew) {
+        m_shownKey.clear();
+      }
     }
     const bool done =
         commands.size() == 1 ? m_host.runCommand(commands.first().toObject()) : m_host.runCommands(commands, label);
@@ -268,6 +272,12 @@ bool CommandSession::redrawPreview() {
     return false;
   }
   preview.tool = earlier.tool;
+  preview.toolShape = earlier.toolShape;
+  preview.toolPlacements = earlier.toolPlacements;
+  // The same exact preview: the basis of a drag proxy stays (mitcad#636).
+  preview.toolMesh = earlier.toolMesh;
+  preview.state = earlier.state;
+  preview.structure = earlier.structure;
   // The other cached previews drew the bodies shown before.
   m_cache.clear();
   m_cacheOrder.clear();

@@ -28,6 +28,8 @@
 
 #include "framework/TestSync.hpp"
 
+#include "../platform/MacDialogs.hpp"
+
 namespace mitcad::report {
 namespace {
 
@@ -263,7 +265,7 @@ FeedbackDialog::FeedbackDialog(const QImage& screenshot, std::function<bool(cons
   });
 
   auto* buttons = new QDialogButtonBox(this);
-  QPushButton* previewButton = buttons->addButton(tr("&Preview..."), QDialogButtonBox::AcceptRole);
+  QPushButton* previewButton = buttons->addButton(tr("&Preview…"), QDialogButtonBox::AcceptRole);
   previewButton->setDefault(true);
   previewButton->setToolTip(tr("See and edit everything the report contains before sending it"));
   buttons->addButton(QDialogButtonBox::Cancel);
@@ -334,6 +336,7 @@ ReportPreviewDialog::ReportPreviewDialog(const Report& report, const QImage& scr
     box->setObjectName(QStringLiteral("reportSection_") + section.id);
     box->setCheckable(true);
     box->setChecked(section.included);
+    mac::styleSection(box);
     auto* boxLayout = new QVBoxLayout(box);
     QPlainTextEdit* text = textEdit(section.text, section.code, box);
     text->setObjectName(QStringLiteral("reportText_") + section.id);
@@ -354,6 +357,7 @@ ReportPreviewDialog::ReportPreviewDialog(const Report& report, const QImage& scr
     m_screenshotBox->setObjectName(QStringLiteral("reportSection_screenshot"));
     m_screenshotBox->setCheckable(true);
     m_screenshotBox->setChecked(true);
+    mac::styleSection(m_screenshotBox);
     auto* boxLayout = new QVBoxLayout(m_screenshotBox);
     auto* image = new QLabel(m_screenshotBox);
     image->setPixmap(QPixmap::fromImage(screenshot.scaled(QSize(400, 250), Qt::KeepAspectRatio,
@@ -376,6 +380,7 @@ ReportPreviewDialog::ReportPreviewDialog(const Report& report, const QImage& scr
     m_logFileBox->setObjectName(QStringLiteral("reportSection_logfile"));
     m_logFileBox->setCheckable(true);
     m_logFileBox->setChecked(false);
+    mac::styleSection(m_logFileBox);
     auto* boxLayout = new QVBoxLayout(m_logFileBox);
     auto* note = new QLabel(tr("The latest debug log, %1. It stays on this computer unless you check this: Send "
                                "then tells you where it is, to drag it into the form. A log may contain file "
@@ -419,6 +424,8 @@ ReportPreviewDialog::ReportPreviewDialog(const Report& report, const QImage& scr
   connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
   layout->addWidget(buttons);
   resize(760, 700);
+  mac::styleDialogButtons(buttons, send, true);
+  mac::styleDialog(this);
 }
 
 Report ReportPreviewDialog::report() const {

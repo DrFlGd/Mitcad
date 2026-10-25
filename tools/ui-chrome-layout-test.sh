@@ -133,6 +133,7 @@ cards_below_bar() {
   done < <(tr ';' '\n' <<< "$rest" | sed 's/^ *//')
   [ -n "${CARDS[titleRow]:-}" ] || ui_fail "$1: no title row in '$line'"
   [ -z "${CARDS[titleCard]:-}" ] || ui_fail "$1: a title card in '$line'"
+  [ -z "${CARDS[titleFinishSketch]:-}" ] || ui_fail "$1: duplicate Finish Sketch in the title row: '$line'"
   for part in titleHistory titleTabs titleSearch; do
     [ -n "${CARDS[$part]:-}" ] || ui_fail "$1: no $part in '$line'"
   done
@@ -253,8 +254,16 @@ ui_step "rectangle tool (R)"              ui_key r
 ui_step "first corner at the origin"      ui_sketch_click 0 0
 ui_step "opposite corner"                 ui_sketch_click 40 20
 ui_expect_log "Added rectangle" "a rectangle: a change to save"
-ui_step "finish it (Ctrl+Enter)"          ui_key ctrl+Return
+cards_below_bar "while sketching" 1 100000
+ui_mark
+ui_step "finish it from the ribbon"      ui_click_logged "Ribbon button sketch.finish"
 ui_expect_log "Sketch finished" "a change to save"
+ui_step "create another sketch"          ui_create_sketch xy
+ui_expect_new "Palette Finish Sketch at" "palette Finish Sketch is laid out"
+cards_below_bar "in the next sketch" 1 100000
+ui_mark
+ui_step "finish it from the palette"     ui_click_logged "Palette Finish Sketch"
+ui_expect_new "Sketch finished" "the palette still finishes a sketch"
 choose_layout Home
 ui_expect_new "Layout preference: docked (restart asked)" "a restart asked"
 ui_focus_dialog '^Restart Mitcad$'
@@ -298,6 +307,21 @@ echo "--- 5. The next start: Docked by the preference; Floating and the Card bac
 ui_start_app --no-native-dialogs --open "$FILE"
 ui_expect_log "Chrome: docked (the preference)" "Docked by the preference"
 grep -q '^Floating cards: ' "$UI_LOG" && ui_fail "Floating cards in the Docked layout"
+# The design opens with the root active and Part1 beside it, so Create
+# Sketch leaves the origin planes out (mitcad#294): Part1 is activated
+# again, as it was when the sketches were drawn.
+ui_mark
+ui_step "activate Part1 (radio)"          ui_click_logged "Browser radio Root/Part1:1"
+ui_expect_new "Activated Part1" "Part1 active again"
+ui_step "create a Docked sketch"          ui_create_sketch xy
+ui_expect_log "Palette Finish Sketch at" "Docked palette finish is laid out"
+ui_mark
+ui_step "finish Docked sketch from palette" ui_click_logged "Palette Finish Sketch"
+ui_expect_new "Sketch finished" "Docked palette still finishes a sketch"
+ui_step "create another Docked sketch"    ui_create_sketch xy
+ui_mark
+ui_step "finish Docked sketch from ribbon" ui_click_logged "Ribbon button sketch.finish"
+ui_expect_new "Sketch finished" "Docked ribbon still finishes a sketch"
 choose_layout End Home
 ui_expect_new "Preferences: browser background card" "the Card background chosen while Docked"
 ui_expect_new "Layout preference: floating (restart asked)" "Floating chosen, a restart asked"

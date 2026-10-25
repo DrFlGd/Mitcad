@@ -5,7 +5,7 @@
 // MainWindowProjects.cpp), Open Recent, Open Read-Only, Close,
 // Save, Save As, Save with Description (P12d), Version History (P12e), the
 // Project submenu (mitcad#89, MainWindowProjects.cpp), Import, Export,
-// Recover Documents (P8c, MainWindowAutosave.cpp); the INSERT group's Insert
+// Recover Designs (P8c, MainWindowAutosave.cpp); the INSERT group's Insert
 // Mesh and Insert DXF, and Insert Component in the ASSEMBLE group; files
 // dropped on the window.
 #include "../MainWindow.hpp"
@@ -85,7 +85,8 @@ QString menuEntries(const QMenu* menu, const QMenu* collapsed) {
       continue;
     }
     QString name = action->text().remove(QLatin1Char('&')).trimmed();
-    while (name.endsWith(QLatin1Char('.'))) {
+    // (Three dots or the single ellipsis, mitcad#645.)
+    while (name.endsWith(QLatin1Char('.')) || name.endsWith(QChar(0x2026))) {
       name.chop(1);
     }
     if (const QMenu* submenu = action->menu()) {
@@ -165,7 +166,7 @@ void MainWindow::registerFileCommands() {
   component.pinned = true;
   component.keywords = {QStringLiteral("assembly"), QStringLiteral("external"), QStringLiteral("mitcad")};
   m_registry->add(component);
-  CommandDef importDef = def("file.import", tr("Import..."), "import",
+  CommandDef importDef = def("file.import", tr("Import…"), "import",
                              tr("Brings in STEP, IGES, STL, DXF and other CAD files, or opens them as designs"),
                              [this] { importFile(); });
   importDef.keywords = {QStringLiteral("step"),    QStringLiteral("iges"),  QStringLiteral("brep"),
@@ -175,7 +176,7 @@ void MainWindow::registerFileCommands() {
                         QStringLiteral("rfa"),     QStringLiteral("solidcraft"), QStringLiteral("dwg"),
                         QStringLiteral("open")};
   m_registry->add(importDef);
-  CommandDef exportDef = def("file.export", tr("Export..."), "export",
+  CommandDef exportDef = def("file.export", tr("Export…"), "export",
                              tr("Bodies to STEP, IGES, STL, OBJ or BRep; a sketch to DXF"),
                              [this] { exportFile(); });
   exportDef.tab.clear(); // the File menu
@@ -186,7 +187,7 @@ void MainWindow::registerFileCommands() {
   m_registry->add(exportDef);
   // Drawings with views, dimensions and a hole table (mitcad#471,
   // MainWindowDrawing.cpp).
-  CommandDef drawingDef = def("file.export_drawing", tr("Export Drawing..."), "export",
+  CommandDef drawingDef = def("file.export_drawing", tr("Export Drawing…"), "export",
                               tr("The bodies as a drawing with views, sizes and a hole table: PDF, SVG or DXF"),
                               [this] { exportDrawing(); });
   drawingDef.tab.clear(); // the File menu
@@ -197,7 +198,9 @@ void MainWindow::registerFileCommands() {
   // 3D Print (mitcad#13, mitcad#234, MainWindowPrint.cpp): a panel in the
   // MAKE group, next to Render Image.
   m_registry->add(print3dCommand());
-  CommandDef recover = def("file.recover", tr("Recover Documents..."), "recover",
+  // Printers and Processes (mitcad#655): next to 3D Print.
+  m_registry->add(printersCommand());
+  CommandDef recover = def("file.recover", tr("Recover Designs…"), "recover",
                            tr("Restores changes that were not saved when Mitcad last ended without closing"),
                            [this] { recoverDocuments(false); });
   recover.tab.clear(); // the File menu
@@ -227,51 +230,51 @@ void MainWindow::createFileMenu() {
   // New and New Design are one command (Ctrl+N): a design of the current
   // project, named in the Projects panel (mitcad#145), else an untitled
   // one.
-  command(file, "file.new_design", tr("&New Design..."));
-  add(tr("&Open..."), QKeySequence::Open, &MainWindow::openDocument);
+  command(file, "file.new_design", tr("&New Design…"));
+  add(tr("&Open…"), QKeySequence::Open, &MainWindow::openDocument);
   // A design of a project, its folders browsed or its name searched
   // (mitcad#530).
-  command(file, "file.open_from_project", tr("Open &from Project..."));
+  command(file, "file.open_from_project", tr("Open &from Project…"));
   m_recentMenu = file->addMenu(tr("Open &Recent"));
   connect(m_recentMenu, &QMenu::aboutToShow, this, &MainWindow::updateRecentMenu);
   updateRecentMenu();
-  command(file, "file.open_read_only", tr("Open Rea&d-Only..."));
+  command(file, "file.open_read_only", tr("Open Rea&d-Only…"));
   add(tr("&Close"), QKeySequence(Qt::CTRL | Qt::Key_W), &MainWindow::closeDocument)->setObjectName(QStringLiteral("command_file.close"));
   file->addSeparator();
   add(tr("&Save"), QKeySequence::Save, &MainWindow::save);
   // QKeySequence::SaveAs has no key on Windows.
-  add(tr("Save &As..."), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), &MainWindow::saveAs);
+  add(tr("Save &As…"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), &MainWindow::saveAs);
   // Save As into a project, a new one too (mitcad#503; File > Project >
   // Move to a Project before).
-  command(file, "file.save_to_project", tr("Save to Pro&ject..."));
+  command(file, "file.save_to_project", tr("Save to Pro&ject…"));
   // Versions (P12d): Save records one in a project; Save with Description
   // one with a description written; Version History (P12e) lists them.
-  command(file, "file.save_version", tr("Save &with Description..."));
-  command(file, "file.version_history", tr("Version &History..."));
+  command(file, "file.save_version", tr("Save &with Description…"));
+  command(file, "file.version_history", tr("Version &History…"));
   file->addSeparator();
   // Local and Cloud projects (P12d, P12 remote, mitcad#89): made or opened;
   // the current one's versions shared; its settings.
   QMenu* project = file->addMenu(tr("&Project"));
   project->setObjectName(QStringLiteral("fileProjectMenu"));
-  command(project, "file.new_project", tr("&New Project..."));
-  command(project, "file.open_project", tr("&Open Project..."));
-  command(project, "file.open_remote", tr("Open from C&loud..."));
+  command(project, "file.new_project", tr("&New Project…"));
+  command(project, "file.open_project", tr("&Open Project…"));
+  command(project, "file.open_remote", tr("Open from C&loud…"));
   project->addSeparator();
   command(project, "file.sync", tr("&Sync"));
   command(project, "file.check_remote", tr("&Check for Newer Versions"));
   command(project, "file.remote_browser", tr("Open in &Browser"));
   project->addSeparator();
-  command(project, "file.project_settings", tr("Project Se&ttings..."));
+  command(project, "file.project_settings", tr("Project Se&ttings…"));
   // The project's web viewer (mitcad#423).
   project->addSeparator();
-  command(project, "file.web_viewer", tr("&Web Viewer..."));
+  command(project, "file.web_viewer", tr("&Web Viewer…"));
   command(project, "file.update_web_viewer", tr("&Update Web Viewer"));
   file->addSeparator();
-  command(file, "file.import", tr("&Import..."));
-  command(file, "file.export", tr("&Export..."));
-  command(file, "file.export_drawing", tr("Export &Drawing..."));
+  command(file, "file.import", tr("&Import…"));
+  command(file, "file.export", tr("&Export…"));
+  command(file, "file.export_drawing", tr("Export &Drawing…"));
   file->addSeparator();
-  command(file, "file.recover", tr("Recover Doc&uments..."));
+  command(file, "file.recover", tr("Recover Desi&gns…"));
 #ifndef Q_OS_MACOS
   // macOS moves Quit to the application menu.
   file->addSeparator();
@@ -817,7 +820,7 @@ void MainWindow::insertComponent(const QString& given) {
     options.title = tr("Insert from a Project");
     options.text = tr("The design to insert as a component:");
     options.acceptText = tr("&Insert");
-    options.otherText = tr("&Another File...");
+    options.otherText = tr("&Another File…");
     options.root = m_project.root;
     options.ownFile = m_filePath;
     const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);

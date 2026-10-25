@@ -3,6 +3,8 @@
 
 #include <QtGlobal>
 
+#include "MacDialogs.hpp"
+
 class QDialog;
 class QFormLayout;
 class QLineEdit;
@@ -60,41 +62,9 @@ inline void styleParameterCell(QStyleOptionViewItem* option, const QModelIndex& 
 
 namespace parameters {
 
-class Appearance : public QObject {
+class RowDelegate : public dialogs::ListRowDelegate {
 public:
-  explicit Appearance(QDialog* dialog) : QObject(dialog), m_dialog(dialog) {
-    dialog->installEventFilter(this);
-    apply();
-  }
-
-protected:
-  bool eventFilter(QObject*, QEvent* event) override {
-    if (event->type() == QEvent::ApplicationPaletteChange || event->type() == QEvent::ApplicationFontChange) {
-      apply();
-    }
-    return false;
-  }
-
-private:
-  void apply() {
-    // The Docked parent has its own accent. Sheets use the application's
-    // system palette, refreshed when macOS changes appearance or accent.
-    m_dialog->setPalette(QApplication::palette());
-    m_dialog->setFont(QFontDatabase::systemFont(QFontDatabase::GeneralFont));
-  }
-
-  QDialog* m_dialog;
-};
-
-class RowDelegate : public QStyledItemDelegate {
-public:
-  using QStyledItemDelegate::QStyledItemDelegate;
-
-  QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-    QSize size = QStyledItemDelegate::sizeHint(option, index);
-    size.setHeight(std::max({size.height(), 28, option.fontMetrics.height() + 10}));
-    return size;
-  }
+  using dialogs::ListRowDelegate::ListRowDelegate;
 
 protected:
   void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
@@ -106,7 +76,7 @@ protected:
 } // namespace parameters
 
 inline void styleParameterForm(QDialog* dialog, QFormLayout* form) {
-  new parameters::Appearance(dialog);
+  styleDialog(dialog);
   form->setContentsMargins(20, 20, 20, 20);
   form->setHorizontalSpacing(12);
   form->setVerticalSpacing(12);
@@ -116,17 +86,15 @@ inline void styleParameterForm(QDialog* dialog, QFormLayout* form) {
 
 inline void styleParametersDialog(QDialog* dialog, QTreeWidget* table, QLineEdit* filter,
                                  QPushButton* add, QPushButton* remove, QPushButton* ok) {
-  new parameters::Appearance(dialog);
-  dialog->resize(880, 520);
+  styleDialog(dialog);
+  dialog->resize(1240, 520); // with the limits' columns (mitcad#665)
   dialog->setMinimumSize(640, 360);
   dialog->layout()->setContentsMargins(20, 20, 20, 20);
   dialog->layout()->setSpacing(12);
   filter->setMinimumWidth(180);
   filter->setMaximumWidth(260);
-  filter->setMinimumHeight(28);
-  filter->addAction(symbolIcon(QStringLiteral("magnifyingglass")), QLineEdit::LeadingPosition);
-  add->setIcon(symbolIcon(QStringLiteral("plus"), add->icon()));
-  remove->setIcon(symbolIcon(QStringLiteral("trash"), remove->icon()));
+  styleSearchField(filter);
+  styleListButtons(add, remove);
   for (QPushButton* button : {add, remove, ok}) {
     button->setMinimumHeight(28);
     button->setIconSize(QSize(14, 14));

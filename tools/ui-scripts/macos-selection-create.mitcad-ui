@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: MIT
+# The same real Create controls are reused for a body and a planar face.
+wait-idle 30
+window-resize 1280 900
+command view.fit
+expect-viewport
+expect-model-bodies 1 24000
+dblclick-logged '^Browser Root/Bodies at '
+mark
+click-logged '^Browser Root/Bodies/Body1 at '
+expect-selection 1 0
+expect-log '^Selection card create: Rectangular Pattern \| Circular Pattern \| Mirror$'
+expect-widget-property selectionCreate0 macFlatToolButton true
+expect-widget-property selectionCreate1 macFlatToolButton true
+expect-widget-property selectionCreate2 macFlatToolButton true
+expect-widget-property selectionCreate3 macFlatToolButton true
+screenshot '${MITCAD_TEST_SHOTS}/body.png'
+screenshot-screen '${MITCAD_TEST_SHOTS}/body-native.png'
+mark
+click-logged '^Selection card create Rectangular Pattern at '
+expect-log '^Selection card create chose Rectangular Pattern$'
+expect-log '^Command Rectangular Pattern started$'
+expect-log '^Rectangular Pattern Objects: 1 body \[body F1.b0\]$'
+key Escape
+expect-log '^Command Rectangular Pattern cancelled$'
+mark
+click-visible-face
+expect-selection 1 0
+expect-log '^Selection card create: Extrude \| Create Sketch \| Hole$'
+expect-widget-property selectionCreate0 macFlatToolButton true
+expect-widget-property selectionCreate1 macFlatToolButton true
+expect-widget-property selectionCreate2 macFlatToolButton true
+expect-widget-property selectionCreate3 macFlatToolButton true
+screenshot '${MITCAD_TEST_SHOTS}/face.png'
+mark
+click-logged '^Selection card create Extrude at '
+expect-log '^Selection card create chose Extrude$'
+expect-log '^Command Extrude started$'
+expect-log '^Extrude Profiles: 1 face '
+key Escape
+expect-log '^Command Extrude cancelled$'
+expect-model-bodies 1 24000
+expect-never 'OCCT view event failed|Recompute failed|The document was read while a job computes it'

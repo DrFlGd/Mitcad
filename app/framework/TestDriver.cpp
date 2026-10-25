@@ -12,6 +12,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QDir>
+#include <QDockWidget>
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
@@ -38,6 +39,8 @@
 #include <QSettings>
 #include <QShortcut>
 #include <QTimer>
+#include <QToolBar>
+#include <QToolTip>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QTextDocument>
@@ -50,12 +53,16 @@
 #include "../platform/NativeTestInput.hpp"
 #include "../OcctViewer.hpp"
 #include "../MainWindow.hpp"
+#include "../sketch/SketchController.hpp"
+#include "../sketch/SketchOverlay.hpp"
+#include "../sketch/SketchTool.hpp"
 #include "../browser/TimelineWidget.hpp"
 #include "GlassCard.hpp"
 #include "TestSync.hpp"
 #include "Dialogs.hpp"
 #include "ComputeProgress.hpp"
 #include "Theme.hpp"
+#include "TreeItemDelegate.hpp"
 #include "mitcad/geometry/geometry.hpp"
 
 namespace mitcad {
@@ -111,14 +118,26 @@ const StepSpec kSpecs[] = {
     {"wheel", 3, 4, kInputOfMain},
     {"wheel-burst", 4, 5, kInputOfMain},
     {"trackpad-scroll", 5, 6, kInputOfMain},
+    {"hover-logged", 1, 1, kInputOfMain},
+    {"timeline-leave", 0, 0, kInputOfMain},
+    {"expect-timeline-hover", 1, 1, kIdle},
+    {"expect-timeline-tooltip", 1, 1, kIdle},
+    {"capture-view-image", 1, 1, kIdle},
+    {"expect-view-image", 2, 2, kIdle},
     {"click-logged", 1, 3, kInputOfMain},
     {"dblclick-logged", 1, 2, kInputOfMain},
     {"click-pick", 1, 2, kInputOfMain},
+    {"expect-pick-offset", 4, 4, kInputOfMain},
+    {"click-pick-offset", 4, 4, kInputOfMain},
     {"click-visible-face", 0, 0, kInputOfMain},
     {"drag-logged", 2, 3, kInputOfMain},
     {"drag-from", 3, 3, kInputOfMain},
     {"sketch-click", 2, 4, kInputOfMain},
+    {"sketch-move", 2, 2, kInputOfMain},
+    {"expect-sketch-field-dimension", 3, 3, kIdle},
     {"sketch-drag", 4, 4, kInputOfMain},
+    {"sketch-pointer", 3, 3, kInputOfMain},
+    {"expect-profiles", 1, 1, kIdle},
     {"type-in", 2, 2, kInputOfMain},
     {"command", 1, 1, kInputOfMain},
     {"open-file", 1, 1, kInputOfMain},
@@ -176,6 +195,11 @@ const StepSpec kSpecs[] = {
     {"expect-view-orientation", 2, 2, kIdle},
     {"expect-view-buttons", 1, 1, kIdle},
     {"expect-selection", 2, 2, kIdle},
+    {"expect-navigation-runtime", 0, 0, kIdle},
+    {"expect-assistant-setup", 1, 1, kIdle},
+    {"expect-formula-builder", 0, 0, kIdle},
+    {"open-formula-field", 1, 1, kInputOfTarget},
+    {"expect-navigation-controls", 1, 1, kIdle},
     {"expect-selection-info", 1, 3, kIdle},
     {"expect-native-text", 2, 2, kIdle},
     {"expect-native-enabled", 2, 2, kIdle},
@@ -186,6 +210,7 @@ const StepSpec kSpecs[] = {
     {"native-history-drag", 1, 2, kInputOfMain},
     {"native-history-drag-now", 1, 2, kPlain},
     {"expect-model-busy", 1, 1, kPlain},
+    {"test-manipulator-feedback", 0, 0, kInputOfMain},
     {"capture-undo-depth", 1, 1, kIdle},
     {"expect-undo-depth", 2, 2, kIdle},
     {"expect-model-bodies", 2, 2, kIdle},
@@ -197,10 +222,17 @@ const StepSpec kSpecs[] = {
     {"focus-main", 0, 0, kPlain},
     {"focus-widget", 1, 1, kInputOfTarget},
     {"expect-widget-property", 3, 3, kIdle},
+    {"expect-projects-layout", 1, 1, kIdle},
+    {"expect-sketch-finish-layout", 0, 0, kIdle},
+    {"expect-tree-rename", 1, 1, kIdle},
+    {"collapse-card", 2, 2, kInputOfMain},
     {"expect-setting", 2, 2, kIdle},
     {"expect-dialog-gone", 1, 1, kIdle},
     {"dialog-resize", 2, 2, kInputOfTarget},
     {"expect-dialog-appearance", 1, 1, kIdle},
+    {"show-dialog-style-fixture", 1, 1, kIdle},
+    {"test-dialog-controls", 1, 1, kInputOfTarget},
+    {"expect-macos-tool-buttons", 0, 0, kIdle},
     {"expect-command-search", 2, 3, kIdle},
     {"click-parameter", 2, 2, kInputOfTarget},
     {"expect-parameter-cell", 4, 4, kIdle},
@@ -1304,7 +1336,8 @@ void TestDriver::run(const Step& step) {
           }
           // Same OCCT MoveTo/filter path as a hover inside paintGL, with
           // deterministic timing before the job can finish.
-          if (guard->viewer().itemAt(point) || !guard->viewer().itemsAt(point).empty()) {
+          if (guard->viewer().itemAt(point) || !guard->viewer().itemsAt(point).empty() ||
+              !guard->viewer().pickPoints(SelectKind::Face | SelectKind::Edge | SelectKind::Body).empty()) {
             fail(line, QStringLiteral("a model item remained pickable during a job")); return;
           }
           qInfo().noquote() << QStringLiteral("Picking suspended during %1 (busy)").arg(label);
@@ -1592,6 +1625,8 @@ void TestDriver::run(const Step& step) {
       return mac::test::historyLayout(state, timeline ? timeline->filteredFeatures() : QSet<QString>(),
                                       selected, checkSelection, m_waitDetail);
     }, 6, QStringLiteral("native history does not match the real model timeline"));
+  } else if (name == QLatin1String("test-manipulator-feedback")) {
+    testManipulatorFeedback();
   } else if (name == QLatin1String("expect-model-busy")) {
     auto* window = qobject_cast<MainWindow*>(mainWindow);
     if (!window || (a.at(0) != QStringLiteral("true") && a.at(0) != QStringLiteral("false"))) {
@@ -1620,6 +1655,70 @@ void TestDriver::run(const Step& step) {
       QString error;
       if (!mac::test::setAppearance(a.at(0), error)) fail(line, error);
     });
+  } else if (name == QLatin1String("hover-logged")) {
+    QRegularExpression re;
+    if (!regex(a.at(0), re)) return;
+    const auto point = std::make_shared<QPoint>();
+    whenReady([this, re, point] { return loggedPoint(re, 0, *point); }, 6,
+              QStringLiteral("no hover position logged"), [this, point] {
+      sendMouse(QEvent::MouseMove, *point, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    }, mainWindow);
+  } else if (name == QLatin1String("timeline-leave")) {
+    auto* strip = m_main->findChild<QWidget*>(QStringLiteral("timelineStrip"));
+    if (!strip) { fail(line, QStringLiteral("timeline strip missing")); return; }
+    QEvent leave(QEvent::Leave);
+    QCoreApplication::sendEvent(strip, &leave);
+  } else if (name == QLatin1String("expect-timeline-hover")) {
+    auto* timeline = m_main->findChild<TimelineWidget*>();
+    const QString actual = timeline ? timeline->hoveredFeatures().join(QLatin1Char(',')) : QStringLiteral("missing");
+    const QString expected = a.at(0) == QStringLiteral("none") ? QString() : a.at(0);
+    if (actual != expected) fail(line, QStringLiteral("timeline hover '%1', expected '%2'").arg(actual, expected));
+  } else if (name == QLatin1String("expect-timeline-tooltip")) {
+    QRegularExpression expected;
+    if (!regex(a.at(0), expected)) return;
+    whenReady([this, expected] {
+      QTextDocument text;
+      text.setHtml(QToolTip::text());
+      m_waitDetail = text.toPlainText();
+      return QToolTip::isVisible() && expected.match(m_waitDetail).hasMatch();
+    }, 2, QStringLiteral("timeline tooltip did not show expected feature details"));
+  } else if (name == QLatin1String("capture-view-image") || name == QLatin1String("expect-view-image")) {
+    auto* view = qobject_cast<OcctViewer*>(viewer());
+    if (!view) { fail(line, QStringLiteral("OCCT viewport missing")); return; }
+    // Screenshot assertions compare a settled camera, not an intermediate
+    // Fit All or animated view frame that may finish while the tooltip opens.
+    view->settleCamera();
+    if (name == QLatin1String("capture-view-image")) {
+      QDir().mkpath(QFileInfo(a.at(0)).absolutePath());
+      if (!view->grabFramebuffer().save(a.at(0))) fail(line, QStringLiteral("cannot save viewport image"));
+      return;
+    }
+    const QImage original(a.at(0));
+    const bool changed = a.at(1) == QStringLiteral("changed");
+    if (original.isNull() || (!changed && a.at(1) != QStringLiteral("same"))) {
+      fail(line, QStringLiteral("expect-view-image requires an image and same|changed")); return;
+    }
+    whenReady([this, view, original, changed] {
+      const QImage current = view->grabFramebuffer();
+      if (original.size() != current.size()) { m_waitDetail = QStringLiteral("viewport size changed"); return false; }
+      int pixels = 0;
+      for (int y = 0; y < current.height(); ++y) for (int x = 0; x < current.width(); ++x) {
+        const QColor a = original.pixelColor(x, y), b = current.pixelColor(x, y);
+        if (std::abs(a.red() - b.red()) + std::abs(a.green() - b.green()) + std::abs(a.blue() - b.blue()) > 30) ++pixels;
+      }
+      m_waitDetail = QStringLiteral("viewport changed pixels: %1").arg(pixels);
+      return changed ? pixels >= 50 : pixels <= 10;
+    }, 6, QStringLiteral("hidden feature framebuffer indication"));
+  } else if (name == QLatin1String("expect-navigation-runtime")) {
+    testNavigationRuntime();
+  } else if (name == QLatin1String("expect-assistant-setup")) {
+    testAssistantSetup(a.at(0));
+  } else if (name == QLatin1String("expect-formula-builder")) {
+    testFormulaBuilder();
+  } else if (name == QLatin1String("open-formula-field")) {
+    openFormulaField(a.at(0));
+  } else if (name == QLatin1String("expect-navigation-controls")) {
+    testNavigationControls(a.at(0));
   } else if (name == QLatin1String("expect-selection-info")) {
     QRegularExpression expected;
     if (!regex(a.at(0), expected)) return;
@@ -2283,6 +2382,44 @@ void TestDriver::run(const Step& step) {
         }, 6, QStringLiteral("the actual viewport click did not select the probed face"));
       });
     }, mainWindow);
+  } else if (name == QLatin1String("expect-pick-offset") || name == QLatin1String("click-pick-offset")) {
+    QRegularExpression target;
+    QRegularExpression expected;
+    if (!regex(QStringLiteral("^Pick (?:.*)(?:%1)").arg(a.at(0)), target) || !regex(a.at(3), expected)) { return; }
+    bool xOk = false;
+    bool yOk = false;
+    const int dx = a.at(1).toInt(&xOk);
+    const int dy = a.at(2).toInt(&yOk);
+    if (!xOk || !yOk) { fail(line, QStringLiteral("pick offsets must be logical pixels")); return; }
+    const auto at = std::make_shared<QPoint>();
+    const auto settle = std::make_shared<QElapsedTimer>();
+    settle->start();
+    whenReady([this, target, expected, dx, dy, at, settle] {
+      if (TestSync::settling() && settle->elapsed() < kSettleLimitMs) { return false; }
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      if (!window) { return false; }
+      auto& view = window->viewer();
+      bool found = false;
+      for (const auto& [item, point] : view.pickPoints(SelectKind::Face | SelectKind::Edge | SelectKind::Vertex)) {
+        const QString description = QStringLiteral("Pick %1 %2/%3")
+            .arg(SelectionItem::kindName(item.kind), item.owner, item.name);
+        if (target.match(description).hasMatch()) {
+          *at = view.mapTo(m_main.data(), point) + QPoint(dx, dy);
+          found = true;
+        }
+      }
+      if (!found) { m_waitDetail = QStringLiteral("no fresh point for %1").arg(target.pattern()); return false; }
+      const auto item = view.itemAt(view.mapFrom(m_main.data(), *at));
+      const QString actual = item ? item->describe() : QStringLiteral("nothing");
+      m_waitDetail = QStringLiteral("pick at offset %1,%2: %3").arg(dx).arg(dy).arg(actual);
+      if (!expected.match(actual).hasMatch()) { return false; }
+      qInfo().noquote() << QStringLiteral("TestDriver: %1").arg(m_waitDetail);
+      return true;
+    }, 6, QStringLiteral("offset pick did not match '%1'").arg(a.at(3)),
+    [this, at, click = name == QLatin1String("click-pick-offset")] {
+      sendMouse(QEvent::MouseMove, *at, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+      if (click) { queueClick(*at, Qt::LeftButton, Qt::NoModifier, 1); }
+    }, mainWindow);
   } else if (name == QLatin1String("click-logged") || name == QLatin1String("dblclick-logged") ||
              name == QLatin1String("click-pick")) {
     const bool pick = name == QLatin1String("click-pick");
@@ -2442,8 +2579,100 @@ void TestDriver::run(const Step& step) {
         mainWindow);
 
     // --- The mouse at sketch points
-  } else if (name == QLatin1String("sketch-click") || name == QLatin1String("sketch-drag")) {
+  } else if (name == QLatin1String("expect-sketch-field-dimension")) {
+    auto* controller = mainWindow->findChild<sketch::SketchController*>();
+    double expected = 0;
+    if (!controller || !controller->tool() || !toNumber(a.at(2), expected)) {
+      fail(line, QStringLiteral("expected an active sketch drawing tool and a numeric dimension")); return;
+    }
+    sketch::ToolPreview preview;
+    controller->tool()->paint(preview);
+    const auto found = std::find_if(preview.fieldDimensions.begin(), preview.fieldDimensions.end(),
+                                    [&a](const auto& value) { return value.field == a.at(0); });
+    if (found == preview.fieldDimensions.end() || found->dimension.type != a.at(1)) {
+      fail(line, QStringLiteral("field %1 has no %2 dimension preview").arg(a.at(0), a.at(1))); return;
+    }
+    const auto& value = *found;
+    auto measured = sketch::measure(value.dimension, value.model);
+    if (value.dimension.type == QStringLiteral("arc_length")) {
+      const auto* arc = value.model.curve(QStringLiteral("preview"));
+      measured = arc ? std::optional<double>(value.dimension.previewSweep.value_or(
+                           sketch::sweep(arc->curve.start, arc->curve.end))) : std::nullopt;
+    }
+    if (!measured || std::abs(*measured - expected) > 1e-6) {
+      fail(line, QStringLiteral("field %1 dimension measures %2, expected %3")
+                     .arg(a.at(0)).arg(measured.value_or(-1)).arg(expected)); return;
+    }
+    const QRectF field = controller->fieldRect(value.field);
+    const auto at = controller->sketchAtF(field.center());
+    if (field.isEmpty() || !at || !QRectF(viewer()->rect()).contains(field)) {
+      fail(line, QStringLiteral("field %1 lies outside the view").arg(value.field)); return;
+    }
+    auto dimension = value.dimension;
+    dimension.text = *at;
+    const sketch::Projection projection{[controller](const sketch::V2& p) { return controller->toScreen(p); },
+                                         controller->pixel()};
+    const auto shape = sketch::dimensionShape(dimension, value.model, projection, QString());
+    if (!shape.valid || shape.arrows.empty() || (shape.lines.empty() && shape.arcs.empty()) ||
+        QLineF(shape.textAt, field.center()).length() > 1.0) {
+      fail(line, QStringLiteral("field %1 is missing its dimension graphics: valid=%2 arrows=%3 lines=%4 arcs=%5 text-field delta=%6 px")
+                     .arg(value.field).arg(shape.valid).arg(shape.arrows.size()).arg(shape.lines.size())
+                     .arg(shape.arcs.size()).arg(QLineF(shape.textAt, field.center()).length(), 0, 'g', 12)); return;
+    }
+    for (auto* other : viewer()->findChildren<QLineEdit*>()) {
+      if (other->isVisible() && other->objectName().startsWith(QStringLiteral("sketchField_")) &&
+          other->objectName() != QStringLiteral("sketchField_") + value.field &&
+          field.intersects(QRectF(other->geometry()))) {
+        fail(line, QStringLiteral("field %1 overlaps %2").arg(value.field, other->objectName())); return;
+      }
+    }
+    for (auto* label : viewer()->findChildren<QLabel*>()) {
+      if (!label->isVisible() || !label->objectName().startsWith(QStringLiteral("sketchFieldLabel_"))) {
+        continue;
+      }
+      if (!QRectF(viewer()->rect()).contains(QRectF(label->geometry()))) {
+        fail(line, QStringLiteral("field label %1 lies outside the view").arg(label->objectName())); return;
+      }
+      for (auto* edit : viewer()->findChildren<QLineEdit*>()) {
+        if (edit->isVisible() && edit->objectName().startsWith(QStringLiteral("sketchField_")) &&
+            QRectF(label->geometry()).intersects(QRectF(edit->geometry()))) {
+          fail(line, QStringLiteral("field label %1 covers %2").arg(label->objectName(), edit->objectName())); return;
+        }
+      }
+    }
+  } else if (name == QLatin1String("expect-profiles")) {
+    double count = 0;
+    if (!toNumber(a.at(0), count) || count < 0 || count != std::floor(count)) {
+      fail(line, QStringLiteral("expect-profiles <nonnegative-count>")); return;
+    }
+    whenReady([this, count] {
+      auto* view = qobject_cast<OcctViewer*>(viewer());
+      return view && view->profileCount() == static_cast<std::size_t>(count);
+    }, 6, QStringLiteral("expected %1 displayed profiles").arg(count));
+  } else if (name == QLatin1String("sketch-pointer")) {
+    const QString phase = a.at(0);
+    double x = 0;
+    double y = 0;
+    if ((phase != QLatin1String("press") && phase != QLatin1String("move") && phase != QLatin1String("release")) ||
+        !toNumber(a.at(1), x) || !toNumber(a.at(2), y)) {
+      fail(line, QStringLiteral("sketch-pointer press|move|release <x> <y>")); return;
+    }
+    const auto at = std::make_shared<QPoint>();
+    whenReady([this, x, y, at] { return sketchPoint(x, y, *at); }, 6,
+              QStringLiteral("the app logged no sketch view"), [this, phase, at] {
+      if (phase == QLatin1String("press")) {
+        sendMouse(QEvent::MouseMove, *at, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+        sendMouse(QEvent::MouseButtonPress, *at, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+      } else if (phase == QLatin1String("move")) {
+        sendMouse(QEvent::MouseMove, *at, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+      } else {
+        sendMouse(QEvent::MouseButtonRelease, *at, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+      }
+    }, mainWindow);
+  } else if (name == QLatin1String("sketch-click") || name == QLatin1String("sketch-drag") ||
+             name == QLatin1String("sketch-move")) {
     const bool drag = name == QLatin1String("sketch-drag");
+    const bool move = name == QLatin1String("sketch-move");
     double c[4] = {0, 0, 0, 0};
     const int count = drag ? 4 : 2;
     for (int i = 0; i < count; ++i) {
@@ -2470,9 +2699,11 @@ void TestDriver::run(const Step& step) {
           return sketchPoint(x1, y1, *from) && (!drag || sketchPoint(x2, y2, *to));
         },
         6, QStringLiteral("the app logged no sketch view"),
-        [this, drag, from, to, button, modifiers] {
+        [this, drag, move, from, to, button, modifiers] {
           if (drag) {
             queueDrag(*from, *to, Qt::LeftButton, Qt::NoModifier);
+          } else if (move) {
+            sendMouse(QEvent::MouseMove, *from, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
           } else {
             queueClick(*from, button, modifiers, 1);
           }
@@ -2624,7 +2855,7 @@ void TestDriver::run(const Step& step) {
           for (QAbstractButton* button : buttons) {
             if (button->isVisibleTo(window.data()) && button->isEnabled() &&
                 (identifier.isEmpty() || button->objectName() == identifier) &&
-                re.match(plainText(button->text())).hasMatch()) {
+                re.match(plainText(button->text().isEmpty() ? button->accessibleName() : button->text())).hasMatch()) {
               m_found = button;
               return true;
             }
@@ -2680,6 +2911,142 @@ void TestDriver::run(const Step& step) {
           }
           m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
         });
+  } else if (name == QLatin1String("collapse-card")) {
+    auto* card = m_main->findChild<GlassCard*>(a.at(0));
+    if (!card || (a.at(1) != QLatin1String("true") && a.at(1) != QLatin1String("false"))) {
+      fail(line, QStringLiteral("collapse-card needs a card name and true|false")); return;
+    }
+    if (card->isCollapsed() != (a.at(1) == QLatin1String("true"))) {
+      card->findChild<QToolButton*>(QStringLiteral("cardChevron"))->click();
+    }
+  } else if (name == QLatin1String("expect-projects-layout")) {
+    whenReady([this, a] {
+      auto* projects = m_main->findChild<QWidget*>(QStringLiteral("projectsDock"));
+      auto* browser = m_main->findChild<QWidget*>(QStringLiteral("browserDock"));
+      auto* tree = m_main->findChild<QTreeWidget*>(QStringLiteral("projectsTree"));
+      if (!projects || !browser || !tree || !projects->isVisible() || !browser->isVisible() ||
+          tree->topLevelItemCount() != a.at(0).toInt()) return false;
+      const QRect actual(projects->mapToGlobal(QPoint()), projects->size());
+      const QRect next(browser->mapToGlobal(QPoint()), browser->size());
+      auto* card = qobject_cast<GlassCard*>(projects);
+      auto* browserCard = qobject_cast<GlassCard*>(browser);
+      qInfo() << "Projects layout: actual" << actual << "browser" << next
+              << "slot" << (card ? card->slot() : QRect()) << "minimum" << projects->minimumSize();
+      if (actual.intersects(next) || actual.bottom() >= next.top()) return false;
+      if (card && (!browserCard || card->slot().size() != card->size() ||
+                   card->slot().intersects(browserCard->slot()) ||
+                   card->parentWidget()->mapToGlobal(card->slot().topLeft()) != actual.topLeft())) return false;
+      auto* toolbar = m_main->findChild<QToolBar*>(QStringLiteral("projectsToolbar"));
+      if (!toolbar || ((!card || !card->isCollapsed()) &&
+          (toolbar->height() < toolbar->sizeHint().height() || !actual.contains(
+              QRect(toolbar->mapToGlobal(QPoint()), toolbar->size()))))) return false;
+      if (!card || !card->isCollapsed()) {
+        for (auto* button : toolbar->findChildren<QToolButton*>()) {
+          if (button->isVisible() && !toolbar->rect().contains(QRect(
+                  button->mapTo(toolbar, QPoint()), button->size()))) return false;
+        }
+      }
+      qInfo() << "Projects layout: passed, projects" << tree->topLevelItemCount()
+              << "DPR" << projects->devicePixelRatioF();
+      return true;
+    }, 6, QStringLiteral("Projects/Browser overlap, stale slot, clipped toolbar or project rows not loaded"));
+  } else if (name == QLatin1String("expect-tree-rename")) {
+    whenReady([this, a] {
+      QStringList observed;
+      const auto rectText = [](const QRect& rect) {
+        return QStringLiteral("%1,%2 %3x%4").arg(rect.x()).arg(rect.y()).arg(rect.width()).arg(rect.height());
+      };
+      for (QLineEdit* editor : m_main->findChildren<QLineEdit*>(QStringLiteral("treeRenameEditor"))) {
+        observed << QStringLiteral("'%1' selected '%2' visible %3")
+                        .arg(editor->text(), editor->selectedText()).arg(editor->isVisible());
+        if (!editor->isVisible() || editor->text() != a.at(0)) continue;
+        m_waitDetail = QStringLiteral("editor '%1', selected '%2', rect %3")
+                           .arg(editor->text(), editor->selectedText(), rectText(editor->geometry()));
+        const auto reject = [this](const QString& reason) {
+          m_waitDetail += QStringLiteral("; %1").arg(reason);
+          return false;
+        };
+        auto* tree = qobject_cast<QTreeWidget*>(editor->parentWidget()->parentWidget());
+        if (!tree) return reject(QStringLiteral("editor is not a tree viewport child"));
+        const QModelIndex index = tree->currentIndex();
+        m_waitDetail += QStringLiteral("; current row %1 column %2 value '%3'")
+                            .arg(index.row()).arg(index.column()).arg(index.data().toString());
+        auto* delegate = dynamic_cast<TreeItemDelegate*>(tree->itemDelegateForIndex(index));
+        if (!delegate) return reject(QStringLiteral("no shared tree delegate"));
+        if (!delegate->editing(index)) return reject(QStringLiteral("current index has no tracked editor"));
+        if (editor->hasFrame()) return reject(QStringLiteral("editor has a native line-edit frame"));
+        if (!editor->testAttribute(Qt::WA_OpaquePaintEvent)) return reject(QStringLiteral("editor lacks opaque paint attribute"));
+        if (editor->palette().color(QPalette::Base).alpha() != 255) {
+          return reject(QStringLiteral("editor Base alpha %1").arg(editor->palette().color(QPalette::Base).alpha()));
+        }
+        if (editor->selectedText() != editor->text()) return reject(QStringLiteral("editor text is not fully selected"));
+        for (QPalette::ColorGroup group : {QPalette::Active, QPalette::Inactive}) {
+          const QPalette colors = editor->palette();
+          const QPalette application = QApplication::palette();
+          for (QPalette::ColorRole role : {QPalette::Text, QPalette::Highlight, QPalette::HighlightedText}) {
+            if (colors.color(group, role) != application.color(group, role)) {
+              return reject(QStringLiteral("palette group %1 role %2: %3 instead of platform editor colour %4")
+                                .arg(int(group)).arg(int(role))
+                                .arg(colors.color(group, role).name(QColor::HexArgb),
+                                     application.color(group, role).name(QColor::HexArgb)));
+            }
+          }
+          if (colors.color(group, QPalette::Highlight).alpha() == 0) {
+            return reject(QStringLiteral("palette group %1 has a transparent text-selection background").arg(int(group)));
+          }
+        }
+        QStyleOptionViewItem cell;
+        cell.initFrom(tree);
+        cell.widget = tree;
+        cell.rect = tree->visualRect(index);
+        cell.font = tree->font();
+        cell.fontMetrics = QFontMetrics(cell.font);
+        cell.decorationSize = tree->iconSize();
+        cell.state |= QStyle::State_Selected;
+        // The editor must stay inside its row and cover the original name,
+        // including the Browser's custom icon/bulb text margin.
+        const QRect nameInk = delegate->nameTextRect(cell, index);
+        const int editorTextLeft = editor->x() + editor->textMargins().left();
+        m_waitDetail += QStringLiteral("; row %1, name ink %2, editor text left %3, font height %4")
+                            .arg(rectText(cell.rect), rectText(nameInk)).arg(editorTextLeft).arg(cell.fontMetrics.height());
+        if (!cell.rect.contains(editor->geometry())) return reject(QStringLiteral("editor extends outside its row"));
+        if (editor->height() < cell.fontMetrics.height()) return reject(QStringLiteral("editor is shorter than the font"));
+        if (nameInk.isEmpty()) return reject(QStringLiteral("old name ink rectangle is empty"));
+        if (!editor->geometry().contains(nameInk)) return reject(QStringLiteral("editor does not cover the old name ink rectangle"));
+        if (std::abs(editorTextLeft - nameInk.left()) > 2) return reject(QStringLiteral("editor text is horizontally misaligned"));
+        const auto painted = [&](const QColor& ink) {
+          QImage image(tree->viewport()->size(), QImage::Format_ARGB32_Premultiplied);
+          image.fill(Qt::transparent);
+          QPainter painter(&image);
+          QStyleOptionViewItem option = cell;
+          option.palette.setColor(QPalette::Text, ink);
+          option.palette.setColor(QPalette::HighlightedText, ink);
+          delegate->paint(&painter, option, index);
+          return image;
+        };
+        // Changing only the text ink must not change a single row pixel:
+        // the delegate must omit the old name while the editor is active.
+        if (painted(Qt::magenta) != painted(Qt::green)) {
+          return reject(QStringLiteral("delegate painting changes with text ink while the editor is open"));
+        }
+        QImage cover(editor->size(), QImage::Format_ARGB32_Premultiplied);
+        cover.fill(Qt::transparent);
+        editor->render(&cover);
+        for (int y = 0; y < cover.height(); ++y) {
+          for (int x = 0; x < cover.width(); ++x) {
+            if (cover.pixelColor(x, y).alpha() != 255) {
+              return reject(QStringLiteral("editor pixel %1,%2 has alpha %3")
+                                .arg(x).arg(y).arg(cover.pixelColor(x, y).alpha()));
+            }
+          }
+        }
+        qInfo() << "Tree rename: passed" << editor->text() << editor->geometry() << "covers" << nameInk
+                << "DPR" << editor->devicePixelRatioF();
+        return true;
+      }
+      m_waitDetail = QStringLiteral("no visible editor with text '%1'; found %2").arg(a.at(0), observed.join(QStringLiteral(" | ")));
+      return false;
+    }, 6, QStringLiteral("rename editor is missing, translucent, misplaced, unselected or paints the old name"));
   } else if (name == QLatin1String("expect-widget-property")) {
     QWidget* window = targetWindow();
     QObject* widget = window ? window->findChild<QWidget*>(a.at(0)) : nullptr;
@@ -2721,6 +3088,14 @@ void TestDriver::run(const Step& step) {
     }
     window->resize(qRound(width), qRound(height));
     m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
+  } else if (name == QLatin1String("show-dialog-style-fixture")) {
+    showDialogStyleFixture(a.at(0));
+  } else if (name == QLatin1String("expect-macos-tool-buttons")) {
+    testMacToolButtons();
+  } else if (name == QLatin1String("expect-sketch-finish-layout")) {
+    testSketchFinishLayout();
+  } else if (name == QLatin1String("test-dialog-controls")) {
+    testDialogControls(a.at(0));
   } else if (name == QLatin1String("expect-dialog-appearance")) {
     const bool dark = a.at(0) == QStringLiteral("dark");
     if (!dark && a.at(0) != QStringLiteral("light")) {

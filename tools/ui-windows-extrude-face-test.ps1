@@ -9,7 +9,8 @@
 # context menu part needs a popup, which session 0 has not):
 #   1. One imported 20 mm cube (written to STEP and read back, no sketch):
 #      Extrude starts with no profile, a face picked in the view is the
-#      profile, Join chosen automatically, 5 mm out: 8000 -> 10000 mm3.
+#      profile, Join chosen automatically, Two Sides refuses a negative
+#      Distance 2 (mitcad#693), 5 mm out: 8000 -> 10000 mm3.
 #   2. A 20 mm cube from a sketch (Body1, F2.b0) beside an unused square
 #      sketch: its side x = 20 selected before Extrude is the profile, not
 #      the square; 5 mm into the cube is Cut, chosen automatically:
@@ -93,6 +94,17 @@ Ui-Mark
 Ui-Step 'pick a face of the cube'        { Ui-ClickPick 'face F1.b0/F1:import(' }
 Ui-ExpectNew 'Extrude Profiles: 1 face [face F1:import(' 'the face is the profile'
 Ui-ExpectNew 'Extrude: automatic Operation = Join' 'Join: out of the cube' 30
+# Two Sides refuses a negative side instead of drawing it on the other
+# side (mitcad#693); back to One Side.
+Ui-Mark
+Ui-Step 'Two Sides (wheel)'              { Ui-WheelLogged 'Panel Extrude input direction' -1 }
+Ui-ExpectNew 'Extrude: Direction = Two Sides' 'two sides chosen' 30
+Ui-Mark
+Ui-Step 'side two -3'                    { Ui-TypeIn 'Panel Extrude input distance2' '-3' }
+Ui-ExpectNew 'Panel Extrude error: Distance 2 is on the other side: for a solid on one side of the sketch use Start: Offset' 'a negative side two refused' 30
+Ui-Mark
+Ui-Step 'One Side (wheel)'               { Ui-WheelLogged 'Panel Extrude input direction' 1 }
+Ui-ExpectNew 'Extrude: Direction = One Side' 'one side again' 30
 Ui-Mark
 Ui-Step 'distance 5'                     { Ui-TypeIn 'Panel Extrude input distance' '5' }
 Ui-ExpectNew 'Preview Extrude: ok' 'previewed' 30

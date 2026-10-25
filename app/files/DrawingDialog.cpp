@@ -24,6 +24,8 @@
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 
+#include "../platform/MacDialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -70,7 +72,8 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
             s.format;
   }
   auto* file = new QLineEdit(start);
-  auto* browse = new QPushButton(QObject::tr("Browse..."));
+  auto* browse = new QPushButton(QObject::tr("Browse…"));
+  mac::auxiliaryButton(browse);
   auto* fileRow = new QHBoxLayout;
   fileRow->addWidget(file, 1);
   fileRow->addWidget(browse);

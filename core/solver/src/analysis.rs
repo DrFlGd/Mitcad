@@ -71,7 +71,7 @@ pub(crate) fn component_dependencies(
     let plan = comp.analysis_plan.get_or_init(|| {
         let row_cols: Vec<Vec<usize>> = (0..m).map(|i| jac.row(i).0.to_vec()).collect();
         let order: Vec<usize> = (0..m).collect();
-        GramPlan::new(&row_cols, n, Some(&order))
+        GramPlan::shared(&row_cols, n, Some(&order))
     });
     let sym = &plan.sym;
     let mut factor = Factor::new(sym);
@@ -151,25 +151,58 @@ pub(crate) fn component_dependencies(
                 col_rows[c].push((i, v / norm));
             }
         }
-        let mut b = vec![0.0; m];
-        let det = (0..n)
-            .map(|v| {
-                if col_rows[v].is_empty() {
-                    return false;
+        // `b^T G^-1 b` for the column `b` of each unknown: from the entries
+        // of `G^-1` between rows that share a column (a selected inverse,
+        // mitcad#677) when the factor is sparse (its cost is the sum of
+        // the squared column counts with a lookup each, linear for
+        // chains), else by a forward solve per unknown (a full pass each).
+        let selected: usize = (0..m).map(|j| (sym.lp[j + 1] - sym.lp[j] + 1).pow(2)).sum();
+        let det = if 4 * selected < n * (sym.nnz() + m) {
+            let (zdiag, zx) = factor.selected_inverse(sym);
+            let z = |a: usize, b: usize| -> f64 {
+                if a == b {
+                    zdiag[sym.pos[a]]
+                } else {
+                    sym.slot(a, b).map_or(0.0, |p| zx[p])
                 }
-                b.iter_mut().for_each(|x| *x = 0.0);
-                let s = comp.dcol[v].sqrt();
-                for &(i, val) in &col_rows[v] {
-                    b[i] = val * s;
-                }
-                factor.forward(sym, &mut b);
-                let q: f64 = (0..m)
-                    .filter(|&i| !factor.skipped[i])
-                    .map(|i| b[i] * b[i] / factor.d[i])
-                    .sum();
-                1.0 - q < DET_TOL
-            })
-            .collect();
+            };
+            (0..n)
+                .map(|v| {
+                    let rows = &col_rows[v];
+                    if rows.is_empty() {
+                        return false;
+                    }
+                    let mut q = 0.0;
+                    for (k, &(i, vi)) in rows.iter().enumerate() {
+                        q += vi * vi * z(i, i);
+                        for &(j, vj) in &rows[..k] {
+                            q += 2.0 * vi * vj * z(i, j);
+                        }
+                    }
+                    1.0 - q * comp.dcol[v] < DET_TOL
+                })
+                .collect()
+        } else {
+            let mut b = vec![0.0; m];
+            (0..n)
+                .map(|v| {
+                    if col_rows[v].is_empty() {
+                        return false;
+                    }
+                    b.iter_mut().for_each(|x| *x = 0.0);
+                    let s = comp.dcol[v].sqrt();
+                    for &(i, val) in &col_rows[v] {
+                        b[sym.pos[i]] = val * s;
+                    }
+                    factor.forward(sym, &mut b);
+                    let q: f64 = (0..m)
+                        .filter(|&i| !factor.skipped[i])
+                        .map(|i| b[i] * b[i] / factor.d[i])
+                        .sum();
+                    1.0 - q < DET_TOL
+                })
+                .collect()
+        };
         Some(det)
     };
     CompAnalysis {

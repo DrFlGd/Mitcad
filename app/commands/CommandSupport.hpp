@@ -8,6 +8,7 @@
 #include <functional>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -105,12 +106,12 @@ void loadValue(CommandState& state, const QString& key, const QJsonValue& slot,
 QString negated(const QString& expression);
 // Whether the value is not zero (a taper of 0 makes no parameter).
 bool nonZero(const CommandState& state, const QString& key);
-// A count, factor or fraction for a slot the model reads as a length
-// (pattern quantities, scale factors, construction paths' fractions): the
-// number itself, or the expression when it names parameters.
-QJsonValue countValue(const CommandState& state, const QString& key);
-// Fills such an input: the feature's own parameter as its number, a
-// borrowed one by name.
+// A definition's slot that is missing, null or a literal 0: a field the model
+// works out, shown empty as Auto (mitcad#656).
+bool zeroOrNone(const QJsonValue& slot);
+// Fills a count, factor or fraction input (a unitless slot, mitcad#662;
+// built with `state.expression`): a number as it is, the feature's own
+// parameter as its expression, a borrowed one by name.
 void loadCount(CommandState& state, const QString& key, const QJsonValue& slot,
                const QJsonObject& def, const CommandContext& context);
 
@@ -157,14 +158,24 @@ Manipulator arrow(const gp_Pnt& origin, const gp_Dir& direction, double base = 0
 Manipulator ring(const gp_Pnt& origin, const gp_Dir& axis);
 // A length in the document's unit, as a value input's text ("12.5 mm").
 QString lengthText(double millimetres, const CommandContext& context);
-// Where a click on a plane or planar face hit, in the plane's coordinates
-// (the frame a sketch on it has), into the inputs `x` and `y`: primitives
-// and coils are placed by a click.
-void placeAt(const SelectionItem& item, CommandState& state, const CommandContext& context,
-             const QString& x, const QString& y);
-// The plane's point at plane coordinates (x, y) of the state.
-std::optional<gp_Pnt> pointOnPlane(const CommandState& state, const CommandContext& context,
-                                   const QString& plane, const QString& x, const QString& y);
+// A belt's tension travel (mitcad#656): how far and which way the axes
+// move to fit the belt ("1 mm apart", "6 mm closer", "0 mm").
+QString travelText(double millimetres, const CommandContext& context);
+// A length rounded to 0.1 mm for the belt's values (mitcad#656).
+QString shortLength(double millimetres, const CommandContext& context);
+// A belt as it is bought (mitcad#656): its profile, length and width,
+// "GT2 200 mm, 6 mm wide", or with its teeth when the width is not known
+// ("T5 400 mm, 80 teeth"); `profile` the model's (`gt2_2mm`).
+QString beltText(const QJsonObject& belt, const QString& profile, const CommandContext& context);
+// The model's belt verdict (`fit`) as a word: "fits", "needs a tensioner",
+// "belt too short"; empty without one.
+QString beltFitText(const QString& fit);
+// A belt's pitch line round two pulleys (mitcad#656): round the first
+// (centre `first`, axis `normal`, pitch diameter `d1`) and the second
+// (`second`, brought into the first's plane, `d2`), both wraps and the
+// two spans; empty when the circles overlap or a diameter is not known.
+std::vector<gp_Pnt> beltPitchLine(const gp_Pnt& first, const gp_Dir& normal, double d1, const gp_Pnt& second,
+                                  double d2);
 
 // --- Splitting and trimming tools (Split Face, Split Body, Trim): the input
 // `tool` (one plane, face or body, or sketch curves of one sketch), its

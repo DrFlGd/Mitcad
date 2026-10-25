@@ -81,6 +81,7 @@ use mitcad_vec3::{add_scaled, combine, unit_div};
 use super::bearing_sizes::{self, Fit, short_number};
 use super::extrude::Operation;
 use super::geom_ref::{GeomRef, Want};
+use super::place_at::{PlaceAt, map_at};
 use super::seat::{Seat, SeatFrame};
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -243,6 +244,10 @@ pub struct PrintableBearingDef<P = ParamId> {
     /// `groove`.
     #[serde(default = "new_component")]
     pub operation: Operation,
+    /// Placed by picked geometry instead of `plane` and `center`
+    /// (mitcad#656, `place_at.rs`): on a shaft or in a hole as a seat.
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub at: Option<PlaceAt<P>>,
 }
 
 impl<P> PrintableBearingDef<P> {
@@ -303,6 +308,7 @@ impl<P> PrintableBearingDef<P> {
             seat,
             fit_clearance,
             operation: self.operation,
+            at: map_at(&self.at, &mut *f)?,
         })
     }
 
@@ -666,7 +672,8 @@ impl PrintableBearingDef<f64> {
     /// The name of the component a new-component bearing makes:
     /// `Bearing 608 (8x22x7)`, `Bearing 8x22x7` with custom dimensions.
     pub fn component_name(&self) -> Option<String> {
-        if self.seat.is_some() && self.size.is_none() && self.width.is_none() {
+        let on_shaft = self.seat.is_some() || self.at.as_ref().is_some_and(PlaceAt::on_shaft);
+        if on_shaft && self.size.is_none() && self.width.is_none() {
             // The size fits the seat, known once the shaft is.
             return Some("Bearing".to_owned());
         }
@@ -708,6 +715,13 @@ impl PrintableBearingDef<f64> {
             || self.width.is_some()
         {
             return Ok(());
+        }
+        // An axis of its own (mitcad#656).
+        if !seat.diameter.is_finite() {
+            return Err(
+                "an axis of its own has no diameter: give the bearing a size or its dimensions"
+                    .to_owned(),
+            );
         }
         match self.fitting_sizes(seat).first() {
             Some(size) => {
@@ -783,6 +797,9 @@ impl PrintableBearingDef<f64> {
         if let Some(seat) = &self.seat {
             seat.check_values()?;
         }
+        if let Some(at) = &self.at {
+            at.check_values()?;
+        }
         for (v, what) in [
             (self.radial_clearance, "radial clearance"),
             (self.axial_clearance, "axial clearance"),
@@ -807,8 +824,12 @@ impl PrintableBearingDef<f64> {
         if let Some(n) = self.element_count
             && (!n.is_finite() || (n - n.round()).abs() > 1.0e-9 || n < MIN_ELEMENTS)
         {
-            return Err(format!(
-                "the number of elements must be a whole number of at least {MIN_ELEMENTS}, got {n}"
+            return Err(crate::parameters::count_error(
+                format!(
+                    "the number of elements must be a whole number of at least {MIN_ELEMENTS}, \
+                     got {n}"
+                ),
+                n,
             ));
         }
         if let Some(flange) = &self.flange {
@@ -1258,6 +1279,17 @@ fn placement<K: Kernel>(
             .map_or(f64::NAN, |(_, v)| *v)
     };
     let mut bearing = evaluated(def, &value);
+    // Placed by picked geometry (mitcad#656): on a shaft or in a hole the
+    // fitting size as a seat's; elsewhere the size given.
+    if let Some(at) = bearing.at.clone() {
+        let placed = ctx.place(&at)?;
+        if let Some(seat) = placed.round() {
+            bearing.fit_to(seat)?;
+        }
+        let layout = bearing.layout(None)?;
+        let frame = turned(placed.frame, bearing.angle);
+        return Ok((bearing, layout, Placement { frame }, None));
+    }
     // On a shaft or in a hole (mitcad#578): the fitting size unless one is
     // given, the plane through the seat's origin normal to its axis.
     if let Some(seat) = bearing.seat.clone() {
@@ -1681,6 +1713,9 @@ impl FeatureInfo for PrintableBearingDef {
         if let Some(seat) = &self.seat {
             seat.add_to(&mut references);
         }
+        if let Some(at) = &self.at {
+            at.add_to(&mut references);
+        }
         references
     }
 
@@ -1689,6 +1724,21 @@ impl FeatureInfo for PrintableBearingDef {
             return Err(
                 "a bearing makes bodies: its operation is new_component or new_body".to_owned(),
             );
+        }
+        // Placed by picked geometry (mitcad#656).
+        if let Some(at) = &self.at {
+            if self.plane.is_some() || !is_origin(&self.center) || self.seat.is_some() {
+                return Err(
+                    "a bearing placed by at takes no plane, centre or seat of its own".to_owned(),
+                );
+            }
+            if self.groove.is_some() || self.offset.is_some() {
+                return Err(
+                    "a bearing placed by at cuts no raceway into a face (the placement has its own offset)"
+                        .to_owned(),
+                );
+            }
+            return at.check(ctx);
         }
         // On a shaft or in a hole (mitcad#578).
         if let Some(seat) = &self.seat {
@@ -1743,7 +1793,7 @@ impl FeatureInfo for PrintableBearingDef {
 
     fn check_values(&self, value: &dyn Fn(ParamId) -> f64) -> Result<(), String> {
         let bearing = evaluated(self, value);
-        if self.groove.is_some() || self.seat.is_some() {
+        if self.groove.is_some() || self.seat.is_some() || self.at.is_some() {
             // The section needs the face's radius or the seat's size:
             // checked when evaluated.
             bearing.check_inputs()

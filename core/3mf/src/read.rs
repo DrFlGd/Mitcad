@@ -178,6 +178,7 @@ fn read_model(model: Node<'_, '_>) -> Result<Model, Error> {
                             triangles: mesh.triangles.clone(),
                         },
                         placements: Vec::new(),
+                        metadata: Vec::new(),
                     });
                     parts.len() - 1
                 });
@@ -201,7 +202,7 @@ fn read_model(model: Node<'_, '_>) -> Result<Model, Error> {
     Ok(Model {
         name: title.unwrap_or(first),
         parts,
-        application: String::new(),
+        ..Model::default()
     })
 }
 

@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: MIT
+# Both hover probes and real clicks use the production selector.
+wait-idle 30
+expect-model-bodies 1 22500
+window-resize 1280 900
+expect-viewport
+click-logged 'Orientation cube front-top'
+command view.fit
+expect-viewport
+mark
+command solid.fillet
+# Probe the real command filter while final-tier preview meshing owns the
+# document. Candidate enumeration must suspend just like hover and clicks.
+expect-picking-on-job display
+click-pick-offset 'face F1.b0/F1:top' 0 0 '^face F1:top of F1.b0$'
+expect-log 'Fillet Edges: 1 face'
+expect-log 'Preview Fillet: ok' 30
+expect-log 'Picking suspended during display \(busy\)' 30
+screenshot '${MITCAD_TEST_WORK}/fillet-face.png'
+mark
+expect-pick-offset 'edge F1.b0/E\{F1:top\|F2:side0\}' 0 4 '^edge E\{F1:top\|F2:side0\} of F1.b0$'
+click-pick-offset 'edge F1.b0/E\{F1:top\|F2:side0\}' 0 4 '^edge E\{F1:top\|F2:side0\} of F1.b0$'
+expect-log 'Fillet Edges: 1 face, 1 edge'
+expect-log 'Preview Fillet: ok' 30
+screenshot '${MITCAD_TEST_WORK}/fillet-face-edge.png'
+mark
+click-pick-offset 'face F1.b0/F1:top' 0 0 '^face F1:top of F1.b0$'
+expect-log 'Fillet Edges: 1 edge \[edge E\{F1:top\|F2:side0\} of F1.b0\]'
+expect-log 'Preview Fillet: ok' 30
+mark
+expect-pick-offset 'edge F1.b0/E\{F1:top\|F2:side0\}' 0 0 '^edge E\{F1:top\|F2:side0\} of F1.b0$'
+click-pick-offset 'edge F1.b0/E\{F1:top\|F2:side0\}' 0 4 '^edge E\{F1:top\|F2:side0\} of F1.b0$'
+expect-log 'Fillet Edges: nothing'
+key Escape
+mark
+command solid.chamfer
+click-pick-offset 'face F1.b0/F1:top' 0 0 '^face F1:top of F1.b0$'
+expect-log 'Chamfer Edges: 1 face'
+expect-log 'Preview Chamfer: ok' 30
+screenshot '${MITCAD_TEST_WORK}/chamfer-face.png'
+mark
+click-pick-offset 'edge F1.b0/E\{F1:top\|F2:side0\}' 0 4 '^edge E\{F1:top\|F2:side0\} of F1.b0$'
+expect-log 'Chamfer Edges: 1 face, 1 edge'
+expect-log 'Preview Chamfer: ok' 30
+mark
+click-pick-offset 'face F1.b0/F1:top' 0 0 '^face F1:top of F1.b0$'
+expect-log 'Chamfer Edges: 1 edge \[edge E\{F1:top\|F2:side0\} of F1.b0\]'
+expect-log 'Preview Chamfer: ok' 30
+mark
+button '^(✕|Clear the selection)$' clear_sets.0.edges
+expect-log 'Chamfer Edges: nothing'
+key Escape
+
+# Measure accepts both edges and vertices. The selected edge's overlay
+# must leave its endpoint available to the second input.
+command inspect.measure
+click-pick-offset 'edge F1.b0/E\{F2:side0\|F2:top\}' 0 0 '^edge E\{F2:side0\|F2:top\} of F1.b0$'
+expect-log 'Measure Selection 1: 1 edge'
+click-pick-offset 'vertex F1.b0/V\{[^}]*F2:side0\|[^}]*F2:top[^}]*\}' 0 0 '^vertex .* of F1.b0$'
+expect-log 'Measure Selection 2: 1 vertex'
+screenshot '${MITCAD_TEST_WORK}/edge-vertex.png'
+key Escape
+expect-model-bodies 1 22500
+expect-never 'TestDriver: FAIL|OCCT view event failed|The document was read while a job computes it'

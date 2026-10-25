@@ -1129,6 +1129,22 @@ fn made_result(seg: &Segment, id: u64) -> Option<i32> {
         })
 }
 
+/// The operation of an item without one of its own whose part is a base
+/// feature that holds the bodies the item brings (mitcad#641): a paste of
+/// bodies and a derive from another design keep them in such a base
+/// feature, listed among the item's sub-features, whose result number is
+/// the item's state.
+fn sub_base_result(seg: &Segment, tail: &decode::ItemTail) -> Option<i32> {
+    tail.sub_features
+        .iter()
+        .flatten()
+        .filter(|&&s| seg.is_kind_of(s, BASE_FEATURE))
+        .find_map(|&s| {
+            let t = decode::feature_tail(seg, seg.object(s)?)?;
+            (t.result_no > 0).then_some(t.result_no)
+        })
+}
+
 /// Names of the parameters that depend on `p`: those whose expression
 /// mentions it (as a name token) and, through them, those that mention
 /// those, in the parameters' order (the API reference dumps list all of
@@ -1202,6 +1218,9 @@ struct Builder<'a> {
     guids: joints::Guids,
     /// Component names by object id.
     component_names: HashMap<u64, String>,
+    /// The timeline item of each sub-feature that is not itself on the
+    /// timeline (mitcad#641): a paste's or derive's base feature.
+    sub_item: HashMap<u64, u64>,
 }
 
 impl Builder<'_> {
@@ -2203,6 +2222,25 @@ impl Builder<'_> {
                 }
                 if let Some(ex) = &it.extrude {
                     extrude_extent_kinds(ex, &mut x);
+                    // The start byte 2: the extrusion starts on a selected
+                    // face, offset by its `ProfileOffset` (mitcad#641).
+                    if ex.start == Some(2)
+                        && let Some(entity) = ex
+                            .start_entity
+                            .and_then(|s| self.members(s))
+                            .filter(|v| v.len() == 1)
+                            .map(|mut v| v.remove(0))
+                            .filter(|r| {
+                                matches!(r, Reference::Face(_) | Reference::ConstructionPlane(_))
+                            })
+                    {
+                        x.start_extent = Some(Definition {
+                            definition_type: Some("FromEntityStartDefinition".into()),
+                            entity: Some(entity),
+                            offset: pr("ProfileOffset"),
+                            ..Definition::default()
+                        });
+                    }
                     // The start byte 0: the extrusion starts on the profile's
                     // plane. A sketch profile's plane, in the sketch's own
                     // coordinates, is its x-y plane (the API reference
@@ -2650,6 +2688,10 @@ impl Builder<'_> {
                         x.quantity = Some(count_ref(value));
                     }
                 }
+                // The quantity's parameter (mitcad#641).
+                if let Some(p) = pr("countU") {
+                    x.quantity = Some(p);
+                }
                 for e in inputs_of(seg, fid, ENTITY_REF) {
                     if let Some(a) = self.axis_ref(e) {
                         x.axis = Some(a);
@@ -2708,6 +2750,16 @@ impl Builder<'_> {
                         _ => {}
                     }
                 }
+                // The quantities' parameters where the file has them
+                // (mitcad#641: every pattern of the corpora has `countU` and
+                // `CountV`), so that an expression such as a count parameter
+                // of the design stays one.
+                if let Some(p) = pr("countU") {
+                    x.quantity_one = Some(p);
+                }
+                if let Some(p) = pr("CountV") {
+                    x.quantity_two = Some(p);
+                }
                 match self.pattern_objects(it) {
                     Some((objects, kind)) => {
                         x.input_entities = Some(objects);
@@ -2755,8 +2807,9 @@ impl Builder<'_> {
             // A path pattern (mitcad#468): its objects as a rectangular
             // pattern's, the quantity, the distance, and from its data
             // object the path (as a sweep's), the distance type, the compute
-            // option and an empty suppressed list. The start point, flip,
-            // orientation and symmetry are not decoded.
+            // option and an empty suppressed list, the flip, orientation and
+            // symmetry, and the objects' centre that places the original on
+            // the path (mitcad#673).
             Some("PathPatternFeature") => {
                 let mut map = serde_json::Map::new();
                 match self.pattern_objects(it) {
@@ -2770,7 +2823,12 @@ impl Builder<'_> {
                         }
                     }
                 }
-                if let Some((_, value)) = int_inputs(seg, fid).into_iter().find(|(s, _)| *s == 0) {
+                // The quantity's parameter (mitcad#641), else its value.
+                if let Some(p) = pr("countU") {
+                    map.insert("quantity".to_owned(), json_value(&p));
+                } else if let Some((_, value)) =
+                    int_inputs(seg, fid).into_iter().find(|(s, _)| *s == 0)
+                {
                     map.insert("quantity".to_owned(), json_value(&count_ref(value)));
                 }
                 if let Some(p) = pr("PathPatternDelta") {
@@ -2778,6 +2836,17 @@ impl Builder<'_> {
                 }
                 if let Some(data) = patterns::path(seg, seg.data_of(it.id)) {
                     map.insert("path".to_owned(), self.path_or_error(data.path));
+                    // The flag bytes, and the objects' centre that places
+                    // the original on the path (mitcad#673).
+                    map.insert("isFlipDirection".to_owned(), data.flip.into());
+                    map.insert("isOrientationAlongPath".to_owned(), data.along_path.into());
+                    map.insert("isSymmetric".to_owned(), data.symmetric.into());
+                    map.insert("_f3d_objects_center".to_owned(), json_value(&data.center));
+                    // How many bodies the pattern made: none where the
+                    // copies of a new body's feature joined its body.
+                    if let Some(n) = self.new_bodies(it) {
+                        map.insert("_f3d_new_bodies".to_owned(), n.into());
+                    }
                     let s = data.settings;
                     if let Some(c) = s.compute {
                         map.insert("patternComputeOption".to_owned(), c.into());
@@ -3009,6 +3078,26 @@ impl Builder<'_> {
                 }
                 Detail::MoveFace(Box::new(x))
             }
+            // An align of bodies (mitcad#641): its bodies by their body
+            // inputs and the motion it made, the rigid 4x4 matrix (row-major,
+            // cm) of its transform input ([`classes::MOVE_DATA`]), as a
+            // move's. The geometry it aligns (key points, directions and
+            // frames of faces) is not decoded.
+            _ if classes::object_type(&it.class) == Some("AlignFeature") => {
+                let mut map = serde_json::Map::new();
+                if let Some(b) = self.body_inputs(it) {
+                    map.insert("inputEntities".to_owned(), json_value(&b));
+                }
+                let matrix = self
+                    .item_inputs(it)
+                    .into_iter()
+                    .filter(|&i| seg.guid_of(i) == Some(MOVE_DATA))
+                    .find_map(|i| rigid_matrix(seg.data_of(i)));
+                if let Some(m) = &matrix {
+                    map.insert("transform".to_owned(), json_value(m));
+                }
+                Detail::Other(map)
+            }
             Some("CutPasteBodiesFeature") => {
                 let mut map = serde_json::Map::new();
                 if let Some(b) = self.body_inputs(it) {
@@ -3201,6 +3290,16 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
             .iter()
             .filter_map(|c| Some((c.id, c.name.clone().filter(|n| !n.is_empty())?)))
             .collect(),
+        sub_item: items
+            .iter()
+            .flat_map(|it| {
+                it.tail
+                    .iter()
+                    .flat_map(|t| t.sub_features.iter().flatten())
+                    .map(move |&s| (s, it.id))
+            })
+            .filter(|&(s, _)| !items.iter().any(|it| it.id == s) && seg.is_kind_of(s, BASE_FEATURE))
+            .collect(),
     };
     for s in seg.objects_of(SKETCH) {
         for r in seg.ref_ids(seg.data(s)) {
@@ -3366,6 +3465,8 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
         }
         if it.class == COMPONENT_FROM_BODIES {
             f3d.made_result_no = made_result(seg, it.id);
+        } else if it.tail.as_ref().is_some_and(|t| t.result_no <= 0) {
+            f3d.made_result_no = it.tail.as_ref().and_then(|t| sub_base_result(seg, t));
         }
         if matches!(it.type_name, Some("ConstructionPlane" | "ConstructionAxis"))
             || it.class == CONSTRUCTION_POINT
@@ -4025,6 +4126,7 @@ mod tests {
             thin_location: None,
             thin_holder: None,
             thin_two: None,
+            start_entity: None,
         }
     }
 

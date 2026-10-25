@@ -12,21 +12,26 @@
 //! - without a history, the `.smb` blobs' top-level bodies are the stored
 //!   design.
 //!
-//! Bodies are converted to the neutral model when the file is opened and
-//! built with OCCT only when the importer asks for a state.
+//! Which states hold the same bodies is told from the history when the
+//! file is opened (`mitcad_f3d::history_states`); a state's bodies are
+//! converted to the neutral model when the importer first asks for them,
+//! or for those of a state it asks for by the timeline when the file is
+//! opened (mitcad#675), and built with OCCT only when the importer asks for
+//! the state.
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cxx::SharedPtr;
 use mitcad_f3d::F3dFile;
 use mitcad_f3d::asm::AsmFile;
 use mitcad_f3d::asm::history::History;
-use mitcad_f3d::convert::{self, ConvertedBody, Options as ConvertOptions};
+use mitcad_f3d::convert::{self, BodyPrefix, ConvertedBody, Options as ConvertOptions};
 use mitcad_f3d::design::ir::Dump;
+use mitcad_f3d::history_states::{self, DistinctBody};
 use mitcad_import::{StoredBody, StoredGeometry};
 use mitcad_model::RecomputeMonitor;
 use mitcad_model::api::ApiError;
@@ -49,10 +54,26 @@ type BodyKey = (usize, usize, usize, [i64; 3]);
 /// of a history state may have and still be built.
 const MAX_VERTEX_GAP: f64 = 1e-2;
 
-/// A body of a blob at some state.
+/// A body of a blob at some state, converted to the neutral model when it
+/// is first asked for ([`StoredFile::body`], mitcad#675).
 struct Variant {
     blob: usize,
-    body: ConvertedBody,
+    /// Its `body` record.
+    record: usize,
+    /// The operations of its blob's history undone to the state it is
+    /// converted at (0 without a history).
+    step: usize,
+    body: OnceLock<ConvertedBody>,
+    /// Whether it has the faces to reuse healed ones ([`REUSE_MIN_FACES`]),
+    /// once told ([`StoredFile::large`]).
+    large: OnceLock<bool>,
+}
+
+/// A history blob's ASM data, kept to convert its states' bodies when they
+/// are asked for.
+struct HistorySource {
+    file: AsmFile,
+    history: History,
 }
 
 struct Blob {
@@ -88,6 +109,9 @@ pub struct StoredFile {
     document: String,
     blobs: Vec<Blob>,
     variants: Vec<Variant>,
+    /// Per blob, its history's data (None without a history).
+    sources: Vec<Option<Arc<HistorySource>>>,
+    options: ConvertOptions,
     /// Global states: per history blob, the index into its `states`.
     states: Vec<Vec<usize>>,
     /// Blobs with a history, in `states` order.
@@ -125,14 +149,29 @@ pub struct StoredFile {
     /// The bodies to build ahead of the replay, oldest state first
     /// ([`F3dGeometry::build_ahead`], mitcad#103).
     ahead: Mutex<std::collections::VecDeque<usize>>,
-    /// Per variant, its base: the variant of the same body (record) in the
-    /// blob's state before the one it first appears in, when both are
-    /// large enough to reuse healed faces (mitcad#181). Its build takes
-    /// the faces it shares with the base's build as healed there. The base
-    /// is fixed by the file, not by which builds happen to exist, so the
-    /// bodies are the same with any number of threads (mitcad#243).
+    /// Per global state, whether the replay asks for it by the timeline
+    /// (mitcad#642): the first and the last state, each item's state and
+    /// the state its own operations start from. The states between them
+    /// are those of the operations of one item (a pattern's copies, one
+    /// operation each) or of operations no item names.
+    anchors: Vec<bool>,
+    /// Per variant, its base when it is large enough to reuse healed faces
+    /// ([`StoredFile::base`]): the variant of the same body (record) in the
+    /// blob's nearest state before the one it first appears in that the
+    /// replay asks for ([`StoredFile::anchors`]), when that is large enough
+    /// too (mitcad#181). Its build takes the faces it shares with the
+    /// base's build as healed there. The base is fixed by the file, not by
+    /// which builds happen to exist, so the bodies are the same with any
+    /// number of threads (mitcad#243). (A base in the state right before,
+    /// whatever the replay asks for, made a pattern of 372 copies, one
+    /// operation each, build every copy's state in a chain: 40 minutes for
+    /// the item's state alone, mitcad#642.) Whether the variant itself is
+    /// large is told when needed ([`StoredFile::large`]): most variants of
+    /// such a pattern are never converted (mitcad#675).
     bases: Vec<Option<usize>>,
-    /// Per variant, the variants whose base it is.
+    /// Per variant, the variants it would be the base of
+    /// ([`StoredFile::bases`]); its heirs are those of them that are large
+    /// ([`StoredFile::has_heirs`]).
     heirs: Vec<Vec<usize>>,
     /// What the builds of variants with heirs kept for their heirs' builds
     /// (None: their build kept nothing), until the heirs are built or
@@ -145,37 +184,100 @@ pub struct StoredFile {
 /// (`mitcad::brep::kMinReuseFaces`): smaller ones have no base.
 const REUSE_MIN_FACES: usize = 256;
 
-/// The bases and heirs of variants ([`StoredFile::bases`]) given each
-/// variant's record and face count, and each history blob's states (their
-/// variants, oldest state first).
+/// The bases and heirs of variants ([`StoredFile::bases`]), each base and
+/// heir whatever the heir's own size, given each variant's record, whether
+/// a variant of a state the replay asks for is large, and each history
+/// blob's states (their variants, oldest state first, each with whether
+/// the replay asks for it: the base comes from the nearest such state
+/// before).
 fn bases_of(
-    variants: &[(usize, usize)],
-    histories: &[Vec<&[usize]>],
+    records: &[usize],
+    large: impl Fn(usize) -> bool,
+    histories: &[Vec<(&[usize], bool)>],
 ) -> (Vec<Option<usize>>, Vec<Vec<usize>>) {
-    let large = |v: usize| variants[v].1 >= REUSE_MIN_FACES;
-    let mut bases = vec![None; variants.len()];
-    let mut heirs = vec![Vec::new(); variants.len()];
+    let mut bases = vec![None; records.len()];
+    let mut heirs = vec![Vec::new(); records.len()];
     for states in histories {
-        for pair in states.windows(2) {
-            let (before, after) = (pair[0], pair[1]);
-            for &v in after {
-                // (A variant is in consecutive states only: one in the
-                // state before is not new here.)
-                if before.contains(&v) || !large(v) {
-                    continue;
+        // The nearest state before that the replay asks for.
+        let mut anchor: Option<&[usize]> = None;
+        for (k, &(after, asked)) in states.iter().enumerate() {
+            if k > 0 {
+                let before = states[k - 1].0;
+                for &v in after {
+                    // (A variant is in consecutive states only: one in the
+                    // state before is not new here, nor in any earlier.)
+                    if before.contains(&v) {
+                        continue;
+                    }
+                    if let Some(&b) = anchor
+                        .into_iter()
+                        .flatten()
+                        .find(|&&b| records[b] == records[v])
+                        .filter(|&&b| large(b))
+                    {
+                        bases[v] = Some(b);
+                        heirs[b].push(v);
+                    }
                 }
-                if let Some(&b) = before
-                    .iter()
-                    .find(|&&b| variants[b].0 == variants[v].0)
-                    .filter(|&&b| large(b))
-                {
-                    bases[v] = Some(b);
-                    heirs[b].push(v);
-                }
+            }
+            if asked {
+                anchor = Some(after);
             }
         }
     }
     (bases, heirs)
+}
+
+/// Which global states the replay asks for by the timeline
+/// ([`StoredFile::anchors`]): all of them when no item has a state.
+fn anchors_of(
+    count: usize,
+    item_states: &HashMap<i64, usize>,
+    item_starts: &HashMap<i64, usize>,
+) -> Vec<bool> {
+    if item_states.is_empty() {
+        return vec![true; count];
+    }
+    let mut anchors = vec![false; count];
+    let named = item_states.values().chain(item_starts.values());
+    for &s in named.chain([0, count.saturating_sub(1)].iter()) {
+        if let Some(a) = anchors.get_mut(s) {
+            *a = true;
+        }
+    }
+    anchors
+}
+
+/// The first `count` states the replay asks for by the timeline
+/// (`anchors`, [`StoredFile::anchors`]), oldest first: those whose bodies
+/// its first item builds ahead ([`STATES_AHEAD`] after the one it asks
+/// for).
+fn first_asked(anchors: &[bool], count: usize) -> Vec<usize> {
+    (0..anchors.len())
+        .filter(|&s| anchors[s])
+        .take(count)
+        .collect()
+}
+
+/// Which of `variants` (of the states the replay asks for first) are healed
+/// while the file is read ([`StoredFile::heal_first_asked`]): those of
+/// [`EARLY_MIN_FACES`] faces or more (`faces`) without a base (`bases`, by
+/// variant) that are not healing already (`healing`), largest first.
+fn heal_while_reading(
+    variants: &[usize],
+    faces: impl Fn(usize) -> usize,
+    bases: &[Option<usize>],
+    healing: &[usize],
+) -> Vec<usize> {
+    let mut chosen: Vec<(usize, usize)> = variants
+        .iter()
+        .copied()
+        .filter(|&v| bases.get(v).copied().flatten().is_none() && !healing.contains(&v))
+        .map(|v| (v, faces(v)))
+        .filter(|&(_, f)| f >= EARLY_MIN_FACES)
+        .collect();
+    chosen.sort_by_key(|&(v, f)| (std::cmp::Reverse(f), v));
+    chosen.into_iter().map(|(v, _)| v).collect()
 }
 
 /// A body's build shared by the tries of an import ([`StoredFile::builds`]).
@@ -290,6 +392,8 @@ impl StoredFile {
             document: document.to_owned(),
             blobs: Vec::new(),
             variants: Vec::new(),
+            sources: Vec::new(),
+            options,
             states: Vec::new(),
             history: Vec::new(),
             plain: Vec::new(),
@@ -302,6 +406,7 @@ impl StoredFile {
             builds: Arc::new(Mutex::new(HashMap::new())),
             build_ended: Arc::new(Condvar::new()),
             ahead: Mutex::new(std::collections::VecDeque::new()),
+            anchors: Vec::new(),
             bases: Vec::new(),
             heirs: Vec::new(),
             healed: Arc::new(Mutex::new(HashMap::new())),
@@ -345,8 +450,10 @@ impl StoredFile {
             } else {
                 None
             };
-            match history {
+            let source = match history {
                 Some(h) => {
+                    let source = Arc::new(HistorySource { file, history: h });
+                    let (file, h) = (&source.file, &source.history);
                     // From the current state back: k operations undone, so
                     // the bodies after operation k. A body as it is in the
                     // state after is that state's (one variant, built and
@@ -354,27 +461,14 @@ impl StoredFile {
                     // differ, so the converted bodies take the memory of the
                     // distinct ones, not of every body in every state
                     // (mitcad#80: gigabytes for a long history of many
-                    // bodies).
-                    let mut distinct: Vec<ConvertedBody> = Vec::new();
-                    let mut newest_first: Vec<(i64, Vec<usize>)> = Vec::new();
-                    let mut ops: Vec<(i64, usize)> = Vec::new();
-                    // The states converted on up to `threads` threads at once
-                    // (mitcad#103), taken in order as one by one.
+                    // bodies). Which bodies are the same is told from the
+                    // history (`history_states`), as converting them all
+                    // and comparing them would tell; a distinct body is
+                    // converted when it is asked for (mitcad#675: converting
+                    // every state's bodies was most of the time of reading a
+                    // design whose pattern made 372 states the replay never
+                    // asks for).
                     let states = h.states.len() + 1;
-                    let convert_state = |k: usize| -> Vec<ConvertedBody> {
-                        let view = h.view(k);
-                        records
-                            .iter()
-                            .filter(|r| view.get(r) != Some(&None))
-                            .map(|&r| {
-                                if k == 0 {
-                                    convert::convert_body(&file, r, &options)
-                                } else {
-                                    convert::convert_body_at(&file, r, &options, Some(&view))
-                                }
-                            })
-                            .collect()
-                    };
                     // The oldest state with bodies is converted first, and
                     // its large bodies are healed while the rest is read
                     // (mitcad#245): the replay's first item asks for them.
@@ -386,7 +480,15 @@ impl StoredFile {
                             })
                         })
                         .flatten();
-                    let first_bodies = first.map(|k| (k, convert_state(k)));
+                    let first_bodies = first.map(|k| {
+                        let view = h.view(k);
+                        let bodies: Vec<ConvertedBody> = records
+                            .iter()
+                            .filter(|r| view.get(r) != Some(&None))
+                            .map(|&r| convert::convert_body_at(file, r, &options, Some(&view)))
+                            .collect();
+                        (k, bodies)
+                    });
                     let healing: Vec<(usize, Arc<EarlyBuild>)> = match &first_bodies {
                         Some((_, bodies)) => {
                             let source = Source {
@@ -400,75 +502,21 @@ impl StoredFile {
                         }
                         None => Vec::new(),
                     };
-                    let first_bodies = Mutex::new(first_bodies);
-                    let convert = |k: usize| -> Vec<ConvertedBody> {
-                        let mut converted = first_bodies
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        match converted.take() {
-                            Some((first, bodies)) if first == k => bodies,
-                            other => {
-                                *converted = other;
-                                drop(converted);
-                                convert_state(k)
-                            }
-                        }
-                    };
+                    let sets = history_states::body_sets(file, h, &records, &options, first_bodies);
+                    b.changed.extend(sets.changed);
                     // The distinct bodies of the oldest state with bodies,
                     // as converted.
-                    let mut first_ids: Option<Vec<usize>> = None;
-                    let consume = |k: usize, converted: Vec<ConvertedBody>| {
-                        let kept = distinct.len();
-                        let after: &[usize] = newest_first.last().map_or(&[], |(_, ids)| ids);
-                        let mut bodies: Vec<usize> = Vec::new();
-                        for body in converted {
-                            let same = after.iter().copied().find(|&d| {
-                                let old = &distinct[d];
-                                old.record == body.record && old.body == body.body
-                            });
-                            bodies.push(same.unwrap_or_else(|| {
-                                distinct.push(body);
-                                distinct.len() - 1
-                            }));
-                        }
-                        let time = h.states.get(k).map_or(i64::MIN, |s| s.id);
-                        let same = newest_first.last().is_some_and(|(_, last)| {
-                            last.len() == bodies.len()
-                                && last
-                                    .iter()
-                                    .zip(&bodies)
-                                    .all(|(&a, &b)| a == b || distinct[a].body == distinct[b].body)
-                        });
-                        if same {
-                            // The older state made it: keep the older time.
-                            newest_first.last_mut().expect("checked").0 = time;
-                            distinct.truncate(kept);
-                        } else {
-                            newest_first.push((time, bodies));
-                            // The operation undone last changed the bodies.
-                            if let Some(s) = k.checked_sub(1).and_then(|j| h.states.get(j)) {
-                                b.changed.insert(s.id);
-                            }
-                        }
-                        if let Some(s) = h.states.get(k) {
-                            ops.push((s.id, newest_first.len() - 1));
-                        }
-                        if first == Some(k) {
-                            first_ids = newest_first.last().map(|(_, ids)| ids.clone());
-                        }
-                    };
-                    mitcad_import::in_order_sharing(
-                        states,
-                        threads,
-                        Some(&share),
-                        convert,
-                        consume,
-                    );
+                    let first_ids = sets.first;
+                    let newest_first = sets.newest_first;
                     let count = newest_first.len();
-                    b.ops = ops.into_iter().map(|(id, j)| (id, count - 1 - j)).collect();
+                    b.ops = sets
+                        .ops
+                        .into_iter()
+                        .map(|(id, j)| (id, count - 1 - j))
+                        .collect();
                     // The variants in the order of the states, oldest first.
-                    let mut distinct: Vec<Option<ConvertedBody>> =
-                        distinct.into_iter().map(Some).collect();
+                    let mut distinct: Vec<Option<DistinctBody>> =
+                        sets.bodies.into_iter().map(Some).collect();
                     let mut variants: Vec<Option<usize>> = vec![None; distinct.len()];
                     for (time, bodies) in newest_first.into_iter().rev() {
                         let ids: Vec<usize> = bodies
@@ -476,7 +524,7 @@ impl StoredFile {
                             .map(|d| {
                                 *variants[d].get_or_insert_with(|| {
                                     let body = distinct[d].take().expect("taken once");
-                                    geometry.variant(index, body)
+                                    geometry.history_variant(index, body)
                                 })
                             })
                             .collect();
@@ -490,6 +538,7 @@ impl StoredFile {
                         }
                     }
                     geometry.history.push(index);
+                    Some(source)
                 }
                 None => {
                     let ids = records
@@ -501,8 +550,10 @@ impl StoredFile {
                         .collect();
                     b.states.push((i64::MIN, ids));
                     geometry.plain.push(index);
+                    None
                 }
-            }
+            };
+            geometry.sources.push(source);
             geometry.blobs.push(b);
         }
         // The operations the timeline items made (`result_no` is the number
@@ -526,31 +577,217 @@ impl StoredFile {
             })
             .filter(|r| r.result > 0)
             .collect();
-        geometry.link_histories(&results);
+        geometry.link_histories(&results, threads, &share);
         if !geometry.merge_by_timeline(&results) {
             geometry.merge();
         }
-        geometry.link_bases();
+        geometry.link_bases(threads, &share, &mut early);
         geometry.take_early(early);
         geometry.trace_histories();
         Ok(geometry)
     }
 
+    /// Converts the bodies of `variants` not converted yet, on up to
+    /// `threads` threads at once (shared with the bodies healed while the
+    /// file is read).
+    fn convert_variants(&self, variants: &[usize], threads: usize, share: &mitcad_import::Share) {
+        let left: Vec<usize> = variants
+            .iter()
+            .copied()
+            .filter(|&v| self.variants[v].body.get().is_none())
+            .collect();
+        mitcad_import::in_order_sharing(
+            left.len(),
+            threads,
+            Some(share),
+            |i| {
+                self.body(left[i]);
+            },
+            |_, ()| {},
+        );
+    }
+
+    /// A variant's body, converted when first asked for (mitcad#675).
+    fn body(&self, v: usize) -> &ConvertedBody {
+        let variant = &self.variants[v];
+        variant.body.get_or_init(|| {
+            // (Only the variants of history blobs are made without their
+            // body.)
+            let source = self.sources[variant.blob]
+                .as_ref()
+                .expect("a variant without its body is of a history");
+            let view = source.history.view(variant.step);
+            convert::convert_body_at(&source.file, variant.record, &self.options, Some(&view))
+        })
+    }
+
+    /// Whether a variant has the faces to reuse healed ones
+    /// ([`REUSE_MIN_FACES`]): from its body when converted, else from its
+    /// first faces only.
+    fn large(&self, v: usize) -> bool {
+        let variant = &self.variants[v];
+        *variant.large.get_or_init(|| {
+            if let Some(body) = variant.body.get() {
+                return body.body.faces.len() >= REUSE_MIN_FACES;
+            }
+            let Some(source) = self.sources[variant.blob].as_ref() else {
+                return self.body(v).body.faces.len() >= REUSE_MIN_FACES;
+            };
+            let view = source.history.view(variant.step);
+            let prefix = convert::convert_body_prefix(
+                &source.file,
+                variant.record,
+                &self.options,
+                Some(&view),
+                None,
+                convert::Limit {
+                    faces: REUSE_MIN_FACES,
+                    edges: usize::MAX,
+                },
+            );
+            match prefix {
+                BodyPrefix::Whole(body) => body.body.faces.len() >= REUSE_MIN_FACES,
+                // (More faces than that.)
+                BodyPrefix::Part(..) => true,
+            }
+        })
+    }
+
+    /// Whether a variant is large, when that is known without converting
+    /// anything.
+    fn known_large(&self, v: usize) -> Option<bool> {
+        let variant = &self.variants[v];
+        variant.large.get().copied().or_else(|| {
+            variant
+                .body
+                .get()
+                .map(|b| b.body.faces.len() >= REUSE_MIN_FACES)
+        })
+    }
+
+    /// Whether any of `variants` is large, those known first.
+    fn any_large(&self, variants: impl Iterator<Item = usize> + Clone) -> bool {
+        variants.clone().any(|v| self.known_large(v) == Some(true))
+            || variants
+                .into_iter()
+                .any(|v| self.known_large(v).is_none() && self.large(v))
+    }
+
+    /// A variant's base ([`StoredFile::bases`]).
+    fn base(&self, v: usize) -> Option<usize> {
+        self.bases[v].filter(|_| self.large(v))
+    }
+
+    /// Whether a variant is the base of any other ([`StoredFile::heirs`]).
+    fn has_heirs(&self, v: usize) -> bool {
+        self.any_large(self.heirs[v].iter().copied())
+    }
+
     /// Gives each variant of a history blob its base ([`StoredFile::bases`]):
-    /// the variant of the same record in the blob's state before the one
-    /// it first appears in (a variant appears in consecutive states only).
-    fn link_bases(&mut self) {
-        let variants: Vec<(usize, usize)> = self
-            .variants
-            .iter()
-            .map(|v| (v.body.record, v.body.body.faces.len()))
+    /// the variant of the same record in the blob's nearest state before
+    /// the one it first appears in that the replay asks for
+    /// ([`StoredFile::anchors`]; a variant appears in consecutive states
+    /// only). The bodies of the states the replay asks for are converted
+    /// here, on up to `threads` threads at once: those of the states it
+    /// asks for first ([`first_asked`]) before the others, and their large
+    /// bodies without a base are healed while the rest is read
+    /// ([`StoredFile::heal_first_asked`], mitcad#676).
+    fn link_bases(&mut self, threads: usize, share: &Arc<mitcad_import::Share>, early: &mut Early) {
+        self.anchors = anchors_of(self.states.len(), &self.item_states, &self.item_starts);
+        let variants_of = |states: &[usize]| {
+            let mut variants: Vec<usize> = states
+                .iter()
+                .flat_map(|&s| self.state_variants(s))
+                .collect();
+            variants.sort_unstable();
+            variants.dedup();
+            variants
+        };
+        let first = first_asked(&self.anchors, STATES_AHEAD + 1);
+        let first_variants = variants_of(&first);
+        self.convert_variants(&first_variants, threads, share);
+        if let Some(&last) = first.last() {
+            self.heal_first_asked(&first_variants, last, share, early);
+        }
+        let all: Vec<usize> = (0..self.states.len())
+            .filter(|&s| self.anchors[s])
             .collect();
-        let histories: Vec<Vec<&[usize]>> = self
-            .history
+        let asked = variants_of(&all);
+        self.convert_variants(&asked, threads, share);
+        let records: Vec<usize> = self.variants.iter().map(|v| v.record).collect();
+        let histories = self.asked_histories(None);
+        let (bases, heirs) = bases_of(&records, |b| self.large(b), &histories);
+        (self.bases, self.heirs) = (bases, heirs);
+    }
+
+    /// Each history blob's states (their variants, oldest first, each with
+    /// whether the replay asks for it, [`StoredFile::anchors`]), for
+    /// [`bases_of`]; with `upto`, only those up to the blob's state in that
+    /// global state.
+    fn asked_histories(&self, upto: Option<usize>) -> Vec<Vec<(&[usize], bool)>> {
+        self.history
             .iter()
-            .map(|&h| self.blobs[h].states.iter().map(|(_, s)| &s[..]).collect())
-            .collect();
-        (self.bases, self.heirs) = bases_of(&variants, &histories);
+            .enumerate()
+            .map(|(i, &h)| {
+                let mut asked = vec![false; self.blobs[h].states.len()];
+                for (state, _) in self.states.iter().zip(&self.anchors).filter(|(_, a)| **a) {
+                    if let Some(a) = asked.get_mut(state[i]) {
+                        *a = true;
+                    }
+                }
+                let count = upto.map_or(asked.len(), |s| self.states[s][i] + 1);
+                self.blobs[h]
+                    .states
+                    .iter()
+                    .zip(asked)
+                    .take(count)
+                    .map(|((_, s), a)| (&s[..], a))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Starts healing the large bodies of the states the replay asks for
+    /// first (`variants`, converted; the states up to global state `last`)
+    /// while the rest of the file is read, as those of a blob's oldest
+    /// state are ([`Early`], mitcad#245): the replay's first item builds
+    /// them ahead at once ([`F3dGeometry::build_ahead`]), and a large one
+    /// took the first items longer than they took themselves (mitcad#676:
+    /// a path pattern's own state, 8 191 faces healed in 6.7 s, waited for
+    /// by its item 0.3 s into the replay). Only bodies without a base: the
+    /// healing builds them as the replay would without one. Their bases
+    /// come from the states up to `last` alone, as [`bases_of`] gives them
+    /// from the whole history (a base is the same body in an earlier state
+    /// the replay asks for).
+    fn heal_first_asked(
+        &self,
+        variants: &[usize],
+        last: usize,
+        share: &Arc<mitcad_import::Share>,
+        early: &mut Early,
+    ) {
+        let records: Vec<usize> = self.variants.iter().map(|v| v.record).collect();
+        let histories = self.asked_histories(Some(last));
+        let (bases, _) = bases_of(&records, |b| self.large(b), &histories);
+        let healing: Vec<usize> = early.builds.iter().map(|&(v, _)| v).collect();
+        let faces = |v: usize| self.body(v).body.faces.len();
+        let room = self.room();
+        for v in heal_while_reading(variants, faces, &bases, &healing) {
+            let variant = &self.variants[v];
+            let blob = &self.blobs[variant.blob];
+            let source = Source {
+                document: &self.document,
+                blob: &blob.entry,
+                asm_version: &blob.asm_version,
+                history: true,
+                history_step: 0,
+            };
+            match early.start_one(&room, &source, self.body(v), share) {
+                Started::Healing(build) => early.builds.push((v, build)),
+                Started::Skipped => {}
+                Started::NoThread => break,
+            }
+        }
     }
 
     /// Traces each history blob's component and operations, and the state
@@ -581,12 +818,20 @@ impl StoredFile {
              items naming an earlier item's operation {shared:?}",
             self.states.len()
         );
+        eprintln!(
+            "import: {} of {} distinct bodies converted while reading",
+            self.variants
+                .iter()
+                .filter(|v| v.body.get().is_some())
+                .count(),
+            self.variants.len()
+        );
     }
 
     /// What tells a body of a blob from the others: its numbers of faces,
     /// edges and vertices and the sum of its vertices.
     fn body_key(&self, v: usize) -> BodyKey {
-        let body = &self.variants[v].body.body;
+        let body = &self.body(v).body;
         let mut sum = [0.0; 3];
         for vertex in &body.vertices {
             for (s, p) in sum.iter_mut().zip(vertex.point) {
@@ -619,9 +864,7 @@ impl StoredFile {
                     .is_some_and(|c| !with_history.contains(&c))
             })
             .flat_map(|&b| self.blobs[b].states[0].1.iter().copied())
-            .filter(|&v| {
-                self.variants[v].body.body.is_solid() && !known.contains(&self.body_key(v))
-            })
+            .filter(|&v| self.body(v).body.is_solid() && !known.contains(&self.body_key(v)))
             .collect()
     }
 
@@ -642,7 +885,12 @@ impl StoredFile {
     /// the body was made, to the component it went to; then neither history
     /// was its component's, and every item of the design went into one
     /// component.
-    fn link_histories(&mut self, items: &[ItemResult]) {
+    fn link_histories(
+        &mut self,
+        items: &[ItemResult],
+        threads: usize,
+        share: &mitcad_import::Share,
+    ) {
         let mut taken: HashSet<u64> = self
             .history
             .iter()
@@ -684,7 +932,7 @@ impl StoredFile {
             taken.insert(component);
             self.blobs[h].component = Some(component);
         }
-        self.link_by_bodies();
+        self.link_by_bodies(threads, share);
     }
 
     /// [`StoredFile::link_histories`] by the bodies, for the blobs no
@@ -692,8 +940,9 @@ impl StoredFile {
     /// bodies are also in the `.smb`, as they are or as they were earlier
     /// in the history (ASM_FORMAT.md), so a history blob belongs to the
     /// component of the `.smb` blob that holds most of its bodies of any
-    /// state.
-    fn link_by_bodies(&mut self) {
+    /// state. The bodies of every state of those blobs are converted for it
+    /// (on up to `threads` threads at once).
+    fn link_by_bodies(&mut self, threads: usize, share: &mitcad_import::Share) {
         let key = |v: usize| self.body_key(v);
         type Key = BodyKey;
         let plain: Vec<(u64, std::collections::HashSet<Key>)> = self
@@ -705,6 +954,22 @@ impl StoredFile {
                 Some((component, keys))
             })
             .collect();
+        if plain.is_empty() {
+            // (Nothing to link a history to.)
+            return;
+        }
+        let unlinked: Vec<usize> = self
+            .history
+            .iter()
+            .filter(|&&h| self.blobs[h].component.is_none())
+            .flat_map(|&h| {
+                self.blobs[h]
+                    .states
+                    .iter()
+                    .flat_map(|(_, s)| s.iter().copied())
+            })
+            .collect();
+        self.convert_variants(&unlinked, threads, share);
         // Every pairing with a body in common, the most bodies first; each
         // component has one history blob.
         let mut pairs = Vec::new();
@@ -740,7 +1005,25 @@ impl StoredFile {
     }
 
     fn variant(&mut self, blob: usize, body: ConvertedBody) -> usize {
-        self.variants.push(Variant { blob, body });
+        self.variants.push(Variant {
+            blob,
+            record: body.record,
+            step: 0,
+            body: OnceLock::from(body),
+            large: OnceLock::new(),
+        });
+        self.variants.len() - 1
+    }
+
+    /// A variant of a history blob, its body converted or not yet.
+    fn history_variant(&mut self, blob: usize, distinct: DistinctBody) -> usize {
+        self.variants.push(Variant {
+            blob,
+            record: distinct.record,
+            step: distinct.step,
+            body: distinct.body.map_or_else(OnceLock::new, OnceLock::from),
+            large: OnceLock::new(),
+        });
         self.variants.len() - 1
     }
 
@@ -911,7 +1194,7 @@ impl StoredFile {
     /// state without it would mislead (T1b tried that: the main body of a
     /// corpus design).
     fn lost_faces(&self, v: usize) -> bool {
-        let body = &self.variants[v].body;
+        let body = self.body(v);
         let check = &body.check;
         // Edge ends up to 0.01 mm off their vertices (rolled-back B-spline
         // edges of some intermediate states) only widen the tolerances.
@@ -924,10 +1207,8 @@ impl StoredFile {
         }
         let blob = &self.blobs[self.variants[v].blob];
         blob.states.last().is_some_and(|(_, last)| {
-            last.iter().any(|&w| {
-                let stored = &self.variants[w].body;
-                stored.record == body.record && stored.body.is_solid()
-            })
+            last.iter()
+                .any(|&w| self.variants[w].record == body.record && self.body(w).body.is_solid())
         })
     }
 
@@ -1075,12 +1356,12 @@ impl F3dGeometry {
             bodies.push(StoredBody {
                 shape,
                 name: None,
-                source: format!("{name}#{}", variant.body.record),
+                source: format!("{name}#{}", variant.record),
                 component: blob.component,
                 id: Some(v as u64),
                 // (A body keeps its record through the rolled-back states
                 // of its blob, also where an operation changed it.)
-                lineage: Some(((variant.blob as u64) << 32) | variant.body.record as u64),
+                lineage: Some(((variant.blob as u64) << 32) | variant.record as u64),
             });
         }
         (bodies, broken)
@@ -1097,8 +1378,8 @@ fn trace_body(file: &StoredFile, variant: usize, what: &str) {
     eprintln!(
         "import: body {}#{} ({} faces) {what}",
         entry.rsplit('/').next().unwrap_or(entry),
-        v.body.record,
-        v.body.body.faces.len()
+        v.record,
+        file.body(variant).body.faces.len()
     );
 }
 
@@ -1115,7 +1396,7 @@ impl StoredFile {
             history: !file.plain.contains(&v.blob),
             history_step: 0,
         };
-        let data = to_ffi(&source, &v.body);
+        let data = to_ffi(&source, self.body(variant));
         // (Before the clock: waiting for the base is not this build's.)
         let base = self.base_build(variant);
         let clock = Instant::now();
@@ -1150,7 +1431,7 @@ impl StoredFile {
     /// the replay skipped, or one released): the base is the same whatever
     /// the order of the builds, so the body is too (mitcad#243).
     fn base_build(&self, variant: usize) -> Option<SharedPtr<F3dBuilt>> {
-        let base = self.bases[variant]?;
+        let base = self.base(variant)?;
         let mut builds = self
             .builds
             .lock()
@@ -1227,7 +1508,7 @@ impl StoredFile {
         if let Some(base) = base {
             f3d_bases_add(bases.pin_mut(), base);
         }
-        let keep = !self.heirs[variant].is_empty();
+        let keep = self.has_heirs(variant);
         let built = match f3d_build_body_from(data, &bases, keep) {
             Ok(built) => Some(built),
             Err(e) => {
@@ -1270,6 +1551,11 @@ impl StoredFile {
     /// None when it has none), and that its base's build is no longer
     /// needed when this was the base's only heir.
     fn record_build(&self, variant: usize, kept: Option<Option<SharedPtr<F3dBuilt>>>) {
+        // (Told before the lock: telling whether another heir is large may
+        // convert its first faces.)
+        let only_heir_of = self.base(variant).filter(|&base| {
+            !self.any_large(self.heirs[base].iter().copied().filter(|&h| h != variant))
+        });
         let mut healed = self
             .healed
             .lock()
@@ -1277,9 +1563,7 @@ impl StoredFile {
         if let Some(kept) = kept {
             healed.insert(variant, kept);
         }
-        if let Some(base) = self.bases[variant]
-            && self.heirs[base].len() == 1
-        {
+        if let Some(base) = only_heir_of {
             healed.remove(&base);
         }
     }
@@ -1375,7 +1659,9 @@ enum EarlyState {
 /// body built ahead: the replay's first item asks for it, and healing the
 /// large bodies of a design took the first item as long as reading the
 /// whole file. It is built from the same data as the replay would build it
-/// (no base: no older state has the body), so the body is the same.
+/// (no base: no older state has the body), so the body is the same. So is a
+/// large body without a base of the states the replay asks for first
+/// ([`StoredFile::heal_first_asked`], mitcad#676).
 struct EarlyBuild {
     record: usize,
     top_level: bool,
@@ -1468,50 +1754,77 @@ impl Early {
         large.sort_by_key(|&i| std::cmp::Reverse(bodies[i].body.faces.len()));
         let mut started = Vec::new();
         for i in large {
-            let body = &bodies[i];
-            let faces = body.body.faces.len();
-            if faces > self.faces_left {
-                continue;
-            }
-            let Some(taken) = share.take(self.keep) else {
-                break;
-            };
-            let build = Arc::new(EarlyBuild {
-                record: body.record,
-                top_level: body.top_level,
-                issues: body.issues.clone(),
-                skipped_faces: body.skipped_faces,
-                state: Mutex::new(EarlyState::Healing),
-            });
-            let data = to_ffi(source, body);
-            let name = format!(
-                "{}#{} ({faces} faces)",
-                source.blob.rsplit('/').next().unwrap_or(source.blob),
-                body.record
-            );
-            let (healing, room) = (Arc::clone(&build), room.clone());
-            let counted = BuildingAhead::new();
-            let thread = std::thread::Builder::new()
-                .name("mitcad-import-bodies".to_owned())
-                .stack_size(mitcad_import::WORKER_STACK)
-                .spawn(move || {
-                    let _counted = counted;
-                    crate::kernel::exchange::ffi::catch_occt_crashes();
-                    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        heal_early(&data, &name)
-                    }))
-                    .ok()
-                    .flatten();
-                    drop(taken);
-                    healing.healed(built, &room);
-                });
-            if thread.is_ok() {
-                self.faces_left -= faces;
-                started.push((i, build));
+            match self.start_one(room, source, &bodies[i], share) {
+                Started::Healing(build) => started.push((i, build)),
+                Started::Skipped => {}
+                Started::NoThread => break,
             }
         }
         started
     }
+
+    /// Starts healing `body` on a thread taken from the converting ones
+    /// (`share`) when its faces fit in what is left of [`EARLY_FACES`] and
+    /// a thread is left.
+    fn start_one(
+        &mut self,
+        room: &Room,
+        source: &Source,
+        body: &ConvertedBody,
+        share: &Arc<mitcad_import::Share>,
+    ) -> Started {
+        let faces = body.body.faces.len();
+        if faces > self.faces_left {
+            return Started::Skipped;
+        }
+        let Some(taken) = share.take(self.keep) else {
+            return Started::NoThread;
+        };
+        let build = Arc::new(EarlyBuild {
+            record: body.record,
+            top_level: body.top_level,
+            issues: body.issues.clone(),
+            skipped_faces: body.skipped_faces,
+            state: Mutex::new(EarlyState::Healing),
+        });
+        let data = to_ffi(source, body);
+        let name = format!(
+            "{}#{} ({faces} faces)",
+            source.blob.rsplit('/').next().unwrap_or(source.blob),
+            body.record
+        );
+        let (healing, room) = (Arc::clone(&build), room.clone());
+        let counted = BuildingAhead::new();
+        let thread = std::thread::Builder::new()
+            .name("mitcad-import-bodies".to_owned())
+            .stack_size(mitcad_import::WORKER_STACK)
+            .spawn(move || {
+                let _counted = counted;
+                crate::kernel::exchange::ffi::catch_occt_crashes();
+                let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    heal_early(&data, &name)
+                }))
+                .ok()
+                .flatten();
+                drop(taken);
+                healing.healed(built, &room);
+            });
+        if thread.is_err() {
+            return Started::Skipped;
+        }
+        self.faces_left -= faces;
+        Started::Healing(build)
+    }
+}
+
+/// Whether [`Early::start_one`] started healing a body.
+enum Started {
+    Healing(Arc<EarlyBuild>),
+    /// Not started: its faces do not fit in what is left of
+    /// [`EARLY_FACES`], or its thread did not start.
+    Skipped,
+    /// No thread is left.
+    NoThread,
 }
 
 /// Heals a body from its data as the replay's build of it would (no base;
@@ -1566,8 +1879,8 @@ impl StoredFile {
     fn take_early(&self, early: Early) {
         let room = self.room();
         for (variant, build) in early.builds {
-            if self.bases[variant].is_none() && build.matches(&self.variants[variant].body) {
-                build.want(variant, !self.heirs[variant].is_empty(), &room);
+            if self.base(variant).is_none() && build.matches(self.body(variant)) {
+                build.want(variant, self.has_heirs(variant), &room);
             } else {
                 build.unwanted();
             }
@@ -1578,7 +1891,8 @@ impl StoredFile {
 // The history's bodies built ahead of the replay (mitcad#103).
 
 /// How many history states after the one the replay asks for have their
-/// bodies built ahead.
+/// bodies built ahead (of those it asks for by the timeline,
+/// [`StoredFile::anchors`]).
 const STATES_AHEAD: usize = 4;
 
 /// Moves whenever a body's build makes progress, on any thread: a try
@@ -1720,7 +2034,10 @@ impl F3dGeometry {
                 .ahead
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for s in state + 1..(state + 1 + STATES_AHEAD).min(last) {
+            // (The states the replay asks for by the timeline: those
+            // between, such as a pattern's copies, it mostly skips.)
+            let next = (state + 1..last).filter(|&s| file.anchors.get(s) != Some(&false));
+            for s in next.take(STATES_AHEAD) {
                 for v in file.state_variants(s) {
                     if self.built[v].is_none() && !queue.contains(&v) {
                         queue.push_back(v);
@@ -1794,10 +2111,23 @@ impl StoredGeometry<SharedPtr<Shape>> for F3dGeometry {
         file.release_ahead(&kept);
         // What builds kept for heirs no later state has goes too (an heir
         // asked for again builds its base again, mitcad#243).
+        // (Told before the lock: telling whether an heir is large may
+        // convert its first faces.)
+        let held: Vec<usize> = file
+            .healed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .keys()
+            .copied()
+            .collect();
+        let gone: HashSet<usize> = held
+            .into_iter()
+            .filter(|&b| !file.any_large(file.heirs[b].iter().copied().filter(|&h| kept[h])))
+            .collect();
         file.healed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .retain(|&b, _| file.heirs[b].iter().any(|&h| kept[h]));
+            .retain(|b, _| !gone.contains(b));
         // (A body that did not build is not tried again.)
         for (built, kept) in self.built.iter_mut().zip(kept) {
             if !kept && matches!(built, Some(Some(_))) {
@@ -2940,5 +3270,106 @@ impl Document {
             "counts": counts,
             "report": serde_json::to_value(&report).expect("the report serializes"),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A history like a path pattern's (mitcad#676): three small states
+    /// the replay asks for, the copies' states it skips, the pattern's own
+    /// state with a large body whose state before has no large body (no
+    /// base), the next states' bodies based on it, and a large new body in
+    /// a later state.
+    struct Pattern {
+        states: Vec<Vec<usize>>,
+        anchors: Vec<bool>,
+        records: Vec<usize>,
+        faces: Vec<usize>,
+    }
+
+    fn pattern() -> Pattern {
+        Pattern {
+            // Global states (one blob): their variants.
+            states: vec![
+                vec![0],
+                vec![1],
+                vec![2],
+                vec![3],
+                vec![4],
+                vec![5],
+                vec![6],
+                vec![7],
+                vec![8],
+                vec![8, 9],
+            ],
+            anchors: vec![
+                true, true, true, false, false, false, true, true, true, true,
+            ],
+            records: vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 2],
+            faces: vec![12, 29, 37, 2_000, 2_100, 2_200, 8_191, 6_721, 6_723, 5_000],
+        }
+    }
+
+    fn bases(p: &Pattern, upto: usize) -> Vec<Option<usize>> {
+        let history: Vec<(&[usize], bool)> = p
+            .states
+            .iter()
+            .zip(&p.anchors)
+            .take(upto + 1)
+            .map(|(s, &a)| (&s[..], a))
+            .collect();
+        bases_of(&p.records, |v| p.faces[v] >= REUSE_MIN_FACES, &[history]).0
+    }
+
+    #[test]
+    fn the_first_states_asked_for_skip_those_between() {
+        let p = pattern();
+        assert_eq!(
+            first_asked(&p.anchors, STATES_AHEAD + 1),
+            vec![0, 1, 2, 6, 7]
+        );
+        assert_eq!(first_asked(&p.anchors, 2), vec![0, 1]);
+        assert_eq!(first_asked(&[false, false], 3), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn the_bases_of_the_first_states_come_from_those_states_alone() {
+        // As the whole history gives them: a base is in an earlier state.
+        let p = pattern();
+        let first = first_asked(&p.anchors, STATES_AHEAD + 1);
+        let last = *first.last().unwrap();
+        let (some, all) = (bases(&p, last), bases(&p, p.states.len() - 1));
+        for v in first.iter().flat_map(|&s| p.states[s].iter().copied()) {
+            assert_eq!(some[v], all[v], "variant {v}");
+        }
+        // The pattern's state has no base (37 faces before it), the next
+        // state's body has the pattern's as its base.
+        assert_eq!(all[6], None);
+        assert_eq!(all[7], Some(6));
+    }
+
+    #[test]
+    fn a_pattern_s_large_state_is_healed_while_the_file_is_read() {
+        let p = pattern();
+        let first = first_asked(&p.anchors, STATES_AHEAD + 1);
+        let variants: Vec<usize> = first
+            .iter()
+            .flat_map(|&s| p.states[s].iter().copied())
+            .collect();
+        let bases = bases(&p, *first.last().unwrap());
+        let faces = |v: usize| p.faces[v];
+        // Not the small bodies, not the one with a base, not the later
+        // state's (not among the first asked for).
+        assert_eq!(heal_while_reading(&variants, faces, &bases, &[]), vec![6]);
+        // Not one healing already (a blob's oldest state's).
+        assert!(heal_while_reading(&variants, faces, &bases, &[6]).is_empty());
+        // Largest first.
+        let no_bases = vec![None; p.faces.len()];
+        assert_eq!(
+            heal_while_reading(&[3, 4, 5, 6, 7], faces, &no_bases, &[]),
+            vec![6, 7, 5, 4, 3]
+        );
     }
 }

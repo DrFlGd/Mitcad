@@ -1,0 +1,18 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "profile": {
+    "id": "qidi-x-plus-3",
+    "name": "QIDI X-Plus 3 (0.4 nozzle)",
+    "kind": "printer",
+    "values": {
+      "bed_shape": [[0, 0], [280, 0], [280, 280], [0, 280]],
+      "max_print_height": 270,
+      "nozzle_diameter": 0.4,
+      "filament_slots": 1,
+      "printer_model": {"qidi_studio": "X-Plus 3"},
+      "printer_settings_id": {"qidi_studio": "X-Plus 3 0.4 nozzle"}
+    },
+    "version": 1
+  }
+}

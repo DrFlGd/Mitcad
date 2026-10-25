@@ -115,9 +115,11 @@ public:
   bool isWindowed() const { return m_windowed; }
 
   // Where the card is, in the coordinates of its parent widget (the same as
-  // geometry() for a card that is not windowed).
+  // geometry() for a card that is not windowed). The native window may be
+  // larger than requested because of its layout's minimum size; stacking
+  // and hit testing must use that accepted size too.
   void setSlot(const QRect& slot);
-  QRect slot() const { return m_windowed ? m_slot : geometry(); }
+  QRect slot() const { return m_windowed ? QRect(m_slot.topLeft(), size()) : geometry(); }
 
   // Shown (or about to be, for a windowed card whose host window is not
   // shown yet) in the sense of !isHidden().

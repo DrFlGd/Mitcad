@@ -192,6 +192,8 @@ impl SketchEdit<'_> {
         }
         self.drop_entities(&entities);
         self.def.texts.retain(|t| !texts.contains(&t.id));
+        // Their text parameters' links go with them (mitcad#664).
+        self.def.text_values.retain(|v| !texts.contains(&v.text));
         self.drop_constraints(&constraints);
         for t in texts {
             self.report.removed.push(format!("t{}", t.0));
@@ -576,6 +578,8 @@ impl SketchEdit<'_> {
             )
             .map_err(|e| e.message)?;
         solved.store(&mut self.def.entities);
+        // What finishing the edit would solve again (mitcad#679).
+        self.dragged = Some(Box::new((self.def.clone(), self.params.clone(), solved)));
         Ok(())
     }
 

@@ -41,7 +41,7 @@ PROTOCOL = "2025-11-25"
 TIMEOUT = 60
 FRAME_LIMIT = 8 * 1024 * 1024
 LIVE_TOOLS = {"document_list", "model_query", "model_command", "document_save", "document_open", "ui_state", "ui_log",
-              "ui_screenshot", "ui_select", "ui_command", "ui_camera"}
+              "ui_screenshot", "ui_select", "ui_command", "ui_camera", "model_export"}
 # The projection of the block's bottom face in the sketch F4, as the
 # design's definition lists it.
 PROJECTED = ["p1", "p2", "c3", "p4", "c5", "p6", "c7", "c8"]
@@ -220,6 +220,10 @@ class Bridge:
         check(bool(result.get("isError", False)) == error, name + ": unexpected result: " + repr(result)[:2000])
         value = result["structuredContent"]
         check(json.loads(result["content"][0]["text"]) == value, "Tool text and JSON disagree")
+        # A screenshot's image block after the text (mitcad#689).
+        images = [item for item in result["content"][1:] if item.get("type") == "image"]
+        if images:
+            value = dict(value, image=images[0])
         return value
 
     def finish(self):
@@ -252,7 +256,8 @@ def wait_for_listener(cli, env, seconds=30):
 
 
 def check_png(shot, limit):
-    png = base64.b64decode(shot["png_base64"])
+    png = base64.b64decode(shot["image"]["data"])
+    check(shot["image"]["mimeType"] == "image/png", "ui_screenshot's image is not a PNG block")
     check(png[:8] == b"\x89PNG\r\n\x1a\n", "ui_screenshot did not give a PNG")
     width, height = struct.unpack(">II", png[16:24])
     check((width, height) == (shot["width"], shot["height"]), "ui_screenshot's size disagrees with its PNG")
@@ -327,6 +332,7 @@ def run_flow(bridge, design, say=print):
           "ui_state's palette warning: " + repr(warnings))
     check(state["sketch"]["palette"]["clean_up_offered"] is True, "ui_state: no clean-up offered")
     check(state["agents"] >= 1 and state["app"]["version"], "ui_state's agents and version: " + repr(state))
+    check("mitcad-live-debug" in state["agent_clients"], "ui_state's initialized client labels: " + repr(state))
     say("ok   ui_state reports the sketch and its palette's warning with its entities")
 
     # A line into the open sketch through its session, then undo.

@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
@@ -166,8 +167,15 @@ def run(app, cli, out):
                 "The actual Swap UI did not log twelve flush placements: " + repr(new_lines))
             bridge.tool("ui_camera", {"frame": "shown"})
             screenshot = bridge.tool("ui_screenshot", {"window": True, "max_size": 1600})
-            image = base64.b64decode(screenshot["png_base64"])
-            MCP.check(image.startswith(b"\x89PNG\r\n\x1a\n"), "The actual Qt window did not produce a PNG")
+            MCP.check(screenshot["image"]["mimeType"] == "image/png", "Screenshot image block has the wrong MIME type")
+            image = base64.b64decode(screenshot["image"]["data"], validate=True)
+            MCP.check(len(image) >= 24 and image.startswith(b"\x89PNG\r\n\x1a\n"),
+                      "The actual Qt window did not produce a PNG")
+            width, height = struct.unpack(">II", image[16:24])
+            MCP.check((width, height) == (screenshot["width"], screenshot["height"]),
+                      "Screenshot metadata and actual PNG dimensions disagree")
+            MCP.check(len(image) == screenshot["bytes"] and max(width, height) <= 1600,
+                      "Screenshot byte count or size limit is incorrect")
             (out / "timber-seating.png").write_bytes(image)
             bridge.finish()
             (work / "finish").touch()

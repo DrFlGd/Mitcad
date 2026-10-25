@@ -218,7 +218,7 @@ indicator_choose() {
     index=$((index + 1))
     item=${item# }
     item=${item% }
-    if [ "$item" = "$1" ]; then
+    if [ "${item//…/...}" = "${1//…/...}" ]; then
       found=$index
       break
     fi

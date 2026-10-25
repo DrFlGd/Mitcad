@@ -163,6 +163,13 @@ class Bridge:
         check(bool(result.get("isError", False)) == error, "Unexpected tool result: " + repr(result))
         value = result["structuredContent"]
         check(json.loads(result["content"][0]["text"]) == value, "Tool text and JSON disagree")
+        # Screenshot bytes are a separate MCP image block, not part of
+        # structuredContent. Keep the metadata equality check above intact.
+        images = [item for item in result["content"][1:] if item.get("type") == "image"]
+        if name == "ui_screenshot" and not error:
+            check(len(images) == 1, "Screenshot must include exactly one MCP image block")
+        if images:
+            value = dict(value, image=images[0])
         return value
 
     def finish(self):
@@ -325,6 +332,9 @@ def run(app, cli, out, ui):
             bridges.append(bridge)
             check("error" in bridge.request("tools/list"), "Live tools did not require initialization")
             bridge.initialize(identifier=(1 << 64) - 1)
+            connection = bridge.tool("ui_state", {})
+            check(connection["agents"] == 1 and connection["agent_clients"] == ["mitcad-live-integration"],
+                  "Initialized client name was not reported by the live UI")
             names = {tool["name"] for tool in bridge.request("tools/list")["result"]["tools"]}
             check(names == LIVE_TOOLS, "Live catalog exposed file/session ownership tools")
             document = bridge.tool("document_list", {})["documents"][0]["document"]
@@ -426,9 +436,18 @@ def run(app, cli, out, ui):
                     "clientInfo": {"name": "mitcad-raw-integration", "version": "1"}}}
                 sock.sendall(json.dumps(initialize).encode("utf-8") + b"\n")
                 check(socket_json(reader).get("id") == initialize["id"], "Socket changed an initialize u64 ID")
+                before_ready = reconnect.tool("ui_state", {})
+                check("mitcad-raw-integration" not in before_ready["agent_clients"],
+                      "A client was marked connected before notifications/initialized")
+                sock.sendall(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
                 huge = {"jsonrpc": "2.0", "id": (1 << 64) - 1, "method": "ping"}
                 sock.sendall(json.dumps(huge).encode("utf-8") + b"\n")
                 check(socket_json(reader).get("id") == huge["id"], "Socket changed a u64 request ID")
+                live_names = reconnect.tool("ui_state", {})["agent_clients"]
+                check("mitcad-raw-integration" in live_names and len(live_names) >= 2,
+                      "Multiple initialized clients were not named")
+            wait_for(lambda: "mitcad-raw-integration" not in reconnect.tool("ui_state", {})["agent_clients"],
+                     "Disconnected client label to clear", gui)
             with raw_socket(endpoint) as sock, sock.makefile("rb") as reader:
                 authenticate(sock, reader, endpoint)
                 try:

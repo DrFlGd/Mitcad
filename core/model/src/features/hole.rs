@@ -17,8 +17,12 @@ use serde::{Deserialize, Serialize};
 
 use super::extrude::{Operation, apply_operation, check_participants, participant_bodies};
 use super::geom_ref::{GeomRef, Want};
+use super::place_at::PlaceAt;
 use super::reference::{ExtentObject, normalized};
-use super::thread::{ThreadSize, check_clearance, clearance_value, thread_clearance, thread_part};
+use super::thread::{
+    ThreadSize, check_clearance, clearance_value, fitted_clearance, flank_from_fit,
+    thread_clearance, thread_part,
+};
 use super::thread_table::ThreadStandard;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -83,6 +87,9 @@ pub enum HolePlacement<P = ParamId> {
         plane: GeomRef,
         points: Vec<[f64; 3]>,
     },
+    /// One hole placed by picked geometry (mitcad#656, `place_at.rs`):
+    /// along the axis into a shaft or hole, against the normal into a face.
+    At { at: Box<PlaceAt<P>> },
 }
 
 /// A point of a sketch: coordinates in it, the centre of a circle, arc or
@@ -272,6 +279,9 @@ impl<P> HoleDef<P> {
                 plane: plane.clone(),
                 points: points.clone(),
             },
+            HolePlacement::At { at } => HolePlacement::At {
+                at: Box::new(at.map_params("placement.at.", &mut *f)?),
+            },
         };
         let diameter = f("diameter", &self.diameter)?;
         let kind = match &self.kind {
@@ -345,6 +355,7 @@ impl<P> HoleDef<P> {
             HolePlacement::FaceOffsets { .. } => 1,
             HolePlacement::SketchPoints { points, .. } => points.len(),
             HolePlacement::Plane { points, .. } => points.len(),
+            HolePlacement::At { .. } => 1,
         }
     }
 }
@@ -388,6 +399,7 @@ impl FeatureInfo for HoleDef {
                 references.features.insert(*sketch);
             }
             HolePlacement::Plane { plane, .. } => plane.add_to(&mut references),
+            HolePlacement::At { at } => at.add_to(&mut references),
         }
         if let HoleExtent::ToObject { object, .. } = &self.extent {
             object.add_references(&mut references);
@@ -436,6 +448,7 @@ impl FeatureInfo for HoleDef {
                     return Err("the hole positions must be finite points".to_owned());
                 }
             }
+            HolePlacement::At { at } => at.check(ctx)?,
             HolePlacement::SketchPoints { sketch, points } => {
                 ctx.sketch(*sketch)?;
                 if points.is_empty() {
@@ -666,6 +679,18 @@ impl HoleDef {
                     .collect();
                 (on_plane, normal)
             }
+            // Placed by picked geometry (mitcad#656): into a shaft or a hole
+            // along its axis, into a face against its normal.
+            HolePlacement::At { at } => {
+                let placed = ctx.place_def(at)?;
+                let n = placed.frame.normal();
+                let normal = if placed.seat.is_some() {
+                    n.map(|v| -v)
+                } else {
+                    n
+                };
+                (vec![placed.frame.origin], normal)
+            }
         };
         if points.is_empty() {
             return Err("the hole has no position".to_owned());
@@ -821,6 +846,15 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             .collect();
         let mut part = thread_part(ctx, thread.length, thread.offset, false)?;
         let clearance = thread_clearance(ctx, thread.radial_clearance, thread.flank_clearance)?;
+        // The printed-fit flank clearance capped where the pitch is too
+        // fine for it (mitcad#691).
+        let clearance = fitted_clearance(
+            data.pitch,
+            (data.major, data.minor, data.pitch_diameter),
+            true,
+            clearance,
+            flank_from_fit(ctx, thread.flank_clearance),
+        );
         check_clearance(
             data.pitch,
             (data.major, data.minor, data.pitch_diameter),

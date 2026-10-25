@@ -300,3 +300,54 @@ fn a_linked_components_bodies_keep_their_occurrences_in_a_preview() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The report's tool places as (occurrence, translation, visible).
+fn tool_places(report: &Value) -> Vec<(String, [f64; 3], bool)> {
+    report["tool_instances"]
+        .as_array()
+        .map(|places| {
+            places
+                .iter()
+                .map(|p| {
+                    (
+                        p["occurrence"].as_str().unwrap().to_owned(),
+                        translation(&p["transform"]),
+                        p["visible"].as_bool().unwrap(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn the_tool_is_where_its_components_occurrences_put_it() {
+    // mitcad#636: the tool is in its feature's component's coordinates; a
+    // display draws it (and a provisional proxy of it) at each placement.
+    let mut d = design();
+    let report = preview_new_body(&mut d.doc);
+    assert_eq!(report["tool"], true, "{report}");
+    let places = tool_places(&report);
+    assert_eq!(places.len(), 1, "{report}");
+    assert_eq!((places[0].0.as_str(), places[0].2), ("", true));
+    assert!(near(places[0].1, [0.0, 0.0, 0.0]));
+
+    d.doc.activate_component(d.board).unwrap();
+    let report = preview_new_body(&mut d.doc);
+    let places = tool_places(&report);
+    assert_eq!(places.len(), 2, "{report}");
+    assert_eq!((places[0].0.clone(), places[0].2), (d.o1.to_string(), true));
+    assert!(near(places[0].1, [60.0, 0.0, 0.0]), "{places:?}");
+    assert_eq!((places[1].0.clone(), places[1].2), (d.o5.to_string(), true));
+    assert!(near(places[1].1, [60.0, 30.0, 0.0]), "{places:?}");
+
+    d.doc.activate_component(d.cover).unwrap();
+    let report = preview_new_body(&mut d.doc);
+    let places = tool_places(&report);
+    assert_eq!(places.len(), 1, "{report}");
+    assert_eq!(
+        (places[0].0.clone(), places[0].2),
+        (d.o2.to_string(), false)
+    );
+    assert!(near(places[0].1, [0.0, 0.0, 40.0]), "{places:?}");
+}

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use mitcad_vec3::unit_div_above;
+use mitcad_vec3::{cross, unit_above, unit_div_above};
 
 use super::{CheckContext, Evaluate, FeatureInfo, FeatureOutput, References};
 use crate::ids::{BodyUid, EntityUid, FeatureUid};
@@ -30,7 +30,7 @@ use crate::sketch::solve::{
 use crate::sketch::text::{self, TextOutline};
 use crate::sketch::{
     Constraint, ConstraintKind, ConstraintUid, Dimension, DimensionKind, Entity, EntityIndex,
-    EntityKind, Projection, Ref, SketchText, ValueRange,
+    EntityKind, Projection, Ref, SketchText, TextValue, ValueRange,
 };
 use crate::topo::{FaceName, RegionKey};
 
@@ -172,6 +172,37 @@ impl FrameDef {
         }
     }
 
+    /// The own frame of a new sketch that shows the design upright
+    /// (mitcad#692, Create Sketch's `upright`): its y axis, the screen's up
+    /// when the sketch opens, is the design's +Z projected onto the plane,
+    /// or the design's +Y when the plane is horizontal (its normal along
+    /// ±Z). The normal stays the plane's, the side the sketch is drawn on,
+    /// so the sketch is not mirrored, and x = y × normal: the screen's
+    /// horizontal stays the sketch's x. `z` and `y` are the design's axes in
+    /// the sketch's coordinates (its component's, through the occurrence
+    /// the sketch is shown in). None when that is the plane's own frame
+    /// (the XY plane, a top face) or no direction is found.
+    pub fn upright(plane: &SketchFrame, z: [f64; 3], y: [f64; 3]) -> Option<FrameDef> {
+        let n = plane.normal();
+        // The part of a direction in the plane; none when it is (within a
+        // micro-radian) along the normal.
+        let in_plane = |v: [f64; 3]| {
+            let along = dot(n, v);
+            unit_above(std::array::from_fn(|i| v[i] - along * n[i]), 1e-6)
+        };
+        let up = in_plane(z).or_else(|| in_plane(y))?;
+        let x = cross(up, n);
+        let local = |v: [f64; 3]| [dot(v, plane.x_axis), dot(v, plane.y_axis), 0.0];
+        let frame = FrameDef {
+            origin: [0.0; 3],
+            x_axis: local(x),
+            y_axis: local(up),
+        };
+        let same = |a: [f64; 3], b: [f64; 3]| (0..3).all(|i| (a[i] - b[i]).abs() <= 1e-12);
+        (!(same(frame.x_axis, [1.0, 0.0, 0.0]) && same(frame.y_axis, [0.0, 1.0, 0.0])))
+            .then_some(frame)
+    }
+
     fn check(&self) -> Result<(), String> {
         let finite = self
             .origin
@@ -215,6 +246,9 @@ pub struct SketchDef<P = ParamId> {
     /// Offsets with their distances (`offset.rs`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub offsets: Vec<SketchOffset<P>>,
+    /// Texts whose text is a text parameter's value (mitcad#664).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub text_values: Vec<TextValue<P>>,
 }
 
 impl<P> Default for SketchDef<P> {
@@ -230,6 +264,7 @@ impl<P> Default for SketchDef<P> {
             texts: Vec::new(),
             patterns: Vec::new(),
             offsets: Vec::new(),
+            text_values: Vec::new(),
         }
     }
 }
@@ -260,6 +295,8 @@ struct SketchDefIn<P> {
     #[serde(default = "Vec::new")]
     offsets: Vec<SketchOffset<P>>,
     #[serde(default = "Vec::new")]
+    text_values: Vec<TextValue<P>>,
+    #[serde(default = "Vec::new")]
     shapes: Vec<LegacyShape<P>>,
 }
 
@@ -277,6 +314,7 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for SketchDef<P> {
             texts: def.texts,
             patterns: def.patterns,
             offsets: def.offsets,
+            text_values: def.text_values,
         };
         if !def.shapes.is_empty() {
             if !sketch.entities.is_empty() || !sketch.dimensions.is_empty() {
@@ -463,6 +501,11 @@ impl<P> SketchDef<P> {
                 .iter()
                 .map(|o| o.map_value(f))
                 .collect::<Result<_, _>>()?,
+            text_values: self
+                .text_values
+                .iter()
+                .map(|v| v.map_value(f))
+                .collect::<Result<_, _>>()?,
         })
     }
 
@@ -515,6 +558,30 @@ impl<P> SketchDef<P> {
 }
 
 impl SketchDef {
+    /// A copy whose texts that follow text parameters (`text_values`,
+    /// mitcad#664) have the parameters' texts, given by `text_of`.
+    pub fn with_parameter_texts(
+        &self,
+        text_of: &mut dyn FnMut(ParamId) -> Result<String, String>,
+    ) -> Result<SketchDef, String> {
+        let mut def = self.clone();
+        for v in &self.text_values {
+            let text = text_of(v.value).map_err(|e| format!("text t{}: {e}", v.text.0))?;
+            if let Some(t) = def.texts.iter_mut().find(|t| t.id == v.text) {
+                t.text = text;
+            }
+        }
+        Ok(def)
+    }
+
+    /// The parameter a text follows (mitcad#664), if it follows one.
+    pub fn text_value(&self, text: EntityUid) -> Option<ParamId> {
+        self.text_values
+            .iter()
+            .find(|v| v.text == text)
+            .map(|v| v.value)
+    }
+
     /// The solver inputs for driving dimensions with `value`'s values
     /// (checked against their ranges), driven ones without.
     pub fn dimension_inputs(
@@ -595,10 +662,19 @@ impl SketchDef {
             bindings: &bindings,
             skip: &skip,
         };
+        // Offsets made by constraints start where their sources' offsets
+        // are now (mitcad#641: a source moved farther than the distance
+        // before the solve flipped them).
+        let seeded = self.offsets.iter().any(|o| !o.derived).then(|| {
+            let mut entities = self.entities.clone();
+            offset::seed(&self.offsets, &mut entities, value);
+            entities
+        });
+        let entities = seeded.as_deref().unwrap_or(&self.entities);
         let mut solved = if goals.is_empty() {
-            solve_extra(&self.entities, &self.constraints, &inputs, &extra)?
+            solve_extra(entities, &self.constraints, &inputs, &extra)?
         } else {
-            drag_extra(&self.entities, &self.constraints, &inputs, &extra, goals)?
+            drag_extra(entities, &self.constraints, &inputs, &extra, goals)?
         };
         for o in &self.offsets {
             let v = value(o.distance).map_err(SolveError::new)?;
@@ -817,6 +893,16 @@ impl<P> SketchDef<P> {
         let index = EntityIndex::new(&self.entities);
         for t in &self.texts {
             text::check(t, &index)?;
+        }
+        // Texts from text parameters (mitcad#664): one value per text.
+        let mut valued = BTreeSet::new();
+        for v in &self.text_values {
+            if !self.texts.iter().any(|t| t.id == v.text) {
+                return Err(format!("text_values: text t{} does not exist", v.text.0));
+            }
+            if !valued.insert(v.text) {
+                return Err(format!("text_values: text t{} has two values", v.text.0));
+            }
         }
         let point = |what: &str, id: EntityUid| -> Result<(), String> {
             match index.get(id) {
@@ -1234,6 +1320,14 @@ impl<K: Kernel> Evaluate<K> for SketchDef {
                 crate::sketch::project::moved_entities(self, &solution)
             }
         };
+        // Texts that follow text parameters (mitcad#664) take their values.
+        let valued;
+        let def = if def.text_values.is_empty() {
+            def
+        } else {
+            valued = def.with_parameter_texts(&mut |id| ctx.param_text(id))?;
+            &valued
+        };
         let texts = def.text_outlines(&solved, ctx.kernel)?;
         // A font this computer lacks is replaced (P9: with a warning).
         for outline in texts.iter().filter(|t| t.fallback) {
@@ -1390,4 +1484,76 @@ fn linked_frame<K: Kernel>(
 /// The curves of solved geometry by id, for callers outside the module.
 pub fn curve_of(solved: &Solved, id: EntityUid) -> Option<&Curve2> {
     solved.curves.get(&id)
+}
+
+#[cfg(test)]
+mod upright_tests {
+    use super::{FrameDef, SketchFrame};
+    use crate::datum::DatumPlane;
+
+    const X: [f64; 3] = [1.0, 0.0, 0.0];
+    const Y: [f64; 3] = [0.0, 1.0, 0.0];
+    const Z: [f64; 3] = [0.0, 0.0, 1.0];
+
+    fn near(a: [f64; 3], b: [f64; 3]) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-12)
+    }
+
+    /// The upright frame of a plane in the design (its axes, x and y), and
+    /// whether it is stored (differs from the plane's own).
+    fn upright(plane: &SketchFrame) -> ([f64; 3], [f64; 3], bool) {
+        match FrameDef::upright(plane, Z, Y) {
+            Some(own) => {
+                own.check().unwrap();
+                let placed = own.apply(plane);
+                assert!(near(placed.origin, plane.origin), "the origin stays");
+                assert!(near(placed.normal(), plane.normal()), "the normal stays");
+                (placed.x_axis, placed.y_axis, true)
+            }
+            None => (plane.x_axis, plane.y_axis, false),
+        }
+    }
+
+    /// A plane, its upright x and y in the design, and whether the own
+    /// frame is stored.
+    type Case<'a> = (&'a str, SketchFrame, [f64; 3], [f64; 3], bool);
+
+    /// mitcad#692: the design's +Z up on every plane that is not
+    /// horizontal, +Y on a horizontal one; the normal kept, x = up ×
+    /// normal.
+    #[test]
+    fn upright_frames_put_the_design_z_up() {
+        let face = |normal: [f64; 3]| DatumPlane::on_plane([5.0, 7.0, 3.0], normal).frame();
+        let s = 0.6;
+        let c = 0.8;
+        let cases: [Case<'_>; 7] = [
+            ("+Z face", face(Z), X, Y, false),
+            ("-Z face", face([0.0, 0.0, -1.0]), [-1.0, 0.0, 0.0], Y, true),
+            ("+X face", face(X), Y, Z, false),
+            ("-X face", face([-1.0, 0.0, 0.0]), [0.0, -1.0, 0.0], Z, true),
+            ("+Y face", face(Y), [-1.0, 0.0, 0.0], Z, true),
+            ("-Y face", face([0.0, -1.0, 0.0]), X, Z, false),
+            // Slanted, facing +Y and up: its own y points down the slope.
+            (
+                "slanted face",
+                face([0.0, s, c]),
+                [-1.0, 0.0, 0.0],
+                [0.0, -c, s],
+                true,
+            ),
+        ];
+        for (name, plane, x, y, stored) in cases {
+            let (got_x, got_y, got_stored) = upright(&plane);
+            assert!(near(got_x, x), "{name}: x {got_x:?}, expected {x:?}");
+            assert!(near(got_y, y), "{name}: y {got_y:?}, expected {y:?}");
+            assert_eq!(got_stored, stored, "{name}: stored");
+        }
+        // The design's axes in other coordinates (a sketch of a component
+        // shown through a turned occurrence): there they are the given ones.
+        let plane = face(Z);
+        let own = FrameDef::upright(&plane, [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]).unwrap();
+        let placed = own.apply(&plane);
+        assert!(near(placed.y_axis, [0.0, -1.0, 0.0]), "{:?}", placed.y_axis);
+        assert!(near(placed.x_axis, [-1.0, 0.0, 0.0]), "{:?}", placed.x_axis);
+    }
 }

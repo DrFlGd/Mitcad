@@ -21,6 +21,12 @@
 //! `seat.rs`): its plane at the seat's offset along the shaft, its axis
 //! the shaft's; without a `bore` its bore is plain, the shaft's diameter
 //! plus `bore_clearance`, and follows the shaft.
+//!
+//! `at` places a gear (not a rack) by picked geometry (mitcad#656,
+//! `place_at.rs`): a shaft or an axis, a point, a point on a face. With
+//! `mesh_with` too the gear stays where `at` puts it and the mesh only
+//! turns it to engage. `mesh_with.toward` picks the direction from the
+//! mate's centre instead of typing `mesh_with.angle`.
 
 use std::f64::consts::{PI, TAU};
 
@@ -33,16 +39,18 @@ use super::gear_profile::{
     self, Bevel, NamedSegment, Rack, Tooth, bore_outline, circle, mesh_distance,
 };
 use super::geom_ref::{GeomRef, Want};
+use super::place_at::{PlaceAt, map_at};
 use super::seat::Seat;
 use super::thread::ThreadSize;
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput, References,
     ToolUse, is_false,
 };
+use crate::datum::{add, norm, scale, sub};
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{BooleanOp, GearConeSpec, GearStep, GearSweepSpec, Kernel};
 use crate::parameters::ParamId;
-use crate::profile::{SketchFrame, cross};
+use crate::profile::{SketchFrame, cross, dot};
 use crate::recompute::Read;
 
 /// What kind of gear.
@@ -93,8 +101,25 @@ pub enum Bore<P = ParamId> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Hub<P = ParamId> {
-    pub diameter: P,
+    /// Worked out without it (mitcad#656, [`hub_diameter`]).
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub diameter: Option<P>,
     pub length: P,
+}
+
+/// The least wall a worked-out hub keeps round its bore (mm).
+pub const HUB_WALL: f64 = 2.0;
+
+/// A hub's diameter worked out when none is given (mitcad#656): the bore
+/// with a wall of [`HUB_WALL`] round it, thicker for a set screw's tap
+/// drill (`screw`, its diameter); without a bore half the teeth's root
+/// diameter (`root`), at least two walls.
+pub fn hub_diameter(bore: Option<f64>, root: f64, screw: Option<f64>) -> f64 {
+    let wall = HUB_WALL.max(screw.unwrap_or(0.0));
+    match bore {
+        Some(d) => d + 2.0 * wall,
+        None => (root / 2.0).max(2.0 * wall),
+    }
 }
 
 /// Where a gear meshes with an earlier gear feature.
@@ -108,6 +133,10 @@ pub struct MeshWith<P = ParamId> {
     /// Along a rack from the middle of its teeth.
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub position: Option<P>,
+    /// The direction from that gear's centre towards a picked point or
+    /// axis instead of `angle` (mitcad#656).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toward: Option<GeomRef>,
 }
 
 fn none<P>() -> Option<P> {
@@ -182,6 +211,10 @@ pub struct GearDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// Placed by picked geometry instead of `plane` and `center`
+    /// (mitcad#656, `place_at.rs`); with `mesh_with` the mesh only turns it.
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub at: Option<PlaceAt<P>>,
 }
 
 fn is_origin(center: &[f64; 2]) -> bool {
@@ -247,7 +280,11 @@ impl<P> GearDef<P> {
             hub: match &self.hub {
                 None => None,
                 Some(hub) => Some(Hub {
-                    diameter: f("hub.diameter", &hub.diameter)?,
+                    diameter: hub
+                        .diameter
+                        .as_ref()
+                        .map(|v| f("hub.diameter", v))
+                        .transpose()?,
                     length: f("hub.length", &hub.length)?,
                 }),
             },
@@ -265,12 +302,14 @@ impl<P> GearDef<P> {
                         .as_ref()
                         .map(|v| f("mesh_with.position", v))
                         .transpose()?,
+                    toward: mesh.toward.clone(),
                 }),
             },
             seat,
             bore_clearance,
             operation: self.operation,
             participants: self.participants.clone(),
+            at: map_at(&self.at, &mut *f)?,
         })
     }
 }
@@ -332,10 +371,30 @@ impl GearDef<f64> {
         })
     }
 
+    /// The hub's diameter: given, or worked out from the bore and the
+    /// roots (mitcad#656, [`hub_diameter`]).
+    pub fn hub_diameter(&self) -> f64 {
+        let given = self.hub.as_ref().and_then(|hub| hub.diameter);
+        given.unwrap_or_else(|| {
+            hub_diameter(
+                self.bore_diameter().ok().flatten(),
+                2.0 * self.tooth().root_radius(),
+                None,
+            )
+        })
+    }
+
     /// A seated gear without a bore gets the plain bore of its shaft of
     /// diameter `shaft`: the shaft's diameter and the bore clearance.
     pub fn seat_bore(&mut self, shaft: f64) {
-        if self.seat.is_some() && self.bore.is_none() {
+        // A placement on a shaft too (mitcad#656); an axis of its own has no
+        // diameter, and a ring or a rack no bore.
+        let bored = self.kind.external() || self.kind == GearKind::Bevel;
+        if (self.seat.is_some() || self.at.is_some())
+            && self.bore.is_none()
+            && shaft.is_finite()
+            && bored
+        {
             self.bore = Some(Bore::Plain {
                 diameter: shaft + self.bore_clearance.unwrap_or(0.0),
             });
@@ -345,7 +404,8 @@ impl GearDef<f64> {
     /// Whether the bore is plain: given so, or a seat's.
     fn plain_bore(&self) -> bool {
         matches!(self.bore, Some(Bore::Plain { .. }))
-            || (self.seat.is_some() && self.bore.is_none())
+            || ((self.seat.is_some() || self.at.as_ref().is_some_and(PlaceAt::on_shaft))
+                && self.bore.is_none())
     }
 
     /// The radius a bore and a hub must stay inside: the roots less a
@@ -379,9 +439,12 @@ impl GearDef<f64> {
         positive(self.module, "module")?;
         positive(self.face_width, "face width")?;
         if (self.teeth - self.teeth.round()).abs() > 1.0e-9 {
-            return Err(format!(
-                "the {name}'s number of teeth must be whole, got {}",
-                self.teeth
+            return Err(crate::parameters::count_error(
+                format!(
+                    "the {name}'s number of teeth must be whole, got {}",
+                    self.teeth
+                ),
+                self.teeth,
             ));
         }
         let not = |present: bool, what: &str| {
@@ -455,6 +518,9 @@ impl GearDef<f64> {
         if let Some(seat) = &self.seat {
             seat.check_values()?;
         }
+        if let Some(at) = &self.at {
+            at.check_values()?;
+        }
         if self.bore_clearance.is_some_and(|c| !c.is_finite()) {
             return Err(format!("the {name}'s bore clearance must be a number"));
         }
@@ -474,9 +540,12 @@ impl GearDef<f64> {
                     ));
                 }
                 if (mate - mate.round()).abs() > 1.0e-9 || mate < gear_profile::MIN_TEETH {
-                    return Err(format!(
-                        "the mate's number of teeth must be whole and at least {}, got {mate}",
-                        gear_profile::MIN_TEETH
+                    return Err(crate::parameters::count_error(
+                        format!(
+                            "the mate's number of teeth must be whole and at least {}, got {mate}",
+                            gear_profile::MIN_TEETH
+                        ),
+                        mate,
                     ));
                 }
                 bevel.check()?;
@@ -503,9 +572,10 @@ impl GearDef<f64> {
             }
         }
         if let Some(hub) = &self.hub {
-            positive(hub.diameter, "hub diameter")?;
+            let diameter = self.hub_diameter();
+            positive(diameter, "hub diameter")?;
             positive(hub.length, "hub length")?;
-            if bore.is_some_and(|d| d >= hub.diameter) {
+            if bore.is_some_and(|d| d >= diameter) {
                 return Err("the hub must be wider than the bore".to_owned());
             }
         }
@@ -614,6 +684,26 @@ pub(crate) fn placement<K: Kernel>(
             .map_or(f64::NAN, |(_, v)| *v)
     };
     let mut gear = evaluated(def, &value);
+    // Placed by picked geometry (mitcad#656): on a shaft its bore follows
+    // the shaft; a mesh only turns it to engage.
+    if let Some(at) = gear.at.clone() {
+        let placed = ctx.place(&at)?;
+        if let Some(seat) = placed.round() {
+            gear.seat_bore(seat.diameter);
+        }
+        let frame = placed.frame;
+        let phase = match gear.mesh_with.clone() {
+            None => gear.angle.unwrap_or(0.0),
+            Some(mesh) => {
+                if depth > 64 {
+                    return Err("the gears mesh with each other in a circle".to_owned());
+                }
+                let (mate, at) = mate_placement(ctx, mesh.gear, depth)?;
+                mesh_phase(ctx, &gear, &mate, at, &frame)?
+            }
+        };
+        return Ok((gear, Placement { frame, phase }));
+    }
     let Some(mesh) = gear.mesh_with.clone() else {
         // On a shaft (mitcad#578): its bore follows the shaft.
         if let Some(seat) = gear.seat.clone() {
@@ -654,34 +744,13 @@ pub(crate) fn placement<K: Kernel>(
     if depth > 64 {
         return Err("the gears mesh with each other in a circle".to_owned());
     }
-    let uid = mesh.gear;
-    let entry = ctx
-        .env
-        .features
-        .iter()
-        .find(|f| f.uid == uid)
-        .cloned()
-        .ok_or_else(|| format!("feature {uid} does not exist"))?;
-    let FeatureDef::Gear(mate_def) = &entry.def else {
-        return Err(format!("{} is not a gear", entry.name));
-    };
-    if entry.component != ctx.component() {
-        return Err(format!(
-            "{} is in another component: a gear meshes with a gear feature of its own component",
-            entry.name
-        ));
-    }
-    let version = ctx
-        .env
-        .history
-        .iter()
-        .find(|r| r.uid == uid)
-        .and_then(|r| r.output.as_ref())
-        .map(|o| o.version);
-    ctx.reads.push(Read::Output(uid, version));
-    let (mate, at) = placement(ctx, mate_def, depth + 1)?;
+    let (mate, at) = mate_placement(ctx, mesh.gear, depth)?;
     let (distance, _, _) = mesh_values(&gear, &mate)?;
-    let theta = mesh.angle.unwrap_or(0.0);
+    // A picked direction (mitcad#656), or the angle.
+    let theta = match &mesh.toward {
+        Some(toward) => toward_angle(ctx, toward, &at.frame)?,
+        None => mesh.angle.unwrap_or(0.0),
+    };
     let frame = at.frame;
     let (s, c) = theta.sin_cos();
     let u = combine(frame.x_axis, c, frame.y_axis, s);
@@ -764,6 +833,160 @@ pub(crate) fn placement<K: Kernel>(
         }
     };
     Ok((gear, placed))
+}
+
+/// The gear `uid` meshes with: its values and its placement (its read
+/// recorded for the recompute cache).
+fn mate_placement<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    uid: FeatureUid,
+    depth: usize,
+) -> Result<(GearDef<f64>, Placement), String> {
+    let entry = ctx
+        .env
+        .features
+        .iter()
+        .find(|f| f.uid == uid)
+        .cloned()
+        .ok_or_else(|| format!("feature {uid} does not exist"))?;
+    let FeatureDef::Gear(mate_def) = &entry.def else {
+        return Err(format!("{} is not a gear", entry.name));
+    };
+    if entry.component != ctx.component() {
+        return Err(format!(
+            "{} is in another component: a gear meshes with a gear feature of its own component",
+            entry.name
+        ));
+    }
+    let version = ctx
+        .env
+        .history
+        .iter()
+        .find(|r| r.uid == uid)
+        .and_then(|r| r.output.as_ref())
+        .map(|o| o.version);
+    ctx.reads.push(Read::Output(uid, version));
+    placement(ctx, mate_def, depth + 1)
+}
+
+/// A length for a message: at most four decimals, no trailing zeros.
+fn mm(value: f64) -> String {
+    let text = format!("{value:.4}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+/// The turn of a gear placed on its own axis (mitcad#656) that engages its
+/// mate's teeth: the direction between the axes takes the place of
+/// `mesh_with.angle`, worked out in the mate's frame as a mesh placed by
+/// its mate is, then given in the gear's own frame. The axes must be
+/// parallel; a distance other than the mesh's warns.
+fn mesh_phase<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    gear: &GearDef<f64>,
+    mate: &GearDef<f64>,
+    at: Placement,
+    frame: &SketchFrame,
+) -> Result<f64, String> {
+    use GearKind::*;
+    if gear.kind == Rack || mate.kind == Rack {
+        return Err(
+            "a gear on its own axis does not mesh with a rack: place it by mesh_with's position"
+                .to_owned(),
+        );
+    }
+    let (distance, _, _) = mesh_values(gear, mate)?;
+    let m = at.frame;
+    let n = m.normal();
+    if norm(cross(n, frame.normal())) > 1.0e-6 {
+        return Err("the gear's axis is not parallel to its mate's".to_owned());
+    }
+    let d = sub(frame.origin, m.origin);
+    let across = sub(d, scale(n, dot(d, n)));
+    let apart = norm(across);
+    if apart < 1.0e-9 {
+        return Err("the gear's axis is its mate's: they cannot mesh".to_owned());
+    }
+    if (apart - distance).abs() > 1.0e-3 {
+        ctx.warn(format!(
+            "the axes are {} mm apart, the mesh needs {} mm",
+            mm(apart),
+            mm(distance)
+        ));
+    }
+    let theta = dot(across, m.y_axis).atan2(dot(across, m.x_axis));
+    let (new_teeth, mate_teeth) = (gear.teeth.round(), mate.teeth.round());
+    let fraction = |angle: f64, phase: f64, teeth: f64| (angle - phase) * teeth / TAU;
+    let phase = match (gear.kind, mate.kind) {
+        (Ring, _) => {
+            let f = fraction(theta + PI, at.phase, mate_teeth) - 0.5;
+            theta + PI - f * TAU / new_teeth
+        }
+        (_, Ring) => {
+            let f = fraction(theta, at.phase, mate_teeth) + 0.5;
+            theta - f * TAU / new_teeth
+        }
+        _ => {
+            let f = fraction(theta, at.phase, mate_teeth);
+            theta + PI - (0.5 - f) * TAU / new_teeth
+        }
+    };
+    // From the mate's frame into the gear's own.
+    let v = add(scale(m.x_axis, phase.cos()), scale(m.y_axis, phase.sin()));
+    Ok(dot(v, frame.y_axis).atan2(dot(v, frame.x_axis)))
+}
+
+/// The direction (from the plane's x axis) from the frame's origin towards
+/// a picked point, or towards where a picked axis meets the frame's plane
+/// (`mesh_with.toward`, mitcad#656).
+fn toward_angle<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    toward: &GeomRef,
+    frame: &SketchFrame,
+) -> Result<f64, String> {
+    let n = frame.normal();
+    let point = match ctx.point(toward) {
+        Ok(point) => point,
+        Err(_) => {
+            let axis = ctx
+                .axis(toward)
+                .map_err(|e| format!("mesh_with.toward: {e}"))?;
+            let along = dot(axis.direction, n);
+            if along.abs() < 1.0e-9 {
+                axis.origin
+            } else {
+                add(
+                    axis.origin,
+                    scale(
+                        axis.direction,
+                        dot(sub(frame.origin, axis.origin), n) / along,
+                    ),
+                )
+            }
+        }
+    };
+    let d = sub(point, frame.origin);
+    let across = sub(d, scale(n, dot(d, n)));
+    if norm(across) < 1.0e-9 {
+        return Err(
+            "mesh_with.toward lies on the gear's axis: pick a point or an axis beside it"
+                .to_owned(),
+        );
+    }
+    Ok(dot(across, frame.y_axis).atan2(dot(across, frame.x_axis)))
+}
+
+/// What `mesh_with.toward` may be: a point, or an axis (mitcad#656).
+fn check_toward(toward: &GeomRef, ctx: &CheckContext<'_>) -> Result<(), String> {
+    let result = match toward {
+        GeomRef::Vertex { .. } | GeomRef::SketchPoint { .. } | GeomRef::FixedPoint(_) => {
+            toward.check(ctx, Want::Point)
+        }
+        GeomRef::Origin(_) | GeomRef::Datum(_) | GeomRef::Mount { .. } => toward
+            .check(ctx, Want::Point)
+            .or_else(|_| toward.check(ctx, Want::Axis)),
+        _ => toward.check(ctx, Want::Axis),
+    };
+    result.map_err(|e| format!("mesh_with.toward: {e}"))
 }
 
 impl GearDef {
@@ -971,7 +1194,7 @@ fn gear_solid<K: Kernel>(
         let tool = sweep(
             ctx,
             frame,
-            &[circle("hub", hub.diameter / 2.0)],
+            &[circle("hub", gear.hub_diameter() / 2.0)],
             0.0,
             start,
             &[GearStep {
@@ -1077,9 +1300,15 @@ impl FeatureInfo for GearDef {
         }
         if let Some(mesh) = &self.mesh_with {
             references.features.insert(mesh.gear);
+            if let Some(toward) = &mesh.toward {
+                toward.add_to(&mut references);
+            }
         }
         if let Some(seat) = &self.seat {
             seat.add_to(&mut references);
+        }
+        if let Some(at) = &self.at {
+            at.add_to(&mut references);
         }
         for body in &self.participants {
             references.body(*body);
@@ -1089,6 +1318,50 @@ impl FeatureInfo for GearDef {
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
         check_participants(ctx, self.operation, &self.participants)?;
+        // Placed by picked geometry (mitcad#656): a mesh only turns it.
+        if let Some(at) = &self.at {
+            let name = self.kind.name();
+            if self.kind == GearKind::Rack {
+                return Err("a rack keeps its plane and centre: it is not placed by at".to_owned());
+            }
+            if self.pair {
+                return Err(
+                    "a bevel pair is not placed by at (make the two gears one by one)".to_owned(),
+                );
+            }
+            if self.plane.is_some() || !is_origin(&self.center) || self.seat.is_some() {
+                return Err(format!(
+                    "a {name} placed by at takes no plane, centre or seat of its own"
+                ));
+            }
+            if self.bore_clearance.is_some() && self.bore.is_some() {
+                return Err("a bore of its own takes no bore clearance".to_owned());
+            }
+            if let Some(mesh) = &self.mesh_with {
+                let entry = ctx.feature(mesh.gear)?;
+                match &entry.def {
+                    FeatureDef::Gear(mate) if mate.kind == GearKind::Rack => {
+                        return Err(format!(
+                            "{} is a rack: a gear meshing with a rack is placed by mesh_with's position",
+                            entry.name
+                        ));
+                    }
+                    FeatureDef::Gear(_) => {}
+                    _ => return Err(format!("{} is not a gear", entry.name)),
+                }
+                if mesh.angle.is_some() || mesh.position.is_some() || mesh.toward.is_some() {
+                    return Err(format!(
+                        "a {name} placed by at meshes towards its mate's axis: mesh_with takes no angle, position or toward"
+                    ));
+                }
+                if self.angle.is_some() {
+                    return Err(format!(
+                        "a {name} placed by at and meshed takes its turn from the mesh"
+                    ));
+                }
+            }
+            return at.check(ctx);
+        }
         // On a shaft (mitcad#578): the kinds with a bore.
         if let Some(seat) = &self.seat {
             let name = self.kind.name();
@@ -1113,7 +1386,9 @@ impl FeatureInfo for GearDef {
                     "a {name} on a shaft is not placed by a mesh too (seat the first gear of the mesh)"
                 ));
             }
-            if matches!(self.bore, Some(Bore::Plain { .. })) {
+            // An axis of its own has no diameter: the bore is the gear's own
+            // (mitcad#656).
+            if seat.body().is_some() && matches!(self.bore, Some(Bore::Plain { .. })) {
                 return Err(format!(
                     "a {name} on a shaft takes its plain bore from the shaft: leave out the bore (bore_clearance widens it)"
                 ));
@@ -1141,6 +1416,24 @@ impl FeatureInfo for GearDef {
                     return Err(
                         "a gear meshed with another takes its turn from the mesh".to_owned()
                     );
+                }
+                // A picked direction (mitcad#656).
+                if let Some(toward) = &mesh.toward {
+                    if mesh.angle.is_some() || mesh.position.is_some() {
+                        return Err(
+                            "mesh_with takes a direction by its angle or toward a pick, not both"
+                                .to_owned(),
+                        );
+                    }
+                    if let FeatureDef::Gear(mate) = &entry.def
+                        && mate.kind == GearKind::Rack
+                    {
+                        return Err(
+                            "a gear on a rack is placed by mesh_with's position, not toward a pick"
+                                .to_owned(),
+                        );
+                    }
+                    check_toward(toward, ctx)?;
                 }
                 Ok(())
             }
@@ -1203,6 +1496,13 @@ pub fn derived_values(gear: &GearDef<f64>) -> serde_json::Value {
     // The bore: given, or a seat's (mitcad#578).
     if let Ok(Some(d)) = gear.bore_diameter() {
         map.insert("bore_diameter".into(), json!(d));
+    }
+    // The hub: given, or worked out (mitcad#656; `computed` lists it).
+    if let Some(hub) = &gear.hub {
+        map.insert("hub_diameter".into(), json!(gear.hub_diameter()));
+        if hub.diameter.is_none() {
+            map.insert("computed".into(), json!(["hub_diameter"]));
+        }
     }
     match gear.kind {
         GearKind::Rack => {

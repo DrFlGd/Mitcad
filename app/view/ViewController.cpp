@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "ViewController.hpp"
+#include "NavigationPreferences.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -34,10 +35,12 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScreen>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStyle>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QUrl>
@@ -76,6 +79,7 @@
 #include "../mcp/AgentFolders.hpp"
 // Font folders for sketch text (mitcad#473).
 #include "../sketch/FontFiles.hpp"
+#include "../platform/MacDialogs.hpp"
 
 namespace mitcad {
 namespace {
@@ -155,6 +159,7 @@ const SchemeEntry kSchemes[] = {
      QT_TRANSLATE_NOOP("View", "Trackpad (two-finger scroll pans, pinch zooms, Alt orbits)")},
     {NavigationScheme::TrackpadShift, "trackpad-shift",
      QT_TRANSLATE_NOOP("View", "Trackpad (two-finger scroll pans, pinch zooms, Shift orbits)")},
+    {NavigationScheme::Custom, "custom", QT_TRANSLATE_NOOP("View", "Custom")},
 };
 
 const SchemeEntry& schemeEntry(NavigationScheme scheme) {
@@ -232,7 +237,17 @@ gp_XYZ xyzOf(const QJsonValue& value) {
 }
 
 // The mouse of a navigation scheme, for the overview.
-QVector<QPair<QString, QString>> mouseRows(NavigationScheme scheme) {
+QVector<QPair<QString, QString>> mouseRows(const NavigationSettings& settings) {
+  const NavigationScheme scheme = settings.scheme;
+  if (scheme == NavigationScheme::Custom) {
+    QVector<QPair<QString, QString>> result;
+    for (const NavigationBinding& binding : settings.customBindings) {
+      if (navigationBindingAllowed(binding) && binding.action != NavigationAction::None)
+        result.append({navigationInputText(binding), navigationActionText(binding.action)});
+    }
+    result.append({QObject::tr("Mouse wheel"), QObject::tr("Zoom")});
+    return result;
+  }
   const QString wheel = QObject::tr("Mouse wheel");
   switch (scheme) {
   case NavigationScheme::Trackpad:
@@ -267,6 +282,7 @@ QVector<QPair<QString, QString>> mouseRows(NavigationScheme scheme) {
             {QObject::tr("Middle drag, Shift + right drag"), QObject::tr("Pan")},
             {wheel, QObject::tr("Zoom")}};
   case NavigationScheme::MiddlePan:
+  case NavigationScheme::Custom:
     break;
   }
   return {{QObject::tr("Middle drag"), QObject::tr("Pan")},
@@ -331,6 +347,7 @@ ViewSettings ViewSettings::load() {
   s.navigation.reverseZoom = flag("reverseZoom", false);
   s.navigation.constrainedOrbit = flag("constrainedOrbit", false);
   s.navigation.animate = flag("animate", true);
+  loadNavigationDetails(store, s.navigation);
   s.ghostInactive = flag("ghostInactive", s.ghostInactive);
   s.activePickPriority = flag("activePickPriority", s.activePickPriority);
   return s;
@@ -353,6 +370,7 @@ void ViewSettings::save() const {
   store.setValue(kGroup + QStringLiteral("reverseZoom"), navigation.reverseZoom);
   store.setValue(kGroup + QStringLiteral("constrainedOrbit"), navigation.constrainedOrbit);
   store.setValue(kGroup + QStringLiteral("animate"), navigation.animate);
+  saveNavigationDetails(store, navigation);
   store.setValue(kGroup + QStringLiteral("ghostInactive"), ghostInactive);
   store.setValue(kGroup + QStringLiteral("activePickPriority"), activePickPriority);
 }
@@ -486,14 +504,14 @@ void ViewController::registerCommands() {
         {QStringLiteral("render"), QStringLiteral("path tracing"), QStringLiteral("cycles"), QStringLiteral("visual style")},
         tr("Shows the visible bodies path traced (a preview of rendering)"));
     // The document's render settings (mitcad#47).
-    add("view.render_environment", tr("Render Environment..."), "environment", [this] { showRenderEnvironment(); },
+    add("view.render_environment", tr("Render Environment…"), "environment", [this] { showRenderEnvironment(); },
         {QStringLiteral("render"), QStringLiteral("lighting"), QStringLiteral("light"), QStringLiteral("studio"),
          QStringLiteral("hdr"), QStringLiteral("exposure"), QStringLiteral("ground"), QStringLiteral("shadow")},
         tr("The rendered view's light, background, ground and exposure, kept in the design"));
     // The final render to an image file (mitcad#48): a button of the
     // ribbon's MAKE group next to 3D Print (mitcad#175), and View > Visual
     // Style.
-    add("file.render_image", tr("Render Image..."), "render-image", [this] { showRenderImage(); },
+    add("file.render_image", tr("Render Image…"), "render-image", [this] { showRenderImage(); },
         {QStringLiteral("render"), QStringLiteral("image"), QStringLiteral("picture"), QStringLiteral("png"),
          QStringLiteral("jpeg"), QStringLiteral("exr"), QStringLiteral("photo"), QStringLiteral("cycles")},
         tr("Renders the view or a named view to an image file at a chosen size and quality"), "MAKE");
@@ -509,11 +527,16 @@ void ViewController::registerCommands() {
     qDebug() << "Component colors" << (m_settings.componentColors ? "on" : "off");
   }, {QStringLiteral("component"), QStringLiteral("color"), QStringLiteral("colour"), QStringLiteral("assembly")},
       tr("Shows each component in a distinct color"));
+  // The design printer's bed and height (mitcad#640, view/BuildVolume.cpp).
+  add("view.build_volume", tr("Show Build Volume"), "print-3d", [this] { setBuildVolumeShown(!m_buildVolume); },
+      {QStringLiteral("printer"), QStringLiteral("bed"), QStringLiteral("print"), QStringLiteral("3d print"),
+       QStringLiteral("build plate")},
+      tr("Shows the design printer's bed and height; bodies that do not fit are marked"));
   add("view.grid", tr("Layout Grid"), "grid", [this] { setGridShown(!m_settings.gridShown); },
       {QStringLiteral("grid")}, tr("Shows the grid on the ground or sketch plane"));
   add("view.snap_grid", tr("Snap to Grid"), "grid", [this] { setSnapToGrid(!m_settings.snapToGrid); },
       {QStringLiteral("grid"), QStringLiteral("snap")}, tr("Sketch points that snap to nothing else snap to the grid"));
-  add("view.grid_settings", tr("Grid Settings..."), "grid", [this] { showGridSettings(); },
+  add("view.grid_settings", tr("Grid Settings…"), "grid", [this] { showGridSettings(); },
       {QStringLiteral("grid"), QStringLiteral("spacing")});
   for (const BackgroundEntry& entry : kBackgrounds) {
     const ViewSettings::Background background = entry.background;
@@ -521,8 +544,14 @@ void ViewController::registerCommands() {
         [this, background] { setBackground(background); },
         {QStringLiteral("environment"), QStringLiteral("background")});
   }
+  // A picture of the view with its measurements (mitcad#649,
+  // view/ViewSnapshot.cpp).
+  add("view.export_snapshot", tr("Export Snapshot…"), "render-image", [this] { exportSnapshot(); },
+      {QStringLiteral("snapshot"), QStringLiteral("screenshot"), QStringLiteral("image"), QStringLiteral("picture"),
+       QStringLiteral("png"), QStringLiteral("measurement"), QStringLiteral("dimension")},
+      tr("Saves a large picture of the view with the shown measurements"));
   add("view.named_view", tr("New Named View"), "named-view", [this] { saveNamedView(QString(), false); },
-      {QStringLiteral("save view"), QStringLiteral("camera")}, tr("Saves the current view in the document"));
+      {QStringLiteral("save view"), QStringLiteral("camera")}, tr("Saves the current view in the design"));
   add("view.set_home", tr("Set Current View as Home"), "home",
       [this] { saveNamedView(QStringLiteral("Home"), true); }, {QStringLiteral("home")});
   add("view.reset_home", tr("Reset Home"), "home", [this] {
@@ -533,9 +562,9 @@ void ViewController::registerCommands() {
   CommandDef preferences;
   preferences.id = QStringLiteral("tools.preferences");
 #ifdef Q_OS_MACOS
-  preferences.name = tr("Settings..."); // as macOS names it since 13
+  preferences.name = tr("Settings…"); // as macOS names it since 13
 #else
-  preferences.name = tr("Preferences...");
+  preferences.name = tr("Preferences…");
 #endif
   preferences.icon = QStringLiteral("settings");
   preferences.kind = CommandDef::Kind::Action;
@@ -611,6 +640,7 @@ void ViewController::createMenus(QMenu* view, QMenu* tools, QMenu* help) {
   }
   QMenu* environment = view->addMenu(themeIcon(QStringLiteral("environment")), tr("Environment"));
   view->addAction(checkable(QStringLiteral("view.component_colors")));
+  view->addAction(checkable(QStringLiteral("view.build_volume")));
   auto* backgrounds = new QActionGroup(this);
   for (const BackgroundEntry& entry : kBackgrounds) {
     environment->addAction(checkable(QString::fromLatin1(entry.id), backgrounds));
@@ -627,6 +657,7 @@ void ViewController::createMenus(QMenu* view, QMenu* tools, QMenu* help) {
   named->addAction(action(QStringLiteral("view.named_view")));
   named->addAction(action(QStringLiteral("view.set_home")));
   named->addAction(action(QStringLiteral("view.reset_home")));
+  view->addAction(action(QStringLiteral("view.export_snapshot"))); // mitcad#649
   view->addSeparator();
   // PreferencesRole: "Settings..." (Cmd+,) in the application menu on macOS,
   // where the Tools menu then has no separator before it.
@@ -676,6 +707,7 @@ void ViewController::syncChecks() {
   check(QStringLiteral("view.component_colors"), m_settings.componentColors);
   check(QStringLiteral("view.grid"), m_settings.gridShown);
   check(QStringLiteral("view.snap_grid"), m_settings.snapToGrid);
+  check(QStringLiteral("view.build_volume"), m_buildVolume);
   if (m_render != nullptr) {
     check(QStringLiteral("view.rendered"), m_render->isEnabled());
     if (m_renderEnvironment) {
@@ -1008,7 +1040,7 @@ void ViewController::showPreferences(const QString& page) {
   const QString folder = recoveryDirectory();
   auto* folderPath = new QLineEdit(QDir::toNativeSeparators(folder));
   folderPath->setReadOnly(true);
-  folderPath->setToolTip(tr("Never a project's folder. What is here goes when the document is saved or "
+  folderPath->setToolTip(tr("Never a project's folder. What is here goes when the design is saved or "
                             "Mitcad ends normally."));
   if (window != nullptr) {
     folderPath->setMinimumWidth(240);
@@ -1089,32 +1121,38 @@ void ViewController::showPreferences(const QString& page) {
   groups.insert(QStringLiteral("textures"), texturesBox);
   // Folders for MCP agents (mitcad#402).
   auto* agentsBox = new mcp::AgentPreferencesBox;
+  connect(agentsBox, &mcp::AgentPreferencesBox::connectRequested, host, [this] {
+    if (auto* action = m_registry.action(QStringLiteral("help.connect_assistant"))) action->trigger();
+  });
   groups.insert(QStringLiteral("agents"), agentsBox);
   // Font folders for sketch text (mitcad#473).
   auto* fontsBox = new sketch::FontPreferencesBox;
   groups.insert(QStringLiteral("fonts"), fontsBox);
 
   QWidget* navigationBox = section(tr("Navigation"));
-  auto* navigation = new QFormLayout(navigationBox);
-  auto* scheme = new QComboBox;
-  scheme->setObjectName(QStringLiteral("navigationScheme"));
+  auto* navigationLayout = new QVBoxLayout(navigationBox);
+  navigationLayout->setContentsMargins(0, 0, 0, 0);
+  QVector<QPair<NavigationScheme, QString>> navigationSchemes;
   for (const SchemeEntry& entry : kSchemes) {
-    scheme->addItem(schemeName(entry.scheme), int(entry.scheme));
+    navigationSchemes.append({entry.scheme, schemeName(entry.scheme)});
   }
-  scheme->setCurrentIndex(scheme->findData(int(m_settings.navigation.scheme)));
-  navigation->addRow(tr("Pan, zoom, orbit shortcuts:"), scheme);
-  auto* zoomToCursor = new QCheckBox(tr("Zoom about the cursor"));
-  zoomToCursor->setChecked(m_settings.navigation.zoomToCursor);
-  auto* reverseZoom = new QCheckBox(tr("Reverse the zoom direction"));
-  reverseZoom->setObjectName(QStringLiteral("preferencesReverseZoom"));
-  reverseZoom->setChecked(m_settings.navigation.reverseZoom);
-  auto* constrained = new QCheckBox(tr("Constrained orbit (Z stays up)"));
-  constrained->setChecked(m_settings.navigation.constrainedOrbit);
-  auto* animate = new QCheckBox(tr("Smooth view transitions"));
-  animate->setChecked(m_settings.navigation.animate);
-  for (QCheckBox* box : {zoomToCursor, reverseZoom, constrained, animate}) {
-    control(navigation, box);
-  }
+  auto* navigation = new NavigationPreferences(m_settings.navigation, navigationSchemes);
+  navigationLayout->addWidget(navigation);
+  navigation->changed = [this, navigation, window] {
+    const NavigationSettings chosen = navigation->chosen();
+    m_viewer.setNavigation(chosen);
+    if (window != nullptr) {
+      m_settings.navigation = chosen;
+      m_settings.save();
+    }
+    qDebug().noquote() << QStringLiteral("Preferences: navigation %1, orbit speed %2, pan speed %3, "
+                                         "zoom speed %4, trackpad speed %5")
+                              .arg(QLatin1String(schemeEntry(chosen.scheme).id))
+                              .arg(chosen.orbitSpeed)
+                              .arg(chosen.panSpeed)
+                              .arg(chosen.zoomSpeed)
+                              .arg(chosen.trackpadSpeed);
+  };
   groups.insert(QStringLiteral("navigation"), navigationBox);
 
   QWidget* displayBox = section(tr("Display"));
@@ -1191,6 +1229,10 @@ void ViewController::showPreferences(const QString& page) {
   if (m_render != nullptr) {
     renderDevice = new QComboBox;
     renderDevice->setObjectName(QStringLiteral("renderDevice"));
+    // The devices' names come from the system: a long one neither widens
+    // Preferences nor sets its minimum width (mitcad#690).
+    renderDevice->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    renderDevice->setMinimumContentsLength(32);
     renderDevice->addItem(tr("Automatic (the best GPU, else the CPU)"), QStringLiteral("auto"));
     QString error;
     const QList<render::RenderDevice> devices = render::renderDevices(render::RenderClient::workerPath(), error);
@@ -1311,7 +1353,7 @@ void ViewController::showPreferences(const QString& page) {
   }
   groups.insert(QStringLiteral("display"), displayBox);
 
-  *commit = [this, general, top, bottom, scheme, zoomToCursor, reverseZoom, constrained, animate, camera, background,
+  *commit = [this, general, top, bottom, navigation, camera, background,
              autosave, minutes, importTolerance, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice, debugLog,
              debugLogApplied, texturesBox, agentsBox, fontsBox, layoutChoice, layoutApplied] {
     // Font folders for sketch text (mitcad#473).
@@ -1352,11 +1394,7 @@ void ViewController::showPreferences(const QString& page) {
         }
       }
     }
-    m_settings.navigation.scheme = static_cast<NavigationScheme>(scheme->currentData().toInt());
-    m_settings.navigation.zoomToCursor = zoomToCursor->isChecked();
-    m_settings.navigation.reverseZoom = reverseZoom->isChecked();
-    m_settings.navigation.constrainedOrbit = constrained->isChecked();
-    m_settings.navigation.animate = animate->isChecked();
+    m_settings.navigation = navigation->chosen();
     m_settings.perspective = camera->currentIndex() == 1;
     m_settings.background = static_cast<ViewSettings::Background>(background->currentIndex());
     m_settings.top = *top;
@@ -1498,7 +1536,6 @@ void ViewController::showPreferences(const QString& page) {
     }
     // No OK: a change is made when it is made. The text boxes when they are
     // left, and what is typed in one when the window closes.
-    connect(scheme, &QComboBox::currentIndexChanged, host, changed);
     connect(camera, &QComboBox::currentIndexChanged, host, changed);
     connect(background, &QComboBox::currentIndexChanged, host, changed);
     if (renderDevice != nullptr) {
@@ -1507,7 +1544,7 @@ void ViewController::showPreferences(const QString& page) {
     if (layoutChoice != nullptr) {
       connect(layoutChoice, &QComboBox::currentIndexChanged, host, changed);
     }
-    for (QCheckBox* box : {zoomToCursor, reverseZoom, constrained, animate, autosave, debugLog}) {
+    for (QCheckBox* box : {autosave, debugLog}) {
       connect(box, &QCheckBox::toggled, host, changed);
     }
     connect(minutes, &QSpinBox::valueChanged, host, changed);
@@ -1556,32 +1593,115 @@ void ViewController::showPreferences(const QString& page) {
     item->setData(Qt::UserRole, QLatin1String(entry.id));
   }
   pages->setSpacing(2);
-  pages->setMaximumWidth(pages->sizeHintForColumn(0) + 2 * pages->frameWidth() + 24);
-  connect(pages, &QListWidget::currentRowChanged, stack, &QStackedWidget::setCurrentIndex);
+  // Only the page shown counts for the window's minimum size (mitcad#690):
+  // the hidden ones are Ignored, as in the Settings window, so that no page
+  // makes the window wider or taller than the one shown needs.
+  const auto showPage = [layout, stack](int row) {
+    if (row < 0) {
+      return;
+    }
+    for (int i = 0; i < stack->count(); ++i) {
+      const QSizePolicy::Policy policy = i == row ? QSizePolicy::Preferred : QSizePolicy::Ignored;
+      stack->widget(i)->setSizePolicy(policy, policy);
+    }
+    stack->setCurrentIndex(row);
+    stack->updateGeometry();
+    layout->invalidate();
+    layout->activate();
+  };
+  connect(pages, &QListWidget::currentRowChanged, stack, showPage);
   connect(pages, &QListWidget::currentRowChanged, dialog.get(), [this, pages](int row) {
     if (row >= 0) {
       // Preferences opens there again (until Mitcad ends).
       m_preferencesPage = pages->item(row)->data(Qt::UserRole).toString();
+      // The minimum size the page shown sets (UI tests).
+      const QSize minimum = pages->window()->minimumSize();
+      qDebug().noquote() << QStringLiteral("Preferences page: %1, minimum %2 x %3")
+                                .arg(pages->item(row)->text())
+                                .arg(minimum.width())
+                                .arg(minimum.height());
     }
   });
   auto* pagesRow = new QHBoxLayout;
   pagesRow->addWidget(pages);
   pagesRow->addWidget(stack, 1);
   layout->addLayout(pagesRow, 1);
-  pages->setCurrentRow(wantedIndex);
 
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
   connect(buttons, &QDialogButtonBox::accepted, dialog.get(), &QDialog::accept);
   connect(buttons, &QDialogButtonBox::rejected, dialog.get(), &QDialog::reject);
   layout->addWidget(buttons);
-  pages->setFocus();
-  // The size the window asks for, the largest page's (UI tests check that
-  // it fits a 1366 x 768 screen).
+  // The page list as wide as its entries in the style and fonts the dialog
+  // shows them in (mitcad#690: measured before the dialog was polished, the
+  // list could clip them), with room for a scroll bar on a low screen; it
+  // keeps that width when the window is made narrower.
+  dialog->ensurePolished();
+  const int entriesWidth = pages->sizeHintForColumn(0) + 2 * pages->spacing();
+  pages->setFixedWidth(entriesWidth + 2 * pages->frameWidth() +
+                       pages->style()->pixelMetric(QStyle::PM_ScrollBarExtent, nullptr, pages) +
+                       pages->fontMetrics().averageCharWidth());
+  pages->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  // The size the window opens at: the largest page's, so that it keeps its
+  // size between pages (UI tests check that it fits a 1366 x 768 screen).
   const QSize size = dialog->sizeHint();
+  pages->setCurrentRow(wantedIndex);
+  showPage(wantedIndex);
+  pages->setFocus();
   qDebug().noquote() << QStringLiteral("Preferences opened: %1, %2 x %3")
                             .arg(pages->currentItem()->text())
                             .arg(size.width())
                             .arg(size.height());
+  // Never larger than the screen's available area (mitcad#690), and still
+  // resizable: only the page shown sets the minimum size.
+  QDialog* shown = dialog.get();
+  const QScreen* screen = m_window != nullptr ? m_window->screen() : shown->screen();
+  if (screen != nullptr) {
+    shown->resize(size.boundedTo(screen->availableGeometry().size()).expandedTo(shown->minimumSizeHint()));
+  }
+  // Once shown, with its frame: the frame within the available area, moved
+  // there if the window system placed it partly off the screen; where it is
+  // and how small it can be made, for UI tests.
+  QTimer::singleShot(0, shown, [shown, pages, entriesWidth] {
+    const QScreen* on = shown->screen();
+    if (on == nullptr) {
+      return;
+    }
+    const QRect available = on->availableGeometry();
+    const QSize margins = shown->frameGeometry().size() - shown->size();
+    const QSize fitted = shown->size().boundedTo(available.size() - margins).expandedTo(shown->minimumSize());
+    if (fitted != shown->size()) {
+      shown->resize(fitted);
+    }
+    const QSize frame = fitted + margins;
+    const QPoint from = shown->frameGeometry().topLeft();
+    // The frame's furthest place right and down that still shows it whole.
+    const int lastX = std::max(available.left(), available.right() + 1 - frame.width());
+    const int lastY = std::max(available.top(), available.bottom() + 1 - frame.height());
+    const QPoint at(std::clamp(from.x(), available.left(), lastX), std::clamp(from.y(), available.top(), lastY));
+    if (at != from) {
+      shown->move(at);
+    }
+    const QSize minimum = shown->minimumSize();
+    const QSize maximum = shown->maximumSize();
+    qDebug().noquote() << QStringLiteral("Preferences frame %1 x %2 at %3,%4 on a screen of %5 x %6 at %7,%8")
+                              .arg(frame.width())
+                              .arg(frame.height())
+                              .arg(at.x())
+                              .arg(at.y())
+                              .arg(available.width())
+                              .arg(available.height())
+                              .arg(available.x())
+                              .arg(available.y());
+    qDebug().noquote() << QStringLiteral("Preferences minimum %1 x %2, %3")
+                              .arg(minimum.width())
+                              .arg(minimum.height())
+                              .arg(maximum.width() > minimum.width() && maximum.height() > minimum.height()
+                                       ? QStringLiteral("resizable")
+                                       : QStringLiteral("fixed"));
+    qDebug().noquote() << QStringLiteral("Preferences page list %1 wide, its entries %2")
+                              .arg(pages->viewport()->width())
+                              .arg(entriesWidth);
+  });
   if (renderDevice != nullptr) {
     // Where the render device's list is once the dialog shows (UI tests).
     QTimer::singleShot(0, renderDevice, [this, renderDevice] {
@@ -1593,6 +1713,7 @@ void ViewController::showPreferences(const QString& page) {
     });
   }
   if (execDialog(dialog.get()) != QDialog::Accepted) {
+    m_viewer.setNavigation(m_settings.navigation);
     return;
   }
   (*commit)();
@@ -1625,6 +1746,7 @@ void ViewController::showShortcutOverview() {
   auto* filter = new QLineEdit;
   filter->setPlaceholderText(tr("Search"));
   filter->setClearButtonEnabled(true);
+  mac::styleSearchField(filter);
   layout->addWidget(filter);
   auto* tree = new QTreeWidget;
   tree->setColumnCount(2);
@@ -1643,7 +1765,7 @@ void ViewController::showShortcutOverview() {
     return item;
   };
   QTreeWidgetItem* mouse = section(tr("Mouse (%1)").arg(schemeName(m_settings.navigation.scheme)));
-  for (const auto& [keys, what] : mouseRows(m_settings.navigation.scheme)) {
+  for (const auto& [keys, what] : mouseRows(m_settings.navigation)) {
     new QTreeWidgetItem(mouse, {keys, what});
   }
   for (const auto& [keys, what] :
@@ -1713,7 +1835,7 @@ void ViewController::showShortcutOverview() {
     }
   });
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
-  QPushButton* edit = buttons->addButton(tr("Change Shortcuts..."), QDialogButtonBox::ActionRole);
+  QPushButton* edit = buttons->addButton(tr("Change Shortcuts…"), QDialogButtonBox::ActionRole);
   connect(edit, &QPushButton::clicked, &dialog, [this, &dialog] {
     dialog.accept();
     if (QAction* shortcuts = m_registry.action(QStringLiteral("tools.shortcuts"))) {
@@ -1722,6 +1844,9 @@ void ViewController::showShortcutOverview() {
   });
   connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
   layout->addWidget(buttons);
+  mac::styleDialogButtons(buttons);
+  mac::styleListTree(tree);
+  mac::styleDialog(&dialog);
   dialog.resize(560, 620);
   qDebug().noquote() << QStringLiteral("Shortcut overview: %1 command shortcuts").arg(count);
   prepareModal(&dialog);

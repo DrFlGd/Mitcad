@@ -40,7 +40,7 @@ CachePreferencesBox::CachePreferencesBox(std::function<void()> diagnostics, QWid
   m_memorySize->setSuffix(tr(" MB"));
   m_memorySize->setValue(static_cast<int>(m_settings.memoryMegabytes));
   m_memorySize->setToolTip(tr("How much memory computed results may take before the oldest leave it"));
-  auto* showDiagnostics = new QPushButton(tr("D&iagnostics..."));
+  auto* showDiagnostics = new QPushButton(tr("D&iagnostics…"));
   connect(showDiagnostics, &QPushButton::clicked, this, [diagnostics] {
     if (diagnostics) {
       diagnostics();

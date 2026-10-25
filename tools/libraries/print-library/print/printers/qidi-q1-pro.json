@@ -1,0 +1,18 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "profile": {
+    "id": "qidi-q1-pro",
+    "name": "QIDI Q1 Pro (0.4 nozzle)",
+    "kind": "printer",
+    "values": {
+      "bed_shape": [[0, 0], [245, 0], [245, 245], [0, 245]],
+      "max_print_height": 240,
+      "nozzle_diameter": 0.4,
+      "filament_slots": 1,
+      "printer_model": {"qidi_studio": "Q1 Pro"},
+      "printer_settings_id": {"qidi_studio": "Q1 Pro 0.4 nozzle"}
+    },
+    "version": 1
+  }
+}

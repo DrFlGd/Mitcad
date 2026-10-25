@@ -130,6 +130,9 @@ struct Rewritten {
     isolated: Vec<(usize, String)>,
     /// Contact sets' occurrences (mitcad#454).
     contact_sets: Vec<(usize, Vec<OccurrencePath>)>,
+    /// Measurement objects' picks (mitcad#649): the measurement, which pick
+    /// (0: `a`, 1: `b`) and its new occurrence path.
+    measurements: Vec<(usize, usize, OccurrencePath)>,
     /// Placing features that go into the new parent whole.
     components: Vec<(usize, ComponentUid)>,
     /// New features of the new parent, each right after the feature at
@@ -446,6 +449,24 @@ fn rewrite_references(
         if moved {
             updates.push(set.name.clone());
             out.contact_sets.push((i, paths));
+        }
+    }
+    // Measurement objects' picks follow it (mitcad#649).
+    for (i, measurement) in state.measurements.iter().enumerate() {
+        let mut moved = false;
+        for (pick, path) in [Some(&measurement.a), measurement.b.as_ref()]
+            .into_iter()
+            .enumerate()
+            .filter_map(|(pick, p)| Some((pick, p?.occurrence.as_ref()?)))
+        {
+            let mut path = path.0.clone();
+            if rewrite.absolute(&mut path) {
+                moved = true;
+                out.measurements.push((i, pick, OccurrencePath(path)));
+            }
+        }
+        if moved {
+            updates.push(measurement.name.clone());
         }
     }
     // Occurrences made by Pattern at Points keep the paths they were made
@@ -966,6 +987,17 @@ fn take(state: &mut DocState, plan: &ReparentPlan) {
     }
     for (i, paths) in &plan.changes.contact_sets {
         state.contact_sets[*i].occurrences.clone_from(paths);
+    }
+    for (i, pick, path) in &plan.changes.measurements {
+        let measurement = &mut state.measurements[*i];
+        let pick = if *pick == 0 {
+            Some(&mut measurement.a)
+        } else {
+            measurement.b.as_mut()
+        };
+        if let Some(pick) = pick {
+            pick.occurrence = Some(path.clone());
+        }
     }
 }
 

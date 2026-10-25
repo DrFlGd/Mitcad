@@ -26,7 +26,7 @@ class BrowserTree;
 struct BrowserNode {
   enum class Type {
     None,
-    Settings,   // Document Settings
+    Settings,   // Design Settings
     Units,      // the document's length unit
     NamedViews, // Named Views
     NamedView,  // uid: home, top, front, right; the document's: named:<name>
@@ -59,6 +59,10 @@ struct BrowserNode {
     ContactSet,
     // A component's motion links (mitcad#466); a link's row is a Joint row.
     MotionLinks,
+    // Measurement objects (mitcad#649): the root's Measurements folder and
+    // its rows (uid: the name; featureType: the kind).
+    Measurements,
+    Measurement,
   };
 
   Type type = Type::None;
@@ -78,7 +82,7 @@ struct BrowserNode {
   bool isFolder() const {
     return type == Type::Bodies || type == Type::Sketches || type == Type::Construction ||
            type == Type::Origin || type == Type::Analyses || type == Type::Joints ||
-           type == Type::MotionLinks;
+           type == Type::MotionLinks || type == Type::Measurements;
   }
   // The selection item the row stands for; invalid for folders and settings.
   SelectionItem item() const;
@@ -149,6 +153,14 @@ public:
   // height, before its first layout, falls back to the viewport).
   int availableHeight() const;
   void setAvailableHeight(std::function<int()> height);
+  // While Create Sketch waits for a plane that the view does not show
+  // (mitcad#694): the Origin folder opened and its XY, XZ and YZ rows not
+  // greyed, as rows a click picks the plane with; its light bulb does not
+  // change. Off again, the folder is open or folded as it was before.
+  // Logged: "Browser offers the origin planes: <folder> open; XY, XZ, YZ
+  // pickable" and "Browser no longer offers the origin planes: <folder>
+  // folded" (or "open", as it was).
+  void offerOriginPlanes(bool offer);
   // Renames a row in place.
   void startRename(const BrowserNode& node);
   // Closes an open rename editor without renaming; false when none is open.
@@ -264,6 +276,11 @@ private:
   QSet<QString> m_shownSelection;  // what showSelection last selected (items and features)
   QSet<QString> m_foldedSelection; // the selection Collapse All left; showSelection does not reveal it again
   bool m_building = false;
+  bool m_originShown = false;        // the Origin folder's light bulb, as last rebuilt
+  bool m_originOffered = false;      // offerOriginPlanes
+  bool m_originWasExpanded = false;  // the folder before the offer
+  // The origin's rows greyed by its light bulb, the planes not while offered.
+  void styleOriginRows(QTreeWidgetItem* folder);
   QString m_logged;
   QSet<QString> m_loggedPlaces; // what logLayout logged a place for, and has not logged out of sight
   QString m_loggedSelection;

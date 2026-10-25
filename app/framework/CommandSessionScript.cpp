@@ -33,6 +33,8 @@ QString typeName(InputDef::Type type) {
     return QStringLiteral("cut_targets");
   case InputDef::Type::List:
     return QStringLiteral("list");
+  case InputDef::Type::Note:
+    return QStringLiteral("note");
   }
   return QStringLiteral("value");
 }
@@ -157,6 +159,9 @@ bool CommandSession::scriptInputs(const QJsonObject& inputs, const ItemReader& r
                  "application")
                   .arg(m_def.name, key);
       return false;
+    case InputDef::Type::Note:
+      error = tr("%1: %2 is a note: it takes no value").arg(m_def.name, key);
+      return false;
     }
   }
   m_presenter->refresh(m_state);
@@ -206,6 +211,9 @@ QJsonObject CommandSession::scriptState() {
     case InputDef::Type::List:
       entry.insert(QStringLiteral("rows"), m_state.rows(slot.key));
       break;
+    case InputDef::Type::Note:
+      entry.insert(QStringLiteral("text"), input.noteFor ? input.noteFor(m_state).text : QString());
+      break;
     }
     inputs.insert(slot.key, entry);
   }
@@ -232,6 +240,41 @@ QJsonObject CommandSession::scriptState() {
     answer.insert(QStringLiteral("panel"), m_presenter->shownState());
   }
   return answer;
+}
+
+bool CommandSession::restoreInputs(const QHash<QString, QString>& choices,
+                                   const QHash<QString, Selection>& selections) {
+  if (m_done || m_presenter == nullptr) {
+    return false;
+  }
+  const CommandPresenter::Actions& actions = m_presenter->actions();
+  for (auto it = choices.constBegin(); it != choices.constEnd(); ++it) {
+    const auto slot = slotOf(it.key());
+    if (slot && slot->def->type == InputDef::Type::Choice && m_state.choice(it.key()) != it.value() &&
+        actions.choiceChanged) {
+      actions.choiceChanged(it.key(), it.value());
+    }
+  }
+  QString last;
+  for (const Slot& slot : slotsOf(false)) {
+    if (slot.def->type != InputDef::Type::Selection) {
+      continue;
+    }
+    const Selection items = selections.value(slot.key);
+    if (!items.isEmpty() && isShown(slot)) {
+      last = slot.key;
+    }
+    if (items == m_state.items(slot.key)) {
+      continue;
+    }
+    m_state.setItems(slot.key, items);
+    selectionChanged(slot.key);
+  }
+  if (!last.isEmpty()) {
+    activate(last);
+  }
+  m_presenter->refresh(m_state);
+  return true;
 }
 
 } // namespace mitcad

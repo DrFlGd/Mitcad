@@ -38,6 +38,7 @@
 #include "../framework/FitToScreen.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/Theme.hpp"
+#include "../platform/MacDialogs.hpp"
 #include "CloudAddress.hpp"
 #include "CloudSection.hpp"
 #include "ProjectDialogs.hpp"
@@ -187,6 +188,7 @@ private:
   CloudSection* m_section = nullptr;
   QLabel* m_authors = nullptr;
   QPushButton* m_share = nullptr;
+  QPushButton* m_close = nullptr;
   QWidget* m_progress = nullptr;
   QLabel* m_progressText = nullptr;
   bool m_probed = false;
@@ -222,7 +224,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
   m_address = new QLabel;
   m_address->setTextInteractionFlags(Qt::TextSelectableByMouse);
   m_address->setTextFormat(Qt::PlainText);
-  m_change = new QPushButton(tr("C&hange..."));
+  m_change = new QPushButton(tr("C&hange…"));
   m_browser = new QPushButton(tr("Open in &Browser"));
   m_addressRow = new QWidget;
   auto* addressLayout = new QHBoxLayout(m_addressRow);
@@ -264,6 +266,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
 
   // Local -> Cloud: the address, then Share.
   m_shareBox = new QGroupBox(tr("Share"));
+  mac::styleSection(m_shareBox);
   auto* shareColumn = new QVBoxLayout(m_shareBox);
   m_section = new CloudSection(
       [this](const QString& url, QObject* owner) {
@@ -301,6 +304,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
   // The project's web viewer (mitcad#423): File > Project > Web Viewer
   // turns it on; whether a Save updates it is for everyone (a version).
   m_webBox = new QGroupBox(tr("Web viewer (saved as a version)"));
+  mac::styleSection(m_webBox);
   auto* webColumn = new QVBoxLayout(m_webBox);
   m_webUpdate = new QCheckBox(tr("&Update the web viewer on each Save"));
   m_webUpdate->setObjectName(QStringLiteral("projectWebViewerUpdate"));
@@ -314,8 +318,10 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
   setErrorStyleSheet(m_problem);
   layout->addWidget(m_problem);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+  m_close = buttons->button(QDialogButtonBox::Close);
   layout->addWidget(buttons);
-  buttons->button(QDialogButtonBox::Close)->setDefault(true);
+  mac::styleDialogButtons(buttons, nullptr, true);
+  mac::styleDialog(this);
 
   read();
 
@@ -415,7 +421,7 @@ void ProjectSettingsDialog::read() {
   m_webNote->setText(web.isObject()
                          ? tr("Its pages are in the project's web folder: open web/index.html in a browser, or let a "
                               "static web host serve the repository.")
-                         : tr("Not turned on: File > Project > Web Viewer writes a page per design into the "
+                         : tr("Not turned on: File › Project › Web Viewer writes a page per design into the "
                               "project's web folder."));
   m_fields->m_test->setVisible(true);
   m_fields->m_test->setEnabled(static_cast<bool>(m_host.testBroker));
@@ -555,6 +561,7 @@ void ProjectSettingsDialog::storageChosen() {
     m_shareBox->setVisible(cloud);
     m_share->setEnabled(m_section->hasAnswer() && m_section->answerOk());
     m_share->setDefault(cloud);
+    if (!cloud) { m_close->setDefault(true); }
     qInfo().noquote() << QStringLiteral("Project Settings: storage %1").arg(cloud ? QStringLiteral("cloud (share)")
                                                                                   : QStringLiteral("local"));
     if (cloud) {
@@ -673,7 +680,7 @@ void ProjectSettingsDialog::shareFinished(RemoteTask* done, const QString& url, 
     m_section->stopCheck();
     m_share->setEnabled(false);
     m_shareBox->setEnabled(false);
-    m_progressText->setText(tr("Sending the project's versions to %1...").arg(url));
+    m_progressText->setText(tr("Sending the project's versions to %1…").arg(url));
     m_progress->show();
     connect(task, &RemoteTask::finished, this,
             [this, task, url, author] { shareFinished(task, url, author, QJsonObject()); });
@@ -963,6 +970,7 @@ ProjectSettingsFields::ProjectSettingsFields(Host host, QWidget* parent) : QWidg
   layout->setContentsMargins(0, 0, 0, 0);
   // For everyone.
   m_everyone = new QGroupBox(tr("For everyone in this project (saved as a version)"));
+  mac::styleSection(m_everyone);
   auto* everyone = new QFormLayout(m_everyone);
   m_locks = new QCheckBox(creating ? tr("Edi&t locks") : tr("&Edit locks"));
   m_locks->setToolTip(tr("A design has one editor at a time; the others open it read-only and can ask for it"));
@@ -1015,6 +1023,7 @@ ProjectSettingsFields::ProjectSettingsFields(Host host, QWidget* parent) : QWidg
 
   // On this computer.
   auto* here = new QGroupBox(tr("On this computer"));
+  mac::styleSection(here);
   auto* hereForm = new QFormLayout(here);
   // The name the Projects panel shows (mitcad#152): this computer's, a
   // display name only.

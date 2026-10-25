@@ -37,6 +37,7 @@ fn part(name: &str, mesh: Mesh, color: Option<[f64; 3]>, placements: Vec<Placeme
         color,
         mesh,
         placements,
+        metadata: Vec::new(),
     }
 }
 
@@ -138,6 +139,7 @@ fn writes_one_object_of_parts_and_reads_it_back() {
                 vec![Placement::IDENTITY],
             ),
         ],
+        ..Model::default()
     };
     let data = write(&model).unwrap();
     assert_eq!(&data[..2], b"PK");
@@ -182,6 +184,7 @@ fn rejects_what_the_core_specification_does_not_allow() {
             None,
             vec![Placement::IDENTITY],
         )],
+        ..Model::default()
     };
     let data = write(&good).unwrap();
     assert!(read(&data).is_ok());
@@ -275,4 +278,75 @@ fn rejects_what_the_core_specification_does_not_allow() {
     assert!((inches.parts[0].mesh.volume() - 25.4f64.powi(3)).abs() < 1e-6);
     // Nothing to write.
     assert!(write(&Model::default()).is_err());
+}
+
+#[test]
+fn settings_go_with_the_model_and_read_back() {
+    let mut body = part(
+        "Body1",
+        cube([0.0; 3], 10.0),
+        None,
+        vec![Placement::IDENTITY],
+    );
+    body.metadata = vec![("cura:extruder_nr".to_owned(), "1".to_owned())];
+    let model = Model {
+        name: "Settings".to_owned(),
+        application: "BambuStudio-02.00.00.00".to_owned(),
+        parts: vec![body],
+        metadata: vec![("BambuStudio:3mfVersion".to_owned(), "1".to_owned())],
+        namespaces: vec![
+            (
+                "BambuStudio".to_owned(),
+                "http://schemas.bambulab.com/package/2021".to_owned(),
+            ),
+            (
+                "cura".to_owned(),
+                "http://software.ultimaker.com/xml/cura/3mf/2015/10".to_owned(),
+            ),
+        ],
+        files: vec![(
+            "Metadata/project_settings.config".to_owned(),
+            b"{\"layer_height\": \"0.2\"}".to_vec(),
+        )],
+    };
+    let data = write(&model).unwrap();
+    let xml = model_xml(&data);
+    assert!(xml.contains("xmlns:BambuStudio=\"http://schemas.bambulab.com/package/2021\""));
+    assert!(xml.contains("<metadata name=\"BambuStudio:3mfVersion\">1</metadata>"));
+    assert!(xml.contains(
+        "<metadata name=\"cura:extruder_nr\" preserve=\"true\" type=\"xs:string\">1</metadata>"
+    ));
+    // The geometry reads as before.
+    assert_eq!(read(&data).unwrap().parts.len(), 1);
+    // The settings read back without it.
+    let package = read_package(&data).unwrap();
+    assert_eq!(
+        package.metadata("Application"),
+        Some("BambuStudio-02.00.00.00")
+    );
+    assert_eq!(package.metadata("BambuStudio:3mfVersion"), Some("1"));
+    assert_eq!(
+        package.file("Metadata/project_settings.config"),
+        Some(&b"{\"layer_height\": \"0.2\"}"[..])
+    );
+    let body = package.objects.iter().find(|o| o.name == "Body1").unwrap();
+    assert_eq!(
+        body.metadata,
+        vec![("cura:extruder_nr".to_owned(), "1".to_owned())]
+    );
+    // Other files have a content type, and paths outside the package are
+    // refused.
+    let types = String::from_utf8(
+        mitcad_zip::Archive::new(data.clone())
+            .unwrap()
+            .read_by_name("[Content_Types].xml")
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(types.contains("<Default Extension=\"config\""));
+    let outside = Model {
+        files: vec![("../escape.config".to_owned(), Vec::new())],
+        ..model.clone()
+    };
+    assert!(write(&outside).is_err());
 }

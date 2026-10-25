@@ -7,6 +7,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDialogButtonBox>
 #include <QEvent>
 #include <QGridLayout>
 #include <QHBoxLayout>
@@ -14,6 +15,7 @@
 #include <QLabel>
 #include <QLayoutItem>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
@@ -22,6 +24,8 @@
 
 #include "framework/TestSync.hpp"
 #include "framework/Theme.hpp"
+
+#include "../platform/MacDialogs.hpp"
 
 namespace mitcad {
 namespace {
@@ -46,7 +50,7 @@ QPushButton* button(const QString& text, const QString& name, const QString& tip
   auto* push = new QPushButton(text);
   push->setObjectName(name);
   push->setToolTip(tip);
-  // Enter in a field commits the field; it never presses a button.
+  // Auxiliary row actions never steal Return from Close.
   push->setAutoDefault(false);
   push->setDefault(false);
   return push;
@@ -89,25 +93,37 @@ OpeningsWindow::OpeningsWindow(QWidget* parent) : QDialog(parent) {
   m_layout->setAlignment(Qt::AlignTop);
   scroll->setWidget(m_grid);
   layout->addWidget(scroll, 1);
-  auto* buttons = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
   m_addWindow = button(tr("Add &Window"), QStringLiteral("openingsAddWindow"), tr("Adds a window after the last opening"));
   m_addDoor = button(tr("Add &Door"), QStringLiteral("openingsAddDoor"), tr("Adds a door after the last opening"));
   m_addOpening =
       button(tr("Add &Opening"), QStringLiteral("openingsAddOpening"), tr("Adds an opening to the floor"));
   m_remove = button(tr("&Remove"), QStringLiteral("openingsRemove"), tr("Removes the opening selected"));
   m_close = button(tr("Close"), QStringLiteral("openingsClose"), tr("Closes the window; the openings stay"));
-  buttons->addWidget(m_addWindow);
-  buttons->addWidget(m_addDoor);
-  buttons->addWidget(m_addOpening);
-  buttons->addWidget(m_remove);
-  buttons->addStretch(1);
-  buttons->addWidget(m_close);
-  layout->addLayout(buttons);
+  buttons->addButton(m_addWindow, QDialogButtonBox::ResetRole);
+  buttons->addButton(m_addDoor, QDialogButtonBox::ResetRole);
+  buttons->addButton(m_addOpening, QDialogButtonBox::ResetRole);
+  buttons->addButton(m_remove, QDialogButtonBox::ResetRole);
+  buttons->addButton(m_close, QDialogButtonBox::RejectRole);
+  mac::styleListButtons(m_addWindow, m_remove);
+#ifdef Q_OS_MACOS
+  auto* addMenu = new QMenu(m_addWindow);
+  addMenu->addAction(tr("Window"), this, [this] { addRow(OpeningRow::Kind::Window); });
+  addMenu->addAction(tr("Door"), this, [this] { addRow(OpeningRow::Kind::Door); });
+  m_addWindow->setMenu(addMenu);
+  m_addWindow->setAccessibleName(tr("Add window or door"));
+  m_addWindow->setToolTip(tr("Add a window or door"));
+#endif
+  mac::styleIconToggle(m_addOpening, QStringLiteral("plus"));
+  mac::styleDialogButtons(buttons, m_close);
+  layout->addWidget(buttons);
+#ifndef Q_OS_MACOS
   connect(m_addWindow, &QPushButton::clicked, this, [this] { addRow(OpeningRow::Kind::Window); });
+#endif
   connect(m_addDoor, &QPushButton::clicked, this, [this] { addRow(OpeningRow::Kind::Door); });
   connect(m_addOpening, &QPushButton::clicked, this, [this] { addRow(OpeningRow::Kind::Floor); });
   connect(m_remove, &QPushButton::clicked, this, [this] { removeRow(); });
-  connect(m_close, &QPushButton::clicked, this, &QWidget::hide);
+  connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
   connect(m_bearing, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int) {
     const bool bearing = m_bearing->currentData().toBool();
     m_target.loadBearing = bearing;
@@ -120,6 +136,7 @@ OpeningsWindow::OpeningsWindow(QWidget* parent) : QDialog(parent) {
   m_placesTimer.setInterval(150);
   connect(&m_placesTimer, &QTimer::timeout, this, [this] { logPlaces(); });
   TestSync::watch(&m_placesTimer);
+  mac::styleDialog(this);
 }
 
 OpeningsWindow::~OpeningsWindow() { m_placesTimer.stop(); }
@@ -141,7 +158,11 @@ void OpeningsWindow::open(const Target& target) {
   m_bearing->setVisible(!target.floor);
   m_bearingLabel->setVisible(!target.floor);
   m_addWindow->setVisible(!target.floor);
+#ifdef Q_OS_MACOS
+  m_addDoor->hide(); // the adjacent + menu contains both wall opening kinds
+#else
   m_addDoor->setVisible(!target.floor);
+#endif
   m_addOpening->setVisible(target.floor);
   rebuild();
   check();

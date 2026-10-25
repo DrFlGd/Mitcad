@@ -33,12 +33,21 @@ use super::Builder;
 
 impl Builder<'_> {
     /// The timeline item that made a body record's body: the first of its
-    /// references that is a timeline item.
+    /// references that is a timeline item, or a part of one (mitcad#641:
+    /// the base feature inside a paste of bodies or a derive from another
+    /// design, which holds the bodies the item brings, is listed among the
+    /// item's sub-features, not on the timeline).
     fn record_producer(&self, record: u64) -> Option<u64> {
         self.seg
             .ref_ids(self.seg.data_of(record))
             .into_iter()
-            .find(|r| self.pos_of.contains_key(r))
+            .find_map(|r| {
+                if self.pos_of.contains_key(&r) {
+                    Some(r)
+                } else {
+                    self.sub_item.get(&r).copied()
+                }
+            })
     }
 
     /// The producer of a body input's body (its timeline index) and the

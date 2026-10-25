@@ -56,12 +56,12 @@ public:
   // and its name (the image's default file name).
   void setDocument(const QString& folder, const QString& name);
   bool isRendering() const;
+  void reject() override;
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
   void showEvent(QShowEvent* event) override;
   void hideEvent(QHideEvent* event) override;
-  void closeEvent(QCloseEvent* event) override;
 
 private:
   QJsonValue value(const QString& field) const; // of the output section
@@ -94,6 +94,8 @@ private:
   QDoubleSpinBox* m_timeLimit = nullptr;
   QCheckBox* m_denoise = nullptr;
   QCheckBox* m_transparent = nullptr;
+  QCheckBox* m_measurements = nullptr; // the shown measurements over the saved image (mitcad#649)
+  QJsonObject m_finalView;             // the last render's camera (render::finalView)
   QComboBox* m_format = nullptr;
   QSpinBox* m_quality = nullptr;
   QLabel* m_preview = nullptr;

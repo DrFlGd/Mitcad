@@ -25,8 +25,9 @@
 
 namespace mitcad {
 
-// What a value is: a length, an angle or a plain number (counts, factors).
-enum class ParameterKind { Length, Angle, Unitless };
+// What a value is: a length, an angle, a plain number (counts, factors) or
+// a text (a text parameter, unit `Text`, mitcad#664).
+enum class ParameterKind { Length, Angle, Unitless, Text };
 
 // A parameter as the `parameters` query gives it.
 struct SuggestedParameter {
@@ -47,9 +48,9 @@ struct SuggestedParameter {
 std::vector<SuggestedParameter> suggestedParameters(const QJsonArray& query);
 
 // The kind a unit gives: none is unitless, rad, deg, ° and grad are
-// angles, every other unit a length.
+// angles, Text is a text, every other unit a length.
 ParameterKind kindOfUnit(const QString& unit);
-// "length", "angle", "number".
+// "length", "angle", "number", "text".
 QString parameterKindName(ParameterKind kind);
 
 // Whether `name` can name a parameter (the model's is_valid_name): a

@@ -33,6 +33,9 @@ public:
     std::function<void(const QString&, bool)> valueFocused;
     // The button beside a choice was clicked (InputDef::onButton).
     std::function<void(const QString&)> buttonClicked;
+    // A note row's button was clicked: the row's key and the button's index
+    // (InputDef::onNoteAction, mitcad#655).
+    std::function<void(const QString&, int)> noteAction;
     // A link in an inspection's result was clicked ("point:x,y,z": Print
     // Analysis' thinnest wall, mitcad#620).
     std::function<void(const QString&)> resultLinkActivated;
@@ -57,6 +60,8 @@ public:
   virtual void setActiveSelection(const QString& key) = 0;
   virtual void setInputError(const QString& key, const QString& message) = 0;
   virtual void setValueHint(const QString& key, const QString& hint) = 0;
+  // What an empty value field shows (InputDef::autoText, mitcad#656).
+  virtual void setPlaceholder(const QString& /*key*/, const QString& /*text*/) {}
   virtual void setMessage(const QString& message, bool error) = 0;
   virtual void setResult(const QString& text) = 0;
   virtual void setOkEnabled(bool enabled) = 0;

@@ -1,0 +1,157 @@
+// SPDX-License-Identifier: MIT
+#include <cstdio>
+
+#include <QCheckBox>
+#include <QComboBox>
+#include <QCoreApplication>
+#include <QEventLoop>
+#include <QLabel>
+#include <QPushButton>
+#include <QSlider>
+#include <QTableWidget>
+#include <QTemporaryDir>
+
+#include "view/NavigationPreferences.hpp"
+
+namespace {
+int failures = 0;
+void check(bool value, const char* expression, int line) {
+  if (!value) {
+    std::fprintf(stderr, "navigation_preferences.cpp:%d: check failed: %s\n", line, expression);
+    ++failures;
+  }
+}
+#define CHECK(value) check((value), #value, __LINE__)
+}
+
+int navigationPreferencesTests() {
+  using namespace mitcad;
+  const QVector<QPair<NavigationScheme, QString>> schemes{
+      {NavigationScheme::MiddlePan, QStringLiteral("Middle pan")},
+      {NavigationScheme::AltButtons, QStringLiteral("Alt buttons")},
+      {NavigationScheme::MiddlePanF4, QStringLiteral("F4")},
+      {NavigationScheme::MiddleOrbit, QStringLiteral("Middle orbit")},
+      {NavigationScheme::RightOrbit, QStringLiteral("Right orbit")},
+      {NavigationScheme::Trackpad, QStringLiteral("Trackpad")},
+      {NavigationScheme::TrackpadShift, QStringLiteral("Trackpad Shift")},
+      {NavigationScheme::Custom, QStringLiteral("Custom")}};
+  NavigationSettings initial;
+  initial.scheme = NavigationScheme::MiddlePan;
+  NavigationPreferences form(initial, schemes);
+  int changes = 0;
+  form.changed = [&changes] { ++changes; };
+  auto* scheme = form.findChild<QComboBox*>(QStringLiteral("navigationScheme"));
+  auto* seed = form.findChild<QComboBox*>(QStringLiteral("navigationStartFrom"));
+  auto* seedButton = form.findChild<QPushButton*>(QStringLiteral("navigationSeed"));
+  auto* table = form.findChild<QTableWidget*>(QStringLiteral("navigationBindings"));
+  auto* guide = form.findChild<QWidget*>(QStringLiteral("navigationVisualGuide"));
+  CHECK(scheme && seed && seedButton && table && guide);
+  if (!scheme || !seed || !seedButton || !table || !guide) return failures;
+  CHECK(changes == 0);
+  CHECK(guide->accessibleDescription().contains(QStringLiteral("Middle drag: Pan")));
+  CHECK(table->rowCount() == navigationBindings(NavigationScheme::MiddlePan).size());
+
+  // Editing a preset preserves its other gestures and enters Custom.
+  int middle = -1;
+  const auto bindings = navigationBindings(NavigationScheme::MiddlePan);
+  for (int row = 0; row < bindings.size(); ++row) {
+    const auto& binding = bindings[row];
+    auto* editor = qobject_cast<QComboBox*>(table->cellWidget(row, 1));
+    CHECK(editor != nullptr);
+    if (!navigationBindingAllowed(binding)) CHECK(editor && !editor->isEnabled());
+    if (binding.input == NavigationInput::MiddleButton && binding.modifiers == Qt::NoModifier) middle = row;
+  }
+  CHECK(middle >= 0);
+  // A short binding table initially reveals a useful gesture, rather than
+  // spending its whole viewport on disabled reserved left-button rows.
+  form.setAttribute(Qt::WA_DontShowOnScreen);
+  form.resize(900, 700);
+  form.show();
+  QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+  if (middle >= 0) {
+    CHECK(table->rowAt(1) == middle);
+    CHECK(table->viewport()->rect().contains(table->visualItemRect(table->item(middle, 0))));
+  }
+  if (middle >= 0) {
+    auto* editor = qobject_cast<QComboBox*>(table->cellWidget(middle, 1));
+    if (editor) editor->setCurrentIndex(editor->findData(int(NavigationAction::Zoom)));
+    CHECK(form.chosen().scheme == NavigationScheme::Custom);
+    CHECK(navigationAction(form.chosen(), NavigationInput::MiddleButton, Qt::NoModifier) == NavigationAction::Zoom);
+    CHECK(navigationAction(form.chosen(), NavigationInput::MiddleButton, Qt::ShiftModifier) == NavigationAction::Orbit);
+    CHECK(guide->accessibleDescription().contains(QStringLiteral("Middle drag: Zoom")));
+  }
+
+  // Start from explicitly replaces the custom table, including trackpad rows.
+  seed->setCurrentIndex(seed->findData(int(NavigationScheme::TrackpadShift)));
+  seedButton->click();
+  CHECK(form.chosen().scheme == NavigationScheme::Custom);
+  CHECK(navigationAction(form.chosen(), NavigationInput::TrackpadScroll, Qt::NoModifier) == NavigationAction::Pan);
+  CHECK(navigationAction(form.chosen(), NavigationInput::TrackpadScroll, Qt::ShiftModifier) == NavigationAction::Orbit);
+  CHECK(guide->accessibleDescription().contains(QStringLiteral("Two-finger scroll: Pan")));
+  // Rebuilding for another preset and revealing a hidden pane both use its
+  // first active editable row, without changing the canonical row ids.
+  scheme->setCurrentIndex(scheme->findData(int(NavigationScheme::RightOrbit)));
+  int right = -1;
+  const auto rightBindings = navigationBindings(NavigationScheme::RightOrbit);
+  for (int row = 0; row < rightBindings.size(); ++row) {
+    if (navigationBindingAllowed(rightBindings[row]) && rightBindings[row].action != NavigationAction::None) {
+      right = row;
+      break;
+    }
+  }
+  QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+  CHECK(right >= 0 && table->rowAt(1) == right);
+  table->scrollToBottom();
+  form.hide();
+  form.show();
+  QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+  CHECK(right >= 0 && table->rowAt(1) == right);
+  form.hide();
+  seed->setCurrentIndex(seed->findData(int(NavigationScheme::TrackpadShift)));
+  seedButton->click();
+
+  for (const char* name : {"navigationOrbitSpeed", "navigationPanSpeed", "navigationZoomSpeed", "navigationTrackpadSpeed"}) {
+    auto* slider = form.findChild<QSlider*>(QString::fromLatin1(name));
+    auto* reset = form.findChild<QPushButton*>(QString::fromLatin1(name) + QStringLiteral("Reset"));
+    CHECK(slider && reset);
+    if (!slider || !reset) continue;
+    CHECK(slider->value() == 100);
+    slider->setValue(235);
+    CHECK(changes > 0);
+    reset->click();
+    CHECK(slider->value() == 100);
+  }
+  auto* zoom = form.findChild<QSlider*>(QStringLiteral("navigationZoomSpeed"));
+  auto* constrained = form.findChild<QCheckBox*>(QStringLiteral("navigationConstrainedOrbit"));
+  CHECK(zoom && constrained);
+  if (zoom) zoom->setValue(150);
+  if (constrained) constrained->setChecked(true);
+  CHECK(form.chosen().zoomSpeed == 1.5);
+  CHECK(form.chosen().constrainedOrbit);
+
+  // Save and reload the widget's actual choices in an isolated settings file.
+  QTemporaryDir folder;
+  CHECK(folder.isValid());
+  if (folder.isValid()) {
+    const QString path = folder.filePath(QStringLiteral("navigation.ini"));
+    {
+      QSettings store(path, QSettings::IniFormat);
+      saveNavigationDetails(store, form.chosen());
+      store.setValue(QStringLiteral("view/navigationScheme"), QStringLiteral("custom"));
+      store.sync();
+      CHECK(store.status() == QSettings::NoError);
+    }
+    NavigationSettings loaded;
+    loaded.scheme = NavigationScheme::Custom;
+    {
+      QSettings store(path, QSettings::IniFormat);
+      loadNavigationDetails(store, loaded);
+    }
+    NavigationPreferences reopened(loaded, schemes);
+    CHECK(reopened.chosen().zoomSpeed == 1.5);
+    CHECK(navigationAction(reopened.chosen(), NavigationInput::TrackpadScroll, Qt::ShiftModifier) == NavigationAction::Orbit);
+    CHECK(navigationAction(reopened.chosen(), NavigationInput::LeftButton, Qt::NoModifier) == NavigationAction::None);
+    CHECK(reopened.findChild<QComboBox*>(QStringLiteral("navigationScheme"))->currentData().toInt() == int(NavigationScheme::Custom));
+  }
+  return failures;
+}

@@ -256,7 +256,7 @@ CommandDef filletCommand(const CommandContext& context) {
       listInput(kSets, QObject::tr("Edge Sets"),
                 {selectionInput(QStringLiteral("edges"), QObject::tr("Edges"),
                                 SelectKind::Edge | SelectKind::Face, 1, 0)
-                     .withTooltip(QObject::tr("Edges to round; a face rounds all its edges"))
+                     .withTooltip(QObject::tr("Round edges or a face's edges; click a selected item to remove it; ✕ clears the input"))
                      .withHoverChain(SelectKind::Edge, QStringLiteral("tangent_chain")),
                  choiceInput(QStringLiteral("size"), QObject::tr("Radius Type"), kFilletSizes,
                              QStringLiteral("constant")),
@@ -327,7 +327,7 @@ CommandDef filletCommand(const CommandContext& context) {
                 QObject::tr("Add Set"), QObject::tr("Set %1")),
       listInput(kMid, QObject::tr("Mid Radii"),
                 {valueInput(QStringLiteral("set"), QObject::tr("Set"), ValueKind::Unitless, QStringLiteral("1"))
-                     .withTooltip(QObject::tr("The variable set (1, 2, ...) the radius is on")),
+                     .withTooltip(QObject::tr("The variable set (1, 2, …) the radius is on")),
                  valueInput(QStringLiteral("position"), QObject::tr("Position"), ValueKind::Unitless,
                             QStringLiteral("0.5"))
                      .withTooltip(QObject::tr("Where along the chain, 0 at the start to 1 at the end")),
@@ -339,7 +339,7 @@ CommandDef filletCommand(const CommandContext& context) {
       // (mitcad#464), in order along the chain.
       listInput(kControl, QObject::tr("Control Radii"),
                 {valueInput(QStringLiteral("set"), QObject::tr("Set"), ValueKind::Unitless, QStringLiteral("1"))
-                     .withTooltip(QObject::tr("The spline set (1, 2, ...) the control radius is of")),
+                     .withTooltip(QObject::tr("The spline set (1, 2, …) the control radius is of")),
                  valueInput(QStringLiteral("radius"), QObject::tr("Radius"), ValueKind::Length,
                             QStringLiteral("3 mm"))},
                 QObject::tr("Add Control Radius"), QObject::tr("Control %1"), 0)
@@ -473,7 +473,7 @@ CommandDef filletCommand(const CommandContext& context) {
       }
       if (row.choice(QStringLiteral("continuity")) == QStringLiteral("curvature")) {
         set.insert(QStringLiteral("continuity"), QStringLiteral("curvature"));
-        set.insert(QStringLiteral("tangency_weight"), countValue(row, QStringLiteral("weight")));
+        set.insert(QStringLiteral("tangency_weight"), row.expression(QStringLiteral("weight")));
       }
       sets.append(set);
     }
@@ -599,7 +599,7 @@ CommandDef chamferCommand(const CommandContext& context) {
       listInput(kSets, QObject::tr("Edge Sets"),
                 {selectionInput(QStringLiteral("edges"), QObject::tr("Edges"),
                                 SelectKind::Edge | SelectKind::Face, 1, 0)
-                     .withTooltip(QObject::tr("Edges to bevel; a face bevels all its edges"))
+                     .withTooltip(QObject::tr("Bevel edges or a face's edges; click a selected item to remove it; ✕ clears the input"))
                      .withHoverChain(SelectKind::Edge, QStringLiteral("tangent_chain")),
                  choiceInput(QStringLiteral("type"), QObject::tr("Chamfer Type"), kChamferTypes,
                              QStringLiteral("equal_distance")),

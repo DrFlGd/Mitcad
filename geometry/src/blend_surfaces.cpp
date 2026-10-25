@@ -64,6 +64,15 @@ constexpr double kAngularTolerance = 1e-2;
 // Largest error of the approximation the import accepts (mm, its geometric
 // tolerance).
 constexpr double kMaxApproxError = 0.01;
+// How far (mm) the spine's start may be from the ball's centre there (its
+// distance from a support from the radius). The files store the spine, the
+// path of the centre, as an approximation (an offset intersection curve's
+// B-spline), some starting a few micrometres off (mitcad#639: up to 0.008
+// mm); the walk solves the true ball in each plane normal to the spine all
+// the same, so only the surface's parametrization follows the spine. Like
+// a stored approximation of the surface, it is taken within the import's
+// tolerance; farther off, the spine is not this blend's.
+constexpr double kMaxSpineOff = kMaxApproxError;
 
 std::string text(double v) {
   char buf[64];
@@ -95,8 +104,10 @@ bool on_normal_side(const Handle(Geom_Surface)& surface, double u, double v, con
 }
 
 // The surface for the walk, its parameters about (u, v): a periodic
-// direction a period either side, so that the contact crossing the seam
-// is not taken for leaving the surface's domain.
+// direction more than a period either side, so that the contact crossing
+// the seam is not taken for leaving the surface's domain, nor the contact
+// of a ball rolled once round (whose parameter there runs a period, give or
+// take the rounding of a spine that is an approximation, mitcad#639).
 Handle(GeomAdaptor_Surface) around(const Handle(Geom_Surface)& surface, double u, double v) {
   double u0 = 0.0;
   double u1 = 0.0;
@@ -104,12 +115,12 @@ Handle(GeomAdaptor_Surface) around(const Handle(Geom_Surface)& surface, double u
   double v1 = 0.0;
   surface->Bounds(u0, u1, v0, v1);
   if (surface->IsUPeriodic()) {
-    u0 = u - surface->UPeriod();
-    u1 = u + surface->UPeriod();
+    u0 = u - 1.25 * surface->UPeriod();
+    u1 = u + 1.25 * surface->UPeriod();
   }
   if (surface->IsVPeriodic()) {
-    v0 = v - surface->VPeriod();
-    v1 = v + surface->VPeriod();
+    v0 = v - 1.25 * surface->VPeriod();
+    v1 = v + 1.25 * surface->VPeriod();
   }
   return new GeomAdaptor_Surface(surface, u0, u1, v0, v1);
 }
@@ -230,7 +241,7 @@ Handle(Geom_Surface) between_surfaces(const Handle(Geom_Surface)& s1, const Hand
   const Handle(Adaptor3d_TopolTool) d2 = new Adaptor3d_TopolTool(a2);
   const Handle(ChFiDS_ElSpine) guide = guide_of(spine, v0, v1);
   for (const gp_Pnt& p : {p1, p2}) {
-    if (std::abs(p.Distance(centre) - radius) > 1e-3 * radius + 1e-3) {
+    if (std::abs(p.Distance(centre) - radius) > kMaxSpineOff) {
       throw std::runtime_error("rolling-ball blend: the spine's start is " + text(p.Distance(centre)) +
                                " mm from a support, not the radius " + text(radius));
     }
@@ -300,6 +311,22 @@ bool as_restriction(Handle(Geom_Curve) curve, const gp_Pnt& centre, const gp_Pnt
   return !restriction.IsNull();
 }
 
+// The side (OCCT's SetRefSide: 1 the left of the restriction's direction in
+// the plane's parameters, -1 the right) of the restriction at its parameter
+// w away from the point c's foot in the plane.
+int away_from_centre(const Handle(Geom2dAdaptor_Curve)& rst, const Handle(GeomAdaptor_Surface)& plane, double w,
+                     const gp_Pnt& c) {
+  gp_Pnt2d p;
+  gp_Vec2d t;
+  rst->D1(w, p, t);
+  gp_Pnt at;
+  gp_Vec du;
+  gp_Vec dv;
+  plane->D1(p.X(), p.Y(), at, du, dv);
+  const gp_Vec left = du * -t.Y() + dv * t.X();
+  return left.Dot(gp_Vec(at, c)) > 0.0 ? -1 : 1;
+}
+
 // Between a surface and a curve: the rolling ball of
 // BRepBlend_SurfRstConstRad walked by BRepBlend_SurfRstLineBuilder, the
 // curve a restriction of a plane through it. u runs from the surface's
@@ -325,16 +352,6 @@ Handle(Geom_Surface) surface_and_curve(const Handle(Geom_Surface)& s, const Hand
   }
   const Handle(GeomAdaptor_Surface) as = around(s, start(1), start(2));
   const Handle(GeomAdaptor_Surface) ap = new GeomAdaptor_Surface(plane);
-  const Handle(Geom2dAdaptor_Curve) rst = new Geom2dAdaptor_Curve(c2d);
-  const Handle(Adaptor3d_TopolTool) ds = new Adaptor3d_TopolTool(as);
-  const Handle(Adaptor3d_TopolTool) dp = new Adaptor3d_TopolTool(ap);
-  const Handle(ChFiDS_ElSpine) guide = guide_of(spine, v0, v1);
-  for (const gp_Pnt& p : {on_surface, contact}) {
-    if (std::abs(p.Distance(centre) - radius) > 1e-3 * radius + 1e-3) {
-      throw std::runtime_error("rolling-ball blend: the spine's start is " + text(p.Distance(centre)) +
-                               " mm from a support, not the radius " + text(radius));
-    }
-  }
   double pu = 0.0;
   double pv = 0.0;
   ElSLib::Parameters(plane->Pln(), contact, pu, pv);
@@ -343,10 +360,34 @@ Handle(Geom_Surface) surface_and_curve(const Handle(Geom_Surface)& s, const Hand
     throw std::runtime_error("rolling-ball blend: the contact is not on its curve");
   }
   start(3) = on_restriction.LowerDistanceParameter();
+  // On a closed curve (a circle) the contact may go once round it, either
+  // way (a ball rolling round the whole circle, mitcad#622): its parameter
+  // then runs a period either side of the start, not to the curve's ends
+  // (where OCCT's walk would look for a vertex of the restriction).
+  const Handle(Geom2dAdaptor_Curve) rst =
+      c2d->IsPeriodic() ? new Geom2dAdaptor_Curve(c2d, start(3) - 1.25 * c2d->Period(), start(3) + 1.25 * c2d->Period())
+                        : new Geom2dAdaptor_Curve(c2d);
+  const Handle(Adaptor3d_TopolTool) ds = new Adaptor3d_TopolTool(as);
+  const Handle(Adaptor3d_TopolTool) dp = new Adaptor3d_TopolTool(ap);
+  const Handle(ChFiDS_ElSpine) guide = guide_of(spine, v0, v1);
+  for (const gp_Pnt& p : {on_surface, contact}) {
+    if (std::abs(p.Distance(centre) - radius) > kMaxSpineOff) {
+      throw std::runtime_error("rolling-ball blend: the spine's start is " + text(p.Distance(centre)) +
+                               " mm from a support, not the radius " + text(radius));
+    }
+  }
 
   BRepBlend_SurfRstConstRad func(as, ap, rst, guide);
   func.Set(ap, rst);
-  func.SetRefSide(0);
+  // The plane is only the curve's carrier, no face of the body: the ball
+  // must not be taken for leaving the curve onto it. Without a side OCCT
+  // decides that from the plane's normal against the section's tangent at
+  // the curve, which is a matter of rounding where the ball's centre lies in
+  // the plane (a ball on a rim level with its centre, mitcad#639; the plane
+  // through a line and the centre): the walk then stopped, at its start or on
+  // the way. The plane's face is said to lie on the curve's side away from
+  // the centre, so the ball never reaches into it.
+  func.SetRefSide(away_from_centre(rst, ap, start(3), centre));
   func.Set(BlendFunc_Rational);
   // OCCT's choice: 1 with the centre on the surface's normal side, 3
   // without; one more for the minor arcs about the spine's tangent.
@@ -381,6 +422,43 @@ Handle(Geom_Surface) surface_and_curve(const Handle(Geom_Surface)& s, const Hand
   return approximated(sections, line->Point(1).Parameter(), line->Point(line->NbPoints()).Parameter());
 }
 
+// Whether [v0, v1] is one whole period of a closed spine.
+bool round_whole_spine(const Handle(Geom_Curve)& spine, double v0, double v1) {
+  if (!spine->IsPeriodic()) {
+    return false;
+  }
+  const double period = spine->Period();
+  return std::abs((v1 - v0) - period) <= 1e-9 * period;
+}
+
+// A blend walked round a whole closed spine, closed: its two end sections
+// are one (the walk's ends, within its tolerance), made the same and the
+// surface periodic in v, so that a face across its seam has its seam edge
+// on both ends (mitcad#622).
+Handle(Geom_Surface) closed_round(const Handle(Geom_Surface)& surface) {
+  const Handle(Geom_BSplineSurface) b = Handle(Geom_BSplineSurface)::DownCast(surface);
+  if (b.IsNull()) {
+    throw std::runtime_error("rolling-ball blend round a closed spine: not a B-spline");
+  }
+  const int nv = b->NbVPoles();
+  double gap = 0.0;
+  for (int i = 1; i <= b->NbUPoles(); ++i) {
+    const gp_Pnt first = b->Pole(i, 1);
+    const gp_Pnt last = b->Pole(i, nv);
+    gap = std::max(gap, first.Distance(last));
+    const gp_Pnt middle(0.5 * (first.XYZ() + last.XYZ()));
+    const double weight = 0.5 * (b->Weight(i, 1) + b->Weight(i, nv));
+    b->SetPole(i, 1, middle, weight);
+    b->SetPole(i, nv, middle, weight);
+  }
+  if (gap > kMaxApproxError) {
+    throw std::runtime_error("rolling-ball blend round a closed spine: its end sections are " + text(gap) +
+                             " mm apart");
+  }
+  b->SetVPeriodic();
+  return b;
+}
+
 } // namespace
 
 Handle(Geom_Surface) rolling_ball_surface(const BlendSupport& first, const BlendSupport& second,
@@ -397,18 +475,20 @@ Handle(Geom_Surface) rolling_ball_surface(const BlendSupport& first, const Blend
                               kind(second) + ", spine a " + spine->DynamicType()->Name() + " over [" +
                               text(v0) + ", " + text(v1) + "])";
   try {
+    Handle(Geom_Surface) out;
     if (!first.surface.IsNull() && !second.surface.IsNull()) {
-      return between_surfaces(first.surface, second.surface, spine, radius, v0, v1, n0, n1);
-    }
-    if (!first.surface.IsNull() && !second.curve.IsNull()) {
-      return surface_and_curve(first.surface, second.curve, spine, radius, v0, v1, n0, n1);
-    }
-    if (!first.curve.IsNull() && !second.surface.IsNull()) {
+      out = between_surfaces(first.surface, second.surface, spine, radius, v0, v1, n0, n1);
+    } else if (!first.surface.IsNull() && !second.curve.IsNull()) {
+      out = surface_and_curve(first.surface, second.curve, spine, radius, v0, v1, n0, n1);
+    } else if (!first.curve.IsNull() && !second.surface.IsNull()) {
       // Walked from the surface: u then runs from the second support.
       const Handle(Geom_Surface) s = surface_and_curve(second.surface, first.curve, spine, radius, v0, v1, n0, n1);
       const Handle(Geom_BSplineSurface) b = Handle(Geom_BSplineSurface)::DownCast(s);
       b->UReverse();
-      return b;
+      out = b;
+    }
+    if (!out.IsNull()) {
+      return round_whole_spine(spine, v0, v1) ? closed_round(out) : out;
     }
   } catch (const Standard_Failure& e) {
     throw std::runtime_error(std::string("rolling-ball blend: OCCT: ") + e.what() + context);

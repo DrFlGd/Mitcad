@@ -14,6 +14,7 @@
 
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
+#include "PlaceInputs.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -212,7 +213,7 @@ CommandDef sweepCommand(const CommandContext& context) {
       }
       const double scale = state.value(QStringLiteral("end_scale"));
       if (std::isfinite(scale) && scale != 1.0) {
-        result.def.insert(QStringLiteral("end_scale"), countValue(state, QStringLiteral("end_scale")));
+        result.def.insert(QStringLiteral("end_scale"), state.expression(QStringLiteral("end_scale")));
       }
       // An edited sweep's frame and fixed binormal (mitcad#543: the
       // imports' pipe modes), which the panel does not show, kept as they
@@ -723,7 +724,7 @@ CommandDef coilCommand(const CommandContext& context) {
   def.id = QStringLiteral("solid.coil");
   def.name = QObject::tr("Coil");
   def.icon = QStringLiteral("coil");
-  def.tooltip = QObject::tr("A helical or spiral coil on a plane");
+  def.tooltip = QObject::tr("A helical or spiral coil about an axis, a point or a spot on a face");
   def.group = QStringLiteral("CREATE");
   def.section = QStringLiteral("primitives");
   def.keywords = {QStringLiteral("spring"), QStringLiteral("helix"), QStringLiteral("spiral")};
@@ -735,15 +736,11 @@ CommandDef coilCommand(const CommandContext& context) {
              (field == QStringLiteral("pitch") && state.choice(QStringLiteral("type")) == QStringLiteral("spiral"));
     };
   };
-  def.inputs = {
-      selectionInput(QStringLiteral("plane"), QObject::tr("Plane"), kPlaneKinds, 1, 1)
-          .withTooltip(QObject::tr("A plane or planar face; a click places the centre"))
-          .withAccepts(isPlanar)
-          .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& model) {
-            placeAt(item, state, model, QStringLiteral("x"), QStringLiteral("y"));
-          }),
-      valueInput(QStringLiteral("x"), QObject::tr("Center X"), ValueKind::Length, QStringLiteral("0 mm")),
-      valueInput(QStringLiteral("y"), QObject::tr("Center Y"), ValueKind::Length, QStringLiteral("0 mm")),
+  // Placed by a pick (mitcad#656, PlaceInputs.hpp).
+  PlacePanel place;
+  place.command = def.name;
+  def.inputs = placeInputs(place);
+  def.inputs += {
       choiceInput(QStringLiteral("type"), QObject::tr("Type"),
                   {{QStringLiteral("revolutions_and_height"), QStringLiteral("Revolution and Height")},
                    {QStringLiteral("revolutions_and_pitch"), QStringLiteral("Revolution and Pitch")},
@@ -759,16 +756,15 @@ CommandDef coilCommand(const CommandContext& context) {
           .withVisible(typeHas("revolutions")),
       valueInput(QStringLiteral("height"), QObject::tr("Height"), ValueKind::Length, QStringLiteral("30 mm"))
           .withVisible(typeHas("height"))
-          .withManipulator([](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
-            const auto at = pointOnPlane(state, model, QStringLiteral("plane"), QStringLiteral("x"), QStringLiteral("y"));
-            if (!at) {
-              return std::nullopt;
-            }
-            const auto frame = frameOf(state.items(QStringLiteral("plane")).first(), model);
+          .withManipulator([place](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
+            const auto frame = placeFrame(state, model, place);
             if (!frame) {
               return std::nullopt;
             }
-            return arrow(*at, frame->normal);
+            Manipulator m = arrow(frame->origin, frame->normal);
+            m.valueBox = true;
+            m.boxAtTip = true;
+            return m;
           }),
       valueInput(QStringLiteral("pitch"), QObject::tr("Pitch"), ValueKind::Length, QStringLiteral("10 mm"))
           .withVisible(typeHas("pitch")),
@@ -789,8 +785,9 @@ CommandDef coilCommand(const CommandContext& context) {
       valueInput(QStringLiteral("size"), QObject::tr("Section Size"), ValueKind::Length, QStringLiteral("4 mm")),
   };
   def.inputs += operationInputs();
+  def.init = [place](CommandState& state, const CommandContext& model) { initPlace(state, model, place); };
 
-  def.build = [](const CommandState& state, const CommandContext&) {
+  def.build = [place](const CommandState& state, const CommandContext& model) {
     Built result;
     const QString type = state.choice(QStringLiteral("type"));
     QJsonObject helix{{QStringLiteral("type"), type}};
@@ -804,8 +801,6 @@ CommandDef coilCommand(const CommandContext& context) {
       helix.insert(QStringLiteral("pitch"), state.expression(QStringLiteral("pitch")));
     }
     result.def = {{QStringLiteral("type"), QStringLiteral("coil")},
-                  {QStringLiteral("plane"), state.items(QStringLiteral("plane")).first().reference()},
-                  {QStringLiteral("center"), QJsonArray{state.value(QStringLiteral("x")), state.value(QStringLiteral("y"))}},
                   {QStringLiteral("diameter"), state.expression(QStringLiteral("diameter"))},
                   {QStringLiteral("helix"), helix},
                   {QStringLiteral("section"), state.choice(QStringLiteral("section"))},
@@ -817,15 +812,15 @@ CommandDef coilCommand(const CommandContext& context) {
     if (state.choice(QStringLiteral("rotation")) == QStringLiteral("cw")) {
       result.def.insert(QStringLiteral("clockwise"), true);
     }
+    if (!addPlace(result.def, state, model, place, result)) {
+      return result;
+    }
     addOperation(result.def, state);
     return result;
   };
 
-  def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
-    state.setItems(QStringLiteral("plane"), {itemOf(feature.value(QStringLiteral("plane")), context)});
-    const QJsonArray center = feature.value(QStringLiteral("center")).toArray();
-    state.setText(QStringLiteral("x"), lengthText(center.at(0).toDouble(), context));
-    state.setText(QStringLiteral("y"), lengthText(center.at(1).toDouble(), context));
+  def.load = [place](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+    loadPlace(feature, state, context, place);
     loadValue(state, QStringLiteral("diameter"), feature.value(QStringLiteral("diameter")), feature, context);
     const QJsonObject helix = feature.value(QStringLiteral("helix")).toObject();
     state.setChoice(QStringLiteral("type"), str(helix, "type"));
@@ -842,9 +837,7 @@ CommandDef coilCommand(const CommandContext& context) {
     loadOperation(feature, state);
   };
 
-  def.canEdit = [&context](const QJsonObject& feature) {
-    return isShowable(feature.value(QStringLiteral("plane")), context);
-  };
+  def.canEdit = [&context](const QJsonObject& feature) { return placeShowable(feature, context); };
 
   def.describe = [](const CommandState& state, const CommandContext&) {
     return QStringLiteral("Added coil (%1), diameter %2")

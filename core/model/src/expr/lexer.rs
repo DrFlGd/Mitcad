@@ -29,6 +29,12 @@ pub(crate) enum Tok {
     Ge,
     Eq,
     Ne,
+    /// Text in double or single quotes, `"mm"`, `'6qt'`; the span includes
+    /// the quotes. A quote of the same kind inside is doubled: `'It''s'`
+    /// (see [`text_of`]).
+    Str,
+    /// `&`, which joins texts (mitcad#664).
+    Amp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -41,6 +47,8 @@ pub(crate) fn lex(text: &str) -> Result<Vec<Token>, ParseError> {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
     let mut i = 0;
+    // Open parentheses: a single `=` inside them compares (mitcad#663).
+    let mut depth = 0usize;
     while let Some(c) = text[i..].chars().next() {
         let start = i;
         let next_byte = bytes.get(i + 1).copied();
@@ -94,14 +102,34 @@ pub(crate) fn lex(text: &str) -> Result<Vec<Token>, ParseError> {
                 '/' => Tok::Slash,
                 '%' => Tok::Percent,
                 '^' => Tok::Caret,
-                '(' => Tok::LParen,
-                ')' => Tok::RParen,
+                '(' => {
+                    depth += 1;
+                    Tok::LParen
+                }
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    Tok::RParen
+                }
                 ';' => Tok::Semicolon,
                 ',' => Tok::Comma,
+                '&' => Tok::Amp,
+                '"' | '\'' => {
+                    i = quoted_end(text, start, c).ok_or_else(|| {
+                        ParseError::new(
+                            ParseErrorKind::UnterminatedText,
+                            Span::new(start, text.len()),
+                        )
+                    })?;
+                    Tok::Str
+                }
                 '<' => two(b'=', Tok::Le, &mut i)
                     .or_else(|| two(b'>', Tok::Ne, &mut i))
                     .unwrap_or(Tok::Lt),
                 '>' => two(b'=', Tok::Ge, &mut i).unwrap_or(Tok::Gt),
+                // A single `=` compares inside parentheses; at the top level
+                // `name = expression` names a slot's parameter, which the
+                // caller splits off before parsing (mitcad#231).
+                '=' if depth > 0 => two(b'=', Tok::Eq, &mut i).unwrap_or(Tok::Eq),
                 '=' => two(b'=', Tok::Eq, &mut i).ok_or_else(|| {
                     ParseError::new(ParseErrorKind::SingleEquals, Span::new(start, start + 1))
                 })?,
@@ -130,10 +158,44 @@ pub(crate) fn lex(text: &str) -> Result<Vec<Token>, ParseError> {
     Ok(tokens)
 }
 
+/// The end (after the closing quote) of the quoted text that starts with the
+/// quote `quote` at `start`; a doubled quote inside is one quote character
+/// (`'It''s'`). None when it is not closed.
+fn quoted_end(text: &str, start: usize, quote: char) -> Option<usize> {
+    let mut at = start + quote.len_utf8();
+    loop {
+        let close = at + text[at..].find(quote)?;
+        let after = close + quote.len_utf8();
+        if text[after..].starts_with(quote) {
+            at = after + quote.len_utf8();
+        } else {
+            return Some(after);
+        }
+    }
+}
+
+/// The characters of a quoted text token (its span's source, quotes
+/// included): without the quotes, a doubled quote as one.
+pub(crate) fn text_of(source: &str) -> String {
+    let mut chars = source.chars();
+    let Some(quote) = chars.next() else {
+        return String::new();
+    };
+    if source.len() < 2 * quote.len_utf8() {
+        return String::new();
+    }
+    let inner = &source[quote.len_utf8()..source.len() - quote.len_utf8()];
+    let doubled: String = [quote, quote].iter().collect();
+    inner.replace(&doubled, &quote.to_string())
+}
+
 /// Whether a token ends a value, so that a comma after it separates
 /// arguments.
 fn ends_value(token: &Token) -> bool {
-    matches!(token.tok, Tok::Number(_) | Tok::Ident | Tok::RParen)
+    matches!(
+        token.tok,
+        Tok::Number(_) | Tok::Ident | Tok::RParen | Tok::Str
+    )
 }
 
 /// End of the number starting at `i`: digits, an optional fraction and an
@@ -180,7 +242,7 @@ fn decimal_comma(bytes: &[u8], i: usize) -> bool {
     let rest = std::str::from_utf8(rest).unwrap_or_default();
     match rest.chars().find(|c| !c.is_whitespace()) {
         None => true,
-        Some(c) => ")*/%^<>=!;".contains(c),
+        Some(c) => ")*/%^<>=!;&".contains(c),
     }
 }
 
@@ -320,5 +382,63 @@ mod tests {
         );
         let e = lex("1 + €").unwrap_err();
         assert_eq!(e.span, Span::new(4, 7));
+    }
+
+    #[test]
+    fn single_equals_compares_inside_parentheses() {
+        assert_eq!(
+            kinds("(a = b)"),
+            [Tok::LParen, Tok::Ident, Tok::Eq, Tok::Ident, Tok::RParen]
+        );
+        let tokens = lex("if(a = 1; 2; 3)").unwrap();
+        assert_eq!(tokens[3].tok, Tok::Eq);
+        assert_eq!(tokens[3].span, Span::new(5, 6));
+        // After the parentheses close, the top level again.
+        let e = lex("(a) = b").unwrap_err();
+        assert_eq!(
+            (e.kind, e.span),
+            (ParseErrorKind::SingleEquals, Span::new(4, 5))
+        );
+    }
+
+    #[test]
+    fn quoted_text() {
+        let tokens = lex("value(d1; \"mm^2\")").unwrap();
+        assert_eq!(tokens[4].tok, Tok::Str);
+        assert_eq!(tokens[4].span, Span::new(10, 16));
+        assert_eq!(tokens[5].tok, Tok::RParen);
+        // A comma after text separates arguments.
+        assert_eq!(kinds("\"mm\",5"), [Tok::Str, Tok::Comma, Tok::Number(5.0)]);
+        let e = lex("value(d1; \"mm)").unwrap_err();
+        assert_eq!(
+            (e.kind, e.span),
+            (ParseErrorKind::UnterminatedText, Span::new(10, 14))
+        );
+    }
+
+    #[test]
+    fn texts_in_either_quotes_and_ampersands() {
+        // mitcad#664: single quotes as `.f3d` expressions write them, a
+        // doubled quote inside, `&` joining.
+        let tokens = lex("'It''s' & \"say \"\"hi\"\"\"").unwrap();
+        assert_eq!(
+            tokens.iter().map(|t| t.tok).collect::<Vec<_>>(),
+            [Tok::Str, Tok::Amp, Tok::Str]
+        );
+        let source = |t: &Token| text_of(&"'It''s' & \"say \"\"hi\"\"\""[t.span.start..t.span.end]);
+        assert_eq!(source(&tokens[0]), "It's");
+        assert_eq!(source(&tokens[2]), "say \"hi\"");
+        // The other quote is an ordinary character inside.
+        let tokens = lex("\"it's\"").unwrap();
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(text_of("\"it's\""), "it's");
+        assert_eq!(text_of("''"), "");
+        let e = lex("'open").unwrap_err();
+        assert_eq!(
+            (e.kind, e.span),
+            (ParseErrorKind::UnterminatedText, Span::new(0, 5))
+        );
+        // A comma before `&` ends a number with a decimal comma.
+        assert_eq!(kinds("5,&'a'"), [Tok::Number(5.0), Tok::Amp, Tok::Str]);
     }
 }

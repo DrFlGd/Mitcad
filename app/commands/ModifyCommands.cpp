@@ -25,7 +25,6 @@ void registerModifyCommands(CommandRegistry& registry, const CommandContext& con
   registry.add(moveFaceCommand(context)); // mitcad#531
   registry.add(alignCommand(context));
   registry.add(deleteFaceCommand(context));
-  registry.add(materialCommand(context));
   registry.add(appearanceCommand(context));
 }
 

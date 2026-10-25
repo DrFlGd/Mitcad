@@ -64,7 +64,6 @@ CommandDef scaleCommand(const CommandContext& context);
 CommandDef combineCommand(const CommandContext& context);
 CommandDef moveCommand(const CommandContext& context);
 CommandDef alignCommand(const CommandContext& context);
-CommandDef materialCommand(const CommandContext& context);
 CommandDef appearanceCommand(const CommandContext& context);
 
 // JointCommands.cpp (mitcad#55)
@@ -96,5 +95,13 @@ CommandDef pulleyCommand(const CommandContext& context);
 
 // BearingCommands.cpp (mitcad#577): printable bearings.
 CommandDef bearingCommand(const CommandContext& context);
+
+// DriveCommands.cpp (mitcad#656): Gear Pair and Belt Drive, both parts of
+// a ratio between two picked axes. GearCommands.cpp links a meshed gear's
+// joint to its mate's once the model is idle (`editing` the gear, the
+// newest one when empty).
+CommandDef gearPairCommand(const CommandContext& context, DocumentHost& host);
+CommandDef beltDriveCommand(const CommandContext& context);
+void linkLater(DocumentHost& host, const QString& editing);
 
 } // namespace mitcad::cmd

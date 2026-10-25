@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: MIT
+wait-idle
+command solid.parameters
+focus-dialog '^Parameters$'
+click-parameter result 2
+button '^Edit Formula'
+focus-dialog '^Formula Editor$'
+expect-formula-builder
+sleep 250
+screenshot-dialog '${MITCAD_TEST_SHOTS}/formula-editor.png'
+button '^OK$'
+focus-dialog '^Parameters$'
+wait-idle
+expect-model-parameter result 10
+expect-parameter-cell result 6 '^2$' visible
+expect-parameter-cell result 7 '^10$' visible
+expect-parameter-cell result 8 '^1$' visible
+button '^OK$'
+focus-main
+# A real command's field keeps its inline signature and opens the same editor.
+command solid.box
+wait-idle
+focus-widget input_length
+key ctrl+a
+type 'FLOOR('
+sleep 300
+expect-widget-property input_length formulaSignature 'FLOOR(<b><u>value</u></b>; [step])'
+open-formula-field input_length
+focus-dialog '^Formula Editor$'
+focus-widget formulaText
+key ctrl+a
+type '25 mm'
+sleep 250
+button '^OK$'
+focus-main
+expect-input-text length '^25 mm$'
+key Escape
+wait-idle
+expect-model-parameter result 10

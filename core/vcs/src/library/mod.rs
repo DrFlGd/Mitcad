@@ -523,6 +523,21 @@ impl LibraryCache {
         })
     }
 
+    /// The user's library of materials and print profiles (mitcad#640):
+    /// `MITCAD_PRINT_LIBRARY_DIR`, else `print-library` in the user's data
+    /// folder for Mitcad, beside `libraries`.
+    pub fn default_print_library() -> PathBuf {
+        std::env::var_os("MITCAD_PRINT_LIBRARY_DIR")
+            .filter(|d| !d.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Self::data_root()
+                    .join("Mitcad")
+                    .join("Mitcad")
+                    .join("print-library")
+            })
+    }
+
     fn environment_root() -> Option<PathBuf> {
         std::env::var_os("MITCAD_LIBRARIES_DIR")
             .filter(|d| !d.is_empty())
@@ -842,6 +857,31 @@ impl LibraryResolver {
 }
 
 impl LinkResolver for LibraryResolver {
+    /// The base library of materials and print profiles (mitcad#640): the
+    /// item files Mitcad's parts library lists in its newest version on
+    /// this computer; none when it was not fetched.
+    fn print_library(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
+        use mitcad_model::print_library::{BASE_LIBRARY, MAX_ITEM};
+
+        let Some(repo) = self.cache.open_id(BASE_LIBRARY) else {
+            return Ok(Vec::new());
+        };
+        let Some(version) = repo.newest().map_err(|e| e.to_string())? else {
+            return Ok(Vec::new());
+        };
+        let commit = ObjectId::from_hex(version.rev.as_bytes()).map_err(|e| e.to_string())?;
+        let manifest = repo.manifest(commit).map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for item in manifest.print_items() {
+            if let Some(data) = repo.read(commit, &item.path).map_err(|e| e.to_string())?
+                && data.len() <= MAX_ITEM
+            {
+                out.push((item.path.clone(), data));
+            }
+        }
+        Ok(out)
+    }
+
     fn library_source(&self, request: &LibraryRequest) -> Result<LibrarySource, String> {
         let (repo, commit) = self
             .cache

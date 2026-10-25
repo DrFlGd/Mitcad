@@ -9,11 +9,13 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 #include <utility>
 
 #include "../framework/Dialogs.hpp"
+#include "../platform/MacDialogs.hpp"
 
 namespace mitcad::mcp {
 namespace {
@@ -96,11 +98,16 @@ QStringList agentFolders() {
   return folders;
 }
 
-QString agentDesignPath(const QString& given, bool forWriting, bool overwrite, QString& reason) {
+namespace {
+
+// A file in an allowed folder (agentDesignPath, agentOutputPath): one of
+// `suffixes` (any when empty; `design` says it must be a Mitcad design).
+QString agentPath(const QString& given, const QStringList& suffixes, bool design, bool forWriting, bool overwrite,
+                  QString& reason) {
   reason.clear();
   const QStringList folders = agentFolders();
   if (folders.isEmpty()) {
-    reason = QObject::tr("No folder is allowed for agents: the user can add one in Preferences > Agents, or start "
+    reason = QObject::tr("No folder is allowed for agents: the user can add one in Preferences › Agents, or start "
                          "Mitcad with --mcp-folder DIR.");
     return QString();
   }
@@ -110,8 +117,11 @@ QString agentDesignPath(const QString& given, bool forWriting, bool overwrite, Q
     return QString();
   }
   const QFileInfo info(QDir::cleanPath(QDir::isAbsolutePath(text) ? text : QDir(folders.first()).filePath(text)));
-  if (info.suffix().compare(QStringLiteral("mitcad"), Qt::CaseInsensitive) != 0) {
-    reason = QObject::tr("%1 is not a Mitcad design: the path must end in .mitcad.").arg(QDir::toNativeSeparators(text));
+  if (!suffixes.isEmpty() && !suffixes.contains(info.suffix(), Qt::CaseInsensitive)) {
+    reason = design ? QObject::tr("%1 is not a Mitcad design: the path must end in .mitcad.")
+                          .arg(QDir::toNativeSeparators(text))
+                    : QObject::tr("%1 must end in .%2.")
+                          .arg(QDir::toNativeSeparators(text), suffixes.join(QStringLiteral(" or .")));
     return QString();
   }
   const QString folder = QFileInfo(info.absolutePath()).canonicalFilePath();
@@ -154,6 +164,16 @@ QString agentDesignPath(const QString& given, bool forWriting, bool overwrite, Q
   return resolved;
 }
 
+} // namespace
+
+QString agentDesignPath(const QString& given, bool forWriting, bool overwrite, QString& reason) {
+  return agentPath(given, {QStringLiteral("mitcad")}, true, forWriting, overwrite, reason);
+}
+
+QString agentOutputPath(const QString& given, bool overwrite, QString& reason, const QStringList& suffixes) {
+  return agentPath(given, suffixes, false, true, overwrite, reason);
+}
+
 AgentPreferencesBox::AgentPreferencesBox(QWidget* parent)
 #ifdef Q_OS_MACOS
     : QWidget(parent)
@@ -162,8 +182,12 @@ AgentPreferencesBox::AgentPreferencesBox(QWidget* parent)
 #endif
 {
   auto* layout = new QVBoxLayout(this);
-  auto* intro = new QLabel(tr("An agent connected through MCP (mitcad-cli mcp --connect) works on the open "
-                              "document. It may save the design to, and open designs from, only these folders "
+  auto* connectAssistant = new QPushButton(tr("Connect AI Assistant…"));
+  connectAssistant->setObjectName(QStringLiteral("connectAssistant"));
+  connectAssistant->setAutoDefault(false);
+  connect(connectAssistant, &QPushButton::clicked, this, &AgentPreferencesBox::connectRequested);
+  layout->addWidget(connectAssistant);
+  auto* intro = new QLabel(tr("Connect a local assistant to the open design. It may save the design to, and open designs from, only these folders "
                               "(and their subfolders); with none, it can only save a design that already has a "
                               "file."));
   intro->setWordWrap(true);
@@ -176,14 +200,15 @@ AgentPreferencesBox::AgentPreferencesBox(QWidget* parent)
     m_folders->addItem(QDir::toNativeSeparators(folder));
   }
   layout->addWidget(m_folders);
+  mac::stylePreview(m_folders);
   auto* row = new QHBoxLayout;
   m_typed = new QLineEdit;
   m_typed->setObjectName(QStringLiteral("agentFolder"));
   m_typed->setPlaceholderText(tr("A folder for agents"));
   m_typed->setToolTip(tr("Add, or OK, adds the folder typed here"));
   auto* add = new QPushButton(tr("Add"));
-  add->setToolTip(tr("Adds the folder typed at the left"));
-  auto* choose = new QPushButton(tr("Choose..."));
+  add->setToolTip(tr("Adds the typed folder"));
+  auto* choose = new QPushButton(tr("Choose…"));
   choose->setToolTip(tr("Chooses a folder to add"));
   m_remove = new QPushButton(tr("Remove"));
   m_remove->setToolTip(tr("Removes the selected folders from the list (the files stay)"));
@@ -191,10 +216,22 @@ AgentPreferencesBox::AgentPreferencesBox(QWidget* parent)
   for (QPushButton* button : {add, choose, m_remove}) {
     button->setAutoDefault(false);
   }
-  row->addWidget(m_typed, 1);
+#ifdef Q_OS_MACOS
+  auto* controls = new QHBoxLayout;
+  controls->setSpacing(0);
+  controls->addWidget(add);
+  controls->addWidget(m_remove);
+  controls->addStretch(1);
+  layout->addLayout(controls);
+#else
   row->addWidget(add);
+#endif
+  row->insertWidget(0, m_typed, 1);
   row->addWidget(choose);
+#ifndef Q_OS_MACOS
   row->addWidget(m_remove);
+#endif
+  mac::styleListButtons(add, m_remove);
   layout->addLayout(row);
 
   connect(add, &QPushButton::clicked, this, [this] {
@@ -230,6 +267,11 @@ void AgentPreferencesBox::addFolder(const QString& typed) {
     item->setToolTip(tr("The folder is not there now"));
   }
   emit changed();
+}
+
+void AgentPreferencesBox::includeSavedFolders() {
+  const QSignalBlocker blocker(this);
+  for (const QString& folder : savedAgentFolders()) addFolder(folder);
 }
 
 QStringList AgentPreferencesBox::chosen() const {

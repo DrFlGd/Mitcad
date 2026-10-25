@@ -173,7 +173,7 @@ fresh_settings
 ui_start_app
 ui_expect_log "Updates: Mitcad 0.0.0 for linux-x64, announce only: not an AppImage" "a development build announces only"
 ui_expect_log "Update request redirected to https://127.0.0.1" "the HTTPS redirect is followed"
-ui_expect_log "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Download it from its release page. Mitcad checks for updates once a day; Tools > Preferences turns that off. [Release Notes, Skip This Version, Later]" \
+ui_expect_log "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Download it from its release page. Mitcad checks for updates once a day; Tools › Preferences turns that off. [Release Notes, Skip This Version, Later]" \
   "the notice: no Install, the release page, where checks are turned off"
 grep -qxF "GET /redirect/stable/update-manifest.json ua=Mitcad/0.0.0 (linux-x64; stable) lang=* cookie=-" \
   "$WORK/requests.log" || ui_fail "the request said more: $(cat "$WORK/requests.log")"
@@ -282,7 +282,7 @@ export UI_GDB=0
 MITCAD_UPDATE_URL=$BASE/appimage/update-manifest.json UI_APP=$APPS/Mitcad.AppImage \
   ui_start_app --open "$WORK/block.mitcad" --set d3=35
 ui_expect_log "Updates: Mitcad 0.0.0 for linux-x64, the AppImage $APPS/Mitcad.AppImage" "a per-user AppImage can update itself"
-ui_expect_log "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Mitcad checks for updates once a day; Tools > Preferences turns that off. [Release Notes, Install, Skip This Version, Later]" \
+ui_expect_log "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Mitcad checks for updates once a day; Tools › Preferences turns that off. [Release Notes, Install, Skip This Version, Later]" \
   "the notice offers Install"
 ui_mark
 ui_step "install (Alt+I)"                ui_key alt+i

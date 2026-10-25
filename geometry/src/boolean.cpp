@@ -25,12 +25,14 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepClass_FaceClassifier.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
+#include <ElSLib.hxx>
 #include <Geom2d_Curve.hxx>
 #include <NCollection_HSequence.hxx>
 #include <NCollection_List.hxx>
@@ -46,6 +48,7 @@
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Pnt2d.hxx>
 #include <gp_XYZ.hxx>
 
@@ -157,16 +160,22 @@ Bnd_Box box_of(const Shape& shape) {
   return box;
 }
 
+// Above this edge count, a planar trim witness is cheaper than measuring
+// every face/face distance near the tool (notably caps with many holes).
+constexpr int kPlanarEdges = 64;
+
 // A shape's faces with their boxes (enlarged by kContact).
 struct FaceBoxes {
+  double contactTolerance = t_contact;
   std::vector<std::pair<TopoDS_Shape, Bnd_Box>> faces;
   // The edges of each face (as its wires use them).
   std::vector<int> edges;
+  std::vector<std::pair<std::size_t, gp_Pln>> planes;
 
-  explicit FaceBoxes(const TopoDS_Shape& shape) {
+  explicit FaceBoxes(const TopoDS_Shape& shape, bool use_triangulation = true) {
     for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
       Bnd_Box box;
-      BRepBndLib::Add(it.Current(), box);
+      BRepBndLib::Add(it.Current(), box, use_triangulation);
       box.Enlarge(t_contact);
       faces.emplace_back(it.Current(), box);
       int count = 0;
@@ -174,6 +183,12 @@ struct FaceBoxes {
         ++count;
       }
       edges.push_back(count);
+      if (!use_triangulation && count >= kPlanarEdges) {
+        const BRepAdaptor_Surface surface(TopoDS::Face(it.Current()), false);
+        if (surface.GetType() == GeomAbs_Plane) {
+          planes.emplace_back(faces.size() - 1, surface.Plane());
+        }
+      }
     }
   }
 
@@ -209,6 +224,17 @@ struct FaceBoxes {
     return found;
   }
 };
+
+std::shared_ptr<const FaceBoxes> contact_faces(const Shape& shape) {
+  auto faces = std::static_pointer_cast<const FaceBoxes>(shape.kept_contact_faces());
+  if (!faces || faces->contactTolerance != t_contact) {
+    // Geometry-only bounds stay conservative when preview/display mesh
+    // quality changes. No mutable triangulation is retained by this index.
+    faces = std::make_shared<const FaceBoxes>(shape.occt(), false);
+    shape.keep_contact_faces(faces);
+  }
+  return faces;
+}
 
 bool any_marked(const std::vector<bool>& marks) {
   return std::find(marks.begin(), marks.end(), true) != marks.end();
@@ -350,6 +376,36 @@ constexpr int kProbedVertices = 32;
 // Edges of the faces near a tool part from which its vertices are tried
 // first (vertex_touches): below it measuring faces is as quick.
 constexpr int kManyEdges = 1000;
+// A planar face with many hole wires makes a face/face distance costly.
+// A few tool vertices can instead prove contact by a plane distance and
+// OCCT's trim classification; a miss proves nothing and keeps the fallback.
+constexpr int kPlanarVertices = 4;
+
+bool planar_vertex_touches(const TopoDS_Shape& part, const Bnd_Box& box_a, const FaceBoxes& faces_a) {
+  if (faces_a.planes.empty()) { return false; }
+  ShapeMap seen;
+  int probed = 0;
+  for (TopExp_Explorer vertex(part, TopAbs_VERTEX); vertex.More() && probed < kPlanarVertices; vertex.Next()) {
+    const int before = seen.Extent();
+    if (seen.Add(vertex.Current()) <= before) { continue; }
+    ++probed;
+    const gp_Pnt point = BRep_Tool::Pnt(TopoDS::Vertex(vertex.Current()));
+    if (box_a.IsOut(point)) { continue; }
+    for (const auto& [index, plane] : faces_a.planes) {
+      const auto& candidate = faces_a.faces[index];
+      if (candidate.second.IsOut(point)) { continue; }
+      const TopoDS_Face& face = TopoDS::Face(candidate.first);
+      if (plane.Distance(point) > t_contact) { continue; }
+      double u = 0, v = 0;
+      ElSLib::Parameters(plane, point, u, v);
+      const BRepClass_FaceClassifier classification(face, gp_Pnt2d(u, v), Precision::PConfusion());
+      // Strictly inside the trim: a point near an edge/vertex with a larger
+      // stored tolerance is left to the existing exact distance check.
+      if (classification.State() == TopAbs_IN) { return true; }
+    }
+  }
+  return false;
+}
 
 // Whether a vertex of `part` shows that it touches the shape `a` (its
 // classifier `inside_a`, its faces `faces_a`): a vertex inside a solid of
@@ -401,7 +457,7 @@ bool vertex_touches(const TopoDS_Shape& part, const Bnd_Box& box_a, Inside& insi
 bool touches(const Shape& a, const Shape& b) {
   Bnd_Box box_a = box_of(a);
   box_a.Enlarge(t_contact);
-  std::optional<FaceBoxes> faces_a;
+  std::shared_ptr<const FaceBoxes> faces_a;
   Inside inside_a(a.occt());
   std::vector<TopoDS_Shape> parts;
   for (TopExp_Explorer solid(b.occt(), TopAbs_SOLID); solid.More(); solid.Next()) {
@@ -418,10 +474,11 @@ bool touches(const Shape& a, const Shape& b) {
       continue;
     }
     if (!faces_a) {
-      faces_a.emplace(a.occt());
+      faces_a = contact_faces(a);
     }
     const bool crowded = faces_a->edges_of(faces_a->near(box)) >= kManyEdges;
-    if ((crowded && vertex_touches(part, box_a, inside_a, *faces_a)) ||
+    if (planar_vertex_touches(part, box_a, *faces_a) ||
+        (crowded && vertex_touches(part, box_a, inside_a, *faces_a)) ||
         faces_touch(*faces_a, part, box, box_a)) {
       return true;
     }

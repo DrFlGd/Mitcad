@@ -14,7 +14,9 @@
 //! angle and spacings (parameters) can change afterwards. A copy point that
 //! its curve already keeps at a distance from the centre (an arc's end, the
 //! ends of an elliptical arc) is bound by its direction only, so no binding
-//! is redundant and the copies add no degrees of freedom.
+//! is redundant and the copies add no degrees of freedom. Each copy is
+//! bound through its neighbour instance one step toward the originals
+//! (mitcad#677), which keeps the solve about linear in the copies.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
@@ -326,6 +328,31 @@ enum Placement {
     Move(P2),
 }
 
+impl Placement {
+    /// The placement that takes `from`'s instance to this one (both of
+    /// one pattern: turns about the same centre).
+    fn after(self, from: Placement) -> Placement {
+        match (self, from) {
+            (Placement::Turn { center, angle }, Placement::Turn { angle: a, .. }) => {
+                Placement::Turn {
+                    center,
+                    angle: angle - a,
+                }
+            }
+            (Placement::Move(by), Placement::Move(b)) => Placement::Move(sub(by, b)),
+            _ => self,
+        }
+    }
+
+    /// The turn of the placement (none for a move).
+    fn angle(self) -> f64 {
+        match self {
+            Placement::Turn { angle, .. } => angle,
+            Placement::Move(_) => 0.0,
+        }
+    }
+}
+
 /// A circular pattern's step: a full turn spreads the instances evenly.
 pub fn circular_step(count: u32, angle: f64) -> f64 {
     let full = (angle.abs() - TAU).abs() < 1e-9;
@@ -359,6 +386,17 @@ fn kept_ends(entities: &[&Entity]) -> BTreeMap<EntityUid, Vec<EntityUid>> {
 impl SketchPattern<ParamId> {
     /// The solver bindings of every copy with the pattern's values (angle,
     /// or the two spacings, in slot order).
+    ///
+    /// Each copy is bound to its neighbour one step toward the originals
+    /// ([`SketchPattern::neighbour`]), not to the originals themselves
+    /// (mitcad#677): the bindings of a copy and of its neighbour then share
+    /// unknowns only along the chain, so the solver's Gram matrix stays
+    /// sparse (about linear in the copies), where binding every copy to the
+    /// originals made it dense in the originals' unknowns (about cubic).
+    /// The chain is a difference of the bindings to the originals, so the
+    /// copies' places, the degrees of freedom and the dependent sets stay
+    /// the same. A neighbour without the counterpart of an original (or a
+    /// missing neighbour instance) binds the copy to the original.
     pub fn bindings(&self, values: &[f64], index: &EntityIndex<'_>) -> Vec<Binding> {
         let mut out = Vec::new();
         let originals: Vec<&Entity> = self
@@ -367,17 +405,35 @@ impl SketchPattern<ParamId> {
             .filter_map(|r| index.get(r.uid()))
             .collect();
         let kept = kept_ends(&originals);
+        let instances: BTreeMap<[u32; 2], &PatternCopy> =
+            self.copies.iter().map(|c| (c.index, c)).collect();
+        let lookup = |copy: &PatternCopy, u: EntityUid| -> Option<EntityUid> {
+            copy.entities
+                .get(&Ref::Point(u))
+                .or_else(|| copy.entities.get(&Ref::Curve(u)))
+                .map(|r| r.uid())
+        };
+        let origin = self.origin_index();
         for copy in &self.copies {
             let placement = self.placement(copy.index, values);
-            let map = |u: EntityUid| -> Option<EntityUid> {
-                copy.entities
-                    .get(&Ref::Point(u))
-                    .or_else(|| copy.entities.get(&Ref::Curve(u)))
-                    .map(|r| r.uid())
+            let map = |u: EntityUid| lookup(copy, u);
+            // The instance the copy is bound to: its neighbour, or the
+            // originals (`None`).
+            let near = Some(self.neighbour(copy.index))
+                .filter(|n| *n != origin && *n != copy.index)
+                .and_then(|n| instances.get(&n).copied());
+            let step = match near {
+                Some(n) => placement.after(self.placement(n.index, values)),
+                None => placement,
             };
-            let angle = match placement {
-                Placement::Turn { angle, .. } => angle,
-                Placement::Move(_) => 0.0,
+            // An original's counterpart in that instance, with the
+            // placement from it; the original with the whole placement when
+            // the instance has none.
+            let source = |u: EntityUid| -> (EntityUid, Placement) {
+                match near {
+                    None => (u, placement),
+                    Some(n) => lookup(n, u).map_or((u, placement), |s| (s, step)),
+                }
             };
             for (original, made) in &copy.entities {
                 let (a, b) = (original.uid(), made.uid());
@@ -390,23 +446,31 @@ impl SketchPattern<ParamId> {
                 };
                 match original {
                     Ref::Point(_) => match kept.get(&a).map(Vec::as_slice) {
-                        None | Some([]) => out.push(bind(match placement {
-                            Placement::Turn { center, angle } => BindingKind::Rotated {
-                                center,
-                                a,
-                                b,
-                                angle,
-                            },
-                            Placement::Move(by) => BindingKind::Translated { a, b, by },
-                        })),
-                        Some([center]) => {
-                            if let Some(copy_center) = map(*center) {
-                                out.push(bind(BindingKind::TurnedDirection {
-                                    a_center: *center,
-                                    a,
-                                    b_center: copy_center,
+                        None | Some([]) => {
+                            let (s, how) = source(a);
+                            out.push(bind(match how {
+                                Placement::Turn { center, angle } => BindingKind::Rotated {
+                                    center,
+                                    a: s,
                                     b,
                                     angle,
+                                },
+                                Placement::Move(by) => BindingKind::Translated { a: s, b, by },
+                            }));
+                        }
+                        Some([center]) => {
+                            if let Some(copy_center) = map(*center) {
+                                // The point and its centre from the same
+                                // instance.
+                                let ((s, sc), how) = near
+                                    .and_then(|n| Some((lookup(n, a)?, lookup(n, *center)?)))
+                                    .map_or(((a, *center), placement), |pair| (pair, step));
+                                out.push(bind(BindingKind::TurnedDirection {
+                                    a_center: sc,
+                                    a: s,
+                                    b_center: copy_center,
+                                    b,
+                                    angle: how.angle(),
                                 }));
                             }
                         }
@@ -422,13 +486,41 @@ impl SketchPattern<ParamId> {
                                     | EntityKind::EllipticalArc { .. }
                             )
                         {
-                            out.push(bind(BindingKind::EqualSize(a, b)));
+                            out.push(bind(BindingKind::EqualSize(source(a).0, b)));
                         }
                     }
                 }
             }
         }
         out
+    }
+
+    /// The instance index of the originals.
+    fn origin_index(&self) -> [u32; 2] {
+        match self.kind {
+            PatternKind::Circular { .. } => [0, 0],
+            PatternKind::Rectangular {
+                count, symmetric, ..
+            } => original_index(count, symmetric),
+        }
+    }
+
+    /// The instance a copy is bound to (mitcad#677): one step toward the
+    /// originals, first along the second direction to the originals' row,
+    /// then along it. In the order of [`SketchPattern::indices`] every
+    /// instance's bindings follow its neighbour's, so the bindings form
+    /// chains (a tree over the instances) whose Gram matrix the solver
+    /// factors with little fill, also in the analysis's creation order.
+    fn neighbour(&self, index: [u32; 2]) -> [u32; 2] {
+        let at = self.origin_index();
+        let toward = |i: u32, a: u32| if i > a { i - 1 } else { i + 1 };
+        if index[1] != at[1] {
+            [index[0], toward(index[1], at[1])]
+        } else if index[0] != at[0] {
+            [toward(index[0], at[0]), index[1]]
+        } else {
+            index
+        }
     }
 
     fn placement(&self, index: [u32; 2], values: &[f64]) -> Placement {

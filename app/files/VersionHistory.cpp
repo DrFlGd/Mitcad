@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <exception>
 
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -23,6 +24,7 @@
 #include <QtLogging>
 
 #include "../framework/Json.hpp"
+#include "../platform/MacDialogs.hpp"
 #include "mitcad_bridge/lib.h"
 
 namespace mitcad {
@@ -103,7 +105,7 @@ VersionHistoryDialog::VersionHistoryDialog(QWidget* parent, const QString& file,
       m_host(std::move(host)) {
   setWindowTitle(tr("Version History - %1").arg(m_name));
   auto* layout = new QVBoxLayout(this);
-  m_heading = new QLabel(tr("Reading the versions of %1...").arg(m_name));
+  m_heading = new QLabel(tr("Reading the versions of %1…").arg(m_name));
   m_heading->setWordWrap(true);
   layout->addWidget(m_heading);
 
@@ -125,6 +127,7 @@ VersionHistoryDialog::VersionHistoryDialog(QWidget* parent, const QString& file,
   m_preview->setFixedSize(kPreviewSize, kPreviewSize);
   m_preview->setAlignment(Qt::AlignCenter);
   m_preview->setFrameShape(QFrame::StyledPanel);
+  mac::stylePreview(m_preview);
   m_preview->setToolTip(tr("The view as it was when this version was saved on this computer"));
   middle->addWidget(m_preview);
   layout->addLayout(middle, 2);
@@ -148,23 +151,25 @@ VersionHistoryDialog::VersionHistoryDialog(QWidget* parent, const QString& file,
   m_comparison->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
   layout->addWidget(m_comparison, 3);
 
-  auto* buttons = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
   m_open = new QPushButton(tr("&Open"));
   m_open->setToolTip(tr("Opens this version as a new, untitled design; the file stays as it is"));
-  m_restore = new QPushButton(tr("&Restore..."));
+  m_restore = new QPushButton(tr("&Restore…"));
   m_restore->setToolTip(tr("Makes this version the latest by recording it as a new version"));
-  m_copy = new QPushButton(tr("Save &Copy As..."));
+  m_copy = new QPushButton(tr("Save &Copy As…"));
   m_copy->setToolTip(tr("Saves this version as a file of its own"));
   auto* close = new QPushButton(tr("Close"));
   for (QPushButton* button : {m_geometry, m_open, m_restore, m_copy, close}) {
     button->setAutoDefault(false); // Enter in the list opens nothing
   }
-  buttons->addWidget(m_open);
-  buttons->addWidget(m_restore);
-  buttons->addWidget(m_copy);
-  buttons->addStretch(1);
-  buttons->addWidget(close);
-  layout->addLayout(buttons);
+  buttons->addButton(m_open, QDialogButtonBox::ActionRole);
+  buttons->addButton(m_restore, QDialogButtonBox::ActionRole);
+  buttons->addButton(m_copy, QDialogButtonBox::ActionRole);
+  buttons->addButton(close, QDialogButtonBox::RejectRole);
+  layout->addWidget(buttons);
+  mac::styleDialogButtons(buttons, close);
+  mac::styleListTree(m_list);
+  mac::styleDialog(this);
 
   connect(m_list, &QTreeWidget::currentItemChanged, this, &VersionHistoryDialog::selected);
   connect(m_withBefore, &QRadioButton::toggled, this, [this](bool on) {
@@ -248,7 +253,7 @@ void VersionHistoryDialog::showVersions(const QJsonObject& history) {
     }
     item->setText(kDescription, description);
     item->setToolTip(kDescription, version.message);
-    item->setText(kChanges, tr("..."));
+    item->setText(kChanges, tr("…"));
   }
   for (int column = 0; column < kChanges; ++column) {
     m_list->resizeColumnToContents(column);

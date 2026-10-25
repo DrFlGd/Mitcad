@@ -12,6 +12,8 @@
 #include <QStyledItemDelegate>
 #include <QWidget>
 
+#include "TreeItemDelegate.hpp"
+
 class QAbstractButton;
 class QDockWidget;
 class QEnterEvent;
@@ -86,15 +88,14 @@ void stylePanelTree(QTreeView* tree);
 
 // A plain tree's rows in a panel: the band and at least kRowHeight; an
 // editor in a row (a rename) with a background of its own.
-class PanelRowDelegate : public QStyledItemDelegate {
+class PanelRowDelegate : public TreeItemDelegate {
   Q_OBJECT
 
 public:
-  using QStyledItemDelegate::QStyledItemDelegate;
+  using TreeItemDelegate::TreeItemDelegate;
 
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override;
   QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override;
-  QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override;
 };
 
 // A section's title in a panel (the Command panel's Autoselect): small grey

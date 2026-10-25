@@ -392,8 +392,8 @@ CommandDef construction(const Spec& spec) {
           definition.insert(key, state.expression(QStringLiteral("length")));
           definition.insert(QStringLiteral("physical"), true);
         } else {
-          // A fraction, as a number: the slot is a length slot.
-          definition.insert(key, state.value(key));
+          // A fraction: a unitless slot (mitcad#662).
+          definition.insert(key, state.expression(key));
         }
         break;
       case Field::Path: {

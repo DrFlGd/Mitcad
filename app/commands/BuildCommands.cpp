@@ -453,7 +453,7 @@ void followFilter(const Shared& shared, const QString& role, CommandState& state
 // window tells it when the design changed.
 
 // The button beside the field that opens it.
-const QString kButtonText = QStringLiteral("...");
+const QString kButtonText = QStringLiteral("…");
 QString buttonTip() {
   return QObject::tr("Opens the part picker: the parts as pictures");
 }
@@ -796,7 +796,7 @@ void startPicker(Shared& shared, const QString& role, CommandState& state, const
 // Why the picker is empty.
 QString noPartsText(const Shared& shared, const QString& role) {
   const QString problem = shared.catalog.problem(role);
-  QString text = QObject::tr("No %1 parts: add Mitcad's parts library in Tools > Libraries and fetch it "
+  QString text = QObject::tr("No %1 parts: add Mitcad's parts library in Tools › Libraries and fetch it "
                              "(or Update in Insert from Library).")
                      .arg(role);
   if (!problem.isEmpty()) {
@@ -2933,7 +2933,7 @@ QVector<InputDef> openingsInputs(const SharedPtr& shared, const QString& command
             }
             const std::vector<build::OpeningRow> rows = build::openingRows(state.text(kFrameOpenings), floor);
             const QString title =
-                rows.empty() ? QObject::tr("Add openings...") : build::openingsSummary(rows);
+                rows.empty() ? QObject::tr("Add openings…") : build::openingsSummary(rows);
             const QString detail = floor || rows.empty() ? QString()
                                    : loadBearingOf(state) ? QObject::tr("Load-bearing")
                                                           : QObject::tr("Non-load-bearing");
@@ -6055,7 +6055,7 @@ CommandDef fastenersCommand(const SharedPtr& shared, DocumentHost& host, const C
     Inspection result;
     const std::optional<BuildPart> connector = connectorOf(*shared, state);
     if (!connector) {
-      result.error = QObject::tr("Pick a connector of the BUILD tab.");
+      result.error = QObject::tr("Pick a connector of the Build tab.");
       return result;
     }
     QStringList lines{QStringLiteral("<b>%1</b>").arg(connector->shownName().toHtmlEscaped())};
@@ -6073,7 +6073,7 @@ CommandDef fastenersCommand(const SharedPtr& shared, DocumentHost& host, const C
   def.apply = [shared, &host, kFastener, kSize](CommandState& state, const CommandContext& model) {
     const std::optional<BuildPart> connector = connectorOf(*shared, state);
     if (!connector) {
-      host.showStatus(QObject::tr("Pick a connector of the BUILD tab."), true);
+      host.showStatus(QObject::tr("Pick a connector of the Build tab."), true);
       return false;
     }
     const QHash<QString, QVector<BuildPart>> groups = fastenersOf(*shared, *connector);
@@ -6494,7 +6494,7 @@ CommandDef lengthCommand(DocumentHost& host, const CommandContext& context) {
     Inspection result;
     const QVector<BuildPart> parts = build::partsOf(state.items(kPart), model);
     if (parts.isEmpty()) {
-      result.error = QObject::tr("Pick a part of the BUILD tab.");
+      result.error = QObject::tr("Pick a component of the Build tab.");
       return result;
     }
     const BuildPart& part = parts.first();
@@ -6520,7 +6520,7 @@ CommandDef lengthCommand(DocumentHost& host, const CommandContext& context) {
   def.apply = [&host](CommandState& state, const CommandContext& model) {
     const QVector<BuildPart> parts = build::partsOf(state.items(kPart), model);
     if (parts.isEmpty()) {
-      host.showStatus(QObject::tr("Pick a part of the BUILD tab."), true);
+      host.showStatus(QObject::tr("Pick a component of the Build tab."), true);
       return false;
     }
     const BuildPart& part = parts.first();
@@ -6534,7 +6534,7 @@ CommandDef lengthCommand(DocumentHost& host, const CommandContext& context) {
       if (!targets.isEmpty()) {
         const std::optional<QString> path = build::pathFromHost(targets.first(), model);
         if (!path) {
-          host.showStatus(QObject::tr("%1 is not in %2, where BUILD places parts.").arg(targets.first().describe(), build::buildHost(model).name), true);
+          host.showStatus(QObject::tr("%1 is not in %2, where the Build tab places components.").arg(targets.first().describe(), build::buildHost(model).name), true);
           return false;
         }
         bind.insert(QStringLiteral("geometry"), targets.first().reference());
@@ -6650,7 +6650,7 @@ CommandDef endsCommand(DocumentHost& host, const CommandContext& context) {
     Inspection result;
     const QVector<BuildPart> parts = build::partsOf(state.items(kPart), model);
     if (parts.isEmpty()) {
-      result.error = QObject::tr("Pick a part of the BUILD tab, near the end to cut.");
+      result.error = QObject::tr("Pick a component of the Build tab, near the end to cut.");
       return result;
     }
     const BuildPart& part = parts.first();
@@ -6670,7 +6670,7 @@ CommandDef endsCommand(DocumentHost& host, const CommandContext& context) {
   def.apply = [&host](CommandState& state, const CommandContext& model) {
     const QVector<BuildPart> parts = build::partsOf(state.items(kPart), model);
     if (parts.isEmpty()) {
-      host.showStatus(QObject::tr("Pick a part of the BUILD tab."), true);
+      host.showStatus(QObject::tr("Pick a component of the Build tab."), true);
       return false;
     }
     const BuildPart& part = parts.first();
@@ -6754,7 +6754,7 @@ CommandDef turnCommand(DocumentHost& host, const CommandContext& context, bool r
     Inspection result;
     const QVector<BuildPart> parts = build::partsOf(state.items(QStringLiteral("parts")), model);
     if (parts.isEmpty()) {
-      result.error = QObject::tr("Pick parts of the BUILD tab.");
+      result.error = QObject::tr("Pick components of the Build tab.");
       return result;
     }
     QStringList lines;
@@ -6774,7 +6774,7 @@ CommandDef turnCommand(DocumentHost& host, const CommandContext& context, bool r
   def.apply = [&host, rotate](CommandState& state, const CommandContext& model) {
     const QVector<BuildPart> parts = build::partsOf(state.items(QStringLiteral("parts")), model);
     if (parts.isEmpty()) {
-      host.showStatus(QObject::tr("Pick parts of the BUILD tab."), true);
+      host.showStatus(QObject::tr("Pick components of the Build tab."), true);
       return false;
     }
     QJsonArray commands;

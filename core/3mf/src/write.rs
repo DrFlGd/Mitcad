@@ -29,23 +29,67 @@ pub fn write(model: &Model) -> Result<Vec<u8>, Error> {
             return Err(Error(format!("{} is not placed", part.name)));
         }
     }
+    for (path, _) in &model.files {
+        let reserved = [CONTENT_TYPES, RELATIONSHIPS, MODEL_PART];
+        if path.is_empty()
+            || path.starts_with('/')
+            || path.contains('\\')
+            || path
+                .split('/')
+                .any(|p| p.is_empty() || p == "." || p == "..")
+            || reserved.contains(&path.as_str())
+        {
+            return Err(Error(format!(
+                "'{path}' is no path of another file of the package"
+            )));
+        }
+    }
     let mut zip = Writer::new();
     let failed = |e: mitcad_zip::ZipError| Error(e.to_string());
-    zip.add(CONTENT_TYPES, content_types().as_bytes(), Method::Deflate)
-        .map_err(failed)?;
+    zip.add(
+        CONTENT_TYPES,
+        content_types(&model.files).as_bytes(),
+        Method::Deflate,
+    )
+    .map_err(failed)?;
     zip.add(RELATIONSHIPS, relationships().as_bytes(), Method::Deflate)
         .map_err(failed)?;
     zip.add(MODEL_PART, model_xml(model).as_bytes(), Method::Deflate)
         .map_err(failed)?;
+    for (path, data) in &model.files {
+        zip.add(path, data, Method::Deflate).map_err(failed)?;
+    }
     zip.finish().map_err(failed)
 }
 
-fn content_types() -> String {
+/// The content types: the relationships, the model, and a generic one for
+/// each other extension of the package's files.
+fn content_types(files: &[(String, Vec<u8>)]) -> String {
+    let mut extensions: Vec<String> = files
+        .iter()
+        .filter_map(|(path, _)| {
+            let name = path.rsplit('/').next()?;
+            let (_, extension) = name.rsplit_once('.')?;
+            Some(extension.to_ascii_lowercase())
+        })
+        .filter(|e| !e.is_empty() && e != "rels" && e != "model")
+        .collect();
+    extensions.sort();
+    extensions.dedup();
+    let mut more = String::new();
+    for extension in extensions {
+        let _ = writeln!(
+            more,
+            " <Default Extension=\"{}\" ContentType=\"application/octet-stream\"/>",
+            escape(&extension)
+        );
+    }
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n \
          <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n \
          <Default Extension=\"model\" ContentType=\"{MODEL_CONTENT_TYPE}\"/>\n\
+         {more}\
          </Types>\n"
     )
 }
@@ -65,10 +109,14 @@ fn model_xml(model: &Model) -> String {
     let triangles: usize = model.parts.iter().map(|p| p.mesh.triangles.len()).sum();
     let vertices: usize = model.parts.iter().map(|p| p.mesh.vertices.len()).sum();
     let mut xml = String::with_capacity(1024 + vertices * 64 + triangles * 48);
+    let mut namespaces = String::new();
+    for (prefix, uri) in &model.namespaces {
+        let _ = write!(namespaces, " xmlns:{}=\"{}\"", escape(prefix), escape(uri));
+    }
     let _ = write!(
         xml,
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"{CORE_NAMESPACE}\">\n"
+         <model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"{CORE_NAMESPACE}\"{namespaces}>\n"
     );
     if !model.application.is_empty() {
         let _ = writeln!(
@@ -82,6 +130,14 @@ fn model_xml(model: &Model) -> String {
             xml,
             " <metadata name=\"Title\">{}</metadata>",
             escape(&model.name)
+        );
+    }
+    for (name, value) in &model.metadata {
+        let _ = writeln!(
+            xml,
+            " <metadata name=\"{}\">{}</metadata>",
+            escape(name),
+            escape(value)
         );
     }
     xml.push_str(" <resources>\n");
@@ -116,7 +172,21 @@ fn model_xml(model: &Model) -> String {
         if let Some(index) = material[i] {
             let _ = write!(xml, " pid=\"1\" pindex=\"{index}\"");
         }
-        xml.push_str(">\n   <mesh>\n    <vertices>\n");
+        xml.push_str(">\n");
+        // The object's own metadata: a slicer's per-object settings.
+        if !part.metadata.is_empty() {
+            xml.push_str("   <metadatagroup>\n");
+            for (name, value) in &part.metadata {
+                let _ = writeln!(
+                    xml,
+                    "    <metadata name=\"{}\" preserve=\"true\" type=\"xs:string\">{}</metadata>",
+                    escape(name),
+                    escape(value)
+                );
+            }
+            xml.push_str("   </metadatagroup>\n");
+        }
+        xml.push_str("   <mesh>\n    <vertices>\n");
         for v in &part.mesh.vertices {
             let _ = writeln!(
                 xml,

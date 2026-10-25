@@ -668,7 +668,7 @@ Decisions made while implementing the production Cut and the reliefs:
 
 Decisions made while implementing the command UI and the DXF export:
 
-- **Commands on the model API.** The SHEET METAL group of the SOLID tab
+- **Commands on the model API.** The Sheet Metal group of the Solid tab
   (`app/commands/SheetCommands.cpp`, [app/COMMANDS.md](../app/COMMANDS.md#sheet-metal))
   has Face, Flange, Bend, Fold, Corner Round, Corner Chamfer, Sheet Cut,
   Corner Relief, Unfold, Refold, Flat Pattern, Sheet Rules, Edit Sheet Rules,

@@ -1,0 +1,65 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ShapeUpgrade_UnifySameDomain: the faces of one cylinder (or another
+elementary surface of revolution) whose surfaces have reversed axes are
+moved onto the reference face's parameters by the signed angle between
+their X directions (mitcad#642).
+
+Before merging faces on one surface, TransformPCurves gives the edges of
+each face pcurves on the reference face's surface: it translates them
+along the axis, mirrors them where the face's axis (v) or its frame's
+handedness (u) is reversed against the reference's, and turns them by the
+angle from the reference's X direction to the face's. Where neither is
+reversed that angle is signed, in the sense the reference's u turns; where
+either is, it was the unsigned angle between the two directions, so a face
+whose X direction lay behind the reference's (the signed angle negative)
+was turned the wrong way round, by twice that angle. A cut or an
+intersection of a body by an extrusion going down gives such faces: the
+tool's walls have their axes reversed against the body's (a bin's rounded
+corner, its pieces split by a pattern of ribs, the faces of the corner
+cylinder's axis pointing down in an indirect frame, 1.57 rad behind). The
+moved pcurves then lay half a turn and more from where the faces are: the
+edges between the faces got the two pcurves of a seam on the reference
+surface, the faces' union looked as if it fell into separate intervals of
+u, and each wire with such an edge was built as a face of its own on the
+reference surface with the edge used once. The result was invalid
+(BRepCheck_UnorientableShape), and the boolean operation's caller
+computed it again without the merge (twice the time) and kept more than a
+thousand faces of the body unmerged, on which a later rounding failed.
+
+The angle is now always the signed one, from the reference's X direction
+to the face's about the reference's X direction crossed with its Y
+direction. Turning u by it and mirroring it as before puts each point of
+the face where it lies on the reference surface: where only the axis is
+reversed, u on the reference is u on the face plus the angle; where the
+handedness is, the angle less u. Where neither is reversed nothing
+changes, nor where the angle lies between 0 and pi.
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
+@@ -1445,19 +1445,12 @@
+       Y_Reverse = true;
+     }
+ 
+-    if (!X_Reverse && !Y_Reverse)
+-    {
+-      gp_Dir DirRef = VdirRefSurf;
+-      if (!AxisOfRefSurf.Direct())
+-      {
+-        DirRef.Reverse();
+-      }
+-      anAngle = XdirRefSurf.AngleWithRef(XdirSurfFace, DirRef);
+-    }
+-    else
+-    {
+-      anAngle = XdirRefSurf.Angle(XdirSurfFace);
+-    }
++    // The angle from the reference's X direction to the face's, signed in
++    // the sense the reference's U parameter turns (CrossProd1), also where
++    // the face's axis or U parameter is reversed against the reference's:
++    // the unsigned angle turned such a face's pcurves half a turn or more
++    // the wrong way whenever its X direction lay behind the reference's.
++    anAngle = XdirRefSurf.AngleWithRef(XdirSurfFace, CrossProd1);
+ 
+     ToRotate = (std::abs(anAngle) > Precision::PConfusion());
+ 

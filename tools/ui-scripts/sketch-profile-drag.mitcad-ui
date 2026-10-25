@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: MIT
+# Filled regions must not lag behind the live curves or remain pickable
+# during a held geometry drag. Release and undo restore the exact regions.
+expect-ever 'View area'
+wait-idle
+dblclick-logged 'Timeline Sketch1'
+expect-log 'Editing sketch F1 \(Sketch1\)'
+command view.fit
+# Enlarge the original circle so its interior is outside point/edge pick tolerances.
+wheel 35 67 6
+expect-profiles 100
+capture-undo-depth baseline
+sketch-click 7 4.5
+expect-selection 1 1
+mark
+sketch-pointer press 5 2.5
+sketch-pointer move 10 7.5
+expect-profiles 0
+sketch-pointer move 15 12.5
+expect-profiles 0
+screenshot '${MITCAD_TEST_WORK}/held-centre.png'
+sketch-pointer release 15 12.5
+expect-log 'Dragged p2 to'
+expect-profiles 100
+expect-undo-depth ${baseline} 1
+screenshot '${MITCAD_TEST_WORK}/released-centre.png'
+# Pick the translated region, then its old, now empty place.
+sketch-click 17 14.5
+expect-selection 1 1
+sketch-click 7 4.5
+expect-selection 0 0
+key ctrl+z
+expect-profiles 100
+expect-undo-depth ${baseline} 0
+mark
+sketch-pointer press 9.5 2.5
+sketch-pointer move 7.5 2.5
+expect-profiles 0
+sketch-pointer move 6.5 2.5
+expect-profiles 0
+sketch-pointer release 6.5 2.5
+expect-log 'Dragged c1 to'
+expect-profiles 100
+expect-undo-depth ${baseline} 1
+# Outside the new radius, inside the old one: no stale profile pick.
+sketch-click 8 3.5
+expect-selection 0 0
+key ctrl+z
+expect-profiles 100
+expect-undo-depth ${baseline} 0
+# A continuous, input-paced drag also exercises timer coalescing.
+mark
+sketch-drag 5 2.5 15 12.5
+expect-log 'Dragged p2 to'
+expect-profiles 100
+expect-undo-depth ${baseline} 1
+key ctrl+z
+# Releasing a drag must respect the palette's hidden-profiles option.
+button '^Show profiles$' paletteProfiles
+expect-profiles 0
+sketch-pointer press 5 2.5
+sketch-pointer move 10 7.5
+expect-profiles 0
+sketch-pointer release 10 7.5
+expect-profiles 0
+button '^Show profiles$' paletteProfiles
+expect-profiles 100
+# A modal dialog can steal the release: its interruption must flush too.
+key ctrl+z
+mark
+sketch-pointer press 5 2.5
+sketch-pointer move 10 7.5
+expect-profiles 0
+file-dialog save '${MITCAD_TEST_WORK}/unused.mitcad'
+focus-dialog '^File Dialog$'
+expect-log 'Drag of p2 ended by a dialog'
+button '^Cancel$'
+focus-main
+expect-profiles 100
+expect-undo-depth ${baseline} 1
+sketch-pointer release 10 7.5
+expect-profiles 100
+expect-never 'OCCT view event failed|TestDriver: FAIL'

@@ -9,6 +9,7 @@
 // - between a plane and a circle (the rim of a hole in a plate above it),
 //   the centre on the circle at the radius from both: the torus about the
 //   circle's axis, between the plane's contact and the rim.
+// Rolled once round a closed spine, the surface is closed (mitcad#622).
 // Every point of the surface lies at the radius from the spine, its edges
 // u = 0 and u = 1 are the contacts on the first and the second support,
 // and the sections are the minor arcs between them.
@@ -22,6 +23,7 @@
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom_Line.hxx>
 #include <Geom_Plane.hxx>
+#include <Geom_ToroidalSurface.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
 #include <NCollection_Array1.hxx>
 #include <Standard_Failure.hxx>
@@ -30,7 +32,12 @@
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
 
+#include <cstdint>
+#include <string>
+#include <vector>
+
 #include "../src/blend_surfaces.hpp"
+#include "mitcad/geometry/brep_import.hpp"
 #include "check.hpp"
 
 namespace {
@@ -167,6 +174,135 @@ void past_a_quarter_turn_and_over_a_seam() {
   CHECK_NEAR_TOL(middle.Distance(gp_Pnt(-d, 2, 2)), 2.0, 1e-5);
 }
 
+void round_a_whole_closed_spine() {
+  // mitcad#622: a ball rolled once round a closed spine (a blend round the
+  // whole rim of a hole, a face across the surface's seam) makes a surface
+  // closed in v, periodic, its seam where the walk started; also where the
+  // ball rolls on a circle, round its whole length (across its seam).
+  const double r = 2.0;
+  const double rho = 10.0 - std::sqrt(3.0);
+  const double turn = 2 * test::kPi;
+  BlendSupport rim;
+  rim.curve = new Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 3), gp_Dir(0, 0, 1)), 10.0);
+  BlendSupport floor;
+  floor.surface = new Geom_Plane(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)));
+  const Handle(Geom_Curve) spine = new Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 2), gp_Dir(0, 0, 1)), rho);
+  for (const double start : {0.0, 1.0}) {
+    const Handle(Geom_Surface) s =
+        mitcad::brep::rolling_ball_surface(rim, floor, spine, r, start, start + turn, start, start + turn);
+    CHECK(s->IsVPeriodic());
+    CHECK_NEAR_TOL(s->VPeriod(), turn, 1e-9);
+    CHECK(off_the_ball(s, spine, r) < 1e-5);
+    for (const double a : {start, start + 1.0, start + 3.0, start + 6.0}) {
+      CHECK(s->Value(0.0, a).Distance(gp_Pnt(10 * std::cos(a), 10 * std::sin(a), 3)) < 1e-5);
+      CHECK(s->Value(1.0, a).Distance(gp_Pnt(rho * std::cos(a), rho * std::sin(a), 0)) < 1e-5);
+    }
+    // The seam: the same section at both ends.
+    for (const double u : {0.0, 0.3, 1.0}) {
+      CHECK(s->Value(u, start).Distance(s->Value(u, start + turn)) < 1e-9);
+    }
+  }
+  // Between two surfaces: the floor and the inside of a cylinder.
+  BlendSupport wall;
+  wall.surface = new Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 10.0);
+  const Handle(Geom_Curve) round = new Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 2), gp_Dir(0, 0, 1)), 8.0);
+  const Handle(Geom_Surface) t = mitcad::brep::rolling_ball_surface(floor, wall, round, r, 0.0, turn, 0.0, turn);
+  CHECK(t->IsVPeriodic());
+  CHECK(off_the_ball(t, round, r) < 1e-5);
+  CHECK(t->Value(0.0, 4.0).Distance(gp_Pnt(8 * std::cos(4.0), 8 * std::sin(4.0), 0)) < 1e-5);
+  CHECK(t->Value(1.0, 4.0).Distance(gp_Pnt(10 * std::cos(4.0), 10 * std::sin(4.0), 2)) < 1e-5);
+  // Less than a whole turn: not closed.
+  const Handle(Geom_Surface) part = mitcad::brep::rolling_ball_surface(floor, wall, round, r, 0.0, 3.0, 0.0, 3.0);
+  CHECK(!part->IsVPeriodic());
+}
+
+void between_a_circle_and_a_torus() {
+  // mitcad#639: a ball of radius 5 rolling on a circular edge of radius 13
+  // (z = 0) and on the outside of a coaxial torus (tube radius 5 round the
+  // circle of radius 10.8 at z = 9.6), its centre on the circle of radius 8
+  // in the edge's own plane: the contact on the edge is straight out from
+  // the centre, the one on the torus 5 along (2.8, 9.6) / 10 from it. Once
+  // round the whole edge (as a rim's blend is), and over part of it; the
+  // spine running either way round (whether OCCT took the ball for leaving
+  // the edge at the start depended on that and on rounding).
+  const double r = 5.0;
+  const double rho = 8.0;
+  BlendSupport edge;
+  edge.curve = new Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 13.0);
+  BlendSupport torus;
+  torus.surface = new Geom_ToroidalSurface(gp_Ax3(gp_Pnt(0, 0, 9.6), gp_Dir(0, 0, 1)), 10.8, 5.0);
+  const double turn = 2 * test::kPi;
+  for (const double sense : {1.0, -1.0}) {
+    const gp_Ax2 frame(gp_Pnt(0, 0, 0), gp_Dir(0, 0, sense), gp_Dir(1, 0, 0));
+    const Handle(Geom_Curve) spine = new Geom_Circle(frame, rho);
+    // At the spine's parameter a.
+    const auto on_edge = [sense](double a) { return gp_Pnt(13 * std::cos(a), 13 * sense * std::sin(a), 0); };
+    const auto on_torus = [sense](double a) {
+      return gp_Pnt(9.4 * std::cos(a), 9.4 * sense * std::sin(a), 4.8);
+    };
+    const Handle(Geom_Surface) s =
+        mitcad::brep::rolling_ball_surface(edge, torus, spine, r, 0.0, turn, 0.0, turn);
+    CHECK(s->IsVPeriodic());
+    CHECK(off_the_ball(s, spine, r) < 1e-5);
+    for (const double a : {0.0, 1.0, 3.0, 6.0}) {
+      // u = 0 on the edge (the first support), u = 1 on the torus.
+      CHECK(s->Value(0.0, a).Distance(on_edge(a)) < 1e-5);
+      CHECK(s->Value(1.0, a).Distance(on_torus(a)) < 1e-5);
+      // The minor arc (74 degrees): its middle above the edge's plane,
+      // away from the axis.
+      const gp_Pnt middle = s->Value(0.5, a);
+      CHECK(middle.Z() > 0.0 && std::hypot(middle.X(), middle.Y()) > rho);
+    }
+    // The supports the other way round, over part of the edge.
+    const Handle(Geom_Surface) t = mitcad::brep::rolling_ball_surface(torus, edge, spine, r, 1.0, 3.0, 1.0, 3.0);
+    CHECK(!t->IsVPeriodic());
+    CHECK(off_the_ball(t, spine, r) < 1e-5);
+    CHECK(t->Value(0.0, 2.0).Distance(on_torus(2.0)) < 1e-5);
+    CHECK(t->Value(1.0, 2.0).Distance(on_edge(2.0)) < 1e-5);
+  }
+}
+
+void a_blend_not_walked_is_its_stored_approximation_and_said() {
+  // mitcad#622: a blend made from its definition with the file's
+  // approximation (too far off) beside it, for when OCCT cannot walk it:
+  // the approximation is then the surface, and the build's report says so
+  // for that surface. Surface 0's spine lies off the supports (its walk
+  // fails), surface 1's on them.
+  mitcad::brep::Body body;
+  const auto blend = [&](double spine_x) {
+    mitcad::brep::Geometry g;
+    g.kind = 9; // rolling ball
+    g.int_offset = static_cast<std::uint32_t>(body.ints.size());
+    g.real_offset = static_cast<std::uint32_t>(body.reals.size());
+    // The two supports (planes), the spine (a line), then the stored
+    // approximation (a plane).
+    const std::vector<std::int32_t> ints{0, 0, 0, 0, 0, 1, 0};
+    const std::vector<double> reals{2.0, 0.0, 10.0, 0.0, 10.0,       // radius, range, needed
+                                    0,   0,   0,    0,   0,    1, 1, 0, 0, // the floor z = 0
+                                    0,   0,   0,    1,   0,    0, 0, 0, 1, // the wall x = 0
+                                    spine_x, 0, 2, 0, 1, 0,              // the spine
+                                    0,   0,   0,    0,   0,    1, 1, 0, 0}; // stored
+    body.ints.insert(body.ints.end(), ints.begin(), ints.end());
+    body.reals.insert(body.reals.end(), reals.begin(), reals.end());
+    g.int_count = static_cast<std::uint32_t>(ints.size());
+    g.real_count = static_cast<std::uint32_t>(reals.size());
+    body.surfaces.push_back(g);
+  };
+  blend(3.0);
+  blend(2.0);
+  const mitcad::brep::BuildResult built = mitcad::brep::build_body(body);
+  int said = 0;
+  for (const std::string& m : built.report.messages) {
+    if (m.rfind("stored approximation of surface 0: ", 0) == 0) {
+      CHECK(m.find("not the radius") != std::string::npos);
+      ++said;
+    }
+    CHECK(m.rfind("stored approximation of surface 1", 0) != 0);
+  }
+  CHECK(said == 1);
+  CHECK(built.report.surfaces_failed == 0);
+}
+
 void a_spine_off_the_supports_is_refused() {
   BlendSupport floor;
   floor.surface = new Geom_Plane(gp_Ax3(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)));
@@ -184,7 +320,11 @@ int main() {
     test::guarded("between_two_planes", between_two_planes);
     test::guarded("between_a_plane_and_a_circle", between_a_plane_and_a_circle);
     test::guarded("past_a_quarter_turn_and_over_a_seam", past_a_quarter_turn_and_over_a_seam);
+    test::guarded("round_a_whole_closed_spine", round_a_whole_closed_spine);
+    test::guarded("between_a_circle_and_a_torus", between_a_circle_and_a_torus);
     test::guarded("a_spine_off_the_supports_is_refused", a_spine_off_the_supports_is_refused);
+    test::guarded("a_blend_not_walked_is_its_stored_approximation_and_said",
+                  a_blend_not_walked_is_its_stored_approximation_and_said);
   } catch (const Standard_Failure& e) {
     std::fprintf(stderr, "blend surfaces threw: %s\n", e.what());
     ++test::failures;

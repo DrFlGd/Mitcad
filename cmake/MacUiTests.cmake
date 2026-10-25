@@ -200,3 +200,146 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
     endif()
   endif()
 endif()
+
+# Selection before Sketch Dimension uses the same placement and editor as
+# interactive picks (mitcad#660).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-sketch-dimension-selection
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-sketch-dimension-selection-test.sh"
+            "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>"
+            "${CMAKE_BINARY_DIR}/ui-macos-sketch-dimension-selection")
+  set_tests_properties(app.ui-macos-sketch-dimension-selection PROPERTIES
+    TIMEOUT 300 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Library/part controls and the shared Qt dialog conventions (mitcad#645).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE AND Python3_Interpreter_FOUND)
+  add_test(NAME app.ui-macos-dialog-gallery
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-dialog-gallery-test.sh"
+            "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-dialog-gallery")
+  set_tests_properties(app.ui-macos-dialog-gallery PROPERTIES
+    TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-command-cancel-docked
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-command-cancel-test.sh"
+            "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-command-cancel-docked")
+  set_tests_properties(app.ui-macos-command-cancel-docked PROPERTIES
+    TIMEOUT 240 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE ENVIRONMENT "MITCAD_TEST_CHROME=docked")
+endif()
+
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-sketch-drawing-dimensions
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-sketch-drawing-dimensions-test.sh"
+            "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-sketch-drawing-dimensions")
+  set_tests_properties(app.ui-macos-sketch-drawing-dimensions PROPERTIES
+    TIMEOUT 540 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Selection overlays keep their body's boundaries available (mitcad#669).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-pick
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-pick-test.sh"
+            "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-pick")
+  set_tests_properties(app.ui-macos-pick PROPERTIES
+    TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Profile faces wait until a sketch geometry drag ends (mitcad#680).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-sketch-profile-drag
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-sketch-profile-drag-test.sh"
+            "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>"
+            "${CMAKE_BINARY_DIR}/ui-macos-sketch-profile-drag")
+  set_tests_properties(app.ui-macos-sketch-profile-drag PROPERTIES
+    TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Projects/Browser stacking uses the native cards' actual bounds (mitcad#681).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-projects-cards
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-projects-cards-test.sh"
+            "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>"
+            "${CMAKE_BINARY_DIR}/ui-macos-projects-cards")
+  set_tests_properties(app.ui-macos-projects-cards PROPERTIES
+    TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Selection shortcuts use the shared macOS tool-button style (mitcad#683).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-selection-create
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-selection-create-test.sh"
+            "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>"
+            "${CMAKE_BINARY_DIR}/ui-macos-selection-create")
+  set_tests_properties(app.ui-macos-selection-create PROPERTIES
+    TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Opaque tree rename fields and no duplicate delegate text (mitcad#685).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-tree-rename
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-tree-rename-test.sh"
+            "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>"
+            "${CMAKE_BINARY_DIR}/ui-macos-tree-rename")
+  set_tests_properties(app.ui-macos-tree-rename PROPERTIES
+    TIMEOUT 480 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Every in-window tool button shares the macOS flat rendering (mitcad#686).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-tool-buttons
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-tool-buttons-test.sh"
+            "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>"
+            "${CMAKE_BINARY_DIR}/ui-macos-tool-buttons")
+  set_tests_properties(app.ui-macos-tool-buttons PROPERTIES
+    TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Finish Sketch stays in the ribbon and palette, without a title duplicate (mitcad#687).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-sketch-finish-layout
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-sketch-finish-layout-test.sh"
+            "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>"
+            "${CMAKE_BINARY_DIR}/ui-macos-sketch-finish-layout")
+  set_tests_properties(app.ui-macos-sketch-finish-layout PROPERTIES
+    TIMEOUT 300 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Inspect timeline features even when their geometry is enclosed (mitcad#695).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND TARGET mitcad-cli
+   AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-timeline-inspection
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-timeline-inspection-test.sh"
+            "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>"
+            "${CMAKE_BINARY_DIR}/ui-macos-timeline-inspection")
+  set_tests_properties(app.ui-macos-timeline-inspection PROPERTIES
+    TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Navigation preferences persist across processes; speeds change real camera input.
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-navigation
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-navigation-test.sh"
+            "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-navigation")
+  set_tests_properties(app.ui-macos-navigation PROPERTIES
+    TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()
+
+# Renamed controls retain their command and stored policy identifiers (mitcad#684).
+if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad AND BASH_EXECUTABLE)
+  add_test(NAME app.ui-macos-naming
+    COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-naming-test.sh"
+            "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-naming")
+  set_tests_properties(app.ui-macos-naming PROPERTIES
+    TIMEOUT 240 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+endif()

@@ -24,8 +24,9 @@ struct BlendSupport {
 // BRepBlend_SurfRstConstRad between a surface and a curve) and approximates
 // the sections to a B-spline (BRepBlend_AppSurface). The sections are the
 // minor arcs between the contacts; u runs across them in [0, 1] from the
-// first support's contact to the second's, v is the spine's parameter.
-// Throws std::runtime_error saying why it cannot.
+// first support's contact to the second's, v is the spine's parameter. Over
+// one whole period of a closed spine the surface is closed, periodic in v
+// (mitcad#622). Throws std::runtime_error saying why it cannot.
 Handle(Geom_Surface) rolling_ball_surface(const BlendSupport& first, const BlendSupport& second,
                                           const Handle(Geom_Curve)& spine, double radius, double v0, double v1,
                                           double n0, double n1);

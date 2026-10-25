@@ -41,6 +41,12 @@ pub struct SketchParts {
     /// The same dimensions, all driven.
     pub driven_dimensions: Vec<Value>,
     pub texts: Vec<Value>,
+    /// The file's texts that were translated: their index among the
+    /// file's texts, the Mitcad id (`t12`) and the string (mitcad#664).
+    pub text_ids: Vec<(usize, String, String)>,
+    /// Texts that follow the file's text parameters (`text_values` of the
+    /// definition, mitcad#664; [`text_values`]).
+    pub text_values: Vec<Value>,
     /// Circular and rectangular patterns and offsets (`patterns`,
     /// `offsets` of the definition).
     pub patterns: Vec<Value>,
@@ -292,6 +298,8 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
     for (i, t) in detail.texts.as_deref().unwrap_or(&[]).iter().enumerate() {
         let n = ids.next + i as u32;
         if let Some(text) = text(t, n, &ids, &parts.entities, &positions) {
+            let string = text["text"].as_str().unwrap_or_default().to_owned();
+            parts.text_ids.push((i, format!("t{n}"), string));
             parts.texts.push(text);
         }
     }
@@ -1082,6 +1090,54 @@ pub(crate) fn without_references(def: &Value) -> Value {
                 map.remove("reference");
             }
         }
+    }
+    def
+}
+
+/// The sketch's texts that follow the text parameters the file made for
+/// them (mitcad#664), as the definition's `text_values`: each parameter of
+/// `params` (the text's number in its role and its Mitcad name, see
+/// [`ParamMap::texts_of`]) goes to the text its role numbers when that
+/// text's string is the parameter's text, else to the only other text with
+/// that string; `text_of` gives a parameter's text. A parameter whose text
+/// no text has is left alone, so a text never changes on import.
+pub(crate) fn text_values(
+    parts: &SketchParts,
+    params: &[(Option<usize>, String)],
+    text_of: &dyn Fn(&str) -> Option<String>,
+) -> Vec<Value> {
+    let mut used: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    for (number, name) in params {
+        let Some(value) = text_of(name).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        let free = |(_, id, string): &&(usize, String, String)| {
+            *string == value && !used.contains(&id.as_str())
+        };
+        let numbered = number
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|i| parts.text_ids.iter().find(|(index, _, _)| *index == i))
+            .filter(|t| free(t));
+        let found = numbered.or_else(|| {
+            let mut same = parts.text_ids.iter().filter(|t| free(t));
+            let first = same.next();
+            if same.next().is_none() { first } else { None }
+        });
+        if let Some((_, id, _)) = found {
+            used.push(id);
+            out.push(json!({"text": id, "value": name}));
+        }
+    }
+    out
+}
+
+/// A sketch definition without its texts' text parameters (mitcad#664):
+/// an import falls back on it when the model refuses one.
+pub(crate) fn without_text_values(def: &Value) -> Value {
+    let mut def = def.clone();
+    if let Some(map) = def.as_object_mut() {
+        map.remove("text_values");
     }
     def
 }

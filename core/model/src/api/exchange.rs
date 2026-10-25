@@ -60,6 +60,10 @@ pub(super) struct ExportCommand {
     /// relative to (mitcad#123).
     #[serde(default)]
     design_folder: Option<String>,
+    /// 3MF: the slicer whose settings go with the bodies (`bambu_studio`,
+    /// `orcaslicer`, `qidi_studio`, `prusaslicer`, `cura`; mitcad#640).
+    #[serde(default)]
+    dialect: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +113,21 @@ impl<K: Kernel> Document<K> {
                 ))
             })?,
         };
+        let dialect = match command.dialect.as_deref() {
+            None => None,
+            Some(id) => {
+                if format != ExportFormat::ThreeMf {
+                    return Err(ApiError(
+                        "a slicer's settings go into 3MF files only".to_owned(),
+                    ));
+                }
+                Some(crate::print_keys::Dialect::from_id(id).ok_or_else(|| {
+                    ApiError(format!(
+                        "'{id}' is no slicer: bambu_studio, orcaslicer, qidi_studio, prusaslicer or cura"
+                    ))
+                })?)
+            }
+        };
         let options = ExportOptions {
             format,
             step_schema: command.schema,
@@ -116,6 +135,7 @@ impl<K: Kernel> Document<K> {
             refinement: command.refinement,
             ascii: command.ascii,
             design_folder: command.design_folder.map(std::path::PathBuf::from),
+            dialect,
         };
         let bodies = command
             .bodies
@@ -162,6 +182,19 @@ impl<K: Kernel> Document<K> {
                 .iter()
                 .map(|(uid, why)| json!({"body": uid, "name": self.body_name(*uid), "reason": why}))
                 .collect();
+            // The slicer's settings (mitcad#640): each body's filament slot
+            // and what the slicer does not take as the design has it.
+            if let Some(dialect) = dialect {
+                result["dialect"] = json!(dialect.id());
+                result["filaments"] = json!(
+                    exported
+                        .slots
+                        .iter()
+                        .map(|slot| slot + 1)
+                        .collect::<Vec<_>>()
+                );
+                result["warnings"] = json!(exported.warnings);
+            }
         }
         if format == ExportFormat::Usdz {
             // The materials, the bodies left out and what was written

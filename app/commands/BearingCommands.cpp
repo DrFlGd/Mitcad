@@ -5,20 +5,20 @@
 // on a plane or with its raceway cut into a round face of a body (Groove
 // Into). The panel shows the model's `bearing_values`: the pitch diameter,
 // the elements, the walls and the least gap, or why the values do not
-// print. The sizes come from the model's `bearing_sizes`. A Shaft (a
-// shaft's end edge or side face, or a hole's rim or wall; mitcad#578,
-// SeatInputs.hpp) places it on the shaft or in the hole instead, Offset
-// along it (in a hole: how deep), and picks the size whose bore fits the
-// shaft (whose outside diameter fits the hole) within the Fit Clearance;
-// another size may be chosen after.
+// print. The sizes come from the model's `bearing_sizes`. Place On
+// (mitcad#656, PlaceInputs.hpp) puts it where a pick says; a shaft's end
+// edge or side face, or a hole's rim or wall (mitcad#578) puts it on the
+// shaft or in the hole, Offset along it (in a hole: how deep), and picks
+// the size whose bore fits the shaft (whose outside diameter fits the
+// hole) within the Fit Clearance; another size may be chosen after.
 #include <cmath>
+#include <functional>
 #include <memory>
 
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QObject>
-#include <QRegularExpression>
 #include <QString>
 #include <QStringList>
 
@@ -26,7 +26,7 @@
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
 #include "Commands.hpp"
-#include "SeatInputs.hpp"
+#include "PlaceInputs.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -54,31 +54,21 @@ bool grooved(const CommandState& state) { return !state.items(QStringLiteral("gr
 bool custom(const CommandState& state) { return state.choice(QStringLiteral("size")) == kCustom; }
 bool flanged(const CommandState& state) { return state.checked(QStringLiteral("flange")); }
 
-// A number with an optional unit ("0", "0 mm"), not an expression naming a
-// parameter.
-bool literalNumber(const QString& text) {
-  static const QRegularExpression number(
-      QStringLiteral(R"(^\s*[-+]?(\d+[.,]?\d*|[.,]\d+)([eE][-+]?\d+)?\s*[A-Za-z]*\s*$)"));
-  return number.match(text).hasMatch();
-}
-
-// Zero leaves the model's choice (the default gap, the largest element),
-// but only when typed as a number: a printed-fit parameter that is zero
-// stays referenced, so a later change of the parameter reaches the bearing.
+// An empty field leaves the model's choice (the default gap, the most
+// elements, the largest element; mitcad#656: Auto). A typed 0 is sent as
+// it is, and the model says why it does not print.
 bool modelChoice(const CommandState& state, const QString& key) {
-  return !std::isfinite(state.value(key)) || (state.value(key) == 0.0 && literalNumber(state.text(key)));
+  return state.text(key).trimmed().isEmpty() || !std::isfinite(state.value(key));
 }
 
-// On a shaft or in a hole (mitcad#578): not with Groove Into; no bore
-// clearance (the size's bore is the bore).
-SeatPanel seatPanel() {
-  SeatPanel panel;
+// Placed by a pick (mitcad#656); not with Groove Into. No bore clearance: the size's bore is the bore.
+PlacePanel placePanel() {
+  PlacePanel panel;
+  panel.command = QObject::tr("Bearing");
   panel.offered = [](const CommandState& state) { return !grooved(state); };
-  panel.clearance = false;
   return panel;
 }
-bool onSeat(const CommandState& state) { return seated(state, seatPanel()); }
-bool onPlane(const CommandState& state) { return !grooved(state) && !onSeat(state); }
+bool onSeat(const CommandState& state) { return onShaft(state, placePanel()); }
 
 // The size that fits the picked shaft (by its bore) or hole (by its
 // outside diameter) within the Fit Clearance, the nearest; the size stays
@@ -87,11 +77,11 @@ void fitSize(CommandState& state, const CommandContext& model) {
   if (!onSeat(state) || custom(state)) {
     return;
   }
-  QJsonObject probe;
-  addSeat(probe, state, model, seatPanel());
   try {
-    const QJsonObject frame = model.queryObject(
-        {{QStringLiteral("query"), QStringLiteral("seat_frame")}, {QStringLiteral("seat"), probe.value(QStringLiteral("seat"))}});
+    const QJsonObject frame = shaftSeat(state, model, placePanel());
+    if (frame.isEmpty() || !frame.value(QStringLiteral("diameter")).isDouble()) {
+      return;
+    }
     const bool hole = frame.value(QStringLiteral("hole")).toBool();
     QJsonObject query{{QStringLiteral("query"), QStringLiteral("bearing_sizes")},
                       {QStringLiteral("fit"), hole ? QStringLiteral("outside") : QStringLiteral("bore")},
@@ -157,35 +147,35 @@ CommandDef bearingCommand(const CommandContext& context) {
   def.featureType = QStringLiteral("printable_bearing");
   const auto sizes = std::make_shared<Choices>();
   const auto ungrooved = [](const CommandState& state) { return !grooved(state); };
+  // The model's values of the definition the panel makes (set once the
+  // build is known, below), for the Auto fields.
+  const auto worked = std::make_shared<std::function<QJsonObject(const CommandState&, const CommandContext&)>>();
+  // What an empty field gets: the model's value of that input.
+  const auto workedOut = [worked](const QString& key, bool length) {
+    return [worked, key, length](const CommandState& state, const CommandContext& model) -> QString {
+      if (!*worked) {
+        return QString();
+      }
+      const QJsonValue value = (*worked)(state, model).value(key);
+      if (!value.isDouble()) {
+        return QString();
+      }
+      return length ? lengthText(value.toDouble(), model) : number(value.toDouble());
+    };
+  };
   def.inputs = {
-      choiceInput(QStringLiteral("element"), QObject::tr("Element"), kElements, QStringLiteral("dumbbell"))
-          .withTooltip(QObject::tr("Dumbbell: a self-centring waisted roller; Airsoft: "
-                                   "bought 6 mm balls in a printed cage")),
+      choiceInput(QStringLiteral("element"), QObject::tr("Element"), kElements, QStringLiteral("dumbbell")),
       selectionInput(QStringLiteral("groove"), QObject::tr("Groove Into"), SelectKind::Face, 0, 1)
-          .withTooltip(QObject::tr("A round face of a body (a bore or a shaft): the raceway is cut into it "
-                                   "and the body becomes one race"))
           .withAccepts(isRound)
           .withVisible([](const CommandState& state) { return !onSeat(state); }),
       valueInput(QStringLiteral("offset"), QObject::tr("Offset"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withTooltip(QObject::tr("Along the face from its end; 0: the middle of the face"))
           .withVisible(grooved),
-      selectionInput(QStringLiteral("plane"), QObject::tr("Plane"), kPlaneKinds, 0, 1)
-          .withTooltip(QObject::tr("A plane or planar face; a click places the centre"))
-          .withAccepts(isPlanar)
-          .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& model) {
-            placeAt(item, state, model, QStringLiteral("x"), QStringLiteral("y"));
-          })
-          .withVisible(onPlane),
-      valueInput(QStringLiteral("x"), QObject::tr("Center X"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(onPlane),
-      valueInput(QStringLiteral("y"), QObject::tr("Center Y"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withVisible(onPlane),
-      valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
-          .withTooltip(QObject::tr("Turns the elements about the axis"))
-          .withVisible(ungrooved),
+      valueInput(QStringLiteral("fit_clearance"), QObject::tr("Fit Clearance"), ValueKind::Length,
+                 QStringLiteral("0.5 mm"))
+          .withPrintedFit(QStringLiteral("printable_bearing"))
+          .withVisible(onSeat),
       choiceInput(QStringLiteral("size"), QObject::tr("Size"), {}, QStringLiteral("608"))
           .withChoices([&context, sizes](const CommandState&) { return sizeChoices(context, sizes); })
-          .withTooltip(QObject::tr("A standard size: bore x outside diameter x width"))
           .withHeading(QObject::tr("Size")),
       valueInput(QStringLiteral("bore"), QObject::tr("Bore"), ValueKind::Length, QStringLiteral("8 mm"))
           .withVisible(custom),
@@ -194,8 +184,7 @@ CommandDef bearingCommand(const CommandContext& context) {
           .withVisible(custom),
       valueInput(QStringLiteral("width"), QObject::tr("Width"), ValueKind::Length, QStringLiteral("7 mm"))
           .withVisible(custom),
-      checkInput(QStringLiteral("flange"), QObject::tr("Flange"), false)
-          .withTooltip(QObject::tr("On the outer race at the face on the plane (a flanged size has its own)")),
+      checkInput(QStringLiteral("flange"), QObject::tr("Flange"), false),
       valueInput(QStringLiteral("flange_diameter"), QObject::tr("Flange Diameter"), ValueKind::Length,
                  QStringLiteral("25 mm"))
           .withVisible(flanged),
@@ -205,42 +194,32 @@ CommandDef bearingCommand(const CommandContext& context) {
       valueInput(QStringLiteral("radial_clearance"), QObject::tr("Radial Clearance"), ValueKind::Length,
                  QStringLiteral("0.4 mm"))
           .withPrintedFit(QStringLiteral("printable_bearing"))
-          .withTooltip(QObject::tr("The gap across the round faces between the elements and the races"))
           .withHeading(QObject::tr("Printing")),
       valueInput(QStringLiteral("axial_clearance"), QObject::tr("Axial Clearance"), ValueKind::Length,
                  QStringLiteral("0.4 mm"))
+          .withPrintedFit(QStringLiteral("printable_bearing")),
+      // Left empty, the model's choice (mitcad#656: Auto with the value it
+      // works out, from the preview's bearing_values).
+      valueInput(QStringLiteral("element_gap"), QObject::tr("Element Gap"), ValueKind::Length, QString())
           .withPrintedFit(QStringLiteral("printable_bearing"))
-          .withTooltip(QObject::tr("The gap along the axis at the sloped faces")),
-      valueInput(QStringLiteral("element_gap"), QObject::tr("Element Gap"), ValueKind::Length, QStringLiteral("0 mm"))
-          .withPrintedFit(QStringLiteral("printable_bearing"))
-          .withTooltip(QObject::tr("The least gap between two elements; 0: 0.6 mm, with airsoft balls room for "
-                                   "the cage")),
-      valueInput(QStringLiteral("element_count"), QObject::tr("Elements"), ValueKind::Unitless, QStringLiteral("0"))
-          .withTooltip(QObject::tr("How many elements; 0: the most that fit")),
-      valueInput(QStringLiteral("element_diameter"), QObject::tr("Element Diameter"), ValueKind::Length,
-                 QStringLiteral("0 mm"))
-          .withTooltip(QObject::tr("0: the largest that leaves the races their walls; airsoft balls 5.95 mm")),
-      valueInput(QStringLiteral("chamfer"), QObject::tr("Chamfer"), ValueKind::Length, QStringLiteral("0.4 mm"))
-          .withTooltip(QObject::tr("At the bore and the outside")),
-      valueInput(QStringLiteral("min_wall"), QObject::tr("Smallest Wall"), ValueKind::Length, QStringLiteral("1.2 mm"))
-          .withTooltip(QObject::tr("The thinnest wall of a race, an element or the cage")),
-      valueInput(QStringLiteral("flank_angle"), QObject::tr("Flank Angle"), ValueKind::Angle, QStringLiteral("45 deg"))
-          .withTooltip(QObject::tr("The sloped faces from the axis: their overhang printed with the axis vertical "
-                                   "(45 deg at most)")),
+          .withAuto(workedOut(QStringLiteral("element_gap"), true)),
+      valueInput(QStringLiteral("element_count"), QObject::tr("Elements"), ValueKind::Unitless, QString())
+          .withAuto(workedOut(QStringLiteral("element_count"), false)),
+      valueInput(QStringLiteral("element_diameter"), QObject::tr("Element Diameter"), ValueKind::Length, QString())
+          .withAuto(workedOut(QStringLiteral("element_diameter"), true)),
+      valueInput(QStringLiteral("chamfer"), QObject::tr("Chamfer"), ValueKind::Length, QStringLiteral("0.4 mm")),
+      valueInput(QStringLiteral("min_wall"), QObject::tr("Smallest Wall"), ValueKind::Length, QStringLiteral("1.2 mm")),
+      valueInput(QStringLiteral("flank_angle"), QObject::tr("Flank Angle"), ValueKind::Angle, QStringLiteral("45") + QChar(0x00B0)),
       choiceInput(QStringLiteral("operation"), QObject::tr("Operation"), kOperationsMade,
                   QStringLiteral("new_component"))
-          .withTooltip(QObject::tr("A component of its own, named after the size, or bodies of the active "
-                                   "component"))
           .withVisible(ungrooved),
   };
-  // The shaft or hole with its offset and flip (mitcad#578) and the fit
-  // clearance before the plane and centre they stand for; a picked shaft
-  // also takes the size that fits it.
+  // Place On and the inputs it brings (mitcad#656) first; a picked shaft
+  // or hole also takes the size that fits it.
   {
-    QVector<InputDef> seatInputList = seatInputs(seatPanel());
-    for (InputDef& input : seatInputList) {
-      if (input.id == QStringLiteral("shaft")) {
-        input.tooltip = QObject::tr("Pick a shaft edge or face, or a hole rim or wall; the bearing size is chosen to fit");
+    QVector<InputDef> placeList = placeInputs(placePanel());
+    for (InputDef& input : placeList) {
+      if (input.id == QStringLiteral("at")) {
         const auto picked = input.onChange;
         input.onChange = [picked](CommandState& state, const CommandContext& model) {
           if (picked) {
@@ -250,25 +229,12 @@ CommandDef bearingCommand(const CommandContext& context) {
         };
       }
     }
-    seatInputList.append(valueInput(QStringLiteral("fit_clearance"), QObject::tr("Fit Clearance"), ValueKind::Length,
-                                    QStringLiteral("0.5 mm"))
-                             .withPrintedFit(QStringLiteral("printable_bearing"))
-                             .withTooltip(QObject::tr("Allowed difference between the standard bearing "
-                                                      "and the shaft or hole diameter"))
-                             .withVisible(onSeat));
-    qsizetype at = 0;
-    while (at < def.inputs.size() && def.inputs.at(at).id != QStringLiteral("plane")) {
-      ++at;
-    }
-    for (const InputDef& input : seatInputList) {
-      def.inputs.insert(at++, input);
-    }
+    def.inputs = placeList + def.inputs;
   }
 
   def.init = [](CommandState& state, const CommandContext& model) {
-    initSeat(state, model);
-    if (state.items(QStringLiteral("plane")).isEmpty() && !grooved(state)) {
-      state.setItems(QStringLiteral("plane"), {itemOf(QJsonValue(QStringLiteral("xy")), model)});
+    if (!grooved(state)) {
+      initPlace(state, model, placePanel());
     }
   };
 
@@ -276,27 +242,17 @@ CommandDef bearingCommand(const CommandContext& context) {
     Built result;
     QJsonObject bearing{{QStringLiteral("type"), QStringLiteral("printable_bearing")},
                         {QStringLiteral("element"), state.choice(QStringLiteral("element"))}};
-    if (onSeat(state)) {
-      addSeat(bearing, state, model, seatPanel());
-      bearing.insert(QStringLiteral("fit_clearance"), state.expression(QStringLiteral("fit_clearance")));
-      if (nonZero(state, QStringLiteral("angle"))) {
-        bearing.insert(QStringLiteral("angle"), state.expression(QStringLiteral("angle")));
-      }
-    } else if (grooved(state)) {
+    if (grooved(state)) {
       bearing.insert(QStringLiteral("groove"), state.items(QStringLiteral("groove")).first().reference());
       if (nonZero(state, QStringLiteral("offset"))) {
         bearing.insert(QStringLiteral("offset"), state.expression(QStringLiteral("offset")));
       }
     } else {
-      const Selection& plane = state.items(QStringLiteral("plane"));
-      if (plane.isEmpty()) {
-        return Built::failure(QObject::tr("Pick a plane, or a round face to cut the raceway into"),
-                              QStringLiteral("plane"));
+      if (!addPlace(bearing, state, model, placePanel(), result)) {
+        return result;
       }
-      bearing.insert(QStringLiteral("plane"), plane.first().reference());
-      bearing.insert(QStringLiteral("center"), QJsonArray{state.value(QStringLiteral("x")), state.value(QStringLiteral("y"))});
-      if (nonZero(state, QStringLiteral("angle"))) {
-        bearing.insert(QStringLiteral("angle"), state.expression(QStringLiteral("angle")));
+      if (onSeat(state)) {
+        bearing.insert(QStringLiteral("fit_clearance"), state.expression(QStringLiteral("fit_clearance")));
       }
     }
     if (custom(state)) {
@@ -314,15 +270,15 @@ CommandDef bearingCommand(const CommandContext& context) {
     for (const char* key : {"radial_clearance", "axial_clearance", "chamfer", "min_wall", "flank_angle"}) {
       bearing.insert(QLatin1String(key), state.expression(QLatin1String(key)));
     }
-    // Zero leaves the model's choice: the default gap, the most elements,
-    // the largest element.
+    // Empty leaves the model's choice: the default gap, the most
+    // elements, the largest element.
     for (const char* key : {"element_gap", "element_diameter"}) {
       if (!modelChoice(state, QLatin1String(key))) {
         bearing.insert(QLatin1String(key), state.expression(QLatin1String(key)));
       }
     }
-    if (nonZero(state, QStringLiteral("element_count"))) {
-      bearing.insert(QStringLiteral("element_count"), countValue(state, QStringLiteral("element_count")));
+    if (!modelChoice(state, QStringLiteral("element_count"))) {
+      bearing.insert(QStringLiteral("element_count"), state.expression(QStringLiteral("element_count")));
     }
     // A raceway cut into a body stays in the body's component.
     bearing.insert(QStringLiteral("operation"),
@@ -331,6 +287,19 @@ CommandDef bearingCommand(const CommandContext& context) {
     return result;
   };
   def.build = buildBearing;
+  *worked = [buildBearing](const CommandState& state, const CommandContext& model) -> QJsonObject {
+    Built built = buildBearing(state, model);
+    if (!built.error.isEmpty()) {
+      return QJsonObject();
+    }
+    built.def.remove(QStringLiteral("type"));
+    try {
+      return model.queryObject({{QStringLiteral("query"), QStringLiteral("bearing_values")},
+                                {QStringLiteral("def"), built.def}});
+    } catch (...) {
+      return QJsonObject();
+    }
+  };
 
   // The derived values of the definition the preview showed, or why it
   // does not print.
@@ -389,21 +358,14 @@ CommandDef bearingCommand(const CommandContext& context) {
   def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
     state.setChoice(QStringLiteral("element"), feature.value(QStringLiteral("element")).toString(QStringLiteral("dumbbell")));
     const QJsonValue groove = feature.value(QStringLiteral("groove"));
-    if (loadSeat(feature, state, context)) {
+    // Its placement: `at`, a seat, or an earlier plane and centre.
+    const bool placed = loadPlace(feature, state, context, placePanel());
+    if (placed) {
       state.setItems(QStringLiteral("groove"), {});
       loadValue(state, QStringLiteral("fit_clearance"), feature.value(QStringLiteral("fit_clearance")), feature, context);
-      loadValue(state, QStringLiteral("angle"), feature.value(QStringLiteral("angle")), feature, context);
     } else if (!groove.isUndefined() && !groove.isNull()) {
       state.setItems(QStringLiteral("groove"), {itemOf(groove, context)});
-      state.setItems(QStringLiteral("plane"), {});
       loadValue(state, QStringLiteral("offset"), feature.value(QStringLiteral("offset")), feature, context);
-    } else {
-      state.setItems(QStringLiteral("groove"), {});
-      state.setItems(QStringLiteral("plane"), {itemOf(feature.value(QStringLiteral("plane")), context)});
-      const QJsonArray center = feature.value(QStringLiteral("center")).toArray();
-      state.setText(QStringLiteral("x"), lengthText(center.at(0).toDouble(), context));
-      state.setText(QStringLiteral("y"), lengthText(center.at(1).toDouble(), context));
-      loadValue(state, QStringLiteral("angle"), feature.value(QStringLiteral("angle")), feature, context);
     }
     const QString size = feature.value(QStringLiteral("size")).toString();
     state.setChoice(QStringLiteral("size"), size.isEmpty() ? kCustom : size);
@@ -412,6 +374,12 @@ CommandDef bearingCommand(const CommandContext& context) {
       loadValue(state, QLatin1String(key), feature.value(QLatin1String(key)), feature, context);
     }
     loadCount(state, QStringLiteral("element_count"), feature.value(QStringLiteral("element_count")), feature, context);
+    // Left out, or 0 as earlier versions wrote it: Auto (mitcad#656).
+    for (const char* key : {"element_gap", "element_diameter", "element_count"}) {
+      if (zeroOrNone(feature.value(QLatin1String(key)))) {
+        state.setText(QLatin1String(key), QString());
+      }
+    }
     const QJsonObject flange = feature.value(QStringLiteral("flange")).toObject();
     state.setChecked(QStringLiteral("flange"), !flange.isEmpty());
     loadValue(state, QStringLiteral("flange_diameter"), flange.value(QStringLiteral("diameter")), feature, context);
@@ -433,15 +401,15 @@ CommandDef bearingCommand(const CommandContext& context) {
     if (!size.isEmpty() && !isChoice(sizeChoices(context, sizes), size)) {
       return false;
     }
-    for (const char* key : {"plane", "groove"}) {
-      const QJsonValue ref = feature.value(QLatin1String(key));
-      if (!ref.isUndefined() && !ref.isNull() && !isShowable(ref, context)) {
-        return false;
-      }
+    const QJsonValue groove = feature.value(QStringLiteral("groove"));
+    if (!groove.isUndefined() && !groove.isNull() && !isShowable(groove, context)) {
+      return false;
     }
-    // A size the seat fits is given by the panel (mitcad#578).
-    return seatShowable(feature, context) &&
-           (feature.value(QStringLiteral("seat")).isUndefined() || !feature.value(QStringLiteral("size")).isUndefined() ||
+    // A size the shaft fits is given by the panel (mitcad#578).
+    const bool onShaftDef = !feature.value(QStringLiteral("seat")).isUndefined() ||
+                            feature.value(QStringLiteral("at")).toObject().contains(QStringLiteral("axis"));
+    return placeShowable(feature, context) &&
+           (!onShaftDef || !feature.value(QStringLiteral("size")).isUndefined() ||
             !feature.value(QStringLiteral("width")).isUndefined());
   };
 

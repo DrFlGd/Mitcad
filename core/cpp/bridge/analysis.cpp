@@ -22,6 +22,7 @@
 #include <Standard_Failure.hxx>
 #include <gp.hxx>
 #include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
 #include <GeomAdaptor_Surface.hxx>
 #include <Extrema_GenLocateExtPS.hxx>
 #include <Extrema_POnSurf.hxx>
@@ -47,6 +48,7 @@
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Vertex.hxx>
+#include <TopoDS_Wire.hxx>
 #include <gp_Pnt2d.hxx>
 #include <OSD_Parallel.hxx>
 // OSD_Parallel.hxx brings in windows.h on Windows, whose empty near and far
@@ -155,6 +157,18 @@ analysis::Plane plane_of(const AnalysisPlane& plane) {
   result.origin = vec(plane.origin);
   result.normal = vec(plane.normal);
   return result;
+}
+
+// The list's shapes (their measures kept with each, mitcad#658).
+std::vector<const geometry::Shape*> shapes_of(const ShapeList& list) {
+  std::vector<const geometry::Shape*> shapes;
+  for (const auto& shape : list.items()) {
+    if (!shape || shape->occt().IsNull()) {
+      throw std::runtime_error("a body has no shape");
+    }
+    shapes.push_back(shape.get());
+  }
+  return shapes;
 }
 
 std::vector<TopoDS_Shape> occt(const ShapeList& list) {
@@ -890,6 +904,65 @@ AnalysisSeparation analysis_between(const geometry::Shape& a, rust::Str a_name,
   });
 }
 
+AnalysisFaceGap analysis_face_gap(const geometry::Shape& a, rust::Str a_name,
+                                  const geometry::Shape& b, rust::Str b_name) {
+  return guarded("maximum face gap", [&] {
+    const Selected first = select(a, std::string(a_name));
+    const Selected second = select(b, std::string(b_name));
+    AnalysisFaceGap result{};
+    if (first.kind != "face" || second.kind != "face" || first.count != 1 || second.count != 1) {
+      return result;
+    }
+    const TopoDS_Face fa = TopoDS::Face(first.shape);
+    const TopoDS_Face fb = TopoDS::Face(second.shape);
+    const auto polygon = [](const TopoDS_Face& face, rust::Vec<double>& vertices) {
+      if (BRepAdaptor_Surface(face).GetType() != GeomAbs_Plane) {
+        return false;
+      }
+      TopExp_Explorer wires(face, TopAbs_WIRE);
+      if (!wires.More()) {
+        return false;
+      }
+      const TopoDS_Wire wire = TopoDS::Wire(wires.Current());
+      wires.Next();
+      if (wires.More() || !wire.Closed()) {
+        return false; // A hole or open boundary needs a different maximum solver.
+      }
+      std::size_t edges = 0;
+      for (TopExp_Explorer it(wire, TopAbs_EDGE); it.More(); it.Next()) {
+        ++edges;
+      }
+      std::size_t traversed = 0;
+      for (BRepTools_WireExplorer it(wire, face); it.More(); it.Next()) {
+        if (BRep_Tool::Degenerated(it.Current()) ||
+            BRepAdaptor_Curve(it.Current()).GetType() != GeomAbs_Line || it.CurrentVertex().IsNull()) {
+          return false;
+        }
+        const gp_Pnt p = BRep_Tool::Pnt(it.CurrentVertex());
+        vertices.push_back(p.X());
+        vertices.push_back(p.Y());
+        vertices.push_back(p.Z());
+        ++traversed;
+      }
+      return traversed >= 3 && traversed == edges;
+    };
+    if (!polygon(fa, result.vertices_a) || !polygon(fb, result.vertices_b)) {
+      return result;
+    }
+    const auto gaps = [&result](const rust::Vec<double>& vertices, const TopoDS_Face& target) {
+      for (std::size_t i = 0; i < vertices.size(); i += 3) {
+        const TopoDS_Vertex vertex =
+            BRepBuilderAPI_MakeVertex(gp_Pnt(vertices[i], vertices[i + 1], vertices[i + 2]));
+        result.distances.push_back(analysis::min_distance(vertex, target).value);
+      }
+    };
+    gaps(result.vertices_a, fb);
+    gaps(result.vertices_b, fa);
+    result.supported = true;
+    return result;
+  });
+}
+
 std::unique_ptr<AnalysisInterferences> analysis_interferences(const ShapeList& bodies,
                                                               double min_volume) {
   analysis::InterferenceOptions options;
@@ -1420,7 +1493,7 @@ rust::Vec<AnalysisNewFace> analysis_new_faces(const ShapeList& before, const geo
   const geometry::CheckedOperation check("new faces");
   const int points = static_cast<int>(std::min<std::size_t>(count, 1024));
   rust::Vec<AnalysisNewFace> out;
-  for (const geometry::NewFace& face : geometry::new_faces(occt(before), after.occt(), points)) {
+  for (const geometry::NewFace& face : geometry::new_faces(shapes_of(before), after, points)) {
     AnalysisNewFace f;
     f.area = face.area;
     for (const gp_Pnt& p : face.points) {
@@ -1435,7 +1508,7 @@ rust::Vec<AnalysisNewFace> analysis_new_faces(const ShapeList& before, const geo
 
 rust::Vec<double> analysis_changed_volume(const ShapeList& before, const ShapeList& after) {
   const geometry::CheckedOperation check("changed volume");
-  const geometry::ChangedVolume changed = geometry::changed_volume(occt(before), occt(after));
+  const geometry::ChangedVolume changed = geometry::changed_volume(shapes_of(before), shapes_of(after));
   rust::Vec<double> out;
   out.push_back(changed.volume);
   out.push_back(changed.slack);

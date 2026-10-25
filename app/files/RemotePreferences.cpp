@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "RemotePreferences.hpp"
 
+#include <algorithm>
+
 #include <QCheckBox>
 #include <QDir>
 #include <QFileDialog>
@@ -27,22 +29,64 @@
 
 namespace mitcad {
 
+namespace {
+
+// The git program found, under its field (mitcad#690): as wide as its text
+// up to about 60 characters and wrapped beyond, so that a long message (git
+// not installed: some 330 characters) neither widens Preferences nor sets
+// its minimum width, and a short one stays on one line. A single word
+// longer than the room (a path) is cut off; the tooltip has the whole text.
+class GitStatusLabel : public QLabel {
+public:
+  GitStatusLabel() {
+    setTextFormat(Qt::PlainText); // what git answered is shown as it is
+    setWordWrap(true);
+    setTextInteractionFlags(Qt::TextSelectableByMouse);
+    // Fills the field's column where the form lets fields grow; elsewhere
+    // (macOS) it stays at its size hint.
+    QSizePolicy policy = sizePolicy(); // keeps the height for width of the wrap
+    policy.setHorizontalPolicy(QSizePolicy::Expanding);
+    setSizePolicy(policy);
+  }
+
+  QSize sizeHint() const override {
+    const int width = std::min(fontMetrics().horizontalAdvance(text()) + extraWidth(), charsWide(kWidest));
+    return {width, heightForWidth(width)};
+  }
+
+  QSize minimumSizeHint() const override {
+    return {std::min(sizeHint().width(), charsWide(kNarrowest)), QLabel::minimumSizeHint().height()};
+  }
+
+private:
+  static constexpr int kWidest = 60;
+  static constexpr int kNarrowest = 20;
+
+  // The margins around the text, and two pixels for the text layout's
+  // rounding, which would otherwise wrap a line that just fits.
+  int extraWidth() const {
+    const QMargins margins = contentsMargins();
+    return margins.left() + margins.right() + 2 * margin() + 2;
+  }
+  int charsWide(int count) const { return fontMetrics().averageCharWidth() * count + extraWidth(); }
+};
+
+} // namespace
+
 RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
     : QGroupBox(tr("Cloud"), parent), m_settings(RemoteSettings::load()), m_author(VersionSettings::load()) {
   auto* form = new QFormLayout(this);
   m_git = new QLineEdit(QDir::toNativeSeparators(m_settings.git));
   m_git->setPlaceholderText(tr("Found automatically"));
   m_git->setToolTip(tr("The git program that sends and gets the versions of Cloud projects"));
-  auto* browse = new QPushButton(tr("Bro&wse..."));
+  auto* browse = new QPushButton(tr("Bro&wse…"));
   auto* gitRow = new QHBoxLayout;
   gitRow->addWidget(m_git, 1);
   gitRow->addWidget(browse);
   auto* gitLabel = new QLabel(tr("Gi&t program:"));
   gitLabel->setBuddy(m_git);
   form->addRow(gitLabel, gitRow);
-  // One line (a wrapping label would take room it does not use).
-  m_found = new QLabel;
-  m_found->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  m_found = new GitStatusLabel;
   form->addRow(QString(), m_found);
   // Who versions are recorded by when neither the project nor git names
   // anyone.
@@ -137,6 +181,7 @@ void RemotePreferencesBox::detect() {
   if (program.isEmpty() && !m_settings.git.isEmpty()) {
     // What remote work finds now is still the program set before.
     m_found->setText(tr("The git program on PATH (or where Git for Windows installs itself), once saved."));
+    m_found->setToolTip(m_found->text());
     return;
   }
   const rust::String json = git_info_at(rustStr(program.toUtf8()));
@@ -155,6 +200,7 @@ void RemotePreferencesBox::detect() {
     }
   }
   m_found->setText(text);
+  m_found->setToolTip(text);
   qInfo().noquote() << QStringLiteral("Preferences: cloud: %1").arg(text);
 }
 

@@ -282,6 +282,12 @@ mod seat_tests;
 // `map_params!`: the regular `map_params` written from the fields
 // (mitcad#586).
 mod mapping;
+// Placement by picked geometry; Gear Pair and Belt Drive (mitcad#656).
+pub mod drives;
+pub mod place_at;
+pub use place_at::{PlaceAt, Placed};
+#[cfg(test)]
+mod place_at_tests;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -476,6 +482,27 @@ impl FeatureDef {
         let mut references = self.info().references();
         references.params = self.params();
         references
+    }
+
+    /// The motion of a Move, a Move of occurrences or a Move Face, whose
+    /// points and axes may be picked in occurrences (mitcad#699).
+    pub(crate) fn move_spec(&self) -> Option<&MoveSpec> {
+        match self {
+            FeatureDef::Move(m) => Some(&m.transform),
+            FeatureDef::MoveOccurrence(m) => Some(&m.transform),
+            FeatureDef::MoveFace(m) => Some(&m.transform),
+            _ => None,
+        }
+    }
+
+    /// [`FeatureDef::move_spec`], to change.
+    pub(crate) fn move_spec_mut(&mut self) -> Option<&mut MoveSpec> {
+        match self {
+            FeatureDef::Move(m) => Some(&mut m.transform),
+            FeatureDef::MoveOccurrence(m) => Some(&mut m.transform),
+            FeatureDef::MoveFace(m) => Some(&mut m.transform),
+            _ => None,
+        }
     }
 }
 
@@ -915,8 +942,31 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
 
     pub fn param(&mut self, id: ParamId) -> Result<f64, String> {
         let value = self.env.params.value(id);
-        self.reads.push(Read::Param(id, value.map(f64::to_bits)));
+        self.reads
+            .push(Read::Param(id, self.env.params.read_bits(id)));
+        // A text parameter (mitcad#664) gives no number.
+        if self.env.params.text(id).is_some() {
+            return Err(format!(
+                "parameter {} is a text, not a number",
+                self.env.params.name(id)
+            ));
+        }
         value.ok_or_else(|| format!("parameter {} does not exist", self.env.params.name(id)))
+    }
+
+    /// The text of a text parameter (mitcad#664), such as a sketch text's.
+    pub fn param_text(&mut self, id: ParamId) -> Result<String, String> {
+        self.reads
+            .push(Read::Param(id, self.env.params.read_bits(id)));
+        let params = self.env.params;
+        match (params.get(id), params.text(id)) {
+            (_, Some(text)) => Ok(text.to_owned()),
+            (Some(_), None) => Err(format!(
+                "parameter {} is a number, not a text",
+                params.name(id)
+            )),
+            (None, None) => Err(format!("parameter {} does not exist", params.name(id))),
+        }
     }
 
     /// A parameter that must be greater than zero.

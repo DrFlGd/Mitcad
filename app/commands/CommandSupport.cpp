@@ -15,6 +15,7 @@
 #include <TopoDS.hxx>
 #include <gp_Pln.hxx>
 
+#include <QHash>
 #include <QRegularExpression>
 
 #include "../framework/ModelShapes.hpp"
@@ -363,13 +364,9 @@ QVector<InputDef> operationInputs(bool newComponent) {
   if (!newComponent) {
     choices.removeLast();
   }
-  return {choiceInput(QStringLiteral("operation"), QObject::tr("Operation"), choices, kNewBody)
-              .withTooltip(QObject::tr("Make a new body or component, or join to, cut from or "
-                                       "intersect with bodies")),
+  return {choiceInput(QStringLiteral("operation"), QObject::tr("Operation"), choices, kNewBody),
           selectionInput(QStringLiteral("objects"), QObject::tr("Objects"), SelectKind::Body, 0, 0)
               .withoutMeshes()
-              .withTooltip(QObject::tr("The bodies to join, cut or intersect; none: every body "
-                                       "the feature reaches"))
               .withVisible([](const CommandState& state) {
                 const QString operation = state.choice(QStringLiteral("operation"));
                 return operation != kNewBody && operation != QStringLiteral("new_component");
@@ -514,15 +511,17 @@ bool nonZero(const CommandState& state, const QString& key) {
   return std::isfinite(value) && value != 0.0;
 }
 
-QJsonValue countValue(const CommandState& state, const QString& key) {
-  if (parsePlainNumber(state.text(key))) {
-    return state.value(key);
-  }
-  return state.expression(key);
+bool zeroOrNone(const QJsonValue& slot) {
+  return slot.isUndefined() || slot.isNull() || (slot.isDouble() && slot.toDouble() == 0.0);
 }
 
 void loadCount(CommandState& state, const QString& key, const QJsonValue& slot,
                const QJsonObject& def, const CommandContext& context) {
+  // A count the definition does not have keeps the input's default (an
+  // earlier gear without profile_shift or mate_teeth, mitcad#656).
+  if (slot.isNull() || slot.isUndefined()) {
+    return;
+  }
   if (slot.isDouble()) {
     state.setText(key, number(slot.toDouble()));
     return;
@@ -534,11 +533,14 @@ void loadCount(CommandState& state, const QString& key, const QJsonValue& slot,
     if (parameter.value(QStringLiteral("name")).toString() != name) {
       continue;
     }
-    // The feature's own count shows as its number (its parameter has the
-    // slot's unit, which the count does not have).
-    state.setText(key, parameter.value(QStringLiteral("owner")).toString() == owner
-                           ? number(parameter.value(QStringLiteral("value")).toDouble())
-                           : name);
+    // The feature's own count shows its expression, with its name by the
+    // label (its parameter is unitless, mitcad#662); a borrowed one its name.
+    if (parameter.value(QStringLiteral("owner")).toString() == owner) {
+      state.setText(key, parameter.value(QStringLiteral("expression")).toString());
+      state.setParameterName(key, name);
+    } else {
+      state.setText(key, name);
+    }
     return;
   }
   state.setText(key, name);
@@ -818,6 +820,86 @@ Manipulator ring(const gp_Pnt& origin, const gp_Dir& axis) {
   return handle;
 }
 
+QString shortLength(double millimetres, const CommandContext& context) {
+  return lengthText(std::round(millimetres * 10.0) / 10.0, context);
+}
+
+QString beltText(const QJsonObject& belt, const QString& profile, const CommandContext& context) {
+  static const QHash<QString, QString> names{{QStringLiteral("gt2_2mm"), QStringLiteral("GT2")},
+                                             {QStringLiteral("gt2_3mm"), QStringLiteral("GT2 3M")},
+                                             {QStringLiteral("htd_3m"), QStringLiteral("HTD 3M")},
+                                             {QStringLiteral("htd_5m"), QStringLiteral("HTD 5M")},
+                                             {QStringLiteral("t5"), QStringLiteral("T5")},
+                                             {QStringLiteral("xl"), QStringLiteral("XL")}};
+  QString text = shortLength(belt.value(QStringLiteral("length")).toDouble(), context);
+  const QString name = names.value(profile);
+  if (!name.isEmpty()) {
+    text = name + QLatin1Char(' ') + text;
+  }
+  if (belt.value(QStringLiteral("width")).isDouble()) {
+    text += QObject::tr(", %1 wide").arg(shortLength(belt.value(QStringLiteral("width")).toDouble(), context));
+  } else if (belt.value(QStringLiteral("teeth")).isDouble()) {
+    text += QObject::tr(", %1 teeth").arg(number(belt.value(QStringLiteral("teeth")).toDouble()));
+  }
+  return text;
+}
+
+std::vector<gp_Pnt> beltPitchLine(const gp_Pnt& first, const gp_Dir& normal, double d1, const gp_Pnt& second,
+                                  double d2) {
+  if (!(d1 > 0.0) || !(d2 > 0.0)) {
+    return {};
+  }
+  const gp_Vec axis(normal);
+  gp_Vec apart(first, second);
+  apart -= axis * apart.Dot(axis); // into the first pulley's plane
+  const double distance = apart.Magnitude();
+  const double r1 = d1 / 2.0;
+  const double r2 = d2 / 2.0;
+  if (distance <= std::abs(r1 - r2) + 1e-6) {
+    return {};
+  }
+  const gp_Vec u = apart / distance;
+  const gp_Vec v = axis.Crossed(u);
+  const gp_Pnt c2 = first.Translated(apart);
+  // Where the spans leave the circles: at +-t from the line of centres.
+  const double t = std::acos(std::clamp((r1 - r2) / distance, -1.0, 1.0));
+  const auto on = [&u, &v](const gp_Pnt& centre, double radius, double angle) {
+    return centre.Translated(u * (radius * std::cos(angle)) + v * (radius * std::sin(angle)));
+  };
+  constexpr double kPi = 3.14159265358979323846;
+  constexpr int kSteps = 48;
+  std::vector<gp_Pnt> line;
+  for (int i = 0; i <= kSteps; ++i) { // round the first, away from the second
+    line.push_back(on(first, r1, t + (2.0 * kPi - 2.0 * t) * i / kSteps));
+  }
+  for (int i = 0; i <= kSteps; ++i) { // round the second, away from the first
+    line.push_back(on(c2, r2, -t + 2.0 * t * i / kSteps));
+  }
+  line.push_back(line.front());
+  return line;
+}
+
+QString beltFitText(const QString& fit) {
+  if (fit == QStringLiteral("ok")) {
+    return QObject::tr("fits");
+  }
+  if (fit == QStringLiteral("tensioner")) {
+    return QObject::tr("needs a tensioner");
+  }
+  if (fit == QStringLiteral("short")) {
+    return QObject::tr("belt too short");
+  }
+  return QString();
+}
+
+QString travelText(double millimetres, const CommandContext& context) {
+  if (std::abs(millimetres) < 0.0005) {
+    return lengthText(0.0, context);
+  }
+  const QString size = lengthText(std::abs(millimetres), context);
+  return millimetres > 0.0 ? QObject::tr("%1 apart").arg(size) : QObject::tr("%1 closer").arg(size);
+}
+
 QString lengthText(double millimetres, const CommandContext& context) {
   const double value = millimetres / context.unitMillimetres();
   QString text = QString::number(value, 'f', 4);
@@ -828,39 +910,6 @@ QString lengthText(double millimetres, const CommandContext& context) {
     text = QStringLiteral("0");
   }
   return text + QLatin1Char(' ') + context.lengthUnit();
-}
-
-void placeAt(const SelectionItem& item, CommandState& state, const CommandContext& context,
-             const QString& x, const QString& y) {
-  if (!item.at) {
-    return;
-  }
-  const auto frame = frameOf(item, context);
-  if (!frame) {
-    return;
-  }
-  const gp_Vec offset(frame->origin, gp_Pnt((*item.at)[0], (*item.at)[1], (*item.at)[2]));
-  // Rounded to a hundredth of a millimetre, as typed values would be.
-  const auto round = [](double value) { return std::round(value * 100.0) / 100.0; };
-  state.setText(x, lengthText(round(offset.Dot(gp_Vec(frame->x))), context));
-  state.setText(y, lengthText(round(offset.Dot(gp_Vec(frame->y))), context));
-  state.setValue(x, std::numeric_limits<double>::quiet_NaN());
-  state.setValue(y, std::numeric_limits<double>::quiet_NaN());
-}
-
-std::optional<gp_Pnt> pointOnPlane(const CommandState& state, const CommandContext& context,
-                                   const QString& plane, const QString& x, const QString& y) {
-  const Selection& items = state.items(plane);
-  if (items.isEmpty()) {
-    return std::nullopt;
-  }
-  const auto frame = frameOf(items.first(), context);
-  const double u = state.value(x);
-  const double v = state.value(y);
-  if (!frame || !std::isfinite(u) || !std::isfinite(v)) {
-    return std::nullopt;
-  }
-  return frame->origin.Translated(gp_Vec(frame->x) * u + gp_Vec(frame->y) * v);
 }
 
 // ---------------------------------------------------------------------------

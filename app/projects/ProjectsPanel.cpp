@@ -21,6 +21,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPixmap>
 #include <QScrollBar>
 #include <QStyle>
 #include <QStyleOptionViewItem>
@@ -167,6 +168,19 @@ public:
     if (index.column() == kName) {
       cell.text = elided(cell);
     }
+    hideEditedText(cell, index);
+    // Status marks (especially the lock) must follow the selected text,
+    // rather than keeping a dark outline over the system accent colour.
+    if (index.column() == kState && (cell.state & QStyle::State_Selected) && !cell.icon.isNull()) {
+      QPixmap mark = cell.icon.pixmap(cell.decorationSize, painter->device()->devicePixelRatioF());
+      QPainter tint(&mark);
+      tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+      tint.fillRect(mark.rect(), cell.palette.color(QPalette::HighlightedText));
+      tint.end();
+      cell.icon = QIcon();
+      cell.icon.addPixmap(mark, QIcon::Normal);
+      cell.icon.addPixmap(mark, QIcon::Selected);
+    }
     cell.textElideMode = Qt::ElideMiddle;
     const QWidget* widget = cell.widget;
     const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
@@ -175,12 +189,6 @@ public:
 
   QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
     return m_bands ? PanelRowDelegate::sizeHint(option, index) : QStyledItemDelegate::sizeHint(option, index);
-  }
-
-  QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option,
-                        const QModelIndex& index) const override {
-    return m_bands ? PanelRowDelegate::createEditor(parent, option, index)
-                   : QStyledItemDelegate::createEditor(parent, option, index);
   }
 
 private:
@@ -409,6 +417,7 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
   setMinimumWidth(160);
   if (chromeStyle() == ChromeStyle::Floating) {
     // Inside a card: the card's material shows through.
+    m_toolbar->setStyleSheet(QStringLiteral("QToolBar { background: transparent; border: none; }"));
     m_tree->setItemDelegate(new ProjectsRowDelegate(false, m_tree));
     m_tree->setFrameShape(QFrame::NoFrame);
     m_tree->setAttribute(Qt::WA_MacShowFocusRect, false);
@@ -497,9 +506,9 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
     connect(made, &QAction::triggered, this, run);
     return made;
   };
-  entry("new-project", tr("New Project..."), [this] { emit commandRequested(QStringLiteral("file.new_project")); });
-  entry("remote-open", tr("Open from Cloud..."), [this] { emit commandRequested(QStringLiteral("file.open_remote")); });
-  entry("folder", tr("Add Existing Project Folder..."), [this] { emit addFolderRequested(); });
+  entry("new-project", tr("New Project…"), [this] { emit commandRequested(QStringLiteral("file.new_project")); });
+  entry("remote-open", tr("Open from Cloud…"), [this] { emit commandRequested(QStringLiteral("file.open_remote")); });
+  entry("folder", tr("Add Existing Project Folder…"), [this] { emit addFolderRequested(); });
   more->addSeparator();
   QAction* show = entry(nullptr, tr("Show in Folder"), [this] {
     QTreeWidgetItem* item = m_tree->currentItem();
@@ -1438,7 +1447,7 @@ void ProjectsPanel::contextMenu(const QPoint& at) {
     menu.add(QString(), tr("Open"), [this] { openCurrent(); });
     menu.add(QStringLiteral("edit"), tr("Rename"), [this] { renameCurrent(); });
     menu.add(QStringLiteral("delete"), tr("Delete"), [this] { deleteCurrent(); });
-    menu.add(QStringLiteral("version-history"), tr("Version History..."),
+    menu.add(QStringLiteral("version-history"), tr("Version History…"),
              [this, root, path = pathOf(item)] { emit versionHistoryRequested(root, path); });
     menu.add(QString(), tr("Show in Folder"),
              [this, root, folder] { emit showInFolderRequested(QDir(root).filePath(folder)); });
@@ -1465,7 +1474,7 @@ void ProjectsPanel::contextMenu(const QPoint& at) {
       menu.add(QStringLiteral("new-design"), tr("New Design"), [this, root] { startNewDesign(root, QString()); });
       menu.add(QStringLiteral("folder"), tr("New Folder"), [this, root] { startNewFolder(root, QString()); });
       menu.add(QString(), tr("Show in Folder"), [this, root] { emit showInFolderRequested(root); });
-      menu.add(QStringLiteral("settings"), tr("Project Settings..."), [this, root] { emit projectSettingsRequested(root); });
+      menu.add(QStringLiteral("settings"), tr("Project Settings…"), [this, root] { emit projectSettingsRequested(root); });
       if (row->kind == ProjectRow::Kind::Cloud) {
         menu.add(QStringLiteral("sync"), tr("Sync Now"), [this, root] { emit syncRequested(root); });
       }
@@ -1477,11 +1486,11 @@ void ProjectsPanel::contextMenu(const QPoint& at) {
     menu.add(QString(), tr("Remove from List"), [this, root] { emit removeFromListRequested(root); });
   }
   menu.separator();
-  menu.add(QStringLiteral("new-project"), tr("New Project..."),
+  menu.add(QStringLiteral("new-project"), tr("New Project…"),
            [this] { emit commandRequested(QStringLiteral("file.new_project")); });
-  menu.add(QStringLiteral("remote-open"), tr("Open from Cloud..."),
+  menu.add(QStringLiteral("remote-open"), tr("Open from Cloud…"),
            [this] { emit commandRequested(QStringLiteral("file.open_remote")); });
-  menu.add(QStringLiteral("folder"), tr("Add Existing Project Folder..."), [this] { emit addFolderRequested(); });
+  menu.add(QStringLiteral("folder"), tr("Add Existing Project Folder…"), [this] { emit addFolderRequested(); });
   menu.exec(m_tree->viewport()->mapToGlobal(at));
 }
 

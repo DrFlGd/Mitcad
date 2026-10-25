@@ -2,59 +2,55 @@
 // New Component (the ASSEMBLE group) and the primitives Box, Cylinder,
 // Sphere and Torus (the CREATE group; U4;
 // commands.md, "box, cylinder, sphere, torus" and "Components and
-// occurrences (F6)"). A primitive is placed on a plane or planar face, at
-// the point clicked on it or typed in its coordinates.
+// occurrences (F6)"). A primitive is placed by a pick (mitcad#656,
+// PlaceInputs.hpp): on an axis, at a point, or on a face or a plane at
+// distances from two of its edges; a box also turns about its axis.
 #include <cmath>
 
 #include <QJsonArray>
 
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
+#include "PlaceInputs.hpp"
 
 namespace mitcad::cmd {
 namespace {
 
 enum class Primitive { Box, Cylinder, Sphere, Torus };
 
-// The plane and the point on it: a box's corner, the others' centre.
-QVector<InputDef> placementInputs(Primitive primitive) {
-  const bool box = primitive == Primitive::Box;
-  return {
-      selectionInput(QStringLiteral("plane"), QObject::tr("Plane"), kPlaneKinds, 1, 1)
-          .withTooltip(box ? QObject::tr("A plane or planar face; a click places the corner")
-                           : QObject::tr("A plane or planar face; a click places the centre"))
-          .withAccepts(isPlanar)
-          .withOnPick([](const SelectionItem& item, CommandState& state, const CommandContext& model) {
-            placeAt(item, state, model, QStringLiteral("x"), QStringLiteral("y"));
-          }),
-      valueInput(QStringLiteral("x"), box ? QObject::tr("Corner X") : QObject::tr("Center X"),
-                 ValueKind::Length, QStringLiteral("0 mm")),
-      valueInput(QStringLiteral("y"), box ? QObject::tr("Corner Y") : QObject::tr("Center Y"),
-                 ValueKind::Length, QStringLiteral("0 mm")),
-  };
+PlacePanel placePanel(Primitive primitive, const QString& name) {
+  PlacePanel panel;
+  panel.command = name;
+  // A box's turn about its axis matters; a round part's does not.
+  if (primitive == Primitive::Box) {
+    panel.turns = [](const CommandState&) { return true; };
+  }
+  return panel;
 }
 
-// An arrow on the plane from the placed point: along the normal (heights)
-// or along the plane's x axis (diameters, at half their value).
+// An arrow from where the part is placed, with its value box (mitcad#656):
+// along its axis (heights), its x axis (diameters, at half their value,
+// a box's length) or its y axis (a box's width); a box's height from
+// the middle of its base, its width from the middle of its length (`dx`,
+// `dy`: fractions of its length and width).
+enum class Along { Normal, X, Y };
 std::function<std::optional<Manipulator>(const CommandState&, const CommandContext&)>
-handle(bool alongNormal, double factor, double dx = 0.0, double dy = 0.0) {
+handle(const PlacePanel& panel, Along along, double factor, double dx = 0.0, double dy = 0.0) {
   return [=](const CommandState& state, const CommandContext& model) -> std::optional<Manipulator> {
-    auto at = pointOnPlane(state, model, QStringLiteral("plane"), QStringLiteral("x"), QStringLiteral("y"));
-    if (!at) {
-      return std::nullopt;
-    }
-    const auto frame = frameOf(state.items(QStringLiteral("plane")).first(), model);
+    const auto frame = placeFrame(state, model, panel);
     if (!frame) {
       return std::nullopt;
     }
-    // A box's height arrow stands on the middle of its base.
+    gp_Pnt at = frame->origin;
     const double length = state.value(QStringLiteral("length"));
     const double width = state.value(QStringLiteral("width"));
-    if (dx != 0.0 && std::isfinite(length) && std::isfinite(width)) {
-      at->Translate(gp_Vec(frame->x) * length * dx + gp_Vec(frame->y) * width * dy);
+    if ((dx != 0.0 || dy != 0.0) && std::isfinite(length) && std::isfinite(width)) {
+      at.Translate(gp_Vec(frame->x) * length * dx + gp_Vec(frame->y) * width * dy);
     }
-    Manipulator m = arrow(*at, alongNormal ? frame->normal : frame->x);
+    Manipulator m = arrow(at, along == Along::Normal ? frame->normal : along == Along::X ? frame->x : frame->y);
     m.factor = factor;
+    m.valueBox = true;
+    m.boxAtTip = true; // a size reads at its end (mitcad#656)
     return m;
   };
 }
@@ -71,52 +67,53 @@ CommandDef primitive(const CommandContext& context, Primitive kind) {
   def.section = QStringLiteral("primitives");
   def.featureType = type;
   def.keywords = {QStringLiteral("primitive")};
-  def.inputs = placementInputs(kind);
+  def.name = kind == Primitive::Box        ? QObject::tr("Box")
+             : kind == Primitive::Cylinder ? QObject::tr("Cylinder")
+             : kind == Primitive::Sphere   ? QObject::tr("Sphere")
+                                           : QObject::tr("Torus");
+  const PlacePanel place = placePanel(kind, def.name);
+  def.inputs = placeInputs(place);
   const auto direction = choiceInput(QStringLiteral("direction"), QObject::tr("Direction"),
                                      {{QStringLiteral("one_side"), QStringLiteral("One Side")},
                                       {QStringLiteral("symmetric"), QStringLiteral("Symmetric")}},
                                      QStringLiteral("one_side"));
   switch (kind) {
   case Primitive::Box:
-    def.name = QObject::tr("Box");
-    def.tooltip = QObject::tr("A box on a plane: corner, length, width and height");
+    def.tooltip = QObject::tr("A box: corner, length, width and height");
     def.keywords << QStringLiteral("cube") << QStringLiteral("block");
     def.inputs += {
         valueInput(QStringLiteral("length"), QObject::tr("Length"), ValueKind::Length, QStringLiteral("30 mm"))
-            .withManipulator(handle(false, 1.0)),
-        valueInput(QStringLiteral("width"), QObject::tr("Width"), ValueKind::Length, QStringLiteral("20 mm")),
+            .withManipulator(handle(place, Along::X, 1.0)),
+        valueInput(QStringLiteral("width"), QObject::tr("Width"), ValueKind::Length, QStringLiteral("20 mm"))
+            .withManipulator(handle(place, Along::Y, 1.0, 0.5, 0.0)),
         valueInput(QStringLiteral("height"), QObject::tr("Height"), ValueKind::Length, QStringLiteral("10 mm"))
-            .withManipulator(handle(true, 1.0, 0.5, 0.5)),
+            .withManipulator(handle(place, Along::Normal, 1.0, 0.5, 0.5)),
         direction,
     };
     break;
   case Primitive::Cylinder:
-    def.name = QObject::tr("Cylinder");
-    def.tooltip = QObject::tr("A cylinder standing on a plane");
+    def.tooltip = QObject::tr("A cylinder standing on a face, an axis or a point");
     def.inputs += {
         valueInput(QStringLiteral("diameter"), QObject::tr("Diameter"), ValueKind::Length, QStringLiteral("20 mm"))
-            .withManipulator(handle(false, 0.5)),
+            .withManipulator(handle(place, Along::X, 0.5)),
         valueInput(QStringLiteral("height"), QObject::tr("Height"), ValueKind::Length, QStringLiteral("30 mm"))
-            .withManipulator(handle(true, 1.0)),
+            .withManipulator(handle(place, Along::Normal, 1.0)),
         direction,
     };
     break;
   case Primitive::Sphere:
-    def.name = QObject::tr("Sphere");
-    def.tooltip = QObject::tr("A sphere centred on a plane");
+    def.tooltip = QObject::tr("A sphere centred where it is placed");
     def.inputs += {
         valueInput(QStringLiteral("diameter"), QObject::tr("Diameter"), ValueKind::Length, QStringLiteral("30 mm"))
-            .withManipulator(handle(false, 0.5)),
+            .withManipulator(handle(place, Along::X, 0.5)),
     };
     break;
   case Primitive::Torus:
-    def.name = QObject::tr("Torus");
-    def.tooltip = QObject::tr("A ring on a plane");
+    def.tooltip = QObject::tr("A ring about where it is placed");
     def.keywords << QStringLiteral("ring") << QStringLiteral("donut");
     def.inputs += {
         valueInput(QStringLiteral("diameter"), QObject::tr("Inner Diameter"), ValueKind::Length, QStringLiteral("40 mm"))
-            .withTooltip(QObject::tr("The diameter the section lies on, as Torus Position says"))
-            .withManipulator(handle(false, 0.5)),
+            .withManipulator(handle(place, Along::X, 0.5)),
         valueInput(QStringLiteral("section"), QObject::tr("Torus Diameter"), ValueKind::Length, QStringLiteral("10 mm")),
         choiceInput(QStringLiteral("position"), QObject::tr("Torus Position"),
                     {{QStringLiteral("inside"), QStringLiteral("Inside")},
@@ -127,13 +124,14 @@ CommandDef primitive(const CommandContext& context, Primitive kind) {
     break;
   }
   def.inputs += operationInputs();
+  def.init = [place](CommandState& state, const CommandContext& model) { initPlace(state, model, place); };
 
-  def.build = [kind, type](const CommandState& state, const CommandContext&) {
+  def.build = [kind, type, place](const CommandState& state, const CommandContext& model) {
     Built result;
-    const QJsonArray at{state.value(QStringLiteral("x")), state.value(QStringLiteral("y"))};
-    result.def = {{QStringLiteral("type"), type},
-                  {QStringLiteral("plane"), state.items(QStringLiteral("plane")).first().reference()},
-                  {kind == Primitive::Box ? QStringLiteral("corner") : QStringLiteral("center"), at}};
+    result.def = {{QStringLiteral("type"), type}};
+    if (!addPlace(result.def, state, model, place, result)) {
+      return result;
+    }
     switch (kind) {
     case Primitive::Box:
       result.def.insert(QStringLiteral("length"), state.expression(QStringLiteral("length")));
@@ -161,11 +159,10 @@ CommandDef primitive(const CommandContext& context, Primitive kind) {
     return result;
   };
 
-  def.load = [kind](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
-    state.setItems(QStringLiteral("plane"), {itemOf(feature.value(QStringLiteral("plane")), context)});
-    const QJsonArray at = feature.value(kind == Primitive::Box ? QStringLiteral("corner") : QStringLiteral("center")).toArray();
-    state.setText(QStringLiteral("x"), lengthText(at.at(0).toDouble(), context));
-    state.setText(QStringLiteral("y"), lengthText(at.at(1).toDouble(), context));
+  def.load = [kind, place](const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+    // An earlier box's `corner`, the others' `center`, on their plane.
+    loadPlace(feature, state, context, place,
+              kind == Primitive::Box ? QStringLiteral("corner") : QStringLiteral("center"));
     for (const char* key : {"length", "width", "height", "diameter"}) {
       loadValue(state, QString::fromLatin1(key), feature.value(QLatin1String(key)), feature, context);
     }
@@ -178,9 +175,7 @@ CommandDef primitive(const CommandContext& context, Primitive kind) {
   };
 
   // A fixed plane (the importer's placement) has no input.
-  def.canEdit = [&context](const QJsonObject& feature) {
-    return isShowable(feature.value(QStringLiteral("plane")), context);
-  };
+  def.canEdit = [&context](const QJsonObject& feature) { return placeShowable(feature, context); };
 
   def.describe = [type](const CommandState& state, const CommandContext&) {
     return QStringLiteral("Added %1 (%2)").arg(type, label(kOperations, state.choice(QStringLiteral("operation"))));
@@ -219,7 +214,7 @@ CommandDef newComponentCommand(const CommandContext& context) {
                    {QStringLiteral("bodies"), QStringLiteral("From Bodies")}},
                   QStringLiteral("empty")),
       textInput(QStringLiteral("name"), QObject::tr("Name"))
-          .withTooltip(QObject::tr("Empty: Component1, Component2, ..."))
+          .withTooltip(QObject::tr("Empty: Component1, Component2, …"))
           .withVisible([fromBodies](const CommandState& s) { return !fromBodies(s); }),
       checkInput(QStringLiteral("activate"), QObject::tr("Activate"), true)
           .withTooltip(QObject::tr("New features go into the new component"))

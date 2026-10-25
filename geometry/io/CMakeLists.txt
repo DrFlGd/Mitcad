@@ -20,6 +20,10 @@ add_library(mitcad_geometry_io STATIC
 target_sources(mitcad_geometry_io PRIVATE
   src/face_mesh.cpp
   include/mitcad/io/face_mesh.hpp)
+# Two display meshings compared face by face (mitcad-cli mesh-compare, mitcad#644).
+target_sources(mitcad_geometry_io PRIVATE
+  src/mesh_compare.cpp
+  include/mitcad/io/mesh_compare.hpp)
 target_include_directories(mitcad_geometry_io PUBLIC include)
 target_link_libraries(mitcad_geometry_io
   PUBLIC TKernel TKMath TKG3d TKBRep TKMesh

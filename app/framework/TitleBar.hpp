@@ -23,20 +23,16 @@ class Ribbon;
 // The top row of the Floating chrome, in the height of a macOS toolbar: room
 // for the window's traffic lights, an Undo and Redo pair, the ribbon's tabs
 // (a segmented control), the document's name and state in the middle, the
-// command search as a search field and, while sketching, a prominent Finish
-// Sketch button. The window's content extends under the native title bar
-// (MainWindow sets the flag), so the empty parts of this row move the window.
+// command search as a search field. The window's content extends under the
+// native title bar (MainWindow sets the flag), so the empty parts of this
+// row move the window.
 class TitleBar : public QWidget {
   Q_OBJECT
 
 public:
   // The ribbon's tab bar is placed in the row. The actions are the registry's:
-  // `search` opens the command search, `finish` finishes the sketch.
-  TitleBar(Ribbon* ribbon, QAction* undo, QAction* redo, QAction* search, QAction* finish,
-           QWidget* parent = nullptr);
-
-  // Shows or hides the Finish Sketch button; follows the ribbon's sketch mode.
-  void setSketchMode(bool sketching);
+  // `search` opens the command search.
+  TitleBar(Ribbon* ribbon, QAction* undo, QAction* redo, QAction* search, QWidget* parent = nullptr);
 
   // The project indicator (mitcad#89), beside the document's name: right of
   // it, before the search field.
@@ -48,7 +44,7 @@ public:
   // The Floating layout's title row on Windows and Linux (mitcad#425,
   // mitcad#429; FloatingLayout::addTopRow): no card behind the row and no
   // margins at its ends. Its controls (the Undo and Redo pair, the tabs, the
-  // project indicator, the search field, Finish Sketch) are capsules of
+  // project indicator, the search field) are capsules of
   // their own over the 3D view, on the cards' material (legible over the
   // view in both themes); the document's name is on a small box of the
   // cards' material, as wide as the text (titleBox). The row takes the
@@ -58,7 +54,7 @@ public:
   bool isFloatingRow() const { return m_floatingRow; }
   // setFloatingRow: the controls shown and the title's box, named
   // ("titleHistory", "titleTabs", "titleBox", "titleIndicator",
-  // "titleSearch", "titleFinishSketch"), in the row's coordinates, left to
+  // "titleSearch"), in the row's coordinates, left to
   // right.
   std::vector<std::pair<QString, QRect>> rowParts() const;
   // The box behind the document's name in the row's coordinates (empty
@@ -101,7 +97,6 @@ private:
   CapsuleFrame* m_history = nullptr;
   QWidget* m_tabs = nullptr;
   QWidget* m_search = nullptr;
-  QWidget* m_finish = nullptr;
   QPointer<QWidget> m_indicator;
   QPointer<QWidget> m_watched;
   bool m_floatingRow = false;

@@ -92,10 +92,22 @@ impl DocState {
                     {
                         self.properties.types.push(ty.clone());
                     }
-                    self.properties.put(target, &group.name, property.clone());
+                    let mut property = property.clone();
+                    // A print profile chosen comes with it (mitcad#640).
+                    if matches!(
+                        crate::print_profile::print_set_of(&group.name),
+                        Some(crate::print_profile::PrintPropertySet::Layer(_))
+                    ) && same_name(&property.key, crate::print_profile::PROFILE_KEY)
+                        && let PropertyValue::Text(id) = &property.value
+                        && let Some(mine) = self.copy_print_profile(source, id)
+                    {
+                        property.value = PropertyValue::Text(mine);
+                    }
+                    self.properties.put(target, &group.name, property);
                 }
             }
         }
+        self.sync_profile_types();
     }
 
     /// Whether a property owner is part of the definition: a component or
@@ -207,6 +219,10 @@ impl<K: Kernel> Document<K> {
         self.check_property_owner(owner)?;
         check_set_name(set).map_err(invalid)?;
         check_key(key).map_err(invalid)?;
+        // The print sets keep the key map's keys and types (mitcad#640).
+        if let Some(print) = crate::print_profile::print_set_of(set) {
+            return self.set_print_property(owner, print, key, value, source);
+        }
         // An occurrence's own value over its component's takes the
         // component's spelling of the set and key.
         let (set, key) = match owner {
@@ -554,7 +570,7 @@ impl<K: Kernel> Document<K> {
                 let Some(shape) = self.body_shape(b) else {
                     return out;
                 };
-                let material = self.body_attributes(b).material();
+                let material = self.body_material(b, None).0;
                 if let Ok(mass) = self.kernel().mass_properties(shape) {
                     let c = Source::Computed;
                     push(
@@ -591,7 +607,7 @@ impl<K: Kernel> Document<K> {
                     let Ok(mass) = self.kernel().mass_properties(body.shape) else {
                         continue;
                     };
-                    let density = self.body_attributes(body.uid).material().density;
+                    let density = self.body_material(body.uid, None).0.density;
                     volume += mass.volume;
                     kg += mass.volume * density * 1e-6;
                     measured += 1;
@@ -810,6 +826,10 @@ impl<K: Kernel> Document<K> {
         }
         if let Some(own) = own.filter(|t| !t.values.is_empty()) {
             value["choices"] = json!(own.values.iter().map(text).collect::<Vec<_>>());
+        }
+        // A print setting's plain name (mitcad#640); the key is its tooltip.
+        if let Some(name) = super::print_key_name(&shown.set, &p.key) {
+            value["name"] = json!(name);
         }
         value
     }

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonArray>
 #include <QLineEdit>
@@ -75,6 +76,15 @@ public:
   // tool body, or null.
   virtual std::shared_ptr<geometry::Shape> previewBodyShape(const std::string& uid) const = 0;
   virtual std::shared_ptr<geometry::Shape> previewToolShape() const = 0;
+  // Meshes the bodies behind a preview's stand-ins in the view's final tier
+  // (framework/DisplayMeshes, mitcad#635) in a job of their own that changes
+  // nothing in the model; `done(true)` on the UI thread once they are
+  // meshed (before it returns on a synchronous host). False when it did not
+  // start.
+  virtual bool refinePreviewDisplay(const std::vector<std::shared_ptr<geometry::Shape>>&, QObject*,
+                                    std::function<void(bool)>) {
+    return false;
+  }
   // A job computes the model now (the caller waits for it in a nested event
   // loop): what a timer or a queued signal starts then must wait.
   virtual bool modelBusy() const = 0;
@@ -141,6 +151,11 @@ public:
     }
     done(answer, error);
   }
+  // An inspection the panel shows now with a record for its history
+  // (Inspection::record, Measure's history, mitcad#648), with the inputs
+  // it measured.
+  virtual void inspectionRecorded(const CommandDef& /*def*/, const CommandState& /*state*/,
+                                  const Inspection& /*result*/) {}
   // Soon (not inside the running command's call): cancels the command and
   // opens feature `uid` for editing, its input `input` taking the keyboard
   // (P6: a command whose inputs ask for another feature's edit).
@@ -171,6 +186,10 @@ public:
     gp_Trsf placement;
   };
   virtual std::vector<ShownSketch> shownSketches() const { return {}; }
+  // For a loop over many items that changes no model (mitcad#679): while
+  // the returned guard lives, itemShape may read each sketch once for all
+  // of its curves and points. The default batches nothing.
+  virtual std::shared_ptr<void> itemShapeBatch() const { return nullptr; }
 };
 
 // A feature command from start to OK or Cancel: its inputs' state and
@@ -249,6 +268,10 @@ public:
   // text of a text input (mitcad#519: BUILD's Openings window), as if
   // typed. False when the command has no such input `key` or has ended.
   bool choose(const QString& key, const QString& value);
+  // The model changed outside the inputs (mitcad#655: a window beside 3D
+  // Print's panel, a note row's button): CommandDef::modelChanged, then the
+  // panel shows the inputs again (choices and notes asked anew).
+  void refreshInputs();
   // A light bulb of the browser while the panel is open (mitcad#295;
   // CommandSessionVisibility.cpp): runs the visibility commands as one undo
   // step `label` outside the command's undo range. An applied sketch
@@ -291,6 +314,12 @@ public:
   // The inputs as they are, whether OK can run (`ready`, else `message`),
   // the last preview's outcome and the panel's messages (shownState).
   QJsonObject scriptState();
+  // A measurement of the history shown again (mitcad#648,
+  // CommandSessionScript.cpp): the choices as given, as if chosen, then
+  // every selection input with the items given (emptied when it has none
+  // given), as if picked; the inspection runs again. False when the
+  // command has ended.
+  bool restoreInputs(const QHash<QString, QString>& choices, const QHash<QString, Selection>& selections);
 
 signals:
   void finished(bool committed);
@@ -315,9 +344,20 @@ private:
     QJsonObject report;
     std::vector<BodyDisplay> bodies;
     TopoDS_Shape tool;
+    std::shared_ptr<geometry::Shape> toolShape; // the tool drawn, as `tool` (mitcad#635)
     // The bodies shown now that the preview removes, where they are shown
     // (removedShownBodies): a consumed tool's occurrences (mitcad#561).
     std::vector<BodyDisplay> removed;
+    // Where the tool is in the design (the report's tool_instances, the
+    // shown ones), `tool` placed there (mitcad#636).
+    std::vector<gp_Trsf> toolPlacements;
+    // The basis of a provisional drag presentation (mitcad#636): the
+    // inputs it was computed from, the structure generation then, and the
+    // tool's mesh as an owned copy in the tool's own coordinates (for a
+    // command with CommandDef::dragProxy).
+    std::optional<CommandState> state;
+    quint64 structure = 0;
+    std::shared_ptr<const ProxyMesh> toolMesh;
   };
 
   // Every input (shown only: those shown now) in the panel's order.
@@ -326,6 +366,7 @@ private:
   CommandState scopeOf(const Slot& slot) const;
   bool isShown(const Slot& slot) const;
   const InputDef* activeInput() const;
+  QString selectionHint(QString hint) const;
   void activate(const QString& key);
   // What the view lets the input pick (with the host's selection filter
   // context, when it has one).
@@ -341,6 +382,12 @@ private:
   // now.
   void followActiveKinds();
   SelectFilter m_activeFilter; // what the active input took when it was shown
+  // The picks of all the selection inputs when the active input's pick
+  // places were last shown: a test that depends on them (InputDef::testNow)
+  // may take other items after a pick (mitcad#697: Place On's straight
+  // edges once it has a face).
+  QString pickedState() const;
+  QString m_shownPickedState;
   void activateFirstNeeded();
   void advanceIfFull();
   void selectionChanged(const QString& key);
@@ -366,6 +413,9 @@ private:
   void acceptFeaturePreview(const QByteArray& key, const Built& built, const Preview& preview, bool cache);
   // A good preview's message: the command's note, then the report's warnings.
   QString okMessage(const QJsonObject& report);
+  // The inputs' row notes (InputDef::rowNote) read again and shown; true
+  // when one changed.
+  bool refreshRowNotes();
   void commandSequenceAsync(const QJsonArray& commands, CommandHost::AsyncCompletion completion,
                             int index = 0, std::function<bool()> aborted = {});
   void undoToDepthAsync(int depth, CommandHost::AsyncCompletion completion, int guard = -1);
@@ -446,6 +496,17 @@ private:
   QPointer<QLineEdit> m_cursorBox;
   QString m_cursorKey;
   QString m_loggedCursorBox;
+  // A handle's value box clicked (Manipulator::valueBox, mitcad#656): a
+  // field over the view at `at` (the view's coordinates) that edits value
+  // input `key` as its panel field does; Enter or a click elsewhere keeps
+  // what was typed, Esc puts the value back (`keep` false).
+  void openValueBox(const QString& key, const QPoint& at);
+  void closeValueBox(bool keep);
+  // Tab in the field: the next handle's value box (`back`: the previous).
+  void stepValueBox(bool back);
+  QPointer<QLineEdit> m_valueBox;
+  QString m_valueBoxKey;
+  QString m_valueBoxBefore;
   // OK of a command that makes a component in a root with modelled bodies
   // (mitcad#171): asks whether the root's features move into a component
   // first. False when the user cancels; `done` when the move did the
@@ -457,7 +518,8 @@ private:
   void logVolumes(const QJsonObject& before) const;
   void logCreatedParameters(const QJsonObject& result) const;
   // Sketch commands: applied for the preview, taken back on a change.
-  void showSketchPreview(const Built& built);
+  // `keep`: applied and left so for OK, also with CommandDef::previewAsNew.
+  void showSketchPreview(const Built& built, bool keep = false);
   void takeBackSketchPreview();
   int undoDepth() const;
 
@@ -486,14 +548,28 @@ private:
   bool m_autoFocusing = false;  // the session itself is focusing a field
   bool m_openFocusPending = false; // the field focused on opening has not had the keyboard yet
   QTimer m_previewTimer;
+  // Once a preview is shown and no drag goes on, its display meshes are
+  // made in the view's final tier (refinePreview, mitcad#635).
+  QTimer m_refineTimer;
+  void scheduleRefinement();
+  void refinePreview();
+  bool m_refining = false; // a refinement job runs
   bool m_previewOk = false;
   QJsonObject m_shownReport; // the report of the preview shown (toggles)
   QString m_loggedPreviewBodies; // the bodies the last preview logged (mitcad#266)
+  QString m_loggedPreviewTool;   // where it drew its tool, as logged (mitcad#636)
+  // A part placed by its first pick is moved out from under the panels
+  // floating over the view once its preview is drawn (mitcad#656).
+  bool m_clearAfterPick = false;
+  bool m_clearedOnce = false;
+  // A previewAsNew command's first preview framed in the view.
+  bool m_framedNew = false;
   QString m_shownOperation; // the operation of the preview shown (its tool's look)
   bool m_toolOverlaysShown = false; // drawn with the active input's tool overlays (mitcad#561)
   bool m_failed = false; // the model could not compute the preview
   QByteArray m_shownKey; // the command whose preview is shown
   QString m_shownNote;   // the command's note shown with it
+  QHash<QString, QString> m_rowNotes; // the row notes shown, by input key
   bool m_previewCancelled = false; // ... or whose preview was cancelled
   QHash<QByteArray, Preview> m_cache;
   QList<QByteArray> m_cacheOrder;
@@ -503,6 +579,13 @@ private:
   // One replaceable action per numeric field between structural barriers.
   // Actions evaluate expressions only after the document worker releases it.
   QHash<QString, std::shared_ptr<std::function<void()>>> m_pendingNumbers;
+  // Every numeric action still waiting for idle, by field (also those a
+  // structural barrier took out of m_pendingNumbers): a value taken at once
+  // empties them (supersedePendingNumbers), so none puts an older value
+  // back after it (mitcad#636). Not while one of them runs.
+  QHash<QString, std::vector<std::shared_ptr<std::function<void()>>>> m_scheduledNumbers;
+  bool m_drainingNumber = false;
+  void supersedePendingNumbers(const QString& key);
   bool m_previewWaiting = false;
   bool m_asyncPending = false;
   bool m_commitRequested = false;
@@ -534,6 +617,11 @@ private:
   bool m_inserting = false;   // a name goes in now (the field takes the keyboard back)
   QPointer<ParameterPicker> m_picker;
   QHash<QString, QString> m_parameterComments; // by name, asked once
+  // A value field whose own parameter has limits (mitcad#665): what they
+  // make of the typed value, as the field's hint ("→ 300 mm ▲max") and in
+  // its tooltip; empty when no limit takes effect.
+  QString limitHint(const QString& key, const QString& text);
+  QSet<QString> m_parametersWithLimits; // by name, asked with the comments
 
   // The hover of a tangent chain (mitcad#290; CommandSessionHover.cpp):
   // while the active input has one (InputDef::chainKinds) and its check is
@@ -601,6 +689,52 @@ private:
   // its answer sets the inputs "operation" and "objects"; the user's own
   // change of either or Cut targets turns it off for the rest of the command.
   // Edits first probe their immutable stored definition, not changed inputs.
+  // A provisional drag presentation (mitcad#636, framework/DragProxy.hpp;
+  // CommandSessionProxy.cpp): while a handle of a command with
+  // CommandDef::dragProxy is dragged, the shown exact preview's tool is
+  // changed to each dragged value at once and drawn provisional
+  // (OcctViewer::setProvisional), also while the model computes; the
+  // exact preview replaces it when its value catches up. It reads only
+  // the shown preview's basis (Preview::state, toolMesh, toolPlacements)
+  // and the handle's arrow, never the model. A structural change, a
+  // failed, cancelled or cleared preview and the end of the command take
+  // it away.
+  struct ProxyBasis {
+    CommandState state;
+    quint64 structure = 0;
+    std::shared_ptr<const ProxyMesh> mesh;
+    std::vector<gp_Trsf> placements;
+  };
+  std::optional<ProxyBasis> m_proxyBasis; // the shown exact preview's
+  QString m_proxyKey;                     // the input dragged, empty: none
+  double m_proxyValue = 0.0;              // its value dragged to
+  bool m_proxyShown = false;
+  std::weak_ptr<const ProxyMesh> m_proxyDrawnFrom; // what the shown proxy changed ...
+  double m_proxyDrawnValue = 0.0;              // ... to which value
+  QString m_proxyWhy;                     // why it is not shown, as last logged
+  QPointer<OcctViewer> m_proxyViewer;     // where it is shown
+  // What a drag did, for the timings' log line at its end.
+  struct ProxyStats {
+    bool active = false;
+    QElapsedTimer clock;
+    int inputs = 0;  // dragged values (semantic changes)
+    std::vector<qint64> proxyAt;  // ms: proxy updates drawn
+    std::vector<qint64> exactAt;  // ms: exact previews shown
+    std::vector<double> updateMs; // each proxy update's own time
+    quint64 frames = 0;           // frames drawn before the drag
+    qint64 releasedAt = -1;       // ms: the button went up
+  } m_proxyStats;
+  void dragProxyMoved(const QString& key, double value);
+  void updateDragProxy();
+  void hideDragProxy(const QString& why, bool forget);
+  void dragProxyFinished(const QString& key);
+  // An exact preview is shown: it becomes the basis, and the proxy follows
+  // it or goes when its value is the one dragged to.
+  void exactPreviewShown(const Preview& preview);
+  // `tool` placed at `toolPlacements` (a compound of placed copies when
+  // there are several), null when none is shown.
+  static TopoDS_Shape placedTool(const TopoDS_Shape& tool, const std::vector<gp_Trsf>& placements);
+
   void startAutoOperation(const QJsonObject& storedDefinition);
   bool probeAutoOperation();
   void resolveAutoOperationProbe(const QJsonObject& report);

@@ -50,6 +50,12 @@ named_enum! {
             /// when left out).
             #[serde(default)]
             context: Option<OccurrencePath>,
+            /// Without `frame`: the sketch gets the own frame that shows
+            /// the design upright when it opens, the design's +Z up (+Y on
+            /// a horizontal plane; mitcad#692, `FrameDef::upright`). Create
+            /// Sketch in the application asks for it.
+            #[serde(default)]
+            upright: bool,
         },
         "sketch.add_rectangle" => AddRectangle {
             sketch: FeatureUid,
@@ -178,6 +184,8 @@ named_enum! {
         },
         "sketch.add_text" => AddText {
             sketch: FeatureUid,
+            /// May be left out with a `value` (mitcad#664).
+            #[serde(default)]
             text: String,
             #[serde(default)]
             at: Option<[f64; 2]>,
@@ -219,6 +227,10 @@ named_enum! {
             /// A font file instead of an installed font (mitcad#473).
             #[serde(default)]
             font_file: Option<String>,
+            /// A text parameter or a text expression the text follows
+            /// (mitcad#664).
+            #[serde(default)]
+            value: Option<ValueInput>,
         },
         // Sketch text edited afterwards (P3).
         "sketch.edit_text" => EditText {
@@ -263,6 +275,10 @@ named_enum! {
             /// A font file (mitcad#473); "" leaves it for the installed `font`.
             #[serde(default)]
             font_file: Option<String>,
+            /// A text parameter or a text expression the text follows
+            /// (mitcad#664); "" stops it following one.
+            #[serde(default)]
+            value: Option<ValueInput>,
         },
         "sketch.add_constraint" => AddConstraint {
             sketch: FeatureUid,
@@ -858,6 +874,7 @@ impl<K: Kernel> Document<K> {
                 name,
                 occurrence,
                 context,
+                upright,
             } => {
                 let plane_link = match &occurrence {
                     Some(path) => crate::links::link_for(
@@ -869,12 +886,17 @@ impl<K: Kernel> Document<K> {
                     .map_err(|e| ApiError(format!("plane: {e}")))?,
                     None => None,
                 };
-                let def = FeatureDef::Sketch(SketchDef {
+                let upright = upright && frame.is_none();
+                let def = SketchDef {
                     plane_link,
                     frame: frame.map(Box::new),
                     ..SketchDef::new(plane)
-                });
-                let added = self.add_feature(&def, name.as_deref())?;
+                };
+                let depth = self.undo_depth();
+                let added = self.add_feature(&FeatureDef::Sketch(def.clone()), name.as_deref())?;
+                if upright {
+                    self.stand_upright(added.uid, def, &occurrence, &context, depth, &added.name)?;
+                }
                 json!({"uid": added.uid, "name": added.name})
             }
             SketchCommand::AddRectangle {
@@ -1331,6 +1353,7 @@ impl<K: Kernel> Document<K> {
                     ink_top,
                     glyphs,
                     font_file,
+                    value,
                     ..
                 } => {
                     let mut t = SketchText {
@@ -1352,6 +1375,13 @@ impl<K: Kernel> Document<K> {
                         ink_top,
                         ..SketchText::new(EntityUid(0), &text, at.unwrap_or_default(), height)
                     };
+                    // A text from a text parameter (mitcad#664) needs none of
+                    // its own: the parameter's replaces it below.
+                    let valued =
+                        matches!(&value, Some(ValueInput::Name(v)) if !v.trim().is_empty());
+                    if t.text.is_empty() && valued {
+                        t.text = "?".to_owned();
+                    }
                     if let Some(file) = font_file.as_deref().filter(|f| !f.is_empty()) {
                         crate::sketch::text::use_font_file(&mut t, file)?;
                     }
@@ -1368,6 +1398,8 @@ impl<K: Kernel> Document<K> {
                         _ => {}
                     }
                     let id = edit.text(t)?;
+                    // Its text from a text parameter (mitcad#664).
+                    edit.set_text_value(id, value.as_ref())?;
                     made_ref.push(format!("t{}", id.0));
                 }
                 C::EditText {
@@ -1391,6 +1423,7 @@ impl<K: Kernel> Document<K> {
                     pen_align,
                     ink_top,
                     font_file,
+                    value,
                     ..
                 } => {
                     let uid = crate::ids::parse_number(&id, "t")
@@ -1484,6 +1517,9 @@ impl<K: Kernel> Document<K> {
                     if t.glyphs.as_ref().is_some_and(|g| !g.fit(t)) {
                         t.glyphs = None;
                     }
+                    // Its text from a text parameter, or no longer
+                    // (mitcad#664).
+                    edit.set_text_value(uid, value.as_ref())?;
                     made_ref.push(id);
                 }
                 C::AddConstraint { constraint, .. } => {
@@ -2202,15 +2238,22 @@ impl<K: Kernel> Document<K> {
         let followed = self.followed_sketch(uid, def);
         let def = followed.as_ref().unwrap_or(def);
         // The status of the definition with the current values, whether
-        // or not the sketch evaluated.
-        let solved = def.solve_with(
-            &mut |id| {
-                params
-                    .value(id)
-                    .ok_or_else(|| format!("parameter {} does not exist", params.name(id)))
-            },
-            &|id| params.name(id),
-        );
+        // or not the sketch evaluated: the evaluation's own solve while it
+        // is that of this definition and these values (mitcad#679), else
+        // solved here.
+        let solved = match self.evaluated_solve(uid) {
+            Some(solved) => Ok(solved),
+            None => def
+                .solve_with(
+                    &mut |id| {
+                        params
+                            .value(id)
+                            .ok_or_else(|| format!("parameter {} does not exist", params.name(id)))
+                    },
+                    &|id| params.name(id),
+                )
+                .map(std::sync::Arc::new),
+        };
         let (solved, error) = match solved {
             Ok(solved) => (Some(solved), None),
             Err(e) => (None, Some(e)),
@@ -2266,6 +2309,11 @@ impl<K: Kernel> Document<K> {
                 if let Some(param) = d.value.or(d.reference).and_then(|id| params.get(id)) {
                     value["expression"] = json!(param.expression());
                     value["comment"] = json!(param.comment());
+                    // A limit took effect (mitcad#665).
+                    if let Some(limited) = param.limited() {
+                        value["limited"] = json!(limited.as_str());
+                        value["limit_message"] = json!(super::limits::message(param));
+                    }
                 }
                 value
             })
@@ -2377,6 +2425,18 @@ impl<K: Kernel> Document<K> {
                     && map.remove("glyphs").is_some()
                 {
                     map.insert("has_glyphs".into(), json!(true));
+                }
+                // The text parameter it follows (mitcad#664): its text, its
+                // name and expression, and whether it is the sketch's own.
+                if let Some(param) = def.text_value(t.id).and_then(|id| params.get(id)) {
+                    if let Some(text) = param.text() {
+                        value["text"] = json!(text);
+                    }
+                    value["value"] = json!({
+                        "parameter": param.name(),
+                        "expression": param.expression(),
+                        "own": params.owner(param.id()) == Some(uid),
+                    });
                 }
                 if let Some(o) = output.and_then(|o| o.texts.iter().find(|o| o.id == t.id)) {
                     value["family"] = json!(o.family);
@@ -2500,6 +2560,18 @@ impl<K: Kernel> Document<K> {
         result["degenerate"] = degenerate_ids(&status);
         Ok(result)
     }
+
+    /// The `sketch` query's text: the last answer while nothing it is made
+    /// from changed (mitcad#679, [`Document::known_sketch_answer`]), else
+    /// made and kept.
+    pub(super) fn sketch_answer(&self, uid: FeatureUid) -> Result<String, ApiError> {
+        if let Some(answer) = self.known_sketch_answer(uid) {
+            return Ok(answer);
+        }
+        let answer = self.sketch_json(uid)?.to_string();
+        self.keep_sketch_answer(uid, &answer);
+        Ok(answer)
+    }
 }
 
 /// The entities a linked projection's warning is about (mitcad#264): all
@@ -2591,6 +2663,42 @@ impl<K: Kernel> Document<K> {
             })
             .collect();
         Ok(Value::Array(items))
+    }
+
+    /// Gives a sketch just added (`def`, as added) the own frame that
+    /// shows the design upright as it opens (mitcad#692,
+    /// [`FrameDef::upright`]), when that differs from its plane's frame:
+    /// one undo step with its adding, the steps after `depth` merged under
+    /// the adding's label. The design's axes are taken where the sketch is
+    /// shown: through the occurrence of the active component that `context`
+    /// or `occurrence` name, else its first one.
+    fn stand_upright(
+        &mut self,
+        uid: FeatureUid,
+        mut def: SketchDef<ValueInput>,
+        occurrence: &Option<OccurrencePath>,
+        context: &Option<OccurrencePath>,
+        depth: usize,
+        name: &str,
+    ) -> Result<(), ApiError> {
+        // A sketch whose plane is not found has no frame: its error says why.
+        let Some(plane) = self.sketch_output(uid).map(|output| output.frame) else {
+            return Ok(());
+        };
+        let shown = context.as_ref().or(occurrence.as_ref()).map(|p| &p.0[..]);
+        let to_component =
+            crate::links::first_path(self.assembly(), self.active_component(), shown)
+                .map(|path| crate::assembly::inverse(&self.path_transform(&path)))
+                .unwrap_or(crate::transform::Transform::IDENTITY);
+        let axis = |v: [f64; 3]| to_component.apply_vector(v);
+        let Some(own) = FrameDef::upright(&plane, axis([0.0, 0.0, 1.0]), axis([0.0, 1.0, 0.0]))
+        else {
+            return Ok(());
+        };
+        def.frame = Some(Box::new(own));
+        self.edit_feature(uid, &FeatureDef::Sketch(def))?;
+        self.merge_undo(depth, &format!("Add {name}"));
+        Ok(())
     }
 }
 

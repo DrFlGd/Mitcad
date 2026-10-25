@@ -488,3 +488,159 @@ fn estimate_settings_out_of_range_are_refused() {
         assert!(bad.check().is_err(), "{bad:?}");
     }
 }
+
+/// The triangles of a simple polygon given counter-clockwise, ears cut off
+/// one by one.
+fn ears(points: &[[f64; 2]]) -> Vec<[usize; 3]> {
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    let mut left: Vec<usize> = (0..points.len()).collect();
+    let mut out = Vec::new();
+    while left.len() > 3 {
+        let m = left.len();
+        let corner = |k: usize| (left[(k + m - 1) % m], left[k], left[(k + 1) % m]);
+        let ear = (0..m)
+            .find(|&k| {
+                let (a, b, c) = corner(k);
+                let (pa, pb, pc) = (points[a], points[b], points[c]);
+                cross(pa, pb, pc) > 1e-12
+                    && left.iter().all(|&q| {
+                        let p = points[q];
+                        q == a
+                            || q == b
+                            || q == c
+                            || cross(pa, pb, p) < 0.0
+                            || cross(pb, pc, p) < 0.0
+                            || cross(pc, pa, p) < 0.0
+                    })
+            })
+            .expect("a simple polygon has an ear");
+        let (a, b, c) = corner(ear);
+        out.push([a, b, c]);
+        left.remove(ear);
+    }
+    out.push([left[0], left[1], left[2]]);
+    out
+}
+
+/// The prism of a profile (x, z; counter-clockwise with x to the right and
+/// z up) from y = 0 to y = `depth`, its vertices shared, facing out.
+fn prism(points: &[[f64; 2]], depth: f64) -> TriangleMesh {
+    let n = points.len();
+    let mut mesh = TriangleMesh::default();
+    mesh.vertices
+        .extend(points.iter().map(|p| [p[0], 0.0, p[1]]));
+    mesh.vertices
+        .extend(points.iter().map(|p| [p[0], depth, p[1]]));
+    let low = |i: usize| (i % n) as u32;
+    let high = |i: usize| (n + i % n) as u32;
+    for i in 0..n {
+        // y × the profile's edge: out.
+        mesh.triangles.push([low(i), high(i), high(i + 1)]);
+        mesh.triangles.push([low(i), high(i + 1), low(i + 1)]);
+    }
+    for [a, b, c] in ears(points) {
+        // The end at y = 0 faces −y as the profile turns; the other end +y.
+        mesh.triangles.push([low(a), low(b), low(c)]);
+        mesh.triangles.push([high(a), high(c), high(b)]);
+    }
+    mesh
+}
+
+/// The points of the arc about `center` of `radius` from angle `start` to
+/// `end` (radians) in `steps` steps, both ends included.
+fn arc(center: [f64; 2], radius: f64, start: f64, end: f64, steps: usize) -> Vec<[f64; 2]> {
+    (0..=steps)
+        .map(|i| {
+            let a = start + (end - start) * i as f64 / steps as f64;
+            [center[0] + radius * a.cos(), center[1] + radius * a.sin()]
+        })
+        .collect()
+}
+
+#[test]
+fn a_shell_split_through_its_fillet_is_as_thick_as_its_wall() {
+    // A 2 mm shell's corner rounded 6 mm outside and 4 mm inside (centre
+    // x 6, z 14), split at z 17 through the fillets: the upper piece. The
+    // split face meets the outer fillet at 60°; along its normal, a ray from
+    // the split face leaves through the fillet at once next to that edge
+    // (and one from the fillet through the split face), which is the
+    // edge's shape, not a wall (mitcad#689).
+    let inner_start = PI - 0.75_f64.asin(); // z 14 + 4 × 0.75 = 17
+    let mut profile = arc([6.0, 14.0], 4.0, inner_start, PI / 2.0, 12);
+    profile.extend([[20.0, 18.0], [20.0, 20.0]]);
+    profile.extend(arc([6.0, 14.0], 6.0, PI / 2.0, 5.0 * PI / 6.0, 12));
+    let mesh = prism(&profile, 10.0);
+    let found = print_analysis::thickness(&mesh, 0.8, &|| false).unwrap();
+    assert!(
+        found.thin.is_empty(),
+        "{:?} {:?}",
+        found.thin,
+        found.thinnest
+    );
+    assert_eq!(found.regions, 0);
+    // Measured along the split face's normal, the curving wall is somewhat
+    // less than 2 mm a sample distance away from the edge (2 mm × the tangent
+    // of the fillet's slope there); nowhere near thin.
+    let wall = found.thinnest.unwrap();
+    assert!(wall > 1.2 && wall < 2.5, "{wall} at {:?}", found.at);
+}
+
+#[test]
+fn a_hole_through_a_curved_wall_leaves_the_wall_as_thick_as_it_is() {
+    // A 2 mm wall curved about the y axis (radius 18 to 20, from 150° down)
+    // cut by the straight side x = 7 of a hole through it: the hole's side
+    // meets the inner surface at 67°, so a ray from either leaves through
+    // the other next to their edge (mitcad#689).
+    let outer_start = (7.0_f64 / 20.0).acos();
+    let inner_end = (7.0_f64 / 18.0).acos();
+    let end = 5.0 * PI / 6.0;
+    let mut profile = arc([0.0, 0.0], 20.0, outer_start, end, 16);
+    profile.extend(arc([0.0, 0.0], 18.0, end, inner_end, 16));
+    let mesh = prism(&profile, 10.0);
+    let found = print_analysis::thickness(&mesh, 0.8, &|| false).unwrap();
+    assert!(
+        found.thin.is_empty(),
+        "{:?} {:?}",
+        found.thin,
+        found.thinnest
+    );
+    // The wall between the facets of its two sides.
+    let wall = found.thinnest.unwrap();
+    assert!(wall > 1.9 && wall < 2.1, "{wall} at {:?}", found.at);
+}
+
+#[test]
+fn a_thin_fin_next_to_an_edge_is_still_found() {
+    // A 20 x 5 mm base with a 0.3 mm fin standing on it flush with its side
+    // (x 0 to 0.3, z 5 to 10): the fin's sides are parallel, a real thin
+    // wall next to the edge of the base's side.
+    let mesh = prism(
+        &[
+            [0.0, 0.0],
+            [20.0, 0.0],
+            [20.0, 5.0],
+            [0.3, 5.0],
+            [0.3, 10.0],
+            [0.0, 10.0],
+        ],
+        10.0,
+    );
+    let found = print_analysis::thickness(&mesh, 0.8, &|| false).unwrap();
+    assert!(
+        close(found.thinnest.unwrap(), 0.3, TOL),
+        "{:?}",
+        found.thinnest
+    );
+    assert!(!found.thin.is_empty());
+    assert!(found.regions >= 1);
+    for &t in &found.thin {
+        let corners = mesh.triangles[t].map(|i| mesh.vertices[i as usize]);
+        assert!(
+            corners.iter().all(|p| close(p[0], 0.0, TOL))
+                || corners.iter().all(|p| close(p[0], 0.3, TOL)),
+            "{corners:?}"
+        );
+    }
+}

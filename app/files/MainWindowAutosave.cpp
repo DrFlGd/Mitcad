@@ -5,7 +5,7 @@
 // afterSaved), an imported design (startF3dImport) and Preferences.
 //
 // Recovery (P8c, Recovery.hpp): at start-up (main.cpp) and by File >
-// Recover Documents, the work that sessions which did not end normally
+// Recover Designs, the work that sessions which did not end normally
 // left; a document restored from it, and Save over its file.
 #include "../MainWindow.hpp"
 
@@ -97,14 +97,14 @@ void MainWindow::recoverAtStart() {
 
 void MainWindow::recoverDocuments(bool atStart) {
   if (modelBusy() || m_import) {
-    showError(tr("Recover Documents waits until the design is computed or imported."));
+    showError(tr("Recover Designs waits until the design is computed or imported."));
     return;
   }
   std::vector<RecoverableSession> sessions = findRecoverable(m_autosave->directory(), m_autosave->session());
   if (sessions.empty()) {
     qInfo().noquote() << QStringLiteral("Recovery: none");
     if (!atStart) {
-      sheetInformation(this, tr("Recover Documents"), tr("There are no unsaved changes to recover."));
+      sheetInformation(this, tr("Recover Designs"), tr("There are no unsaved changes to recover."));
     }
     return;
   }
@@ -163,7 +163,7 @@ bool MainWindow::restoreRecovered(RecoverableSession& session) {
   if (!error.isEmpty()) {
     const QString message = tr("Could not recover %1:\n%2").arg(name, error);
     qWarning().noquote() << QStringLiteral("Recovery of %1 failed: %2").arg(name, error);
-    sheetWarning(this, tr("Recover Documents"), message);
+    sheetWarning(this, tr("Recover Designs"), message);
     return false;
   }
   // The document is the one it was; its file, if any, is still to be
@@ -196,12 +196,12 @@ std::optional<bool> MainWindow::askOverwriteChanged() {
   const QString name = documentName();
   qInfo().noquote() << QStringLiteral("Save conflict: %1 changed since it was opened").arg(m_filePath);
   QMessageBox box(QMessageBox::Warning, tr("Mitcad"),
-                  tr("%1 has changed since the recovered document was opened from it.").arg(name),
+                  tr("%1 has changed since the recovered design was opened from it.").arg(name),
                   QMessageBox::NoButton, this);
-  box.setInformativeText(tr("Overwrite the file with the recovered document, or save the recovered document "
+  box.setInformativeText(tr("Overwrite the file with the recovered design, or save the recovered design "
                             "as another file?"));
   QPushButton* overwrite = box.addButton(tr("&Overwrite"), QMessageBox::DestructiveRole);
-  QPushButton* another = box.addButton(tr("Save &As..."), QMessageBox::AcceptRole);
+  QPushButton* another = box.addButton(tr("Save &As…"), QMessageBox::AcceptRole);
   box.addButton(QMessageBox::Cancel);
   box.setDefaultButton(another);
   prepareModal(&box);

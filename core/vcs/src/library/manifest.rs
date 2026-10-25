@@ -266,6 +266,23 @@ pub struct Manifest {
     pub categories: Vec<Category>,
     #[serde(default)]
     pub components: Vec<ManifestComponent>,
+    /// The library's materials, printers and process profiles of print
+    /// settings (mitcad#640): one item file each, in `materials/`,
+    /// `print/printers/` and `print/processes/` (`docs/libraries.md`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<ManifestItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub printers: Vec<ManifestItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<ManifestItem>,
+}
+
+/// A material or print profile a manifest lists (mitcad#640): its id and
+/// its item file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestItem {
+    pub id: String,
+    pub path: String,
 }
 
 fn millimetres() -> String {
@@ -620,7 +637,41 @@ impl Manifest {
             // Mount frames of any part (mitcad#525).
             super::mounts::check_component(c, &label, &mut out);
         }
+        // Materials and print profiles (mitcad#640): files in their
+        // folders, each id once per list.
+        for (field, folder, items) in [
+            ("materials", "materials/", &self.materials),
+            ("printers", "print/printers/", &self.printers),
+            ("processes", "print/processes/", &self.processes),
+        ] {
+            let mut ids = BTreeSet::new();
+            for (i, item) in items.iter().enumerate() {
+                if !valid_path(&item.path)
+                    || !item.path.starts_with(folder)
+                    || !item.path.ends_with(".json")
+                {
+                    out.error(format!(
+                        "{field}[{i}]: '{}' is no path of a .json file in {folder}",
+                        item.path
+                    ));
+                }
+                if item.id.trim().is_empty() {
+                    out.error(format!("{field}[{i}]: no id"));
+                } else if !ids.insert(item.id.as_str()) {
+                    out.error(format!("{field}[{i}]: the id {} is used twice", item.id));
+                }
+            }
+        }
         out
+    }
+
+    /// The item files of materials and print profiles the manifest lists
+    /// (mitcad#640), materials first.
+    pub fn print_items(&self) -> impl Iterator<Item = &ManifestItem> {
+        self.materials
+            .iter()
+            .chain(&self.printers)
+            .chain(&self.processes)
     }
 }
 

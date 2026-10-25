@@ -540,6 +540,18 @@ if(BUILD_TESTING)
   add_executable(test_blend_surfaces tests/test_blend_surfaces.cpp)
   target_link_libraries(test_blend_surfaces PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry.blend_surfaces COMMAND test_blend_surfaces)
+  # The face merge after booleans on faces of one cylinder whose axes point
+  # the other way, with the port's patch 1040 (mitcad#642).
+  add_executable(test_merge_reversed_axis tests/test_merge_reversed_axis.cpp)
+  target_link_libraries(test_merge_reversed_axis PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.merge_reversed_axis COMMAND test_merge_reversed_axis)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(test_tool_contacts tests/test_tool_contacts.cpp)
+  find_package(Threads REQUIRED)
+  target_link_libraries(test_tool_contacts PRIVATE mitcad_geometry mitcad_geometry_io mitcad_warnings Threads::Threads)
+  add_test(NAME geometry.tool_contacts COMMAND test_tool_contacts)
 endif()
 
 # Data exchange and analysis services, separate libraries on top of OCCT.

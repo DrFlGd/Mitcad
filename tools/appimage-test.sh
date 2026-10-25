@@ -286,7 +286,7 @@ unset MITCAD_NO_UPDATE_CHECK
 inode=$(stat -c %i "$COPY")
 UI_GDB=0 UI_APP=$COPY ui_start_app
 ui_expect_log "Updates: Mitcad 0.0.0 for linux-x64, the AppImage $COPY" "the AppImage can update itself"
-ui_expect_log "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Mitcad checks for updates once a day; Tools > Preferences turns that off. [Release Notes, Install, Skip This Version, Later]" \
+ui_expect_log "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Mitcad checks for updates once a day; Tools › Preferences turns that off. [Release Notes, Install, Skip This Version, Later]" \
   "the notice offers Install"
 OLD=$(xdotool getwindowpid "$UI_WINDOW")
 ui_mark

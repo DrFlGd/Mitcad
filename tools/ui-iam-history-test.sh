@@ -5,7 +5,7 @@
 # An .iam assembly's parts with their design history (mitcad#507), through
 # File > Open:
 #   - the test project of test_exchange --write-iam: Import Assembly asks
-#     how the parts come in, Parts with their design history on by
+#     how the parts come in, Components with their design history on by
 #     default. On, the progress follows the parts (part n of 3), the cube
 #     part's sketch and extrusion are replayed into its component, the
 #     report says per part whether it was replayed or came in as its stored
@@ -52,7 +52,7 @@ import_assembly() {
     sed 's/.*design history //')
   ui_focus_dialog '^Import Assembly$'
   if [ "$shown" != "$want" ]; then
-    ui_step "parts with their design history $want (Alt+P)" ui_key alt+p
+    ui_step "parts with their design history $want (Alt+H)" ui_key alt+h
     ui_expect_new "Import Assembly: parts with their design history $want" "the box toggled"
   fi
   ui_step "import (Enter)"                 ui_key Return
@@ -106,7 +106,7 @@ grep -q "Import report part: cube.ipt: replayed, 2 items (2 parametric, 0 partia
   "$WORK/test-on.log" || ui_fail "the cube was not replayed: $(grep 'Import report part' "$WORK/test-on.log")"
 grep -q "Import report part: pair.ipt: stored bodies: the part has no design history" "$WORK/test-on.log" ||
   ui_fail "the part without a design is not reported so: $(grep 'Import report part' "$WORK/test-on.log")"
-grep -q "Import report summary: top.iam (assembly) .* Parts with their design history: 1 replayed, 2 as their stored bodies\." \
+grep -q "Import report summary: top.iam (assembly) .* Components with their design history: 1 replayed, 2 as their stored bodies\." \
   "$WORK/test-on.log" || ui_fail "the report does not sum the parts up"
 echo "ok   the report: the cube replayed, the parts without a design as their stored bodies"
 cube=$(components test-on | awk -F'\t' '$1 == "cube" { print $2 }')

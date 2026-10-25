@@ -142,6 +142,16 @@ impl<K: Kernel> Document<K> {
         component: ComponentUid,
         seat: &mut Option<SeatFrame>,
     ) -> Result<Layout, String> {
+        // Placed by picked geometry (mitcad#656): a shaft or a hole as a
+        // seat.
+        if let Some(at) = values.at.clone() {
+            let placed = self.place_frame(&at).map_err(|e| format!("at: {e}"))?;
+            if let Some(frame) = placed.round() {
+                *seat = Some(*frame);
+                values.fit_to(frame)?;
+            }
+            return values.layout(None);
+        }
         if let Some(on) = values.seat.clone() {
             let frame = self
                 .seat_frame(&on, component)

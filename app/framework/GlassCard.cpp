@@ -23,6 +23,7 @@
 
 #include "../platform/MacChrome.hpp"
 #include "Theme.hpp"
+#include "MacToolButtonStyle.hpp"
 
 namespace mitcad {
 namespace {
@@ -64,11 +65,15 @@ QIcon drawnChevron(bool collapsed, const QPalette& palette, qreal ratio) {
 
 void setFlatCardButton(QToolButton* button) {
   button->setAutoRaise(true);
+#ifdef Q_OS_MACOS
+  styleMacToolButton(button);
+#else
   button->setStyleSheet(QStringLiteral(
       "QToolButton { border: none; background: transparent; border-radius: 6px; padding: 2px; }"
       "QToolButton:hover { background: rgba(128, 128, 128, 40); }"
       "QToolButton:pressed { background: rgba(128, 128, 128, 80); }"
       "QToolButton:disabled { background: transparent; }"));
+#endif
 }
 
 CapsuleButton::CapsuleButton(const QString& text, bool prominent, QWidget* parent)
@@ -451,6 +456,9 @@ void GlassCard::setWindowed(bool windowed) {
 }
 
 void GlassCard::setSlot(const QRect& slot) {
+  // A native tool window honours its layout's minimum size. Settle that
+  // constraint before sizing it, including after the content was folded.
+  m_layout->activate();
   m_slot = slot;
   if (m_windowed) {
     setGeometry(QRect(parentWidget()->mapToGlobal(slot.topLeft()), slot.size()));

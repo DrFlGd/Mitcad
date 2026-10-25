@@ -432,6 +432,11 @@ fn unit(u: &str) -> Unit {
     match u.trim() {
         "" | "none" | "unitless" => Unit::NONE,
         "°" | "degree" | "degrees" => Unit::parse("deg").unwrap_or(Unit::NONE),
-        other => Unit::parse(other).unwrap_or(Unit::MM),
+        // (`Text`, a text parameter's unit since mitcad#664, is no unit of
+        // these files' numbers.)
+        other => Unit::parse(other)
+            .ok()
+            .filter(|u| !u.is_text())
+            .unwrap_or(Unit::MM),
     }
 }

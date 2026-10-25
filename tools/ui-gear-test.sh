@@ -2,26 +2,36 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/GearCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/gear.rs core/model/src/features/gear_profile.rs geometry/src/gear.cpp
-# check-all sources: app/commands/SeatInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
+# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
 # check-all sources: core/model/src/print_fits.rs core/model/src/api/gears.rs
 # Gear (mitcad#472) through the real UI; the Windows counterpart is
 # tools/ui-windows-gear-test.ps1 (ctest app.ui-windows-gear). The Backlash
 # and the Bore Clearance start as the printed-fit parameters gear_backlash
 # and shaft_bore_clearance (0.2 mm each, mitcad#623):
-#   1. Gear in an empty design: the panel starts on XY with a spur gear of
-#      20 teeth, module 2, 10 wide; its note shows the derived diameters
-#      (pitch 40, outside 44, root 35). OK makes Gear1 (F1.b0), its teeth
+#   1. Gear in an empty design, placed by a click on the XY plane and both
+#      distances 0 (it waits for a pick, mitcad#656): a spur gear of 20
+#      teeth, module 2, 10 wide; its note shows the derived diameters (pitch
+#      40, outside 44, root 35). OK makes Gear1 (F1.b0), its teeth
 #      thinner by the backlash, and creates gear_backlash.
-#   2. Gear again: Rack picked by its icon, Mesh With a face of Gear1, 10
-#      teeth, 12 high: the note shows its pitch line (20 pi = 62.8319 mm) and
+#   2. Gear again: Rack picked by its icon, Mesh With a face of Gear1 (the
+#      mesh places a rack, no pick needed), 10 teeth, 12 high: the note shows its pitch line (20 pi = 62.8319 mm) and
 #      the centre distance (20 mm); OK makes the rack below the gear
 #      (F2.b0).
 #   3. On a shaft (mitcad#578), in a design mitcad-cli makes (an 8 mm
 #      cylinder 30 high, Cylinder1, F1.b0): Gear (Spur, 20 teeth) with
-#      Shaft the cylinder's top edge: the note shows the bore the shaft
+#      Place On the cylinder's top edge: the note shows the bore the shaft
 #      gives with the printed fit (8.2 mm); an offset of 5 mm; OK makes the
 #      gear on the shaft (F2.b0: Gear1's volume less the 8.2 mm bore
 #      through its 10 mm) and creates shaft_bore_clearance.
+#   4. Gear Pair (mitcad#656), in a design with two 8 mm shafts 60 mm
+#      apart (Cylinder1 F1.b0 at the origin, Cylinder2 F2.b0 at (60, 0)):
+#      the shafts' top edges picked as the two axes, ratio 2: the rows list
+#      the gears that fit (module, teeth, the deviation only where the
+#      ratio is not met, the fit), the exact pairs needing no correction
+#      against undercut with the fewest teeth first (2 mm, 20 and 40
+#      teeth: 2 x 60 / 2 = 60; 2.5 mm with 16 teeth, corrected, after
+#      them); the second row (module 1.25, 32 and 64 teeth) previewed, as
+#      new bodies; OK makes both gears.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-gear-test.sh [screenshot.png]
@@ -40,6 +50,15 @@ cat > "$WORK/shaft.json" << 'EOF'
 ]
 EOF
 "$CLI" run "$WORK/shaft.json" --save "$WORK/shaft.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+cat > "$WORK/shafts.json" << 'JSON'
+[
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [60, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}}
+]
+JSON
+"$CLI" run "$WORK/shafts.json" --save "$WORK/shafts.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
 ui_start_display
 ui_start_app
@@ -47,8 +66,8 @@ ui_start_app
 echo "--- 1. A spur gear on XY"
 ui_mark
 ui_step "Gear"                             ui_command "Gear"
-ui_expect_new "Preview Gear: ok" "the spur gear previewed" 30
-ui_expect_new "Gear Backlash: gear_backlash = 0.2 mm" "the backlash is the printed-fit parameter"
+ui_expect_new "Gear Backlash: gear_backlash = 0.2 mm" "the backlash is the printed-fit parameter" 30
+ui_place_on_xy Gear
 ui_expect_new "Panel Gear note: Pitch diameter 40 mm, outside 44 mm, root 35 mm" "the derived diameters shown"
 [ -n "$SHOT" ] && ui_capture "$SHOT"
 ui_mark
@@ -60,7 +79,7 @@ ui_expect_volume 'New body [^ ]* (F1\.b0): volume \([0-9.]*\) mm3' 12283.094 "Ge
 echo "--- 2. A rack meshing it"
 ui_mark
 ui_step "Gear"                             ui_command "Gear"
-ui_expect_new "Preview Gear: ok" "the panel open" 30
+ui_expect_new "Command Gear started" "the panel opened, waiting for a pick" 30
 ui_step "Rack"                             ui_click_logged "Panel Gear input kind=rack"
 ui_step "teeth 10"                         ui_type_in "Panel Gear input teeth" "10"
 ui_step "height 12"                        ui_type_in "Panel Gear input height" "12"
@@ -87,18 +106,20 @@ ui_step "fit (F6)"                         ui_key F6
 ui_expect_log "Bodies shown: F1.b0" "the shaft shown"
 ui_mark
 ui_step "Gear"                             ui_command "Gear"
-ui_expect_new "Preview Gear: ok" "the panel open on XY" 30
+ui_expect_new "Command Gear started" "the panel opened, waiting for a pick" 30
 ui_expect_new "Gear Bore Clearance: shaft_bore_clearance = 0.2 mm" "the bore clearance is the printed-fit parameter"
 ui_step "teeth 20"                         ui_type_in "Panel Gear input teeth" "20"
 ui_mark
-ui_step "Shaft"                            ui_click_logged "Panel Gear input shaft"
+ui_step "Place On"                         ui_click_logged "Panel Gear input at"
 ui_expect_new "Pick places:" "the picks are logged"
 ui_expect_new "Pick edge F1.b0/E{F1:side0|F1:top} at" "the shaft's top edge can be picked"
 ui_mark
 ui_step "click the shaft's top edge"       ui_click_pick "edge F1.b0/E{F1:side0|F1:top} at"
+ui_expect_new "Place Gear: axis edge E{F1:side0|F1:top} of F1.b0" "placed on the shaft's end"
 ui_expect_new "bore 8.2 mm (shaft 8 mm)" "the bore the shaft gives, with the printed fit" 30
 ui_mark
-ui_step "offset 5"                         ui_type_in "Panel Gear input seat_offset" "5"
+ui_step "More"                             ui_click_logged "Panel Gear input at_more"
+ui_step "offset 5"                         ui_type_in "Panel Gear input at_offset" "5"
 ui_expect_new "Preview Gear: ok" "5 mm down the shaft previewed" 30
 grep "^Panel Gear note: " "$UI_LOG" | tail -1 | sed 's/^/     /'
 ui_mark
@@ -106,6 +127,37 @@ ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added gear (Spur), 20 teeth, module 2" "the gear on the shaft added" 30
 ui_expect_new "Created user parameter shaft_bore_clearance = 0.2 mm" "shaft_bore_clearance created with the gear" 30
 ui_expect_volume 'New body [^ ]* (F2\.b0): volume \([0-9.]*\) mm3' 11754.992 "the gear with the shaft's bore" 1e-5
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- 4. Gear Pair between two shafts (mitcad#656)"
+ui_stop_app
+ui_start_app --open "$WORK/shafts.mitcad"
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Bodies shown: F1.b0, F2.b0" "the shafts shown"
+ui_mark
+ui_step "Gear Pair"                        ui_command "Gear Pair"
+ui_expect_new "Command Gear Pair started" "the panel opened" 30
+ui_expect_new "Pick edge F1.b0/E{F1:side0|F1:top} at" "the first shaft's top edge can be picked"
+ui_mark
+ui_step "the first shaft"                  ui_click_pick "edge F1.b0/E{F1:side0|F1:top} at"
+ui_expect_new "Gear Pair First Axis: 1 edge" "the first axis picked"
+ui_expect_new "Pick edge F2.b0/E{F2:side0|F2:top} at" "the second shaft's top edge can be picked"
+ui_mark
+ui_step "the second shaft"                 ui_click_pick "edge F2.b0/E{F2:side0|F2:top} at"
+ui_expect_new "Gear Pair candidates: " "the model's candidates" 30
+ui_expect_new "centre distance 60 mm" "the axes 60 mm apart"
+ui_expect_new "Panel Gear Pair options candidate: 2 mm, 20:40" "no correction and the fewest teeth first" 30
+ui_mark
+ui_step "operation: New Body"              ui_choose "Panel Gear Pair input operation" 1
+ui_expect_new "Preview Gear Pair: ok" "the pair previewed" 30
+ui_mark
+ui_step "the second row"                   ui_click_logged "Panel Gear Pair input candidate=1"
+ui_expect_new "Gear Pair: Gears = 1.25 mm" "module 1.25 chosen"
+ui_expect_new "Preview Gear Pair: ok" "module 1.25 previewed" 30
+[ -n "$SHOT" ] && ui_capture "${SHOT%.png}-pair.png"
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added gear pair, module 1.25, 32 and 64 teeth (exact)" "both gears added" 30
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 
 ui_finish "UI gear test"

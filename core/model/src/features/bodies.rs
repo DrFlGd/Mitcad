@@ -65,6 +65,20 @@ impl<S: Clone> BodySet<S> {
             .collect()
     }
 
+    /// The bodies the feature made so far (not there before it) that are
+    /// still there, in the order it first set them.
+    pub fn made(&self) -> Vec<BodyUid> {
+        self.changed()
+            .into_iter()
+            .filter(|uid| !self.before.contains(uid))
+            .collect()
+    }
+
+    /// Whether the body was there before the feature.
+    pub fn was_there(&self, uid: BodyUid) -> bool {
+        self.before.contains(&uid)
+    }
+
     /// The shapes of the participants an operation works on ([`apply_tool`]:
     /// empty means all bodies); bodies that do not exist are left out.
     pub fn participants(&self, participants: &[BodyUid]) -> Vec<&S> {

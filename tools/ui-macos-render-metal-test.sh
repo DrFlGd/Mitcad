@@ -129,11 +129,11 @@ mark
 command solid.box
 expect-log 'Command Box started'
 click-logged 'Datum xy'
-focus-widget input_x
+focus-widget input_at_offset1
 key ctrl+a
 type 80
 key Tab
-focus-widget input_y
+focus-widget input_at_offset2
 key ctrl+a
 type 0
 key Tab
@@ -197,17 +197,17 @@ key End
 focus-widget renderImage_width
 key ctrl+a
 type 320
-key Return
+key Tab
 focus-widget renderImage_height
 key ctrl+a
 type 240
-key Return
+key Tab
 focus-widget renderImage_samples
 key ctrl+a
 type 16
-key Return
+key Tab
 mark
-button '^Render$'
+key Return
 wait-log 'Render image worker ready: Cycles' 30
 expect-log 'Render diagnostics: backend METAL,'
 wait-log 'Render image done: 320 x 240, 16 samples' 120
@@ -216,14 +216,21 @@ screenshot-dialog '${MITCAD_METAL_SHOTS}/final-image.png'
 focus-widget renderImage_samples
 key ctrl+a
 type 65536
-key Return
+key Tab
 mark
 button '^Render$'
 wait-log 'Render image progress ' 30
 button '^Cancel$'
 wait-log 'Render image cancelled' 15
 expect-model-bodies 1 48000
-button '^Close$'
+# Escape follows the same stop path as closing the render window.
+mark
+button '^Render$'
+wait-log 'Render image progress ' 30
+key Escape
+wait-log 'Render image cancelled' 15
+expect-dialog-gone '^Render Image$'
+expect-model-bodies 1 48000
 focus-main
 DRIVER
 fi

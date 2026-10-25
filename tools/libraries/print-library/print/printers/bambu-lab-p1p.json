@@ -1,0 +1,18 @@
+{
+  "format": "mitcad-print-item",
+  "version": 1,
+  "profile": {
+    "id": "bambu-lab-p1p",
+    "name": "Bambu Lab P1P (0.4 nozzle)",
+    "kind": "printer",
+    "values": {
+      "bed_shape": [[0, 0], [256, 0], [256, 256], [0, 256]],
+      "max_print_height": 256,
+      "nozzle_diameter": 0.4,
+      "filament_slots": 1,
+      "printer_model": {"bambu_studio": "Bambu Lab P1P", "orcaslicer": "Bambu Lab P1P"},
+      "printer_settings_id": {"bambu_studio": "Bambu Lab P1P 0.4 nozzle", "orcaslicer": "Bambu Lab P1P 0.4 nozzle"}
+    },
+    "version": 1
+  }
+}

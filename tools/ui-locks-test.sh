@@ -206,7 +206,7 @@ indicator_choose() {
     index=$((index + 1))
     item=${item# }
     item=${item% }
-    if [ "$item" = "$1" ]; then
+    if [ "${item//…/...}" = "${1//…/...}" ]; then
       found=$index
       break
     fi
@@ -227,7 +227,7 @@ banner_click() {
   start=$(wc -l < "$UI_LOG")
   ui_step "$2"                            ui_click_logged "Lock banner $1"
   for _ in $(seq 1 10); do
-    tail -n +$((start + 1)) "$UI_LOG" | grep -qF "Lock banner: $1" && return 0
+    tail -n +$((start + 1)) "$UI_LOG" | sed "s/…/.../g" | grep -qF "Lock banner: ${1//…/...}" && return 0
     sleep 0.2
   done
   echo "note: the click did not reach the banner's $1: once more"

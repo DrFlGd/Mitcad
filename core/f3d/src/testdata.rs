@@ -81,6 +81,104 @@ pub fn cube_with_history_blob() -> Vec<u8> {
     w.finish()
 }
 
+/// The named cube of [`named_cube_blob`] with an ASM history of three
+/// operations, newest first: state 3 changed only attributes and an
+/// attribute pointer (it changed the first face's name attribute, made
+/// another one and changed the corner (0, 0, 0)'s attribute pointer),
+/// state 2 moved the corner (1, 1, 1) from (1, 1, 0.5), state 1 created
+/// the body (mitcad#675).
+pub fn named_cube_with_attribute_history_blob() -> Vec<u8> {
+    // The live records 0..93 (the cube's 0..86, its name attributes
+    // 86..93), a new attribute 93, the history section (records 94..98:
+    // its header and the three states), and the copies: of attribute 86
+    // (record 98, pointer 94), of point 60 (99, pointer 95) and of point
+    // 66 (100, pointer 96).
+    let mut w = cube_writer(true);
+    let attribute = |w: &mut Writer, owner: i32, tag: &str| {
+        w.record("ATTRIB_CUSTOM-attrib")
+            .ptr(-1)
+            .int(-1)
+            .ptr(-1)
+            .ptr(-1)
+            .ptr(owner)
+            .str("generic_tag_attrib_def")
+            .int(3)
+            .int(3)
+            .int(-1)
+            .str("generic_tag_attrib_def ")
+            .int(1)
+            .int(1)
+            .str(tag)
+            .int(0)
+            .int(1)
+            .int(301)
+            .int(0)
+            .end();
+    };
+    attribute(&mut w, 4, "7");
+    w.record("Begin-of-ASM-History-Data")
+        .ident("history_stream")
+        .int(3)
+        .int(3)
+        .int(0)
+        .int(3)
+        .ptr(-1)
+        .ptr(0)
+        .ptr(2)
+        .ptr(-1)
+        .end();
+    // State 3 (index 0): attribute 86 changed, attribute 93 made, point
+    // 60's attribute pointer changed.
+    w.record("delta_state")
+        .int(3)
+        .int(1)
+        .int(0)
+        .ptr(-1)
+        .ptr(1)
+        .ptr(0)
+        .ptr(-1)
+        .ptr(0);
+    w.bool(false).int(1).ptr(0).int(2);
+    w.int(1).ptr(94).ptr(86);
+    w.int(1).ptr(-1).ptr(93);
+    w.int(1).ptr(95).ptr(60);
+    w.int(0).int(0).int(0).end();
+    // State 2 (index 1): the corner (1, 1, 1) moved.
+    w.record("delta_state")
+        .int(2)
+        .int(1)
+        .int(0)
+        .ptr(0)
+        .ptr(2)
+        .ptr(1)
+        .ptr(-1)
+        .ptr(0);
+    w.bool(false).int(1).ptr(1).int(2);
+    w.int(1).ptr(96).ptr(66).int(0).int(0).int(0).end();
+    // State 1 (index 2): created the body.
+    w.record("delta_state")
+        .int(1)
+        .int(1)
+        .int(0)
+        .ptr(1)
+        .ptr(-1)
+        .ptr(2)
+        .ptr(-1)
+        .ptr(0);
+    w.bool(false).int(1).ptr(2).int(2);
+    w.int(1).ptr(-1).ptr(1).int(0).int(0).int(0).end();
+    w.record("End-of-ASM-History-Section");
+    attribute(&mut w, 4, "8");
+    w.record("point")
+        .ptr(86)
+        .int(-1)
+        .ptr(-1)
+        .pos([0.0, 0.0, 0.0])
+        .end();
+    w.record("point").head().pos([1.0, 1.0, 0.5]).end();
+    w.finish()
+}
+
 fn cube(named: bool) -> Vec<u8> {
     cube_writer(named).finish()
 }

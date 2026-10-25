@@ -446,6 +446,8 @@ fn a_split_in_two_operations_made_the_new_bodies_of_both() {
         alternatives: HashMap::new(),
         guesses: None,
         defer_guesses: false,
+        own_state: None,
+        untranslated: None,
         kernel_failed: false,
         start_bases: HashMap::new(),
         deadline: None,
@@ -562,6 +564,8 @@ fn named_participants_alone_when_the_history_changed_only_them() {
             alternatives: HashMap::new(),
             guesses: None,
             defer_guesses: false,
+            own_state: None,
+            untranslated: None,
             kernel_failed: false,
             start_bases: HashMap::new(),
             deadline: None,
@@ -829,6 +833,346 @@ fn a_removal_by_a_cuts_record_takes_a_new_piece_not_the_target() {
     assert_eq!(
         def["def"]["bodies"],
         json!([format!("{}.b0", combine.features[0])]),
+        "{}",
+        report.text()
+    );
+}
+
+const COMBINE_LOCAL_DOCUMENT: &str = "c0ffee00-0000-4000-8000-0000000000a1";
+
+fn combine_body_from(producer: i64) -> Value {
+    json!({"kind": "body", "objectType": "BRepBody",
+           "_f3d": {"producer": producer, "body_index": 0,
+                    "document": COMBINE_LOCAL_DOCUMENT,
+                    "recipe": "body", "found": "the body is not in the history state",
+                    "entities": [[{"tag": "resolved-by-producer", "kind": 0, "ops": [1]}]]}})
+}
+
+fn combine_lost_body(found: &str) -> Value {
+    json!({"kind": "body", "objectType": "BRepBody",
+           "_f3d": {"object_id": 700, "recipe": "body", "found": found,
+                    "document": COMBINE_LOCAL_DOCUMENT,
+                    "entities": [[{"tag": "deleted-tool", "kind": 0, "ops": [99]}]]}})
+}
+
+fn combine_with_tools(tools: Vec<Value>, keep: bool) -> (Document<TestKernel>, DesignReport) {
+    combine_with_tools_and_documents(tools, keep, Vec::new(), None)
+}
+
+fn combine_with_tools_and_documents(
+    tools: Vec<Value>,
+    keep: bool,
+    external: Vec<Value>,
+    target: Option<Value>,
+) -> (Document<TestKernel>, DesignReport) {
+    let items = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+        extrude(2, 0, "NewBodyFeatureOperation", "d2"),
+        extrude(3, 0, "NewBodyFeatureOperation", "d2"),
+        json!({"index": 4, "name": "Combine1", "objectType": "CombineFeature",
+               "detail": {"targetBody": target.unwrap_or_else(|| combine_body_from(1)), "toolBodies": tools,
+                          "operation": "JoinFeatureOperation", "isKeepToolBodies": keep}}),
+    ];
+    let mut value = serde_json::to_value(timeline_dump(items)).unwrap();
+    value["_f3d"] = json!({"external_documents": external});
+    let mut doc = Document::new(TestKernel::default());
+    let report = import_design(&mut doc, &dump(value), &mut NoGeometry, &Options::default());
+    (doc, report)
+}
+
+/// A stale selection can retain records of copies a resized pattern no
+/// longer produces. Omit only the references the stream proves lost, keep
+/// every resolved tool, and report the shortened selection as inferred.
+#[test]
+fn a_combine_omits_lost_tools_but_keeps_all_resolved_tools() {
+    let local = combine_lost_body("the body is not in the history state");
+    let mut local_case = local.clone();
+    local_case["_f3d"]["document"] = json!(COMBINE_LOCAL_DOCUMENT.to_ascii_uppercase());
+    let mut no_document = local.clone();
+    no_document["_f3d"]
+        .as_object_mut()
+        .unwrap()
+        .remove("document");
+    for keep in [false, true] {
+        for lost in [
+            None,
+            Some(local.clone()),
+            Some(local_case.clone()),
+            Some(no_document.clone()),
+        ] {
+            let inferred = lost.is_some();
+            let mut tools = vec![combine_body_from(2)];
+            if let Some(orphan) = lost {
+                tools.push(orphan);
+            }
+            tools.push(combine_body_from(3));
+            let (doc, report) = combine_with_tools(tools, keep);
+            let item = &report.items[4];
+            assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+            assert_eq!(
+                item.input_provenance,
+                Some(if inferred {
+                    InputProvenance::Inferred
+                } else {
+                    InputProvenance::Read
+                }),
+                "{}",
+                report.text()
+            );
+            if inferred {
+                assert!(
+                    item.note.as_deref().is_some_and(|note| note
+                        .contains("1 of its 3 tool body references are lost in the file")),
+                    "{}",
+                    report.text()
+                );
+            }
+            let def: Value = serde_json::from_str(
+                &doc.query(&json!({"query": "feature", "uid": item.features[0]}).to_string())
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                def["def"]["tools"],
+                json!([
+                    format!("{}.b0", report.items[2].features[0]),
+                    format!("{}.b0", report.items[3].features[0])
+                ])
+            );
+            assert_eq!(def["def"]["operation"], "join");
+            assert_eq!(def["def"]["keep_tools"].as_bool().unwrap_or(false), keep);
+            assert_eq!(doc.bodies().len(), if keep { 3 } else { 1 });
+        }
+    }
+}
+
+/// An unresolved body is not necessarily absent from the file: a failed
+/// producer, ambiguous recipe or an external dump without stream evidence
+/// must keep the combine from silently using only part of its selection.
+#[test]
+fn a_combine_does_not_omit_unknown_or_ambiguous_tools() {
+    let unknown = json!({"kind": "body", "objectType": "BRepBody"});
+    let mut producer_not_replayed = combine_lost_body("the body is not in the history state");
+    producer_not_replayed["_f3d"]["producer"] = json!(99);
+    let mut external = combine_lost_body("the body is not in the history state");
+    external["_f3d"]["stored"] = json!("body-record");
+    let mut unnamed = combine_lost_body("the body is not in the history state");
+    unnamed["_f3d"]["entities"] = json!([]);
+    let mut unknown_document = combine_lost_body("the body is not in the history state");
+    unknown_document["_f3d"]["document"] = json!("c0ffee00-0000-4000-8000-0000000000d1");
+    let mut names_only_in_later_group = combine_lost_body("the body is not in the history state");
+    names_only_in_later_group["_f3d"]["entities"] =
+        json!([[], [{"tag": "deleted-tool", "kind": 0, "ops": [99]}]]);
+    let mut empty_tag = combine_lost_body("the body is not in the history state");
+    empty_tag["_f3d"]["entities"] = json!([[{"tag": "", "kind": 0, "ops": [99]}]]);
+    let mut geometric_points = combine_lost_body("the body is not in the history state");
+    geometric_points["_f3d"]["edge_points"] = json!([[1234.0, 5678.0, 9012.0]]);
+    let mut volume_evidence = combine_lost_body("the body is not in the history state");
+    volume_evidence["volume"] = json!(1e30);
+    let mut geometry_evidence = combine_lost_body("the body is not in the history state");
+    geometry_evidence["geometry"] = json!({"type": "Solid"});
+    for unresolved in [
+        unknown,
+        combine_body_from(99),
+        producer_not_replayed,
+        external,
+        unnamed,
+        unknown_document,
+        names_only_in_later_group,
+        empty_tag,
+        geometric_points,
+        volume_evidence,
+        geometry_evidence,
+        combine_lost_body("2 bodies fit the names"),
+        combine_lost_body("the history state could not be read"),
+    ] {
+        let (_, report) = combine_with_tools(vec![combine_body_from(2), unresolved.clone()], true);
+        assert_ne!(
+            report.items[4].outcome,
+            Outcome::Parametric,
+            "unresolved reference {unresolved}: {}",
+            report.text()
+        );
+    }
+    // Local document metadata is not an external reference, but an
+    // explicitly declared external GUID remains protected, case ignored.
+    let mut declared_external = combine_lost_body("the body is not in the history state");
+    declared_external["_f3d"]["document"] = json!("c0ffee00-0000-4000-8000-0000000000b1");
+    for metadata in [
+        json!({"document_guid": "C0FFEE00-0000-4000-8000-0000000000B1"}),
+        json!({"document_guid": "c0ffee00-0000-4000-8000-0000000000c1",
+               "guids": ["C0FFEE00-0000-4000-8000-0000000000B1"]}),
+    ] {
+        let (_, report) = combine_with_tools_and_documents(
+            vec![combine_body_from(2), declared_external.clone()],
+            true,
+            vec![metadata],
+            None,
+        );
+        assert_ne!(
+            report.items[4].outcome,
+            Outcome::Parametric,
+            "{}",
+            report.text()
+        );
+    }
+    for tools in [
+        Vec::new(),
+        vec![combine_lost_body("the body is not in the history state")],
+    ] {
+        let (_, report) = combine_with_tools(tools, false);
+        assert_ne!(
+            report.items[4].outcome,
+            Outcome::Parametric,
+            "{}",
+            report.text()
+        );
+    }
+}
+
+/// The history can keep a consumed tool unchanged as cached B-rep data.
+/// Omitting a genuinely lost reference must not prevent the remaining,
+/// producer-resolved tool from being retired from the checked states.
+#[test]
+fn a_combine_with_lost_references_retires_its_consumed_history_tools() {
+    let mut reference = Document::new(TestKernel::default());
+    import_design(
+        &mut reference,
+        &timeline_dump(vec![
+            two_rectangles(0),
+            extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+        ]),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let before_tool = shapes(&reference);
+    let small = "r{c13[c16,c14],c14[c13,c15],c15[c14,c16],c16[c15,c13]}";
+    add(
+        &mut reference,
+        json!({"type": "extrude", "profiles": [{"sketch": "F1", "region": small}],
+               "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}),
+    );
+    let before_combine = shapes(&reference);
+    let tool = reference
+        .body_shape("F3.b0".parse().unwrap())
+        .unwrap()
+        .clone();
+    add(
+        &mut reference,
+        json!({"type": "combine", "target": "F2.b0", "tools": ["F3.b0"], "operation": "join"}),
+    );
+    let combined = shapes(&reference);
+    let mut cached_after = combined.clone();
+    cached_after.push(tool);
+    let items = vec![
+        two_rectangles(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+        extrude(2, 0, "NewBodyFeatureOperation", "d2"),
+        json!({"index": 3, "name": "Combine1", "objectType": "CombineFeature",
+               "detail": {"targetBody": combine_body_from(1),
+                          "toolBodies": [combine_body_from(2),
+                              combine_lost_body("the body is not in the history state")],
+                          "operation": "JoinFeatureOperation", "isKeepToolBodies": false}}),
+    ];
+    let mut geometry = TestGeometry {
+        states: vec![before_tool, before_combine, cached_after],
+        items: HashMap::from([(1, 0), (2, 1), (3, 2)]),
+        ids: true,
+        ..TestGeometry::default()
+    };
+    let mut doc = Document::new(TestKernel::default());
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut geometry,
+        &Options::default(),
+    );
+    let item = &report.items[3];
+    assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+    assert_eq!(item.verified, Some(true));
+    assert_eq!(item.input_provenance, Some(InputProvenance::Inferred));
+    let def: Value = serde_json::from_str(
+        &doc.query(&json!({"query": "feature", "uid": item.features[0]}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!def["def"]["keep_tools"].as_bool().unwrap_or(false));
+    assert_eq!(
+        def["def"]["tools"],
+        json!([format!("{}.b0", report.items[2].features[0])])
+    );
+    assert_eq!(doc.bodies().len(), 1);
+    assert_eq!(shapes(&doc), combined);
+    assert_eq!(report.bodies.len(), 1, "{}", report.text());
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+/// Stale decoder metadata is not enough to discard a tool that its
+/// fingerprint still resolves: the replayed body remains an input.
+#[test]
+fn a_combine_keeps_a_resolved_tool_even_when_its_stream_recipe_looks_lost() {
+    let (reference, before) =
+        combine_with_tools(vec![combine_body_from(2), combine_body_from(3)], true);
+    let expected_tool = format!("{}.b0", before.items[2].features[0]);
+    let fingerprint = body_fingerprint(&reference, &expected_tool);
+    let mut resolved = combine_lost_body("the body is not in the history state");
+    resolved["name"] = fingerprint["name"].clone();
+    resolved["volume"] = fingerprint["volume"].clone();
+    let (doc, report) = combine_with_tools(vec![resolved, combine_body_from(3)], true);
+    let item = &report.items[4];
+    assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+    assert_eq!(item.input_provenance, Some(InputProvenance::Unknown));
+    let def: Value = serde_json::from_str(
+        &doc.query(&json!({"query": "feature", "uid": item.features[0]}).to_string())
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        def["def"]["tools"],
+        json!([expected_tool, format!("{}.b0", report.items[3].features[0])])
+    );
+    assert_eq!(doc.bodies().len(), 3);
+}
+
+/// Finding a target by its mass/name fallback does not prove that the
+/// declared producer or its document context exists in the replay.
+#[test]
+fn a_combine_does_not_prove_local_document_from_a_missing_target_producer() {
+    let mut reference = Document::new(TestKernel::default());
+    import_design(
+        &mut reference,
+        &timeline_dump(vec![
+            rectangle_sketch(0),
+            extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+            extrude(2, 0, "NewBodyFeatureOperation", "d2"),
+            extrude(3, 0, "NewBodyFeatureOperation", "d2"),
+        ]),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let unknown_document = "c0ffee00-0000-4000-8000-0000000000d1";
+    let mut target = body_fingerprint(&reference, "F2.b0");
+    target["_f3d"] = combine_lost_body("the body is not in the history state")["_f3d"].clone();
+    target["_f3d"]["producer"] = json!(99);
+    target["_f3d"]["document"] = json!(unknown_document);
+    let fp: mitcad_f3d::design::ir::Fingerprint = serde_json::from_value(target.clone()).unwrap();
+    assert_eq!(
+        refs::resolve_body(&reference, &fp),
+        Some("F2.b0".parse().unwrap()),
+        "the target is still found by its fingerprint, despite its absent producer"
+    );
+    let mut orphan = combine_lost_body("the body is not in the history state");
+    orphan["_f3d"]["document"] = json!(unknown_document);
+    let (_, report) = combine_with_tools_and_documents(
+        vec![combine_body_from(2), orphan],
+        true,
+        Vec::new(),
+        Some(target),
+    );
+    assert_ne!(
+        report.items[4].outcome,
+        Outcome::Parametric,
         "{}",
         report.text()
     );

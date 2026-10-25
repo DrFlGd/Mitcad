@@ -186,7 +186,7 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
     }
   };
   addKind(Kind::Solid, tr("Solid"), QStringLiteral("Solid"));
-  addKind(Kind::Build, tr("BUILD"), QStringLiteral("BUILD"));
+  addKind(Kind::Build, tr("Build"), QStringLiteral("Build"));
   addKind(Kind::Construct, tr("Construct"), QStringLiteral("Construct"));
   menu.addSeparator();
 
@@ -208,12 +208,25 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   }
   // Appearances of the bodies selected or picked on (mitcad#46).
   if (const Selection targets = appearanceTargets(); !targets.isEmpty()) {
-    addCall(QStringLiteral("appearance"), tr("Appearance..."), [this, targets] { m_controller->openAppearances(targets); });
+    addCall(QStringLiteral("appearance"), tr("Appearance…"), [this, targets] { m_controller->openAppearances(targets); });
+    // The bodies' material (mitcad#640): a face stands for its body.
+    QStringList bodies;
+    for (const SelectionItem& target : targets) {
+      if (!bodies.contains(target.owner)) {
+        bodies << target.owner;
+      }
+    }
+    addCall(QStringLiteral("material"), tr("Material…"), [this, bodies] { m_controller->openMaterial(bodies); });
+  } else if (selection.size() == 1 && first.kind == SelectKind::Component) {
+    // A component's default material (mitcad#640).
+    const QString component = first.owner;
+    addCall(QStringLiteral("material"), tr("Material…"),
+            [this, component] { m_controller->openMaterial({}, component); });
   }
   // The properties of the first item's body, occurrence and component
   // (mitcad#496).
   if (const PropertyTarget target = propertyTarget(first); !target.isEmpty()) {
-    addCall(QStringLiteral("parameters"), tr("Property Sets..."),
+    addCall(QStringLiteral("parameters"), tr("Property Sets…"),
             [this, target] { m_controller->openPropertySets(target); });
   }
 

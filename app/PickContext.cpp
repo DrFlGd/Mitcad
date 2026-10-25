@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -70,6 +72,9 @@ public:
         mySelectingVolumeMgr.GetActiveSelectionType() != SelectMgr_SelectionType_Point) {
       return;
     }
+    coveredFirst();
+    narrowFaceFirst();
+    lastBehind();
     edgesFirst();
     preferredFirst();
   }
@@ -79,8 +84,79 @@ public:
     m_preferred = std::move(preferred);
   }
   bool prioritized() const { return m_prioritized; }
+  // setPickLast().
+  void setLast(std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> last) {
+    m_last = std::move(last);
+  }
+  void setSources(PickSourceResolver resolve) { m_sources = std::move(resolve); }
+  void setCovers(PickCoverResolver resolve) { m_covers = std::move(resolve); }
 
 private:
+  // The owners put last (construction planes while a placement input takes
+  // picks, mitcad#656) behind the others, each group in its order.
+  void lastBehind() const {
+    if (!m_last) {
+      return;
+    }
+    std::vector<int> front;
+    std::vector<int> behind;
+    for (int rank = myIndexes.Lower(); rank <= myIndexes.Upper(); ++rank) {
+      const int index = myIndexes(rank);
+      (m_last(mystored.FindKey(index)) ? behind : front).push_back(index);
+    }
+    if (front.empty() || behind.empty()) {
+      return;
+    }
+    int rank = myIndexes.Lower();
+    for (const int index : front) {
+      myIndexes(rank++) = index;
+    }
+    for (const int index : behind) {
+      myIndexes(rank++) = index;
+    }
+  }
+
+  // A selection overlay before the previewed body it covers (setPickCovers),
+  // where it lies no farther than that body's first hit; the moved hits keep
+  // their order. The rules below then rank its edges before its face.
+  void coveredFirst() const {
+    if (!m_covers) {
+      return;
+    }
+    std::vector<int> order;
+    for (int rank = myIndexes.Lower(); rank <= myIndexes.Upper(); ++rank) {
+      order.push_back(myIndexes(rank));
+    }
+    bool moved = false;
+    for (std::size_t i = 1; i < order.size(); ++i) {
+      const SelectMgr_SelectableObject* covered = m_covers(mystored.FindKey(order[i]));
+      if (covered == nullptr) {
+        continue;
+      }
+      const SelectMgr_SortCriterion& hit = mystored.FindFromIndex(order[i]);
+      for (std::size_t j = 0; j < i; ++j) {
+        if (mystored.FindKey(order[j])->Selectable().get() != covered) {
+          continue;
+        }
+        const SelectMgr_SortCriterion& bodyHit = mystored.FindFromIndex(order[j]);
+        if (hit.ZLayerPosition >= bodyHit.ZLayerPosition &&
+            hit.Depth - bodyHit.Depth <= hit.Tolerance + bodyHit.Tolerance) {
+          const auto from = order.begin() + static_cast<std::ptrdiff_t>(j);
+          const auto at = order.begin() + static_cast<std::ptrdiff_t>(i);
+          std::rotate(from, at, std::next(at));
+          moved = true;
+        }
+        break;
+      }
+    }
+    if (moved) {
+      int rank = myIndexes.Lower();
+      for (const int index : order) {
+        myIndexes(rank++) = index;
+      }
+    }
+  }
+
   // The preferred owners (the active component's, mitcad#420) before the
   // others, each in their order; m_prioritized when one went before a
   // nearer other one.
@@ -107,22 +183,90 @@ private:
     m_prioritized = true;
   }
 
+  const SelectMgr_SelectableObject* source(const occ::handle<SelectMgr_EntityOwner>& owner) const {
+    return m_sources ? m_sources(owner) : owner->Selectable().get();
+  }
+
+  double cursorOffset(const SelectMgr_SortCriterion& hit) const {
+    const gp_Vec toHit(mySelectingVolumeMgr.GetNearPickedPnt(), hit.Point);
+    const double distance = toHit.Crossed(gp_Vec(mySelectingVolumeMgr.GetViewRayDirection())).Magnitude();
+    return hit.Tolerance > 0.0 ? distance / hit.Tolerance : distance;
+  }
+
+  bool edgeOn(const SelectMgr_SortCriterion& hit) const {
+    const gp_Vec normal(hit.Normal.x(), hit.Normal.y(), hit.Normal.z());
+    return normal.Magnitude() > 0.0 &&
+        std::abs(normal.Dot(gp_Vec(mySelectingVolumeMgr.GetViewRayDirection()))) <= 1e-6 * normal.Magnitude();
+  }
+
+  void narrowFaceFirst() const {
+    const int first = myIndexes.Lower();
+    const int nearestIndex = myIndexes(first);
+    const auto& nearest = mystored.FindKey(nearestIndex);
+    const TopoDS_Shape* nearestShape = ownedShape(nearest);
+    if (!nearestShape) { return; }
+    const auto& edgeHit = mystored.FindFromIndex(nearestIndex);
+    const bool nearestEdge = nearestShape->ShapeType() == TopAbs_EDGE;
+    if (!nearestEdge && (nearestShape->ShapeType() != TopAbs_FACE || !edgeOn(edgeHit))) { return; }
+    const auto* nearestSource = source(nearest);
+    int bestRank = -1;
+    double bestOffset = std::numeric_limits<double>::infinity();
+    // On a flat strip OCCT can put an edge first even at the face's
+    // centre. Apply the same opposing-edge rule before promoting edges;
+    // a face below a selected edge's layer must not take its removal click.
+    for (int faceRank = first + 1; faceRank <= myIndexes.Upper(); ++faceRank) {
+      const int faceIndex = myIndexes(faceRank);
+      const auto& faceOwner = mystored.FindKey(faceIndex);
+      const TopoDS_Shape* face = ownedShape(faceOwner);
+      const auto& faceHit = mystored.FindFromIndex(faceIndex);
+      if (!face || face->ShapeType() != TopAbs_FACE || source(faceOwner) != nearestSource ||
+          faceHit.ZLayerPosition < edgeHit.ZLayerPosition || edgeOn(faceHit) ||
+          (nearestEdge && (!bounds(*nearestShape, *face) || !onSurface(edgeHit, faceHit)))) { continue; }
+      std::vector<std::pair<TopoDS_Shape, double>> edges;
+      bool sharesBoundary = nearestEdge;
+      for (int rank = first; rank <= myIndexes.Upper(); ++rank) {
+        const int index = myIndexes(rank);
+        const auto& owner = mystored.FindKey(index);
+        const TopoDS_Shape* shape = ownedShape(owner);
+        const auto& hit = mystored.FindFromIndex(index);
+        if (!shape || shape->ShapeType() != TopAbs_EDGE || source(owner) != nearestSource ||
+            !bounds(*shape, *face) || !onSurface(hit, faceHit) ||
+            std::any_of(edges.begin(), edges.end(), [&](const auto& edge) { return edge.first.IsSame(*shape); })) {
+          continue;
+        }
+        sharesBoundary = sharesBoundary || bounds(*shape, *nearestShape);
+        edges.emplace_back(*shape, cursorOffset(hit));
+      }
+      std::sort(edges.begin(), edges.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+      if (!sharesBoundary || edges.size() < 2 || edges[0].second <= kNearerEdge * edges[1].second) { continue; }
+      // An edge-on side face may also lie within its pick tolerance.
+      // Prefer the face actually under the cursor over that margin hit.
+      const double offset = cursorOffset(faceHit);
+      if (offset < bestOffset) { bestOffset = offset; bestRank = faceRank; }
+    }
+    if (bestRank >= 0) {
+      const int faceIndex = myIndexes(bestRank);
+      for (int rank = bestRank; rank > first; --rank) { myIndexes(rank) = myIndexes(rank - 1); }
+      myIndexes(first) = faceIndex;
+    }
+  }
+
   void edgesFirst() const {
     const int first = myIndexes.Lower();
     const int nearestIndex = myIndexes(first);
     const occ::handle<SelectMgr_EntityOwner>& nearest = mystored.FindKey(nearestIndex);
     const TopoDS_Shape* nearestShape = ownedShape(nearest);
     const int nearestDimension = nearestShape != nullptr ? dimensionOf(*nearestShape) : -1;
+    const auto* nearestSource = source(nearest);
     if (nearestDimension < 1) {
       return; // not a body's face or edge
     }
     const SelectMgr_SortCriterion& hit = mystored.FindFromIndex(nearestIndex);
-    const gp_Pnt rayStart = mySelectingVolumeMgr.GetNearPickedPnt();
-    const gp_Dir ray = mySelectingVolumeMgr.GetViewRayDirection();
     struct Candidate {
       int index;     // into mystored
       int dimension; // vertices before edges
       double offset; // from the cursor, in the entity's pick widths
+      TopoDS_Shape shape;
     };
     std::vector<Candidate> promoted;
     std::vector<int> rest;
@@ -132,13 +276,21 @@ private:
       const TopoDS_Shape* shape = ownedShape(owner);
       const int dimension = shape != nullptr ? dimensionOf(*shape) : -1;
       const SelectMgr_SortCriterion& data = mystored.FindFromIndex(index);
-      if (dimension < 0 || dimension >= nearestDimension || owner->Selectable() != nearest->Selectable() ||
+      if (dimension < 0 || dimension >= nearestDimension || source(owner) != nearestSource ||
           !bounds(*shape, *nearestShape) || !onSurface(data, hit)) {
         rest.push_back(index);
         continue;
       }
-      const double offset = gp_Vec(rayStart, data.Point).Crossed(gp_Vec(ray)).Magnitude();
-      promoted.push_back({index, dimension, data.Tolerance > 0.0 ? offset / data.Tolerance : offset});
+      // The same edge may be hit through both its overlay and the body.
+      // Count it once, including for the narrow-face rule below.
+      if (std::any_of(promoted.begin(), promoted.end(), [&](const Candidate& other) {
+            return shape->IsSame(other.shape);
+          })) {
+        rest.push_back(index);
+        continue;
+      }
+      promoted.push_back({index, dimension, cursorOffset(data),
+                          *shape});
     }
     std::stable_sort(promoted.begin(), promoted.end(), [](const Candidate& a, const Candidate& b) {
       return a.dimension != b.dimension ? a.dimension < b.dimension : a.offset < b.offset;
@@ -174,7 +326,10 @@ private:
     }
   }
 
+  PickSourceResolver m_sources;
+  PickCoverResolver m_covers;
   std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> m_preferred;
+  std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> m_last;
   mutable bool m_prioritized = false;
 
   // Whether an edge or vertex picked with a face lies on the face's surface
@@ -208,10 +363,29 @@ occ::handle<AIS_InteractiveContext> makePickContext(const occ::handle<V3d_Viewer
   return new PickContext(viewer);
 }
 
+void setPickSources(const occ::handle<AIS_InteractiveContext>& context, PickSourceResolver resolve) {
+  const auto selector = occ::handle<EdgeFirstSelector>::DownCast(context->MainSelector());
+  if (!selector.IsNull()) { selector->setSources(std::move(resolve)); }
+}
+
+void setPickCovers(const occ::handle<AIS_InteractiveContext>& context, PickCoverResolver resolve) {
+  const auto selector = occ::handle<EdgeFirstSelector>::DownCast(context->MainSelector());
+  if (!selector.IsNull()) {
+    selector->setCovers(std::move(resolve));
+  }
+}
+
 void setPickPriority(const occ::handle<AIS_InteractiveContext>& context, PickPreference preferred) {
   const auto selector = occ::handle<EdgeFirstSelector>::DownCast(context->MainSelector());
   if (!selector.IsNull()) {
     selector->setPreferred(std::move(preferred));
+  }
+}
+
+void setPickLast(const occ::handle<AIS_InteractiveContext>& context, PickPreference last) {
+  const auto selector = occ::handle<EdgeFirstSelector>::DownCast(context->MainSelector());
+  if (!selector.IsNull()) {
+    selector->setLast(std::move(last));
   }
 }
 

@@ -233,6 +233,8 @@ bool SketchModel::load(const QJsonObject& sketch) {
     d.parameter = k.value(d.driven ? QStringLiteral("reference") : QStringLiteral("value")).toString();
     d.expression = k.value(QStringLiteral("expression")).toString();
     d.comment = k.value(QStringLiteral("comment")).toString();
+    d.limited = k.value(QStringLiteral("limited")).toString();
+    d.limitMessage = k.value(QStringLiteral("limit_message")).toString();
     d.measured = number(k, "measured");
     d.signedOffset = flag(k, "signed");
     if (k.value(QStringLiteral("text")).isArray()) {
@@ -269,6 +271,12 @@ bool SketchModel::load(const QJsonObject& sketch) {
     const QJsonObject code = t.value(QStringLiteral("code")).toObject();
     text.code = !code.isEmpty();
     text.ecc = code.value(QStringLiteral("ecc")).toString(QStringLiteral("M"));
+    const QJsonObject followed = t.value(QStringLiteral("value")).toObject();
+    if (!followed.isEmpty()) {
+      text.value = followed.value(QStringLiteral("own")).toBool()
+                       ? followed.value(QStringLiteral("expression")).toString()
+                       : followed.value(QStringLiteral("parameter")).toString();
+    }
     texts.push_back(text);
   }
 

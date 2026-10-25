@@ -17,8 +17,8 @@ mark
 native-action solid.box
 expect-log 'Command Box started'
 click-logged 'Datum xy'
-native-type input_x '0 mm'
-native-type input_y '0 mm'
+native-type input_at_offset1 '0 mm'
+native-type input_at_offset2 '0 mm'
 native-type input_length '10 mm'
 native-type input_width '10 mm'
 native-type input_height '10 mm'
@@ -30,8 +30,8 @@ mark
 native-action solid.box
 expect-log 'Command Box started'
 click-logged 'Datum xy'
-native-type input_x '20 mm'
-native-type input_y '0 mm'
+native-type input_at_offset1 '20 mm'
+native-type input_at_offset2 '0 mm'
 native-type input_length '10 mm'
 native-type input_width '10 mm'
 native-type input_height '20 mm'
@@ -43,8 +43,8 @@ mark
 native-action solid.box
 expect-log 'Command Box started'
 click-logged 'Datum xy'
-native-type input_x '40 mm'
-native-type input_y '0 mm'
+native-type input_at_offset1 '40 mm'
+native-type input_at_offset2 '0 mm'
 native-type input_length '10 mm'
 native-type input_width '10 mm'
 native-type input_height '30 mm'

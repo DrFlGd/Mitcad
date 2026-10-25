@@ -9,13 +9,16 @@
 //! at x + length, …), a cylinder's, sphere's and torus's curved face is
 //! `side0`. The height of a box or a cylinder goes along the plane's normal
 //! (against it when negative), or both ways with `symmetric` (experiment
-//! K59 asks the defaults of .f3d designs).
+//! K59 asks the defaults of .f3d designs). `at` places a primitive by
+//! picked geometry instead (mitcad#656, `place_at.rs`): its frame is the
+//! plane, its origin the position (a box's corner).
 
 use serde::{Deserialize, Serialize};
 
 use super::bodies::{BodySet, apply_tool, boolean_op, verb};
 use super::geom_ref::{GeomRef, Want};
 use super::mapping::map_params;
+use super::place_at::{PlaceAt, map_at};
 use super::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, Operation, References,
     ToolUse, is_false,
@@ -44,13 +47,102 @@ fn is_on_center(position: &TorusPosition) -> bool {
     *position == TorusPosition::OnCenter
 }
 
+/// A coordinate of a primitive's position on its plane (mitcad#689): a
+/// plain number, as documents and imports have always written it, or a
+/// value like the sizes: an expression or a parameter (`"-L/2"`, `"W"`),
+/// which becomes a parameter of the feature and follows its changes. A
+/// number stays a number, so stored documents load as they were.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged, expecting = "a number or an expression")]
+pub enum Coord<P = ParamId> {
+    Number(f64),
+    Value(P),
+}
+
+impl<P> Default for Coord<P> {
+    fn default() -> Self {
+        Self::Number(0.0)
+    }
+}
+
+/// A position left out: the origin. (A named default, so that serde asks no
+/// `Default` of the parameter type, as `#[serde(default)]` would.)
+fn origin<P>() -> [Coord<P>; 2] {
+    [Coord::Number(0.0), Coord::Number(0.0)]
+}
+
+impl Coord {
+    /// The coordinate in millimetres, reading its parameter.
+    fn read<K: Kernel>(&self, ctx: &mut EvalContext<'_, K>) -> Result<f64, String> {
+        match self {
+            Self::Number(value) => Ok(*value),
+            Self::Value(id) => ctx.param(*id),
+        }
+    }
+
+    /// The coordinate by `value` (a parameter's value).
+    fn value(&self, value: &dyn Fn(ParamId) -> f64) -> f64 {
+        match self {
+            Self::Number(number) => *number,
+            Self::Value(id) => value(*id),
+        }
+    }
+}
+
+/// Maps a position's values: slots `<field>.x` and `<field>.y`; a plain
+/// number has no slot.
+fn map_point<P, Q, E>(
+    field: &str,
+    point: &[Coord<P>; 2],
+    f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
+) -> Result<[Coord<Q>; 2], E> {
+    let mut one = |axis: &str, coord: &Coord<P>| -> Result<Coord<Q>, E> {
+        Ok(match coord {
+            Coord::Number(number) => Coord::Number(*number),
+            Coord::Value(value) => Coord::Value(f(&format!("{field}.{axis}"), value)?),
+        })
+    };
+    let x = one("x", &point[0])?;
+    let y = one("y", &point[1])?;
+    Ok([x, y])
+}
+
+fn map_corner<P, Q, E>(
+    corner: &[Coord<P>; 2],
+    f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
+) -> Result<[Coord<Q>; 2], E> {
+    map_point("corner", corner, f)
+}
+
+fn map_center<P, Q, E>(
+    center: &[Coord<P>; 2],
+    f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
+) -> Result<[Coord<Q>; 2], E> {
+    map_point("center", center, f)
+}
+
+/// Checks a position's values: finite.
+fn check_point(
+    what: &str,
+    point: &[Coord; 2],
+    value: &dyn Fn(ParamId) -> f64,
+) -> Result<(), String> {
+    if point.iter().all(|coord| coord.value(value).is_finite()) {
+        Ok(())
+    } else {
+        Err(format!("the {what}'s position must be finite"))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BoxDef<P = ParamId> {
-    pub plane: GeomRef,
+    /// None with `at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plane: Option<GeomRef>,
     /// The first corner, in plane coordinates.
-    #[serde(default)]
-    pub corner: [f64; 2],
+    #[serde(default = "origin")]
+    pub corner: [Coord<P>; 2],
     /// Along the plane's x axis.
     pub length: P,
     /// Along the plane's y axis.
@@ -61,15 +153,21 @@ pub struct BoxDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// Placed by picked geometry instead of `plane` and the position
+    /// (mitcad#656, `place_at.rs`).
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub at: Option<PlaceAt<P>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CylinderDef<P = ParamId> {
-    pub plane: GeomRef,
+    /// None with `at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plane: Option<GeomRef>,
     /// The centre of the base, in plane coordinates.
-    #[serde(default)]
-    pub center: [f64; 2],
+    #[serde(default = "origin")]
+    pub center: [Coord<P>; 2],
     pub diameter: P,
     pub height: P,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -77,27 +175,39 @@ pub struct CylinderDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// Placed by picked geometry instead of `plane` and the position
+    /// (mitcad#656, `place_at.rs`).
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub at: Option<PlaceAt<P>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SphereDef<P = ParamId> {
-    pub plane: GeomRef,
-    #[serde(default)]
-    pub center: [f64; 2],
+    /// None with `at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plane: Option<GeomRef>,
+    #[serde(default = "origin")]
+    pub center: [Coord<P>; 2],
     pub diameter: P,
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// Placed by picked geometry instead of `plane` and the position
+    /// (mitcad#656, `place_at.rs`).
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub at: Option<PlaceAt<P>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TorusDef<P = ParamId> {
-    pub plane: GeomRef,
+    /// None with `at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plane: Option<GeomRef>,
     /// The centre, in plane coordinates; the axis is the plane's normal.
-    #[serde(default)]
-    pub center: [f64; 2],
+    #[serde(default = "origin")]
+    pub center: [Coord<P>; 2],
     /// The diameter the ring lies on (see `position`).
     pub diameter: P,
     /// The diameter of the ring's section.
@@ -107,6 +217,10 @@ pub struct TorusDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// Placed by picked geometry instead of `plane` and the position
+    /// (mitcad#656, `place_at.rs`).
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub at: Option<PlaceAt<P>>,
 }
 
 impl<P> BoxDef<P> {
@@ -116,13 +230,14 @@ impl<P> BoxDef<P> {
     map_params! {
         BoxDef {
             plane: clone,
-            corner: copy,
+            corner: with(map_corner),
             length: param,
             width: param,
             height: param,
             symmetric: copy,
             operation: copy,
             participants: clone,
+            at: with(map_at),
         }
     }
 }
@@ -134,12 +249,13 @@ impl<P> CylinderDef<P> {
     map_params! {
         CylinderDef {
             plane: clone,
-            center: copy,
+            center: with(map_center),
             diameter: param,
             height: param,
             symmetric: copy,
             operation: copy,
             participants: clone,
+            at: with(map_at),
         }
     }
 }
@@ -151,10 +267,11 @@ impl<P> SphereDef<P> {
     map_params! {
         SphereDef {
             plane: clone,
-            center: copy,
+            center: with(map_center),
             diameter: param,
             operation: copy,
             participants: clone,
+            at: with(map_at),
         }
     }
 }
@@ -166,12 +283,13 @@ impl<P> TorusDef<P> {
     map_params! {
         TorusDef {
             plane: clone,
-            center: copy,
+            center: with(map_center),
             diameter: param,
             section_diameter: param,
             position: copy,
             operation: copy,
             participants: clone,
+            at: with(map_at),
         }
     }
 }
@@ -179,8 +297,10 @@ impl<P> TorusDef<P> {
 /// What the four primitives share: placement, operation and participants.
 struct Common<'a> {
     what: &'static str,
-    plane: &'a GeomRef,
-    point: [f64; 2],
+    plane: Option<&'a GeomRef>,
+    /// Placed by picked geometry (mitcad#656).
+    at: Option<&'a PlaceAt>,
+    point: &'a [Coord; 2],
     operation: Operation,
     participants: &'a [BodyUid],
 }
@@ -188,7 +308,12 @@ struct Common<'a> {
 impl Common<'_> {
     fn references(&self) -> References {
         let mut references = References::default();
-        self.plane.add_to(&mut references);
+        if let Some(plane) = self.plane {
+            plane.add_to(&mut references);
+        }
+        if let Some(at) = self.at {
+            at.add_to(&mut references);
+        }
         for body in self.participants {
             references.body(*body);
         }
@@ -196,8 +321,30 @@ impl Common<'_> {
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
-        self.plane.check(ctx, Want::Plane)?;
-        if !self.point.iter().all(|v| v.is_finite()) {
+        // On a plane, or placed by picked geometry (mitcad#656).
+        match (self.plane, self.at) {
+            (Some(plane), None) => plane.check(ctx, Want::Plane)?,
+            (None, Some(at)) => {
+                if self.point.iter().any(|coord| *coord != Coord::Number(0.0)) {
+                    return Err(format!(
+                        "a {} placed by at takes its position from the placement",
+                        self.what
+                    ));
+                }
+                at.check(ctx)?;
+            }
+            (None, None) => {
+                return Err(format!("a {} needs a plane or a placement (at)", self.what));
+            }
+            (Some(_), Some(_)) => {
+                return Err(format!("a {} placed by at takes no plane", self.what));
+            }
+        }
+        // A value's own number is checked by check_values (mitcad#689).
+        if !self.point.iter().all(|coord| match coord {
+            Coord::Number(number) => number.is_finite(),
+            Coord::Value(_) => true,
+        }) {
             return Err(format!("the {}'s position must be finite", self.what));
         }
         if self.operation.makes_bodies() && !self.participants.is_empty() {
@@ -225,8 +372,18 @@ impl Common<'_> {
         shape: PrimitiveShape,
         lift: f64,
     ) -> Result<K::Shape, String> {
-        let mut frame = ctx.plane(self.plane)?.frame();
-        frame.origin = add(frame.point(self.point), scaled(frame.normal(), lift));
+        let mut frame = match (self.plane, self.at) {
+            // Placed by picked geometry (mitcad#656).
+            (_, Some(at)) => ctx.place_def(at)?.frame,
+            (Some(plane), None) => {
+                let point = [self.point[0].read(ctx)?, self.point[1].read(ctx)?];
+                let mut frame = ctx.plane(plane)?.frame();
+                frame.origin = frame.point(point);
+                frame
+            }
+            (None, None) => return Err(format!("a {} needs a plane or a placement", self.what)),
+        };
+        frame.origin = add(frame.origin, scaled(frame.normal(), lift));
         let spec = PrimitiveSpec {
             feature,
             frame: placement.apply_frame(&frame),
@@ -327,8 +484,9 @@ impl Primitive for BoxDef {
     fn common(&self) -> Common<'_> {
         Common {
             what: "box",
-            plane: &self.plane,
-            point: self.corner,
+            plane: self.plane.as_ref(),
+            at: self.at.as_ref(),
+            point: &self.corner,
             operation: self.operation,
             participants: &self.participants,
         }
@@ -358,8 +516,9 @@ impl Primitive for CylinderDef {
     fn common(&self) -> Common<'_> {
         Common {
             what: "cylinder",
-            plane: &self.plane,
-            point: self.center,
+            plane: self.plane.as_ref(),
+            at: self.at.as_ref(),
+            point: &self.center,
             operation: self.operation,
             participants: &self.participants,
         }
@@ -381,8 +540,9 @@ impl Primitive for SphereDef {
     fn common(&self) -> Common<'_> {
         Common {
             what: "sphere",
-            plane: &self.plane,
-            point: self.center,
+            plane: self.plane.as_ref(),
+            at: self.at.as_ref(),
+            point: &self.center,
             operation: self.operation,
             participants: &self.participants,
         }
@@ -401,8 +561,9 @@ impl Primitive for TorusDef {
     fn common(&self) -> Common<'_> {
         Common {
             what: "torus",
-            plane: &self.plane,
-            point: self.center,
+            plane: self.plane.as_ref(),
+            at: self.at.as_ref(),
+            point: &self.center,
             operation: self.operation,
             participants: &self.participants,
         }
@@ -474,7 +635,9 @@ macro_rules! primitive_feature {
             ) -> Option<Result<K::Shape, String>> {
                 // A face found again on the later bodies could lie elsewhere;
                 // the pattern moves the finished tool instead.
-                if matches!(self.common().plane, GeomRef::Face { .. }) {
+                // So could a placement's references (mitcad#656).
+                let common = self.common();
+                if matches!(common.plane, Some(GeomRef::Face { .. })) || common.at.is_some() {
                     return None;
                 }
                 Some(self.shape(ctx).and_then(|(shape, lift)| {
@@ -486,21 +649,25 @@ macro_rules! primitive_feature {
 }
 
 primitive_feature!(BoxDef, |self, value| {
+    check_point("box", &self.corner, value)?;
     positive("box length", value(self.length))?;
     positive("box width", value(self.width))?;
     nonzero("box height", value(self.height)).map(|_| ())
 });
 
 primitive_feature!(CylinderDef, |self, value| {
+    check_point("cylinder", &self.center, value)?;
     positive("cylinder diameter", value(self.diameter))?;
     nonzero("cylinder height", value(self.height)).map(|_| ())
 });
 
 primitive_feature!(SphereDef, |self, value| {
+    check_point("sphere", &self.center, value)?;
     positive("sphere diameter", value(self.diameter)).map(|_| ())
 });
 
 primitive_feature!(TorusDef, |self, value| {
+    check_point("torus", &self.center, value)?;
     let diameter = positive("torus diameter", value(self.diameter))?;
     let section = positive("torus section diameter", value(self.section_diameter))?;
     torus_radii(diameter, section, self.position).map(|_| ())

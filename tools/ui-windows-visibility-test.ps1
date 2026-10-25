@@ -23,6 +23,10 @@
 #      command or the sketch first." during the pick and during Extrude,
 #      where the component's light bulb works; the Origin folder's light
 #      bulb during the pick shows the planes, and XY can be picked.
+#   6. The same design: Create Sketch offers the hidden origin planes in the
+#      browser (mitcad#694): the Origin folder opens with XY, XZ and YZ
+#      pickable, its light bulb unchanged; a click on the XZ row starts the
+#      sketch on it, and the folder folds back.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-visibility-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -73,6 +77,38 @@ function Hide-Body1([string]$Command) {
   if (-not $drawn.Contains('F4.b0 at')) { Ui-Fail "the preview lost Body2: $drawn" }
   Write-Host 'ok   the preview without Body1, with Body2'
   Ui-ExpectNone "Preview ${Command}: " 'the preview not computed again'
+}
+
+# Place-Valid "text": whether the last line about it gives its place
+# ("<text> at x,y") and not "<text> out of sight" (BrowserPanel::logLayout).
+function Place-Valid([string]$Text) {
+  $last = [string](Ui-LogLines | Where-Object { $_.Contains("$Text at ") -or $_.Contains("$Text out of sight") } |
+    Select-Object -Last 1)
+  return ($last -ne '' -and -not $last.EndsWith(' out of sight'))
+}
+
+# Click-Row "Browser <path>" (or "Browser eye|radio <path>"): a browser row
+# clicked, scrolled into sight first by wheel steps over the rows (down, then
+# up) when it is not. The Origin folder opened for Create Sketch's plane pick
+# (mitcad#694) can push rows below the card's edge in session 0's 1024x768
+# desktop; a place the row has left is never clicked.
+function Click-Row([string]$Text) {
+  foreach ($steps in @(-2, 2)) {
+    for ($i = 0; $i -lt 8 -and -not (Place-Valid $Text); $i++) {
+      $row = Ui-LogLines | Select-String -Pattern '^Browser (?:eye |radio )?Root.* at (\d+),(\d+)$' |
+        Select-Object -Last 1
+      if (-not $row) { break }
+      $x = [int]$row.Matches[0].Groups[1].Value
+      $y = [int]$row.Matches[0].Groups[2].Value
+      [UiInput]::Move($script:UiWindow, $x, $y, 0)
+      Start-Sleep -Milliseconds 80
+      [UiInput]::Wheel($script:UiWindow, $x, $y, $steps)
+      Ui-Sync
+      Start-Sleep -Milliseconds 300
+    }
+  }
+  if (-not (Place-Valid $Text)) { Ui-Fail "'$Text' is out of sight (scrolled away, folded or gone)" }
+  Ui-ClickLogged $Text
 }
 
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
@@ -205,7 +241,7 @@ Ui-ExpectNew 'Create Sketch: origin planes not shown (the design has components)
 Ui-ExpectNew 'Pick face F4.b0/F4:end(' 'Body2''s top face can be picked'
 Ui-ExpectNone 'Datum xy at' 'the XY plane is not in the view'
 Ui-Mark
-Ui-Step 'activate Part (radio)'          { Ui-ClickLogged 'Browser radio Root/Part:1' }
+Ui-Step 'activate Part (radio)'          { Click-Row 'Browser radio Root/Part:1' }
 Ui-ExpectNew 'Create Sketch is waiting for a plane: pick one or press Esc.' 'other browser actions wait for the plane pick'
 Ui-ExpectNone 'Activated Part' 'Part not activated'
 Ui-Step 'pick Body2''s top face'         { Ui-ClickPick 'face F4.b0/F4:end(' }
@@ -214,12 +250,30 @@ Ui-Mark
 Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
 Ui-ExpectNew 'Sketch finished' 'the empty sketch finished'
 
+Write-Host '--- The hidden origin planes offered in the browser (mitcad#694)'
+Ui-Mark
+Ui-Step 'create sketch (F7)'             { Ui-Key 'F7' }
+Ui-ExpectNew 'Create Sketch: origin planes not shown (the design has components)' 'the origin planes not shown'
+Ui-ExpectNew 'Browser offers the origin planes: Root/Origin open; XY, XZ, YZ pickable' 'the Origin folder opened, its planes pickable'
+Ui-ExpectNew 'Browser Root/Origin/XZ at' 'the XZ row in sight'
+Ui-ExpectNone 'Visibility Root/Origin' 'the Origin''s light bulb not changed'
+Ui-ExpectNone 'Datum xz at' 'the XZ plane is not in the view'
+Ui-Mark
+Ui-Step 'click XZ in the browser'        { Click-Row 'Browser Root/Origin/XZ' }
+Ui-ExpectNew 'Sketch started on xz' 'the sketch started on the origin''s XZ plane'
+Ui-ExpectNew 'Browser no longer offers the origin planes: Root/Origin folded' 'the Origin folder folded back'
+Ui-ExpectNew 'Browser Root/Origin/XZ out of sight' 'the XZ row folded away'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'the empty sketch finished'
+Ui-ExpectNone 'Browser Root/Origin/XZ at' 'the Origin folder stays folded'
+
 Write-Host '--- The Origin folder''s light bulb during the pick'
 Ui-Mark
 Ui-Step 'create sketch (F7)'             { Ui-Key 'F7' }
 Ui-ExpectNew 'Create Sketch: origin planes not shown (the design has components)' 'the origin planes not shown'
 Ui-Mark
-Ui-Step 'show the origin'                { Ui-ClickLogged 'Browser eye Root/Origin' }
+Ui-Step 'show the origin'                { Click-Row 'Browser eye Root/Origin' }
 Ui-ExpectNew 'Visibility Root/Origin: shown (during Create Sketch)' 'the Origin folder shown during the pick'
 Ui-ExpectNew 'Datum xy at' 'the XY plane in the view'
 Ui-Step 'pick XY'                        { Ui-ClickLogged 'Datum xy' }
@@ -237,7 +291,7 @@ Ui-Mark
 Ui-Step 'hide Part:1'                    { Ui-ClickLogged 'Browser eye Root/Part:1' }
 Ui-ExpectNew 'Visibility Root/Part:1: hidden (during Extrude)' 'Part:1 hidden during Extrude'
 Ui-Mark
-Ui-Step 'activate Part (radio)'          { Ui-ClickLogged 'Browser radio Root/Part:1' }
+Ui-Step 'activate Part (radio)'          { Click-Row 'Browser radio Root/Part:1' }
 Ui-ExpectNew 'Finish the command or the sketch first.' 'other browser actions wait for the command'
 Ui-ExpectNone 'Activated Part' 'Part not activated'
 Ui-Mark

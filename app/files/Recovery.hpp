@@ -16,7 +16,7 @@ namespace mitcad {
 
 // Recovery (P8c): the work that sessions which did not end normally (a
 // crash, a kill) left in the recovery folder (Autosave.hpp), offered when
-// the application starts and by File > Recover Documents.
+// the application starts and by File > Recover Designs.
 
 // A session whose process is gone, with what its files tell.
 struct RecoverableSession {

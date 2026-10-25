@@ -16,7 +16,7 @@
 #     Face onto another body's cylinder (tools/cli/tests/f2_face_ops.json).
 #   - Move/Copy: translate, a copy moved freely (its arrow dragged), a
 #     rotation; Combine, Align (a vertex onto a vertex), Split Body;
-#     Physical Material, Physical Properties and Appearance.
+#     Edit Materials, Physical Properties and Appearance.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-modify-test.sh [screenshot.png]
@@ -399,20 +399,29 @@ ui_step "OK (Enter)"                       ui_key Return
 ui_expect_volume "Body Body1 (F2.b0): volume 14000.000 -> \([0-9.]*\) mm3" 4000 "the piece below x = 10"
 ui_expect_volume "New body [A-Za-z0-9]* (F10.b0): volume \([0-9.]*\) mm3" 10000 "the piece above"
 
-ui_step "physical material (search)"      ui_command "Physical Material"
+# Edit Materials opens the Materials window for the selection (mitcad#655).
 ui_step "pick Body1"                       ui_click_logged "Browser Root/Bodies/Body1"
-ui_step "Aluminum"                         ui_choose "Panel Physical Material input value" 3
-ui_step "OK (Enter)"                       ui_key Return
-ui_expect_log "Material aluminum for 1 body(ies)" "aluminium"
+ui_mark
+ui_step "Edit Materials (search)"         ui_command "Edit Materials"
+ui_focus_dialog '^Materials$'
+ui_expect_new "Materials item Aluminum at" "Aluminum is listed"
+ui_step "choose Aluminum"                  ui_click_logged "Materials item Aluminum"
+ui_expect_new "Material selected: Aluminum (" "Aluminum is selected"
+ui_step "Assign"                           ui_click_logged "Materials assign"
+ui_focus_main
+ui_expect_new "Material aluminum set for 1 body(ies)" "aluminium"
 ui_step "physical properties (search)"    ui_command "Physical Properties"
 ui_expect_log "Physical properties: Body1 volume 4000 mass 0.0108 center (5, 10, 10)" \
   "4000 mm3 of aluminium weighs 10.8 g"
 ui_focus_dialog "Properties"
 ui_step "close the dialog (Esc)"           ui_key Escape
 ui_focus_main
+# Body1 is still selected after Edit Materials' Assign (mitcad#655):
+# Appearance starts with it, and a click on its row would take it out.
+ui_mark
 ui_step "appearance (search)"              ui_command "Appearance"
-ui_step "pick Body1"                       ui_click_logged "Browser Root/Bodies/Body1"
-ui_step "Paint - Red"                      ui_choose "Panel Appearance input value" 5
+ui_expect_new "Appearance Bodies: 1 body [body F2.b0]" "Appearance takes the selected Body1"
+ui_step "Paint - Red"                    ui_choose "Panel Appearance input value" 5
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_log "Appearance paint_red for 1 body(ies)" "painted red"
 

@@ -87,8 +87,11 @@ use projects::{projects_command, projects_command_text};
 // Live updates (mitcad#89).
 use live::{LiveHub, new_live_hub};
 use mcp::{
-    LiveMcpSession, new_live_mcp_session, run_mcp, validate_mcp_command, validate_mcp_query,
+    LiveMcpSession, build_mcp_bundle, new_live_mcp_session, plan_codex_mcp_config, run_mcp,
+    validate_mcp_command, validate_mcp_query, verify_codex_mcp_config,
 };
+// Live MCP's compact command results and command arrays (mitcad#689).
+use mcp::{mcp_command_document, mcp_entry_failed, mcp_recomputed, mcp_snapshot_queries};
 
 #[cxx::bridge(namespace = "mitcad")]
 mod ffi {
@@ -108,6 +111,11 @@ mod ffi {
 
         /// Serves local MCP tools on stdin/stdout within the workspace.
         fn run_mcp(workspace: &str, read_only: bool) -> Result<()>;
+        /// Plan a preserving local assistant configuration edit; no filesystem IO.
+        fn plan_codex_mcp_config(current: &str, bridge: &str, replace_existing: bool) -> String;
+        fn verify_codex_mcp_config(before: &str, after: &str, bridge: &str) -> String;
+        /// Build an MCP bundle containing the installed native launcher.
+        fn build_mcp_bundle(manifest: &str, launcher_path: &str) -> Result<Vec<u8>>;
 
         /// Live MCP protocol only; the application owns and dispatches tools.
         type LiveMcpSession;
@@ -120,6 +128,24 @@ mod ffi {
         fn validate_mcp_features(self: &Document) -> Result<()>;
         fn validate_mcp_document_command(self: &Document, request: &str) -> Result<()>;
         fn validate_mcp_query(request: &str) -> Result<()>;
+        /// Live MCP's command results, arrays and export (mitcad#689).
+        fn mcp_snapshot_queries() -> String;
+        fn mcp_command_document(
+            mode: &str,
+            before: &str,
+            after: &str,
+            times: &str,
+        ) -> Result<String>;
+        fn mcp_entry_failed(result: &str) -> bool;
+        fn mcp_recomputed(result: &str) -> bool;
+        fn mcp_export_plan(
+            self: &Document,
+            arguments: &str,
+            path: &str,
+            title: &str,
+            design_folder: &str,
+        ) -> Result<String>;
+        fn mcp_export_drawing(self: &Document, command: &str) -> Result<String>;
 
         fn new_document() -> Box<Document>;
         /// A new, empty design: Root and an empty component Part1, active,
@@ -148,6 +174,10 @@ mod ffi {
         fn clear_preview(self: &mut Document);
         /// Runs a script of commands and expectations (mitcad-cli run).
         fn run_script(self: &mut Document, json: &str) -> Result<String>;
+        /// Runs a script as run_script does; returns how long each step
+        /// took, a line "Timing steps[i] <name>: <ms> ms" per step
+        /// (mitcad-cli run --timings).
+        fn run_script_timings(self: &mut Document, json: &str) -> Result<String>;
         /// The timeline and the bodies with their measurements, as text or
         /// JSON.
         fn report(self: &Document, json: bool) -> Result<String>;
@@ -740,6 +770,12 @@ impl Document {
 
     fn run_script(&mut self, json: &str) -> Result<String, ApiError> {
         self.0.run_script(json)
+    }
+
+    fn run_script_timings(&mut self, json: &str) -> Result<String, ApiError> {
+        let mut times = String::new();
+        self.0.run_script_timed(json, Some(&mut times))?;
+        Ok(times)
     }
 
     fn report(&self, json: bool) -> Result<String, ApiError> {

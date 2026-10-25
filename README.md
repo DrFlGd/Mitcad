@@ -120,8 +120,8 @@ pinned sources outside the build folders
 development machine. Without the prefix the configure stops and names the
 script. The renderer is the
 executable `mitcad-render` next to `mitcad` (only it links the renderer's
-libraries), and View > Rendered appears whenever it is there, with View
-> Render Environment for the design's light (with lights of one's own),
+libraries), and View › Visual Style › Rendered appears whenever it is there, with View
+› Render Environment for the design's light (with lights of one's own),
 background, ground and exposure, and Render Image (and `mitcad-cli render`) for a final
 image file at a chosen size and quality; the AppImage, the Windows
 installer and the macOS bundle include it.
@@ -196,7 +196,7 @@ corpus setup: [docs/development.md](docs/development.md#the-check-script).
 | `geometry` | C++ facade over OCCT |
 | `app` | Qt application ([app/COMMANDS.md](app/COMMANDS.md)) |
 | `tools` | `mitcad-cli`, UI tests, dev environment scripts, FreeCAD export macros, macOS packaging |
-| `docs` | [Architecture](docs/architecture.md), [development](docs/development.md), [user guide](docs/user-guide.md), [updates](docs/updates.md), [rendering](docs/rendering.md) |
+| `docs` | [Architecture](docs/architecture.md), [development](docs/development.md), [user guide](docs/user-guide.md), [updates](docs/updates.md), [rendering](docs/rendering.md), [naming](docs/naming.md) |
 | `third_party` | Third-party files with their own licences |
 
 ## AI agent policy

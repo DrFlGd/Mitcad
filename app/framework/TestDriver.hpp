@@ -64,8 +64,24 @@
 //   type <text>             the characters as key events
 //   expect-widget-property <object-name> <property> <value>
 //                           a Qt target widget's property as text
+//   expect-projects-layout <count>  actual Projects/Browser bounds and card
+//                           slots, toolbar containment and loaded project count
+//   expect-sketch-finish-layout  no title-row Finish Sketch or reserved gap;
+//                           ribbon and palette retain the enabled action
+//   collapse-card <object-name> true|false  use the card's chevron button
 //   expect-setting <key> <value>     the current saved QSettings value
 //   expect-dialog-gone <title-regex> no matching Qt tool window remains visible
+//   hover-logged <regex>       move to a logged control without clicking
+//   timeline-leave             leave the timeline and clear its preview
+//   expect-timeline-hover <uids|none>  actual preview feature identifiers
+//   expect-timeline-tooltip <regex>  actual visible tooltip plain text
+//   capture-view-image <path>  save only the OCCT framebuffer
+//   expect-view-image <path> same|changed  compare the actual framebuffer
+//   expect-navigation-runtime       saved navigation bindings and camera gestures
+//   expect-assistant-setup <mode>    isolated real setup controls and config results
+//   expect-formula-builder          the open expression editor's real controls
+//   open-formula-field <name>        open the editor attached to a real value field
+//   expect-navigation-controls <mode>  default|configure|restored|reset
 //   expect-selection-info <text-regex> [maximum-card-height] [with-create-row]
 //                           idle Qt selection measurements and compact card;
 //                           optionally add the visible Create row's size hint
@@ -83,6 +99,9 @@
 //   dblclick-logged <regex>
 //   click-pick <regex>      like click-logged, among the "Pick <kind> <name>
 //                           at x,y" lines after the last "Pick places:"
+//   expect-pick-offset <regex> <dx> <dy> <item-regex>
+//                           probe fresh viewport picks plus logical pixels
+//   click-pick-offset <regex> <dx> <dy> <item-regex>   probe, then click there
 //   click-visible-face      probe fresh visible OCCT face points, click one
 //                           through the viewport input path, then verify the
 //                           actual shared selection contains that exact face
@@ -94,6 +113,8 @@
 //                           logged "Sketch view" (the origin, (100, 0) and
 //                           (0, 100) in window coordinates)
 //   sketch-drag <x1> <y1> <x2> <y2>
+//   sketch-pointer press|move|release <x> <y>  separate held left-drag events
+//   expect-profiles <count> inspect the actual displayed profile objects
 //   type-in <regex> <text>  reveal/focus the identified panel field, select
 //                           all and type through its actual frontend editor
 //   expect-input-text <id> <regex> check the actual Qt or AppKit field text
@@ -221,6 +242,8 @@
 //   native-history-drag-now begin|to <index>|end send the same actual event
 //                           immediately, including while the model is busy
 //   expect-model-busy true|false assert the worker's actual state immediately
+//   test-manipulator-feedback check actual subpixel length/angle overlay
+//                           events at two zooms, placements and cancellation
 //   menu-now <menu path> invoke the actual menu action without waiting for
 //                           an active worker, to test document transitions
 //   cancel-model-job <command name> cancel its running preview through the
@@ -400,6 +423,16 @@ private:
                  Qt::KeyboardModifiers modifiers);
   void queueClick(const QPoint& at, Qt::MouseButton button, Qt::KeyboardModifiers modifiers, int clicks);
   void queueDrag(const QPoint& from, const QPoint& to, Qt::MouseButton button, Qt::KeyboardModifiers modifiers);
+  void testManipulatorFeedback();
+  void showDialogStyleFixture(const QString& kind);
+  void testDialogControls(const QString& kind);
+  void testMacToolButtons();
+  void testSketchFinishLayout();
+  void testNavigationRuntime();
+  void testNavigationControls(const QString& mode);
+  void testAssistantSetup(const QString& mode);
+  void testFormulaBuilder();
+  void openFormulaField(const QString& name);
   void sendWheel(const QPoint& windowPos, int notches, Qt::KeyboardModifiers modifiers);
   bool saveScreenshot(const QString& path, bool viewOnly);
 

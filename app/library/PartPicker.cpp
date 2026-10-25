@@ -10,6 +10,7 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QComboBox>
+#include <QDialogButtonBox>
 #include <QEvent>
 #include <QFontMetrics>
 #include <QFrame>
@@ -45,6 +46,8 @@
 #include "../files/Libraries.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/TestSync.hpp"
+#include "../framework/WindowStyle.hpp"
+#include "../platform/MacDialogs.hpp"
 #include "PartFavourites.hpp"
 
 namespace mitcad {
@@ -210,6 +213,28 @@ QIcon blankIcon() {
   return QIcon(pixmap);
 }
 
+#ifdef Q_OS_MACOS
+constexpr int kGroupStarRole = Qt::UserRole + 71;
+
+// Keep the star's hit area in place without filling the whole sidebar
+// with unchecked stars. The source-list row delegate retains its band.
+class GroupDelegate final : public PanelRowDelegate {
+public:
+  using PanelRowDelegate::PanelRowDelegate;
+
+protected:
+  void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
+    QStyledItemDelegate::initStyleOption(option, index);
+    const QVariant starred = index.data(kGroupStarRole);
+    if (starred.isValid()) {
+      option->icon = starred.toBool() || option->state.testFlag(QStyle::State_MouseOver)
+                         ? starIcon(starred.toBool(), option->palette.color(QPalette::PlaceholderText))
+                         : blankIcon();
+    }
+  }
+};
+#endif
+
 // A tile: the picture at the top, the name and the sizes under it.
 QSize tileBox(int size, int lineHeight) { return QSize(size + 24, size + 2 * lineHeight + 18); }
 
@@ -238,7 +263,11 @@ public:
     panel.icon = QIcon();
     const QWidget* widget = option.widget;
     QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
+#ifndef Q_OS_MACOS
     style->drawPrimitive(QStyle::PE_PanelItemViewItem, &panel, painter, widget);
+#else
+    Q_UNUSED(style);
+#endif
 
     const int size = *m_tile;
     const QRect tile = option.rect;
@@ -246,11 +275,26 @@ public:
     const bool selected = option.state.testFlag(QStyle::State_Selected);
     const QPalette& palette = option.palette;
     const QColor text = palette.color(selected ? QPalette::HighlightedText : QPalette::Text);
-    const QColor faint = selected ? text : palette.color(QPalette::PlaceholderText);
+    const QColor faint =
+#ifdef Q_OS_MACOS
+        palette.color(QPalette::PlaceholderText);
+#else
+        selected ? text : palette.color(QPalette::PlaceholderText);
+#endif
     painter->save();
     if (!index.data(PartGridModel::kRefusedRole).toString().isEmpty()) {
       painter->setOpacity(0.38);
     }
+#ifdef Q_OS_MACOS
+    if (selected) {
+      QColor fill = palette.color(QPalette::Highlight);
+      fill.setAlpha(38);
+      painter->setRenderHint(QPainter::Antialiasing);
+      painter->setPen(QPen(palette.color(QPalette::Highlight), 1));
+      painter->setBrush(fill);
+      painter->drawRoundedRect(QRectF(image).adjusted(-4, -4, 4, 4), 8, 8);
+    }
+#endif
     const QPixmap picture = index.data(PartGridModel::kImageRole).value<QPixmap>();
     if (picture.isNull()) {
       painter->setRenderHint(QPainter::Antialiasing);
@@ -264,10 +308,19 @@ public:
     const QFontMetrics metrics = option.fontMetrics;
     const int line = metrics.height();
     const QRect nameRect(tile.left() + 3, image.bottom() + 5, tile.width() - 6, line);
+    const QString name = metrics.elidedText(index.data(Qt::DisplayRole).toString(), Qt::ElideRight, nameRect.width());
+#ifdef Q_OS_MACOS
+    if (selected) {
+      const int captionWidth = std::min(nameRect.width(), metrics.horizontalAdvance(name) + 12);
+      const QRect caption(nameRect.center().x() - captionWidth / 2, nameRect.top(), captionWidth, nameRect.height());
+      painter->setPen(Qt::NoPen);
+      painter->setBrush(palette.brush(QPalette::Highlight));
+      painter->drawRoundedRect(QRectF(caption), 4, 4);
+    }
+#endif
     painter->setFont(option.font);
     painter->setPen(text);
-    painter->drawText(nameRect, Qt::AlignHCenter | Qt::AlignVCenter,
-                      metrics.elidedText(index.data(Qt::DisplayRole).toString(), Qt::ElideRight, nameRect.width()));
+    painter->drawText(nameRect, Qt::AlignHCenter | Qt::AlignVCenter, name);
     const QString sizes = index.data(PartGridModel::kSizesRole).toString();
     if (!sizes.isEmpty()) {
       QFont smaller = option.font;
@@ -647,9 +700,17 @@ PartGrid::PartGrid(QWidget* parent) : QWidget(parent), m_group(kAll) {
   m_groups->setMinimumWidth(160);
   m_groups->setMaximumWidth(240);
   m_groups->setToolTip(tr("A group lists its subgroups' parts; its star stars them all and puts them first (Ctrl+Shift+D)"));
+  mac::styleListTree(m_groups);
+#ifdef Q_OS_MACOS
+  m_groups->setItemDelegate(new GroupDelegate(m_groups));
+  m_groups->setMouseTracking(true);
+#endif
   auto* groupsLabel = new QLabel(tr("Gr&oups:"));
   groupsLabel->setBuddy(m_groups);
   left->addWidget(groupsLabel);
+#ifdef Q_OS_MACOS
+  groupsLabel->hide();
+#endif
   left->addWidget(m_groups, 1);
   layout->addLayout(left);
 
@@ -659,9 +720,13 @@ PartGrid::PartGrid(QWidget* parent) : QWidget(parent), m_group(kAll) {
   m_search->setObjectName(QStringLiteral("partPickerSearch"));
   m_search->setPlaceholderText(tr("Search: name, standard, size, supplier, part number"));
   m_search->setClearButtonEnabled(true);
+  mac::styleSearchField(m_search, m_search->placeholderText());
   auto* searchLabel = new QLabel(tr("&Search:"));
   searchLabel->setBuddy(m_search);
   top->addWidget(searchLabel);
+#ifdef Q_OS_MACOS
+  searchLabel->hide();
+#endif
   top->addWidget(m_search, 1);
   m_filters = new QWidget;
   auto* filters = new QHBoxLayout(m_filters);
@@ -686,6 +751,10 @@ PartGrid::PartGrid(QWidget* parent) : QWidget(parent), m_group(kAll) {
   m_star->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
   m_star->setAutoRaise(true);
   m_star->setToolTip(tr("Star the chosen part or turn its star off (Ctrl+D): favourites come first"));
+#ifdef Q_OS_MACOS
+  m_star->setCheckable(true);
+#endif
+  mac::styleIconToggle(m_star, QStringLiteral("star"), QStringLiteral("star.fill"));
   second->addWidget(m_star);
   m_size = new QSlider(Qt::Horizontal);
   m_size->setObjectName(QStringLiteral("partPickerTileSize"));
@@ -719,6 +788,10 @@ PartGrid::PartGrid(QWidget* parent) : QWidget(parent), m_group(kAll) {
   m_view->setMouseTracking(true);
   m_view->setDragEnabled(false);
   m_view->setMinimumWidth(tileBox(kMaxTile, fontMetrics().height()).width() + 40);
+#ifdef Q_OS_MACOS
+  m_view->setFrameShape(QFrame::NoFrame);
+  m_view->setAttribute(Qt::WA_MacShowFocusRect, false);
+#endif
   right->addWidget(m_view, 1);
   layout->addLayout(right, 1);
   setTileSize(m_tile);
@@ -793,6 +866,7 @@ PartGrid::PartGrid(QWidget* parent) : QWidget(parent), m_group(kAll) {
     const QString key = index.data(PartGridModel::kKeyRole).toString();
     if (key != m_current) {
       m_current = key;
+      refreshStarButton();
       emit currentChanged(m_current);
     }
   });
@@ -817,6 +891,7 @@ PartGrid::PartGrid(QWidget* parent) : QWidget(parent), m_group(kAll) {
   m_groups->viewport()->installEventFilter(this);
   fillGroups();
   fillSystems();
+  refreshStarButton();
 }
 
 void PartGrid::setParts(const QList<PickerPart>& parts) {
@@ -884,6 +959,7 @@ void PartGrid::setCurrent(const QString& key, bool notify) {
     m_current.clear();
   }
   m_filling = false;
+  refreshStarButton();
   if (notify) {
     emit currentChanged(m_current);
   }
@@ -1126,6 +1202,9 @@ void PartGrid::fillGroups() {
     auto* item = new QTreeWidgetItem(QStringList{node != nullptr ? node->name : groupLabel(key)});
     item->setData(0, Qt::UserRole, key);
     item->setIcon(0, starIcon(groupStarred(key), outline));
+#ifdef Q_OS_MACOS
+    item->setData(0, kGroupStarRole, groupStarred(key));
+#endif
     if (node != nullptr) {
       for (const QString& child : ordered(node->children)) {
         item->addChild(made(child));
@@ -1306,12 +1385,29 @@ void PartGrid::refreshStars() {
     const QString id = (*it)->data(0, Qt::UserRole).toString();
     if (!id.startsWith(QLatin1Char(':'))) {
       (*it)->setIcon(0, starIcon(groupStarred(id), outline));
+#ifdef Q_OS_MACOS
+      (*it)->setData(0, kGroupStarRole, groupStarred(id));
+#endif
     }
   }
   m_model->refreshStars();
+  refreshStarButton();
   logTiles(true);
   qInfo().noquote() << QStringLiteral("Part picker groups kept: %1").arg(groupsText());
   emit starsChanged();
+}
+
+void PartGrid::refreshStarButton() {
+  const PickerPart* part = currentPart();
+  const bool enabled = part != nullptr && !part->libraryEntry;
+  m_star->setEnabled(enabled);
+#ifdef Q_OS_MACOS
+  const bool starred = enabled && starredTile(*part);
+  const QSignalBlocker quiet(m_star);
+  m_star->setChecked(starred);
+  m_star->setIcon(mac::symbolIcon(starred ? QStringLiteral("star.fill") : QStringLiteral("star"),
+                                starIcon(starred, palette().color(QPalette::PlaceholderText))));
+#endif
 }
 
 QString PartGrid::groupsText() const {
@@ -1588,18 +1684,22 @@ PartPicker::PartPicker(QWidget* parent) : QDialog(parent) {
   auto* layout = new QVBoxLayout(this);
   m_grid = new PartGrid;
   layout->addWidget(m_grid, 1);
-  auto* buttons = new QHBoxLayout;
+  auto* buttons = new QDialogButtonBox;
   m_pin = new QToolButton;
   m_pin->setObjectName(QStringLiteral("partPickerPin"));
   m_pin->setText(tr("&Pin"));
   m_pin->setCheckable(true);
   m_pin->setToolTip(tr("Keep the picker open when the command ends; it follows the next command that chooses parts"));
+  mac::styleIconToggle(m_pin, QStringLiteral("pin"), QStringLiteral("pin.fill"));
   auto* close = new QPushButton(tr("Close"));
-  close->setAutoDefault(false);
-  buttons->addWidget(m_pin);
-  buttons->addStretch(1);
-  buttons->addWidget(close);
-  layout->addLayout(buttons);
+  auto* footer = new QHBoxLayout;
+  footer->addWidget(m_pin);
+  footer->addStretch(1);
+  buttons->addButton(close, QDialogButtonBox::RejectRole);
+  mac::styleDialogButtons(buttons, close);
+  footer->addWidget(buttons);
+  layout->addLayout(footer);
+  mac::styleDialog(this);
   m_saveTimer.setSingleShot(true);
   m_saveTimer.setInterval(400);
   connect(&m_saveTimer, &QTimer::timeout, this, [this] {

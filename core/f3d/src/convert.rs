@@ -33,6 +33,63 @@ pub struct ConvertedBody {
     /// Loops made fit for the builder ([`tidy_loop`]).
     pub tidied: LoopTidy,
     pub check: CheckReport,
+    /// Faces on rolling-ball blends whose stored approximation is farther
+    /// off than the import's tolerance (mitcad#622).
+    pub stored_blends: Vec<StoredBlend>,
+}
+
+/// A face on a rolling-ball blend whose stored approximation is farther
+/// off the blend than the import's tolerance (`Options::max_fit`). The
+/// blend is made from its definition; where that cannot be done, the
+/// approximation is the surface, as before mitcad#622, and the import's
+/// report says so.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredBlend {
+    /// The `face` record in the ASM file.
+    pub face_record: usize,
+    /// The face and its surface in the neutral body.
+    pub face: usize,
+    pub surface: usize,
+    /// The approximation's fit tolerance (mm).
+    pub fit_mm: f64,
+    /// Why the converter took the approximation (a blend it does not make
+    /// from its definition, e.g. of a varying radius); `None` when the
+    /// builder walks the blend, which takes the approximation where OCCT's
+    /// walk fails (the builder's report message starting
+    /// [`STORED_APPROXIMATION`] then says why).
+    pub why: Option<String>,
+}
+
+/// The start of the builder's report message saying that a surface is a
+/// blend's stored approximation because OCCT could not walk the blend,
+/// followed by the neutral surface's index, `": "` and why
+/// (`geometry/src/brep_import.cpp`).
+pub const STORED_APPROXIMATION: &str = "stored approximation of surface ";
+
+impl StoredBlend {
+    /// Why the face's surface is the stored approximation, from this and
+    /// the builder's report messages; `None` when it is not (the blend was
+    /// made from its definition).
+    pub fn reason(&self, messages: &[impl AsRef<str>]) -> Option<String> {
+        if let Some(why) = &self.why {
+            return Some(why.clone());
+        }
+        let start = format!("{STORED_APPROXIMATION}{}: ", self.surface);
+        messages.iter().find_map(|m| {
+            m.as_ref()
+                .strip_prefix(&start)
+                .map(|why| format!("walk failed: {why}"))
+        })
+    }
+
+    /// The report's line for the face, given why its surface is the
+    /// stored approximation.
+    pub fn note(&self, why: &str) -> String {
+        format!(
+            "face {}: its rolling-ball blend is the stored approximation, which may be {:.3} mm off it (its fit tolerance): {why}",
+            self.face_record, self.fit_mm
+        )
+    }
 }
 
 /// Options for [`convert_file`].
@@ -43,6 +100,14 @@ pub struct Options {
     /// Points per turn when sampling helices (curves and thread
     /// surfaces, which the builder interpolates).
     pub helix_samples_per_turn: usize,
+    /// How far (mm) a stored approximation of a rolling-ball blend or of
+    /// its contact curve may be from the exact geometry (its fit
+    /// tolerance): one farther off is replaced by the blend made from its
+    /// definition and the contact curves by the blend along their
+    /// parameter curves (mitcad#622: approximations a tenth of a
+    /// millimetre off left a blend face's boundary open). The import's
+    /// geometric tolerance.
+    pub max_fit: f64,
 }
 
 impl Default for Options {
@@ -50,6 +115,7 @@ impl Default for Options {
         Options {
             scale: 10.0,
             helix_samples_per_turn: 48,
+            max_fit: 0.01,
         }
     }
 }
@@ -362,6 +428,21 @@ struct Ctx<'a> {
     tidied: LoopTidy,
     /// ASM surface record -> (neutral surface, normal flipped).
     surface_map: IdMap<Option<(usize, bool)>>,
+    /// Neutral surface -> the fit tolerance (mm) of a rolling-ball blend's
+    /// stored approximation farther off than the import's tolerance, and
+    /// why the approximation is the surface all the same (`None`: the
+    /// builder makes the blend from its definition; mitcad#622).
+    coarse_blends: HashMap<usize, (f64, Option<String>)>,
+    /// The faces on such blends.
+    stored_blends: Vec<StoredBlend>,
+    /// Entities whose data lie elsewhere than `view` says: one more history
+    /// state rolled back ([`convert_body_prefix`]); checked first.
+    overlay: Option<&'a View>,
+    /// The conversion stops before the face or edge past this many
+    /// ([`convert_body_prefix`]).
+    limit: Limit,
+    /// It stopped there, before the next face or edge.
+    stopped: Option<Stop>,
 }
 
 fn unit(v: P3) -> P3 {
@@ -456,7 +537,11 @@ impl<'a> Ctx<'a> {
     /// The record holding an entity's data at the converted history state:
     /// the entity's own record unless rolling back.
     fn data(&self, entity: usize) -> Result<usize, GeomError> {
-        match self.view.and_then(|v| v.get(&entity)) {
+        let at = self
+            .overlay
+            .and_then(|o| o.get(&entity))
+            .or_else(|| self.view.and_then(|v| v.get(&entity)));
+        match at {
             None => Ok(entity),
             Some(Some(r)) => Ok(*r),
             Some(None) => Err(GeomError(format!(
@@ -663,6 +748,23 @@ impl<'a> Ctx<'a> {
                         pcurve,
                         params,
                     } => Ok((self.curve_on_surface(chart, pcurve, params)?, k)),
+                    // A blend's contact curve: the blend along its
+                    // parameter curve where the stored approximation is
+                    // farther off than the import's tolerance (mitcad#622),
+                    // as the blend is made.
+                    IntGeom::Approximated { approx, fit, exact } => {
+                        if fit * self.opt.scale > self.opt.max_fit
+                            && let IntGeom::OnSurface {
+                                chart,
+                                pcurve,
+                                params,
+                            } = &**exact
+                            && let Ok(c) = self.curve_on_surface(chart, pcurve, params)
+                        {
+                            return Ok((c, k));
+                        }
+                        Ok((Curve::BSpline(self.bspline_curve(approx)?), k))
+                    }
                     IntGeom::Unsupported(why) => Err(GeomError(format!("{subtype}: {why}"))),
                 }
             }
@@ -688,6 +790,20 @@ impl<'a> Ctx<'a> {
             // curve, its v carried as the surface's (a rolling ball's v is
             // its spine's, `k` times the file's).
             // The surface is made over the v the curve spans.
+            // A blend stored with an approximation close enough: the curve
+            // on it, as on other B-spline surfaces.
+            if let AsmSurface::Spline {
+                geom: SplineGeom::RollingBall(rb),
+                ..
+            } = &**surface
+                && let Some(approx) = self.stored_blend(rb)
+            {
+                return self.curve_on_surface(
+                    &Chart::Spline(Box::new(approx.clone())),
+                    pcurve,
+                    params,
+                );
+            }
             let (surface, k) = match &**surface {
                 AsmSurface::Spline {
                     geom: SplineGeom::RollingBall(rb),
@@ -866,6 +982,10 @@ impl<'a> Ctx<'a> {
                 t = [t[0].clamp(a, b), t[1].clamp(a, b)];
             }
         }
+        if self.body.edges.len() >= self.limit.edges {
+            self.stopped = Some(Stop::Edge);
+            return Err(GeomError("stopped before this edge".into()));
+        }
         self.body.curves.push(curve);
         let ci = self.body.curves.len() - 1;
         self.body.edges.push(Edge {
@@ -1043,6 +1163,10 @@ impl<'a> Ctx<'a> {
                     Ok((helix_circle_surface(h, ranges, &self.opt)?, *reversed))
                 }
                 SplineGeom::RollingBall(rb) => {
+                    // Stored with an approximation close enough: that.
+                    if let Some(approx) = self.stored_blend(rb) {
+                        return Ok((Surface::BSpline(self.bspline_surface(approx)?), *reversed));
+                    }
                     // Made over the face's v range where the record gives
                     // it. A spine running against its definition runs v
                     // backwards, and du x dv with it.
@@ -1050,8 +1174,16 @@ impl<'a> Ctx<'a> {
                         [Some(a), Some(b)] => Some([a, b]),
                         _ => None,
                     };
-                    let (surface, k) = self.rolling_ball(rb, needed)?;
-                    Ok((surface, *reversed != (k < 0.0)))
+                    match (self.rolling_ball(rb, needed), rb.approx.as_deref()) {
+                        (Ok((surface, k)), _) => Ok((surface, *reversed != (k < 0.0))),
+                        // A blend the builder does not make from its
+                        // definition: the file's approximation (as before
+                        // mitcad#622).
+                        (Err(_), Some(approx)) => {
+                            Ok((Surface::BSpline(self.bspline_surface(approx)?), *reversed))
+                        }
+                        (Err(e), None) => Err(e),
+                    }
                 }
                 SplineGeom::Sum { curves, origin } => {
                     let (surface, flip) = self.sum_surface(curves, *origin)?;
@@ -1134,8 +1266,18 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// A rolling-ball blend stored without its approximation, for the
-    /// builder to make (mitcad#621), and the factor `k` of its spine: the
+    /// The stored approximation of a rolling-ball blend where it is close
+    /// enough to the blend (its fit tolerance within the import's): then
+    /// the surface (mitcad#622).
+    fn stored_blend<'r>(&self, rb: &'r RollingBall) -> Option<&'r Bs3Surface> {
+        rb.approx
+            .as_deref()
+            .filter(|_| rb.fit * self.opt.scale <= self.opt.max_fit)
+    }
+
+    /// A rolling-ball blend stored without its approximation, or with one
+    /// too far off (mitcad#622), for the builder to make from its
+    /// definition (mitcad#621), and the factor `k` of its spine: the
     /// surface's v is `k` times the file's. `needed` is the v range (the
     /// file's) a face or a curve on it spans, else the whole surface's:
     /// the builder walks the ball over it and a little more where the
@@ -1183,9 +1325,26 @@ impl<'a> Ctx<'a> {
             Some([a, b]) if a.max(b) > a.min(b) => [within(a.min(b)), within(a.max(b))],
             _ => whole,
         };
-        let margin = 0.02 * (needed[1] - needed[0]);
+        // Round a whole closed spine exactly: the builder then closes the
+        // surface, whose seam a face crosses (mitcad#622).
+        let period = match &spine {
+            Curve::BSpline(b) if b.periodic => b.knots[b.knots.len() - 1] - b.knots[0],
+            Curve::Ellipse { .. } => std::f64::consts::TAU,
+            _ => f64::INFINITY,
+        };
+        let margin = if needed[1] - needed[0] >= period * (1.0 - 1e-9) {
+            0.0
+        } else {
+            0.02 * (needed[1] - needed[0])
+        };
         let range = [within(needed[0] - margin), within(needed[1] + margin)];
         let scaled = |[a, b]: [f64; 2]| [(k * a).min(k * b), (k * a).max(k * b)];
+        // The file's approximation where it has one in the same
+        // parameters (a spine running as defined).
+        let stored = match rb.approx.as_deref() {
+            Some(s) if k > 0.0 => Some(Box::new(Surface::BSpline(self.bspline_surface(s)?))),
+            _ => None,
+        };
         Ok((
             Surface::RollingBall {
                 supports,
@@ -1193,6 +1352,7 @@ impl<'a> Ctx<'a> {
                 range: scaled(range),
                 needed: scaled(needed),
                 radius: a * self.opt.scale,
+                stored,
             },
             k,
         ))
@@ -1202,12 +1362,34 @@ impl<'a> Ctx<'a> {
         if let Some(s) = self.surface_map.get(&record) {
             return Ok(*s);
         }
-        let result = self
+        let asm = self
             .data(record)
-            .and_then(|r| geom::surface_record(self.file, r))
-            .and_then(|s| self.surface_geom(&s));
+            .and_then(|r| geom::surface_record(self.file, r));
+        let result = asm
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|s| self.surface_geom(s));
         let out = match result {
             Ok((s, flip)) => {
+                // A blend whose stored approximation is too far off: kept
+                // for the report (mitcad#622).
+                if let Ok(AsmSurface::Spline {
+                    geom: SplineGeom::RollingBall(rb),
+                    ..
+                }) = &asm
+                    && rb.approx.is_some()
+                    && self.stored_blend(rb).is_none()
+                {
+                    let why = match &s {
+                        Surface::RollingBall { .. } => None,
+                        _ => Some(match self.rolling_ball(rb, None) {
+                            Err(e) => format!("not made from its definition: {e}"),
+                            Ok(_) => "not made from its definition".to_owned(),
+                        }),
+                    };
+                    self.coarse_blends
+                        .insert(self.body.surfaces.len(), (rb.fit * self.opt.scale, why));
+                }
                 self.body.surfaces.push(s);
                 Some((self.body.surfaces.len() - 1, flip))
             }
@@ -1272,6 +1454,7 @@ impl<'a> Ctx<'a> {
                         forward: along != coedge_reversed,
                     }),
                     Ok(EdgeRef::Degenerate(v)) => point = Some(v),
+                    Err(err) if self.stopped.is_some() => return Err(err),
                     Err(err) => {
                         let name = self.file.records[edge_rec].type_name.clone();
                         self.issue(format!("edge {edge_rec} ({name}): {err}"));
@@ -1307,6 +1490,10 @@ impl<'a> Ctx<'a> {
             self.issue(format!("face {record}: none of its loops could be read"));
             return Ok(None);
         }
+        if self.body.faces.len() >= self.limit.faces {
+            self.stopped = Some(Stop::Face);
+            return Err(GeomError("stopped before this face".into()));
+        }
         self.body.faces.push(Face {
             surface,
             reversed: sense_reversed != flip,
@@ -1314,7 +1501,17 @@ impl<'a> Ctx<'a> {
             loops,
             point_loops,
         });
-        Ok(Some(self.body.faces.len() - 1))
+        let face = self.body.faces.len() - 1;
+        if let Some((fit_mm, why)) = self.coarse_blends.get(&surface) {
+            self.stored_blends.push(StoredBlend {
+                face_record: record,
+                face,
+                surface,
+                fit_mm: *fit_mm,
+                why: why.clone(),
+            });
+        }
+        Ok(Some(face))
     }
 
     fn shell(&mut self, record: usize) -> Result<(Shell, usize), GeomError> {
@@ -1593,6 +1790,11 @@ pub fn edge_curve_along(
         degenerate_edges: 0,
         tidied: LoopTidy::default(),
         surface_map: IdMap::default(),
+        coarse_blends: HashMap::new(),
+        stored_blends: Vec::new(),
+        overlay: None,
+        limit: Limit::NONE,
+        stopped: None,
     };
     let mut c = ctx.cursor(body)?;
     c.ptr()?; // lump
@@ -1631,6 +1833,11 @@ pub fn vertex_position(
         degenerate_edges: 0,
         tidied: LoopTidy::default(),
         surface_map: IdMap::default(),
+        coarse_blends: HashMap::new(),
+        stored_blends: Vec::new(),
+        overlay: None,
+        limit: Limit::NONE,
+        stopped: None,
     };
     let mut c = ctx.cursor(body)?;
     c.ptr()?; // lump
@@ -1689,6 +1896,11 @@ pub fn face_surface(
         degenerate_edges: 0,
         tidied: LoopTidy::default(),
         surface_map: IdMap::default(),
+        coarse_blends: HashMap::new(),
+        stored_blends: Vec::new(),
+        overlay: None,
+        limit: Limit::NONE,
+        stopped: None,
     };
     let mut c = ctx.cursor(body)?;
     c.ptr()?; // lump
@@ -1734,6 +1946,75 @@ pub fn convert_body_at(
     options: &Options,
     view: Option<&View>,
 ) -> ConvertedBody {
+    match convert_body_prefix(file, record, options, view, None, Limit::NONE) {
+        BodyPrefix::Whole(body) => body,
+        // (Not stopped without a limit.)
+        BodyPrefix::Part(body, _) => ConvertedBody {
+            record,
+            top_level: false,
+            body,
+            issues: Vec::new(),
+            skipped_faces: 0,
+            degenerate_edges: 0,
+            tidied: LoopTidy::default(),
+            check: CheckReport::default(),
+            stored_blends: Vec::new(),
+        },
+    }
+}
+
+/// How many faces and edges a conversion makes at most
+/// ([`convert_body_prefix`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limit {
+    pub faces: usize,
+    pub edges: usize,
+}
+
+impl Limit {
+    /// No limit: the whole body.
+    pub const NONE: Limit = Limit {
+        faces: usize::MAX,
+        edges: usize::MAX,
+    };
+}
+
+/// What a conversion stopped before ([`BodyPrefix::Part`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stop {
+    /// A face past its limit: the body has more faces than converted.
+    Face,
+    /// An edge past its limit: the body has more edges than converted.
+    Edge,
+}
+
+/// A body converted up to some number of faces and edges
+/// ([`convert_body_prefix`]).
+#[derive(Clone, Debug)]
+pub enum BodyPrefix {
+    /// It has no more faces and edges than the limit: the whole body, as
+    /// [`convert_body_at`] gives it.
+    Whole(ConvertedBody),
+    /// It has more: the neutral body as far as the conversion went, before
+    /// the next face or edge. The conversion only appends to the body's
+    /// lists, so each list is the start of the whole body's (its lumps
+    /// aside, which are added whole).
+    Part(Body, Stop),
+}
+
+/// Converts one `body` record at a history state, as [`convert_body_at`],
+/// stopping before a face or edge past `limit` (mitcad#675: two states'
+/// bodies that differ mostly differ in their first faces, which tells them
+/// apart without converting them whole). `overlay`, when given, is looked
+/// up before `view` (one more history state rolled back).
+pub fn convert_body_prefix(
+    file: &AsmFile,
+    record: usize,
+    options: &Options,
+    view: Option<&View>,
+    overlay: Option<&View>,
+    limit: Limit,
+) -> BodyPrefix {
     let mut ctx = Ctx {
         file,
         view,
@@ -1745,6 +2026,11 @@ pub fn convert_body_at(
         degenerate_edges: 0,
         tidied: LoopTidy::default(),
         surface_map: IdMap::default(),
+        coarse_blends: HashMap::new(),
+        stored_blends: Vec::new(),
+        overlay,
+        limit,
+        stopped: None,
     };
     let mut skipped_faces = 0;
     let result: Result<(), GeomError> = (|| {
@@ -1786,12 +2072,15 @@ pub fn convert_body_at(
         }
         Ok(())
     })();
+    if let Some(stop) = ctx.stopped {
+        return BodyPrefix::Part(ctx.body, stop);
+    }
     if let Err(e) = result {
         ctx.issue(format!("body {record}: {e}"));
     }
     ctx.body.split_disconnected_shells();
     let check = ctx.body.check(1e-3);
-    ConvertedBody {
+    BodyPrefix::Whole(ConvertedBody {
         record,
         top_level: file.records[record].type_name == "body" && file.top_level().contains(&record),
         body: ctx.body,
@@ -1800,7 +2089,8 @@ pub fn convert_body_at(
         degenerate_edges: ctx.degenerate_edges,
         tidied: ctx.tidied,
         check,
-    }
+        stored_blends: ctx.stored_blends,
+    })
 }
 
 #[cfg(test)]
@@ -1868,6 +2158,11 @@ mod tests {
             degenerate_edges: 0,
             tidied: LoopTidy::default(),
             surface_map: IdMap::default(),
+            coarse_blends: HashMap::new(),
+            stored_blends: Vec::new(),
+            overlay: None,
+            limit: Limit::NONE,
+            stopped: None,
         };
         // Degree 1 both ways, three poles round in u (the last on the
         // first), two in v; the file's end multiplicities are the degree.
@@ -1961,6 +2256,11 @@ mod tests {
             degenerate_edges: 0,
             tidied: LoopTidy::default(),
             surface_map: IdMap::default(),
+            coarse_blends: HashMap::new(),
+            stored_blends: Vec::new(),
+            overlay: None,
+            limit: Limit::NONE,
+            stopped: None,
         };
         let revolution = |reversed| AsmSurface::Spline {
             reversed,
@@ -2008,6 +2308,11 @@ mod tests {
             degenerate_edges: 0,
             tidied: LoopTidy::default(),
             surface_map: IdMap::default(),
+            coarse_blends: HashMap::new(),
+            stored_blends: Vec::new(),
+            overlay: None,
+            limit: Limit::NONE,
+            stopped: None,
         }
     }
 
@@ -2042,6 +2347,8 @@ mod tests {
             },
             offsets: [-2.0, -2.0],
             v_range: [0.0, 10.0],
+            approx: None,
+            fit: 0.0,
         }
     }
 
@@ -2069,10 +2376,12 @@ mod tests {
             range,
             needed,
             radius,
+            stored,
         } = &surface
         else {
             panic!("{surface:?}")
         };
+        assert!(stored.is_none());
         assert_eq!(*radius, 20.0);
         assert_eq!(*needed, [2.0, 7.0]);
         assert!((range[0] - 1.9).abs() < 1e-12 && (range[1] - 7.1).abs() < 1e-12);
@@ -2126,6 +2435,204 @@ mod tests {
         );
         assert_eq!(curve.range(), Some((3.0, 6.0)));
         assert!(curve.eval(4.0)[0].is_nan());
+    }
+
+    #[test]
+    fn rolling_balls_with_approximations_too_far_off_go_to_the_builder() {
+        // mitcad#622: a blend stored with an approximation (in cm, as .f3d
+        // files store them) is that where its fit tolerance is within the
+        // import's tolerance (0.01 mm), and made from its definition (with
+        // the approximation for when OCCT cannot walk it) where farther off.
+        let file = AsmFile::parse(&crate::asm::writer::Writer::new(1, 2).finish()).unwrap();
+        let ctx = empty_ctx(&file);
+        let approx = Bs3Surface {
+            u_degree: 1,
+            v_degree: 1,
+            rational: false,
+            u_closure: 0,
+            v_closure: 0,
+            u_knots: vec![0.0, 1.0],
+            u_mults: vec![1, 1],
+            v_knots: vec![0.0, 10.0],
+            v_mults: vec![1, 1],
+            nu: 2,
+            nv: 2,
+            ctrl: vec![
+                [0.0, 0.0, 2.0, 1.0],
+                [2.0, 0.0, 0.0, 1.0],
+                [0.0, 10.0, 2.0, 1.0],
+                [2.0, 10.0, 0.0, 1.0],
+            ],
+        };
+        let blend = |fit: f64, spine_reversed: bool| AsmSurface::Spline {
+            reversed: false,
+            subtype: "rb_blend_spl_sur".into(),
+            geom: SplineGeom::RollingBall(Box::new(RollingBall {
+                approx: Some(Box::new(approx.clone())),
+                fit,
+                ..rolling_ball(spine_reversed)
+            })),
+            ranges: [[None; 2]; 2],
+        };
+        let (surface, flip) = ctx.surface_geom(&blend(1e-4, false)).unwrap();
+        assert!(!flip);
+        assert!(matches!(&surface, Surface::BSpline(b) if b.poles[1] == [0.0, 100.0, 20.0]));
+        let (surface, flip) = ctx.surface_geom(&blend(0.0043, false)).unwrap();
+        assert!(!flip);
+        let Surface::RollingBall { needed, stored, .. } = &surface else {
+            panic!("{surface:?}")
+        };
+        assert_eq!(*needed, [0.0, 10.0]);
+        assert!(matches!(stored.as_deref(), Some(Surface::BSpline(_))));
+        // The approximation runs v as the file does: not kept for a spine
+        // running against its definition (the surface's v negated).
+        let (surface, _) = ctx.surface_geom(&blend(0.0043, true)).unwrap();
+        assert!(matches!(
+            &surface,
+            Surface::RollingBall { stored: None, .. }
+        ));
+        // Of a blend the builder does not make (a varying radius): the
+        // approximation.
+        let mut uneven = rolling_ball(false);
+        uneven.offsets = [-2.0, -3.0];
+        uneven.approx = Some(Box::new(approx.clone()));
+        uneven.fit = 0.0043;
+        let uneven = AsmSurface::Spline {
+            reversed: false,
+            subtype: "rb_blend_spl_sur".into(),
+            geom: SplineGeom::RollingBall(Box::new(uneven)),
+            ranges: [[None; 2]; 2],
+        };
+        assert!(matches!(
+            ctx.surface_geom(&uneven).unwrap().0,
+            Surface::BSpline(_)
+        ));
+
+        // A contact curve stored with its approximation: that where close
+        // enough, else the blend along its parameter curve (u = 1).
+        let contact = |fit: f64, blend_fit: f64| AsmCurve::Int {
+            reversed: false,
+            subtype: "blend_int_cur".into(),
+            geom: IntGeom::Approximated {
+                approx: Bs3Curve {
+                    degree: 1,
+                    rational: false,
+                    closure: 0,
+                    knots: vec![2.0, 7.0],
+                    mults: vec![1, 1],
+                    ctrl: vec![[2.0, 2.0, 0.0, 1.0], [2.0, 7.0, 0.0, 1.0]],
+                },
+                fit,
+                exact: Box::new(IntGeom::OnSurface {
+                    chart: Chart::Procedural(Box::new(blend(blend_fit, false))),
+                    pcurve: Bs2Curve {
+                        degree: 1,
+                        rational: false,
+                        closure: 0,
+                        knots: vec![2.0, 7.0],
+                        mults: vec![1, 1],
+                        ctrl: vec![[1.0, 2.0, 1.0], [1.0, 7.0, 1.0]],
+                    },
+                    params: Vec::new(),
+                }),
+            },
+        };
+        let (curve, _) = ctx.curve(&contact(1e-4, 0.0043)).unwrap();
+        assert!(matches!(curve, Curve::BSpline(_)), "{curve:?}");
+        let (curve, k) = ctx.curve(&contact(0.0043, 0.0043)).unwrap();
+        assert_eq!(k, 1.0);
+        let Curve::OnSurface { surface, pcurve } = &curve else {
+            panic!("{curve:?}")
+        };
+        assert_eq!(pcurve.poles, vec![[1.0, 2.0], [1.0, 7.0]]);
+        assert!(matches!(&**surface, Surface::RollingBall { needed, .. } if *needed == [2.0, 7.0]));
+        // On a blend whose approximation is close enough: the curve on
+        // that approximation (through its points).
+        let (curve, _) = ctx.curve(&contact(0.0043, 1e-4)).unwrap();
+        let Curve::Interpolated { points, .. } = &curve else {
+            panic!("{curve:?}")
+        };
+        assert_eq!(points[0], [20.0, 20.0, 0.0]);
+    }
+
+    #[test]
+    fn faces_on_blends_kept_as_their_coarse_approximation_are_reported() {
+        // mitcad#622: a face on a blend whose stored approximation is too
+        // far off (0.043 mm). Of a varying radius the converter keeps the
+        // approximation and says why.
+        let file = crate::asm::geom::tests::coarse_blend_face_file([-2.0, -3.0]);
+        let mut ctx = empty_ctx(&file);
+        let face = ctx.face(2).unwrap().unwrap();
+        assert!(matches!(ctx.body.surfaces[0], Surface::BSpline(_)));
+        let [blend] = &ctx.stored_blends[..] else {
+            panic!("{:?}", ctx.stored_blends)
+        };
+        assert_eq!((blend.face_record, blend.face, blend.surface), (2, face, 0));
+        assert!((blend.fit_mm - 0.043).abs() < 1e-12);
+        let none: [&str; 0] = [];
+        let why = blend.reason(&none).expect("a reason");
+        assert!(why.contains("not a constant radius"), "{why}");
+        let note = blend.note(&why);
+        assert!(
+            note.starts_with("face 2: ") && note.contains("0.043 mm"),
+            "{note}"
+        );
+
+        // Of a constant radius the builder walks it: said only where the
+        // builder took the approximation, with its reason.
+        let file = crate::asm::geom::tests::coarse_blend_face_file([-2.0, -2.0]);
+        let mut ctx = empty_ctx(&file);
+        ctx.face(2).unwrap().unwrap();
+        assert!(matches!(
+            &ctx.body.surfaces[0],
+            Surface::RollingBall {
+                stored: Some(_),
+                ..
+            }
+        ));
+        let [blend] = &ctx.stored_blends[..] else {
+            panic!("{:?}", ctx.stored_blends)
+        };
+        assert_eq!(blend.why, None);
+        assert_eq!(blend.reason(&["surface 3: other"]), None);
+        assert_eq!(
+            blend
+                .reason(&[
+                    "surface 3: other",
+                    "stored approximation of surface 0: rolling-ball blend: OCCT's walking along the spine failed"
+                ])
+                .as_deref(),
+            Some("walk failed: rolling-ball blend: OCCT's walking along the spine failed")
+        );
+        assert_eq!(
+            blend.reason(&["stored approximation of surface 1: no"]),
+            None
+        );
+    }
+
+    #[test]
+    fn rolling_balls_round_a_whole_closed_spine_are_closed() {
+        // mitcad#622: over a whole period of a closed spine the surface is
+        // made over exactly that period (no margin), so the builder closes
+        // it; over less, 2 % more each side.
+        let file = AsmFile::parse(&crate::asm::writer::Writer::new(1, 2).finish()).unwrap();
+        let ctx = empty_ctx(&file);
+        let mut rb = rolling_ball(false);
+        rb.spine = AsmCurve::Ellipse {
+            center: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+            major: [5.0, 0.0, 0.0],
+            ratio: 1.0,
+        };
+        rb.v_range = [0.0, std::f64::consts::TAU];
+        let (surface, _) = ctx.rolling_ball(&rb, None).unwrap();
+        assert!(
+            matches!(surface, Surface::RollingBall { range, needed, .. } if range == needed && range == [0.0, std::f64::consts::TAU])
+        );
+        let (surface, _) = ctx.rolling_ball(&rb, Some([1.0, 2.0])).unwrap();
+        assert!(
+            matches!(surface, Surface::RollingBall { range, .. } if (range[0] - 0.98).abs() < 1e-12 && (range[1] - 2.02).abs() < 1e-12)
+        );
     }
 
     #[test]
@@ -2232,6 +2739,11 @@ mod tests {
             degenerate_edges: 0,
             tidied: LoopTidy::default(),
             surface_map: IdMap::default(),
+            coarse_blends: HashMap::new(),
+            stored_blends: Vec::new(),
+            overlay: None,
+            limit: Limit::NONE,
+            stopped: None,
         };
         let t = ctx.transform(1).unwrap();
         // x goes to y, y to -x, scaled by 2; the translation in mm.
@@ -2265,6 +2777,11 @@ mod tests {
             degenerate_edges: 0,
             tidied: LoopTidy::default(),
             surface_map: IdMap::default(),
+            coarse_blends: HashMap::new(),
+            stored_blends: Vec::new(),
+            overlay: None,
+            limit: Limit::NONE,
+            stopped: None,
         };
         // From (1, 2) to (3, 2), degree 1.
         let pcurve = Bs2Curve {

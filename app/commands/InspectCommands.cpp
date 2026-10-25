@@ -11,8 +11,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <memory>
 #include <optional>
+#include <utility>
 
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -36,6 +38,7 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Iterator.hxx>
 
 #include "../files/Print3d.hpp"
 #include "../framework/Appearances.hpp"
@@ -101,14 +104,169 @@ QString describeMeasured(const QJsonObject& item, QStringList& log) {
     describeCircle(circle.value(QStringLiteral("radius")).toDouble(), xyz(circle.value(QStringLiteral("center"))),
                    lines, log);
   }
+  // A cylinder's, cone's or circle's axis, or a construction axis
+  // (mitcad#647): its point (the centre) and direction.
+  const QJsonObject axis = item.value(QStringLiteral("axis")).toObject();
+  if (!axis.isEmpty()) {
+    const QString origin = xyz(axis.value(QStringLiteral("origin")));
+    const QString direction = xyz(axis.value(QStringLiteral("direction")));
+    lines << QObject::tr("Axis: through %1, direction %2").arg(origin, direction);
+    log << QStringLiteral("axis %1 along %2").arg(origin, direction);
+  }
   return lines.join(QStringLiteral("<br>"));
 }
 
-QJsonValue measureRef(const SelectionItem& item) {
-  if (item.kind == SelectKind::Plane || item.kind == SelectKind::Axis || item.kind == SelectKind::Point) {
-    return QJsonObject{{QStringLiteral("datum"), item.owner}};
+// The axis of a measured item drawn as a line through its point while the
+// panel is open (mitcad#647): a round face's line runs its length along
+// the axis (a whole cylinder's, from its area) and a radius beyond each
+// end, a circle's twice its radius each way, a cone's (no radius) the
+// square root of its area each way, a construction axis 25 mm each way.
+TopoDS_Shape axisLine(const QJsonObject& item) {
+  const QJsonObject axis = item.value(QStringLiteral("axis")).toObject();
+  if (axis.isEmpty()) {
+    return TopoDS_Shape();
   }
-  return item.reference();
+  const gp_Pnt origin = pointOf(axis.value(QStringLiteral("origin")));
+  const gp_Vec direction = vectorOf(axis.value(QStringLiteral("direction")));
+  if (direction.Magnitude() < 1e-9) {
+    return TopoDS_Shape();
+  }
+  const double radius = item.value(QStringLiteral("circle")).toObject().value(QStringLiteral("radius")).toDouble();
+  const double area = item.value(QStringLiteral("area")).toDouble();
+  double half = 25.0;
+  if (radius > 0.0 && area > 0.0) {
+    const double circumference = 4.0 * std::asin(1.0) * radius;
+    half = area / circumference / 2.0 + radius;
+  } else if (radius > 0.0) {
+    half = 2.0 * radius;
+  } else if (area > 0.0) {
+    half = std::sqrt(area);
+  }
+  const gp_Vec along = direction.Normalized() * half;
+  return BRepBuilderAPI_MakeEdge(origin.Translated(-along), origin.Translated(along)).Edge();
+}
+
+// A pick in the words of Measure's history (mitcad#648): "Face of Body1",
+// a body's name, "Sketch curve of Sketch1", a construction feature's name,
+// or an origin datum ("Plane XY").
+QString pickedName(const SelectionItem& item, const CommandContext& context) {
+  QString kind = SelectionItem::kindName(item.kind);
+  if (!kind.isEmpty()) {
+    kind[0] = kind[0].toUpper();
+  }
+  try {
+    switch (item.kind) {
+    case SelectKind::Body:
+      return context.bodyName(item.owner);
+    case SelectKind::Face:
+    case SelectKind::Edge:
+    case SelectKind::Vertex:
+      return QObject::tr("%1 of %2").arg(kind, context.bodyName(item.owner));
+    case SelectKind::SketchCurve:
+    case SelectKind::SketchPoint:
+      return QObject::tr("%1 of %2").arg(kind, context.featureName(item.owner));
+    case SelectKind::Plane:
+    case SelectKind::Axis:
+    case SelectKind::Point: {
+      if (item.owner == QStringLiteral("origin")) {
+        return QObject::tr("Origin");
+      }
+      const QString name = context.featureName(item.owner);
+      return name != item.owner ? name : QStringLiteral("%1 %2").arg(kind, item.owner.toUpper());
+    }
+    default:
+      break;
+    }
+  } catch (const std::exception&) {
+    // The kind alone: the model could not name it.
+  }
+  return kind;
+}
+
+// The picks of a measurement for the history: "Face of Body1 ↔ Edge of
+// Body2".
+QString pickedNames(const SelectionItem& first, const SelectionItem* second, const CommandContext& context) {
+  QString text = pickedName(first, context);
+  if (second != nullptr) {
+    text += QStringLiteral(" ↔ ") + pickedName(*second, context);
+  }
+  return text;
+}
+
+// The main values of a measure query's answer for the history
+// (mitcad#648): a single pick's volume, area, length or position; a circle's
+// radius and diameter; between two picks the distance, the angle, the
+// offset and the axis and centre distances.
+QStringList recordValues(const QJsonObject& answer) {
+  QStringList values;
+  const bool pair = answer.contains(QStringLiteral("b"));
+  const auto millimetres = [](const QString& label, double value) {
+    return QStringLiteral("%1 %2 mm").arg(label, n(value));
+  };
+  for (const QString& key : {QStringLiteral("a"), QStringLiteral("b")}) {
+    const QJsonObject item = answer.value(key).toObject();
+    if (item.isEmpty()) {
+      continue;
+    }
+    if (!pair) {
+      if (item.value(QStringLiteral("volume")).isDouble()) {
+        values << QStringLiteral("%1 %2 mm³")
+                      .arg(QObject::tr("Volume"), n(item.value(QStringLiteral("volume")).toDouble()));
+      }
+      if (item.value(QStringLiteral("area")).isDouble()) {
+        values << QStringLiteral("%1 %2 mm²")
+                      .arg(QObject::tr("Area"), n(item.value(QStringLiteral("area")).toDouble()));
+      }
+      if (item.value(QStringLiteral("length")).isDouble()) {
+        values << millimetres(QObject::tr("Length"), item.value(QStringLiteral("length")).toDouble());
+      }
+      if (item.contains(QStringLiteral("point"))) {
+        values << QStringLiteral("%1 %2").arg(QObject::tr("Position"), xyz(item.value(QStringLiteral("point"))));
+      }
+    }
+    const QJsonObject circle = item.value(QStringLiteral("circle")).toObject();
+    if (circle.value(QStringLiteral("radius")).isDouble()) {
+      const double radius = circle.value(QStringLiteral("radius")).toDouble();
+      values << millimetres(QObject::tr("Radius"), radius) << millimetres(QObject::tr("Diameter"), 2.0 * radius);
+    }
+  }
+  const QJsonObject between = answer.value(QStringLiteral("between")).toObject();
+  if (between.value(QStringLiteral("distance")).isDouble()) {
+    values << millimetres(QObject::tr("Distance"), between.value(QStringLiteral("distance")).toDouble());
+  }
+  if (between.value(QStringLiteral("angle")).isDouble()) {
+    values << QStringLiteral("%1 %2°")
+                  .arg(QObject::tr("Angle"), degrees(between.value(QStringLiteral("angle")).toDouble()));
+  }
+  const std::pair<const char*, QString> distances[] = {
+      {"offset", QObject::tr("Offset")},
+      {"axis_distance", QObject::tr("Axis distance")},
+      {"center_distance", QObject::tr("Centre distance")}};
+  for (const auto& [key, label] : distances) {
+    if (between.value(QLatin1String(key)).isDouble()) {
+      values << millimetres(label, between.value(QLatin1String(key)).toDouble());
+    }
+  }
+  return values;
+}
+
+// A pick as the measure query takes it, with the occurrence that places it
+// (mitcad#646), so that the model measures it where the view shows it.
+QJsonValue measureRef(const SelectionItem& item) {
+  QJsonObject ref;
+  if (item.kind == SelectKind::Plane || item.kind == SelectKind::Axis || item.kind == SelectKind::Point) {
+    ref = QJsonObject{{QStringLiteral("datum"), item.owner}};
+  } else {
+    const QJsonValue reference = item.reference();
+    if (!reference.isObject()) {
+      return reference;
+    }
+    ref = reference.toObject();
+  }
+  if (!item.occurrence.isEmpty()) {
+    ref.insert(QStringLiteral("occurrence"), item.occurrence);
+  }
+  return ref;
 }
 
 bool isSketchItem(const SelectionItem& item) {
@@ -195,6 +353,23 @@ Inspection measureShapes(const SelectionItem& first, const SelectionItem* second
   }
   result.text = parts.join(QStringLiteral("<br><br>"));
   result.log = log.join(QStringLiteral(", "));
+  // For the history (mitcad#648): the logged values in words; of two picks
+  // their circles, the distance and the angle.
+  result.record.picked = pickedNames(first, second, context);
+  for (const QString& entry : log) {
+    const QString key = entry.section(QLatin1Char(' '), 0, 0);
+    const QString value = entry.section(QLatin1Char(' '), 1);
+    if (key == QStringLiteral("angle")) {
+      result.record.values << QStringLiteral("%1 %2°").arg(QObject::tr("Angle"), value.section(QLatin1Char(' '), 0, 0));
+    } else if (key == QStringLiteral("point") && second == nullptr) {
+      result.record.values << QStringLiteral("%1 %2").arg(QObject::tr("Position"), value);
+    } else if (key == QStringLiteral("radius") || key == QStringLiteral("diameter") ||
+               key == QStringLiteral("distance") || (key == QStringLiteral("length") && second == nullptr)) {
+      QString label = key;
+      label[0] = label[0].toUpper();
+      result.record.values << QStringLiteral("%1 %2 mm").arg(label, value);
+    }
+  }
   return result;
 }
 
@@ -243,8 +418,13 @@ CommandDef measureCommand() {
     const bool whole = bodies(state);
     const Selection& first = state.items(whole ? QStringLiteral("body_a") : QStringLiteral("a"));
     const Selection& second = state.items(whole ? QStringLiteral("body_b") : QStringLiteral("b"));
+    // The inputs that hold the picks, for the history (mitcad#648).
+    const QStringList inputs = whole ? QStringList{QStringLiteral("body_a"), QStringLiteral("body_b")}
+                                     : QStringList{QStringLiteral("a"), QStringLiteral("b")};
     if (isSketchItem(first.first()) || (!second.isEmpty() && isSketchItem(second.first()))) {
-      return measureShapes(first.first(), second.isEmpty() ? nullptr : &second.first(), context);
+      result = measureShapes(first.first(), second.isEmpty() ? nullptr : &second.first(), context);
+      result.record.inputs = inputs;
+      return result;
     }
     QJsonObject request{{QStringLiteral("query"), QStringLiteral("measure")},
                         {QStringLiteral("a"), measureRef(first.first())}};
@@ -258,6 +438,19 @@ CommandDef measureCommand() {
     if (answer.contains(QStringLiteral("b"))) {
       parts << describeMeasured(answer.value(QStringLiteral("b")).toObject(), log);
     }
+    // Drawn over the view: the axes of the picks (mitcad#647), the closest
+    // distance and the axis distance.
+    TopoDS_Compound drawn;
+    BRep_Builder builder;
+    builder.MakeCompound(drawn);
+    int axes = 0;
+    for (const QString& key : {QStringLiteral("a"), QStringLiteral("b")}) {
+      const TopoDS_Shape line = axisLine(answer.value(key).toObject());
+      if (!line.IsNull()) {
+        builder.Add(drawn, line);
+        ++axes;
+      }
+    }
     const QJsonObject between = answer.value(QStringLiteral("between")).toObject();
     if (!between.isEmpty()) {
       QStringList lines;
@@ -269,6 +462,14 @@ CommandDef measureCommand() {
         lines << QObject::tr("<b>Angle: %1°</b>").arg(angle);
         log << QStringLiteral("angle %1 deg").arg(angle);
       }
+      // Two parallel planes: their distance along the normal (mitcad#646),
+      // beside the closest distance, which differs where they do not
+      // overlap.
+      if (between.value(QStringLiteral("offset")).isDouble()) {
+        const QString offset = n(between.value(QStringLiteral("offset")).toDouble());
+        lines << QObject::tr("<b>Offset: %1 mm</b>").arg(offset);
+        log << QStringLiteral("offset %1").arg(offset);
+      }
       const QJsonArray a = between.value(QStringLiteral("on_a")).toArray();
       const QJsonArray c = between.value(QStringLiteral("on_b")).toArray();
       if (a.size() == 3 && c.size() == 3) {
@@ -278,13 +479,45 @@ CommandDef measureCommand() {
                      .arg(n(q.X() - p.X()), n(q.Y() - p.Y()), n(q.Z() - p.Z()));
         lines << QObject::tr("From %1 to %2").arg(xyz(a), xyz(c));
         if (p.Distance(q) > 1e-9) {
-          result.shape = BRepBuilderAPI_MakeEdge(p, q).Edge();
+          builder.Add(drawn, BRepBuilderAPI_MakeEdge(p, q).Edge());
         }
+      }
+      // With an axis (mitcad#647): the axes' distance beside the closest
+      // one (parallel, skew or meeting axes, an axis and a point or a
+      // parallel plane), where it is measured, and two circles' centres.
+      if (between.value(QStringLiteral("axis_distance")).isDouble()) {
+        const QString distanceText = n(between.value(QStringLiteral("axis_distance")).toDouble());
+        lines << QObject::tr("<b>Axis distance: %1 mm</b>").arg(distanceText);
+        log << QStringLiteral("axis distance %1").arg(distanceText);
+        const QJsonArray points = between.value(QStringLiteral("axis_points")).toArray();
+        if (points.size() == 2) {
+          lines << QObject::tr("Axis from %1 to %2").arg(xyz(points.at(0)), xyz(points.at(1)));
+          const gp_Pnt p = pointOf(points.at(0));
+          const gp_Pnt q = pointOf(points.at(1));
+          if (p.Distance(q) > 1e-9) {
+            builder.Add(drawn, BRepBuilderAPI_MakeEdge(p, q).Edge());
+          }
+        }
+      }
+      if (between.value(QStringLiteral("center_distance")).isDouble()) {
+        const QString centres = n(between.value(QStringLiteral("center_distance")).toDouble());
+        lines << QObject::tr("<b>Centre distance: %1 mm</b>").arg(centres);
+        log << QStringLiteral("center distance %1").arg(centres);
       }
       parts << lines.join(QStringLiteral("<br>"));
     }
+    if (axes > 0) {
+      log << QStringLiteral("axis lines %1").arg(axes);
+    }
+    TopoDS_Iterator anything(drawn);
+    if (anything.More()) {
+      result.shape = drawn;
+    }
     result.text = parts.join(QStringLiteral("<br><br>"));
     result.log = log.join(QStringLiteral(", "));
+    result.record.picked = pickedNames(first.first(), second.isEmpty() ? nullptr : &second.first(), context);
+    result.record.values = recordValues(answer);
+    result.record.inputs = inputs;
     return result;
   };
   return def;

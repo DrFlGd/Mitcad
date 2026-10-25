@@ -153,14 +153,14 @@ Ui-ExpectNew 'Pick face F2.b0/F2:side(c1[c4,c2]) in O1 at' "Part1's faces can be
 Ui-ExpectNone 'Create Sketch: policy leaves out' 'nothing left out'
 Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
 
-Write-Host '--- The Part preset and the first-sketch settings in the Policy dialog (mitcad#293)'
+Write-Host '--- The Component preset and the first-sketch settings in the Policy dialog (mitcad#293)'
 Ui-Mark
 Ui-Step 'design policy of Part2 (F8)'    { Ui-Key 'F8' }
 Ui-ExpectNew 'Design Policy dialog opened for Part2' 'the policy of Part2 opened'
 Ui-ExpectNew 'Policy dialog Part2: hybrid;' 'a new component is Hybrid'
 Ui-FocusDialog '^Design Policy of Part2$'
 Ui-Mark
-Ui-Step 'Part preset (Alt+P)'            { Ui-Key 'alt+p' }
+Ui-Step 'Component preset (Alt+N)'            { Ui-Key 'alt+n' }
 Ui-ExpectNew 'Policy dialog Part2: part;' 'Part2 is a part'
 Ui-ExpectNew 'attach_to_others blocked (0), attachments_from_others blocked (0), first_sketch_attaches allowed, first_sketch_attachments_from_others allowed' 'the attached first sketch breaks nothing'
 Ui-Mark
@@ -203,7 +203,7 @@ Ui-ExpectNew 'Design Policy dialog opened for Part1' 'the policy of Part1 opened
 Ui-ExpectNew 'Policy dialog Part1: hybrid;' 'Part1 is Hybrid'
 Ui-FocusDialog '^Design Policy of Part1$'
 Ui-Mark
-Ui-Step 'Part preset (Alt+P)'            { Ui-Key 'alt+p' }
+Ui-Step 'Component preset (Alt+N)'            { Ui-Key 'alt+n' }
 Ui-ExpectNew 'Policy dialog Part1: part;' 'Part1 is a part'
 Ui-Mark
 Ui-Step 'first sketches from others off (Alt+K)' { Ui-Key 'alt+k' }

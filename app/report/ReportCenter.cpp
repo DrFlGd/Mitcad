@@ -74,7 +74,7 @@ QString processLabel(const QString& process) {
 // "mitcad::MainWindow::save" of a frame's "mitcad::MainWindow::save() const".
 QString shortSymbol(const QString& symbol) {
   QString name = symbol.section(QLatin1Char('('), 0, 0);
-  return name.size() > 80 ? name.left(77) + QStringLiteral("...") : name;
+  return name.size() > 80 ? name.left(77) + QStringLiteral("…") : name;
 }
 
 QString oneLine(const QString& text) { return QString(text).replace(QLatin1Char('\n'), QStringLiteral(" | ")); }
@@ -126,7 +126,7 @@ QString ReportCenter::issueTracker() {
 void ReportCenter::registerCommands(CommandRegistry& registry) {
   CommandDef feedback;
   feedback.id = QStringLiteral("help.send_feedback");
-  feedback.name = tr("Send Feedback...");
+  feedback.name = tr("Send Feedback…");
   feedback.icon = QStringLiteral("feedback");
   feedback.kind = CommandDef::Kind::Action;
   feedback.mode = CommandDef::Mode::Any;
@@ -471,7 +471,7 @@ void ReportCenter::internalError(const QString& context, const QString& message)
   report.key = key;
   const QString first = message.section(QLatin1Char('\n'), 0, 0).simplified();
   report.title = QStringLiteral("Internal error: %1 [mitcad-%2]")
-                     .arg(first.size() > 90 ? first.left(87) + QStringLiteral("...") : first, key);
+                     .arg(first.size() > 90 ? first.left(87) + QStringLiteral("…") : first, key);
   report.sections << report::Section{QStringLiteral("description"), QStringLiteral("What I was doing"), QString(),
                                      true, false, true};
   report.sections << report::Section{QStringLiteral("error"), QStringLiteral("What happened"),
@@ -529,7 +529,7 @@ bool ReportCenter::showOffer(const Offer& offer) {
   box.setText(offer.message);
   box.setInformativeText(tr("You can send a report to Mitcad's developers. You will see everything it contains, "
                             "and can change it, before anything is sent."));
-  QPushButton* review = box.addButton(tr("&Review Report..."), QMessageBox::AcceptRole);
+  QPushButton* review = box.addButton(tr("&Review Report…"), QMessageBox::AcceptRole);
   box.addButton(tr("&Don't Send"), QMessageBox::RejectRole);
   box.setDefaultButton(review);
   auto* never = new QCheckBox(tr("Do &not offer error reports again"), &box);

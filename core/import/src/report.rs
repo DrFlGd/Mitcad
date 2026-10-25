@@ -179,7 +179,8 @@ pub struct ParameterReport {
     pub literal: Vec<String>,
     /// Renamed because Mitcad reserves the name: (name in the file, new name).
     pub renamed: Vec<(String, String)>,
-    /// Not created (text parameters), with the reason.
+    /// Not created (no expression and no value to fall back on), with the
+    /// reason.
     pub skipped: Vec<(String, String)>,
     /// Evaluated to another value than the file stores.
     pub mismatched: Vec<String>,

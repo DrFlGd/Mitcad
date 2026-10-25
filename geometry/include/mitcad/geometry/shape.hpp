@@ -153,6 +153,13 @@ public:
   std::shared_ptr<void> boundary_index() const { return m_boundaryIndex.get().value_or(nullptr); }
   void set_boundary_index(std::shared_ptr<void> index) const { m_boundaryIndex.set(std::move(index)); }
 
+  // Contact preparation belongs to this immutable geometry and location,
+  // never to a tool/distance or an operation answer. Bounds and planes use the
+  // geometry, independent of triangulation quality, keyed also by contact
+  // tolerance (ordinary and near-contact joins).
+  std::shared_ptr<const void> kept_contact_faces() const { return m_contactFaces.get().value_or(nullptr); }
+  void keep_contact_faces(std::shared_ptr<const void> faces) const { m_contactFaces.set(std::move(faces)); }
+
   // Each face's surface kind and area (query.cpp's face_infos), once
   // measured: the .f3d import asks for the faces of the same large body
   // again and again (an extrusion's face lookups on a body of 5 000 faces
@@ -198,6 +205,26 @@ public:
   bool display_meshed() const { return m_displayMeshed.get().value_or(false); }
   void set_display_meshed() const { m_displayMeshed.set(true); }
 
+  // The interactive preview tier of the view's meshes (mitcad#635): a
+  // preview's body is drawn through a stand-in, an independent_copy of it
+  // meshed for interactive previews on the model's thread, and the body's
+  // own faces stay without triangulations until the job that meshes it at
+  // the view's final quality, so the two qualities never share a face and
+  // nothing the view reads is meshed again on another thread. The body
+  // holds its stand-in weakly (whoever draws it keeps it), the stand-in
+  // its body weakly too.
+  std::shared_ptr<Shape> display_stand_in() const {
+    return m_displayStandIn.get().value_or(std::weak_ptr<Shape>()).lock();
+  }
+  void set_display_stand_in(const std::shared_ptr<Shape>& stand_in) const { m_displayStandIn.set(stand_in); }
+  // On a stand-in: the body it is drawn for, and that its meshes are the
+  // interactive tier's.
+  bool display_interactive() const { return m_standInFor.get().has_value(); }
+  std::shared_ptr<Shape> stand_in_for() const {
+    return m_standInFor.get().value_or(std::weak_ptr<Shape>()).lock();
+  }
+  void set_stand_in_for(const std::shared_ptr<Shape>& shape) const { m_standInFor.set(shape); }
+
   // Takes what was worked out of `other`, a Shape of the same B-rep (the
   // same TopoDS_Shape, with other face names), that does not depend on
   // face names: the measures, the box, the face measures and boxes, the
@@ -238,12 +265,15 @@ private:
   LazyValue<std::array<double, 5>> m_measured;
   LazyValue<std::array<double, 6>> m_bounds;
   LazyValue<std::shared_ptr<void>> m_boundaryIndex;
+  LazyValue<std::shared_ptr<const void>> m_contactFaces;
   LazyValue<std::shared_ptr<const FaceMeasures>> m_faceMeasures;
   LazyValue<std::shared_ptr<const void>> m_edgeMiddles;
   LazyValue<std::shared_ptr<const void>> m_edgeCurves;
   LazyValue<std::shared_ptr<const FaceBoxes>> m_faceBoxes;
   LazyValue<bool> m_valid;
   LazyValue<bool> m_displayMeshed;
+  LazyValue<std::weak_ptr<Shape>> m_displayStandIn;
+  LazyValue<std::weak_ptr<Shape>> m_standInFor;
   // A large shape's faces by each reference that matches one of their
   // names (naming.hpp: the name, or the name before a "#k"), made the
   // first time a face is looked for (mitcad#181: finding faces one by one

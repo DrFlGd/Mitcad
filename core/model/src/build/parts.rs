@@ -511,6 +511,14 @@ pub(crate) fn inherit_appearance(
             state.appearances.push(own.clone());
         }
     }
+    // A material of the library design's own comes with it (mitcad#640).
+    let material = match material {
+        Some(id) if design.materials.iter().any(|m| m.id == id) => {
+            let mapped = state.copy_materials(&design, &BTreeSet::from([id.clone()]));
+            Some(mapped.get(&id).cloned().unwrap_or(id))
+        }
+        other => other,
+    };
     let count = shown.len().max(1);
     for i in 0..count {
         let entry = state

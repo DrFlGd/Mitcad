@@ -569,3 +569,62 @@ fn a_print_analysis_changes_no_body_and_no_print_file() {
         std::fs::read(&after_path).unwrap()
     );
 }
+
+#[test]
+fn the_walls_summary_leaves_the_triangles_out_or_caps_them() {
+    // mitcad#689: an agent's tool response stays small.
+    let doc = block();
+    let walls = |extra: Value| {
+        let mut request = json!({"query": "print_thickness", "bodies": ["F2.b0"], "minimum": 25});
+        for (key, value) in extra.as_object().unwrap() {
+            request[key] = value.clone();
+        }
+        query(&doc, request)
+    };
+    let full = walls(json!({}));
+    assert_eq!(full["thin_triangles"], 12);
+    assert_eq!(full["bodies"][0]["thin_triangles"], 12);
+    assert_eq!(full["bodies"][0]["triangles"].as_array().unwrap().len(), 12);
+    assert!(full.get("truncated").is_none());
+    let summary = walls(json!({"triangles": false}));
+    let body = &summary["bodies"][0];
+    assert!(body.get("triangles").is_none(), "{summary}");
+    assert_eq!(body["thin_triangles"], 12);
+    assert_eq!(body["regions"], 1);
+    assert_eq!(body["thinnest"], full["bodies"][0]["thinnest"]);
+    assert_eq!(summary["thinnest"], full["thinnest"]);
+    assert_eq!(summary["at"], full["at"]);
+    let capped = walls(json!({"max_triangles": 5}));
+    assert_eq!(
+        capped["bodies"][0]["triangles"].as_array().unwrap().len(),
+        5
+    );
+    assert_eq!(capped["bodies"][0]["truncated"], true);
+    assert_eq!(capped["truncated"], true);
+    assert_eq!(capped["thin_triangles"], 12);
+    let error = query_error(&doc, json!({"query": "print_thickness", "triangles": "no"}));
+    assert!(error.contains("boolean"), "{error}");
+}
+
+#[test]
+fn body_versions_change_with_the_shape() {
+    // mitcad#689: MCP's command results list the bodies a command changed.
+    let mut doc = block();
+    let plain = query(&doc, json!({"query": "bodies"}));
+    assert!(plain[0].get("version").is_none());
+    let version = |doc: &Document<MockKernel>| {
+        query(doc, json!({"query": "bodies", "versions": true}))[0]["version"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let before = version(&doc);
+    assert_eq!(before.len(), 32);
+    command(
+        &mut doc,
+        json!({"cmd": "set_body_visible", "uid": "F2.b0", "visible": false}),
+    );
+    assert_eq!(version(&doc), before);
+    taller(&mut doc, 30.0);
+    assert_ne!(version(&doc), before);
+}

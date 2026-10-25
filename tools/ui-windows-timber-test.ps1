@@ -705,7 +705,7 @@ Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
 Ui-ExpectNew 'Command Timber started' 'Timber again'
 Ui-ExpectNew 'BUILD timber starts with test-timber/timber-48-test: chosen last in the tool' 'the part chosen last'
 Ui-ExpectNew 'BUILD timber adds to Part1, member' 'the mode used last'
-Ui-ExpectNew 'BUILD timber starts: length 600 (typed last), typed; along z, flat' 'the length typed last and the direction'
+Ui-ExpectNew 'BUILD timber starts: length 600 mm (typed last), typed; along z, flat' 'the length typed last and the direction'
 
 Write-Host '--- 3. Two points'
 Ui-Mark
@@ -1403,19 +1403,19 @@ if ($placed.Count -gt 0) {
 if ($heads.Count -ne 2) { Ui-Fail 'no two screw heads at two junctions in the view' }
 Ui-Step 'click a screw'                  { Ui-Click $heads[0][1] $heads[0][2] }
 Ui-Step 'Ctrl+click another'             { Ui-ClickWith 'ctrl' $heads[1][1] $heads[1][2] }
-# The context menu is filled and logged: its BUILD has Swap Fastener for
+# The context menu is filled and logged: its Build has Swap Fastener for
 # the screws. It stays open and takes the keys (as in
 # tools/ui-windows-browser-open-test.ps1), so it is chosen with them, as on
-# Linux with the mouse: BUILD is its third entry, Swap Fastener the first of
+# Linux with the mouse: Build is its third entry, Swap Fastener the first of
 # its submenu.
 Ui-Mark
 Ui-Step 'right-click it'                 { Ui-Click $heads[1][1] $heads[1][2] 3 }
-Ui-ExpectNew 'Context menu BUILD: ' 'the context menu''s BUILD'
-$menu = Ui-LastMatch '^Context menu BUILD: (.*)$'
-if (-not "$menu".StartsWith('Swap Fastener')) { Ui-Fail "BUILD has no Swap Fastener first: $menu" }
+Ui-ExpectNew 'Context menu Build: ' 'the context menu''s Build'
+$menu = Ui-LastMatch '^Context menu Build: (.*)$'
+if (-not "$menu".StartsWith('Swap Fastener')) { Ui-Fail "Build has no Swap Fastener first: $menu" }
 $entries = Ui-LastMatch '^Context menu: (.*)$'
-if (-not "$entries".StartsWith('Repeat Timber | Solid | BUILD |')) { Ui-Fail "BUILD is not the menu's third entry: $entries" }
-Write-Host 'ok   the context menu''s BUILD offers Swap Fastener'
+if (-not "$entries".StartsWith('Repeat Timber | Solid | Build |')) { Ui-Fail "Build is not the menu's third entry: $entries" }
+Write-Host 'ok   the context menu''s Build offers Swap Fastener'
 Ui-Mark
 Ui-Step 'BUILD > Swap Fastener'          { Ui-Key 'Down'; Ui-Key 'Down'; Ui-Key 'Down'; Ui-Key 'Right'; Ui-Key 'Return' }
 Ui-ExpectNew 'Command Swap Fastener started' 'Swap Fastener started'

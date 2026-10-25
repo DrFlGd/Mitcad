@@ -156,6 +156,23 @@ void test_new_faces() {
   CHECK(new_faces({rounded->occt()}, copy, 9).empty());
   // Without bodies before, every face is new.
   CHECK(new_faces({}, rounded->occt(), 4).size() == 7);
+  // Of Shapes, where only the faces whose boxes hold a centre of a face of
+  // the result are measured (mitcad#658), the same; also with a body far
+  // away before it, whose faces no box test lets through, and against a
+  // copy rebuilt from the same data.
+  const ShapePtr far_block = extrude("F7", {rectangle(1, 500, 500, 60, 40)}, 0, 20);
+  const std::vector<NewFace> of_shapes = new_faces({block.get(), far_block.get()}, *rounded, 9);
+  CHECK(of_shapes.size() == faces.size());
+  double shapes_area = 0;
+  for (const NewFace& face : of_shapes) {
+    shapes_area += face.area;
+  }
+  CHECK_NEAR(shapes_area, area);
+  const Shape rebuilt(copy);
+  CHECK(new_faces({rounded.get()}, rebuilt, 9).empty());
+  CHECK(new_faces({far_block.get(), rounded.get()}, rebuilt, 9).empty());
+  CHECK(new_faces({far_block.get()}, rebuilt, 9).size() == 7);
+  CHECK(new_faces(std::vector<const Shape*>{}, *rounded, 4).size() == 7);
 }
 
 // The volume a change makes from the faces it changed (mitcad#235): the
@@ -185,6 +202,18 @@ void test_changed_volume() {
   const ChangedVolume slack = changed_volume({block->occt()}, {loose});
   CHECK_NEAR(slack.volume, -taken);
   CHECK(slack.slack > 1.0 && slack.slack > 100.0 * changed.slack);
+  // Of Shapes (their face boxes kept with them, mitcad#658), the same,
+  // also with a body far away on both sides and against a copy.
+  const ShapePtr far_block = extrude("F7", {rectangle(1, 500, 500, 60, 40)}, 0, 20);
+  const std::vector<const Shape*> before{block.get(), far_block.get()};
+  const std::vector<const Shape*> after{rounded.get(), far_block.get()};
+  CHECK_NEAR(changed_volume(before, after).volume, -taken);
+  const Shape copied(copy);
+  CHECK_NEAR(changed_volume({&copied}, {rounded.get()}).volume, -taken);
+  CHECK_NEAR(changed_volume({rounded.get()}, {rounded.get()}).volume, 0.0);
+  CHECK_NEAR(changed_volume({rounded.get()}, {block.get()}).volume, taken);
+  const Shape loosened(loose);
+  CHECK_NEAR(changed_volume({block.get()}, {&loosened}).slack, slack.slack);
 }
 
 } // namespace

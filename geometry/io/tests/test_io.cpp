@@ -4,6 +4,7 @@
 
 #include "mitcad/io/exchange.hpp"
 #include "mitcad/io/face_mesh.hpp"
+#include "mitcad/io/mesh_compare.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -20,6 +21,11 @@
 
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepTools.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
@@ -45,6 +51,10 @@
 #include <gp_Vec.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <Poly_PolygonOnTriangulation.hxx>
+#include <Poly_Triangle.hxx>
+#include <Poly_Triangulation.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Pnt2d.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <vector>
 
@@ -301,7 +311,7 @@ void test_triangulate_keeps_original() {
   CHECK(!mitcad::io::is_mesh(block));
   bool threw = false;
   try {
-    mitcad::io::triangulate(block, mitcad::io::MeshOptions{0.0, 0.5, false, 0});
+    mitcad::io::triangulate(block, mitcad::io::MeshOptions{0.0, 0.5, false, 0, false});
   } catch (const mitcad::io::Error&) {
     threw = true;
   }
@@ -399,7 +409,7 @@ void test_building_scale_sphere(const std::string& dir) {
   // Meshed in place (the 3D view's meshes, made on the model's thread):
   // every face triangulated within the bound; meshing again keeps them.
   const TopoDS_Shape shown = dome(1.0);
-  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000};
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
   CHECK(!mitcad::io::has_triangulation(shown));
   CHECK(mitcad::io::mesh_in_place(shown, view));
   CHECK(mitcad::io::has_triangulation(shown));
@@ -451,7 +461,7 @@ public:
 // Counts, not times.
 void test_mesh_all_in_place() {
   using mitcad::io::MeshOptions;
-  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000};
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
   const auto bodies = [] {
     return std::vector<TopoDS_Shape>{dome(1.0), dome(0.01), filleted_block(), holed_block()};
   };
@@ -505,6 +515,165 @@ void test_mesh_all_in_place() {
   CHECK(mitcad::io::mesh_all_in_place({TopoDS_Shape()}, view) == 0);
 }
 
+// A 60 x 40 x 5 mm plate with 24 through holes of 4 mm: two planes with
+// many hole wires (mitcad#635).
+TopoDS_Shape perforated_plate() {
+  BRep_Builder builder;
+  TopoDS_Compound holes;
+  builder.MakeCompound(holes);
+  for (int x = 0; x < 6; ++x) {
+    for (int y = 0; y < 4; ++y) {
+      builder.Add(holes, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(5.0 + 10.0 * x, 5.0 + 10.0 * y, -1.0), gp::DZ()),
+                                                  2.0, 7.0)
+                             .Shape());
+    }
+  }
+  return BRepAlgoAPI_Cut(BRepPrimAPI_MakeBox(60.0, 40.0, 5.0).Shape(), holes).Shape();
+}
+
+// What a meshing reports (mitcad#635): every face meshed the first time,
+// kept the second; planes through Delabella (MeshOptions::fast_planes)
+// have the same nodes and as many triangles as by default, faces and
+// shared edges agreeing.
+void test_mesh_report_and_fast_planes() {
+  using mitcad::io::MeshOptions;
+  using mitcad::io::MeshReport;
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
+  const TopoDS_Shape plate = perforated_plate();
+  MeshReport first;
+  CHECK(mitcad::io::mesh_in_place(plate, view, Message_ProgressRange(), &first));
+  CHECK(first.faces == 30);
+  CHECK(first.meshed == 30);
+  CHECK(first.kept == 0);
+  CHECK(first.failed == 0);
+  CHECK(first.total > 0.0 && first.triangulate > 0.0);
+  CHECK(!first.slowest.empty() && first.slowest.front().surface == "plane" &&
+        first.slowest.front().wires == 25);
+  CHECK(first.line().find("faces=30 kept=0 meshed=30") == 0);
+  MeshReport again;
+  CHECK(mitcad::io::mesh_in_place(plate, view, Message_ProgressRange(), &again));
+  CHECK(again.kept == 30 && again.meshed == 0);
+
+  MeshOptions fast = view;
+  fast.fast_planes = true;
+  const TopoDS_Shape quick = perforated_plate();
+  MeshReport report;
+  CHECK(mitcad::io::mesh_in_place(quick, fast, Message_ProgressRange(), &report));
+  CHECK(report.meshed == 30 && report.failed == 0);
+  const mitcad::io::MeshStats slow = mitcad::io::mesh_stats(plate);
+  const mitcad::io::MeshStats delabella = mitcad::io::mesh_stats(quick);
+  std::printf("Perforated plate: %zu triangles, %zu nodes by default; %zu, %zu with fast planes\n", slow.triangles,
+              slow.nodes, delabella.triangles, delabella.nodes);
+  CHECK(delabella.nodes == slow.nodes);
+  CHECK(delabella.triangles == slow.triangles);
+  CHECK(face_triangles(quick) == face_triangles(plate));
+}
+
+// The perforated plate meshed by default and with planes through Delabella,
+// compared face by face (mitcad#644): every face triangulated both ways
+// and timed, the plate itself left without triangulations, planes with as
+// many triangles and the same area both ways (the same boundary points),
+// each face's area near its own and its deviation within its tolerance.
+// A face measured by itself: a square of 10 mm in two triangles, then one
+// of them turned over.
+void test_compare_meshing() {
+  using mitcad::io::MeshOptions;
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
+  MeshOptions fast = view;
+  fast.fast_planes = true;
+  const TopoDS_Shape plate = perforated_plate();
+  const mitcad::io::MeshComparison comparison = mitcad::io::compare_meshing({plate, TopoDS_Shape()}, view, fast);
+  CHECK(!mitcad::io::has_triangulation(plate));
+  CHECK(comparison.faces.size() == 30);
+  CHECK(comparison.surfaceless == 0);
+  CHECK(comparison.a.meshed == 30 && comparison.b.meshed == 30);
+  CHECK(comparison.a.every_face_time.empty() && comparison.b.every_face_time.empty()); // let go
+  int planes = 0;
+  for (const mitcad::io::FaceMeshComparison& face : comparison.faces) {
+    CHECK(face.body == 0);
+    CHECK(face.a.triangulated && face.b.triangulated);
+    CHECK(face.ms_a >= 0.0 && face.ms_b >= 0.0);
+    CHECK(face.tolerance >= 0.01);
+    CHECK(face.a.deviation <= face.tolerance && face.b.deviation <= face.tolerance);
+    CHECK(face.a.folded == 0 && face.b.folded == 0);
+    CHECK(relative_near(face.a.area, face.area, 1e-3));
+    if (face.surface == "plane") {
+      ++planes;
+      CHECK(face.a.triangles == face.b.triangles);
+      CHECK(relative_near(face.a.area, face.b.area, 1e-9));
+      CHECK(face.a.deviation < 1e-9);
+    } else {
+      CHECK(face.surface == "cylinder");
+      CHECK(face.a.deviation > 0.0);
+    }
+  }
+  CHECK(planes == 6);
+
+  BRepBuilderAPI_MakePolygon square(gp_Pnt(0, 0, 0), gp_Pnt(10, 0, 0), gp_Pnt(10, 10, 0), gp_Pnt(0, 10, 0), true);
+  const TopoDS_Face face = BRepBuilderAPI_MakeFace(gp_Pln(gp::XOY()), square.Wire(), true).Face();
+  CHECK(!mitcad::io::face_mesh_quality(face).triangulated);
+  occ::handle<Poly_Triangulation> mesh = new Poly_Triangulation(4, 2, true);
+  const double corners[4][2] = {{0, 0}, {10, 0}, {10, 10}, {0, 10}};
+  for (int i = 0; i < 4; ++i) {
+    mesh->SetNode(i + 1, gp_Pnt(corners[i][0], corners[i][1], 0.0));
+    mesh->SetUVNode(i + 1, gp_Pnt2d(corners[i][0], corners[i][1]));
+  }
+  mesh->SetTriangle(1, Poly_Triangle(1, 2, 3));
+  mesh->SetTriangle(2, Poly_Triangle(1, 3, 4));
+  BRep_Builder().UpdateFace(face, mesh);
+  mitcad::io::FaceMeshQuality quality = mitcad::io::face_mesh_quality(face);
+  CHECK(quality.triangulated && quality.triangles == 2 && quality.nodes == 4);
+  CHECK(near(quality.area, 100.0, 1e-9));
+  CHECK(quality.deviation < 1e-12 && quality.folded == 0);
+  // Turned over on the first instead of beside it: a fold, and half the
+  // face missing.
+  mesh->SetNode(4, gp_Pnt(8, 2, 0));
+  mesh->SetUVNode(4, gp_Pnt2d(8, 2));
+  mesh->SetTriangle(2, Poly_Triangle(1, 4, 2));
+  quality = mitcad::io::face_mesh_quality(face);
+  CHECK(quality.folded == 1);
+  CHECK(near(quality.area, 60.0, 1e-9));
+}
+
+// A face's triangulation given to the same face of a copy (mitcad#635):
+// every face of a copy that shares the surfaces and curves takes its
+// donor's, each edge with its polygons (a prism's top edges, its base's
+// moved up, included), the meshing that follows keeps them all; a body
+// made anew (its own surfaces and curves) takes none, and neither does a
+// face that has a triangulation of its own.
+void test_reuse_triangulations() {
+  using mitcad::io::MeshOptions;
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
+  BRepBuilderAPI_MakePolygon square(gp_Pnt(0, 0, 0), gp_Pnt(30, 0, 0), gp_Pnt(30, 20, 0), gp_Pnt(0, 20, 0), true);
+  BRepBuilderAPI_MakeFace base(square.Wire(), true);
+  BRepBuilderAPI_MakePolygon slot(gp_Pnt(5, 5, 0), gp_Pnt(5, 15, 0), gp_Pnt(25, 15, 0), gp_Pnt(25, 5, 0), true);
+  base.Add(slot.Wire());
+  const TopoDS_Shape prism = BRepPrimAPI_MakePrism(base.Face(), gp_Vec(0, 0, 5)).Shape();
+  for (const TopoDS_Shape& donor : {perforated_plate(), prism}) {
+    CHECK(mitcad::io::mesh_in_place(donor, view));
+    int faces = 0;
+    for (TopExp_Explorer it(donor, TopAbs_FACE); it.More(); it.Next()) {
+      ++faces;
+    }
+    const TopoDS_Shape copy = BRepBuilderAPI_Copy(donor, false, false).Shape();
+    CHECK(mitcad::io::mesh_stats(copy).triangles == 0);
+    const std::size_t given = mitcad::io::reuse_triangulations(copy, {donor});
+    std::printf("Reused %zu of %d faces\n", given, faces);
+    CHECK(given == static_cast<std::size_t>(faces));
+    CHECK(BRepTools::Triangulation(copy, 0.01, true));
+    CHECK(mitcad::io::mesh_stats(copy).triangles == mitcad::io::mesh_stats(donor).triangles);
+    mitcad::io::MeshReport report;
+    CHECK(mitcad::io::mesh_in_place(copy, view, Message_ProgressRange(), &report));
+    CHECK(report.kept == static_cast<std::size_t>(faces) && report.meshed == 0);
+    CHECK(mitcad::io::reuse_triangulations(copy, {donor}) == 0);
+  }
+  const TopoDS_Shape plate = perforated_plate();
+  const TopoDS_Shape anew = perforated_plate();
+  CHECK(mitcad::io::mesh_in_place(plate, view));
+  CHECK(mitcad::io::reuse_triangulations(anew, {plate}) == 0);
+  CHECK(mitcad::io::reuse_triangulations(anew, {}) == 0);
+}
+
 // The most points a circle edge of the shape's cylinder faces has in their
 // triangulations (0 without one).
 int circle_points(const TopoDS_Shape& meshed) {
@@ -545,7 +714,7 @@ int circle_points(const TopoDS_Shape& meshed) {
 // times.
 void test_building_scale_round_faces() {
   using mitcad::io::MeshOptions;
-  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000};
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
   MeshOptions unlimited = view;
   unlimited.face_triangles = 0;
 
@@ -1032,6 +1201,9 @@ int main(int argc, char** argv) {
     test_triangulate_keeps_original();
     test_building_scale_sphere(dir);
     test_mesh_all_in_place();
+    test_mesh_report_and_fast_planes();
+    test_reuse_triangulations();
+    test_compare_meshing();
     test_building_scale_round_faces();
     test_stl(dir);
     test_indexed_mesh(dir);

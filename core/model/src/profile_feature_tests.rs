@@ -151,6 +151,86 @@ fn extents_starts_tapers_and_walls_reach_the_kernel() {
     assert_eq!(status, FeatureStatus::Ok);
 }
 
+/// A two-sided extrusion's negative distance (mitcad#693): commands and
+/// their previews refuse it, whether a number, an expression or a
+/// parameter gives it; the document's own API, which the imports add
+/// through, still takes its size, and an edit that keeps such a distance
+/// passes.
+#[test]
+fn commands_refuse_a_negative_two_sided_distance() {
+    let mut b = block();
+    let two_sides = |d1: Value, d2: Value| {
+        json!({"type": "extrude", "profiles": [{"sketch": "F1", "region": RECT}],
+               "extent": {"type": "two_sides", "side1": {"type": "distance", "distance": d1},
+                          "side2": {"type": "distance", "distance": d2}},
+               "operation": "new_body"})
+    };
+    b.doc
+        .command(&json!({"cmd": "add_parameter", "name": "gap", "value": "-3 mm"}).to_string())
+        .unwrap();
+    let depth = b.doc.undo_depth();
+    let features = b.doc.features().count();
+    for (d1, d2, expected) in [
+        (json!(15), json!(-4), "side 2's distance is -4"),
+        (json!(15), json!("-4 mm"), "side 2's distance is -4"),
+        (json!(15), json!("2 mm - 6 mm"), "side 2's distance is -4"),
+        (json!(15), json!("depth = -4 mm"), "side 2's distance is -4"),
+        (json!(15), json!("gap"), "side 2's distance is -3"),
+        (json!(-15), json!(4), "side 1's distance is -15"),
+    ] {
+        let definition = two_sides(d1.clone(), d2.clone());
+        let command = json!({"cmd": "add_feature", "def": definition}).to_string();
+        for (what, result) in [
+            ("command", b.doc.command(&command)),
+            ("preview", b.doc.preview(&command)),
+        ] {
+            let error = result.unwrap_err().0;
+            assert!(
+                error.contains(expected) && error.contains("use a start offset"),
+                "{what} {d1} {d2}: {error}"
+            );
+        }
+    }
+    assert_eq!(b.doc.undo_depth(), depth, "nothing was added");
+    assert_eq!(b.doc.features().count(), features);
+    // Zero and positive distances pass.
+    let command = json!({"cmd": "add_feature", "def": two_sides(json!(0), json!(4))});
+    b.doc.command(&command.to_string()).unwrap();
+    b.doc.undo();
+    // The document's own API (the imports') takes the size: 4 the other way.
+    let uid = b
+        .doc
+        .add_feature(&def(two_sides(json!(15), json!(-4))), None)
+        .unwrap()
+        .uid;
+    let spec = last_spec(&b.doc);
+    assert!(
+        spec.ends_with("distance 15 taper 0; distance 4 taper 0"),
+        "{spec}"
+    );
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    // An edit that keeps that negative distance passes, one to another
+    // negative distance is refused, a positive one passes.
+    let edit = |d2: Value| {
+        json!({"cmd": "edit_feature", "uid": uid.to_string(), "def": two_sides(json!(20), d2)})
+            .to_string()
+    };
+    b.doc.command(&edit(json!(-4))).unwrap();
+    let spec = last_spec(&b.doc);
+    assert!(
+        spec.ends_with("distance 20 taper 0; distance 4 taper 0"),
+        "{spec}"
+    );
+    let error = b.doc.command(&edit(json!(-6))).unwrap_err().0;
+    assert!(error.contains("side 2's distance is -6"), "{error}");
+    b.doc.command(&edit(json!(6))).unwrap();
+    let spec = last_spec(&b.doc);
+    assert!(
+        spec.ends_with("distance 20 taper 0; distance 6 taper 0"),
+        "{spec}"
+    );
+}
+
 #[test]
 fn extrude_values_get_parameters_and_checks() {
     let mut b = block();
@@ -843,7 +923,7 @@ fn cosmetic_threads_are_data_and_modelled_ones_geometry() {
     doc.edit_feature(uid, &internal_class).unwrap();
     assert_eq!(
         status(&doc, uid),
-        FeatureStatus::Failed("class 6H is for internal threads".to_owned())
+        FeatureStatus::Failed("class 6H is for internal threads; use 6g for a shaft".to_owned())
     );
     // A modelled thread too big for the rod.
     let too_big = def(
@@ -1063,6 +1143,98 @@ fn tapped_holes_take_extra_clearance() {
         panic!("no tooth left");
     };
     assert!(message.contains("leaves no usable tooth"), "{message}");
+}
+
+/// mitcad#691: an M6x1 6H modelled in a 5 mm bore (its tap drill) with
+/// the Thread panel's defaults, the printed-fit parameters of 0.1 mm. An
+/// internal M6x1's crest is P/4 = 0.25 wide and must keep P/50: a flank
+/// clearance of at most (0.25 - 0.02) cos 30° / 2 = 0.0996 mm. The
+/// printed-fit flank clearance is capped there and the thread is made; a
+/// smaller one is used as it is. The same 0.1 mm given as a number is
+/// refused, naming the most that fits (rounded down), which is taken.
+#[test]
+fn printed_fit_flank_clearance_is_capped_on_fine_pitches() {
+    let mut doc = bored_rod(12.0, Some(5.0));
+    let thread = |extra: Value| {
+        let mut value = json!({"type": "thread",
+            "faces": [{"body": "F2.b0", "face": "F3:hole0.wall"}],
+            "thread": {"designation": "M6x1", "class": "6H"}, "modeled": true});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        def(value)
+    };
+    let defaults = thread(json!({"radial_clearance": "thread_radial_clearance",
+                                 "flank_clearance": "thread_flank_clearance"}));
+    let uid = doc.add_feature(&defaults, None).unwrap().uid;
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&doc).starts_with("thread F3:hole0.wall pitch 1 diameters 6.0000/4.9175/5.3505"),
+        "{}",
+        last_spec(&doc)
+    );
+    assert!(
+        last_spec(&doc).ends_with("clearance 0.1000/0.0996"),
+        "{}",
+        last_spec(&doc)
+    );
+    // The parameter keeps its value; a smaller one is used as it is.
+    assert_eq!(
+        doc.parameters()
+            .value(doc.parameters().find("thread_flank_clearance").unwrap()),
+        Some(0.1)
+    );
+    doc.set_parameter("thread_flank_clearance", 0.05).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&doc).ends_with("clearance 0.1000/0.0500"),
+        "{}",
+        last_spec(&doc)
+    );
+    doc.set_parameter("thread_flank_clearance", 0.1).unwrap();
+
+    // Given as a number, 0.1 mm is the user's own: refused with the most
+    // that fits, which is then taken.
+    let explicit = thread(json!({"radial_clearance": 0.1, "flank_clearance": 0.1}));
+    doc.edit_feature(uid, &explicit).unwrap();
+    let FeatureStatus::Failed(message) = status(&doc, uid) else {
+        panic!("0.1 mm leaves no tooth on M6x1");
+    };
+    assert!(message.contains("leaves no usable tooth"), "{message}");
+    assert!(
+        message.contains("takes a flank clearance of at most 0.0995 mm"),
+        "{message}"
+    );
+    let largest = thread(json!({"radial_clearance": 0.1, "flank_clearance": 0.0995}));
+    doc.edit_feature(uid, &largest).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&doc).ends_with("clearance 0.1000/0.0995"),
+        "{}",
+        last_spec(&doc)
+    );
+
+    // A tapped M6x1 hole with the printed-fit flank clearance alike.
+    let mut b = block();
+    let on_top = json!({"type": "face", "body": "F2.b0", "face": TOP, "points": [[10, 10, 20]]});
+    let hole = b
+        .doc
+        .add_feature(
+            &hole_def(
+                on_top,
+                json!({"thread": {"designation": "M6x1", "class": "6H", "modeled": true,
+                                  "flank_clearance": "thread_flank_clearance"}}),
+            ),
+            None,
+        )
+        .unwrap()
+        .uid;
+    assert_eq!(status(&b.doc, hole), FeatureStatus::Ok);
+    assert!(
+        last_spec(&b.doc).ends_with("clearance 0.0000/0.0996"),
+        "{}",
+        last_spec(&b.doc)
+    );
 }
 
 #[test]

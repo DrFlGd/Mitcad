@@ -22,6 +22,10 @@
 //! `seat.rs`): its plane at the seat's offset along the shaft, its axis
 //! the shaft's; without a `bore` its bore is plain, the shaft's diameter
 //! plus `bore_clearance`, and follows the shaft.
+//!
+//! `at` places it by picked geometry (mitcad#656, `place_at.rs`): a shaft
+//! or an axis, a point, or a point on a face; on a shaft its bore follows
+//! the shaft as a seat's does, elsewhere it keeps its own.
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -33,6 +37,7 @@ use super::extrude::{Operation, apply_operation, check_participants, participant
 use super::gear::{Bore, Hub};
 use super::gear_profile::{self, NamedSegment, bore_outline, circle};
 use super::geom_ref::{GeomRef, Want};
+use super::place_at::{PlaceAt, map_at};
 use super::pulley_profile::{self, BeltProfile};
 use super::seat::Seat;
 use super::thread::ThreadSize;
@@ -52,6 +57,10 @@ pub const DEFAULT_CLEARANCE: f64 = 1.0;
 /// The least wall between a bore (with its keyway) and the groove
 /// bottoms (an idler's running face), mm.
 pub const MIN_WALL: f64 = 0.5;
+
+/// How far a worked-out flange stands above the groove bottoms' depth
+/// beyond the outside circle, mm (mitcad#656): Mitcad's default.
+pub const FLANGE_MARGIN: f64 = 1.0;
 
 /// The most set screws, 90 degrees apart.
 pub const MAX_SET_SCREWS: f64 = 4.0;
@@ -122,6 +131,14 @@ pub struct SetScrews<P = ParamId> {
     pub position: Option<P>,
 }
 
+/// A belt kept checked round a pulley and an earlier pulley feature of
+/// its component (mitcad#656): a relation that places nothing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeltCheck {
+    pub pulley: FeatureUid,
+}
+
 /// Where a pulley runs on one belt with an earlier pulley feature.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -187,6 +204,14 @@ pub struct PulleyDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// Placed by picked geometry instead of `plane` and `center`
+    /// (mitcad#656, `place_at.rs`).
+    #[serde(default = "none", skip_serializing_if = "Option::is_none")]
+    pub at: Option<PlaceAt<P>>,
+    /// A belt checked round this pulley and an earlier one (mitcad#656):
+    /// no geometry; `pulley_values` gives the check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub belt_check: Option<BeltCheck>,
 }
 
 fn is_origin(center: &[f64; 2]) -> bool {
@@ -248,7 +273,11 @@ impl<P> PulleyDef<P> {
             hub: match &self.hub {
                 None => None,
                 Some(hub) => Some(Hub {
-                    diameter: f("hub.diameter", &hub.diameter)?,
+                    diameter: hub
+                        .diameter
+                        .as_ref()
+                        .map(|v| f("hub.diameter", v))
+                        .transpose()?,
                     length: f("hub.length", &hub.length)?,
                 }),
             },
@@ -279,6 +308,8 @@ impl<P> PulleyDef<P> {
             bore_clearance,
             operation: self.operation,
             participants: self.participants.clone(),
+            at: map_at(&self.at, &mut *f)?,
+            belt_check: self.belt_check.clone(),
         })
     }
 }
@@ -373,7 +404,9 @@ impl PulleyDef<f64> {
     /// A seated pulley without a bore gets the plain bore of its shaft of
     /// diameter `shaft`: the shaft's diameter and the bore clearance.
     pub fn seat_bore(&mut self, shaft: f64) {
-        if self.seat.is_some() && self.bore.is_none() {
+        // A placement on a shaft too (mitcad#656); an axis of its own has no
+        // diameter.
+        if (self.seat.is_some() || self.at.is_some()) && self.bore.is_none() && shaft.is_finite() {
             self.bore = Some(Bore::Plain {
                 diameter: shaft + self.bore_clearance.unwrap_or(0.0),
             });
@@ -383,16 +416,44 @@ impl PulleyDef<f64> {
     /// Whether the bore is plain: given so, or a seat's.
     fn plain_bore(&self) -> bool {
         matches!(self.bore, Some(Bore::Plain { .. }))
-            || (self.seat.is_some() && self.bore.is_none())
+            || ((self.seat.is_some() || self.at.as_ref().is_some_and(PlaceAt::on_shaft))
+                && self.bore.is_none())
     }
 
-    /// The flanges' sides, diameter and thickness.
+    /// The flanges' diameter worked out when none is given (mitcad#656):
+    /// the outside diameter and, all round, the groove's depth (none
+    /// without a profile) and [`FLANGE_MARGIN`].
+    pub fn default_flange_diameter(&self) -> f64 {
+        let depth = self.data().map_or(0.0, |data| data.groove.depth);
+        self.outside_diameter() + 2.0 * (depth + FLANGE_MARGIN)
+    }
+
+    /// The hub's diameter: given, or worked out from the bore (a seat's
+    /// too), a set screw's tap drill and the roots (mitcad#656,
+    /// [`super::gear::hub_diameter`]).
+    pub fn hub_diameter(&self) -> f64 {
+        let given = self.hub.as_ref().and_then(|hub| hub.diameter);
+        given.unwrap_or_else(|| {
+            let screw = self
+                .set_screws
+                .as_ref()
+                .and_then(|screws| screws.thread.data().ok())
+                .map(|data| data.minor);
+            super::gear::hub_diameter(
+                self.bore_diameter().ok().flatten(),
+                self.root_diameter(),
+                screw,
+            )
+        })
+    }
+
+    /// The flanges' sides, diameter (given or worked out) and thickness.
     fn flange_values(&self) -> (FlangeSides, f64, f64) {
         match &self.flanges {
             None => (FlangeSides::None, 0.0, 0.0),
             Some(f) => (
                 f.sides,
-                f.diameter.unwrap_or(f64::NAN),
+                f.diameter.unwrap_or_else(|| self.default_flange_diameter()),
                 f.thickness.unwrap_or(f64::NAN),
             ),
         }
@@ -465,6 +526,9 @@ impl PulleyDef<f64> {
         ] {
             finite(v, what)?;
         }
+        if let Some(at) = &self.at {
+            at.check_values()?;
+        }
         if let Some(seat) = &self.seat {
             seat.check_values()?;
         }
@@ -486,8 +550,9 @@ impl PulleyDef<f64> {
                 ));
             }
             if !teeth.is_finite() || (teeth - teeth.round()).abs() > 1.0e-9 {
-                return Err(format!(
-                    "the {name}'s number of teeth must be whole, got {teeth}"
+                return Err(crate::parameters::count_error(
+                    format!("the {name}'s number of teeth must be whole, got {teeth}"),
+                    teeth,
                 ));
             }
             if teeth < data.min_teeth || teeth > 1000.0 {
@@ -529,7 +594,7 @@ impl PulleyDef<f64> {
             }
         }
         if let Some(hub) = &self.hub {
-            positive(hub.diameter, "hub diameter")?;
+            positive(self.hub_diameter(), "hub diameter")?;
             positive(hub.length, "hub length")?;
         }
         // The bore.
@@ -557,7 +622,7 @@ impl PulleyDef<f64> {
                     }
                 ));
             }
-            if self.hub.as_ref().is_some_and(|hub| d >= hub.diameter) {
+            if self.hub.is_some() && d >= self.hub_diameter() {
                 return Err("the hub must be wider than the bore".to_owned());
             }
         }
@@ -568,8 +633,9 @@ impl PulleyDef<f64> {
                 || (count - count.round()).abs() > 1.0e-9
                 || !(1.0..=MAX_SET_SCREWS).contains(&count)
             {
-                return Err(format!(
-                    "1 to {MAX_SET_SCREWS} set screws fit a hub, got {count}"
+                return Err(crate::parameters::count_error(
+                    format!("1 to {MAX_SET_SCREWS} set screws fit a hub, got {count}"),
+                    count,
                 ));
             }
             finite(screws.position, "set screws' position")?;
@@ -582,7 +648,7 @@ impl PulleyDef<f64> {
                         hub.length - d / 2.0
                     ));
                 }
-                if bore.is_some_and(|b| d >= hub.diameter - b) {
+                if bore.is_some_and(|b| d >= self.hub_diameter() - b) {
                     return Err("the set screws' tap drills are too large for the hub".to_owned());
                 }
             }
@@ -712,6 +778,16 @@ pub(crate) fn placement<K: Kernel>(
     let mut pulley = evaluated(def, &value);
     let Some(belt) = pulley.belt_with.clone() else {
         let phase = pulley.angle.unwrap_or(0.0);
+        // Placed by picked geometry (mitcad#656): on a shaft its bore
+        // follows the shaft.
+        if let Some(at) = pulley.at.clone() {
+            let placed = ctx.place(&at)?;
+            if let Some(seat) = placed.round() {
+                pulley.seat_bore(seat.diameter);
+            }
+            let frame = placed.frame;
+            return Ok((pulley, Placement { frame, phase }, None));
+        }
         // On a shaft (mitcad#578): its bore follows the shaft.
         if let Some(seat) = pulley.seat.clone() {
             let seat = ctx.seat(&seat).map_err(|e| format!("seat: {e}"))?;
@@ -873,11 +949,11 @@ fn pulley_solid<K: Kernel>(
             ("flange_b_inner", "flange_b_end"),
         )?);
     }
-    if let (Some((z0, z1)), Some(hub)) = (layout.hub, &pulley.hub) {
+    if let (Some((z0, z1)), Some(_)) = (layout.hub, &pulley.hub) {
         parts.push(sweep(
             ctx,
             frame,
-            &[circle("hub", hub.diameter / 2.0)],
+            &[circle("hub", pulley.hub_diameter() / 2.0)],
             z0,
             z1 - z0,
             ("hub_start", "hub_end"),
@@ -905,7 +981,7 @@ fn pulley_solid<K: Kernel>(
         )?;
         solid = cut(ctx, &solid, &tool, "bore")?;
     }
-    if let (Some((d, height, count)), Some(hub)) = (pulley.set_screw_values()?, &pulley.hub) {
+    if let (Some((d, height, count)), Some(_)) = (pulley.set_screw_values()?, &pulley.hub) {
         for i in 0..count {
             let k = i + 1;
             let screw = screw_frame(&frame, at.phase + FRAC_PI_2 * i as f64, height);
@@ -919,7 +995,7 @@ fn pulley_solid<K: Kernel>(
                 screw,
                 &[circle(&format!("set_screw({k})"), d / 2.0)],
                 0.0,
-                hub.diameter / 2.0 + 1.0,
+                pulley.hub_diameter() / 2.0 + 1.0,
                 (bottom.as_str(), top.as_str()),
             )?;
             solid = cut(ctx, &solid, &tool, "set screw")?;
@@ -937,8 +1013,14 @@ impl FeatureInfo for PulleyDef {
         if let Some(belt) = &self.belt_with {
             references.features.insert(belt.pulley);
         }
+        if let Some(check) = &self.belt_check {
+            references.features.insert(check.pulley);
+        }
         if let Some(seat) = &self.seat {
             seat.add_to(&mut references);
+        }
+        if let Some(at) = &self.at {
+            at.add_to(&mut references);
         }
         for body in &self.participants {
             references.body(*body);
@@ -948,6 +1030,34 @@ impl FeatureInfo for PulleyDef {
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
         check_participants(ctx, self.operation, &self.participants)?;
+        // A belt kept checked (mitcad#656): with another pulley.
+        if let Some(check) = &self.belt_check {
+            let entry = ctx.feature(check.pulley)?;
+            if !matches!(entry.def, FeatureDef::Pulley(_)) {
+                return Err(format!(
+                    "{} is not a pulley: a belt is checked round two",
+                    entry.name
+                ));
+            }
+        }
+        // Placed by picked geometry (mitcad#656): a bore given is kept.
+        if let Some(at) = &self.at {
+            if self.plane.is_some() || !is_origin(&self.center) || self.seat.is_some() {
+                return Err(
+                    "a pulley placed by at takes no plane, centre or seat of its own".to_owned(),
+                );
+            }
+            if self.belt_with.is_some() {
+                return Err(
+                    "a pulley placed by at is not placed by a belt too (the belt is checked with belt_check)"
+                        .to_owned(),
+                );
+            }
+            if self.bore_clearance.is_some() && self.bore.is_some() {
+                return Err("a bore of its own takes no bore clearance".to_owned());
+            }
+            return at.check(ctx);
+        }
         // On a shaft (mitcad#578).
         if let Some(seat) = &self.seat {
             if self.plane.is_some() || !is_origin(&self.center) {
@@ -961,7 +1071,9 @@ impl FeatureInfo for PulleyDef {
                         .to_owned(),
                 );
             }
-            if matches!(self.bore, Some(Bore::Plain { .. })) {
+            // An axis of its own has no diameter: the bore is the pulley's
+            // own (mitcad#656).
+            if seat.body().is_some() && matches!(self.bore, Some(Bore::Plain { .. })) {
                 return Err(
                     "a pulley on a shaft takes its plain bore from the shaft: leave out the bore (bore_clearance widens it)"
                         .to_owned(),
@@ -1060,6 +1172,26 @@ pub fn derived_values(pulley: &PulleyDef<f64>) -> serde_json::Value {
     // The bore: given, or a seat's (mitcad#578).
     if let Ok(Some(d)) = pulley.bore_diameter() {
         map.insert("bore_diameter".into(), json!(d));
+    }
+    // Flanges and hub: given, or worked out (mitcad#656; `computed`
+    // lists those worked out).
+    let mut computed = Vec::new();
+    if let Some(flanges) = &pulley.flanges
+        && flanges.sides != FlangeSides::None
+    {
+        map.insert("flange_diameter".into(), json!(pulley.flange_values().1));
+        if flanges.diameter.is_none() {
+            computed.push("flange_diameter");
+        }
+    }
+    if let Some(hub) = &pulley.hub {
+        map.insert("hub_diameter".into(), json!(pulley.hub_diameter()));
+        if hub.diameter.is_none() {
+            computed.push("hub_diameter");
+        }
+    }
+    if !computed.is_empty() {
+        map.insert("computed".into(), json!(computed));
     }
     if let Some(profile) = pulley.profile {
         let data = profile.data();

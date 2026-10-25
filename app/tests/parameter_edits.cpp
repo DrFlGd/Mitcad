@@ -145,6 +145,9 @@ void changeTests() {
   CHECK(parameterCommandChangesValues(setParameter("depth", "value", 30.0)));
   CHECK(!parameterCommandChangesValues(setParameter("depth", "comment", QStringLiteral("Depth"))));
   CHECK(!parameterCommandChangesValues(setParameter("depth", "favorite", true)));
+  // Limits (mitcad#665).
+  CHECK(parameterCommandChangesValues(setParameter("depth", "max", QStringLiteral("30 mm"))));
+  CHECK(parameterCommandChangesValues(setParameter("depth", "strict", true)));
   CHECK(!parameterCommandChangesValues({{QStringLiteral("cmd"), QStringLiteral("set_feature_visible")}}));
 }
 

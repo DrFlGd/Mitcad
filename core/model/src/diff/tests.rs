@@ -372,7 +372,8 @@ fn the_document_bodies_groups_and_views() {
         &mut doc,
         json!([
             {"cmd": "rename_body", "uid": "F2.b0", "name": "Plate"},
-            {"cmd": "set_body_material", "uid": "F2.b0", "material": "aluminum"},
+            {"cmd": "set_body_material", "uid": "F2.b0", "material": "aluminum",
+             "appearance": "keep"},
             {"cmd": "set_marker", "position": 1},
             {"cmd": "set_units", "length": "in"},
             {"cmd": "add_named_view", "name": "Front", "eye": [0, -100, 0], "target": [0, 0, 0],

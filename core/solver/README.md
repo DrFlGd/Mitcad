@@ -117,7 +117,11 @@ to all equations.
    Union-find splits them into independent components. For each component the
    pattern of the Gram matrix `G = J D J^T` and its symbolic LDL^T
    factorization in a minimum degree order are computed once. Dimension
-   changes only update equation constants.
+   changes only update equation constants. The plans of components of 64
+   rows or more are also shared between systems: the model builds a new
+   system for every edit and drag step with the same equations, and takes
+   the 32 latest plans by their structure (the columns of every row)
+   instead of computing them again (mitcad#677).
 2. **Jacobian**: every residual is generic over a `Scalar` trait; evaluating
    it with dual numbers (8 derivative lanes, several passes for more
    unknowns) gives exact derivatives, including through B-spline evaluation
@@ -175,6 +179,28 @@ to all equations.
   is zero (below `1e-8`). A point is fully constrained when both coordinates
   are, an entity when all its points and radii are (sketch mode shows
   these in black). Components without remaining DOF skip this test.
+  `b^T G^-1 b` comes from the entries of `G^-1` on the pattern of the
+  factor (a selected inverse by Takahashi's equations), since the rows of
+  one column are a clique there; its cost is the sum of the squared column
+  counts of `L`, linear for chains and bands (mitcad#677). A factor so
+  dense that one forward solve per unknown costs less uses those instead.
+
+### Patterns of many copies
+
+The model binds each copy of a sketch pattern to its neighbour instance
+one step toward the originals (`Translated`, `Rotated`, `TurnedDirection`,
+`EqualSize` with the transform between the two instances), not to the
+originals (mitcad#677). The rows of the bindings to the originals are
+differences of the chained rows, so the solution, the degrees of freedom
+and the dependent sets are the same, but their Gram matrix shares only
+neighbours' unknowns: a chain or a tree factors with linear fill, where
+every copy bound to the original's unknowns makes `G` dense (a clique per
+coordinate) and its factorization cubic in the copies. In
+`tests/pattern.rs` a drag step of a 20 x 20 grid of circles (as the model
+runs it: a new system, solves, the drag, the analysis) took 0.7 s with
+the copies bound to the original before the plans were shared and the
+analysis used the selected inverse, 0.13 s with them, and 0.7 ms chained
+(release).
 
 ## Joints (rigid bodies)
 

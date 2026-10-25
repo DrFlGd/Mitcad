@@ -158,13 +158,13 @@ ui_step "click Wall 2's plate"             xdotool mousemove $AT2 click 1
 ui_step "Ctrl+click Wall 3's plate"        xdotool mousemove $AT3 keydown ctrl click 1 keyup ctrl
 ui_mark
 ui_step "right-click it"                   xdotool mousemove $AT3 click 3
-ui_expect_new "Context menu BUILD: " "the context menu's BUILD"
-menu=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Context menu BUILD: " | tail -1)
-[[ $menu == "Context menu BUILD: Floor / Roof"* || $menu == *"| Floor / Roof |"* ]] ||
+ui_expect_new "Context menu Build: " "the context menu's BUILD"
+menu=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Context menu Build: " | tail -1)
+[[ $menu == "Context menu Build: Floor / Roof"* || $menu == *"| Floor / Roof |"* ]] ||
   ui_fail "BUILD does not offer Floor / Roof first for two walls' members: $menu"
 echo "ok   BUILD offers Floor / Roof for two walls: $menu"
 ui_mark
-ui_step "BUILD > Floor / Roof"             ui_menu_choose "BUILD" "Floor / Roof"
+ui_step "Build > Floor / Roof"             ui_menu_choose "Build" "Floor / Roof"
 ui_expect_new "Command Floor / Roof started" "Floor / Roof started"
 ui_expect_new "BUILD floor_roof kind roof, 2 item(s) selected before" "a roof on the two walls selected"
 expect_inspect "Floor / Roof" "frame roof Roof 1, gable roof" "rafter" "ridge board" \

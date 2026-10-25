@@ -411,7 +411,10 @@ fn seats_refuse_what_is_not_a_round_shaft() {
         "{message}"
     );
     let message = rejected(&mut doc, on(json!("xy")));
-    assert!(message.contains("is not an edge or a face"), "{message}");
+    assert!(
+        message.contains("is not an axis, an edge or a face with an axis"),
+        "{message}"
+    );
     // A face the shaft no longer has fails with the reason.
     let gone = format!("{}:side(c99)", shaft.body.split('.').next().unwrap());
     let message = rejected(&mut doc, on(json!({"body": shaft.body, "face": gone})));

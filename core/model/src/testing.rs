@@ -217,6 +217,29 @@ pub struct MockKernel {
     pub side_planes: RefCell<BTreeMap<String, Plane>>,
     #[allow(clippy::type_complexity)]
     pub moved: RefCell<Vec<(MockShape, MockShape, Transform)>>,
+    /// Drawings' hole tags (mitcad#707): `round_holes` gives each shape
+    /// with bounds one hole of this diameter through its box along Z, at
+    /// the middle of its top; none otherwise.
+    pub box_holes: Cell<Option<f64>>,
+    /// The faces and edges queries' geometry (mitcad#714): areas of faces
+    /// and boxes of faces or edges by name. Without one a face's area is 0
+    /// and its box its slab of the bounds (a box's `bottom`, `top`, `side0`
+    /// to `side3`) or the bounds; an edge's box is that of its
+    /// `edge_geometry` ends.
+    pub face_areas: RefCell<BTreeMap<String, f64>>,
+    pub item_boxes: RefCell<BTreeMap<String, BoundingBox>>,
+    /// `split_body` by a plane square to an axis cuts the bounds there:
+    /// the first piece below it along the normal, the second above
+    /// (mitcad#714); otherwise each piece keeps the body's bounds.
+    pub split_bounds: Cell<bool>,
+    /// `face_geometries` and `edge_geometries` describe every face and
+    /// edge as `face_geometry` (else `face_plane`) and `edge_geometry` do
+    /// (mitcad#714); otherwise the kernel has neither.
+    pub lists_geometry: Cell<bool>,
+    /// Drawings' sections (mitcad#717): `project_view` keeps what lies
+    /// behind a section's plane of each box and gives where the plane cuts
+    /// it as a cut face; every edge whole and no cut faces otherwise.
+    pub cuts_sections: Cell<bool>,
 }
 
 /// The bounds of what of `b` lies on or below the plane through `point`
@@ -947,11 +970,18 @@ impl Kernel for MockKernel {
         &self,
         feature: FeatureUid,
         body: &MockShape,
-        _tool: &ToolInput<'_, MockShape>,
+        tool: &ToolInput<'_, MockShape>,
         _extend: bool,
     ) -> Result<Vec<MockShape>, KernelError> {
         self.call("split_body")?;
         let count = self.split.get().unwrap_or(2);
+        // With `split_bounds`: the axis and place of a plane square to it.
+        let cut = match tool {
+            ToolInput::Plane { origin, normal } if self.split_bounds.get() && count == 2 => (0..3)
+                .find(|&i| (normal[i].abs() - 1.0).abs() < 1e-9)
+                .map(|axis| (axis, origin[axis], normal[axis] > 0.0)),
+            _ => None,
+        };
         Ok((0..count)
             .map(|k| {
                 let mut piece = MockShape {
@@ -959,6 +989,14 @@ impl Kernel for MockKernel {
                     ..body.clone()
                 };
                 piece.faces.push(FaceName::new(feature, "split", None));
+                if let (Some((axis, at, up)), Some(bounds)) = (cut, piece.bounds.as_mut()) {
+                    // The first piece lies behind the plane along its normal.
+                    if (k == 0) == up {
+                        bounds.max[axis] = at;
+                    } else {
+                        bounds.min[axis] = at;
+                    }
+                }
                 piece
             })
             .collect())
@@ -997,14 +1035,24 @@ impl Kernel for MockKernel {
         Ok(usize::from(shape.has_face(face)))
     }
 
+    /// Planes unless `surfaces` names another surface; areas by
+    /// `face_areas` (0 otherwise).
     fn faces(&self, shape: &MockShape) -> Result<Vec<crate::kernel::FaceInfo>, KernelError> {
+        let surfaces = self.surfaces.borrow();
+        let areas = self.face_areas.borrow();
         Ok(shape
             .faces
             .iter()
-            .map(|face| crate::kernel::FaceInfo {
-                names: vec![face.to_string()],
-                surface: "plane".to_owned(),
-                area: 0.0,
+            .map(|face| {
+                let name = face.to_string();
+                crate::kernel::FaceInfo {
+                    surface: surfaces
+                        .get(&name)
+                        .map_or("plane", SurfaceGeometry::kind)
+                        .to_owned(),
+                    area: areas.get(&name).copied().unwrap_or(0.0),
+                    names: vec![name],
+                }
             })
             .collect())
     }
@@ -1152,6 +1200,8 @@ impl Kernel for MockKernel {
         if !self.measures_selections.get() {
             return Err(KernelError::Unsupported("measurement"));
         }
+        // Counted (mitcad#716: kept annotations are not measured again).
+        self.call("measure_between")?;
         let (box_a, plane_a) = self.selection_box(a.shape, a.name)?;
         let (box_b, plane_b) = self.selection_box(b.shape, b.name)?;
         let (on_a, on_b) = closest_in_boxes(&box_a, &box_b);
@@ -1823,9 +1873,16 @@ impl Kernel for MockKernel {
         if !shape.has_face(face) {
             return Err(KernelError::failed(format!("the body has no face {face}")));
         }
-        let internal = face.role.ends_with(".wall");
-        let closed = matches!(&face.key, Some(RoleKey::Segment(s)) if s.ends.is_none());
-        if !internal && !(face.role == "side" && closed) {
+        // A pattern's copy of a face (`F6:inst1(F4:side(c1))`) is what the
+        // face is.
+        let mut plain = face;
+        while let (true, Some(RoleKey::Face(inner))) = (plain.role.starts_with("inst"), &plain.key)
+        {
+            plain = inner;
+        }
+        let internal = plain.role.ends_with(".wall");
+        let closed = matches!(&plain.key, Some(RoleKey::Segment(s)) if s.ends.is_none());
+        if !internal && !(plain.role == "side" && closed) {
             return Err(KernelError::failed(format!(
                 "face {face} is not cylindrical"
             )));
@@ -2539,6 +2596,8 @@ impl Kernel for MockKernel {
             face_spans: self.face_spans.clone(),
             measures_selections: self.measures_selections.clone(),
             side_planes: self.side_planes.clone(),
+            box_holes: self.box_holes.clone(),
+            cuts_sections: self.cuts_sections.clone(),
             ..MockKernel::default()
         })
     }
@@ -3328,7 +3387,8 @@ impl Kernel for MockKernel {
     }
 
     /// Drawings (mitcad#471): the twelve edges of each shape's box, all
-    /// seen.
+    /// seen; a section's (mitcad#717) what lies behind its plane of them,
+    /// and where the plane cuts the box as its cut face.
     fn project_view(
         &self,
         shapes: &[&MockShape],
@@ -3337,6 +3397,17 @@ impl Kernel for MockKernel {
         use crate::drawing::{ViewCurve, ViewEdge, ViewEdgeKind, ViewProjection};
         self.call("project_view")?;
         let mut projection = ViewProjection::default();
+        let section = spec.section.filter(|_| self.cuts_sections.get());
+        let side = |p: [f64; 3]| {
+            section.map_or(-1.0, |c| {
+                (0..3)
+                    .map(|k| (p[k] - c.origin[k]) * c.normal[k])
+                    .sum::<f64>()
+            })
+        };
+        let lerp = |a: [f64; 3], b: [f64; 3], t: f64| -> [f64; 3] {
+            std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t)
+        };
         for shape in shapes {
             let Some(b) = shape.bounds else { continue };
             let corner = |i: usize| {
@@ -3346,19 +3417,45 @@ impl Kernel for MockKernel {
                     if i & 4 == 0 { b.min[2] } else { b.max[2] },
                 ]
             };
+            let mut crossings: Vec<[f64; 2]> = Vec::new();
             for i in 0..8 {
                 for bit in [1, 2, 4] {
-                    if i & bit == 0 {
-                        projection.edges.push(ViewEdge {
-                            visible: true,
-                            kind: ViewEdgeKind::Sharp,
-                            curve: ViewCurve::Line(
-                                spec.project(corner(i)),
-                                spec.project(corner(i | bit)),
-                            ),
-                        });
+                    if i & bit != 0 {
+                        continue;
                     }
+                    let (mut p, mut q) = (corner(i), corner(i | bit));
+                    let (sp, sq) = (side(p), side(q));
+                    if sp > 1e-9 && sq > 1e-9 {
+                        continue;
+                    }
+                    if (sp > 1e-9) != (sq > 1e-9) {
+                        let cut = lerp(p, q, sp / (sp - sq));
+                        crossings.push(spec.project(cut));
+                        if sp > 1e-9 {
+                            p = cut;
+                        } else {
+                            q = cut;
+                        }
+                    }
+                    projection.edges.push(ViewEdge {
+                        visible: true,
+                        kind: ViewEdgeKind::Sharp,
+                        curve: ViewCurve::Line(spec.project(p), spec.project(q)),
+                    });
                 }
+            }
+            if crossings.len() >= 3 {
+                let n = crossings.len() as f64;
+                let c = [
+                    crossings.iter().map(|p| p[0]).sum::<f64>() / n,
+                    crossings.iter().map(|p| p[1]).sum::<f64>() / n,
+                ];
+                crossings.sort_by(|a, b| {
+                    (a[1] - c[1])
+                        .atan2(a[0] - c[0])
+                        .total_cmp(&(b[1] - c[1]).atan2(b[0] - c[0]))
+                });
+                projection.cuts.push(vec![crossings]);
             }
         }
         Ok(projection)
@@ -3366,9 +3463,26 @@ impl Kernel for MockKernel {
 
     fn round_holes(
         &self,
-        _shape: &MockShape,
+        shape: &MockShape,
     ) -> Result<Vec<crate::drawing::RoundHole>, KernelError> {
-        Ok(Vec::new())
+        self.call("round_holes")?;
+        let (Some(diameter), Some(b)) = (self.box_holes.get(), shape.bounds) else {
+            return Ok(Vec::new());
+        };
+        Ok(vec![crate::drawing::RoundHole {
+            face: None,
+            opening: [
+                (b.min[0] + b.max[0]) / 2.0,
+                (b.min[1] + b.max[1]) / 2.0,
+                b.max[2],
+            ],
+            direction: [0.0, 0.0, -1.0],
+            diameter,
+            through: true,
+            depth: b.max[2] - b.min[2],
+            counterbore: None,
+            countersink: None,
+        }])
     }
     /// A face per curve and the caps, over the loops' bounds along the
     /// steps (mitcad#472).
@@ -4223,6 +4337,144 @@ impl Kernel for MockKernel {
             faces,
             edges,
             bounds: None,
+            parts: Vec::new(),
+        })
+    }
+
+    // The faces and edges queries' geometry (mitcad#714).
+
+    /// With `lists_geometry`: each face's `face_geometry`, else its
+    /// `face_plane` (a box's sides with `box_faces`); a face neither
+    /// describes is a plane of unknown place (`Other`).
+    fn face_geometries(
+        &self,
+        shape: &MockShape,
+    ) -> Result<Vec<(Vec<String>, SurfaceGeometry)>, KernelError> {
+        if !self.lists_geometry.get() {
+            return Err(KernelError::Unsupported("face geometries"));
+        }
+        Ok(shape
+            .faces
+            .iter()
+            .map(|face| {
+                let surface = self
+                    .face_geometry(shape, face)
+                    .or_else(|_| {
+                        self.face_plane(shape, face)
+                            .map(|plane| SurfaceGeometry::Plane {
+                                origin: plane.origin,
+                                normal: plane.normal,
+                            })
+                    })
+                    .unwrap_or_else(|_| SurfaceGeometry::Other {
+                        kind: "plane".to_owned(),
+                    });
+                (vec![face.to_string()], surface)
+            })
+            .collect())
+    }
+
+    fn edge_geometries(
+        &self,
+        shape: &MockShape,
+    ) -> Result<Vec<(Option<String>, CurveGeometry)>, KernelError> {
+        if !self.lists_geometry.get() {
+            return Err(KernelError::Unsupported("edge geometries"));
+        }
+        let names = self.edges(shape)?;
+        shape
+            .edges
+            .iter()
+            .zip(names)
+            // An edge the mock knows no curve of is left out, as a kernel
+            // leaves out what it cannot describe (drawings' picks, mitcad#707).
+            .filter_map(|((a, b), info)| {
+                let edge = EdgeName::new(a.clone(), b.clone());
+                let curve = self.edge_geometry(shape, &edge).ok()?;
+                Some(Ok((info.name, curve)))
+            })
+            .collect()
+    }
+
+    fn face_bounding_boxes(
+        &self,
+        shape: &MockShape,
+        faces: &[usize],
+    ) -> Result<Vec<Option<BoundingBox>>, KernelError> {
+        let boxes = self.item_boxes.borrow();
+        faces
+            .iter()
+            .map(|&i| {
+                let face = shape
+                    .faces
+                    .get(i)
+                    .ok_or_else(|| KernelError::failed(format!("no face {i}")))?;
+                if let Some(found) = boxes.get(&face.to_string()) {
+                    return Ok(Some(*found));
+                }
+                Ok(shape.bounds.map(|bounds| {
+                    let (mut min, mut max) = (bounds.min, bounds.max);
+                    if let Some((axis, high)) = box_side(plain_role(face)) {
+                        let at = if high { max[axis] } else { min[axis] };
+                        min[axis] = at;
+                        max[axis] = at;
+                    }
+                    BoundingBox { min, max }
+                }))
+            })
+            .collect()
+    }
+
+    fn edge_bounding_boxes(
+        &self,
+        shape: &MockShape,
+        edges: &[usize],
+    ) -> Result<Vec<Option<BoundingBox>>, KernelError> {
+        let infos = self.edges(shape)?;
+        let boxes = self.item_boxes.borrow();
+        edges
+            .iter()
+            .map(|&i| {
+                let (a, b) = shape
+                    .edges
+                    .get(i)
+                    .ok_or_else(|| KernelError::failed(format!("no edge {i}")))?;
+                if let Some(found) = infos[i].name.as_ref().and_then(|name| boxes.get(name)) {
+                    return Ok(Some(*found));
+                }
+                let (start, end) =
+                    match self.edge_geometry(shape, &EdgeName::new(a.clone(), b.clone()))? {
+                        CurveGeometry::Line { start, end }
+                        | CurveGeometry::Circle { start, end, .. }
+                        | CurveGeometry::Other { start, end, .. } => (start, end),
+                    };
+                Ok(Some(BoundingBox {
+                    min: std::array::from_fn(|k| start[k].min(end[k])),
+                    max: std::array::from_fn(|k| start[k].max(end[k])),
+                }))
+            })
+            .collect()
+    }
+
+    /// The tool clipped to the box: its bounds are the box (mitcad#712).
+    fn extended_tool(
+        &self,
+        tool: &ToolInput<'_, MockShape>,
+        extend: bool,
+        bounds: &BoundingBox,
+    ) -> Result<MockShape, KernelError> {
+        self.call("extended_tool")?;
+        let tool = match tool {
+            ToolInput::Plane { .. } => "plane".to_owned(),
+            ToolInput::Face { face, .. } => format!("face {face}"),
+            ToolInput::Body { .. } => "body".to_owned(),
+            ToolInput::Curves { .. } => "curves".to_owned(),
+        };
+        Ok(MockShape {
+            history: format!("extended_tool({tool},{extend})"),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            bounds: Some(*bounds),
             parts: Vec::new(),
         })
     }

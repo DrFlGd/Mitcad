@@ -37,6 +37,11 @@
 //! a dialect's own preset (`printer_settings_id`, `printer_model`) is
 //! [`KeyDef::per_dialect`]: a profile keeps one value per dialect.
 //!
+//! A few keys are Mitcad's own ([`MITCAD_OWN`]), with no dialect key: a
+//! material's purge volumes on filament changes (mitcad#705), which no
+//! slicer keeps per filament. Export turns them into each slicer's purge
+//! matrix ([`crate::print_purge`]).
+//!
 //! # Categories
 //!
 //! Every key has a place in the settings form (mitcad#655): a
@@ -450,6 +455,8 @@ pub enum Group {
     Chamber,
     VolumetricSpeed,
     ScarfSeam,
+    // The material's purge volumes on filament changes (mitcad#705).
+    Purge,
     FilamentPresets,
     PartCoolingFan,
     SlowDownForCooling,
@@ -466,7 +473,7 @@ pub enum Group {
 }
 
 impl Group {
-    pub const ALL: [Group; 59] = [
+    pub const ALL: [Group; 60] = [
         Group::PrintableSpace,
         Group::PrinterPresets,
         Group::Nozzle,
@@ -513,6 +520,7 @@ impl Group {
         Group::Chamber,
         Group::VolumetricSpeed,
         Group::ScarfSeam,
+        Group::Purge,
         Group::FilamentPresets,
         Group::PartCoolingFan,
         Group::SlowDownForCooling,
@@ -605,6 +613,7 @@ impl Group {
             Group::Chamber => (Category::Filament, "chamber", "Chamber"),
             Group::VolumetricSpeed => (Category::Filament, "volumetric_speed", "Volumetric speed"),
             Group::ScarfSeam => (Category::Filament, "scarf_seam", "Scarf seam"),
+            Group::Purge => (Category::Filament, "purge", "Purge volumes"),
             Group::FilamentPresets => (Category::Filament, "filament_presets", "Slicer presets"),
             Group::PartCoolingFan => (Category::Cooling, "part_cooling_fan", "Part cooling fan"),
             Group::SlowDownForCooling => (
@@ -1185,6 +1194,11 @@ pub const FILAMENT_OVERRIDES: &[&str] = &[
     "filament_long_retractions_when_cut",
     "filament_retraction_distances_when_cut",
 ];
+
+/// The keys that are Mitcad's own, with no dialect key (mitcad#705): a
+/// filament's purge volumes into and out of it, which the export turns
+/// into the slicers' purge matrices ([`crate::print_purge`]).
+pub const MITCAD_OWN: &[&str] = &["purge_into", "purge_out"];
 
 /// The keys of a layer, in the table's order.
 pub fn keys_in(set: PrintSet) -> impl Iterator<Item = &'static KeyDef> {

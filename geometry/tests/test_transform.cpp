@@ -291,6 +291,16 @@ void test_tools_of_faces() {
   CHECK(near(volume(*twice.pieces.at(0).shape), 60.0 * 40 * 5 - 2 * kPi * 2.5 * 2.5 * 5, 1e-6));
   CHECK(faces_named(*twice.pieces.at(0).shape, "F9:inst1(" + wall + ")") == 1);
 
+  // The walls of two separate holes: a solid of each (mitcad#719).
+  const ShapePtr second = extrude("F5", {circle(7, 40, 10, 2)}, -1, 6);
+  const ShapePtr two_holes = run(BooleanOp::Cut, with_hole, second).pieces.at(0).shape;
+  const std::string other_wall = mitcad::geometry::face_name("F5", "side", "c7");
+  const FaceTool holes = face_tool(*two_holes, {wall, other_wall});
+  CHECK(!holes.material);
+  CHECK(solids(*holes.tool).size() == 2);
+  CHECK(near(volume(*holes.tool), (kPi * 2.5 * 2.5 + kPi * 2 * 2) * 5, 1e-6));
+  CHECK(faces_named(*holes.tool, other_wall) == 1);
+
   // A boss on the plate: its side and top bound material.
   const ShapePtr peg = extrude("F6", {circle(9, 40, 20, 5)}, 0, 15);
   const BooleanResult bossed = run(BooleanOp::Join, plate, peg);

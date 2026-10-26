@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: MIT
-//! The `export_drawing` command (mitcad#471, commands.md): the bodies at
-//! the marker as a drawing on a sheet, written as PDF, SVG or DXF. The
-//! kernel projects the views and finds the round holes; the `threads`
-//! query gives the holes' threads and the sketches their dimensions;
-//! `crate::drawing` lays the sheet out and writes it.
+//! The `export_drawing` command (mitcad#471, commands.md): a drawing on
+//! sheets written as PDF, SVG or DXF. With `drawing` it writes a drawing
+//! kept in the design (mitcad#707); without, it lays out a temporary one
+//! from its options as File › Export Drawing's dialog gives them (the
+//! bodies at the marker in a grid of views at a scale that fits) and
+//! writes that. Both are drawn the same way (`drawings.rs`): the kernel
+//! projects the views and finds the round holes; the `threads` query gives
+//! the holes' threads and the sketches their dimensions; `crate::drawing`
+//! lays the sheet out and writes it.
+
+use std::collections::BTreeSet;
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -11,28 +17,37 @@ use serde_json::{Map, Value, json};
 use mitcad_vec3::sub;
 
 use super::ApiError;
+use super::drawings::{SheetDrawn, Shown};
 use crate::datum::Vec3;
 use crate::document::Document;
-use crate::drawing::compose::{self, Composed, HoleInput, SheetInput, SketchDimension, ViewInput};
+use crate::drawing::compose::{self, Composed, HoleInput, SketchDimension, ViewInput, shown_views};
+use crate::drawing::def::{
+    Annotations, Drawing, DrawingSheet, DrawingUid, DrawingView, StandardView, Subject,
+    SubjectBody, TitleBlock, ViewDirection, ViewKind, ViewStyle,
+};
 use crate::drawing::{
-    DrawingOptions, RoundHole, SectionChoice, Units, ViewName, ViewSpec, cross, dot, pdf, svg,
-    today, unit,
+    DrawingOptions, RoundHole, SectionChoice, Units, ViewName, cross, dot, pdf, svg, today, unit,
 };
 use crate::features::FeatureDef;
-use crate::ids::BodyUid;
+use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::kernel::{Kernel, KernelError};
 use crate::recompute::FeatureStatus;
 use crate::sketch::DimensionKind;
 use crate::sketch::geometry::Curve2;
 use crate::transform::Transform;
 
-/// `export_drawing`: the file, its format, the bodies and the drawing's
-/// options (the other fields, [`DrawingOptions`]).
+/// `export_drawing`: the file, its format, and either a kept drawing (and
+/// its sheet) or the bodies and the options of a temporary one (the other
+/// fields, [`DrawingOptions`]).
 #[derive(Debug)]
 pub(super) struct ExportDrawingCommand {
     path: String,
     format: Option<String>,
     bodies: Vec<String>,
+    drawing: Option<String>,
+    sheet: Option<usize>,
+    /// A kept drawing's title where it has none of its own.
+    title: Option<String>,
     options: DrawingOptions,
 }
 
@@ -54,11 +69,50 @@ impl<'de> Deserialize<'de> for ExportDrawingCommand {
             None | Some(Value::Null) => Vec::new(),
             Some(value) => serde_json::from_value(value).map_err(D::Error::custom)?,
         };
+        let drawing = match map.remove("drawing") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(drawing)) => Some(drawing),
+            Some(_) => return Err(D::Error::custom("\"drawing\" must be a string")),
+        };
+        let sheet = match map.remove("sheet") {
+            None | Some(Value::Null) => None,
+            Some(Value::Number(n)) if drawing.is_some() => Some(
+                n.as_u64()
+                    .ok_or_else(|| D::Error::custom("\"sheet\" is a sheet's index"))?
+                    as usize,
+            ),
+            // An export's sheet size (A4, ...) when no drawing is named.
+            Some(value) => {
+                map.insert("sheet".to_owned(), value);
+                None
+            }
+        };
+        let mut title = None;
+        if drawing.is_some() {
+            title = match map.remove("title") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(title)) => Some(title),
+                Some(_) => return Err(D::Error::custom("\"title\" must be a string")),
+            };
+            if let Some(field) = map.keys().next() {
+                return Err(D::Error::custom(format!(
+                    "a kept drawing is exported as it is: \"{field}\" is its own, edit the drawing"
+                )));
+            }
+            if !bodies.is_empty() {
+                return Err(D::Error::custom(
+                    "a kept drawing is exported as it is: its views have their subjects",
+                ));
+            }
+        }
         let options = serde_json::from_value(Value::Object(map)).map_err(D::Error::custom)?;
         Ok(Self {
             path,
             format,
             bodies,
+            drawing,
+            sheet,
+            title,
             options,
         })
     }
@@ -89,15 +143,8 @@ impl Format {
     }
 }
 
-/// A body on the drawing: its shapes where the design shows it.
-struct Drawn<S> {
-    uid: BodyUid,
-    name: String,
-    placements: Vec<(Transform, S)>,
-}
-
 /// A thread of the `threads` query, for its hole.
-struct ThreadOf {
+pub(super) struct ThreadOf {
     body: BodyUid,
     face: String,
     designation: String,
@@ -117,7 +164,7 @@ fn vec3(value: &Value) -> Option<Vec3> {
     ])
 }
 
-fn threads_of(threads: &Value) -> Vec<ThreadOf> {
+pub(super) fn threads_of(threads: &Value) -> Vec<ThreadOf> {
     threads
         .as_array()
         .into_iter()
@@ -155,6 +202,25 @@ fn on_axis(hole: &RoundHole, start: Vec3, end: Vec3) -> bool {
     dot(across, across).sqrt() < 1e-4
 }
 
+/// A temporary drawing laid out from an export's options, with what it
+/// draws.
+pub(super) struct AutoDrawing {
+    pub(super) drawing: Drawing,
+    /// The bodies drawn, in order, with their names.
+    pub(super) drawn: Vec<(BodyUid, String)>,
+    pub(super) warnings: Vec<String>,
+}
+
+/// The standard view of an export's view name.
+fn standard(name: ViewName) -> StandardView {
+    match name {
+        ViewName::Front => StandardView::Front,
+        ViewName::Top => StandardView::Top,
+        ViewName::Right => StandardView::Right,
+        ViewName::Iso => StandardView::Iso,
+    }
+}
+
 impl<K: Kernel> Document<K> {
     pub(super) fn export_drawing_command(
         &self,
@@ -178,6 +244,266 @@ impl<K: Kernel> Document<K> {
             return Err(ApiError("expected export_drawing".to_owned()));
         };
         self.export_drawing_command_checked(command, check)
+    }
+
+    /// The bodies an export draws: those given (by uid or name), or every
+    /// body the design shows; each once.
+    fn drawing_bodies(&self, given: &[String]) -> Result<Vec<BodyUid>, ApiError> {
+        let all = self.bodies();
+        let instances = self.instances();
+        if given.is_empty() {
+            return Ok(all
+                .iter()
+                .filter(|b| instances.iter().any(|i| i.body == b.uid && i.visible))
+                .map(|b| b.uid)
+                .collect());
+        }
+        let mut chosen = Vec::new();
+        for body in given {
+            let uid = self.body_by_uid_or_name(body)?;
+            if chosen.contains(&uid) {
+                return Err(ApiError(format!("body {body} is listed more than once")));
+            }
+            if !all.iter().any(|b| b.uid == uid) {
+                return Err(ApiError(format!(
+                    "body {uid} does not exist at the timeline marker"
+                )));
+            }
+            chosen.push(uid);
+        }
+        Ok(chosen)
+    }
+
+    /// Lays out a drawing of the root from an export's options: a sheet
+    /// (or one per body) with the views asked for in a grid after the
+    /// projection method at a scale that fits (or the one given), the
+    /// section's view beside them, as `export_drawing` draws them.
+    pub(super) fn auto_drawing(
+        &self,
+        options: &DrawingOptions,
+        bodies: &[String],
+    ) -> Result<AutoDrawing, ApiError> {
+        let units = match &options.units {
+            Some(symbol) => Units::by_symbol(symbol)
+                .ok_or_else(|| ApiError(format!("unknown length unit '{symbol}'")))?,
+            None => Units::of(self.parameters().context().default_length_unit),
+        };
+        if options.views.is_empty() && options.section.is_none() {
+            return Err(ApiError("a drawing needs at least one view".to_owned()));
+        }
+        // The bodies, without the empty ones.
+        let mut drawn: Vec<(BodyUid, String)> = Vec::new();
+        for uid in self.drawing_bodies(bodies)? {
+            let subject = Subject::Bodies {
+                bodies: vec![SubjectBody {
+                    body: uid,
+                    occurrence: None,
+                }],
+            };
+            let shown = self
+                .subject_bodies(ComponentUid::ROOT, &subject)
+                .map_err(ApiError)?;
+            if !shown.is_empty() {
+                drawn.push((uid, self.body_name(uid)));
+            }
+        }
+        if drawn.is_empty() {
+            return Err(ApiError("there are no bodies to draw".to_owned()));
+        }
+        let section = match &options.section {
+            None => None,
+            Some(SectionChoice::Plane { origin, normal }) => Some(
+                compose::cut_plane(*origin, *normal)
+                    .ok_or_else(|| ApiError("the section plane's normal is zero".to_owned()))?,
+            ),
+            Some(SectionChoice::Analysis { analysis }) => {
+                let found = self
+                    .analyses()
+                    .iter()
+                    .find(|a| &a.name == analysis)
+                    .ok_or_else(|| ApiError(format!("there is no analysis '{analysis}'")))?;
+                let crate::AnalysisDef::Section(def) = &found.def else {
+                    return Err(ApiError(format!("'{analysis}' is not a section analysis")));
+                };
+                let plane = self
+                    .section_plane(def)
+                    .map_err(|e| ApiError(format!("{analysis}: {e}")))?;
+                Some(
+                    compose::cut_plane(plane.origin, plane.normal)
+                        .ok_or_else(|| ApiError(format!("{analysis}: no plane")))?,
+                )
+            }
+        };
+        let mut names: Vec<ViewName> = Vec::new();
+        for v in &options.views {
+            if !names.contains(v) {
+                names.push(*v);
+            }
+        }
+        let style = ViewStyle {
+            hidden_lines: options.hidden_lines,
+            tangent_edges: options.tangent_edges,
+            shaded: false,
+            polygonal: !options.exact,
+        };
+        let sheet_bodies: Vec<Vec<BodyUid>> = if options.per_body {
+            drawn.iter().map(|(b, _)| vec![*b]).collect()
+        } else {
+            vec![drawn.iter().map(|(b, _)| *b).collect()]
+        };
+        let threads = threads_of(&self.threads_json());
+        let mut warnings = Vec::new();
+        let mut sheets = Vec::new();
+        // View ids are the drawing's, one counter over all its sheets.
+        let mut next_id = 1u32;
+        for (index, bodies) in sheet_bodies.iter().enumerate() {
+            let subject = Subject::Bodies {
+                bodies: bodies
+                    .iter()
+                    .map(|b| SubjectBody {
+                        body: *b,
+                        occurrence: None,
+                    })
+                    .collect(),
+            };
+            let mut sheet = DrawingSheet::new(format!("Sheet{}", index + 1));
+            sheet.size = options.sheet;
+            sheet.orientation = options.orientation;
+            sheet.projection = options.projection;
+            sheet.units = options.units.clone();
+            sheet.annotations = Annotations::of(options);
+            sheet.title_block = TitleBlock {
+                title: Some(
+                    options
+                        .title
+                        .clone()
+                        .filter(|t| !t.trim().is_empty())
+                        .unwrap_or_else(|| "Untitled".to_owned()),
+                ),
+                number: None,
+                author: None,
+                date: Some(options.date.clone().unwrap_or_else(today)),
+            };
+            // The views asked for, each projected to lay them out.
+            let mut kinds: Vec<(Option<ViewName>, ViewKind)> = names
+                .iter()
+                .map(|n| {
+                    (
+                        Some(*n),
+                        ViewKind::Base {
+                            direction: ViewDirection::Named(standard(*n)),
+                        },
+                    )
+                })
+                .collect();
+            if let Some(plane) = &section {
+                kinds.push((
+                    None,
+                    ViewKind::Section {
+                        parent: None,
+                        origin: plane.origin,
+                        normal: plane.normal,
+                        span: None,
+                        letter: "A".to_owned(),
+                        hatch: true,
+                    },
+                ));
+            }
+            let shown: Vec<Shown> = self
+                .subject_bodies(ComponentUid::ROOT, &subject)
+                .map_err(ApiError)?;
+            let mut inputs: Vec<(ViewInput, DrawingView)> = Vec::new();
+            for (i, (name, kind)) in kinds.into_iter().enumerate() {
+                let view = DrawingView {
+                    id: i as u32 + 1,
+                    kind,
+                    place: [0.0, 0.0],
+                    scale: Some(1.0),
+                    style: Some(ViewStyle {
+                        // A section shows no hidden edges.
+                        hidden_lines: style.hidden_lines && name.is_some(),
+                        ..style
+                    }),
+                    label: None,
+                    subject: Some(subject.clone()),
+                    breaks: Vec::new(),
+                    aligned: false,
+                    center_marks: false,
+                    retrieved_dimensions: false,
+                    annotations: Vec::new(),
+                };
+                sheet.views.push(view.clone());
+                let spec = sheet.spec(view.id).map_err(ApiError)?;
+                let projection = self.projected(&shown, &spec).map_err(|e| {
+                    ApiError(format!(
+                        "the {} view: {e}",
+                        name.map_or("section", ViewName::as_str)
+                    ))
+                })?;
+                inputs.push((
+                    ViewInput {
+                        name,
+                        spec,
+                        projection: (*projection).clone(),
+                    },
+                    view,
+                ));
+            }
+            // The holes, for the room their callouts and table take (the
+            // sheet's drawing says what went wrong with them).
+            let mut holes: Vec<HoleInput> = Vec::new();
+            if options.dimensions || options.hole_table {
+                for s in &shown {
+                    if let Ok(shapes) = self.placed_shapes(std::slice::from_ref(s)) {
+                        holes.extend(self.drawing_holes(
+                            s.body,
+                            &s.transform,
+                            &shapes[0],
+                            &threads,
+                            &mut Vec::new(),
+                        ));
+                    }
+                }
+            }
+            // Only the views with something to show stay.
+            let (view_inputs, views): (Vec<ViewInput>, Vec<DrawingView>) =
+                inputs.into_iter().unzip();
+            let laid_out = shown_views(&view_inputs, &mut warnings);
+            let layout = compose::layout(options, units, &laid_out, &holes);
+            warnings.extend(layout.warnings.iter().cloned());
+            // Each at the layout's place: its anchor (the origin) where the
+            // layout puts the middle of its box.
+            sheet.views.clear();
+            for ((input, _), map) in laid_out.iter().zip(&layout.maps) {
+                let Some(map) = map else { continue };
+                let Some(index) = view_inputs.iter().position(|v| std::ptr::eq(v, *input)) else {
+                    continue;
+                };
+                let mut view = views[index].clone();
+                view.scale = Some(layout.scale);
+                view.place = [
+                    map.place[0] - layout.scale * map.anchor[0],
+                    map.place[1] - layout.scale * map.anchor[1],
+                ];
+                view.id = next_id;
+                next_id += 1;
+                sheet.views.push(view);
+            }
+            sheets.push(sheet);
+        }
+        let drawing = Drawing {
+            uid: DrawingUid(0),
+            name: String::new(),
+            component: ComponentUid::ROOT,
+            sheets,
+            revisions: Vec::new(),
+            exported: 0,
+        };
+        Ok(AutoDrawing {
+            drawing,
+            drawn,
+            warnings,
+        })
     }
 
     fn export_drawing_command_checked(
@@ -208,186 +534,30 @@ impl<K: Kernel> Document<K> {
                 )));
             }
         };
-        let options = command.options;
-        let units = match &options.units {
-            Some(symbol) => Units::by_symbol(symbol)
-                .ok_or_else(|| ApiError(format!("unknown length unit '{symbol}'")))?,
-            None => Units::of(self.parameters().context().default_length_unit),
-        };
-        if options.views.is_empty() && options.section.is_none() {
-            return Err(ApiError("a drawing needs at least one view".to_owned()));
-        }
-        let kernel = self.kernel();
 
-        // The bodies where the design shows them.
-        let all = self.bodies();
-        let instances = self.instances();
-        let chosen: Vec<BodyUid> = if command.bodies.is_empty() {
-            all.iter()
-                .filter(|b| instances.iter().any(|i| i.body == b.uid && i.visible))
-                .map(|b| b.uid)
-                .collect()
-        } else {
-            let mut chosen = Vec::new();
-            for body in &command.bodies {
-                let uid = self.body_by_uid_or_name(body)?;
-                if chosen.contains(&uid) {
-                    return Err(ApiError(format!("body {body} is listed more than once")));
-                }
-                chosen.push(uid);
+        // The drawing: kept, or laid out for the export.
+        let (drawing, drawn, mut warnings, title) = match &command.drawing {
+            Some(name) => {
+                let drawing = self.find_drawing(name)?.clone();
+                (drawing, None, Vec::new(), command.title.clone())
             }
-            chosen
+            None => {
+                let auto = self.auto_drawing(&command.options, &command.bodies)?;
+                (auto.drawing, Some(auto.drawn), auto.warnings, None)
+            }
         };
-        let mut drawn: Vec<Drawn<K::Shape>> = Vec::new();
-        for uid in chosen {
-            let Some(body) = all.iter().find(|b| b.uid == uid) else {
-                return Err(ApiError(format!(
-                    "body {uid} does not exist at the timeline marker"
-                )));
-            };
-            if matches!(
-                kernel.body_kind(body.shape),
-                Ok(crate::exchange::BodyKind::Empty)
-            ) {
-                continue;
-            }
-            let mine: Vec<_> = instances.iter().filter(|i| i.body == uid).collect();
-            let shown: Vec<_> = mine.iter().copied().filter(|i| i.visible).collect();
-            let mut transforms: Vec<Transform> = if shown.is_empty() { mine } else { shown }
-                .iter()
-                .map(|i| i.transform)
-                .collect();
-            if transforms.is_empty() {
-                transforms.push(Transform::IDENTITY);
-            }
-            let mut placements = Vec::new();
-            for t in transforms {
-                let shape = if t.is_identity() {
-                    body.shape.clone()
-                } else {
-                    kernel
-                        .transform_shape(body.shape, &t, None)
-                        .map_err(|e| ApiError(format!("{}: {e}", body.name)))?
-                };
-                placements.push((t, shape));
-            }
-            drawn.push(Drawn {
-                uid,
-                name: body.name.clone(),
-                placements,
-            });
+        let indices: Vec<usize> = match command.sheet {
+            Some(i) if i < drawing.sheets.len() => vec![i],
+            Some(i) => return Err(ApiError(format!("{} has no sheet {i}", drawing.name))),
+            None => (0..drawing.sheets.len()).collect(),
+        };
+        let mut sheets: Vec<SheetDrawn> = Vec::new();
+        for i in &indices {
+            sheets.push(self.draw_sheet(&drawing, *i, title.as_deref())?);
         }
-        if drawn.is_empty() {
-            return Err(ApiError("there are no bodies to draw".to_owned()));
-        }
-
-        let threads = threads_of(&self.threads_json());
-        let section = match &options.section {
-            None => None,
-            Some(SectionChoice::Plane { origin, normal }) => Some(
-                compose::cut_plane(*origin, *normal)
-                    .ok_or_else(|| ApiError("the section plane's normal is zero".to_owned()))?,
-            ),
-            Some(SectionChoice::Analysis { analysis }) => {
-                let found = self
-                    .analyses()
-                    .iter()
-                    .find(|a| &a.name == analysis)
-                    .ok_or_else(|| ApiError(format!("there is no analysis '{analysis}'")))?;
-                let crate::AnalysisDef::Section(def) = &found.def else {
-                    return Err(ApiError(format!("'{analysis}' is not a section analysis")));
-                };
-                let plane = self
-                    .section_plane(def)
-                    .map_err(|e| ApiError(format!("{analysis}: {e}")))?;
-                Some(
-                    compose::cut_plane(plane.origin, plane.normal)
-                        .ok_or_else(|| ApiError(format!("{analysis}: no plane")))?,
-                )
-            }
-        };
-        let sketch_dimensions = if options.sketch_dimensions {
-            self.sketch_dimensions()
-        } else {
-            Vec::new()
-        };
-        let mut views: Vec<ViewName> = Vec::new();
-        for v in &options.views {
-            if !views.contains(v) {
-                views.push(*v);
-            }
-        }
-        let title = options
-            .title
-            .clone()
-            .filter(|t| !t.trim().is_empty())
-            .unwrap_or_else(|| "Untitled".to_owned());
-        let date = options.date.clone().unwrap_or_else(today);
-
-        let sheets: Vec<Vec<&Drawn<K::Shape>>> = if options.per_body {
-            drawn.iter().map(|d| vec![d]).collect()
-        } else {
-            vec![drawn.iter().collect()]
-        };
-        let mut composed: Vec<Composed> = Vec::new();
-        let mut warnings: Vec<String> = Vec::new();
-        for bodies in &sheets {
-            let shapes: Vec<&K::Shape> = bodies
-                .iter()
-                .flat_map(|d| d.placements.iter().map(|(_, s)| s))
-                .collect();
-            let mut inputs = Vec::new();
-            for name in &views {
-                let (toward_eye, x_axis) = name.axes();
-                let spec = ViewSpec {
-                    toward_eye,
-                    x_axis,
-                    hidden: options.hidden_lines && *name != ViewName::Iso,
-                    smooth: options.tangent_edges,
-                    exact: options.exact,
-                    section: None,
-                    deflection: 0.01,
-                };
-                let projection = kernel
-                    .project_view(&shapes, &spec)
-                    .map_err(|e| ApiError(format!("the {} view: {e}", name.as_str())))?;
-                inputs.push(ViewInput {
-                    name: Some(*name),
-                    spec,
-                    projection,
-                });
-            }
-            if let Some(plane) = &section {
-                let spec =
-                    compose::section_spec(plane, false, options.tangent_edges, options.exact);
-                let projection = kernel
-                    .project_view(&shapes, &spec)
-                    .map_err(|e| ApiError(format!("the section view: {e}")))?;
-                inputs.push(ViewInput {
-                    name: None,
-                    spec,
-                    projection,
-                });
-            }
-            let mut holes = Vec::new();
-            if options.dimensions || options.hole_table {
-                for d in bodies {
-                    for (t, shape) in &d.placements {
-                        holes.extend(self.drawing_holes(d.uid, t, shape, &threads, &mut warnings));
-                    }
-                }
-            }
-            let input = SheetInput {
-                title: title.clone(),
-                bodies: bodies.iter().map(|d| d.name.clone()).collect(),
-                date: date.clone(),
-                views: inputs,
-                holes,
-                sketch_dimensions: sketch_dimensions.clone(),
-            };
-            let sheet = compose::compose(&options, units, &input);
-            warnings.extend(sheet.warnings.iter().cloned());
-            composed.push(sheet);
+        let composed: Vec<&Composed> = sheets.iter().map(|s| &s.composed).collect();
+        for c in &composed {
+            warnings.extend(c.warnings.iter().cloned());
         }
 
         // The files: a PDF of every sheet, an SVG or DXF file per sheet
@@ -412,10 +582,14 @@ impl<K: Kernel> Document<K> {
         let write = |path: &str, bytes: &[u8]| {
             std::fs::write(path, bytes).map_err(|e| ApiError(format!("cannot write {path}: {e}")))
         };
+        let document_title = composed
+            .first()
+            .map(|c| c.sheet.title.clone())
+            .unwrap_or_default();
         match format {
             Format::Pdf => {
-                let sheets: Vec<_> = composed.iter().map(|c| c.sheet.clone()).collect();
-                write(&command.path, &pdf::write(&sheets, &title))?;
+                let pages: Vec<_> = composed.iter().map(|c| c.sheet.clone()).collect();
+                write(&command.path, &pdf::write(&pages, &document_title))?;
                 files.push(command.path.clone());
             }
             Format::Svg | Format::Dxf => {
@@ -434,8 +608,11 @@ impl<K: Kernel> Document<K> {
                 }
             }
         }
-        let first = &composed[0];
-        let orientation = match options.orientation {
+        let first = composed
+            .first()
+            .ok_or_else(|| ApiError("the drawing has no sheet".to_owned()))?;
+        let first_sheet = &drawing.sheets[indices[0]];
+        let orientation = match first_sheet.orientation {
             crate::drawing::Orientation::Landscape => "landscape",
             crate::drawing::Orientation::Portrait => "portrait",
         };
@@ -443,20 +620,38 @@ impl<K: Kernel> Document<K> {
             .iter()
             .map(|c| crate::drawing::scale_text(c.scale))
             .collect();
-        let bodies: Vec<BodyUid> = drawn.iter().map(|d| d.uid).collect();
-        let names: Vec<String> = drawn.iter().map(|d| d.name.clone()).collect();
+        // The bodies drawn: those laid out, or those the kept drawing's
+        // views show.
+        let drawn: Vec<(BodyUid, String)> = match drawn {
+            Some(drawn) => drawn,
+            None => {
+                let mut out: Vec<(BodyUid, String)> = Vec::new();
+                for s in sheets.iter().flat_map(|s| &s.evaluated.shown) {
+                    if !out.iter().any(|(b, _)| *b == s.body) {
+                        out.push((s.body, s.name.clone()));
+                    }
+                }
+                out
+            }
+        };
+        let bodies: Vec<BodyUid> = drawn.iter().map(|d| d.0).collect();
+        let names: Vec<String> = drawn.iter().map(|d| d.1.clone()).collect();
         let pages = if format == Format::Pdf {
             composed.len()
         } else {
             1
         };
-        Ok(json!({
+        let units = match &first_sheet.units {
+            Some(symbol) => Units::by_symbol(symbol).map_or("mm", |u| u.symbol),
+            None => Units::of(self.parameters().context().default_length_unit).symbol,
+        };
+        let mut result = json!({
             "path": command.path,
             "format": format.as_str(),
             "files": files,
             "sheets": composed.len(),
             "pages": pages,
-            "sheet": options.sheet.name(),
+            "sheet": first_sheet.size.name(),
             "orientation": orientation,
             "scale": crate::drawing::scale_text(first.scale),
             "scales": scales,
@@ -466,16 +661,80 @@ impl<K: Kernel> Document<K> {
             "dimensions": composed.iter().map(|c| c.dimensions).sum::<usize>(),
             "holes": composed.iter().map(|c| c.holes).sum::<usize>(),
             "hole_table_rows": composed.iter().map(|c| c.hole_rows).sum::<usize>(),
-            "units": units.symbol,
+            "units": units,
             "polygonal": composed.iter().any(|c| c.polygonal),
             "warnings": warnings,
-        }))
+        });
+        if command.drawing.is_some() {
+            result["drawing"] = json!(drawing.uid);
+        }
+        Ok(result)
     }
 
-    /// A placed body's round holes in the design's coordinates, with their
+    /// The round holes of a body where a view shows it, as
+    /// [`Self::drawing_holes`] finds them, kept by the body's shape version,
+    /// its placement and its threads (mitcad#718: hole tables found them
+    /// again on every draw). The warnings of finding them go to `warnings`;
+    /// only holes found without one are kept (mitcad#722: a passing kernel
+    /// failure was not tried again until the body changed, and a warning
+    /// kept a renamed body's old name).
+    pub(super) fn shown_holes(
+        &self,
+        shown: &Shown,
+        threads: &[ThreadOf],
+        warnings: &mut Vec<String>,
+    ) -> Vec<HoleInput> {
+        let mut fp = crate::fingerprint::Fingerprint::new("drawing-holes-v1");
+        fp.str(&shown.body.to_string())
+            .u128(self.body_version(shown.body).unwrap_or(0));
+        for row in &shown.transform.linear {
+            for v in row {
+                fp.f64(*v);
+            }
+        }
+        for v in &shown.transform.translation {
+            fp.f64(*v);
+        }
+        for t in threads.iter().filter(|t| t.body == shown.body) {
+            fp.str(&t.face)
+                .str(&t.designation)
+                .bool(t.internal)
+                .bool(t.modeled)
+                .f64(t.major);
+            for v in t.start.iter().chain(&t.end) {
+                fp.f64(*v);
+            }
+        }
+        let key = fp.finish();
+        if let Some(holes) = self.drawing_cache().holes(key) {
+            return (*holes).clone();
+        }
+        let mut found = Vec::new();
+        let holes = match self.placed_shapes(std::slice::from_ref(shown)) {
+            Ok(shapes) => self.drawing_holes(
+                shown.body,
+                &shown.transform,
+                &shapes[0],
+                threads,
+                &mut found,
+            ),
+            Err(e) => {
+                found.push(format!("the holes of {}: {e}", shown.name));
+                Vec::new()
+            }
+        };
+        if found.is_empty() {
+            self.drawing_cache()
+                .keep_holes(key, std::sync::Arc::new(holes.clone()));
+        }
+        warnings.extend(found);
+        holes
+    }
+
+    /// A placed body's round holes in the drawing's coordinates, with their
     /// threads; a modelled thread in a hole that has no cylinder left is a
     /// hole of its major diameter.
-    fn drawing_holes(
+    pub(super) fn drawing_holes(
         &self,
         body: BodyUid,
         placement: &Transform,
@@ -556,8 +815,9 @@ impl<K: Kernel> Document<K> {
     }
 
     /// The dimensions of the sketches at the marker, in the design's
-    /// coordinates: distances, lengths, radii and diameters.
-    fn sketch_dimensions(&self) -> Vec<SketchDimension> {
+    /// coordinates: distances, lengths, radii and diameters, each with its
+    /// sketch.
+    pub(super) fn sketch_dimensions(&self) -> Vec<(FeatureUid, SketchDimension)> {
         let mut out = Vec::new();
         for entry in self.features() {
             let FeatureDef::Sketch(def) = &entry.def else {
@@ -574,7 +834,8 @@ impl<K: Kernel> Document<K> {
             let solved = &output.solved;
             let point = |id| solved.points.get(id).map(|p| frame.point(*p));
             let text = |d: &crate::sketch::Dimension<_>| d.text.map(|t| frame.point(t));
-            for dim in &def.dimensions {
+            // Not the inactive ones (mitcad#721): they hold nothing.
+            for dim in def.dimensions.iter().filter(|d| def.dimension_applied(d)) {
                 let made = match &dim.kind {
                     DimensionKind::Distance { a, b } => {
                         point(a)
@@ -640,7 +901,43 @@ impl<K: Kernel> Document<K> {
                     }
                     _ => None,
                 };
-                out.extend(made);
+                out.extend(made.map(|d| (entry.uid, d)));
+            }
+        }
+        out
+    }
+
+    /// The sketches that shape bodies (mitcad#717: a view's sketch
+    /// dimensions are those of its own bodies): those of the features that
+    /// made them, of the features that name them, and of the features of
+    /// their components that neither make nor name a body (a cut through
+    /// every body).
+    pub(super) fn sketches_shaping(&self, bodies: &[BodyUid]) -> BTreeSet<FeatureUid> {
+        let makers: BTreeSet<FeatureUid> = bodies.iter().map(|b| b.feature).collect();
+        let components: BTreeSet<ComponentUid> = bodies
+            .iter()
+            .filter_map(|b| self.body_component(*b))
+            .collect();
+        let every_maker: BTreeSet<FeatureUid> =
+            self.bodies().iter().map(|b| b.uid.feature).collect();
+        let sketches: BTreeSet<FeatureUid> = self
+            .features()
+            .filter(|e| matches!(e.def, FeatureDef::Sketch(_)))
+            .map(|e| e.uid)
+            .collect();
+        let mut out = BTreeSet::new();
+        for entry in self.features() {
+            if entry.suppressed || matches!(entry.def, FeatureDef::Sketch(_)) {
+                continue;
+            }
+            let named = entry.def.references().features;
+            let shapes = makers.contains(&entry.uid)
+                || named.iter().any(|f| makers.contains(f))
+                || (!every_maker.contains(&entry.uid)
+                    && named.iter().all(|f| !every_maker.contains(f))
+                    && components.contains(&entry.component));
+            if shapes {
+                out.extend(named.iter().filter(|f| sketches.contains(f)).copied());
             }
         }
         out

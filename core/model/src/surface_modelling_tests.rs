@@ -312,6 +312,43 @@ fn block_and_walls() -> (Block, BodyUid) {
 }
 
 #[test]
+fn a_trim_previews_its_extended_tool_past_the_body() {
+    let (mut b, walls) = block_and_walls();
+    let target = b.doc.body_shape(walls).unwrap().bounds.unwrap();
+    let face = json!({"body": b.body, "face": format!("F2:end({})", b.region)});
+    // Extended (the default): the face grown past the walls on every side.
+    let trim = def(json!({"type": "trim_surface", "body": walls, "tool": face,
+                          "keep": [[0, 30, 5]]}));
+    b.doc.preview_add(&trim, None).unwrap();
+    let tool = b.doc.preview_tool().expect("an extended tool");
+    assert_eq!(
+        tool.history,
+        format!("extended_tool(face F2:end({}),true)", b.region)
+    );
+    let bounds = tool.bounds.unwrap();
+    for i in 0..3 {
+        assert!(bounds.min[i] < target.min[i] - 0.5, "{bounds:?} {target:?}");
+        assert!(bounds.max[i] > target.max[i] + 0.5, "{bounds:?} {target:?}");
+    }
+    // Only the preview makes it: committing the trim does not.
+    let made = b.doc.kernel().count("extended_tool");
+    b.doc.add_feature(&trim, None).unwrap();
+    assert_eq!(b.doc.kernel().count("extended_tool"), made);
+    b.doc.undo();
+    // Not extended, or by sketch curves: no extended tool.
+    let line = line(&mut b.doc, b.sketch, [-10.0, 20.0], [70.0, 20.0]);
+    for tool in [
+        json!({"type": "trim_surface", "body": walls, "tool": face, "extend": false,
+               "keep": [[0, 30, 5]]}),
+        json!({"type": "trim_surface", "body": walls,
+               "tool": {"sketch": b.sketch, "curves": [line]}, "keep": [[0, 30, 5]]}),
+    ] {
+        b.doc.preview_add(&def(tool), None).unwrap();
+        assert!(b.doc.preview_tool().is_none());
+    }
+}
+
+#[test]
 fn an_offset_surface_copies_faces_out_as_a_new_surface_body() {
     let (mut b, walls) = block_and_walls();
     // Every face of the walls.

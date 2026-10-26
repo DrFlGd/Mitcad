@@ -4,6 +4,7 @@
 // C++ half of core/ffi/src/kernel/faceops.rs. The profile types are the
 // ones the profile bridge generates.
 
+#include <array>
 #include <memory>
 
 #include "bridge/shape.hpp"
@@ -46,5 +47,11 @@ std::shared_ptr<geometry::Shape> split_faces(rust::Str feature, const geometry::
                                              rust::Slice<const rust::String> faces,
                                              const ToolSpec& tool, const ShapeList& tool_shapes,
                                              const Frame& frame, rust::Slice<const Region> regions);
+// The preview of an extended tool (mitcad#712).
+std::shared_ptr<geometry::Shape> extended_tool(const ToolSpec& tool, const ShapeList& tool_shapes,
+                                               const Frame& frame,
+                                               rust::Slice<const Region> regions,
+                                               std::array<double, 3> low,
+                                               std::array<double, 3> high);
 
 } // namespace mitcad::bridge

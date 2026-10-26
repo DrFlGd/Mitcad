@@ -128,7 +128,7 @@ QImage matte(const QImage& black, const QImage& white) {
 
 } // namespace
 
-QImage OcctViewer::snapshot(const QSize& size, bool transparent, bool withMeasurements) {
+QImage OcctViewer::snapshot(const QSize& size, bool transparent, bool withMeasurements, const QString& group) {
   if (m_view.IsNull() || m_view->Window().IsNull() || size.width() <= 0 || size.height() <= 0) {
     return QImage();
   }
@@ -173,6 +173,9 @@ QImage OcctViewer::snapshot(const QSize& size, bool transparent, bool withMeasur
   };
   std::vector<MeasurementShape> shapes;
   for (const MeasurementDisplay& m : m_measurements) {
+    if (!group.isEmpty() && m.group != group) {
+      continue; // another group's (mitcad#702)
+    }
     shapes.push_back(layoutMeasurement(m, project, scale));
   }
   QPainter painter(&image);

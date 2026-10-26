@@ -2409,6 +2409,66 @@ impl Kernel for OcctKernel {
     fn solid_count(&self, shape: &Self::Shape) -> Result<usize, KernelError> {
         Ok(query::ffi::solid_count(occt(shape)?))
     }
+
+    // Boxes of single faces and edges (the faces and edges queries,
+    // mitcad#714; query.rs).
+
+    fn face_bounding_boxes(
+        &self,
+        shape: &Self::Shape,
+        faces: &[usize],
+    ) -> Result<Vec<Option<BoundingBox>>, KernelError> {
+        let found =
+            query::ffi::face_bounding_boxes(occt(shape)?, &item_indices(faces)?).map_err(failed)?;
+        Ok(found.into_iter().map(item_box).collect())
+    }
+
+    fn edge_bounding_boxes(
+        &self,
+        shape: &Self::Shape,
+        edges: &[usize],
+    ) -> Result<Vec<Option<BoundingBox>>, KernelError> {
+        let found =
+            query::ffi::edge_bounding_boxes(occt(shape)?, &item_indices(edges)?).map_err(failed)?;
+        Ok(found.into_iter().map(item_box).collect())
+    }
+
+    // The extended tool of a split or trim, for its preview (mitcad#712;
+    // faceops.rs, geometry's split.hpp).
+
+    fn extended_tool(
+        &self,
+        tool: &ToolInput<'_, Self::Shape>,
+        extend: bool,
+        bounds: &BoundingBox,
+    ) -> Result<Self::Shape, KernelError> {
+        let mut tool = Tool::new(tool)?;
+        tool.spec.extend = extend;
+        faceops::ffi::extended_tool(
+            &tool.spec,
+            &tool.shapes,
+            &tool.frame,
+            &tool.regions,
+            bounds.min,
+            bounds.max,
+        )
+        .map_err(failed)
+    }
+}
+
+/// Face or edge indices for the bridge (mitcad#714).
+fn item_indices(items: &[usize]) -> Result<Vec<u32>, KernelError> {
+    items
+        .iter()
+        .map(|&i| u32::try_from(i).map_err(|_| KernelError::failed(format!("no item {i}"))))
+        .collect()
+}
+
+fn item_box(found: query::ffi::BoundingBox) -> Option<BoundingBox> {
+    (!found.empty).then_some(BoundingBox {
+        min: found.min,
+        max: found.max,
+    })
 }
 
 /// The name of a selection's sub-shape, empty for the whole body.

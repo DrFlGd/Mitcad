@@ -1545,3 +1545,89 @@ out or the dimension driven, as before. Tests:
 `a_corner_micrometres_off_a_linked_spline_keeps_its_coincidence`,
 `a_solve_within_the_tolerance_that_changes_the_regions_drives_the_dimension`.
 
+
+## A drum of a 2026 writer, item by item (mitcad#719)
+
+A drum of six components (68 items, design `3282222f`) written by a
+2026 writer (2706) came in with 17 of its items parametric: 37 fell back,
+among them every hole ("no diameter") and the first extrusion of every
+component ("no bodies to extrude through"). The causes, in the order they
+showed:
+
+- **Parameters of class version 10.** None of the design's 263
+  parameters decoded: the flags after the expression take 11 bytes in
+  class version 10 (10 in versions 8 and 9), the user flag still the
+  last, and the `u32` before the comment is 5. Without parameters no
+  feature had its sizes (`decode::parse_parameter`).
+- **A tail that lists its own item.** A hole whose sub-items are the hole
+  itself ends its tail with `u32 1 | ref self | 00 00 00 | ref health`;
+  read 20 bytes later the zeros look like a tail with an empty base name,
+  the index 256 and no sub-items, so three holes lost their result
+  numbers and their states. The `u32` after the index is zero on every
+  item; a candidate with another value is no tail. The same false match
+  took the tails of derived contexts and of cut-paste items in other
+  designs (their names, result numbers and sub-items decode now).
+- **A tapped hole's modelled thread is its last operation.** The thread
+  sub-item has a result number of its own, the hole's plus one, whose
+  state cuts the thread into the bore (`_f3d.last_result_no`, modelled
+  threads only). The hole with its thread is checked against that state;
+  before, it was checked against the bore alone (14 % off) and the next
+  hole took the thread's state.
+- **Patterns of tapped holes repeat their threads.** A thread leaves no
+  tool, so a pattern of the holes copied bores without threads (6 % less
+  volume removed). Threads are repeated as fillets and chamfers are, on
+  the copies of their faces (`dressup_copies.rs`; a mirror's image turns
+  the other way), and the import lists a tapped hole's thread with the
+  hole in a pattern's features.
+- **Circular patterns about an arc edge.** Mitcad's axis of a circular
+  edge (and an origin axis) points the way of its largest coordinate; the
+  file turns about its stored axis line, here (0, -1, 0). The angle is
+  negated where they disagree (`Importer::circular_angle`), so the copies
+  go the file's way round instead of off the segment. A rectangular
+  pattern along an edge or an axis of its own negates its distance alike.
+- **A pattern of faces whose selection lost a neighbour.** The faces of
+  two cut-outs were selected before a corner of the sketch was rounded:
+  two walls the recipes name as neighbours have the rounding between them
+  now. The selection with the face that meets both (and no other
+  selected face) is tried first, as the file's result has it on every
+  copy, then the selection as it is (`ops::bridging_faces`; its inputs
+  count as inferred). The tool of faces of separate cut-outs is a
+  solid of each (`geometry::face_tool`; it was one shell, not connected).
+- **Holes at distances.** A hole whose position definition gives two
+  edges of its face and the distances comes in at those distances
+  (`face_offsets`) first: the point the file keeps with it lay 3.2 mm off
+  (the volume the same, so the history took it, and the bodies after it
+  were 3.2 mm off). Holes on a shaft's side are measured from the
+  shaft's end face (the one slot of role 33 holds that face): the new
+  placement `cylinder_offset` (the distance along the plane's normal,
+  along the axis for an end square to it), where the kept point lay
+  296 mm off. Points on a cylindrical face go across its axis.
+- **Cost.** A hole's history guesses come after its decoded definitions
+  are tried (with the history and a decoded position; else there are
+  none after the first part), and bodies the file's operation left alone
+  are not compared for removed material: on the shaft with modelled
+  threads that boolean took 13 minutes and more than 6 GB at a hole of
+  another component.
+- **An item's own operations before its last.** A rectangular pattern of
+  holes makes its copies in operations before its last one, which changes
+  nothing; it is no item that failed in the file. The operations no item
+  names count as the next item's only after an earlier item named one of
+  the blob's (the blob's start is no item's).
+
+Now 58 of the 68 items are parametric and one falls back; the others are
+the placing of occurrences and one pattern skipped with it. What is left:
+
+- **Tapered pipe threads.** Two holes on the shaft are tapped `1/2 - 14
+  NPT` (cosmetic): the file's thread sizes each bore to its taper in two
+  operations of its own (75 mm³ a hole), which Mitcad has no thread for.
+  The holes come in, but the state after them is brought by a base
+  feature; the rectangular pattern of the holes is 1.1 % off and skipped,
+  and the circular pattern of both falls back.
+- **The start of a tapped hole's modelled thread.** Mitcad's thread on a
+  hole's wall starts at angle 0 (the walls do not exist before the hole);
+  the file's starts elsewhere, 0.42 mm apart, and the pattern's copies
+  take the angle about their own axes. The bodies match the file's in
+  volume (1e-7) but not within the geometric tolerance.
+- **A row of dimples 0.4 mm off.** The segment's rectangular pattern of
+  dimples matches its state within 2.4e-4, its body 0.4 mm off the file's
+  after it (cause not traced yet).

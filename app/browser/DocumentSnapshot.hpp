@@ -82,6 +82,12 @@ struct DocumentSnapshot {
     QString component;
     bool visible = true;
     bool mesh = false; // triangles without surfaces (mitcad#399)
+    // The face that lies on the print bed (mitcad#731): its name as
+    // assigned (empty: none), the faces it finds at the marker, and why it
+    // cannot lie on the bed when it cannot.
+    QString printBedFace;
+    QStringList printBedFaces;
+    QString printBedError;
   };
 
   QVector<Feature> features; // in timeline order
@@ -123,6 +129,10 @@ struct DocumentSnapshot {
   QJsonArray measurements;
   // A measurement by name, or an empty object.
   QJsonObject measurement(const QString& name) const;
+  // Drawings kept in the design (mitcad#707): the `drawings` query's
+  // entries (drawing, name, component, sheets), and those of a component.
+  QJsonArray drawings;
+  QJsonArray drawingsOf(const QString& component) const;
   // Saved in the document (P9): the root's Origin folder shown, and what
   // the view is isolated to (bodies and occurrences; none: everything).
   bool originShown = false;

@@ -189,7 +189,7 @@ ui_expect_log "Opened with the root active; C1 was active in the file (unmodifie
 ui_expect_log "Browser opened expanded: " "a small design opens expanded"
 ui_expect_log "Browser Root/Bracket:1/Bodies/Body1 at" "Bracket's rows are open"
 ui_sync
-# After the design opened: the empty design of the start has Part1 active.
+# After the design opened: the empty design of the start has Component1 active.
 sed -n '/^Opened with the root active/,$p' "$UI_LOG" | grep "^View inactive ghosts: " | grep -qv ": none$" && ui_fail "inactive components are ghosts: the root is not active"
 echo "ok   no ghosts"
 case "$(xdotool getwindowname "$UI_WINDOW")" in

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands app/framework/CommandSessionPicks.cpp
+# check-all sources: app/commands app/framework/CommandSessionPicks.cpp app/framework/CommandSession.cpp
 # The MODIFY group (U4) through the real UI, with the volumes the model
 # reports (analytic, or tools/cli/tests/f2_*.json, f4_*.json):
 #   - Fillet's Edges picked twice in a row, the radius typed without a
@@ -15,7 +15,9 @@
 #     face (an offset), Delete of the fillet's face, Split Face; Replace
 #     Face onto another body's cylinder (tools/cli/tests/f2_face_ops.json).
 #   - Move/Copy: translate, a copy moved freely (its arrow dragged), a
-#     rotation; Combine, Align (a vertex onto a vertex), Split Body;
+#     rotation; Combine, Align (a vertex onto a vertex), Split Body (its
+#     plane drawn as the split extends it while Extend Splitting Tool is
+#     on, none while it is off, mitcad#712);
 #     Edit Materials, Physical Properties and Appearance.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
@@ -393,8 +395,25 @@ ui_step "split body (search)"              ui_command "Split Body"
 ui_step "pick Body1"                       ui_click_logged "Browser Root/Bodies/Body1"
 ui_step "the tool input"                   ui_click_logged "Panel Split Body input tool"
 ui_step "pick YZ"                          ui_click_logged "Datum yz"
+ui_mark
 ui_step "offset 10"                        ui_type_in "Panel Split Body input offset" "10"
 ui_expect_log "Preview Split Body: ok" "previewed"
+# The plane as the split extends it, drawn across Body1 (mitcad#712): a
+# face at x = 10; none with Extend Splitting Tool off, again with it on.
+ui_expect_extended_tool() {
+  for _ in $(seq 1 30); do
+    tail -n +$((${UI_MARK:-0} + 1)) "$UI_LOG" | grep -Eq "^Preview extended tool: $1" && { echo "ok   $2"; return; }
+    sleep 0.2
+  done
+  ui_fail "$2: no 'Preview extended tool: $1' in the log since the mark"
+}
+ui_expect_extended_tool '10\.0,-?[0-9.]+,-?[0-9.]+ to 10\.0,' "the extended plane drawn at x = 10"
+ui_mark
+ui_step "Extend Splitting Tool off"        ui_click_logged "Panel Split Body input extend"
+ui_expect_extended_tool 'none$' "not extended: no extended tool drawn"
+ui_mark
+ui_step "Extend Splitting Tool on"         ui_click_logged "Panel Split Body input extend"
+ui_expect_extended_tool '10\.0,-?[0-9.]+,-?[0-9.]+ to 10\.0,' "extended again: drawn again"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_volume "Body Body1 (F2.b0): volume 14000.000 -> \([0-9.]*\) mm3" 4000 "the piece below x = 10"
 ui_expect_volume "New body [A-Za-z0-9]* (F10.b0): volume \([0-9.]*\) mm3" 10000 "the piece above"

@@ -71,20 +71,39 @@ MeasureHistoryView::MeasureHistoryView(const MeasureHistory& history, QWidget* p
   // of the design.
   auto* keepRow = new QHBoxLayout;
   m_keep = new QPushButton(tr("Keep"), this);
-  m_keep->setToolTip(tr("Keep this measurement in the design: drawn in the view and listed under Measurements"));
+  m_keep->setToolTip(tr("Keep this measurement in the design as a dimension, drawn in the view"));
   m_keep->setEnabled(false);
   // Keep Row: the history row clicked last (beside Keep, so that the row
   // of Copy, Copy All and Clear keeps the panel's width).
   m_keepRow = new QPushButton(tr("Keep Row"), this);
-  m_keepRow->setToolTip(tr("Keep the history row clicked last in the design as a measurement object"));
+  m_keepRow->setToolTip(tr("Keep the history row clicked last in the design as a dimension"));
   m_keepRow->setEnabled(false);
-  for (QPushButton* button : {m_keep, m_keepRow}) {
+  // A leader note on the one pick shown, and the Annotations window
+  // (mitcad#702).
+  m_note = new QPushButton(tr("Note…"), this);
+  m_note->setToolTip(tr("A note with an arrow to the face, edge or vertex picked"));
+  m_note->setEnabled(false);
+  // A datum label and a feature control frame on it (phase 2).
+  m_datum = new QPushButton(tr("Datum Label…"), this);
+  m_datum->setToolTip(tr("A datum label on the face, edge or datum picked"));
+  m_datum->setEnabled(false);
+  m_frame = new QPushButton(tr("Frame…"), this);
+  m_frame->setToolTip(tr("A feature control frame with an arrow to the face or edge picked"));
+  m_frame->setEnabled(false);
+  m_annotations = new QPushButton(tr("Annotations…"), this);
+  m_annotations->setToolTip(tr("The dimensions, notes, datum labels and frames kept in the design"));
+  // Note…, Datum Label… and Frame… on a row of their own, so that the panel
+  // keeps its width; Annotations… beside Keep.
+  auto* annotationRow = new QHBoxLayout;
+  for (QPushButton* button : {m_keep, m_keepRow, m_annotations, m_note, m_datum, m_frame}) {
     button->setFocusPolicy(Qt::NoFocus);
     button->setAutoDefault(false);
-    keepRow->addWidget(button);
+    (button == m_note || button == m_datum || button == m_frame ? annotationRow : keepRow)->addWidget(button);
   }
   keepRow->addStretch();
   layout->addLayout(keepRow);
+  annotationRow->addStretch();
+  layout->addLayout(annotationRow);
   m_title = new QLabel(this);
   layout->addWidget(m_title);
   m_list = new QListWidget(this);
@@ -138,6 +157,30 @@ MeasureHistoryView::MeasureHistoryView(const MeasureHistory& history, QWidget* p
     qDebug().noquote() << QStringLiteral("Measure history Keep clicked: row %1").arg(number);
     if (m_actions.keepRow) {
       m_actions.keepRow(number);
+    }
+  });
+  connect(m_note, &QPushButton::clicked, this, [this] {
+    qDebug().noquote() << QStringLiteral("Measure Note clicked");
+    if (m_actions.note) {
+      m_actions.note();
+    }
+  });
+  connect(m_datum, &QPushButton::clicked, this, [this] {
+    qDebug().noquote() << QStringLiteral("Measure Datum Label clicked");
+    if (m_actions.datum) {
+      m_actions.datum();
+    }
+  });
+  connect(m_frame, &QPushButton::clicked, this, [this] {
+    qDebug().noquote() << QStringLiteral("Measure Frame clicked");
+    if (m_actions.frame) {
+      m_actions.frame();
+    }
+  });
+  connect(m_annotations, &QPushButton::clicked, this, [this] {
+    qDebug().noquote() << QStringLiteral("Measure Annotations clicked");
+    if (m_actions.annotations) {
+      m_actions.annotations();
     }
   });
   connect(m_copy, &QPushButton::clicked, this, [this] { copy(false); });
@@ -196,6 +239,23 @@ void MeasureHistoryView::setKeepable(bool keepable) {
   TestSync::singleShot(0, this, [this] { logPlaces(); });
 }
 
+void MeasureHistoryView::setNoteable(bool noteable, bool feature) {
+  const bool featured = noteable && feature;
+  if (m_note->isEnabled() == noteable && m_datum->isEnabled() == featured) {
+    return;
+  }
+  m_datum->setEnabled(featured);
+  m_frame->setEnabled(featured);
+  // The places again either way (Datum Label… and Frame… with them).
+  TestSync::singleShot(0, this, [this] { logPlaces(); });
+  if (m_note->isEnabled() == noteable) {
+    return;
+  }
+  m_note->setEnabled(noteable);
+  qDebug().noquote() << QStringLiteral("Measure Note %1")
+                            .arg(noteable ? QStringLiteral("enabled") : QStringLiteral("disabled"));
+}
+
 void MeasureHistoryView::fitHeight() {
   // As high as its rows up to kShownRows of them, then it scrolls.
   const int line = m_list->fontMetrics().height() + 4;
@@ -244,6 +304,13 @@ QStringList MeasureHistoryView::places() const {
   }
   lines << QStringLiteral("Measure Keep at %1%2")
                .arg(at(m_keep, m_keep->rect().center()), m_keep->isEnabled() ? QString() : QStringLiteral(" (disabled)"));
+  lines << QStringLiteral("Measure Note at %1%2")
+               .arg(at(m_note, m_note->rect().center()), m_note->isEnabled() ? QString() : QStringLiteral(" (disabled)"));
+  lines << QStringLiteral("Measure Datum Label at %1%2")
+               .arg(at(m_datum, m_datum->rect().center()), m_datum->isEnabled() ? QString() : QStringLiteral(" (disabled)"));
+  lines << QStringLiteral("Measure Frame at %1%2")
+               .arg(at(m_frame, m_frame->rect().center()), m_frame->isEnabled() ? QString() : QStringLiteral(" (disabled)"));
+  lines << QStringLiteral("Measure Annotations at %1").arg(at(m_annotations, m_annotations->rect().center()));
   return lines;
 }
 

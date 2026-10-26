@@ -28,6 +28,7 @@ signals:
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
   void paintEvent(QPaintEvent* event) override;
+  void hideEvent(QHideEvent* event) override;
 
 private:
   void fill(const QString& text);

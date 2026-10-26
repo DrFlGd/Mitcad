@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Body attributes: visibility (the browser's light bulb), physical material and
-//! appearance of each body, and the appearances of single faces
-//! (mitcad#53). They are part of the definition state, so they are saved
+//! appearance of each body, the appearances of single faces (mitcad#53)
+//! and the print bed face (mitcad#731, `print_bed.rs`). They are part of the definition state, so they are saved
 //! with the body's name and undo restores them; they do not change the
 //! geometry.
 //!
@@ -38,6 +38,11 @@ pub struct BodyAttributes {
     /// ids by the face's topological name as it was assigned (canonical
     /// text).
     pub face_appearances: BTreeMap<String, String>,
+    /// The planar face that lies on the print bed (mitcad#731,
+    /// `print_bed.rs`): its topological name as it was assigned (canonical
+    /// text), found as a face appearance's is. None: the design's −Z is
+    /// down.
+    pub print_bed_face: Option<String>,
 }
 
 impl Default for BodyAttributes {
@@ -47,6 +52,7 @@ impl Default for BodyAttributes {
             material: None,
             appearance: None,
             face_appearances: BTreeMap::new(),
+            print_bed_face: None,
         }
     }
 }
@@ -267,7 +273,7 @@ impl<K: Kernel> Document<K> {
 
     /// Sets a body's attributes as one undo step that recomputes nothing
     /// (none when they do not change).
-    fn set_attributes(
+    pub(super) fn set_attributes(
         &mut self,
         uid: BodyUid,
         verb: &str,

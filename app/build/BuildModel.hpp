@@ -33,9 +33,9 @@ QString componentAt(const QString& path, const CommandContext& context);
 
 // The component BUILD places parts in (the `build_host` query, mitcad#394:
 // the active one when it takes components, else the nearest one up that
-// does; a new design's root while Part1 is active): its uid, name and
-// path from the root ("" for the root). The commands' paths are from it
-// and their points in its coordinates.
+// does; in a new design its active Component1, mitcad#421): its uid, name
+// and path from the root ("" for the root). The commands' paths are from
+// it and their points in its coordinates.
 struct Host {
   QString component = QStringLiteral("C0");
   QString name;

@@ -81,8 +81,6 @@ pub(super) struct Translated {
     /// Dimensions as driving ones (with values; reference dimensions
     /// driven).
     pub dimensions: Vec<Value>,
-    /// The same dimensions, all driven.
-    pub driven_dimensions: Vec<Value>,
     /// Where each point should be after solving, and each circle's radius
     /// and each ellipse's minor radius.
     pub positions: Vec<(u32, [f64; 2])>,
@@ -222,16 +220,8 @@ pub(super) fn translate(
     for (i, item) in t.out.constraints.iter_mut().enumerate() {
         item["id"] = json!(format!("k{}", i + 1));
     }
-    for (i, (driving, driven)) in t
-        .out
-        .dimensions
-        .iter_mut()
-        .zip(t.out.driven_dimensions.iter_mut())
-        .enumerate()
-    {
-        let id = json!(format!("k{}", first_dimension + i + 1));
-        driving["id"] = id.clone();
-        driven["id"] = id;
+    for (i, item) in t.out.dimensions.iter_mut().enumerate() {
+        item["id"] = json!(format!("k{}", first_dimension + i + 1));
     }
     // The sources were numbered by their dimension's index.
     for s in t.out.sources.iter_mut().chain(t.out.references.iter_mut()) {
@@ -1017,8 +1007,6 @@ impl Translator<'_> {
     /// A dimension, driving with `mitcad` as its value unless FreeCAD's is
     /// a reference.
     fn dimension(&mut self, i: usize, con: &fc::Constraint, mut v: Value, mitcad: f64) {
-        let mut driven = v.clone();
-        driven["driven"] = json!(true);
         if con.driving {
             v["value"] = json!(mitcad);
             self.out.sources.push(DimensionSource {
@@ -1032,7 +1020,7 @@ impl Translator<'_> {
                 parameter: None,
             });
         } else {
-            v = driven.clone();
+            v["driven"] = json!(true);
             self.out.references.push(DimensionSource {
                 index: i,
                 dimension: self.out.dimensions.len().to_string(),
@@ -1044,7 +1032,6 @@ impl Translator<'_> {
             });
         }
         self.out.dimensions.push(v);
-        self.out.driven_dimensions.push(driven);
     }
 
     /// The points a curve is drawn through (a line's start and end).

@@ -180,14 +180,14 @@ fn sorting_along_a_direction_names_ties() {
 fn a_spacing_dimension_drives_the_mixed_anchors_without_aligning_them() {
     let mut e = entities();
     e[0].fixed = true; // p1
-    let constraints = [Constraint {
-        id: ConstraintUid(1),
-        kind: ConstraintKind::EqualSpacing {
+    let constraints = [Constraint::new(
+        ConstraintUid(1),
+        ConstraintKind::EqualSpacing {
             anchors: vec![p(1), c(2), c(5)],
             mode: SpacingMode::Horizontal,
             direction: None,
         },
-    }];
+    )];
     let spacing = DimensionKind::Spacing {
         constraint: ConstraintUid(1),
     };

@@ -57,7 +57,7 @@ QSize snapshotSize(const QString& sizeKey, int width, const QSize& view) {
 }
 
 std::optional<SnapshotChoice> askSnapshot(QWidget* parent, const QString& path, const QSize& view,
-                                          int measurements) {
+                                          int measurements, const QList<QPair<QString, int>>& groups) {
   QSettings store;
   QDialog dialog(parent);
   dialog.setWindowTitle(QObject::tr("Export Snapshot"));
@@ -91,14 +91,25 @@ std::optional<SnapshotChoice> askSnapshot(QWidget* parent, const QString& path, 
   widthRow->addWidget(height, 1);
   form->addRow(QObject::tr("&Width:"), widthRow);
   auto* transparent = new QCheckBox(QObject::tr("&Transparent background"));
-  transparent->setToolTip(QObject::tr("Only the bodies and the measurements: the background left out (PNG)"));
+  transparent->setToolTip(QObject::tr("Only the bodies and the annotations: the background left out (PNG)"));
   transparent->setChecked(store.value(kGroup + QStringLiteral("transparent"), false).toBool());
   form->addRow(QString(), transparent);
-  auto* shown = new QCheckBox(measurements > 0 ? QObject::tr("&Measurements (%1 shown)").arg(measurements)
-                                               : QObject::tr("&Measurements (none shown)"));
-  shown->setToolTip(QObject::tr("The measurements shown in the view, drawn over the picture"));
-  shown->setChecked(store.value(kGroup + QStringLiteral("measurements"), true).toBool());
-  form->addRow(QString(), shown);
+  // The annotations drawn over it (mitcad#702): every shown one, none, or
+  // one group's shown ones.
+  auto* shown = new QComboBox;
+  shown->addItem(measurements > 0 ? QObject::tr("All shown (%1)").arg(measurements) : QObject::tr("All shown (none)"),
+                 QStringLiteral("all"));
+  shown->addItem(QObject::tr("None"), QStringLiteral("none"));
+  for (const auto& [group, count] : groups) {
+    shown->addItem(QObject::tr("Group %1 (%2 shown)").arg(group).arg(count), QStringLiteral("group:") + group);
+  }
+  shown->setCurrentIndex(
+      store.value(kGroup + QStringLiteral("measurements"), true).toBool() ? 0 : shown->findData(QStringLiteral("none")));
+  form->addRow(QObject::tr("&Annotations:"), shown);
+  const auto annotationsKey = [shown] {
+    const QString key = shown->currentData().toString();
+    return key.startsWith(QLatin1String("group:")) ? QStringLiteral("group ") + key.mid(6) : key;
+  };
 
   auto* message = new QLabel;
   setErrorStyleSheet(message);
@@ -126,8 +137,8 @@ std::optional<SnapshotChoice> askSnapshot(QWidget* parent, const QString& path, 
   QObject::connect(transparent, &QCheckBox::toggled, &dialog, [](bool on) {
     qDebug().noquote() << QStringLiteral("Snapshot dialog: transparent = %1").arg(onOff(on));
   });
-  QObject::connect(shown, &QCheckBox::toggled, &dialog, [](bool on) {
-    qDebug().noquote() << QStringLiteral("Snapshot dialog: measurements = %1").arg(onOff(on));
+  QObject::connect(shown, &QComboBox::currentIndexChanged, &dialog, [annotationsKey] {
+    qDebug().noquote() << QStringLiteral("Snapshot dialog: annotations = %1").arg(annotationsKey());
   });
   QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, file] {
     const QString picked = dialogSaveFileName(&dialog, QObject::tr("Export Snapshot"), file->text(),
@@ -139,9 +150,8 @@ std::optional<SnapshotChoice> askSnapshot(QWidget* parent, const QString& path, 
   file->setFocus();
   file->selectAll();
   dialog.resize(520, dialog.sizeHint().height());
-  qDebug().noquote() << QStringLiteral("Snapshot dialog opened: size %1, transparent %2, measurements %3 (%4 shown)")
-                            .arg(size->currentData().toString(), onOff(transparent->isChecked()),
-                                 onOff(shown->isChecked()))
+  qDebug().noquote() << QStringLiteral("Snapshot dialog opened: size %1, transparent %2, annotations %3 (%4 shown)")
+                            .arg(size->currentData().toString(), onOff(transparent->isChecked()), annotationsKey())
                             .arg(measurements);
   // Where the inputs are, in the dialog's own coordinates (UI tests post
   // their clicks to the dialog's window).
@@ -152,7 +162,7 @@ std::optional<SnapshotChoice> askSnapshot(QWidget* parent, const QString& path, 
       return QStringLiteral("%1,%2").arg(p.x()).arg(p.y());
     };
     const std::pair<const char*, QWidget*> places[] = {
-        {"file", file}, {"size", size}, {"width", width}, {"transparent", transparent}, {"measurements", shown}};
+        {"file", file}, {"size", size}, {"width", width}, {"transparent", transparent}, {"annotations", shown}};
     for (const auto& [name, widget] : places) {
       qDebug().noquote() << QStringLiteral("Snapshot dialog %1 at %2").arg(QLatin1String(name), at(widget));
     }
@@ -168,7 +178,11 @@ std::optional<SnapshotChoice> askSnapshot(QWidget* parent, const QString& path, 
     choice.sizeKey = size->currentData().toString();
     choice.size = chosen();
     choice.transparent = transparent->isChecked();
-    choice.measurements = shown->isChecked();
+    const QString annotations = shown->currentData().toString();
+    choice.measurements = annotations != QLatin1String("none");
+    if (annotations.startsWith(QLatin1String("group:"))) {
+      choice.group = annotations.mid(6);
+    }
     if (choice.path.isEmpty()) {
       message->setText(QObject::tr("Give the file to write."));
       continue;

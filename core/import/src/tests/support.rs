@@ -131,7 +131,8 @@ pub(super) struct TestKernel {
     /// the change as the bodies' volumes, noise left out.
     pub(super) change_slack: Option<f64>,
     /// Runs in each kernel call of this name ("extrude_feature",
-    /// "offset_faces", "mass_properties") before it is made: a call that
+    /// "offset_faces", "mass_properties", "transform_shape") before it is
+    /// made: a call that
     /// blocks or takes long (mitcad#68, mitcad#69, mitcad#71, mitcad#82).
     #[allow(clippy::type_complexity)]
     pub(super) on_call:
@@ -441,6 +442,7 @@ impl Kernel for TestKernel {
         transform: &mitcad_model::Transform,
         instance: Option<mitcad_model::Instance>,
     ) -> Result<MockShape, KernelError> {
+        self.hook("transform_shape");
         self.mock.transform_shape(shape, transform, instance)
     }
 
@@ -621,6 +623,24 @@ impl Kernel for TestKernel {
         spec: &mitcad_model::HoleSpec<'_, MockShape>,
     ) -> Result<MockShape, KernelError> {
         self.mock.hole_tool(spec)
+    }
+
+    // The edges the test gives curves (`mock.edge_curves`); the others
+    // are not measured.
+    fn edge_geometry(
+        &self,
+        shape: &MockShape,
+        edge: &EdgeName,
+    ) -> Result<mitcad_model::datum::CurveGeometry, KernelError> {
+        if !self
+            .mock
+            .edge_curves
+            .borrow()
+            .contains_key(&edge.to_string())
+        {
+            return Err(KernelError::Unsupported("edge geometry"));
+        }
+        self.mock.edge_geometry(shape, edge)
     }
 
     fn modeled_thread(

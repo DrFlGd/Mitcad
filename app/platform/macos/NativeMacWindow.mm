@@ -144,11 +144,24 @@ struct NativeMacWindowState;
 - (void)stepHistory:(id)sender;
 - (void)openHistoryFilter:(id)sender;
 - (void)openProjectMenu:(id)sender;
+- (void)clickAgentIndicator:(id)sender;
+- (void)openAgentMenu:(id)sender;
 - (void)toggleTreeVisibility:(id)sender;
 - (void)renameTree:(id)sender;
 - (void)closeDocument:(id)sender;
 - (void)quitApplication:(id)sender;
 - (void)menuTrackingChanged:(NSNotification*)notification;
+@end
+
+// The agent indicator's button (mitcad#710): a click connects an agent or
+// opens the agents' menu, a right click always opens the menu.
+@interface MITCADAgentButton : NSButton
+@end
+@implementation MITCADAgentButton
+- (void)rightMouseDown:(NSEvent*)event {
+  (void)event;
+  [NSApp sendAction:@selector(openAgentMenu:) to:self.target from:self];
+}
 @end
 
 namespace mitcad::mac {
@@ -343,6 +356,8 @@ NSString* const inspectorID = @"mitcad.inspector";
 NSString* const historyID = @"mitcad.history";
 NSString* const projectID = @"mitcad.project";
 NSString* const projectToolbarMigrationKey = @"com.mitcad.toolbar.floating.v2.projectStatusInstalled";
+NSString* const agentID = @"mitcad.agent";
+NSString* const agentToolbarMigrationKey = @"com.mitcad.toolbar.floating.v2.agentStatusInstalled";
 NSString* const createID = @"mitcad.create";
 NSString* const modifyID = @"mitcad.modify";
 NSString* const searchID = @"mitcad.search";
@@ -379,6 +394,11 @@ struct NativeMacWindowState {
   QList<CGFloat> historyBoundaries;
   QString projectText;
   QString projectTooltip;
+  // The agent indicator (mitcad#710).
+  QString agentText;
+  QString agentTooltip;
+  bool agentConnected = false;
+  bool agentAvailable = true;
   bool sketching = false;
   bool updatingSelection = false;
   bool closing = false;
@@ -1465,6 +1485,19 @@ struct NativeMacWindowState {
     NSApp.mainMenu = mainMenu;
   }
 
+  // The agent indicator's button (mitcad#710): its text, dot and tooltip.
+  void applyAgentStatus(NSButton* button) const {
+    button.title = ns(agentText);
+    button.toolTip = ns(agentTooltip);
+    button.accessibilityLabel = ns(QStringLiteral("AI assistant: %1").arg(agentText));
+    button.image = symbol(agentConnected   ? QStringLiteral("circle.fill")
+                          : agentAvailable ? QStringLiteral("circle")
+                                           : QStringLiteral("circle.slash"));
+    button.contentTintColor = agentConnected   ? NSColor.controlAccentColor
+                              : agentAvailable ? NSColor.secondaryLabelColor
+                                               : NSColor.tertiaryLabelColor;
+  }
+
   void installToolbar() {
     NSToolbar* toolbar = [[NSToolbar alloc] initWithIdentifier:@"com.mitcad.toolbar.floating.v2"];
     toolbar.delegate = delegate;
@@ -1483,6 +1516,18 @@ struct NativeMacWindowState {
       if (!hasProject) [toolbar insertItemWithItemIdentifier:projectID
                                                    atIndex:std::min(NSUInteger(3), toolbar.items.count)];
       [defaults setBool:YES forKey:projectToolbarMigrationKey];
+    }
+    // The agent indicator (mitcad#710) right of Project, likewise once.
+    if (![defaults boolForKey:agentToolbarMigrationKey]) {
+      NSUInteger index = std::min(NSUInteger(4), toolbar.items.count);
+      bool hasAgent = false;
+      for (NSUInteger i = 0; i < toolbar.items.count; ++i) {
+        NSString* identifier = toolbar.items[i].itemIdentifier;
+        if ([identifier isEqualToString:agentID]) hasAgent = true;
+        if ([identifier isEqualToString:projectID]) index = i + 1;
+      }
+      if (!hasAgent) [toolbar insertItemWithItemIdentifier:agentID atIndex:index];
+      [defaults setBool:YES forKey:agentToolbarMigrationKey];
     }
     buildRibbon();
   }
@@ -2001,6 +2046,16 @@ void NativeMacWindow::setProjectStatus(const QString& text, const QString& toolt
     button.title = ns(text);
     button.toolTip = ns(tooltip);
     button.accessibilityLabel = ns(QStringLiteral("Project: %1").arg(text));
+  }
+}
+void NativeMacWindow::setAgentStatus(const QString& text, const QString& tooltip, bool connected, bool available) {
+  m_state->agentText = text;
+  m_state->agentTooltip = tooltip;
+  m_state->agentConnected = connected;
+  m_state->agentAvailable = available;
+  for (NSToolbarItem* item in m_state->window.toolbar.items) {
+    if (![item.itemIdentifier isEqualToString:agentID] || ![item.view isKindOfClass:MITCADAgentButton.class]) continue;
+    m_state->applyAgentStatus((NSButton*)item.view);
   }
 }
 void NativeMacWindow::setSketchMode(bool sketching) {
@@ -2673,12 +2728,12 @@ using namespace mitcad::mac;
 - (NSArray<NSToolbarItemIdentifier>*)toolbarDefaultItemIdentifiers:(NSToolbar*)toolbar {
   (void)toolbar;
   return @[sidebarID, @"command.edit.undo", @"command.edit.redo",
-           projectID, NSToolbarFlexibleSpaceItemIdentifier, searchID, historyID, inspectorID];
+           projectID, agentID, NSToolbarFlexibleSpaceItemIdentifier, searchID, historyID, inspectorID];
 }
 - (NSArray<NSToolbarItemIdentifier>*)toolbarAllowedItemIdentifiers:(NSToolbar*)toolbar {
   (void)toolbar;
   NSMutableArray* identifiers = [NSMutableArray arrayWithArray:@[
-    sidebarID, createID, modifyID, constraintsID, searchID, historyID, inspectorID, projectID,
+    sidebarID, createID, modifyID, constraintsID, searchID, historyID, inspectorID, projectID, agentID,
     NSToolbarFlexibleSpaceItemIdentifier, NSToolbarSpaceItemIdentifier
   ]];
   if (state) for (const auto& item : state->actions) {
@@ -2711,6 +2766,26 @@ using namespace mitcad::mac;
     button.accessibilityLabel = ns(QStringLiteral("Project: %1").arg(state->projectText));
     [button setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [button.widthAnchor constraintLessThanOrEqualToConstant:340].active = YES;
+    [button.heightAnchor constraintEqualToConstant:26].active = YES;
+    item.view = button;
+    return item;
+  }
+  if ([identifier isEqualToString:agentID]) {
+    NSToolbarItem* item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
+    item.label = @"AI Assistants";
+    item.paletteLabel = @"AI Assistant Status";
+    MITCADAgentButton* button = [[MITCADAgentButton alloc] initWithFrame:NSZeroRect];
+    button.target = self;
+    button.action = @selector(clickAgentIndicator:);
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.bordered = NO;
+    button.imagePosition = NSImageLeft;
+    button.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+    button.lineBreakMode = NSLineBreakByTruncatingTail;
+    button.accessibilityIdentifier = @"native.agentIndicator";
+    state->applyAgentStatus(button);
+    [button setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [button.widthAnchor constraintLessThanOrEqualToConstant:240].active = YES;
     [button.heightAnchor constraintEqualToConstant:26].active = YES;
     item.view = button;
     return item;
@@ -2923,6 +2998,19 @@ using namespace mitcad::mac;
 - (void)openProjectMenu:(id)sender {
   if (!state || state->nativeModalBlocked() || !state->callbacks.projectMenu) return;
   state->callbacks.projectMenu(menuPoint((NSView*)sender));
+}
+- (void)clickAgentIndicator:(id)sender {
+  if (!state || state->nativeModalBlocked()) return;
+  // A Control-click is a right click.
+  if ((NSApp.currentEvent.modifierFlags & NSEventModifierFlagControl) != 0) {
+    [self openAgentMenu:sender];
+    return;
+  }
+  if (state->callbacks.agentClicked) state->callbacks.agentClicked(menuPoint((NSView*)sender));
+}
+- (void)openAgentMenu:(id)sender {
+  if (!state || state->nativeModalBlocked() || !state->callbacks.agentMenu) return;
+  state->callbacks.agentMenu(menuPoint((NSView*)sender));
 }
 - (void)chooseSearch:(id)sender {
   (void)sender;

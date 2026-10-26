@@ -15,6 +15,7 @@
 #include <QStyleOptionViewItem>
 #include <QTableWidget>
 #include <QTabWidget>
+#include <QTreeWidget>
 #include <QStyle>
 
 #include "../files/Libraries.hpp"
@@ -140,12 +141,12 @@ void TestDriver::testDialogControls(const QString& kind) {
   }
 #endif
   if (kind == QStringLiteral("shortcuts-empty") || kind == QStringLiteral("shortcuts-results")) {
-    auto* table = window->findChild<QTableWidget*>(QStringLiteral("shortcutTable"));
+    auto* tree = window->findChild<QTreeWidget*>(QStringLiteral("shortcutTree"));
     int visible = 0;
-    if (table != nullptr) {
-      for (int row = 0; row < table->rowCount(); ++row) { visible += !table->isRowHidden(row); }
+    if (tree != nullptr) {
+      for (int row = 0; row < tree->topLevelItemCount(); ++row) { visible += !tree->topLevelItem(row)->isHidden(); }
     }
-    check(table != nullptr && (kind == QStringLiteral("shortcuts-empty") ? visible == 0 : visible > 0),
+    check(tree != nullptr && (kind == QStringLiteral("shortcuts-empty") ? visible == 0 : visible > 0),
           QStringLiteral("shortcut search did not filter the actual rows"));
   }
   if (kind == QStringLiteral("sources")) {

@@ -12,8 +12,10 @@ use crate::kernel::Kernel;
 use crate::policy::{self, Policy, PolicyObject, Setting, Violation};
 use crate::transform::Transform;
 
-/// The component a new design starts with, active.
-pub const NEW_DESIGN_PART: &str = "Part1";
+/// The component a new design starts with, active: named as any other new
+/// component is (`Assembly::unused_name("Component")`), so the first one
+/// is Component1 (mitcad#711; designs saved earlier keep their Part1).
+pub const NEW_DESIGN_COMPONENT: &str = "Component1";
 
 /// An object that breaks one setting of an owner: a sketch, a feature or
 /// an occurrence placed in it; for attachments and references the
@@ -42,18 +44,18 @@ pub struct PolicyReport {
 
 impl DocState {
     /// The state of a new, empty design: the root and an empty component
-    /// Part1, active, so that the first sketch or feature goes into Part1.
-    /// Both have the general defaults (the Hybrid preset, everything
-    /// allowed, mitcad#421): Part1 takes components too.
+    /// Component1, active, so that the first sketch or feature goes into
+    /// Component1. Both have the general defaults (the Hybrid preset,
+    /// everything allowed, mitcad#421): Component1 takes components too.
     pub(crate) fn new_design() -> Self {
         let mut state = Self::default();
         state.assembly.root_policy = Policy::GENERAL;
-        let part = state.assembly.create(Some(NEW_DESIGN_PART), None);
-        state.assembly.set_policy(part, Policy::GENERAL);
+        let component = state.assembly.create(Some(NEW_DESIGN_COMPONENT), None);
+        state.assembly.set_policy(component, Policy::GENERAL);
         state
             .assembly
-            .place(part, ComponentUid::ROOT, Transform::IDENTITY);
-        state.assembly.active = part;
+            .place(component, ComponentUid::ROOT, Transform::IDENTITY);
+        state.assembly.active = component;
         state
     }
 

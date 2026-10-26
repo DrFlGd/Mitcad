@@ -87,7 +87,9 @@ impl SketchEdit<'_> {
 
     /// Removes the constraints and dimensions on `point` that say nothing
     /// after a merge: one that names it twice, a point-on-curve on a curve
-    /// it is a point of, and a constraint the same as an earlier one.
+    /// it is a point of, and a constraint the same as an earlier one. Of
+    /// the same constraint twice the active one stays (mitcad#723): an
+    /// inactive duplicate of an active one holds nothing.
     fn drop_idle_on(&mut self, point: EntityUid) {
         let index = EntityIndex::new(&self.def.entities);
         let on_point = |refs: &[Ref]| refs.contains(&Ref::Point(point));
@@ -108,7 +110,14 @@ impl SketchEdit<'_> {
             ref other => other.clone(),
         };
         let mut seen: Vec<ConstraintKind> = Vec::new();
-        for c in &self.def.constraints {
+        // The active ones first, so that a duplicate keeps the active one.
+        let active_first = self
+            .def
+            .constraints
+            .iter()
+            .filter(|c| c.active)
+            .chain(self.def.constraints.iter().filter(|c| !c.active));
+        for c in active_first {
             let refs = c.kind.refs();
             if !on_point(&refs) {
                 continue;

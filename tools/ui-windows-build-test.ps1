@@ -6,7 +6,7 @@
 # synthetic BUILD parts made here (mitcad-cli; no supplier's files), fetched
 # from a local git repository; skipped where git is not installed:
 #   1. The BUILD tab beside SOLID.
-#   2. A new design, Part1 active (mitcad#394): Profile adds to the root,
+#   2. A new design, Component1 active (mitcad#394): Profile adds to the root,
 #      no policy message; the first profile by a pick on the XY plane,
 #      then (undone) by Enter at the origin; then only profiles' faces,
 #      the planes hidden; a side click flush with an end fills Offset and
@@ -481,7 +481,7 @@ function Choose-InPicker([string]$Command, [string]$Part) {
   Ui-ExpectNew "Part picker chose $Part" "$Part chosen in the picker"
 }
 
-# A new design (mitcad#394): Part1 active, the root with the Assembly policy.
+# A new design (mitcad#394): Component1 active, the root with the Assembly policy.
 Ui-StartApp 'build-new'
 
 Write-Host '--- 1. The BUILD tab'
@@ -490,13 +490,13 @@ Ui-Mark
 Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
 Ui-ExpectNew 'Ribbon BUILD/PROFILE at' 'its PROFILE group'
 
-Write-Host '--- 2. The first profiles of a new design, Part1 active'
+Write-Host '--- 2. The first profiles of a new design, Component1 active'
 Ui-Mark
 Ui-Step 'Profile (F3)'                   { Ui-Key 'F3' }
 Ui-ExpectNew 'Command Profile started' 'Profile started'
-Ui-ExpectNew 'BUILD profile adds to Part1 (a ground placement)' 'BUILD adds to the active Part1 (Hybrid, mitcad#421)'
+Ui-ExpectNew 'BUILD profile adds to Component1 (a ground placement)' 'BUILD adds to the active Component1 (Hybrid, mitcad#421)'
 Ui-ExpectNew 'View hint Profile: Click a plane or a face, or press Enter' "the view's hint for the first part"
-Ui-ExpectNew 'Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1' 'at the origin with its stock length'
+Ui-ExpectNew 'Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Component1' 'at the origin with its stock length'
 Expect-Row 'axis=z' 'shown' "the Direction's X, Y and Z buttons"
 Ui-ExpectNew 'Panel Profile tile part: Profile 20 test' 'the Part tile shows the chosen profile (mitcad#427)'
 Expect-Row 'search' 'hidden' 'no Search row: the part picker has it'
@@ -507,14 +507,14 @@ Expect-Row 'place' 'hidden' 'no Placement before a part to go on (mitcad#427)'
 Expect-Row 'tilt' 'hidden' 'no Tilt before a side pick (mitcad#444)'
 Ui-Mark
 Ui-Step "on the root's XY plane"         { Ui-ClickLogged 'Datum xy' }
-Ui-ExpectNew 'Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1' 'on the root''s XY plane, picked from Part1: grounded at the click'
+Ui-ExpectNew 'Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Component1' 'on the root''s XY plane, picked from Component1: grounded at the click'
 Place 'Profile 20 test'
 No-PolicyMessage
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 Ui-Step 'undo it (Ctrl+Z)'               { Ui-Key 'ctrl+z' }
 Ui-Mark
 Ui-Step 'Profile again (F3)'             { Ui-Key 'F3' }
-Ui-ExpectNew 'BUILD profile adds to Part1 (a ground placement)' 'a new design again'
+Ui-ExpectNew 'BUILD profile adds to Component1 (a ground placement)' 'a new design again'
 Ui-Step '60 mm long'                     { Ui-TypeIn 'Panel Profile input length' '60' }
 Ui-Mark
 Ui-Step 'along X'                        { Ui-ClickLogged 'Panel Profile input axis=x' }

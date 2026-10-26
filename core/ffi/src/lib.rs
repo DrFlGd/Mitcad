@@ -148,8 +148,8 @@ mod ffi {
         fn mcp_export_drawing(self: &Document, command: &str) -> Result<String>;
 
         fn new_document() -> Box<Document>;
-        /// A new, empty design: Root and an empty component Part1, active,
-        /// both with the general defaults (mitcad#220, mitcad#421).
+        /// A new, empty design: Root and an empty component Component1,
+        /// active, both with the general defaults (mitcad#220, mitcad#421).
         fn new_design_document() -> Box<Document>;
         /// A 60 x 40 x 20 mm block (Sketch1, Extrude1), used by tests.
         fn new_demo_document() -> Box<Document>;
@@ -608,7 +608,7 @@ fn new_document() -> Box<Document> {
 }
 
 /// A new, empty design as File > New makes it (mitcad#220): the root and an
-/// empty component Part1, active, both with the general defaults
+/// empty component Component1, active, both with the general defaults
 /// (mitcad#421).
 fn new_design_document() -> Box<Document> {
     Box::new(Document(mitcad_model::Document::new_design(OcctKernel)))

@@ -77,7 +77,7 @@ ui_expect_log "F2.b0 in O1" "Part's block shown"
 ui_expect_log "F3.b0 in O2" "the shield shown"
 ui_expect_log "Opened with the root active; C3 was active in the file (unmodified)" "opened with the root active (mitcad#426)"
 ui_sync
-# After the design opened: the empty design of the start has Part1 active.
+# After the design opened: the empty design of the start has Component1 active.
 sed -n '/^Opened with the root active/,$p' "$UI_LOG" | grep "^View inactive ghosts: " | grep -qv ": none$" && ui_fail "ghosts with the root active"
 echo "ok   nothing is a ghost with the root active"
 ui_mark

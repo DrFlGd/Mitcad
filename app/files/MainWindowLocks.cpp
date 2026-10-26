@@ -88,6 +88,9 @@ bool MainWindow::readOnlyCommand(const CommandDef& def) {
       QStringLiteral("file.new_design"),
       // A copy in a project, as Save As writes one (mitcad#503).
       QStringLiteral("file.save_to_project"),
+      // Drawings (mitcad#707): back from one, and a drawing written
+      // without keeping it.
+      QStringLiteral("drawing.close"), QStringLiteral("file.export_drawing"),
       // Another design of a project, as Open (mitcad#530).
       QStringLiteral("file.open_from_project"),
   };
@@ -108,8 +111,9 @@ bool MainWindow::readOnlyModelCommand(const QString& name) {
       QStringLiteral("edit_analysis"),    QStringLiteral("delete_analysis"),  QStringLiteral("rename_analysis"),
       QStringLiteral("set_analysis_visible"), QStringLiteral("merge_undo"),
       QStringLiteral("begin_command"),    QStringLiteral("restore_command"), QStringLiteral("discard_command"),
-      // A Flat Pattern's drawing (mitcad#210).
-      QStringLiteral("export_flat_pattern_dxf"),
+      // A Flat Pattern's drawing (mitcad#210), a drawing's file
+      // (mitcad#707; one kept is only read).
+      QStringLiteral("export_flat_pattern_dxf"), QStringLiteral("export_drawing"),
   };
   return allowed.contains(name);
 }

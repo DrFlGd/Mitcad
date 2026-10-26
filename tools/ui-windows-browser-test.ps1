@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/MainWindow.cpp tools/cli
+# check-all sources: app/browser app/print app/MainWindow.cpp tools/cli
 # Input-driven Windows UI test of the browser's scrolling with a selection
 # (mitcad#318) in the build VM (tools/ui-windows-lib.ps1 says how the input
 # is posted); the Linux test is the last part of tools/ui-browser-test.sh:
@@ -12,6 +12,10 @@
 #   4. Five light bulbs clicked quickly with a small mouse move during each
 #      press (mitcad#344): each toggles once and the selection is unchanged
 #      (the Linux test is a part of tools/ui-browser-test.sh).
+#   5. Material... and Appearance... of Body60's row, Body1 and Body60
+#      selected, open for both bodies (mitcad#703; the Linux test, which
+#      assigns, is tools/ui-material-test.sh): the right click keeps the
+#      selection, Assign names the two bodies.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-browser-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -164,6 +168,57 @@ if ((Ui-LogLines | Select-Object -Skip $script:UiMark) | Where-Object { $_.Conta
 }
 if (-not (Place-Valid 'Browser Root/Bodies/Body60')) { Ui-Fail 'Body60''s row left the sight' }
 Write-Host "ok   the scroll position stays at $after"
+
+Write-Host '--- Material... and Appearance... of a selected row are for every selected body (mitcad#703)'
+# Menu-Choose "entry": the entry of the context menu logged last ("Context
+# menu: A | B"), chosen with the keys as the menu opens with nothing active
+# (the labels' ellipsis matches three dots).
+$ellipsis = [string][char]0x2026
+function Menu-Choose([string]$Entry) {
+  $entries = @("$(Ui-LastMatch '^Context menu: (.*)$')" -split ' \| ' | ForEach-Object { $_.Replace($ellipsis, '...') })
+  $index = [array]::IndexOf($entries, $Entry)
+  if ($index -lt 0) { Ui-Fail "'$Entry' is not in the context menu: $($entries -join ' | ')" }
+  for ($i = 0; $i -le $index; $i++) { Ui-Key 'Down' }
+  Ui-Key 'Return'
+}
+# Expect-NewMatch "regex" "description": Ui-ExpectNew with a regular
+# expression (the two bodies in either order).
+function Expect-NewMatch([string]$Pattern, [string]$Description) {
+  for ($i = 0; $i -lt 30; $i++) {
+    if (Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_ -match $Pattern }) {
+      Write-Host "ok   $Description"
+      return
+    }
+    Start-Sleep -Milliseconds 200
+  }
+  Ui-Fail "${Description}: /$Pattern/ not in the log since the mark"
+}
+# Changed-Selection: a "Browser selected" line since the mark.
+function Changed-Selection {
+  return [bool](Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Browser selected: ') })
+}
+$both = '(F2\.b0, F61\.b0|F61\.b0, F2\.b0)'
+Ui-Mark
+Ui-Step 'right-click Body60'             { Ui-ClickLogged 'Browser Root/Bodies/Body60' 3 }
+Ui-ExpectNew 'Context menu: ' 'the body''s context menu'
+Ui-Step 'choose Material...'             { Menu-Choose 'Material...' }
+Expect-NewMatch "^Materials opened for bodies $both$" 'the Materials window opened for both selected bodies'
+Ui-ExpectNew 'Materials assign label: Assign to 2 bodies' 'Assign names the two bodies'
+if (Changed-Selection) { Ui-Fail 'the right click on a selected row changed the selection' }
+Write-Host 'ok   the right click kept both rows selected'
+Ui-FocusDialog '^Materials$'
+Ui-Step 'close the Materials window (Escape)' { Ui-Key 'Escape' }
+Ui-FocusMain
+Ui-Mark
+Ui-Step 'right-click Body60 again'       { Ui-ClickLogged 'Browser Root/Bodies/Body60' 3 }
+Ui-ExpectNew 'Context menu: ' 'the body''s context menu'
+Ui-Step 'choose Appearance...'           { Menu-Choose 'Appearance...' }
+Expect-NewMatch "^Appearances for bodies: $both( \(|$)" 'the Appearances window opened for both selected bodies'
+if (Changed-Selection) { Ui-Fail 'the second right click changed the selection' }
+Ui-FocusDialog '^Appearances$'
+Ui-Step 'close the Appearances window (Escape)' { Ui-Key 'Escape' }
+Ui-FocusMain
+
 if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
 
 Ui-Finish 'UI Windows browser test'

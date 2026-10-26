@@ -2,6 +2,7 @@
 #pragma once
 
 #include <functional>
+#include <utility>
 
 #include <QDialog>
 #include <QJsonArray>
@@ -9,13 +10,16 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QWidget>
 
 #include "../framework/Appearances.hpp"
+#include "PrintItemsHost.hpp"
 #include "PrintKeys.hpp"
 #include "PrintLibrary.hpp"
 
 class QAction;
 class QComboBox;
+class QHBoxLayout;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -28,15 +32,15 @@ namespace mitcad {
 class DocumentHost;
 class SettingsForm;
 
-// Materials (mitcad#655): a library window like Appearances, opened by
-// Material... and Physical Material (with the bodies or the component it
-// assigns to) and Edit Materials. On the left the materials the user can
-// choose (the `library_items` query, one row with the design's copy),
-// grouped by their class in Metals, Plastics (the filaments too) and
-// Other, each with its appearance's swatch; no places: an item is
-// built-in or the user's own. Opened for targets the top row is Default
-// with what it gives ("Default (Steel)", its swatch, a line under it),
-// and Assign (Assign to 2 bodies, Assign to Arm) gives the selected one.
+// The materials' list and editor (mitcad#655), shared by the Materials
+// window and My Library's Materials tab (mitcad#704). On the left the
+// materials the user can choose (the `library_items` query, one row with
+// the design's copy), grouped by their class in Metals, Plastics (the
+// filaments too) and Other, each with its appearance's swatch; no places:
+// an item is built-in or the user's own. Opened for targets the top row
+// is Default with what it gives ("Default (Steel)", its swatch, a line
+// under it), and Assign (Assign to 2 bodies, Assign to Arm) gives the
+// selected one.
 //
 // On the right the selected material with the values the design prints
 // with: its name as a title, "Built-in" with a lock for a built-in one,
@@ -56,23 +60,44 @@ class SettingsForm;
 // its library, the design keeping its copy), always asked
 // (confirmDelete). A refusal of a setting shows under its field, others
 // on the message line. Read only is disabled, never hidden.
-class MaterialsDialog : public QDialog {
+//
+// In a library (setLibrary, My Library): the library's items by class,
+// then the built-in ones under Built-in to duplicate; New and Duplicate
+// make the item in the library, edits and Delete change its file. No
+// Default row, no Assign, no Save to, no saved state (every item is the
+// library's).
+class MaterialsPanel : public QWidget {
   Q_OBJECT
 
 public:
-  MaterialsDialog(DocumentHost& host, QWidget* parent = nullptr);
-  ~MaterialsDialog() override;
+  // `logName` heads the panel's log lines: "Materials", "My Library
+  // materials".
+  MaterialsPanel(PrintItemsHost& host, const QString& logName, QWidget* parent = nullptr);
+  ~MaterialsPanel() override;
 
+  // The library the panel works in: `user` or `project` (My Library);
+  // empty: the design (the default).
+  void setLibrary(const QString& library);
   // What Assign gives the material: bodies (their names in `names`), or a
   // component (`component`, its name in `names`); neither: no Assign.
   void setTargets(const QStringList& bodies, const QString& component, const QStringList& names);
   // Whether Assign leaves the window open (3D Print's Assign materials…,
-  // mitcad#655); else it closes it.
+  // mitcad#655); else it closes it (assigned()).
   void setKeepOpen(bool keepOpen);
   // Shows the materials and the selected one as the model has them now.
   void refresh();
-  // Edit Appearances… of the Appearance box (the controller's window).
+  // A button of the window at the end of the row under the list (My
+  // Library…, Close), its place logged as "<logName> <name> at x,y".
+  void addButton(QPushButton* button, const QString& name);
+  // Edit Appearances… of the Appearance box (the controller's window);
+  // none: the box has no such entry.
   std::function<void()> editAppearances;
+
+signals:
+  // Assign gave the targets the material: the window closes.
+  void assigned();
+  // A command of the panel changed the model (My Library: a library).
+  void changed();
 
 protected:
   void showEvent(QShowEvent* event) override;
@@ -81,11 +106,16 @@ protected:
 
 private:
   const LibraryItem* current() const;
+  bool inLibrary() const { return !m_libraryPlace.isEmpty(); }
+  // The project commands and queries name: none in My library.
+  QString itemsProject() const;
   void rebuildList();
   void showCurrent();
   void selectKey(const QString& key);
   // Runs `change` (fields of edit_material) on the selected item, later.
   void edit(const QJsonObject& change, const QString& what, const QString& field = QString());
+  // A new item's `library` and project in My Library.
+  void inPlace(QJsonObject& command) const;
   void newMaterial();
   void duplicate();
   void remove();
@@ -102,7 +132,9 @@ private:
   void scheduleLogPlaces();
   void logPlaces();
 
-  DocumentHost& m_host;
+  PrintItemsHost& m_host;
+  QString m_log;          // "Materials"
+  QString m_libraryPlace; // user or project in My Library; empty: the design
   PrintKeyTable m_keys;
   QString m_dialect; // the design's slicer (designDialectOf)
   QVector<LibraryItem> m_items;
@@ -136,16 +168,42 @@ private:
   QLineEdit* m_density = nullptr;
   QLabel* m_densityError = nullptr;
   QComboBox* m_appearance = nullptr;
+  QString m_carriedAppearance; // the entry of an appearance a library's material carries
   SettingsForm* m_form = nullptr;
   QLabel* m_message = nullptr;
+  QHBoxLayout* m_buttons = nullptr;
   QPushButton* m_new = nullptr;
   QPushButton* m_duplicate = nullptr;
   QPushButton* m_delete = nullptr;
   QPushButton* m_assign = nullptr;
   QLabel* m_mixed = nullptr; // the targets' mixed state beside Assign
-  QPushButton* m_close = nullptr;
+  QVector<std::pair<QString, QPushButton*>> m_windowButtons; // addButton's
   QString m_loggedRows;
   QString m_loggedPlaces;
+};
+
+// Materials (mitcad#655): a library window like Appearances, opened by
+// Material... and Physical Material (with the bodies or the component it
+// assigns to) and Edit Materials: the panel above on the open design,
+// with My Library… (mitcad#704) and Close after Assign.
+class MaterialsDialog : public QDialog {
+  Q_OBJECT
+
+public:
+  MaterialsDialog(DocumentHost& host, QWidget* parent = nullptr);
+  ~MaterialsDialog() override;
+
+  void setTargets(const QStringList& bodies, const QString& component, const QStringList& names);
+  void setKeepOpen(bool keepOpen);
+  void refresh();
+  // Edit Appearances… of the Appearance box (the controller's window).
+  std::function<void()> editAppearances;
+  // My Library… (mitcad#704).
+  std::function<void()> openMyLibrary;
+
+private:
+  DesignItemsHost m_designHost;
+  MaterialsPanel* m_panel = nullptr;
 };
 
 } // namespace mitcad

@@ -113,6 +113,18 @@ void CommandSearch::paintEvent(QPaintEvent* event) {
   }
 }
 
+// The window it opened over takes the keys again: its shortcuts work only
+// while it is active, and the system may activate another window when the
+// popup goes. Logged for the UI tests: a key sent right after Esc would race
+// the popup still closing.
+void CommandSearch::hideEvent(QHideEvent* event) {
+  QFrame::hideEvent(event);
+  if (QWidget* owner = parentWidget()) {
+    owner->window()->activateWindow();
+  }
+  qDebug() << "Command search closed";
+}
+
 void CommandSearch::fill(const QString& rawText) {
   QString text = rawText.trimmed().toLower();
   if (text.endsWith(QStringLiteral("..."))) { text.chop(3); }

@@ -10,22 +10,226 @@
 //! [`pdf`], [`dxf`]) without any geometry library. Lengths on the sheet are
 //! millimetres of paper; lengths of the model are millimetres too, shown in
 //! the drawing's unit.
+//!
+//! Drawings kept in the design (mitcad#707) are definitions only
+//! ([`def`]): sheets and their views, each placed on its sheet with its
+//! scale, style and subject. Their lines are projected again from the
+//! model whenever they are asked for (`api/drawings.rs`); detail views and
+//! breaks cut the projected lines in the view's plane ([`clip`]). The
+//! export of a design without a kept drawing (`export_drawing`) lays a
+//! temporary one out and draws it the same way.
 
+pub mod annotate;
+#[cfg(test)]
+mod annotation_tests;
+pub mod clip;
 pub mod compose;
+pub mod def;
 pub mod dxf;
+#[cfg(test)]
+mod follow_up_tests;
 pub mod pdf;
+#[cfg(test)]
+mod pick_tests;
 pub mod sheet;
+#[cfg(test)]
+mod stored_tests;
 pub mod svg;
+#[cfg(test)]
+mod table_tests;
+pub mod tables;
+pub mod template;
+#[cfg(test)]
+mod template_tests;
 #[cfg(test)]
 mod tests;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::datum::Vec3;
 use crate::topo::FaceName;
 
 /// A point in a view's or on the sheet's plane.
 pub type P2 = [f64; 2];
+
+// --- Views projected before -------------------------------------------------
+
+/// How many projections (and shadings) [`ProjectionCache`] keeps.
+const CACHED_PROJECTIONS: usize = 64;
+/// How many bodies' edges and round faces it keeps: one per body a sheet
+/// shows, so a bound of its own, well above the views' (mitcad#717: a
+/// sheet of more than 64 bodies threw them out on every draw). A body's
+/// older versions go when a new one is kept (mitcad#718), so this bounds
+/// bodies, not versions.
+const CACHED_GEOMETRIES: usize = 4096;
+/// How many placed bodies' round holes it keeps (hole tables and the
+/// automatic annotations, mitcad#718).
+const CACHED_HOLES: usize = 1024;
+/// How many answers of one body on one section, detail or broken view it
+/// keeps (what a parts list counts and a pick's cut faces, mitcad#722):
+/// one per body and view, so a bound of its own like the geometries', and
+/// apart from the views' projections, which they would push out.
+const CACHED_BODY_VIEWS: usize = 4096;
+
+type Entries<T> = std::sync::Mutex<std::collections::VecDeque<(u128, std::sync::Arc<T>)>>;
+/// Bodies' geometries, each with its body's own key and its version's.
+type BodyEntries = std::sync::Mutex<
+    std::collections::VecDeque<(u128, u128, std::sync::Arc<annotate::BodyGeometry>)>,
+>;
+
+/// Views the kernel projected (and shaded views' faces), by the
+/// fingerprint of what they show and how (the bodies' shape versions and
+/// placements, the view's spec), so that asking for a drawing again
+/// projects only what changed (mitcad#707). Separate from modelling
+/// results: drawing changes no state. The least recently used go first.
+#[derive(Default)]
+pub(crate) struct ProjectionCache {
+    inner: Entries<ViewProjection>,
+    shading: Entries<Shading>,
+    /// The bodies' named edges and round faces (annotations, mitcad#707
+    /// phase 2), by body and shape version; each with the body's own key,
+    /// so that a new version replaces the old one.
+    geometry: BodyEntries,
+    /// A placed body's round holes with their threads, by body, shape
+    /// version, placement and threads; found without a warning (a failure
+    /// is tried again, mitcad#722).
+    holes: Entries<Holes>,
+    /// A body's volume, by body and shape version (a title block's mass,
+    /// mitcad#707 phase 4).
+    volumes: Entries<f64>,
+    /// What one body shows on a section, a detail or a broken view, by
+    /// body, shape version, placement, view spec, circle and breaks
+    /// (mitcad#722).
+    body_views: Entries<BodyInView>,
+}
+
+/// What one body shows on a section, a detail or a broken view, from its
+/// own projection there: whether any line of it is left (a parts list
+/// counts it, mitcad#718) and its cut faces as the view shows them (picks
+/// on a section's cut faces).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct BodyInView {
+    pub(crate) seen: bool,
+    pub(crate) cuts: Vec<CutFace>,
+}
+
+/// A shaded view's faces: polygons in view coordinates with their greys,
+/// the farthest first.
+pub(crate) type Shading = Vec<(Vec<P2>, f64)>;
+
+/// A placed body's round holes.
+pub(crate) type Holes = Vec<compose::HoleInput>;
+
+fn cached<T>(entries: &Entries<T>, key: u128) -> Option<std::sync::Arc<T>> {
+    // Least recently used first: a hit moves to the back.
+    let mut entries = entries.lock().ok()?;
+    let i = entries.iter().position(|(k, _)| *k == key)?;
+    let entry = entries.remove(i)?;
+    let value = std::sync::Arc::clone(&entry.1);
+    entries.push_back(entry);
+    Some(value)
+}
+
+fn keep<T>(entries: &Entries<T>, key: u128, value: std::sync::Arc<T>, limit: usize) {
+    if let Ok(mut entries) = entries.lock() {
+        entries.retain(|(k, _)| *k != key);
+        entries.push_back((key, value));
+        while entries.len() > limit {
+            entries.pop_front();
+        }
+    }
+}
+
+impl ProjectionCache {
+    pub(crate) fn projection(&self, key: u128) -> Option<std::sync::Arc<ViewProjection>> {
+        cached(&self.inner, key)
+    }
+
+    pub(crate) fn keep_projection(&self, key: u128, value: std::sync::Arc<ViewProjection>) {
+        keep(&self.inner, key, value, CACHED_PROJECTIONS);
+    }
+
+    pub(crate) fn shading(&self, key: u128) -> Option<std::sync::Arc<Shading>> {
+        cached(&self.shading, key)
+    }
+
+    pub(crate) fn keep_shading(&self, key: u128, value: std::sync::Arc<Shading>) {
+        keep(&self.shading, key, value, CACHED_PROJECTIONS);
+    }
+
+    pub(crate) fn geometry(&self, key: u128) -> Option<std::sync::Arc<annotate::BodyGeometry>> {
+        let mut entries = self.geometry.lock().ok()?;
+        let i = entries.iter().position(|(_, k, _)| *k == key)?;
+        let entry = entries.remove(i)?;
+        let value = std::sync::Arc::clone(&entry.2);
+        entries.push_back(entry);
+        Some(value)
+    }
+
+    /// Keeps a body's geometry (`body`: the body's own key, `key`: its
+    /// version's), throwing out the body's older versions.
+    pub(crate) fn keep_geometry(
+        &self,
+        body: u128,
+        key: u128,
+        value: std::sync::Arc<annotate::BodyGeometry>,
+    ) {
+        if let Ok(mut entries) = self.geometry.lock() {
+            entries.retain(|(b, k, _)| *b != body && *k != key);
+            entries.push_back((body, key, value));
+            while entries.len() > CACHED_GEOMETRIES {
+                entries.pop_front();
+            }
+        }
+    }
+
+    /// How many bodies' geometries it keeps.
+    #[cfg(test)]
+    pub(crate) fn geometries(&self) -> usize {
+        self.geometry.lock().map_or(0, |e| e.len())
+    }
+
+    pub(crate) fn holes(&self, key: u128) -> Option<std::sync::Arc<Holes>> {
+        cached(&self.holes, key)
+    }
+
+    pub(crate) fn keep_holes(&self, key: u128, value: std::sync::Arc<Holes>) {
+        keep(&self.holes, key, value, CACHED_HOLES);
+    }
+
+    pub(crate) fn volume(&self, key: u128) -> Option<f64> {
+        cached(&self.volumes, key).map(|v| *v)
+    }
+
+    pub(crate) fn keep_volume(&self, key: u128, volume: f64) {
+        keep(
+            &self.volumes,
+            key,
+            std::sync::Arc::new(volume),
+            CACHED_GEOMETRIES,
+        );
+    }
+
+    pub(crate) fn body_view(&self, key: u128) -> Option<std::sync::Arc<BodyInView>> {
+        cached(&self.body_views, key)
+    }
+
+    pub(crate) fn keep_body_view(&self, key: u128, value: std::sync::Arc<BodyInView>) {
+        keep(&self.body_views, key, value, CACHED_BODY_VIEWS);
+    }
+
+    /// How many views' projections it keeps.
+    #[cfg(test)]
+    pub(crate) fn projections(&self) -> usize {
+        self.inner.lock().map_or(0, |e| e.len())
+    }
+
+    /// How many bodies' answers on partial views it keeps.
+    #[cfg(test)]
+    pub(crate) fn body_views(&self) -> usize {
+        self.body_views.lock().map_or(0, |e| e.len())
+    }
+}
 
 // --- What the kernel works out --------------------------------------------
 
@@ -141,7 +345,7 @@ pub struct RoundHole {
 
 /// The sheet sizes: ISO 216 A4 to A0 and ANSI A to E (`ANSI_A`, …),
 /// width and height in millimetres in landscape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum SheetSize {
     #[default]
     A4,
@@ -209,7 +413,7 @@ impl SheetSize {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Orientation {
     #[default]
@@ -220,7 +424,7 @@ pub enum Orientation {
 /// ISO 5456-2: third angle (the top view above the front view, the right
 /// view on its right) or first angle (the top view below, the right view on
 /// the left).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Projection {
     #[default]

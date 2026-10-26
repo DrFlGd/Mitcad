@@ -546,6 +546,7 @@ void SketchController::enter(const QString& uid) {
   m_status.clear();
   m_loggedProjections.clear();
   m_loggedView.clear();
+  m_loggedGlyphs.clear();
   m_loggedSpacings.clear();
   m_loggedPointer.clear();
   reload();
@@ -630,6 +631,12 @@ void SketchController::reload() {
     qDebug().noquote() << projections;
   }
   logSpacings();
+  // What is drawn inactive (mitcad#721), also where the view never paints
+  // (Windows session 0).
+  m_overlay->logInactive();
+  // Where their symbols are now: a change of the geometry moves them
+  // without a change of the view (mitcad#723).
+  logGlyphs();
   updateConvertAction();
   m_overlay->update();
   emit changed();
@@ -761,7 +768,37 @@ void SketchController::logView() {
                                 .arg(qRound(at.y() + window.y()));
     }
   }
+  logGlyphs();
   m_overlay->logDimensionHalos();
+  m_overlay->logInactive();
+}
+
+void SketchController::logGlyphs() {
+  if (!isActive()) {
+    return;
+  }
+  // Where each inactive constraint's symbol is (mitcad#721), to right-click
+  // it: when the view or the sketch changes it (mitcad#723).
+  const QPoint window = m_viewer.mapTo(m_viewer.window(), QPoint(0, 0));
+  QStringList lines;
+  for (const auto& [id, rect] : m_overlay->constraintGlyphRects()) {
+    const ConstraintData* k = m_model.constraint(id);
+    if (k == nullptr || k->active) {
+      continue;
+    }
+    lines << QStringLiteral("Constraint %1 glyph at %2,%3")
+                 .arg(id)
+                 .arg(qRound(rect.center().x() + window.x()))
+                 .arg(qRound(rect.center().y() + window.y()));
+  }
+  const QString logged = lines.join(QLatin1Char('\n'));
+  if (logged == m_loggedGlyphs) {
+    return;
+  }
+  m_loggedGlyphs = logged;
+  for (const QString& line : lines) {
+    qDebug().noquote() << line;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1183,6 +1220,51 @@ void SketchController::setDimensionSigned(const QString& id, bool on) {
                                  changed != nullptr ? changed->expression : QString());
 }
 
+void SketchController::setItemsActive(const QStringList& ids, bool on) {
+  if (ids.isEmpty()) {
+    return;
+  }
+  SketchOp op(*this);
+  QJsonObject cmd = op.command(QStringLiteral("sketch.set_active"));
+  cmd.insert(QStringLiteral("items"), QJsonArray::fromStringList(ids));
+  cmd.insert(QStringLiteral("active"), on);
+  if (!op.run(cmd)) {
+    const QString reason = op.error();
+    op.rollback();
+    // "Sketch items not activated: k5 cannot be activated: …", for UI tests.
+    qDebug().noquote() << QStringLiteral("Sketch items not %1: %2")
+                              .arg(on ? QStringLiteral("activated") : QStringLiteral("deactivated"), reason);
+    error(reason);
+    return;
+  }
+  op.commit();
+  // "Sketch items activated: k5", for UI tests.
+  qDebug().noquote() << QStringLiteral("Sketch items %1: %2")
+                            .arg(on ? QStringLiteral("activated") : QStringLiteral("deactivated"),
+                                 ids.join(QStringLiteral(", ")));
+}
+
+QStringList SketchController::selectedItems(bool active) const {
+  QStringList ids;
+  for (const SelectionItem& item : m_host.selection()) {
+    if (item.owner != m_uid) {
+      continue;
+    }
+    if (item.kind == SelectKind::SketchConstraint) {
+      const ConstraintData* k = m_model.constraint(item.name);
+      if (k != nullptr && k->active == active) {
+        ids << k->id;
+      }
+    } else if (item.kind == SelectKind::SketchDimension) {
+      const DimensionData* d = m_model.dimension(item.name);
+      if (d != nullptr && d->active == active) {
+        ids << d->id;
+      }
+    }
+  }
+  return ids;
+}
+
 // ---------------------------------------------------------------------------
 // Options
 
@@ -1283,13 +1365,19 @@ void SketchController::showDimensionTooltip(const QString& dimension, const QPoi
   }
   m_tooltipDimension = dimension;
   const DimensionData* d = dimension.isEmpty() ? nullptr : m_model.dimension(dimension);
-  if (d == nullptr) {
+  // An inactive constraint says why it is not applied (mitcad#721).
+  const ConstraintData* k = d != nullptr || dimension.isEmpty() ? nullptr : m_model.constraint(dimension);
+  const QString text = d != nullptr   ? m_overlay->dimensionTooltip(*d)
+                       : k != nullptr ? SketchOverlay::inactiveTooltip(k->active, k->inactiveReason)
+                                      : QString();
+  if (text.isEmpty()) {
     QToolTip::hideText();
     return;
   }
-  const QString text = m_overlay->dimensionTooltip(*d);
   QToolTip::showText(m_viewer.mapToGlobal(at.toPoint()), text, &m_viewer);
-  qDebug().noquote() << QStringLiteral("Dimension tooltip %1: %2").arg(dimension, text);
+  qDebug().noquote() << QStringLiteral("%1 tooltip %2: %3")
+                            .arg(d != nullptr ? QStringLiteral("Dimension") : QStringLiteral("Constraint"),
+                                 dimension, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -1830,7 +1918,9 @@ bool SketchController::viewerEvent(QEvent* event) {
       m_overlay->update();
     }
     const SketchOverlay::Hit under = m_overlay->hitTest(e->position());
-    showDimensionTooltip(under.kind == SketchOverlay::Hit::Kind::Dimension ? under.id : QString(), e->position());
+    const bool annotation =
+        under.kind == SketchOverlay::Hit::Kind::Dimension || under.kind == SketchOverlay::Hit::Kind::Constraint;
+    showDimensionTooltip(annotation ? under.id : QString(), e->position());
     return m_pressed;
   }
   case QEvent::MouseButtonPress: {

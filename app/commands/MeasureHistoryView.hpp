@@ -33,6 +33,14 @@ public:
     // panel shows), Keep Row clicked (the row clicked last).
     std::function<void()> keep;
     std::function<void(int number)> keepRow;
+    // Annotations (mitcad#702): Note… clicked (a leader note on the one
+    // pick the panel shows), Annotations… clicked (their window).
+    std::function<void()> note;
+    std::function<void()> annotations;
+    // Datum Label… and Frame… clicked (phase 2): a datum label or a feature
+    // control frame on a leader to that pick.
+    std::function<void()> datum;
+    std::function<void()> frame;
   };
 
   explicit MeasureHistoryView(const MeasureHistory& history, QWidget* parent = nullptr);
@@ -41,6 +49,11 @@ public:
   // model's, with a result): Keep is enabled; logs "Measure Keep enabled"
   // or "… disabled" when it changes, and the places again.
   void setKeepable(bool keepable);
+  // Whether the panel shows one pick of the model's, which a note can
+  // point at: Note… is enabled; and whether it is a feature (not a vertex
+  // or a datum point) a datum label or a frame can mark: Datum Label… and
+  // Frame… are enabled.
+  void setNoteable(bool noteable, bool feature);
   // The rows again from the history; logs them, and their places once laid
   // out.
   void refresh();
@@ -65,6 +78,10 @@ private:
   QPushButton* m_clear = nullptr;
   QPushButton* m_keep = nullptr;    // keeps the measurement shown (mitcad#649)
   QPushButton* m_keepRow = nullptr; // keeps the row clicked last
+  QPushButton* m_note = nullptr;    // a note on the pick shown (mitcad#702)
+  QPushButton* m_datum = nullptr;   // a datum label on it
+  QPushButton* m_frame = nullptr;   // a feature control frame on it
+  QPushButton* m_annotations = nullptr; // opens the Annotations window
   QStringList m_logged; // the places logged last
 };
 

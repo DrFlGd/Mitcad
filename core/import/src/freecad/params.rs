@@ -1448,11 +1448,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             if !close(s.value, s.mitcad) {
                 continue;
             }
-            for d in t
-                .dimensions
-                .iter_mut()
-                .chain(t.driven_dimensions.iter_mut())
-            {
+            for d in &mut t.dimensions {
                 if d["id"].as_str() == Some(s.dimension.as_str()) {
                     d["reference"] = json!(name);
                 }

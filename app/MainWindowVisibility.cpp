@@ -45,11 +45,11 @@ QString MainWindow::activeCommandName() const {
 }
 
 // "No components" counts neither the active component nor a root without
-// bodies of its own: a new design's empty Part1 is active under an empty
-// root, and its first sketch starts on the origin planes; so does a design
-// whose bodies are all the active component's. Another component, or the
-// root's bodies beside the active component, is where sketches usually
-// start instead (a component's sketch may attach there), and the
+// bodies of its own: a new design's empty Component1 is active under an
+// empty root, and its first sketch starts on the origin planes; so does a
+// design whose bodies are all the active component's. Another component,
+// or the root's bodies beside the active component, is where sketches
+// usually start instead (a component's sketch may attach there), and the
 // planes would only cover it; the Origin folder shows them on request.
 bool MainWindow::sketchShowsOrigin() const {
   for (const DocumentSnapshot::Component& component : m_snapshot.components) {
@@ -93,7 +93,8 @@ QString MainWindow::pickPlaneText() const {
 
 void MainWindow::updateModeBanner() {
   if (m_modeBanner != nullptr) {
-    m_modeBanner->setText(m_mode == Mode::PickPlane ? pickPlaneText() : QString());
+    // Create Sketch's plane, or an annotation's pick (mitcad#702).
+    m_modeBanner->setText(m_mode == Mode::PickPlane ? pickPlaneText() : annotationPickText());
   }
   // The origin planes startSketch offered in the browser (mitcad#694) go
   // with the pick: the sketch started, Esc, another document.

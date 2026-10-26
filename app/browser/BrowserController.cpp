@@ -129,14 +129,14 @@ BrowserController::BrowserController(DocumentHost& host, QWidget* window)
   follow(m_browser, &BrowserPanel::activateClicked, &BrowserController::activate);
   follow(m_browser, &BrowserPanel::renamed, &BrowserController::rename);
   follow(m_browser, &BrowserPanel::doubleClicked, &BrowserController::browserDoubleClicked);
-  follow(m_browser, &BrowserPanel::deleteRequested, &BrowserController::deleteNode);
+  follow(m_browser, &BrowserPanel::deleteRequested, &BrowserController::deleteKeyed);
   follow(m_browser, &BrowserPanel::contextMenuRequested, &BrowserController::browserMenu, true);
 
   follow(m_timeline, &TimelineWidget::featuresClicked, &BrowserController::featuresClicked);
   follow(m_timeline, &TimelineWidget::editRequested, &BrowserController::editFeature);
   follow(m_timeline, &TimelineWidget::contextMenuRequested, &BrowserController::timelineMenu, true);
   follow(m_timeline, &TimelineWidget::groupMenuRequested, &BrowserController::groupMenu, true);
-  follow(m_timeline, &TimelineWidget::deleteRequested, &BrowserController::deleteFeature);
+  follow(m_timeline, &TimelineWidget::deleteRequested, &BrowserController::deleteFeatureKeyed);
   follow(m_timeline, &TimelineWidget::renamed, &BrowserController::renameFeature);
   follow(m_timeline, &TimelineWidget::reorderRequested, &BrowserController::reorder);
   follow(m_timeline, &TimelineWidget::markerRequested, &BrowserController::setMarker);
@@ -209,6 +209,15 @@ void BrowserController::refresh(const DocumentSnapshot& snapshot) {
   }
   if (m_ownSettings && m_ownSettings->isVisible()) {
     m_ownSettings->refresh();
+  }
+  // A Save to or a library edit of the design shows in My Library
+  // (mitcad#704).
+  if (m_myLibrary && m_myLibrary->isVisible()) {
+    m_myLibrary->setProjectFolder(m_host.projectFolder());
+    m_myLibrary->refresh();
+  }
+  if (m_purgeVolumes && m_purgeVolumes->isVisible()) {
+    m_purgeVolumes->refresh(); // mitcad#705
   }
   if (m_find) {
     m_find->setSnapshot(m_snapshot);
@@ -402,7 +411,6 @@ bool BrowserController::visibilityInEveryMode(const BrowserNode& node) {
   case BrowserNode::Type::Bodies:
   case BrowserNode::Type::Sketches:
   case BrowserNode::Type::Construction:
-  case BrowserNode::Type::Measurement: // mitcad#649: also while Measure keeps one
     return true;
   default:
     return false;
@@ -469,12 +477,6 @@ void BrowserController::toggleVisibility(const BrowserNode& node) {
     done = m_host.runModelCommand(cmd("set_analysis_visible", {{QStringLiteral("name"), node.uid},
                                                                {QStringLiteral("visible"), show}}));
     break;
-  case BrowserNode::Type::Measurement:
-    // A measurement object's dimension over the view (mitcad#649).
-    commands.append(cmd("set_measurement_visible", {{QStringLiteral("name"), node.uid},
-                                                    {QStringLiteral("visible"), show}}));
-    label = (show ? tr("Show %1") : tr("Hide %1")).arg(node.name);
-    break;
   default:
     return;
   }
@@ -533,8 +535,8 @@ void BrowserController::rename(const BrowserNode& node, const QString& name) {
   case BrowserNode::Type::ContactSet:
     command = cmd("edit_contact_set", {{QStringLiteral("name"), node.uid}, {QStringLiteral("new_name"), name}});
     break;
-  case BrowserNode::Type::Measurement:
-    command = cmd("rename_measurement", {{QStringLiteral("name"), node.uid}, {QStringLiteral("new_name"), name}});
+  case BrowserNode::Type::Drawing: // mitcad#707
+    command = cmd("edit_drawing", {{QStringLiteral("drawing"), node.uid}, {QStringLiteral("name"), name}});
     break;
   default:
     return;
@@ -577,10 +579,12 @@ void BrowserController::browserDoubleClicked(const BrowserNode& node) {
     break;
   case BrowserNode::Type::Body:
   case BrowserNode::Type::Component:
-  case BrowserNode::Type::Measurement: // mitcad#649
     if (canChange()) {
       m_browser->startRename(node);
     }
+    break;
+  case BrowserNode::Type::Measurements: // the Annotations folder (mitcad#702)
+    m_host.openAnnotations();
     break;
   case BrowserNode::Type::FlatPattern:
     editFlatPattern(node.uid);
@@ -600,6 +604,9 @@ void BrowserController::browserDoubleClicked(const BrowserNode& node) {
   case BrowserNode::Type::ContactSet:
     m_host.editContactSet(node.uid);
     break;
+  case BrowserNode::Type::Drawing: // mitcad#707: its sheet over the view
+    m_host.openDrawing(node.uid);
+    break;
   default:
     break;
   }
@@ -609,6 +616,29 @@ void BrowserController::editFlatPattern(const QString& body) {
   if (canChange()) {
     m_host.startCommand(QStringLiteral("sheet.flat_pattern"), {SelectionItem{SelectKind::Body, body, QString(), QString()}},
                         nullptr);
+  }
+}
+
+bool BrowserController::keyDeletesModel() {
+  // While a drawing is open the Delete key is its views' (mitcad#707).
+  if (!m_host.isDrawingOpen()) {
+    return true;
+  }
+  m_host.showStatus(tr("The Delete key deletes the drawing's views while it is open: close the drawing to "
+                       "delete model items."),
+                    true);
+  return false;
+}
+
+void BrowserController::deleteKeyed(const BrowserNode& node) {
+  if (node.type == BrowserNode::Type::Drawing || keyDeletesModel()) {
+    deleteNode(node);
+  }
+}
+
+void BrowserController::deleteFeatureKeyed(const QString& uid) {
+  if (keyDeletesModel()) {
+    deleteFeature(uid);
   }
 }
 
@@ -659,9 +689,9 @@ void BrowserController::deleteNode(const BrowserNode& node) {
       qDebug().noquote() << QStringLiteral("Deleted contact set %1").arg(node.name);
     }
     break;
-  case BrowserNode::Type::Measurement:
-    if (canChange() && m_host.runModelCommand(cmd("delete_measurement", {{QStringLiteral("name"), node.uid}}))) {
-      qDebug().noquote() << QStringLiteral("Deleted measurement %1").arg(node.name);
+  case BrowserNode::Type::Drawing: // mitcad#707
+    if (canChange() && m_host.runModelCommand(cmd("delete_drawing", {{QStringLiteral("drawing"), node.uid}}))) {
+      qDebug().noquote() << QStringLiteral("Deleted drawing %1").arg(node.name);
     }
     break;
   default:
@@ -867,87 +897,16 @@ void BrowserController::changeUnits() {
   }
 }
 
-void BrowserController::chooseMeasurementColor(const BrowserNode& node) {
-  if (!canChange()) {
-    return;
-  }
-  // The six colours new measurements take in turn (the model's
-  // MEASUREMENT_COLORS), red, black and white, then any other.
-  static const std::pair<const char*, const char*> colours[] = {
-      {QT_TR_NOOP("Orange"), "#d9480f"}, {QT_TR_NOOP("Blue"), "#1971c2"},  {QT_TR_NOOP("Green"), "#2f9e44"},
-      {QT_TR_NOOP("Magenta"), "#c2255c"}, {QT_TR_NOOP("Violet"), "#7048e8"}, {QT_TR_NOOP("Amber"), "#e67700"},
-      {QT_TR_NOOP("Red"), "#e03131"},    {QT_TR_NOOP("Black"), "#212529"},  {QT_TR_NOOP("White"), "#f8f9fa"}};
-  const QString current = m_snapshot.measurement(node.uid).value(QStringLiteral("color")).toString();
-  QStringList names;
-  int at = -1;
-  for (const auto& [name, hex] : colours) {
-    if (QLatin1String(hex) == current) {
-      at = static_cast<int>(names.size());
-    }
-    names << tr(name);
-  }
-  names << tr("Other…");
-  qDebug().noquote() << QStringLiteral("Measurement colour dialog opened: %1 %2 (%3)")
-                            .arg(node.name, current, names.join(QStringLiteral(" | ")));
-  bool ok = false;
-  const QString chosen = dialogItem(m_window, tr("Measurement Colour"), tr("Colour of %1:").arg(node.name), names,
-                                    at >= 0 ? at : static_cast<int>(names.size()) - 1, &ok);
-  if (!ok) {
-    return;
-  }
-  QString hex;
-  const qsizetype index = names.indexOf(chosen);
-  if (index >= 0 && index < static_cast<qsizetype>(std::size(colours))) {
-    hex = QLatin1String(colours[index].second);
-  } else {
-    const QColor picked = QColorDialog::getColor(QColor(current), m_window, tr("Colour of %1").arg(node.name));
-    if (!picked.isValid()) {
-      return;
-    }
-    hex = picked.name();
-  }
-  if (hex != current && m_host.runModelCommand(cmd("set_measurement_color", {{QStringLiteral("name"), node.uid},
-                                                                           {QStringLiteral("color"), hex}}))) {
-    qDebug().noquote() << QStringLiteral("Measurement %1 colour %2").arg(node.name, hex);
-  }
-}
-
-void BrowserController::chooseMeasurementKind(const BrowserNode& node) {
-  if (!canChange()) {
-    return;
-  }
-  static const std::pair<const char*, const char*> kinds[] = {
-      {"distance", QT_TR_NOOP("Distance")},           {"angle", QT_TR_NOOP("Angle")},
-      {"offset", QT_TR_NOOP("Offset")},               {"axis_distance", QT_TR_NOOP("Axis distance")},
-      {"center_distance", QT_TR_NOOP("Centre distance")}, {"radius", QT_TR_NOOP("Radius")},
-      {"diameter", QT_TR_NOOP("Diameter")}};
-  const QJsonObject measurement = m_snapshot.measurement(node.uid);
-  const QJsonObject values = measurement.value(QStringLiteral("values")).toObject();
-  const QString current = measurement.value(QStringLiteral("kind")).toString();
-  QStringList keys;
-  QStringList names;
-  for (const auto& [key, name] : kinds) {
-    if (values.contains(QLatin1String(key))) {
-      keys << QLatin1String(key);
-      names << tr(name);
+QStringList BrowserController::menuBodies(const BrowserNode& node) const {
+  // The selection shown in the browser: a right click on a row that was not
+  // selected has selected it alone before the menu opens.
+  QStringList bodies;
+  for (const SelectionItem& item : m_shownItems) {
+    if (item.kind == SelectKind::Body && !item.owner.isEmpty() && !bodies.contains(item.owner)) {
+      bodies << item.owner;
     }
   }
-  if (keys.isEmpty()) {
-    return;
-  }
-  qDebug().noquote() << QStringLiteral("Measurement kind dialog opened: %1 %2 (%3)")
-                            .arg(node.name, current, keys.join(QStringLiteral(" | ")));
-  bool ok = false;
-  const QString chosen = dialogItem(m_window, tr("Measurement Kind"), tr("%1 shows:").arg(node.name), names,
-                                    std::max(0, static_cast<int>(keys.indexOf(current))), &ok);
-  const qsizetype index = names.indexOf(chosen);
-  if (!ok || index < 0 || keys[index] == current) {
-    return;
-  }
-  if (m_host.runModelCommand(cmd("set_measurement_kind", {{QStringLiteral("name"), node.uid},
-                                                         {QStringLiteral("kind"), keys[index]}}))) {
-    qDebug().noquote() << QStringLiteral("Measurement %1 kind %2").arg(node.name, keys[index]);
-  }
+  return bodies.contains(node.uid) ? bodies : QStringList{node.uid};
 }
 
 void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
@@ -993,6 +952,8 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
       menu.add(QStringLiteral("radio-on"), tr("Activate Component"), [this, node] { activate(node); });
     }
     menu.add(QStringLiteral("component"), tr("New Component"), [this, node] { newComponent(node); });
+    // A drawing of the component, kept in its Drawings folder (mitcad#707).
+    menu.add(QStringLiteral("drawing"), tr("Create Drawing"), [this, node] { m_host.createDrawing(node.uid); });
     // Its modelled bodies with their features into a component of their
     // own (mitcad#171).
     for (const DocumentSnapshot::Component& c : std::as_const(m_snapshot.components)) {
@@ -1078,11 +1039,17 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
                        {QStringLiteral("source_occurrence"), node.occurrence},
                        {QStringLiteral("bodies"), QJsonArray{node.uid}}});
     });
-    menu.add(QStringLiteral("appearance"), tr("Appearance…"), [this, node] {
-      openAppearances({SelectionItem{SelectKind::Body, node.uid, QString(), QString()}});
+    // For the selected bodies when the row is one of them (mitcad#703).
+    const QStringList bodies = menuBodies(node);
+    menu.add(QStringLiteral("appearance"), tr("Appearance…"), [this, bodies] {
+      Selection targets;
+      for (const QString& uid : bodies) {
+        targets.append(SelectionItem{SelectKind::Body, uid, QString(), QString()});
+      }
+      openAppearances(targets);
     });
-    // Its material: density, appearance and filament (mitcad#640).
-    menu.add(QStringLiteral("material"), tr("Material…"), [this, node] { openMaterial({node.uid}); });
+    // Their material: density, appearance and filament (mitcad#640).
+    menu.add(QStringLiteral("material"), tr("Material…"), [this, bodies] { openMaterial(bodies); });
     // Its properties, its occurrence's and its component's (mitcad#496).
     menu.add(QStringLiteral("parameters"), tr("Property Sets…"),
              [this, node] { openPropertySets({node.uid, node.occurrence, QString()}); });
@@ -1306,21 +1273,24 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.separator();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
     break;
-  // Measurement objects (mitcad#649).
+  // Annotations (mitcad#702): the window where they are listed and
+  // edited, and Measure, which keeps new ones.
   case BrowserNode::Type::Measurements:
+    menu.add(QStringLiteral("measure"), tr("Annotations…"), [this] { m_host.openAnnotations(); });
     menu.add(QStringLiteral("measure"), tr("Measure"), [this] {
       if (canChange()) {
         m_host.startCommand(QStringLiteral("inspect.measure"), {}, nullptr);
       }
     });
     break;
-  case BrowserNode::Type::Measurement:
-    menu.add(QStringLiteral("appearance"), tr("Colour…"), [this, node] { chooseMeasurementColor(node); });
-    if (m_snapshot.measurement(node.uid).value(QStringLiteral("values")).toObject().size() > 1) {
-      menu.add(QStringLiteral("measure"), tr("Kind…"), [this, node] { chooseMeasurementKind(node); });
-    }
+  // Drawings kept in the design (mitcad#707): a new one in the folder's
+  // component; a drawing opened over the view.
+  case BrowserNode::Type::Drawings:
+    menu.add(QStringLiteral("drawing"), tr("Create Drawing"), [this, node] { m_host.createDrawing(node.component); });
+    break;
+  case BrowserNode::Type::Drawing:
+    menu.add(QStringLiteral("drawing"), tr("Open"), [this, node] { m_host.openDrawing(node.uid); });
     menu.separator();
-    visibility();
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
     break;
@@ -2062,6 +2032,7 @@ void BrowserController::openPropertySets(const PropertyTarget& target) {
 void BrowserController::openProfiles(const QString& kind, const QString& key) {
   if (!m_profiles) {
     m_profiles = new ProfilesDialog(m_host, m_window);
+    m_profiles->openMyLibrary = [this] { openMyLibrary(); };
   }
   showDialog(m_profiles);
   if (!m_profiles->testAttribute(Qt::WA_DontShowOnScreen)) {
@@ -2070,6 +2041,33 @@ void BrowserController::openProfiles(const QString& kind, const QString& key) {
   }
   qDebug().noquote() << QStringLiteral("Printers and processes opened");
   m_profiles->showItem(kind, key);
+}
+
+void BrowserController::openMyLibrary() {
+  if (!m_myLibrary) {
+    m_myLibrary = new MyLibraryDialog(m_window);
+    // The design's windows read the libraries again (mitcad#704); a
+    // changed item the design uses is asked about there, as another
+    // design's change.
+    connect(m_myLibrary, &MyLibraryDialog::libraryChanged, this, [this] {
+      if (m_materials && m_materials->isVisible()) {
+        m_materials->refresh();
+      }
+      if (m_profiles && m_profiles->isVisible()) {
+        m_profiles->refresh();
+      }
+      m_host.commandInputsChanged();
+    });
+  }
+  m_myLibrary->setProjectFolder(m_host.projectFolder());
+  m_myLibrary->refresh();
+  showDialog(m_myLibrary);
+  if (!m_myLibrary->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_myLibrary->raise();
+    m_myLibrary->activateWindow();
+  }
+  qDebug().noquote() << QStringLiteral("My Library opened%1")
+                            .arg(m_host.projectFolder().isEmpty() ? QString() : QStringLiteral(" in a project"));
 }
 
 void BrowserController::openOwnSettings(const QString& owner, const QString& name) {
@@ -2082,6 +2080,18 @@ void BrowserController::openOwnSettings(const QString& owner, const QString& nam
     m_ownSettings->activateWindow();
   }
   m_ownSettings->setOwner(owner, name);
+}
+
+void BrowserController::openPurgeVolumes(const QStringList& bodies) {
+  if (!m_purgeVolumes) {
+    m_purgeVolumes = new PurgeVolumesDialog(m_host, m_window);
+  }
+  showDialog(m_purgeVolumes);
+  if (!m_purgeVolumes->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_purgeVolumes->raise();
+    m_purgeVolumes->activateWindow();
+  }
+  m_purgeVolumes->setBodies(bodies);
 }
 
 void BrowserController::openPolicy(const QString& component) {
@@ -2112,6 +2122,7 @@ void BrowserController::openMaterial(const QStringList& bodies, const QString& c
   if (!m_materials) {
     m_materials = new MaterialsDialog(m_host, m_window);
     m_materials->editAppearances = [this] { openAppearances({}); };
+    m_materials->openMyLibrary = [this] { openMyLibrary(); };
   }
   // The targets by name: Assign to Body1, Assign to Arm.
   QStringList names;

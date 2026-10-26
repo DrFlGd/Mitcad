@@ -93,6 +93,14 @@ struct RecoverableSession;
 namespace sketch {
 class SketchPalette;
 }
+namespace mcp {
+class AgentIndicator;
+struct ConnectedAgent;
+} // namespace mcp
+
+namespace drawings {
+class DrawingWorkspace;
+}
 
 // The model is driven with JSON commands and queries (see
 // core/model/src/api/commands.md); geometry comes as Shape handles.
@@ -134,10 +142,15 @@ public:
   // mcp::Refusal (busy, with when to retry) or another std::exception with
   // the reason when it is refused.
   QJsonObject mcpTool(const QString& name, const QJsonObject& arguments);
-  // The agents connected through MCP (initialized sessions): the project
-  // indicator lists their display labels and its menu offers Disconnect Agent,
-  // which calls `disconnectAll`.
-  void setMcpAgents(const QStringList& clients, std::function<void()> disconnectAll);
+  // The agents connected through MCP (initialized sessions): the agent
+  // indicator (mitcad#710) names them and its menu disconnects them all,
+  // Connect AI Assistant those of the assistant chosen (mitcad#706), through
+  // `disconnect` with their ids (ConnectedAgent::id).
+  void setMcpAgents(const QList<mcp::ConnectedAgent>& agents, std::function<void(const QStringList& ids)> disconnect);
+  // The live MCP listener started (its instance id and port), or did not
+  // and why: the agent indicator says so.
+  void setMcpListener(const QString& instance, int port);
+  void setMcpUnavailable(const QString& reason);
   const QStringList& mcpAgentNames() const { return m_mcpAgentNames; }
 
   // Sets a parameter's value (mm or rad, written in its unit), as typed in
@@ -271,6 +284,12 @@ public:
   QString documentFolder() const override;
   QString projectFolder() const override { return m_project.isProject() ? m_project.root : QString(); }
   void exportFlatPattern(const QString& body) override;
+  // Drawings kept in the design (mitcad#707; drawings/MainWindowDrawings.cpp):
+  // one opened over the 3D view, a new one in a component's Drawings folder
+  // (the root's: "C0") opened at once.
+  void openDrawing(const QString& uid) override;
+  void createDrawing(const QString& component) override;
+  bool isDrawingOpen() const override { return drawingOpen(); }
   // Light bulbs in every mode (mitcad#295; MainWindowVisibility.cpp).
   bool runVisibilityCommands(const QJsonArray& commands, const QString& label) override;
   QString activeCommandName() const override;
@@ -282,6 +301,8 @@ public:
   // MainWindowParameterEdits.cpp).
   bool runParameterCommand(const QJsonObject& command) override;
   ParameterEditScope parameterScope() const override;
+  // Annotations (mitcad#702; MainWindowAnnotations.cpp).
+  void openAnnotations() override;
 
 protected:
   void closeEvent(QCloseEvent* event) override;
@@ -330,7 +351,7 @@ private:
   int mcpUndoTo(int depth);
   // The document as a command result compares it (mcp_snapshot_queries).
   QJsonObject mcpSnapshot() const;
-  // model_export into a folder agents may use (mitcad#689).
+  // model_export into a folder for designs (mitcad#689).
   QJsonObject mcpExport(const QJsonObject& arguments);
   void mcpLabelAgentChange(int depthBefore);
   QJsonObject mcpSave(const QJsonObject& arguments);
@@ -1008,8 +1029,25 @@ private:
   // again with them (`options`: those it ran with).
   void offerDeviations(const QString& path, const QJsonObject& result, QJsonObject options);
   void exportFile();
-  // Export Drawing (mitcad#471; files/MainWindowDrawing.cpp).
+  // Export Drawing (mitcad#471; files/MainWindowDrawing.cpp): the drawing
+  // its dialog lays out is kept in the design and written (mitcad#707).
   void exportDrawing();
+  // Drawings kept in the design (mitcad#707; drawings/MainWindowDrawings.cpp):
+  // the workspace over the 3D view, made when first needed; the design's
+  // name for title blocks; whether one is open; the open drawing follows
+  // the model (refreshScene) and goes for a command of the 3D view.
+  drawings::DrawingWorkspace* drawingWorkspace();
+  QString drawingTitle() const;
+  bool drawingOpen() const;
+  // The drawing tools and Close Drawing as commands (drawing.*).
+  void registerDrawingCommands();
+  // Esc (cancel) while a drawing is open and the keyboard is with no other
+  // control: the drawing's Esc; false when it is not the drawing's.
+  bool escapeDrawing();
+  void followDrawing();
+  void leaveDrawing();
+  drawings::DrawingWorkspace* m_drawingWorkspace = nullptr;
+  QString m_drawingDesign; // the design the open drawing is of (designId)
   // 3D Print (mitcad#13, mitcad#234; files/MainWindowPrint.cpp): a panel of
   // the bodies to send, picked in the view, and the format, refinement and
   // slicer; OK writes the files and starts the slicer (sendToSlicer: false
@@ -1080,8 +1118,9 @@ private:
   bool m_mcpRequestActive = false;
   int m_mcpAgents = 0;                     // connected MCP clients (mitcad#265)
   QStringList m_mcpAgentNames;             // client-supplied display labels, not identities
-  QAction* m_mcpDisconnect = nullptr;      // the indicator's Disconnect Agent
-  std::function<void()> m_mcpDisconnectAll;
+  mcp::AgentIndicator* m_agentIndicator = nullptr; // beside the project indicator (mitcad#710)
+  std::function<void(const QStringList& ids)> m_mcpDisconnect; // ends these agents' connections
+  void disconnectAllMcpAgents();
   bool m_mcpSketchEdited = false;          // an agent changed the sketch being edited
   rust::Box<Document>& m_document = m_documentSession->state().document;
   ModelWorker* m_worker = &m_documentSession->worker();
@@ -1209,6 +1248,9 @@ private:
   SelectionItem m_jointHover;
   QString m_loggedJointHighlight = QStringLiteral("none");
   QString m_loggedJointCard;
+  // A body's print bed face shown while a face's context menu is open
+  // (mitcad#731; invalid: none).
+  SelectionItem m_printBedShown;
   mutable QString m_loggedMoveFaceCard; // the Move Face card's line last logged (mitcad#531)
   bool m_originVisible = false; // an input takes construction geometry
   bool m_constructionHidden = false; // an input hides it (mitcad#394)
@@ -1382,12 +1424,13 @@ private:
   MeasureHistory m_measureHistory;
   QPointer<QWidget> m_measureHistoryView;
 
-  // Measurement objects (mitcad#649, MainWindowMeasurements.cpp): Keep in
-  // the Measure panel (the measurement it shows) and on a row of its
-  // history adds its picks as a measurement object (add_measurement, a
-  // change outside the panel's undo range, CommandSession::runVisibility);
-  // the shown ones are drawn over the view after each refresh, and one
-  // kept is logged once the model lists it ("Measurement kept: <name>").
+  // Annotations (mitcad#649, mitcad#702; MainWindowMeasurements.cpp): Keep
+  // in the Measure panel (the measurement it shows) and on a row of its
+  // history adds its picks as an annotation in the plane the view suggests
+  // (add_annotation, a change outside the panel's undo range,
+  // CommandSession::runVisibility); the shown ones are drawn in the view
+  // after each refresh, and one kept is logged once the model lists it
+  // ("Annotation kept: <name>").
   void followMeasurements();
   // The picks of a measurement's inputs ("a" and "b", or "body_a" and
   // "body_b") as add_measurement takes them; false (with the reason in
@@ -1399,7 +1442,86 @@ private:
   QHash<QString, Selection> m_measureShown; // the picks of the measurement the panel shows
   QStringList m_measurementNames;           // the measurements' names at the last refresh
   bool m_measurementKept = false;           // a Keep waits for its measurement to be listed
-  QString m_loggedMeasurements;             // "Measurements: …" as last logged
+  QString m_loggedMeasurements;             // "Annotations: …" as last logged
+
+  // Annotations (mitcad#702, MainWindowAnnotations.cpp): the Annotations
+  // window, the editor of one, Note… in the Measure panel, and what a
+  // click, a drag, a double-click and a right click on one in the view do.
+  // Each change is one undo step outside a panel's undo range, as a light
+  // bulb's (runVisibilityCommands).
+  void connectAnnotations();
+  bool runAnnotationCommand(const QJsonObject& command, const QString& what);
+  void editAnnotationNamed(const QString& name);
+  void annotationMenu(const QString& name, const QPoint& global);
+  void annotationMoved(const QString& name, bool line, double alongX, double alongY);
+  void keepNote(const QHash<QString, Selection>& inputs);
+  // The view as add_annotation's `view` takes it: the direction it looks
+  // along, its up and a pixel's size (mm) at its centre.
+  QJsonObject annotationView() const;
+  // The picks the Measure panel shows: one of the model's, which a note
+  // can point at.
+  static bool notePick(const QHash<QString, Selection>& inputs, QJsonObject& pick, QJsonValue& at);
+  // Whether the one pick shown is a feature a datum label or a frame can
+  // mark: not a vertex or a datum point.
+  static bool markablePick(const QHash<QString, Selection>& inputs);
+  QPointer<QDialog> m_annotationsWindow;
+  // A pick as add_annotation and edit_annotation take it (the measure
+  // query's selection as fields, with its occurrence); null for what the
+  // model does not measure (sketch curves and points).
+  static QJsonValue measurementPick(const SelectionItem& item);
+
+  // Datums and feature control frames (mitcad#702 phase 2;
+  // MainWindowMeasurements.cpp, MainWindowAnnotations.cpp): Datum… and Frame… in the Measure panel put
+  // one on a leader to the one pick shown (`kind` "datum" or "frame"); Add
+  // Frame… in the Annotations window one under a dimension.
+  void keepLeader(const QHash<QString, Selection>& inputs, const QString& kind);
+  void addFrameUnder(const QString& dimension);
+  QStringList datumLetters() const;              // the design's datum labels' letters
+  QJsonArray geometricCharacteristics() const;    // the model's geometric_characteristics
+  // The annotations with the hidden ones measured too (mitcad#716: the
+  // snapshot's leave them unmeasured), for the Annotations window and the
+  // editor.
+  QJsonArray measuredAnnotations() const;
+  // An annotation's pick (its `a`, `b` or plane's `pick`) as the view's
+  // item; none when the model's pick names nothing the view has.
+  std::optional<SelectionItem> annotationPickItem(const QJsonValue& pick) const;
+  QString describeAnnotationPick(const QJsonValue& pick) const;
+  // The annotations highlighted (a row selected in the Annotations window,
+  // one clicked in the view): drawn bolder, and their picks highlighted in
+  // their colour (updateIdleView), logged as "Annotation picks highlighted:
+  // <name>: <pick>; …".
+  void highlightAnnotations(const QStringList& names);
+  void addAnnotationHighlights(std::vector<HighlightDisplay>& highlights);
+  QString m_loggedAnnotationPicks;
+  // Picking an annotation's pick or plane again in the view (the editor's
+  // Pick Again… and Pick…): the next click on a face, edge, vertex or datum
+  // (a planar face or a datum plane for the plane) is that pick, one undo
+  // step of edit_annotation, and the editor opens again; Esc cancels and
+  // opens it again. Only outside commands and sketches. A frame taken from
+  // under its dimension picks its `a` with `on: null` (`with`) in the same
+  // edit.
+  struct AnnotationPick {
+    QString name;
+    QString field; // a, b or plane
+    QJsonObject with; // fields sent together with the pick
+  };
+  std::optional<AnnotationPick> m_annotationPick;
+  void startAnnotationPick(const QString& name, const QString& field, const QJsonObject& with = {});
+  // The click of the pick (true: the pick took it).
+  bool annotationPicked(const Selection& items);
+  bool cancelAnnotationPick();
+  // Ends it without opening the editor again: undo, redo, a command, a
+  // sketch or Create Sketch starting, another document.
+  void endAnnotationPick();
+  // After a refresh: ends it when its annotation is no longer there.
+  void followAnnotationPick();
+  // Takes the annotations' highlight away, and the window's rows with it:
+  // the selection changed in the view, another document.
+  void dropAnnotationHighlight();
+  // The banner's text while an annotation's pick is waited for.
+  QString annotationPickText() const;
+  // The view's filter while it is.
+  void applyAnnotationPickFilter();
 };
 
 } // namespace mitcad

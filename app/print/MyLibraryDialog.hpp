@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#include <QDialog>
+#include <QString>
+
+#include "PrintImportSummary.hpp"
+#include "PrintItemsHost.hpp"
+
+class QComboBox;
+class QLabel;
+class QPushButton;
+class QTabWidget;
+
+namespace mitcad {
+
+class MaterialsPanel;
+class ProfilesPanel;
+
+// My Library (mitcad#704): the user's own materials, printers and
+// processes, managed without a design. Tools › My Library… and My
+// Library… of the Materials and Printers and Processes windows open it; a
+// non-modal window.
+//
+// Tabs Materials, Printers and Processes, each the panel of the design's
+// window (MaterialsPanel, ProfilesPanel) on the library: its items, then
+// the built-in ones under Built-in; New, Duplicate (also of a built-in
+// one), Delete under the list, the name and the values edited in the same
+// editor. In a project a place switch at the top, My library or This
+// project's library. Import… beside it reads a slicer's project or
+// preset into the library (`import_print_profile` with `into`), its line
+// and Details… after it.
+//
+// It works through a model of its own (LibraryItemsHost): the open
+// design does not change, and learns of the library's changes as of
+// another design's ("changed in another design", asked once).
+class MyLibraryDialog : public QDialog {
+  Q_OBJECT
+
+public:
+  explicit MyLibraryDialog(QWidget* parent = nullptr);
+  ~MyLibraryDialog() override;
+
+  // The open design's project (its library the second place); empty
+  // outside one.
+  void setProjectFolder(const QString& folder);
+  // Shows the libraries' items as they are now.
+  void refresh();
+
+signals:
+  // The window closed after it changed a library: the design's windows
+  // read the libraries again.
+  void libraryChanged();
+
+protected:
+  void showEvent(QShowEvent* event) override;
+  void hideEvent(QHideEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
+
+private:
+  // The place shown: `user` or `project`.
+  QString place() const;
+  void placeChosen();
+  void importFromSlicer();
+  void scheduleLogPlaces();
+  void logPlaces();
+
+  LibraryItemsHost m_host;
+  QComboBox* m_place = nullptr;
+  QPushButton* m_import = nullptr;
+  QLabel* m_importLine = nullptr;
+  QPushButton* m_details = nullptr;
+  QTabWidget* m_tabs = nullptr;
+  MaterialsPanel* m_materials = nullptr;
+  ProfilesPanel* m_printers = nullptr;
+  ProfilesPanel* m_processes = nullptr;
+  PrintImportSummary m_summary;
+  bool m_changed = false;
+  QString m_loggedPlaces;
+};
+
+} // namespace mitcad

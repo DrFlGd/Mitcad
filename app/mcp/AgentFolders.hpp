@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// The folders an agent connected through live MCP may save designs to and
-// open them from (mitcad#402): live mode's equivalent of headless mode's
-// --workspace. None by default: the user adds them in Preferences > Agents
-// (the setting mcp/folders), or for one run with --mcp-folder DIR. A path
+// The folders for designs, which an agent connected through live MCP saves
+// designs to and opens them from (mitcad#402): live mode's equivalent of headless mode's
+// --workspace. None by default: the user adds them in Preferences > AI
+// Assistants (the setting mcp/folders), or for one run with --mcp-folder DIR. A path
 // is inside one when its folder, with symbolic links resolved, is that
 // folder or below it; '..' is refused, and a relative path is relative to
 // the first folder.
@@ -14,7 +14,6 @@
 #include <QStringList>
 #include <QWidget>
 
-class QLineEdit;
 class QListWidget;
 class QPushButton;
 
@@ -48,15 +47,14 @@ using AgentPreferencesBase = QWidget;
 using AgentPreferencesBase = QGroupBox;
 #endif
 
-// The Agents group of Preferences: the list of allowed folders.
+// The AI Assistants group of Preferences: the list of allowed folders.
 class AgentPreferencesBox : public AgentPreferencesBase {
   Q_OBJECT
 
 public:
   explicit AgentPreferencesBox(QWidget* parent = nullptr);
 
-  // The folders as the box shows them (with one typed and not added yet),
-  // to save when Preferences is accepted.
+  // The folders as the box shows them, to save when Preferences is accepted.
   QStringList chosen() const;
   void includeSavedFolders();
 
@@ -68,7 +66,6 @@ private:
   void addFolder(const QString& folder);
 
   QListWidget* m_folders = nullptr;
-  QLineEdit* m_typed = nullptr;
   QPushButton* m_remove = nullptr;
 };
 

@@ -430,6 +430,11 @@ record! {
         /// A construction plane's or point's stored definition code (the
         /// `u32` after its root part and seven bytes; mitcad#186).
         "datum_code" => datum_code: u32,
+        /// The result number of the item's last operation where a sub-item
+        /// makes one of its own after the item's (mitcad#719: a tapped
+        /// hole's modelled thread, which cuts the thread into the bore of
+        /// the hole's own operation).
+        "last_result_no" => last_result_no: i32,
     }
 }
 

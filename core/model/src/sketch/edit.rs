@@ -165,7 +165,7 @@ impl<'a> SketchEdit<'a> {
 
     pub fn add_constraint(&mut self, kind: ConstraintKind) -> ConstraintUid {
         let id = self.constraint_id();
-        self.def.constraints.push(Constraint { id, kind });
+        self.def.constraints.push(Constraint::new(id, kind));
         self.report.constraints.push(id);
         id
     }
@@ -197,13 +197,7 @@ impl<'a> SketchEdit<'a> {
         comment: Option<&str>,
     ) -> Result<ConstraintUid, String> {
         let id = self.constraint_id();
-        let mut dimension: Dimension<ParamId> = Dimension {
-            id,
-            kind,
-            value: None,
-            reference: None,
-            text: None,
-        };
+        let mut dimension: Dimension<ParamId> = Dimension::new(id, kind, None);
         if !driven {
             let measured;
             let value = match value {

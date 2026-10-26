@@ -17,7 +17,7 @@
 #      starts as a roof on them (the kind and the walls from the selection),
 #      a gable roof previewed with its rafters and ridge board, and placed.
 #      The next Floor / Roof start is a roof again (the kind used last).
-#      Each frame a component of its own in Part1 (mitcad#522): Part1
+#      Each frame a component of its own in Component1 (mitcad#522): Component1
 #      holds none of their joints, the roof its nails'; Timber Frame on a
 #      plate of Wall 1 lays it out again in the same component; the cut
 #      list by frame. The roof with ring nails (the owner's case,
@@ -48,7 +48,7 @@ choose_in_picker() {
 }
 
 ui_start_display
-# A new design (mitcad#394): Part1 active.
+# A new design (mitcad#394): Component1 active.
 ui_start_app --no-native-dialogs
 
 echo "--- 1. Floor / Roof: a floor"
@@ -102,10 +102,10 @@ expect_inspect Wall "frame wall Wall 1, wall 3600 x 2400 mm" "fasteners no" "a w
 ui_mark
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed frame Wall 1 (wall, lead C" "Wall 1 placed" 60
-# Each frame a component of its own in Part1 (mitcad#522).
+# Each frame a component of its own in Component1 (mitcad#522).
 ui_expect_new "Frame component Wall 1 (C" "Wall 1 a component of its own (mitcad#522)"
 WALL1C=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | sed -n 's/^Frame component Wall 1 (\(C[0-9]*\)) in .*/\1/p' | tail -1)
-ui_expect_new "Joints by component: Part1 0" "no joint of it in Part1"
+ui_expect_new "Joints by component: Component1 0" "no joint of it in Component1"
 # Wall 1's plates: the largest bodies made with it (both 3600 long).
 PLATES1=$(largest_bodies)
 STUDS1=$(stud_bodies)
@@ -143,8 +143,8 @@ expect_inspect "Timber Frame" "frame Wall 1 laid out again: " "the studs at 400"
 ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Timber frame Wall 1: " "Wall 1 laid out again" 60
-ui_expect_new "Frame component Wall 1 ($WALL1C) in Part1" "in its own component, the same one"
-ui_expect_new "Joints by component: Part1 0" "still no joint in Part1"
+ui_expect_new "Frame component Wall 1 ($WALL1C) in Component1" "in its own component, the same one"
+ui_expect_new "Joints by component: Component1 0" "still no joint in Component1"
 ui_step "close Timber Frame (Escape)"      ui_key Escape
 # Where a click picks a face of each plate: Offset Face's pick places.
 ui_step "fit (F6)"                         ui_key F6
@@ -189,7 +189,7 @@ line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Placed frame Roof 1 " | tail
 fastened=$(sed -n 's/.*member(s), \([0-9]*\) junction(s) fastened$/\1/p' <<< "$line")
 [ "${fastened:-0}" -gt 0 ] || ui_fail "no junction of the roof fastened: $line"
 ui_expect_new "Frame component Roof 1 (C" "Roof 1 a component of its own (mitcad#522)"
-ui_expect_new "Joints by component: Part1 0, " "Part1 holds no joint, the roof its nails' joints"
+ui_expect_new "Joints by component: Component1 0, " "Component1 holds no joint, the roof its nails' joints"
 joints=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Joints by component: " | tail -1)
 [[ $joints == *"Roof 1 $((2 * fastened))"* ]] || ui_fail "the roof's joints not in Roof 1: $joints"
 echo "ok   $joints"

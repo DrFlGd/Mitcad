@@ -96,6 +96,8 @@ pub fn drawing(sheet: &Sheet) -> Drawing {
                         );
                     }
                 }
+                // A DXF drawing of lines has no shading.
+                Item::Shade { .. } => {}
                 Item::Text {
                     at,
                     height,

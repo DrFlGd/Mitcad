@@ -7,7 +7,7 @@
 # slot 5, a corner block, a panel, a rail, a carriage and a slider; no supplier's
 # files), fetched from a local git repository:
 #   1. The BUILD tab beside SOLID, its groups.
-#   2. A new design, Part1 active (mitcad#394): Profile adds to the root
+#   2. A new design, Component1 active (mitcad#394): Profile adds to the root
 #      without activating it, no policy message; the panel starts with the
 #      part, its length (the stock length) and the X / Y / Z buttons, the
 #      view's hint; the first profile by a pick on the root's XY plane,
@@ -444,7 +444,7 @@ no_policy_message() {
 }
 
 ui_start_display
-# A new design (mitcad#394): Part1 active, the root with the Assembly policy.
+# A new design (mitcad#394): Component1 active, the root with the Assembly policy.
 ui_start_app --no-native-dialogs
 
 echo "--- 1. The BUILD tab"
@@ -454,15 +454,15 @@ ui_step "the BUILD tab"                    ui_click_logged "Ribbon tab BUILD"
 ui_expect_new "Ribbon BUILD/PROFILE at" "its PROFILE group"
 ui_expect_new "Ribbon BUILD/OUTPUT at" "its OUTPUT group"
 
-echo "--- 2. The first profiles of a new design, Part1 active"
+echo "--- 2. The first profiles of a new design, Component1 active"
 ui_mark
 ui_step "Profile (command search)"         ui_command "Profile"
 ui_expect_new "Command Profile started" "Profile started"
 ui_expect_new "BUILD parts profile: 1 (0 in the design)" "the picker lists the library's profile"
-ui_expect_new "BUILD profile adds to Part1 (a ground placement)" "BUILD adds to the active Part1 (Hybrid, mitcad#421)"
+ui_expect_new "BUILD profile adds to Component1 (a ground placement)" "BUILD adds to the active Component1 (Hybrid, mitcad#421)"
 ui_expect_new "View hint Profile: Click a plane or a face, or press Enter" "the view's hint for the first part"
-ui_expect_new "Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1" \
-  "at the origin with its stock length, adding to Part1"
+ui_expect_new "Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Component1" \
+  "at the origin with its stock length, adding to Component1"
 expect_row axis=z shown "the Direction's X, Y and Z buttons"
 ui_expect_new "Panel Profile tile part: Profile 20 test" "the Part tile shows the chosen profile (mitcad#427)"
 expect_row search hidden "no Search row: the part picker has it"
@@ -474,8 +474,8 @@ expect_row place hidden "no Placement before a part to go on (mitcad#427)"
 expect_row tilt hidden "no Tilt before a side pick (mitcad#444)"
 ui_mark
 ui_step "on the root's XY plane"           ui_click_logged "Datum xy"
-ui_expect_new "Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Part1" \
-  "on the XY plane, the root's plane picked from Part1: grounded at the click"
+ui_expect_new "Inspect Profile: place grounded, length 1000.00 mm (typed), square ends; adds to Component1" \
+  "on the XY plane, the root's plane picked from Component1: grounded at the click"
 ui_step "Place (Enter)"                    ui_key Return
 ui_expect_new "Placed Profile 20 test as " "placed by a pick on the XY plane" 30
 no_policy_message
@@ -485,7 +485,7 @@ ui_step "undo it (Ctrl+Z)"                 ui_key ctrl+z
 ui_sync
 ui_mark
 ui_step "Profile again"                    ui_command "Profile"
-ui_expect_new "BUILD profile adds to Part1 (a ground placement)" "a new design again"
+ui_expect_new "BUILD profile adds to Component1 (a ground placement)" "a new design again"
 ui_step "60 mm long"                       ui_type_in "Panel Profile input length" "60"
 ui_mark
 ui_step "along X"                          ui_click_logged "Panel Profile input axis=x"
@@ -594,7 +594,7 @@ echo "--- 2b. The same panel in the Floating chrome"
 ui_start_app --no-native-dialogs --chrome=floating
 ui_mark
 ui_step "Profile (command search)"         ui_command "Profile"
-ui_expect_new "BUILD profile adds to Part1 (a ground placement)" "a new design: adds to Part1"
+ui_expect_new "BUILD profile adds to Component1 (a ground placement)" "a new design: adds to Component1"
 expect_row axis=x shown "the X button in a floating card"
 expect_row place hidden "no Placement before a part to go on"
 ui_mark

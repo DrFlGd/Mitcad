@@ -58,13 +58,67 @@ namespace {
 // The Printer and Process boxes' last entry: a new one (mitcad#655).
 const char* kNewProfile = "__new";
 
+// The bodies go on the print bed by their print bed faces (mitcad#731).
 QJsonObject exportCommand(const QString& path, const QString& format, const QStringList& bodies,
                           const QJsonValue& refinement) {
   return {{QStringLiteral("cmd"), QStringLiteral("export")},
           {QStringLiteral("path"), path},
           {QStringLiteral("format"), format},
           {QStringLiteral("bodies"), QJsonArray::fromStringList(bodies)},
-          {QStringLiteral("refinement"), refinement}};
+          {QStringLiteral("refinement"), refinement},
+          {QStringLiteral("on_bed"), true}};
+}
+
+// A number of the bed's log line: three decimals, no "-0.000".
+QString bedNumber(double value) {
+  return QString::number(std::abs(value) < 0.0005 ? 0.0 : value, 'f', 3);
+}
+
+// How an export put the bodies on the print bed (mitcad#731), for the log:
+// the body and face on the bed, the plate's centre and the transform after
+// the design's placements (rows "a b c t"); the bodies kept as assembled;
+// or as in the design; then each bed face that cannot be used.
+QString bedLog(const QJsonObject& bed) {
+  const QJsonArray plate = bed.value(QStringLiteral("plate")).toArray();
+  const QString centre = QStringLiteral("%1,%2").arg(bedNumber(plate.at(0).toDouble()),
+                                                     bedNumber(plate.at(1).toDouble()));
+  QString line;
+  if (bed.value(QStringLiteral("body")).isString()) {
+    QStringList rows;
+    for (const QJsonValue& row : bed.value(QStringLiteral("transform")).toArray()) {
+      QStringList numbers;
+      for (const QJsonValue& number : row.toArray()) {
+        numbers << bedNumber(number.toDouble());
+      }
+      rows << numbers.join(QLatin1Char(' '));
+    }
+    line = QStringLiteral("%1 on %2, plate %3, transform %4")
+               .arg(bed.value(QStringLiteral("name")).toString(), bed.value(QStringLiteral("face")).toString(),
+                    centre, rows.join(QStringLiteral(" | ")));
+  } else if (!bed.value(QStringLiteral("kept")).toArray().isEmpty()) {
+    QStringList kept;
+    for (const QJsonValue& uid : bed.value(QStringLiteral("kept")).toArray()) {
+      kept << uid.toString();
+    }
+    line = QStringLiteral("kept as assembled: %1").arg(kept.join(QStringLiteral(", ")));
+  } else {
+    line = QStringLiteral("as in the design");
+  }
+  for (const QJsonValue& value : bed.value(QStringLiteral("problems")).toArray()) {
+    const QJsonObject problem = value.toObject();
+    line += QStringLiteral("; %1: %2").arg(problem.value(QStringLiteral("name")).toString(),
+                                           problem.value(QStringLiteral("reason")).toString());
+  }
+  return line;
+}
+
+// An export's warnings, one per line.
+QStringList exportWarnings(const QJsonObject& result) {
+  QStringList warnings;
+  for (const QJsonValue& warning : result.value(QStringLiteral("warnings")).toArray()) {
+    warnings << warning.toString();
+  }
+  return warnings;
 }
 
 // What the panel keeps while it is open, besides its inputs.
@@ -76,6 +130,17 @@ struct PrintPanel {
   bool selected = false; // the bodies came from the selection
   std::shared_ptr<PrintImport> imported = std::make_shared<PrintImport>();
 };
+
+// The bodies the panel prints, each once, in their order (uids).
+QStringList printedBodies(const CommandState& state) {
+  QStringList bodies;
+  for (const SelectionItem& item : state.items(QStringLiteral("bodies"))) {
+    if (!bodies.contains(item.owner)) {
+      bodies << item.owner;
+    }
+  }
+  return bodies;
+}
 
 // Solids and mesh bodies can be printed; sheet and empty bodies cannot.
 bool printable(const std::shared_ptr<geometry::Shape>& shape) {
@@ -190,10 +255,8 @@ void MainWindow::importPrintSettings(const std::shared_ptr<PrintImport>& target)
     showError(changeBlockedReason());
     return;
   }
-  const QString path = dialogOpenFileName(
-      this, tr("Import from Slicer"), dialogStartFolder(DialogGroup::Import, QString()),
-      tr("Slicer settings (*.3mf *.json *.ini *.bbscfg *.bbsflmt *.zip *.orca_printer *.orca_filament);;"
-         "All files (*)"));
+  const QString path = dialogOpenFileName(this, tr("Import from Slicer"),
+                                          dialogStartFolder(DialogGroup::Import, QString()), slicerFileFilter());
   if (path.isEmpty()) {
     return;
   }
@@ -384,6 +447,17 @@ CommandDef MainWindow::print3dCommand() {
         .withOnChange([choose, kind](CommandState& state, const CommandContext&) { choose(kind, state); })
         .withEnabled(threeMf); // disabled with STL, not hidden (mitcad#655)
   };
+  // The purge table of the bodies' filament slots (mitcad#705, the model's
+  // `purge_volumes` query); empty when the model cannot say.
+  const auto purgeVolumes = [this](const QStringList& bodies) {
+    QJsonObject query{{QStringLiteral("query"), QStringLiteral("purge_volumes")},
+                      {QStringLiteral("bodies"), QJsonArray::fromStringList(bodies)}};
+    try {
+      return queryObject(query);
+    } catch (const std::exception&) {
+      return QJsonObject();
+    }
+  };
   def.inputs = {
       // Sheet and empty bodies cannot be picked, and are not sent.
       selectionInput(QStringLiteral("bodies"), tr("Bodies"), SelectKind::Body, 1, 0)
@@ -536,6 +610,31 @@ CommandDef MainWindow::print3dCommand() {
             m_controller->openMaterial(bodies, QString(), action == 1);
           },
           tr("Materials"))
+          .withEnabled(threeMf),
+      // The purge volumes between the bodies' filaments (mitcad#705): Computed,
+      // or how many pairs are set by hand; the pencil opens the table.
+      noteInput(
+          QStringLiteral("purge"),
+          [purgeVolumes](const CommandState& state) {
+            const QJsonObject table = purgeVolumes(printedBodies(state));
+            const QJsonArray volumes = table.value(QStringLiteral("volumes")).toArray();
+            if (volumes.size() < 2) {
+              // One filament: no changes to purge for.
+              return InputNote{tr("None"), {}, {}};
+            }
+            int edited = 0;
+            for (const QJsonValue& row : volumes) {
+              for (const QJsonValue& cell : row.toArray()) {
+                edited += cell.toObject().value(QStringLiteral("edited")).toBool() ? 1 : 0;
+              }
+            }
+            return InputNote{edited == 0 ? tr("Computed") : tr("%n set by hand", nullptr, edited), {tr("Edit")},
+                             {QStringLiteral("edit")}};
+          },
+          [this](int, const CommandState& state, const CommandContext&) {
+            m_controller->openPurgeVolumes(printedBodies(state));
+          },
+          tr("Purge volumes"))
           .withEnabled(threeMf),
       choiceInput(QStringLiteral("refinement"), tr("Refinement"),
                   {{QStringLiteral("low"), tr("Low")},
@@ -777,7 +876,11 @@ bool MainWindow::sendToSlicer(const CommandState& state) {
         // With the last line, in the warning colour (mitcad#655).
         *warned = shown.join(QLatin1Char('\n'));
       }
+    } else if (const QStringList warnings = exportWarnings(result); !warnings.isEmpty()) {
+      // The print bed faces that cannot be used (mitcad#731).
+      *warned = warnings.join(QLatin1Char('\n'));
     }
+    qInfo().noquote() << QStringLiteral("3D Print bed: %1").arg(bedLog(result.value(QStringLiteral("bed")).toObject()));
     files << path;
     for (const QJsonValue& value : result.value(QStringLiteral("meshes")).toArray()) {
       const QJsonObject mesh = value.toObject();
@@ -804,10 +907,17 @@ bool MainWindow::sendToSlicer(const CommandState& state) {
       if (!pieces[i].occurrence.isEmpty()) {
         command.insert(QStringLiteral("occurrence"), pieces[i].occurrence);
       }
-      if (!runCommand(command)) {
+      QJsonObject result;
+      if (!runCommand(command, &result)) {
         sheetWarning(this, tr("3D Print"),
                      tr("Could not write %1:\n%2").arg(QDir::toNativeSeparators(path), m_lastError));
         return false;
+      }
+      // Each file's body on its print bed face (mitcad#731).
+      qInfo().noquote() << QStringLiteral("3D Print bed %1: %2")
+                               .arg(fileNames[i], bedLog(result.value(QStringLiteral("bed")).toObject()));
+      if (const QStringList warnings = exportWarnings(result); !warnings.isEmpty()) {
+        *warned += (warned->isEmpty() ? QString() : QStringLiteral("\n")) + warnings.join(QLatin1Char('\n'));
       }
       files << path;
       written << fileNames[i];

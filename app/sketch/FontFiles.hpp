@@ -14,7 +14,6 @@
 #include <QVector>
 #include <QWidget>
 
-class QLineEdit;
 class QListWidget;
 class QPushButton;
 
@@ -78,7 +77,7 @@ public:
   explicit FontPreferencesBox(QWidget* parent = nullptr);
 
   // The folders as the box shows them, to save when Preferences is
-  // accepted (a folder typed and not added yet too).
+  // accepted.
   QStringList chosen() const;
 
 signals:
@@ -91,7 +90,7 @@ private:
   void addFolder(const QString& folder);
 
   QListWidget* m_folders = nullptr;
-  QLineEdit* m_typed = nullptr;
+  QPushButton* m_add = nullptr;
   QPushButton* m_remove = nullptr;
 };
 

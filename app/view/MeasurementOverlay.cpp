@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
-// Measurement objects over the 3D view (mitcad#649, app/COMMANDS.md
-// "Measurement objects"): OcctViewer::setMeasurements and the overlay that
-// draws them.
+// Annotations in the view (mitcad#649, mitcad#702; app/COMMANDS.md
+// "Annotations"): OcctViewer::setMeasurements and the overlay that draws
+// them and takes the mouse on their texts and lines.
 #include "MeasurementOverlay.hpp"
 
 #include <cmath>
 #include <optional>
+#include <utility>
 #include <vector>
 
+#include <QContextMenuEvent>
 #include <QEvent>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QStringList>
 #include <QtLogging>
@@ -17,6 +20,12 @@
 #include "MeasurementDrawing.hpp"
 
 namespace mitcad {
+namespace {
+
+// A press moved this far (pixels) is a drag.
+constexpr double kDragStart = 4.0;
+
+} // namespace
 
 void OcctViewer::setMeasurements(const std::vector<MeasurementDisplay>& measurements) {
   m_measurements = measurements;
@@ -30,21 +39,55 @@ void OcctViewer::setMeasurements(const std::vector<MeasurementDisplay>& measurem
   // are, in the window's coordinates.
   QStringList drawn;
   for (const MeasurementDisplay& m : measurements) {
-    drawn << QStringLiteral("%1 (%2)").arg(m.label, m.color.name());
+    drawn << QStringLiteral("%1 = %2 (%3)").arg(m.name, m.label, m.color.name());
   }
   const QString logged =
-      QStringLiteral("Measurements drawn: %1").arg(drawn.isEmpty() ? QStringLiteral("none") : drawn.join(QStringLiteral(" | ")));
+      QStringLiteral("Annotations drawn: %1").arg(drawn.isEmpty() ? QStringLiteral("none") : drawn.join(QStringLiteral(" | ")));
   if (logged != m_loggedMeasurements) {
     m_loggedMeasurements = logged;
     qDebug().noquote() << logged;
-    const MeasurementProjection project = [this](const gp_Pnt& p) -> std::optional<QPointF> { return toWidgetF(p); };
-    for (const MeasurementDisplay& m : measurements) {
-      const MeasurementShape shape = layoutMeasurement(m, project);
-      if (shape.valid) {
-        const QPoint at = mapTo(window(), shape.labelAt.toPoint());
-        qDebug().noquote() << QStringLiteral("Measurement label %1 at %2,%3").arg(m.name).arg(at.x()).arg(at.y());
-      }
+  }
+  // Where their labels and dimension lines are, when that changes (a drag
+  // moved one).
+  logAnnotationPlaces();
+}
+
+void OcctViewer::logAnnotationPlaces() {
+  const MeasurementProjection project = [this](const gp_Pnt& p) -> std::optional<QPointF> { return toWidgetF(p); };
+  QStringList places;
+  for (const MeasurementDisplay& m : m_measurements) {
+    const MeasurementShape shape = layoutMeasurement(m, project);
+    if (!shape.valid) {
+      continue;
     }
+    const QPoint at = mapTo(window(), shape.labelAt.toPoint());
+    places << QStringLiteral("Annotation label %1 at %2,%3").arg(m.name).arg(at.x()).arg(at.y());
+    if (!shape.grips.empty() && !shape.grips.front().isEmpty()) {
+      const QPolygonF& grip = shape.grips.front();
+      // A quarter along it: its middle is under the text.
+      const QPointF on = grip.size() == 2 ? grip[0] + (grip[1] - grip[0]) * 0.25 : grip[grip.size() / 4];
+      const QPoint line = mapTo(window(), on.toPoint());
+      places << QStringLiteral("Annotation line %1 at %2,%3").arg(m.name).arg(line.x()).arg(line.y());
+    }
+  }
+  const QString placed = places.join(QLatin1Char('\n'));
+  if (placed != m_loggedAnnotationPlaces) {
+    m_loggedAnnotationPlaces = placed;
+    for (const QString& line : std::as_const(places)) {
+      qDebug().noquote() << line;
+    }
+  }
+}
+
+void OcctViewer::setHighlightedAnnotations(const QStringList& names) {
+  if (names == m_highlightedAnnotations) {
+    return;
+  }
+  m_highlightedAnnotations = names;
+  qDebug().noquote() << QStringLiteral("Annotations highlighted: %1")
+                            .arg(names.isEmpty() ? QStringLiteral("none") : names.join(QStringLiteral(", ")));
+  if (m_measurementOverlay != nullptr) {
+    m_measurementOverlay->update();
   }
 }
 
@@ -56,7 +99,7 @@ MeasurementOverlay::MeasurementOverlay(OcctViewer* viewer) : QWidget(viewer), m_
   setFocusPolicy(Qt::NoFocus);
   hide();
   viewer->installEventFilter(this);
-  // The camera moved (a frame was drawn): the dimensions follow their
+  // The camera moved (a frame was drawn): the annotations follow their
   // points.
   connect(viewer, &OcctViewer::viewChanged, this, [this] {
     if (isVisible()) {
@@ -70,6 +113,8 @@ MeasurementOverlay::MeasurementOverlay(OcctViewer* viewer) : QWidget(viewer), m_
 void MeasurementOverlay::refresh() {
   if (m_viewer->measurements().empty()) {
     hide();
+    m_pressed.clear();
+    m_dragging = false;
     return;
   }
   show();
@@ -84,28 +129,221 @@ void MeasurementOverlay::refresh() {
 QString MeasurementOverlay::placesKey() const {
   QStringList places;
   for (const MeasurementDisplay& m : m_viewer->measurements()) {
-    const gp_Pnt p = m.arc ? m.corner : m.circle ? m.center : !m.points.empty() ? m.points.front() : gp_Pnt();
+    const gp_Pnt p = m.planar ? m.textAt
+                     : m.arc  ? m.corner
+                     : m.circle ? m.center
+                     : !m.points.empty() ? m.points.front()
+                                         : gp_Pnt();
     const QPointF at = m_viewer->toWidgetF(p);
     places << QStringLiteral("%1,%2").arg(std::lround(at.x())).arg(std::lround(at.y()));
   }
+  // A turn about the text's point turns the text too.
+  const gp_Dir eye = m_viewer->viewDirection();
+  places << QStringLiteral("%1,%2,%3")
+                .arg(std::lround(eye.X() * 1000.0))
+                .arg(std::lround(eye.Y() * 1000.0))
+                .arg(std::lround(eye.Z() * 1000.0));
   return places.join(QLatin1Char(' '));
 }
 
 void MeasurementOverlay::follow() {
+  bool moved = false;
   if (geometry() != m_viewer->rect()) {
     setGeometry(m_viewer->rect());
     update();
+    moved = true;
   }
   const QString key = placesKey();
   if (key != m_drawnKey) {
     m_drawnKey = key;
     update();
+    moved = true;
+  }
+  // For UI tests: the labels' places again once the view is laid out or
+  // the camera moved them (a fit, a turn), not only when they change.
+  if (moved) {
+    m_viewer->logAnnotationPlaces();
+  }
+}
+
+int MeasurementOverlay::hitAt(const QPointF& at, QString* name) const {
+  const MeasurementProjection project = [this](const gp_Pnt& p) -> std::optional<QPointF> {
+    return m_viewer->toWidgetF(p);
+  };
+  // The last drawn is on top.
+  const std::vector<MeasurementDisplay>& shown = m_viewer->measurements();
+  for (auto m = shown.rbegin(); m != shown.rend(); ++m) {
+    const int part = measurementHit(layoutMeasurement(*m, project), at);
+    if (part != 0) {
+      *name = m->name;
+      return part;
+    }
+  }
+  return 0;
+}
+
+bool MeasurementOverlay::mouse(QEvent* event) {
+  const OcctViewer::AnnotationActions& actions = m_viewer->annotationActions();
+  // A release waited for after a double or right click went to the menu
+  // or the editor that opened instead: a new press starts afresh.
+  // So does a press or drag whose release never came (a popup took it):
+  // forgotten, with its cursor.
+  if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick) {
+    m_swallowRelease = false;
+    if (!m_pressed.isEmpty() || m_dragging || m_hovering) {
+      const bool drawnMoved = m_dragging;
+      m_pressed.clear();
+      m_dragging = false;
+      m_hovering = false;
+      m_viewer->restoreCursor();
+      if (drawnMoved) {
+        update();
+      }
+    }
+  }
+  // While a command takes picks or a sketch is edited, the view has the
+  // mouse (a press taken already ends here, a waited-for release too).
+  const bool waited = event->type() == QEvent::MouseButtonRelease && m_swallowRelease;
+  if (actions.active && !actions.active() && m_pressed.isEmpty() && !waited) {
+    if (m_hovering) {
+      m_hovering = false;
+      m_viewer->restoreCursor();
+    }
+    return false;
+  }
+  switch (event->type()) {
+  case QEvent::MouseButtonPress: {
+    auto* press = static_cast<QMouseEvent*>(event);
+    QString name;
+    const int part = hitAt(press->position(), &name);
+    if (part == 0) {
+      return false;
+    }
+    if (press->button() == Qt::RightButton) {
+      m_swallowRelease = true;
+      if (actions.menu) {
+        actions.menu(name, press->globalPosition().toPoint());
+      }
+      return true;
+    }
+    if (press->button() != Qt::LeftButton) {
+      return false;
+    }
+    m_pressed = name;
+    m_part = part;
+    m_pressAt = press->position();
+    m_delta = QPointF();
+    m_dragging = false;
+    return true;
+  }
+  case QEvent::MouseMove: {
+    auto* move = static_cast<QMouseEvent*>(event);
+    if (m_pressed.isEmpty()) {
+      // Over an annotation: a hand, which says it takes the mouse there.
+      QString name;
+      const bool over = move->buttons() == Qt::NoButton && hitAt(move->position(), &name) != 0;
+      if (over != m_hovering) {
+        m_hovering = over;
+        if (over) {
+          m_viewer->setCursor(Qt::OpenHandCursor);
+        } else {
+          m_viewer->restoreCursor();
+        }
+      }
+      return false;
+    }
+    m_delta = move->position() - m_pressAt;
+    if (!m_dragging && std::hypot(m_delta.x(), m_delta.y()) >= kDragStart) {
+      m_dragging = true;
+      m_viewer->setCursor(Qt::ClosedHandCursor);
+    }
+    if (m_dragging) {
+      update();
+    }
+    return true;
+  }
+  case QEvent::MouseButtonRelease: {
+    if (m_pressed.isEmpty()) {
+      // The release of a double-click or a right click taken here.
+      const bool taken = m_swallowRelease;
+      m_swallowRelease = false;
+      return taken;
+    }
+    const QString name = m_pressed;
+    const bool dragged = m_dragging;
+    const bool line = m_part == 2;
+    const QPointF delta = m_delta;
+    m_pressed.clear();
+    m_dragging = false;
+    m_viewer->restoreCursor();
+    m_hovering = false;
+    if (!dragged) {
+      qDebug().noquote() << QStringLiteral("Annotation clicked: %1").arg(name);
+      if (actions.clicked) {
+        actions.clicked(name);
+      }
+      return true;
+    }
+    update();
+    // The drag in millimetres along the plane's axes, where the text was
+    // when it started.
+    const MeasurementProjection project = [this](const gp_Pnt& p) -> std::optional<QPointF> {
+      return m_viewer->toWidgetF(p);
+    };
+    for (const MeasurementDisplay& m : m_viewer->measurements()) {
+      if (m.name != name) {
+        continue;
+      }
+      const std::optional<std::array<double, 2>> moved =
+          measurementDragMillimetres(layoutMeasurement(m, project), delta);
+      if (!moved) {
+        break;
+      }
+      qDebug().noquote() << QStringLiteral("Annotation %1 dragged: %2 by %3 x %4 mm")
+                                .arg(name, line ? QStringLiteral("line") : QStringLiteral("text"))
+                                .arg((*moved)[0], 0, 'f', 3)
+                                .arg((*moved)[1], 0, 'f', 3);
+      if (actions.moved) {
+        actions.moved(name, line, (*moved)[0], (*moved)[1]);
+      }
+      break;
+    }
+    return true;
+  }
+  case QEvent::MouseButtonDblClick: {
+    auto* click = static_cast<QMouseEvent*>(event);
+    QString name;
+    if (click->button() != Qt::LeftButton || hitAt(click->position(), &name) == 0) {
+      return false;
+    }
+    m_pressed.clear();
+    m_swallowRelease = true; // its release, which the view must not see alone
+    m_dragging = false;
+    qDebug().noquote() << QStringLiteral("Annotation double-clicked: %1").arg(name);
+    if (actions.opened) {
+      actions.opened(name);
+    }
+    return true;
+  }
+  case QEvent::ContextMenu: {
+    // The menu was asked for on the press already.
+    auto* menu = static_cast<QContextMenuEvent*>(event);
+    QString name;
+    return hitAt(QPointF(menu->pos()), &name) != 0;
+  }
+  default:
+    return false;
   }
 }
 
 bool MeasurementOverlay::eventFilter(QObject* watched, QEvent* event) {
-  if (watched == m_viewer && event->type() == QEvent::Resize && isVisible()) {
-    follow();
+  if (watched == m_viewer) {
+    if (event->type() == QEvent::Resize && isVisible()) {
+      follow();
+    }
+    if (isVisible() && mouse(event)) {
+      return true;
+    }
   }
   return QWidget::eventFilter(watched, event);
 }
@@ -114,9 +352,15 @@ void MeasurementOverlay::paintEvent(QPaintEvent* /*event*/) {
   const MeasurementProjection project = [this](const gp_Pnt& p) -> std::optional<QPointF> {
     return m_viewer->toWidgetF(p);
   };
+  const QStringList& highlighted = m_viewer->highlightedAnnotations();
   std::vector<MeasurementShape> shapes;
   for (const MeasurementDisplay& m : m_viewer->measurements()) {
-    shapes.push_back(layoutMeasurement(m, project));
+    MeasurementShape shape = layoutMeasurement(m, project);
+    shape.highlighted = highlighted.contains(m.name);
+    if (m_dragging && m.name == m_pressed) {
+      shape = draggedMeasurement(shape, m_part == 2, m_delta);
+    }
+    shapes.push_back(shape);
   }
   QPainter painter(this);
   paintMeasurements(painter, shapes, m_viewer->sketchHaloColor(), measurementFont(font()));

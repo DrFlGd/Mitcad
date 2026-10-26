@@ -7,16 +7,19 @@
 #include <vector>
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPointer>
+#include <QStringList>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
 #include <QUuid>
 
 #include "MainWindow.hpp"
+#include "AgentIndicator.hpp"
 #include "LiveErrors.hpp"
 #include "LocalEndpoint.hpp"
 #include "LogRing.hpp"
@@ -47,6 +50,11 @@ struct LiveServer::State {
     bool initialized = false;
     bool initializeAccepted = false;
     QString displayName;
+    // clientInfo.version and when the session was initialized (mitcad#710).
+    QString version;
+    QDateTime since;
+    // This connection among the others, to end it alone (mitcad#706).
+    QString id = randomId();
     rust::Box<LiveMcpSession> session = new_live_mcp_session();
   };
 
@@ -61,22 +69,22 @@ struct LiveServer::State {
   State(LiveServer* object, MainWindow* documentWindow) : owner(object), window(documentWindow) {}
 
   // The window shows whether agents are connected and can disconnect them
-  // (mitcad#265).
+  // (mitcad#265), all or some (mitcad#706).
   void updateAgents() {
-    QStringList names;
+    QList<ConnectedAgent> agents;
     for (const auto& client : clients) {
       if (client->initialized && client->socket && client->socket->state() == QAbstractSocket::ConnectedState) {
-        names << client->displayName;
+        agents.append({client->displayName, client->version, client->since, client->id});
       }
     }
     if (window) {
-      window->setMcpAgents(names, [this] { disconnectAll(); });
+      window->setMcpAgents(agents, [this](const QStringList& ids) { disconnectClients(ids); });
     }
   }
 
-  void disconnectAll() {
+  void disconnectClients(const QStringList& ids) {
     for (const auto& client : clients) {
-      if (client->initialized && client->socket) {
+      if (client->initialized && client->socket && ids.contains(client->id)) {
         client->socket->abort();
       }
     }
@@ -124,10 +132,14 @@ struct LiveServer::State {
                   QStringLiteral("initialize") &&
               QJsonDocument::fromJson(response.toString().toUtf8()).object().contains(QStringLiteral("result"))) {
             client.initializeAccepted = true;
-            QString name = request.value(QStringLiteral("params")).toObject()
-                .value(QStringLiteral("clientInfo")).toObject().value(QStringLiteral("name")).toString();
-            for (QChar& character : name) if (!character.isPrint()) character = QLatin1Char(' ');
-            client.displayName = name.simplified().left(80);
+            const QJsonObject info = request.value(QStringLiteral("params")).toObject()
+                .value(QStringLiteral("clientInfo")).toObject();
+            const auto label = [](QString text, qsizetype length) {
+              for (QChar& character : text) if (!character.isPrint()) character = QLatin1Char(' ');
+              return text.simplified().left(length);
+            };
+            client.displayName = label(info.value(QStringLiteral("name")).toString(), 80);
+            client.version = label(info.value(QStringLiteral("version")).toString(), 40);
             if (client.displayName.isEmpty()) client.displayName = QObject::tr("Unnamed client");
           }
         } else if (!client.initialized && client.initializeAccepted &&
@@ -136,6 +148,7 @@ struct LiveServer::State {
                    (!request.contains(QStringLiteral("params")) || request.value(QStringLiteral("params")).isObject()) &&
                    request.value(QStringLiteral("method")).toString() == QStringLiteral("notifications/initialized")) {
           client.initialized = true;
+          client.since = QDateTime::currentDateTime();
           updateAgents();
         }
         return;
@@ -301,6 +314,10 @@ bool LiveServer::start(QString* error) {
   m_state->published = true;
   connect(&m_state->listener, &QTcpServer::newConnection, this, [this] { m_state->accept(); });
   qInfo().noquote() << "MCP live instance:" << endpoint.instance << "127.0.0.1:" << endpoint.port;
+  // The agent indicator names them (mitcad#710).
+  if (m_state->window) {
+    m_state->window->setMcpListener(endpoint.instance, endpoint.port);
+  }
   return true;
 }
 

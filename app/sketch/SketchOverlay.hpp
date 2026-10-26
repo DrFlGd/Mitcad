@@ -10,6 +10,7 @@
 // cursor.
 
 #include <functional>
+#include <map>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -93,6 +94,14 @@ public:
   // document's unit and its comment ("d3 = d1 / 2 → 20 mm (Sketch1
   // distance)", mitcad#231).
   QString dimensionTooltip(const DimensionData& dimension) const;
+  // An inactive constraint's or dimension's tooltip line (mitcad#721): "Not
+  // applied: <why>"; empty for an active one.
+  static QString inactiveTooltip(bool active, const QString& reason);
+  // Where each shown constraint's first symbol is drawn (view pixels).
+  std::map<QString, QRectF> constraintGlyphRects() const;
+  // Logs "Sketch inactive drawn: k5 constraint, k7 dimension" when what is
+  // drawn inactive changes, for the UI tests (mitcad#721).
+  void logInactive();
   // Logs "Sketch dimension halos: <count> dark|light" when it changes, for
   // the UI tests (mitcad#633). Called when the overlay paints, when the
   // background's tone changes and when the sketch's edit starts: a session
@@ -109,6 +118,7 @@ private:
     QString entity;     // what it is drawn at
     QString type;       // constraint type, or "fix"
     QRectF rect;
+    bool inactive = false; // an inactive constraint's (mitcad#721), drawn pink
   };
   struct DimensionLayout {
     QString id;
@@ -133,7 +143,8 @@ private:
   // `color`: the value's text; `lines`: the dimension and extension lines
   // and arrows, light on a dark background.
   void paintDimension(QPainter& painter, const DimensionShape& shape, const QRectF& textRect,
-                      const QColor& color, const QColor& lines, bool driven) const;
+                      const QColor& color, const QColor& lines, bool driven,
+                      bool inactive = false) const;
   void paintPreview(QPainter& painter, const ToolPreview& preview) const;
   void paintSnap(QPainter& painter) const;
   void paintEntityHighlight(QPainter& painter, const QString& entity, const QColor& color) const;
@@ -144,6 +155,8 @@ private:
   SketchController& m_c;
   // The last "Sketch dimension halos:" line logged (for UI tests).
   QString m_loggedDimensionHalos;
+  // The last "Sketch inactive drawn:" line logged (mitcad#721).
+  QString m_loggedInactive;
 };
 
 } // namespace mitcad::sketch

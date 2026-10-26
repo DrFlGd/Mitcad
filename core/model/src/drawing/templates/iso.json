@@ -1,0 +1,42 @@
+{
+  "format": "mitcad-drawing-template",
+  "id": "iso",
+  "name": "ISO",
+  "size": "A3",
+  "projection": "first_angle",
+  "margins": [20, 10, 10, 10],
+  "title_block": {
+    "width": 180,
+    "height": 36,
+    "lines": [
+      [0, 12, 180, 12],
+      [0, 24, 180, 24],
+      [110, 24, 110, 36],
+      [60, 12, 60, 24],
+      [95, 12, 95, 24],
+      [120, 0, 120, 24],
+      [140, 12, 140, 24],
+      [160, 12, 160, 24],
+      [45, 0, 45, 12],
+      [75, 0, 75, 12],
+      [150, 0, 150, 12]
+    ],
+    "fields": [
+      {"label": "TITLE", "text": "{title}", "at": [0, 24], "size": [110, 12], "height": 5},
+      {"label": "DRAWING NO.", "text": "{number}", "at": [110, 24], "size": [70, 12]},
+      {"label": "MATERIAL", "text": "{material}", "at": [0, 12], "size": [60, 12]},
+      {"label": "MASS", "text": "{mass}", "at": [60, 12], "size": [35, 12]},
+      {"label": "SCALE", "text": "{scale}", "at": [95, 12], "size": [25, 12]},
+      {"label": "REV", "text": "{revision}", "at": [120, 12], "size": [20, 12]},
+      {"label": "SHEET", "text": "{sheet}", "at": [140, 12], "size": [20, 12]},
+      {"label": "SIZE", "text": "{size}", "at": [160, 12], "size": [20, 12]},
+      {"label": "DRAWN BY", "text": "{author}", "at": [0, 0], "size": [45, 12]},
+      {"label": "DATE", "text": "{date}", "at": [45, 0], "size": [30, 12]},
+      {"label": "PART NO.", "text": "{part_number}", "at": [75, 0], "size": [45, 12]},
+      {"label": "UNITS", "text": "{units}", "at": [120, 0], "size": [30, 12]},
+      {"label": "PROJECTION", "text": "", "at": [150, 0], "size": [30, 12]}
+    ],
+    "projection_symbol": [156, 3.5]
+  },
+  "revision_table": {"rows": 4}
+}

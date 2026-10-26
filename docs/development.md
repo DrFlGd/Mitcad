@@ -606,9 +606,13 @@ Run in the isolated environments:
   body's faces and edges, to compare the topology two builds (or one
   build with and without `MITCAD_NO_FAR_FEATURES=1`) give a design.
 - Display meshing (mitcad#644): `mitcad-cli mesh-compare design
-  --report report.json` meshes every body of a design (opened, or
-  imported as the application imports it) as the view's final tier does
-  and with planes through Delabella, and compares them face by face
+  --report report.json [--a variant] [--b variant]` meshes every body of
+  a design (opened, or imported as the application imports it) twice as
+  the view's final tier does, each time with one variant of the planes'
+  triangulation (`default`: the default insertion, the final tier before
+  mitcad#644; `delabella`: Delabella unchecked, the interactive tier;
+  `checked`: Delabella checked, the final tier now; (a) `default` and (b)
+  `delabella` unless given), and compares them face by face
   (triangles, deviation, area against the face's own, folds, faces left
   without a triangulation, time); `mitcad-cli mesh-compare --summary
   <folder>...` totals the reports of many designs
@@ -638,7 +642,7 @@ Run in the isolated environments:
 | Variable | Effect |
 |---|---|
 | `MITCAD_LOG_PICKS=1`, `MITCAD_LOG_VOLUMES=1`, `MITCAD_LOG_TIMING=1` | Log pick positions, body volumes after changes, step durations. |
-| `MITCAD_MESH_TRACE=1` | Log the view's display meshings (faces kept, reused, meshed, BRepMesh's phases, the slowest faces) and, on standard error, any meshing a presentation does on the UI thread (mitcad#635; also `test_preview_meshing --bench`). |
+| `MITCAD_MESH_TRACE=1` | Log the view's display meshings (faces kept, reused, meshed, BRepMesh's phases, the slowest faces, planes the final tier triangulated again after Delabella, mitcad#644) and, on standard error, any meshing a presentation does on the UI thread (mitcad#635; also `test_preview_meshing --bench`). |
 | `MITCAD_SETTINGS_DIR` | Settings as an INI file in this folder. |
 | `MITCAD_AUTOSAVE_DIR`, `MITCAD_TEST_AUTOSAVE_SECONDS` | Recovery folder and autosave interval. |
 | `MITCAD_TEST_RECOMPUTE_DELAY_MS=n[,job=m...]` | Every feature computed in a job takes n ms longer (`400,undo=800`), to exercise the progress dialog. |
@@ -721,6 +725,16 @@ visibly on a desktop in use.
 - The app runs without gdb: gdb loads the debug build's symbols (about
   1 GB) at every start, and the app's crash handler logs a crash's signal
   and stack itself. `UI_GDB=1` starts it under gdb for gdb's backtrace.
+- Logged places are clicked as logged, so log a place a click really
+  takes: a check box stretched over its row takes clicks only on its box
+  and label, so its logged place is its box, not the row's middle; a tab
+  bar squeezed by its neighbours hides tabs under its scroll arrows.
+  Log places again when the layout or the camera moves them, and wait for
+  the settled place after a change of layout (a `settled` helper that
+  sees the last place stay across a sync), not the first line logged.
+- Leave a mode by its own control when Esc does several things in turn:
+  in a drawing Esc ends the tool, then clears the selection, then closes
+  the drawing, so the tests close it with Close Drawing.
 
 ### Windows UI tests
 
@@ -992,7 +1006,7 @@ It checks at two depths:
 | fmt, clippy, deps | clippy's target dir is `build/dev/clippy`, kept across syncs. |
 | ctest | The tests whose sources changed (below), a quarter of the cores, without the corpus group; `cli.perf_*` run serially. |
 | corpus | `f3d.corpus*`, `f3d.models_loft`, `freecad.corpus`, `ipt.corpus`, several at once (`--corpus-tests`), each importing several files at once (`--corpus-jobs`, `MITCAD_CORPUS_JOBS`). By default all their children together fit the run's memory limit less 1G at `MITCAD_CORPUS_MEMORY` (1536M) each, and the cores of a test slot; about the square root of that many tests run at once (12G, 32 cores and three slots: two tests, three files each), each child within 300 s (`MITCAD_CORPUS_TIMEOUT`). Every corpus test is a row of the table. `auto` runs them only when `CORPUS_SOURCES` or the corpus files differ from every passing run on the machine (`~/.cache/mitcad/corpus-passed`). `CORPUS_SOURCES`: the readers and the import, the bridge's kernel and import files (`core/ffi/src/kernel`, `*_import.rs`, `ipt_history.rs`, `exchange.rs`, `memory.rs`, `core/cpp`; not `lib.rs` or other families' files), the geometry, `mitcad-cli`'s imports (`tools/cli/import.cpp`, not `main.cpp`), the build files, the OCCT port, and the resolved dependencies of the import's crates (`cargo tree` of `CORPUS_CRATES`, instead of `Cargo.toml` and `Cargo.lock`, so a crate added for something else does not count). Changes in `core/model` alone don't trigger it: use `--corpus always` when they may affect imports. |
-| `ui-<name>` | The `tools/ui-*-test.sh` whose sources changed (below), four at a time, longest first, 30 min limit each (`UI_TIMEOUT`); `ui-compute` runs alone at the end (flaky under load). |
+| `ui-<name>` | The `tools/ui-*-test.sh` whose sources changed (below), four at a time, longest first, 30 min limit each (`UI_TIMEOUT`); `ui-compute` runs alone at the end (flaky under load). A test that fails among the others without crashing runs once more alone after them: a pass shows as `ok-again` and counts, so load flakiness stays visible without failing the check; a second failure, or a crash, fails it (mitcad#657). |
 
 ctests by what changed (`--ctest auto`, the default; mitcad#134): each
 ctest has a fingerprint of what it depends on, and is skipped (an
@@ -1103,7 +1117,7 @@ are kept only from runs that built (the build step ran), so a run on an
 older build does not count for newer sources.
 
 Results: `build/dev/check-timings.tsv` (plus ctest tests ≥ 10 s as
-`ctest:<name>`, and the ctests skipped), history in `build/dev/check-timings-history.tsv`, logs in
+`ctest:<name>`, every corpus test, and the ctests skipped), history in `build/dev/check-timings-history.tsv` (the same rows with each run's start, so a corpus test's time can be compared between runs), logs in
 `build/dev/check-logs/<step>.log`. Exit 0 only if all steps pass.
 `--only ui-compute` or `--only build,ctest` reruns single steps. A UI
 test that fails keeps the application's whole log there too
@@ -1314,7 +1328,7 @@ whose sketch holds a projection that no longer follows: queries and
 through `mitcad-cli.exe mcp --connect` in the Windows VM's session 0.
 The Linux UI test `ui-mcp-files-camera` (`tools/ui-mcp-files-camera-test.sh`)
 drives the bridge from the shell (jq, two FIFOs) for Save As and Open into
-the folders agents may use and for the camera (mitcad#402, mitcad#405).
+the folders for designs and for the camera (mitcad#402, mitcad#405).
 
 Follow the focused checks with `tools/check-all.sh` in the Linux isolated
 environment and the documented Windows and macOS builds with CTest.

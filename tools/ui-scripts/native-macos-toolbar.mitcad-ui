@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/platform app/files app/MainWindowNative.cpp
+# check-all sources: app/platform app/files app/MainWindowNative.cpp app/mcp/AgentIndicator.cpp
 # The harness starts with a saved toolbar configuration from before Project.
 expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
 sleep 800
 expect-native-toolbar-item mitcad.sidebar true
 expect-native-toolbar-item mitcad.search true
 expect-native-toolbar-item mitcad.project true
+# The agent indicator (mitcad#710), added by its own migration once.
+expect-native-toolbar-item mitcad.agent true
+expect-native-text native.agentIndicator '^No assistant$'
 
 # A palette sample must not redirect updates away from the inserted item.
 native-toolbar-item mitcad.project palette

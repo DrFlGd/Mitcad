@@ -28,6 +28,8 @@ use crate::transform::Transform;
 struct SnapshotAttributes {
     body: BodyAttributes,
     faces: BTreeMap<u32, String>,
+    /// The print bed face's index (mitcad#731).
+    bed: Option<u32>,
 }
 
 struct ComponentSnapshot {
@@ -203,6 +205,8 @@ impl DocState {
             }
             gone = orphans;
         }
+        // Their drawings go with them (mitcad#707).
+        self.drop_orphan_drawings();
         let mut removed: BTreeSet<FeatureUid> = self
             .features
             .iter()
@@ -617,6 +621,7 @@ impl<K: Kernel> Document<K> {
                 state.assembly.name(made),
                 state.assembly.name(component)
             );
+            state.move_drawings(made, component);
             state.assembly.remove(made);
             if let Some(c) = state.assembly.component_mut(component) {
                 c.created_by = Some(feature);
@@ -906,6 +911,11 @@ impl<K: Kernel> Document<K> {
                                     (face.to_string(), appearance)
                                 })
                                 .collect();
+                            // The print bed face by its new name (mitcad#731).
+                            body.print_bed_face = attributes.bed.map(|index| {
+                                FaceName::new(added.uid, "import", Some(RoleKey::Index(index)))
+                                    .to_string()
+                            });
                             if !body.is_default() {
                                 state
                                     .body_attributes
@@ -962,9 +972,10 @@ impl<K: Kernel> Document<K> {
     /// to the B-rep's face order before their old names are lost.
     fn component_snapshot(&self, component: ComponentUid) -> Result<ComponentSnapshot, ModelError> {
         let source = self.component_bodies(component);
-        let map_faces = source
-            .iter()
-            .any(|uid| !self.body_attributes(*uid).face_appearances.is_empty());
+        let map_faces = source.iter().any(|uid| {
+            let attributes = self.body_attributes(*uid);
+            !attributes.face_appearances.is_empty() || attributes.print_bed_face.is_some()
+        });
         let mut bodies = Vec::with_capacity(source.len());
         let mut attributes = Vec::with_capacity(source.len());
         let mut first_face = 0u32;
@@ -974,6 +985,7 @@ impl<K: Kernel> Document<K> {
             };
             let mut body = self.body_attributes(uid);
             let mut mapped = BTreeMap::new();
+            let mut bed = None;
             if map_faces {
                 let faces = self.kernel().faces(shape).map_err(|e| {
                     invalid(format!(
@@ -1008,15 +1020,35 @@ impl<K: Kernel> Document<K> {
                         }
                     }
                 }
+                // The print bed face (mitcad#731): the first face it finds.
+                if let Some(reference) = body
+                    .print_bed_face
+                    .as_deref()
+                    .and_then(|face| FaceName::from_str(face).ok())
+                {
+                    let resolved: BTreeSet<String> =
+                        faces_named(&names, &reference).into_iter().collect();
+                    bed = names
+                        .iter()
+                        .position(|names| {
+                            names
+                                .iter()
+                                .any(|name| resolved.contains(&name.to_string()))
+                        })
+                        .and_then(|i| u32::try_from(i).ok())
+                        .and_then(|i| first_face.checked_add(i));
+                }
                 first_face = u32::try_from(faces.len())
                     .ok()
                     .and_then(|count| first_face.checked_add(count))
                     .ok_or_else(|| invalid("too many snapshot faces"))?;
             }
             body.face_appearances.clear();
+            body.print_bed_face = None;
             attributes.push(SnapshotAttributes {
                 body,
                 faces: mapped,
+                bed,
             });
             bodies.push(ImportBody {
                 name: Some(self.body_name(uid)),

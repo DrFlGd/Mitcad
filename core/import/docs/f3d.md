@@ -24,7 +24,7 @@ Entry points:
 | Module | |
 |---|---|
 | `params.rs` | User and model parameters with the file's names and expressions, in dependency order. Expressions that do not evaluate become values; names Mitcad reserves get `_1`. A model parameter is adopted by the feature or sketch that made it (`Document::adopt_parameters`). |
-| `sketch.rs` | Points, lines, circles, arcs (counter-clockwise), ellipses, splines (control points, weights, full knots), texts (style, flips, multi-line frame and alignment, text along or fitted to a path), constraints and dimensions by type. Ids are renumbered into Mitcad's one id space (points first). Positions are the file's stored solution; the sketch is accepted when Mitcad's solve keeps them (1e-4 mm), or keeps them within the import's geometric tolerance with the sketch's regions the file's ([*A sketch solved within the geometric tolerance*](f3d-rounds-4.md#a-sketch-solved-within-the-geometric-tolerance-mitcad396) below), else retried with driven dimensions, then without constraints (`partial`). `sketch/groups.rs`: polygons, sketch patterns, offsets and concentric circle dimensions ([*Sketch patterns, offsets and polygons*](f3d-history.md#sketch-patterns-offsets-and-polygons) below). |
+| `sketch.rs` | Points, lines, circles, arcs (counter-clockwise), ellipses, splines (control points, weights, full knots), texts (style, flips, multi-line frame and alignment, text along or fitted to a path), constraints and dimensions by type. Ids are renumbered into Mitcad's one id space (points first). Positions are the file's stored solution; the sketch is accepted when Mitcad's solve keeps them (1e-4 mm), or keeps them within the import's geometric tolerance with the sketch's regions the file's ([*A sketch solved within the geometric tolerance*](f3d-rounds-4.md#a-sketch-solved-within-the-geometric-tolerance-mitcad396) below), else retried with the fewest constraints and dimensions that keep it off the file's geometry inactive, then with all of them inactive (`partial`; [*Inactive constraints and dimensions*](#inactive-constraints-and-dimensions-mitcad721) below). `sketch/groups.rs`: polygons, sketch patterns, offsets and concentric circle dimensions ([*Sketch patterns, offsets and polygons*](f3d-history.md#sketch-patterns-offsets-and-polygons) below). |
 | `features.rs` | Sketch planes (origin planes; imported construction planes with the exact frame as `frame`; planar faces found geometrically; else a fixed construction plane), construction planes (from the entities the decoder reads, mitcad#178: offset, angle, tangent, mid plane, two edges, along a path; through three points, tangent at a point, offset through a point, mitcad#186; else offset from an origin plane or a face found by distance; each checked against the file's plane; else fixed), construction points (at a vertex, at the centre of a circle, where three planes meet) and axes (through two points, along an edge or sketch line, through a round face, where two planes meet) checked against where the file has them (mitcad#186; else fixed), extrude, revolve, fillet, chamfer. |
 | `ops.rs` | Combine, mirror, circular and rectangular patterns, shell, offset faces, move, split body, hole, thread, replace face — from external dumps (SCHEMA.md §2), or from the history when the stream decoder gives no inputs (see below). |
 | `sweeps.rs` | Sweeps, pipes and lofts ([*Sweeps, pipes and lofts*](f3d-history.md#sweeps-pipes-and-lofts) below). |
@@ -204,3 +204,44 @@ Known failure classes:
   unknown classes (`?…`), construction axes, and the untranslated types
   under *Limits*, which are skipped or fall back.
 
+
+## Inactive constraints and dimensions (mitcad#721)
+
+A sketch is added at three levels, each through the variants of its
+reference curves (locked, free with the points that hold the own curves
+pinned, free; with and without the derived offsets and the projections):
+
+1. every constraint and dimension the file has, active; where the file's
+   own positions break some of them (a sketch not solved again after the
+   geometry it is linked to changed: the solve's `stored_violations`),
+   again with those inactive;
+2. the fewest that keep the sketch off the file's geometry inactive,
+   everything else active: the sketch is first added with all of them
+   inactive (it must then keep the file's positions), and the inactive ones
+   its solution does not meet (the solve's `unmet_inactive`) are the
+   candidates; `sketch::inactive::fewest` starts from them (from all, when
+   the sketch does not solve with only those inactive) and gives back to
+   the solve every group the sketch still solves to the file's geometry
+   with, halving the groups it does not (a bisection: one bad constraint
+   among n takes about 2 log2 n solves, at most 64 after the first). It
+   never asks for the sketch with none of them inactive, which level 1
+   showed fails (mitcad#723). Only the first variant whose sketch solves
+   with all of them inactive is searched; the others cost one add each;
+3. all of them inactive, without the patterns and offsets.
+
+Each attempt is checked as the sketch itself: the file's positions within
+1e-4 mm, or within the geometric tolerance with the file's regions (the
+active constraints'). Inactive ones keep their parameters and carry
+`inactive_reason` "not met in the imported file"; the sketch view draws
+them pink and offers Activate (commands.md, *Inactive constraints and
+dimensions*). Patterns and offsets the file's positions do not keep cannot
+be inactive: they are left out. The note names each inactive one (`1
+constraint inactive, not met in the file: coincident k7 (p3 on c5)`), and
+the item is `partial`. The FreeCAD import does the same with FreeCAD's
+solution (`freecad/sketches.rs`). Both readers give each dimension once,
+as the file has it (driving with its value, or driven). Tests:
+`sketch::inactive::tests` (also: the search never asks for none or all
+inactive),
+`tests::constraint_tests` (a parallel constraint and a second width among
+good ones; a dimension 4 µm off and a coincidence 50 µm off a linked
+spline come in inactive), `freecad::tests` (a parallel constraint).

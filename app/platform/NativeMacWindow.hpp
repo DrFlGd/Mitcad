@@ -108,6 +108,10 @@ struct NativeMacWindowCallbacks {
   std::function<void()> timelineSearchClosed;
   std::function<void(const QPoint&)> timelineSearchFilterMenu;
   std::function<void(const QPoint&)> projectMenu;
+  // The agent indicator (mitcad#710): a click (Connect AI Assistant or the
+  // menu, as the Qt indicator decides) and its menu.
+  std::function<void(const QPoint&)> agentClicked;
+  std::function<void(const QPoint&)> agentMenu;
   std::function<void(const QString&)> openFile;
   std::function<bool()> confirm;
   std::function<bool()> cancel;
@@ -150,6 +154,8 @@ public:
   void setHistorySelection(const QStringList& keys);
   void setHistoryFilter(const QString& label, bool active);
   void setProjectStatus(const QString& text, const QString& tooltip);
+  void setAgentStatus(const QString& text, const QString& tooltip, bool connected, bool available);
+  void setAgentStatus(const QString& text, const QString& tooltip, bool connected, bool available);
   void setDocument(const QString& title, const QString& path, bool edited);
   void setSketchMode(bool sketching);
   void setStatus(const QString& message, bool error = false);

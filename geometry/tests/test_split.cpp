@@ -155,6 +155,52 @@ void test_split_extended_curved_faces_have_finite_bounds() {
   }
 }
 
+// The preview of an extended tool (mitcad#712): the faces the split cuts
+// with, clipped to the bodies' box grown by 2 mm.
+void test_extended_tool_reaches_the_bodies_box() {
+  const gp_Pnt low(-2, -2, -2);
+  const gp_Pnt high(62, 42, 22);
+  const auto box_of_shape = [](const Shape& shape) {
+    const BoundingBox box = bounding_box(shape);
+    CHECK(!box.empty);
+    return box;
+  };
+  // A side face of a small post at x = 50 (y 10..15, z 5..15), extended:
+  // the whole plane across the box, as the split cuts with it.
+  const ShapePtr post = extrude("F8", {rectangle(5, 50, 10, 5, 5)}, 5, 15);
+  const double post_volume = volume(*post);
+  const Tool face = Tool::of_face(post, side("F8", 5, 3));
+  const ShapePtr grown = extended_tool(face, low, high, true);
+  CHECK_NEAR(mass_properties(*grown).area, 44.0 * 24.0);
+  const BoundingBox box = box_of_shape(*grown);
+  CHECK(std::abs(box.min.X() - 50) < 1e-6 && std::abs(box.max.X() - 50) < 1e-6);
+  CHECK(std::abs(box.min.Y() + 2) < 1e-6 && std::abs(box.max.Y() - 42) < 1e-6);
+  CHECK(std::abs(box.min.Z() + 2) < 1e-6 && std::abs(box.max.Z() - 22) < 1e-6);
+  // The split with that tool divides the block where the preview shows it.
+  const std::vector<ShapePtr> cut = split_body("F9", *block(), face, true);
+  CHECK(cut.size() == 2 && near(volume(*cut.at(0)), 10.0 * 40.0 * 20.0));
+  // Not extended: the face as it is.
+  CHECK_NEAR(mass_properties(*extended_tool(face, low, high, false)).area, 5.0 * 10.0);
+  // The post is left as it is.
+  CHECK_NEAR(volume(*post), post_volume);
+  CHECK(post->face_count() == 6);
+
+  // A cylinder's side, extended along its axis through the box.
+  const ShapePtr rod = extrude("F8", {circle(5, 30, 20, 5)}, 5, 15);
+  const ShapePtr tube = extended_tool(Tool::of_face(rod, "F8:side(c5)"), low, high, true);
+  CHECK_NEAR_TOL(mass_properties(*tube).area, 2.0 * kPi * 5.0 * 24.0, 1e-4);
+  const BoundingBox tube_box = box_of_shape(*tube);
+  CHECK(tube_box.min.Z() < -2 + 1e-6 && tube_box.max.Z() > 22 - 1e-6);
+
+  // A plane: the face across the box.
+  const Tool at20 = Tool::of_plane(gp_Pln(gp_Pnt(20, 0, 0), gp_Dir(1, 0, 0)));
+  CHECK_NEAR(mass_properties(*extended_tool(at20, low, high, true)).area, 44.0 * 24.0);
+  // A plane past the box reaches nothing.
+  const Tool beyond = Tool::of_plane(gp_Pln(gp_Pnt(100, 0, 0), gp_Dir(1, 0, 0)));
+  CHECK(throws_with([&] { extended_tool(beyond, low, high, true); }, "does not reach"));
+  CHECK(throws_with([&] { extended_tool(at20, high, low, true); }, "box is empty"));
+}
+
 } // namespace
 
 void split_tests() {
@@ -162,6 +208,7 @@ void split_tests() {
   guarded("test_split_faces", test_split_faces);
   guarded("test_split_extended_curved_faces_have_finite_bounds",
           test_split_extended_curved_faces_have_finite_bounds);
+  guarded("test_extended_tool_reaches_the_bodies_box", test_extended_tool_reaches_the_bodies_box);
 }
 
 } // namespace test

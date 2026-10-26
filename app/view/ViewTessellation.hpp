@@ -24,18 +24,34 @@ namespace mitcad {
 // straight pieces (mitcad#438): those of radii over about half a metre,
 // and their edges, with a deviation of 2e-5 of the radius (about 700
 // points round a circle, where 6.8 m took 2 600 at 0.01 mm), smaller ones
-// at 0.01 mm.
+// at 0.01 mm. Planes are triangulated through Delabella's base
+// triangulation, each checked (io::MeshOptions::check_planes, mitcad#644):
+// a plane left without a triangulation, or whose triangles' area is off the
+// area its boundary encloses, is triangulated again by the default
+// insertion. The trial over every local corpus design (mitcad#644) gave
+// the default's triangulation on all but a handful of degenerate or sliver
+// planes, about 5.5 times faster on planes and up to 16 times on designs
+// with large perforated plates; the check keeps the default's result where
+// Delabella left a regular face undrawn or covered a sliver many times
+// over.
 constexpr double kViewDeviation = 0.01;
 constexpr double kViewAngle = 5.0 * 3.14159265358979323846 / 180.0;
 constexpr std::size_t kViewFaceTriangles = 20000;
 
 inline io::MeshOptions viewMeshOptions() {
-  return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles, false};
+  return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles, true, true};
+}
+
+// The view's final tier as it was before mitcad#644: planes by the default
+// insertion alone (mitcad-cli mesh-compare's reference).
+inline io::MeshOptions defaultPlaneMeshOptions() {
+  return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles, false, false};
 }
 
 // The interactive preview tier's meshes (mitcad#635, framework/
 // DisplayMeshes): the view's deviation, angle and face bound, with planes
-// through Delabella's base triangulation (io::MeshOptions::fast_planes).
+// through Delabella's base triangulation (io::MeshOptions::fast_planes),
+// unchecked (a wrong plane is replaced when the final tier meshes the body).
 // Chosen from test_preview_meshing --compare on the synthetic 83-hole
 // block: the same 48 180 triangles and nodes as viewMeshOptions in about a
 // tenth of the time (a plane of 84 wires: 0.5 s with the default
@@ -44,7 +60,7 @@ inline io::MeshOptions viewMeshOptions() {
 // the drawers' (setViewTessellation), so a drawer finds the triangulations
 // fine enough and never meshes them again.
 inline io::MeshOptions previewMeshOptions() {
-  return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles, true};
+  return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles, true, false};
 }
 
 // Shared by shaded face boundaries, wireframe and selection highlights.

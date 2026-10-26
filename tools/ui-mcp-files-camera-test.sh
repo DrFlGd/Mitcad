@@ -149,7 +149,7 @@ mcp_tool model_command "$(jq -cn --arg d "$DOC" '{document: $d, command: {cmd: "
 mcp_tool document_save "$(jq -cn --arg d "$DOC" '{document: $d}')" true
 expect '.error | contains("path")' "saving without a path asks for one"
 mcp_tool document_save "$(jq -cn --arg d "$DOC" --arg p "$OUTSIDE/box.mitcad" '{document: $d, path: $p}')" true
-expect '.error | contains("not in a folder agents may use")' "a folder not allowed is refused"
+expect '.error | contains("not in a folder for designs")' "a folder not allowed is refused"
 mcp_tool document_save "$(jq -cn --arg d "$DOC" '{document: $d, path: "../outside/box.mitcad"}')" true
 expect '.error | contains("..")' "'..' is refused"
 mcp_tool document_save "$(jq -cn --arg d "$DOC" '{document: $d, path: "box.step"}')" true
@@ -178,7 +178,7 @@ mcp_tool model_command "$(jq -cn --arg d "$DOC" '{document: $d, command: {cmd: "
 mcp_tool document_open '{"path": "sub/blocks.mitcad"}' true
 expect '.error | contains("unsaved changes")' "unsaved changes keep the design open"
 mcp_tool document_open "$(jq -cn --arg p "$OUTSIDE/box.mitcad" '{path: $p}')" true
-expect '.error | contains("not in a folder agents may use")' "opening outside the folder is refused"
+expect '.error | contains("not in a folder for designs")' "opening outside the folder is refused"
 ui_mark
 mcp_tool document_open '{"path": "sub/blocks.mitcad", "discard": true}'
 expect '.opened == true and (.path | endswith("/allowed/sub/blocks.mitcad")) and .document != $old' \
@@ -283,7 +283,7 @@ expect '.modified == ($modified == "true")' "the export does not change the docu
 mcp_tool model_export "$(jq -cn --arg d "$DOC" '{document: $d, path: "lid.stl", format: "stl"}')" true
 expect '.error | contains("already exists")' "an existing file is refused"
 mcp_tool model_export "$(jq -cn --arg d "$DOC" --arg p "$OUTSIDE/lid.step" '{document: $d, path: $p, format: "step"}')" true
-expect '.error | contains("not in a folder agents may use")' "an export outside the folder is refused"
+expect '.error | contains("not in a folder for designs")' "an export outside the folder is refused"
 [ -e "$OUTSIDE/lid.step" ] && ui_fail "a refused export wrote a file outside the folder"
 
 mcp_tool ui_camera '{"frame": "shown", "aspect": 1.5}'

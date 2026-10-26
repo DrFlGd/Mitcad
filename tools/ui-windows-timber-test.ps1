@@ -104,7 +104,7 @@
 #      them. Clicks, typing and the wheel go to the window itself.
 #  17. Each frame a component of its own (mitcad#522): three walls (Wall 2
 #      and Wall 3 flush with Wall 1's ends), each logged as a component in
-#      Part1, Part1 holding no joint; Timber Frame on a plate of Wall 1 lays
+#      Component1, Component1 holding no joint; Timber Frame on a plate of Wall 1 lays
 #      it out again in the same component; a gable roof on Wall 2 and Wall
 #      3 with ring nails (mitcad#521, the owner's case): two at each
 #      junction, each at its junction's members, its head on the entry
@@ -646,7 +646,7 @@ function Corner([string]$Cmd, [string]$Body, [string]$Turn, [string]$Length) {
   }
 }
 
-# A new design (mitcad#394): Part1 active.
+# A new design (mitcad#394): Component1 active.
 Ui-StartApp 'timber-new'
 Ui-Mark
 Ui-Step 'the BUILD tab'                  { Ui-ClickLogged 'Ribbon tab BUILD' }
@@ -664,7 +664,7 @@ Ui-Step 'the Timber button'              { Ui-ClickLogged 'Ribbon button build.t
 Ui-ExpectNew 'Command Timber started' 'Timber started'
 Ui-ExpectNew 'BUILD parts timber: 4 (0 in the design)' "Timber's picker: the members' four sizes (mitcad#484), no profile"
 Ui-ExpectNew "BUILD timber starts with test-timber/timber-48-test: the first time's dimensioned 48x98" 'the dimensioned 48x98 the first time'
-Ui-ExpectNew 'BUILD timber adds to Part1, member' 'On a member at first (mitcad#485)'
+Ui-ExpectNew 'BUILD timber adds to Component1, member' 'On a member at first (mitcad#485)'
 Ui-ExpectNew "BUILD timber starts: length 3000 mm (the part's default), typed; along x, flat" "a typed length, the part's default, along X, flat"
 Expect-Inspect 'Timber' @('place grounded, length 3000.00 mm (typed)', '; along x, flat', '; thickness along Z',
                           '; end A at 0.0, 0.0, 24.0', '; part Timber 48x98 test') `
@@ -704,7 +704,7 @@ Ui-Mark
 Ui-Step 'Timber (F4)'                    { Ui-Key 'F4' }
 Ui-ExpectNew 'Command Timber started' 'Timber again'
 Ui-ExpectNew 'BUILD timber starts with test-timber/timber-48-test: chosen last in the tool' 'the part chosen last'
-Ui-ExpectNew 'BUILD timber adds to Part1, member' 'the mode used last'
+Ui-ExpectNew 'BUILD timber adds to Component1, member' 'the mode used last'
 Ui-ExpectNew 'BUILD timber starts: length 600 mm (typed last), typed; along z, flat' 'the length typed last and the direction'
 
 Write-Host '--- 3. Two points'
@@ -1681,9 +1681,9 @@ Write-Host '--- 17. Each frame a component of its own; a gable roof''s ring nail
 First-Wall 'timber-roof' 'butt'
 $studs1 = $script:Studs1
 Ui-ExpectNew 'Frame component Wall 1 (' 'Wall 1 a component of its own (mitcad#522)'
-$frame1 = Ui-LastMatch '^Frame component Wall 1 \((C\d+)\) in Part1$'
-if (-not $frame1) { Ui-Fail 'Wall 1 is no component of its own in Part1' }
-Ui-ExpectNew 'Joints by component: Part1 0' 'no joint of Wall 1 in Part1'
+$frame1 = Ui-LastMatch '^Frame component Wall 1 \((C\d+)\) in Component1$'
+if (-not $frame1) { Ui-Fail 'Wall 1 is no component of its own in Component1' }
+Ui-ExpectNew 'Joints by component: Component1 0' 'no joint of Wall 1 in Component1'
 $plates1 = @(Largest-Bodies)
 Start-Picks
 Wall-From 'Wall 2' (Stud-Face $studs1 'first') '3000' "from Wall 1's side, flush with end A (butt)" 1
@@ -1715,8 +1715,8 @@ Expect-Inspect 'Timber Frame' @('frame Wall 1 laid out again: ') 'the studs at 4
 Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Timber frame Wall 1: ' 'Wall 1 laid out again' 60
-Ui-ExpectNew "Frame component Wall 1 ($frame1) in Part1" 'in its own component, the same one'
-Ui-ExpectNew 'Joints by component: Part1 0' 'still no joint in Part1'
+Ui-ExpectNew "Frame component Wall 1 ($frame1) in Component1" 'in its own component, the same one'
+Ui-ExpectNew 'Joints by component: Component1 0' 'still no joint in Component1'
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
 # A gable roof on Wall 2 and Wall 3 with ring nails (the owner's case of
 # mitcad#521), two at each junction.
@@ -1747,7 +1747,7 @@ Ui-ExpectNew 'Placed frame Roof 1 (roof, lead ' 'the roof placed' 60
 $fastened = [int](Ui-LastMatch '^Placed frame Roof 1 \(roof, lead [^)]*\): \d+ member\(s\), (\d+) junction')
 if ($fastened -lt 1) { Ui-Fail 'no junction of the roof fastened' }
 Ui-ExpectNew 'Frame component Roof 1 (' 'Roof 1 a component of its own'
-Ui-ExpectNew 'Joints by component: Part1 0, ' 'Part1 holds no joint, the roof its nails'''
+Ui-ExpectNew 'Joints by component: Component1 0, ' 'Component1 holds no joint, the roof its nails'''
 $joints = Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Joints by component: ') } |
   Select-Object -Last 1
 if (-not "$joints".Contains("Roof 1 $(2 * $fastened)")) { Ui-Fail "the roof's joints not in Roof 1: $joints" }

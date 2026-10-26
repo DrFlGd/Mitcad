@@ -113,18 +113,6 @@ void ProjectIndicator::setLockActions(const QList<QAction*>& actions) {
   }
 }
 
-void ProjectIndicator::setAgentText(const QString& text) {
-  m_agentText = text;
-  refresh();
-}
-
-void ProjectIndicator::setAgentActions(const QList<QAction*>& actions) {
-  m_agentActions.clear();
-  for (QAction* action : actions) {
-    m_agentActions << action;
-  }
-}
-
 void ProjectIndicator::setDebugLog(const QString& text, const QString& tip) {
   m_debugLogText = text;
   m_debugLogTip = tip;
@@ -252,11 +240,6 @@ void ProjectIndicator::refresh() {
     shown << m_lockText;
     logged << m_lockText.toLower();
   }
-  if (!m_agentText.isEmpty()) {
-    shown << m_agentText;
-    logged << m_agentText.toLower();
-    tip << tr("An agent is connected to this window through MCP");
-  }
   if (!m_debugLogText.isEmpty()) {
     shown << m_debugLogText;
     logged << m_debugLogText.toLower();
@@ -338,16 +321,6 @@ void ProjectIndicator::fillMenu() {
   }
   bool separated = false;
   for (const QPointer<QAction>& action : std::as_const(m_lockActions)) {
-    if (action != nullptr) {
-      if (!separated) {
-        m_menu->addSeparator();
-        separated = true;
-      }
-      m_menu->addAction(action);
-    }
-  }
-  separated = false;
-  for (const QPointer<QAction>& action : std::as_const(m_agentActions)) {
     if (action != nullptr) {
       if (!separated) {
         m_menu->addSeparator();

@@ -237,7 +237,7 @@ function Click-PaletteFinish {
   Ui-ClickLogged 'Palette Finish Sketch'
 }
 
-# Sketch-OnBrowserXY: Create Sketch on XY in part.mitcad, whose Part1:1
+# Sketch-OnBrowserXY: Create Sketch on XY in part.mitcad, whose Component1:1
 # keeps the origin planes out of the view (mitcad#294): the browser offers
 # them for the pick (mitcad#694), and a click on its XY row starts the sketch.
 function Sketch-OnBrowserXY {

@@ -25,6 +25,7 @@
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -771,6 +772,69 @@ void test_distances() {
   const auto inside = min_distance(box(2, 2, 2, 1, 1, 1), a);
   CHECK(inside.inside && near(inside.value, 0.0));
   CHECK(throws([&] { min_distance(TopoDS_Shape(), a); }));
+  CHECK(!d.parallel_faces && !dv.parallel_faces);
+}
+
+// A 600 x 2000 x 18 mm plate at height z with 3 x 60 through holes of
+// 5 mm, like a cabinet wall with rows of shelf-pin holes.
+TopoDS_Shape perforated_plate(double z) {
+  TopoDS_Compound holes;
+  BRep_Builder builder;
+  builder.MakeCompound(holes);
+  for (int column = 0; column < 3; ++column) {
+    for (int row = 0; row < 60; ++row) {
+      const gp_Ax2 axis(gp_Pnt(100.0 + 200.0 * column, 32.0 + 32.0 * row, z - 1.0), gp::DZ());
+      builder.Add(holes, BRepPrimAPI_MakeCylinder(axis, 2.5, 20.0).Shape());
+    }
+  }
+  return BRepAlgoAPI_Cut(box(0, 0, z, 600, 2000, 18), holes).Shape();
+}
+
+// How far a point is from a face.
+double off_face(const mitcad::analysis::Vec3& p, const TopoDS_Face& face) {
+  BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(gp_Pnt(p.x, p.y, p.z)).Vertex(), face);
+  return distance.IsDone() ? distance.Value() : 1e9;
+}
+
+// Two planar faces in parallel planes (mitcad#716): their gap from a point
+// of one over the other, the same as the full extrema, without them.
+void test_parallel_faces() {
+  using mitcad::analysis::min_distance;
+  const TopoDS_Face lower = face_with_normal(perforated_plate(0.0), 0, 0, 1);
+  const TopoDS_Face upper = face_with_normal(perforated_plate(500.0), 0, 0, -1);
+  CHECK(!lower.IsNull() && !upper.IsNull());
+  int holes = 0;
+  for (TopExp_Explorer it(lower, TopAbs_WIRE); it.More(); it.Next()) {
+    ++holes;
+  }
+  CHECK(holes == 181); // the outer wire and 180 holes
+  const auto fast = min_distance(lower, upper);
+  CHECK(fast.parallel_faces && !fast.inside);
+  CHECK(near(fast.value, 482.0));
+  BRepExtrema_DistShapeShape full(lower, upper);
+  CHECK(full.IsDone() && near(fast.value, full.Value(), 1e-6));
+  // The closest points: one on each face, straight across.
+  CHECK(off_face(fast.on_a, lower) < 1e-6 && off_face(fast.on_b, upper) < 1e-6);
+  CHECK(near(fast.on_a.z, 18.0) && near(fast.on_b.z, 500.0));
+  CHECK(near(fast.on_a.x, fast.on_b.x) && near(fast.on_a.y, fast.on_b.y));
+  // Turned around: the same, the ends swapped.
+  const auto back = min_distance(upper, lower);
+  CHECK(back.parallel_faces && near(back.value, 482.0));
+  CHECK(off_face(back.on_a, upper) < 1e-6 && off_face(back.on_b, lower) < 1e-6);
+
+  // Overlapping in a corner only: a vertex of the one over the other.
+  const TopoDS_Face low = face_with_normal(box(0, 0, 0, 10, 10, 1), 0, 0, 1);
+  const TopoDS_Face corner = face_with_normal(box(5, 5, 4, 10, 10, 1), 0, 0, -1);
+  const auto overlap = min_distance(low, corner);
+  CHECK(overlap.parallel_faces && near(overlap.value, 3.0));
+  CHECK(off_face(overlap.on_a, low) < 1e-9 && off_face(overlap.on_b, corner) < 1e-9);
+  // Side by side, nothing of one over the other: the full extrema.
+  const TopoDS_Face aside = face_with_normal(box(20, 0, 5, 10, 10, 1), 0, 0, -1);
+  const auto apart = min_distance(low, aside);
+  CHECK(!apart.parallel_faces && near(apart.value, std::sqrt(10.0 * 10.0 + 4.0 * 4.0)));
+  // Not parallel: the full extrema.
+  const auto tilted = min_distance(low, face_with_normal(box(0, 0, 5, 10, 10, 1), 1, 0, 0));
+  CHECK(!tilted.parallel_faces && near(tilted.value, 4.0));
 }
 
 void test_angles() {
@@ -1183,6 +1247,7 @@ int main() {
     test_face_past_its_trimmed_surface();
     test_products_and_several_bodies();
     test_distances();
+    test_parallel_faces();
     test_angles();
     test_lengths_and_circles();
     test_interference();

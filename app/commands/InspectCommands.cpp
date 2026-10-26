@@ -19,6 +19,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QScrollArea>
@@ -850,6 +851,39 @@ QJsonObject printQuery(const CommandContext& context, const QJsonObject& request
   return context.queryObject(request);
 }
 
+// The bed face a new analysis starts from (mitcad#731), by the export's
+// rule: the print bed face of the one analysed body that has a usable one,
+// in the occurrence the body was taken in; invalid when none or several
+// bodies have one.
+SelectionItem storedBedFace(const Selection& bodies, const CommandContext& context) {
+  const QJsonArray all = context.queryArray(QStringLiteral("bodies"));
+  QStringList seen;
+  SelectionItem found;
+  int usable = 0;
+  for (const SelectionItem& body : bodies) {
+    if (seen.contains(body.owner)) {
+      continue; // a body shown more than once is one body of the analysis
+    }
+    seen << body.owner;
+    for (const QJsonValue& value : all) {
+      const QJsonObject entry = value.toObject();
+      if (entry.value(QStringLiteral("uid")).toString() != body.owner) {
+        continue;
+      }
+      const QJsonObject bed = entry.value(QStringLiteral("print_bed_face")).toObject();
+      const QJsonArray faces = bed.value(QStringLiteral("faces")).toArray();
+      if (!bed.contains(QStringLiteral("error")) && !faces.isEmpty() && ++usable == 1) {
+        found =
+            itemOf(QJsonObject{{QStringLiteral("body"), body.owner}, {QStringLiteral("face"), faces.first()}}, context);
+        found.occurrence = body.occurrence;
+      }
+      break;
+    }
+  }
+  // Several bodies with bed faces: kept as assembled, so none.
+  return usable == 1 && isPlanar(found) ? found : SelectionItem();
+}
+
 CommandDef printAnalysisCommand(const CommandContext& model) {
   CommandDef def;
   def.id = QStringLiteral("inspect.print_analysis");
@@ -931,6 +965,13 @@ CommandDef printAnalysisCommand(const CommandContext& model) {
       }
     }
     state.setItems(QStringLiteral("bodies"), bodies);
+    // Printed on the bodies' print bed face (mitcad#731), unless another
+    // is picked.
+    const SelectionItem bed = storedBedFace(bodies, context);
+    if (bed.isValid()) {
+      state.items(QStringLiteral("bed_face")) = {bed};
+      qDebug().noquote() << QStringLiteral("Print Analysis bed face: %1/%2").arg(bed.owner, bed.name);
+    }
   };
   // A new analysis starts with the settings group's numbers.
   def.init = [](CommandState& state, const CommandContext& context) {

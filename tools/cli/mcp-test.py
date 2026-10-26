@@ -24,7 +24,7 @@ WORK = Path(sys.argv[2]).resolve()
 TIMEOUT = 20
 PROTOCOL = "2025-11-25"
 TOOLS = {"document_create", "document_open", "document_list", "document_close",
-         "model_command", "model_query", "document_save", "model_export"}
+         "model_command", "model_query", "document_save", "model_export", "model_reference"}
 BOX = {"cmd": "add_feature", "def": {
     "type": "box", "plane": {"type": "origin", "plane": "xy"},
     "corner": [0, 0], "length": 30, "width": 20, "height": 10,
@@ -794,6 +794,74 @@ class McpTest(unittest.TestCase):
                 "query": "print_thickness", "minimum": 20}})["result"]
             self.assertNotIn("triangles", walls["bodies"][0])
             self.assertGreater(walls["thin_triangles"], 0)
+            client.finish()
+
+    def test_reference_in_parts_and_errors_that_give_the_choices(self):
+        """mitcad#714: model_reference, and errors that list the choices."""
+        with Session(self.workspace) as client:
+            client.initialize()
+            contents = client.tool("model_reference", {})
+            self.assertIn("Feature definitions", contents["contents"])
+            self.assertIn("add_feature", contents["commands"])
+            self.assertIn("sketch.add_line", contents["commands"])
+            self.assertNotIn("import_file", contents["commands"])
+            self.assertIn("bodies", contents["queries"])
+            self.assertNotIn("dxf_info", contents["queries"])
+            self.assertIn("construction_plane", contents["features"])
+            values = client.tool("model_reference", {"section": "Values"})
+            self.assertTrue(values["text"].startswith("## Values"))
+            row = client.tool("model_reference", {"query": "faces"})
+            self.assertIn("| `faces` |", row["text"])
+            self.assertTrue(row["permitted"])
+            plane = client.tool("model_reference", {"feature": "construction_plane"})
+            self.assertIn('"type": "construction_plane"', plane["example"])
+            found = client.tool("model_reference", {"search": "bbox"})
+            self.assertGreater(found["total"], 0)
+            long = client.tool("model_reference", {"section": "Feature definitions"})
+            self.assertTrue(long["truncated"])
+            self.assertLessEqual(len(long["text"].encode("utf-8")), 64 * 1024)
+            rest = client.tool("model_reference", {"section": "Feature definitions",
+                                                   "offset": long["next_offset"]})
+            self.assertTrue(rest["text"])
+            client.tool("model_reference", {"section": "No such section"}, error=True)
+
+            document = client.tool("document_create", {})["document"]
+            # An unknown query lists the queries; a refused one keeps its text.
+            unknown = client.tool("model_query", {"document": document,
+                                                  "query": {"query": "bbox"}}, error=True)
+            self.assertIn("unknown query 'bbox'", unknown["error"])
+            self.assertIn("bodies", unknown["error"])
+            refused = client.tool("model_query", {"document": document,
+                                                  "query": {"query": "dxf_info", "path": "x.dxf"}}, error=True)
+            self.assertIn("query 'dxf_info' is not available through MCP", refused["error"])
+            # An unknown command lists the commands.
+            unknown = client.tool("model_command", {"document": document,
+                                                    "command": {"cmd": "list"}}, error=True)
+            self.assertIn("unknown command 'list'", unknown["error"])
+            self.assertIn("add_feature", unknown["error"])
+            # A command without cmd shows the form.
+            form = client.tool("model_command", {"document": document,
+                                                 "command": {"command": "list"}}, error=True)
+            self.assertIn('{"cmd": "add_feature", "def": {...}}', form["error"])
+            # A definition that misses fields gets its type's reference.
+            for definition in ({"type": "construction_plane"},
+                               {"type": "construction_plane", "definition": {"type": "offset"}}):
+                missing = client.tool("model_command", {"document": document, "command": {
+                    "cmd": "add_feature", "def": definition}}, error=True)
+                self.assertIn("missing field", missing["error"])
+                self.assertIn('model_reference {"feature": "construction_plane"}', missing["error"])
+                self.assertEqual(missing["reference"]["feature"], "construction_plane")
+                self.assertIn('"definition"', missing["reference"]["example"])
+                self.assertIn("`offset`", missing["reference"]["text"])
+            # The model's own list of choices stays as it is.
+            variant = client.tool("model_command", {"document": document, "command": {
+                "cmd": "add_feature", "def": {"type": "construction_plane", "definition": {
+                    "type": "offst", "plane": "xy", "distance": 10}}}}, error=True)
+            self.assertIn("unknown variant", variant["error"])
+            self.assertIn("expected one of", variant["error"])
+            self.assertNotIn("reference", variant)
+            self.assertEqual(client.tool("model_query", {"document": document,
+                             "query": {"query": "timeline"}})["result"]["features"], [])
             client.finish()
 
 

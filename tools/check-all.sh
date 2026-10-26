@@ -18,7 +18,7 @@
 #
 # Every step's time and result go to build/dev/check-timings.tsv (step,
 # seconds, result; also appended to check-timings-history.tsv with the
-# run's start) and are printed as a table at the end, so that each run
+# run's start, the rows of single ctests and corpus tests too) and are printed as a table at the end, so that each run
 # measures itself; the steps' output is in build/dev/check-logs/. The exit
 # status is 0 only if every step passed.
 #
@@ -119,7 +119,10 @@
 # lint take none; unless set, they use half the cores
 # (CMAKE_BUILD_PARALLEL_LEVEL, CARGO_BUILD_JOBS). tools/ui-compute-test.sh
 # runs alone after the other UI tests: it fails intermittently under load
-# (mitcad#8).
+# (mitcad#8). A UI test that fails among the others without crashing runs
+# once more alone after them; a pass then shows as "ok-again" and counts
+# (mitcad#657: tests that count events in a wall-clock window miss under
+# load), a second failure fails the check.
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -274,11 +277,12 @@ if [ -f "$HISTORY" ]; then
 fi
 printf 'step\tseconds\tresult\n' > "$TIMINGS"
 
-# record step seconds result: a row of the table; "ok" and "skipped" pass.
+# record step seconds result: a row of the table; "ok", "ok-again" (a UI
+# test that passed when run again alone, mitcad#657) and "skipped" pass.
 record() {
   printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$TIMINGS"
   printf '%s\t%s\t%s\t%s\n' "$STARTED" "$1" "$2" "$3" >> "$HISTORY"
-  case $3 in ok | skipped | -) ;; *) FAILED=1 ;; esac
+  case $3 in ok | ok-again | skipped | -) ;; *) FAILED=1 ;; esac
 }
 
 # step name command...: runs a step, its output in check-logs/<name>.log.
@@ -309,6 +313,9 @@ ctest_rows() {
       if [ "${seconds%.*}" -ge "$least" ]; then
         case $result in Passed) result=ok ;; *Skipped*) result=skipped ;; *) result=${result//\*/} ;; esac
         printf '  ctest:%s\t%s\t%s\n' "$name" "$seconds" "$result" >> "$TIMINGS"
+        # In the history too, so that a test's time can be compared between
+        # runs; the step's own row says whether it failed.
+        printf '%s\tctest:%s\t%s\t%s\n' "$STARTED" "$name" "$seconds" "$result" >> "$HISTORY"
       fi
     done
 }
@@ -597,10 +604,17 @@ declare -A UI_PIDS
 # Each UI test's fingerprint, kept with its passes.
 declare -A UI_FINGERPRINTS
 UI_RUNNING=0
+# The UI tests that failed without crashing among the others, run again
+# alone after them (mitcad#657): tests that count events in a wall-clock
+# window (ui-drag-proxy, ui-pick, ui-render, ui-sweep) miss under load.
+UI_AGAIN=()
+UI_ALONE=0
 # reap_ui: waits for a UI test to end and records it; a pass in a run that
-# built is kept for the test's fingerprint.
+# built is kept for the test's fingerprint. A failure among the others
+# that is not a crash is not recorded yet: the test runs again alone
+# (UI_AGAIN), and its second result counts, "ok-again" for a pass.
 reap_ui() {
-  local pid="" name status seconds result=ok
+  local pid="" name status seconds result=ok crashed=0
   wait -n -p pid
   [ -n "$pid" ] || return
   # Another background job of this script (not a UI test) may end first.
@@ -614,19 +628,29 @@ reap_ui() {
     124 | 137) result=TIMEOUT ;;
     *) result=FAIL ;;
   esac
+  if [ "$result" = FAIL ] && grep -qsE "crashed during|SIGSEGV|SIGABRT|terminate called|Segmentation fault" \
+    "$LOGS/ui-$name.log" "$LOGS/ui-$name".*app.log "$LOGS/ui-$name".app.log; then
+    crashed=1
+  fi
+  if [ "$result" != ok ] && [ "$crashed" = 0 ] && [ "$UI_ALONE" = 0 ]; then
+    echo "   $result ui-$name ($seconds s): again, alone after the others"
+    tail -n 40 "$LOGS/ui-$name.log"
+    UI_AGAIN+=("$name")
+    return
+  fi
+  [ "$result" = ok ] && [ "$UI_ALONE" = 1 ] && result=ok-again
   echo "   $result ui-$name ($seconds s)"
-  [ "$result" = ok ] || tail -n 40 "$LOGS/ui-$name.log"
+  [ "$result" = ok ] || [ "$result" = ok-again ] || tail -n 40 "$LOGS/ui-$name.log"
   record "ui-$name" "$seconds" "$result"
   # A crash (the app's crash handler logged its stack) runs the test once
   # more under gdb, for gdb's backtrace with lines; the test stays failed.
-  if [ "$result" = FAIL ] && grep -qsE "crashed during|SIGSEGV|SIGABRT|terminate called|Segmentation fault" \
-    "$LOGS/ui-$name.log" "$LOGS/ui-$name".*app.log "$LOGS/ui-$name".app.log; then
+  if [ "$crashed" = 1 ]; then
     echo "   ui-$name crashed: once more under gdb (ui-$name.gdb.log)"
     mkdir -p "$LOGS/ui-$name.gdb"
     UI_GDB=1 MITCAD_UI_LOG_DIR=$LOGS/ui-$name.gdb timeout -k 30 "$UI_TIMEOUT" \
       bash "tools/ui-$name-test.sh" > "$LOGS/ui-$name.gdb.log" 2>&1 9>&-
   fi
-  if [ "$result" = ok ] && [ "$BUILT" = 1 ] && [ "$UI_LAYOUT_FINGERPRINT" != unknown ]; then
+  if [ "${result%-again}" = ok ] && [ "$BUILT" = 1 ] && [ "$UI_LAYOUT_FINGERPRINT" != unknown ]; then
     mkdir -p "$UI_PASSED"
     echo "${UI_FINGERPRINTS[$name]}" >> "$UI_PASSED/$name"
   fi
@@ -702,6 +726,16 @@ elif [ ${#UI_TESTS[@]} -gt 0 ]; then
     UI_PIDS[$!]=compute
     UI_RUNNING=1
     reap_ui
+  fi
+  if [ ${#UI_AGAIN[@]} -gt 0 ]; then
+    echo "== UI tests failed among the others, again, alone: ${UI_AGAIN[*]} (mitcad#657)"
+    UI_ALONE=1
+    for name in "${UI_AGAIN[@]}"; do
+      run_ui "$name" &
+      UI_PIDS[$!]=$name
+      UI_RUNNING=1
+      while [ "$UI_RUNNING" -gt 0 ]; do reap_ui; done
+    done
   fi
   record "ui (all)" "$(seconds_since "$start")" -
 fi

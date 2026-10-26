@@ -323,6 +323,47 @@ fn values_that_do_not_read_are_kept_with_a_warning() {
 }
 
 #[test]
+fn an_empty_sub_element_links_the_whole_object() {
+    // FreeCAD 1.x writes a link to a whole sketch as one empty sub-element
+    // (mitcad#708), older files as none; the XLink and LinkSubList forms
+    // likewise.
+    let xml = r#"<Document SchemaVersion="4" ProgramVersion="1.2R1">
+      <Objects><Object type="PartDesign::Pad" name="Pad"/></Objects>
+      <ObjectData><Object name="Pad"><Properties>
+        <Property name="Profile" type="App::PropertyLinkSub">
+          <LinkSub value="Sketch" count="1"><Sub value=""/></LinkSub></Property>
+        <Property name="Old" type="App::PropertyLinkSub">
+          <LinkSub value="Sketch" count="0"></LinkSub></Property>
+        <Property name="ReferenceAxis" type="App::PropertyLinkSub">
+          <LinkSub value="Sketch" count="1"><Sub value="N_Axis"/></LinkSub></Property>
+        <Property name="UpToFace" type="App::PropertyLinkSub">
+          <LinkSub value="" count="0"></LinkSub></Property>
+        <Property name="Linked" type="App::PropertyXLinkSub">
+          <XLinkSub file="" stamp="" name="Sketch" count="1"><Sub value=""/></XLinkSub></Property>
+        <Property name="AttachmentSupport" type="App::PropertyLinkSubList">
+          <LinkSubList count="1"><Link obj="XY_Plane" sub=""/></LinkSubList></Property>
+      </Properties></Object></ObjectData></Document>"#;
+    let doc = Document::parse(xml).unwrap();
+    assert!(doc.warnings.is_empty(), "{:?}", doc.warnings);
+    let pad = doc.object("Pad").unwrap();
+    for (property, object) in [
+        ("Profile", "Sketch"),
+        ("Old", "Sketch"),
+        ("Linked", "Sketch"),
+        ("AttachmentSupport", "XY_Plane"),
+    ] {
+        let links = pad.links(property);
+        assert_eq!(links.len(), 1, "{property}");
+        assert_eq!(links[0].object, object, "{property}");
+        assert!(links[0].subs.is_empty(), "{property}: {:?}", links[0].subs);
+    }
+    let axis = pad.link("ReferenceAxis").unwrap();
+    assert_eq!(axis.subs.len(), 1);
+    assert_eq!(axis.subs[0].name, "N_Axis");
+    assert!(pad.link("UpToFace").is_none());
+}
+
+#[test]
 fn reads_spreadsheet_cells_and_expressions() {
     use mitcad_freecad::expression::Expr;
     use mitcad_freecad::spreadsheet::{Content, Sheet};

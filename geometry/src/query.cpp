@@ -5,6 +5,8 @@
 #include <cmath>
 #include <exception>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
@@ -272,6 +274,79 @@ BoundingBox enclosing_box(const Shape& shape) {
     result.min = gp_Pnt(xmin, ymin, zmin);
     result.max = gp_Pnt(xmax, ymax, zmax);
     return result;
+  });
+}
+
+namespace {
+
+// The tight box of one face or edge; a mesh face's from its triangles.
+BoundingBox item_box(const TopoDS_Shape& item) {
+  if (item.IsNull()) {
+    return {};
+  }
+  Bnd_Box box;
+  BRepBndLib::AddOptimal(item, box, false, false);
+  if (box.IsVoid()) {
+    BRepBndLib::Add(item, box, true);
+  }
+  BoundingBox result;
+  if (box.IsVoid()) {
+    return result;
+  }
+  double xmin = 0, ymin = 0, zmin = 0, xmax = 0, ymax = 0, zmax = 0;
+  box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+  result.empty = false;
+  result.min = gp_Pnt(xmin, ymin, zmin);
+  result.max = gp_Pnt(xmax, ymax, zmax);
+  return result;
+}
+
+// The boxes of the items at `indices`, on all cores.
+template <typename Item>
+std::vector<BoundingBox> item_boxes(const std::vector<int>& indices, int count, Item item) {
+  std::vector<TopoDS_Shape> items;
+  items.reserve(indices.size());
+  for (const int i : indices) {
+    if (i < 0 || i >= count) {
+      throw std::out_of_range("no item " + std::to_string(i) + " of " + std::to_string(count));
+    }
+    items.push_back(item(i));
+  }
+  std::vector<BoundingBox> boxes(items.size());
+  std::vector<std::exception_ptr> errors(items.size());
+  OSD_Parallel::For(
+      0, static_cast<int>(items.size()),
+      [&](int i) {
+        const auto k = static_cast<std::size_t>(i);
+        try {
+          boxes[k] = item_box(items[k]);
+        } catch (...) {
+          errors[k] = std::current_exception();
+        }
+      },
+      items.size() < 8);
+  for (const std::exception_ptr& error : errors) {
+    if (error) {
+      std::rethrow_exception(error);
+    }
+  }
+  return boxes;
+}
+
+} // namespace
+
+std::vector<BoundingBox> face_bounding_boxes(const Shape& shape, const std::vector<int>& faces) {
+  return detail::run("face boxes",
+                     [&] { return item_boxes(faces, shape.face_count(), [&](int i) { return shape.face(i); }); });
+}
+
+std::vector<BoundingBox> edge_bounding_boxes(const Shape& shape, const std::vector<int>& edges) {
+  return detail::run("edge boxes", [&] {
+    return item_boxes(edges, shape.edge_count(), [&](int i) -> TopoDS_Shape {
+      const TopoDS_Edge& edge = shape.edge(i);
+      // A degenerate edge has no curve: no box.
+      return BRep_Tool::Degenerated(edge) ? TopoDS_Shape() : TopoDS_Shape(edge);
+    });
   });
 }
 

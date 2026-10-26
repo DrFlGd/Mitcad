@@ -195,6 +195,16 @@ void MainWindow::registerFileCommands() {
   drawingDef.keywords = {QStringLiteral("drawing"), QStringLiteral("pdf"), QStringLiteral("svg"),
                          QStringLiteral("dxf"), QStringLiteral("print"), QStringLiteral("blueprint")};
   m_registry->add(drawingDef);
+  // A drawing kept in the design (mitcad#707, drawings/MainWindowDrawings.cpp):
+  // in the root's Drawings folder, opened at once.
+  CommandDef createDrawingDef = def("file.create_drawing", tr("Create Drawing"), "drawing",
+                                    tr("Adds a drawing of the design and opens its sheet"),
+                                    [this] { createDrawing(QStringLiteral("C0")); });
+  createDrawingDef.tab.clear(); // the File menu
+  createDrawingDef.keywords = {QStringLiteral("drawing"), QStringLiteral("sheet"), QStringLiteral("blueprint"),
+                               QStringLiteral("2d"), QStringLiteral("views")};
+  m_registry->add(createDrawingDef);
+  registerDrawingCommands();
   // 3D Print (mitcad#13, mitcad#234, MainWindowPrint.cpp): a panel in the
   // MAKE group, next to Render Image.
   m_registry->add(print3dCommand());
@@ -272,6 +282,7 @@ void MainWindow::createFileMenu() {
   file->addSeparator();
   command(file, "file.import", tr("&Import…"));
   command(file, "file.export", tr("&Export…"));
+  command(file, "file.create_drawing", tr("Create Dra&wing…"));
   command(file, "file.export_drawing", tr("Export &Drawing…"));
   file->addSeparator();
   command(file, "file.recover", tr("Recover Desi&gns…"));

@@ -195,6 +195,10 @@ public:
   // Logs where the sketch origin and axes are in the window, when that
   // changed ("Sketch view x,y x,y x,y" for (0, 0), (100, 0) and (0, 100)).
   void logView();
+  // Logs where each inactive constraint's symbol is in the window
+  // ("Constraint k1 glyph at x,y"), when the view or the sketch moved it
+  // (mitcad#721, mitcad#723).
+  void logGlyphs();
 
   // --- Tools
   void startTool(std::unique_ptr<SketchTool> tool);
@@ -224,6 +228,13 @@ public:
   // A horizontal or vertical distance made signed or unsigned, its point
   // kept where it is (`sketch.set_signed`, mitcad#409).
   void setDimensionSigned(const QString& id, bool on);
+  // Activates or deactivates constraints and dimensions (`sketch.set_active`,
+  // mitcad#721). An activation the sketch does not solve with is refused
+  // with the model's reason; nothing changes then.
+  void setItemsActive(const QStringList& ids, bool on);
+  // The selected constraints and dimensions of this sketch that are
+  // inactive (`active` false) or active.
+  QStringList selectedItems(bool active) const;
 
   // --- Options of the sketch palette
   bool construction() const { return m_construction; }
@@ -457,6 +468,7 @@ private:
   QString m_status;         // last logged status
   QString m_loggedProjections; // the linked projections last logged
   QString m_loggedView;     // last logged view placement
+  QString m_loggedGlyphs;   // the inactive constraints' symbol places last logged
   SketchOverlay* m_overlay = nullptr;
   std::unique_ptr<SketchTool> m_tool;
   QHash<QString, QString> m_toolIcons; // by tool name
@@ -523,10 +535,11 @@ private:
   QPointer<QLabel> m_editorLabel; // "d3 =" before the editor (mitcad#231)
   QString m_editorDimension;       // the dimension it edits
   QString m_editorText;            // the text it opened with
-  QString m_tooltipDimension;      // the dimension whose tooltip is shown
+  QString m_tooltipDimension;      // the dimension or constraint whose tooltip is shown
   // Logs what each dimension shows ("Dimension texts: k5 d1 = 60.00, ...").
   void logDimensionTexts() const;
-  // Shows the tooltip of the dimension under the pointer (empty: none).
+  // Shows the tooltip of the dimension under the pointer, or of an inactive
+  // constraint (mitcad#721; empty: none).
   void showDimensionTooltip(const QString& dimension, const QPointF& at);
   DimensionText m_dimensionText = DimensionText::Value;
 

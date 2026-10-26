@@ -583,19 +583,36 @@ impl SketchDef {
     }
 
     /// The solver inputs for driving dimensions with `value`'s values
-    /// (checked against their ranges), driven ones without.
+    /// (checked against their ranges), driven ones without. Inactive ones
+    /// (mitcad#721) are left out.
     pub fn dimension_inputs(
         &self,
         value: &mut dyn FnMut(ParamId) -> Result<f64, String>,
         name: &dyn Fn(ParamId) -> String,
     ) -> Result<Vec<DimensionInput<'_>>, String> {
+        self.dimension_inputs_where(true, value, name)
+    }
+
+    /// The solver inputs of the dimensions the solve applies (`applied`)
+    /// or of those it leaves out ([`SketchDef::dimension_applied`]); only the
+    /// applied ones' values are checked against their ranges.
+    fn dimension_inputs_where(
+        &self,
+        applied: bool,
+        value: &mut dyn FnMut(ParamId) -> Result<f64, String>,
+        name: &dyn Fn(ParamId) -> String,
+    ) -> Result<Vec<DimensionInput<'_>>, String> {
         self.dimensions
             .iter()
+            .filter(|d| self.dimension_applied(d) == applied)
             .map(|d| {
                 let v = match d.value {
                     Some(id) => {
                         let v = value(id)?;
-                        check_range(d.kind.range(), v).map_err(|e| format!("{} {e}", name(id)))?;
+                        if applied {
+                            check_range(d.kind.range(), v)
+                                .map_err(|e| format!("{} {e}", name(id)))?;
+                        }
                         Some(v)
                     }
                     None => None,
@@ -676,6 +693,41 @@ impl SketchDef {
         } else {
             drag_extra(entities, &self.constraints, &inputs, &extra, goals)?
         };
+        // What of the inactive constraints and dimensions the solution does
+        // not meet (mitcad#721).
+        if self.has_inactive() {
+            let mut at = entities.to_vec();
+            solved.store(&mut at);
+            let left_out = self
+                .dimension_inputs_where(false, value, name)
+                .unwrap_or_default();
+            let inactive: BTreeSet<ConstraintUid> = self
+                .constraints
+                .iter()
+                .filter(|c| !c.active)
+                .map(|c| c.id)
+                .chain(left_out.iter().map(|d| d.id))
+                .collect();
+            let plain = Extra {
+                bindings: &[],
+                skip: &skip,
+            };
+            solved.status.unmet_inactive =
+                crate::sketch::solve::unmet(&at, &self.constraints, &left_out, &plain)
+                    .into_iter()
+                    .filter(|k| inactive.contains(k))
+                    .collect();
+            // An inactive driven dimension constrains nothing either way:
+            // it measures as an active one does, so that its reference
+            // parameter never keeps a stale value (mitcad#723).
+            for d in left_out.iter().filter(|d| d.value.is_none()) {
+                if let Some(v) =
+                    crate::sketch::solve::measure_in(d.kind, &solved, &self.constraints)
+                {
+                    solved.status.driven.insert(d.id, v);
+                }
+            }
+        }
         for o in &self.offsets {
             let v = value(o.distance).map_err(SolveError::new)?;
             if !(v.is_finite() && v > 0.0) {
@@ -844,6 +896,25 @@ const ROUND: &[&str] = &["circle", "arc"];
 const ANY: &[&str] = &[];
 
 impl<P> SketchDef<P> {
+    /// Whether the solve applies a dimension (mitcad#721): an active one,
+    /// unless it is the spacing of an inactive equal spacing.
+    pub fn dimension_applied(&self, d: &Dimension<P>) -> bool {
+        d.active
+            && match d.kind {
+                DimensionKind::Spacing { constraint } => self
+                    .constraints
+                    .iter()
+                    .find(|c| c.id == constraint)
+                    .is_none_or(|c| c.active),
+                _ => true,
+            }
+    }
+
+    /// Whether any constraint or dimension is inactive (mitcad#721).
+    pub fn has_inactive(&self) -> bool {
+        self.constraints.iter().any(|c| !c.active) || self.dimensions.iter().any(|d| !d.active)
+    }
+
     /// Derived offset curves are computed, not solved: nothing may
     /// constrain or pattern them.
     fn check_derived(&self, derived: &BTreeSet<EntityUid>) -> Result<(), String> {
@@ -1200,7 +1271,9 @@ impl FeatureInfo for SketchDef {
     }
 
     fn check_values(&self, value: &dyn Fn(ParamId) -> f64) -> Result<(), String> {
-        for d in &self.dimensions {
+        // An inactive dimension's value is checked when it is activated
+        // (mitcad#721).
+        for d in self.dimensions.iter().filter(|d| self.dimension_applied(d)) {
             if let Some(id) = d.value {
                 check_range(d.kind.range(), value(id))
                     .map_err(|e| format!("{} {e}", d.kind.type_name()))?;

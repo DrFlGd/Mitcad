@@ -69,6 +69,11 @@ pub struct SketchStatus {
     /// For each redundant constraint, the set it follows from (itself
     /// included), so that a refusal can name them (mitcad#221).
     pub redundant_sets: Vec<Vec<SolverItem>>,
+    /// The inactive constraints and dimensions (mitcad#721) the solved
+    /// geometry does not meet (1e-4 mm): those that would move it when
+    /// activated. An import finds with it what of a sketch its file does not
+    /// keep.
+    pub unmet_inactive: Vec<ConstraintUid>,
 }
 
 impl SketchStatus {
@@ -156,6 +161,8 @@ impl fmt::Display for SolveError {
 }
 
 /// A dimension to solve: driving with its value (mm, rad), or driven.
+/// Inactive dimensions (mitcad#721) are not solver inputs; see
+/// [`unmet`] for them.
 #[derive(Debug, Clone, Copy)]
 pub struct DimensionInput<'a> {
     pub id: ConstraintUid,
@@ -319,6 +326,8 @@ impl Built {
                 anchors.insert(e.as_ref(), anchor);
             }
         }
+        // Inactive constraints are left out (mitcad#721).
+        let constraints: Vec<&Constraint> = constraints.iter().filter(|c| c.active).collect();
         let spacings = constraints
             .iter()
             .filter_map(|c| match &c.kind {
@@ -946,6 +955,37 @@ pub fn solve_extra(
     built.analyze(&mut solved);
     solved.status.stored_violations = violated;
     Ok(solved)
+}
+
+/// The constraints and dimensions that `entities`' positions do not meet
+/// (1e-4 mm), without solving: every one of `constraints` (active or not)
+/// and the driving ones of `dimensions`. Empty when they cannot be built
+/// into a system. The solve's [`SketchStatus::unmet_inactive`] (mitcad#721)
+/// is this on the solved positions, for the inactive ones.
+pub fn unmet(
+    entities: &[Entity],
+    constraints: &[Constraint],
+    dimensions: &[DimensionInput<'_>],
+    extra: &Extra<'_>,
+) -> Vec<ConstraintUid> {
+    let all: Vec<Constraint> = constraints
+        .iter()
+        .map(|c| Constraint {
+            active: true,
+            ..c.clone()
+        })
+        .collect();
+    let Ok(mut built) = Built::new(entities, &all, dimensions, extra) else {
+        return Vec::new();
+    };
+    built
+        .violated()
+        .into_iter()
+        .filter_map(|item| match item {
+            SolverItem::Constraint(k) => Some(k),
+            SolverItem::Fixed(_) => None,
+        })
+        .collect()
 }
 
 /// Solves, then pulls the goals toward their targets as far as the

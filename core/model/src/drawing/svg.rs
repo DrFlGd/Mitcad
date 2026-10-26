@@ -141,6 +141,18 @@ pub fn write(sheet: &Sheet) -> String {
                         list.join(" ")
                     );
                 }
+                Item::Shade { points, grey } => {
+                    let list: Vec<String> = points
+                        .iter()
+                        .map(|q| format!("{},{}", n(q[0]), n(h - q[1])))
+                        .collect();
+                    let level = (grey.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    let _ = writeln!(
+                        out,
+                        r#"<polygon points="{}" fill="rgb({level},{level},{level})" stroke="none"/>"#,
+                        list.join(" ")
+                    );
+                }
                 Item::Text {
                     at,
                     height,

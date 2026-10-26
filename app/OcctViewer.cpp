@@ -140,6 +140,9 @@ const Quantity_Color kConstructionColor(0.85, 0.50, 0.10, Quantity_TOC_RGB);
 const Quantity_Color kProfileFill(0.55, 0.70, 0.95, Quantity_TOC_RGB);
 const Quantity_Color kPreviewColor(0.30, 0.55, 0.95, Quantity_TOC_RGB);
 const Quantity_Color kCutPreviewColor(0.90, 0.20, 0.15, Quantity_TOC_RGB);
+// A split's extended tool (mitcad#712): the orange of the panel's second
+// selection input, the splitting tool's.
+const Quantity_Color kExtendedToolColor(0xff / 255.0, 0x8c / 255.0, 0x00 / 255.0, Quantity_TOC_sRGB);
 const Quantity_Color kPlaneColor(0.95, 0.70, 0.35, Quantity_TOC_RGB);
 const Quantity_Color kAxisColor(0.85, 0.45, 0.10, Quantity_TOC_RGB);
 const Quantity_Color kHiddenEdgeColor(0.45, 0.48, 0.54, Quantity_TOC_RGB);
@@ -478,6 +481,8 @@ constexpr float kPickedPlaneTransparency = 0.8f;
 // The occurrences a selected joint joins (mitcad#523): a faint tint.
 constexpr float kLightTransparency = 0.82f;
 constexpr float kDatumPreviewTransparency = 0.2f;
+// A split's extended tool (mitcad#712): the bodies and the cut show through.
+constexpr float kExtendedToolTransparency = 0.6f;
 // OCCT's own selection highlight; the selections shown are setHighlights'.
 const Quantity_Color kSelectedColor(0x1f / 255.0, 0x7a / 255.0, 0xff / 255.0, Quantity_TOC_sRGB);
 
@@ -2444,6 +2449,19 @@ void OcctViewer::setPreview(const TopoDS_Shape& shape, PreviewStyle style) {
                                   .arg(kDatumPreviewTransparency)
                                   .arg(kPickedPlaneTransparency);
       }
+    } else if (style == PreviewStyle::ExtendedTool) {
+      // Faces through the bodies, light enough to see the cut and the
+      // bodies behind it; their outline marks where the tool ends.
+      setEdgeStyle(m_preview, kExtendedToolColor, 1.5);
+      m_preview->SetMaterial(flatMaterial(0.0f));
+      m_preview->SetTransparency(kExtendedToolTransparency);
+      const occ::handle<Prs3d_Drawer>& drawer = m_preview->Attributes();
+      drawer->SetFaceBoundaryDraw(true);
+      drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(kExtendedToolColor, Aspect_TOL_SOLID, 1.5));
+      // The cut faces of the pieces lie on the tool: pull it towards the
+      // viewer so that it wins the depth test there.
+      drawer->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, -1.0f, -2.0f);
+      m_context->Display(m_preview, AIS_Shaded, -1, false);
     } else {
       m_preview->SetColor(style == PreviewStyle::Remove ? kCutPreviewColor : kPreviewColor);
       m_preview->SetTransparency(0.5);
@@ -2700,7 +2718,12 @@ std::vector<std::pair<SelectionItem, QPoint>> OcctViewer::pickPoints(SelectFilte
       }
     }
   } ownerTestsEnd{this, outer};
-  // The middle of a face's largest triangle lies on the face.
+  // A point well inside a face: the centre of the circle inscribed in its
+  // fattest triangle (the largest such circle), as far from that
+  // triangle's sides as any point of it. The middle of the largest
+  // triangle can lie at an edge of the face where the triangulation has
+  // long thin triangles (planes through Delabella, mitcad#644), where a
+  // click a pixel off picks the face beside it.
   const auto middleOf = [](const TopoDS_Face& face) -> std::optional<gp_Pnt> {
     TopLoc_Location location;
     const occ::handle<Poly_Triangulation> mesh = BRep_Tool::Triangulation(face, location);
@@ -2717,10 +2740,19 @@ std::vector<std::pair<SelectionItem, QPoint>> OcctViewer::pickPoints(SelectFilte
       const gp_Pnt pa = mesh->Node(a);
       const gp_Pnt pb = mesh->Node(b);
       const gp_Pnt pc = mesh->Node(c);
-      const double area = gp_Vec(pa, pb).Crossed(gp_Vec(pa, pc)).Magnitude();
-      if (area > largest) {
-        largest = area;
-        middle = gp_Pnt((pa.XYZ() + pb.XYZ() + pc.XYZ()) / 3.0);
+      // Each corner weighted by the length of the side across it.
+      const double acrossA = pb.Distance(pc);
+      const double acrossB = pc.Distance(pa);
+      const double acrossC = pa.Distance(pb);
+      const double perimeter = acrossA + acrossB + acrossC;
+      if (perimeter <= 0.0) {
+        continue;
+      }
+      // Twice the area over the perimeter: the inscribed circle's radius.
+      const double inscribed = gp_Vec(pa, pb).Crossed(gp_Vec(pa, pc)).Magnitude() / perimeter;
+      if (inscribed > largest) {
+        largest = inscribed;
+        middle = gp_Pnt((acrossA * pa.XYZ() + acrossB * pb.XYZ() + acrossC * pc.XYZ()) / perimeter);
       }
     }
     if (largest <= 0.0) {
@@ -3557,7 +3589,13 @@ void OcctViewer::applyCubePlacement() {
   sceneChanged();
 }
 
-void OcctViewer::setCoveredRects(const std::vector<QRect>& rects) { m_covered = rects; }
+void OcctViewer::setCoveredRects(const std::vector<QRect>& rects) {
+  if (rects == m_covered) {
+    return;
+  }
+  m_covered = rects;
+  emit coveredChanged();
+}
 
 void OcctViewer::setTopCards(const std::vector<QRect>& cards, int bottom) {
   m_topCards = cards;

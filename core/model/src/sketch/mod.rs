@@ -13,7 +13,8 @@
 //!   `centerline` (in profiles, unlike construction lines).
 //! - Constraints ([`Constraint`]) and dimensions ([`Dimension`]) share the
 //!   id space `k<n>`. A driving dimension's value is a parameter; a driven
-//!   one only measures.
+//!   one only measures. Either can be inactive (mitcad#721): kept and shown,
+//!   but left out of the solve until it is activated.
 //! - Stored positions are the last solved ones and the start of every
 //!   solve, so the same definition and values always give the same
 //!   geometry (`solve.rs`).
@@ -747,6 +748,24 @@ impl ConstraintKind {
 pub struct Constraint {
     pub id: ConstraintUid,
     pub kind: ConstraintKind,
+    /// Whether the solver applies it (mitcad#721): an inactive constraint
+    /// is kept and shown, but constrains nothing until it is activated.
+    pub active: bool,
+    /// Why it is inactive, when something says (an import: "not met in the
+    /// imported file"); None for an active one.
+    pub inactive_reason: Option<String>,
+}
+
+impl Constraint {
+    /// An active constraint.
+    pub fn new(id: ConstraintUid, kind: ConstraintKind) -> Self {
+        Self {
+            id,
+            kind,
+            active: true,
+            inactive_reason: None,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -754,6 +773,10 @@ struct ConstraintOut<'a> {
     id: ConstraintUid,
     #[serde(flatten)]
     kind: &'a ConstraintKind,
+    #[serde(skip_serializing_if = "is_true")]
+    active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inactive_reason: Option<&'a str>,
 }
 
 impl Serialize for Constraint {
@@ -761,6 +784,8 @@ impl Serialize for Constraint {
         ConstraintOut {
             id: self.id,
             kind: &self.kind,
+            active: self.active,
+            inactive_reason: inactive_reason(self.active, &self.inactive_reason),
         }
         .serialize(serializer)
     }
@@ -774,12 +799,42 @@ fn take_id<E: serde::de::Error>(map: &mut Map<String, Value>) -> Result<Constrai
     }
 }
 
+/// The `active` flag and the `inactive_reason` of a constraint or dimension
+/// (mitcad#721): active unless `"active": false`; a reason only goes with
+/// an inactive one.
+fn take_active<E: serde::de::Error>(
+    map: &mut Map<String, Value>,
+) -> Result<(bool, Option<String>), E> {
+    let active = match take_field(map, "active") {
+        None => true,
+        Some(Value::Bool(b)) => b,
+        Some(_) => return Err(E::custom("\"active\" must be true or false")),
+    };
+    let reason = match take_field(map, "inactive_reason") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text),
+        Some(_) => return Err(E::custom("\"inactive_reason\" must be a string")),
+    };
+    Ok((active, reason.filter(|r| !active && !r.is_empty())))
+}
+
+/// The reason written with an item: only an inactive one's.
+fn inactive_reason(active: bool, reason: &Option<String>) -> Option<&str> {
+    reason.as_deref().filter(|_| !active)
+}
+
 impl<'de> Deserialize<'de> for Constraint {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut map = Map::deserialize(deserializer)?;
         let id = take_id(&mut map)?;
+        let (active, inactive_reason) = take_active(&mut map)?;
         let kind = serde_json::from_value(Value::Object(map)).map_err(D::Error::custom)?;
-        Ok(Self { id, kind })
+        Ok(Self {
+            id,
+            kind,
+            active,
+            inactive_reason,
+        })
     }
 }
 
@@ -1005,9 +1060,28 @@ pub struct Dimension<P> {
     pub reference: Option<P>,
     /// Where the value is shown, in sketch coordinates.
     pub text: Option<[f64; 2]>,
+    /// Whether the solver applies it (mitcad#721): an inactive driving
+    /// dimension keeps its value but drives nothing, an inactive driven one
+    /// measures nothing, until it is activated.
+    pub active: bool,
+    /// Why it is inactive, when something says; None for an active one.
+    pub inactive_reason: Option<String>,
 }
 
 impl<P> Dimension<P> {
+    /// An active dimension: driving with `value`, driven without.
+    pub fn new(id: ConstraintUid, kind: DimensionKind, value: Option<P>) -> Self {
+        Self {
+            id,
+            kind,
+            value,
+            reference: None,
+            text: None,
+            active: true,
+            inactive_reason: None,
+        }
+    }
+
     pub fn is_driven(&self) -> bool {
         self.value.is_none()
     }
@@ -1033,6 +1107,8 @@ impl<P> Dimension<P> {
                 None => None,
             },
             text: self.text,
+            active: self.active,
+            inactive_reason: self.inactive_reason.clone(),
         })
     }
 }
@@ -1050,6 +1126,10 @@ struct DimensionOut<'a, P> {
     reference: Option<&'a P>,
     #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "is_true")]
+    active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inactive_reason: Option<&'a str>,
 }
 
 impl<P: Serialize> Serialize for Dimension<P> {
@@ -1061,6 +1141,8 @@ impl<P: Serialize> Serialize for Dimension<P> {
             driven: self.value.is_none(),
             reference: self.reference.as_ref(),
             text: self.text,
+            active: self.active,
+            inactive_reason: inactive_reason(self.active, &self.inactive_reason),
         }
         .serialize(serializer)
     }
@@ -1080,6 +1162,7 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for Dimension<P> {
         let text = take_field(&mut map, "text")
             .map(|v| serde_json::from_value::<[f64; 2]>(v).map_err(D::Error::custom))
             .transpose()?;
+        let (active, inactive_reason) = take_active(&mut map)?;
         let kind = serde_json::from_value(Value::Object(map)).map_err(D::Error::custom)?;
         match (driven, &value) {
             (true, Some(_)) => Err(D::Error::custom(format!(
@@ -1097,6 +1180,8 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for Dimension<P> {
                 value,
                 reference,
                 text,
+                active,
+                inactive_reason,
             }),
         }
     }

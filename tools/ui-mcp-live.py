@@ -41,7 +41,7 @@ PROTOCOL = "2025-11-25"
 TIMEOUT = 60
 FRAME_LIMIT = 8 * 1024 * 1024
 LIVE_TOOLS = {"document_list", "model_query", "model_command", "document_save", "document_open", "ui_state", "ui_log",
-              "ui_screenshot", "ui_select", "ui_command", "ui_camera", "model_export"}
+              "ui_screenshot", "ui_select", "ui_command", "ui_camera", "model_export", "model_reference"}
 # The projection of the block's bottom face in the sketch F4, as the
 # design's definition lists it.
 PROJECTED = ["p1", "p2", "c3", "p4", "c5", "p6", "c7", "c8"]
@@ -269,7 +269,18 @@ def run_flow(bridge, design, say=print):
     """The live debugging flow on the open design (see the module's text)."""
     names = {tool["name"] for tool in bridge.request("tools/list")["result"]["tools"]}
     check(names == LIVE_TOOLS, "Live catalog: " + repr(sorted(names)))
+    # The reference in parts, with the names the live server permits
+    # (mitcad#714).
+    contents = bridge.tool("model_reference", {})
+    check("sketch.add_line" in contents["commands"] and "faces" in contents["queries"]
+          and "extrude" in contents["features"], "model_reference lacks the permitted names")
+    check("export" not in contents["commands"], "model_reference lists a file command")
+    row = bridge.tool("model_reference", {"query": "faces"})
+    check("| `faces` |" in row["text"] and row["permitted"], "model_reference's row of faces: " + repr(row))
     document = bridge.tool("document_list", {})["documents"][0]["document"]
+    unknown = bridge.tool("model_query", {"document": document, "query": {"query": "bbox"}}, error=True)
+    check("unknown query 'bbox'" in unknown["error"] and "bodies" in unknown["error"],
+          "An unknown query does not list the queries: " + repr(unknown))
 
     # Refusals must preserve the complete live camera, including FOV. The
     # new eye/FOV would previously be applied before framing was checked.

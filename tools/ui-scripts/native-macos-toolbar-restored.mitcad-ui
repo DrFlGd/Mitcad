@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/platform app/files app/MainWindowNative.cpp
+# check-all sources: app/platform app/files app/MainWindowNative.cpp app/mcp/AgentIndicator.cpp
 # A second application process restores the explicitly customized layout.
 expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
 sleep 800
 expect-native-toolbar-item mitcad.sidebar true
 expect-native-toolbar-item mitcad.search true
 expect-native-toolbar-item mitcad.project false
+expect-native-toolbar-item mitcad.agent true
 expect-native-toolbar-item command.file.open_from_project true
 native-toolbar-item command.file.open_from_project remove
 expect-native-toolbar-item command.file.open_from_project false

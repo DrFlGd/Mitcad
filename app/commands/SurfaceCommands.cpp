@@ -863,6 +863,7 @@ CommandDef trimSurfaceCommand(const CommandContext& context) {
                                   QObject::tr("Cuts a surface body and keeps the pieces clicked"));
   def.featureType = QStringLiteral("trim_surface");
   def.surfaceBodiesOnly = true; // the view's context menu (mitcad#494)
+  def.extendedToolPreview = true; // the trimming tool as it is extended (mitcad#712)
   def.keywords << QStringLiteral("trim surface") << QStringLiteral("cut");
   def.inputs = {
       selectionInput(QStringLiteral("body"), QObject::tr("Surface"), SelectKind::Body, 1, 1)

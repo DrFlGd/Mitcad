@@ -63,6 +63,8 @@ int drawingSettingsTests() {
   // Typed scales.
   CHECK(mitcad::normalizedScale(QStringLiteral(" 1 : 5 ")) == QStringLiteral("1:5"));
   CHECK(mitcad::normalizedScale(QStringLiteral("Fit to sheet")) == QStringLiteral("fit"));
+  // The dialog's own entry, worded as the drawing workspace's (mitcad#725).
+  CHECK(mitcad::normalizedScale(QStringLiteral("Fit the Sheet")) == QStringLiteral("fit"));
   CHECK(mitcad::normalizedScale(QStringLiteral("2.5:1")) == QStringLiteral("2.5:1"));
   CHECK(mitcad::normalizedScale(QStringLiteral("1:0")).isEmpty());
   CHECK(mitcad::normalizedScale(QStringLiteral("half")).isEmpty());

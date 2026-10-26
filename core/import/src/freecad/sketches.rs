@@ -22,11 +22,14 @@
 //!   projected ones at the same places; defining ones (1.1) are in the
 //!   profiles, the others construction geometry.
 //! - Check: the solved points must stay within 1e-4 mm of FreeCAD's (radii
-//!   too); else the dimensions go driven, else the constraints are left
-//!   out (`partial`), as in the .f3d import. The solution is then compared
+//!   too); else the fewest constraints and dimensions that keep it off are
+//!   imported inactive, else all of them (`partial`, mitcad#721), as in the
+//!   .f3d import (`crate::sketch::inactive`). The solution is then compared
 //!   with the sketch's stored shape (its edges projected into the sketch:
 //!   each a curve of the solution, within 1e-4 mm, of the same length).
 //! - The sketch keeps FreeCAD's visibility.
+
+use std::collections::BTreeSet;
 
 use mitcad_freecad::sketch::{self as fc, Curve, PointPos};
 use mitcad_freecad::{Object, Placement};
@@ -46,6 +49,7 @@ use super::report::{ObjectOutcome, ShapeCheck, SketchReport};
 use super::sketch::{self, ExternalMap, Kind, Translated};
 use super::{Importer, Key, placement_of, transform};
 use crate::geom::{self, add, cross, dot, norm, scale, sub};
+use crate::sketch::inactive;
 
 /// The largest error of solved sketch points accepted, mm.
 const SKETCH_TOLERANCE: f64 = 1e-4;
@@ -136,36 +140,48 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let frame_def = geom::relative_frame(&plane.1, &frame);
         let mut entities = external.entities.clone();
         entities.extend(t.entities.iter().cloned());
-        let levels: [(&[Value], &[Value], &str); 3] = [
-            (&t.constraints, &t.dimensions, ""),
-            (&t.constraints, &t.driven_dimensions, "dimensions driven"),
-            (
-                &[],
-                &t.driven_dimensions,
-                "without constraints, dimensions driven",
-            ),
-        ];
-        let mut last = String::new();
-        for (level, (constraints, dimensions, what)) in levels.iter().enumerate() {
+        // Every constraint and dimension active (level 0); the fewest that
+        // keep the sketch off FreeCAD's solution inactive and everything else
+        // active (level 1, mitcad#721); all of them inactive (level 2).
+        let all_items = inactive::item_ids(&t.constraints, &t.dimensions);
+        let def_with = |off: &BTreeSet<String>| -> Value {
             let mut def = json!({"type": "sketch", "plane": plane.0, "entities": entities,
-                                 "constraints": constraints, "dimensions": dimensions,
+                                 "constraints": inactive::mark(&t.constraints, off),
+                                 "dimensions": inactive::mark(&t.dimensions, off),
                                  "projections": external.projections});
             if let Some(f) = &frame_def {
                 def["frame"] = serde_json::to_value(f).expect("serializes");
             }
-            let depth = self.doc.undo_depth();
-            let added = match self.add_named(&def, &label, place.component) {
-                // The model refuses a constraint's parameter as a driven
-                // dimension's reference (a feature before the sketch uses
-                // it): the dimensions get their own (mitcad#250).
-                Err(_) if crate::sketch::has_references(&def) => self.add_named(
-                    &crate::sketch::without_references(&def),
-                    &label,
-                    place.component,
-                ),
-                other => other,
+            def
+        };
+        let mut last = String::new();
+        for level in 0..3 {
+            let off: BTreeSet<String> = match level {
+                0 => BTreeSet::new(),
+                1 => {
+                    // Everything inactive first: whether FreeCAD's positions
+                    // solve at all, and what of the constraints and
+                    // dimensions they do not meet. Then the fewest of them
+                    // inactive.
+                    let everything: BTreeSet<String> = all_items.iter().cloned().collect();
+                    if everything.is_empty() {
+                        continue;
+                    }
+                    let Some(unmet) =
+                        self.sketch_attempt(&def_with(&everything), &label, place.component, &t)
+                    else {
+                        continue;
+                    };
+                    inactive::fewest(&unmet, &all_items, &mut |set| {
+                        self.sketch_attempt(&def_with(set), &label, place.component, &t)
+                            .is_some()
+                    })
+                }
+                _ => all_items.iter().cloned().collect(),
             };
-            let uid = match added {
+            let def = def_with(&off);
+            let depth = self.doc.undo_depth();
+            let uid = match self.add_sketch_def(&def, &label, place.component) {
                 Ok(uid) => uid,
                 Err(e) => {
                     last = e;
@@ -178,9 +194,9 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 self.undo_to(depth);
                 continue;
             }
-            // The named constraints' parameters are the sketch's.
-            if level == 0
-                && !adopt.is_empty()
+            // The named constraints' parameters are the sketch's (an
+            // inactive dimension keeps its value).
+            if !adopt.is_empty()
                 && let Err(e) = self.doc.adopt_parameters(uid, &adopt)
             {
                 report.notes.push(format!("parameters: {e}"));
@@ -188,11 +204,17 @@ impl<K: Kernel> Importer<'_, '_, K> {
             report.feature = Some(uid.to_string());
             report.error = error;
             report.entities = entities.len();
-            report.mitcad_constraints = constraints.len();
-            report.dimensions = dimensions.len();
+            report.mitcad_constraints = t.constraints.len();
+            report.dimensions = t.dimensions.len();
             report.notes.extend(plane.2.iter().cloned());
-            if level > 0 {
-                report.notes.push((*what).to_owned());
+            if level == 2 {
+                report.notes.push(
+                    "no subset of its constraints and dimensions solves to FreeCAD's \
+                     solution: all of them inactive"
+                        .to_owned(),
+                );
+            } else if let Some(note) = inactive::summary(&t.constraints, &t.dimensions, &off) {
+                report.notes.push(note);
             }
             report.notes.extend(external.notes.iter().cloned());
             report.notes.extend(t.notes.iter().cloned());
@@ -265,6 +287,56 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 break;
             }
         }
+    }
+
+    /// Adds a sketch definition, without its driven dimensions' references
+    /// where the model refuses a constraint's parameter as one (a feature
+    /// before the sketch uses it): the dimensions get their own
+    /// (mitcad#250).
+    fn add_sketch_def(
+        &mut self,
+        def: &Value,
+        label: &str,
+        component: ComponentUid,
+    ) -> Result<FeatureUid, String> {
+        match self.add_named(def, label, component) {
+            Err(_) if crate::sketch::has_references(def) => {
+                self.add_named(&crate::sketch::without_references(def), label, component)
+            }
+            other => other,
+        }
+    }
+
+    /// Adds a sketch definition, checks that it solves to FreeCAD's
+    /// solution and takes it back (mitcad#721): Some with the inactive
+    /// constraints and dimensions its solution does not meet when it does,
+    /// None when it does not.
+    fn sketch_attempt(
+        &mut self,
+        def: &Value,
+        label: &str,
+        component: ComponentUid,
+        t: &Translated,
+    ) -> Option<Vec<String>> {
+        let depth = self.doc.undo_depth();
+        let result = self
+            .add_sketch_def(def, label, component)
+            .ok()
+            .filter(|uid| self.solution_error(*uid, t) <= SKETCH_TOLERANCE)
+            .map(|uid| {
+                self.doc
+                    .sketch_output(uid)
+                    .map(|o| {
+                        o.status()
+                            .unmet_inactive
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+        self.undo_to(depth);
+        result
     }
 
     /// How far the solved sketch is from FreeCAD's: points and radii, mm.

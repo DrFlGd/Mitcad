@@ -72,7 +72,8 @@ EOF
   { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
 ui_start_display
-ui_start_app --open "$FILE"
+# Qt's own file dialogs: Preferences' Add... is answered by typing the folder.
+ui_start_app --no-native-dialogs --open "$FILE"
 ui_expect_log "Opened $FILE" "the box opened"
 
 echo "--- The texture folder as a source"
@@ -145,10 +146,11 @@ open(sys.argv[1], "wb").write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(
 EOF
 ui_mark
 ui_step "Preferences: Textures"         ui_command "Preferences: Textures"
-ui_expect_new "Preferences texture folder at" "the Textures page"
+ui_expect_new "Preferences texture folder add at" "the Textures page"
 ui_focus_dialog '^Preferences$'
-ui_step "click the folder field"        ui_click_logged "Preferences texture folder"
-ui_step "type the second folder"        xdotool type --delay 20 -- "$WORK/more"
+ui_step "Add..."                        ui_click_logged "Preferences texture folder add"
+ui_step "choose the second folder"      ui_type_path "Texture Folder" "$WORK/more"
+ui_focus_dialog '^Preferences$'
 ui_step "OK (Return)"                   ui_key Return
 ui_expect_new "Preferences: texture folders $WORK/textures, $WORK/more" "the folder is added"
 grep -q "^folders=.*$WORK/more" "$UI_CONFIG/Mitcad/Mitcad.conf" || ui_fail "the settings do not keep the folder"

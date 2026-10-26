@@ -22,8 +22,11 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepMesh_MeshAlgoFactory.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
 #include <BRepBndLib.hxx>
@@ -38,6 +41,10 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <IMeshData_Face.hxx>
+#include <IMeshTools_MeshAlgo.hxx>
+#include <IMeshTools_MeshAlgoFactory.hxx>
+#include <IMeshTools_Parameters.hxx>
 #include <Message_ProgressIndicator.hxx>
 #include <Message_ProgressScope.hxx>
 #include <TopExp.hxx>
@@ -46,6 +53,7 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax2.hxx>
+#include <gp_Circ.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
@@ -311,7 +319,7 @@ void test_triangulate_keeps_original() {
   CHECK(!mitcad::io::is_mesh(block));
   bool threw = false;
   try {
-    mitcad::io::triangulate(block, mitcad::io::MeshOptions{0.0, 0.5, false, 0, false});
+    mitcad::io::triangulate(block, mitcad::io::MeshOptions{0.0, 0.5, false, 0, false, false});
   } catch (const mitcad::io::Error&) {
     threw = true;
   }
@@ -409,7 +417,7 @@ void test_building_scale_sphere(const std::string& dir) {
   // Meshed in place (the 3D view's meshes, made on the model's thread):
   // every face triangulated within the bound; meshing again keeps them.
   const TopoDS_Shape shown = dome(1.0);
-  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
   CHECK(!mitcad::io::has_triangulation(shown));
   CHECK(mitcad::io::mesh_in_place(shown, view));
   CHECK(mitcad::io::has_triangulation(shown));
@@ -461,7 +469,7 @@ public:
 // Counts, not times.
 void test_mesh_all_in_place() {
   using mitcad::io::MeshOptions;
-  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
   const auto bodies = [] {
     return std::vector<TopoDS_Shape>{dome(1.0), dome(0.01), filleted_block(), holed_block()};
   };
@@ -538,7 +546,7 @@ TopoDS_Shape perforated_plate() {
 void test_mesh_report_and_fast_planes() {
   using mitcad::io::MeshOptions;
   using mitcad::io::MeshReport;
-  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
   const TopoDS_Shape plate = perforated_plate();
   MeshReport first;
   CHECK(mitcad::io::mesh_in_place(plate, view, Message_ProgressRange(), &first));
@@ -578,7 +586,7 @@ void test_mesh_report_and_fast_planes() {
 // of them turned over.
 void test_compare_meshing() {
   using mitcad::io::MeshOptions;
-  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
   MeshOptions fast = view;
   fast.fast_planes = true;
   const TopoDS_Shape plate = perforated_plate();
@@ -635,6 +643,206 @@ void test_compare_meshing() {
   CHECK(near(quality.area, 60.0, 1e-9));
 }
 
+// A stand-in for Delabella's planes (use_fast_plane_algorithms_for_tests,
+// mitcad#644): a plane left without a triangulation, as Delabella left a
+// regular quarter disc, or the default insertion's triangulation with one
+// triangle more reaching 60 mm past the face, as Delabella covered a sliver
+// many times over.
+enum class Spoil { Nothing, Outside };
+
+class SpoiledPlane : public IMeshTools_MeshAlgo {
+public:
+  SpoiledPlane(Spoil spoil, occ::handle<IMeshTools_MeshAlgo> inner) : m_spoil(spoil), m_inner(std::move(inner)) {}
+
+  void Perform(const IMeshData::IFaceHandle& face, const IMeshTools_Parameters& parameters,
+               const Message_ProgressRange& range) override {
+    if (m_spoil == Spoil::Nothing) {
+      return;
+    }
+    m_inner->Perform(face, parameters, range);
+    const TopoDS_Face& shape = face->GetFace();
+    TopLoc_Location location;
+    const occ::handle<Poly_Triangulation> made = BRep_Tool::Triangulation(shape, location);
+    if (made.IsNull() || made->NbNodes() < 2 || !made->HasUVNodes()) {
+      return;
+    }
+    const int nodes = made->NbNodes();
+    const int triangles = made->NbTriangles();
+    occ::handle<Poly_Triangulation> wider = new Poly_Triangulation(nodes + 1, triangles + 1, true);
+    for (int i = 1; i <= nodes; ++i) {
+      wider->SetNode(i, made->Node(i));
+      wider->SetUVNode(i, made->UVNode(i));
+    }
+    for (int i = 1; i <= triangles; ++i) {
+      wider->SetTriangle(i, made->Triangle(i));
+    }
+    const gp_Pnt2d outside(made->UVNode(1).X() + 37.0, made->UVNode(1).Y() + 49.0);
+    wider->SetUVNode(nodes + 1, outside);
+    wider->SetNode(nodes + 1, BRepAdaptor_Surface(shape, false).Value(outside.X(), outside.Y()));
+    wider->SetTriangle(triangles + 1, Poly_Triangle(1, 2, nodes + 1));
+    wider->Deflection(made->Deflection());
+    BRep_Builder().UpdateFace(shape, wider);
+  }
+
+private:
+  Spoil m_spoil;
+  occ::handle<IMeshTools_MeshAlgo> m_inner;
+};
+
+class SpoiledPlanes : public IMeshTools_MeshAlgoFactory {
+public:
+  explicit SpoiledPlanes(Spoil spoil) : m_spoil(spoil) {}
+
+  occ::handle<IMeshTools_MeshAlgo> GetAlgo(const GeomAbs_SurfaceType type,
+                                           const IMeshTools_Parameters& parameters) const override {
+    return new SpoiledPlane(m_spoil, BRepMesh_MeshAlgoFactory().GetAlgo(type, parameters));
+  }
+
+private:
+  Spoil m_spoil;
+};
+
+// A lens 20 mm long and 0.1 mm thick between two arcs of 1 000 mm radius:
+// a sliver of a plane.
+TopoDS_Shape plane_sliver() {
+  const gp_Pnt a(0.0, 0.0, 0.0);
+  const gp_Pnt b(20.0, 0.0, 0.0);
+  const double radius = (100.0 + 0.05 * 0.05) / (2.0 * 0.05);
+  const gp_Circ below(gp_Ax2(gp_Pnt(10.0, radius - 0.05, 0.0), gp::DZ()), radius);
+  const gp_Circ above(gp_Ax2(gp_Pnt(10.0, 0.05 - radius, 0.0), gp::DZ()), radius);
+  // Counter-clockwise round each centre: a to b along the bottom, b to a
+  // along the top.
+  const TopoDS_Edge bottom = BRepBuilderAPI_MakeEdge(below, a, b).Edge();
+  const TopoDS_Edge top = BRepBuilderAPI_MakeEdge(above, b, a).Edge();
+  return BRepBuilderAPI_MakeFace(BRepBuilderAPI_MakeWire(bottom, top).Wire(), true).Face();
+}
+
+// A quarter disc of 5 mm radius: two lines and an arc.
+TopoDS_Shape quarter_disc() {
+  const gp_Pnt centre(0.0, 0.0, 0.0);
+  const gp_Pnt x(5.0, 0.0, 0.0);
+  const gp_Pnt y(0.0, 5.0, 0.0);
+  const TopoDS_Edge arc = BRepBuilderAPI_MakeEdge(gp_Circ(gp::XOY(), 5.0), x, y).Edge();
+  const TopoDS_Wire wire =
+      BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(centre, x).Edge(), arc, BRepBuilderAPI_MakeEdge(y, centre).Edge())
+          .Wire();
+  return BRepBuilderAPI_MakeFace(wire, true).Face();
+}
+
+// Every plane of a meshed shape triangulated, its triangles covering the
+// area its boundary's polygons enclose (io::plane_mesh_area), that area
+// within `tolerance` of the face's own (relative); how many planes.
+int planes_fit(const TopoDS_Shape& meshed, double tolerance) {
+  int planes = 0;
+  for (TopExp_Explorer it(meshed, TopAbs_FACE); it.More(); it.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(it.Current());
+    if (BRepAdaptor_Surface(face, false).GetType() != GeomAbs_Plane) {
+      continue;
+    }
+    ++planes;
+    const mitcad::io::PlaneMeshArea area = mitcad::io::plane_mesh_area(face);
+    GProp_GProps properties;
+    BRepGProp::SurfaceProperties(face, properties);
+    std::printf("Plane of %.4f mm²: boundary polygon %.4f mm², triangles %.4f mm²\n", properties.Mass(),
+                area.boundary, area.triangles);
+    CHECK(area.boundary > 0.0);
+    CHECK(mitcad::io::plane_area_fits(area.triangles, area.boundary));
+    CHECK(relative_near(area.boundary, properties.Mass(), tolerance));
+  }
+  return planes;
+}
+
+// The final display tier's planes (MeshOptions::check_planes, mitcad#644):
+// through Delabella, a plane without a triangulation or with its area off
+// its boundary's triangulated again by the default insertion. A perforated
+// plate, a sliver and a quarter disc get triangulations covering their
+// boundaries; the plate the default's triangles. With a stand-in for
+// Delabella that leaves the planes without triangulations, or reaches past
+// them, every plane is made again and gets the default's triangulation,
+// counted in the report; the interactive tier (fast_planes unchecked)
+// keeps the stand-in's.
+void test_checked_planes() {
+  using mitcad::io::MeshOptions;
+  using mitcad::io::MeshReport;
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
+  MeshOptions fast = view;
+  fast.fast_planes = true;
+  MeshOptions checked = fast;
+  checked.check_planes = true;
+
+  CHECK(mitcad::io::plane_area_fits(100.0, 100.09));
+  CHECK(!mitcad::io::plane_area_fits(100.0, 100.2));
+  CHECK(mitcad::io::plane_area_fits(0.0185, 0.018)); // 0.001 mm² at least
+  CHECK(!mitcad::io::plane_area_fits(0.026, 0.018));
+  CHECK(!mitcad::io::plane_area_fits(11.769, 0.018));
+  CHECK(mitcad::io::plane_mesh_area(TopoDS::Face(quarter_disc())).boundary < 0.0); // not meshed
+
+  const TopoDS_Shape reference = perforated_plate();
+  CHECK(mitcad::io::mesh_in_place(reference, view));
+
+  // Delabella, checked.
+  const TopoDS_Shape plate = perforated_plate();
+  MeshReport report;
+  CHECK(mitcad::io::mesh_in_place(plate, checked, Message_ProgressRange(), &report));
+  CHECK(report.meshed == 30 && report.failed == 0);
+  CHECK(report.planes_redone == 0);
+  CHECK(report.line().find("planes redone") == std::string::npos);
+  CHECK(face_triangles(plate) == face_triangles(reference));
+  CHECK(planes_fit(plate, 1e-2) == 6);
+  // The sliver's arcs, 0.05 mm high, are polygons of a few points.
+  const std::pair<TopoDS_Shape, double> shapes[] = {{plane_sliver(), 0.3}, {quarter_disc(), 1e-2}};
+  for (const auto& [face, tolerance] : shapes) {
+    CHECK(mitcad::io::mesh_in_place(face, checked));
+    CHECK(mitcad::io::has_triangulation(face));
+    CHECK(planes_fit(face, tolerance) == 1);
+  }
+
+  for (const Spoil spoil : {Spoil::Nothing, Spoil::Outside}) {
+    mitcad::io::use_fast_plane_algorithms_for_tests(new SpoiledPlanes(spoil));
+    // Checked: every plane made again by the default.
+    const TopoDS_Shape redone = perforated_plate();
+    MeshReport again;
+    CHECK(mitcad::io::mesh_in_place(redone, checked, Message_ProgressRange(), &again));
+    std::printf("Stand-in planes %s, checked: %s\n", spoil == Spoil::Nothing ? "missing" : "too large",
+                again.line().c_str());
+    CHECK(again.meshed == 30 && again.failed == 0);
+    CHECK(again.planes_redone == 6);
+    CHECK(again.line().find("; planes redone 6") != std::string::npos);
+    CHECK(face_triangles(redone) == face_triangles(reference));
+    CHECK(planes_fit(redone, 1e-2) == 6);
+    const std::pair<TopoDS_Shape, double> spoilt[] = {{plane_sliver(), 0.3}, {quarter_disc(), 1e-2}};
+    for (const auto& [face, tolerance] : spoilt) {
+      MeshReport alone;
+      CHECK(mitcad::io::mesh_in_place(face, checked, Message_ProgressRange(), &alone));
+      CHECK(alone.planes_redone == 1);
+      CHECK(mitcad::io::has_triangulation(face));
+      CHECK(planes_fit(face, tolerance) == 1);
+    }
+
+    // Unchecked (the interactive tier): the stand-in's planes as they are.
+    const TopoDS_Shape kept = perforated_plate();
+    MeshReport unchecked;
+    CHECK(mitcad::io::mesh_in_place(kept, fast, Message_ProgressRange(), &unchecked));
+    CHECK(unchecked.planes_redone == 0);
+    int spoiled = 0;
+    for (TopExp_Explorer it(kept, TopAbs_FACE); it.More(); it.Next()) {
+      const TopoDS_Face& face = TopoDS::Face(it.Current());
+      if (BRepAdaptor_Surface(face, false).GetType() != GeomAbs_Plane) {
+        continue;
+      }
+      TopLoc_Location location;
+      if (spoil == Spoil::Nothing) {
+        spoiled += BRep_Tool::Triangulation(face, location).IsNull() ? 1 : 0;
+      } else {
+        const mitcad::io::PlaneMeshArea area = mitcad::io::plane_mesh_area(face);
+        spoiled += area.boundary > 0.0 && !mitcad::io::plane_area_fits(area.triangles, area.boundary) ? 1 : 0;
+      }
+    }
+    CHECK(spoiled == 6);
+  }
+  mitcad::io::use_fast_plane_algorithms_for_tests(occ::handle<IMeshTools_MeshAlgoFactory>());
+}
+
 // A face's triangulation given to the same face of a copy (mitcad#635):
 // every face of a copy that shares the surfaces and curves takes its
 // donor's, each edge with its polygons (a prism's top edges, its base's
@@ -643,7 +851,7 @@ void test_compare_meshing() {
 // face that has a triangulation of its own.
 void test_reuse_triangulations() {
   using mitcad::io::MeshOptions;
-  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
   BRepBuilderAPI_MakePolygon square(gp_Pnt(0, 0, 0), gp_Pnt(30, 0, 0), gp_Pnt(30, 20, 0), gp_Pnt(0, 20, 0), true);
   BRepBuilderAPI_MakeFace base(square.Wire(), true);
   BRepBuilderAPI_MakePolygon slot(gp_Pnt(5, 5, 0), gp_Pnt(5, 15, 0), gp_Pnt(25, 15, 0), gp_Pnt(25, 5, 0), true);
@@ -714,7 +922,7 @@ int circle_points(const TopoDS_Shape& meshed) {
 // times.
 void test_building_scale_round_faces() {
   using mitcad::io::MeshOptions;
-  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false};
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
   MeshOptions unlimited = view;
   unlimited.face_triangles = 0;
 
@@ -1204,6 +1412,7 @@ int main(int argc, char** argv) {
     test_mesh_report_and_fast_planes();
     test_reuse_triangulations();
     test_compare_meshing();
+    test_checked_planes();
     test_building_scale_round_faces();
     test_stl(dir);
     test_indexed_mesh(dir);

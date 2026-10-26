@@ -154,11 +154,29 @@
 //! components', occurrences' and bodies' choices and overrides are
 //! properties of the `Print Printer` and `Print Process` sets.
 //!
-//! Measurement objects (mitcad#649), when there are any: `measurements`
-//! (`name`, `kind`, `color` `#rrggbb`, `"visible": false`, the picks `a`
+//! Annotations (mitcad#702), when there are any: `annotations` (`name`,
+//! `kind`, `color` `#rrggbb`, `"visible": false`, `group`, the picks `a`
 //! and `b` as the `measure` query's selections: `body` with `face`, `edge`
-//! or `vertex`, or `datum`, and `occurrence`), see
-//! `document/measurements.rs`. Their values are not stored.
+//! or `vertex`, or `datum`, and `occurrence`; `plane`, `line_offset`,
+//! `text_offset`, `format`, `tolerance`, a note's `text` and `at`), see
+//! `document/annotations.rs`. Their values are not stored. While every one
+//! has only the fields of the measurement objects of mitcad#649 (a
+//! dimension's `name`, `kind`, `color`, `visible`, `a`, `b`), they are
+//! written as `measurements`, which older versions read; both lists are
+//! read as annotations.
+//!
+//! Purge volumes set by hand (mitcad#705), when there are any:
+//! `purge_volumes` (`[{"from", "to", "volume"}]`: material ids and mm³),
+//! see [`crate::print_purge`]; a pair of a material the design no longer
+//! has is kept.
+//!
+//! Drawings of the root and the components (mitcad#707), when there are
+//! any: `drawings` (`uid` `D<n>`, `name`, `component` unless the root's,
+//! `sheets`: `name`, `size`, `orientation`, `projection`, `title_block`,
+//! `units`, `annotations`, `views`: `id`, `kind` {`type` `base`,
+//! `projected`, `section` or `detail` with its fields}, `place`, `scale`,
+//! `style`, `label`, `subject`, `breaks`, `aligned`), see
+//! [`crate::drawing::def`]. Their lines are not stored.
 //!
 //! Appearances of the document (mitcad#46), when there are any:
 //! `appearances` (`id`, `name`, `base_color`, `metalness`, `roughness`,
@@ -639,9 +657,9 @@ pub(crate) fn single_file(state: &DocState) -> String {
 
 /// The design file of a new, empty design (what
 /// `Document::new_design(..).to_json()` writes: the root and an empty
-/// active Part1, both with the general defaults, mitcad#220, mitcad#421),
-/// without a geometry kernel:
-/// the projects' `new_design` (mitcad#144).
+/// active Component1, both with the general defaults, mitcad#220,
+/// mitcad#421), without a geometry kernel: the projects' `new_design`
+/// (mitcad#144).
 pub fn empty_design() -> String {
     v2::save(&DocState::new_design())
 }

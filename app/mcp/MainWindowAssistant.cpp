@@ -13,8 +13,8 @@ void MainWindow::showConnectAssistant() {
     existing->show(); existing->raise(); existing->activateWindow(); return;
   }
   auto* dialog = new mcp::ConnectAssistantDialog({
-      [this] { return m_mcpAgentNames; },
-      [this] { if (m_mcpDisconnectAll) m_mcpDisconnectAll(); },
+      [this] { return m_agentIndicator->agents(); },
+      [this](const QStringList& ids) { if (m_mcpDisconnect) m_mcpDisconnect(ids); },
       projectsDirectory()}, this);
   showDialog(dialog);
 }

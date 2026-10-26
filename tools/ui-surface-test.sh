@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands
+# check-all sources: app/commands app/framework/CommandSession.cpp
 # The SURFACE group (mitcad#455) through the real UI, with the bodies the
 # model reports (commands.md, "Surface modelling"):
 #   - Surface Extrude: a 60 x 40 rectangle's profile (instead of the newest
@@ -13,7 +13,8 @@
 #     body of 3200 mm3 (the patch stays).
 #   - Offset Surface: the thickened patch's top 3 mm out; Ruled Surface: a
 #     strip off a wall's open edges; Extend: that wall past its open edges.
-#   - Trim: the walls cut by Plane1 (10 mm up), the piece clicked kept;
+#   - Trim: the walls cut by Plane1 (10 mm up), the plane drawn as the
+#     trim extends it (mitcad#712), the piece clicked kept;
 #     Unstitch: one of their faces a surface body of its own; Reverse
 #     Normal: a face of the revolved surface; Untrim: the offset face with
 #     its outer boundary back, a new surface.
@@ -166,6 +167,12 @@ ui_step "Plane1 (10 mm up) as the tool"    ui_click_logged "Browser Root/Constru
 ui_step "the keep input"                   ui_click_logged "Panel Trim input keep"
 ui_step "click the walls"                  ui_click_pick "face F9.b0/"
 ui_expect_log "Preview Trim: ok" "previewed"
+# Plane1 as the trim extends it, drawn across the walls at z = 10
+# (mitcad#712).
+ui_expect_log "Preview extended tool: " "the extended tool logged"
+grep -Eq '^Preview extended tool: -?[0-9.]+,-?[0-9.]+,10\.0 to -?[0-9.]+,-?[0-9.]+,10\.0$' "$UI_LOG" ||
+  ui_fail "the extended plane is not drawn at z = 10: $(grep '^Preview extended tool: ' "$UI_LOG" | tail -1)"
+echo "ok   the extended plane drawn at z = 10"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_log "Added trim keeping 1 pieces" "trim added"
 ui_step "unstitch (search)"                ui_command "Unstitch"

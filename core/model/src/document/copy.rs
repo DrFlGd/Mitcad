@@ -238,6 +238,13 @@ impl DocState {
         // Their properties, and the bodies' of the copied features
         // (mitcad#496): another design's root gives its own to `into`.
         self.copy_properties(source, &components, &occurrences, &uids);
+        // The copied components' drawings come along (mitcad#707).
+        let copied: BTreeMap<ComponentUid, ComponentUid> = components
+            .iter()
+            .filter(|(c, _)| inside.contains(*c))
+            .map(|(c, copy)| (*c, *copy))
+            .collect();
+        self.copy_drawings(source, &copied, &occurrences, &uids);
         let prefix = crate::links::first_path(&self.assembly, into, None).map_err(invalid)?;
 
         // The features, in timeline order, checked only after all their
@@ -393,6 +400,9 @@ impl DocState {
                         (remap_reference(&face, &text), mapped)
                     })
                     .collect();
+                attributes.print_bed_face = attributes
+                    .print_bed_face
+                    .map(|face| remap_reference(&face, &text));
                 Some((BodyUid::new(*feature, body.index), attributes))
             })
             .collect();
@@ -1136,7 +1146,7 @@ fn remap_value(value: &mut Value, uids: &HashMap<String, String>) {
     }
 }
 
-fn remap_reference(text: &str, uids: &HashMap<String, String>) -> String {
+pub(super) fn remap_reference(text: &str, uids: &HashMap<String, String>) -> String {
     if text.parse::<FeatureUid>().is_ok() || text.parse::<BodyUid>().is_ok() {
         return remap_text(text, uids);
     }

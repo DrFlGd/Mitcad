@@ -654,10 +654,7 @@ fn the_solver_reports_freedom_conflicts_and_driven_values() {
             },
         ),
     ];
-    let horizontal = Constraint {
-        id: ConstraintUid(1),
-        kind: ConstraintKind::Horizontal { line: c(3) },
-    };
+    let horizontal = Constraint::new(ConstraintUid(1), ConstraintKind::Horizontal { line: c(3) });
     let length = DimensionKind::Length { line: c(3) };
     let driving = [DimensionInput {
         id: ConstraintUid(2),
@@ -682,10 +679,7 @@ fn the_solver_reports_freedom_conflicts_and_driven_values() {
     assert_eq!(solved.status.dof, 1);
     assert!((solved.status.driven[&ConstraintUid(2)] - 9.0).abs() < 1e-9);
     // Vertical as well: a conflict naming both constraints.
-    let vertical = Constraint {
-        id: ConstraintUid(3),
-        kind: ConstraintKind::Vertical { line: c(3) },
-    };
+    let vertical = Constraint::new(ConstraintUid(3), ConstraintKind::Vertical { line: c(3) });
     let error = solve(&entities, &[horizontal, vertical], &driving).unwrap_err();
     assert!(
         error.message.contains("k1") && error.message.contains("k3"),
@@ -1062,4 +1056,118 @@ fn a_seeded_tangent_offset_corner_lies_where_the_line_touches_the_arc() {
     let at = corner(&entities);
     assert_eq!(at[0], 0.0, "{at:?}");
     assert!((at[1].abs() - 2.0).abs() < 1e-12, "{at:?}");
+}
+
+/// Seeding the closed offset of a projected outline whose right end is one
+/// circle split into two arcs, each with its own centre point lying within
+/// rounding of the other's (mitcad#709): the corner the two offset arcs
+/// share stays on their circle, where the old seed (the middle of their
+/// ends) put it. Taken as circles touching inside each other, it had gone
+/// to a "touching point" near the centre, and the solve started from there
+/// lost the extrusion's profile. The chain runs as a projection gives it:
+/// an arc, a line, an arc, a line against the chain, an arc, a line against
+/// the chain and an arc, every join tangent, offset 3 mm outwards with the
+/// results drawn in place and helpers across the arcs' gaps.
+#[test]
+fn a_seeded_corner_of_two_arcs_of_one_circle_stays_on_the_circle() {
+    use super::offset::{SketchOffset, seed};
+    // The split circle's two centres, a rounding apart.
+    let (upper, lower) = ([50.0, 9e-16], [50.0, -7e-16]);
+    let (left_top, left_bottom) = ([48.0, 1.0], [48.0, -1.0]);
+    let mut b = Builder::new();
+    let curves = vec![
+        b.arc(upper, [56.0, 0.0], [50.0, 6.0]),
+        b.line([50.0, 6.0], [48.0, 6.0]),
+        b.arc(left_top, [48.0, 6.0], [43.0, 1.0]),
+        b.line([43.0, -1.0], [43.0, 1.0]),
+        b.arc(left_bottom, [43.0, -1.0], [48.0, -6.0]),
+        b.line([50.0, -6.0], [48.0, -6.0]),
+        b.arc(lower, [50.0, -6.0], [56.0, 0.0]),
+    ];
+    let results = vec![
+        b.arc(upper, [59.0, 0.0], [50.0, 9.0]),
+        b.line([50.0, 9.0], [48.0, 9.0]),
+        b.arc(left_top, [48.0, 9.0], [40.0, 1.0]),
+        b.line([40.0, 1.0], [40.0, -1.0]),
+        b.arc(left_bottom, [40.0, -1.0], [48.0, -9.0]),
+        b.line([48.0, -9.0], [50.0, -9.0]),
+        b.arc(lower, [50.0, -9.0], [59.0, 0.0]),
+    ];
+    // The helpers: 3 mm on a radius of each arc, from the source to the
+    // result.
+    let h = std::f64::consts::FRAC_1_SQRT_2;
+    let helpers = vec![
+        b.line([50.0 + 6.0 * h, 6.0 * h], [50.0 + 9.0 * h, 9.0 * h]),
+        b.line(
+            [48.0 - 5.0 * h, 1.0 + 5.0 * h],
+            [48.0 - 8.0 * h, 1.0 + 8.0 * h],
+        ),
+        b.line(
+            [48.0 - 5.0 * h, -1.0 - 5.0 * h],
+            [48.0 - 8.0 * h, -1.0 - 8.0 * h],
+        ),
+        b.line([50.0 + 6.0 * h, -6.0 * h], [50.0 + 9.0 * h, -9.0 * h]),
+    ];
+    for e in b.def.entities.iter_mut() {
+        e.reference = curves.contains(&e.id);
+        e.construction = helpers.contains(&e.id);
+    }
+    let offsets = vec![SketchOffset {
+        id: ConstraintUid(1),
+        curves,
+        distance: ParamId::from_raw(0),
+        left: false,
+        results: results.clone(),
+        corners: Vec::new(),
+        helpers,
+        derived: false,
+    }];
+    let point = |entities: &[Entity], id: EntityUid| match entities
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| &e.kind)
+    {
+        Some(EntityKind::Point { at }) => *at,
+        _ => panic!("no point {id:?}"),
+    };
+    let start = |entities: &[Entity], id: EntityUid| match entities
+        .iter()
+        .find(|e| e.id == id)
+        .map(|e| &e.kind)
+    {
+        Some(EntityKind::Line { start, .. } | EntityKind::Arc { start, .. }) => {
+            point(entities, *start)
+        }
+        _ => panic!("no curve {id:?}"),
+    };
+    let mut entities = b.def.entities.clone();
+    seed(&offsets, &mut entities, &mut |_| Ok(3.0));
+    // Each corner where the offset curves meet: the results' starts in
+    // chain order, the first the two arcs' corner on the split circle.
+    let corners = [
+        [59.0, 0.0],
+        [50.0, 9.0],
+        [48.0, 9.0],
+        [40.0, 1.0],
+        [40.0, -1.0],
+        [48.0, -9.0],
+        [50.0, -9.0],
+    ];
+    for (result, expected) in results.iter().zip(corners) {
+        let at = start(&entities, *result);
+        assert!(
+            (at[0] - expected[0]).abs() < 1e-6 && (at[1] - expected[1]).abs() < 1e-6,
+            "{result:?}: {at:?}, expected {expected:?}"
+        );
+    }
+    // Drawn in place, the offset stays where it is.
+    for (e, f) in b.def.entities.iter().zip(&entities) {
+        if let (EntityKind::Point { at: p }, EntityKind::Point { at: q }) = (&e.kind, &f.kind) {
+            assert!(
+                (p[0] - q[0]).abs() < 1e-6 && (p[1] - q[1]).abs() < 1e-6,
+                "{:?}: {q:?}, drawn at {p:?}",
+                e.id
+            );
+        }
+    }
 }

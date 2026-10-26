@@ -21,7 +21,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::face_refs::{Resolved, check_tool, kernel_error, map_offset, resolve_tool};
+use super::face_refs::{
+    Resolved, check_tool, extended_tools, kernel_error, map_offset, resolve_tool,
+};
 use super::geom_ref::{GeomRef, Want};
 use super::mapping::map_params;
 use super::pattern::none;
@@ -220,6 +222,35 @@ impl<K: Kernel> Evaluate<K> for SplitBodyDef {
             }
         }
         Ok(output)
+    }
+
+    /// The tools as the split extends them, for the open command's
+    /// preview only (mitcad#712): against the bodies as the split finds
+    /// them.
+    fn preview_tool(&self, ctx: &mut EvalContext<'_, K>) -> Option<K::Shape> {
+        if !self.extend {
+            return None;
+        }
+        let mut tools = vec![
+            split_tool(
+                ctx,
+                &self.tool_links,
+                &self.tool,
+                self.offset,
+                self.direction,
+            )
+            .ok()?,
+        ];
+        for t in &self.more_tools {
+            tools.push(split_tool(ctx, &self.tool_links, t, None, None).ok()?);
+        }
+        let mut targets = Vec::with_capacity(self.bodies.len());
+        for body in &self.bodies {
+            targets.push(ctx.surface_body(*body).ok()?);
+        }
+        let targets: Vec<&K::Shape> = targets.iter().collect();
+        let tools: Vec<&Resolved<K::Shape>> = tools.iter().collect();
+        extended_tools(ctx.kernel, &targets, &tools, self.extend)
     }
 }
 

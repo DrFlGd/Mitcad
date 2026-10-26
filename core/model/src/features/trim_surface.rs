@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::face_refs::{check_tool, kernel_error, map_offset, resolve_tool};
+use super::face_refs::{check_tool, extended_tools, kernel_error, map_offset, resolve_tool};
 use super::geom_ref::{GeomRef, Want};
 use super::mapping::map_params;
 use super::path::{self, SketchCurves};
@@ -146,5 +146,16 @@ impl<K: Kernel> Evaluate<K> for TrimSurfaceDef {
             changes: vec![BodyChange::Set(self.body, trimmed)],
             ..FeatureOutput::default()
         })
+    }
+
+    /// The tool as the trim extends it, for the open command's preview
+    /// only (mitcad#712); sketch curves are swept, not extended.
+    fn preview_tool(&self, ctx: &mut EvalContext<'_, K>) -> Option<K::Shape> {
+        if !self.extend || matches!(self.tool, GeomRef::SketchCurves { .. }) {
+            return None;
+        }
+        let shape = ctx.surface_body(self.body).ok()?;
+        let tool = resolve_tool(ctx, &self.tool, self.offset, self.direction).ok()?;
+        extended_tools(ctx.kernel, &[&shape], &[&tool], self.extend)
     }
 }

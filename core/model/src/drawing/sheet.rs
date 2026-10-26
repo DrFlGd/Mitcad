@@ -91,6 +91,12 @@ pub enum Item {
     Fill {
         points: Vec<P2>,
     },
+    /// A polygon filled grey (0 black, 1 white) without an outline: a
+    /// shaded view's face (mitcad#707).
+    Shade {
+        points: Vec<P2>,
+        grey: f64,
+    },
     /// `height` is the height of capitals (ISO 3098's h), `angle` the
     /// baseline's direction (radians), `at` the anchor on the baseline.
     Text {

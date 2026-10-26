@@ -321,8 +321,19 @@ mod print_library_tests;
 // 5).
 pub mod print_files;
 pub use document::read_print_file;
-// Measurement objects kept in the design (mitcad#649).
-pub use document::{MEASUREMENT_COLORS, MeasureKind, MeasurePick, Measurement, NewMeasurement};
+// Purge volumes on filament changes: the materials' values, the computed
+// table and the design's overrides (mitcad#705).
+pub mod print_purge;
+// Annotations kept in the design (mitcad#702), grown from the measurement
+// objects of mitcad#649, and the ISO 286 fit codes of their tolerances.
+pub use document::{
+    ANNOTATION_COLORS, Annotation, AnnotationFormat, AnnotationPlane, Characteristic, DatumNeed,
+    GeometricTolerance, MAX_DECIMALS, MEASUREMENT_COLORS, MaterialCondition, MeasureKind,
+    MeasurePick, Measurement, NewMeasurement, Tolerance, datum_letter,
+};
+#[cfg(test)]
+mod annotation_tests;
+pub mod iso286;
 #[cfg(test)]
 mod measurement_tests;
 // The parameters as CSV: Mitcad's table and the `.f3d` application's
@@ -331,3 +342,6 @@ pub mod parameters_csv;
 pub use document::{CsvAction, CsvImport, CsvLimits, CsvRowOutcome};
 #[cfg(test)]
 mod parameters_csv_tests;
+// A body's print bed face, which the 3D print export turns down onto the
+// plate (mitcad#731).
+pub use document::PrintBedFace;

@@ -60,6 +60,11 @@ struct ConstraintData {
   QString type;
   QJsonObject json; // the definition's fields
   QStringList refs; // the entities, in the definition's order (an equal spacing's anchors)
+  // Whether the solve applies it (mitcad#721): an inactive one is kept and
+  // drawn, but constrains nothing until it is activated; `inactiveReason`
+  // says why when something did ("not met in the imported file").
+  bool active = true;
+  QString inactiveReason;
 };
 
 struct DimensionData {
@@ -68,6 +73,9 @@ struct DimensionData {
   QJsonObject json;
   QStringList refs;
   bool driven = false;
+  // Inactive (mitcad#721): it keeps its value but drives nothing.
+  bool active = true;
+  QString inactiveReason;
   QString parameter;  // a driving dimension's parameter or a driven one's reference (d3)
   QString expression; // its expression ("d1 / 2")
   QString comment;    // its parameter's comment ("Sketch1 distance")
@@ -189,6 +197,9 @@ public:
   std::vector<OffsetData> offsets;
   std::vector<ProjectionData> projections;
   std::vector<QStringList> conflicts;
+  // The inactive constraints and dimensions the geometry does not meet
+  // (mitcad#721): activating one of them moves it.
+  QStringList unmetInactive;
 
   const PointData* point(const QString& id) const;
   const CurveData* curve(const QString& id) const;

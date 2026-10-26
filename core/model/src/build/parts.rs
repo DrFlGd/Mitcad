@@ -188,7 +188,8 @@ impl<K: Kernel> Document<K> {
     /// when its policy takes components, else the nearest one up from it
     /// that takes them and can be edited, as the design policy puts a new
     /// component beside a part ("goes beside it", mitcad#292). In a new
-    /// design (Part1 active) that is the root. The active component when
+    /// design that is its active Component1 itself, which takes components
+    /// (mitcad#421). The active component when
     /// none up takes components.
     pub(crate) fn build_host(&self) -> ComponentUid {
         // A timber frame's own component while it drives its fasteners

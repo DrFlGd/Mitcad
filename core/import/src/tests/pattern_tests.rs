@@ -25,6 +25,7 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
             (1, "F2".parse().unwrap()),
             (2, "F3".parse().unwrap()),
             (3, "F4".parse().unwrap()),
+            (5, "F6".parse().unwrap()),
         ]),
         report: DesignReport::default(),
         pending: Vec::new(),
@@ -52,6 +53,7 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
         dressups: HashMap::from([
             (2, vec!["F3".parse().unwrap()]),
             (3, vec!["F4".parse().unwrap()]),
+            (5, vec!["F7".parse().unwrap()]),
         ]),
         notes: Default::default(),
         suppressed: Default::default(),
@@ -241,6 +243,70 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
         assert_eq!(direction["axis"], "x");
         assert_eq!(direction["distance"].as_f64(), Some(distance), "{vector:?}");
     }
+    // So does an axis of its own that runs the other way (mitcad#719).
+    for (vector, distance) in [([1.0, 0.0, 0.0], -10.0), ([-1.0, 0.0, 0.0], 10.0)] {
+        let item = serde_json::from_value(
+            json!({"index": 4, "objectType": "RectangularPatternFeature",
+            "detail": {"inputEntities": [plain.clone()],
+                       "directionOneEntity": {"kind": "construction_axis",
+                           "geometry": {"type": "InfiniteLine3D",
+                                        "origin": [0.0, 0.0, 0.0], "direction": [1.0, 0.0, 0.0]}},
+                       "directionOne": vector,
+                       "quantityOne": {"kind": "parameter", "value": 2.0, "unit": ""},
+                       "distanceOne": {"kind": "parameter", "value": -1.0, "unit": "cm"}}}),
+        )
+        .unwrap();
+        let candidates = importer
+            .translate_op("RectangularPatternFeature", &item)
+            .unwrap();
+        let direction = &candidates[0].defs[0]["direction1"];
+        assert_eq!(
+            direction["axis"],
+            json!({"origin": [0.0, 0.0, 0.0], "direction": [1.0, 0.0, 0.0]})
+        );
+        assert_eq!(direction["distance"].as_f64(), Some(distance), "{vector:?}");
+    }
+    // A tapped hole's pattern copies its thread with it (mitcad#719).
+    let item = serde_json::from_value(json!({"index": 6, "objectType": "CircularPatternFeature",
+    "detail": {
+        "inputEntities": [feature(5, "HoleFeature")],
+        "axis": {"kind": "construction_axis", "origin": "Z"},
+        "quantity": {"kind": "parameter", "value": 2.0, "unit": ""},
+        "totalAngle": {"kind": "parameter", "value": 180.0, "unit": "deg"}
+    }}))
+    .unwrap();
+    let candidates = importer
+        .translate_op("CircularPatternFeature", &item)
+        .unwrap();
+    assert_eq!(
+        candidates[0].defs[0]["objects"],
+        json!({"type": "features", "features": ["F6", "F7"]})
+    );
+    // A hole whose guesses are asked for in parts (mitcad#719) has none
+    // after its first part where nothing is guessed: without the history,
+    // and with the history but no decoded position (its definitions are
+    // the history's alone).
+    let hole = |position: bool| -> mitcad_f3d::design::ir::TimelineItem {
+        let mut detail = json!({
+            "holeType": "SimpleHoleType",
+            "holeDiameter": {"kind": "parameter", "value": 0.5, "unit": "mm"},
+            "extentDefinition": {"_type": "DistanceExtentDefinition",
+                                 "distance": {"kind": "parameter", "value": 1.0, "unit": "mm"}}
+        });
+        if position {
+            detail["position"] = json!([1.0, 1.0, 1.0]);
+        }
+        serde_json::from_value(json!({"index": 7, "objectType": "HoleFeature", "detail": detail}))
+            .unwrap()
+    };
+    for (oracle, position) in [(false, true), (true, false)] {
+        importer.oracle.enabled = oracle;
+        importer.guesses = Some(crate::Guesses::default());
+        let _ = importer.translate_op("HoleFeature", &hole(position));
+        let guesses = importer.guesses.take().unwrap();
+        assert!(guesses.done, "oracle {oracle}, position {position}");
+    }
+    importer.oracle.enabled = false;
 }
 
 #[test]
@@ -351,6 +417,205 @@ fn a_circular_pattern_uses_its_decoded_sketch_axis_without_history() {
         value["def"]["objects"],
         json!({"type": "bodies", "bodies": ["F2.b0"]})
     );
+}
+
+/// A circular pattern turns about the file's stored axis line: where the
+/// axis the replay resolves points the other way (the origin Y axis, whose
+/// Mitcad direction is +Y, stored as (0, -1, 0)), the angle is negated, so
+/// that a partial pattern goes the file's way round (mitcad#719).
+#[test]
+fn a_circular_pattern_turns_the_way_of_its_stored_axis() {
+    let mut angles = Vec::new();
+    for stored in [[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]] {
+        let dump = timeline_dump(vec![
+            rectangle_sketch(0),
+            extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+            json!({"index": 2, "name": "Pattern", "objectType": "CircularPatternFeature",
+            "detail": {
+                "inputEntities": [{"kind": "body", "objectType": "BRepBody",
+                                   "_f3d": {"producer": 1, "body_index": 0}}],
+                "axis": {"kind": "construction_axis", "name": "Y", "origin": "Y"},
+                "quantity": {"kind": "parameter", "value": 3.0, "unit": ""},
+                "totalAngle": {"kind": "parameter", "value": 0.5, "unit": "rad"},
+                "_f3d_axis": {"origin": [0.0, 0.0, 0.0], "direction": stored}
+            }}),
+        ]);
+        let mut doc = Document::new(MockKernel::default());
+        let report = import(&mut doc, &dump);
+        let item = &report.items[2];
+        assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+        let value: Value = serde_json::from_str(
+            &doc.query(&format!(
+                r#"{{"query": "feature", "uid": "{}"}}"#,
+                item.features[0]
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["def"]["axis"], "y");
+        let name = value["def"]["angle"].as_str().unwrap().to_owned();
+        let parameters: Value =
+            serde_json::from_str(&doc.query(r#"{"query": "parameters"}"#).unwrap()).unwrap();
+        let found = parameters
+            .as_array()
+            .or_else(|| parameters["parameters"].as_array())
+            .unwrap()
+            .iter()
+            .find(|p| p["name"] == name.as_str())
+            .unwrap()
+            .clone();
+        angles.push(found["value"].as_f64());
+    }
+    let [Some(against), Some(along)] = angles[..] else {
+        panic!("{angles:?}");
+    };
+    assert!(
+        (against + 0.5).abs() < 1e-9 && (along - 0.5).abs() < 1e-9,
+        "{angles:?}"
+    );
+}
+
+/// Faces of a pattern of faces whose recipes name each other as neighbours
+/// but which the replay has apart take the face between them, the one face
+/// that meets both and no other selected face (mitcad#719: a corner rounded
+/// after the selection was made). The plate's top and bottom meet every
+/// wall, and walls that still meet need nothing.
+#[test]
+fn a_face_selection_takes_the_face_between_neighbours_it_names() {
+    use mitcad_f3d::design::ir::EntityName;
+    let tag = |t: &str| {
+        vec![EntityName {
+            tag: t.to_owned(),
+            kind: 0,
+            ops: vec![7],
+        }]
+    };
+    let recipe = |own: &str, neighbours: &[&str]| {
+        std::iter::once(tag(own))
+            .chain(neighbours.iter().map(|n| tag(n)))
+            .collect::<Vec<_>>()
+    };
+    // A triangle of walls a, b, c between top t and bottom u: a and b meet
+    // in the recipes, the replay has the rounding r between them.
+    let named = vec![
+        recipe("a", &["t", "b", "c", "u"]),
+        recipe("b", &["t", "a", "c", "u"]),
+        recipe("c", &["t", "a", "b", "u"]),
+    ];
+    let body: BodyUid = "F2.b0".parse().unwrap();
+    let faces: Vec<(BodyUid, String)> = ["A", "B", "C"]
+        .iter()
+        .map(|f| (body, (*f).to_owned()))
+        .collect();
+    let pair = |x: &str, y: &str| [x.to_owned(), y.to_owned()];
+    let mut walls = vec![
+        pair("A", "R"),
+        pair("R", "B"),
+        pair("B", "C"),
+        pair("C", "A"),
+    ];
+    for w in ["A", "B", "C", "R"] {
+        walls.push(pair(w, "T"));
+        walls.push(pair(w, "U"));
+    }
+    let edges = walls.clone();
+    let found = crate::ops::bridging_faces(&named, &faces, &mut |_| edges.clone());
+    assert_eq!(found, [(body, "R".to_owned())]);
+    // A face of that name on another body selected too is another face.
+    let other: BodyUid = "F5.b0".parse().unwrap();
+    let mut named_other = named.clone();
+    named_other.push(recipe("r", &["t"]));
+    let mut with_other = faces.clone();
+    with_other.push((other, "R".to_owned()));
+    let found = crate::ops::bridging_faces(&named_other, &with_other, &mut |b| {
+        if b == body { edges.clone() } else { Vec::new() }
+    });
+    assert_eq!(found, [(body, "R".to_owned())]);
+    // Where a and b meet, nothing is added.
+    let mut closed: Vec<[String; 2]> = walls
+        .into_iter()
+        .filter(|[x, y]| x != "R" && y != "R")
+        .collect();
+    closed.push(pair("A", "B"));
+    assert!(crate::ops::bridging_faces(&named, &faces, &mut |_| closed.clone()).is_empty());
+}
+
+/// A rectangular pattern along an edge the replay runs the other way from
+/// the file's stored vector negates its distance, so that the copies go
+/// the file's way (mitcad#719).
+#[test]
+fn a_rectangular_pattern_along_an_edge_goes_the_stored_way() {
+    let kernel = || TestKernel {
+        face_listing: true,
+        edge_points: true,
+        ..TestKernel::default()
+    };
+    let items = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    let mut reference = Document::new(kernel());
+    import_design(
+        &mut reference,
+        &timeline_dump(items.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let faces = reference.bodies()[0].shape.faces.clone();
+    let top = faces.iter().find(|f| f.role == "end").cloned().unwrap();
+    let side = faces.iter().find(|f| f.role == "side").cloned().unwrap();
+    let mut values = Vec::new();
+    for vector in [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0]] {
+        let mut items = items.clone();
+        items.push(
+            json!({"index": 2, "name": "Pattern", "objectType": "RectangularPatternFeature",
+            "detail": {
+                "inputEntities": [{"kind": "feature", "objectType": "ExtrudeFeature",
+                                   "timeline_index": 1}],
+                "directionOneEntity": {"kind": "edge", "objectType": "BRepEdge", "length": 0.1,
+                    "mid_point": edge_point(&top, &side).map(|x| x / 10.0)},
+                "directionOne": vector,
+                "quantityOne": {"kind": "parameter", "value": 2.0, "unit": ""},
+                "distanceOne": {"kind": "parameter", "value": 3.0, "unit": "cm"}
+            }}),
+        );
+        let mut doc = Document::new(kernel());
+        // The edge's line runs along +x in the replay.
+        doc.kernel().mock.edge_curves.borrow_mut().insert(
+            mitcad_model::EdgeName::new(top.clone(), side.clone()).to_string(),
+            mitcad_model::datum::CurveGeometry::Line {
+                start: [0.0; 3],
+                end: [1.0, 0.0, 0.0],
+            },
+        );
+        let report = import_design(
+            &mut doc,
+            &timeline_dump(items),
+            &mut NoGeometry,
+            &Options::default(),
+        );
+        let item = &report.items[2];
+        assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+        let def: Value = serde_json::from_str::<Value>(
+            &doc.query(&format!(
+                r#"{{"query": "feature", "uid": "{}"}}"#,
+                item.features[0]
+            ))
+            .unwrap(),
+        )
+        .unwrap()["def"]
+            .clone();
+        assert!(def["direction1"]["axis"]["edge"].is_string(), "{def}");
+        let params = doc.parameters();
+        values.push(
+            def["direction1"]["distance"]
+                .as_str()
+                .and_then(|n| params.find(n))
+                .and_then(|id| params.get(id))
+                .map(|p| p.value()),
+        );
+    }
+    assert_eq!(values, [Some(30.0), Some(-30.0)]);
 }
 
 /// A path pattern of a body along a sketch line (mitcad#468), as the stream
@@ -472,6 +737,125 @@ fn a_stream_decoded_path_pattern_reads_its_flags_centre_and_joined_copies() {
     assert_eq!(def["combine"], json!(true), "{def}");
     // The copies joined the extrusion's body.
     assert_eq!(doc.bodies().len(), 1);
+}
+
+/// The stored geometry of the tests, with each state asked for logged
+/// ("state N") in `log`, where the test kernel's hooks log too.
+struct Logged {
+    inner: TestGeometry,
+    log: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl StoredGeometry<MockShape> for Logged {
+    fn state_count(&mut self) -> usize {
+        self.inner.state_count()
+    }
+
+    fn item_state(&mut self, index: i64) -> Option<usize> {
+        self.inner.item_state(index)
+    }
+
+    fn item_components(&mut self, index: i64) -> Option<Vec<u64>> {
+        self.inner.item_components(index)
+    }
+
+    fn state(&mut self, index: usize) -> Result<Vec<StoredBody<MockShape>>, String> {
+        self.log.lock().unwrap().push(format!("state {index}"));
+        self.inner.state(index)
+    }
+
+    fn final_bodies(&mut self) -> Result<Vec<StoredBody<MockShape>>, String> {
+        self.inner.final_bodies()
+    }
+}
+
+/// A path pattern of the block's body with a history (nothing, the block,
+/// the block and its copies; `broken`: the states that cannot be built),
+/// imported with the states asked for and the copies made logged in order
+/// ("state N", "copy"): the report, the document and the log.
+fn path_pattern_with_history(
+    broken: Vec<usize>,
+) -> (DesignReport, Document<TestKernel>, Vec<String>) {
+    let line = json!([{"_type": "PathEntity", "entity": {"kind": "sketch_entity",
+        "objectType": "SketchLine", "sketch_timeline_index": 0, "id": "c0"}}]);
+    let items = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+        path_pattern_item(line, true),
+    ];
+    let state = |n: usize| {
+        let mut reference = Document::new(TestKernel::default());
+        import_design(
+            &mut reference,
+            &timeline_dump(items[..n].to_vec()),
+            &mut NoGeometry,
+            &Options::default(),
+        );
+        shapes(&reference)
+    };
+    let mut geometry = Logged {
+        inner: TestGeometry {
+            states: vec![Vec::new(), state(2), state(3)],
+            items: HashMap::from([(1, 1), (2, 2)]),
+            broken,
+            ..TestGeometry::default()
+        },
+        log: Arc::default(),
+    };
+    let kernel = TestKernel::default();
+    let log = Arc::clone(&geometry.log);
+    *kernel.on_call.borrow_mut() = Some((
+        "transform_shape",
+        Box::new(move |_: &MockKernel| log.lock().unwrap().push("copy".to_owned())),
+    ));
+    let mut doc = Document::new(kernel);
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut geometry,
+        &Options::default(),
+    );
+    let log = geometry.log.lock().unwrap().clone();
+    (report, doc, log)
+}
+
+#[test]
+fn a_path_pattern_asks_for_its_state_after_evaluating_its_first_definition() {
+    // mitcad#701: an item asks for its own state only when it compares a
+    // result against it, so that a large state heals while the item's
+    // first definition is evaluated. The result is the same.
+    let (report, doc, log) = path_pattern_with_history(Vec::new());
+    let item = &report.items[2];
+    assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+    assert_eq!(doc.bodies().len(), 3, "{}", report.text());
+    let first = |entry: &str| log.iter().position(|e| e == entry);
+    let state = first("state 2").expect("its state is asked for");
+    let copy = first("copy").expect("the pattern made copies");
+    assert!(copy < state, "{log:?}");
+    // Asked for once.
+    assert_eq!(log.iter().filter(|e| *e == "state 2").count(), 1, "{log:?}");
+}
+
+#[test]
+fn a_path_pattern_whose_state_does_not_rebuild_keeps_nothing_of_its_try() {
+    // mitcad#701: the state turns out not to rebuild only after the first
+    // definition was evaluated; nothing of that try is kept, and the item
+    // is taken unchecked as when its state was asked for first.
+    let (report, doc, _) = path_pattern_with_history(vec![2]);
+    let item = &report.items[2];
+    let note = item.note.clone().unwrap_or_default();
+    assert!(
+        note.contains("not checked: its state in the file's history could not be rebuilt"),
+        "{}",
+        report.text()
+    );
+    assert_eq!(item.features.len(), 1, "{}", report.text());
+    let patterns = doc
+        .features()
+        .filter(|f| f.def.type_name() == "path_pattern")
+        .count();
+    assert_eq!(patterns, 1, "{}", report.text());
+    assert_eq!(doc.bodies().len(), 3, "{}", report.text());
 }
 
 #[test]

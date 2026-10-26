@@ -248,6 +248,8 @@ public:
     Failed, // red outline: the feature fails
     Datum,  // blue, nearly opaque, over picked references: a construction
             // feature's plane, axis or point (mitcad#446)
+    ExtendedTool, // orange, see-through: a split's or trim's tool as the
+                  // feature extends it (mitcad#712)
   };
 
   explicit OcctViewer(QWidget* parent = nullptr);
@@ -291,12 +293,39 @@ public:
   // printer's bed and printable height as lines, and the boxes of the bodies
   // that do not fit in `warning`; not pickable. Null shapes clear them.
   void setBuildVolume(const TopoDS_Shape& frame, const TopoDS_Shape& outside, const QColor& warning);
-  // Measurement objects (mitcad#649, view/MeasurementOverlay.cpp): the
-  // shown ones drawn as dimensions over the view (MeasurementOverlay), in
-  // their colours over the halo tone; logs "Measurements drawn: …" and
-  // their labels' places when they change.
+  // Annotations (mitcad#649, mitcad#702; view/MeasurementOverlay.cpp): the
+  // shown ones drawn in their planes (MeasurementOverlay), in their colours
+  // over the halo tone; logs "Annotations drawn: …" when that changes and
+  // their labels' and lines' places when those change.
   void setMeasurements(const std::vector<MeasurementDisplay>& measurements);
   const std::vector<MeasurementDisplay>& measurements() const { return m_measurements; }
+  // For UI tests: "Annotation label <name> at x,y" and "Annotation line
+  // <name> at x,y" in the window's coordinates, when they changed since
+  // last logged; after setMeasurements and whenever the view's size or the
+  // camera moved them (MeasurementOverlay::follow).
+  void logAnnotationPlaces();
+  // Annotations in the view (mitcad#702, view/MeasurementOverlay.cpp):
+  // their texts and dimension lines take the mouse where they are drawn
+  // (clicks elsewhere reach the model). A click selects one, a drag of its
+  // text or its line moves it (in millimetres along its plane's axes), a
+  // double-click opens it, a right click asks for its menu.
+  struct AnnotationActions {
+    // Whether they take the mouse now: not while a command takes picks or
+    // a sketch is edited.
+    std::function<bool()> active;
+    std::function<void(const QString& name)> clicked;
+    std::function<void(const QString& name)> opened;
+    std::function<void(const QString& name, const QPoint& global)> menu;
+    std::function<void(const QString& name, bool line, double alongX, double alongY)> moved;
+  };
+  void setAnnotationActions(AnnotationActions actions) { m_annotationActions = std::move(actions); }
+  const AnnotationActions& annotationActions() const { return m_annotationActions; }
+  // The annotations drawn highlighted (rows selected in the Annotations
+  // window).
+  void setHighlightedAnnotations(const QStringList& names);
+  const QStringList& highlightedAnnotations() const { return m_highlightedAnnotations; }
+  // The view's own cursor again (after an annotation's hand).
+  void restoreCursor() { updateCursor(false); }
   // A snapshot of the view (mitcad#649, view/Snapshot.cpp): the bodies as
   // the view shows them rendered offscreen at `size` (OCCT's ToPixMap;
   // the view's aspect for a sharp picture of its contents), without the
@@ -304,7 +333,9 @@ public:
   // channel, worked out from a render over black and one over white) and
   // the shown measurements drawn over it at the picture's scale. Null when
   // the view cannot render one. Only while no model job runs.
-  QImage snapshot(const QSize& size, bool transparent, bool withMeasurements);
+  // `group`: only the shown annotations of that group (mitcad#702); all
+  // shown ones when empty.
+  QImage snapshot(const QSize& size, bool transparent, bool withMeasurements, const QString& group = QString());
 
   // The camera (named views, U5).
   CameraState camera() const;
@@ -634,6 +665,9 @@ signals:
   // A frame was drawn (the camera may have moved): drawings over the view
   // follow.
   void viewChanged();
+  // The panels floating over the view moved or changed size
+  // (`setCoveredRects`): what keeps clear of them (a drawing) follows.
+  void coveredChanged();
   // A click (window false) or a window selection; empty when the click hit
   // nothing. Emitted while the view paints: connect queued.
   void picked(const mitcad::Selection& items, Qt::KeyboardModifiers modifiers, bool window);
@@ -1024,7 +1058,12 @@ private:
   // Measurement objects (setMeasurements, mitcad#649).
   std::vector<MeasurementDisplay> m_measurements;
   MeasurementOverlay* m_measurementOverlay = nullptr;
-  QString m_loggedMeasurements = QStringLiteral("Measurements drawn: none");
+  QString m_loggedMeasurements = QStringLiteral("Annotations drawn: none");
+  // Annotations (mitcad#702): what clicks on them do, and those
+  // highlighted.
+  AnnotationActions m_annotationActions;
+  QStringList m_highlightedAnnotations;
+  QString m_loggedAnnotationPlaces; // their labels' and lines' places as last logged
   QColor m_paper = QColor(0xd8, 0xdc, 0xe2); // the hidden-line style's faces
   bool m_gridShown = true;
   double m_gridStep = 0.0; // mm; 0: follows the zoom

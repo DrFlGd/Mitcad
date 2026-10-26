@@ -113,12 +113,32 @@ pub use print_import::read_print_file;
 // (mitcad#655).
 mod library_items;
 pub(crate) use library_items::{library_kind, writable_library};
-// Measurement objects: measurements kept in the design (mitcad#649).
-mod measurements;
-pub use measurements::{MEASUREMENT_COLORS, MeasureKind, MeasurePick, Measurement, NewMeasurement};
+// Annotations: dimensions and notes kept in the design (mitcad#702), grown
+// from the measurement objects of mitcad#649.
+mod annotations;
+pub use annotations::{
+    ANNOTATION_COLORS, Annotation, AnnotationFormat, AnnotationPlane, Characteristic, DatumNeed,
+    GeometricTolerance, MAX_DECIMALS, MEASUREMENT_COLORS, MaterialCondition, MeasureKind,
+    MeasurePick, Measurement, NewMeasurement, Tolerance, datum_letter,
+};
+pub(crate) use annotations::{
+    check_format, check_frame, check_tolerance, normalized_color, settle_frames,
+};
 // The parameters exported to and imported from CSV (mitcad#666).
 mod parameters_csv;
 pub use parameters_csv::{CsvAction, CsvImport, CsvLimits, CsvRowOutcome};
+// Purge volumes on filament changes: the table of the filament slots and
+// the pairs set by hand (mitcad#705).
+mod purge_volumes;
+pub use purge_volumes::PurgeChange;
+pub(crate) use purge_volumes::purge_defaults_json;
+// Drawings kept in the root's and components' Drawings folders (mitcad#707).
+mod drawings;
+pub(crate) use drawings::deleted_views;
+// A body's print bed face, which the 3D print export turns down onto the
+// plate (mitcad#731).
+mod print_bed;
+pub use print_bed::PrintBedFace;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -291,8 +311,15 @@ pub struct DocState {
     /// The design's printer and process profiles (mitcad#640, part 3), in
     /// the order they were made.
     pub(crate) print_profiles: Vec<crate::print_profile::PrintProfile>,
-    /// Measurement objects (mitcad#649), in the order they were added.
-    pub(crate) measurements: Vec<Measurement>,
+    /// Annotations (mitcad#702; the measurement objects of mitcad#649), in
+    /// the order they were added.
+    pub(crate) annotations: Vec<Annotation>,
+    /// Purge volumes set by hand for pairs of materials (mitcad#705), in
+    /// the order they were set.
+    pub(crate) purge_volumes: Vec<crate::print_purge::PurgeOverride>,
+    /// Drawings of the root and the components (mitcad#707), in the order
+    /// they were made.
+    pub(crate) drawings: Vec<crate::drawing::def::Drawing>,
 }
 
 impl Default for DocState {
@@ -326,7 +353,9 @@ impl Default for DocState {
             materials: Vec::new(),
             component_materials: BTreeMap::new(),
             print_profiles: Vec::new(),
-            measurements: Vec::new(),
+            annotations: Vec::new(),
+            purge_volumes: Vec::new(),
+            drawings: Vec::new(),
         }
     }
 }
@@ -805,6 +834,13 @@ impl DocState {
                         self.assembly.name(made)
                     )));
                 }
+                if self.has_drawings(made) {
+                    return Err(invalid(format!(
+                        "{} has drawings in its Drawings folder; delete them first, or keep the \
+                         new-component operation",
+                        self.assembly.name(made)
+                    )));
+                }
                 self.assembly.remove(made);
             }
             _ => {}
@@ -844,6 +880,7 @@ impl DocState {
             .retain(|uid, _| !removed.contains(uid));
         self.import_notes.retain(|uid, _| !removed.contains(uid));
         self.release_components(removed);
+        self.drop_orphan_drawings();
         order
     }
 
@@ -858,8 +895,11 @@ impl DocState {
             .map(|c| c.uid)
             .collect();
         for c in made {
+            // One with features, occurrences or drawings of its own stays
+            // as a plain component.
             if self.features.iter().any(|f| f.component == c)
                 || self.assembly.children(c).next().is_some()
+                || self.has_drawings(c)
             {
                 if let Some(def) = self.assembly.component_mut(c) {
                     def.created_by = None;
@@ -1299,6 +1339,12 @@ pub struct Document<K: Kernel> {
     /// Print Analysis meshes and results (mitcad#620), separate from
     /// modelling results.
     print_cache: crate::print_analysis::PrintCache,
+    /// Drawing views projected before (mitcad#707), separate from modelling
+    /// results.
+    drawing_cache: crate::drawing::ProjectionCache,
+    /// Annotations' picks measured before (mitcad#716), separate from
+    /// modelling results.
+    measure_cache: crate::api::MeasureCache,
     /// The components an import filled from other documents, by the
     /// document's name for them, with their sub-components
     /// ([`Document::set_import_scopes`]). Runtime context only.
@@ -1371,6 +1417,8 @@ impl<K: Kernel> Document<K> {
             source_directory: RwLock::new(None),
             flat_cache: Default::default(),
             print_cache: Default::default(),
+            drawing_cache: Default::default(),
+            measure_cache: Default::default(),
             import_scopes: Vec::new(),
             import_focus: Default::default(),
             policy_checks: false,
@@ -1615,6 +1663,8 @@ impl<K: Kernel> Document<K> {
             source_directory: RwLock::new(self.source_directory()),
             flat_cache: Default::default(),
             print_cache: Default::default(),
+            drawing_cache: Default::default(),
+            measure_cache: Default::default(),
             import_scopes: self.import_scopes.clone(),
             import_focus: self.import_focus.clone(),
             policy_checks: false,
@@ -1659,6 +1709,16 @@ impl<K: Kernel> Document<K> {
     /// The Print Analysis meshes and results kept (mitcad#620).
     pub(crate) fn print_cache(&self) -> &crate::print_analysis::PrintCache {
         &self.print_cache
+    }
+
+    /// The drawing views projected before (mitcad#707).
+    pub(crate) fn drawing_cache(&self) -> &crate::drawing::ProjectionCache {
+        &self.drawing_cache
+    }
+
+    /// Annotations' picks measured before (mitcad#716).
+    pub(crate) fn measure_cache(&self) -> &crate::api::MeasureCache {
+        &self.measure_cache
     }
 
     /// Writes to the result store the results of the last recompute that
@@ -3339,7 +3399,11 @@ impl<K: Kernel> Document<K> {
             self.preview = None;
             return Err(error);
         }
-        let result = match self.compute(&state) {
+        // The feature's preview-only tool too (mitcad#712).
+        self.cache.preview = Some(uid);
+        let computed = self.compute(&state);
+        self.cache.preview = None;
+        let result = match computed {
             Ok(result) => result,
             Err(error) => {
                 self.preview = None;
@@ -3399,7 +3463,8 @@ impl<K: Kernel> Document<K> {
         let tool = result
             .result(uid)
             .and_then(|r| r.output.as_ref())
-            .is_some_and(|o| o.tool.is_some());
+            .is_some_and(|o| o.tool.is_some())
+            || result.preview_tool.is_some();
         // The tool's component in each of its occurrences (mitcad#636).
         let tool_component = state.entry(uid).map(|f| f.component).filter(|_| tool);
         let tool_instances = match tool_component {
@@ -3553,13 +3618,17 @@ impl<K: Kernel> Document<K> {
     /// boolean).
     pub fn preview_tool(&self) -> Option<&K::Shape> {
         let preview = self.preview.as_ref()?;
-        preview
-            .result
-            .result(preview.uid)?
-            .output
-            .as_ref()?
-            .tool
-            .as_ref()
+        // A split's or trim's extended tool, made for the preview only
+        // (mitcad#712), else the feature's own.
+        preview.result.preview_tool.as_ref().or_else(|| {
+            preview
+                .result
+                .result(preview.uid)?
+                .output
+                .as_ref()?
+                .tool
+                .as_ref()
+        })
     }
 
     /// The previewed definition state, for queries.

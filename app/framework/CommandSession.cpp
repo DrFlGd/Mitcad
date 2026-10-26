@@ -2392,10 +2392,33 @@ void CommandSession::showPreview(const Preview& preview, const QString& operatio
     m_loggedPreviewTool = toolAt;
     qDebug().noquote() << QStringLiteral("Preview tool at %1").arg(toolAt);
   }
+  // A split's or trim's extended tool (mitcad#712) shows see-through orange
+  // over the result, where the cut runs; logged with its box for UI tests.
+  QString extended = QStringLiteral("none");
+  if (m_def.extendedToolPreview && !preview.tool.IsNull()) {
+    Bnd_Box box;
+    BRepBndLib::Add(preview.tool, box);
+    if (!box.IsVoid()) {
+      const auto coordinate = [](double value) {
+        return QString::number(std::abs(value) < 1e-6 ? 0.0 : value, 'f', 1);
+      };
+      const gp_Pnt low = box.CornerMin();
+      const gp_Pnt high = box.CornerMax();
+      extended = QStringLiteral("%1,%2,%3 to %4,%5,%6")
+                     .arg(coordinate(low.X()), coordinate(low.Y()), coordinate(low.Z()), coordinate(high.X()),
+                          coordinate(high.Y()), coordinate(high.Z()));
+    }
+  }
+  if (m_def.extendedToolPreview && extended != m_loggedExtendedTool) {
+    m_loggedExtendedTool = extended;
+    qDebug().noquote() << QStringLiteral("Preview extended tool: %1").arg(extended);
+  }
   // New bodies show as see-through bodies; a tool that joins, cuts or
   // intersects shows over the result, red for a cut; so does
   // a construction feature's datum.
-  if (operation == QStringLiteral("cut")) {
+  if (m_def.extendedToolPreview && !preview.tool.IsNull()) {
+    viewer.setPreview(preview.tool, OcctViewer::PreviewStyle::ExtendedTool);
+  } else if (operation == QStringLiteral("cut")) {
     viewer.setPreview(preview.tool, OcctViewer::PreviewStyle::Remove);
   } else if (operation == QStringLiteral("new_body") ||
              operation == QStringLiteral("new_component")) {

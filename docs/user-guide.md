@@ -17,34 +17,77 @@ search: type the start of a command's name and press Enter.
 
 ## Connect an AI assistant
 
-With a design open, choose **Help › Connect AI Assistant…**, the same entry
-in the project indicator's menu, or **Connect AI Assistant…** in
-**Preferences › Agents**. Choose **Claude Desktop**, **Claude Code**,
-**Codex / ChatGPT Desktop (local MCP)**, or **Other MCP client**.
+With a design open, choose **Help › Connect AI Assistant…**, click the
+assistant indicator, or choose **Connect AI Assistant…** in
+**Preferences › AI Assistants**.
 
-**Set up connection** starts the supported setup for that client: a bundle
-installation in Claude Desktop, a user-scope registration in Claude Code,
-or Codex's shared local settings. If the Codex CLI is missing, the dialog
-can update the selected TOML settings file directly. Existing unrelated
-settings and comments are preserved, changes are backed up and atomic,
-and a conflicting Mitcad entry requires explicit replacement. Managed
-requirements and disabled entries are not bypassed. Install missing clients
-through **Installation instructions** and return to setup afterwards.
+1. Choose the assistant: **Claude Desktop**, **Claude Code**,
+   **ChatGPT / Codex** or **Other**. The dialog starts with the one chosen
+   last, or else the first one installed on this computer. In its lines
+   ChatGPT / Codex is called Codex (**Ready to connect Codex**).
+2. Press the button beside the state line. The line names the next step
+   and the button does it:
 
-Follow the client's approval and sign-in steps. Start a new conversation
-after setup; restart the desktop client when instructed. **Configured,
-waiting for connection** is distinct from **Connected**, which lists the
-clients that completed initialization. **Disconnect Agent** leaves the
-design and its unsaved changes in place.
+   | State line | Button | What to do |
+   |---|---|---|
+   | *Assistant* was not found on this computer | **Get Claude Desktop** or **How to install** | Install it from the page that opens, then come back. If it is installed after all, press **Connect anyway** (Claude Desktop, ChatGPT / Codex) |
+   | Ready to connect *assistant* | **Connect** | Mitcad sets the connection up |
+   | Approve Mitcad in Claude Desktop, then start a new chat | **Open in Claude Desktop again** | Approve the extension in Claude Desktop; the button opens it again if needed |
+   | Install Claude Desktop first, in red | **Get Claude Desktop** | No application on this computer took the extension: install Claude Desktop, then choose it again |
+   | Start a new Claude Code session to use Mitcad / Restart ChatGPT or start a new Codex session to use Mitcad | none | Start a new conversation in the assistant |
+   | ✓ Connected: *assistant* | **Disconnect** | Work with the assistant; **Disconnect** keeps the design and its unsaved changes |
+   | A short message saying what went wrong, in red | **Try again** | Do what the message says, then try again |
 
-Choose a folder and press **Allow folder** before asking an agent to Open
-or Save As. The grant includes subfolders and creates the chosen folder if
-necessary. Saving an already open design to its existing file remains
-available without a folder grant. With several Mitcad windows, close the
-others or explicitly select the bridge target; setup never silently chooses
-an arbitrary design. Browser/mobile and remote clients require a separate
-connection arrangement. See [the MCP guide](mcp.md#connect-from-mitcad) for
-supported local workflows and copyable manual fallbacks.
+   Connected shows for the assistant that is connected, by its name
+   (**Claude Desktop**, **Claude Code**, **Codex**; another assistant by
+   the name it gives itself). With another assistant chosen, a quiet line
+   names it (**Also connected: …**), and **Disconnect** then ends only the
+   chosen assistant's connection and names it (**Disconnect Claude Code**;
+   with **Other**, the assistant's own name).
+   For **Other**, **Copy configuration** copies the settings to paste into
+   your assistant's settings.
+3. The line **Folder for designs:** names the folder the assistant can
+   open designs from and save them to (with its subfolders). **Connect**
+   (or **Connect anyway**, **Copy configuration**) allows that folder;
+   **Change…** picks another first. Without an allowed folder, the
+   assistant can only save a design that already has a file. The allowed
+   folders are listed in **Preferences › AI Assistants**.
+
+**Advanced** shows what sets the connection up by hand: the
+**Configuration** (the settings to paste) and the **Command** that
+registers Mitcad (**PowerShell command** on Windows), each with its own
+**Copy** button, and the **Codex settings file** with **Change…** (for
+ChatGPT / Codex; a file other than `config.toml` takes the configuration
+only). When several Mitcad windows are open, **Copy
+Command for This Window** gives a command that connects to this window
+only. The dialog checks the installations and the connection every
+second.
+
+Connect never changes unrelated settings: it backs up the assistant's
+settings first, changes only Mitcad's entry, and asks before it replaces
+a connection to another Mitcad installation. Settings managed by an
+administrator are not changed. See [the MCP guide](mcp.md#connect-from-mitcad)
+for the details of each assistant.
+
+**The assistant indicator.** Beside the project indicator, the assistant
+indicator shows whether AI assistants are connected to the window: **No
+assistant** with a hollow dot (the window accepts them), **Claude Code
+connected** with a coloured dot (one assistant; **2 assistants connected**
+with several), or **Assistants unavailable** with a struck-through dot
+(the window cannot accept them, for example when Mitcad was started with
+`--no-mcp`). It is in the title row of the Floating layout, in the status
+bar of the Docked layout and in the toolbar of the native macOS window.
+Its tooltip gives the details, with the window's instance id and port.
+
+With no assistant connected, a click on the indicator opens **Connect AI
+Assistant**; its arrow, or a right click, opens its menu. Otherwise a
+click opens the menu. With assistants unavailable, the menu says why
+first. With assistants connected, it lists each (its name, the name and
+version the client gave itself, and the time it connected) and has
+**Disconnect *assistant*** (**Disconnect All** with several). It always
+has **Connect AI Assistant…** and **Folders for Designs…** (**Preferences ›
+AI Assistants**), and with several Mitcad windows open **Copy Command for
+This Window** (a command that connects to this window only).
 
 ## Installation
 
@@ -398,7 +441,31 @@ dialog shows, the window takes no other input.
 ## Commands and shortcuts
 
 The shortcuts in this chapter are the defaults. You can change them in
-Tools › Keyboard Shortcuts; its search field filters by command or shortcut.
+Tools › Keyboard Shortcuts. Click a command's Shortcut cell (or select
+its row and press Enter) and press the new key; Delete clears a
+shortcut, and the row's right-click menu also has Reset to Default. The
+search field filters by command or shortcut (Down goes to the first row
+found), and the context list shows the keys of one context: Model
+(outside sketches), Sketch, or Command Panel (while a command's panel is
+open), each command as one row whose key works in that context only. The
+selected command stays selected when you change the context. With all
+contexts shown, the Context column says where each key works; commands of different contexts
+can share a key, a sketch command and a model command for one. A command
+that works in several contexts, such as Command Search, Undo or Extrude,
+has a row with its contexts (All, or for example Model, Sketch) and
+expands into a row per context. A key given on the command's row is its
+key in every one of them; a key given on a context's row is its own
+there, and the command's row then shows Varies. To make S draw a spline
+in sketches, for example, give Command Search F3 in its Sketch row and S
+to Fit Point Spline: S still opens the search in the model. When two
+commands that work in the same context get the same key, OK says so ("S
+is used by both Command Search and Fit Point Spline in a sketch") and
+selects the row to change. The keys that cannot be changed are listed
+in grey and marked (reserved): Ctrl+F under Search Timeline, and Enter
+for OK, Esc for Cancel and the others after the commands. A command
+cannot take them ("Ctrl+F is reserved for Search Timeline"). Ctrl+F, F2
+(Rename) and Delete work while the Browser or the timeline has the
+keyboard focus.
 Help › Keyboard and Mouse Overview lists all
 shortcuts. Commands without a shortcut are in command search (S) and in
 the menus of the groups.
@@ -434,7 +501,7 @@ the menus of the groups.
 | Fillet | F | Round edges or faces, in several radius sets ([Fillet](#fillet)) |
 | Press Pull | Q | Offset a face, fillet an edge or extrude a profile ([Press Pull](#press-pull)) |
 | Move/Copy | M | Move bodies or components: a free move with handles, a move along axes, a rotation, or a move from point to point |
-| Measure | I | Measure a distance, an angle, a length, an area or a position. Also whole bodies ([Inspect: Measure and Section Analysis](#inspect-measure-and-section-analysis)) |
+| Measure | I | Measure a distance, an angle, a length, an area or a position. Also whole bodies ([Inspect: Measure, Annotations and Section Analysis](#inspect-measure-annotations-and-section-analysis)) |
 | Rename | F2 | Rename a browser row. On the timeline, use the context menu |
 | Search Timeline | Ctrl+F (Cmd+F) | Available when the timeline or the browser has the keyboard focus. Find features by name, type, component and status ([Timeline filter and search](#timeline-filter-and-search)). Also Edit › Search Timeline |
 
@@ -519,6 +586,15 @@ submenus.
 Fillet, Chamfer, Shell, Draft and Replace Face obey the *Tangent Chain*
 option ([Tangent Chain](#tangent-chain)).
 
+**Split Face** and **Split Body** cut with a **Splitting Tool**: a plane,
+a face, a body or sketch curves. With **Extend Splitting Tool** (on by
+default), a face is extended along its surface so that it cuts through
+the whole body. A plane always cuts through the whole body. While the
+option is on, the view shows the tool as the split uses it: an orange,
+see-through surface across the bodies, a little past their edges. It
+shows where the cut runs and which bodies it goes through. Turn the
+option off, and the view shows only the face that you selected.
+
 **Surface:** Surface Extrude, Surface Revolve, Surface Sweep, Surface
 Loft, Patch, Stitch, Thicken, Offset Surface, Ruled Surface, Extend and
 the other surface features ([Surface modelling](#surface-modelling)).
@@ -554,8 +630,8 @@ sets](#motion-studies-and-contact-sets), [Motion links](#motion-links)):
   centre of a circle or sphere, at an edge and a plane, along a path
 
 **Inspect:** Measure, Interference, Section Analysis, Print Analysis,
-Physical Properties ([Inspect: Measure and Section
-Analysis](#inspect-measure-and-section-analysis), [Print
+Physical Properties ([Inspect: Measure, Annotations and Section
+Analysis](#inspect-measure-annotations-and-section-analysis), [Print
 Analysis](#print-analysis)).
 
 **Insert:** Insert Mesh, Insert DXF, Import.
@@ -960,7 +1036,7 @@ This cut cannot change only one occurrence of a shared definition. Older
 cuts keep their **Local bodies** scope when you edit them. When you open
 an existing cut, Mitcad does not add other component targets.
 
-### Inspect: Measure and Section Analysis
+### Inspect: Measure, Annotations and Section Analysis
 
 **Measure** (I) measures a distance, an angle, a length, an area or a
 position. It also measures whole bodies. Use Measure for distances and
@@ -989,22 +1065,100 @@ copies all rows as tab-separated text, for example into a spreadsheet.
 also when you close and open Measure again. It is not saved with the
 design. A row whose geometry is gone is grey.
 
-To keep a measurement in the design, click *Keep* in the Measure panel,
-or click a row of the history and then *Keep Row*. The measurement
-becomes a *measurement object*: the view draws it as a dimension in its
-own colour, and the browser lists it in the *Measurements* folder with a
-light bulb. Mitcad names it after what it shows (`Distance1`, `Angle1`,
-`Offset1`, `Diameter1`, …). Rename it as any row (F2), choose
-*Colour…* or *Kind…* (for example the distance or the angle of the same
-picks) in its menu, and hide it with its light bulb. The design file
-saves it. When the design changes, the measurement follows its picks and
-shows the new value. When a pick is gone, the row shows a warning and
-says why; the measurement comes back when the pick does.
+**Annotations.** To keep a measurement in the design, click *Keep* in
+the Measure panel, or click a row of the history and then *Keep Row*.
+The measurement becomes an *annotation*: a dimension drawn in the view
+as on a drawing
+(ISO 129 style, millimetres), in its own colour. Mitcad names it after
+what it shows (`Distance1`, `Angle1`, `Offset1`, `Diameter1`, …). With
+one face, edge or vertex picked, *Note…* adds a *leader note* instead:
+an arrow to the pick and a text of one or more lines.
+
+**Datum labels and feature control frames.** For geometric tolerances
+(ISO 1101), pick one face, edge, datum plane or datum axis in the
+Measure panel and click *Datum Label…* or *Frame…* (not a vertex or a
+point: they mark a feature). *Datum Label…* adds a *datum label*: a
+letter in a square on a leader that ends in a filled triangle on the
+pick (ISO 5459). Mitcad
+offers the first free letter, A, B, C …; it skips I, O and Q, and each
+letter is used once. *Frame…* adds a *feature control frame* on a leader
+with an arrow to the pick: a row of boxes with the characteristic's symbol
+(straightness ⏤, flatness ⏥, circularity ○, cylindricity ⌭, profile of a
+line ⌒ or of a surface ⌓, parallelism ∥, perpendicularity ⟂, angularity
+∠, position ⌖, concentricity ◎, symmetry ⌯, circular ↗ or total runout
+⌰), the tolerance zone's width, and the datum letters it refers to in
+order. Tick *Cylindrical zone (Ø)* for the zone of an axis, and choose a
+*Material condition* (Ⓜ maximum, Ⓛ least material) where the
+characteristic takes them. A form tolerance (straightness, flatness,
+circularity, cylindricity) refers to no datum; parallelism,
+perpendicularity, angularity, concentricity, symmetry and runout refer to
+at least one. To put a frame under a dimension instead, select the
+dimension in the Annotations window and click *Add Frame…*: the frame
+stands just below the dimension line and moves with the dimension. A
+frame that refers to a letter no datum label has shows a warning in the
+window. A frame refers to single datum labels: common datums (A-B)
+are not supported yet.
+
+A dimension lies in a plane, not facing the screen: a length in the plane
+you looked at it in when you kept it, a radius or a diameter in its
+circle's plane, an angle in the plane of its sides. Its text turns to
+stay readable within that plane, and an annotation whose plane you see
+edge on fades away. Drag the text of an annotation to move it, or drag a
+length's dimension line (an angle's arc) to move it farther from or
+nearer the measured points. The places are kept relative to the picks,
+so the annotation follows the model when it changes.
+
+Double-click an annotation in the view to edit it: its name, kind,
+prefix (Ø, R), decimals, your own text before or after the value or in
+its place (`4 x`, `THRU`), its tolerance, colour, group and whether it
+is shown. A tolerance is symmetric (`±0.1`), deviations (`+0.2` over
+`-0.1`), limits (the largest and the smallest size, `10.1` over `9.9`;
+type them as the sizes in the editor), or an ISO 286 fit code (`H7` for
+a hole, `g6` for a shaft) whose deviations Mitcad can show in brackets.
+Fit codes cover sizes up to 500 mm, the grades IT5 to IT11 and the
+common holes and shafts (C to S, c to s); a radius takes the fit of its
+diameter. A tolerance shows the decimals it needs, whatever the value
+shows. A right click on an annotation offers *Edit…*, *Hide*, *Delete*
+and *Annotations…*. While a command or a sketch is open, a click on an
+annotation goes to the model as any other click.
+
+The editor also shows what the annotation points at and its plane. Click
+*Pick Again…* beside a pick to choose another face, edge, vertex or
+datum in the view, or *Pick…* beside the plane to lay the annotation in
+a planar face's or a datum plane's plane; *Automatic* gives the plane
+back to Mitcad. The editor closes for the pick, a banner says what to
+pick, and the editor opens again after it. Press Esc to cancel the pick.
+A radius, a diameter and an angle have no plane to pick: they lie in
+their circle's plane or in the plane of their sides. A frame under a
+dimension stands in the dimension's place; to put it on a leader, set
+*Placed* to *On its leader* and click *Pick Again…* or OK. When it
+stood on a vertex, a point or a whole body, Mitcad asks you to pick the
+face, edge or axis its leader points at first.
+
+The **Annotations** window (*View › Annotations…*, *Annotations…* in the
+Measure panel, or the browser's *Annotations* folder) lists every
+annotation: name, kind, value, tolerance, own text, colour, group and
+whether it is shown. Search it, filter it by kind or group, and sort it
+by any column. Select several rows to change their colour, group,
+decimals or tolerance together, to show or hide them, or to delete them;
+each change is one undo step. Choose a group in the filter and click
+*Hide Group* or *Show Group* to hide or show all of its annotations. A
+row you select is highlighted in the view, and so are the faces, edges
+or datums it points at, in its colour; double-click it to edit it.
+When a pick of an annotation is gone, its row shows a warning and says
+why; the annotation comes back when the pick does.
+
+The design file saves the annotations. Designs saved with measurement
+objects open with them as annotations, with the same values. A design
+with dimensions kept from the view needs this version of Mitcad: Keep
+stores the plane and the places you saw them in, which older versions do
+not read.
 
 *View › Export Snapshot* saves a picture of the view, 2 or 4 times as
 large as the view or a width in pixels, optionally with a transparent
-background, with the shown measurements drawn over it. *Render Image*
-also draws the shown measurements over the image it saves.
+background, with the shown annotations drawn over it: all of them, none,
+or the shown annotations of one group. *Render Image* also draws the
+shown annotations over the image it saves.
 
 Outside a command, the selection card shows measurements of the
 selection. When you select an edge, the card shows its length. For a
@@ -1064,7 +1218,7 @@ A sketch that you edit again keeps the orientation it was made with.
 
 The Sketch tab has three groups:
 
-- Create: the drawing tools (refer to [Drawing tools](#drawing-tools))
+- Create: the sketch curve tools (refer to [Sketch curve tools](#sketch-curve-tools))
 - Modify: fillet, chamfer, Trim, Extend, Offset, Move/Copy, Edit
   Pattern, Edit Offset, Edit Text, construction, centre line and
   Convert to Sketch Geometry
@@ -1143,9 +1297,9 @@ Sketch mode has these limits:
 - You cannot add constraints to the curves of an offset of an ellipse
   or a spline.
 
-### Drawing tools
+### Sketch curve tools
 
-The Create menu of the Sketch tab groups the drawing tools:
+The Create menu of the Sketch tab groups the sketch curve tools:
 
 | Entry | Tools |
 | --- | --- |
@@ -1397,10 +1551,29 @@ or that conflicts. Mitcad also refuses a constraint that would
 over-constrain the sketch, with a message.
 
 Coincident between the ends of two curves joins them to one point
-(refer to [Drawing tools](#drawing-tools)). The constraint tools also
+(refer to [Sketch curve tools](#sketch-curve-tools)). The constraint tools also
 take the sketch's axes and origin (refer to [Dimensions](#dimensions)).
 Equal Spacing keeps intervals equal (refer to
 [Equal Spacing](#equal-spacing)).
+
+**Inactive constraints and dimensions.** An inactive constraint or
+dimension stays in the sketch, but it does not hold the geometry.
+Mitcad draws it pink, with dashed lines. Its tooltip tells why it is not
+applied, for example "Not applied: not met in the imported file". An
+import makes inactive the constraints and dimensions of a sketch that
+the file's own geometry does not meet (refer to [.f3d
+import](#f3d-import)). An inactive dimension keeps its value and its
+parameter.
+
+Right-click a selected inactive constraint or dimension and select
+**Activate** to apply it. If the sketch cannot solve with it, or if it
+over-constrains the sketch, Mitcad does not activate it and shows the
+reason. Then change the geometry or delete the constraints that are in
+conflict, and try again. **Deactivate** in the same menu makes an
+active constraint or dimension inactive. **Delete** removes it. An
+equal spacing and its spacing dimension go together: the dimension of an
+inactive equal spacing is drawn inactive too, and **Activate** on it
+activates both.
 
 ### Projections
 
@@ -1419,7 +1592,7 @@ Projected geometry obeys these rules:
 - If the sketch already has a projection of the same edge or corner,
   Mitcad uses that projection again.
 - **Convert to Sketch Geometry** makes projected geometry ordinary
-  sketch geometry (refer to [Drawing tools](#drawing-tools)).
+  sketch geometry (refer to [Sketch curve tools](#sketch-curve-tools)).
 - Project has selection rows of its own while it runs (refer to
   [Selection in sketch mode](#selection-in-sketch-mode)).
 
@@ -2188,7 +2361,10 @@ rendered view, its lights, Render Image and the render device.
 The **Modify** group of the Solid tab holds the commands **Physical
 Material**, **Appearance** and **Edit Appearances**. **Edit
 Appearances** shows the appearance library. **Appearance...** in the
-context menu of a body shows the same library.
+context menu of a body shows the same library. When you selected several
+bodies in the Browser (Ctrl+click) and open the menu on one of them,
+**Appearance...** is for all the selected bodies; on a body that is not
+selected, it is for that body only.
 
 The library shows a preview of each appearance. An appearance has these
 values:
@@ -2291,7 +2467,11 @@ until the material changes again.
 
 **Material...** in the context menu of a body (in the Browser or in the
 view) opens the same window for that body. Select a material and click
-**Assign to Body1** (a double-click only selects). When the bodies have
+**Assign to Body1** (a double-click only selects). When you selected
+several bodies (in the Browser with Ctrl+click) and open the menu on one
+of them, the window is for all the selected bodies, and **Assign to 3
+bodies** gives the material to each of them in one step; on a body that
+is not selected, the menu is for that body only. When the bodies have
 different materials, nothing is selected at first ("2 materials" beside
 Assign) until you choose one. If you set the appearance of the body
 yourself, Mitcad asks first:
@@ -2387,11 +2567,64 @@ settings** row, for example "Body1: Walls", or "None"; its pencil opens the own 
 several, of the one you choose from their names. The
 process editor shows them beside each setting, for example "4 on Body1".
 
+**Purge volumes.** When the printer changes from one filament to
+another, it purges some of the new filament to clear the old one out of
+the nozzle. The **Purge volumes** row of 3D Print, under Materials, says
+"Computed", or how many volumes you set ("1 set by hand"); its pencil
+opens the table of the filaments you print: a row for each filament it
+changes from, a column for each filament it changes to, the volumes in
+mm³. A volume is computed from the two materials: from a dark colour to
+a light one takes more than from a light one to a dark one, and the
+**Purge multiplier** of the process (*Others*) multiplies it. Type a
+volume in a cell to set it yourself: the cell is then in bold, and the
+design keeps it for those two materials. **Reset** gives the selected
+cells the computed volume again. Each change is one Undo step.
+
+A material's own values are on its *Filament* tab, under **Purge
+volumes**: **Purge into this filament** and **Purge out of this
+filament**. Unset, they show the values of the material's colour in
+grey.
+
+The 3MF gives the table to Bambu Studio, OrcaSlicer, QIDI Studio and
+PrusaSlicer; UltiMaker Cura has no such table. Importing a slicer's
+project brings its table in as volumes set by hand.
+
 **Show Build Volume** (the View menu) draws the bed of the design's
 printer, with its middle at the origin and its surface at Z = 0, and its
 printable height. Bodies that do not fit are marked with a dashed box.
 
 STL files carry no settings.
+
+### My Library
+
+**My Library** keeps your own materials, printers and processes, so
+that you can use them in every design. You manage it without a design:
+use **Tools › My Library…**, or **My Library…** next to Close in the
+Materials and the Printers and Processes windows.
+
+The window has the tabs **Materials**, **Printers** and **Processes**.
+Each tab works as the Materials window: your items on the left, then the
+built-in ones under **Built-in**, and the settings of the selected one
+on the right. **New**, **Duplicate** and **Delete** are under the list.
+New and Duplicate make the item in your library. To start from a
+built-in material, printer or process, select it and click
+**Duplicate**: the copy is yours (for example "PLA Plastic 2"), and you
+can rename it and change its values. Each value is saved when you press
+Enter or leave the field. **Delete** asks first and removes the item from
+your library.
+
+In a project, the box at the top chooses between **My library** and
+**This project's library**: the project's items go with the project.
+
+**Import from Slicer…** at the top reads a slicer's 3MF project or
+preset, as Import from slicer… in 3D Print does, but into the library
+shown: its printer, its process and a material for each filament. A
+short line beside the button says what came in; **Details…** shows the
+whole report.
+
+The open design does not change. A design that uses an item you changed
+here asks once, as for a change in another design: **Use the changes**
+or **Keep this design's settings**.
 
 ### Textures
 
@@ -2401,8 +2634,8 @@ between the appearances and the texture sources. The sources are
 *Local Folders* and *Poly Haven*.
 
 *Local Folders* are the folders that you add in Preferences › Textures.
-Click **Add**, select the folder with **Choose...**, or type the folder
-and click **OK**. Mitcad also searches the subfolders.
+**Add…** chooses a folder, and **Remove** takes the selected folders off
+the list. Mitcad also searches the subfolders.
 
 A material in a local folder is a set of PNG or JPEG images. A suffix
 in the name of each image says which map the image holds:
@@ -2695,9 +2928,12 @@ bodies of their own component.
 
 ### Design policy
 
-A new design starts with an empty component, Part1. Part1 is active,
-so the first sketch and feature go into it. By default, every
-component and the root can hold sketches, features and components.
+A new design starts with an empty component, Component1. Component1 is
+active, so the first sketch and feature go into it. Further new
+components are Component2, Component3 and so on. A design made with an
+earlier version keeps its first component's name, Part1. By default,
+every component and the root can hold sketches, features and
+components.
 Also by default, sketches and features can use the faces and the
 geometry of other components.
 
@@ -3085,8 +3321,8 @@ the design. Thus you need no library to place more of it.
 You do not need to activate a component first. The Build tab puts its components into
 the active component when it can hold components. If it cannot, the Build tab
 puts them into the nearest component above it that can. In a new design
-that is Part1 itself. Part1 is active and holds components. The panel
-shows where (*Adds to: Part1*).
+that is Component1 itself. Component1 is active and holds components.
+The panel shows where (*Adds to: Component1*).
 
 ### Profile
 
@@ -3511,7 +3747,9 @@ of each selected face are used.
 **Trim** cuts a surface body with a plane, a face, a body or sketch
 curves, like Split Body. Trim keeps only the pieces you click under
 **Keep**. Click the surface on each piece that you want to keep. Trim
-does not divide a solid. Use Split Body for a solid.
+does not divide a solid. Use Split Body for a solid. As in Split Body,
+**Extend Trimming Tool** extends a face along its surface, and the view
+then shows the extended tool as an orange, see-through surface.
 
 **Untrim** gives a face its surface back. Untrim closes the holes of the
 face. With Outer Boundary, Untrim also puts the outline of the face back
@@ -5348,6 +5586,14 @@ After the import, a report shows how each item was imported:
 - As the file's bodies
 - Not at all, for example assembly relationships
 
+A sketch whose constraints and dimensions do not solve to the file's
+geometry keeps them. Mitcad finds the constraints and dimensions that
+the file does not meet and makes only those inactive (refer to
+[Constraints](#constraints)). All the others stay active, and the
+dimensions keep their parameters. The report names each inactive one,
+for example "1 constraint inactive, not met in the file: coincident k7
+(p3 on c5)". The sketch is then marked partial.
+
 The report also tells how well the final bodies match the bodies stored
 in the file. How well real designs import:
 [core/import/README.md](../core/import/README.md). How the timeline
@@ -5433,7 +5679,9 @@ import-fcstd`. The import does this:
   plane or face to which they were attached. A sketch can have a
   constraint that Mitcad cannot express, for example a tangency to an
   ellipse, Snell's law, or a distance to a circle. Such a sketch is
-  imported without that constraint and is marked partial.
+  imported without that constraint and is marked partial. Constraints
+  and dimensions that FreeCAD's solution does not meet are imported
+  inactive, as in the .f3d import (refer to [.f3d import](#f3d-import)).
 - Shapes without a history (plain shapes, Draft objects, bodies of
   other documents) are base features with FreeCAD's colours.
 - Spreadsheet cells, VarSets and named constraints become parameters.
@@ -5781,9 +6029,10 @@ The panel also has these options:
     file, the bodies are the parts of one object, with their names and
     their appearance colours.
 
-  Both formats put the bodies where the view shows them. 3MF is the
-  reliable way to get one object of several parts in the slicer.
-  UltiMaker Cura loads the parts as a group.
+  Both formats put the bodies where the view shows them, unless a body
+  has a print bed face (see [The print bed face](#the-print-bed-face)).
+  3MF is the reliable way to get one object of several parts in the
+  slicer. UltiMaker Cura loads the parts as a group.
 - **Import from slicer…**, **Printer**, **Process**, **Own settings**
   and **Materials** (3MF only, greyed out with STL): Import from
   slicer… first, above the design's printer and process, then the
@@ -5812,6 +6061,40 @@ Mitcad finds slicers in these places:
 | macOS    | The Applications folders. An application gets the files through `open -a`. |
 | Linux    | `PATH`, Flatpaks and desktop files                        |
 
+#### The print bed face
+
+A body can have a face that lies on the print bed. Right-click a planar
+face of a body and choose **Set as Print Bed Face**. A body has one
+print bed face: a new one replaces the old one. Right-click the print
+bed face and choose **Clear Print Bed Face** to remove it. Each is one
+undo step.
+
+The print bed face belongs to the body. Thus it applies to every
+occurrence of the body, it is saved in the design, and it stays the
+same face when you edit the body. While the context menu of another
+face of the body is open, the print bed face is highlighted in green.
+The tooltip of the body in the browser names the face, for example
+`Print bed face: end face of Extrude1`.
+
+**3D Print** uses the print bed face. The design itself does not move:
+
+- A body sent alone, or bodies of which only one has a print bed face:
+  Mitcad turns them so that the face lies on the bed, puts the lowest
+  point on the bed, and centres them on the plate. The plate is the bed
+  of the design's printer (see [Print settings](#print-settings)), else
+  a 256 × 256 mm plate. A component that is placed several times, only
+  moved, turns the same way in every place.
+- Several bodies that each have a print bed face, for example the parts
+  of a component: Mitcad sends them as they are assembled.
+- With STL, each file is turned onto the print bed face of its body.
+
+If the print bed face is gone after an edit, or is no longer planar,
+Mitcad sends the body as the design has it, with -Z down. The status
+line tells which body, for example `Body1: the print bed face is gone;
+printed as in the design`. The tooltip in the browser says *gone* or
+*not planar*. Then **Clear Print Bed Face** is in the context menu of
+every face of the body, or choose a new print bed face.
+
 #### Print Analysis
 
 **Print Analysis** (Inspect) shows where a body will print badly before
@@ -5823,7 +6106,9 @@ body and mesh body. These are the options:
 
 - **Bed face:** optional. Select a planar face of a body. The face lies
   on the bed, so it sets the print direction. The body does not move.
-  Without a bed face, down is the -Z direction of the design.
+  A new analysis starts with the print bed face of the bodies, if
+  exactly one of them has one (see [The print bed face](#the-print-bed-face)). Without a bed
+  face, down is the -Z direction of the design.
 - **Overhangs** and **Angle** (45 degrees from the vertical): faces that
   face down more steeply than the angle need support. Faces on the bed
   are not overhangs.
@@ -5888,8 +6173,289 @@ mitcad-cli export design.mitcad design.usdz
 
 ### Drawings
 
-File › Export Drawing writes the bodies as a drawing on a sheet. A
-workshop, a supplier or a printed order needs such a sheet. The
+A drawing shows the design on sheets of paper: views of it from the
+front, the top, the side or a corner, sections and details. A
+workshop, a supplier or a printed order needs such sheets. Mitcad
+keeps each drawing in the design itself, not in a file of its own.
+
+#### Drawings in the design
+
+**Where they are.** Drawings are in a **Drawings** folder in the
+browser. The root's folder and a component's folder appear once they
+have a drawing. A drawing in the root's folder shows the whole design.
+A drawing in a component's folder shows that component. The
+component's drawings go with the component: insert the component into
+another design, or paste a new copy of it, and its drawings come too.
+Delete the component, and its drawings go too.
+
+**Creating one.** Use one of these:
+
+- File › Create Drawing: a drawing of the whole design.
+- The context menu of a component in the browser: Create Drawing.
+- The context menu of a Drawings folder: Create Drawing.
+
+A dialog asks for the first sheet's **Template** (refer to
+[Templates and revisions](#templates-and-revisions)), its size, its
+orientation and the projection method. A template brings its sheet size
+and its projection method: ISO starts on A3 in first-angle projection,
+ANSI on ANSI B in third-angle projection. Mitcad names the drawing
+Drawing1, Drawing2 and so on, opens it and starts **Base View**: click
+where the first view goes.
+
+**Opening one.** Double-click the drawing in the browser. The sheet
+takes the place of the 3D view. **Close Drawing** at the top left
+shows the 3D view again; only Close Drawing closes the drawing. Esc
+ends the active tool, then clears the selection, and leaves the
+drawing open. A command chosen on the ribbon also leads back to the
+model, but the single-key shortcuts of the model's commands (E for
+Extrude, H for Hole and the others) do nothing while the sheet or its
+panel has the keyboard, so a stray key does not leave the drawing.
+Undo, Redo and Save keep their shortcuts.
+
+While a drawing is open, Delete deletes the selected views and
+annotations of the drawing. It never deletes the bodies or features
+selected in the model behind it.
+
+The drawing stores only how its views are set up. Mitcad draws the
+lines from the model each time. When you change the model, the views
+change with it. Undo and redo work for drawings too.
+
+#### Views
+
+The bar over the sheet has the drawing's tools in groups, each with its
+caption: **Create** (the views' tools below), **Geometry** (centre marks
+and centrelines), **Dimensions**, **Text**, **Symbols** (datum labels,
+feature control frames, surface finish symbols), **Tables** and
+**Export**.
+
+| Tool | What it makes |
+|---|---|
+| Base View | A view of the design: front, top, right, back, bottom, left, an isometric view from above or below, or *Current View*: the direction the 3D view looks at the model now, with its up. Click where it goes. |
+| Projected View | A view seen from one side of another view. Drag it out of the view, or click where it goes. |
+| Section View | A view of the design cut along a line. Click the line's two ends on a view, then where the section view goes. |
+| Detail View | A circle of a view at a larger scale. Click the circle's middle on a view, then its edge, then where the detail view goes. |
+| Break | A view made shorter: a band of it is taken out. Click the band's two sides on a view. |
+
+The hint over the sheet says what the active tool waits for. While you
+place a section, a detail or a view projected from another, a dashed
+box about its size follows the pointer. The panel beside the sheet
+shows the tool's options. A base view's *Shows* list names what it can
+show: the whole design (in a component's drawing, the component) by
+its name, each occurrence in it (`Arm:1`, `Arm:1/Pin:2`) and each of
+its own bodies. A base view also has its orientation, its scale
+(*Fit the Sheet* unless you choose one), and whether it shows hidden
+edges, tangent edges and shaded faces. When you place a base view,
+Projected View starts at once: each click beside the base view places
+a view seen from that side. In third-angle projection, a click to the
+right of the front view places the view from the right. In
+first-angle projection, the view from the left goes there. A click at
+a corner places an isometric view. Esc ends the tool.
+
+A section view takes its letters (A, B and so on) and hatches the cut
+faces. *Look the Other Way* turns the view round. The section line
+with its arrows and letters shows on the view you drew it on. A detail
+view is twice the scale of its view. Its circle and letter show on
+that view.
+
+**Changing a view.** Click a view to select it. Drag it to move it. A
+view projected from another, and a section, stay in line with that
+view: they move only along it. A view projected from a detail lines up
+with the detail's middle. A view that moves takes the views made from
+it along. A break shortens its own view only: the views in line with
+it keep their full length. The panel shows the selected view's
+properties:
+
+- A base view: its orientation (*Current View* takes the 3D view's
+  direction again), and what it shows (*Shows*, the same list as the
+  tool's).
+- A projected view: the side of its view it is on.
+- A section: its letter, its hatching and *Look the Other Way*.
+- A detail: its letter, its circle's radius and its circle's centre
+  (*Center X* and *Center Y*, in millimetres on the sheet). While the
+  detail is selected, its circle shows in blue on its view: drag the
+  circle to move it.
+- Every view: its scale, its edges, its label and *In Line with Its
+  Parent*. A base view's scale can *Fit the Sheet*. Another view takes
+  its view's scale (a detail twice it) unless it has its own; the list
+  shows the scale that gives.
+
+A view that has sections or details on it keeps its direction: delete
+them first to turn the view, change a projected view's side or a
+section's direction, or change the projection method of a sheet whose
+projected views have them. Delete
+removes the view and the views made from it.
+
+**Several at once.** Ctrl+click a view or an annotation to add it to the
+selection, or to take it out. Delete deletes everything selected, and a
+drag of one of them moves them all, each as one undo step.
+
+**The sheet's menu.** Right-click a view for its menu: Projected View,
+Section View, Detail View and Break start from it; Hidden Edges, Tangent
+Edges, Shaded, Center Marks (and a section's Hatching) switch as in its
+panel; Delete View. Right-click an annotation for Edit Text… (a note or
+a text), Tolerance… (a dimension or a frame) and Delete; the sheet
+itself for Sheet…, Add Revision… and Add Sheet. Double-click a note or
+a text to change its text.
+
+A view shows the visible bodies of the design or of its component. A
+view whose bodies are gone keeps a red box where it was, with the
+reason, and the status bar says it too. Select the box to delete the
+view, or undo to bring the bodies back.
+
+#### Dimensions and notes
+
+The Geometry, Dimensions, Text and Symbols groups have the annotations'
+tools, as icons:
+
+| Tool | What it makes |
+|---|---|
+| Dimension | A dimension: Linear (horizontal or vertical, after the picks), Aligned, Angle, Radius or Diameter. Click two edges or corners (a circle for a radius or a diameter), then where the dimension goes. |
+| Ordinate | A point's distance from an origin along the view's x or y. Click the origin, the point, then where the value goes. |
+| Baseline | Several dimensions at once: from the first point to each of the others (Baseline) or from each to the next (Chain). Click the points, then a free place. |
+| Center Mark | Centre lines across a circle, or the centreline of a hole or a shaft seen from the side. Click the circle or the round face. |
+| Centerline | A centreline through two circles, or between two edges. |
+| Text | Text on the sheet. Click where it goes. |
+| Note | Text on a leader. Click the edge or point it points at, then where the text goes. |
+| Datum Label | A datum label (A, B, …) on a face or an axis. The letters of the model's datum labels and the drawings' are one set: a new label takes the first letter no other has. |
+| Feature Control Frame | A geometric tolerance on a face or an axis. A dialog asks for it; its datums are the letters of the model's and the drawings' datum labels. |
+| Surface Finish | A surface finish symbol on a face, with its requirement (`Ra 1.6`). |
+
+A click picks an edge, a circle, a corner or a round face of the model
+as the view shows it; before you click, what the click would pick shows
+light orange under the pointer, and what it picked turns orange. While
+you place a dimension, its lines follow the pointer; a note, a symbol
+or a balloon shows its leader. A corner or a
+circle's centre near the click wins over an edge. The annotation keeps
+what it picked, not a place on the paper: when you change the model, the
+dimension changes with it. A tool stays on for the next annotation; Esc
+drops the picks so far, then ends the tool.
+
+A view picks what it shows. A section view picks what lies behind its
+cut, and the edges of the cut faces: such an edge stands for the face
+it cuts. A detail view and a broken view pick an edge where they show
+it, also when its middle lies outside the detail's circle or in a
+break. Where two edges lie on one another, the one the view draws as a
+visible line wins, then the one nearer to you. An arc is picked where
+it is, not on the rest of its circle.
+
+On an isometric view, lengths along the paper's x and y and angles
+would come out shorter than they are: Mitcad refuses horizontal,
+vertical and ordinate dimensions and angles there. A dimension on such
+a view is aligned and shows the true distance between its two points.
+
+Values are written as the annotations in the 3D view write them: Ø and R
+before diameters and radii, the decimals you choose, text before and
+after, and a tolerance (±, deviations, limits, or a fit code such as H7).
+Click an annotation to select it. Drag it to move its line or its text.
+Its panel shows its value and has *Tolerance…* and *Decimals…* (the
+same dialogs as in the 3D view), its text before and after, a note's
+text, a datum's letter, a frame's tolerance or a finish's requirement,
+and *Delete*. Delete deletes it too.
+
+An annotation whose edge or face is gone (the feature deleted or
+suppressed, the body no longer in the view) is not drawn. A small red
+box beside its view marks it; select it to see why, and delete it or
+bring the geometry back.
+
+A view also shows centre marks on its holes (half holes too) and
+centrelines on its round faces by itself (*Center Marks* in its panel),
+and on request the dimensions of the sketches it sees square on
+(*Sketch Dimensions*): those of the sketches that shape the bodies it
+shows, where it shows them. Exports draw all of them.
+
+Click an annotation on its lines or its text to select it; a click
+between its lines picks the view under it.
+
+#### Tables and balloons
+
+The Tables group has the tables' tools:
+
+| Tool | What it makes |
+|---|---|
+| Hole Table | A table of the holes a view sees end on. Click the view, then where the table goes. Each hole gets a tag in the view: A1, A2, … for the holes of one size, B1 for the next size (or 1, 2, 3 with *Tags: Numbers*). The table lists each tag with the hole's X and Y from the view's lower left corner (or from the component's origin), its size, depth and thread. |
+| Parts List | A numbered list of the components a view shows, with how many of each it shows, their names, descriptions and materials. Click the view, then where the list goes. *Rows: Parts Only* lists the components with bodies inside subassemblies instead of the first level. With *Balloons* (on unless you switch it off) a balloon goes on each listed item in the view, as the Balloon tool would place it. |
+| Balloon | A component's number from the parts list, in a circle on a leader. Click an edge of the component on a view, then where the balloon goes. |
+
+A table follows the design: add a component, delete an occurrence or a
+hole, and its rows change; the balloons keep their numbers in step. A
+balloon whose component is gone, or that no parts list on its sheet
+lists, is marked broken. Drag a table or a balloon to move it; a
+balloon stays where it is relative to its component.
+
+Select a table to change it in the panel: its **Columns** (a parts list
+can also show any property of the components: type the property's name
+under *More Columns*, such as `Vendor`), **Sort By** and
+**Descending**, a hole table's **Origin** and **Tags**, a parts list's
+**Rows**, and its **Title**. The numbers of a parts list follow its
+sort.
+
+#### Sheets
+
+The tabs over the sheet are the drawing's sheets: click a tab to show
+its sheet. **+** adds a sheet. The context menu of a tab renames or
+deletes it. **Sheet…** sets the sheet's template, size (A4 to A0, ANSI
+A to E), landscape or portrait, the projection method, the units of its
+dimensions and tables (the design's, or millimetres, inches and others),
+and the title block's title, drawing number, author and date. Without a drawing number, the title block names the bodies.
+Without a date, it shows the date of the day.
+
+**Export…** writes the drawing as PDF (all sheets), SVG or DXF (a file
+per sheet). The command line writes a drawing of the design too, all
+its sheets or one (`--sheet 2`: the second):
+
+```
+mitcad-cli export-drawing design.mitcad design.pdf --drawing Drawing1
+mitcad-cli export-drawing design.mitcad sheet2.svg --drawing Drawing1 --sheet 2
+```
+
+The drawing is written as it is: the options that lay out a new
+drawing (`--views`, `--scale` and the others) are refused with
+`--drawing`.
+
+#### Templates and revisions
+
+A sheet's **template** gives it its frame, its title block and its
+revision table. Create Drawing and Sheet… offer:
+
+- **ISO** (A sizes) and **ANSI** (ANSI sizes), built in;
+- your own templates, kept in your library beside your materials and
+  print profiles;
+- the templates of the project the design is in, kept in the project;
+- **Simple Title Block**: the block File › Export Drawing draws.
+
+Choosing a template in Create Drawing or Sheet… also sets its sheet
+size and its projection method (ISO first angle, ANSI third angle; a
+template you save keeps its sheet's). Sheet… keeps the sheet's
+projection method while sections or details are drawn on its projected
+views, and says so. A sheet keeps a copy of its
+template, so the drawing looks the same wherever the design goes.
+
+The title block's fields come from the design and follow it: the title
+(the design's or the component's name), the drawing number (else the
+part number), the part number, the material (the property `Material`,
+else the bodies' materials), the mass (the property `Mass`, else worked
+out from the bodies and their materials), who drew it
+(else the property `Author`), the date, the scale, the sheet (`1/2`) and
+the latest revision. Sheet… sets the title, drawing number, author and
+date of the sheet over the design's. A template's field can show any
+property of the component, written in braces: `{Customer}`,
+`{Identity/Customer}`.
+
+**Save as Template…** in a sheet tab's menu saves the sheet's template
+under a name to your library or the project's. A template is a small
+JSON file in the folder `drawing-templates`, so it can be written by
+hand too.
+
+**Add Revision…** adds a row to the drawing's revision table: its letter
+(A, B, … in turn), a description, the date (today's when left empty)
+and who made it. The revision table is drawn above the title block once
+the drawing has a revision, the latest on top, and the title block
+shows the latest letter. The sheet's panel lists the revisions: a click
+on one edits or deletes it.
+
+#### Export Drawing
+
+File › Export Drawing writes the bodies as a drawing on a sheet. The
 drawing has one of these formats:
 
 | Format | Use                         |
@@ -5906,8 +6472,8 @@ for its body.
 Mitcad removes the edges behind faces. An isometric view and a section
 view are available on request. Third-angle projection puts the top
 view above the front view and the right view to its right. First-angle
-projection puts them the other way round. *Hidden edges dashed* draws
-the edges behind faces as dashed lines. *Tangent edges* draws the
+projection puts them the other way round. *Hidden Edges* draws
+the edges behind faces as dashed lines. *Tangent Edges* draws the
 edges where faces meet smoothly as thin lines.
 
 A section view cuts where a Section Analysis of the design cuts.
@@ -5932,7 +6498,7 @@ body.
 **Sheet.** The sheet is A4 to A0 or ANSI A to E, landscape or
 portrait. The sheet has a frame and a title block. The title block
 shows the design's name, the bodies, the scale, the units, the date,
-the sheet and the projection method. *Fit to sheet* takes the largest
+the sheet and the projection method. *Fit the Sheet* takes the largest
 standard scale at which the views fit. The standard scales are 1:1,
 1:2, 1:5 and so on, or 2:1, 5:1 and so on. You can also type a scale,
 for example 1:3.
@@ -5941,9 +6507,21 @@ for example 1:3.
 the sheets are the pages of one file. For SVG and DXF, Mitcad writes
 numbered files.
 
-The dialog remembers its choices for the next drawing. The drawing is
-a snapshot of the design. After a change, export the drawing again.
-The command line writes the same file:
+The dialog remembers its choices for the next drawing. Mitcad keeps
+the drawing it lays out in the root's Drawings folder. Open it to
+change it, and export it again with Export… after a change of the
+model. *Drawing* says which drawing the dialog writes: the one it laid
+out last (the first choice), another of the design's drawings, or *New
+Drawing*. A drawing of the design is written as it is: it follows the
+model already, and what you made on it (annotations, tables, moved
+views, more sheets, its template) stays. The dialog's view, sheet and
+scale settings are for a new drawing only and are off while a drawing
+of the design is chosen; change that drawing in its own workspace. So
+exporting again does not add a new drawing each time. When the design cannot change at the moment (it is read-only,
+or a command's panel is open), Mitcad writes the file without keeping
+a drawing. When the file cannot be written, the drawing is not kept
+either. The command line writes the same file without keeping a
+drawing:
 
 ```
 mitcad-cli export-drawing design.mitcad design.pdf --sheet A3
@@ -6104,8 +6682,8 @@ Web Viewer writes the index again from all designs.
 
 **Tools › Preferences** holds the settings of Mitcad. It has one page
 for each kind of setting: General, Navigation, Display, Cache, Cloud,
-Updates, 3D Print, Diagnostics, Textures and Agents. Command search
-finds each page by its name or by what it sets, for example "autosave",
+Updates, 3D Print, Diagnostics, Textures, AI Assistants and Fonts.
+Command search finds each page by its name or by what it sets, for example "autosave",
 "slicer" or "git". The result shows as *Preferences: Cache* and so on.
 The window opens no larger than the screen, and you can resize it.
 
@@ -6127,7 +6705,7 @@ guide that explains its settings.
 | **3D Print** | The slicer | [3D printing](#3d-printing) |
 | **Diagnostics** | **Write a debug log** | [Debug log](#debug-log) |
 | **Textures** | The *Local Folders* of the texture sources. *Allow texture sources on the internet* | [Textures](#textures) |
-| **Agents** | The folders that an agent connected through MCP can save to and open from | [mcp.md](mcp.md) |
+| **AI Assistants** | Connect AI Assistant…, and the folders that an AI assistant connected through MCP can save to and open from | [mcp.md](mcp.md) |
 | **Fonts** | The folders of font files that the font chooser of Edit Text lists | [Text, fonts and QR codes](#text-fonts-and-qr-codes) |
 
 
@@ -6172,29 +6750,37 @@ them can be set to off. Refer to [Components](#components).
 Refer to [Sharing a project](#sharing-a-project) and
 [Live updates](#live-updates).
 
-**Textures.** The *Local Folders* of the texture sources are the folders
-that you add on the Textures page. Use Add, Choose..., or type a folder
-and click OK. Mitcad also searches the subfolders. Mitcad uses the
+**Textures.** The *Local Folders* of the texture sources are the
+**Texture folders** that you add on the Textures page with **Add…**
+(**Remove** takes the selected ones off the list). Mitcad also searches
+the subfolders for PNG and JPEG images named by their maps, such as
+`oak_diff.png` and `oak_nor_gl.png`, and embeds a texture that a design
+uses in the design. Mitcad uses the
 internet only when you permit it. The first time you select an online
 source, Mitcad asks. If you answer No, Mitcad asks for nothing from the
 internet. *Allow texture sources on the internet* on the Textures page
 changes the answer later. Refer to [Textures](#textures).
 
 **Fonts.** The font chooser of Edit Text lists the bundled Droid Sans
-and the installed fonts. Then it lists the font files of the folders of
-**Preferences › Fonts**. Each font has a preview. **File...** beside the
-chooser selects any font file (`.ttf`, `.otf`, `.ttc`, `.woff`,
-`.woff2`). Refer to [Text, fonts and QR codes](#text-fonts-and-qr-codes).
+and the installed fonts. Then it lists the font files of the **Font
+folders** of **Preferences › Fonts** and their subfolders (**Add…**
+chooses a folder, **Remove** takes the selected ones off the list). Each
+font has a preview. **File...** beside the chooser selects any font file
+(`.ttf`, `.otf`, `.ttc`, `.woff`, `.woff2`). A text keeps its font
+file's outlines in the design, so the design looks the same on a
+computer without the file. Refer to [Text, fonts and QR codes](#text-fonts-and-qr-codes).
 
 **3D Print.** The 3D Print page sets the slicer. Mitcad finds it
 automatically where possible. You can also select another program, for
 example an AppImage or, on macOS, an application in the Applications
 folder. Refer to [3D printing](#3d-printing).
 
-**Agents.** The Agents page lists folders for an agent connected through
-MCP (`mitcad-cli mcp --connect`). The agent is permitted to save the
-open design to these folders and to open designs from them. There are
-none until you add one. Refer to [mcp.md](mcp.md).
+**AI Assistants.** The AI Assistants page has **Connect AI Assistant…**
+and lists the **Folders for designs**: a connected AI assistant may save
+the open design to these folders and open designs from them. There are
+none until you add one: **Add…** chooses a folder, **Remove** takes the
+selected ones off the list (the files stay). Connect in Connect AI
+Assistant adds its folder too. Refer to [mcp.md](mcp.md).
 
 ### Cache of computed results
 

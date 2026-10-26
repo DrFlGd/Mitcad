@@ -12,8 +12,10 @@
 #include "DocumentSnapshot.hpp"
 #include "FindInDesign.hpp"
 #include "../print/MaterialsDialog.hpp"
+#include "../print/MyLibraryDialog.hpp"
 #include "../print/OwnSettingsDialog.hpp"
 #include "../print/ProfilesDialog.hpp"
+#include "../print/PurgeVolumesDialog.hpp"
 #include "PropertySetsDialog.hpp"
 
 class QEvent;
@@ -95,6 +97,15 @@ public:
   // shows it (3D Print's own-settings links, Property Sets' Edit… of
   // Process).
   void openOwnSettings(const QString& owner, const QString& name);
+  // My Library (mitcad#704; Tools › My Library…, My Library… of Materials
+  // and Printers and Processes): the user's and the project's materials,
+  // printers and processes without a design. When it closes after a
+  // change, the open print windows read the libraries again.
+  void openMyLibrary();
+  // Purge Volumes (mitcad#705; 3D Print's Purge volumes row): the table of
+  // the filament slots of `bodies` (uids, in the order printed). The window
+  // follows the model.
+  void openPurgeVolumes(const QStringList& bodies);
   // Reorient Design (mitcad#502): the whole design turned by quarter turns,
   // previewed while its dialog is open; OK keeps it as one undo step.
   void openReorient();
@@ -165,6 +176,9 @@ private:
   void editFeature(const QString& uid);
   void markerDragged(int position);
   void browserMenu(const BrowserNode& node, const QPoint& at);
+  // What a body row's Appearance… and Material… are for (mitcad#703): every
+  // selected body when the row is one of them, else the row's body alone.
+  QStringList menuBodies(const BrowserNode& node) const;
   void timelineMenu(const QString& uid, const QPoint& at);
   // A feature's menu, the same in the timeline and on its rows under
   // sketches in the browser (mitcad#177): `row` is the browser's row, or
@@ -185,6 +199,11 @@ private:
   void rename(const BrowserNode& node, const QString& name);
   void renameFeature(const QString& uid, const QString& name);
   void deleteNode(const BrowserNode& node);
+  // The Delete key in the browser and the timeline: as deleteNode and
+  // deleteFeature, except of model items while a drawing is open.
+  bool keyDeletesModel();
+  void deleteKeyed(const BrowserNode& node);
+  void deleteFeatureKeyed(const QString& uid);
   // Opens Flat Pattern on a sheet-metal body: its settings, or a new one
   // (mitcad#210).
   void editFlatPattern(const QString& body);
@@ -203,11 +222,6 @@ private:
   void moveHistory(const QString& uid);
   void paste(bool asNew);
   void changeUnits();
-  // A measurement object's colour from the named ones (or another, Qt's
-  // colour dialog) and the kind of value it shows from those its picks
-  // have (mitcad#649), each an undo step.
-  void chooseMeasurementColor(const BrowserNode& node);
-  void chooseMeasurementKind(const BrowserNode& node);
   void reveal(const QString& uid);
   void updateFailures();
   bool canChange(bool visibilityOnly = false);
@@ -226,6 +240,8 @@ private:
   QPointer<MaterialsDialog> m_materials;     // mitcad#655
   QPointer<ProfilesDialog> m_profiles;       // mitcad#655
   QPointer<OwnSettingsDialog> m_ownSettings; // mitcad#655
+  QPointer<MyLibraryDialog> m_myLibrary;     // mitcad#704
+  QPointer<PurgeVolumesDialog> m_purgeVolumes; // mitcad#705
   QPointer<FindDialog> m_find;
   QToolButton* m_findButton = nullptr;
   QString m_loggedFindButton;

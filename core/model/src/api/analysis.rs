@@ -4,7 +4,7 @@
 //! STEP file, their text form for `mitcad-cli`, and shapes for display.
 //! See `commands.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write;
 
 use serde::Deserialize;
@@ -19,6 +19,7 @@ use crate::datum::{CurveGeometry, Datum, DatumPlane, OriginDatum, SurfaceGeometr
 use crate::document::{BodyView, Document, MeasurePick};
 use crate::features::OccurrencePath;
 use crate::features::geom_ref::GeomRef;
+use crate::fingerprint::Fingerprint;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::joints::path_component;
 use crate::kernel::{Kernel, KernelError, Plane};
@@ -368,6 +369,7 @@ impl<S> Resolved<S> {
 
 /// What [`Document::measure_picks`] finds for a measurement object
 /// (mitcad#649).
+#[derive(Clone)]
 pub(super) struct MeasuredPicks {
     /// The only pick measured alone (its circle, a round face's or edge's).
     pub(super) single: Option<Measurement>,
@@ -375,6 +377,44 @@ pub(super) struct MeasuredPicks {
     pub(super) between: Option<Separation>,
     /// Each pick's plane, axis, line or point in the design's coordinates.
     pub(super) elements: [Option<Element>; 2],
+}
+
+/// How many measured picks [`MeasureCache`] keeps.
+const CACHED_MEASURES: usize = 256;
+
+/// Picks measured before (mitcad#716), by the fingerprint of what they
+/// were measured from ([`Document::picks_key`]: the picks as named, their
+/// bodies' shape versions and placements, their datums as placed). The
+/// annotations are answered again after every command, and measuring two
+/// large faces can take long, so only picks whose bodies, placements or
+/// datums changed are measured again. Separate from modelling results:
+/// measuring changes no state. Failures are not kept. The least recently
+/// used go first.
+#[derive(Default)]
+pub(crate) struct MeasureCache {
+    entries: std::sync::Mutex<VecDeque<(u128, MeasuredPicks)>>,
+}
+
+impl MeasureCache {
+    fn found(&self, key: u128) -> Option<MeasuredPicks> {
+        // A hit moves to the back.
+        let mut entries = self.entries.lock().ok()?;
+        let i = entries.iter().position(|(k, _)| *k == key)?;
+        let entry = entries.remove(i)?;
+        let picks = entry.1.clone();
+        entries.push_back(entry);
+        Some(picks)
+    }
+
+    fn keep(&self, key: u128, picks: MeasuredPicks) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.retain(|(k, _)| *k != key);
+            entries.push_back((key, picks));
+            while entries.len() > CACHED_MEASURES {
+                entries.pop_front();
+            }
+        }
+    }
 }
 
 /// A measurement object's pick (mitcad#649) as a selection given as fields.
@@ -575,6 +615,22 @@ impl<K: Kernel> Document<K> {
         }
     }
 
+    /// What places a pick's component in the design (its occurrence's
+    /// transform; none in the root): what an annotation keeps in the pick's
+    /// own coordinates follows it with this (mitcad#702).
+    pub(super) fn pick_transform(&self, pick: &MeasurePick) -> Result<Transform, ApiError> {
+        let owner = match (&pick.datum, pick.body) {
+            (Some(id), None) => id
+                .parse::<FeatureUid>()
+                .ok()
+                .and_then(|uid| self.feature(uid))
+                .map(|entry| entry.component),
+            (None, Some(body)) => self.body_component(body),
+            _ => None,
+        };
+        self.selection_transform(owner, pick.occurrence.as_ref(), "the pick")
+    }
+
     /// A selection in the design's coordinates (mitcad#646): a body's shape
     /// moved by its occurrence's transform, a datum moved likewise, with
     /// its plane, axis, line or point (mitcad#647).
@@ -703,8 +759,85 @@ impl<K: Kernel> Document<K> {
     /// `measurements.rs`): placed in the design as the `measure` query
     /// places them, the first measured alone when there is no second (its
     /// circle), else their separation, and each pick's plane, axis, line or
-    /// point.
+    /// point. Measured once, then taken from the [`MeasureCache`] while what
+    /// they are measured from is the same (mitcad#716).
     pub(super) fn measure_picks(
+        &self,
+        a: &MeasurePick,
+        b: Option<&MeasurePick>,
+    ) -> Result<MeasuredPicks, ApiError> {
+        let key = self.picks_key(a, b)?;
+        if let Some(found) = self.measure_cache().found(key) {
+            return Ok(found);
+        }
+        let found = self.measure_picks_now(a, b)?;
+        self.measure_cache().keep(key, found.clone());
+        Ok(found)
+    }
+
+    /// The fingerprint of what a measurement object's picks are measured
+    /// from (mitcad#716), found without the kernel: each pick as named, its
+    /// body's shape version (the recompute cache's, which changes whenever
+    /// the shape does), component and placement, or its datum as placed.
+    /// Picks of the same key measure the same. Fails as measuring would
+    /// when a pick's body or datum is not there.
+    pub(super) fn picks_key(
+        &self,
+        a: &MeasurePick,
+        b: Option<&MeasurePick>,
+    ) -> Result<u128, ApiError> {
+        let mut fp = Fingerprint::new("measured-picks-v1");
+        self.pick_key(&mut fp, a)?;
+        fp.bool(b.is_some());
+        if let Some(b) = b {
+            self.pick_key(&mut fp, b)?;
+        }
+        Ok(fp.finish())
+    }
+
+    fn pick_key(&self, fp: &mut Fingerprint, pick: &MeasurePick) -> Result<(), ApiError> {
+        let named = serde_json::to_string(pick).map_err(|e| ApiError(e.to_string()))?;
+        fp.str(&named);
+        match (&pick.datum, pick.body) {
+            (Some(id), None) => {
+                // As `resolve_selection` places it.
+                let (_, label, datum) = self.datum_by_id(id)?;
+                let owner = id
+                    .parse::<FeatureUid>()
+                    .ok()
+                    .and_then(|uid| self.feature(uid))
+                    .map(|entry| entry.component);
+                let transform =
+                    self.selection_transform(owner, pick.occurrence.as_ref(), &label)?;
+                fp.str(&format!("{:?}", moved_datum(&datum, &transform)));
+            }
+            (None, Some(body)) => {
+                self.require_body(body)?;
+                let owner = self.body_component(body);
+                let transform = self.selection_transform(
+                    owner,
+                    pick.occurrence.as_ref(),
+                    &format!("body {body}"),
+                )?;
+                fp.u128(self.body_version(body).unwrap_or(0))
+                    .str(&format!("{owner:?}"));
+                for row in &transform.linear {
+                    for v in row {
+                        fp.f64(*v);
+                    }
+                }
+                for v in &transform.translation {
+                    fp.f64(*v);
+                }
+            }
+            // No pick: measuring it says why.
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// [`Document::measure_picks`] by the kernel.
+    fn measure_picks_now(
         &self,
         a: &MeasurePick,
         b: Option<&MeasurePick>,
@@ -742,6 +875,7 @@ impl<K: Kernel> Document<K> {
             ),
         });
         add_axis_json(&mut value["a"], a.element.as_ref());
+        add_plane_json(&mut value["a"], a.element.as_ref());
         if let Some(b_input) = &query.b {
             let b = self.resolve_selection(b_input)?;
             value["b"] = measurement_json(
@@ -751,6 +885,7 @@ impl<K: Kernel> Document<K> {
                     .map_err(kernel_error(&b_input.describe()))?,
             );
             add_axis_json(&mut value["b"], b.element.as_ref());
+            add_plane_json(&mut value["b"], b.element.as_ref());
             let between = self
                 .kernel()
                 .measure_between(&a.selection(), &b.selection())
@@ -1028,6 +1163,11 @@ impl<K: Kernel> Document<K> {
                     .map(|f| json!({"face": f.face, "appearance": f.appearance, "faces": f.faces}))
                     .collect::<Vec<_>>()
             );
+        }
+        // The print bed face (mitcad#731), with the faces it finds at the
+        // marker or why it cannot lie on the bed.
+        if let Some(bed) = self.print_bed_face_json(uid) {
+            value["print_bed_face"] = bed;
         }
     }
 
@@ -1510,6 +1650,17 @@ fn add_axis_json(value: &mut Value, element: Option<&Element>) {
         // + 0.0 turns -0.0 into 0.0.
         let v = |v: Vec3| v.map(|x| x + 0.0);
         value["axis"] = json!({"origin": v(origin), "direction": v(direction)});
+    }
+}
+
+/// A planar face's or datum plane's `plane` {`origin`, `normal`} in the
+/// measure query's answer (mitcad#714): the middle of the face on its
+/// plane and its normal out of the material, as `axis` is a cylinder's.
+fn add_plane_json(value: &mut Value, element: Option<&Element>) {
+    if let Some(Element::Plane { origin, normal }) = element {
+        // + 0.0 turns -0.0 into 0.0.
+        let v = |v: &Vec3| v.map(|x| x + 0.0);
+        value["plane"] = json!({"origin": v(origin), "normal": v(normal)});
     }
 }
 

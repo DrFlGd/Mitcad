@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// mitcad-cli mesh-compare (mitcad#644): a design's bodies meshed as the 3D
-// view's final display tier meshes them, and the same with planes through
-// OCCT's Delabella triangulation (the interactive preview tier's planes),
-// compared face by face; and the totals over many such reports.
+// mitcad-cli mesh-compare (mitcad#644): a design's bodies meshed twice as
+// the 3D view's final display tier meshes them, each time with one variant
+// of the planes' triangulation (the default insertion, OCCT's Delabella as
+// the interactive preview tier, or Delabella checked as the final tier
+// now), compared face by face; and the totals over many such reports.
 
 #include <functional>
 #include <string>

@@ -5,7 +5,8 @@
 # mitcad-cli.exe mcp --connect, over JSON-RPC on its stdin and stdout.
 #   1. A design (mitcad-cli): a block with a fillet, and a sketch F4 whose
 #      projection of the block's bottom face no longer matches the face.
-#   2. The bridge connects: the catalog's tools, "Agent connected".
+#   2. The bridge connects: the catalog's tools, "Agent connected", the
+#      agent indicator names the client (mitcad#710).
 #   3. ui_command edit F4 opens the sketch; queries with it open (sketch,
 #      timeline); ui_state reports the sketch and its Sketch Palette's
 #      warning with the projection's entities.
@@ -18,7 +19,8 @@
 #      Finish Sketch.
 #   8. document_save writes the design's file.
 #   9. ui_log shows the commands' lines; since a sequence number.
-#  10. The bridge's stdin closed: it ends, "Agent disconnected".
+#  10. The bridge's stdin closed: it ends, "Agent disconnected", the agent
+#      indicator says no agent.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-mcp-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -180,6 +182,7 @@ Remove-Item -Recurse -Force $env:MITCAD_MCP_DISCOVERY_DIR -ErrorAction SilentlyC
 
 Ui-StartApp 'mcp' @('--open', $design)
 Ui-ExpectLog 'MCP live instance:' "the application's MCP listener is up"
+Ui-ExpectLog 'Agent indicator: no agent' 'the agent indicator says the window accepts agents'
 Ui-ExpectLog 'stale.mitcad' 'the design opened'
 
 # The listener answers an authenticated probe, the same discovery the
@@ -207,12 +210,12 @@ $init = Mcp-Request 'initialize' @{ protocolVersion = '2025-11-25'; capabilities
 Mcp-Check ($init.result.protocolVersion -eq '2025-11-25') 'initialized' ($init | ConvertTo-Json -Compress -Depth 10)
 Mcp-Send @{ jsonrpc = '2.0'; method = 'notifications/initialized' }
 $tools = @((Mcp-Request 'tools/list').result.tools | ForEach-Object { $_.name }) | Sort-Object
-$expected = @('document_list', 'document_open', 'document_save', 'model_command', 'model_export', 'model_query', 'ui_camera',
+$expected = @('document_list', 'document_open', 'document_save', 'model_command', 'model_export', 'model_query', 'model_reference', 'ui_camera',
   'ui_command', 'ui_log', 'ui_screenshot', 'ui_select', 'ui_state') | Sort-Object
 Mcp-Check (($tools -join ',') -eq ($expected -join ',')) 'the live catalog has the debugging tools' ($tools -join ',')
 $document = @((Mcp-Tool 'document_list' @{}).documents)[0].document
 Ui-ExpectNew 'Agent connected' 'the window says an agent is connected'
-Ui-ExpectNew 'Project indicator: not in a project, connected: mitcad-windows-test' 'the status bar names the client'
+Ui-ExpectNew 'Agent indicator: connected: mitcad-windows-test' 'the agent indicator names the client'
 
 Write-Host '--- The sketch opened, queries with it open, ui_state'
 $edited = Mcp-Tool 'ui_command' @{ document = $document; edit = 'F4' }
@@ -309,5 +312,6 @@ $script:Bridge.StandardInput.Close()
 if (-not $script:Bridge.WaitForExit(30000)) { Mcp-Fail 'the bridge did not end after its stdin closed' }
 Mcp-Check ($script:Bridge.ExitCode -eq 0) 'the bridge ended' "exit code $($script:Bridge.ExitCode): $($script:BridgeError.Result)"
 Ui-ExpectNew 'Agent disconnected' 'the window says the agent disconnected'
+Ui-ExpectNew 'Agent indicator: no agent' 'the agent indicator says no agent again'
 
 Ui-Finish 'UI Windows live MCP test'

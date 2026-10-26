@@ -1,16 +1,23 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
+#include <utility>
+
 #include <QDialog>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
+#include <QWidget>
 
+#include "PrintItemsHost.hpp"
 #include "PrintKeys.hpp"
 #include "PrintLibrary.hpp"
 
 class QComboBox;
+class QHBoxLayout;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -21,11 +28,9 @@ namespace mitcad {
 class DocumentHost;
 class SettingsForm;
 
-// Printers and Processes (mitcad#655): every printer and process the user
-// can choose, laid out as Materials. Edit Printers and Processes (MAKE,
-// next to 3D Print) and Edit… of 3D Print's and Property
-// Sets' Printer and Process rows open it; a non-modal window that follows
-// the model.
+// The printers' and processes' list and editor (mitcad#655), shared by
+// the Printers and Processes window and My Library's Printers and
+// Processes tabs (mitcad#704), laid out as Materials.
 //
 // On the left the items under Printers and Processes (the `library_items`
 // query), the design's choice marked; no places, no filter: the window's
@@ -43,19 +48,39 @@ class SettingsForm;
 // Under the list, as in Materials: New (a printer or a process) and
 // Duplicate (the user's own copy) make it in this design as the design's
 // choice, in one undo step; Delete (always asked, naming what uses it and
-// the outcome); Use in this design; Close on the right.
-class ProfilesDialog : public QDialog {
+// the outcome); Use in this design.
+//
+// In a library (setLibrary, My Library): the library's items of the
+// kinds shown (setKinds), then the built-in ones under Built-in to
+// duplicate; New (of the one kind shown, no menu) and Duplicate make the
+// item in the library, edits and Delete change its file. No Save to, no
+// Use in this design, no saved state.
+class ProfilesPanel : public QWidget {
   Q_OBJECT
 
 public:
-  ProfilesDialog(DocumentHost& host, QWidget* parent = nullptr);
-  ~ProfilesDialog() override;
+  // `logName` heads the panel's list and place log lines: "Profiles",
+  // "My Library printers".
+  ProfilesPanel(PrintItemsHost& host, const QString& logName, QWidget* parent = nullptr);
+  ~ProfilesPanel() override;
 
+  // The kinds listed: printer and process (the default), or one of them.
+  void setKinds(const QStringList& kinds);
+  // The library the panel works in: `user` or `project` (My Library);
+  // empty: the design (the default).
+  void setLibrary(const QString& library);
   // Shows the item `key` ("<place>/<id>") of `kind` (printer or process);
   // an empty key selects nothing (3D Print's Slicer default).
   void showItem(const QString& kind, const QString& key);
   // Shows the items and the selected one as the model has them now.
   void refresh();
+  // A button of the window at the end of the row under the list (My
+  // Library…, Close), its place logged as "<logName> <name> at x,y".
+  void addButton(QPushButton* button, const QString& name);
+
+signals:
+  // A command of the panel changed the model (My Library: a library).
+  void changed();
 
 protected:
   void showEvent(QShowEvent* event) override;
@@ -64,6 +89,9 @@ protected:
 
 private:
   const LibraryItem* current() const;
+  bool inLibrary() const { return !m_libraryPlace.isEmpty(); }
+  // The project commands and queries name: none in My library.
+  QString itemsProject() const;
   // A row's key in the list: "<kind>|<place>/<id>".
   static QString rowKey(const LibraryItem& item);
   static QString kindTitle(const QString& kind);
@@ -71,6 +99,8 @@ private:
   void showCurrent();
   void selectKey(const QString& key);
   void edit(const QJsonObject& change, const QString& what, const QString& field = QString());
+  // A new item's `library` and project in My Library, else `choose`.
+  void inPlace(QJsonObject& command) const;
   void newProfile();
   void duplicate();
   // Use in this design: the selected one the design's printer or process.
@@ -86,7 +116,10 @@ private:
   void scheduleLogPlaces();
   void logPlaces();
 
-  DocumentHost& m_host;
+  PrintItemsHost& m_host;
+  QString m_log;          // "Profiles"
+  QString m_libraryPlace; // user or project in My Library; empty: the design
+  QStringList m_kinds;    // printer, process
   PrintKeyTable m_keys;
   QString m_dialect; // the design's slicer (designDialectOf)
   QVector<LibraryItem> m_items; // printers, then processes
@@ -108,14 +141,37 @@ private:
   QPushButton* m_saveTo = nullptr;
   SettingsForm* m_form = nullptr;
   QLabel* m_message = nullptr;
+  QHBoxLayout* m_buttons = nullptr;
   QPushButton* m_new = nullptr;
   QPushButton* m_duplicate = nullptr;
   QPushButton* m_use = nullptr;
   QPushButton* m_delete = nullptr;
-  QPushButton* m_close = nullptr;
+  QVector<std::pair<QString, QPushButton*>> m_windowButtons; // addButton's
   QString m_loggedRows;
   QString m_loggedValues;
   QString m_loggedPlaces;
+};
+
+// Printers and Processes (mitcad#655): every printer and process the user
+// can choose, the panel above on the open design. Edit Printers and
+// Processes (MAKE, next to 3D Print) and Edit… of 3D Print's and Property
+// Sets' Printer and Process rows open it; a non-modal window that follows
+// the model, with My Library… (mitcad#704) and Close on the right.
+class ProfilesDialog : public QDialog {
+  Q_OBJECT
+
+public:
+  ProfilesDialog(DocumentHost& host, QWidget* parent = nullptr);
+  ~ProfilesDialog() override;
+
+  void showItem(const QString& kind, const QString& key);
+  void refresh();
+  // My Library… (mitcad#704).
+  std::function<void()> openMyLibrary;
+
+private:
+  DesignItemsHost m_designHost;
+  ProfilesPanel* m_panel = nullptr;
 };
 
 } // namespace mitcad

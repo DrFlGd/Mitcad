@@ -810,3 +810,87 @@ fn library_edits_undo_with_their_file_and_a_kept_change_is_asked_once() {
     assert_eq!(draft_changed(&doc, &project), false);
     assert_eq!(layer(&doc), 0.12);
 }
+
+/// My Library (mitcad#704): a built-in material duplicated into a library
+/// by its id, renamed, its density changed and deleted, and a library's
+/// printer duplicated, on an empty design of its own that keeps none of
+/// them.
+#[test]
+fn a_library_is_managed_on_an_empty_design() {
+    let (mut doc, project) = setup("my-library");
+    let folder = project_library(&project);
+    let path = project.to_string_lossy().to_string();
+    // Duplicate of the built-in PLA, by its id.
+    let answer = command(
+        &mut doc,
+        json!({"cmd": "create_material", "library": "project", "project": path,
+               "based_on": "pla"}),
+    );
+    assert_eq!(answer["id"], "pla-plastic-2");
+    let file = folder.join(item_path(ItemKind::Material, "pla-plastic-2"));
+    let read = |file: &Path| -> Value {
+        serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap()
+    };
+    let item = read(&file);
+    assert_eq!(item["material"]["name"], "PLA Plastic 2");
+    assert_eq!(item["material"]["based_on"], "pla");
+    assert_eq!(item["material"]["class"], "plastic");
+    assert_eq!(item["material"]["filament"]["filament_type"], "PLA");
+    // Listed in the project's place, the built-in PLA still built in.
+    let materials = rows(&doc, "material", &project);
+    assert_eq!(
+        row(&materials, "project", "pla-plastic-2")["in_design"],
+        Value::Null
+    );
+    assert_eq!(row(&materials, "mitcad", "pla")["read_only"], true);
+    // Renamed, then its density: each the next version of the file.
+    command(
+        &mut doc,
+        json!({"cmd": "edit_material", "library": "project", "project": path,
+               "id": "pla-plastic-2", "name": "Bench PLA"}),
+    );
+    let answer = command(
+        &mut doc,
+        json!({"cmd": "edit_material", "library": "project", "project": path,
+               "id": "pla-plastic-2", "density": 1.3}),
+    );
+    assert_eq!(answer["version"], 3);
+    let item = read(&file);
+    assert_eq!(
+        (&item["material"]["name"], &item["material"]["density"]),
+        (&json!("Bench PLA"), &json!(1.3))
+    );
+    // A library's printer duplicated within the library.
+    command(
+        &mut doc,
+        json!({"cmd": "create_print_profile", "library": "project", "project": path,
+               "kind": "printer", "name": "Bench X", "values": {"max_print_height": 250}}),
+    );
+    let answer = command(
+        &mut doc,
+        json!({"cmd": "create_print_profile", "library": "project", "project": path,
+               "kind": "printer", "based_on": {"library": "project", "id": "bench-x"}}),
+    );
+    assert_eq!(answer["id"], "bench-x-2");
+    let printer = read(&folder.join(item_path(ItemKind::Printer, "bench-x-2")));
+    assert_eq!(printer["profile"]["name"], "Bench X 2");
+    // As a number, whether the file writes 250 or 250.0.
+    assert_eq!(
+        printer["profile"]["values"]["max_print_height"].as_f64(),
+        Some(250.0)
+    );
+    // Deleted: the file goes, nothing of the design to keep.
+    let answer = command(
+        &mut doc,
+        json!({"cmd": "delete_material", "library": "project", "project": path,
+               "id": "pla-plastic-2"}),
+    );
+    assert_eq!(
+        (&answer["kept"], &answer["removed"]),
+        (&json!([]), &json!([]))
+    );
+    assert!(!file.exists());
+    // The design has none of them.
+    assert!(doc.custom_materials().is_empty());
+    assert!(doc.print_profiles().is_empty());
+}

@@ -69,7 +69,7 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sheet-ops"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-sheet-ops PROPERTIES TIMEOUT 600)
-    # Design policy (mitcad#220): the new design's Part1, a root that
+    # Design policy (mitcad#220): the new design's Component1, a root that
     # refuses sketches, the policy dialog and its presets, undo, and
     # sketch planes of other components left out of picking.
     add_test(NAME app.ui-windows-policy
@@ -311,6 +311,15 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-drawing"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-drawing PROPERTIES TIMEOUT 300)
+    # Drawings kept in the design (mitcad#707): Create Drawing, a base, a
+    # projected, a section and a detail view, the model changed under them,
+    # saved and opened again, a PDF exported.
+    add_test(NAME app.ui-windows-drawings
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-drawings-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-drawings"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-drawings PROPERTIES TIMEOUT 300)
 
     # Gear (mitcad#472): a spur gear from the panel, a rack meshing it.
     add_test(NAME app.ui-windows-gear
@@ -550,15 +559,37 @@ if(MITCAD_MESA_DIR)
               -Out "${CMAKE_BINARY_DIR}/ui-windows-print-settings" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-print-settings PROPERTIES TIMEOUT 300)
 
+    # My Library (mitcad#704): a built-in material duplicated into My
+    # library, renamed, its density changed and deleted, a printer
+    # duplicated, renamed and deleted, each in the library's files; the
+    # open design unchanged.
+    add_test(NAME app.ui-windows-my-library
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-my-library-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-my-library" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-my-library PROPERTIES TIMEOUT 300)
+
     # Measurement objects (mitcad#649): kept from the Measure panel and its
-    # history, renamed, recoloured and hidden in the browser, a 4 x
-    # transparent snapshot, saved and opened again.
+    # history (annotations since mitcad#702), listed in the browser's
+    # Annotations folder, a 4 x transparent snapshot, saved and opened
+    # again.
     add_test(NAME app.ui-windows-measurement-objects
       COMMAND powershell -NoProfile -ExecutionPolicy Bypass
               -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-measurement-objects-test.ps1"
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-measurement-objects"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-measurement-objects PROPERTIES TIMEOUT 300)
+
+    # Annotations (mitcad#702): a tolerance from the editor opened in the
+    # view, the text dragged, an H7 fit, several changed together in the
+    # Annotations window, a group hidden, a snapshot of one group.
+    add_test(NAME app.ui-windows-annotations
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-annotations-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-annotations"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-annotations PROPERTIES TIMEOUT 300)
 
     # Preferences' size (mitcad#690): with git found, MITCAD_GIT naming a
     # missing file and git not installed, the window fits a 1366 x 768
@@ -570,6 +601,44 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-preferences"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-preferences PROPERTIES TIMEOUT 300)
+    # Inactive sketch constraints (mitcad#721): drawn inactive, Activate
+    # refused and applied, undo, Delete.
+    add_test(NAME app.ui-windows-sketch-inactive
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sketch-inactive-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-inactive"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-sketch-inactive PROPERTIES TIMEOUT 300)
+
+    # Keys per context (mitcad#720): Keyboard Shortcuts driven by its keys
+    # (Command Search F3 in Sketch, Fit Point Spline S, OK; then a conflict
+    # OK refuses); S draws a spline in a sketch and opens the command search
+    # in the model, F3 searches in the sketch.
+    add_test(NAME app.ui-windows-shortcut-contexts
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-shortcut-contexts-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-shortcut-contexts"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-shortcut-contexts PROPERTIES TIMEOUT 300)
+    # Purge volumes (mitcad#705): 3D Print's Purge volumes row on two
+    # bodies of a white and a black filament, the table opened, a cell
+    # typed (set by hand, saved in the design) and reset to the computed
+    # volume.
+    add_test(NAME app.ui-windows-purge-volumes
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-purge-volumes-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-purge-volumes" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-purge-volumes PROPERTIES TIMEOUT 300)
+    # Print bed face (mitcad#731): set from a face's context menu, shown
+    # from another face's, cleared and undone; 3D Print turns the box onto
+    # it; Print Analysis starts from it; a face that is gone is reported.
+    add_test(NAME app.ui-windows-print-bed
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-print-bed-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-print-bed" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-print-bed PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

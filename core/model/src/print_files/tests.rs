@@ -51,7 +51,7 @@ fn cube(name: &str) -> mitcad_3mf::Part {
 }
 
 /// A 3MF project of one cube with a slicer's files.
-fn project(
+pub(super) fn project(
     application: &str,
     files: Vec<(&str, Vec<u8>)>,
     object_metadata: Vec<(&str, &str)>,
@@ -397,7 +397,7 @@ pub(super) fn small_block(doc: &mut Document<MockKernel>) -> BodyUid {
 
 /// Two bodies: one of the root (PLA), one of an arm (ABS) with five walls
 /// of its own; a bench printer and a standard process at the root.
-fn design() -> Document<MockKernel> {
+pub(super) fn design() -> Document<MockKernel> {
     let mut doc = Document::new(MockKernel::default());
     small_block(&mut doc);
     let (arm, _) = doc
@@ -810,7 +810,7 @@ fn a_filament_override_of_some_slots_writes_nil_for_the_others() {
 /// Imports a slicer's settings file into a new design and gives it a body
 /// of each of `materials` (indices of the materials read), each in a
 /// component of its own.
-fn design_of(file: &str, data: &[u8], materials: &[usize]) -> Document<MockKernel> {
+pub(super) fn design_of(file: &str, data: &[u8], materials: &[usize]) -> Document<MockKernel> {
     let dir = std::env::temp_dir().join(format!("mitcad-print-slots-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(file).to_str().unwrap().to_owned();
@@ -861,8 +861,9 @@ fn warnings_of(result: &Value) -> Vec<String> {
 /// from. Two bodies of the second and the fourth of a four-filament
 /// project's filaments: every per-filament list has two entries, those
 /// two filaments' (found by `filament_self_index`, or by the presets the
-/// printer block keeps), the flushing matrix is their 2 x 2 and the vector
-/// their two pairs. Bambu Studio's -1 stays in its own file, and is left
+/// printer block keeps), the flushing matrix is their 2 x 2 (the import's
+/// purge volumes of their pairs, mitcad#705) and the vector their two
+/// pairs (their colours'). Bambu Studio's -1 stays in its own file, and is left
 /// out of OrcaSlicer's and PrusaSlicer's with a warning.
 #[test]
 fn bambu_lists_across_filaments_have_one_entry_per_written_slot() {
@@ -929,15 +930,26 @@ fn bambu_lists_across_filaments_have_one_entry_per_written_slot() {
             json!(["2 0 0 0 0 0", "4 0 0 0 0 0"])
         );
         assert_eq!(written["filament_map"], json!(["1", "1"]));
-        // From the second to the fourth filament and back.
+        // From the second to the fourth filament and back: the project's
+        // table became the design's purge volumes of those materials
+        // (mitcad#705), and each slot's values are its colour's (out, in).
         assert_eq!(
             written["flush_volumes_matrix"],
             json!(["0", "204", "402", "0"])
         );
+        let green = crate::print_purge::colour_defaults(Some([0.0, 1.0, 0.0]));
+        let white = crate::print_purge::colour_defaults(Some([1.0, 1.0, 1.0]));
+        let text = |x: f64| json!(print_keys::number_text(x));
         assert_eq!(
             written["flush_volumes_vector"],
-            json!(["20", "21", "40", "41"])
+            json!([
+                text(green.out),
+                text(green.into),
+                text(white.out),
+                text(white.into)
+            ])
         );
+        assert_eq!(written["flush_multiplier"], "1");
         if self_index {
             assert_eq!(written["filament_self_index"], json!(["1", "2"]));
         }

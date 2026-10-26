@@ -32,20 +32,30 @@
 //! that fails) one element after another. When that fails too, the pattern
 //! applies all its objects one element after another
 //! (`pattern.rs`, `Copying::by_elements`).
+//!
+//! Threads among the objects (mitcad#719: a tapped hole's modelled thread
+//! is a thread feature on the hole's wall) are repeated alike, on the
+//! copies of the faces they thread; a mirror's image turns the other way.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::bodies::BodySet;
 use super::pattern::Element;
+use super::reference::FaceRef;
 use super::{ChamferSizeDef, EvalContext, FeatureDef, FilletSizeDef};
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{EdgeMiddle, Kernel};
 use crate::topo::{EdgeName, FaceName, RoleKey, VertexName};
 use crate::transform::{Instance, Transform};
 
-/// Fillets and chamfers: what a pattern repeats on its copies' edges.
+/// Fillets and chamfers: what a pattern repeats on its copies' edges; and
+/// threads, which it repeats on its copies' faces (mitcad#719: a tapped
+/// hole's modelled thread among a pattern's features).
 pub(crate) fn is_dressup(def: &FeatureDef) -> bool {
-    matches!(def, FeatureDef::Fillet(_) | FeatureDef::Chamfer(_))
+    matches!(
+        def,
+        FeatureDef::Fillet(_) | FeatureDef::Chamfer(_) | FeatureDef::Thread(_)
+    )
 }
 
 /// The features whose faces a pattern of `objects` copies: the objects, and
@@ -274,6 +284,20 @@ impl CopyNames<'_> {
                 }
                 (!copy.sets.is_empty()).then_some(FeatureDef::Chamfer(copy))
             }
+            // A thread on the copies of the faces it threads.
+            FeatureDef::Thread(thread) => {
+                let mut copy = thread.clone();
+                copy.faces = thread
+                    .faces
+                    .iter()
+                    .map(|f| FaceRef {
+                        body: f.body,
+                        face: self.face(&f.face),
+                    })
+                    .filter(|c| !thread.faces.iter().any(|f| f.face == c.face))
+                    .collect();
+                (!copy.faces.is_empty()).then_some(FeatureDef::Thread(copy))
+            }
             _ => None,
         }
     }
@@ -333,6 +357,16 @@ fn present<K: Kernel>(
                 .retain_mut(|s| keep(&mut s.edges, &mut s.faces, &mut s.reference_face));
             (!copy.sets.is_empty()).then_some(FeatureDef::Chamfer(copy))
         }
+        FeatureDef::Thread(thread) => {
+            let mut copy = thread.clone();
+            copy.faces = thread
+                .faces
+                .iter()
+                .filter_map(|f| face_now(&f.face).map(|face| FaceRef { body: f.body, face }))
+                .collect();
+            lost |= copy.faces.len() < thread.faces.len();
+            (!copy.faces.is_empty()).then_some(FeatureDef::Thread(copy))
+        }
         _ => None,
     }?;
     Some((def, lost))
@@ -349,6 +383,9 @@ fn merged(copies: &[(u32, FeatureDef)]) -> FeatureDef {
             (FeatureDef::Chamfer(all), FeatureDef::Chamfer(copy)) => {
                 all.sets.extend(copy.sets.iter().cloned());
             }
+            (FeatureDef::Thread(all), FeatureDef::Thread(copy)) => {
+                all.faces.extend(copy.faces.iter().cloned());
+            }
             _ => {}
         }
     }
@@ -358,18 +395,23 @@ fn merged(copies: &[(u32, FeatureDef)]) -> FeatureDef {
 /// The most copies of a fillet or chamfer applied in one operation.
 const DRESSED_AT_ONCE: usize = 128;
 
-/// Rounds or bevels `shape` by a copy's definition, its new faces named
-/// after `pattern`.
+/// Rounds, bevels or threads `shape` (of `body`) by a copy's definition,
+/// its new faces named after `pattern`.
 fn dress<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
     pattern: FeatureUid,
     def: &FeatureDef,
+    body: BodyUid,
     shape: &K::Shape,
 ) -> Result<K::Shape, String> {
     match def {
         FeatureDef::Fillet(fillet) => fillet.round(ctx, pattern, shape),
         FeatureDef::Chamfer(chamfer) => chamfer.bevel(ctx, pattern, shape),
-        _ => Err("only fillets and chamfers are repeated on copies".to_owned()),
+        FeatureDef::Thread(thread) => {
+            let faces: Vec<FaceName> = thread.faces.iter().map(|f| f.face.clone()).collect();
+            thread.thread_on(ctx, pattern, body, shape, &faces)
+        }
+        _ => Err("only fillets, chamfers and threads are repeated on copies".to_owned()),
     }
 }
 
@@ -395,7 +437,12 @@ pub(crate) fn repeat_dressup<K: Kernel>(
     let home = match &entry.def {
         FeatureDef::Fillet(fillet) => fillet.body,
         FeatureDef::Chamfer(chamfer) => chamfer.body,
-        _ => return Err(format!("{} is not a fillet or chamfer", entry.name)),
+        FeatureDef::Thread(thread) => thread
+            .faces
+            .first()
+            .map(|f| f.body)
+            .ok_or_else(|| format!("{} threads no face", entry.name))?,
+        _ => return Err(format!("{} is not a fillet, chamfer or thread", entry.name)),
     };
     let pattern = ctx.uid;
     // The bodies to look on: the fillet's own first, then those the
@@ -495,10 +542,16 @@ pub(crate) fn repeat_dressup<K: Kernel>(
                 names.placed.insert(edge.clone(), placed);
             }
         }
-        let Some(copy) = names.definition(&entry.def) else {
+        let Some(mut copy) = names.definition(&entry.def) else {
             missing.push(element.index);
             continue;
         };
+        // A mirror's image of a thread turns the other way.
+        if let FeatureDef::Thread(thread) = &mut copy
+            && transform.determinant() < 0.0
+        {
+            thread.thread.right_handed = !thread.thread.right_handed;
+        }
         // The body its edges were found on by name first, where it has the
         // whole copy; else the bodies in order.
         let on = |body: BodyUid| {
@@ -539,7 +592,7 @@ pub(crate) fn repeat_dressup<K: Kernel>(
         // every pair of the roundings of one operation (a thousand copies of
         // a rounding took a minute in that alone).
         for group in copies.chunks(DRESSED_AT_ONCE) {
-            dressed = match dress(ctx, pattern, &merged(group), &dressed) {
+            dressed = match dress(ctx, pattern, &merged(group), body, &dressed) {
                 Ok(dressed) => dressed,
                 Err(e) if group.len() == 1 => {
                     return Err(format!("{} at element {}: {e}", entry.name, group[0].0));
@@ -549,7 +602,7 @@ pub(crate) fn repeat_dressup<K: Kernel>(
                 Err(_) => {
                     let mut dressed = dressed;
                     for (index, copy) in group {
-                        dressed = dress(ctx, pattern, copy, &dressed)
+                        dressed = dress(ctx, pattern, copy, body, &dressed)
                             .map_err(|e| format!("{} at element {index}: {e}", entry.name))?;
                     }
                     dressed

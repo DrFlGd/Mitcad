@@ -10,7 +10,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::face_refs::{
-    add_faces, check_faces, check_tool, kernel_error, map_offset, require_faces, resolve_tool,
+    add_faces, check_faces, check_tool, extended_tools, kernel_error, map_offset, require_faces,
+    resolve_tool,
 };
 use super::geom_ref::{GeomRef, Want};
 use super::mapping::map_params;
@@ -106,5 +107,16 @@ impl<K: Kernel> Evaluate<K> for SplitFaceDef {
             changes: vec![BodyChange::Set(self.body, split)],
             ..FeatureOutput::default()
         })
+    }
+
+    /// The tool as the split extends it, for the open command's preview
+    /// only (mitcad#712).
+    fn preview_tool(&self, ctx: &mut EvalContext<'_, K>) -> Option<K::Shape> {
+        if !self.extend {
+            return None;
+        }
+        let shape = ctx.surface_body(self.body).ok()?;
+        let tool = resolve_tool(ctx, &self.tool, self.offset, self.direction).ok()?;
+        extended_tools(ctx.kernel, &[&shape], &[&tool], self.extend)
     }
 }

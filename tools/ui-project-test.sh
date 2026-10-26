@@ -701,7 +701,7 @@ mkdir -p "$NUTS"
 ui_mark
 ui_step "close: untitled (Ctrl+W)"       ui_key ctrl+w
 ui_expect_new "Document closed" "an untitled design"
-# The new untitled design opens with the root active, not its Part1
+# The new untitled design opens with the root active, not its Component1
 # (mitcad#426): Insert Component below puts the component into the root.
 ui_expect_new "Opened with the root active; C1 was active in the file (unmodified)" "the root is active"
 save_as_elsewhere "$NUTS/nut.mitcad"
@@ -745,7 +745,7 @@ cp "$WORK/block.mitcad" "$GEAR/pin.mitcad"
 in_git "$GEAR" add pin.mitcad
 in_git "$GEAR" commit -qm "Add pin.mitcad"
 # nut.mitcad began as a new design, opened with the root active
-# (mitcad#426): the component goes into the root, not into its Part1
+# (mitcad#426): the component goes into the root, not into its Component1
 # (mitcad#421).
 ui_mark
 ui_step "insert component (search)"      ui_command "Insert Component"

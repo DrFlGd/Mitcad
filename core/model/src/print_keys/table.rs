@@ -4250,6 +4250,20 @@ pub(super) static KEYS: &[KeyDef] = &[
         advanced,
         [d!(B | O | Q, "prime_tower_flat_ironing"),]
     ),
+    // The purge volumes' multiplier (mitcad#705): the Bambu family keeps it
+    // beside its purge matrix, which it multiplies; PrusaSlicer has none
+    // (its matrix is written multiplied, `crate::print_purge`). Read as a
+    // list (one per extruder in newer projects), written as one text, which
+    // the family's loaders take for both forms (the export's purge table).
+    key!(
+        Process,
+        "flush_multiplier",
+        Kind::Number(Unit::None),
+        "Purge multiplier",
+        Filaments,
+        common,
+        [d!(B | O | Q, "flush_multiplier", list),]
+    ),
     key!(
         Process,
         "perimeter_extruder",
@@ -5281,6 +5295,26 @@ pub(super) static KEYS: &[KeyDef] = &[
         ScarfSeam,
         advanced,
         [d!(B | Q, "filament_scarf_length", list),]
+    ),
+    // Mitcad's own (mitcad#705, `MITCAD_OWN`): the export makes the
+    // slicers' purge matrices of them.
+    key!(
+        Filament,
+        "purge_into",
+        Kind::Number(Unit::Mm3),
+        "Purge into this filament",
+        Purge,
+        common,
+        []
+    ),
+    key!(
+        Filament,
+        "purge_out",
+        Kind::Number(Unit::Mm3),
+        "Purge out of this filament",
+        Purge,
+        common,
+        []
     ),
     key!(
         Filament,

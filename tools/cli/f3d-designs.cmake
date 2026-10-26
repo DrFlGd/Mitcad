@@ -28,7 +28,8 @@ cmake_minimum_required(VERSION 3.24)
 
 # <id>|<items parametric, comma separated>|<items that fall back>[|<items
 # whose inputs may be inferred>[|<time limit, seconds in a release build>]]; an
-# item that falls back may be named by its place on the timeline, `#<index>`.
+# item may be named by its place on the timeline, `#<index>` (in every list
+# since mitcad#719: names a user gave items stay out of this file).
 set(designs
     # A circuit board with a pole round it (150 items, 78 occurrences):
     # its fillet between the pole's chamfer and a band 0.3 mm high where
@@ -100,7 +101,20 @@ set(designs
     # original placed on the closed outline by its ribs' centre, the copies
     # turned along it and joined to the body as the file keeps one.
     # Nothing falls back.
-    "b832916a|Extrude8,Fillet3,PathPattern3,Extrude9,Extrude10,Extrude11,Extrude12,Chamfer1,Fillet4,Extrude18,Extrude19,Fillet5,Chamfer6,R-Pattern3,Combine2,Extrude20||Extrude7,Combine2|375")
+    "b832916a|Extrude8,Fillet3,PathPattern3,Extrude9,Extrude10,Extrude11,Extrude12,Chamfer1,Fillet4,Extrude18,Extrude19,Fillet5,Chamfer6,R-Pattern3,Combine2,Extrude20||Extrude7,Combine2|375"
+    # A drum of six components written by a 2026 writer (68 items,
+    # mitcad#719): its parameters (class version 10) give the sizes, the
+    # tapped holes' modelled threads come in on their own states and are
+    # repeated by the pattern of the holes, holes are placed at their
+    # distances from two edges or on a shaft at a distance from its end, a
+    # pattern of faces (#24) takes the rounding added after its faces were
+    # selected (inferred inputs), and
+    # patterns about arcs and edges go the stored axis' way round. The
+    # pattern of the shaft's tapered pipe-threaded holes falls back (no
+    # tapered pipe threads; its row pattern is skipped with them).
+    # The holes whose inputs are not all read (unknown) are named with the
+    # inferred ones; the items the user named are given by their places.
+    "3282222f|Extrude1,Extrude2,Extrude3,Extrude4,Extrude5,Extrude9,Extrude10,Hole1,Hole2,Hole3,Hole5,Hole6,Hole7,Hole8,C-Pattern2,C-Pattern6,#24,#38,#39,#41,#42,#43,#44,#46,#48,#49,#50,#51,#53,#54,#55,#56,#57|C-Pattern8|Plane2,Plane3,Hole2,Hole3,Hole5,Hole6,Hole7,Hole8,#24,#41,#43,#49")
 
 # Seconds as the trace gives them (two decimals) in hundredths.
 function(hundredths seconds out)
@@ -209,14 +223,17 @@ foreach(design IN LISTS designs)
     string(JSON retry ERROR_VARIABLE retry_missing GET "${report}" designs 0 items ${i} exact_retry)
     string(JSON provenance ERROR_VARIABLE provenance_missing GET "${report}" designs 0 items ${i}
            input_provenance)
+    string(JSON index GET "${report}" designs 0 items ${i} index)
     list(FIND parametric "${name}" named)
+    if(named EQUAL -1)
+      list(FIND parametric "#${index}" named)
+    endif()
     if(named GREATER -1 AND NOT outcome STREQUAL "parametric")
       list(APPEND problems "${id}: ${name} ${outcome}, not parametric")
     endif()
     if(outcome STREQUAL "fallback" AND NOT type STREQUAL "BaseFeature")
       # An item whose name is not for the list (a comma in it, or the name
       # of another design) is named by its place on the timeline, `#<i>`.
-      string(JSON index GET "${report}" designs 0 items ${i} index)
       list(FIND falling "#${index}" by_index)
       if(by_index GREATER -1)
         list(APPEND fell "#${index}")
@@ -228,6 +245,9 @@ foreach(design IN LISTS designs)
       list(APPEND problems "${id}: ${name} is parametric after a retry on the file's exact state")
     endif()
     list(FIND inferred "${name}" may_infer)
+    if(may_infer EQUAL -1)
+      list(FIND inferred "#${index}" may_infer)
+    endif()
     if(outcome STREQUAL "parametric" AND NOT provenance_missing AND NOT provenance STREQUAL "read"
        AND may_infer EQUAL -1)
       list(APPEND problems "${id}: ${name}'s inputs ${provenance}, not read")

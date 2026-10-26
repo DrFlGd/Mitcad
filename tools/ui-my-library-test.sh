@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# check-all sources: app/print app/browser/BrowserController.cpp app/MainWindow.cpp app/files/MainWindowPrint.cpp
+# check-all sources: core/model/src/print_library.rs core/model/src/document/library_items.rs tools/cli
+# My Library (mitcad#704) through the real UI: the user's materials,
+# printers and processes managed without a design, on a design of one box
+# that must not change. My library is the test's own folder
+# (MITCAD_PRINT_LIBRARY_DIR), which mitcad-cli gives a printer, Bench X.
+#   1. Tools › My Library… (the command search): the Materials tab lists
+#      the built-in materials under Built-in; Duplicate of PLA Plastic
+#      makes PLA Plastic 2 in My library (its file), its name typed
+#      (Bench PLA) and its density changed (1.3), each written to the
+#      file; Delete asks ("Delete Bench PLA from My library?") and removes
+#      the file.
+#   2. The Printers tab: Bench X; Duplicate makes Bench X 2 in My library,
+#      renamed Bench Y; Delete removes it.
+#   3. The design did not change: no modified mark in the title, its file
+#      as it was; Edit Printers and Processes' My Library… opens the
+#      window again.
+#
+# Runs headless on Xvfb (see ui-test-lib.sh).
+# Usage: tools/ui-my-library-test.sh
+
+source "$(dirname "$0")/ui-test-lib.sh"
+
+CLI=${UI_CLI:-$(cd "$(dirname "$UI_APP")/.." && pwd)/tools/cli/mitcad-cli}
+WORK=$(mktemp -d /tmp/mitcad-ui-my-library.XXXXXX)
+trap 'ui_cleanup; rm -rf -- "${WORK:?}"' EXIT
+FILE=$WORK/box.mitcad
+# The user's library of materials and profiles in the test's own folder.
+export MITCAD_PRINT_LIBRARY_DIR=$WORK/print-library
+LIB=$MITCAD_PRINT_LIBRARY_DIR
+
+# expect_item path filter expected description: a jq filter on a library
+# item's file.
+expect_item() {
+  local actual
+  [ -f "$1" ] || ui_fail "$4: no $1"
+  actual=$(jq -c "$2" "$1") || ui_fail "$4: cannot read $1"
+  [ "$actual" = "$3" ] || ui_fail "$4: $2 is '$actual', expected '$3'"
+  echo "ok   $4"
+}
+
+# logged_after "text" sed-expression: the last line since the mark with
+# the text, through the expression.
+logged_after() {
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F -- "$1" | tail -1 | sed "$2"
+}
+
+# The design: one box. My library: a printer.
+cat > "$WORK/model.json" << 'EOF'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-10, -10],
+    "length": 20, "width": 20, "height": 20, "operation": "new_body"}}
+]
+EOF
+"$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+cat > "$WORK/printer.json" << 'EOF'
+[
+  {"cmd": "create_print_profile", "library": "user", "kind": "printer", "name": "Bench X",
+   "values": {"bed_shape": [[0, 0], [220, 0], [220, 220], [0, 220]], "max_print_height": 250,
+              "nozzle_diameter": 0.4}}
+]
+EOF
+"$CLI" run "$WORK/printer.json" --save "$WORK/other.mitcad" > "$WORK/cli-printer.log" 2>&1 ||
+  { cat "$WORK/cli-printer.log"; ui_fail "mitcad-cli (Bench X into My library)"; }
+[ -f "$LIB/print/printers/bench-x.json" ] || ui_fail "Bench X is not in My library"
+DESIGN_SUM=$(sha256sum "$FILE" | cut -c1-64)
+
+ui_start_display
+ui_start_app --open "$FILE" --no-native-dialogs
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Body F1.b0 at" "the box is in the view"
+
+echo "--- 1. My Library: a built-in material duplicated, renamed, its density changed, deleted"
+ui_mark
+ui_command "My Library"
+ui_expect_new "My Library opened" "the window opened"
+ui_expect_new "My Library materials row: plastics/pla PLA Plastic (mitcad)" "PLA is listed, built in"
+ui_expect_new "My Library tab printers at" "the tabs have their places"
+ui_expect_new "My Library import at" "Import from Slicer… has its place"
+ui_expect_new "My Library materials item PLA Plastic at" "its row has its place"
+ui_focus_dialog '^My Library$'
+ui_mark
+ui_step "PLA Plastic"                      ui_click_logged "My Library materials item PLA Plastic"
+ui_expect_new "Material selected: PLA Plastic (mitcad)" "PLA is selected"
+ui_expect_new "My Library materials duplicate at" "Duplicate under the list"
+ui_step "Duplicate"                        ui_click_logged "My Library materials duplicate"
+ui_expect_new "Material duplicated: PLA Plastic as " "a copy made"
+id=$(logged_after "Material duplicated: PLA Plastic as " 's/.* as \(.*\) in \(.*\)$/\1/')
+place=$(logged_after "Material duplicated: PLA Plastic as " 's/.* as .* in \(.*\)$/\1/')
+[ "$place" = user ] || ui_fail "the copy went to '$place', not My library"
+echo "ok   in My library, not in the design"
+MATERIAL=$LIB/materials/$id.json
+expect_item "$MATERIAL" '.material.name' '"PLA Plastic 2"' "its file, named after PLA"
+ui_expect_new "My Library materials row: plastics/$id PLA Plastic 2 (user)" "the list shows it"
+ui_sync
+ui_mark
+xdotool type --delay 40 "Bench PLA"
+ui_key Return
+ui_expect_new "Material PLA Plastic 2 (user) name = Bench PLA" "Enter renamed it"
+expect_item "$MATERIAL" '.material.name' '"Bench PLA"' "the file has the new name"
+ui_expect_new "My Library materials density at" "Density has its place"
+ui_step "Density"                          ui_click_logged "My Library materials density"
+ui_key ctrl+a
+xdotool type --delay 40 "1.3"
+ui_key Return
+ui_expect_new "Material Bench PLA (user) density = 1.3" "Enter saved the density"
+expect_item "$MATERIAL" '.material.density' '1.3' "the file has the new density"
+ui_mark
+ui_step "Delete"                           ui_click_logged "My Library materials delete"
+ui_expect_new "My Library materials delete: Delete Bench PLA from My library?" \
+  "Delete asks first, naming the library"
+ui_focus_dialog '^Delete$'
+ui_step "Delete (Alt+D)"                   ui_key alt+d
+ui_expect_new "Material deleted: Bench PLA (user)" "deleted"
+[ ! -e "$MATERIAL" ] || ui_fail "the file is still there"
+echo "ok   its file is gone"
+
+echo "--- 2. Printers: Bench X duplicated, renamed, deleted"
+ui_focus_dialog '^My Library$'
+ui_mark
+ui_step "the Printers tab"                 ui_click_logged "My Library tab printers"
+ui_expect_new "My Library tab: printers" "the Printers tab"
+ui_expect_new "My Library printers row: printer/bench-x Bench X (user)" "Bench X is listed"
+ui_expect_new "My Library printers item Bench X at" "its row has its place"
+ui_step "Bench X"                          ui_click_logged "My Library printers item Bench X"
+ui_expect_new "Profile selected: printer Bench X (user)" "Bench X is selected"
+ui_expect_new "My Library printers duplicate at" "Duplicate under the list"
+ui_mark
+ui_step "Duplicate"                        ui_click_logged "My Library printers duplicate"
+ui_expect_new "Profile duplicated: Bench X as " "a copy made"
+pid=$(logged_after "Profile duplicated: Bench X as " 's/.* as \(.*\) in \(.*\)$/\1/')
+place=$(logged_after "Profile duplicated: Bench X as " 's/.* as .* in \(.*\)$/\1/')
+[ "$place" = user ] || ui_fail "the copy went to '$place', not My library"
+PRINTER=$LIB/print/printers/$pid.json
+expect_item "$PRINTER" '.profile.name' '"Bench X 2"' "its file, named after Bench X"
+expect_item "$PRINTER" '.profile.values.max_print_height == 250' 'true' "with Bench X's values"
+ui_sync
+ui_mark
+xdotool type --delay 40 "Bench Y"
+ui_key Return
+ui_expect_new "Profile Bench X 2 (user) name = Bench Y" "Enter renamed it"
+expect_item "$PRINTER" '.profile.name' '"Bench Y"' "the file has the new name"
+ui_mark
+ui_step "Delete"                           ui_click_logged "My Library printers delete"
+ui_expect_new "My Library printers delete: Delete Bench Y from My library?" "Delete asks first"
+ui_focus_dialog '^Delete$'
+ui_step "Delete (Alt+D)"                   ui_key alt+d
+ui_expect_new "Profile deleted: Bench Y (user)" "deleted"
+[ ! -e "$PRINTER" ] || ui_fail "the printer's file is still there"
+[ -f "$LIB/print/printers/bench-x.json" ] || ui_fail "Bench X went too"
+echo "ok   its file is gone, Bench X stays"
+ui_focus_dialog '^My Library$'
+ui_mark
+ui_step "close"                            ui_click_logged "My Library printers close"
+ui_expect_new "My Library closed after changes" "closed"
+
+echo "--- 3. The design did not change; Printers and Processes links to My Library"
+ui_focus_main
+title=$(xdotool getwindowname "$UI_WINDOW")
+case $title in
+  *"*"*) ui_fail "the design is marked changed: $title" ;;
+esac
+[ "$(sha256sum "$FILE" | cut -c1-64)" = "$DESIGN_SUM" ] || ui_fail "the design's file changed"
+echo "ok   the design is unchanged ($title)"
+ui_mark
+ui_command "Edit Printers and Processes"
+ui_expect_new "Printers and processes opened" "Printers and Processes opened"
+ui_expect_new "Profiles my_library at" "My Library… beside Close"
+ui_focus_dialog '^Printers and Processes$'
+ui_mark
+ui_step "My Library…"                      ui_click_logged "Profiles my_library"
+ui_expect_new "Profiles: My Library…" "the link"
+ui_expect_new "My Library opened" "My Library opened again"
+ui_focus_dialog '^My Library$'
+ui_step "close (Esc)"                      ui_key Escape
+ui_expect_new "My Library closed" "closed"
+
+ui_finish "UI My Library"

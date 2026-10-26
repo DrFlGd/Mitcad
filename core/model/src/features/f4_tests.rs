@@ -894,6 +894,67 @@ fn patterns_and_mirrors_repeat_fillets_and_chamfers_on_the_copies() {
     );
 }
 
+#[test]
+fn patterns_and_mirrors_repeat_threads_on_the_copies() {
+    // The hole (Extrude2, F4) with a modelled thread on its wall (Thread1,
+    // F5): a tapped hole as the .f3d import makes it (mitcad#719).
+    let mut b = block();
+    let (cut, _) = hole(&mut b.doc);
+    let side = format!("{cut}:side(c1)");
+    let thread = add(
+        &mut b.doc,
+        json!({"type": "thread", "faces": [{"body": "F2.b0", "face": side}],
+               "thread": {"designation": "M10x1.5"}, "modeled": true}),
+    );
+    assert_eq!(status(&b.doc, thread), FeatureStatus::Ok);
+    let threads = |doc: &Document<MockKernel>| -> Vec<String> {
+        doc.kernel()
+            .specs
+            .borrow()
+            .iter()
+            .filter(|s| s.starts_with("thread "))
+            .cloned()
+            .collect()
+    };
+    let before = threads(&b.doc).len();
+    let pattern = add(
+        &mut b.doc,
+        json!({"type": "rectangular_pattern",
+               "objects": {"type": "features", "features": [thread, cut]},
+               "direction1": {"axis": "x", "quantity": 3, "distance": 20},
+               "distance_type": "spacing"}),
+    );
+    assert_eq!(status(&b.doc, pattern), FeatureStatus::Ok);
+    assert!(b.doc.warnings(pattern).is_empty());
+    // One operation for both copies of the wall, right-handed.
+    let made = threads(&b.doc)[before..].to_vec();
+    assert_eq!(made.len(), 1, "{made:?}");
+    for k in 1..=2 {
+        assert!(
+            made[0].contains(&format!("{pattern}:inst{k}({side})")),
+            "{made:?}"
+        );
+    }
+    assert!(made[0].contains("right true"), "{made:?}");
+    b.doc.undo();
+
+    // A mirror's image turns the other way.
+    let before = threads(&b.doc).len();
+    let mirror = add(
+        &mut b.doc,
+        json!({"type": "mirror", "objects": {"type": "features", "features": [cut, thread]},
+               "plane": {"origin": [30, 0, 0], "normal": [1, 0, 0]}}),
+    );
+    assert_eq!(status(&b.doc, mirror), FeatureStatus::Ok);
+    let made = threads(&b.doc)[before..].to_vec();
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert!(
+        made[0].contains(&format!("{mirror}:inst1({side})")),
+        "{made:?}"
+    );
+    assert!(made[0].contains("right false"), "{made:?}");
+}
+
 /// The hole (Extrude2, F4) with a chamfer on its rim (Chamfer1, F5) and a
 /// fillet between the chamfer and the wall (Fillet1, F6).
 fn rounded_hole(doc: &mut Document<MockKernel>) -> (FeatureUid, FeatureUid, FeatureUid, RegionKey) {

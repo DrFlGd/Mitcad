@@ -54,8 +54,8 @@ native-action view.orthographic
 
 # A body supplies real native browser and history menu targets and makes
 # action dispatch observable in the actual document, independently of input.
-# A new design models in its active Part1 (mitcad#220): the body's row is
-# Part1:1's (O1), shown once the outline is expanded.
+# A new design models in its active Component1 (mitcad#220): the body's
+# row is Component1:1's (O1), shown once the outline is expanded.
 mark
 native-action solid.box
 expect-log 'Command Box started'

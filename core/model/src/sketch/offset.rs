@@ -971,11 +971,17 @@ pub fn seed(
                     }
                     // Two arcs: their circles' crossing nearest the middle
                     // of the two ends; circles touching (within rounding) at
-                    // the point they touch.
+                    // the point they touch. Circles whose centres lie within
+                    // rounding of each other (one circle split into two arcs
+                    // with a centre point each, as a projection makes them)
+                    // neither cross nor touch at a point: their "touching
+                    // point" fell near the centre, far off the circle, and
+                    // the solve started from there lost the profile
+                    // (mitcad#709). Their corner is the middle of the ends.
                     ([], [(c1, r1), (c2, r2)]) => {
                         let d = norm(sub(*c2, *c1));
                         let touch = TOUCH * (r1 + r2).max(1.0);
-                        (d > 0.0 && d <= r1 + r2 + touch && d >= (r1 - r2).abs() - touch).then(
+                        (d > touch && d <= r1 + r2 + touch && d >= (r1 - r2).abs() - touch).then(
                             || {
                                 let u = scale(sub(*c2, *c1), 1.0 / d);
                                 let a = (r1 * r1 - r2 * r2 + d * d) / (2.0 * d);

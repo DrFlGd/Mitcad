@@ -18,7 +18,7 @@ use super::geom_ref::{GeomRef, Want};
 use super::{CheckContext, EvalContext, References};
 use crate::datum::{Vec3, add, scale, unit};
 use crate::ids::{BodyUid, EntityUid};
-use crate::kernel::{Kernel, KernelError, ToolInput};
+use crate::kernel::{BoundingBox, Kernel, KernelError, ToolInput};
 use crate::parameters::ParamId;
 use crate::profile::{ProfileRegion, SketchFrame};
 use crate::recompute::FeatureStatus;
@@ -306,4 +306,65 @@ pub(crate) fn missing_face<K: Kernel>(
         );
     }
     format!("the body has no face {face}")
+}
+
+/// How far the preview of an extended tool reaches past its targets' box
+/// on every side, as a share of the box's diagonal (mitcad#712), and at
+/// least [`EXTENDED_TOOL_MIN_MARGIN`] mm.
+pub(crate) const EXTENDED_TOOL_MARGIN: f64 = 0.05;
+pub(crate) const EXTENDED_TOOL_MIN_MARGIN: f64 = 1.0;
+
+/// The tools a split or trim cuts with as it extends them, for its preview
+/// (mitcad#712, `Evaluate::preview_tool`): with `extend`, each plane or face
+/// tool grown along its surface as the operation grows it
+/// ([`Kernel::extended_tool`]), clipped to the targets' box a little
+/// enlarged, all in one shape. None without `extend`, without a plane or
+/// face tool, or where the kernel cannot make it: the preview then shows
+/// the tool only as it is picked, and the feature itself is not affected.
+pub(crate) fn extended_tools<K: Kernel>(
+    kernel: &K,
+    targets: &[&K::Shape],
+    tools: &[&Resolved<K::Shape>],
+    extend: bool,
+) -> Option<K::Shape> {
+    if !extend {
+        return None;
+    }
+    let tools: Vec<&Resolved<K::Shape>> = tools
+        .iter()
+        .copied()
+        .filter(|t| matches!(t, Resolved::Plane { .. } | Resolved::Face { .. }))
+        .collect();
+    if tools.is_empty() {
+        return None;
+    }
+    let mut bounds: Option<BoundingBox> = None;
+    for target in targets {
+        if let Some(b) = kernel.bounding_box(target).ok().flatten() {
+            bounds = Some(bounds.map_or(b, |a| a.union(&b)));
+        }
+    }
+    let bounds = grown(bounds?);
+    let mut shapes: Vec<K::Shape> = tools
+        .iter()
+        .filter_map(|t| kernel.extended_tool(&t.input(), extend, &bounds).ok())
+        .collect();
+    match shapes.len() {
+        0 => None,
+        1 => shapes.pop(),
+        _ => kernel.compound(&shapes).ok(),
+    }
+}
+
+/// The box grown by the preview's margin on every side.
+fn grown(bounds: BoundingBox) -> BoundingBox {
+    let diagonal = (0..3)
+        .map(|i| (bounds.max[i] - bounds.min[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    let margin = (diagonal * EXTENDED_TOOL_MARGIN).max(EXTENDED_TOOL_MIN_MARGIN);
+    BoundingBox {
+        min: bounds.min.map(|v| v - margin),
+        max: bounds.max.map(|v| v + margin),
+    }
 }

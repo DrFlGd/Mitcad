@@ -217,7 +217,7 @@ if(BUILD_TESTING)
 
   # Construction geometry and analysis (F5): datums checked through queries,
   # physical properties, measurement and comparison with a STEP file.
-  foreach(script construction analysis holed_block face_separation)
+  foreach(script construction analysis holed_block face_separation face_geometry)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
   add_test(NAME cli.properties COMMAND mitcad-cli run "${scripts}/analysis.json" --properties)
@@ -1267,7 +1267,7 @@ if(BUILD_TESTING)
 endif()
 
 # Display meshings compared face by face (mitcad#644): the holed block's
-# seven faces meshed as the view's final tier and with planes through
+# seven faces meshed with planes by the default insertion and through
 # Delabella, then the totals over that report.
 if(BUILD_TESTING)
   set(mesh_compare "${CMAKE_CURRENT_BINARY_DIR}/mesh-compare")
@@ -1279,7 +1279,15 @@ if(BUILD_TESTING)
   add_test(NAME cli.mesh_compare_summary COMMAND mitcad-cli mesh-compare --summary "${mesh_compare}")
   set_tests_properties(cli.mesh_compare_summary PROPERTIES FIXTURES_REQUIRED cli_mesh_compare
     PASS_REGULAR_EXPRESSION "designs compared \\| 1 / 1 \\|.*faces triangulated \\(b\\) \\| 7 / 7 \\|.*planes with as many triangles in \\(b\\) \\| 6 / 6 \\|.*planes whose area differs between \\(a\\) and \\(b\\) \\| 0 / 6 \\|")
+  # The final tier as switched (Delabella checked) against the default: the
+  # holed block's planes need no second triangulation.
+  add_test(NAME cli.mesh_compare_checked COMMAND mitcad-cli mesh-compare
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/holed_block.json" --b checked)
+  set_tests_properties(cli.mesh_compare_checked PROPERTIES PASS_REGULAR_EXPRESSION
+    "1 bodies, 7 faces \\(6 planes\\), without a triangulation a 0 b 0;.*planes redone a 0 b 0 \\(a default, b checked\\)")
   if(WIN32)
+    set_property(TEST cli.mesh_compare_checked APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     set_property(TEST cli.mesh_compare cli.mesh_compare_summary APPEND PROPERTY ENVIRONMENT_MODIFICATION
       "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()

@@ -370,9 +370,14 @@ pub fn check_filament_value(key: &str, value: &Value) -> Result<(), String> {
         }
         return Ok(());
     }
-    print_keys::Value::from_json(def, value)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    let parsed = print_keys::Value::from_json(def, value).map_err(|e| e.to_string())?;
+    // A purge volume (mitcad#705) is zero or more.
+    if print_keys::MITCAD_OWN.contains(&key)
+        && let print_keys::Value::Number(volume) = parsed
+    {
+        crate::print_purge::check_volume(volume).map_err(|e| format!("{key}: {e}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1529,6 +1529,17 @@ wins.
 | user | `print-library` in the platform's data folder under `Mitcad/Mitcad`, beside `libraries` (`MITCAD_PRINT_LIBRARY_DIR` replaces it) | the user's own |
 | base | Mitcad's parts library, its newest version fetched | read only |
 
+The user's and the project's library are managed in the application
+without a design: Tools › My Library… ([user guide](user-guide.md#my-library),
+mitcad#704) makes, duplicates (also from the base library and the
+built-in materials), renames, edits and deletes their items, and
+imports a slicer's project or preset into them. It runs the library
+commands of [commands.md](../core/model/src/api/commands.md#print-profiles)
+(*Items where they live*, `import_print_profile` with `into`) on a model
+of its own, so an open design changes only through its own question
+about an item changed elsewhere. A library can also be written by hand
+in this format, or with `mitcad-cli run` and the same commands.
+
 A library repository lists its items in its manifest, each with its id
 and path:
 

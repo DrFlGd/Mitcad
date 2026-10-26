@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 #include "drawing.hpp"
 
+#include <exception>
 #include <filesystem>
 #include <iostream>
 #include <sstream>
+#include <string>
 
 #include <QByteArray>
 #include <QJsonArray>
@@ -56,7 +58,7 @@ int export_drawing(const std::vector<std::string>& args) {
   std::string problem;
   if (!parse_arguments(args,
                        {"--bodies", "--sheet", "--scale", "--views", "--section", "--normal",
-                        "--section-analysis", "--unit", "--title", "--date"},
+                        "--section-analysis", "--unit", "--title", "--date", "--drawing"},
                        {"--portrait", "--first-angle", "--hidden", "--tangent-edges", "--no-dimensions",
                         "--sketch-dimensions", "--no-hole-table", "--per-body", "--polygonal", "--json"},
                        a, problem)) {
@@ -66,6 +68,58 @@ int export_drawing(const std::vector<std::string>& args) {
     return usage("export-drawing needs a design and an output file");
   }
   std::string command = R"({"cmd": "export_drawing", "path": )" + json_string(a.positional[1]);
+  // A drawing kept in the design (mitcad#707) is written as it is: only its
+  // title, where it has none, and the one sheet to write (--sheet N, from
+  // 1) come from here.
+  if (const std::string* drawing = a.option("--drawing")) {
+    for (const char* option : {"--bodies", "--scale", "--views", "--section", "--normal", "--section-analysis",
+                               "--unit", "--date"}) {
+      if (a.option(option) != nullptr) {
+        return usage(std::string(option) + " lays out a new drawing; a kept drawing (--drawing) is written as it is");
+      }
+    }
+    for (const char* flag : {"--portrait", "--first-angle", "--hidden", "--tangent-edges", "--no-dimensions",
+                             "--sketch-dimensions", "--no-hole-table", "--per-body", "--polygonal"}) {
+      if (a.flag(flag)) {
+        return usage(std::string(flag) + " lays out a new drawing; a kept drawing (--drawing) is written as it is");
+      }
+    }
+    const std::string* title = a.option("--title");
+    command += R"(, "drawing": )" + json_string(*drawing) + R"(, "title": )" +
+               json_string(title != nullptr ? *title
+                                            : std::filesystem::path(a.positional[0]).stem().string());
+    if (const std::string* sheet = a.option("--sheet")) {
+      int number = 0;
+      try {
+        std::size_t used = 0;
+        number = std::stoi(*sheet, &used);
+        if (used != sheet->size()) {
+          number = 0;
+        }
+      } catch (const std::exception&) {
+        number = 0;
+      }
+      if (number < 1) {
+        return usage("with --drawing, --sheet N names one sheet of the drawing, from 1");
+      }
+      command += R"(, "sheet": )" + std::to_string(number - 1);
+    }
+    command += "}";
+    rust::Box<mitcad::Document> document = open_document(a.positional[0]);
+    const std::string result(document->command(command));
+    if (a.flag("--json")) {
+      std::cout << result << "\n";
+      return 0;
+    }
+    const QJsonObject r = QJsonDocument::fromJson(QByteArray::fromStdString(result)).object();
+    std::cout << "Exported " << a.positional[1] << ": drawing " << *drawing << ", "
+              << r.value(QStringLiteral("sheets")).toInt() << " sheets, "
+              << r.value(QStringLiteral("views")).toInt() << " views on the first\n";
+    for (const QJsonValue warning : r.value(QStringLiteral("warnings")).toArray()) {
+      std::cerr << "warning: " << warning.toString().toStdString() << "\n";
+    }
+    return 0;
+  }
   if (const std::string* bodies = a.option("--bodies")) {
     command += R"(, "bodies": )" + strings(*bodies);
   }

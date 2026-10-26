@@ -39,9 +39,24 @@ void MainWindow::addMeasureHistory(CommandPanel& panel, const CommandDef& def) {
   auto* view = new MeasureHistoryView(m_measureHistory, &panel);
   m_measureShown.clear();
   // Keep and Keep Row (mitcad#649, MainWindowMeasurements.cpp).
+  // Note…, Annotations…, Datum Label… and Frame… (mitcad#702,
+  // MainWindowMeasurements.cpp).
   view->setActions({[this](int number) { showMeasurement(number); }, [this] { clearMeasureHistory(); },
                     [this] { keepMeasurement(m_measureShown, QStringLiteral("shown")); },
-                    [this](int number) { keepMeasurementRow(number); }});
+                    [this](int number) { keepMeasurementRow(number); },
+                    [this] {
+                      const QHash<QString, Selection> inputs = m_measureShown;
+                      keepNote(inputs);
+                    },
+                    [this] { openAnnotations(); },
+                    [this] {
+                      const QHash<QString, Selection> inputs = m_measureShown;
+                      keepLeader(inputs, QStringLiteral("datum"));
+                    },
+                    [this] {
+                      const QHash<QString, Selection> inputs = m_measureShown;
+                      keepLeader(inputs, QStringLiteral("frame"));
+                    }});
   m_measureHistoryView = view;
   const QPointer<MeasureHistoryView> guarded(view);
   panel.addSection(view, [guarded] { return guarded ? guarded->places() : QStringList(); });
@@ -84,8 +99,14 @@ void MainWindow::inspectionRecorded(const CommandDef& def, const CommandState& s
   QJsonObject probe;
   QString why;
   const bool keepable = !row.values.isEmpty() && measurementPicks(row.inputs, probe, why);
+  // A note (mitcad#702) on the one pick shown; a datum label or a frame
+  // on it when it is a feature.
+  QJsonObject notePicked;
+  QJsonValue noteAt;
+  const bool noteable = notePick(row.inputs, notePicked, noteAt);
   if (auto* view = static_cast<MeasureHistoryView*>(m_measureHistoryView.data())) {
     view->setKeepable(keepable);
+    view->setNoteable(noteable, markablePick(row.inputs));
   }
   if (m_measureHistory.record(std::move(row))) {
     refreshMeasureHistory();

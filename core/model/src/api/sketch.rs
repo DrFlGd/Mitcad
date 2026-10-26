@@ -574,6 +574,15 @@ named_enum! {
         // The sketch's own axes and origin as entities (mitcad#500): the one there
         // is, or a new one.
         "sketch.axis" => Axis { sketch: FeatureUid, axis: String },
+        // Inactive constraints and dimensions (mitcad#721).
+        "sketch.set_active" => SetActive {
+            sketch: FeatureUid,
+            items: Vec<ConstraintUid>,
+            #[serde(default = "yes")]
+            active: bool,
+            #[serde(default)]
+            reason: Option<String>,
+        },
     }
 }
 
@@ -1095,6 +1104,14 @@ impl<K: Kernel> Document<K> {
             C::EditEqualSpacing { sketch, .. } => (*sketch, "Edit Equal Spacing in {sketch}"),
             C::AddCode { sketch, .. } => (*sketch, "Add QR Code to {sketch}"),
             C::EditCode { sketch, .. } => (*sketch, "Edit QR Code in {sketch}"),
+            C::SetActive { sketch, active, .. } => (
+                *sketch,
+                if *active {
+                    "Activate in {sketch}"
+                } else {
+                    "Deactivate in {sketch}"
+                },
+            ),
             C::Create { .. }
             | C::AddRectangle { .. }
             | C::AddCircle { .. }
@@ -1857,6 +1874,28 @@ impl<K: Kernel> Document<K> {
                     code_fits(t)?;
                     made_ref.push(id);
                 }
+                C::SetActive {
+                    items,
+                    active,
+                    reason,
+                    ..
+                } => {
+                    // Activated only where the sketch then solves without
+                    // over-constraining it (mitcad#721).
+                    let before = edit.redundancy().ok();
+                    let changed = edit.set_active(&items, active, reason.as_deref())?;
+                    if active && !changed.is_empty() {
+                        let names: Vec<String> = changed.iter().map(ToString::to_string).collect();
+                        let what = names.join(", ");
+                        edit.solved()
+                            .map_err(|e| format!("{what} cannot be activated: {e}"))?;
+                        if let Some(before) = before {
+                            edit.require_needed(before, &what)
+                                .map_err(|e| format!("{what} cannot be activated: {e}"))?;
+                        }
+                    }
+                    made_ref.extend(changed.iter().map(ToString::to_string));
+                }
                 C::Create { .. }
                 | C::AddRectangle { .. }
                 | C::AddCircle { .. }
@@ -2306,6 +2345,21 @@ impl<K: Kernel> Document<K> {
                     None => status.driven.get(&d.id).copied(),
                 };
                 value["measured"] = json!(measured);
+                // The spacing dimension of an inactive equal spacing is not
+                // applied: shown inactive, with its equal spacing's reason
+                // (mitcad#723).
+                if d.active && !def.dimension_applied(d) {
+                    value["active"] = json!(false);
+                    if let DimensionKind::Spacing { constraint } = d.kind
+                        && let Some(why) = def
+                            .constraints
+                            .iter()
+                            .find(|c| c.id == constraint)
+                            .and_then(|c| c.inactive_reason.as_deref())
+                    {
+                        value["inactive_reason"] = json!(why);
+                    }
+                }
                 if let Some(param) = d.value.or(d.reference).and_then(|id| params.get(id)) {
                     value["expression"] = json!(param.expression());
                     value["comment"] = json!(param.comment());
@@ -2558,6 +2612,16 @@ impl<K: Kernel> Document<K> {
             result[key] = value[key].clone();
         }
         result["degenerate"] = degenerate_ids(&status);
+        // The inactive constraints and dimensions the geometry does not
+        // meet (mitcad#721).
+        if !status.unmet_inactive.is_empty() {
+            let unmet: Vec<String> = status
+                .unmet_inactive
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            result["unmet_inactive"] = json!(unmet);
+        }
         Ok(result)
     }
 

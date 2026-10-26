@@ -31,21 +31,28 @@
 #include "import.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "mitcad/io/mesh_compare.hpp"
-// The view's final tier (viewMeshOptions) and the interactive tier's planes
-// (previewMeshOptions), as the application meshes them (mitcad#635).
+// The planes' variants: the view's final tier (viewMeshOptions), as it was
+// before mitcad#644 (defaultPlaneMeshOptions), and the interactive tier's
+// planes (previewMeshOptions), as the application meshes them (mitcad#635).
 #include "view/ViewTessellation.hpp"
 
 namespace mitcad::cli {
 
 const char* const kMeshCompareUsage =
-    R"(  mitcad-cli mesh-compare <design> [--report <report.json>] [--b-first] [--dump <folder>]
+    R"(  mitcad-cli mesh-compare <design> [--report <report.json>] [--a <variant>] [--b <variant>] [--b-first]
+                           [--dump <folder>]
       Opens a design (.mitcad, or a script .json) or imports another file
       as the application imports it (.f3d, .FCStd, .ipt, .iam, .ifc, .rvt,
       .solidcraft, .dwg; others by the generic import), and meshes every
       body's faces twice, each time all bodies together as the 3D view's
-      final tier meshes them (commit, opening a design): (a) as that tier
-      does, (b) the same with planes through OCCT's Delabella triangulation
-      (the interactive preview tier's planes). Compares them face by face:
+      final tier meshes them (commit, opening a design), with the view's
+      deviation, angle and face bound, (a) and (b) each one of three
+      variants for the planes: "default" (the default insertion: the final
+      tier before mitcad#644; (a)'s default), "delabella" (OCCT's Delabella
+      triangulation unchecked: the interactive preview tier's planes; (b)'s
+      default) or "checked" (Delabella, a plane left without a
+      triangulation or with its area off its boundary's made again by the
+      default: the final tier now). Compares them face by face:
       surface kind, triangles, the deviation of triangle centroids and edge
       midpoints from the surface, the triangulated area against the face's
       own (BRepGProp), triangles folded over others, faces left without a
@@ -133,9 +140,27 @@ const char* const kColumns[] = {"body",        "face",        "surface",    "tol
                                 "area_b",      "folded_a",    "folded_b",   "ms_a",       "ms_b"};
 
 QJsonObject meshing_totals(const io::MeshReport& report) {
-  return {{"total_ms", report.total},     {"triangulate_ms", report.triangulate},
+  return {{"total_ms", report.total},
+          {"triangulate_ms", report.triangulate},
           {"faces", static_cast<qint64>(report.faces)},
-          {"meshed", static_cast<qint64>(report.meshed)}, {"failed", static_cast<qint64>(report.failed)}};
+          {"meshed", static_cast<qint64>(report.meshed)},
+          {"failed", static_cast<qint64>(report.failed)},
+          {"planes_redone", static_cast<qint64>(report.planes_redone)}};
+}
+
+// The options of a variant of the planes' meshing (kMeshCompareUsage), all
+// with the view's deviation, angle and face bound; false for an unknown name.
+bool variant_options(const std::string& name, io::MeshOptions& options) {
+  if (name == "default") {
+    options = defaultPlaneMeshOptions();
+  } else if (name == "delabella") {
+    options = previewMeshOptions();
+  } else if (name == "checked") {
+    options = viewMeshOptions();
+  } else {
+    return false;
+  }
+  return true;
 }
 
 bool write_json(const std::string& path, const QJsonObject& object) {
@@ -153,8 +178,17 @@ int compare_design(const Arguments& a,
   QJsonObject report{{"id", QString::fromStdString(content_id(path))},
                      {"file", QString::fromStdString(path)},
                      {"format", QString::fromStdString(lower_suffix(path))}};
-  const io::MeshOptions options_a = viewMeshOptions();
-  const io::MeshOptions options_b = previewMeshOptions();
+  const std::string* chosen_a = a.option("--a");
+  const std::string* chosen_b = a.option("--b");
+  const std::string variant_a = chosen_a != nullptr ? *chosen_a : "default";
+  const std::string variant_b = chosen_b != nullptr ? *chosen_b : "delabella";
+  io::MeshOptions options_a;
+  io::MeshOptions options_b;
+  if (!variant_options(variant_a, options_a) || !variant_options(variant_b, options_b)) {
+    return usage("mesh-compare: a variant is default, delabella or checked");
+  }
+  report.insert("variants", QJsonObject{{"a", QString::fromStdString(variant_a)},
+                                        {"b", QString::fromStdString(variant_b)}});
   report.insert("options", QJsonObject{{"deviation", options_a.linear_deflection},
                                        {"angle", options_a.angular_deflection},
                                        {"face_triangles", static_cast<qint64>(options_a.face_triangles)}});
@@ -274,9 +308,11 @@ int compare_design(const Arguments& a,
     return 1;
   }
   std::printf("mesh-compare %s: %zu bodies, %zu faces (%zu planes), without a triangulation a %zu b %zu; "
-              "meshing a %.1f ms b %.1f ms, planes' triangulation a %.1f ms b %.1f ms\n",
+              "meshing a %.1f ms b %.1f ms, planes' triangulation a %.1f ms b %.1f ms; planes redone a %zu b %zu "
+              "(a %s, b %s)\n",
               content_id(path).c_str(), shapes.size(), comparison.faces.size(), planes, missing_a, missing_b,
-              comparison.a.total, comparison.b.total, plane_ms_a, plane_ms_b);
+              comparison.a.total, comparison.b.total, plane_ms_a, plane_ms_b, comparison.a.planes_redone,
+              comparison.b.planes_redone, variant_a.c_str(), variant_b.c_str());
   return 0;
 }
 
@@ -303,6 +339,10 @@ struct Design {
   std::string status;
   double total[2] = {0.0, 0.0};
   double triangulate[2] = {0.0, 0.0};
+  std::size_t planes_redone[2] = {0, 0};
+  // The planes' variants, "(a) default, (b) delabella" (the reports before
+  // the variants were chosen: the trial of mitcad#644).
+  std::string variants;
   std::vector<Face> faces;
 };
 
@@ -315,7 +355,11 @@ Design read_design(const QJsonObject& object) {
     const QJsonObject totals = object.value(s == 0 ? "a" : "b").toObject();
     design.total[s] = totals.value("total_ms").toDouble();
     design.triangulate[s] = totals.value("triangulate_ms").toDouble();
+    design.planes_redone[s] = static_cast<std::size_t>(totals.value("planes_redone").toDouble());
   }
+  const QJsonObject variants = object.value("variants").toObject();
+  design.variants = "(a) " + variants.value("a").toString("default").toStdString() + ", (b) " +
+                    variants.value("b").toString("delabella").toStdString();
   std::map<std::string, int> column;
   const QJsonArray columns = object.value("columns").toArray();
   for (int i = 0; i < columns.size(); ++i) {
@@ -403,6 +447,7 @@ struct Totals {
   double other_ms[2] = {0.0, 0.0};
   std::size_t plane_faster = 0; // planes whose (b) took less time
   std::size_t plane_slower = 0;
+  std::size_t planes_redone[2] = {0, 0}; // made again by the default (variant "checked")
   std::vector<Listed> speedups;  // per face: ms (a) - ms (b)
   std::vector<Listed> slowdowns; // ms (b) - ms (a)
   std::vector<std::pair<std::string, std::pair<double, double>>> design_times; // id, (a, b)
@@ -422,6 +467,7 @@ struct Totals {
     for (int s = 0; s < 2; ++s) {
       total[s] += design.total[s];
       triangulate[s] += design.triangulate[s];
+      planes_redone[s] += design.planes_redone[s];
     }
     design_times.emplace_back(design.id, std::make_pair(design.total[0], design.total[1]));
     for (const Face& f : design.faces) {
@@ -573,6 +619,8 @@ void print_totals(const std::string& name, const Totals& t, const Rules& rules) 
   out << "| faces over it in (b), not in (a) | " << of(t.deviation_over_only[1], t.faces) << " |\n";
   out << "| planes triangulated faster in (b) | " << of(t.plane_faster, t.planes_both) << " |\n";
   out << "| planes triangulated slower in (b) | " << of(t.plane_slower, t.planes_both) << " |\n";
+  out << "| planes made again by the default after Delabella, (a) | " << of(t.planes_redone[0], t.planes) << " |\n";
+  out << "| planes made again by the default after Delabella, (b) | " << of(t.planes_redone[1], t.planes) << " |\n";
   out << "\nArea off: more than " << number(rules.area_relative * 100.0, 2) << " % of the true area or "
       << number(rules.area_absolute, 4) << " mm², whichever is larger; planes' areas differ: more than "
       << rules.same_relative << " of it or " << rules.same_absolute << " mm².\n";
@@ -671,6 +719,7 @@ int summary(const Arguments& a) {
   std::vector<std::pair<std::string, Totals>> groups;
   Totals all;
   std::set<std::string> seen;
+  std::set<std::string> variants;
   for (const std::string& folder : a.positional) {
     const QDir dir(QString::fromStdString(folder));
     if (!dir.exists()) {
@@ -689,13 +738,22 @@ int summary(const Arguments& a) {
       designs.push_back(std::make_unique<Design>(read_design(object)));
       const Design& design = *designs.back();
       totals.add(design, rules);
+      if (design.status == "ok") {
+        variants.insert(design.variants);
+      }
       if (seen.insert(design.id).second) {
         all.add(design, rules);
       }
     }
     groups.emplace_back(dir.dirName().toStdString(), std::move(totals));
   }
-  std::cout << "# Display meshing: (a) the final tier, (b) planes through Delabella\n";
+  // The planes' variants (kMeshCompareUsage): one pair, unless reports of
+  // several runs are totalled together.
+  std::string compared;
+  for (const std::string& pair : variants) {
+    compared += (compared.empty() ? "" : "; ") + pair;
+  }
+  std::cout << "# Display meshing, planes: " << (compared.empty() ? "(a) default, (b) delabella" : compared) << "\n";
   for (auto& [name, totals] : groups) {
     print_totals(name, totals, rules);
   }
@@ -710,8 +768,8 @@ int mesh_compare(const std::vector<std::string>& args,
                  const std::function<rust::Box<mitcad::Document>(const std::string&)>& open) {
   Arguments a;
   std::string problem;
-  if (!parse_arguments(args, {"--report", "--dump", "--area-tolerance", "--list"}, {"--b-first", "--summary"}, a,
-                       problem)) {
+  if (!parse_arguments(args, {"--report", "--dump", "--area-tolerance", "--list", "--a", "--b"},
+                       {"--b-first", "--summary"}, a, problem)) {
     return usage(problem);
   }
   if (a.flag("--summary")) {

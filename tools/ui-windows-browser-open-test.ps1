@@ -77,7 +77,7 @@ Ui-ExpectLog 'Browser opened expanded: ' 'a small design opens expanded'
 if (Ui-LogLines | Where-Object { $_.Contains('Browser opened folded') }) { Ui-Fail 'the small design opened folded' }
 Ui-ExpectLog 'Browser Root/Bracket:1/Bodies/Body1 at' "Bracket's rows are open"
 Ui-Sync
-# After the design opened: the empty design of the start has Part1 active.
+# After the design opened: the empty design of the start has Component1 active.
 $lines = @(Ui-LogLines)
 $opened = [array]::FindLastIndex($lines, [Predicate[string]] { param($l) $l.StartsWith('Opened with the root active') })
 $ghosts = @($lines | Select-Object -Skip ($opened + 1) | Where-Object { $_.StartsWith('View inactive ghosts: ') -and -not $_.EndsWith(': none') })

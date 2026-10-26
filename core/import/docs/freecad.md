@@ -49,7 +49,9 @@ checks.
   is checked against the same element of the referenced object's stored
   shape.
 - A sketch is accepted when Mitcad's solution keeps FreeCAD's points
-  within 1e-4 mm (else with driven dimensions, else without constraints)
+  within 1e-4 mm (else with the fewest constraints and dimensions that keep
+  it off inactive, else with all of them inactive: `partial`, mitcad#721,
+  `crate::sketch::inactive` as in the .f3d import; the notes name them)
   and is compared with its stored shape. What Mitcad cannot express
   (tangency with ellipses, Snell's law, distances to circles,
   intermediate features' elements) is listed, and the sketch is
@@ -300,6 +302,11 @@ cells.
   1.1; the outer ones with their holes, 1.0). Without `AllowMultiFace`
   (and in 0.21) FreeCAD ignores the chosen edges and takes the whole
   sketch; the import does too (before, any chosen edge was a fallback).
+- A link to a whole object is no sub-element in older files
+  (`count="0"`) and one empty sub-element in FreeCAD 1.x
+  (`count="1"`, `<Sub value=""/>`, as in every Pad's and Pocket's
+  `Profile` of a 1.2 document); the reader takes both (and an empty `sub`
+  of a list entry) as the whole object, for every link (mitcad#708).
 - A `Part::Fillet` edge of two radii (`(edge, R1, R2)`) is FreeCAD's
   `BRepFilletAPI_MakeFillet::Add(R1, R2, E)`: R1 at the start of the
   edge's curve, R2 at its end. The import gives each such edge a set of

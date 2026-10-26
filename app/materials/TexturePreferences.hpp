@@ -11,7 +11,6 @@
 #include "TextureSource.hpp"
 
 class QCheckBox;
-class QLineEdit;
 class QListWidget;
 class QPushButton;
 
@@ -46,7 +45,7 @@ private:
 
   TextureSettings m_settings;
   QListWidget* m_folders = nullptr;
-  QLineEdit* m_typed = nullptr;
+  QPushButton* m_add = nullptr;
   QPushButton* m_remove = nullptr;
   QCheckBox* m_network = nullptr;
 };

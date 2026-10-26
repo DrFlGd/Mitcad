@@ -486,6 +486,26 @@ pub fn slot_unit(slot: &str) -> Unit {
     }
 }
 
+/// Whether an angle slot of a feature of type `feature` means nothing more
+/// beyond one turn (mitcad#714): a move's or move face's rotation
+/// (`transform.angle`), a revolve's angles, a draft's, a chamfer's angle, an
+/// extrusion's tapers, a hole's taper, countersink and tip angles and a
+/// construction plane's angle. Helices, coils, sweeps' twists and other
+/// slots that take several turns are not such slots.
+pub(crate) fn one_turn_slot(feature: &str, slot: &str) -> bool {
+    let field = slot.rsplit('.').next().unwrap_or(slot);
+    match feature {
+        "move" | "move_face" => slot == "transform.angle",
+        "revolve" => matches!(slot, "extent.angle" | "extent.angle1" | "extent.angle2"),
+        "draft" => matches!(slot, "angle" | "angle2"),
+        "chamfer" => field == "angle",
+        "extrude" => field == "taper",
+        "hole" => matches!(slot, "taper" | "kind.angle" | "tip_angle"),
+        "construction_plane" => slot == "definition.angle",
+        _ => false,
+    }
+}
+
 /// Whether a parameter in `unit` can give a slot of `slot_unit` its value:
 /// the same dimensions, or a unitless parameter (its number is used as is).
 /// A text slot takes only a text parameter, and a text parameter fits only

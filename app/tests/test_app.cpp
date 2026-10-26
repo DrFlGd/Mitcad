@@ -36,6 +36,7 @@
 #include "files/Print3d.hpp"
 #include "framework/Cursors.hpp"
 #include "framework/AtomicCopy.hpp"
+#include "framework/CommandRegistry.hpp"
 #include "framework/WorkerThreadStart.hpp"
 #include "framework/DesktopEntry.hpp"
 #include "framework/Numbers.hpp"
@@ -228,6 +229,65 @@ void shortcutBindingTests() {
     CHECK(conflicts.front().description().contains(reserved.name));
     custom.id = reserved.id;
     CHECK(shortcutConflicts({reserved, custom}).isEmpty());
+    // The names users see (mitcad#730), not where the key works.
+    CHECK(!reserved.name.contains(QLatin1Char('(')) && !reserved.name.contains(QLatin1Char('/')));
+  }
+  const auto reservedName = [&fixed](const char* id) {
+    for (const auto& binding : fixed) {
+      if (binding.id == QLatin1String(id)) return binding.name;
+    }
+    return QString();
+  };
+  CHECK(reservedName("view.search_timeline") == QStringLiteral("Search Timeline"));
+  CHECK(reservedName("browser.rename") == QStringLiteral("Rename"));
+  CHECK(reservedName("browser.delete") == QStringLiteral("Delete"));
+  CHECK(reservedName("command.accept") == QStringLiteral("OK"));
+  CHECK(reservedName("command.cancel") == QStringLiteral("Cancel"));
+  {
+    ShortcutBinding findKey = make("custom.find", ModelShortcutContext, QKeySequence(QKeySequence::Find));
+    QList<ShortcutBinding> withFind = fixed;
+    withFind.append(findKey);
+    const auto conflicts = shortcutConflicts(withFind);
+    CHECK(conflicts.size() == 1);
+    CHECK(!conflicts.isEmpty() &&
+          conflicts.front().description().contains(QStringLiteral(" is reserved for Search Timeline. ")));
+  }
+  // Keyboard Shortcuts lists the reserved keys as read-only rows, one per
+  // name with all its keys (mitcad#730): Ctrl+F under Search Timeline.
+  {
+    const QList<ReservedShortcut> rows = reservedShortcuts();
+    QSet<QString> ids;
+    qsizetype keyCount = 0;
+    for (const ReservedShortcut& row : rows) {
+      CHECK(!ids.contains(row.id));
+      ids.insert(row.id);
+      CHECK(!row.keys.isEmpty() && row.contexts != 0);
+      keyCount += row.keys.size();
+    }
+    CHECK(keyCount == fixed.size());
+    const auto rowOf = [&rows](const char* id) {
+      for (const ReservedShortcut& row : rows) {
+        if (row.id == QLatin1String(id)) return row;
+      }
+      return ReservedShortcut{};
+    };
+    const ReservedShortcut timeline = rowOf("view.search_timeline");
+    CHECK(timeline.name == QStringLiteral("Search Timeline"));
+    CHECK(timeline.keys == QList<QKeySequence>{QKeySequence(QKeySequence::Find)});
+    CHECK(timeline.contexts == unsigned(AllShortcutContexts));
+    const ReservedShortcut ok = rowOf("command.accept");
+    CHECK(ok.name == QStringLiteral("OK"));
+    CHECK((ok.keys == QList<QKeySequence>{QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)}));
+    CHECK(rowOf("browser.rename").contexts == unsigned(ModelShortcutContext));
+    // Ctrl+F, F2 and Delete work while the Browser or the timeline has the
+    // keyboard focus; OK and Save everywhere.
+    CHECK(timeline.browserFocus && rowOf("browser.rename").browserFocus && rowOf("browser.delete").browserFocus);
+    CHECK(!ok.browserFocus && !rowOf("file.save").browserFocus);
+#ifdef Q_OS_MACOS
+    CHECK(rowOf("browser.delete").keys.size() == 2);
+#else
+    CHECK(rowOf("browser.delete").keys.size() == 1);
+#endif
   }
 
   ShortcutBinding removeSketch = make("sketch.delete", SketchShortcutContext, QKeySequence(Qt::Key_Delete));
@@ -276,6 +336,156 @@ void shortcutBindingTests() {
   ShortcutBinding another = make("solid.another", ModelShortcutContext, QKeySequence(Qt::Key_J));
   another.primary = legacy.primary = QKeySequence(Qt::Key_B);
   CHECK(conflictingShortcutIds(shortcutConflicts({legacy, another})).size() == 2);
+}
+
+// Keys per context (mitcad#720): a command of several contexts (Command
+// Search) has its own key in each, so S can draw a spline in sketches and
+// still search in the model; a single key saved before reads as the key of
+// every context. The registry reads and writes the settings of the test's
+// own.
+void shortcutContextTests() {
+  using namespace mitcad;
+  QTemporaryDir directory;
+  CHECK(directory.isValid());
+  const QString organization = QCoreApplication::organizationName();
+  const QString application = QCoreApplication::applicationName();
+  const QSettings::Format format = QSettings::defaultFormat();
+  QCoreApplication::setOrganizationName(QStringLiteral("MitcadShortcutContextTest"));
+  QCoreApplication::setApplicationName(QStringLiteral("MitcadShortcutContextTest"));
+  QSettings::setDefaultFormat(QSettings::IniFormat);
+  QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, directory.path());
+  {
+    QSettings settings;
+    settings.clear();
+    settings.sync();
+  }
+  const auto command = [](const char* id, CommandDef::Mode mode, const QKeySequence& key, bool during) {
+    CommandDef def;
+    def.id = QString::fromLatin1(id);
+    def.name = def.id;
+    def.kind = CommandDef::Kind::Action;
+    def.mode = mode;
+    def.shortcut = key;
+    def.duringCommands = during;
+    return def;
+  };
+  const QString search = QStringLiteral("tools.search");
+  const QString spline = QStringLiteral("sketch.spline");
+  const QString create = QStringLiteral("sketch.create");
+  const QKeySequence s(Qt::Key_S);
+  const QKeySequence f3(Qt::Key_F3);
+  const QKeySequence altS(Qt::ALT | Qt::Key_S);
+  {
+    CommandRegistry registry;
+    registry.add(command("tools.search", CommandDef::Mode::Any, s, true));
+    registry.add(command("sketch.spline", CommandDef::Mode::Sketch, QKeySequence(), false));
+    registry.add(command("sketch.create", CommandDef::Mode::Model, altS, false));
+    CHECK(registry.shortcutContexts(search) == AllShortcutContexts);
+    CHECK(registry.shortcutContexts(spline) == SketchShortcutContext);
+    CHECK(registry.shortcutContexts(create) == ModelShortcutContext);
+    CHECK(registry.defaultShortcutConflicts().isEmpty());
+    const ContextShortcuts defaults = registry.shortcuts(search);
+    CHECK(defaults.size() == 3 && defaults.value(ModelShortcutContext) == s &&
+          defaults.value(SketchShortcutContext) == s && defaults.value(CommandShortcutContext) == s);
+
+    // S for the spline meets Command Search in sketches only...
+    QHash<QString, ContextShortcuts> proposal;
+    proposal[spline].insert(SketchShortcutContext, s);
+    QList<ShortcutConflict> conflicts = registry.shortcutConflicts(proposal);
+    CHECK(conflicts.size() == 1);
+    CHECK(!conflicts.isEmpty() && conflicts.front().contexts == SketchShortcutContext &&
+          conflicts.front().description() ==
+              QStringLiteral("S is used by both tools.search and sketch.spline in a sketch. Change one of them."));
+    // ...and is free once Command Search has another key there; S stays
+    // its key in Model and Command Panel.
+    proposal[search].insert(SketchShortcutContext, f3);
+    CHECK(registry.shortcutConflicts(proposal).isEmpty());
+    // Create Sketch on S then meets Command Search in the model...
+    proposal[create].insert(ModelShortcutContext, s);
+    conflicts = registry.shortcutConflicts(proposal);
+    CHECK(conflicts.size() == 1);
+    CHECK(!conflicts.isEmpty() && conflicts.front().contexts == ModelShortcutContext &&
+          conflicts.front().description().contains(QStringLiteral(" in the model. ")));
+    // Contexts in a sentence, and their names.
+    CHECK(shortcutContextPhrase(ModelShortcutContext | SketchShortcutContext) ==
+          QStringLiteral("in the model and in a sketch"));
+    CHECK(shortcutContextPhrase(AllShortcutContexts) ==
+          QStringLiteral("in the model, in a sketch and while a command panel is open"));
+    CHECK(shortcutContextName(CommandShortcutContext) == QStringLiteral("Command Panel"));
+    CHECK(shortcutContextName(ModelShortcutContext | SketchShortcutContext) == QStringLiteral("Model, Sketch"));
+    // ...unless Command Search moves there too.
+    proposal[search].insert(ModelShortcutContext, QKeySequence(Qt::CTRL | Qt::Key_K));
+    CHECK(registry.shortcutConflicts(proposal).isEmpty());
+
+    // Saved: the key of one context where they differ, one key for all.
+    proposal.remove(create);
+    proposal[search].remove(ModelShortcutContext);
+    registry.setShortcuts(proposal);
+    QSettings settings;
+    CHECK(settings.value(QStringLiteral("shortcuts.sketch/tools.search")).toString() == QStringLiteral("F3"));
+    CHECK(!settings.contains(QStringLiteral("shortcuts/tools.search")));
+    CHECK(!settings.contains(QStringLiteral("shortcuts.model/tools.search"))); // the default
+    CHECK(!settings.contains(QStringLiteral("shortcuts.commands/tools.search")));
+    CHECK(settings.value(QStringLiteral("shortcuts/sketch.spline")).toString() == QStringLiteral("S"));
+    CHECK(!settings.contains(QStringLiteral("shortcuts.sketch/sketch.spline")));
+    CHECK(registry.shortcut(search, ModelShortcutContext) == s);
+    CHECK(registry.shortcut(search, SketchShortcutContext) == f3);
+    CHECK(registry.shortcut(search, CommandShortcutContext) == s);
+    CHECK(registry.shortcutConflicts().isEmpty());
+    CHECK(registry.shortcutWarnings().isEmpty());
+
+    // The actions' keys follow the current context.
+    CHECK(registry.shortcutContext() == ModelShortcutContext);
+    CHECK(registry.effectiveShortcuts(search) == QList<QKeySequence>{s});
+    registry.setShortcutContext(SketchShortcutContext);
+    CHECK(registry.effectiveShortcuts(search) == QList<QKeySequence>{f3});
+    CHECK(registry.shortcut(search) == f3);
+    CHECK(registry.shortcutHint(search).contains(f3.toString(QKeySequence::NativeText)));
+    CHECK(registry.effectiveShortcuts(spline) == QList<QKeySequence>{s});
+    registry.setShortcutContext(CommandShortcutContext);
+    CHECK(registry.effectiveShortcuts(search) == QList<QKeySequence>{s});
+    // A command outside the current context keeps its own context's key.
+    CHECK(registry.effectiveShortcuts(spline) == QList<QKeySequence>{s});
+    CHECK(registry.effectiveShortcuts(create) == QList<QKeySequence>{altS});
+    registry.setShortcutContext(ModelShortcutContext);
+
+    // One key in every context again, the default: nothing saved.
+    registry.setShortcut(search, s);
+    CHECK(!settings.contains(QStringLiteral("shortcuts.sketch/tools.search")));
+    CHECK(!settings.contains(QStringLiteral("shortcuts/tools.search")));
+    // One context alone: cleared during commands.
+    registry.setShortcut(search, CommandShortcutContext, QKeySequence());
+    CHECK(settings.contains(QStringLiteral("shortcuts.commands/tools.search")));
+    CHECK(registry.shortcut(search, CommandShortcutContext).isEmpty());
+    CHECK(registry.shortcut(search, ModelShortcutContext) == s);
+    CHECK(registry.shortcut(search, SketchShortcutContext) == s);
+  }
+  {
+    // A single key saved before mitcad#720 is the key of every context.
+    QSettings settings;
+    settings.clear();
+    settings.setValue(QStringLiteral("shortcuts/tools.search"), QStringLiteral("F3"));
+    settings.sync();
+    CommandRegistry registry;
+    registry.add(command("tools.search", CommandDef::Mode::Any, s, true));
+    registry.add(command("sketch.create", CommandDef::Mode::Model, altS, false));
+    for (const unsigned context : shortcutContextList(AllShortcutContexts)) {
+      CHECK(registry.shortcut(search, context) == f3);
+    }
+    CHECK(registry.shortcuts(search).size() == 3);
+    // A context's own key wins there.
+    settings.setValue(QStringLiteral("shortcuts.sketch/tools.search"), QStringLiteral("Q"));
+    CHECK(registry.shortcut(search, SketchShortcutContext) == QKeySequence(Qt::Key_Q));
+    CHECK(registry.shortcut(search, ModelShortcutContext) == f3);
+    // The key of a context a command does not live in is not read.
+    settings.setValue(QStringLiteral("shortcuts.sketch/sketch.create"), QStringLiteral("S"));
+    CHECK(registry.shortcuts(create).size() == 1 && registry.shortcuts(create).value(ModelShortcutContext) == altS);
+    settings.clear();
+    settings.sync();
+  }
+  QCoreApplication::setOrganizationName(organization);
+  QCoreApplication::setApplicationName(application);
+  QSettings::setDefaultFormat(format);
 }
 
 // Numbers typed with a decimal comma or point (mitcad#2).
@@ -2267,6 +2477,7 @@ int treeItemDelegateTests();
 int macToolButtonTests();
 int navigationPreferencesTests();
 int formulaEditorTests();
+int drawingToolsTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2281,6 +2492,7 @@ int main(int argc, char* argv[]) {
     renderWorkerFailureTests();
     workerThreadStartTests();
     shortcutBindingTests();
+    shortcutContextTests();
     numberTests();
     cursorTests();
     printTests();
@@ -2358,6 +2570,7 @@ int main(int argc, char* argv[]) {
     failures += macToolButtonTests();
     failures += navigationPreferencesTests();
     failures += formulaEditorTests();
+    failures += drawingToolsTests();
     mitcad::tests::navigationSettingsTests(check);
   }
   if (failures != 0) {

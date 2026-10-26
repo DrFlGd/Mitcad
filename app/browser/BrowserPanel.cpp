@@ -36,7 +36,6 @@
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "../framework/WindowStyle.hpp"
-#include "../view/MeasurementDrawing.hpp"
 
 namespace mitcad {
 namespace {
@@ -356,6 +355,40 @@ QString itemKey(const SelectionItem& item) {
       .arg(item.owner, item.occurrence);
 }
 
+// A body's print bed face in its row's tooltip (mitcad#731): "end face of
+// Extrude1" by the feature and role of its name ("a face of Base1" for
+// roles without a plain word), or why it cannot lie on the bed.
+QString printBedText(const DocumentSnapshot& snapshot, const DocumentSnapshot::Body& body) {
+  if (!body.printBedError.isEmpty()) {
+    return body.printBedFaces.isEmpty() ? QObject::tr("gone") : QObject::tr("not planar");
+  }
+  const QString face = body.printBedFaces.value(0, body.printBedFace);
+  const QString feature = face.section(QLatin1Char(':'), 0, 0);
+  QString role = face.section(QLatin1Char(':'), 1).section(QLatin1Char('('), 0, 0).section(QLatin1Char('#'), 0, 0);
+  // A box's sides are side0 to side3.
+  while (role.startsWith(QStringLiteral("side")) && !role.isEmpty() && role.back().isDigit()) {
+    role.chop(1);
+  }
+  const DocumentSnapshot::Feature* made = snapshot.feature(feature);
+  const QString name = made != nullptr ? made->name : feature;
+  if (role == QStringLiteral("end")) {
+    return QObject::tr("end face of %1").arg(name);
+  }
+  if (role == QStringLiteral("start")) {
+    return QObject::tr("start face of %1").arg(name);
+  }
+  if (role == QStringLiteral("side")) {
+    return QObject::tr("side face of %1").arg(name);
+  }
+  if (role == QStringLiteral("top")) {
+    return QObject::tr("top face of %1").arg(name);
+  }
+  if (role == QStringLiteral("bottom")) {
+    return QObject::tr("bottom face of %1").arg(name);
+  }
+  return QObject::tr("a face of %1").arg(name);
+}
+
 // A joint's row (mitcad#55): its kind, whether it holds and its values
 // ("Joint1: revolute, placed, rz 30 deg"); a rigid group's members.
 QString jointTooltip(const DocumentSnapshot& snapshot, const DocumentSnapshot::Feature& feature) {
@@ -628,7 +661,9 @@ protected:
     QTreeWidgetItem* item = itemAt(event->position().toPoint());
     if (item != nullptr && event->button() == Qt::LeftButton) {
       const BrowserNode node = m_panel.nodeOf(item);
-      if (!node.isFolder() && node.type != BrowserNode::Type::Settings &&
+      // The Annotations folder opens its window (mitcad#702).
+      if ((!node.isFolder() || node.type == BrowserNode::Type::Measurements) &&
+          node.type != BrowserNode::Type::Settings &&
           node.type != BrowserNode::Type::NamedViews) {
         emit m_panel.doubleClicked(node);
         return;
@@ -1010,8 +1045,10 @@ QString BrowserPanel::keyOf(const BrowserNode& node) const {
     return QStringLiteral("links") + at;
   case BrowserNode::Type::Measurements:
     return QStringLiteral("measurements");
-  case BrowserNode::Type::Measurement:
-    return QStringLiteral("measurement:") + node.uid;
+  case BrowserNode::Type::Drawings:
+    return QStringLiteral("drawings") + at;
+  case BrowserNode::Type::Drawing:
+    return QStringLiteral("drawing:") + node.uid + at;
   case BrowserNode::Type::None:
     break;
   }
@@ -1039,7 +1076,7 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
                          node.type == BrowserNode::Type::Feature ||
                          node.type == BrowserNode::Type::MotionStudy ||
                          node.type == BrowserNode::Type::ContactSet ||
-                         node.type == BrowserNode::Type::Measurement ||
+                         node.type == BrowserNode::Type::Drawing ||
                          (node.type == BrowserNode::Type::NamedView &&
                           node.uid.startsWith(QStringLiteral("named:")));
   if (renamable) {
@@ -1052,7 +1089,7 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
                     node.type == BrowserNode::Type::Construction || node.type == BrowserNode::Type::Analyses ||
                     node.type == BrowserNode::Type::Joints || node.type == BrowserNode::Type::MotionStudies ||
                     node.type == BrowserNode::Type::ContactSets || node.type == BrowserNode::Type::MotionLinks ||
-                    node.type == BrowserNode::Type::Measurements;
+                    node.type == BrowserNode::Type::Measurements || node.type == BrowserNode::Type::Drawings;
   item->setExpanded(m_expanded.value(key, open));
   return item;
 }
@@ -1094,9 +1131,12 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
       node.mesh = body.mesh;
       const QString feature = uid.section(QLatin1Char('.'), 0, 0);
       const DocumentSnapshot::Feature* made = snapshot.feature(feature);
-      QTreeWidgetItem* row = addRow(bodies, node, QStringLiteral("body"),
-                                    tr("%1 (%2), made by %3")
-                                        .arg(node.name, uid, made != nullptr ? made->name : feature));
+      QString tip = tr("%1 (%2), made by %3").arg(node.name, uid, made != nullptr ? made->name : feature);
+      // The face that lies on the print bed (mitcad#731).
+      if (!body.printBedFace.isEmpty()) {
+        tip += QLatin1Char('\n') + tr("Print bed face: %1").arg(printBedText(snapshot, body));
+      }
+      QTreeWidgetItem* row = addRow(bodies, node, QStringLiteral("body"), tip);
       gray(row, shown && body.visible);
       addSheetRows(row, snapshot, node, shown && body.visible);
     }
@@ -1152,6 +1192,32 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
       if (sketches) {
         addFeatureRows(row, snapshot, *feature, occurrence, shown, uses);
       }
+    }
+  }
+
+  // Drawings (mitcad#707): the component's, of it in its own coordinates;
+  // a double-click opens one over the view.
+  const QJsonArray drawings = snapshot.drawingsOf(component);
+  if (!drawings.isEmpty()) {
+    BrowserNode drawingsFolder;
+    drawingsFolder.type = BrowserNode::Type::Drawings;
+    drawingsFolder.occurrence = occurrence;
+    drawingsFolder.component = component;
+    drawingsFolder.name = tr("Drawings");
+    QTreeWidgetItem* drawingRows = addRow(parent, drawingsFolder, QStringLiteral("folder"));
+    gray(drawingRows, shown);
+    for (const QJsonValue& value : drawings) {
+      const QJsonObject drawing = value.toObject();
+      BrowserNode node;
+      node.type = BrowserNode::Type::Drawing;
+      node.uid = drawing.value(QStringLiteral("drawing")).toString();
+      node.occurrence = occurrence;
+      node.component = component;
+      node.name = drawing.value(QStringLiteral("name")).toString();
+      const qsizetype sheets = drawing.value(QStringLiteral("sheets")).toArray().size();
+      QTreeWidgetItem* row = addRow(drawingRows, node, QStringLiteral("drawing"),
+                                    tr("%1: %n sheet(s)", nullptr, static_cast<int>(sheets)).arg(node.name));
+      gray(row, shown);
     }
   }
 
@@ -1550,43 +1616,26 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
     }
   }
 
-  // Measurement objects (mitcad#649), each with its light bulb and a
-  // swatch of its colour; one whose picks are gone with a warning, in the
-  // failure colour, its tooltip saying why.
+  // Annotations (mitcad#702; the measurement objects of mitcad#649): one
+  // folder row that opens the Annotations window, where they are listed
+  // and edited; its tooltip counts them and the broken ones.
   if (!snapshot.measurements.isEmpty()) {
     BrowserNode folder;
     folder.type = BrowserNode::Type::Measurements;
     folder.component = rootNode.uid;
-    folder.name = tr("Measurements");
-    QTreeWidgetItem* measurements = addRow(rootItem, folder, QStringLiteral("folder"));
-    const double unit = lengthUnitMillimetres(snapshot.lengthUnit);
+    folder.name = tr("Annotations");
+    int broken = 0;
     for (const QJsonValue& value : snapshot.measurements) {
-      const QJsonObject measurement = value.toObject();
-      BrowserNode row;
-      row.type = BrowserNode::Type::Measurement;
-      row.component = rootNode.uid;
-      row.uid = measurement.value(QStringLiteral("name")).toString();
-      row.name = row.uid;
-      row.visible = measurement.value(QStringLiteral("visible")).toBool(true);
-      row.hasEye = true;
-      row.featureType = measurement.value(QStringLiteral("kind")).toString();
-      const QString error = measurement.value(QStringLiteral("error")).toString();
-      const QString tooltip =
-          error.isEmpty()
-              ? QStringLiteral("%1 = %2").arg(row.name, measurementValueText(row.featureType,
-                                                                             measurement.value(QStringLiteral("value")).toDouble(),
-                                                                             snapshot.lengthUnit, unit))
-              : tr("%1: broken: %2").arg(row.name, error);
-      QTreeWidgetItem* item =
-          addRow(measurements, row, error.isEmpty() ? QStringLiteral("measure") : QStringLiteral("warning"), tooltip);
-      if (!error.isEmpty()) {
-        item->setForeground(kName, kFailedText);
-      } else {
-        item->setIcon(kName, measurementSwatch(QColor(measurement.value(QStringLiteral("color")).toString())));
-        if (!row.visible) {
-          item->setForeground(kName, kHiddenText);
-        }
-      }
+      broken += value.toObject().contains(QStringLiteral("error")) ? 1 : 0;
+    }
+    const int count = static_cast<int>(snapshot.measurements.size());
+    const QString tooltip = broken > 0 ? tr("%n annotation(s), %1 broken", nullptr, count)
+                                             .arg(broken)
+                                       : tr("%n annotation(s)", nullptr, count);
+    QTreeWidgetItem* item =
+        addRow(rootItem, folder, broken > 0 ? QStringLiteral("warning") : QStringLiteral("measure"), tooltip);
+    if (broken > 0) {
+      item->setForeground(kName, kFailedText);
     }
   }
 

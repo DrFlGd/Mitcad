@@ -153,7 +153,7 @@ expect_pointer 30 15
 expect_pointer -15 -10
 
 echo "--- Outside sketch editing the sketch keeps its colours (mitcad#286)"
-# A new design's first sketch goes into a new component, Part1 (O1;
+# A new design's first sketch goes into a new component, Component1 (O1;
 # mitcad#220): outside its edit that occurrence places it.
 SKETCH1="F1( in O[0-9]+)?"
 expect_colours "$SKETCH1" "c >= 4 && u == 0" "in its edit the rectangle is fully constrained"

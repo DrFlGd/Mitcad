@@ -30,7 +30,7 @@ values continue to reach the model through the existing sketch commands.
 | `core/usdz` (`mitcad-usdz`) | Rust | USDZ writer: the binary USD layer (crate format 0.8.0, LZ4 and USD's integer coding written here, no USD library) of a scene of meshes, `Xform`s and `UsdPreviewSurface` materials, packed with its textures 64-byte aligned; a checking reader for tests (mitcad#123). |
 | `core/vcs` (`mitcad-vcs`) | Rust | Version history of projects in git (gitoxide, only here); remotes through the system's git; component libraries and community indexes in git repositories ([libraries.md](libraries.md)). |
 | `core/update` (`mitcad-update`) | Rust | Release manifest, signatures, version selection; the `mitcad-release` tool. No network ([updates.md](updates.md)). |
-| `core/mcp` (`mitcad-mcp`) | Rust | MCP lifecycle, JSON-RPC envelopes, tool schemas and command-reference resource; headless stdio and live application profiles. No geometry dependency ([mcp.md](mcp.md)). |
+| `core/mcp` (`mitcad-mcp`) | Rust | MCP lifecycle, JSON-RPC envelopes, tool schemas, the command-reference resource and `model_reference`, the reference in sections (mitcad#714); headless stdio and live application profiles. No geometry dependency ([mcp.md](mcp.md)). |
 | `core/ffi`, `core/cpp` | Rust, C++ | CXX bridges: the `Kernel` on OCCT, the document API for C++. |
 | `geometry` (`mitcad_geometry`) | C++ | OCCT facade: profiles, features, booleans, name transfer, queries, file formats, ASM bodies, analyses. No Qt. |
 | `tools/cli` (`mitcad-cli`) | C++ | Headless open/import, recompute, properties, export; kernel and import tests run through it. Also `render` (the final render through the render worker), which links Qt Core and Gui for the application's scene and job code. |
@@ -318,20 +318,80 @@ design in a project.
   bounding volume hierarchy of their own for the wall rays, no kernel
   method of their own; the results are kept in memory by the bodies'
   shape versions and the settings.
-- **Measurement objects** (mitcad#649, `core/model/src/document/measurements.rs`,
-  `api/measurements.rs`): measurements kept in the definition state with
-  a name, a colour, a light bulb, a kind (distance, angle, offset, axis or
-  centre distance, radius, diameter) and one or two picks as the `measure`
-  query's selections (topological names with their occurrences); their
-  commands are undo steps that recompute nothing. Each is measured at the
-  marker whenever the `measurements` query asks (the kernel's measures and
-  `api::measure_axes`), with the geometry of its dimension worked out in
-  Rust (the ends of a length, a circle, an angle's corner and rays); a
-  pick that is gone gives an error instead, and the object stays. The app
-  draws the shown ones as dimensions over the view with QPainter
-  (`app/view/MeasurementDrawing`, `MeasurementOverlay`), in snapshots
-  rendered offscreen at a larger size (`OcctViewer::snapshot`, OCCT's
-  `V3d_View::ToPixMap`) and over Render Image's image.
+- **Annotations** (mitcad#702, grown from the measurement objects of
+  mitcad#649; `core/model/src/document/annotations.rs`,
+  `api/measurements.rs`, `api/annotations.rs`, `iso286.rs`): dimensions,
+  leader notes, datum labels and feature control frames kept in the
+  definition state with a name, a colour, a light bulb, a group, a kind
+  (distance, angle, offset, axis or centre distance, radius, diameter;
+  the leaders note, datum and frame: a letter, an ISO 1101 tolerance whose
+  rules Rust checks, a frame under a dimension), one or two picks as the
+  `measure` query's selections (topological names with their
+  occurrences), the
+  plane they lie in (a direction or a picked plane), the dimension line's
+  and the text's places relative to the picks, a format and a tolerance
+  (ISO 286 fit codes computed in Rust); their commands are undo steps
+  that recompute nothing. Each is measured at the marker whenever the
+  `annotations` query asks (the kernel's measures and
+  `api::measure_axes`), and laid out in Rust in its plane: extension and
+  dimension lines, arcs, arrows, the text's place and direction, the
+  value in words ISO 129 style; a pick that is gone gives an error
+  instead, and the annotation stays. The app projects the layout, keeps
+  the text readable within its plane and paints it with QPainter
+  (`app/view/MeasurementDrawing`, `MeasurementOverlay`, which also takes
+  clicks and drags on the texts and lines), in snapshots rendered
+  offscreen at a larger size (`OcctViewer::snapshot`, OCCT's
+  `V3d_View::ToPixMap`; all, or one group) and over Render Image's image;
+  the Annotations window lists and edits them (`app/view/AnnotationsWindow`).
+- **Drawings in the design** (mitcad#707, `core/model/src/drawing/def.rs`,
+  `document/drawings.rs`, `api/drawings.rs`): drawings kept in the
+  definition state in the root's and components' Drawings folders, each
+  sheets of views (base, projected, section, detail; breaks on any) with
+  their places, scales, styles and subjects, and nothing computed. Their
+  commands are undo steps that recompute nothing; the design file and the
+  comparison of versions keep and list them; a component's drawings are
+  copied with it (`DocState::copy_drawings` in `copy_component_mapped`) and
+  go with it. The `drawing` query works a sheet out at the marker: each
+  base view's subject in the drawing's component's coordinates, projected
+  by `Kernel::project_view` (no kernel method of their own) and kept in
+  the document's projection cache (`drawing::ProjectionCache`, by shape
+  versions, placements and the view's spec); details and breaks are cut
+  in Rust in the view's plane (`drawing::clip`), shaded views from
+  `Kernel::triangle_mesh`; the sheet is drawn by the export's
+  `drawing::compose::render`. A view's place is where the component's
+  origin lies on the sheet, so views in line share a coordinate. The
+  application paints the query's groups in a sheet view of its own
+  ([app/COMMANDS.md](../app/COMMANDS.md), "Drawings"). Annotations on
+  views (phase 2, `drawing/annotate.rs`, `api/drawing_annotations.rs`)
+  keep picks of model topology (a body, its occurrence, an edge or a round
+  face by its topological name): a click is matched in Rust against the
+  bodies' named edges and faces as the view projects them
+  (`Kernel::edge_geometries`, `Kernel::face_geometries`, kept per shape
+  version in the same cache), and each pick is found again by its name
+  whenever the sheet is drawn, so the annotation follows the model or is
+  marked broken. Their values are written by the model annotations'
+  engine (`api/annotations.rs`, mitcad#702) and laid out on the sheet in
+  paper millimetres relative to their picks. A view sees what it shows
+  (mitcad#717): a section what lies behind its plane, and the planar faces
+  its plane cuts (their cut edges, matched in Rust against the projection's
+  cut faces); a detail and a broken view the parts of edges they show; of
+  picks as near, the one the projection draws visible, then the one nearest
+  the eye; a pictorial view measures aligned dimensions in 3D and refuses
+  foreshortened ones. Tables (phase 3, `drawing/tables.rs`,
+  `api/drawing_tables.rs`) are annotations of a view too: a hole table
+  (`Kernel::round_holes` of the bodies it shows, seen end on) and a parts
+  list (the view's occurrences counted per component, the `parts_list`
+  rows' and properties' words) are worked out whenever the sheet is drawn
+  and drawn in Rust; balloons take their numbers from the sheet's parts
+  lists. Sheet templates (phase 4, `drawing/template.rs`,
+  `api/drawing_templates.rs`) are data: a frame, a title block's lines
+  and fields with names in braces, a revision table; built in (JSON files
+  compiled in), or files in the user's and the project's library folders
+  (beside the materials and print profiles), read and written by the
+  model; a sheet keeps a copy of its template, and its fields are filled
+  in from the design (properties, materials, the mass from the bodies'
+  volumes) whenever it is drawn. A drawing's revisions are rows of the
+  drawing itself.
 - **Parameters as CSV** (mitcad#666, `core/model/src/parameters_csv.rs`,
   `document/parameters_csv.rs`, `api/parameters_csv.rs`): Mitcad's
   parameter table and the `.f3d` application's parameter table CSV are
@@ -456,7 +516,8 @@ design in a project.
   and the design file. The general defaults (the Hybrid preset,
   mitcad#421) allow everything; the Part and Assembly presets are the
   stricter choices. A new design (`Document::new_design`) has the root and
-  an empty, active Part1, both with the general defaults, as have
+  an empty, active Component1 (named as any new component, mitcad#711),
+  both with the general defaults, as have
   `Document::new`, new components and owners without a stored policy (a
   stored one keeps its values; the file format is unchanged). Every change a JSON
   command or preview makes goes through one check before it is computed
@@ -610,7 +671,7 @@ design in a project.
   components record what BUILD made (`build`). They work in the **BUILD
   host** (mitcad#394, `Document::build_host`): the active component when
   its policy takes components, else the nearest one up that does (in a
-  new design Part1 itself, mitcad#421), so the design policy never
+  new design Component1 itself, mitcad#421), so the design policy never
   refuses where a part goes; bound lengths count as assembly features
   there, as joints do. Everything else treats
   them as ordinary components, features, joints and parameters
@@ -971,7 +1032,9 @@ the `Shape` type.
   beside them); the model (`core/model/src/drawing`, no geometry library)
   lays the sheet out (views by the projection method, sizes, callouts,
   the hole table with the `threads` query's threads, the title block)
-  and writes PDF and SVG itself and DXF through `core/dxf`.
+  and writes PDF and SVG itself and DXF through `core/dxf`. An export
+  lays out a temporary drawing and draws it as a drawing kept in the
+  design is drawn (below, *Drawings in the design*).
 - A mesh body (STL, OBJ) is a face with a triangulation and no surface.
   `geometry::transform_shape` moves a copy of the triangulation, and the
   validity check skips such faces. Surface operations do not take one
@@ -1089,7 +1152,10 @@ evaluation is not.
   can use (mitcad#231). A definition may name a user parameter as a
   driven dimension's reference, which the sketch then takes over: the
   importers map a source file's parameter of a driven dimension so
-  (mitcad#250).
+  (mitcad#250). A constraint or dimension can be **inactive**: kept and
+  shown, left out of the solve until it is activated; the importers make
+  those the source file's own geometry does not meet inactive instead of
+  dropping the sketch's constraints (mitcad#721).
 - **Stored positions** are the last solution and the next solve's start,
   so the same definition always gives the same geometry.
 - **Implied constraints:** a new constraint the others imply in full is
@@ -1353,7 +1419,13 @@ not recompute.
   times faster on planes with many holes for the same nodes); the bodies
   themselves keep no triangulation until a job meshes them in the final
   tier: the command that commits the preview, or a refinement job (no
-  model change, no undo step) once a drag ends and the inputs rest. So a
+  model change, no undo step) once a drag ends and the inputs rest, and
+  opening a design (`viewMeshOptions`: planes through Delabella too, each
+  checked, mitcad#644: a plane Delabella leaves without a triangulation,
+  or whose triangles' area is off the area its boundary's discretization
+  encloses by more than 0.1 % or 0.001 mm², is triangulated again by the
+  default insertion, whose result stands; `io::MeshOptions::check_planes`,
+  `MeshReport::planes_redone`). So a
   committed body never keeps a preview's meshes, and no job writes into a
   shape the view draws. Both tiers first take the triangulations of the
   faces a command or preview left untouched from the bodies as shown
@@ -1453,13 +1525,13 @@ not recompute.
   Initialized client labels are UI metadata, never authentication identities.
 - **MCP** (`core/mcp`, `core/ffi/src/mcp.rs`, `app/mcp`): the live
   application profile exposes `document_list`, `model_query`,
-  `model_command`, `model_export`, `document_save`, `document_open` and the application's
+  `model_command`, `model_export`, `model_reference`, `document_save`, `document_open` and the application's
   own `ui_state`, `ui_log`, `ui_screenshot`, `ui_select`, `ui_command` and
   `ui_camera` against the
   window's actual `DocumentSession` (mitcad#265, `app/MainWindowMcp.cpp`,
   `app/MainWindowMcpUi.cpp`). Save As (`document_save` with a path) and
-  Open reach only the folders the user allows agents (`app/mcp/AgentFolders`:
-  Preferences › Agents, `--mcp-folder`; none by default, mitcad#402), live
+  Open reach only the folders for designs (`app/mcp/AgentFolders`:
+  Preferences › AI Assistants, `--mcp-folder`; none by default, mitcad#402), live
   mode's counterpart of headless mode's workspace. Replies that move the
   view (`ui_camera`, `ui_select`'s reveal, `view.*` commands) end the
   view's animation and any pending fit first (`OcctViewer::settleCamera`,
@@ -1477,8 +1549,9 @@ not recompute.
   handle. `ui_command` runs registry commands through the panel's own
   actions (`CommandSession::scriptInputs`) and closes any modal dialog it
   opens (`mcp::ModalGuard`); `ui_log` reads a ring of the application's log
-  lines (`mcp/LogRing`). The project indicator says "Agent connected"
-  while an MCP session is initialized and can disconnect it. A listener binds only
+  lines (`mcp/LogRing`). The agent indicator (`mcp/AgentIndicator`,
+  mitcad#710), beside the project indicator, names the initialized sessions
+  and can disconnect them. A listener binds only
   to IPv4 loopback on an allocated port; a private per-user discovery
   record supplies an instance ID, the process id and authentication token;
   records of processes no longer running are skipped and removed
@@ -1497,7 +1570,7 @@ not recompute.
   answers with what it changed, compared in Rust
   (`core/mcp/src/changes.rs`: snapshots before and after, the shape
   versions of the `bodies` query, `recompute_times`); the live
-  `model_export` writes into the folders for agents with the headless
+  `model_export` writes into the folders for designs with the headless
   server's command and checks (`Document::mcp_export_plan`), and
   `ui_screenshot` returns an MCP image block (mitcad#689).
 - **Logging** (`app/mcp/LogRing`, `app/framework/DebugLog`, mitcad#269):
@@ -1732,7 +1805,10 @@ mode; command definitions and saved shortcuts remain shared.
 The shared command registry validates shortcut proposals against commands
 which can be available together, fixed application/menu keys and effective
 alternate bindings. Profile-accepting model features also run in sketch
-mode; other Model/Sketch pairs can share keys. Alternates apply only while
+mode; other Model/Sketch pairs can share keys. A command of several
+contexts can have its own key in each (mitcad#720; `shortcuts.<context>/<id>`
+beside the all-context `shortcuts/<id>`); the window sets the current
+context from its mode, and the actions carry that context's keys. Alternates apply only while
 the proposed primary remains its default. Conflicting legacy custom
 bindings remain saved for repair in Keyboard Shortcuts, but are disabled
 at runtime with a diagnostic; their menu actions remain available. The

@@ -59,11 +59,15 @@ impl TimelineMode {
 
 /// The queries of a snapshot, by the key its value goes under: the
 /// document's state, the timeline, and the bodies with their shape
-/// versions (which tell a changed body).
+/// versions (which tell a changed body) and boxes (where each is,
+/// mitcad#714).
 pub const SNAPSHOT_QUERIES: [(&str, &str); 3] = [
     ("state", r#"{"query":"document"}"#),
     ("timeline", r#"{"query":"timeline"}"#),
-    ("bodies", r#"{"query":"bodies","versions":true}"#),
+    (
+        "bodies",
+        r#"{"query":"bodies","versions":true,"bbox":true}"#,
+    ),
 ];
 
 /// The features a command's results say it evaluated: `recompute_times`

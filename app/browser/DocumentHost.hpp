@@ -144,6 +144,15 @@ public:
   // DXF file the user chooses.
   virtual void exportFlatPattern(const QString& body) = 0;
 
+  // Drawings kept in the design (mitcad#707): a drawing (`D1`) opened in
+  // its own view over the 3D view; a new one in a component's Drawings
+  // folder (the root's: "C0"), opened at once.
+  virtual void openDrawing(const QString& /*uid*/) {}
+  virtual void createDrawing(const QString& /*component*/) {}
+  // Whether a drawing is open over the 3D view: the Delete key then
+  // deletes its views, never the model's selection behind it.
+  virtual bool isDrawingOpen() const { return false; }
+
   // Change Parameters while a sketch or a feature is edited (mitcad#564):
   // runs a command of the parameter table as the window's mode needs it
   // (an open panel runs it outside its undo range and previews again; one
@@ -152,6 +161,10 @@ public:
   virtual bool runParameterCommand(const QJsonObject& command) { return runModelCommand(command); }
   // What is being edited now; empty outside sketches and panels.
   virtual ParameterEditScope parameterScope() const { return {}; }
+
+  // Annotations (mitcad#702): opens the Annotations window (the browser's
+  // Annotations folder, View > Annotations).
+  virtual void openAnnotations() {}
 };
 
 } // namespace mitcad

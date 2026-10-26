@@ -200,7 +200,7 @@ fn three_collinear_points_lie_on_the_line_between_two_of_them() {
 
 /// A sketch whose stored positions break one of its constraints (not
 /// solved again after the geometry it follows changed) comes in with the
-/// others, that one left out, not without any.
+/// others active, that one inactive (mitcad#721), not without any.
 #[test]
 fn constraints_the_stored_positions_break_are_left_out_alone() {
     let points = vec![
@@ -230,15 +230,22 @@ fn constraints_the_stored_positions_break_are_left_out_alone() {
         report.text()
     );
     let note = report.items[0].note.as_deref().unwrap_or_default();
-    assert!(note.contains("1 constraints and dimensions"), "{note}");
+    assert!(
+        note.contains("1 constraint inactive, not met in the file: horizontal"),
+        "{note}"
+    );
     let s = sketch_query(&doc);
-    let kinds: Vec<&str> = s["constraints"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|k| k["type"].as_str())
-        .collect();
-    assert_eq!(kinds, ["horizontal", "vertical"], "{s}");
+    let kinds = |active: bool| -> Vec<&str> {
+        s["constraints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|k| k["active"].as_bool().unwrap_or(true) == active)
+            .filter_map(|k| k["type"].as_str())
+            .collect()
+    };
+    assert_eq!(kinds(true), ["horizontal", "vertical"], "{s}");
+    assert_eq!(kinds(false), ["horizontal"], "{s}");
     // The positions are the file's.
     assert_eq!(at(&s, &point_at(&s, [40.0, 20.0])), [40.0, 20.0]);
 }
@@ -248,7 +255,7 @@ fn constraints_the_stored_positions_break_are_left_out_alone() {
 /// coincidence, the corner moves that far, within the import's geometric
 /// tolerance (mitcad#224) and with the sketch's regions the file's, so the
 /// coincidence stays and the sketch is parametric. 50 µm off, beyond the
-/// tolerance, it is left out as before.
+/// tolerance, it comes in inactive (mitcad#721).
 #[test]
 fn a_corner_micrometres_off_a_linked_spline_keeps_its_coincidence() {
     for (off, kept) in [(1.3e-4, true), (5e-3, false)] {
@@ -320,8 +327,18 @@ fn a_corner_micrometres_off_a_linked_spline_keeps_its_coincidence() {
             assert!(on.abs() < 1e-7, "{corner:?}");
         } else {
             assert_eq!(report.items[0].outcome, Outcome::Partial, "{note}");
-            assert!(note.contains("1 constraints and dimensions"), "{note}");
-            assert!(!kinds.contains(&"coincident"), "{s}");
+            // It comes in inactive (mitcad#721).
+            assert!(
+                note.contains("1 constraint inactive, not met in the file: coincident"),
+                "{note}"
+            );
+            let coincident = s["constraints"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|k| k["type"] == "coincident")
+                .unwrap_or_else(|| panic!("{s}"));
+            assert_eq!(coincident["active"], false, "{s}");
         }
     }
 }
@@ -330,9 +347,9 @@ fn a_corner_micrometres_off_a_linked_spline_keeps_its_coincidence() {
 /// regions is not the file's sketch (mitcad#396): a line 2 µm short of a
 /// rectangle's top edge, its length dimensioned 4 µm longer than the
 /// file's positions make it, would cross the edge and split the
-/// rectangle; the dimension stays driven.
+/// rectangle; the dimension comes in inactive (mitcad#721).
 #[test]
-fn a_solve_within_the_tolerance_that_changes_the_regions_drives_the_dimension() {
+fn a_solve_within_the_tolerance_that_changes_the_regions_leaves_the_dimension_inactive() {
     for (end, kept) in [(1.5, true), (1.9998, false)] {
         let points = vec![
             gpoint("p0", 0.0, 0.0),
@@ -382,7 +399,13 @@ fn a_solve_within_the_tolerance_that_changes_the_regions_drives_the_dimension() 
             );
         } else {
             assert_eq!(report.items[0].outcome, Outcome::Partial, "{note}");
-            assert!(note.contains("1 constraints and dimensions"), "{note}");
+            assert!(
+                note.contains("1 dimension inactive, not met in the file: vertical distance"),
+                "{note}"
+            );
+            let s = sketch_query(&doc);
+            assert_eq!(s["dimensions"][0]["active"], false, "{s}");
+            assert_eq!(s["constraints"].as_array().unwrap().len(), 4, "{s}");
         }
     }
 }
@@ -788,4 +811,116 @@ fn an_angle_dimensions_side_comes_from_the_file() {
     assert_eq!(side(&dimensions[1]), given(true, true), "{def}");
     assert_eq!(side(&dimensions[2]), given(false, false), "{def}");
     assert_eq!(side(&dimensions[3]), (None, None), "{def}");
+}
+
+// Inactive constraints and dimensions (mitcad#721).
+
+/// One constraint or dimension the file's own sketch does not meet among
+/// good ones: a 40 x 20 mm rectangle from the fixed origin, held by
+/// horizontal and vertical constraints and its width and height, with
+/// either its bottom parallel to its side or a second width of 50 mm. The
+/// bad one comes in inactive and the report names it; the other
+/// constraints stay, the dimensions keep driving the rectangle.
+#[test]
+fn a_constraint_the_file_does_not_meet_comes_in_inactive_and_the_others_stay() {
+    let points = vec![
+        gfixed("p0", 0.0, 0.0),
+        gpoint("p1", 4.0, 0.0),
+        gpoint("p2", 4.0, 2.0),
+        gpoint("p3", 0.0, 2.0),
+    ];
+    let curves = vec![
+        gline("c0", "p0", "p1"),
+        gline("c1", "p1", "p2"),
+        gline("c2", "p2", "p3"),
+        gline("c3", "p3", "p0"),
+    ];
+    let line = |id: &str, kind: &str, refs: &[&str]| json!({"id": id, "type": kind, "refs": {"entities": refs}});
+    let distance = |id: &str, name: &str, mm: f64, orientation: &str, refs: &[&str]| {
+        json!({"id": id, "type": "SketchLinearDimension",
+               "parameter": param(name, &format!("{mm} mm"), mm / 10.0, "mm"),
+               "props": {"orientation": orientation},
+               "refs": {"entities": refs}})
+    };
+    let model = |name: &str, mm: f64| json!({"name": name, "expression": format!("{mm} mm"), "value": mm / 10.0, "unit": "mm"});
+    let horizontal = "HorizontalDimensionOrientation";
+    let vertical = "VerticalDimensionOrientation";
+    for bad_constraint in [true, false] {
+        let mut constraints = vec![
+            line("k0", "HorizontalConstraint", &["c0"]),
+            line("k1", "VerticalConstraint", &["c1"]),
+            line("k2", "HorizontalConstraint", &["c2"]),
+            line("k3", "VerticalConstraint", &["c3"]),
+        ];
+        let mut dimensions = vec![
+            distance("d0", "d1", 40.0, horizontal, &["p0", "p1"]),
+            distance("d1", "d2", 20.0, vertical, &["p1", "p2"]),
+        ];
+        let mut params = vec![model("d1", 40.0), model("d2", 20.0)];
+        if bad_constraint {
+            constraints.push(line("k4", "ParallelConstraint", &["c0", "c1"]));
+        } else {
+            dimensions.push(distance("d2", "d3", 50.0, horizontal, &["p0", "p1"]));
+            params.push(model("d3", 50.0));
+        }
+        let dump = group_sketch_dump(
+            params,
+            points.clone(),
+            curves.clone(),
+            json!(constraints),
+            json!(dimensions),
+        );
+        let mut doc = Document::new(MockKernel::default());
+        let report = import(&mut doc, &dump);
+        let note = report.items[0].note.clone().unwrap_or_default();
+        assert_eq!(report.items[0].outcome, Outcome::Partial, "{note}");
+        let expected = if bad_constraint {
+            "1 constraint inactive, not met in the file: parallel k"
+        } else {
+            "1 dimension inactive, not met in the file: horizontal distance k"
+        };
+        assert!(note.contains(expected), "{note}");
+        let s = sketch_query(&doc);
+        assert!(s["error"].is_null(), "{s}");
+        let inactive = |list: &str| -> Vec<Value> {
+            s[list]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|k| k["active"] == false)
+                .cloned()
+                .collect()
+        };
+        let (k, d) = (inactive("constraints"), inactive("dimensions"));
+        if bad_constraint {
+            assert_eq!(k.len(), 1, "{s}");
+            assert_eq!(k[0]["type"], "parallel", "{s}");
+            assert_eq!(k[0]["inactive_reason"], "not met in the imported file");
+            assert!(d.is_empty(), "{s}");
+            assert_eq!(s["constraints"].as_array().unwrap().len(), 5, "{s}");
+            assert_eq!(s["unmet_inactive"], json!([k[0]["id"]]), "{s}");
+        } else {
+            assert!(k.is_empty(), "{s}");
+            assert_eq!(d.len(), 1, "{s}");
+            let measured = d[0]["measured"].as_f64().unwrap_or_default();
+            assert!((measured - 50.0).abs() < 1e-6, "{s}");
+            assert_eq!(s["constraints"].as_array().unwrap().len(), 4, "{s}");
+        }
+        // Everything else drives the rectangle: fully constrained, and the
+        // width follows its parameter.
+        assert_eq!(s["dof"], 0, "{s}");
+        let driving = s["dimensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|x| x["active"] != false && x["driven"] != true)
+            .count();
+        assert_eq!(driving, 2, "{s}");
+        let corner = point_at(&s, [40.0, 20.0]);
+        doc.set_parameter_expression("d1", "60 mm", None).unwrap();
+        let s = sketch_query(&doc);
+        assert!(s["error"].is_null(), "{s}");
+        let [x, y] = at(&s, &corner);
+        assert!((x - 60.0).abs() < 1e-6 && (y - 20.0).abs() < 1e-6, "{s}");
+    }
 }

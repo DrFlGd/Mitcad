@@ -3635,6 +3635,132 @@ fn face_profiles_extrude_the_face_and_ignored_sketch_edges_take_the_sketch() {
 }
 
 #[test]
+fn profiles_of_a_whole_sketch_with_an_empty_sub_element_replay() {
+    // (mitcad#708) FreeCAD 1.x links a feature to its whole sketch by one
+    // empty sub-element (`count="1"`, `<Sub value=""/>`), with
+    // AllowMultiFace on and the sketch's normal as ReferenceAxis; older
+    // files by none (`count="0"`, Pocket2). Each takes the whole sketch.
+    let sketch_feature = |sketch: &str, subs: &[&str], direction: [f64; 3]| {
+        format!(
+            "{}{}{}{}",
+            link_sub("Profile", sketch, subs),
+            flag("AllowMultiFace", true),
+            link_sub("ReferenceAxis", sketch, &["N_Axis"]),
+            vector("Direction", direction)
+        )
+    };
+    let xml = document(&[
+        (
+            "PartDesign::Body",
+            "Body",
+            format!(
+                "{}{}{}",
+                shape("Body.brp"),
+                links(
+                    "Group",
+                    "App::PropertyLinkList",
+                    &["Sketch", "Pad", "Sketch2", "Pocket", "Sketch3", "Pocket2"]
+                ),
+                link("Tip", "Pocket2")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Sketch",
+            rectangle_sketch(0.0, 0.0, 40.0, 30.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "Pad",
+            format!(
+                "{}{}{}{}",
+                sketch_feature("Sketch", &[""], [0.0, 0.0, 1.0]),
+                float("Length", 8.5),
+                enumeration("Type", 0),
+                shape("Pad.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Sketch2",
+            rectangle_sketch(5.0, 5.0, 10.0, 10.0),
+        ),
+        (
+            "PartDesign::Pocket",
+            "Pocket",
+            format!(
+                "{}{}{}{}",
+                sketch_feature("Sketch2", &[""], [0.0, 0.0, -1.0]),
+                link("BaseFeature", "Pad"),
+                enumeration("Type", 1),
+                shape("Pocket.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Sketch3",
+            rectangle_sketch(20.0, 5.0, 10.0, 10.0),
+        ),
+        (
+            "PartDesign::Pocket",
+            "Pocket2",
+            format!(
+                "{}{}{}{}{}",
+                link_sub("Profile", "Sketch3", &[]),
+                flag("AllowMultiFace", true),
+                link("BaseFeature", "Pocket"),
+                float("Length", 2.0),
+                shape("Pocket2.brp")
+            ),
+        ),
+    ])
+    .replace("1.0R39319", "1.2R1");
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("Body.brp", b"14 body"),
+            ("Pad.brp", b"6 pad"),
+            ("Pocket.brp", b"10 pocket"),
+            ("Pocket2.brp", b"14 pocket2"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    for name in ["Pad", "Pocket", "Pocket2"] {
+        let f = feature(&report, name);
+        assert_eq!(f.outcome, ObjectOutcome::Parametric, "{f:?}");
+        assert_eq!(f.mitcad, "extrude", "{f:?}");
+    }
+    let def = |name: &str| def_of(&doc, &feature(&report, name).features[0]);
+    let (pad, pocket, pocket2) = (def("Pad"), def("Pocket"), def("Pocket2"));
+    // Each the one region of its whole sketch.
+    let mut sketches = Vec::new();
+    for d in [&pad, &pocket, &pocket2] {
+        assert_eq!(d["profiles"].as_array().unwrap().len(), 1, "{d}");
+        assert!(d["profile_face"].is_null(), "{d}");
+        sketches.push(d["profiles"][0]["sketch"].clone());
+    }
+    assert!(
+        sketches[0] != sketches[1] && sketches[1] != sketches[2] && sketches[0] != sketches[2],
+        "{sketches:?}"
+    );
+    assert_eq!(pad["operation"], "new_body", "{pad}");
+    assert_eq!(value_of(&doc, &pad["extent"]["distance"]), Some(8.5));
+    // The pockets cut (their direction is the importer's, checked by the corpus).
+    assert_eq!(pocket["operation"], "cut", "{pocket}");
+    assert_eq!(pocket["extent"]["type"], "through_all", "{pocket}");
+    assert_eq!(pocket2["operation"], "cut", "{pocket2}");
+    assert_eq!(value_of(&doc, &pocket2["extent"]["distance"]), Some(2.0));
+    assert!(
+        report
+            .text()
+            .contains("6 parametric, 0 partial, 0 fallback"),
+        "{}",
+        report.text()
+    );
+}
+
+#[test]
 fn part_sweeps_framed_sections_face_pipes_and_several_faces_become_features() {
     // (mitcad#543) A Part sweep in the Frenet mode; a pipe of the block's
     // top along a sketch line; a pipe through two sections in the Frenet
@@ -4002,4 +4128,83 @@ fn fixed_curves_and_the_wires_of_sweep_sections() {
         closed: true,
     });
     assert_eq!(sweep_inputs::wires_of(&two), [true, true]);
+}
+
+// Inactive constraints and dimensions (mitcad#721).
+
+/// A 40 x 20 mm rectangle from the root point, held by horizontal and
+/// vertical constraints and its two lengths, with its bottom also parallel
+/// to its side: a constraint FreeCAD's solution does not meet. It comes in
+/// inactive and the report names it; the other constraints stay and the
+/// lengths keep driving.
+#[test]
+fn a_constraint_freecad_s_solution_does_not_meet_comes_in_inactive() {
+    let p = [[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]];
+    let profile = format!(
+        "{}{}",
+        geometry(&[
+            segment(p[0], p[1], false),
+            segment(p[1], p[2], false),
+            segment(p[2], p[3], false),
+            segment(p[3], p[0], false),
+        ]),
+        constraints(&[
+            constrain(1, 0.0, &[(0, 2), (1, 1)], "", true),
+            constrain(1, 0.0, &[(1, 2), (2, 1)], "", true),
+            constrain(1, 0.0, &[(2, 2), (3, 1)], "", true),
+            constrain(1, 0.0, &[(3, 2), (0, 1)], "", true),
+            constrain(1, 0.0, &[(0, 1), (-1, 1)], "", true),
+            constrain(2, 0.0, &[(0, 0)], "", true),
+            constrain(3, 0.0, &[(1, 0)], "", true),
+            constrain(2, 0.0, &[(2, 0)], "", true),
+            constrain(3, 0.0, &[(3, 0)], "", true),
+            constrain(6, 40.0, &[(0, 0)], "width", true),
+            constrain(6, 20.0, &[(1, 0)], "height", true),
+            // The bottom parallel to the side.
+            constrain(4, 0.0, &[(0, 0), (1, 0)], "", true),
+        ])
+    );
+    let xml = document(&[("Sketcher::SketchObject", "Profile", profile)]);
+    let (doc, report) = import_with(
+        fcstd(&xml, None, &[]),
+        Vec::new(),
+        MockKernel::default(),
+        false,
+    );
+    let s = &report.sketches[0];
+    assert_eq!(s.outcome, ObjectOutcome::Partial, "{s:?}");
+    assert!(s.error < 1e-9, "{s:?}");
+    assert!(
+        s.notes
+            .iter()
+            .any(|n| n.starts_with("1 constraint inactive, not met in the file: parallel k")),
+        "{:?}",
+        s.notes
+    );
+    let def = sketch_def(&doc, &report, "Profile");
+    let constraints = def["constraints"].as_array().unwrap();
+    let inactive: Vec<&serde_json::Value> = constraints
+        .iter()
+        .filter(|c| c["active"] == false)
+        .collect();
+    assert_eq!(inactive.len(), 1, "{def}");
+    assert_eq!(inactive[0]["type"], "parallel", "{def}");
+    assert_eq!(constraints.len(), 5, "{def}");
+    // The lengths are active and driving.
+    let dims = def["dimensions"].as_array().unwrap();
+    assert_eq!(dims.len(), 2, "{def}");
+    for d in dims {
+        assert!(
+            d.get("active").is_none() && d.get("driven").is_none(),
+            "{d}"
+        );
+    }
+    let uid = s.feature.as_deref().unwrap();
+    let sketch: serde_json::Value = serde_json::from_str(
+        &doc.query(&format!(r#"{{"query": "sketch", "uid": "{uid}"}}"#))
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(sketch["error"].is_null(), "{sketch}");
+    assert_eq!(sketch["dof"], 0, "{sketch}");
 }

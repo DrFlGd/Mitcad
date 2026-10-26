@@ -5,7 +5,6 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
@@ -107,8 +106,13 @@ QString agentPath(const QString& given, const QStringList& suffixes, bool design
   reason.clear();
   const QStringList folders = agentFolders();
   if (folders.isEmpty()) {
-    reason = QObject::tr("No folder is allowed for agents: the user can add one in Preferences › Agents, or start "
-                         "Mitcad with --mcp-folder DIR.");
+    // The window as the platform names it (tools.preferences); the
+    // command-line option is in docs/mcp.md only.
+#ifdef Q_OS_MACOS
+    reason = QObject::tr("No folder for designs is allowed: add one in Settings › AI Assistants.");
+#else
+    reason = QObject::tr("No folder for designs is allowed: add one in Preferences › AI Assistants.");
+#endif
     return QString();
   }
   const QString text = QDir::fromNativeSeparators(given.trimmed());
@@ -129,7 +133,7 @@ QString agentPath(const QString& given, const QStringList& suffixes, bool design
     reason = QObject::tr("The folder %1 does not exist.").arg(QDir::toNativeSeparators(info.absolutePath()));
     return QString();
   }
-  const QString outside = QObject::tr("%1 is not in a folder agents may use (%2).")
+  const QString outside = QObject::tr("%1 is not in a folder for designs (%2).")
                               .arg(QDir::toNativeSeparators(info.absoluteFilePath()),
                                    QDir::toNativeSeparators(folders.join(QStringLiteral(", "))));
   if (!insideAny(folder, folders)) {
@@ -178,7 +182,7 @@ AgentPreferencesBox::AgentPreferencesBox(QWidget* parent)
 #ifdef Q_OS_MACOS
     : QWidget(parent)
 #else
-    : QGroupBox(tr("Agents"), parent)
+    : QGroupBox(tr("AI Assistants"), parent)
 #endif
 {
   auto* layout = new QVBoxLayout(this);
@@ -186,60 +190,46 @@ AgentPreferencesBox::AgentPreferencesBox(QWidget* parent)
   connectAssistant->setObjectName(QStringLiteral("connectAssistant"));
   connectAssistant->setAutoDefault(false);
   connect(connectAssistant, &QPushButton::clicked, this, &AgentPreferencesBox::connectRequested);
-  layout->addWidget(connectAssistant);
-  auto* intro = new QLabel(tr("Connect a local assistant to the open design. It may save the design to, and open designs from, only these folders "
-                              "(and their subfolders); with none, it can only save a design that already has a "
-                              "file."));
-  intro->setWordWrap(true);
-  layout->addWidget(intro);
+  // Its natural width, as the other pages' buttons.
+  layout->addWidget(connectAssistant, 0, Qt::AlignLeft);
+  // The list's name, as the Connect AI Assistant dialog's folder line.
+  auto* title = new QLabel(tr("Folders for designs"));
+  layout->addWidget(title);
   m_folders = new QListWidget;
   m_folders->setObjectName(QStringLiteral("agentFolders"));
+  // Named also while it is empty.
+  m_folders->setAccessibleName(tr("Folders for designs"));
+  title->setBuddy(m_folders);
   m_folders->setSelectionMode(QAbstractItemView::ExtendedSelection);
   m_folders->setMinimumHeight(90);
   for (const QString& folder : savedAgentFolders()) {
     m_folders->addItem(QDir::toNativeSeparators(folder));
   }
-  layout->addWidget(m_folders);
+  // The list takes the page's height.
+  layout->addWidget(m_folders, 1);
   mac::stylePreview(m_folders);
-  auto* row = new QHBoxLayout;
-  m_typed = new QLineEdit;
-  m_typed->setObjectName(QStringLiteral("agentFolder"));
-  m_typed->setPlaceholderText(tr("A folder for agents"));
-  m_typed->setToolTip(tr("Add, or OK, adds the folder typed here"));
-  auto* add = new QPushButton(tr("Add"));
-  add->setToolTip(tr("Adds the typed folder"));
-  auto* choose = new QPushButton(tr("Choose…"));
-  choose->setToolTip(tr("Chooses a folder to add"));
+  // Add… chooses a folder, Remove takes the selected ones off the list.
+  auto* add = new QPushButton(tr("Add…"));
+  add->setObjectName(QStringLiteral("agentFolderAdd"));
+  add->setToolTip(tr("Chooses a folder to add"));
   m_remove = new QPushButton(tr("Remove"));
   m_remove->setToolTip(tr("Removes the selected folders from the list (the files stay)"));
   m_remove->setEnabled(false);
-  for (QPushButton* button : {add, choose, m_remove}) {
+  for (QPushButton* button : {add, m_remove}) {
     button->setAutoDefault(false);
   }
-#ifdef Q_OS_MACOS
   auto* controls = new QHBoxLayout;
+#ifdef Q_OS_MACOS
   controls->setSpacing(0);
+#endif
   controls->addWidget(add);
   controls->addWidget(m_remove);
   controls->addStretch(1);
-  layout->addLayout(controls);
-#else
-  row->addWidget(add);
-#endif
-  row->insertWidget(0, m_typed, 1);
-  row->addWidget(choose);
-#ifndef Q_OS_MACOS
-  row->addWidget(m_remove);
-#endif
   mac::styleListButtons(add, m_remove);
-  layout->addLayout(row);
+  layout->addLayout(controls);
 
   connect(add, &QPushButton::clicked, this, [this] {
-    addFolder(m_typed->text());
-    m_typed->clear();
-  });
-  connect(choose, &QPushButton::clicked, this, [this] {
-    const QString folder = dialogDirectory(this, tr("Folder for Agents"));
+    const QString folder = dialogDirectory(this, tr("Folder for Designs"));
     if (!folder.isEmpty()) {
       addFolder(folder);
     }
@@ -279,7 +269,6 @@ QStringList AgentPreferencesBox::chosen() const {
   for (int i = 0; i < m_folders->count(); ++i) {
     addClean(folders, m_folders->item(i)->text());
   }
-  addClean(folders, m_typed->text());
   return folders;
 }
 

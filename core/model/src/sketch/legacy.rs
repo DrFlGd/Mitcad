@@ -198,10 +198,7 @@ pub fn convert<P>(shapes: Vec<LegacyShape<P>>, size: &dyn Fn(&P) -> Option<f64>)
                     } else {
                         ConstraintKind::Vertical { line: *line }
                     };
-                    out.constraints.push(Constraint {
-                        id: constraint_id(),
-                        kind,
-                    });
+                    out.constraints.push(Constraint::new(constraint_id(), kind));
                 }
                 for (line, value) in [(curves[0], width), (curves[1], height)] {
                     out.dimensions.push(Dimension {
@@ -210,6 +207,8 @@ pub fn convert<P>(shapes: Vec<LegacyShape<P>>, size: &dyn Fn(&P) -> Option<f64>)
                         value: Some(value),
                         reference: None,
                         text: None,
+                        active: true,
+                        inactive_reason: None,
                     });
                 }
             }
@@ -238,6 +237,8 @@ pub fn convert<P>(shapes: Vec<LegacyShape<P>>, size: &dyn Fn(&P) -> Option<f64>)
                     value: Some(diameter),
                     reference: None,
                     text: None,
+                    active: true,
+                    inactive_reason: None,
                 });
             }
         }

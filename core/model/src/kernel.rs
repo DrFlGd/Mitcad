@@ -1632,6 +1632,49 @@ pub trait Kernel {
     fn solid_count(&self, _shape: &Self::Shape) -> Result<usize, KernelError> {
         Err(KernelError::Unsupported("solid counts"))
     }
+
+    // Boxes of single faces and edges (the `faces` and `edges` queries'
+    // geometry, mitcad#714).
+
+    /// The tight axis-aligned box of each face at these indices of the
+    /// shape's face order ([`Kernel::faces`]), as [`Kernel::bounding_box`]
+    /// measures a body; None for a face without geometry.
+    fn face_bounding_boxes(
+        &self,
+        _shape: &Self::Shape,
+        _faces: &[usize],
+    ) -> Result<Vec<Option<BoundingBox>>, KernelError> {
+        Err(KernelError::Unsupported("face bounding boxes"))
+    }
+
+    /// The same of the edges at these indices of [`Kernel::edges`]' order;
+    /// None for a degenerate edge.
+    fn edge_bounding_boxes(
+        &self,
+        _shape: &Self::Shape,
+        _edges: &[usize],
+    ) -> Result<Vec<Option<BoundingBox>>, KernelError> {
+        Err(KernelError::Unsupported("edge bounding boxes"))
+    }
+
+    // The extended tool of a split or trim, for its preview (mitcad#712;
+    // `features::face_refs::extended_tools`).
+
+    /// The faces [`Kernel::split_body`], [`Kernel::split_faces`] and
+    /// [`Kernel::trim_surface`] cut with when their targets lie in
+    /// `bounds`: a plane as a face across the box, a face grown along its
+    /// surface with `extend` (as those operations grow it, the same
+    /// construction), a body's faces, sketch curves swept through the box;
+    /// clipped to `bounds`. The tool's shapes are left as they are; an
+    /// error when nothing of the tool lies in the box.
+    fn extended_tool(
+        &self,
+        _tool: &ToolInput<'_, Self::Shape>,
+        _extend: bool,
+        _bounds: &BoundingBox,
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("extended tools"))
+    }
 }
 
 /// A conical face ([`Kernel::face_cone`], mitcad#473).

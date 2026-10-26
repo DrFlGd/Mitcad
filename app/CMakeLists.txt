@@ -503,7 +503,7 @@ target_sources(mitcad PRIVATE
   mcp/LiveErrors.hpp
   mcp/LogRing.cpp mcp/LogRing.hpp
   mcp/ModalGuard.cpp mcp/ModalGuard.hpp)
-# Live MCP's Save As and Open into the folders the user allows agents
+# Live MCP's Save As and Open into the folders for designs
 # (mitcad#402).
 target_sources(mitcad PRIVATE mcp/AgentFolders.cpp mcp/AgentFolders.hpp)
 target_sources(mitcad PRIVATE
@@ -511,6 +511,8 @@ target_sources(mitcad PRIVATE
   mcp/ConnectAssistantDialog.cpp mcp/ConnectAssistantDialog.hpp
   mcp/MainWindowAssistant.cpp
   framework/TestDriverAssistant.cpp)
+# The agent indicator beside the project indicator (mitcad#710).
+target_sources(mitcad PRIVATE mcp/AgentIndicator.cpp mcp/AgentIndicator.hpp)
 # The MCP Bundle contains this Qt-free launcher, which starts the installed
 # CLI directly so its own runtime paths remain valid after extraction.
 add_executable(mitcad-mcp-launcher mcp/AssistantLauncher.cpp)
@@ -524,7 +526,9 @@ endif()
 add_dependencies(mitcad mitcad-mcp-launcher)
 if(WIN32)
   target_sources(mitcad PRIVATE mcp/WindowsEndpointSecurity.cpp mcp/WindowsEndpointSecurity.hpp)
-  target_link_libraries(mitcad PRIVATE advapi32)
+  # shlwapi: whether an application takes Claude Desktop's extension files
+  # (ConnectAssistantDialog, mitcad#706).
+  target_link_libraries(mitcad PRIVATE advapi32 shlwapi)
 endif()
 set(MITCAD_UPDATE_KEY_FILE "${PROJECT_SOURCE_DIR}/packaging/update-key.txt" CACHE FILEPATH
     "The public Ed25519 keys of Mitcad's releases (lines of 64 hex digits)")
@@ -685,7 +689,7 @@ if(BUILD_TESTING)
   # triangulations wind (mitcad#319): OCCT's shapes and meshing.
   target_sources(test_app PRIVATE tests/render_mesh.cpp render/RenderMesh.cpp render/RenderMesh.hpp)
   target_link_libraries(test_app PRIVATE TKMesh)
-  # The folders live MCP agents may save to and open from (mitcad#402):
+  # The folders for designs, which live MCP agents save to and open from (mitcad#402):
   # plain Qt Core and Widgets.
   target_sources(test_app PRIVATE tests/agent_folders.cpp mcp/AgentFolders.cpp mcp/AgentFolders.hpp)
   # The file dialogs' folders per group (mitcad#498): plain Qt Core.
@@ -1222,6 +1226,25 @@ if(BUILD_TESTING)
   # The settings and the command they make: plain Qt Core.
   target_sources(test_app PRIVATE tests/drawing_settings.cpp files/DrawingSettings.cpp files/DrawingSettings.hpp)
 endif()
+# Drawings kept in the design (mitcad#707, app/COMMANDS.md "Drawings"): a
+# drawing opened over the 3D view, its sheet painted from the model's
+# drawing query, its tools as declarative definitions, the main window's
+# Create Drawing and open and close.
+target_sources(mitcad PRIVATE
+  drawings/DrawingSheetView.cpp
+  drawings/DrawingSheetView.hpp
+  drawings/DrawingTemplates.cpp
+  drawings/DrawingTemplates.hpp
+  drawings/DrawingTools.cpp
+  drawings/DrawingTools.hpp
+  drawings/DrawingWorkspace.cpp
+  drawings/DrawingWorkspace.hpp
+  drawings/MainWindowDrawings.cpp)
+if(BUILD_TESTING)
+  # The tools' definitions and the commands they make: plain Qt Core.
+  target_sources(test_app PRIVATE tests/drawing_tools.cpp drawings/DrawingTools.cpp drawings/DrawingTools.hpp
+                                  drawings/DrawingTemplates.cpp drawings/DrawingTemplates.hpp)
+endif()
 if(BUILD_TESTING)
   # The view's context menu (mitcad#494): which commands a selection
   # completes (first) and which need further picks (More), from the command
@@ -1514,6 +1537,14 @@ target_sources(mitcad PRIVATE
   print/OwnSettingsDialog.cpp
   print/OwnSettingsDialog.hpp
   view/BuildVolume.cpp)
+# My Library (mitcad#704): the panels of Materials and Printers and
+# Processes on the user's or the project's library, through a model of
+# its own.
+target_sources(mitcad PRIVATE
+  print/PrintItemsHost.cpp
+  print/PrintItemsHost.hpp
+  print/MyLibraryDialog.cpp
+  print/MyLibraryDialog.hpp)
 if(BUILD_TESTING)
   # The import's line and report (plain Qt Core); the key table's layout
   # and values, and the settings form's rows (Qt Widgets).
@@ -1522,6 +1553,12 @@ if(BUILD_TESTING)
                  print/PrintKeys.hpp print/SettingField.cpp print/SettingField.hpp print/SettingsForm.cpp
                  print/SettingsForm.hpp)
 endif()
+
+# Purge volumes on filament changes (mitcad#705): 3D Print's table of the
+# filament slots.
+target_sources(mitcad PRIVATE
+  print/PurgeVolumesDialog.cpp
+  print/PurgeVolumesDialog.hpp)
 
 # Placement by picked geometry (mitcad#656, app/COMMANDS.md "Placement by
 # picked geometry"): the placement input every part placed by a pick
@@ -1551,7 +1588,14 @@ target_sources(mitcad PRIVATE
   view/Snapshot.cpp
   view/SnapshotDialog.cpp
   view/SnapshotDialog.hpp
-  view/ViewSnapshot.cpp)
+  view/ViewSnapshot.cpp
+  # Annotations (mitcad#702): their window, editor and dialogs, and the
+  # view's clicks and drags on them.
+  MainWindowAnnotations.cpp
+  view/AnnotationDialogs.cpp
+  view/AnnotationDialogs.hpp
+  view/AnnotationsWindow.cpp
+  view/AnnotationsWindow.hpp)
 if(BUILD_TESTING)
   # The query's entries to dimensions, their layout through a projection and
   # at a picture's scale, painting, the values in words, a render camera's

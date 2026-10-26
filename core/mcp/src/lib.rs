@@ -14,6 +14,9 @@ mod changes;
 pub use changes::{
     SNAPSHOT_QUERIES, TimelineMode, command_document, entry_failed, evaluated_features, recomputed,
 };
+// The command reference in parts, errors that give the choices (mitcad#714).
+mod reference;
+pub use reference::{Vocabulary, missing_name, unknown_command, unknown_query};
 
 use serde_json::{Value, json};
 use std::io::{self, BufRead, Write};
@@ -41,6 +44,12 @@ pub struct ToolResult {
 pub trait Backend {
     /// An error here is a tool execution failure, rather than a protocol error.
     fn call(&mut self, name: &str, arguments: &Value) -> Result<ToolResult, String>;
+
+    /// The query, command and feature type names MCP permits, which
+    /// `model_reference` lists (mitcad#714); none by default.
+    fn vocabulary(&self) -> Vocabulary {
+        Vocabulary::default()
+    }
 }
 
 /// Read requests until EOF and flush one compact JSON response per line.
@@ -105,14 +114,17 @@ struct Session<B> {
     phase: Phase,
     backend: B,
     profile: Profile,
+    vocabulary: Vocabulary,
 }
 
 impl<B: Backend> Session<B> {
     fn new(backend: B) -> Self {
+        let vocabulary = backend.vocabulary();
         Self {
             phase: Phase::Uninitialized,
             backend,
             profile: Profile::Headless,
+            vocabulary,
         }
     }
 
@@ -124,8 +136,17 @@ impl<B: Backend> Session<B> {
                 name,
                 arguments,
             } => Some(match self.backend.call(&name, &arguments) {
-                Ok(result) => success(&id, tool_content(result.value, result.is_error)),
-                Err(message) => success(&id, tool_error(message)),
+                Ok(mut result) => {
+                    if result.is_error {
+                        explain_refusal(&name, &arguments, &mut result.value);
+                    }
+                    success(&id, tool_content(result.value, result.is_error))
+                }
+                Err(message) => {
+                    let mut value = json!({"error": message});
+                    explain_refusal(&name, &arguments, &mut value);
+                    success(&id, tool_content(value, true))
+                }
             }),
         };
         response.map(bounded_response)
@@ -286,10 +307,10 @@ impl<B: Backend> Session<B> {
         self.phase = Phase::AwaitingInitialized;
         let instructions = match self.profile {
             Profile::Headless => {
-                "Local headless CAD documents. Read mitcad://reference/commands for model operations. Use the explicit document handle on every call. Files are confined to the configured workspace. A model_command is one command object or an array of them run in order (stopping at the first refusal, which undoes the ones before it, or at the first failed feature); its result lists what it changed (timeline: full gives the whole timeline and bodies). Queries are single objects; lengths default to millimetres. Documents last until closed or the server exits."
+                "Local headless CAD documents. Look up commands, queries, feature types and their fields with model_reference: without arguments it gives the reference's contents and every name this server permits, then one section, query, command, feature type or search at a time (the resource mitcad://reference/commands is the whole reference, about 1 MB). Use the explicit document handle on every call. Files are confined to the configured workspace. A model_command is one command object or an array of them run in order (stopping at the first refusal, which undoes the ones before it, or at the first failed feature); its result lists what it changed (timeline: full gives the whole timeline and bodies). Queries are single objects. JSON numbers are millimetres and radians; write \"90 deg\" for degrees. Documents last until closed or the server exits."
             }
             Profile::Live => {
-                "Control the document already open in the Mitcad application, alongside its user. Call document_list to obtain its current handle; handles become invalid when the document is replaced. Read mitcad://reference/commands for model operations. A model_command is one command object or an array of them run in order as one undo step (stopping at the first refusal, which undoes the ones before it, or at the first failed feature); its result lists what it changed (timeline: full gives the whole timeline and bodies). Queries are single objects; lengths default to millimetres. Queries work at any time except while the model computes (the result then says busy and when to retry). While a sketch is open, its sketch.* commands go through the sketch session; other model commands wait until the sketch or command panel is finished, and editing is refused when the document is read-only. ui_state shows what the user sees (mode, selection, Sketch Palette warnings, messages), ui_log the application's log, ui_screenshot the view; ui_select points at entities, ui_command runs the application's commands by id, ui_camera reads or sets the view's camera (and frames a box, the shown bodies or the selection) for screenshots. document_save saves to the document's own path, or with path (Save As) into a folder the user allows agents to use; document_open opens a design from such a folder in place of the open document; document_list lists the allowed folders; model_export writes the bodies (3MF, STL, STEP, drawings, ...) to a new file in such a folder without changing the document, and ui_screenshot can write its image there too. Changes you make are labelled (agent) in the undo text and undo with Ctrl+Z. File imports and closing are not available through this connection. Disconnecting leaves the application's document open, including unsaved changes."
+                "Control the document already open in the Mitcad application, alongside its user. Call document_list to obtain its current handle; handles become invalid when the document is replaced. Look up commands, queries, feature types and their fields with model_reference: without arguments it gives the reference's contents and every name this server permits, then one section, query, command, feature type or search at a time (the resource mitcad://reference/commands is the whole reference, about 1 MB). A model_command is one command object or an array of them run in order as one undo step (stopping at the first refusal, which undoes the ones before it, or at the first failed feature); its result lists what it changed (timeline: full gives the whole timeline and bodies). Queries are single objects. JSON numbers are millimetres and radians; write \"90 deg\" for degrees. Queries work at any time except while the model computes (the result then says busy and when to retry). While a sketch is open, its sketch.* commands go through the sketch session; other model commands wait until the sketch or command panel is finished, and editing is refused when the document is read-only. ui_state shows what the user sees (mode, selection, Sketch Palette warnings, messages), ui_log the application's log, ui_screenshot the view; ui_select points at entities, ui_command runs the application's commands by id, ui_camera reads or sets the view's camera (and frames a box, the shown bodies or the selection) for screenshots. document_save saves to the document's own path, or with path (Save As) into a folder the user allows agents to use; document_open opens a design from such a folder in place of the open document; document_list lists the allowed folders; model_export writes the bodies (3MF, STL, STEP, drawings, ...) to a new file in such a folder without changing the document, and ui_screenshot can write its image there too. Changes you make are labelled (agent) in the undo text and undo with Ctrl+Z. File imports and closing are not available through this connection. Disconnecting leaves the application's document open, including unsaved changes."
             }
         };
         success(
@@ -329,6 +350,14 @@ impl<B: Backend> Session<B> {
         if let Err(message) = catalog::validate(arguments, &tool["inputSchema"], "arguments") {
             return Dispatch::response(error(Some(id), -32602, &message));
         }
+        // The reference is the protocol's own, in both servers (mitcad#714).
+        if name == "model_reference" {
+            let content = match reference::answer(arguments, &self.vocabulary) {
+                Ok(answer) => tool_content(answer, false),
+                Err(message) => tool_error(message),
+            };
+            return Dispatch::response(success(id, content));
+        }
         Dispatch::Tool {
             id: id.clone(),
             name: name.to_owned(),
@@ -350,6 +379,14 @@ fn mcp_defaults(name: &str, arguments: &Value) -> Value {
         query.insert("triangles".to_owned(), json!(false));
     }
     arguments
+}
+
+/// A refused `model_command` that misses fields gets the reference of its
+/// feature type or command (mitcad#714).
+fn explain_refusal(name: &str, arguments: &Value, value: &mut Value) {
+    if name == "model_command" {
+        reference::explain_refusal(arguments, value);
+    }
 }
 
 struct DeferredBackend;
@@ -385,8 +422,9 @@ impl PreparedMessage {
 /// The application retains ownership and executes tools on its model worker.
 pub struct LiveSession {
     session: Session<DeferredBackend>,
-    /// The request ID and the tool of the call being completed.
-    pending: Option<(Value, String)>,
+    /// The request ID, the tool and the arguments of the call being
+    /// completed.
+    pending: Option<(Value, String, Value)>,
 }
 
 impl Default for LiveSession {
@@ -397,8 +435,14 @@ impl Default for LiveSession {
 
 impl LiveSession {
     pub fn new() -> Self {
+        Self::with_vocabulary(Vocabulary::default())
+    }
+
+    /// A session whose `model_reference` lists these names (mitcad#714).
+    pub fn with_vocabulary(vocabulary: Vocabulary) -> Self {
         let mut session = Session::new(DeferredBackend);
         session.profile = Profile::Live;
+        session.vocabulary = vocabulary;
         Self {
             session,
             pending: None,
@@ -441,7 +485,7 @@ impl LiveSession {
                 name,
                 arguments,
             } => {
-                self.pending = Some((id, name.clone()));
+                self.pending = Some((id, name.clone(), arguments.clone()));
                 PreparedMessage::Tool { name, arguments }
             }
         })
@@ -451,13 +495,16 @@ impl LiveSession {
     /// `is_error` is the application's refusal; an applied model command
     /// is an error only by [`command_outcome`].
     pub fn finish(&mut self, mut value: Value, is_error: bool) -> Result<Value, String> {
-        let (id, name) = self
+        let (id, name, arguments) = self
             .pending
             .take()
             .ok_or_else(|| "no live MCP tool call is pending".to_owned())?;
         let is_error = if !is_error && name == "model_command" && value.is_object() {
             command_outcome(&mut value)
         } else {
+            if is_error {
+                explain_refusal(&name, &arguments, &mut value);
+            }
             is_error
         };
         let content = if name == "ui_screenshot" && !is_error {
@@ -624,5 +671,7 @@ fn bounded_response(response: Value) -> Value {
     }
 }
 
+#[cfg(test)]
+mod reference_tests;
 #[cfg(test)]
 mod tests;

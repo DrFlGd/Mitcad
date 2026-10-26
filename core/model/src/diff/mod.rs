@@ -314,8 +314,12 @@ pub struct DesignDiff {
     pub materials: Vec<ItemChange>,
     /// The document's printer and process profiles (mitcad#640), by id.
     pub print_profiles: Vec<ItemChange>,
-    /// Measurement objects (mitcad#649), by name.
-    pub measurements: Vec<ItemChange>,
+    /// Annotations (mitcad#702; the measurement objects of mitcad#649), by
+    /// name.
+    pub annotations: Vec<ItemChange>,
+    /// Drawings of the root and the components (mitcad#707), by id: their
+    /// sheets and views.
+    pub drawings: Vec<ItemChange>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometry: Option<GeometryDiff>,
 }
@@ -359,7 +363,8 @@ pub fn diff_states(from: &DocState, to: &DocState) -> DesignDiff {
         flat_patterns: flat_pattern_changes(from, to),
         materials: material_changes(from, to),
         print_profiles: print_profile_changes(from, to),
-        measurements: measurement_changes(from, to),
+        annotations: annotation_changes(from, to),
+        drawings: drawing_changes(from, to),
         ..DesignDiff::default()
     };
     diff.finish();
@@ -437,7 +442,8 @@ impl DesignDiff {
             && self.flat_patterns.is_empty()
             && self.materials.is_empty()
             && self.print_profiles.is_empty()
-            && self.measurements.is_empty()
+            && self.annotations.is_empty()
+            && self.drawings.is_empty()
             && self
                 .geometry
                 .as_ref()
@@ -1471,7 +1477,8 @@ fn body_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
                 let value = json!({"name": name, "visible": attributes.visible,
                                    "material": attributes.material,
                                    "appearance": attributes.appearance,
-                                   "face_appearances": attributes.face_appearances});
+                                   "face_appearances": attributes.face_appearances,
+                                   "print_bed_face": attributes.print_bed_face});
                 (uid, name, value)
             })
             .collect()
@@ -1530,15 +1537,15 @@ fn analysis_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
     item_changes(list(a), list(b), false, &|_, _| {})
 }
 
-/// Measurement objects (mitcad#649) by name: their kind, colour, light
-/// bulb and picks.
-fn measurement_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
+/// Annotations (mitcad#702) by name: their kind, colour, light bulb,
+/// group, picks, places, format and tolerance.
+fn annotation_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
     let list = |state: &DocState| -> Vec<(String, String, Value)> {
         state
-            .measurements
+            .annotations
             .iter()
             .map(|measurement| {
-                let mut value = serde_json::to_value(measurement).expect("measurements serialize");
+                let mut value = serde_json::to_value(measurement).expect("annotations serialize");
                 if let Value::Object(fields) = &mut value {
                     fields.remove("name");
                 }
@@ -1547,6 +1554,25 @@ fn measurement_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
             .collect()
     };
     item_changes(list(a), list(b), false, &|_, _| {})
+}
+
+/// Drawings (mitcad#707) by id: their name, component, sheets and views,
+/// field by field (`sheets[0].views[1].place`).
+fn drawing_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
+    let list = |state: &DocState| -> Vec<(String, String, Value)> {
+        state
+            .drawings
+            .iter()
+            .map(|drawing| {
+                let mut value = serde_json::to_value(drawing).expect("drawings serialize");
+                if let Value::Object(fields) = &mut value {
+                    fields.remove("uid");
+                }
+                (drawing.uid.to_string(), drawing.name.clone(), value)
+            })
+            .collect()
+    };
+    item_changes(list(a), list(b), true, &|_, _| {})
 }
 
 fn appearance_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {

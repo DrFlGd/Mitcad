@@ -30,16 +30,17 @@ use crate::params::ParamMap;
 
 pub(crate) mod edges;
 mod groups;
+// Inactive constraints and dimensions (mitcad#721).
+pub(crate) mod inactive;
 
 /// What a sketch translates to, without its plane.
 #[derive(Debug, Default)]
 pub struct SketchParts {
     pub entities: Vec<Value>,
     pub constraints: Vec<Value>,
-    /// Dimensions as driving ones (with values).
+    /// Dimensions as the file has them: driving ones with values, driven
+    /// ones driven.
     pub dimensions: Vec<Value>,
-    /// The same dimensions, all driven.
-    pub driven_dimensions: Vec<Value>,
     pub texts: Vec<Value>,
     /// The file's texts that were translated: their index among the
     /// file's texts, the Mitcad id (`t12`) and the string (mitcad#664).
@@ -253,7 +254,7 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
                 .and_then(|v| groups::concentric_dimension(d, &mut sk, v))
                 .map(|g| added.append(g))
                 .map_err(|e| format!("{kind}: {e}")),
-            _ => dimension(d, &ids, params, &sk.entities, sk.at).map(|pair| dimensions.push(pair)),
+            _ => dimension(d, &ids, params, &sk.entities, sk.at).map(|v| dimensions.push(v)),
         };
         if let Err(reason) = result {
             dropped.push(format!("{}: {reason}", d.id.as_deref().unwrap_or("?")));
@@ -265,10 +266,8 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
     parts.constraints = constraints;
     parts.constraints.extend(added.constraints);
     parts.entities.extend(added.entities);
-    for (driving, driven) in dimensions.into_iter().chain(added.dimensions) {
-        parts.dimensions.push(driving);
-        parts.driven_dimensions.push(driven);
-    }
+    parts.dimensions = dimensions;
+    parts.dimensions.extend(added.dimensions);
     parts.new_params = added.params;
     // Constraint, dimension, pattern and offset ids share one space.
     for (i, item) in parts
@@ -278,10 +277,6 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
         .enumerate()
     {
         item["id"] = json!(format!("k{}", i + 1));
-    }
-    let first_dimension = parts.constraints.len();
-    for (i, item) in parts.driven_dimensions.iter_mut().enumerate() {
-        item["id"] = json!(format!("k{}", first_dimension + i + 1));
     }
     let first_record = parts.constraints.len() + parts.dimensions.len();
     parts.patterns = added.patterns;
@@ -836,14 +831,14 @@ fn constraint(
     Ok(Some(value))
 }
 
-/// The driving and the driven form of a dimension.
+/// A dimension as the file has it: driving with its value, or driven.
 fn dimension(
     d: &SketchDimension,
     ids: &Ids,
     params: &ParamMap,
     entities: &HashMap<String, &Value>,
     at: &HashMap<u32, [f64; 2]>,
-) -> Result<(Value, Value), String> {
+) -> Result<Value, String> {
     let Some(kind) = d.dimension_type.as_deref() else {
         return Err("dimension type not decoded".to_owned());
     };
@@ -968,13 +963,6 @@ fn dimension(
     if let Some(t) = d.text_position {
         value["text"] = json!(xy(t));
     }
-    let mut driven = value.clone();
-    driven["driven"] = json!(true);
-    // The file's parameter of a driven dimension is its reference
-    // (mitcad#250), not a parameter of its own.
-    if let Some(name) = driven_parameter(d, params) {
-        driven["reference"] = json!(name);
-    }
     match driving_value(d, kind, params)? {
         Some(v) => {
             // An ellipse's dimension that holds the whole axis: its radius
@@ -986,9 +974,16 @@ fn dimension(
                 (false, v) => v,
             }
         }
-        None => value = driven.clone(),
+        None => {
+            value["driven"] = json!(true);
+            // The file's parameter of a driven dimension is its reference
+            // (mitcad#250), not a parameter of its own.
+            if let Some(name) = driven_parameter(d, params) {
+                value["reference"] = json!(name);
+            }
+        }
     }
-    Ok((value, driven))
+    Ok(value)
 }
 
 /// The side of an angle dimension between the lines `a` and `b`

@@ -9,7 +9,6 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QLabel>
-#include <QLineEdit>
 #include <QListWidget>
 #include <QPainter>
 #include <QPushButton>
@@ -189,59 +188,44 @@ FontPreferencesBox::FontPreferencesBox(QWidget* parent)
     : QGroupBox(tr("Fonts"), parent) {
 #endif
   auto* layout = new QVBoxLayout(this);
-  auto* intro = new QLabel(tr("Edit Text offers the fonts in these folders (and their subfolders) beside the "
-                              "installed ones: TrueType and OpenType files (.ttf, .otf, .ttc) and web fonts "
-                              "(.woff, .woff2). A text keeps its font file's outlines in the design, so the design "
-                              "looks the same where the file is not."));
-  intro->setWordWrap(true);
-  layout->addWidget(intro);
+  // The list's name, as AI Assistants' Folders for designs; the font files
+  // taken and what a design keeps are in the user guide (mitcad#732).
+  auto* title = new QLabel(tr("Font folders"));
+  layout->addWidget(title);
   m_folders = new QListWidget;
   m_folders->setObjectName(QStringLiteral("fontFolders"));
+  // Named also while it is empty.
+  m_folders->setAccessibleName(tr("Font folders"));
+  title->setBuddy(m_folders);
   m_folders->setSelectionMode(QAbstractItemView::ExtendedSelection);
   m_folders->setMinimumHeight(90);
   for (const QString& folder : savedFontFolders()) {
     m_folders->addItem(QDir::toNativeSeparators(folder));
   }
-  layout->addWidget(m_folders);
+  // The list takes the page's height.
+  layout->addWidget(m_folders, 1);
   mac::stylePreview(m_folders);
-  auto* row = new QHBoxLayout;
-  m_typed = new QLineEdit;
-  m_typed->setObjectName(QStringLiteral("fontFolder"));
-  m_typed->setPlaceholderText(tr("A folder of fonts"));
-  m_typed->setToolTip(tr("Add, or OK, adds the folder typed here"));
-  auto* add = new QPushButton(tr("Add"));
-  add->setToolTip(tr("Adds the typed folder"));
-  auto* choose = new QPushButton(tr("Choose…"));
-  choose->setToolTip(tr("Chooses a folder to add"));
+  // Add… chooses a folder, Remove takes the selected ones off the list.
+  m_add = new QPushButton(tr("Add…"));
+  m_add->setObjectName(QStringLiteral("fontFolderAdd"));
+  m_add->setToolTip(tr("Chooses a folder to add"));
   m_remove = new QPushButton(tr("Remove"));
   m_remove->setToolTip(tr("Removes the selected folders from the list (the files stay)"));
   m_remove->setEnabled(false);
-  for (QPushButton* button : {add, choose, m_remove}) {
+  for (QPushButton* button : {m_add, m_remove}) {
     button->setAutoDefault(false);
   }
-#ifdef Q_OS_MACOS
   auto* controls = new QHBoxLayout;
+#ifdef Q_OS_MACOS
   controls->setSpacing(0);
-  controls->addWidget(add);
+#endif
+  controls->addWidget(m_add);
   controls->addWidget(m_remove);
   controls->addStretch(1);
+  mac::styleListButtons(m_add, m_remove);
   layout->addLayout(controls);
-#else
-  row->addWidget(add);
-#endif
-  row->insertWidget(0, m_typed, 1);
-  row->addWidget(choose);
-#ifndef Q_OS_MACOS
-  row->addWidget(m_remove);
-#endif
-  mac::styleListButtons(add, m_remove);
-  layout->addLayout(row);
 
-  connect(add, &QPushButton::clicked, this, [this] {
-    addFolder(m_typed->text());
-    m_typed->clear();
-  });
-  connect(choose, &QPushButton::clicked, this, [this] {
+  connect(m_add, &QPushButton::clicked, this, [this] {
     const QString folder = dialogDirectory(this, tr("Font Folder"));
     if (!folder.isEmpty()) {
       addFolder(folder);
@@ -257,12 +241,12 @@ FontPreferencesBox::FontPreferencesBox(QWidget* parent)
 
 void FontPreferencesBox::showEvent(QShowEvent* event) {
   FontPreferencesBase::showEvent(event);
-  // Where the folder field is, in the main window's coordinates (UI tests).
+  // Where Add… is, in the main window's coordinates (UI tests).
   QTimer::singleShot(0, this, [this] {
     QWidget* main = window()->parentWidget() != nullptr ? window()->parentWidget()->window() : nullptr;
-    if (main != nullptr && m_typed->isVisible()) {
-      const QPoint at = m_typed->mapToGlobal(m_typed->rect().center()) - main->mapToGlobal(QPoint(0, 0));
-      qDebug().noquote() << QStringLiteral("Preferences font folder at %1,%2").arg(at.x()).arg(at.y());
+    if (main != nullptr && m_add->isVisible()) {
+      const QPoint at = m_add->mapToGlobal(m_add->rect().center()) - main->mapToGlobal(QPoint(0, 0));
+      qDebug().noquote() << QStringLiteral("Preferences font folder add at %1,%2").arg(at.x()).arg(at.y());
     }
   });
 }
@@ -288,10 +272,6 @@ QStringList FontPreferencesBox::chosen() const {
   QStringList folders;
   for (int i = 0; i < m_folders->count(); ++i) {
     folders << QDir::fromNativeSeparators(m_folders->item(i)->text());
-  }
-  const QString typed = m_typed->text().trimmed();
-  if (!typed.isEmpty() && !folders.contains(cleanFolder(typed))) {
-    folders << cleanFolder(typed);
   }
   return folders;
 }

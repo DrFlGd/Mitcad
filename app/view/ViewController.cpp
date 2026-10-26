@@ -221,11 +221,19 @@ const PreferencePage kPreferencePages[] = {
     {"diagnostics", QT_TRANSLATE_NOOP("View", "Diagnostics"), "debug log logging trace problem report"},
     // Texture folders for Edit Appearances (mitcad#315).
     {"textures", QT_TRANSLATE_NOOP("View", "Textures"), "texture folders maps materials appearance images"},
-    // The folders MCP agents may save to and open from (mitcad#402).
-    {"agents", QT_TRANSLATE_NOOP("View", "Agents"), "mcp agent ai folders save open connection"},
+    // The folders for designs, which AI assistants save to and open from
+    // (mitcad#402).
+    {"agents", QT_TRANSLATE_NOOP("View", "AI Assistants"), "mcp agent agents ai folders save open connection assistant assistants designs codex claude"},
     // Folders of font files for sketch text (mitcad#473).
     {"fonts", QT_TRANSLATE_NOOP("View", "Fonts"), "font folders text ttf otf woff typeface"},
 };
+
+// The pages whose folder list takes the page's height (mitcad#727,
+// mitcad#732); the others keep their natural height at the top.
+bool pageFills(const char* id) {
+  const QLatin1String page(id);
+  return page == QLatin1String("textures") || page == QLatin1String("agents") || page == QLatin1String("fonts");
+}
 
 QString onOff(bool on) { return on ? QStringLiteral("on") : QStringLiteral("off"); }
 
@@ -549,7 +557,12 @@ void ViewController::registerCommands() {
   add("view.export_snapshot", tr("Export Snapshot…"), "render-image", [this] { exportSnapshot(); },
       {QStringLiteral("snapshot"), QStringLiteral("screenshot"), QStringLiteral("image"), QStringLiteral("picture"),
        QStringLiteral("png"), QStringLiteral("measurement"), QStringLiteral("dimension")},
-      tr("Saves a large picture of the view with the shown measurements"));
+      tr("Saves a large picture of the view with the shown annotations"));
+  // The Annotations window (mitcad#702, MainWindowAnnotations.cpp).
+  add("view.annotations", tr("Annotations…"), "measure", [this] { m_host.openAnnotations(); },
+      {QStringLiteral("annotation"), QStringLiteral("dimension"), QStringLiteral("measurement"),
+       QStringLiteral("tolerance"), QStringLiteral("note"), QStringLiteral("leader"), QStringLiteral("fit")},
+      tr("Lists, filters and edits the dimensions and notes kept in the design"));
   add("view.named_view", tr("New Named View"), "named-view", [this] { saveNamedView(QString(), false); },
       {QStringLiteral("save view"), QStringLiteral("camera")}, tr("Saves the current view in the design"));
   add("view.set_home", tr("Set Current View as Home"), "home",
@@ -657,6 +670,7 @@ void ViewController::createMenus(QMenu* view, QMenu* tools, QMenu* help) {
   named->addAction(action(QStringLiteral("view.named_view")));
   named->addAction(action(QStringLiteral("view.set_home")));
   named->addAction(action(QStringLiteral("view.reset_home")));
+  view->addAction(action(QStringLiteral("view.annotations")));      // mitcad#702
   view->addAction(action(QStringLiteral("view.export_snapshot"))); // mitcad#649
   view->addSeparator();
   // PreferencesRole: "Settings..." (Cmd+,) in the application menu on macOS,
@@ -1364,7 +1378,7 @@ void ViewController::showPreferences(const QString& page) {
                                 .arg(fontFolders.isEmpty() ? QStringLiteral("none")
                                                            : fontFolders.join(QStringLiteral(", ")));
     }
-    // Folders for MCP agents (mitcad#402).
+    // Folders for designs (mitcad#402).
     const QStringList agentFolders = agentsBox->chosen();
     if (agentFolders != mcp::savedAgentFolders()) {
       mcp::saveAgentFolders(agentFolders);
@@ -1524,8 +1538,9 @@ void ViewController::showPreferences(const QString& page) {
       auto* content = new QWidget;
       auto* contentLayout = new QVBoxLayout(content);
       contentLayout->setContentsMargins(0, 0, 0, 0);
-      contentLayout->addWidget(group);
-      contentLayout->addStretch(1);
+      const bool fills = pageFills(entry.id);
+      contentLayout->addWidget(group, fills ? 1 : 0);
+      if (!fills) contentLayout->addStretch(1);
       QIcon icon;
       for (const PaneIcon& pane : kPaneIcons) {
         if (QLatin1String(pane.id) == QLatin1String(entry.id)) {
@@ -1586,8 +1601,9 @@ void ViewController::showPreferences(const QString& page) {
     auto* content = new QWidget;
     auto* contentLayout = new QVBoxLayout(content);
     contentLayout->setContentsMargins(0, 0, 0, 0);
-    contentLayout->addWidget(groups.value(QLatin1String(entry.id)));
-    contentLayout->addStretch(1);
+    const bool fills = pageFills(entry.id);
+    contentLayout->addWidget(groups.value(QLatin1String(entry.id)), fills ? 1 : 0);
+    if (!fills) contentLayout->addStretch(1);
     stack->addWidget(content);
     auto* item = new QListWidgetItem(QCoreApplication::translate("View", entry.name), pages);
     item->setData(Qt::UserRole, QLatin1String(entry.id));

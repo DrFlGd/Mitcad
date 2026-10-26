@@ -37,8 +37,8 @@ const TOL: f64 = 1e-5;
 pub(super) struct Group {
     pub entities: Vec<Value>,
     pub constraints: Vec<Value>,
-    /// (driving, driven).
-    pub dimensions: Vec<(Value, Value)>,
+    /// Driving with a value, or driven.
+    pub dimensions: Vec<Value>,
     pub patterns: Vec<Value>,
     pub offsets: Vec<Value>,
     /// Parameters to create before the sketch: (placeholder used in the
@@ -605,17 +605,15 @@ fn radius_gap(
         json!({"type": if horizontal { "horizontal" } else { "vertical" }, "line": line}),
         json!({"type": "coincident", "point": ca, "entity": line}),
     ]);
-    let mut driven = json!({"type": "length", "line": line});
+    let mut length = json!({"type": "length", "line": line});
     if let Some(t) = toward {
-        driven["text"] = json!(t);
+        length["text"] = json!(t);
     }
-    let mut driving = driven.clone();
-    driven["driven"] = json!(true);
     match value {
-        Some(v) => driving["value"] = v,
-        None => driving = driven.clone(),
+        Some(v) => length["value"] = v,
+        None => length["driven"] = json!(true),
     }
-    g.dimensions.push((driving, driven));
+    g.dimensions.push(length);
     Ok(())
 }
 
@@ -839,11 +837,9 @@ pub(super) fn offset(
         if s.entity(parent)?["type"] == "line" {
             g.constraints
                 .push(json!({"type": "parallel", "a": parent, "b": child}));
-            let driven = json!({"type": "line_distance", "a": parent, "b": child, "driven": true});
-            let mut driving = driven.clone();
-            driving.as_object_mut().expect("object").remove("driven");
-            driving["value"] = value.clone();
-            g.dimensions.push((driving, driven));
+            g.dimensions.push(json!({
+                "type": "line_distance", "a": parent, "b": child, "value": value.clone()
+            }));
         } else {
             radius_gap(s, parent, child, Some(value.clone()), None, &mut g)?;
         }

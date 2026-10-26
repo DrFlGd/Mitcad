@@ -806,8 +806,9 @@ pub(crate) struct Importer<'a, K: Kernel> {
     workers: Arc<std::sync::atomic::AtomicUsize>,
     /// What the learning dump keeps ([`Options::learn`]).
     learn: Option<learn::Store>,
-    /// Timeline index → the fillets and chamfers made for it, which
-    /// patterns and mirrors of the item repeat on their copies (mitcad#105).
+    /// Timeline index → the fillets and chamfers made for it (a tapped
+    /// hole's thread, mitcad#719), which patterns and mirrors of the item
+    /// repeat on their copies (mitcad#105).
     dressups: HashMap<i64, Vec<FeatureUid>>,
     /// What the timeline's notes of the import are made of (mitcad#170).
     notes: timeline_notes::Notes,
@@ -1048,6 +1049,42 @@ const IN_PARTS: &str = "the file keeps no result for it in its own component (it
 
 /// The note of an item whose definitions built, none to the file's result.
 const NOT_IN_HISTORY: &str = "its result is not in the file's history";
+
+/// Why [`Importer::try_state`] tried nothing: the item's own state could
+/// not be rebuilt ([`Target`]); the item is then taken unchecked.
+const TARGET_NOT_REBUILT: &str = "its state in the file's history could not be rebuilt";
+
+/// The solids of the history state an item made, asked for from the
+/// history only when the item first needs them (mitcad#701): when a
+/// candidate's result is compared against them, or before that where its
+/// translation, the bounds of its extrusions' prisms or its ranking reads
+/// the state. A large state without a base takes seconds to heal (a path
+/// pattern's own state of 8 191 faces, 6.7 s); asked for before the item's
+/// first definition was evaluated, the item waited for the healing on its
+/// ahead thread before evaluating anything. Asked for after it, the two
+/// overlap. The time building the state still takes is left out of the
+/// item's time ([`history::Oracle::watch`]), as when it was asked for
+/// before the item's time began.
+struct Target {
+    /// The state.
+    state: usize,
+    /// Its solids once asked for; None inside when it cannot be rebuilt.
+    sigs: std::cell::OnceCell<Option<Vec<Sig>>>,
+}
+
+impl Target {
+    fn new(state: usize) -> Self {
+        Self {
+            state,
+            sigs: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// Whether the state was asked for and could not be rebuilt.
+    fn not_rebuilt(&self) -> bool {
+        matches!(self.sigs.get(), Some(None))
+    }
+}
 
 /// Whether a definition's error says only that its result is not the
 /// file's (it built another, or nothing of it reached a body), not why.
@@ -3003,15 +3040,16 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             self.features.insert(index, first);
             self.adopt(index, first);
         }
-        // All of a fillet's features (one per tangent chain), for patterns
-        // and mirrors of it (mitcad#105).
+        // All of a fillet's features (one per tangent chain), and a tapped
+        // hole's thread (mitcad#719), for patterns and mirrors of it
+        // (mitcad#105).
         let dressups: Vec<FeatureUid> = uids
             .iter()
             .copied()
             .filter(|u| {
                 matches!(
                     self.doc.feature(*u).map(|f| &f.def),
-                    Some(FeatureDef::Fillet(_) | FeatureDef::Chamfer(_))
+                    Some(FeatureDef::Fillet(_) | FeatureDef::Chamfer(_) | FeatureDef::Thread(_))
                 )
             })
             .collect();
@@ -3790,20 +3828,19 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// item's own (`state`): whether one of its candidates gave `state`, in
     /// half the item's time. Else nothing is left of the try, and the item
     /// is tried as one whose state comes right after the one before.
+    /// (`target`: the solids of `state`, asked for when first needed.)
     fn tried_from_own_start(
         &mut self,
         at: usize,
         index: i64,
         item: &TimelineItem,
         own: usize,
-        state: usize,
+        target: &Target,
     ) -> bool {
         let name = item_name(item);
+        let state = target.state;
         let kernel = self.doc.kernel();
-        let (Some(expected), Some(target)) = (
-            self.oracle.try_sigs(kernel, own),
-            self.oracle.try_sigs(kernel, state),
-        ) else {
+        let Some(expected) = self.oracle.try_sigs(kernel, own) else {
             return false;
         };
         let Some((carried, _)) = history::bodies_distance(&expected, &self.current_sigs()) else {
@@ -3821,7 +3858,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             index,
             item,
             states,
-            &target,
+            target,
             Some(&expected),
             carried,
             budget,
@@ -3854,12 +3891,14 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         // of 8 000 faces took 6.6 s for nothing).
         let mut undecoded_from = None;
         self.untranslated = None;
+        // Its own state's solids, asked for when first needed (mitcad#701).
+        let target = Target::new(state);
         if let Some(own) = self
             .oracle
             .item_start(index)
             .filter(|&b| self.pending.is_empty() && self.oracle.cursor == Some(b) && b + 1 < state)
         {
-            if self.tried_from_own_start(at, index, item, own, state) {
+            if self.tried_from_own_start(at, index, item, own, &target) {
                 return;
             }
             if self.untranslated.as_deref().is_some_and(undecoded) {
@@ -3932,12 +3971,6 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         if start.is_some() {
             self.oracle.cursor = start;
         }
-        let kernel = self.doc.kernel();
-        let target = self.oracle.try_sigs(kernel, state);
-        let Some(target) = target else {
-            self.unchecked(at, index, item, state);
-            return;
-        };
         let budget = self.options.item_seconds;
         let fresh = self.give_up(index).is_none();
         // The state before it, for the volume it changes itself (and its
@@ -3960,6 +3993,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         let mut tried =
             self.try_state(at, index, item, states, &target, reference, carried, budget);
         self.defer_guesses = false;
+        // Its state could not be rebuilt: nothing of the try is left
+        // ([`Importer::try_state`]), and its definition is taken unchecked.
+        if target.not_rebuilt() {
+            self.unchecked(at, index, item, state);
+            return;
+        }
         // The bodies before it carry an earlier item's approximation, which
         // may keep it from matching: brought to the state before it exactly,
         // it is tried again (in half the time). So is a fillet or chamfer
@@ -4185,10 +4224,14 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     }
 
     /// The candidates of an item with a known state (`states.after`, whose
-    /// bodies are `target`) on the bodies as they are (`reference`: the
-    /// state's before it, `states.before`, when rebuilt; `carried`: how far
-    /// they are from it), for at most `budget` seconds: Ok when one gave the
-    /// state (and was accepted), else why none did.
+    /// bodies are `target`, asked for when first needed) on the bodies as
+    /// they are (`reference`: the state's before it, `states.before`, when
+    /// rebuilt; `carried`: how far they are from it), for at most `budget`
+    /// seconds: Ok when one gave the state (and was accepted), else why none
+    /// did. Where the state turns out not to rebuild, nothing of the try is
+    /// left (the document and what the try noted are as before it), and it
+    /// fails with [`TARGET_NOT_REBUILT`]: the item is then taken unchecked,
+    /// as when its state was asked for before its definitions (mitcad#701).
     #[allow(clippy::too_many_arguments)]
     fn try_state(
         &mut self,
@@ -4196,14 +4239,106 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         index: i64,
         item: &TimelineItem,
         states: geometric::States,
-        target: &[Sig],
+        target: &Target,
         reference: Option<&[Sig]>,
         carried: f64,
         budget: f64,
     ) -> Result<(), String> {
-        self.within(budget, |s| {
+        if target.not_rebuilt() {
+            return Err(TARGET_NOT_REBUILT.to_owned());
+        }
+        let depth = self.doc.undo_depth();
+        let defined = self.defined.contains(&index);
+        let untranslated = self.untranslated.clone();
+        let kernel_failed = self.kernel_failed;
+        let deviations = self.deviations.len();
+        self.oracle.watch(Some(target.state));
+        let tried = self.within(budget, |s| {
             s.try_state_in(at, index, item, states, target, reference, carried, budget)
-        })
+        });
+        // (Nothing was compared against it: whether it rebuilds.)
+        self.target_sigs(target);
+        self.oracle.watch(None);
+        if target.not_rebuilt() {
+            trace!(
+                "{}: its state {} could not be rebuilt; nothing of the try is kept",
+                item_name(item),
+                target.state
+            );
+            self.undo_to(depth);
+            if !defined {
+                self.defined.remove(&index);
+            }
+            self.untranslated = untranslated;
+            self.kernel_failed = kernel_failed;
+            self.deviations.truncate(deviations);
+            return Err(TARGET_NOT_REBUILT.to_owned());
+        }
+        tried
+    }
+
+    /// The solids of an item's own state ([`Target`]), asked for from the
+    /// history now where they were not yet; None when the state cannot be
+    /// rebuilt.
+    fn target_sigs<'t>(&mut self, target: &'t Target) -> Option<&'t [Sig]> {
+        target
+            .sigs
+            .get_or_init(|| {
+                let kernel = self.doc.kernel();
+                self.oracle.try_sigs(kernel, target.state)
+            })
+            .as_deref()
+    }
+
+    /// Leaves the time building the item's own state took since the last
+    /// call ([`history::Oracle::watch`]) out of the item's time: out of
+    /// `clock` and the item's deadline (mitcad#701).
+    fn leave_out_target_build(&mut self, clock: &mut learn::Clock) {
+        let spent = self.oracle.take_watched();
+        if spent.is_zero() {
+            return;
+        }
+        trace!(
+            "its state built in {:.2} s, left out of the item's time",
+            spent.as_secs_f64()
+        );
+        clock.leave_out(spent);
+        if let Some(deadline) = self.deadline.as_mut() {
+            *deadline += spent;
+        }
+    }
+
+    /// [`feasible`] against the item's own state ([`Target`]), which is
+    /// asked for only where a candidate's prism bounds its change; None when
+    /// the state cannot be rebuilt. (`now`: the solids of the bodies before
+    /// the item; `volumes`: the change the state asks for and the volume of
+    /// the bodies it keeps unchanged, once known.)
+    fn feasible_for(
+        &mut self,
+        name: &str,
+        candidates: Vec<Candidate>,
+        target: &Target,
+        now: &[Sig],
+        volumes: &mut Option<(f64, f64)>,
+    ) -> Option<Vec<Candidate>> {
+        if !candidates.iter().any(bounded) {
+            return Some(candidates);
+        }
+        let (change, mergeable) = match *volumes {
+            Some(v) => v,
+            None => {
+                let target = self.target_sigs(target)?;
+                let change = target.iter().map(|s| s.volume).sum::<f64>()
+                    - now.iter().map(|s| s.volume).sum::<f64>();
+                let mergeable: f64 = now
+                    .iter()
+                    .filter(|s| target.iter().any(|t| t.same(s)))
+                    .map(|s| s.volume)
+                    .sum();
+                *volumes.insert((change, mergeable))
+            }
+        };
+        Some(feasible(name, candidates, change, mergeable))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4213,7 +4348,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         index: i64,
         item: &TimelineItem,
         states: geometric::States,
-        target: &[Sig],
+        target_state: &Target,
         reference: Option<&[Sig]>,
         carried: f64,
         budget: f64,
@@ -4223,9 +4358,16 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         let mut last_error = String::from("no definition gave the file's result");
         self.untranslated = None;
         // The volume the item adds or removes must be the file's too, not
-        // only the bodies' measures (mitcad#121).
-        let own = reference.and_then(|r| history::Change::new(r, &self.current_sigs(), target));
-        let started = self.clock();
+        // only the bodies' measures (mitcad#121): from the bodies before it
+        // to its state, once that is asked for.
+        let start_sigs = self.current_sigs();
+        let mut own_change: Option<Option<history::Change>> = None;
+        let mut own_of_target = |target: &[Sig]| {
+            *own_change.get_or_insert_with(|| {
+                reference.and_then(|r| history::Change::new(r, &start_sigs, target))
+            })
+        };
+        let mut started = self.clock();
         // A fillet's or chamfer's edge guesses one history state at a time;
         // an extrusion's decoded profiles before the other sets of regions
         // (mitcad#181; all at once for the learning dump, which keeps every
@@ -4267,6 +4409,10 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             Some(Detail::Extrude(_)) if self.learn.is_none() && !later_copies => {
                 Some(Guesses::default())
             }
+            // A hole's guesses after its decoded definitions (mitcad#719).
+            Some(Detail::Hole(_)) if self.learn.is_none() && self.oracle.enabled => {
+                Some(Guesses::default())
+            }
             _ => None,
         };
         let clock = std::time::Instant::now();
@@ -4280,24 +4426,29 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         );
         // Extrusions whose prism holds less than the state adds or
         // removes (or that change the volume the other way) are not tried;
-        // they are left out before the likeliest are chosen.
+        // they are left out before the likeliest are chosen. (The state is
+        // asked for here only where such an extrusion is among them.)
         let now = self.current_sigs();
-        let change = target.iter().map(|s| s.volume).sum::<f64>()
-            - now.iter().map(|s| s.volume).sum::<f64>();
-        let mergeable: f64 = now
-            .iter()
-            .filter(|s| target.iter().any(|t| t.same(s)))
-            .map(|s| s.volume)
-            .sum();
-        let mut translated = translated.map(|c| feasible(&name, c, change, mergeable));
+        let mut volumes = None;
+        let mut translated = match translated {
+            Ok(c) => match self.feasible_for(&name, c, target_state, &now, &mut volumes) {
+                Some(c) => Ok(c),
+                None => return Err(TARGET_NOT_REBUILT.to_owned()),
+            },
+            Err(e) => Err(e),
+        };
         // (Decoded profiles that cannot make the change: the other sets.)
         while extrusion
             && matches!(&translated, Ok(c) if c.is_empty())
             && guesses.as_ref().is_some_and(|g| !g.done)
         {
-            translated = self
-                .translate_part(index, item, &mut guesses)
-                .map(|c| feasible(&name, c, change, mergeable));
+            translated = match self.translate_part(index, item, &mut guesses) {
+                Ok(c) => match self.feasible_for(&name, c, target_state, &now, &mut volumes) {
+                    Some(c) => Ok(c),
+                    None => return Err(TARGET_NOT_REBUILT.to_owned()),
+                },
+                Err(e) => Err(e),
+            };
         }
         let translated = translated.map(|c| self.rank(c, state));
         let translated = translated.map(|mut c| {
@@ -4306,6 +4457,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             }
             c
         });
+        // Where the translation, the prisms' bounds or the ranking built the
+        // item's state, not in the item's time.
+        self.leave_out_target_build(&mut started);
         match translated {
             Ok(c) if c.is_empty() => last_error = "nothing to try".to_owned(),
             Ok(mut candidates) => {
@@ -4375,11 +4529,21 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             // (An extrusion's other definitions: ranked as
                             // they would be among all, after the decoded.)
                             if extrusion {
-                                part = feasible(&name, part, change, mergeable);
+                                part = match self.feasible_for(
+                                    &name,
+                                    part,
+                                    target_state,
+                                    &now,
+                                    &mut volumes,
+                                ) {
+                                    Some(part) => part,
+                                    None => return Err(TARGET_NOT_REBUILT.to_owned()),
+                                };
                                 part = self.rank(part, state);
                             }
                             part.truncate(room);
                             candidates.extend(part);
+                            self.leave_out_target_build(&mut started);
                         }
                         if next == candidates.len() {
                             // The first round is over: those that gave way.
@@ -4483,6 +4647,17 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     let ran = evaluated
                         .ran
                         .unwrap_or_else(|| tried.elapsed().as_secs_f64());
+                    // The item's state, asked for once its first definition
+                    // was evaluated, whatever came of it (mitcad#701): its
+                    // building (or healing ahead) overlaps the evaluation,
+                    // and the definitions after it, with the workers that
+                    // evaluate them ahead, start as when it was asked for
+                    // first.
+                    let Some(target) = self.target_sigs(target_state) else {
+                        return Err(TARGET_NOT_REBUILT.to_owned());
+                    };
+                    self.leave_out_target_build(&mut started);
+                    let own = own_of_target(target);
                     match evaluated.result.clone() {
                         Ok(_) => {
                             combined.extend(same_result_combine(c));
@@ -4722,6 +4897,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 if let Some((k, _)) = loose
                     && !halts(&last_error)
                 {
+                    // (Asked for already: the match was loose.)
+                    let Some(target) = self.target_sigs(target_state) else {
+                        return Err(TARGET_NOT_REBUILT.to_owned());
+                    };
+                    let own = own_of_target(target);
                     let c = &candidates[k];
                     let inner = self.doc.undo_depth();
                     if let Ok(uids) = self.try_candidate(index, c, item.name()) {
@@ -4769,11 +4949,17 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 // definitions' bodies too: with those definitions (not when
                 // the item's time went to its definitions: each edit would
                 // evaluate the same long definition again, mitcad#181).
-                if !halts(&last_error)
-                    && !self.past_deadline()
-                    && self.with_other_profiles(at, index, item, &candidates, target, own, states)
-                {
-                    return Ok(());
+                // (The state is asked for here where no definition was
+                // evaluated.)
+                if !halts(&last_error) && !self.past_deadline() {
+                    let Some(target) = self.target_sigs(target_state) else {
+                        return Err(TARGET_NOT_REBUILT.to_owned());
+                    };
+                    self.leave_out_target_build(&mut started);
+                    let own = own_of_target(target);
+                    if self.with_other_profiles(at, index, item, &candidates, target, own, states) {
+                        return Ok(());
+                    }
                 }
                 // A decoded definition that failed is the item's cause where
                 // the definitions guessed after it only missed the state

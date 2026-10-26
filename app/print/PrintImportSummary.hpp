@@ -42,4 +42,8 @@ QStringList distinctProblems(const QStringList& problems);
 PrintImportSummary printImportSummary(const QString& file, const QString& into, const QJsonObject& result,
                                       const PrintKeyTable* keys = nullptr);
 
+// The file dialog's filter of Import from Slicer (3D Print, My Library;
+// mitcad#704): the files `import_print_profile` reads.
+QString slicerFileFilter();
+
 } // namespace mitcad

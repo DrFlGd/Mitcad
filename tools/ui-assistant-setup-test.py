@@ -55,7 +55,8 @@ def main():
                 if mode == "cli-concurrent": env["MITCAD_TEST_ASSISTANT_CONCURRENT"] = "1"
                 script = ["wait-idle", "expect-model-bodies 0 0", "command help.connect_assistant",
                     "focus-dialog '^Connect AI Assistant$'", "expect-assistant-setup codex",
-                    "expect-assistant-setup other", "expect-assistant-setup folder",
+                    "expect-assistant-setup other", "expect-assistant-setup disconnect-other",
+                    "expect-assistant-setup folder",
                     "expect-assistant-setup missing-claude", "expect-assistant-setup claude"]
                 if sys.platform in ("darwin", "win32"):
                     script.append("expect-assistant-setup bundle")

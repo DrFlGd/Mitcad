@@ -205,10 +205,10 @@ std::optional<QJsonObject> atOf(const QString& key, const CommandState& state, c
   const std::optional<QString> path = pathFromHost(item, context);
   if (!path) {
     // An origin or construction plane or point above the host (the root's
-    // origin planes while a new design's Part1 is the host, mitcad#421): the
-    // first part is grounded at the click, in the host's coordinates, as
-    // Enter grounds it at the origin. (A BUILD part to go on is always
-    // under the host.)
+    // origin planes while a new design's Component1 is the host,
+    // mitcad#421): the first part is grounded at the click, in the host's
+    // coordinates, as Enter grounds it at the origin. (A BUILD part to go
+    // on is always under the host.)
     if (item.kind == SelectKind::Plane || item.kind == SelectKind::Point) {
       if (const std::optional<gp_Pnt> point = pickPoint(key, state, context)) {
         return QJsonObject{{QStringLiteral("point"), pointJson(inHost(*point, context))}};

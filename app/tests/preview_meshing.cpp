@@ -282,10 +282,11 @@ int compare(bool holes, int samples) {
   const std::size_t bound = mitcad::kViewFaceTriangles;
   const Candidate candidates[] = {
       {"final: 0.01 mm, 5 deg", mitcad::viewMeshOptions()},
-      {"fast planes: 0.01 mm, 5 deg", mitcad::io::MeshOptions{0.01, 5 * degree, false, bound, true}},
-      {"0.02 mm, 10 deg", mitcad::io::MeshOptions{0.02, 10 * degree, false, bound, false}},
-      {"0.05 mm, 20 deg", mitcad::io::MeshOptions{0.05, 20 * degree, false, bound, false}},
-      {"fast planes: 0.02 mm, 10 deg", mitcad::io::MeshOptions{0.02, 10 * degree, false, bound, true}},
+      {"final before mitcad#644 (planes by the default)", mitcad::defaultPlaneMeshOptions()},
+      {"fast planes: 0.01 mm, 5 deg", mitcad::io::MeshOptions{0.01, 5 * degree, false, bound, true, false}},
+      {"0.02 mm, 10 deg", mitcad::io::MeshOptions{0.02, 10 * degree, false, bound, false, false}},
+      {"0.05 mm, 20 deg", mitcad::io::MeshOptions{0.05, 20 * degree, false, bound, false, false}},
+      {"fast planes: 0.02 mm, 10 deg", mitcad::io::MeshOptions{0.02, 10 * degree, false, bound, true, false}},
   };
   for (const Candidate& candidate : candidates) {
     std::vector<double> times;

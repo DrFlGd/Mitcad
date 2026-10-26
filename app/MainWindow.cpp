@@ -82,6 +82,7 @@
 #include "files/LiveController.hpp"
 #include "files/LockController.hpp"
 #include "files/ProjectIndicator.hpp"
+#include "mcp/AgentIndicator.hpp"
 #include "files/RemoteController.hpp"
 #include "projects/ProjectsPanel.hpp"
 #include "files/VersionDialogs.hpp"
@@ -134,6 +135,9 @@ namespace {
 
 const QString kFileSuffix = QStringLiteral("mitcad");
 const QColor kSelectionColor(0x1f, 0x7a, 0xff);
+// A body's print bed face shown while a face's context menu is open
+// (mitcad#731).
+const QColor kPrintBedColor(0x2e, 0xb8, 0x72);
 // Size of the planes and axes that stand for datums, mm.
 constexpr double kDatumSize = 100.0;
 const QStringList kOriginDatums = {QStringLiteral("xy"), QStringLiteral("xz"), QStringLiteral("yz"),
@@ -402,23 +406,29 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   // open design's version and its remote's state (P12 remote), with the
   // project's menu.
   m_indicator = new ProjectIndicator([this](const QString& id) { trigger(id); }, this);
+  // Beside it, the agents connected through live MCP (mitcad#710).
+  m_agentIndicator = new mcp::AgentIndicator({[this](const QString& id) { trigger(id); },
+                                              [this] { disconnectAllMcpAgents(); }},
+                                             this);
   createRemote();
   createLocks();
   if (m_nativeUi || chromeStyle() == ChromeStyle::Floating) {
     // No status bar: the view is the central widget of createPanels(),
     // messages go to a transient pill over it. The labels stay as the store
     // of the texts (the log), in a widget that is never shown; the project
-    // indicator goes to the title bar row (createPanels).
+    // and agent indicators go to the title bar row (createPanels).
     auto* store = new QWidget(this);
     store->setObjectName(QStringLiteral("hiddenStore"));
     store->hide();
-    for (QWidget* widget : std::initializer_list<QWidget*>{m_statusLabel, m_indicator, m_rendererLabel}) {
+    for (QWidget* widget :
+         std::initializer_list<QWidget*>{m_statusLabel, m_indicator, m_agentIndicator, m_rendererLabel}) {
       widget->setParent(store);
     }
   } else {
     setCentralWidget(m_viewer);
     statusBar()->addWidget(m_statusLabel, 1);
     statusBar()->addPermanentWidget(m_indicator);
+    statusBar()->addPermanentWidget(m_agentIndicator);
     statusBar()->addPermanentWidget(m_rendererLabel);
   }
   connect(m_viewer, &OcctViewer::glInitialized, this, [this](const QString& renderer) {
@@ -568,6 +578,7 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   } else if (auto* titleBar = findChild<TitleBar*>()) {
     // Beside the document's name in the title bar row.
     titleBar->setIndicator(m_indicator);
+    titleBar->setAgentIndicator(m_agentIndicator);
   }
   m_search = new CommandSearch(*m_registry, this);
   connect(m_search, &CommandSearch::chosen, this, &MainWindow::trigger, Qt::QueuedConnection);
@@ -996,6 +1007,18 @@ void MainWindow::registerCommands() {
   // One command for the Materials window (mitcad#655): Physical Material's
   // old id opens it too.
   m_registry->alias(QStringLiteral("solid.material"), QStringLiteral("solid.materials"));
+  // My Library (mitcad#704, print/MyLibraryDialog.cpp): the user's own
+  // materials, printers and processes without a design; it changes only
+  // the libraries, so also while a panel is open.
+  CommandDef myLibrary = action("tools.my_library", tr("My Library…"), "material", CommandDef::Mode::Any,
+                                [this] { m_controller->openMyLibrary(); });
+  myLibrary.tooltip = tr("Your own materials, printers and processes");
+  myLibrary.keywords = {QStringLiteral("material"), QStringLiteral("printer"),  QStringLiteral("process"),
+                        QStringLiteral("filament"), QStringLiteral("library"),  QStringLiteral("print"),
+                        QStringLiteral("slicer"),   QStringLiteral("profile"), QStringLiteral("import")};
+  myLibrary.duringCommands = true;
+  myLibrary.enabled = [this] { return m_controller != nullptr; };
+  m_registry->add(myLibrary);
 
   // The caches of computed results (P7d).
   CommandDef diagnostics = action("help.diagnostics", tr("Diagnostics…"), "measure", CommandDef::Mode::Any,
@@ -1080,6 +1103,8 @@ void MainWindow::createMenus() {
   QMenu* tools = menuBar()->addMenu(tr("&Tools"));
   tools->addAction(m_registry->action(QStringLiteral("tools.search")));
   tools->addAction(m_registry->action(QStringLiteral("tools.shortcuts")));
+  // The user's materials, printers and processes (mitcad#704).
+  tools->addAction(m_registry->action(QStringLiteral("tools.my_library")));
   // Component libraries (mitcad#64, mitcad#63).
   createLibraryMenu(tools);
 #ifdef Q_OS_MACOS
@@ -1088,7 +1113,6 @@ void MainWindow::createMenus() {
   QMenu* help = menuBar()->addMenu(tr("&Help"));
   m_viewController->createMenus(view, tools, help);
   help->addAction(m_registry->action(QStringLiteral("help.connect_assistant")));
-  m_indicator->setAgentActions({m_registry->action(QStringLiteral("help.connect_assistant"))});
   help->addAction(m_registry->action(QStringLiteral("help.diagnostics")));
   help->addAction(m_registry->action(QStringLiteral("help.open_log_folder")));
   help->addAction(m_registry->action(QStringLiteral("help.check_updates")));
@@ -1601,6 +1625,11 @@ void MainWindow::updateActions() {
     MainWindow* window;
     ~Reset() { window->m_queryMemo = nullptr; }
   } reset{this};
+  // A command of several contexts (Command Search, Undo) carries its key of
+  // the mode's context (mitcad#720), as isAvailable() enables the others.
+  m_registry->setShortcutContext(m_mode == Mode::Command  ? unsigned(CommandShortcutContext)
+                                 : m_mode == Mode::Sketch ? unsigned(SketchShortcutContext)
+                                                          : unsigned(ModelShortcutContext));
   m_registry->updateEnabled([this](const CommandDef& def) { return isAvailable(def); });
   // The card's Create row offers enabled commands only (mitcad#619).
   updateSelectionCreate();
@@ -1632,6 +1661,11 @@ void MainWindow::trigger(const QString& id) {
     m_reports->noteAction(QStringLiteral("command ") + id);
   }
   m_locks->activity();
+  // A command of the 3D view leads back to the model from a drawing
+  // (mitcad#707); the menus' commands (Undo, Save, Export) do not.
+  if (def->kind == CommandDef::Kind::Feature || !def->tab.isEmpty()) {
+    leaveDrawing();
+  }
   if (def->kind == CommandDef::Kind::Feature) {
     startFeatureCommand(*def);
   } else if (def->run) {
@@ -1644,6 +1678,8 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
   if (!readOnlyCommand(def) && refuseReadOnly(editUid.isEmpty() ? def.id : QStringLiteral("editing %1").arg(editUid))) {
     return;
   }
+  // A panel works in the 3D view: back from a drawing (mitcad#707).
+  leaveDrawing();
   if (m_mode == Mode::Sketch && def.mode == CommandDef::Mode::Model) {
     // A feature from sketch mode (Extrude): the sketch is finished first,
     // its selected profiles go to the feature.
@@ -1671,6 +1707,7 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
   const Selection preselection = editUid.isEmpty() && analysis.isEmpty() ? m_selection : Selection();
   setSelection({});
   m_placementNote.clear(); // what this command places, it says (mitcad#292)
+  endAnnotationPick(); // an annotation's pick waited for ends with it
   m_mode = Mode::Command;
   if (!m_commandInSketch && !editUid.isEmpty()) {
     // The sketches the edited feature uses are shown for its time
@@ -1801,6 +1838,7 @@ void MainWindow::editFeature(const QString& uid) {
   if (m_mode != Mode::Idle) {
     return;
   }
+  leaveDrawing(); // a feature is edited in the 3D view (mitcad#707)
   try {
     const QJsonObject feature =
         queryObject({{QStringLiteral("query"), QStringLiteral("feature")}, {QStringLiteral("uid"), uid}});
@@ -1960,6 +1998,9 @@ void MainWindow::cancel() {
     m_session->cancel();
     return;
   }
+  if (cancelAnnotationPick()) {
+    return; // an annotation's pick no longer waited for
+  }
   if (m_mode == Mode::PickPlane) {
     m_mode = Mode::Idle;
     inputActivated(SelectFilter());
@@ -1974,6 +2015,9 @@ void MainWindow::cancel() {
       setSelection({});
     }
     return;
+  }
+  if (escapeDrawing()) {
+    return; // an open drawing's Esc (mitcad#707)
   }
   setSelection({});
 }
@@ -2734,6 +2778,8 @@ void MainWindow::refreshScene() {
   followAnalyses();
   // The measurement objects shown, as dimensions over the view (mitcad#649).
   followMeasurements();
+  // The drawing open over the view follows the model (mitcad#707).
+  followDrawing();
   // The Origin folder and Isolate are the document's (P9).
   m_originShown = m_snapshot.originShown;
   m_isolation = m_snapshot.isolation;
@@ -3677,6 +3723,7 @@ void MainWindow::showStatus(const QString& message, bool error) {
 
 void MainWindow::createSketchOn(const SelectionItem& plane) {
   if (m_mode == Mode::Idle && isSketchPlane(plane)) {
+    leaveDrawing(); // mitcad#707
     // The design policy (mitcad#220): of the active component, and of the
     // plane's owner.
     QString refused = refreshSketchSupports();
@@ -3945,6 +3992,14 @@ void MainWindow::onPicked(const Selection& items, Qt::KeyboardModifiers modifier
     m_session->picked(items, modifiers, window);
     return;
   }
+  // An annotation's pick or plane picked again (its editor's Pick Again…).
+  if (m_annotationPick && m_mode == Mode::Idle) {
+    if (window) {
+      m_viewer->windowSelectionApplied();
+    }
+    annotationPicked(window ? Selection() : items);
+    return;
+  }
   if (m_mode == Mode::PickPlane) {
     qDebug().noquote() << QStringLiteral("Create Sketch picked %1").arg(summarize(items));
     for (const SelectionItem& item : items) {
@@ -4013,6 +4068,10 @@ void MainWindow::setSelection(const Selection& items) {
   const bool changed = items != m_selection;
   m_selection = items;
   if (changed) {
+    // A selection of the view's own takes an annotation's highlight
+    // away (the Annotations window highlights through
+    // highlightAnnotations, not here).
+    dropAnnotationHighlight();
     m_idleMeasurements.clear();
     m_locks->activity(); // a selection keeps the edit lock active (mitcad#89)
     QStringList names;
@@ -4029,6 +4088,10 @@ void MainWindow::setSelection(const Selection& items) {
 }
 
 void MainWindow::updateIdleView() {
+  // An annotation's pick waited for ends when a command or a sketch starts.
+  if (m_mode != Mode::Idle) {
+    m_annotationPick.reset();
+  }
   m_autoselect->setActive(m_mode == Mode::Idle);
   updateSelectionCreate();
   updateModeBanner();
@@ -4053,6 +4116,7 @@ void MainWindow::updateIdleView() {
     applySketchScope(drawing);
   } else {
     m_viewer->setPickFilter(idleFilter());
+    applyAnnotationPickFilter(); // an annotation's pick waited for
   }
   std::vector<HighlightDisplay> highlights;
   QStringList featureFaces; // "F4 1": a selected feature's faces (mitcad#28)
@@ -4085,6 +4149,14 @@ void MainWindow::updateIdleView() {
       highlights.push_back({item, itemShape(item), QColor(0x2f, 0x9b, 0xff)});
     }
   }
+  // A body's print bed face while a face's context menu is open
+  // (mitcad#731); it takes no clicks.
+  if (m_printBedShown.isValid()) {
+    HighlightDisplay shown{m_printBedShown, itemShape(m_printBedShown), kPrintBedColor};
+    shown.pickable = false;
+    shown.body = bodyShape(m_printBedShown.owner);
+    highlights.push_back(std::move(shown));
+  }
   QStringList hoverFaces;
   if (m_mode == Mode::Idle) for (const QString& uid : m_timelineHover) {
     const auto* feature = m_snapshot.feature(uid);
@@ -4112,6 +4184,8 @@ void MainWindow::updateIdleView() {
   // The selected joints' sides and frames, and the hovered joint row's
   // (mitcad#523).
   addJointHighlights(highlights);
+  // The picks of the annotations highlighted (mitcad#702).
+  addAnnotationHighlights(highlights);
   batch.reset();
   m_viewer->setHighlights(highlights);
   const QString logged = featureFaces.isEmpty() ? QStringLiteral("none") : featureFaces.join(QStringLiteral(", "));
@@ -4373,6 +4447,17 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
         if (m_sketch->selectionHasProjected()) {
           add(m_registry->action(QStringLiteral("sketch.convert_projected")));
         }
+        // Inactive constraints and dimensions (mitcad#721): Activate applies
+        // them where the sketch then solves; active ones can be set aside.
+        const QStringList inactive = m_sketch->selectedItems(false);
+        const QStringList active = m_sketch->selectedItems(true);
+        if (!inactive.isEmpty()) {
+          addCall(QStringLiteral("constraint"), tr("Activate"),
+                  [this, inactive] { m_sketch->setItemsActive(inactive, true); });
+        } else if (!active.isEmpty()) {
+          addCall(QStringLiteral("constraint"), tr("Deactivate"),
+                  [this, active] { m_sketch->setItemsActive(active, false); });
+        }
         if (m_selection.size() == 1 && m_selection.first().kind == SelectKind::SketchDimension) {
           const QString id = m_selection.first().name;
           addCall(QStringLiteral("dimension"), tr("Edit Dimension"), [this, id] { m_sketch->editDimension(id); });
@@ -4438,6 +4523,11 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
   add(m_registry->action(QStringLiteral("tools.search")));
   qDebug().noquote() << QStringLiteral("Context menu: %1").arg(entries.join(QStringLiteral(" | ")));
   execMenu(&menu, globalPosition);
+  // The print bed face shown while the menu was open (mitcad#731).
+  if (m_printBedShown.isValid()) {
+    m_printBedShown = SelectionItem();
+    updateIdleView();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4459,6 +4549,7 @@ void MainWindow::startSketch() {
   if (m_mode != Mode::Idle || refuseReadOnly(QStringLiteral("sketch.create"))) {
     return;
   }
+  leaveDrawing(); // a sketch is drawn in the 3D view (mitcad#707)
   // The active component's design policy (mitcad#220): one that takes no
   // sketches says so; nothing is redirected into another component.
   if (const QString refused = refreshSketchSupports(); !refused.isEmpty()) {
@@ -4476,6 +4567,7 @@ void MainWindow::startSketch() {
     createSketch(sketchPlaneFields(m_selection.first()));
     return;
   }
+  endAnnotationPick();
   m_mode = Mode::PickPlane;
   setSelection({});
   // The origin planes only while the design has no other component
@@ -4606,6 +4698,7 @@ QString MainWindow::featureError(const QString& uid) const {
 void MainWindow::enterSketch(const QString& uid, bool existing, const QString& picked) {
   m_sketchExisting = existing;
   m_mcpSketchEdited = false;
+  endAnnotationPick();
   m_mode = Mode::Sketch;
   updateModeBanner(); // no plane is waited for (mitcad#474)
   m_selection.clear();
@@ -4780,6 +4873,7 @@ void MainWindow::undo() {
   if (m_mode == Mode::Command || m_mode == Mode::PickPlane) {
     return;
   }
+  endAnnotationPick(); // the annotation it waits for may change or go
   if (m_mode == Mode::Sketch) {
     // What a tool has half drawn goes first.
     m_sketch->resetTool();
@@ -4808,6 +4902,7 @@ void MainWindow::redo() {
   if (m_mode == Mode::Command || m_mode == Mode::PickPlane) {
     return;
   }
+  endAnnotationPick();
   const QJsonObject before = bodyVolumes(*this);
   QJsonObject result;
   if (!runCommand({{QStringLiteral("cmd"), QStringLiteral("redo")}}, &result)) {
@@ -5498,6 +5593,9 @@ void MainWindow::resetCommandState() {
     inputActivated(SelectFilter());
     updateModeBanner();
   }
+  // An annotation's pick and highlight are the old document's.
+  endAnnotationPick();
+  dropAnnotationHighlight();
   m_selection.clear();
   m_section = QJsonValue();
 }

@@ -146,6 +146,15 @@ impl<K: Kernel> Document<K> {
                         material.origin = Some(origin.clone());
                         materials.push(state.put_material(material, appearance.as_ref(), false));
                     }
+                    // The project's purge table: its materials' pairs set by
+                    // hand (mitcad#705).
+                    for (from, to, volume) in imported.purge {
+                        if let (Some(from), Some(to)) = (materials.get(from), materials.get(to))
+                            && from != to
+                        {
+                            state.set_purge_override(from, to, Some(volume));
+                        }
+                    }
                     let root = PropertyOwner::Component(ComponentUid::ROOT);
                     if choose {
                         if let Some(id) = printers.first() {

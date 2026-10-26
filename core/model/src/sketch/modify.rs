@@ -376,6 +376,61 @@ impl SketchEdit<'_> {
         Ok(())
     }
 
+    /// Activates or deactivates constraints and dimensions (mitcad#721):
+    /// an inactive one stays in the sketch but the solve leaves it out.
+    /// `reason` says why one is deactivated (kept with it until it is
+    /// activated). Whether the sketch still solves with those activated is
+    /// for the command to check. An equal spacing takes its spacing
+    /// dimension with it either way, and activating a spacing dimension
+    /// activates its equal spacing, since the dimension applies only with
+    /// it (mitcad#723); deactivating the dimension alone leaves the equal
+    /// spacing. Returns the ids whose state changed.
+    pub fn set_active(
+        &mut self,
+        ids: &[ConstraintUid],
+        active: bool,
+        reason: Option<&str>,
+    ) -> Result<Vec<ConstraintUid>, String> {
+        let reason = reason.map(str::trim).filter(|r| !r.is_empty());
+        let mut all: Vec<ConstraintUid> = Vec::new();
+        for id in ids {
+            let spacing = self.def.dimensions.iter().find_map(|d| match d.kind {
+                DimensionKind::Spacing { constraint } if d.id == *id && active => Some(constraint),
+                _ => None,
+            });
+            let dimensions = self.def.dimensions.iter().filter_map(|d| match d.kind {
+                DimensionKind::Spacing { constraint } if constraint == *id => Some(d.id),
+                _ => None,
+            });
+            for k in spacing.into_iter().chain([*id]).chain(dimensions) {
+                if !all.contains(&k) {
+                    all.push(k);
+                }
+            }
+        }
+        let mut changed = Vec::new();
+        for id in &all {
+            let (flag, why) = if let Some(c) = self.def.constraints.iter_mut().find(|c| c.id == *id)
+            {
+                (&mut c.active, &mut c.inactive_reason)
+            } else if let Some(d) = self.def.dimensions.iter_mut().find(|d| d.id == *id) {
+                (&mut d.active, &mut d.inactive_reason)
+            } else {
+                return Err(format!("constraint or dimension {id} does not exist"));
+            };
+            if *flag != active {
+                changed.push(*id);
+            }
+            *flag = active;
+            *why = if active {
+                None
+            } else {
+                reason.map(str::to_owned).or_else(|| why.take())
+            };
+        }
+        Ok(changed)
+    }
+
     // Dimensions.
 
     fn dimension_index(&self, id: ConstraintUid) -> Result<usize, String> {
@@ -691,7 +746,14 @@ impl SketchEdit<'_> {
                     let mut kind = c.kind.clone();
                     remap(&mut kind, &copies);
                     if kind != c.kind {
-                        self.add_constraint(kind);
+                        let id = self.add_constraint(kind);
+                        // An inactive one's copy is inactive too (mitcad#721).
+                        if !c.active
+                            && let Some(made) = self.def.constraints.iter_mut().find(|k| k.id == id)
+                        {
+                            made.active = false;
+                            made.inactive_reason = c.inactive_reason.clone();
+                        }
                     }
                 }
             }
@@ -827,13 +889,15 @@ impl SketchEdit<'_> {
     /// the new value, so that the end is not pulled back to what it
     /// measured before. A parameter that has an expression or is shared
     /// (with a dimension, an offset or an expression) keeps its value, and
-    /// the dimension holds.
+    /// the dimension holds. An inactive one (mitcad#723) keeps its value:
+    /// it holds nothing, and its value is what it asks for when activated
+    /// (an imported one's value is the file's).
     fn remeasure_dimensions_on(&mut self, point: EntityUid, after: &Solved) {
         let ids: Vec<ConstraintUid> = self
             .def
             .dimensions
             .iter()
-            .filter(|d| d.kind.refs().contains(&Ref::Point(point)))
+            .filter(|d| d.kind.refs().contains(&Ref::Point(point)) && self.def.dimension_applied(d))
             .map(|d| d.id)
             .collect();
         for id in ids {
@@ -872,13 +936,16 @@ impl SketchEdit<'_> {
 
     /// Removes the dimensions that measure a curve's extent and the
     /// midpoint constraints on it, which a trim or an extend changes.
+    /// An inactive length stays (mitcad#723): it holds nothing back, a line
+    /// stays a line, and an imported one keeps the file's value until it is
+    /// activated or deleted.
     fn drop_extent_constraints(&mut self, curve: EntityUid) {
         let ids: BTreeSet<ConstraintUid> = self
             .def
             .dimensions
             .iter()
             .filter(|d| {
-                matches!(d.kind, DimensionKind::Length { line } if line == curve)
+                matches!(d.kind, DimensionKind::Length { line } if line == curve && d.active)
                     || matches!(d.kind, DimensionKind::ArcLength { arc } if arc == curve)
             })
             .map(|d| d.id)

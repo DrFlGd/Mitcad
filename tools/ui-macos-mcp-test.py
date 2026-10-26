@@ -342,11 +342,11 @@ def run(app, cli, out, ui):
             check(body_volume(bridge, document) == (0, 0), "Initial GUI document was not empty")
             bridge.notify("tools/call", {"name": "model_command", "arguments": {"document": document, "command": BOX}})
             check(body_volume(bridge, document) == (0, 0), "A notification mutated the GUI")
-            # No folder is allowed for agents in this run (mitcad#402):
+            # No folder for designs is allowed in this run (mitcad#402):
             # document_save's path is refused by the application.
             refused = bridge.request("tools/call", {"name": "document_save", "arguments": {"document": document, "path": "outside.mitcad"}})
             check(refused.get("result", {}).get("isError") is True
-                  and "No folder is allowed" in refused["result"]["structuredContent"]["error"],
+                  and "No folder for designs is allowed" in refused["result"]["structuredContent"]["error"],
                   "Live socket exposed file writes: " + repr(refused)[:2000])
             bridge.tool("model_command", {"document": document, "command": {"cmd": "load_design", "json": "{}"}}, error=True)
             check(body_volume(bridge, document) == (0, 0), "A refused command changed the model")
@@ -558,6 +558,12 @@ def run(app, cli, out, ui):
             live.finish()
             wait_for(lambda: "Agent disconnected" in debugger.log_text(), "the agent's disconnection", debugger)
             check("Agent connected" in debugger.log_text(), "The GUI did not say an agent was connected")
+            # The agent indicator (mitcad#710) named the client, then none.
+            check("Agent indicator: connected: mitcad-live-debug" in debugger.log_text(),
+                  "The agent indicator did not name the connected client")
+            wait_for(lambda: "Agent indicator: no agent" in debugger.log_text().split(
+                         "Agent indicator: connected: mitcad-live-debug")[-1],
+                     "the agent indicator's no agent after the disconnection", debugger)
             (work / "debug-finish").touch()
             debugger.process.wait(timeout=TIMEOUT)
             check(debugger.process.returncode == 0 and "TestDriver: FAIL" not in debugger.log_text(),

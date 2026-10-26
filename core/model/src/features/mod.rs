@@ -361,6 +361,10 @@ macro_rules! feature_types {
         }
 
         impl FeatureDef {
+            /// Every feature type's name, in the order of the types (what
+            /// MCP lists, mitcad#714).
+            pub const TYPE_NAMES: &'static [&'static str] = &[$($def::<ParamId>::TYPE,)*];
+
             pub fn info(&self) -> &dyn FeatureInfo {
                 match self {
                     $(Self::$variant(def) => def,)*
@@ -616,6 +620,15 @@ pub trait Evaluate<K: Kernel> {
     ) -> Option<Result<K::Shape, String>> {
         None
     }
+
+    /// What the open command's preview of this feature shows besides its
+    /// result, made only for that preview and never cached (mitcad#712:
+    /// a split's or trim's tool as it extends it), with `ctx` as the
+    /// feature's evaluation sees the design. None: the preview shows the
+    /// feature's own `tool`, if any.
+    fn preview_tool(&self, _ctx: &mut EvalContext<'_, K>) -> Option<K::Shape> {
+        None
+    }
 }
 
 /// What a feature produced. A failed feature produces nothing and the body
@@ -783,6 +796,16 @@ pub(crate) struct Env<'a, S> {
     pub changed_pieces: &'a BTreeMap<BodyUid, String>,
     pub gone_pieces: &'a BTreeMap<BodyUid, FeatureUid>,
 }
+
+// (References only: an evaluation and its preview's extra see the same,
+// mitcad#712.)
+impl<S> Clone for Env<'_, S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for Env<'_, S> {}
 
 /// Inputs of an evaluating feature. Every read is recorded, so the
 /// recompute cache can tell whether a stored result still applies.

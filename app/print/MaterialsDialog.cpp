@@ -84,11 +84,51 @@ const QStringList& groupOrder() {
 
 } // namespace
 
-MaterialsDialog::MaterialsDialog(DocumentHost& host, QWidget* parent) : QDialog(parent), m_host(host) {
+MaterialsDialog::MaterialsDialog(DocumentHost& host, QWidget* parent) : QDialog(parent), m_designHost(host) {
   setWindowTitle(tr("Materials"));
   setWindowIcon(themeIcon(QStringLiteral("material")));
   resize(960, 620);
   auto* layout = new QVBoxLayout(this);
+  m_panel = new MaterialsPanel(m_designHost, QStringLiteral("Materials"));
+  layout->addWidget(m_panel);
+  m_panel->editAppearances = [this] {
+    if (editAppearances) {
+      editAppearances();
+    }
+  };
+  // The user's library without a design (mitcad#704), then Close.
+  auto* myLibrary = new QPushButton(tr("My Library…"));
+  auto* close = new QPushButton(tr("Close"));
+  m_panel->addButton(myLibrary, QStringLiteral("my_library"));
+  m_panel->addButton(close, QStringLiteral("close"));
+  mac::styleDialog(this);
+  connect(myLibrary, &QPushButton::clicked, this, [this] {
+    qDebug().noquote() << QStringLiteral("Materials: My Library…");
+    if (openMyLibrary) {
+      openMyLibrary();
+    }
+  });
+  connect(close, &QPushButton::clicked, this, &QDialog::reject);
+  connect(m_panel, &MaterialsPanel::assigned, this, &QDialog::accept);
+}
+
+MaterialsDialog::~MaterialsDialog() {
+  // The panel before the host it works through.
+  delete m_panel;
+}
+
+void MaterialsDialog::setTargets(const QStringList& bodies, const QString& component, const QStringList& names) {
+  m_panel->setTargets(bodies, component, names);
+}
+
+void MaterialsDialog::setKeepOpen(bool keepOpen) { m_panel->setKeepOpen(keepOpen); }
+
+void MaterialsDialog::refresh() { m_panel->refresh(); }
+
+MaterialsPanel::MaterialsPanel(PrintItemsHost& host, const QString& logName, QWidget* parent)
+    : QWidget(parent), m_host(host), m_log(logName) {
+  auto* layout = new QVBoxLayout(this);
+  layout->setContentsMargins(0, 0, 0, 0);
   auto* splitter = new QSplitter(Qt::Horizontal);
 
   // The list, grouped by class (mitcad#655): one search in the window, the
@@ -174,30 +214,27 @@ MaterialsDialog::MaterialsDialog(DocumentHost& host, QWidget* parent) : QDialog(
   m_message = new QLabel;
   m_message->setWordWrap(true);
   layout->addWidget(m_message);
-  auto* buttons = new QHBoxLayout;
+  m_buttons = new QHBoxLayout;
   m_new = new QPushButton(tr("New ▾"));
   m_duplicate = new QPushButton(tr("Duplicate"));
   m_delete = new QPushButton(tr("Delete"));
   m_assign = new QPushButton(tr("Assign"));
-  m_close = new QPushButton(tr("Close"));
   m_assign->hide(); // shown for targets (setTargets)
   // The targets' mixed state, "2 materials" (mitcad#655).
   m_mixed = new QLabel;
   m_mixed->setStyleSheet(QStringLiteral("color: gray;"));
   m_mixed->hide();
-  buttons->addWidget(m_new);
-  buttons->addWidget(m_duplicate);
-  buttons->addWidget(m_delete);
-  buttons->addStretch(1);
-  buttons->addWidget(m_mixed);
-  buttons->addWidget(m_assign);
-  buttons->addWidget(m_close);
-  layout->addLayout(buttons);
+  m_buttons->addWidget(m_new);
+  m_buttons->addWidget(m_duplicate);
+  m_buttons->addWidget(m_delete);
+  m_buttons->addStretch(1);
+  m_buttons->addWidget(m_mixed);
+  m_buttons->addWidget(m_assign);
+  layout->addLayout(m_buttons);
   // Enter in a field saves it: no button takes Enter.
-  for (QPushButton* button : {m_headerDuplicate, m_saveTo, m_new, m_duplicate, m_delete, m_assign, m_close}) {
+  for (QPushButton* button : {m_headerDuplicate, m_saveTo, m_new, m_duplicate, m_delete, m_assign}) {
     mac::auxiliaryButton(button);
   }
-  mac::styleDialog(this);
 
   connect(m_class, &QComboBox::activated, this, [this](int index) {
     const LibraryItem* item = current();
@@ -247,7 +284,7 @@ MaterialsDialog::MaterialsDialog(DocumentHost& host, QWidget* parent) : QDialog(
       edit({{QStringLiteral("density"), *density}}, QStringLiteral("density = %1").arg(printNumberText(*density)));
     }
   });
-  connect(m_appearance, &QComboBox::activated, this, &MaterialsDialog::appearanceChosen);
+  connect(m_appearance, &QComboBox::activated, this, &MaterialsPanel::appearanceChosen);
   connect(m_form, &SettingsForm::valueChanged, this, [this](const QString& key, const QJsonValue& value) {
     const PrintKey* printKey = m_keys.find(key);
     const QString shown = value.isNull() ? QStringLiteral("cleared")
@@ -255,21 +292,42 @@ MaterialsDialog::MaterialsDialog(DocumentHost& host, QWidget* parent) : QDialog(
                                                                 : value.toVariant().toString());
     edit({{QStringLiteral("filament"), QJsonObject{{key, value}}}}, QStringLiteral("%1 = %2").arg(key, shown), key);
   });
-  connect(m_form, &SettingsForm::layoutChanged, this, &MaterialsDialog::scheduleLogPlaces);
-  connect(m_saveTo, &QPushButton::clicked, this, &MaterialsDialog::saveTo);
-  connect(m_new, &QPushButton::clicked, this, &MaterialsDialog::newMaterial);
-  connect(m_duplicate, &QPushButton::clicked, this, &MaterialsDialog::duplicate);
-  connect(m_headerDuplicate, &QPushButton::clicked, this, &MaterialsDialog::duplicate);
-  connect(m_delete, &QPushButton::clicked, this, &MaterialsDialog::remove);
-  connect(m_assign, &QPushButton::clicked, this, &MaterialsDialog::assign);
-  connect(m_close, &QPushButton::clicked, this, &QDialog::reject);
+  connect(m_form, &SettingsForm::layoutChanged, this, &MaterialsPanel::scheduleLogPlaces);
+  connect(m_saveTo, &QPushButton::clicked, this, &MaterialsPanel::saveTo);
+  connect(m_new, &QPushButton::clicked, this, &MaterialsPanel::newMaterial);
+  connect(m_duplicate, &QPushButton::clicked, this, &MaterialsPanel::duplicate);
+  connect(m_headerDuplicate, &QPushButton::clicked, this, &MaterialsPanel::duplicate);
+  connect(m_delete, &QPushButton::clicked, this, &MaterialsPanel::remove);
+  connect(m_assign, &QPushButton::clicked, this, &MaterialsPanel::assign);
 }
 
-MaterialsDialog::~MaterialsDialog() = default;
+MaterialsPanel::~MaterialsPanel() = default;
 
-void MaterialsDialog::setKeepOpen(bool keepOpen) { m_keepOpen = keepOpen; }
+void MaterialsPanel::setKeepOpen(bool keepOpen) { m_keepOpen = keepOpen; }
 
-void MaterialsDialog::setTargets(const QStringList& bodies, const QString& component, const QStringList& names) {
+void MaterialsPanel::setLibrary(const QString& library) {
+  if (library == m_libraryPlace) {
+    return;
+  }
+  m_libraryPlace = library;
+  m_currentKey.clear();
+  m_currentDesignId.clear();
+  m_loggedRows.clear();
+  refresh();
+}
+
+QString MaterialsPanel::itemsProject() const {
+  // My library is the same wherever the design is: no project's items.
+  return m_libraryPlace == QStringLiteral("user") ? QString() : m_host.projectFolder();
+}
+
+void MaterialsPanel::addButton(QPushButton* button, const QString& name) {
+  mac::auxiliaryButton(button);
+  m_buttons->addWidget(button);
+  m_windowButtons.append({name, button});
+}
+
+void MaterialsPanel::setTargets(const QStringList& bodies, const QString& component, const QStringList& names) {
   m_targetBodies = bodies;
   m_targetComponent = component;
   m_targetNames = names;
@@ -325,28 +383,38 @@ void MaterialsDialog::setTargets(const QStringList& bodies, const QString& compo
   } else {
     m_assign->setText(tr("Assign to %1 bodies").arg(bodies.size()));
   }
-  qDebug().noquote() << QStringLiteral("Materials for %1: %2")
+  qDebug().noquote() << QStringLiteral("%1 for %2: %3").arg(m_log)
                             .arg(!component.isEmpty() ? QStringLiteral("component %1").arg(component)
                                  : targets           ? QStringLiteral("bodies %1").arg(bodies.join(QStringLiteral(", ")))
                                                      : QStringLiteral("no targets"),
                                  mixed                ? QStringLiteral("mixed, %1 materials").arg(materials)
                                  : material.isEmpty() ? QStringLiteral("default")
                                                       : material);
-  qDebug().noquote() << QStringLiteral("Materials assign label: %1").arg(targets ? m_assign->text() : QString());
+  qDebug().noquote() << QStringLiteral("%1 assign label: %2").arg(m_log).arg(targets ? m_assign->text() : QString());
   scheduleLogPlaces();
 }
 
-const LibraryItem* MaterialsDialog::current() const {
+const LibraryItem* MaterialsPanel::current() const {
   if (m_currentKey.isEmpty() || m_currentKey == QLatin1String(kDefaultKey)) {
     return nullptr;
   }
   return findItem(m_items, m_currentKey);
 }
 
-void MaterialsDialog::refresh() {
-  const QString project = m_host.projectFolder();
+void MaterialsPanel::refresh() {
+  const QString project = itemsProject();
   QString error;
   m_items = queryLibraryItems(m_host.model(), QStringLiteral("material"), project, &error);
+  if (inLibrary()) {
+    // A library's items and the built-in ones to duplicate (mitcad#704).
+    QVector<LibraryItem> kept;
+    for (const LibraryItem& item : std::as_const(m_items)) {
+      if (item.place == m_libraryPlace || item.readOnly) {
+        kept.append(item);
+      }
+    }
+    m_items = kept;
+  }
   try {
     m_designMaterials = m_host.model().queryArray(QStringLiteral("materials"));
     QJsonObject libraryQuery{{QStringLiteral("query"), QStringLiteral("print_library")}};
@@ -375,15 +443,18 @@ void MaterialsDialog::refresh() {
     }
   }
   // The appearances, the design's and the library's, with Edit
-  // Appearances… last.
+  // Appearances… last (none in My Library, which has no design).
   {
     const QSignalBlocker block(m_appearance);
     m_appearance->clear();
+    m_carriedAppearance.clear();
     m_appearance->addItem(tr("None"), QString());
     for (const Appearance& appearance : std::as_const(m_appearances)) {
       m_appearance->addItem(swatch(appearance.displayColor), appearance.name, appearance.id);
     }
-    m_appearance->addItem(tr("Edit Appearances…"), QString::fromLatin1(kEditAppearances));
+    if (editAppearances) {
+      m_appearance->addItem(tr("Edit Appearances…"), QString::fromLatin1(kEditAppearances));
+    }
   }
   rebuildList();
   showCurrent();
@@ -403,7 +474,7 @@ void MaterialsDialog::refresh() {
   }
 }
 
-void MaterialsDialog::rebuildList() {
+void MaterialsPanel::rebuildList() {
   m_building = true;
   m_list->clear();
   QTreeWidgetItem* selected = nullptr;
@@ -461,30 +532,49 @@ void MaterialsDialog::rebuildList() {
     used << rootDefault;
   }
   m_usedIds = used;
+  const auto heading = [this](const QString& title, const QString& group) {
+    auto* made = new QTreeWidgetItem(m_list, {title});
+    made->setFlags(Qt::ItemIsEnabled);
+    made->setFirstColumnSpanned(true);
+    made->setData(1, kKeyRole, group);
+    QFont bold = made->font(0);
+    bold.setBold(true);
+    made->setFont(0, bold);
+    return made;
+  };
+  const auto addRow = [&](QTreeWidgetItem* under, const LibraryItem& item) {
+    auto* row = new QTreeWidgetItem(under, {item.name, QString()});
+    row->setIcon(0, swatch(item.displayColor));
+    row->setData(0, kKeyRole, item.key());
+    markInDesign(row, !item.designId().isEmpty() && used.contains(item.designId()), tr("Used in this design"));
+    if (item.key() == m_currentKey) {
+      selected = row;
+    }
+  };
   // By class, in the query's order (the built-in ones first, then by
-  // name); no places (mitcad#655).
+  // name); no places (mitcad#655). In a library its own items by class,
+  // then the built-in ones under Built-in (mitcad#704).
   for (const QString& group : groupOrder()) {
-    QTreeWidgetItem* heading = nullptr;
+    QTreeWidgetItem* groupRow = nullptr;
     for (const LibraryItem& item : std::as_const(m_items)) {
       const QString itemGroup = groupOrder().contains(item.group) ? item.group : QStringLiteral("other");
-      if (itemGroup != group) {
+      if (itemGroup != group || (inLibrary() && item.readOnly)) {
         continue;
       }
-      if (heading == nullptr) {
-        heading = new QTreeWidgetItem(m_list, {materialGroupTitle(group)});
-        heading->setFlags(Qt::ItemIsEnabled);
-        heading->setFirstColumnSpanned(true);
-        heading->setData(1, kKeyRole, group);
-        QFont bold = heading->font(0);
-        bold.setBold(true);
-        heading->setFont(0, bold);
+      if (groupRow == nullptr) {
+        groupRow = heading(materialGroupTitle(group), group);
       }
-      auto* row = new QTreeWidgetItem(heading, {item.name, QString()});
-      row->setIcon(0, swatch(item.displayColor));
-      row->setData(0, kKeyRole, item.key());
-      markInDesign(row, !item.designId().isEmpty() && used.contains(item.designId()), tr("Used in this design"));
-      if (item.key() == m_currentKey) {
-        selected = row;
+      addRow(groupRow, item);
+    }
+  }
+  if (inLibrary()) {
+    QTreeWidgetItem* builtIn = nullptr;
+    for (const LibraryItem& item : std::as_const(m_items)) {
+      if (item.readOnly) {
+        if (builtIn == nullptr) {
+          builtIn = heading(placeName(QStringLiteral("mitcad")), QStringLiteral("built_in"));
+        }
+        addRow(builtIn, item);
       }
     }
   }
@@ -498,7 +588,7 @@ void MaterialsDialog::rebuildList() {
   scheduleLogPlaces();
 }
 
-void MaterialsDialog::selectKey(const QString& key) {
+void MaterialsPanel::selectKey(const QString& key) {
   for (QTreeWidgetItemIterator it(m_list); *it != nullptr; ++it) {
     if ((*it)->data(0, kKeyRole).toString() == key) {
       m_list->setCurrentItem(*it);
@@ -508,7 +598,7 @@ void MaterialsDialog::selectKey(const QString& key) {
   }
 }
 
-void MaterialsDialog::showCurrent() {
+void MaterialsPanel::showCurrent() {
   const LibraryItem* item = current();
   const bool targets = !m_targetBodies.isEmpty() || !m_targetComponent.isEmpty();
   m_assign->setEnabled(targets && (item != nullptr || m_currentKey == QLatin1String(kDefaultKey)));
@@ -551,9 +641,10 @@ void MaterialsDialog::showCurrent() {
   // Built-in or the user's own, no place (mitcad#655); Save to only for
   // the user's own that is in no library yet.
   m_builtIn->setVisible(item->readOnly);
-  showSavedState(m_saved, item);
+  // In a library every item is the library's: no saved state (mitcad#704).
+  showSavedState(m_saved, inLibrary() ? nullptr : item);
   m_usedState->setVisible(!item->designId().isEmpty() && m_usedIds.contains(item->designId()));
-  m_saveTo->setVisible(item->unsaved());
+  m_saveTo->setVisible(item->unsaved() && m_host.hasDesign());
   m_saveTo->setText(saveToText(!m_host.projectFolder().isEmpty()));
   const double density = fields.value(QStringLiteral("density")).toDouble(1.0);
   m_density->setText(printNumberText(density));
@@ -561,6 +652,21 @@ void MaterialsDialog::showCurrent() {
   const QString appearanceId = text(fields, "appearance");
   {
     const QSignalBlocker block(m_appearance);
+    // An appearance a library's material carries, which is neither
+    // Mitcad's nor the design's (mitcad#704): its own entry with the
+    // item's colour, before Edit Appearances….
+    if (!m_carriedAppearance.isEmpty() && m_carriedAppearance != appearanceId) {
+      const int old = m_appearance->findData(m_carriedAppearance);
+      if (old >= 0) {
+        m_appearance->removeItem(old);
+      }
+      m_carriedAppearance.clear();
+    }
+    if (!appearanceId.isEmpty() && m_appearance->findData(appearanceId) < 0) {
+      const int at = m_appearance->count() - (editAppearances ? 1 : 0);
+      m_appearance->insertItem(at, swatch(item->displayColor), appearanceId, appearanceId);
+      m_carriedAppearance = appearanceId;
+    }
     m_appearance->setCurrentIndex(std::max(0, m_appearance->findData(appearanceId)));
   }
   m_appearance->setEnabled(editable);
@@ -585,6 +691,28 @@ void MaterialsDialog::showCurrent() {
       words.insert(QStringLiteral("filament_colour"), appearance.name);
     }
   }
+  if (appearanceId == m_carriedAppearance && !appearanceId.isEmpty() && item->displayColor.isValid()) {
+    placeholders.insert(QStringLiteral("filament_colour"), item->displayColor.name().toUpper());
+    words.insert(QStringLiteral("filament_colour"), appearanceId);
+  }
+  // Unset purge volumes are those of the colour it prints with (mitcad#705),
+  // as the model works them out: what the export uses.
+  QString colour = filament.value(QStringLiteral("filament_colour")).toString();
+  if (colour.isEmpty()) {
+    colour = placeholders.value(QStringLiteral("filament_colour")).toString();
+  }
+  try {
+    QJsonObject query{{QStringLiteral("query"), QStringLiteral("purge_defaults")}};
+    if (!colour.isEmpty()) {
+      query.insert(QStringLiteral("color"), colour);
+    }
+    const QJsonObject defaults = m_host.model().queryObject(query);
+    for (const QString& key : {QStringLiteral("purge_into"), QStringLiteral("purge_out")}) {
+      placeholders.insert(key, defaults.value(key));
+    }
+  } catch (const std::exception&) {
+    // Without them: Slicer default.
+  }
   m_form->setPlaceholderValues(placeholders, words);
   // Another design changed it: asked once, when the design uses it or it
   // is edited (mitcad#655), not on a mere selection.
@@ -593,7 +721,7 @@ void MaterialsDialog::showCurrent() {
   }
 }
 
-bool MaterialsDialog::canChange() {
+bool MaterialsPanel::canChange() {
   if (m_host.canChangePrintSettings()) {
     return true;
   }
@@ -601,10 +729,11 @@ bool MaterialsDialog::canChange() {
   return false;
 }
 
-bool MaterialsDialog::run(const QJsonObject& command, QJsonObject* result) {
+bool MaterialsPanel::run(const QJsonObject& command, QJsonObject* result) {
   if (m_host.runModelCommand(command, result)) {
     setMessage(QString());
     m_host.commandInputsChanged();
+    emit changed();
     return true;
   }
   if (!m_host.lastCancelled()) {
@@ -612,12 +741,12 @@ bool MaterialsDialog::run(const QJsonObject& command, QJsonObject* result) {
     setMessage(plainModelError(m_host.lastError(), m_keys, command, item != nullptr ? item->name : QString()),
                true); // plain words (mitcad#655)
   }
-  qDebug().noquote() << QStringLiteral("Materials: %1 refused: %2")
+  qDebug().noquote() << QStringLiteral("%1: %2 refused: %3").arg(m_log)
                             .arg(command.value(QStringLiteral("cmd")).toString(), m_host.lastError());
   return false;
 }
 
-void MaterialsDialog::setMessage(const QString& message, bool error) {
+void MaterialsPanel::setMessage(const QString& message, bool error) {
   m_message->setText(message);
   if (error) {
     setErrorStyleSheet(m_message);
@@ -626,7 +755,7 @@ void MaterialsDialog::setMessage(const QString& message, bool error) {
   }
 }
 
-void MaterialsDialog::edit(const QJsonObject& change, const QString& what, const QString& field) {
+void MaterialsPanel::edit(const QJsonObject& change, const QString& what, const QString& field) {
   const LibraryItem* item = current();
   if (item == nullptr || item->readOnly) {
     return;
@@ -642,10 +771,10 @@ void MaterialsDialog::edit(const QJsonObject& change, const QString& what, const
     // Edited while another design's change waits: asked first
     // (mitcad#655).
     if (target.changed && !changeAsked(target)) {
-      run(askChangedElsewhere(this, target, QStringLiteral("Materials"), m_host.projectFolder()));
+      run(askChangedElsewhere(this, target, m_log, itemsProject()));
     }
     QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("edit_material")}};
-    nameItem(command, target, m_host.projectFolder());
+    nameItem(command, target, itemsProject());
     for (auto it = change.begin(); it != change.end(); ++it) {
       command.insert(it.key(), it.value());
     }
@@ -662,7 +791,7 @@ void MaterialsDialog::edit(const QJsonObject& change, const QString& what, const
   });
 }
 
-void MaterialsDialog::appearanceChosen(int index) {
+void MaterialsPanel::appearanceChosen(int index) {
   const QString id = m_appearance->itemData(index).toString();
   if (id == QLatin1String(kEditAppearances)) {
     showCurrent(); // the box shows the material's again
@@ -679,19 +808,20 @@ void MaterialsDialog::appearanceChosen(int index) {
        QStringLiteral("appearance = %1").arg(id.isEmpty() ? QStringLiteral("none") : id));
 }
 
-void MaterialsDialog::newMaterial() {
+void MaterialsPanel::newMaterial() {
   if (!canChange()) {
     return;
   }
   // Its class (mitcad#655); made in this design and selected, put into a
-  // library only by Save to.
+  // library only by Save to; in My Library made in its library
+  // (mitcad#704).
   QMenu menu(this);
   QStringList titles;
   for (const QString& materialClass : materialClasses()) {
     menu.addAction(materialClassTitle(materialClass))->setData(materialClass);
     titles << materialClassTitle(materialClass);
   }
-  qDebug().noquote() << QStringLiteral("Materials new menu: %1").arg(titles.join(QStringLiteral(" | ")));
+  qDebug().noquote() << QStringLiteral("%1 new menu: %2").arg(m_log).arg(titles.join(QStringLiteral(" | ")));
   QAction* chosen = execMenu(&menu, m_new->mapToGlobal(QPoint(0, m_new->height())));
   if (chosen == nullptr) {
     return;
@@ -707,27 +837,39 @@ void MaterialsDialog::newMaterial() {
   } else if (materialClass == QStringLiteral("plastic")) {
     command.insert(QStringLiteral("density"), 1.24);
   }
+  inPlace(command);
   QJsonObject result;
   if (run(command, &result)) {
-    m_currentKey = QStringLiteral("design/") + text(result, "id");
-    m_currentDesignId = text(result, "id");
+    const QString place = inLibrary() ? m_libraryPlace : QStringLiteral("design");
+    m_currentKey = place + QLatin1Char('/') + text(result, "id");
+    m_currentDesignId = inLibrary() ? QString() : text(result, "id");
     m_pendingFocus = m_currentKey;
     m_pendingDensity = materialClass == QStringLiteral("other");
-    qDebug().noquote() << QStringLiteral("Material created: %1 in design").arg(text(result, "id"));
+    qDebug().noquote() << QStringLiteral("Material created: %1 in %2").arg(text(result, "id"), place);
   }
   refresh();
 }
 
-void MaterialsDialog::duplicate() {
+void MaterialsPanel::inPlace(QJsonObject& command) const {
+  if (inLibrary()) {
+    command.insert(QStringLiteral("library"), m_libraryPlace);
+    if (!itemsProject().isEmpty()) {
+      command.insert(QStringLiteral("project"), itemsProject());
+    }
+  }
+}
+
+void MaterialsPanel::duplicate() {
   const LibraryItem* item = current();
   if (item == nullptr || !canChange()) {
     return;
   }
   const LibraryItem source = *item;
-  const QString project = m_host.projectFolder();
+  const QString project = itemsProject();
   // The user's own copy in this design, selected (mitcad#655): the
   // design's copy of the source when it has one, else the library's
-  // item, with the appearance it carries.
+  // item, with the appearance it carries. In My Library the copy is made
+  // in its library (mitcad#704), from a built-in one by its id.
   const QJsonValue basedOn = source.library.isEmpty() || !source.inDesign.isEmpty()
                                  ? QJsonValue(source.designId())
                                  : QJsonValue(QJsonObject{{QStringLiteral("library"), source.library},
@@ -738,17 +880,19 @@ void MaterialsDialog::duplicate() {
   if (!project.isEmpty() && basedOn.isObject()) {
     command.insert(QStringLiteral("project"), project);
   }
+  inPlace(command);
   QJsonObject result;
   if (run(command, &result)) {
-    m_currentKey = QStringLiteral("design/") + text(result, "id");
-    m_currentDesignId = text(result, "id");
+    const QString place = inLibrary() ? m_libraryPlace : QStringLiteral("design");
+    m_currentKey = place + QLatin1Char('/') + text(result, "id");
+    m_currentDesignId = inLibrary() ? QString() : text(result, "id");
     m_pendingFocus = m_currentKey;
-    qDebug().noquote() << QStringLiteral("Material duplicated: %1 as %2 in design").arg(source.name, text(result, "id"));
+    qDebug().noquote() << QStringLiteral("Material duplicated: %1 as %2 in %3").arg(source.name, text(result, "id"), place);
   }
   refresh();
 }
 
-void MaterialsDialog::remove() {
+void MaterialsPanel::remove() {
   const LibraryItem* item = current();
   if (item == nullptr || item->readOnly || !canChange()) {
     return;
@@ -790,25 +934,25 @@ void MaterialsDialog::remove() {
   users.removeDuplicates();
   const QString fallback =
       tr("Default (%1)").arg(rootDefault.isEmpty() || isRootDefault ? steel : rootDefault);
-  if (!confirmDelete(this, target, QStringLiteral("Materials"), users, fallback)) {
+  if (!confirmDelete(this, target, m_log, users, fallback)) {
     return;
   }
   QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("delete_material")}};
-  nameItem(command, target, m_host.projectFolder());
+  nameItem(command, target, itemsProject());
   if (run(command)) {
     qDebug().noquote() << QStringLiteral("Material deleted: %1 (%2)").arg(target.name, target.place);
   }
   refresh();
 }
 
-void MaterialsDialog::saveTo() {
+void MaterialsPanel::saveTo() {
   const LibraryItem* item = current();
   if (item == nullptr || !item->unsaved() || !canChange()) {
     return;
   }
   const LibraryItem target = *item;
   const QString project = m_host.projectFolder();
-  const QString library = choosePlace(m_saveTo, QStringLiteral("Materials save_to"), !project.isEmpty());
+  const QString library = choosePlace(m_saveTo, m_log + QStringLiteral(" save_to"), !project.isEmpty());
   if (library.isEmpty()) {
     return;
   }
@@ -827,7 +971,7 @@ void MaterialsDialog::saveTo() {
   refresh();
 }
 
-void MaterialsDialog::askChanges() {
+void MaterialsPanel::askChanges() {
   const LibraryItem* item = current();
   if (item == nullptr || !item->changed || changeAsked(*item) || !isVisible() ||
       !m_host.canChangePrintSettings()) {
@@ -835,14 +979,14 @@ void MaterialsDialog::askChanges() {
   }
   const LibraryItem target = *item;
   // Use the changes or Keep these, one undo step either way (mitcad#655).
-  const QJsonObject command = askChangedElsewhere(this, target, QStringLiteral("Materials"), m_host.projectFolder());
+  const QJsonObject command = askChangedElsewhere(this, target, m_log, itemsProject());
   if (run(command)) {
     qDebug().noquote() << QStringLiteral("Material %1: %2").arg(target.name, command.value(QStringLiteral("cmd")).toString());
   }
   refresh();
 }
 
-void MaterialsDialog::assign() {
+void MaterialsPanel::assign() {
   const bool forComponent = !m_targetComponent.isEmpty();
   if ((m_targetBodies.isEmpty() && !forComponent) || !canChange()) {
     return;
@@ -869,7 +1013,7 @@ void MaterialsDialog::assign() {
                    {QStringLiteral("component"), m_targetComponent}}))) {
       qDebug().noquote() << QStringLiteral("Default material of %1: %2")
                                 .arg(m_targetNames.value(0), item == nullptr ? QStringLiteral("none") : logged);
-      accept();
+      emit assigned();
     }
     return;
   }
@@ -931,10 +1075,10 @@ void MaterialsDialog::assign() {
     refresh();
     return;
   }
-  accept();
+  emit assigned();
 }
 
-void MaterialsDialog::logRows() {
+void MaterialsPanel::logRows() {
   if (!isVisible()) {
     return;
   }
@@ -949,9 +1093,9 @@ void MaterialsDialog::logRows() {
     return;
   }
   m_loggedRows = logged;
-  qDebug().noquote() << QStringLiteral("Materials: %1 items").arg(rows.size());
+  qDebug().noquote() << QStringLiteral("%1: %2 items").arg(m_log).arg(rows.size());
   for (const QString& row : std::as_const(rows)) {
-    qDebug().noquote() << QStringLiteral("Materials row: %1").arg(row);
+    qDebug().noquote() << QStringLiteral("%1 row: %2").arg(m_log).arg(row);
   }
   if (const LibraryItem* item = current()) {
     for (const QString& value : m_form->rows()) {
@@ -960,20 +1104,20 @@ void MaterialsDialog::logRows() {
   }
 }
 
-void MaterialsDialog::showEvent(QShowEvent* event) {
-  QDialog::showEvent(event);
+void MaterialsPanel::showEvent(QShowEvent* event) {
+  QWidget::showEvent(event);
   m_loggedRows.clear();
   m_loggedPlaces.clear();
   logRows();
   scheduleLogPlaces();
 }
 
-void MaterialsDialog::resizeEvent(QResizeEvent* event) {
-  QDialog::resizeEvent(event);
+void MaterialsPanel::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
   scheduleLogPlaces();
 }
 
-bool MaterialsDialog::eventFilter(QObject* watched, QEvent* event) {
+bool MaterialsPanel::eventFilter(QObject* watched, QEvent* event) {
   // F2 on a row: its name.
   if (watched == m_list && event->type() == QEvent::KeyPress &&
       static_cast<QKeyEvent*>(event)->key() == Qt::Key_F2 && current() != nullptr && !current()->readOnly) {
@@ -981,19 +1125,20 @@ bool MaterialsDialog::eventFilter(QObject* watched, QEvent* event) {
     m_name->selectAll();
     return true;
   }
-  return QDialog::eventFilter(watched, event);
+  return QWidget::eventFilter(watched, event);
 }
 
-void MaterialsDialog::scheduleLogPlaces() {
+void MaterialsPanel::scheduleLogPlaces() {
   TestSync::singleShot(0, this, [this] { logPlaces(); });
 }
 
-void MaterialsDialog::logPlaces() {
-  if (!isVisible() || parentWidget() == nullptr) {
+void MaterialsPanel::logPlaces() {
+  // In the main window's coordinates (the parent of the panel's window), as
+  // the other logged places.
+  if (!isVisible() || window()->parentWidget() == nullptr) {
     return;
   }
-  // In the main window's coordinates, as the other logged places.
-  const QPoint origin = parentWidget()->window()->mapToGlobal(QPoint(0, 0));
+  const QPoint origin = window()->parentWidget()->window()->mapToGlobal(QPoint(0, 0));
   const auto at = [&origin](QWidget* widget, const QPoint& point) {
     const QPoint global = widget->mapToGlobal(point) - origin;
     return QStringLiteral("%1,%2").arg(global.x()).arg(global.y());
@@ -1007,21 +1152,32 @@ void MaterialsDialog::logPlaces() {
       continue;
     }
     const LibraryItem* item = findItem(m_items, key);
-    lines << QStringLiteral("Materials item %1 at %2")
+    lines << QStringLiteral("%1 item %2 at %3").arg(m_log)
                  .arg(item != nullptr ? item->name : QString::fromLatin1(kDefaultKey),
                       at(m_list->viewport(), QPoint(60, rect.center().y())));
   }
-  const std::pair<const char*, QWidget*> widgets[] = {
-      {"name", m_name},       {"class", m_class},   {"save_to", m_saveTo},     {"header_duplicate", m_headerDuplicate}, {"density", m_density},
-      {"appearance", m_appearance}, {"new", m_new}, {"duplicate", m_duplicate}, {"delete", m_delete},
-      {"assign", m_assign},   {"close", m_close}};
-  for (const auto& [name, widget] : widgets) {
+  QVector<std::pair<QString, QWidget*>> widgets{
+      {QStringLiteral("name"), m_name},
+      {QStringLiteral("class"), m_class},
+      {QStringLiteral("save_to"), m_saveTo},
+      {QStringLiteral("header_duplicate"), m_headerDuplicate},
+      {QStringLiteral("density"), m_density},
+      {QStringLiteral("appearance"), m_appearance},
+      {QStringLiteral("new"), m_new},
+      {QStringLiteral("duplicate"), m_duplicate},
+      {QStringLiteral("delete"), m_delete},
+      {QStringLiteral("assign"), m_assign}};
+  // The window's buttons (My Library…, Close).
+  for (const auto& [name, button] : std::as_const(m_windowButtons)) {
+    widgets.append(std::pair<QString, QWidget*>(name, button));
+  }
+  for (const auto& [name, widget] : std::as_const(widgets)) {
     if (widget->isVisibleTo(this)) {
-      lines << QStringLiteral("Materials %1 at %2").arg(QString::fromLatin1(name), at(widget, widget->rect().center()));
+      lines << QStringLiteral("%1 %2 at %3").arg(m_log).arg(name, at(widget, widget->rect().center()));
     }
   }
   if (m_form->isVisibleTo(this)) {
-    lines << m_form->places(QStringLiteral("Materials settings"), at);
+    lines << m_form->places(m_log + QStringLiteral(" settings"), at);
   }
   const QString logged = lines.join(QLatin1Char('\n'));
   if (logged != m_loggedPlaces) {

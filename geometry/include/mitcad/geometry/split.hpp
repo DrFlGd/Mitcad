@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <gp_Pnt.hxx>
+
 #include "mitcad/geometry/shape.hpp"
 #include "mitcad/geometry/tool.hpp"
 
@@ -27,5 +29,14 @@ std::vector<ShapePtr> split_body(const std::string& feature, const Shape& body, 
 // "#k". Fails when a face is not split.
 ShapePtr split_faces(const std::string& feature, const Shape& body,
                      const std::vector<std::string>& faces, const Tool& tool, bool extend = true);
+
+// The faces split_body, split_faces and trim_surface cut with when their
+// bodies lie in the box from `low` to `high`, made the same way: a plane
+// as a face across the box, a face tool extended along its surface with
+// `extend`, a body's faces or sketch curves swept through the box; clipped
+// to the box. The preview of an extended tool (mitcad#712); the tool's
+// shapes are left as they are. Fails when nothing of the tool lies in the
+// box.
+ShapePtr extended_tool(const Tool& tool, const gp_Pnt& low, const gp_Pnt& high, bool extend = true);
 
 } // namespace mitcad::geometry

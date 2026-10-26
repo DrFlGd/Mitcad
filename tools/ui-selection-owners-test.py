@@ -83,7 +83,7 @@ def run(app, cli, out, qt_bin):
                 def query(value):
                     return bridge.tool("model_query", {"document": document, "query": value})["result"]
 
-                # A fresh GUI document has an active Part1 occurrence. The
+                # A fresh GUI document has an active Component1 occurrence. The
                 # root-body case must explicitly create geometry in C0.
                 command({"cmd": "activate_component", "component": "C0"})
                 command(MCP.BOX)

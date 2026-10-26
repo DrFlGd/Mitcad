@@ -87,7 +87,7 @@ impl<K: Kernel> Document<K> {
     /// The families of commands besides the document's own (`Command`,
     /// which takes every other name, so that its error lists its commands
     /// for an unknown one). A new family is one row here.
-    pub(super) fn command_families() -> [CommandFamily<K>; 16] {
+    pub(super) fn command_families() -> [CommandFamily<K>; 18] {
         [
             // Gears: the motion link of a mesh (mitcad#472, `gears.rs`),
             // run as the `add_motion_link` worked out from the gears. It has
@@ -225,6 +225,23 @@ impl<K: Kernel> Document<K> {
                     doc.run_parameters_csv_command(parse(value, "command")?)
                 },
             },
+            // Purge volumes on filament changes (mitcad#705,
+            // `purge_volumes.rs`).
+            CommandFamily {
+                names: super::purge_volumes::PurgeCommand::NAMES,
+                prefix: None,
+                run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
+                    doc.run_purge_command(parse(value, "command")?)
+                },
+            },
+            // Drawings kept in the design (mitcad#707, `drawings.rs`).
+            CommandFamily {
+                names: super::drawings::DrawingCommand::NAMES,
+                prefix: None,
+                run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
+                    doc.run_drawing_command(parse(value, "command")?)
+                },
+            },
         ]
     }
 }
@@ -360,7 +377,7 @@ mod tests {
             ),
             "{error}"
         );
-        assert!(error.ends_with("`export_drawing`"), "{error}");
+        assert!(error.ends_with("`set_print_bed_face`"), "{error}");
         let error = doc
             .command(r#"{"cmd": "sketch.fly"}"#)
             .unwrap_err()

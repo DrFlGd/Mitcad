@@ -794,4 +794,51 @@ and bodies stay the same.
 The healing starts while the rest of the bodies are converted and the
 inputs are found (1.1 and 1.4 s at the same time on the bin), instead of
 at the replay's start, so the item waits that much less; the rest of the
-healing still comes before the pattern's evaluation.
+healing still came before the pattern's evaluation, until
+[mitcad#701](#an-items-own-state-asked-for-when-first-needed-mitcad701).
+
+## An item's own state asked for when first needed (mitcad#701)
+
+An item whose state the history names asked for that state's solids
+before it tried anything (`Importer::verified_at`, and
+`tried_from_own_start` for the copies of a pattern), so the bin's path
+pattern still waited for the rest of its body's healing (about 5 s)
+before its own evaluation of 12 s began. The state is now asked for when
+the item first needs it (`Target` in `lib.rs`, passed to `try_state`):
+
+- **After the first definition was evaluated**, whatever came of it: a
+  result is compared with the state, and the definitions after the first
+  (with the workers that evaluate them ahead, which start only once the
+  first was rejected) begin as they did when the state was asked for
+  first. The healing on its thread ahead and the first evaluation overlap.
+- **Before that, where the item reads the state anyway**: an extrusion's
+  translation (its change and new body), the bounds of extrusions' prisms
+  (`feasible`, only where a candidate's prism bounds its change), the
+  ranking by predicted volumes (`rank`), a fillet's or chamfer's edge
+  guesses, and the guesses of patterns, mirrors and combines without
+  decoded inputs (`history_change`). These items wait as before. A
+  pattern with decoded inputs, such as the bin's path pattern, reads
+  nothing of its state before its first evaluation.
+
+The ranking, the look ahead and the order of the definitions are those of
+before, and the state's solids are the same, so the items' verdicts and
+bodies are too. Two things keep it so:
+
+- **The item's time.** The time the state still takes to build (or to
+  wait for the build ahead) is left out of the item's time: the history
+  times the building of the item's own state (`Oracle::watch`), and the
+  item's clock and deadline move by it, as when the state was asked for
+  before the item's time began.
+- **A state that does not rebuild.** That was known before anything was
+  tried, and the item was taken unchecked. Now it is known only once the
+  state is first asked for: nothing of the try is kept (the document is
+  undone, and what the try noted, the item's definitions offered, its
+  untranslated cause, the kernel's failures and the recorded deviations,
+  is as before it), and the item is taken unchecked as before. The first
+  definition is then evaluated once in vain, and a state not asked for
+  during the try is asked for at its end, to tell whether it rebuilds.
+
+The bodies are still built ahead as before: when the replay asks for a
+state, the next four states it asks for by the timeline are built ahead,
+so the healing of an item's own state is under way when the item begins
+(on the bin since the file was read, mitcad#676).

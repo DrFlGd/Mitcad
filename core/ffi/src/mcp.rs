@@ -6,9 +6,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use mitcad_mcp::{Backend, LiveSession, TimelineMode, ToolResult};
+use mitcad_mcp::{Backend, LiveSession, TimelineMode, ToolResult, Vocabulary};
 use mitcad_model::api::classes::{self, ApiClass};
 use mitcad_model::{BlobStore, Sha256};
 use serde_json::{Map, Value, json};
@@ -68,7 +69,25 @@ pub fn run_mcp(workspace: &str, read_only: bool) -> Result<(), crate::ApiError> 
 pub struct LiveMcpSession(LiveSession);
 
 pub fn new_live_mcp_session() -> Box<LiveMcpSession> {
-    Box::new(LiveMcpSession(LiveSession::new()))
+    Box::new(LiveMcpSession(LiveSession::with_vocabulary(
+        vocabulary().clone(),
+    )))
+}
+
+/// The names MCP permits (mitcad#714), by their classes: what
+/// `model_reference` lists and an unknown name's error names.
+fn vocabulary() -> &'static Vocabulary {
+    static NAMES: OnceLock<Vocabulary> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let owned = |names: &[&str]| -> Vec<String> {
+            names.iter().map(|name| (*name).to_owned()).collect()
+        };
+        Vocabulary {
+            queries: owned(&classes::external_queries()),
+            commands: owned(&classes::external_commands()),
+            features: owned(<mitcad_model::FeatureDef>::TYPE_NAMES),
+        }
+    })
 }
 
 impl LiveMcpSession {
@@ -107,7 +126,8 @@ fn validate_command(request: &Value) -> Result<(), String> {
     if !request.is_object() {
         return Err("MCP commands must be single JSON objects".to_owned());
     }
-    let kind = string(request, "cmd")?;
+    // The form of a command when its name is missing (mitcad#714).
+    let kind = string(request, "cmd").map_err(|_| mitcad_mcp::missing_name(request, "cmd"))?;
     // By the command's class (mitcad#265): the model's own commands only.
     match classes::command_class_with(request) {
         Some(ApiClass::Model) => {}
@@ -123,11 +143,14 @@ fn validate_command(request: &Value) -> Result<(), String> {
                 class.name()
             ));
         }
-        None => return Err(format!("unknown command '{kind}'")),
+        // With the commands MCP permits (mitcad#714).
+        None => return Err(mitcad_mcp::unknown_command(kind, vocabulary())),
     }
     if matches!(kind, "add_feature" | "edit_feature") {
         let definition = object(request, "def")?;
-        let feature = string(definition, "type")?;
+        let feature = string(definition, "type").map_err(|_| {
+            "'def' needs 'type', its feature type, for example {\"type\": \"box\", ...}; model_reference without arguments lists the feature types and with feature gives one's fields".to_owned()
+        })?;
         if classes::feature_class_with(definition) != ApiClass::Model {
             return Err(format!(
                 "feature type '{feature}' is not available through MCP"
@@ -170,7 +193,11 @@ fn validate_query(request: &Value) -> Result<(), String> {
     if !request.is_object() {
         return Err("MCP queries must be single JSON objects".to_owned());
     }
-    let kind = string(request, "query")?;
+    let kind = string(request, "query").map_err(|_| mitcad_mcp::missing_name(request, "query"))?;
+    // A name the API lacks, with the queries MCP permits (mitcad#714).
+    if classes::query_class(kind).is_none() {
+        return Err(mitcad_mcp::unknown_query(kind, vocabulary()));
+    }
     // By the query's class (mitcad#265); the result store's files are not
     // read either.
     if !classes::external_query_allowed(kind)
@@ -330,6 +357,10 @@ impl CadBackend {
 }
 
 impl Backend for CadBackend {
+    fn vocabulary(&self) -> Vocabulary {
+        vocabulary().clone()
+    }
+
     fn call(&mut self, name: &str, arguments: &Value) -> Result<ToolResult, String> {
         match name {
             "document_create" => {
@@ -749,7 +780,7 @@ fn prepare_export(
 impl Document {
     /// A live `model_export` (mitcad#689): the model command that writes
     /// `arguments`' export to `path`, which the application found to be a
-    /// new file in a folder agents may use, with the other files it writes
+    /// new file in a folder for designs, with the other files it writes
     /// (`outputs`, to be checked the same way) and whether it is a drawing
     /// ([`Document::mcp_export_drawing`] writes those). `title` names the
     /// design in a drawing's title block; `design_folder` is the design's

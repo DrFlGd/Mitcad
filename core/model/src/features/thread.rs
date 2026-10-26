@@ -17,7 +17,7 @@ use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     is_false,
 };
-use crate::ids::BodyUid;
+use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{Kernel, ThreadChamfer, ThreadSpec};
 use crate::parameters::ParamId;
 use crate::topo::FaceName;
@@ -505,6 +505,70 @@ impl FeatureInfo for ThreadDef {
 
 impl<K: Kernel> Evaluate<K> for ThreadDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
+        let faces = self.faces.clone();
+        let threaded = self.threaded(ctx, ctx.uid, &mut |ctx| {
+            let mut targets = Vec::new();
+            for face in &faces {
+                let shape = ctx.surface_body(face.body)?;
+                // A face a sketch change renamed is found again (mitcad#272).
+                let found = ctx.face_or(&shape, &face.face, || {
+                    format!("body {} has no face {}", face.body, face.face)
+                })?;
+                targets.push((face.body, shape, found));
+            }
+            Ok(targets)
+        })?;
+        Ok(FeatureOutput {
+            changes: threaded
+                .into_iter()
+                .map(|(uid, shape)| BodyChange::Set(uid, shape))
+                .collect(),
+            ..FeatureOutput::default()
+        })
+    }
+}
+
+/// The faces a thread goes on: each with its body and the body's shape.
+type ThreadTargets<S> = Vec<(BodyUid, S, FaceName)>;
+
+/// What gives a thread its faces, read once the thread's own values are
+/// checked ([`ThreadDef::threaded`]).
+type TargetsOf<'a, K> =
+    &'a mut dyn for<'c, 'e> FnMut(
+        &'c mut EvalContext<'e, K>,
+    ) -> Result<ThreadTargets<<K as Kernel>::Shape>, String>;
+
+impl ThreadDef {
+    /// The thread on `faces` of `shape` (a pattern's copy of the faces,
+    /// mitcad#719), its new faces named after `feature`: the shape
+    /// threaded, as it was for a cosmetic thread without chamfers.
+    pub(crate) fn thread_on<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        feature: FeatureUid,
+        body: BodyUid,
+        shape: &K::Shape,
+        faces: &[FaceName],
+    ) -> Result<K::Shape, String> {
+        let targets: ThreadTargets<K::Shape> = faces
+            .iter()
+            .map(|f| (body, shape.clone(), f.clone()))
+            .collect();
+        let mut threaded = self.threaded(ctx, feature, &mut |_| Ok(targets.clone()))?;
+        Ok(threaded
+            .pop()
+            .map_or_else(|| shape.clone(), |(_, shape)| shape))
+    }
+
+    /// The thread on the faces `targets` gives (read after the thread's own
+    /// values are checked), its new faces named after `feature`: each
+    /// body's new shape.
+    fn threaded<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        feature: FeatureUid,
+        targets: TargetsOf<'_, K>,
+    ) -> Result<Vec<(BodyUid, K::Shape)>, String> {
         let part = thread_part(
             ctx,
             self.length,
@@ -557,12 +621,7 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
         // chamfer's check.
         let mut extreme_diameter: Option<f64> = None;
         let mut internal = None;
-        for face in &self.faces {
-            let shape = ctx.surface_body(face.body)?;
-            // A face a sketch change renamed is found again (mitcad#272).
-            let found = ctx.face_or(&shape, &face.face, || {
-                format!("body {} has no face {}", face.body, face.face)
-            })?;
+        for (body, shape, found) in targets(ctx)? {
             let cylinder = ctx
                 .kernel
                 .face_cylinder(&shape, &found)
@@ -586,7 +645,7 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
             if self.modeled && !fits {
                 return Err(format!(
                     "thread {} does not fit face {} of diameter {diameter}",
-                    data.designation, face.face
+                    data.designation, found
                 ));
             }
             // The ends asked for that the thread reaches; the kernel
@@ -613,15 +672,15 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
                 Some(d) if cylinder.internal => d.max(material),
                 Some(d) => d.min(material),
             });
-            match bodies.iter_mut().find(|(uid, _, _, _)| *uid == face.body) {
+            match bodies.iter_mut().find(|(uid, _, _, _)| *uid == body) {
                 Some((_, _, faces, all_ends)) => {
                     faces.push(found);
                     all_ends.push(ends);
                 }
-                None => bodies.push((face.body, shape, vec![found], vec![ends])),
+                None => bodies.push((body, shape, vec![found], vec![ends])),
             }
         }
-        let mut output = FeatureOutput::default();
+        let mut output = Vec::new();
         let data = self.thread.data()?;
         let (major, minor, pitch_diameter) =
             diameters.unwrap_or((data.major, data.minor, data.pitch_diameter));
@@ -686,7 +745,7 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
         }
         for (uid, shape, faces, ends) in bodies {
             let spec = ThreadSpec {
-                feature: ctx.uid,
+                feature,
                 faces: &faces,
                 pitch: data.pitch,
                 major,
@@ -716,7 +775,7 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
                 .kernel
                 .modeled_thread(&shape, &spec)
                 .map_err(|e| e.to_string())?;
-            output.changes.push(BodyChange::Set(uid, threaded));
+            output.push((uid, threaded));
         }
         Ok(output)
     }

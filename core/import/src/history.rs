@@ -473,6 +473,10 @@ pub struct Oracle<'g, S> {
     /// Bodies the design no longer has from a state on although the ASM
     /// history keeps them, by body id ([`Oracle::retire`]).
     retired: Vec<(usize, u64)>,
+    /// The state whose building is timed ([`Oracle::watch`]), and the
+    /// time its building took since [`Oracle::take_watched`].
+    watched: Option<usize>,
+    watched_time: std::time::Duration,
 }
 
 impl<'g, S: Clone> Oracle<'g, S> {
@@ -492,7 +496,26 @@ impl<'g, S: Clone> Oracle<'g, S> {
             broken: std::collections::HashMap::new(),
             released: std::collections::HashSet::new(),
             retired: Vec::new(),
+            watched: None,
+            watched_time: std::time::Duration::ZERO,
         }
+    }
+
+    /// Times the building of state `index` from now on (None: of no state):
+    /// an item asks for its own state only when it first compares a result
+    /// against it, and the time that state takes to build (or the wait for
+    /// the bodies built ahead) is left out of the item's time, as it was
+    /// when the state was asked for before the item's time began
+    /// (mitcad#701).
+    pub fn watch(&mut self, index: Option<usize>) {
+        self.watched = index;
+        self.watched_time = std::time::Duration::ZERO;
+    }
+
+    /// The time building the watched state took since the last call
+    /// ([`Oracle::watch`]).
+    pub fn take_watched(&mut self) -> std::time::Duration {
+        std::mem::take(&mut self.watched_time)
     }
 
     /// Leaves bodies (by [`StoredBody::id`]) out of the states from `from`
@@ -581,52 +604,64 @@ impl<'g, S: Clone> Oracle<'g, S> {
             return Err(e.clone());
         }
         if self.states[index].is_none() {
-            let bodies = match self.geometry.state(index) {
-                Ok(b) => b,
-                Err(e) => {
-                    self.broken.insert(index, e.clone());
-                    return Err(e);
-                }
-            };
-            if !self.released.remove(&index) {
-                self.built += 1;
+            let clock = (self.watched == Some(index)).then(std::time::Instant::now);
+            let built = self.build(kernel, index);
+            if let Some(clock) = clock {
+                self.watched_time += clock.elapsed();
             }
-            let measured = &mut self.measured;
-            let measured_sheets = &mut self.measured_sheets;
-            let mut solids = Vec::new();
-            let mut sheets = Vec::new();
-            for b in bodies {
-                if self
-                    .retired
-                    .iter()
-                    .any(|&(f, r)| b.id == Some(r) && f <= index)
-                {
-                    continue;
-                }
-                let sig = match b.id {
-                    Some(id) => *measured
-                        .entry(id)
-                        .or_insert_with(|| Sig::of(kernel, &b.shape)),
-                    None => Sig::of(kernel, &b.shape),
-                };
-                if let Some(s) = sig {
-                    solids.push((b, s));
-                    continue;
-                }
-                let sheet = match b.id {
-                    Some(id) => *measured_sheets
-                        .entry(id)
-                        .or_insert_with(|| SheetSig::of(kernel, &b.shape)),
-                    None => SheetSig::of(kernel, &b.shape),
-                };
-                if let Some(s) = sheet {
-                    sheets.push((b, s));
-                }
-            }
-            self.states[index] = Some(solids);
-            self.sheets[index] = sheets;
+            built?;
         }
         Ok(self.states[index].as_deref().expect("built"))
+    }
+
+    /// Builds state `index` ([`Oracle::state`]): its bodies and their
+    /// signatures, solids and sheets apart.
+    fn build<K: Kernel<Shape = S>>(&mut self, kernel: &K, index: usize) -> Result<(), String> {
+        let bodies = match self.geometry.state(index) {
+            Ok(b) => b,
+            Err(e) => {
+                self.broken.insert(index, e.clone());
+                return Err(e);
+            }
+        };
+        if !self.released.remove(&index) {
+            self.built += 1;
+        }
+        let measured = &mut self.measured;
+        let measured_sheets = &mut self.measured_sheets;
+        let mut solids = Vec::new();
+        let mut sheets = Vec::new();
+        for b in bodies {
+            if self
+                .retired
+                .iter()
+                .any(|&(f, r)| b.id == Some(r) && f <= index)
+            {
+                continue;
+            }
+            let sig = match b.id {
+                Some(id) => *measured
+                    .entry(id)
+                    .or_insert_with(|| Sig::of(kernel, &b.shape)),
+                None => Sig::of(kernel, &b.shape),
+            };
+            if let Some(s) = sig {
+                solids.push((b, s));
+                continue;
+            }
+            let sheet = match b.id {
+                Some(id) => *measured_sheets
+                    .entry(id)
+                    .or_insert_with(|| SheetSig::of(kernel, &b.shape)),
+                None => SheetSig::of(kernel, &b.shape),
+            };
+            if let Some(s) = sheet {
+                sheets.push((b, s));
+            }
+        }
+        self.states[index] = Some(solids);
+        self.sheets[index] = sheets;
+        Ok(())
     }
 
     /// The sheets of a state (built as [`Oracle::state`] builds it).
@@ -898,5 +933,59 @@ mod tests {
         faces.faces += 2;
         assert!(own_difference(change, &[file], &[faces]).is_some_and(|d| d > CHANGE));
         assert_eq!(own_difference(None, &[file], &[faces]), None);
+    }
+
+    #[test]
+    fn the_time_building_a_watched_state_takes_is_measured_once() {
+        // mitcad#701: an item's own state, asked for when first needed, is
+        // left out of the item's time by the time its building took.
+        use mitcad_model::testing::{MockKernel, MockShape};
+        struct Slow;
+        impl StoredGeometry<MockShape> for Slow {
+            fn state_count(&mut self) -> usize {
+                3
+            }
+            fn state(&mut self, index: usize) -> Result<Vec<StoredBody<MockShape>>, String> {
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                if index == 2 {
+                    return Err("state 2 cannot be built".to_owned());
+                }
+                Ok(vec![StoredBody {
+                    shape: MockShape::imported(&format!("state {index}"), 6),
+                    name: None,
+                    source: format!("state {index}"),
+                    component: None,
+                    id: None,
+                    lineage: None,
+                }])
+            }
+            fn final_bodies(&mut self) -> Result<Vec<StoredBody<MockShape>>, String> {
+                self.state(1)
+            }
+        }
+        let kernel = MockKernel::default();
+        let mut geometry = Slow;
+        let mut oracle = Oracle::new(&mut geometry);
+        let ms = std::time::Duration::from_millis(40);
+        oracle.watch(Some(1));
+        assert_eq!(oracle.take_watched(), std::time::Duration::ZERO);
+        // Another state than the watched one: not measured.
+        assert!(oracle.try_sigs(&kernel, 0).is_some());
+        assert_eq!(oracle.take_watched(), std::time::Duration::ZERO);
+        // The watched state's building, once; built, it is not again.
+        assert!(oracle.try_sigs(&kernel, 1).is_some());
+        assert!(oracle.take_watched() >= ms);
+        assert_eq!(oracle.take_watched(), std::time::Duration::ZERO);
+        assert!(oracle.try_sigs(&kernel, 1).is_some());
+        assert_eq!(oracle.take_watched(), std::time::Duration::ZERO);
+        // A state that does not build: the try is measured, once.
+        oracle.watch(Some(2));
+        assert!(oracle.try_sigs(&kernel, 2).is_none());
+        assert!(oracle.take_watched() >= ms);
+        assert!(oracle.try_sigs(&kernel, 2).is_none());
+        assert_eq!(oracle.take_watched(), std::time::Duration::ZERO);
+        // Watching ends.
+        oracle.watch(None);
+        assert_eq!(oracle.take_watched(), std::time::Duration::ZERO);
     }
 }

@@ -77,7 +77,7 @@ pub struct Policy {
 impl Policy {
     /// The general defaults, the Hybrid preset: everything allowed
     /// (mitcad#421). What an owner without a stored policy has, a new
-    /// design's root and Part1, and a new component.
+    /// design's root and Component1, and a new component.
     pub const GENERAL: Self = Self {
         sketches: true,
         features: true,

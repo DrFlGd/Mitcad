@@ -2,15 +2,18 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/browser app/print app/MainWindowContextMenu.cpp app/commands/MoveCommands.cpp core/model tools/cli
 # Material... (mitcad#640; the Materials window, mitcad#655) through the
-# real UI, on two boxes (F1.b0 with an appearance set by hand, F2.b0 with
-# the default look) and a material of the design's own, each chosen in
-# the Materials window and given with Assign:
+# real UI, on three boxes (F1.b0 with an appearance set by hand, F2.b0 and
+# F3.b0 with the default look) and a material of the design's own, each
+# chosen in the Materials window and given with Assign:
 #   - Material... of Body2 gives it PLA and PLA's appearance, no question.
 #   - Material... of Body1 with the design's Acme PETG asks before
 #     replacing the hand-set appearance; Keep keeps it, the material is
 #     set.
 #   - Again with PLA and Replace: Body1 looks as PLA; undo takes it back
 #     in one step.
+#   - Body2 and Body3 selected in the browser (Ctrl+click), Appearance...
+#     and Material... of Body3's row are for both (mitcad#703): ABS is set
+#     for the two bodies, Body1 keeps its material.
 #   - Material... of the root component sets its default material.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
@@ -29,6 +32,16 @@ expect_file() {
   actual=$(jq -c "$1" "$FILE") || ui_fail "$3: cannot read $FILE"
   [ "$actual" = "$2" ] || ui_fail "$3: $1 is '$actual', expected '$2'"
   echo "ok   $3"
+}
+
+# expect_new_match regex description: ui_expect_new with an extended
+# regular expression (two bodies in either order).
+expect_new_match() {
+  for _ in $(seq 1 30); do
+    tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE -- "$1" && { echo "ok   $2"; return; }
+    sleep 0.2
+  done
+  ui_fail "$2: /$1/ not in the log since the mark"
 }
 
 save() {
@@ -56,6 +69,8 @@ cat > "$WORK/model.json" << 'EOF'
   {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-45, -10],
     "length": 40, "width": 20, "height": 20, "operation": "new_body"}},
   {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [5, -10],
+    "length": 40, "width": 20, "height": 20, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [55, -10],
     "length": 40, "width": 20, "height": 20, "operation": "new_body"}},
   {"cmd": "set_body_appearance", "uid": "F1.b0", "appearance": "paint_red"},
   {"cmd": "create_material", "id": "acme_petg", "name": "Acme PETG", "density": 1.27,
@@ -103,6 +118,33 @@ ui_step "undo"                             ui_key ctrl+z
 ui_expect_new "Undo: Set Material of Body1" "one undo step"
 save
 expect_file '.bodies[0] | [.material, .appearance]' '["acme_petg","paint_red"]' "Body1 is back to Acme PETG, red"
+
+echo "--- Body2 and Body3 selected: Appearance... and Material... of a selected row are for both (mitcad#703)"
+ui_mark
+ui_step "click Body2"                      ui_click_logged "Browser Root/Bodies/Body2"
+ui_expect_new "Browser selected: Root/Bodies/Body2" "Body2 selected"
+ui_step "Ctrl+click Body3"                 xdotool mousemove $(ui_logged_at "Browser Root/Bodies/Body3") keydown ctrl click 1 keyup ctrl
+ui_expect_new "Browser selected: Root/Bodies/Body2, Root/Bodies/Body3" "Body2 and Body3 selected"
+ui_mark
+ui_step "right-click Body3"                ui_click_logged "Browser Root/Bodies/Body3" 3
+ui_step "choose Appearance..."             ui_menu_choose "Appearance..."
+expect_new_match 'Appearances for bodies: (F2\.b0, F3\.b0|F3\.b0, F2\.b0)( \(|$)' "Appearances opened for both selected bodies"
+if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "Browser selected: "; then
+  ui_fail "the right click on a selected row changed the selection"
+fi
+echo "ok   the right click kept both rows selected"
+ui_focus_dialog '^Appearances$'
+ui_step "Close"                            ui_click_logged "Appearances close"
+ui_focus_main
+ui_mark
+material_of "Root/Bodies/Body3" "ABS Plastic"
+ui_focus_main
+expect_new_match 'Materials opened for bodies (F2\.b0, F3\.b0|F3\.b0, F2\.b0)$' "Materials opened for both selected bodies"
+ui_expect_new "Materials assign label: Assign to 2 bodies" "Assign names the two bodies"
+ui_expect_new "Material abs set for 2 body(ies), appearance replace" "ABS set for Body2 and Body3"
+save
+expect_file '[.bodies[] | .material]' '["acme_petg","abs","abs"]' "Body2 and Body3 are ABS, Body1 is not"
+ui_step "Escape (clear the selection)"     ui_key Escape
 
 echo "--- The root's default material"
 ui_mark

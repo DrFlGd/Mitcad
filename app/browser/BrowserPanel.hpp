@@ -59,10 +59,13 @@ struct BrowserNode {
     ContactSet,
     // A component's motion links (mitcad#466); a link's row is a Joint row.
     MotionLinks,
-    // Measurement objects (mitcad#649): the root's Measurements folder and
-    // its rows (uid: the name; featureType: the kind).
+    // Annotations (mitcad#702; the measurement objects of mitcad#649): the
+    // root's Annotations folder, which opens their window.
     Measurements,
-    Measurement,
+    // Drawings kept in the design (mitcad#707): a component's Drawings
+    // folder (the root's too) and its rows (uid: the drawing, D1).
+    Drawings,
+    Drawing,
   };
 
   Type type = Type::None;
@@ -82,7 +85,7 @@ struct BrowserNode {
   bool isFolder() const {
     return type == Type::Bodies || type == Type::Sketches || type == Type::Construction ||
            type == Type::Origin || type == Type::Analyses || type == Type::Joints ||
-           type == Type::MotionLinks || type == Type::Measurements;
+           type == Type::MotionLinks || type == Type::Measurements || type == Type::Drawings;
   }
   // The selection item the row stands for; invalid for folders and settings.
   SelectionItem item() const;

@@ -8,11 +8,16 @@ expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
 expect-command-search '' '*' shortcuts
 screenshot-dialog '${MITCAD_DIALOG_SHOTS}/search-${MITCAD_TEST_COLOR_SCHEME}.png'
 
-# Exact and fuzzy matches remain navigable in their displayed order.
+# Exact, keyword and fuzzy matches remain navigable in their displayed order.
+# Annotations' fit keyword precedes the axis command's fuzzy name match.
 type fit
 expect-command-search fit view.fit disabled
 key Down
+expect-command-search fit view.annotations disabled
+key Down
 expect-command-search fit construct.axis_normal_face disabled
+key Up
+expect-command-search fit view.annotations disabled
 key Up
 expect-command-search fit view.fit disabled
 mark

@@ -170,6 +170,19 @@ expression (`"d1 / 2 + 5 mm"`, `"30 deg"`; syntax and unit rules in
   reference constraint's, where the dimension measures the constraint's
   value), and add the sketch without these references when the model
   refuses one.
+- **An angle of more than one turn where one turn is the most**
+  (mitcad#714) warns: a move's or move face's rotation
+  (`transform.angle`), a revolve's angles, a draft's, a chamfer's angle,
+  an extrusion's tapers, a hole's taper, countersink and tip angles and a
+  construction plane's angle. A JSON number there is radians, so
+  `"angle": 90` meant as degrees turns by 5156.6°; the feature succeeds
+  with the warning `Move1 angle: 90 is read as radians (5156.6°); write
+  "90 deg" for degrees` (in its `warnings`, the timeline's `error`, and
+  the `add_feature` or `edit_feature` result's `warnings`), or a failed
+  feature's error ends with it. A value that is not a short number in
+  radians (`"720 deg"`) says `Revolve1 angle: 720° is more than one turn`.
+  Helices, coils, a sweep's twist and other slots that take several turns
+  never warn (`parameters::one_turn_slot`, `recompute::turn_warnings`).
 - Parameters are evaluated in dependency order. Cycles, unknown names,
   syntax errors and unit mismatches reject the command. Renaming a
   parameter rewrites the expressions that use it (features refer to
@@ -399,6 +412,11 @@ millimetres, angles radians. Build sketches with the
   true` and only measures, with its reference parameter's
   name in `reference` (see [Values](#values)); a file without it gets one
   when it is read. `text`: where the value is shown.
+- Constraints and dimensions alike may be inactive: `"active": false`,
+  with an optional `inactive_reason` text; the solve leaves them out (see
+  [Inactive constraints and
+  dimensions](#inactive-constraints-and-dimensions)). Written only when
+  false.
 - `projections`: linked projections, `{"source": "<edge, face or
   vertex>", "body": "F2.b0", "entities": ["p7", "p8", "c9", …]}`; the entities
   follow the source when the model changes (`sketch.project`). The stored
@@ -999,7 +1017,9 @@ their segments' names); a full turn has no caps.
 ```
 
 - `placement`: `{"type": "face", "body": b, "face": f, "points": [[x, y,
-  z], …]}` (points put onto a planar face's plane, one hole each),
+  z], …]}` (points put onto a planar face's plane, one hole each; on a
+  cylindrical face each point moved across its axis onto the cylinder,
+  the hole along the radius into the material, mitcad#719),
   `{"type": "face_offsets", "body": b, "face": f, "edge1": e1, "offset1":
   o1, "edge2": e2, "offset2": o2}` (one hole at those distances from the
   lines of two edges, on the face's side of both) or `{"type":
@@ -1009,9 +1029,16 @@ their segments' names); a full turn has no caps.
   `{"type": "plane", "plane": g, "points": [[x, y, z], …]}` (points put
   onto an origin plane, a construction plane or a planar face's plane: the
   holes start on it, also inside a body, and cut the participants they
-  reach; `setPositionByPoint` on a plane in .f3d designs). Holes go
-  against the face, plane or sketch normal, into the material; `flip`
-  turns them round (`isDefaultDirection` false).
+  reach; `setPositionByPoint` on a plane in .f3d designs) or `{"type":
+  "cylinder_offset", "body": b, "face": f, "plane": g, "offset": o,
+  "toward": [x, y, z]}` (one hole on a cylindrical face, at the point of
+  its axis `o` from the plane `g` the axis crosses, measured along the
+  plane's normal on the face's side of it (along the axis for a plane
+  square to it), on the side of the axis where the point lies, along the
+  radius into the material;
+  `setPositionByPlaneAndOffsets` on a shaft's side in .f3d designs,
+  mitcad#719). Holes go against the face, plane or sketch normal, into the
+  material; `flip` turns them round (`isDefaultDirection` false).
 - `kind`: `{"type": "simple"}` (default), `{"type": "counterbore",
   "diameter": D, "depth": d}`, `{"type": "countersink", "diameter": D,
   "angle": a}` (the cone's full angle), `{"type": "counterdrill",
@@ -2897,6 +2924,32 @@ numbers, and a size filter over a component's bodies would take small
 bodies that are no fragments as well; with the ids kept, the named pieces
 stay right.
 
+### The extended tool of a split or trim (mitcad#712)
+
+A preview of `split_body`, `split_face` or `trim_surface` with `extend`
+(the default) and a plane or face tool shows the tool as the feature
+extends it: the preview reports `"tool": true` and `preview_tool_shape()`
+returns it (with `tool_instances`), so that a display can show where the
+cut runs. It is the faces the operation itself cuts with (a plane as a
+face across the box, a face grown along its surface: the same
+construction, `Kernel::extended_tool`, the OCCT kernel's
+`geometry::extended_tool`), clipped to the box of the bodies split (of
+every body of a `split_body` together) grown on every side by 5 % of its
+diagonal, at least 1 mm. A `split_body` with further tools (`more_tools`)
+shows every plane or face tool, in one compound. Without `extend`, with a
+body or sketch curves as the tool, or where the kernel cannot make it (a
+tool that does not reach the box), there is none; the split itself is not
+affected.
+
+Only a preview makes it (`Evaluate::preview_tool`, for the feature
+`Cache::preview` names while `Document::preview_state` computes): it is
+made again for every preview of the feature, also when the split's result
+comes from the cache, and is kept in the preview's result
+(`Recomputed::preview_tool`), never in the feature's output, the cache or
+the result store. Recomputes, commits (which reuse the preview's result)
+and imports do not make it. Tests: `core.model` (`f2_tests.rs`,
+`surface_modelling_tests.rs`), `geometry` (`test_split.cpp`).
+
 ## Commands
 
 `command` takes one command object (`{"cmd": "<name>", …}`) or an array
@@ -3428,10 +3481,10 @@ timeline marker.
 | `appearances` | | the library's and the document's appearances with their parameters ([Appearances](#appearances)) |
 | `appearance_image` | `id`, `map` (`base_color` default, `normal`, `roughness`, `metalness`, `occlusion`) | an embedded image of an appearance's texture set: `data` (base64), `format`, `sha256` ([Textures](#textures), [Texture map sets](#texture-map-sets)) |
 | `render_settings` | | the document's render settings, every section and field ([Render settings](#render-settings)) |
-| `bodies` | `properties`, `volumes` | `uid`, `name`, `component` (when not the root's), `visible`, `material`, `appearance`, `face_appearances` ([Appearances of faces](#appearances-of-faces)) (when set), `mesh`: true for a mesh body ([Mesh bodies in surface operations](#mesh-bodies-in-surface-operations)); with `"properties": true` also `kind` (`solid`, `sheet`: faces or open shells, `mesh`, `empty`), `volume`, `area`, `center`, `bbox` {`min`, `max`} (in the component's coordinates), `faces`, `edges` (counts); with `"volumes": true` only `volume` (cheaper); with `"versions": true` also `version`, the shape's version as 32 hexadecimal digits, which changes whenever the body's shape does (mitcad#689: MCP's command results list the bodies a command changed) |
+| `bodies` | `properties`, `volumes`, `versions`, `bbox` | `uid`, `name`, `component` (when not the root's), `visible`, `material`, `appearance`, `face_appearances` ([Appearances of faces](#appearances-of-faces)) (when set), `mesh`: true for a mesh body ([Mesh bodies in surface operations](#mesh-bodies-in-surface-operations)); with `"properties": true` also `kind` (`solid`, `sheet`: faces or open shells, `mesh`, `empty`), `volume`, `area`, `center`, `bbox` {`min`, `max`} (in the component's coordinates), `faces`, `edges` (counts); with `"volumes": true` only `volume` (cheaper); with `"versions": true` also `version`, the shape's version as 32 hexadecimal digits, which changes whenever the body's shape does (mitcad#689: MCP's command results list the bodies a command changed); with `"bbox": true` also `bbox` without the other properties (mitcad#714: the boxes in MCP's `changes`) |
 | `profiles` | `hashes` | `sketch`, `sketch_name`, `region`, `consumed` (an extrude uses it); with `"hashes": true` also `hash` (16 hex digits of the region's geometry and sketch frame: the same while the profile's face would be the same) |
-| `faces` | `body` | per face: `names`, `surface` (`plane`, `cylinder`, …), `area` |
-| `edges` | `body` | per edge: `name`, `curve` (`line`, `circle`, …), `length` |
+| `faces` | `body`; `geometry`, filters `surface`, `min_area`, `max_area`, `normal`, `normal_tolerance`, and `offset`, `limit` ([Faces and edges with geometry](#faces-and-edges-with-geometry)) | per face: `names`, `surface` (`plane`, `cylinder`, …), `area`; with `"geometry": true` also its surface's geometry and `bbox`; with a filter, `offset` or `limit` an object: `total`, `offset`, `faces` (each also with `index`) |
+| `edges` | `body`; `geometry`, filters `curve`, `min_length`, `max_length`, and `offset`, `limit` ([Faces and edges with geometry](#faces-and-edges-with-geometry)) | per edge: `name`, `curve` (`line`, `circle`, …), `length`; with `"geometry": true` also its curve's geometry and `bbox`; with a filter, `offset` or `limit` an object: `total`, `offset`, `edges` (each also with `index`) |
 | `dependents` | `uid` | `dependents`: `uid`, `name` of the features that refer to it, directly or through others, in timeline order (what `delete_feature` with `dependents` deletes too) |
 | `can_reorder` | `uid`, `index` | `ok`, and `error` (the reason `reorder_feature` would give) when not |
 | `sketch` | `uid` | see [Sketch commands](#sketch-commands) |
@@ -3445,8 +3498,9 @@ timeline marker.
 
 Other queries: [analysis](#analysis-queries), [components](#component-commands-and-queries),
 `dxf_info` ([DXF](#dxf-into-sketches)), `cache` ([Caches](#caches)),
-`tangent_chains` ([Tangent chains](#tangent-chains)), `measurements`
-([Measurement objects](#measurement-objects)).
+`tangent_chains` ([Tangent chains](#tangent-chains)), `measurements` and
+`annotations`
+([Measurement objects](#measurement-objects), [Annotations](#annotations)).
 
 - `evaluate` reads the expression as a value slot of that kind does: a
   bare number takes the document's unit of the kind (`"90"` as an angle
@@ -3466,6 +3520,48 @@ Other queries: [analysis](#analysis-queries), [components](#component-commands-a
   `Shape::names_of_face` and `Shape::find_edges`
   (`geometry/include/mitcad/geometry/shape.hpp`).
 
+### Faces and edges with geometry
+
+The `faces` and `edges` queries tell where each face and edge is
+(mitcad#714), in the body's component's coordinates, mm and radians:
+
+```json
+{"query": "faces", "body": "F2.b0", "geometry": true, "surface": "cylinder",
+ "max_area": 500, "offset": 0, "limit": 50}
+{"query": "faces", "body": "F2.b0", "normal": [0, 0, 1], "normal_tolerance": 0.001}
+{"query": "edges", "body": "F2.b0", "geometry": true, "curve": "circle", "min_length": 30}
+```
+
+- `"geometry": true` adds each item's geometry and its `bbox` {`min`,
+  `max`} (the tight axis-aligned box; null for a face without geometry
+  or a degenerate edge). A face on a plane has `origin` (the plane's
+  point nearest to the model origin) and `normal` (out of the material);
+  on a cylinder or a cone `origin` (the axis point nearest to the face's
+  centre), `axis` (pointing along its largest component) and `radius` (a
+  cone's at `origin`, with `half_angle`); on a sphere `center` and
+  `radius`; on a torus `center`, `axis`, `major_radius` and
+  `minor_radius`; on other surfaces (B-splines, planar ones too) only the
+  box. An edge has `start` and `end`; a circle or an arc also `center`,
+  `radius` and `normal` (it runs counter-clockwise about the normal from
+  `start` to `end`, the same point for a full circle).
+- Filters: faces by `surface` (the type `surface` names), `min_area` and
+  `max_area` (mm²), `normal` (planar faces whose outward normal is that
+  direction, of any length, within `normal_tolerance` radians, default
+  1e-6); edges by `curve`, `min_length` and `max_length` (mm). All given
+  filters apply together.
+- With a filter, `offset` or `limit` the answer is an object: `total`
+  (the number of items that match), `offset`, and `faces` or `edges`, the
+  matching items from `offset` on, at most `limit` of them, each with its
+  `index` in the body's face or edge order. Without them it is the array
+  of every item, as before. A large body (hundreds of faces of holes)
+  is read in pages this way.
+- `Kernel::face_geometries` and `Kernel::edge_geometries` describe the
+  items in one pass; `Kernel::face_bounding_boxes` and
+  `Kernel::edge_bounding_boxes` measure the boxes of the page's items
+  only. Tests: `api::face_lists_tests`, `cli.face_geometry`
+  (`tools/cli/tests/face_geometry.json`, a block with two holes on the
+  OCCT kernel).
+
 ### Analysis queries
 
 | Query | Fields | Result |
@@ -3473,7 +3569,7 @@ Other queries: [analysis](#analysis-queries), [components](#component-commands-a
 | `datums` | `origin` (also the origin datums) | per datum: `uid`, `name`, `type` and its geometry |
 | `datum` | `uid` (`F3` or `xy`) | `type` `plane`: `origin`, `normal`, `x_axis`, `y_axis`; `axis`: `origin`, `direction`; `point`: `point` |
 | `properties` | `bodies` (default all), `density`, `densities` {uid: g/cm³} | `bodies`: `uid`, `name`, `material`, `density`, `volume`, `area`, `mass`, `center_of_mass`, `inertia` (3 × 3, at the centre of mass), `principal_moments`, `principal_axes`; `total`: `volume`, `area`, `mass`, `center_of_mass`, `inertia` |
-| `measure` | `a`, `b` (optional) selections | `a`, `b`: `kind` and `volume`, `area`, `length`, `point`, `circle` {`center`, `axis`, `radius`, `sweep`}, `axis` {`origin`, `direction`} (*Measure with axes*) as they apply; with `b` also `between`: `distance`, `on_a`, `on_b`, `inside`, `angle` (null unless both have a normal, a direction or an axis), `offset` (only for two parallel planes, *Measure in the design*), `axis_distance`, `axis_points`, `center_distance` (*Measure with axes*) |
+| `measure` | `a`, `b` (optional) selections | `a`, `b`: `kind` and `volume`, `area`, `length`, `point`, `circle` {`center`, `axis`, `radius`, `sweep`}, `axis` {`origin`, `direction`} (*Measure with axes*), `plane` {`origin`, `normal`} of a planar face or a datum plane (the middle of the face on its plane, the normal out of the material; mitcad#714) as they apply; with `b` also `between`: `distance`, `on_a`, `on_b`, `inside`, `angle` (null unless both have a normal, a direction or an axis), `offset` (only for two parallel planes, *Measure in the design*), `axis_distance`, `axis_points`, `center_distance` (*Measure with axes*) |
 | `interference` | `bodies` (default all), `min_volume` (mm³, default 1e-6) | `bodies` (count), `pairs`: `a`, `b`, `names`, `volume` |
 | `section` | `plane`, `bodies` (default all), `world` (default false) | `plane`, per body `edges`, `faces`, `length`, `area`, and the totals |
 | `compare_step` | `file`, `bodies`, `step_body` (name or index), `samples`, `fuzzy`, `max_deviation`, `max_relative` | `step_bodies`, `volume`, `step_volume`, `volume_only_mitcad`, `volume_only_step`, `relative_difference`, `max_deviation`, `mitcad_to_step` and `step_to_mitcad` {`max`, `rms`, `at`, `samples`}, `bounds_difference`; with limits `pass` and `exceeded` |
@@ -3614,7 +3710,9 @@ it on a copy of the document without committing it. The result:
   and no body is drawn without a pair's placement (mitcad#266; the app:
   `app/framework/PreviewBodies.hpp`).
 - `preview_body_shape(uid)` returns a body as the command leaves it and
-  `preview_tool_shape()` the extrusion before its boolean.
+  `preview_tool_shape()` the extrusion before its boolean (a split's or
+  trim's extended tool: [The extended tool of a split or
+  trim](#the-extended-tool-of-a-split-or-trim-mitcad712)).
 - `tool_instances` (with `tool`): where that tool is in the design. The
   tool is in its feature's component's coordinates, so there is one entry
   per occurrence of that component (one with an empty `occurrence` in the
@@ -3695,6 +3793,7 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.set_driven` | `dimension`, `driven` (default true) | driving again keeps the measured value; driven, its own parameter becomes its reference parameter |
 | `sketch.set_signed` | `dimension` (a `horizontal_distance` or `vertical_distance`), `signed` (default true) | the point stays where it is: a driving value is negated where `b` lies on the negative side (see [Signed point dimensions](#signed-point-dimensions)) |
 | `sketch.set_dimension_text` | `dimension` (`k3`), `text` [x, y] | where the value is shown; undo step `Move Dimension in Sketch1` |
+| `sketch.set_active` | `items` (constraints and dimensions, `k3`), `active` (default true), `reason` (optional, with `active` false) | inactive ones are kept but left out of the solve; activating is refused when the sketch then does not solve or is over-constrained; `made` lists the items whose state changed; undo step `Activate in Sketch1` / `Deactivate in Sketch1` (see [Inactive constraints and dimensions](#inactive-constraints-and-dimensions)) |
 | `sketch.remove` | `items`: `p3`, `c4`, `t5`, `k6` | a point takes the curves that use it, a curve its points no other curve uses; constraints and dimensions on removed entities go too; a curve or point a derived offset computes (a spline or ellipse chain's) is refused, its source goes with the offset (mitcad#361) |
 | `sketch.set_construction` | `curves`, `construction` (default true) | |
 | `sketch.set_centerline` | `lines`, `centerline` (default true) | |
@@ -3769,7 +3868,10 @@ The `sketch` query (`{"query": "sketch", "uid": "F1"}`) returns:
   counter);
 - `dof`, `fully_constrained` (entity ids), `redundant` (constraint ids
   implied by the others) and `conflicts` (sets of ids that contradict
-  each other).
+  each other);
+- `unmet_inactive` (only when not empty): the inactive constraints and
+  dimensions the geometry does not meet ([Inactive constraints and
+  dimensions](#inactive-constraints-and-dimensions)).
 
 The positions, curves and status come from the sketch's last evaluation
 while it succeeded and was made from the definition and the parameter
@@ -5033,7 +5135,7 @@ first, then those the file's history suggests without them.
 | `RibFeature`, `WebFeature` | | not translated (fallback): no inputs are recorded besides thickness and depth |
 | `ThreadFeature` | `thread` | `inputCylindricalFaces` (resolved through `point_on_face`) → `faces`; `threadInfo`: `threadType` ISO Metric profile and other metric `M` sizes → `iso_metric`, ANSI Unified → `unified`, BSP Pipe Threads → `whitworth` with `G <size>-<tpi>` → `G <size>`, others fallback; `threadDesignation` → `designation`, `threadClass` → `class` when Mitcad lists it for the face's side (else left out), `isRightHanded` → `right_handed`; `isModeled` true → `modeled` with `diameters` from `majorDiameter`, `minorDiameter` and `pitchDiameter` and the `angle` the next history state shows on each face (one `thread` per face; Whitworth and NPT fall back), tried first without sizing the faces; `isFullLength` false → `length` (`threadLength`), `offset` (`threadOffset`) and `location` (`threadLocation`, swapped where Mitcad's cylinder axis runs against the face's `geometry.axis`). First with an `offset_face` of each face to the thread's major (external) or minor (internal) diameter, as the file sizes threaded faces, and one of each chamfer at the face's ends (a cone about its axis from an end circle, narrowing away from a shaft, widening away from a bore) by the radial step times the cosine of its angle to the axis, so that it moves along the radius with the face as in the file (mitcad#335), then with a tube between the two radii (`cylinder`s and `combine`s) cut from or joined to the body, then without |
 | `HoleFeature` tapped (`holeTapType` Tapped) | `hole` + `thread` | the hole with its diameter (then `tappedHoleInfo.minorDiameter`), and a `thread` on `hole<i>.wall` with the size of `tappedHoleInfo` (as for `ThreadFeature`; for `thread.isModeled` modelled with its diameters, angle 0), and for `thread.isFullLength` false `length` and `offset` from the hole's start (`low_end`); then the hole without the thread |
-| `HoleFeature` | `hole` | `position` (the stream decoder: every point of `_f3d_positions`) on the planar face named by `holePositionDefinition` or through the point, `holeType` Simple/Counterbore/Countersink with `counterboreDiameter`/`Depth` or `countersinkDiameter`/`Angle`, `holeDiameter`, `tipAngle` (180° → `flat`), `extentDefinition` `DistanceExtentDefinition` → `distance`, `ThroughAllExtentDefinition` or `AllExtentDefinition` → `through_all` (others fall back; with the stream decoder's `_f3d_through_all` through all first, checked by the history), `isDefaultDirection` false → `flip`; without a position, the holes the history shows |
+| `HoleFeature` | `hole` | `position` (the stream decoder: every point of `_f3d_positions`) on the planar face named by `holePositionDefinition` or through the point, `holeType` Simple/Counterbore/Countersink with `counterboreDiameter`/`Depth` or `countersinkDiameter`/`Angle`, `holeDiameter`, `tipAngle` (180° → `flat`), `extentDefinition` `DistanceExtentDefinition` → `distance`, `ThroughAllExtentDefinition` or `AllExtentDefinition` → `through_all` (others fall back; with the stream decoder's `_f3d_through_all` through all first, checked by the history), `isDefaultDirection` false → `flip`; one hole whose `holePositionDefinition` (`PlaneAndOffsetsHolePositionDefinition`) gives two edges and their distances → `face_offsets` first, on a cylindrical face one face and a distance from it → `cylinder_offset` first (mitcad#719); a tapped hole's modelled thread is checked against the thread's own state (the hole's last); without a position, the holes the history shows (tried after the decoded definitions) |
 | `Joint` | `joint` | in the component its occurrence paths start in (`_f3d.context_component`); `occurrenceOne` → `a`, `occurrenceTwo` → `b` (`_f3d.path` of occurrence objects → occurrence uids, occurrences of components of other documents included: they are occurrences of empty components; a level inside one leaves the joint out); each side's stored frame (`_f3d.frames`, else `geometryOrOrigin*`) on geometry of the side's component that gives it (a joint origin, construction geometry, a circular edge, a planar face or a face of revolution, with a `frame_override` for the rest; on a component of another document its `"origin"`), else a fixed plane; `jointMotion` → `kind` (`slide_axis` by the motion's slot), the values the motions have where the file places the occurrences (from the frames, mitcad#87: a joint that cannot hold there is not added), `rotationLimits` → `rz`'s and `slideLimits` → the slide's `limits` where they hold those values (else left out), the values → `position` where the rest value is another; `_f3d.opposed` → `flip`, `angle` → `angle`, `offset` → `offset` (an offset the file stores rounded takes the placements' value, mitcad#81), `offsetX`/`offsetY` move `b`'s origin. Kept only where every occurrence stays where it was or goes where the file places it after the item or at the end of its timeline (the occurrences' `_f3d.placements`, else its last captured position, else its stored transform); else an `as_built_joint` of the placements with a warning ([core/import/docs/f3d-components.md](../../../import/docs/f3d-components.md#joints)) |
 | `AsBuiltJoint` | `as_built_joint` | `occurrenceOne`/`Two` → `a`/`b`, `relative` from the placements at its point of the timeline (`_f3d.placements` checked against them, a warning where they differ), `jointMotion` → `kind`, its motion frame `origin` the recorded frame (on geometry of `b`'s component, else of `a`'s, else fixed on `b`), its limits where the recorded placement is the file's and they hold 0 (a rest value other than 0 → `position` 0) |
 | `RigidGroup` (an as-built joint of motion type 11) | `rigid_group` | `occurrences` → the occurrences of its component they are or are in (members below the top level and inside components of other documents move with them); with the component's own geometry among them, rigid `as_built_joint`s of each to it |
@@ -8560,11 +8662,14 @@ recognised as `assembly` whatever its `first_sketch_attaches`.
 
 **New designs** (`Document::new_design`, the bridge's
 `new_design_document`, File > New, MCP's `document_create`, a project's
-`new_design`) start with the root and an empty component `Part1`, active,
-both with the general defaults (mitcad#421): the first sketch or feature
-goes into Part1, Part1 takes components, and a component's sketches may
-lie on Part1's faces. Neither policy is stored, as they are the
-defaults. `Document::new` (and so the importers and `mitcad-cli`) has the
+`new_design`) start with the root and an empty component `Component1`,
+active, both with the general defaults (mitcad#421): the first sketch or
+feature goes into Component1, Component1 takes components, and a
+component's sketches may lie on Component1's faces. Component1 is named
+as any new component is (`Component1`, `Component2`, …; mitcad#711):
+designs made before keep their `Part1`, as the name is stored in the
+file. Neither policy is stored, as they are the defaults. `Document::new`
+(and so the importers and `mitcad-cli`) has the
 general defaults everywhere. Components get the general defaults when
 made (`create_component` takes `policy`, a preset name or settings; the
 application's New Component, the command and the browser's, gives none);
@@ -9214,11 +9319,11 @@ activated first. Its commands place parts in the **BUILD host**: the
 active component when its policy takes components, else the nearest
 component up from it (along its first path from the root) that takes
 components and can be edited, as the design policy puts a new component
-beside a part (*Design policy*, mitcad#292). In a new design Part1 takes
-components (the general defaults, mitcad#421), so the host is Part1, the
-active component, and nothing is redirected; a component set to `part`
-still sends its parts up. When no component up takes components, the
-active one (and the policy's refusal).
+beside a part (*Design policy*, mitcad#292). In a new design Component1
+takes components (the general defaults, mitcad#421), so the host is
+Component1, the active component, and nothing is redirected; a component
+set to `part` still sends its parts up. When no component up takes
+components, the active one (and the policy's refusal).
 The `build_host` query names it. Every path (`at.occurrence`,
 `length.bind.occurrence`) is from the host and every point and direction
 (`at.point`, `at.direction`) in its coordinates; the joints and bound
@@ -11436,6 +11541,14 @@ holes from `Kernel::round_holes`, their threads from the `threads` query.
 | `date` | today (UTC) | the date in the title block |
 | `per_body` | false | a sheet per body: pages of one PDF, or SVG and DXF files `<name>-2.svg`, … |
 | `exact` | true | exact edges; false: from a triangulation (quicker on large bodies; also the fallback when the exact projection fails, and for mesh bodies) |
+| `drawing` | none | a drawing kept in the design (`D1` or its name, *Drawings in the design*), written as it is: its sheets, views and title blocks; the fields above are then its own and refused, except `title` (where its sheets have none) |
+| `sheet` | all | with `drawing`: one sheet's index (0 the first) |
+
+Without `drawing` the export lays out a temporary drawing from the fields
+above (`api/drawing.rs`, `auto_drawing`: each view a base view in the
+grid below, the section a section view without a parent) and draws it as
+a kept one is drawn, so the two give the same file; `add_drawing` with
+`layout` keeps such a drawing in the design (File › Export Drawing).
 
 The sheet (ISO 5457): a frame 20 mm from the left edge and 10 mm from the
 others, the title block (ISO 7200) at the bottom right with the title, the
@@ -13097,7 +13210,8 @@ group), so that the application keeps no table of its own.
   `fuzzy_skin`, `gcode_output`, `process_presets`).
 - Filament: `filament` (`filament_basics`, `flow`, `nozzle_temperature`,
   `bed_temperature`, `chamber`, `volumetric_speed`, `scarf_seam`,
-  `filament_presets`), `cooling` (`part_cooling_fan`,
+  `purge` ([Purge volumes](#purge-volumes)), `filament_presets`),
+  `cooling` (`part_cooling_fan`,
   `slow_down_for_cooling`, `overhangs_and_bridges`, `auxiliary_fan`,
   `exhaust_fan`), `setting_overrides` (`retraction`,
   `toolchange_retraction`, `override_speed`), `advanced`
@@ -13247,8 +13361,11 @@ built-in (read-only) or the user's own, saved in a library or not yet.
   when not given, free among the libraries' items. A material's
   appearance that is not one of Mitcad's goes with it into the file. The
   file is an undo step of its own (`Create Material New Material`): undo
-  removes it. The app makes new items in the design instead and puts
-  them into a library only by `save_to_print_library`.
+  removes it. The design's windows make new items in the design instead
+  and put them into a library only by `save_to_print_library`; My
+  Library (mitcad#704, `app/COMMANDS.md`) makes them in the library with
+  these commands, on an empty design of its own, so that the open design
+  does not change.
 - **Edited in its library.** `edit_material` and `edit_print_profile`
   with `library` read that library's item, apply the change key by key
   on top of its newest version (so an older copy never overwrites newer
@@ -13378,7 +13495,8 @@ comparison), `print_library::tests`, `print_library_tests` (the nearest
 library, the design's copies and their updates, saving into a library,
 the base library's items in this repository; mitcad#655: `library_items`
 rows and places, items made, duplicated, edited and deleted in a library,
-the design's copy taking an edit, chosen in one undo step), `print_files::tests`
+the design's copy taking an edit, chosen in one undo step; mitcad#704: a library
+managed on an empty design), `print_files::tests`
 (synthetic projects, presets and bundles of each dialect read with their
 reports; exports of each dialect read back), `3mf.corpus` (real slicer
 projects under `MITCAD_3MF_CORPUS`, checked against their index rows and
@@ -13809,9 +13927,10 @@ axial warning, a belt check kept with a pulley).
 
 ## Measurement objects
 
-Measurements kept in the design (mitcad#649,
-`core/model/src/document/measurements.rs`, `api/measurements.rs`): the
-browser's Measurements folder. Each has a `name` (`Distance1`, `Angle1`,
+Measurements kept in the design (mitcad#649; since mitcad#702 they are
+[Annotations](#annotations), and these commands are their short forms;
+`core/model/src/document/annotations.rs`, `api/measurements.rs`): the
+application's Annotations window. Each has a `name` (`Distance1`, `Angle1`,
 …), a `color` (`#rrggbb`), a light bulb (`visible`), the `kind` of value
 it shows and one or two picks `a` and `b`, given as the `measure` query's
 selections as fields (*Analysis queries*: `{"body", "face" | "edge" |
@@ -13855,12 +13974,15 @@ The kinds (`kind`) and the picks they take:
 - **Nothing recomputed.** The commands are undo steps that change no
   geometry and recompute nothing. The measurements are saved in the
   design file (`"measurements": [{"name", "kind", "color", "visible"
-  (only when false), "a", "b"}]`, left out when there are none; their
-  values are not stored), the comparison of versions lists them by name,
-  and Move to another parent rewrites their picks' occurrence paths.
+  (only when false), "a", "b"}]`, left out when there are none; as
+  `"annotations"` once one has a field of the annotations, *Annotations*
+  below; their values are not stored), the comparison of versions lists
+  them by name, and Move to
+  another parent rewrites their picks' occurrence paths.
 
-The `measurements` query lists them in the order added: the file form
-(`name`, `kind`, `color`, `visible`, `a`, `b`) and, measured at the marker:
+The `measurements` query (the same as `annotations`) lists them in the
+order added: the file form (`name`, `kind`, `color`, `visible`, `a`, `b`,
+and the annotations' fields) and, measured at the marker:
 
 - `values`: every value the picks have now, by kind (`{"distance": 40,
   "angle": 0, "offset": 40}`);
@@ -13884,9 +14006,37 @@ The `measurements` query lists them in the order added: the file form
   in the design and is measured again when its picks come back (an undo,
   the marker rolled forward).
 
-The application (`app/COMMANDS.md`, *Measurement objects*) keeps a
-measurement from the Measure panel, lists them in the browser, draws the
-shown ones over the view and in its snapshots.
+When the values are worked out (mitcad#716):
+
+- **Hidden ones only when asked.** A hidden one (`"visible": false`) is
+  not drawn, so it is not measured: it is listed in its file form with
+  `"measured": false` and without `values`, `value`, the geometry,
+  `label` (a leader's `label` stays) and `deviations`; `error` only when a
+  pick's body or datum is not there at the marker (known without
+  measuring). `{"query": "annotations", "measure_hidden": true}` (or
+  `measurements`) measures them too, answering every one as shown ones
+  are answered; the application asks so for its Annotations window and
+  the editor of one.
+- **Measured again only when changed.** The model keeps what each pair of
+  picks gave, keyed by the picks as named, each picked body's shape
+  version (the recompute's, which changes whenever the shape does: the
+  `bodies` query's `version`), its component and placement, and each
+  picked datum as placed. A command that changes none of these — a
+  rename, a colour, a light bulb, a change to other bodies, an annotation
+  hidden or shown — answers from what was kept; an undo back to a shape
+  measured before as well. Failures are measured again each time. The
+  last 256 kept are held, in memory only.
+- Two planar faces in parallel planes are measured from a few points of
+  each (a point inside it, its vertices) whose foot on the other's plane
+  lies in the other face: the gap of the planes, with that point and its
+  foot as the closest points, instead of the general distance of every
+  edge and vertex of the two faces (seconds for two walls with rows of
+  holes); when no such point is found, the general distance. The
+  `measure` query's two faces take the same way.
+
+The application (`app/COMMANDS.md`, *Measurement objects*, *Annotations*)
+keeps a measurement from the Measure panel, lists them in its Annotations
+window, draws the shown ones in the view and in its snapshots.
 
 Tests: `measurement_tests` (kept with a default kind, name and colour;
 measured again after a parameter change and its undo; refused picks and
@@ -13895,11 +14045,230 @@ saved and read back, measured after reopening, listed by the comparison of
 versions, broken entries of a file refused; a pick that is gone breaks the
 measurement until the marker or an undo brings it back),
 `api::measurements::tests` (the corners and rays of angles between planes,
-lines, an axis and a plane, parallel picks), `document::measurements::tests`
+lines, an axis and a plane, parallel picks), `document::annotations::tests`
 (colours, kinds, the picks a kind needs), on the mock kernel's measure of
 the picks' boxes (`MockKernel::measures_selections`); `tools/ui-measurement-objects-test.sh`
 and `tools/ui-windows-measurement-objects-test.ps1`
 (`app.ui-windows-measurement-objects`).
+
+## Annotations
+
+Dimensions and leader notes kept in the design (mitcad#702,
+`core/model/src/document/annotations.rs`, `api/annotations.rs`,
+`iso286.rs`), grown from the [measurement objects](#measurement-objects):
+every measurement object is an annotation and the measurement commands are
+short forms of these. ISO 129 style and millimetres. An annotation is a
+dimension (`kind` one of the measurement kinds) or a leader note (`kind`
+`note`); it has the measurement's `name`, `color`, `visible` and picks, and:
+
+| Field | Meaning |
+|---|---|
+| `group` | a group's name (`Manufacturing`), trimmed; left out for none. The application shows and hides a group at once and snapshots one. |
+| `plane` | the plane it lies in: `{"normal": [x, y, z]}` (a direction in the first pick's own coordinates, so that it turns with the pick's occurrence; a length's plane is turned square to its ends), with `"x"` for a note (the direction its text runs along, likewise), or `{"pick": <pick>}`, a planar face or a datum plane it lies parallel to and follows. Left out: chosen from the picks — a length's plane is square to the coordinate axis least along it (Z, then Y, then X), a note's is its face's plane (else XY). A radius, a diameter and an angle lie in the plane of their circle or rays and take no `plane`. |
+| `line_offset` | a length's dimension line from its ends, mm, signed across the ends in the plane (a quarter of the length, at least 1 mm, when left out); an angle's arc radius, more than 0 (half the distance from the corner to the nearer pick's point, else 10 mm). None for a radius, a diameter or a note. |
+| `text_offset` | `[along, across]`, mm in the plane: a dimension's text from its default place (the dimension line's middle; a circle's one and a half radii out along `across` of its axis; an angle's arc's middle); a note's text from its arrow's point (`[10, 10]` when left out). |
+| `format` | a dimension's `{"decimals"` (0 to 6; up to three without trailing zeros when left out), `"prefix"` (in place of the kind's: `Ø` for a diameter, `R` for a radius; `""` for none), `"before"`, `"after"` (own text, e.g. `4 x`, `THRU`), `"replace"` (a text in place of the value and its tolerance)`}`; left out when all are defaults. |
+| `tolerance` | a dimension's `{"type": "symmetric", "value"}` (±), `{"type": "deviations", "upper", "lower"}` (signed, upper more than lower), `{"type": "limits", "upper", "lower"}` (the same deviations written as the largest and smallest size), or `{"type": "fit", "code", "deviations"}` (an ISO 286 code on a length, `H7` a hole's, `g6` a shaft's, of the size as written (its range by the value rounded as shown) — a radius' of its diameter's size, with half its deviations; `deviations: true` writes them in brackets); millimetres for lengths, degrees for angles. |
+| `text` | a note's text, lines split at `\n`. |
+| `at` | a note's, a datum's or a frame's point as picked, in the pick's own (its component's) coordinates: the arrow follows the pick's occurrence. |
+| `letter` | a datum label's letter (*Datums and feature control frames* below). |
+| `frame`, `on` | a feature control frame's tolerance, and the dimension (its name) it stands under instead of a leader (below). |
+
+| Command | Fields | Result |
+|---|---|---|
+| `add_annotation` | `a`, `b`, `kind` (as `add_measurement` chooses it when left out; `note` when a `text` is given), `name`, `color`, `group`, `visible`, the fields above, and `view` | `name`, `kind`; undo step `Add Distance1` |
+| `edit_annotation` | `name`, or `names` of several; any of `new_name`, `kind`, `color`, `group`, `visible`, `a`, `b`, `plane`, `line_offset`, `text_offset`, `format` (only the format's fields given change), `tolerance`, `text`, `at`; `null` sets a field back to its default | `changed`; one undo step `Edit Distance1` / `Edit 3 annotations`, none when nothing changes |
+| `delete_annotation` | `name`, or `names` of several | one undo step `Delete Distance1` / `Delete 3 annotations` |
+
+- **A view's suggestion.** `add_annotation`'s `view` is `{"direction"`
+  (the way the view looks, from the eye), `"up"`, `"pixel"` (mm a pixel
+  near the picks)`}`: what it leaves out is placed as it was seen — a
+  length's or a note's plane square to the view (a length's turned to hold
+  its ends; seen along them, closer than 1e-6, square to the view's up
+  instead; a note's text along the view's right), kept in the first pick's
+  own coordinates, a length's dimension line 22 pixels off on the view's
+  upper side, an angle's arc 42 pixels out, a circle's text 30 pixels past
+  its rim, a note's text 40 and 30 pixels off — and kept as `plane`,
+  `line_offset` and `text_offset`.
+- **Checked.** A note points at one pick, which gives it a point (a body
+  picked without `at` gives none), and needs a text; it has no format or
+  tolerance, a dimension no `text`; a note stays a note and a dimension a
+  dimension. A fit code is a length's (`a fit code is a length's
+  tolerance`); codes not covered are refused with the reason. Several are
+  edited without a new name or picks. Other picks or another kind draw
+  the dimension afresh (its places back to the defaults; between an angle
+  and a length its tolerance dropped too, here and in
+  `set_measurement_kind`); picks whose kind is gone take their first (as
+  `add_measurement`'s default). Another first pick drops a `plane` direction
+  and a note's `at` (kept in the old pick's coordinates) unless given anew;
+  a note edited so must still give a point, as when added.
+- **ISO 286 fit codes** (`iso286.rs`): nominal sizes over 0 up to 500 mm
+  (a range's bound taken up to 1e-6 mm over, the baseline tolerance),
+  grades IT5 to IT11, the holes C, D, E, F, G, H, JS, K, M, N, P, R, S and
+  the shafts c, d, e, f, g, h, js, k, m, n, p, r, s (ISO 286-1's
+  fundamental deviations with the Δ of K, M, N up to IT8 and P, R, S up to
+  IT7, M6's −9 µm of 250 to 315 mm; JS and js of grades 7 to 11 rounded
+  down to even micrometres when the tolerance is odd, of the finer grades
+  exactly half, to half a micrometre). A size over 500 mm keeps the code
+  and says why in the label's `warning`.
+- **The file.** While every annotation has only the fields of the
+  measurement objects of mitcad#649 (a dimension's `name`, `kind`,
+  `color`, `visible`, `a`, `b`: plain measurements made through the API)
+  they are written as `measurements`, which older versions read; once one
+  has another field, all are written as `annotations`. Both are read. The
+  application's Keep stores a `plane` and the places from the view, so a
+  design with dimensions kept from the view needs this version.
+
+The `annotations` query lists them as the `measurements` query does (the
+file form; `values`, `value`, `points` … of a dimension, or `error`), and,
+where the annotation is not broken:
+
+- `label`: a dimension's value in words — `main` (the own text before, the
+  prefix, the value in the document's length unit — written after the
+  value unless millimetres — or degrees, a symmetric tolerance `±0.1` or a
+  fit code), `upper` and `lower` stacked after it (deviations `+0.2`
+  `-0.1`, a zero as `0`; limits; a fit's deviations with `brackets`; a
+  tolerance with the decimals it needs, up to four, both of a stack with
+  the same, not the value's),
+  `after`, `tolerance` (the tolerance alone in words), `warning`, and
+  `text`, all on one line (`Ø20 H7 (+0.021/0) THRU`, `10.1/9.9`); a
+  note's `lines` and `text` (`Deburr / all edges`, also when broken);
+- `deviations`: `{"upper", "lower"}` of its tolerance (mm or degrees);
+- `drawing`, in the design's coordinates: `plane` (`origin`; `x` and `y`,
+  the unit axes `text_offset` is along — a length's dimension line and
+  across it, the tangent at an angle's arc's middle and its radius there,
+  a circle's `across` of its axis and square to it, a note's text and up —
+  and `normal`; a right-handed frame), `line_offset` and `text_offset` (the
+  ones in use: dragging adds to them), `extension_lines` (from a measured point
+  to the dimension line: the application leaves a gap at the point and
+  runs past the line), `dimension_lines` (a length's line, run on under
+  text moved past an end; a radius from the centre or a diameter across,
+  run on to text outside the circle; a note's leader from its text to its
+  point), `arcs` (`center`, `radius`, `from`, `to` unit rays, `normal`),
+  `arrows` (`tip` and the unit `direction` it points along: outwards at a
+  length's ends and on a rim, along an angle's arc, at a note's point),
+  `center` (a circle's, for its centre mark) and `text` (`at`: its middle
+  on the line, or a note's start; `direction` and `up`, unit vectors in
+  the plane). The application keeps the text readable within its plane
+  and sizes arrows and text in pixels.
+
+### Datums and feature control frames
+
+Phase 2 of mitcad#702: two more kinds of annotation on one pick, drawn
+on a leader in their plane as a note is (the same `plane`, `text_offset`,
+`at` and view suggestions; no value, format or tolerance of a
+dimension's).
+
+- **`datum`**, a datum label (ISO 5459) on a planar face, an edge, a
+  round face (its axis) or a datum plane or axis: its `letter`, one or two
+  capitals but I, O and Q, each letter once in the design; left out, the
+  first free one (A, B, C, … Z, then AA, AB, …). Its default name is `Datum<letter>`
+  (`DatumA`). Its leader ends on the feature in a filled triangle: the
+  drawing's `terminator` is `datum`. The label is `{"text": "A", "datum":
+  "A"}`.
+- **`frame`**, a feature control frame (ISO 1101), default name
+  `Frame<n>`: `frame` is `{"characteristic", "value", "diameter",
+  "modifier", "datums"}` — the characteristic (`straightness`,
+  `flatness`, `circularity`, `cylindricity`, `line_profile`,
+  `surface_profile`, `parallelism`, `perpendicularity`, `angularity`,
+  `position`, `concentricity`, `symmetry`, `circular_runout`,
+  `total_runout`), the zone's width in mm (more than 0), `diameter: true`
+  for a cylindrical zone (Ø; straightness, the orientations, position and
+  concentricity only), a material condition `"M"` or `"L"` (Ⓜ, Ⓛ;
+  straightness, the orientations, position, concentricity and symmetry
+  only) and up to three datum letters in order of precedence, each once:
+  none for a form tolerance (straightness, flatness, circularity,
+  cylindricity), at least one for an orientation, concentricity,
+  symmetry and runout, either way for the profiles and position. Its
+  leader ends in an arrow on its pick; with `on` (a dimension's name) it
+  has no leader and stands under that dimension's text: its drawing is
+  that text's place and frame with `"attached": "<name>"` (the
+  application sets the frame just under the dimension line), it is not
+  drawn (no `drawing`) while that dimension is hidden, it follows the
+  dimension's new name when the dimension is renamed (the same undo step),
+  it becomes a leader to its own pick again (no `on`) when the dimension
+  is deleted (the same step), as it does when a file or the document
+  names no dimension of that name in `on`. Under a dimension its drawing
+  and errors are that dimension's alone; its own pick (the dimension's
+  first when it was put there) is only an anchor and is not checked, so
+  it may be a vertex, a datum point or a whole body. A datum label or a
+  frame on its leader whose pick is a point (one left so by a deleted
+  dimension) is broken with the reason. `on` naming a note, a
+  datum, a frame (itself too) or nothing is refused (`DatumA is no
+  dimension`, `there is no dimension Width to stand under`). The label is
+  `{"text": "⟂ | Ø0.05 Ⓜ | A | B", "frame": ["⟂", "Ø0.05 Ⓜ", "A", "B"],
+  "tolerance": "Ø0.05 Ⓜ"}` — the cells of the
+  frame: the ISO 1101 symbol (⏤ ⏥ ○ ⌭ ⌒ ⌓ ∥ ⟂ ∠ ⌖ ◎ ⌯ ↗ ⌰), the tolerance
+  in the document's unit (none written), each datum — with a `warning`
+  (`no datum label C`) for a letter no datum label has.
+
+`add_annotation` makes a datum of a `letter` (or `kind: "datum"`), a
+frame of a `frame`; `edit_annotation` changes `letter`, `frame` (whole)
+and `on` (`null` for a leader again). A datum still named by its letter
+(`DatumA`) is renamed with a new letter (`DatumD`); frames referring to a
+datum whose letter changes refer to the new letter (the same step; refused
+when a frame would then refer to a letter twice: `Frame1: datum C is
+referred to twice`); the letters a frame refers to and its `on` are
+stored trimmed. A datum or a frame on a leader stands on a face, an
+edge, an axis or a plane: a vertex or a datum point is refused (`a
+datum label stands on a face, an edge, an axis or a plane, not on a
+point`). Common datums (`A-B`, one datum from two features) are not
+supported yet: a frame's datum is one label's letter. A datum, a frame
+and a note keep their kind (`a frame stays a frame, a dimension a
+dimension`); a letter in use is refused (`datum A exists`). Files keep
+them as `annotations`; a file with one letter on two labels is refused
+on load as an edit would refuse it (`annotations[1]: datum A is
+lettered on 'DatumA' and on 'DatumB'`, mitcad#713). A frame under a
+dimension whose pick is a vertex, a datum point or a whole body goes
+onto a leader with another pick in the same edit (`"on": null, "a": …,
+"at": …`): the check takes the new pick.
+
+`{"query": "next_datum_letter"}` gives the letter a new datum label
+takes when none is given (`{"letter": "C"}`), for an application to
+offer: neither a label's nor one a frame refers to; `every datum letter
+is in use` when none is left (and so for `add_annotation` without a
+letter).
+
+`{"query": "geometric_characteristics"}` lists the characteristics in
+that order, each with its rules, for an editor of frames:
+`{"key": "position", "symbol": "⌖", "datums": "optional", "diameter":
+true, "modifier": true}` (`datums`: `none`, `optional` or `required`;
+`diameter`: whether it may have a cylindrical zone; `modifier`: whether
+it takes Ⓜ or Ⓛ).
+
+Errors besides the measurement's: `the plane: its pick is not there: …`,
+`the plane: its pick is not a planar face or a datum plane`, `the note's
+pick has no point to point at: …` (a body picked without a point).
+
+Tests: `annotation_tests` (added with a group, format, tolerance and
+places, the stored form and reading back, refused fields; datums and
+feature control frames: letters, ISO 1101's rules, a frame under a
+dimension, edited, saved and read back, the characteristics' list, a
+frame following its renamed dimension and not drawn under a hidden one,
+`on` refused for a leader, itself and nothing and `null` for a leader,
+datum names and frames' datums following their letters, letters past Z,
+points refused, a frame under a dimension from a point, frames of a
+deleted dimension on leaders again, the next datum letter (not one a
+frame refers to), a new letter refused when a frame would refer to it
+twice, a saved state opened again, a frame under a dimension from a
+body, a frame's zone in inches; older files' `measurements` opened unchanged
+in value, written so while they need nothing more, both lists read; a
+note on a component's face following its occurrence, a body without a
+point refused; a view seen along a length; a length's drawing in its
+plane, its text and line moved,
+following a parameter, back to the defaults, a picked plane and a broken
+one; a view's plane and places; notes pointing at a face's point,
+following it, refused fields, broken; fit codes' deviations and the size
+range; several edited,
+undone, renamed, given other picks and deleted as one step),
+`api::annotations::tests` (values, prefixes, decimals, own text and every
+tolerance in words, with their own decimals, a radius' fit; the layouts
+of a length, a circle, an angle and a
+note), `iso286::tests` (ISO 286-2's classes at 20 mm, range bounds,
+intermediate ranges, Δ, K8, JS rounding and half micrometres, a size a
+hair over a bound, codes refused),
+`document::annotations::tests` (checks of fields, older measurements read
+and written the same).
 
 ## Parameter limits
 
@@ -14256,3 +14625,875 @@ and source range. The query never changes the formula, parameters or limits.
 The editor's templates are ordinary expression text. Limits continue to use
 `set_parameter` with `min`, `max`, `step` and `strict`; setting a formula and its
 limits together remains one undoable parameter command.
+
+## Purge volumes
+
+How much the printer purges when it changes from one filament to another
+(mitcad#705; `core/model/src/print_purge.rs`, `document/purge_volumes.rs`,
+`api/purge_volumes.rs`, `print_files/`): a table of the filament slots, a
+row per filament changed from and a column per filament changed to, in
+mm³, which the 3MF export writes for the slicers that keep one.
+
+- **A material's values.** Two keys of the `Print Filament` set, Mitcad's
+  own (no slicer keeps them per filament; the [key map](#print-settings-key-map)'s
+  group `purge` in the category `filament`): `purge_into` (purging into
+  it, when the printer changes to it) and `purge_out` (purging out of it,
+  when it changes from it), mm³, zero or more. A material that sets
+  neither takes them from the colour it prints with (its
+  `filament_colour`, else its appearance's): by the colour's lightness
+  `L` (CIE L*, 0 black to 1 white), into 70 + 140 · L and out of
+  70 + 140 · (1 − L), whole mm³. Mid grey takes 140 each way, black 70
+  into and 210 out, white 210 into and 70 out.
+- **The multiplier.** `flush_multiplier` of the `Print Process` set
+  (category `others`, group `filaments`; the Bambu family's key), 1 when
+  unset; the design's is the first body's.
+- **The computed table:** from one filament to another, out of the first
+  plus into the second, times the multiplier, whole mm³; 0 from a
+  filament to itself. Dark to light so takes more than light to dark
+  (black to white 420, white to black 140).
+- **Pairs set by hand** ("overrides"): the design keeps a volume for an
+  ordered pair of materials (from, to), as it is: the multiplier does not
+  apply to it. Resetting it gives the computed volume again.
+- **The slots** are those the 3MF export makes: the bodies in their order
+  (sheet and empty bodies are not printed), a slot per distinct material
+  in the order of first use, each body's material and settings in the
+  occurrence that shows it first.
+- **Export** (`export` with a `dialect`): the Bambu family (Bambu Studio,
+  OrcaSlicer, QIDI Studio) gets `flush_volumes_matrix` (the table divided
+  by the multiplier, which the slicer applies; one table per extruder, as
+  many as the printer's `nozzle_diameter` entries), `flush_multiplier`
+  (one text) and `flush_volumes_vector` (out, then in, per slot,
+  unmultiplied); PrusaSlicer, which has no multiplier,
+  `wiping_volumes_matrix` (the table as it purges),
+  `wiping_volumes_use_custom_matrix = 1` and `wiping_volumes_extruders`
+  (out, then in, per slot, multiplied). Cura has no table, and its
+  per-material prime volumes are extruder settings, which its export does
+  not write: nothing.
+- **Import** (`import_print_profile` into the design): a Bambu-family
+  project's `flush_volumes_matrix` (its first extruder's table, times its
+  `flush_multiplier`) or a PrusaSlicer project's or configuration's
+  `wiping_volumes_matrix` (unless `wiping_volumes_use_custom_matrix` is
+  0) becomes the pairs set by hand of its materials, in the same undo
+  step; a table of another size is left out (the report says so). None of
+  these keys is kept as the slicer's text; the report counts them as
+  read.
+
+| Command | Fields | Result |
+|---|---|---|
+| `set_purge_volumes` | `volumes`: `[{from, to, volume}]`, material ids (built-in or the design's) and mm³ (zero or more); a `volume` of null or left out resets the pair | undo step `Set Purge Volume PLA Plastic to ABS Plastic`, `Reset Purge Volume …`, or for several `Set Purge Volumes` (`Reset Purge Volumes` when all reset), which recomputes nothing; none when nothing changes. Refused: an unknown material, a material to itself, a negative volume, no pairs |
+
+| Query | Fields | Result |
+|---|---|---|
+| `purge_volumes` | `bodies` (uids of the bodies printed, in order; the design's when left out) | `multiplier`; `slots`: `{material, name, color, purge_into, purge_out, bodies}` (the values used: the material's own or its colour's); `volumes[from][to]`: `{computed, volume, edited}` (`volume` the one used, `edited` set by hand) |
+| `purge_defaults` | `color` (`#RRGGBB`; mid grey when left out) | `{purge_into, purge_out}`: what a material of that colour without its own values takes (the material editor's empty fields) |
+
+The design file keeps the pairs set by hand as `"purge_volumes": [{"from",
+"to", "volume"}]`, left out when there are none; a pair of a material the
+design no longer has is kept (it applies again when the material comes
+back).
+
+Tests: `print_purge::tests` (the colour rule, the multiplier, overrides in
+the table, a project's table as pairs), `print_files::purge_tests` (the
+computed table, a material's own values, pairs set, kept, reset, saved and
+refused, the Bambu-family and PrusaSlicer exports, both imports),
+`tools/ui-purge-volumes-test.sh` (3D Print's Purge volumes table).
+
+## The reference in parts over MCP
+
+This reference is about 1 MB, more than an agent's context. The MCP
+servers (headless and live, `docs/mcp.md`) give it in parts through the
+read-only tool `model_reference` (mitcad#714), parsed from this file in
+`core/mcp/src/reference.rs`; the resource `mitcad://reference/commands`
+still holds all of it.
+
+| Arguments | Result |
+|---|---|
+| none | `contents` (the `##` and `###` headings), and `queries`, `commands`, `features`: the names MCP permits |
+| `section` | one section with its subsections, found by its heading, a name its heading lists (`split_body`) or a part of its heading |
+| `query`, `command` | the rows of its tables (tables whose first column is `Query` or `Command`), with their headers and the headings above them |
+| `feature` | the section of the feature type: the heading that lists it, or the section of its first example definition (a code block with `"type": "<name>"`), and that `example` |
+| `search` | the headings and the lines that contain a text, each line's headings and an excerpt |
+
+Each answer holds at most 64 kB of text; a longer one gives
+`next_offset` for `offset`. So that the tool finds things, keep to the
+forms it reads: a feature type's section is a `###` heading that names
+the type (`### rib, web`, or a list after a colon) or has an example
+`{"type": "<name>", …}`; a command's or query's row is in a table whose
+first header cell is `Command` or `Query` and names it in backticks in
+its first cell.
+
+The names come from `api::classes`: `external_queries()` (the model
+class), `external_commands()` (the model class, and the commands that
+are the model's own in some form: `create_appearance`, `edit_appearance`,
+`set_render_settings` without a file, `build_place`, `build_connect`,
+`build_panel`, `build_swap_fasteners` with a source of the design) and
+`FeatureDef::TYPE_NAMES`. The MCP server's errors name the same lists:
+an unknown query or command lists the permitted ones, and a refused
+command that misses a field gets the section of its feature type, or its
+command's rows, in `reference` (`docs/mcp.md`, "Transport, errors and
+limits").
+
+## Drawings in the design
+
+Drawings kept in the design (mitcad#707, phase 1;
+`core/model/src/drawing/def.rs`, `document/drawings.rs`,
+`api/drawings.rs`): the root's and each component's Drawings folder.
+A drawing is a definition only: its sheets and their views, each with its
+place on the sheet, scale, style, label and subject. The lines are
+projected from the model whenever the drawing is asked for, so a drawing
+follows the model; nothing computed is stored. A drawing of a component
+shows that component in its own coordinates and belongs to it: a copy of
+the component (Paste New, Insert Component as a copy) brings copies of
+its drawings, with their bodies and occurrences mapped, and deleting the
+component deletes them. A component a feature made (a new-component
+operation, a component from bodies) that is filled into an existing
+empty component (`move_made_component`) moves its drawings there (a
+name the folder has gets the next free one); an edit that would remove
+it (the feature no longer a new-component operation) is refused while
+it has drawings (`Component1 has drawings in its Drawings folder;
+delete them first, or keep the new-component operation`), as while it
+has features or occurrences; deleting the feature keeps it, with its
+drawings, as a plain component. Dimensions, centre marks, notes and
+symbols on views: *Annotations on drawing views* (phase 2).
+
+Ids: a drawing is `D<n>` (`uid`), named uniquely in its folder
+(`Drawing1`); commands take the id or a name only one drawing has. Its
+sheets are numbered from 0 in their order; its views have ids from 1,
+unique in the drawing. Points on a sheet are millimetres of paper from its
+lower left corner.
+
+| Command | Fields | Result |
+|---|---|---|
+| `add_drawing` | `component` (uid or name; the root when left out), `name` (the next free `Drawing<n>`), the first sheet's `size`, `orientation`, `projection`, `title_block`, `units`, `annotations` (below), `layout` (instead of an empty sheet: `export_drawing`'s fields without `path` and `format`, laid out as the export lays them out; the root's only) | `drawing`, `name`, `component`, `sheets`, `warnings`; undo step `Add Drawing1` |
+| `edit_drawing` | `drawing`, `name` | undo step `Rename Drawing1` |
+| `delete_drawing` | `drawing` | undo step `Delete Drawing1` |
+| `add_drawing_sheet` | `drawing`, `sheet` (where it goes; the end), `name` (`Sheet<n>`), and the sheet's fields; the others are the last sheet's | `sheet`; undo step `Add Sheet2 to Drawing1` |
+| `edit_drawing_sheet` | `drawing`, `sheet` (0), and the fields to change | undo step `Edit Sheet1 of Drawing1` |
+| `delete_drawing_sheet` | `drawing`, `sheet`; refused for the last one | undo step `Delete Sheet2 of Drawing1` |
+| `add_drawing_view` | `drawing`, `sheet` (0), `type`, and the fields of its type (below) | `view`; undo step `Add view 3 to Drawing1` |
+| `edit_drawing_view` | `drawing`, `view`, and what changes (below) | undo step `Move view 3 of Drawing1` (a move alone) or `Edit view 3 of Drawing1` |
+| `delete_drawing_view` | `drawing`, `view` | `deleted`: the view and the views that come from it; undo step `Delete view 3 of Drawing1` |
+
+The commands change no geometry and recompute nothing; nothing changed is
+no undo step.
+
+**Sheets.** `size`: `A4` (default) … `A0`, `ANSI_A` … `ANSI_E`;
+`orientation`: `landscape` (default) or `portrait`; `projection`:
+`third_angle` (default) or `first_angle`; `title_block`: `title` (the
+component's name, or the design's: the query's `title`, else the root's
+name unless it is `Root`), `number` (the drawing number; without one the
+block names the bodies drawn), `author` (`DRAWN BY`; without one `MADE
+WITH Mitcad`), `date` (today's when drawn); `""` clears a field;
+`units`: a length unit symbol (the design's when left out, `""`);
+`annotations`: `{"dimensions", "hole_table", "sketch_dimensions"}`,
+File › Export Drawing's automatic annotations (all off for a new drawing;
+those of its options for one laid out). A drawing of several sheets
+numbers them in the title block (`A3 1/2`).
+
+**Views.** Each view has a `place`: where its anchor lies on the sheet,
+the component's origin as the view sees it (a detail's centre), so views
+that share an axis share a coordinate of their places at the same scale.
+
+| `type` | Fields when added | What it shows |
+|---|---|---|
+| `base` | `direction` (`front` (default, from -Y), `back`, `top` (+Z), `bottom`, `left`, `right` (+X), `iso` (front, right, above), `iso_top_left`, `iso_bottom_right`, `iso_bottom_left`; `{"toward_eye", "x_axis"}`; or `{"toward_eye", "up"}`: the application's camera), `subject`, `at` (where its box's middle goes; the sheet's middle, moved right clear of the other views; a view placed for itself is moved on while it overlaps another, then the other way, never out of the sheet's area for views, and stays where it would go, overlapping, when there is no room), `scale` (`"fit"` or left out: the largest ISO 5455 scale at which it takes two fifths of the sheet at most each way) | the subject from that direction |
+| `projected` | `parent`, `side` (`right`, `left`, `above`, `below`, or a corner `above_right`, …; from `at` when left out), `at` (where its box's middle goes; beside its parent, moved away from it clear of the other views, never back past it: with no room that way it stays beside its parent, overlapping) | an orthographic view seen from that side of its parent (third angle) or from the opposite one (first angle); at a corner, the view from that corner (an isometric view of a standard one) |
+| `section` | `parent`, `line` (two sheet points on the parent), `flip` (look the other way), `letter` (the next free: A, B, … without I, O, Q), `hatch` (true), `at` (where its box's middle goes; beside its parent on the side it is seen from in third angle, on the other side in first angle, clear of the other views, moved away from its parent only) | the parent's subject cut by the plane through the line and the parent's direction; what lies on the normal's side (left of the line as drawn, `flip`: right) goes and the view looks at the cut along -normal; the line, its arrows and letters are drawn on the parent |
+| `detail` | `parent`, `center` (a sheet point on the parent), `radius` (sheet millimetres on the parent, 10), `letter`, `at` (where its centre goes; right of its parent, clear of the other views, moved away from its parent only) | what the parent shows inside the circle, projected in the detail's own style as its parent looks (a detail of a section cut by the section's plane), at twice the parent's scale unless given; the circle and its letter are drawn on the parent |
+
+Every view also takes `scale` (`"1:2"`, `"2:1"`, a number; a projected
+and a section view take their parent's when left out), `style`
+(`{"hidden_lines", "tangent_edges", "shaded", "polygonal"}`; a view other
+than a base view takes its parent's when left out; an isometric view and
+a section show no hidden edges; `shaded` fills the faces in grey under
+the lines from the kernel's triangles) and `label` (written under the
+view; a section's `SECTION A-A` and a detail's `DETAIL B (2:1)` when left
+out). A base view's `subject`: `{"type": "design"}` (default: every shown
+body of the drawing's component and its occurrences),
+`{"type": "occurrence", "occurrence": "O2/O5"}` (a path from the
+drawing's component), `{"type": "bodies", "bodies": [{"body": "F2.b0",
+"occurrence": "O2"}]}` (each where the occurrence places it, or wherever
+it is shown when `occurrence` is left out). Views of other types show
+their parent's subject.
+
+`edit_drawing_view` takes `place` (the anchor's new place) or `move`
+(`[dx, dy]`, a drag), `scale` (`"parent"`: the parent's again; a base view, which has no
+parent, takes the one that fits the sheet, as `"fit"` does), `style`,
+`label` (`""`: the default), a base view's `direction` and `subject`, a
+projected view's `side`, a section's `letter`, `hatch` and `flip`, a
+detail's `center` and `radius` (on the sheet) and `letter`, `breaks` (all
+of them, `[]` none) or `add_break`, and `aligned`. A view that moves
+takes the views that come from it along. A projected or section view is
+kept in line with its parent (`aligned`, true): one beside its parent
+keeps its parent's y, one above or below its x (a section the axis its
+view shares with the parent's; a view of a detail lines up with the
+detail's centre); `"aligned": false` lets it go. A break:
+`{"direction": "horizontal" | "vertical", "from": [x, y], "to": [x, y],
+"gap": 6}`, two sheet points whose coordinates along the view's x
+(horizontal) or y (vertical) bound the band taken out; the two sides
+close up to `gap` millimetres of paper with a break line at each. A
+break is its own view's: the views in line with it keep their length.
+
+Refused: a parent that is not an earlier view of the sheet, a subject on
+a view other than a base view (a laid out section without a parent keeps
+its sheet's bodies as its own), a section line of no length, a detail
+circle of no size, overlapping breaks, a field the view's type does not
+have, `"fit"` for a view other than a base view, an unknown unit, two
+drawings of a folder with one name, the last sheet's deletion, a drawing
+of a linked component, and turning a view that has sections or details
+drawn on it or on a view from it (a base view's `direction`, a
+projected view's `side`, a section's `flip`, the sheet's `projection`
+while a projected view has them): `view 1 has section or detail views:
+delete them before turning it`.
+
+The `drawings` query lists the drawings: `drawing`, `name`, `component`,
+`component_name`, `exported`, `sheets` (`name`, `size`, `views`: their
+count). `exported` numbers the drawings `add_drawing` laid out from a
+`layout`, in the order they were made (1, 2, …; 0 for the others): File ›
+Export Drawing offers the highest one first and writes it as it is
+(mitcad#725). A drawing is never laid out again: what was made on it by
+hand stays.
+
+The `drawing` query (`drawing`, `sheet` (0), `geometry` (true), `title`)
+gives the drawing's `sheets`, each with `name`, `size`, `orientation`,
+`projection`, `width`, `height`, `title_block`, `units`, `annotations` and
+`views`: `id`, `type`, `parent`, `place`, `scale` and `scale_text`,
+`own_scale`, `automatic_scale` (what it would be without its own: its
+parent's, twice that for a detail, 1:1 for a base view), `style`,
+`own_style`, `label`, `aligned` (`"x"`, `"y"` or null), `breaks`, and a
+base view's `direction` and `subject`, a projected view's `side`, a
+section's `letter`, `hatch` and `span`, a detail's `letter` and `circle`
+(`center` and `radius` on the sheet). The sheet asked for is drawn: each
+view's `box` on the sheet (null when it shows nothing), or `error` (why
+it is not drawn: `the body F9.b0 is gone`, `the occurrence O3 is gone`,
+`its parent, view 2, is not drawn`, a kernel failure) with `broken` and
+a 30 mm `box` about its place, so that it can be picked and deleted; the
+sheet's `scale` (the first base view's) and `warnings`, and
+with `geometry` its `groups` as the export writes them (`class`, `id`,
+`items`: `{"line": [a, b], "pen"}`, `{"arc": {"center", "radius",
+"start", "end"}, "pen"}`, `{"polyline": points, "closed", "pen"}`,
+`{"fill": points}`, `{"shade": points, "grey"}`, `{"text", "at",
+"height", "angle", "anchor"}`; pens `thick`, `thin`, `hidden`, `hatch`,
+`chain`, `frame`). Groups: `view` (`id` `view-front`, … by its direction,
+`view-section`, `view-detail`, else `view-V<id>`), `view-label`,
+`section-line`, `detail-circle`, the automatic annotations' groups,
+`frame`, `title-block`.
+
+How a view is worked out: a base view's subject is found in the drawing's
+component at the timeline marker (`Document::instances` below the
+component's first placement, moved into its coordinates); the kernel
+projects it (`Kernel::project_view`, the drawing family: hidden-line
+removal and sections by OCCT); the projection is kept in the document's
+projection cache (the 64 used last) by the bodies' shape versions and
+placements and the view's spec, so asking again projects only what
+changed; the bodies' edges and faces that picks are found among are kept
+by a bound of their own (4096 bodies, a body's newer version replacing its
+older one), so a sheet of many bodies does not
+throw them out on every draw. A detail is projected in its own style and cut to its circle,
+and breaks take their bands out (`crate::drawing::clip`: lines and
+polylines cut where they cross, arcs split at the circle or, across a
+break, as polylines, cut faces clipped as polygons), all in Rust on the
+projected lines. A shaded view's faces are those that face the eye (a
+mirroring placement turns their triangles over). The sheet is then drawn
+by the export's code (`drawing::compose::render`); each view tags the
+round holes of the bodies it shows, not those inside its breaks, and a
+kernel failure finding a body's holes is a warning of the sheet.
+
+Files: `"drawings": [{"uid", "name", "component" (unless the root's),
+"exported" (when a layout laid it out), "sheets": [{"name", "size", "orientation", "projection", "title_block",
+"units", "annotations", "views": [{"id", "kind": {"type": "base",
+"direction"} | {"type": "projected", "parent", "side"} | {"type":
+"section", "parent", "origin", "normal", "span", "letter", "hatch"} |
+{"type": "detail", "parent", "center", "radius", "letter"}, "place",
+"scale", "style", "label", "subject", "breaks", "aligned"}]}]}]`, left
+out when there are none and each field at its default left out; the
+comparison of versions lists drawings by id with their changed fields
+(`sheets[0].views[1].place`).
+
+Classes: the commands and both queries are the model's (`classes.rs`).
+`export_drawing` with `drawing` writes one (*Drawings*); `mitcad-cli
+export-drawing <design> <out> --drawing D1 [--sheet N]` too (the sheet
+from 1; the options that lay out a new drawing are refused with it).
+Tests: `drawing::stored_tests` (directions of projected and section
+views; the definition, its checks and file form; views placed,
+projected, cut and detailed; moves in line with parents; breaks; the
+model changed under a drawing and projections kept; undo, the design
+file, the comparison; refusals; a component's drawings copied and
+deleted with it, and inserted with a design; a kept drawing exported; a
+laid out drawing the same as the export's; the drawings laid out
+numbered and one written again as it is, mitcad#725; per-body sheets;
+hole tags
+per view and under breaks; first-angle placement; a detail of a
+section; sections and details on a broken view; the refusal to turn a
+view; a view that cannot be drawn; a made component's drawings),
+`drawing::clip::tests`; `tools/ui-drawings-test.sh`,
+`tools/ui-windows-drawings-test.ps1` (`app.ui-windows-drawings`).
+
+## Annotations on drawing views
+
+Dimensions, centre marks and centrelines, leader notes, datum labels,
+feature control frames and surface finish symbols on a drawing's views,
+and text notes on its sheets (mitcad#707 phase 2;
+`core/model/src/drawing/annotate.rs`, `api/drawing_annotations.rs`). One
+engine with the annotations of the model (*Annotations*, mitcad#702): a
+dimension's value is written by the same code, with its prefix (Ø, R),
+decimals, own text (`format`: `decimals`, `prefix`, `before`, `after`,
+`replace`), tolerance (`tolerance`: `symmetric`, `deviations`, `limits`
+or an ISO 286 `fit` code) and the same checks; a datum label's letter and
+a frame's `frame` are those of *Datums and feature control frames*.
+
+**Picks are model topology seen through the view.** A pick is
+`{"body", "occurrence", "edge" | "face", "point"}`: a body the view shows,
+where an occurrence places it (a path from the drawing's component;
+none for its own placement), and one of its edges or round faces by its
+topological name, or a point of an edge (`"start"`, `"end"`, `"center"`:
+a circle's centre, a straight edge's middle; a round face's `"center"`:
+its axis). Commands take a pick, or a sheet point (`[x, y]`, mm) where
+the view's nearest pick is found: the bodies' named edges
+(`Kernel::edge_geometries`) and round faces (`Kernel::face_geometries`,
+cylinders, their ends the body's circles on their axis), projected as
+the view sees them (a circle end on as a circle, from the side as its
+diameter; a round face from the side as its axis between its ends); an
+edge's end or a circle's centre within 2 mm of paper first, else an edge
+or face within 3 mm, of what the type wants (an ordinate a point, a
+circle's rim or a round face giving its centre; an angle a straight
+edge; a radius, a diameter and a centre mark a circle or a round face).
+A view sees what it shows (mitcad#717): an edge's part nearest the click
+must lie inside a detail's circle and outside a break's band (a long edge
+across a band or into a detail is picked where it shows); a section sees
+what lies behind its plane (an edge in front of it is no pick, one across
+it is cut there) and picks a planar face where its plane cuts it (the
+cut face's edge in the face's plane, `{"body", "face"}`, found again on
+every draw among the projection's cut faces). Picks as near as one
+another (within 0.25 mm of paper) are told apart by the view: the one
+the projection draws as a visible line first, then the one nearest the
+eye. An arc is where it is (seen end on its range of angles, from the
+side its reach), and a whole circle has no start or end to pick. A round
+face reaches between the circles of its own edges (not those of another
+face on its axis). Whenever the
+sheet is drawn each pick is found again by its name
+(`Kernel::edge_geometry`, `Kernel::face_geometry`), so the annotation
+follows the model; one that is gone (its body no longer shown by the
+view, its edge or face not in the body, a face that is not round) makes
+the annotation **broken**: it is not drawn or exported, the `drawing`
+query says why and gives it a small box beside its view, and the sheet's
+warnings say `annotation 2 on view 3: the face F4:side(c1) of Body1 is
+gone`.
+
+| Command | Fields | Result |
+|---|---|---|
+| `add_drawing_annotation` | `drawing`, `view`, `type` (below), `picks` (picks or sheet points), `along`, `at` (a sheet point: a dimension's line and text there, a leader's text, a symbol), `format`, `tolerance`, `text`, `letter`, `frame`, `finish`, `series`; a text note: `"type": "text"`, `sheet` (0), `at`, `text`, `height` (3.5 mm) | `annotation` (its id), `annotations` (all of a series); undo step `Add dimension 3 to Drawing1`, `Add note 4 to Drawing1`, `Add 2 dimensions to Drawing1` |
+| `edit_drawing_annotation` | `drawing`, `annotation`, and what changes: `move` (`[dx, dy]`, a drag on the sheet), `at`, `picks` (drawn afresh), `along`, `format` (the fields that change; `null` back to the default), `tolerance` (`null`: none), `text`, `letter`, `frame`, `finish`, `line_offset`, `text_offset` (`null`: the default); a text note's `text`, `at`, `move`, `height` | undo step `Move dimension 3 of Drawing1` (a move alone) or `Edit dimension 3 of Drawing1` |
+| `delete_drawing_annotation` | `drawing`, `annotation` or `annotations` | `deleted`; undo step `Delete annotation 3 of Drawing1` |
+
+| `type` | Picks | Shows |
+|---|---|---|
+| `linear` | two | the distance of the picks along the view's x (`"along": "horizontal"`), its y (`"vertical"`; from the picks when left out: the axis they lie further apart along) or `"aligned"` (square to a straight edge picked, else along the line between them); a straight edge stands for its middle, its extension line starts at its end nearer the dimension line |
+| `angle` | two straight edges | the angle between them as seen, an arc about their corner (refused for parallel ones) |
+| `radius`, `diameter` | a circle or a round face | its true radius or diameter: end on, a line from the centre (across for a diameter) to the rim, run on to the text on a shoulder; from the side, a linear dimension across it |
+| `ordinate` | an origin and a point | the point's coordinate from the origin along the view's x or y (`along`), on a leader to the origin's level |
+| `center_mark` | a circle seen end on, or a round face from the side | crossed centre lines beyond the rim, or the face's centreline |
+| `centerline` | a round face, two circles or points, or two parallel edges | the axis; the line through the centres; the line halfway between the edges, over both |
+| `note` | one | `text` (lines split at `\n`) on a shoulder, a leader to the pick's point nearest where it was clicked |
+| `datum` | one | the letter (`letter`; the first one neither the drawing's datum labels nor the model's have) in a square on a leader ending in a filled triangle |
+| `frame` | one | `frame`'s cells (the characteristic's symbol drawn as lines, the zone, the datums) on a leader |
+| `finish` | one | ISO 1302's symbol on the surface: `finish` `{"process": "any" \| "removal" \| "no_removal", "text": "Ra 1.6"}` |
+
+Places are kept in millimetres of paper, relative to the picks, so an
+annotation keeps its look at any scale and moves with its view and the
+model: `line_offset` (a linear dimension's line across from the middle
+of its picks, an ordinate's level from its origin, an angle's arc
+radius; when left out, a linear dimension's line goes 10 mm beyond the
+view's box on the side of its picks), `text_offset` (along and across a
+dimension line; a leader's text, a datum's square, a frame, a symbol from
+the arrow's point: 10, 8 by default; a circle's text from its centre),
+`at` (where a leader's pick was clicked, in view millimetres). `series`:
+`"baseline"` makes a linear dimension from the first pick to each other
+one, their lines 7 mm apart; `"chain"` from each to the next, in a row.
+An angle's arc keeps a radius of 2 mm at least, whether dragged, placed
+or given as `line_offset`.
+
+**Pictorial views** (an isometric view, a projected view from a
+corner, any view that does not look along an axis of its component, and
+their details; mitcad#717): lengths along the view's x or y, ordinates
+and angles would be foreshortened, so a horizontal or vertical linear
+dimension, an ordinate and an angle are refused there (and drawn broken
+when a file has one); a linear dimension is aligned there unless told
+otherwise and measures the true distance of its picks' points in 3D (a
+straight edge's middle, a circle's centre); radii and diameters are true
+anyway. A base view along a given direction (not a standard one) that
+looks square at a planar face of a body it shows, and its details, are
+orthographic for the annotations whose picks all lie on such bodies
+(mitcad#718, mitcad#722); the isometric presets and the corner views stay
+pictorial whatever face they look square at. An aligned dimension on any
+view along no axis keeps measuring its picks' true distance in 3D (in
+the face's plane the same as the projected one), so a file's aligned
+dimensions keep their values.
+
+**Datum letters** are one set for the model and its drawings: a datum
+label of a drawing takes the first letter that neither the model's nor
+any drawing's datum labels have and no frame refers to (the model's
+`next_datum_letter`, which counts the drawings' too), and a letter in use
+anywhere is refused (`datum A exists: DatumA`, `datum B exists: a datum
+label of Drawing1`), in the model as on a drawing. An edit that keeps an
+annotation's letter is no new claim (a file where two drawings share a
+letter edits as before). A copy of a component (Paste New, Insert
+Component as a copy) gives its drawings' datum labels the next free
+letters where theirs are in use in the design, and their frames refer
+to the new letters (mitcad#718).
+
+**Views.** `add_drawing_view` and `edit_drawing_view` take
+`center_marks` (on when a view is added: a centre mark on each circle
+the view sees end on that turns half way round at least, a half hole's
+too, concentric ones once, and a centreline on each round face it sees
+from the side whose ends do; inside a detail's circle, outside breaks
+and behind a section's plane only) and `retrieved_dimensions` (off: the
+dimensions of the sketches that shape the bodies the view shows (those
+of the features that made or name them, and of their components'
+features that neither make nor name a body), seen square on, where the
+view shows them (behind a section's plane, in a detail's circle, beside
+breaks), written by #702's engine; the root's drawings; not on pictorial
+views). A sketch dimension a view retrieves is not drawn again by the
+sheet's `sketch_dimensions`. A view's deletion takes its annotations
+along.
+
+The `drawing` query's sheet asked for has `annotations`: each view
+annotation in its file form with `view`, `broken`, `label` (its words on
+one line: `40 ±0.1`, `Ø10 H7`, a note's lines joined by ` / `, a datum's
+letter, a frame's cells joined by ` | `), `value` (a dimension's, mm or
+radians), `warning` (a fit code out of range, a datum referred to that no
+label has), `box` (on the sheet), or `error`; then the text notes
+(`"type": "text"`, `text`, `at`, `box`). Views list `center_marks`,
+`retrieved_dimensions` and their annotations' ids. Groups: `dimension`
+(`id` `A3`), `center-mark`, `note`, `datum`, `feature-control-frame`,
+`surface-finish`, `retrieved-dimension`. The export draws them and counts
+the dimensions in its `dimensions`.
+
+The `drawing_pick` query (`drawing`, `sheet` (0), `view` (the smallest
+drawn view there when left out), `at`, `type` or `want`: `any`, `point`,
+`line`, `circle`) gives the pick a click there makes: `view`, `pick`,
+`seen` (`point`, `line`, `circle`, `axis`), `at` (its point on the
+sheet) and `items` to show it (`{"point"}`, `{"line"}`, `{"circle":
+{"center", "radius"}}`, `{"arc": {"center", "radius", "start", "end"}}`,
+sheet mm), or `"pick": null`. The `drawing` query also gives
+`datum_letters`: the letters of the model's and every drawing's datum
+labels, what a frame can refer to.
+
+Files: a view's `annotations` (`id`, `type`, `picks`, `along`,
+`line_offset`, `text_offset`, `at`, `format`, `tolerance`, `text`,
+`letter`, `frame`, `finish`), `center_marks`, `retrieved_dimensions`; a
+sheet's `notes` (`id`, `text`, `at`, `height`); left out when empty or
+off. Ids are unique among a drawing's annotations and notes; a drawing's
+datum letters too. A component's copy maps its drawings' picks (bodies,
+occurrences, the features in edge and face names).
+
+Classes: the commands and `drawing_pick` are the model's. Tests:
+`drawing::annotate::tests` (measures, layouts, checks, symbols),
+`drawing::annotation_tests` (dimensions by names and by clicks with
+tolerances and fit codes, the model changed under them, drags, broken
+ones, a diameter end on and from the side, centre marks automatic and on
+request, an ordinate, notes, datum labels, frames, finish symbols, text
+notes, a baseline, the file, the export, refusals), `tests/drawing_tools.cpp`,
+`tools/ui-drawings-test.sh`, `tools/ui-windows-drawings-test.ps1`, and
+`drawing::pick_tests` (mitcad#717: a section's picks behind its plane and
+of the faces it cuts, picks across breaks and into details, edges on one
+another told apart by the eye, arcs and whole circles, a pictorial view's
+refusals and aligned dimension in 3D, an angle's radius kept, a round
+face's own ends and a half hole's centre mark, datum letters shared with
+the model, a component's copied drawing's picks, retrieved dimensions of
+the view's own bodies once).
+
+## Tables on drawing views
+
+Hole tables, parts lists and balloons on a drawing's views (mitcad#707
+phase 3; `core/model/src/drawing/tables.rs`, `api/drawing_tables.rs`).
+Each is an annotation of its view (*Annotations on drawing views*): it
+takes the same commands, is kept, saved, undone, compared and copied
+with a component as the others are, and a view's deletion takes it
+along. Its rows are worked out from the model whenever the sheet is
+drawn, so it follows the design.
+
+| `type` | Picks | What it is |
+|---|---|---|
+| `hole_table` | none, or one point: its origin | the round holes of the bodies the view shows that the view sees end on (`Kernel::round_holes`, with the threads of the `threads` query, as File › Export Drawing finds them), where it shows them (in a detail's circle, beside breaks, behind a section's plane), tagged in the view beside each hole and listed |
+| `parts_list` | none | the components the view shows, each once with how many of its occurrences the view shows; numbered |
+| `balloon` | one: an edge or a face of a component's body | that component's number in a parts list, in a circle on a leader to the pick |
+
+`add_drawing_annotation` takes a table's place, `at` (its upper left
+corner on the sheet, mm; needed), and `table`, its settings:
+
+- `columns`: the columns shown, in order. A hole table's: `tag`, `x`,
+  `y`, `size` (`Ø6.6`, with a counterbore or countersink), `depth`
+  (`THRU` or the depth), `thread` (the designation, `-` without). A
+  parts list's own: `item`, `quantity`, `name` (a library part's
+  designation, else the component's name), `part_number`, `description`
+  (the property `Description`), `material` (the computed `Material`);
+  any other column is a property of the components, `Key` or
+  `Set/Key`, as the `parts_list` query's `properties` give them (its
+  header the key in capitals). Left out: all of a hole table's; `item`,
+  `quantity`, `name`, `description`, `material` of a parts list's.
+- `sort` (a column; a hole table's tags, a parts list's names when left
+  out or `null`) and `descending` (false): numbers first, by value, then
+  tags by their letters and numbers, then other text alphabetically
+  (cells alike in that order by their texts as they are). A table sorts
+  by a column it does not show too (mitcad#718). A parts list is
+  numbered in that order; sorted by `item`, it is numbered by name and
+  `descending` lists it from the last number up.
+- A hole table's `tags`: `by_size` (default: a letter per size, depth
+  and thread, A, B, … without I, O and Q, then AA, AB, …, and a number
+  per hole of it along the view's x and then y: A1, A2, B1) or `numbers`
+  (1, 2, … in that order); `origin` when it has no pick: `corner`
+  (default: the view's lower left corner, marked with a cross) or `model`
+  (the drawing's component's origin). Its X and Y are measured along the
+  view's axes from its origin, in the sheet's unit; a picked origin is a
+  point of the model, found again on every draw.
+- A parts list's `levels`: `top` (default: the components of the
+  occurrences right below the view's subject: a view of an occurrence
+  lists what is in it, as do its balloons) or `parts` (the components
+  whose bodies the view shows, at any depth); the bodies of the drawing's
+  own component are rows of their own (their name and material). On a
+  section, a detail or a broken view it lists only the bodies the view
+  shows something of: those whose own projection keeps a line behind
+  the plane, inside the circle or beside the breaks (mitcad#718).
+- `title`: over the table; `HOLES (mm)` (the sheet's unit) and `PARTS
+  LIST` when left out or `null`.
+
+A parts list added with `"balloons": true` (false when left out;
+mitcad#725) places a balloon on each of its rows in the same undo step
+(`Add parts list 6 and 2 balloons to Drawing1`): on the first straight
+edge, drawn as a visible line, of the row's bodies that the list counts
+(on a section, a detail or a broken view those it shows something of);
+their circles in one column 15 mm right of the view's box, 12 mm apart
+from its top down, the highest arrow first, so that they cover neither
+one another nor the view (`text_offset`). A row whose bodies show no
+such edge gets none.
+The result lists their ids, `balloons`; `balloons` on another type is
+refused.
+
+`edit_drawing_annotation` takes `table` with what changes, `picks` (a
+hole table's origin; `[]`: none), and `move` or `at` (a table's place on
+the sheet: whatever its picks); undo steps `Add hole table 5 to
+Drawing1`, `Edit parts list 6 of Drawing1`, `Move balloon 7 of Drawing1`.
+A balloon is dragged as a note is: its circle's place is kept from its
+pick (`text_offset`, 12, 10 mm when left out), so it moves with its
+component.
+
+A balloon's number is its component's row (by the parts list's
+`levels`): in a parts list of its own view first, else of another view
+of its sheet. A balloon whose pick is gone (its occurrence deleted, its
+body no longer shown) or that no parts list of its sheet lists is
+**broken** (`no parts list on the sheet lists Pin`). Refused: a table
+without its place, a hole table's unknown column, a sort column a table
+does not have, a parts list's tags or origin, a hole table's levels,
+`table` on another type, and a hole table on a pictorial view (it sees
+no hole end on). A base view along a given direction that looks square
+at a planar face of a body it shows counts as orthographic, as one along
+an axis does: its lengths in that face's plane are true (mitcad#718;
+for the annotations on such bodies, mitcad#722). On a section, a detail
+or a broken view, which bodies a parts list counts and a body's own cut
+faces (picks) come from each body's own projection there, kept in a
+bounded cache of their own by the body's version and placement and the
+view (mitcad#722), apart from the views' projections. A
+placed body's holes are kept in the document's projection cache by its
+shape version, placement and threads, so a sheet drawn again finds them
+once; a search that fails is not kept, so it is tried again on the next
+draw and its warning names the body as it is then (mitcad#722).
+
+The `drawing` query's entry of a table has `columns` (shown), `available`
+(`column` and `header`: its type's own and a parts list's property
+columns shown), `sort`, `rows` (how many) and `label`: a hole table's
+rows' cells (`A1 20 15 Ø6.6 THRU -; A2 60 5 Ø6.6 THRU -`, `no holes`),
+a parts list's numbers, names and quantities (`1 Pin x1; 2 Plate x2`,
+`no components`), a balloon's number. Groups: `hole-table` (its title,
+cells, tags at their holes and its origin's cross), `parts-list`,
+`balloon`, each `A<id>`; the export writes them (PDF, SVG, DXF). File ›
+Export Drawing keeps its own sheet-wide hole table (`annotations`'
+`hole_table`: every orthographic view's holes, tagged per view), which
+is not one of these.
+
+Files: an annotation's `table` (`place`, `columns`, `sort`,
+`descending`, `tags`, `origin`, `levels`, `title`; each at its default
+left out).
+
+Classes: the model's. Tests: `drawing::tables::tests` (a table drawn,
+its settings checked, cells sorted), `api::drawing_tables::tests`
+(size letters), `drawing::table_tests` (a hole table's tags, rows,
+origins, columns, sort and title, its origin following the model, moved,
+saved, undone, holes gone; refusals; a parts list of an assembly's view
+with balloons, sorted the other way and a property column, a placement
+deleted and undone, a balloon without its list, the export, a parts list
+that places its balloons, mitcad#725),
+`drawing::follow_up_tests` (mitcad#718: hole tables on section, detail
+and broken views; two parts lists on one sheet and their balloons; a
+section's parts list; a hidden sort column and the item sort; a view
+square to an inclined face; a copied component's drawing with tables,
+balloons and re-lettered datum labels; an unchanged letter on a shared
+file; the caches of geometry and holes; tables in PDF and DXF),
+`tests/drawing_tools.cpp`, `tools/ui-drawings-test.sh` (a hole table on a
+top view that empties when the hole is suppressed; a parts list with its
+balloons, undone; a parts list and a balloon on an assembly, exported, the list following a deleted placement
+and its balloon broken), `tools/ui-windows-drawings-test.ps1` (a parts
+list and a balloon).
+
+## Drawing templates and revisions
+
+Sheet templates and revision tables of drawings (mitcad#707 phase 4;
+`core/model/src/drawing/template.rs`, `api/drawing_templates.rs`). A
+**template** is data: the frame's margins, the title block's size, lines
+and fields, where the projection symbol goes, and a revision table above
+the block. A sheet keeps a complete copy of the template it was given
+(`template` in the file), so a drawing looks the same wherever its
+design goes and a library change never changes it; a sheet without one
+keeps the simple title block of File › Export Drawing.
+
+Templates come from three places:
+
+- **built-in**: `iso` (A sizes, A3 to start with; 20 mm filing margin,
+  10 elsewhere; a 180 x 36 mm block) and `ansi` (ANSI sizes, B to start
+  with; 12.7 mm margins; a 178 x 40 mm block), the JSON files in
+  `drawing/templates/`;
+- **user**: `drawing-templates/<id>.json` in the user's library folder,
+  beside its materials and print profiles (`print_library::user_library`,
+  `MITCAD_PRINT_LIBRARY_DIR`);
+- **project**: `drawing-templates/<id>.json` in the project's library
+  folder (`<project>/print-library`), versioned with the project.
+
+A template file: `{"format": "mitcad-drawing-template", "id", "name",
+"size" (the sheet a drawing made with it starts with), "projection" (its
+projection method, `first_angle` or `third_angle`; ISO first, ANSI third;
+mitcad#725), "margins": [left,
+bottom, right, top], "title_block": {"width", "height", "lines": [[x0,
+y0, x1, y1], …], "fields": [{"label", "text", "at": [x, y], "size": [w,
+h], "height"}], "projection_symbol": [x, y]}, "revision_table": {"rows":
+4}}`, lengths in mm from the block's lower left corner; the id is the
+file's name. A field's label is written small in its cell's upper left
+corner, its text at the bottom, made smaller down to 2 mm and then cut
+when it is too wide. Names in braces in a text are filled in from the
+design whenever the sheet is drawn, so the block follows the design:
+
+| Name | Value |
+|---|---|
+| `title` | the sheet's title (`title_block.title`), else the component's or the design's name (the `drawing` query's `title`) |
+| `name` | the component's or the design's name |
+| `drawing` | the drawing's name |
+| `number` | the sheet's drawing number, else the component's part number |
+| `part_number`, `description` | the component's properties `Part number`, `Description` |
+| `material` | the component's property `Material`, else the materials of the bodies it shows, each once |
+| `mass` | the component's property `Mass` (stored or its library's, not the one worked out; mitcad#722), else the bodies the component shows, each where it is placed: their volumes (kept by shape version) times their materials' densities, in the design's mass unit |
+| `author` | the sheet's (`title_block.author`), else the property `Author` |
+| `date` | the sheet's, else today's |
+| `scale` | the sheet's first base view's |
+| `sheet`, `sheet_number`, `sheets` | `1/2`, `1`, `2` |
+| `size`, `units`, `projection` | `A3` (`ANSI B`), the length unit, `THIRD ANGLE` |
+| `revision` | the latest revision's letter, `-` before the first |
+| any other | a property of the drawing's component, `Key` or `Set/Key` (empty without one) |
+
+Commands and the query:
+
+| Command | Fields | Result |
+|---|---|---|
+| `add_drawing`, `add_drawing_sheet`, `edit_drawing_sheet` | `template`: a built-in one's id (`iso`, `ansi`), a template's data as `drawing_templates` lists it (a user's or a project's), or `""`/null for the simple title block; `add_drawing` takes the template's `size` and `projection` unless they are given (not a `layout`'s projection: its views are placed by it; mitcad#725); a new sheet takes the last sheet's template | as before |
+| `add_drawing_revision` | `drawing`, `description` (needed), `letter` (the one after the latest: A, B, … without I, O, Q, then AA), `date` (today's), `author` | `revision`; undo step `Add revision A to Drawing1` |
+| `edit_drawing_revision` | `drawing`, `revision` (its letter), and what changes: `letter`, `description`, `date` (`""`: today's, as for a new one, mitcad#722), `author` (`""` clears) | undo step `Edit revision A of Drawing1` |
+| `delete_drawing_revision` | `drawing`, `revision` | undo step `Delete revision A of Drawing1` |
+| `save_drawing_template` | `drawing`, `sheet` (0), `library` (`user` or `project`), `name`, `id` (from the name: `Company A3` → `company-a3`), `project` (the project's folder) | `path`, `id`, `choice` (`project:company-a3`); writes the sheet's template with its size and projection method, replacing one of the id; no undo step |
+
+The `drawing_templates` query (`project`: the project's folder) lists
+`templates`, each a template's data with its `library` (`builtin`,
+`user`, `project`) and its `choice` (`iso`, `user:<id>`,
+`project:<id>`), the built-in ones first, then the user's and the
+project's by name; and `problems` (files that are no template).
+
+The `drawing` query gives each sheet's `template` (`id`, `name`,
+`library`, `choice`; null for the simple block), the drawn sheet's
+`title_fields` (each `label` with its `text` as drawn; the simple
+block's TITLE, DRAWING NO. or BODY, DATE and DRAWN BY), and the
+drawing's `revisions` (`letter`, `description`, `date`, `author`) and
+`next_revision`. A template's sheet draws `frame`, `title-block` (its
+lines, labels, values and the projection symbol) and, once the drawing
+has a revision, `revision-table` (REV, DESCRIPTION, DATE, BY: its
+`rows` latest revisions above the block, the latest on top); the views'
+area is the template's frame above its block and the revision table's
+whole room (its `rows` and its header, 5 mm each), kept clear from the
+start so that the first revision overlaps no view placed in the area
+(mitcad#722; the export's hole table keeps clear of it too). Exports
+(PDF, SVG, DXF) write them as drawn.
+
+Refused: an unknown built-in template, a template that is not one (an
+id of other than letters, digits, `-` and `_`, no name, a block of no
+size, a field without a cell, a revision table of other than 1 to 50
+rows, margins that leave no frame or a title block that with the
+revision table's room does not fit in the frame of its own `size`), a
+sheet whose template does not fit it so (its size or orientation changed,
+or the template given; mitcad#722), a revision without a description or
+with a letter the drawing has, saving the simple title block as a
+template, and a library other than `user` or `project`.
+
+Classes: the revision commands are the model's; `save_drawing_template`
+and `drawing_templates` read and write library folders (file IO).
+Saved, undone, compared and copied with a component's drawings as the
+rest of a drawing. Tests: `drawing::template::tests` (the built-in
+templates, fields filled, revision letters, a filled template drawn,
+templates checked, saved and listed in folders of the test's own, a
+template fitting its sheet), `drawing::template_tests` (a template's
+projection method brought to a new drawing, mitcad#725; a
+template's block following the design's material, mass, properties and
+sheets; revisions added, shown, edited, deleted, undone and saved;
+templates per sheet, a template's data with a property field, copied
+with a component; saved to a project's library and chosen; exported),
+`api::drawing_templates::tests`; `tools/ui-drawings-test.sh` (the ISO
+template chosen in Create Drawing, the title block's material following
+the body's, a revision added and exported).
+
+## Inactive constraints and dimensions
+
+(mitcad#721.) A sketch constraint or dimension can be inactive: kept in
+the sketch and shown, but left out of the solve until it is activated. An
+import makes the constraints and dimensions of a file's sketch that keep
+it off the file's geometry inactive instead of leaving every constraint
+out (core/import/docs/f3d.md, freecad.md); the user sees what was left
+out and activates or deletes it.
+
+In the definition, an inactive constraint or dimension has
+`"active": false` and an optional `inactive_reason`, both written only
+for an inactive one:
+
+```json
+{"id": "k7", "type": "coincident", "point": "p3", "entity": "c5",
+ "active": false, "inactive_reason": "not met in the imported file"}
+```
+
+- The solve leaves inactive constraints out; an inactive driving
+  dimension keeps its parameter and value but drives nothing (its value
+  is not checked against its range). An inactive driven one constrains
+  nothing either way, so it still measures: its reference parameter, and
+  what uses it, never keep a stale value (mitcad#723). The spacing
+  dimension of an inactive equal spacing is left out with it. Drawings
+  leave inactive dimensions out.
+- Edits keep what an inactive item asks for (mitcad#723): Extend and
+  Trim keep an inactive length of the line, and Extend never re-measures
+  an inactive dimension on the end it moves (an imported one keeps the
+  file's value); a point merge (two curve ends made coincident) that
+  makes an inactive constraint the same as an active one keeps the
+  active one.
+- `sketch.set_active` sets the flag: `{"cmd": "sketch.set_active",
+  "sketch": "F1", "items": ["k7", "k9"], "active": true}`; `active` false
+  with an optional `reason`. Activating is refused, the sketch left as it
+  was, when the sketch then does not solve (`k7 cannot be activated: the
+  sketch is over-constrained: k3 and k7 contradict each other`) or when an
+  activated one is implied by the others (over-constraining, as
+  `sketch.add_constraint` refuses it). One undo step, `Activate in Sketch1`
+  or `Deactivate in Sketch1`. An equal spacing takes its spacing
+  dimension with it either way, and activating the spacing dimension
+  activates its equal spacing, since it applies only with it; deactivating
+  the dimension alone leaves the equal spacing (mitcad#723). A copy
+  (`sketch.move` with `copy`) of an inactive constraint is inactive too.
+- The `sketch` query: each constraint and dimension with its `active` and
+  `inactive_reason` as in the definition; an inactive driving dimension's
+  `measured` is its value. A spacing dimension the solve does not apply
+  (its equal spacing inactive) has `"active": false` and the equal
+  spacing's `inactive_reason` there, so that it is drawn as it acts
+  (mitcad#723). `unmet_inactive` (only when not empty) lists
+  the inactive ones the solved geometry does not meet (1e-4 mm): those
+  whose activation would move it.
+- Model: `Constraint::active`, `Dimension::active` and their
+  `inactive_reason` (`core/model/src/sketch/mod.rs`),
+  `SketchDef::dimension_applied`, `SketchStatus::unmet_inactive` and
+  `sketch::solve::unmet` (`solve.rs`), `SketchEdit::set_active`
+  (`modify.rs`).
+
+The sketch view draws inactive constraints and dimensions in pink, their
+frames and lines dashed; the tooltip says `Not applied: <reason>`. The
+context menu of selected inactive ones offers **Activate**, of active
+ones **Deactivate**; Delete removes them as any other
+(`app/COMMANDS.md`).
+
+Classes: the model's. Tests: `api::sketch_inactive_tests` (the solve
+leaves an inactive constraint out, a contradicting activation refused,
+activation and undo, delete; an inactive dimension keeps its value and
+drives nothing; the file round trip; mitcad#723: a point merge keeps the
+active duplicate, an equal spacing and its dimension set aside and
+activated together, Extend keeps inactive values, an inactive driven
+dimension keeps its reference measured), the imports' (`sketch::inactive`,
+`tests::constraint_tests`, `freecad::tests`),
+`tools/ui-sketch-inactive-test.sh` and
+`tools/ui-windows-sketch-inactive-test.ps1` (drawn inactive, its tooltip,
+Activate refused and applied, undo, Delete). The sketch view logs where
+each inactive constraint's symbol is (`Constraint k1 glyph at x,y`) when
+the view or the sketch moves it (mitcad#723).
+
+## Print bed faces
+
+A body keeps the face that lies on the print bed (mitcad#731,
+`core/model/src/document/print_bed.rs`): a planar face, stored with the
+body's other attributes by its topological name as it was assigned, so
+that it follows the body's edits as a face appearance does ([Appearances
+of faces](#appearances-of-faces)) and applies to every occurrence of the
+body. A body has one; setting another replaces it.
+
+| Command | Fields | Result |
+|---|---|---|
+| `set_print_bed_face` | `uid` (body), `face` (a topological name of a planar face of the body at the marker; null or left out takes it away) | undo step `Set Print Bed Face of Body1` / `Clear Print Bed Face of Body1` unless nothing changes; it recomputes nothing. A body that is not there or is no solid or mesh body (a surface body is not printed), a name that is no face name or names no face of the body, and a face that is not planar are refused |
+
+- The `bodies` query gives a body's `print_bed_face`: `{"face"` (as
+  assigned), `"faces"` (a name of each face it finds at the marker),
+  `"error"}` (only when it cannot lie on the bed: `the print bed face is
+  gone`, `the print bed face is not planar` when its surface is no plane,
+  else why its plane is not found, such as a renamed face that two faces
+  fit alike); left out without one. A face that is gone stays kept, for
+  when it comes back (undo).
+- The design file keeps it with the body: `"print_bed_face":
+  "F2:end(r{c5})"` (left out without one; files without it have none).
+  Copies rename the feature in the name; Paste New of a component copied
+  as bodies names the face of the copy. The comparison of versions lists
+  it with the body.
+- **Export on the bed:** `export` with `"on_bed": true` (3MF and STL, in
+  the design's coordinates; other formats and `coordinates: component`
+  are refused) puts the bodies written on the print bed. They are one
+  piece, as the 3MF file's one object:
+  - with one body's bed face among them (a body printed alone, or a
+    component in which one body has one), placed once or placed several
+    times turned alike (normals within 1e-9: a component placed again and
+    moved only, as the face applies to every occurrence), the piece turns
+    so that the
+    face's outward normal points straight down (−Z; the smallest turn, half
+    a turn about X for a face up), its lowest point goes onto the bed (z =
+    0) and the middle of its box over the plate's centre: the centre of
+    the design's printer's `bed_shape` ([Print profiles](#print-profiles)),
+    else of a 256 × 256 mm plate, (128, 128);
+  - with the bed faces of several bodies, or of a body placed turned
+    differently, the bodies stay as they are assembled; with none, as the
+    design has them;
+  - a bed face that is gone or not planar is reported, and its body is
+    written as the design has it (−Z down) unless another body's face
+    turns the piece;
+  - the bed faces of bodies that are not printed (surface bodies, which
+    3MF leaves out) count for nothing.
+
+  The design does not move: a 3MF part's placements (its components) or
+  an STL file's vertices are moved after the design's placements, and
+  the meshes are the kernel's. The result adds `bed`: `body`, `name` and
+  `face` (null when nothing turned), `transform` (three rows `[a, b, c,
+  t]` of what moved the bodies after their placements, null when nothing
+  moved), `plate` ([x, y]), `kept` (the bodies kept as assembled) and
+  `problems` (`body`, `name`, `reason`); and `warnings`, one per problem
+  (`Body1: the print bed face is gone; printed as in the design`).
+
+```json
+{"cmd": "set_print_bed_face", "uid": "F2.b0", "face": "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"}
+{"cmd": "export", "path": "print.3mf", "bodies": ["F2.b0"], "on_bed": true, "dialect": "bambu_studio"}
+```
+
+Print Analysis starts from the bed face as the export does: the
+application's panel fills its Bed face with it when exactly one of the
+analysed bodies has a usable one ([Print analysis](#print-analysis)); the
+analysis keeps its own `bed_face`.
+
+Classes: the model's. Tests: `api::print_bed_tests` (set, replaced,
+cleared and refused, a surface body's face too; kept through an edit, a
+sketch edit that renames the face, and in the design file; a box on its
+top, on a tilted face, in a turned component and in a component placed
+twice turned and centred on the default plate and the printer's; two bed
+faces kept as assembled; a surface body's face counts for nothing; a face
+that is not planar or gone reported; an STL file; the formats),
+`tools/ui-print-bed-test.sh` and `tools/ui-windows-print-bed-test.ps1`.

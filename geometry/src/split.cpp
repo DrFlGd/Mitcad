@@ -7,10 +7,13 @@
 #include <stdexcept>
 #include <utility>
 
+#include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Section.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepFeat_SplitShape.hxx>
 #include <BRepGProp.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <NCollection_List.hxx>
 #include <TopExp.hxx>
@@ -137,6 +140,35 @@ ShapePtr split_faces(const std::string& feature, const Shape& body,
     namer.finish();
     detail::require_valid(namer.result(), "the split");
     return namer.shape();
+  });
+}
+
+ShapePtr extended_tool(const Tool& tool, const gp_Pnt& low, const gp_Pnt& high, bool extend) {
+  if (!(low.X() < high.X() && low.Y() < high.Y() && low.Z() < high.Z())) {
+    throw std::invalid_argument("extended tool: the box is empty");
+  }
+  return detail::run("extended tool", [&] {
+    Bnd_Box box;
+    box.Update(low.X(), low.Y(), low.Z(), high.X(), high.Y(), high.Z());
+    // The same cutter the split makes around its body's box.
+    const detail::Cutter cutter = detail::make_cutter(tool, box, extend);
+    const TopoDS_Shape clip = BRepPrimAPI_MakeBox(low, high).Shape();
+    BRepAlgoAPI_Common common;
+    NCollection_List<TopoDS_Shape> arguments;
+    arguments.Append(cutter.shape);
+    NCollection_List<TopoDS_Shape> tools;
+    tools.Append(clip);
+    common.SetArguments(arguments);
+    common.SetTools(tools);
+    common.SetNonDestructive(true);
+    detail::build(common);
+    if (!common.IsDone() || common.HasErrors()) {
+      throw std::runtime_error("the tool could not be clipped to the bodies' box");
+    }
+    if (!TopExp_Explorer(common.Shape(), TopAbs_FACE).More()) {
+      throw std::invalid_argument("the tool does not reach the bodies");
+    }
+    return std::make_shared<Shape>(common.Shape());
   });
 }
 

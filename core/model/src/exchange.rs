@@ -27,6 +27,10 @@ use crate::transform::Transform;
 mod stl;
 mod usdz;
 
+// The bodies on the print bed by their print bed faces (mitcad#731).
+mod bed;
+pub use bed::{DEFAULT_PLATE, OnBed};
+
 /// What a body is made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyKind {
@@ -173,6 +177,9 @@ pub struct ExportPlacement {
     /// Only the placements by this occurrence (a path from the root) and
     /// the occurrences in it; in the design's coordinates.
     pub within: Option<Vec<OccurrenceUid>>,
+    /// 3MF and STL: the bodies on the print bed by their print bed faces
+    /// (mitcad#731, `bed.rs`).
+    pub on_bed: bool,
 }
 
 /// A body as one triangle mesh ([`Kernel::triangle_mesh`]), millimetres.
@@ -217,6 +224,9 @@ pub struct Exported {
     /// 3MF with a slicer's settings (mitcad#640): the filament slot of each
     /// written body (0 the first).
     pub slots: Vec<usize>,
+    /// 3MF and STL on the print bed (mitcad#731): how the bodies were put
+    /// there.
+    pub on_bed: Option<OnBed>,
 }
 
 /// A body's mesh in a 3MF file: its triangles and the volume they enclose
@@ -638,6 +648,18 @@ impl<K: Kernel> Document<K> {
                 "the placements of an occurrence are in the design's coordinates",
             ));
         }
+        if placement.on_bed {
+            if !matches!(format, ExportFormat::ThreeMf | ExportFormat::Stl) {
+                return Err(invalid(
+                    "only 3MF and STL files put the bodies on the print bed",
+                ));
+            }
+            if !design {
+                return Err(invalid(
+                    "bodies are put on the print bed from the design's coordinates",
+                ));
+            }
+        }
         let all = self.bodies();
         let mut chosen: Vec<_> = if bodies.is_empty() {
             all.iter().collect()
@@ -710,6 +732,14 @@ impl<K: Kernel> Document<K> {
         let placements = |body: BodyUid| -> Vec<Transform> {
             placed_at(body).into_iter().map(|p| p.transform).collect()
         };
+        // On the print bed (mitcad#731): the bodies' bed faces, and the turn
+        // that takes the one face down.
+        let mut on_bed = if placement.on_bed {
+            let uids: Vec<BodyUid> = chosen.iter().map(|b| b.uid).collect();
+            Some(self.bed_plan(&uids, &placements))
+        } else {
+            None
+        };
         if format == ExportFormat::ThreeMf {
             // The occurrence path a body's print settings are of: its first
             // shown placement's (mitcad#640).
@@ -723,7 +753,7 @@ impl<K: Kernel> Document<K> {
                     .or_else(|| mine.first())
                     .map(|i| i.path.clone())
             };
-            return self.export_3mf(
+            let mut exported = self.export_3mf(
                 path,
                 &chosen,
                 bodies.is_empty(),
@@ -736,10 +766,22 @@ impl<K: Kernel> Document<K> {
                         &path_of as &dyn Fn(BodyUid) -> Option<Vec<OccurrenceUid>>,
                     )
                 }),
-            );
+                on_bed.as_mut(),
+            )?;
+            self.report_bed(&mut exported, on_bed);
+            return Ok(exported);
         }
         if format == ExportFormat::Stl {
-            return self.export_stl(path, &chosen, &tolerance, options.ascii, placements);
+            let mut exported = self.export_stl(
+                path,
+                &chosen,
+                &tolerance,
+                options.ascii,
+                placements,
+                on_bed.as_mut(),
+            )?;
+            self.report_bed(&mut exported, on_bed);
+            return Ok(exported);
         }
         if format == ExportFormat::Usdz {
             // The placements with their occurrence paths (mitcad#123).
@@ -793,7 +835,9 @@ impl<K: Kernel> Document<K> {
 
     /// An STL file of the bodies (mitcad#17): their triangle meshes as one
     /// solid, each body once per placement (in the design's coordinates,
-    /// or once in its component's).
+    /// or once in its component's); turned onto the print bed face, the
+    /// lowest point on the bed and centred on the plate, with `bed`'s turn
+    /// (mitcad#731).
     fn export_stl(
         &self,
         path: &str,
@@ -801,6 +845,7 @@ impl<K: Kernel> Document<K> {
         tolerance: &MeshTolerance,
         ascii: bool,
         placements: impl Fn(BodyUid) -> Vec<Transform>,
+        on_bed: Option<&mut OnBed>,
     ) -> Result<Exported, ModelError> {
         let mut all = TriangleMesh::default();
         for body in chosen {
@@ -830,6 +875,17 @@ impl<K: Kernel> Document<K> {
                 }));
             }
         }
+        // On the print bed (mitcad#731): a turn keeps the triangles facing
+        // out.
+        if let Some(on_bed) = on_bed
+            && let Some(turn) = on_bed.transform
+        {
+            let moved = bed::settled(&turn, all.vertices.iter().copied(), on_bed.plate);
+            for vertex in &mut all.vertices {
+                *vertex = moved.apply_point(*vertex);
+            }
+            on_bed.transform = Some(moved);
+        }
         let name = Path::new(path)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -849,7 +905,10 @@ impl<K: Kernel> Document<K> {
     /// left out when all bodies are written (`all`). With `print` (a
     /// slicer, and the occurrence path whose settings a body prints with),
     /// each body's effective print settings go with it in the slicer's
-    /// dialect (mitcad#640, `crate::print_files`).
+    /// dialect (mitcad#640, `crate::print_files`). With `on_bed`'s turn the
+    /// parts' placements turn onto the print bed face, the lowest point on
+    /// the bed and the middle over the plate's centre (mitcad#731): the
+    /// meshes stay as the kernel made them.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::type_complexity)]
     fn export_3mf(
@@ -864,6 +923,7 @@ impl<K: Kernel> Document<K> {
             crate::print_keys::Dialect,
             &dyn Fn(BodyUid) -> Option<Vec<OccurrenceUid>>,
         )>,
+        on_bed: Option<&mut OnBed>,
     ) -> Result<Exported, ModelError> {
         let mut exported = Exported::default();
         let mut parts = Vec::with_capacity(chosen.len());
@@ -914,6 +974,29 @@ impl<K: Kernel> Document<K> {
         if parts.is_empty() {
             return Err(invalid("there are no solid or mesh bodies to export"));
         }
+        // On the print bed (mitcad#731): every placement moved alike, as the
+        // bodies are one object.
+        if let Some(on_bed) = on_bed
+            && let Some(turn) = on_bed.transform
+        {
+            let mut points = Vec::new();
+            for part in &parts {
+                for placement in &part.placements {
+                    points.extend(part.mesh.vertices.iter().map(|v| placement.apply(*v)));
+                }
+            }
+            let moved = bed::settled(&turn, points.into_iter(), on_bed.plate);
+            let outer = mitcad_3mf::Placement {
+                linear: moved.linear,
+                translation: moved.translation,
+            };
+            for part in &mut parts {
+                for placement in &mut part.placements {
+                    *placement = outer.after(placement);
+                }
+            }
+            on_bed.transform = Some(moved);
+        }
         let mut model = mitcad_3mf::Model {
             name: Path::new(path)
                 .file_stem()
@@ -944,7 +1027,13 @@ impl<K: Kernel> Document<K> {
                     placements: part.placements.len(),
                 })
                 .collect();
-            let written = crate::print_files::export(dialect, &model.name, &parts);
+            // With the purge volumes set by hand (mitcad#705).
+            let written = crate::print_files::export(
+                dialect,
+                &model.name,
+                &parts,
+                &self.state().purge_volumes,
+            );
             if let Some(application) = written.application {
                 model.application = application;
             }

@@ -26,6 +26,7 @@
 #include <BRepMesh_FaceDiscret.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepMesh_MeshAlgoFactory.hxx>
+#include <BRepMesh_ShapeTool.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_CurveRepresentation.hxx>
@@ -67,8 +68,10 @@
 #include <gp_Cylinder.hxx>
 #include <gp_Elips.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pnt2d.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
+#include <gp_XY.hxx>
 
 #include "mitcad/io/body.hpp"
 
@@ -82,11 +85,11 @@ constexpr double kDegree = kPi / 180.0;
 MeshOptions MeshOptions::from(Refinement refinement) {
   switch (refinement) {
   case Refinement::Low:
-    return MeshOptions{0.1, 30.0 * kDegree, false, 5000, false};
+    return MeshOptions{0.1, 30.0 * kDegree, false, 5000, false, false};
   case Refinement::Medium:
-    return MeshOptions{0.03, 15.0 * kDegree, false, 20000, false};
+    return MeshOptions{0.03, 15.0 * kDegree, false, 20000, false, false};
   case Refinement::High:
-    return MeshOptions{0.01, 8.0 * kDegree, false, 50000, false};
+    return MeshOptions{0.01, 8.0 * kDegree, false, 50000, false, false};
   }
   return MeshOptions{};
 }
@@ -433,12 +436,194 @@ private:
   FaceTimes& m_times;
 };
 
+// The area check of MeshOptions::check_planes (plane_area_fits).
+constexpr double kPlaneAreaRelative = 1e-3;
+constexpr double kPlaneAreaAbsolute = 1e-3; // mm²
+
+// The area of polygons in a plane's parameters, wire by wire: each wire's
+// by the shoelace formula over its edges' polylines (relative to the
+// wire's first point, so that a plane far from its origin keeps its
+// digits), the outer wire taken as the largest and the others as its
+// holes. Orientations are not trusted: each wire's area counts as it is.
+class LoopAreas {
+public:
+  void start_wire() {
+    finish_wire();
+    m_started = false;
+    m_twice = 0.0;
+  }
+
+  // One directed segment of the wire.
+  void add(const gp_XY& from, const gp_XY& to) {
+    if (!m_started) {
+      m_origin = from;
+      m_started = true;
+    }
+    const gp_XY a = from - m_origin;
+    const gp_XY b = to - m_origin;
+    m_twice += a.X() * b.Y() - b.X() * a.Y();
+    m_open = true;
+  }
+
+  double area() {
+    finish_wire();
+    double largest = 0.0;
+    double sum = 0.0;
+    for (const double wire : m_wires) {
+      largest = std::max(largest, wire);
+      sum += wire;
+    }
+    return std::max(0.0, largest - (sum - largest));
+  }
+
+private:
+  void finish_wire() {
+    if (m_open) {
+      m_wires.push_back(0.5 * std::abs(m_twice));
+      m_open = false;
+    }
+  }
+
+  std::vector<double> m_wires;
+  gp_XY m_origin;
+  double m_twice = 0.0;
+  bool m_started = false;
+  bool m_open = false;
+};
+
+// The area (mm²) a plane's boundary discretization encloses, from the
+// mesher's model of it: each wire's edges' points in the plane's
+// parameters (lengths on a plane), each edge in the direction the mesher
+// links it (its parameter curve's orientation, reversed or not), the
+// wires the mesher leaves out (self-intersecting) left out here too.
+double boundary_area(const IMeshData::IFaceHandle& face) {
+  const IMeshData::IFacePtr self = face.get();
+  LoopAreas loops;
+  for (int w = 0; w < face->WiresNb(); ++w) {
+    const IMeshData::IWireHandle& wire = face->GetWire(w);
+    if (wire->IsSet(IMeshData_SelfIntersectingWire)) {
+      continue;
+    }
+    loops.start_wire();
+    for (int e = 0; e < wire->EdgesNb(); ++e) {
+      const IMeshData::IEdgePtr& edge = wire->GetEdge(e);
+      const IMeshData::IPCurveHandle& pcurve = edge->GetPCurve(self, wire->GetEdgeOrientation(e));
+      const TopAbs_Orientation orientation = pcurve->GetOrientation();
+      if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
+        continue; // an edge inside the face, not a boundary
+      }
+      const bool reversed = orientation == TopAbs_REVERSED;
+      for (int i = 0; i + 1 < pcurve->ParametersNb(); ++i) {
+        const gp_XY p = pcurve->GetPoint(i).XY();
+        const gp_XY q = pcurve->GetPoint(i + 1).XY();
+        if (reversed) {
+          loops.add(q, p);
+        } else {
+          loops.add(p, q);
+        }
+      }
+    }
+  }
+  return loops.area();
+}
+
+// The area (mm²) a triangulation covers, each triangle's counted however it
+// turns (a fold adds to it): in its parameter nodes when it has them (a
+// plane's are lengths), else in its nodes.
+double covered_area(const Poly_Triangulation& triangulation) {
+  double twice = 0.0;
+  const bool uv = triangulation.HasUVNodes();
+  for (int t = 1; t <= triangulation.NbTriangles(); ++t) {
+    int a = 0;
+    int b = 0;
+    int c = 0;
+    triangulation.Triangle(t).Get(a, b, c);
+    if (uv) {
+      const gp_XY pa = triangulation.UVNode(a).XY();
+      const gp_XY ab = triangulation.UVNode(b).XY() - pa;
+      const gp_XY ac = triangulation.UVNode(c).XY() - pa;
+      twice += std::abs(ab.X() * ac.Y() - ab.Y() * ac.X());
+    } else {
+      const gp_Pnt pa = triangulation.Node(a);
+      twice += gp_Vec(pa, triangulation.Node(b)).Crossed(gp_Vec(pa, triangulation.Node(c))).Magnitude();
+    }
+  }
+  return 0.5 * twice;
+}
+
+// A plane's triangulation made by `first` (Delabella's), checked
+// (MeshOptions::check_planes, mitcad#644): when it leaves the face without
+// a new triangulation or marks it failed, or the triangulation's area does
+// not fit the area its boundary encloses (plane_area_fits), the face is
+// triangulated again by `again` (the default insertion), whose result is
+// kept as it comes. Each such face counts in `redone`.
+class CheckedPlaneAlgo : public IMeshTools_MeshAlgo {
+public:
+  CheckedPlaneAlgo(occ::handle<IMeshTools_MeshAlgo> first, occ::handle<IMeshTools_MeshAlgoFactory> again,
+                   std::atomic<std::size_t>* redone)
+      : m_first(std::move(first)), m_again(std::move(again)), m_redone(redone) {}
+
+  void Perform(const IMeshData::IFaceHandle& face, const IMeshTools_Parameters& parameters,
+               const Message_ProgressRange& range) override {
+    const TopoDS_Face& shape = face->GetFace();
+    TopLoc_Location location;
+    const occ::handle<Poly_Triangulation> before = BRep_Tool::Triangulation(shape, location);
+    bool fits = false;
+    try {
+      m_first->Perform(face, parameters, range);
+      const occ::handle<Poly_Triangulation> made = BRep_Tool::Triangulation(shape, location);
+      fits = !face->IsSet(IMeshData_Failure) && !made.IsNull() && made != before &&
+             plane_area_fits(covered_area(*made), boundary_area(face));
+    } catch (const Standard_Failure&) {
+      fits = false;
+    }
+    if (fits) {
+      return;
+    }
+    // The default's own start: no triangulation, nothing failed yet. A
+    // stopped meshing leaves the face so, as a face it did not reach.
+    BRepMesh_ShapeTool::NullifyFace(shape);
+    face->UnsetStatus(IMeshData_Failure);
+    if (range.UserBreak()) {
+      face->SetStatus(IMeshData_UserBreak);
+      return;
+    }
+    ++*m_redone;
+    const occ::handle<IMeshTools_MeshAlgo> again = m_again->GetAlgo(GeomAbs_Plane, parameters);
+    if (again.IsNull()) {
+      face->SetStatus(IMeshData_Failure);
+      return;
+    }
+    again->Perform(face, parameters, range);
+  }
+
+private:
+  occ::handle<IMeshTools_MeshAlgo> m_first;
+  occ::handle<IMeshTools_MeshAlgoFactory> m_again;
+  std::atomic<std::size_t>* m_redone;
+};
+
+// use_fast_plane_algorithms_for_tests: null for Delabella's.
+std::mutex g_fastPlanesMutex;
+occ::handle<IMeshTools_MeshAlgoFactory> g_fastPlanesForTests;
+
+occ::handle<IMeshTools_MeshAlgoFactory> fast_plane_algorithms() {
+  const std::lock_guard<std::mutex> lock(g_fastPlanesMutex);
+  if (!g_fastPlanesForTests.IsNull()) {
+    return g_fastPlanesForTests;
+  }
+  return new BRepMesh_DelabellaMeshAlgoFactory();
+}
+
 // The faces' algorithms: BRepMesh_Context's default (CSF_MeshAlgo), with
 // planes through Delabella's base triangulation when `fast_planes`
-// (MeshOptions::fast_planes), each timed when `times` is given.
+// (MeshOptions::fast_planes), checked and made again by the default when
+// `check_planes` too (CheckedPlaneAlgo, counted in `redone`), each timed
+// when `times` is given.
 class FaceAlgoFactory : public IMeshTools_MeshAlgoFactory {
 public:
-  FaceAlgoFactory(bool fast_planes, FaceTimes* times) : m_times(times) {
+  FaceAlgoFactory(bool fast_planes, bool check_planes, FaceTimes* times, std::atomic<std::size_t>* redone)
+      : m_check(fast_planes && check_planes), m_times(times), m_redone(redone) {
     TCollection_AsciiString algorithm = OSD_Environment("CSF_MeshAlgo").Value();
     algorithm.LowerCase();
     if (algorithm == "delabella" || algorithm == "1") {
@@ -446,14 +631,16 @@ public:
     } else {
       m_default = new BRepMesh_MeshAlgoFactory();
     }
-    m_planes = fast_planes ? occ::handle<IMeshTools_MeshAlgoFactory>(new BRepMesh_DelabellaMeshAlgoFactory())
-                           : m_default;
+    m_planes = fast_planes ? fast_plane_algorithms() : m_default;
   }
 
   occ::handle<IMeshTools_MeshAlgo> GetAlgo(const GeomAbs_SurfaceType type,
                                            const IMeshTools_Parameters& parameters) const override {
-    const occ::handle<IMeshTools_MeshAlgo> algorithm =
+    occ::handle<IMeshTools_MeshAlgo> algorithm =
         (type == GeomAbs_Plane ? m_planes : m_default)->GetAlgo(type, parameters);
+    if (!algorithm.IsNull() && m_check && type == GeomAbs_Plane) {
+      algorithm = new CheckedPlaneAlgo(algorithm, m_default, m_redone);
+    }
     if (algorithm.IsNull() || m_times == nullptr) {
       return algorithm;
     }
@@ -463,7 +650,9 @@ public:
 private:
   occ::handle<IMeshTools_MeshAlgoFactory> m_default;
   occ::handle<IMeshTools_MeshAlgoFactory> m_planes;
+  bool m_check;
   FaceTimes* m_times;
+  std::atomic<std::size_t>* m_redone;
 };
 
 // BRepMesh's own context, with the edges of large cylinders and cones
@@ -473,14 +662,16 @@ private:
 // triangulation that meets it). The floors are computed over the faces in
 // parallel when the meshing is (each task only reads its own face and sets
 // its own deviation); a face whose floor cannot be computed keeps
-// BRepMesh's deviation. With a report, each phase is timed and so is each
-// face (MeshReport).
+// BRepMesh's deviation. Planes through Delabella with `fast_planes`,
+// checked with `check_planes` (MeshOptions). With a report, each phase is
+// timed and so is each face (MeshReport).
 class BoundedContext : public BRepMesh_Context {
 public:
-  BoundedContext(std::size_t face_triangles, bool fast_planes, MeshReport* report)
+  BoundedContext(std::size_t face_triangles, bool fast_planes, bool check_planes, MeshReport* report)
       : m_faceTriangles(face_triangles), m_report(report) {
     if (fast_planes || m_report != nullptr) {
-      SetFaceDiscret(new BRepMesh_FaceDiscret(new FaceAlgoFactory(fast_planes, m_report ? &m_times : nullptr)));
+      SetFaceDiscret(new BRepMesh_FaceDiscret(
+          new FaceAlgoFactory(fast_planes, check_planes, m_report ? &m_times : nullptr, &m_redone)));
     }
   }
 
@@ -582,6 +773,7 @@ private:
     for (const auto& [surface, count] : surfaces) {
       m_report->meshed_by_surface.emplace_back(surface, count);
     }
+    m_report->planes_redone += m_redone.load();
     if (m_report->every_face) {
       m_report->every_face_time.insert(m_report->every_face_time.end(), m_times.faces.begin(), m_times.faces.end());
     }
@@ -598,6 +790,7 @@ private:
   std::size_t m_faceTriangles;
   MeshReport* m_report;
   FaceTimes m_times;
+  std::atomic<std::size_t> m_redone{0}; // CheckedPlaneAlgo
 };
 
 // Faces the presentations' algorithm triangulated (presentation_faces_meshed).
@@ -608,7 +801,8 @@ std::atomic<std::size_t> g_presentationFaces{0};
 class BoundedMesh : public BRepMesh_IncrementalMesh {
 public:
   explicit BoundedMesh(const MeshOptions& options, MeshReport* report = nullptr, bool presentation = false)
-      : m_faceTriangles(options.face_triangles), m_fastPlanes(options.fast_planes), m_report(report),
+      : m_faceTriangles(options.face_triangles), m_fastPlanes(options.fast_planes),
+        m_checkPlanes(options.check_planes), m_report(report),
         m_presentation(presentation) {}
 
   using BRepMesh_IncrementalMesh::Perform;
@@ -616,7 +810,8 @@ public:
     MeshReport own;
     MeshReport* report = m_presentation ? &own : m_report;
     const Clock::time_point start = Clock::now();
-    BRepMesh_IncrementalMesh::Perform(new BoundedContext(m_faceTriangles, m_fastPlanes, report), range);
+    BRepMesh_IncrementalMesh::Perform(new BoundedContext(m_faceTriangles, m_fastPlanes, m_checkPlanes, report),
+                                      range);
     if (report != nullptr) {
       report->total += milliseconds_since(start);
     }
@@ -631,6 +826,7 @@ public:
 private:
   std::size_t m_faceTriangles;
   bool m_fastPlanes;
+  bool m_checkPlanes;
   MeshReport* m_report;
   bool m_presentation;
 };
@@ -645,7 +841,7 @@ public:
 
   occ::handle<BRepMesh_DiscretRoot> CreateAlgorithm(const TopoDS_Shape& shape, double deviation,
                                                     double angle) override {
-    const MeshOptions options{deviation, angle, false, m_faceTriangles, false};
+    const MeshOptions options{deviation, angle, false, m_faceTriangles, false, false};
     occ::handle<BoundedMesh> mesher = new BoundedMesh(options, nullptr, true);
     mesher->ChangeParameters().Deflection = deviation;
     mesher->ChangeParameters().Angle = angle;
@@ -712,7 +908,64 @@ std::string MeshReport::line() const {
       out += text;
     }
   }
+  if (planes_redone > 0) {
+    out += "; planes redone " + std::to_string(planes_redone);
+  }
   return out;
+}
+
+bool plane_area_fits(double triangulated, double boundary) {
+  return std::isfinite(triangulated) && std::isfinite(boundary) &&
+         std::abs(triangulated - boundary) <= std::max(kPlaneAreaRelative * std::abs(boundary), kPlaneAreaAbsolute);
+}
+
+PlaneMeshArea plane_mesh_area(const TopoDS_Face& face) {
+  PlaneMeshArea area;
+  if (face.IsNull() || BRepAdaptor_Surface(face, false).GetType() != GeomAbs_Plane) {
+    return area;
+  }
+  TopLoc_Location location;
+  const occ::handle<Poly_Triangulation> triangulation = BRep_Tool::Triangulation(face, location);
+  if (triangulation.IsNull() || !triangulation->HasUVNodes()) {
+    return area;
+  }
+  // Each wire's edges in the face's orientation, as the mesher links them
+  // (a reversed face's wires run the other way round, which the areas'
+  // own signs do not mind).
+  const TopoDS_Face forward = TopoDS::Face(face.Oriented(TopAbs_FORWARD));
+  LoopAreas loops;
+  for (TopExp_Explorer wires(forward, TopAbs_WIRE); wires.More(); wires.Next()) {
+    loops.start_wire();
+    for (TopExp_Explorer edges(wires.Current(), TopAbs_EDGE); edges.More(); edges.Next()) {
+      const TopoDS_Edge& edge = TopoDS::Edge(edges.Current());
+      if (edge.Orientation() != TopAbs_FORWARD && edge.Orientation() != TopAbs_REVERSED) {
+        continue;
+      }
+      const occ::handle<Poly_PolygonOnTriangulation> polygon =
+          BRep_Tool::PolygonOnTriangulation(edge, triangulation, location);
+      if (polygon.IsNull()) {
+        return PlaneMeshArea{};
+      }
+      const bool reversed = edge.Orientation() == TopAbs_REVERSED;
+      for (int i = 1; i < polygon->NbNodes(); ++i) {
+        const gp_XY p = triangulation->UVNode(polygon->Node(i)).XY();
+        const gp_XY q = triangulation->UVNode(polygon->Node(i + 1)).XY();
+        if (reversed) {
+          loops.add(q, p);
+        } else {
+          loops.add(p, q);
+        }
+      }
+    }
+  }
+  area.boundary = loops.area();
+  area.triangles = covered_area(*triangulation);
+  return area;
+}
+
+void use_fast_plane_algorithms_for_tests(const occ::handle<IMeshTools_MeshAlgoFactory>& factory) {
+  const std::lock_guard<std::mutex> lock(g_fastPlanesMutex);
+  g_fastPlanesForTests = factory;
 }
 
 double face_deviation_floor(const TopoDS_Face& face, double deviation, std::size_t face_triangles) {

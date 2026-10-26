@@ -14,6 +14,7 @@
 #include "ShortcutBindings.hpp"
 
 class QAction;
+class QSettings;
 class QWidget;
 
 namespace mitcad {
@@ -47,35 +48,69 @@ public:
   void createActions(QWidget* owner, const std::function<void(const QString&)>& trigger);
   QAction* action(const QString& id) const { return m_actions.value(m_aliases.value(id, id)); }
 
+  // The contexts a command's keys live in (ShortcutContext bits): Model,
+  // Sketch or both by its mode, a profile feature's Sketch too, and During
+  // commands for one that runs beside a panel. A command of several
+  // contexts has a key in each (mitcad#720), the same one unless changed.
+  unsigned shortcutContexts(const QString& id) const;
+  // The context whose keys the actions carry (MainWindow: by its mode).
+  // A command of several contexts that is not in it carries its first
+  // context's key (its action is disabled there).
+  unsigned shortcutContext() const { return m_context; }
+  void setShortcutContext(unsigned context);
+
+  // A command's key in one context: saved for that context, else saved for
+  // every context, else its default.
+  QKeySequence shortcut(const QString& id, unsigned context) const;
+  // Its key in the current context (or its first).
   QKeySequence shortcut(const QString& id) const;
+  // Its key in each of its contexts.
+  ContextShortcuts shortcuts(const QString& id) const;
   QKeySequence defaultShortcut(const QString& id) const;
-  // The runtime bindings, including default-only alternates. Conflicting
-  // legacy settings remain editable but are not installed on actions.
+  // The runtime bindings in the current context, including default-only
+  // alternates. Conflicting legacy settings remain editable but are not
+  // installed on actions.
   QList<QKeySequence> effectiveShortcuts(const QString& id) const;
   QList<QKeySequence> effectiveShortcuts(const QString& id, const QKeySequence& primary) const;
-  QList<ShortcutConflict> shortcutConflicts(const QHash<QString, QKeySequence>& proposed = {}) const;
+  // `proposed`: keys by command and context; the others as saved.
+  QList<ShortcutConflict> shortcutConflicts(const QHash<QString, ContextShortcuts>& proposed = {}) const;
   // Registered defaults, independent of any saved user overrides.
   QList<ShortcutConflict> defaultShortcutConflicts() const;
   const QStringList& shortcutWarnings() const { return m_shortcutWarnings; }
   QString shortcutHint(const QString& id) const;
-  // Applies one complete proposal so swaps do not create intermediate conflicts.
-  void setShortcuts(const QHash<QString, QKeySequence>& shortcuts);
-  // Changes a shortcut and saves it; an empty sequence removes it.
+  // Applies one complete proposal so swaps do not create intermediate
+  // conflicts. A command's contexts left out keep their keys; one key in
+  // all its contexts is saved as before ("shortcuts/<id>"), different keys
+  // per context ("shortcuts.model/<id>", "shortcuts.sketch/<id>",
+  // "shortcuts.commands/<id>").
+  void setShortcuts(const QHash<QString, ContextShortcuts>& proposal);
+  // Changes a shortcut in every context of the command and saves it; an
+  // empty sequence removes it.
   void setShortcut(const QString& id, const QKeySequence& shortcut);
+  // Changes a shortcut in one context.
+  void setShortcut(const QString& id, unsigned context, const QKeySequence& shortcut);
 
   // Enables the actions of the commands `available` accepts.
   void updateEnabled(const std::function<bool(const CommandDef&)>& available);
 
 private:
-  ShortcutBinding binding(const CommandDef& def, const QKeySequence& primary) const;
+  unsigned contextsOf(const CommandDef& def) const;
+  // The context whose key a command of `contexts` carries now.
+  unsigned activeContext(unsigned contexts) const;
+  QKeySequence savedShortcut(const QSettings& settings, const CommandDef& def, unsigned context) const;
+  ShortcutBinding binding(const CommandDef& def, unsigned contexts, const QKeySequence& primary) const;
+  // One binding per distinct key, with the contexts that have it.
+  QList<ShortcutBinding> bindings(const CommandDef& def, const ContextShortcuts& keys) const;
+  QList<QKeySequence> effectiveKeys(const CommandDef& def, const QSettings& settings) const;
   void refreshShortcuts();
-  void applyShortcut(const CommandDef& def);
+  void applyShortcut(const CommandDef& def, const QSettings& settings);
 
   std::vector<std::unique_ptr<CommandDef>> m_commands;
   QHash<QString, QAction*> m_actions;
   QHash<QString, QString> m_aliases; // former id -> id
   QSet<QString> m_disabledShortcuts;
   QStringList m_shortcutWarnings;
+  unsigned m_context = ModelShortcutContext;
 };
 
 } // namespace mitcad

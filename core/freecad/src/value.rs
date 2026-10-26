@@ -372,9 +372,14 @@ fn mapped(node: &Node<'_, '_>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// `<Sub value=… [shadowed=…]/>` children.
+/// `<Sub value=… [shadowed=…]/>` children. An empty one names no element:
+/// FreeCAD 1.x writes a link to a whole object (a Pad's sketch profile) as
+/// `count="1"` with one `<Sub value=""/>`, where older files write
+/// `count="0"`; both read as no elements, the whole object (as an empty
+/// `sub` of a `LinkSubList` entry does).
 fn subs(node: &Node<'_, '_>) -> Vec<SubName> {
     items(node, "Sub")
+        .filter(|n| attr(n, "value").is_some_and(|v| !v.is_empty()))
         .map(|n| SubName {
             name: attr(&n, "value").unwrap_or_default().to_owned(),
             mapped: mapped(&n),

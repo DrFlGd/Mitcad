@@ -214,7 +214,7 @@ SCREWS=$(fastener_bodies)
 ui_step "close Wall (Escape)"              ui_key Escape
 ui_mark
 ui_step "Wall again (command search)"      ui_command "Wall"
-ui_expect_new "BUILD wall adds to Part1; fasteners on; 3 x Wood screw test 5.0x90 at each junction" \
+ui_expect_new "BUILD wall adds to Component1; fasteners on; 3 x Wood screw test 5.0x90 at each junction" \
   "the next start remembers the fastener, its size and count"
 ui_step "close Wall (Escape)"              ui_key Escape
 

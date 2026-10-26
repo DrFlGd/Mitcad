@@ -42,15 +42,15 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "model_query",
-            "Read a document using one existing JSON model query. Read mitcad://reference/commands for query names, arguments, identities and units. print_thickness answers its summary only (thinnest wall, where, regions, thin_triangles) unless the query sets triangles (true, with max_triangles to cap them).",
-            json!({"document": document, "query": {"type": "object", "description": "One JSON query object from the model API reference"}}),
+            "Read a document using one existing JSON model query. model_reference lists the query names and gives each one's arguments and result (identities and units too). print_thickness answers its summary only (thinnest wall, where, regions, thin_triangles) unless the query sets triangles (true, with max_triangles to cap them).",
+            json!({"document": document, "query": query_schema()}),
             &["document", "query"],
             true,
             false,
         ),
         tool(
             "model_command",
-            "Apply a JSON model command, or an array of them in order, to a document. Read mitcad://reference/commands first. An array stops at the first refused entry (the entries before it are undone, nothing of the array stays; the result names the entry) or at the first entry whose added or edited feature fails (applied; stopped_at names it). File imports and external links are not supported through this tool. isError is true only when a command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new). The result holds the document's state and what the command changed (changes: features added, changed, recomputed or failed, bodies added or changed, what was removed); timeline: full gives the whole timeline and bodies instead, none neither.",
+            "Apply a JSON model command, or an array of them in order, to a document. Look up the command, or the feature type of add_feature, with model_reference first. An array stops at the first refused entry (the entries before it are undone, nothing of the array stays; the result names the entry) or at the first entry whose added or edited feature fails (applied; stopped_at names it). File imports and external links are not supported through this tool. isError is true only when a command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new). The result holds the document's state and what the command changed (changes: features added, changed, recomputed or failed, bodies added or changed, what was removed); timeline: full gives the whole timeline and bodies instead, none neither.",
             json!({
                 "document": document,
                 "command": command_schema(),
@@ -74,7 +74,7 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "model_export",
-            "Export geometry to a new file inside the workspace. Existing output files are refused. Optionally select bodies; DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing is given. PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options of mitcad://reference/commands (sheet, orientation, scale, projection, views, section, hidden_lines, ...). Defaults are metric.",
+            "Export geometry to a new file inside the workspace. Existing output files are refused. Optionally select bodies; DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing is given. PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options (sheet, orientation, scale, projection, views, section, hidden_lines, ...; model_reference {\"section\": \"Drawings\"}). Defaults are metric.",
             json!({
                 "document": document,
                 "path": path,
@@ -88,7 +88,28 @@ pub(crate) fn tools() -> Vec<Value> {
             false,
             false,
         ),
+        reference_tool(),
     ]
+}
+
+/// The command reference in parts (mitcad#714), in both servers; the
+/// protocol answers it without the backend.
+fn reference_tool() -> Value {
+    tool(
+        "model_reference",
+        "Look up the model API reference: commands, queries, feature definitions, values and units, identities. Without arguments: the contents (the sections' headings) and the names of every query, command and feature type this server permits. With one of: section (a heading or a name it lists, e.g. \"Values\", \"split_body\", \"Sketch commands\"), query or command (its reference row: fields and result), feature (a feature type's section with an example definition), search (the sections and excerpts that contain a text). Each answer holds at most 64 kB of text; a longer one says truncated and gives next_offset, to pass as offset for the rest. The resource mitcad://reference/commands is the whole reference (about 1 MB).",
+        json!({
+            "section": {"type": "string", "minLength": 1, "description": "A section's heading, or a name its heading lists, e.g. \"Values\", \"split_body\" or \"Sketch commands\""},
+            "query": {"type": "string", "minLength": 1, "description": "A query's name, e.g. \"bodies\" or \"faces\""},
+            "command": {"type": "string", "minLength": 1, "description": "A command's name (its cmd), e.g. \"add_feature\" or \"sketch.add_line\""},
+            "feature": {"type": "string", "minLength": 1, "description": "A feature type (a definition's type), e.g. \"extrude\" or \"construction_plane\""},
+            "search": {"type": "string", "minLength": 2, "description": "A text to find in any case, e.g. \"bbox\""},
+            "offset": {"type": "integer", "minimum": 0, "description": "Where a truncated answer continues: its next_offset"}
+        }),
+        &[],
+        true,
+        false,
+    )
 }
 
 /// `model_command`'s command: an object, or an array of them run in order
@@ -99,7 +120,15 @@ fn command_schema() -> Value {
         "items": {"type": "object"},
         "minItems": 1,
         "maxItems": 1000,
-        "description": "One JSON command object, or an array of them run in order; lengths use millimetres unless explicitly specified"
+        "description": "One JSON command object {\"cmd\": \"<name>\", ...its fields}, for example {\"cmd\": \"add_feature\", \"def\": {...}}, or an array of them run in order. JSON numbers are millimetres and radians; write \"90 deg\" for degrees. model_reference gives each command's fields."
+    })
+}
+
+/// `model_query`'s query (mitcad#714).
+fn query_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "One JSON query object {\"query\": \"<name>\", ...its fields}, for example {\"query\": \"bodies\", \"properties\": true}; model_reference lists the queries and gives each one's fields"
     })
 }
 
@@ -119,7 +148,13 @@ pub(crate) fn live_tools() -> Vec<Value> {
         .filter(|tool| {
             matches!(
                 tool["name"].as_str(),
-                Some("document_list" | "model_query" | "model_command" | "model_export")
+                Some(
+                    "document_list"
+                        | "model_query"
+                        | "model_command"
+                        | "model_export"
+                        | "model_reference"
+                )
             )
         })
         .collect();
@@ -132,22 +167,22 @@ pub(crate) fn live_tools() -> Vec<Value> {
             }
             Some("model_query") => {
                 tool["description"] = json!(
-                    "Read the open document with one JSON model query, also while a sketch or command is open. Refused only while the model computes: the result then says busy and retry_after_ms. Read mitcad://reference/commands for query names, arguments, identities and units."
+                    "Read the open document with one JSON model query, also while a sketch or command is open. Refused only while the model computes: the result then says busy and retry_after_ms. model_reference lists the query names and gives each one's arguments and result (identities and units too)."
                 );
             }
             Some("model_command") => {
                 tool["description"] = json!(
-                    "Apply a JSON model command, or an array of them in order, to the open document through its normal undo workflow; the change is one undo step labelled (agent) in the undo text. While a sketch is open, sketch.* commands on it (and edit_feature of it, undo, redo) go through the sketch session as the user's would; other commands wait until it is finished. Read mitcad://reference/commands first. File, remote and internal commands are refused. An array stops at the first refused entry (the entries before it are undone, nothing of the array stays; the result names the entry) or at the first entry whose added or edited feature fails (applied; stopped_at names it); undo and redo run alone. isError is true only when a command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new). The result holds the document's state and what the command changed (changes: features added, changed, recomputed or failed, bodies added or changed, what was removed); timeline: full gives the whole timeline and bodies instead, none neither."
+                    "Apply a JSON model command, or an array of them in order, to the open document through its normal undo workflow; the change is one undo step labelled (agent) in the undo text. While a sketch is open, sketch.* commands on it (and edit_feature of it, undo, redo) go through the sketch session as the user's would; other commands wait until it is finished. Look up the command, or the feature type of add_feature, with model_reference first. File, remote and internal commands are refused. An array stops at the first refused entry (the entries before it are undone, nothing of the array stays; the result names the entry) or at the first entry whose added or edited feature fails (applied; stopped_at names it); undo and redo run alone. isError is true only when a command is refused or a feature it added or edited fails; failed_features lists every failed feature in the timeline (edited, new). The result holds the document's state and what the command changed (changes: features added, changed, recomputed or failed, bodies added or changed, what was removed); timeline: full gives the whole timeline and bodies instead, none neither."
                 );
             }
-            // Into the folders the user allows agents (mitcad#689), as
+            // Into the folders for designs (mitcad#689), as
             // document_save's path.
             Some("model_export") => {
                 tool["description"] = json!(
-                    "Export the open document's geometry to a new file in a folder the user allows agents to use (document_list lists them); the document does not change. An existing file is refused. bodies selects what is written (for example leaving out a helper body). DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing is given. PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options of mitcad://reference/commands. Refused while a command panel is open or the document has failed features. Defaults are metric."
+                    "Export the open document's geometry to a new file in a folder the user allows agents to use (document_list lists them); the document does not change. An existing file is refused. bodies selects what is written (for example leaving out a helper body). DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing is given. PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options (model_reference {\"section\": \"Drawings\"}). Refused while a command panel is open or the document has failed features. Defaults are metric."
                 );
                 tool["inputSchema"]["properties"]["path"]["description"] = json!(
-                    "A new file in a folder the user allows agents to use (Preferences > Agents, or the application's --mcp-folder), with the format's extension; a relative path is relative to the first allowed folder; '..' is refused"
+                    "A new file in a folder the user allows agents to use (Preferences > AI Assistants, or the application's --mcp-folder), with the format's extension; a relative path is relative to the first allowed folder; '..' is refused"
                 );
             }
             _ => {}
@@ -195,7 +230,7 @@ fn ui_tools() -> Vec<Value> {
         "required": ["kind", "owner"],
         "additionalProperties": false
     });
-    let folder_path = json!({"type": "string", "minLength": 1, "description": "A .mitcad file in a folder the user allows agents to use (Preferences > Agents, or the application's --mcp-folder); a relative path is relative to the first allowed folder; '..' is refused"});
+    let folder_path = json!({"type": "string", "minLength": 1, "description": "A .mitcad file in a folder the user allows agents to use (Preferences > AI Assistants, or the application's --mcp-folder); a relative path is relative to the first allowed folder; '..' is refused"});
     let point = json!({"type": "array", "items": {"type": "number"}, "minItems": 3, "maxItems": 3, "description": "x, y, z in millimetres"});
     vec![
         tool(
@@ -251,7 +286,7 @@ fn ui_tools() -> Vec<Value> {
                 "width": {"type": "integer", "minimum": 16, "maximum": 4096, "description": "Pixels across an offscreen render of the 3D view (with height, or with aspect)"},
                 "height": {"type": "integer", "minimum": 16, "maximum": 4096, "description": "Pixels down an offscreen render of the 3D view (with width, or with aspect)"},
                 "aspect": {"type": "number", "minimum": 0.1, "maximum": 10, "description": "Width / height of an offscreen render of the 3D view; max_size on its longer side unless width or height is given"},
-                "path": {"type": "string", "minLength": 1, "description": "A .png or .jpg file in a folder the user allows agents to use (Preferences > Agents, or the application's --mcp-folder) to write the image to instead of returning it; a relative path is relative to the first allowed folder; '..' is refused"},
+                "path": {"type": "string", "minLength": 1, "description": "A .png or .jpg file in a folder the user allows agents to use (Preferences > AI Assistants, or the application's --mcp-folder) to write the image to instead of returning it; a relative path is relative to the first allowed folder; '..' is refused"},
                 "overwrite": {"type": "boolean", "default": false, "description": "Explicitly allow replacement of an existing file at path"}
             }),
             &[],

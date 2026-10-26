@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-// The folders a live MCP agent may save to and open from (mitcad#402): a
+// The folders for designs, which a live MCP agent saves to and opens from
+// (mitcad#402): a
 // path inside the allowed folder is taken (relative ones too), '..', other
 // folders, other suffixes, missing folders and files, an existing file
 // without overwrite and links out of the folder are refused.
@@ -10,6 +11,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QPushButton>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -60,7 +64,7 @@ int agentFolderTests() {
   CHECK(reason.contains(QStringLiteral("..")));
   CHECK(agentDesignPath(allowed + QStringLiteral("/sub/../../outside/x.mitcad"), true, false, reason).isEmpty());
   CHECK(agentDesignPath(outside + QStringLiteral("/x.mitcad"), true, false, reason).isEmpty());
-  CHECK(reason.contains(QStringLiteral("not in a folder agents may use")));
+  CHECK(reason.contains(QStringLiteral("not in a folder for designs")));
   CHECK(agentDesignPath(allowed + QStringLiteral("/x.step"), true, false, reason).isEmpty());
   CHECK(reason.contains(QStringLiteral(".mitcad")));
   CHECK(agentDesignPath(QStringLiteral("missing/x.mitcad"), true, false, reason).isEmpty());
@@ -79,12 +83,12 @@ int agentFolderTests() {
   // Links out of the folder: a linked folder, a linked file.
   CHECK(QFile::link(outside, allowed + QStringLiteral("/linked")));
   CHECK(agentDesignPath(QStringLiteral("linked/x.mitcad"), true, false, reason).isEmpty());
-  CHECK(reason.contains(QStringLiteral("not in a folder agents may use")));
+  CHECK(reason.contains(QStringLiteral("not in a folder for designs")));
   CHECK(QFile::link(outside + QStringLiteral("/other.mitcad"), allowed + QStringLiteral("/link.mitcad")));
   CHECK(agentDesignPath(QStringLiteral("link.mitcad"), true, true, reason).isEmpty());
   CHECK(reason.contains(QStringLiteral("not a regular file")));
   CHECK(agentDesignPath(QStringLiteral("link.mitcad"), false, false, reason).isEmpty());
-  CHECK(reason.contains(QStringLiteral("not in a folder agents may use")));
+  CHECK(reason.contains(QStringLiteral("not in a folder for designs")));
 #endif
   // An agent's output (mitcad#689: model_export, ui_screenshot's path): a
   // new file of any or of the given suffixes, by the same rules.
@@ -99,8 +103,33 @@ int agentFolderTests() {
   CHECK(reason.contains(QStringLiteral("overwrite")));
   CHECK(agentOutputPath(QStringLiteral("kept.mitcad"), true, reason) == allowed + QStringLiteral("/kept.mitcad"));
   CHECK(agentOutputPath(outside + QStringLiteral("/part.stl"), false, reason).isEmpty());
-  CHECK(reason.contains(QStringLiteral("not in a folder agents may use")));
+  CHECK(reason.contains(QStringLiteral("not in a folder for designs")));
   CHECK(agentOutputPath(QStringLiteral("../outside/part.stl"), false, reason).isEmpty());
   mitcad::mcp::setRunAgentFolders({});
+  // No folder (mitcad#732): the reason names the window as the platform
+  // does, and no command-line option.
+  if (mitcad::mcp::agentFolders().isEmpty()) {
+    CHECK(agentDesignPath(QStringLiteral("x.mitcad"), true, false, reason).isEmpty());
+#ifdef Q_OS_MACOS
+    CHECK(reason.contains(QStringLiteral("Settings › AI Assistants")));
+#else
+    CHECK(reason.contains(QStringLiteral("Preferences › AI Assistants")));
+#endif
+    CHECK(!reason.contains(QStringLiteral("--mcp-folder")));
+  }
+
+  // Preferences › AI Assistants (mitcad#727): the list named for assistive
+  // technology also while empty, Add… (a folder chooser) and Remove, no
+  // typed field; the folders chosen are the list's.
+  {
+    mitcad::mcp::AgentPreferencesBox box;
+    auto* list = box.findChild<QListWidget*>(QStringLiteral("agentFolders"));
+    auto* add = box.findChild<QPushButton*>(QStringLiteral("agentFolderAdd"));
+    CHECK(list != nullptr && list->accessibleName() == QStringLiteral("Folders for designs"));
+    // On macOS a + button, its words its accessible name.
+    CHECK(add != nullptr && (add->text() == QStringLiteral("Add…") || add->accessibleName() == QStringLiteral("Add…")));
+    CHECK(box.findChildren<QLineEdit*>().isEmpty());
+    CHECK(box.chosen() == mitcad::mcp::savedAgentFolders());
+  }
   return failures;
 }

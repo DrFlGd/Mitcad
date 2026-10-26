@@ -12,8 +12,10 @@
 # tools/ui-mcp-live.py runs against it: queries with the sketch open,
 # sketch.add_line through the sketch session and undo, ui_state with the
 # palette's warning, ui_select, ui_screenshot, ui_command Clean Up Stale
-# Projections and Finish Sketch, document_save, ui_log. The project
-# indicator names the initialized client while the bridge is connected.
+# Projections and Finish Sketch, document_save, ui_log. The agent indicator
+# (mitcad#710) names the initialized client while the bridge is connected;
+# with none, a click on it opens Connect AI Assistant and its menu offers
+# Connect AI Assistant and Folders for Designs.
 # Then the shared setup-dialog flow checks isolated file and stub-CLI
 # registration, failures, concurrent edits, folder consent and both layouts.
 #
@@ -41,15 +43,31 @@ print(live.make_design(sys.argv[2], sys.argv[3]))' "$LIVE" "$CLI" "$WORK") || ui
 ui_start_display
 ui_start_app --mcp-folder "$WORK" --open "$FILE"
 ui_expect_log "MCP live instance:" "the application's MCP listener is up"
+ui_expect_log "Agent indicator: no agent" "the agent indicator says the window accepts agents"
 ui_expect_log "Timeline Sketch2 at" "the design is open"
 
 echo "--- The live debugging flow through the bridge"
 ui_mark
 python3 -I "$LIVE" "$CLI" "$FILE" || ui_fail "the live MCP flow failed (above)"
 ui_expect_new "Agent connected" "the window said an agent was connected"
-ui_expect_new "Project indicator: not in a project, connected: mitcad-live-debug" "the project indicator named the client"
+ui_expect_new "Agent indicator: connected: mitcad-live-debug" "the agent indicator named the client"
 ui_expect_new "Agent disconnected" "the bridge's end disconnected it"
+ui_expect_new "Agent indicator: no agent" "the agent indicator says no agent again"
 ui_expect_new "Saved $FILE" "the agent saved the design"
+
+echo "--- The agent indicator: a click connects an agent; its menu"
+ui_mark
+ui_step "the agent indicator"            ui_click_logged "Agent indicator"
+ui_expect_new "Agent indicator chose help.connect_assistant" "a click with no agent connects one"
+ui_focus_dialog '^Connect AI Assistant$'
+ui_step "close Connect AI Assistant (Esc)" ui_key Escape
+ui_focus_main
+ui_mark
+ui_step "its menu (right click)"         ui_click_logged "Agent indicator" 3
+# One window listens: no instance line and no Copy Command for This Window
+# (those are in the tooltip, and for several windows).
+ui_expect_new "Agent indicator menu: Connect AI Assistant... | Folders for Designs..." "the menu: Connect AI Assistant, Folders for Designs"
+ui_step "close the menu (Esc)"           ui_key Escape
 ui_crashed && ui_fail "the application crashed"
 
 ui_finish "UI live MCP test"

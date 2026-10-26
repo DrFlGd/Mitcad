@@ -3,40 +3,56 @@
 
 #include <exception>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include <QApplication>
+#include <QButtonGroup>
 #include <QClipboard>
-#include <QComboBox>
-#include <QDateTime>
+#include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QFileInfo>
-#include <QFormLayout>
+#include <QFont>
+#include <QFontDatabase>
+#include <QFontMetrics>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QScrollBar>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QTextDocument>
 #include <QTimer>
 #include <QTemporaryDir>
+#include <QToolButton>
 #include <QUrl>
-#include <QUuid>
 #include <QVBoxLayout>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <shlwapi.h>
+#endif
 
 #include "AgentFolders.hpp"
 #include "LocalEndpoint.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/FitToScreen.hpp"
+#include "../framework/Icons.hpp"
 #include "../framework/Json.hpp"
+#include "../framework/Theme.hpp"
+#include "../platform/MacChrome.hpp"
 #include "mitcad_bridge/lib.h"
 
 namespace mitcad::mcp {
@@ -48,26 +64,73 @@ constexpr bool windows =
     false;
 #endif
 
+// Claude Desktop's extensions install on Windows and macOS only.
+constexpr bool desktopExtensions =
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    true;
+#else
+    false;
+#endif
+
+// The Advanced configuration's height at most; a longer one scrolls.
+constexpr int kConfigurationHeight = 200;
+
+const QString kClientSetting = QStringLiteral("assistant/client");
+
 QString jsonString(const QString& text) {
   const QByteArray list = QJsonDocument(QJsonArray{text}).toJson(QJsonDocument::Compact);
   return QString::fromUtf8(list.mid(1, list.size() - 2));
 }
 
-QString codexHomeCommand(const QString& command, const QString& path) {
-  const QString home = QFileInfo(path).absolutePath();
-  const QString quoted = windows ? assistantCommand(home, {}, true).mid(2) : assistantCommand(home, {}, false);
-  return windows ? QStringLiteral("$env:CODEX_HOME = %1; %2").arg(quoted, command)
-                 : QStringLiteral("CODEX_HOME=%1 %2").arg(quoted, command);
+// A TOML string: a literal one keeps a Windows path's backslashes as they
+// are; a basic one (JSON's escapes are TOML's) where a literal cannot be.
+QString tomlString(const QString& text) {
+  bool literal = !text.contains(QLatin1Char('\''));
+  for (const QChar character : text) {
+    if ((character.unicode() < 0x20 && character != QLatin1Char('\t')) || character.unicode() == 0x7f) literal = false;
+  }
+  return literal ? QString(QLatin1Char('\'') + text + QLatin1Char('\'')) : jsonString(text);
 }
+
+QString codexToml(const QString& bridge) {
+  return QStringLiteral("[mcp_servers.mitcad-desktop]\ncommand = %1\nargs = [\"mcp\", \"--connect\"]\n").arg(tomlString(bridge));
+}
+
+QString codexHomeCommand(const QString& command, const QString& path) {
+  const QString home = QDir::toNativeSeparators(QFileInfo(path).absolutePath());
+  // PowerShell assigns only a quoted string.
+  return windows ? QStringLiteral("$env:CODEX_HOME = %1; %2").arg(assistantShellWord(home, true, true), command)
+                 : QStringLiteral("CODEX_HOME=%1 %2").arg(assistantShellWord(home, false), command);
+}
+
+// The CLI registers only into CODEX_HOME/config.toml; another file chosen
+// under Advanced gets the TOML by hand.
+bool standardCodexFile(const QString& path) { return QFileInfo(path).fileName() == QStringLiteral("config.toml"); }
 
 QJsonObject codexPlan(const QString& current, const QString& bridge, bool replace = false) {
   return parseObject(plan_codex_mcp_config(rustStr(current.toUtf8()), rustStr(bridge.toUtf8()), replace));
 }
 
-bool confirmReplacement(QWidget* parent) {
+// Whether Codex's settings already start this bridge: as setup writes it,
+// or with the platform's separators as the manual configuration shows it.
+bool codexHasBridge(const QString& current, const QString& bridge) {
+  const auto unchanged = [&current](const QString& form) {
+    return codexPlan(current, form).value(QStringLiteral("status")).toString() == QStringLiteral("unchanged");
+  };
+  const QString native = QDir::toNativeSeparators(bridge);
+  return unchanged(bridge) || (native != bridge && unchanged(native));
+}
+
+// A Claude Code entry that starts this bridge (with either separator).
+bool claudeEntryStarts(const QJsonObject& entry, const QString& bridge) {
+  return QDir::fromNativeSeparators(entry.value(QStringLiteral("command")).toString()) == QDir::fromNativeSeparators(bridge) &&
+      entry.value(QStringLiteral("args")) == QJsonArray{QStringLiteral("mcp"), QStringLiteral("--connect")};
+}
+
+bool confirmReplacement(QWidget* parent, const QString& name) {
   return sheetQuestion(parent, QObject::tr("Replace Mitcad Connection"),
-      QObject::tr("This client already has a different Mitcad entry. Replace only that entry? "
-                  "The existing configuration will be backed up."), QMessageBox::Yes | QMessageBox::No,
+      QObject::tr("%1 is already connected to another Mitcad installation. Connect it to this one instead? "
+                  "Your current settings are backed up first.").arg(name), QMessageBox::Yes | QMessageBox::No,
                   QMessageBox::No) == QMessageBox::Yes;
 }
 
@@ -80,6 +143,118 @@ QString claudeUserConfiguration() {
   if (!custom.isEmpty()) return QDir(custom).absoluteFilePath(QStringLiteral(".claude.json"));
   return QDir::home().filePath(QStringLiteral(".claude.json"));
 }
+
+// Whether Claude Desktop is on this computer: its application or the
+// settings folder it makes on its first start. A test run looks only for a
+// `claude-desktop` file among its isolated client executables.
+bool claudeDesktopInstalled() {
+  if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT")) {
+    const QString folder = qEnvironmentVariable("MITCAD_TEST_ASSISTANT_EXECUTABLES");
+    if (!folder.isEmpty()) {
+      return folder != QStringLiteral("none") && QFileInfo::exists(QDir(folder).filePath(QStringLiteral("claude-desktop")));
+    }
+  }
+#if defined(Q_OS_MACOS)
+  for (const QString& path : {QStringLiteral("/Applications/Claude.app"), QDir::home().filePath(QStringLiteral("Applications/Claude.app")),
+                              QDir::home().filePath(QStringLiteral("Library/Application Support/Claude"))}) {
+    if (QFileInfo(path).isDir()) return true;
+  }
+#elif defined(Q_OS_WIN)
+  const QString local = qEnvironmentVariable("LOCALAPPDATA");
+  const QString roaming = qEnvironmentVariable("APPDATA");
+  if (!local.isEmpty() && (QFileInfo(QDir(local).filePath(QStringLiteral("AnthropicClaude"))).isDir() ||
+      !QDir(QDir(local).filePath(QStringLiteral("Packages"))).entryList({QStringLiteral("Claude_*"), QStringLiteral("*.Claude_*")},
+                                                                       QDir::Dirs).isEmpty())) {
+    return true;
+  }
+  if (!roaming.isEmpty() && QFileInfo(QDir(roaming).filePath(QStringLiteral("Claude"))).isDir()) return true;
+#endif
+  return false;
+}
+
+// Whether an application takes Claude Desktop's extension files. Windows
+// offers "Open with" for a file no application takes, so that opening one
+// succeeds says nothing there; the association does. Without
+// ASSOCF_INIT_IGNOREUNKNOWN the query answers with the "Unknown" type's
+// handler, Open With itself, so that is no handler either. Elsewhere
+// opening is the test.
+bool bundleHandlerRegistered() {
+#ifdef Q_OS_WIN
+  DWORD size = 0;
+  if (AssocQueryStringW(ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE, L".mcpb", nullptr, nullptr, &size) != S_FALSE ||
+      size <= 1) {
+    return false;
+  }
+  std::wstring executable(size, L'\0');
+  if (AssocQueryStringW(ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE, L".mcpb", nullptr, executable.data(), &size) !=
+      S_OK) {
+    return false;
+  }
+  const QString program = QFileInfo(QString::fromWCharArray(executable.c_str())).fileName();
+  return !program.isEmpty() && program.compare(QStringLiteral("OpenWith.exe"), Qt::CaseInsensitive) != 0;
+#else
+  return true;
+#endif
+}
+
+QString installPage(AssistantClient client) {
+  switch (client) {
+  case AssistantClient::ClaudeDesktop: return QStringLiteral("https://claude.ai/download");
+  case AssistantClient::ClaudeCode: return QStringLiteral("https://code.claude.com/docs/en/quickstart");
+  case AssistantClient::Codex: return QStringLiteral("https://developers.openai.com/codex");
+  case AssistantClient::Other: break;
+  }
+  return {};
+}
+
+// One short line per assistant choice.
+QString choiceTip(AssistantClient client) {
+  switch (client) {
+  case AssistantClient::ClaudeDesktop: return QObject::tr("The Claude app");
+  case AssistantClient::ClaudeCode: return QObject::tr("Claude in a terminal");
+  case AssistantClient::Codex: return QObject::tr("ChatGPT's desktop app or the Codex CLI");
+  case AssistantClient::Other: return QObject::tr("Any assistant that takes an MCP configuration");
+  }
+  return {};
+}
+
+// A copy button says "Copied" for a moment.
+void showCopied(QPushButton* button) {
+  const QString label = button->property("label").toString();
+  button->setText(QObject::tr("Copied ✓"));
+  QTimer::singleShot(1500, button, [button, label] { button->setText(label); });
+}
+
+QPushButton* copyButton(const QString& text, const char* name, const QString& accessible = {}) {
+  auto* button = new QPushButton(text);
+  button->setObjectName(QLatin1String(name));
+  button->setProperty("label", text);
+  button->setAutoDefault(false);
+  if (!accessible.isEmpty()) { button->setAccessibleName(accessible); button->setToolTip(accessible); }
+  return button;
+}
+
+// A labelled field of Advanced: its title above it, the field's button (Copy,
+// Change…) at the right of the title's row.
+QWidget* labelledField(const QString& title, QPushButton* button, QWidget* field, const char* labelName = nullptr) {
+  auto* box = new QWidget;
+  auto* column = new QVBoxLayout(box);
+  column->setContentsMargins(0, 0, 0, 0);
+  column->setSpacing(4);
+  auto* header = new QHBoxLayout;
+  auto* label = new QLabel(title);
+  if (labelName) label->setObjectName(QLatin1String(labelName));
+  label->setBuddy(field);
+  header->addWidget(label, 1);
+  header->addWidget(button);
+  column->addLayout(header);
+  column->addWidget(field);
+  return box;
+}
+
+QString rgba(const QColor& colour, int alpha) {
+  return QStringLiteral("rgba(%1, %2, %3, %4)").arg(colour.red()).arg(colour.green()).arg(colour.blue()).arg(alpha);
+}
 }
 
 ConnectAssistantDialog::ConnectAssistantDialog(Host host, QWidget* parent)
@@ -87,218 +262,614 @@ ConnectAssistantDialog::ConnectAssistantDialog(Host host, QWidget* parent)
   setObjectName(QStringLiteral("connectAssistantDialog"));
   setWindowTitle(tr("Connect AI Assistant"));
   setAttribute(Qt::WA_DeleteOnClose);
-  auto* outer = new QVBoxLayout(this);
-  auto* area = new FittingScrollArea;
-  area->setWidgetResizable(true);
-  area->setFrameShape(QFrame::NoFrame);
-  auto* page = new QWidget;
-  auto* layout = new QVBoxLayout(page);
-  auto* intro = new QLabel(tr("Connect an assistant on this computer to the open Mitcad design. "
-      "You keep the normal editing and undo workflow. Client installation, sign-in and approvals stay with the client."));
-  intro->setWordWrap(true); layout->addWidget(intro);
-  auto* form = new QFormLayout;
-  m_client = new QComboBox;
-  m_client->setObjectName(QStringLiteral("assistantClient"));
-  m_client->addItem(tr("Claude Desktop"), int(AssistantClient::ClaudeDesktop));
-  m_client->addItem(tr("Claude Code"), int(AssistantClient::ClaudeCode));
-  m_client->addItem(tr("Codex / ChatGPT Desktop (local MCP)"), int(AssistantClient::Codex));
-  m_client->addItem(tr("Other MCP client"), int(AssistantClient::Other));
-  form->addRow(tr("Assistant:"), m_client);
-  m_config = new QLineEdit(codexConfigurationPath());
-  m_config->setObjectName(QStringLiteral("assistantConfigPath"));
-  auto* configRow = new QHBoxLayout; configRow->addWidget(m_config, 1);
-  auto* chooseConfig = new QPushButton(tr("Choose…"));
-  chooseConfig->setObjectName(QStringLiteral("assistantChooseConfig")); configRow->addWidget(chooseConfig);
-  form->addRow(tr("Codex settings file:"), configRow);
-  layout->addLayout(form);
-  m_details = new QLabel;
-  m_details->setObjectName(QStringLiteral("assistantInstructions"));
-  m_details->setWordWrap(true); layout->addWidget(m_details);
-  auto* actions = new QHBoxLayout;
-  m_setup = new QPushButton(tr("Set up connection"));
-  m_setup->setObjectName(QStringLiteral("assistantSetup"));
-  actions->addWidget(m_setup);
-  auto* install = new QPushButton(tr("Installation instructions"));
-  install->setObjectName(QStringLiteral("assistantInstallation")); actions->addWidget(install);
-  auto* refresh = new QPushButton(tr("Refresh")); actions->addWidget(refresh);
-  actions->addStretch(); layout->addLayout(actions);
+  // A small dialog: its rows straight in its layout, no scroll area.
+  auto* layout = new QVBoxLayout(this);
+  layout->setSpacing(12);
+
+  // 1. The assistant: large choices with an icon and a name.
+  auto* choices = new QWidget;
+  choices->setObjectName(QStringLiteral("assistantClient"));
+  auto* choiceRow = new QHBoxLayout(choices);
+  choiceRow->setContentsMargins(0, 0, 0, 0);
+  m_clients = new QButtonGroup(this);
+  m_clients->setExclusive(true);
+  const struct { AssistantClient client; const char* icon; } kChoices[] = {
+      {AssistantClient::ClaudeDesktop, "assistant-desktop"}, {AssistantClient::ClaudeCode, "assistant-terminal"},
+      {AssistantClient::Codex, "assistant-chat"}, {AssistantClient::Other, "assistant-other"}};
+  for (const auto& choice : kChoices) {
+    auto* button = new QToolButton;
+    button->setText(assistantName(choice.client));
+    button->setToolTip(choiceTip(choice.client));
+    button->setIcon(themeIcon(QString::fromLatin1(choice.icon)));
+    button->setIconSize(QSize(32, 32));
+    button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    button->setCheckable(true);
+    button->setAutoRaise(true);
+    button->setMinimumWidth(112);
+    button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    button->setProperty("assistantClient", int(choice.client));
+    m_clients->addButton(button, int(choice.client));
+    choiceRow->addWidget(button);
+  }
+  layout->addWidget(choices);
+
+  // 2. Connect: the state line naming the next step and the primary button.
+  auto* stateRow = new QHBoxLayout;
   m_state = new QLabel;
   m_state->setTextFormat(Qt::PlainText);
   m_state->setObjectName(QStringLiteral("assistantConnectionState"));
-  m_state->setWordWrap(true); layout->addWidget(m_state);
+  m_state->setWordWrap(true);
+  QFont stateFont = m_state->font();
+  stateFont.setBold(true);
+  m_state->setFont(stateFont);
+  stateRow->addWidget(m_state, 1);
+  m_setup = new QPushButton(tr("Connect"));
+  m_setup->setObjectName(QStringLiteral("assistantSetup"));
+  m_setup->setDefault(true);
+  stateRow->addWidget(m_setup);
+  layout->addLayout(stateRow);
+  // Not found is a guess: a quiet way to set it up all the same.
+  auto* anywayRow = new QHBoxLayout;
+  anywayRow->addStretch();
+  m_connectAnyway = new QPushButton(tr("Connect anyway"));
+  m_connectAnyway->setObjectName(QStringLiteral("assistantConnectAnyway"));
+  m_connectAnyway->setAutoDefault(false);
+  m_connectAnyway->setFlat(true);
+  m_connectAnyway->setCursor(Qt::PointingHandCursor);
+  anywayRow->addWidget(m_connectAnyway);
+  layout->addLayout(anywayRow);
   m_result = new QLabel;
   m_result->setTextFormat(Qt::PlainText);
   m_result->setObjectName(QStringLiteral("assistantSetupResult"));
-  m_result->setWordWrap(true); m_result->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  m_result->setWordWrap(true);
+  m_result->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  m_result->hide();
   layout->addWidget(m_result);
-  m_disconnect = new QPushButton(tr("Disconnect Agent"));
-  m_disconnect->setObjectName(QStringLiteral("assistantDisconnect")); layout->addWidget(m_disconnect);
-  auto* targets = new QLabel(tr("Target: this open design. With several Mitcad windows, the bridge refuses to choose. "
-      "Keep only the intended Mitcad window open before connecting, or use the bridge's --list and --instance options "
-      "for that launch. Saved setup never pins a temporary instance id."));
-  targets->setObjectName(QStringLiteral("assistantTargetHelp")); targets->setWordWrap(true); layout->addWidget(targets);
-  auto* folders = new QFormLayout;
-  m_folder = new QLineEdit(m_host.suggestedFolder);
+  m_also = new QLabel;
+  m_also->setTextFormat(Qt::PlainText);
+  m_also->setObjectName(QStringLiteral("assistantAlsoConnected"));
+  m_also->setWordWrap(true);
+  m_also->setForegroundRole(QPalette::PlaceholderText);
+  m_also->hide();
+  layout->addWidget(m_also);
+
+  // 3. The folder Connect allows: the path cut to the room there is.
+  m_folderRow = new QWidget;
+  auto* folderRow = new QHBoxLayout(m_folderRow);
+  folderRow->setContentsMargins(0, 0, 0, 0);
+  m_folder = new QLabel;
   m_folder->setObjectName(QStringLiteral("assistantFolder"));
-  auto* folderRow = new QHBoxLayout; folderRow->addWidget(m_folder, 1);
-  auto* chooseFolder = new QPushButton(tr("Choose…")); folderRow->addWidget(chooseFolder);
-  auto* allow = new QPushButton(tr("Allow folder")); allow->setObjectName(QStringLiteral("assistantAllowFolder"));
-  folderRow->addWidget(allow); folders->addRow(tr("Agent file access:"), folderRow);
-  layout->addLayout(folders);
-  auto* folderHelp = new QLabel(tr("Allow folder explicitly grants Open and Save As access, including subfolders, "
-      "and creates the folder if necessary. Without an allowed folder these operations are refused; "
-      "saving the open design to its existing file is still available."));
-  folderHelp->setWordWrap(true); layout->addWidget(folderHelp);
-  auto* fallbackTitle = new QLabel(tr("Manual fallback — configuration and command"));
-  layout->addWidget(fallbackTitle);
-  m_fallback = new QPlainTextEdit; m_fallback->setReadOnly(true);
-  m_fallback->setObjectName(QStringLiteral("assistantFallback")); m_fallback->setMaximumHeight(110);
-  layout->addWidget(m_fallback);
-  auto* copyRow = new QHBoxLayout;
-  auto* copy = new QPushButton(tr("Copy configuration")); copy->setObjectName(QStringLiteral("assistantCopyConfiguration"));
-  auto* copyCommand = new QPushButton(tr("Copy command")); copyCommand->setObjectName(QStringLiteral("assistantCopyCommand"));
-  copyRow->addWidget(copy); copyRow->addWidget(copyCommand); copyRow->addStretch(); layout->addLayout(copyRow);
-  auto* boundary = new QLabel(tr("Local desktop clients only: a browser, mobile app, WSL client, remote executor "
-      "or cloud conversation cannot automatically launch this native bridge. No public listener or tunnel is enabled."));
-  boundary->setWordWrap(true); layout->addWidget(boundary);
-  area->setWidget(page); outer->addWidget(area);
+  m_folder->setTextFormat(Qt::PlainText);
+  m_folder->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+  m_folder->setMinimumWidth(120);
+  m_folder->installEventFilter(this);
+  folderRow->addWidget(m_folder, 1);
+  auto* changeFolder = new QPushButton(tr("Change…"));
+  changeFolder->setObjectName(QStringLiteral("assistantChangeFolder"));
+  changeFolder->setToolTip(tr("The folder the assistant can open designs from and save them to"));
+  changeFolder->setAutoDefault(false);
+  folderRow->addWidget(changeFolder);
+  layout->addWidget(m_folderRow);
+
+  // Advanced: the manual configuration and command, the Codex settings file
+  // and several Mitcad windows.
+  m_advancedToggle = new QToolButton;
+  m_advancedToggle->setObjectName(QStringLiteral("assistantAdvancedToggle"));
+  m_advancedToggle->setText(tr("Advanced"));
+  m_advancedToggle->setCheckable(true);
+  m_advancedToggle->setAutoRaise(true);
+  m_advancedToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+#ifdef Q_OS_MACOS
+  m_advancedToggle->setIcon(mac::symbolIcon(QStringLiteral("chevron.right")));
+#else
+  m_advancedToggle->setArrowType(Qt::RightArrow);
+#endif
+  layout->addWidget(m_advancedToggle, 0, Qt::AlignLeft);
+  m_advanced = new QWidget;
+  m_advanced->setObjectName(QStringLiteral("assistantAdvanced"));
+  auto* advanced = new QVBoxLayout(m_advanced);
+  advanced->setContentsMargins(0, 0, 0, 0);
+  advanced->setSpacing(10);
+  // Advanced's labels without a colon, each above its field; its buttons'
+  // words as the folder's.
+  m_config = new QLineEdit(QDir::toNativeSeparators(codexConfigurationPath()));
+  m_config->setObjectName(QStringLiteral("assistantConfigPath"));
+  auto* chooseConfig = new QPushButton(tr("Change…"));
+  chooseConfig->setObjectName(QStringLiteral("assistantChooseConfig"));
+  chooseConfig->setAutoDefault(false);
+  m_configRow = labelledField(tr("Codex settings file"), chooseConfig, m_config, "assistantConfigTitle");
+  advanced->addWidget(m_configRow);
+  const QFont code = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+  m_configuration = new QPlainTextEdit;
+  m_configuration->setReadOnly(true);
+  m_configuration->setObjectName(QStringLiteral("assistantConfiguration"));
+  m_configuration->setLineWrapMode(QPlainTextEdit::NoWrap);
+  m_configuration->setFont(code);
+  m_copyConfiguration = copyButton(tr("Copy"), "assistantCopyConfiguration", tr("Copy configuration"));
+  advanced->addWidget(labelledField(tr("Configuration"), m_copyConfiguration, m_configuration));
+  m_command = new QLineEdit;
+  m_command->setReadOnly(true);
+  m_command->setObjectName(QStringLiteral("assistantCommand"));
+  m_command->setFont(code);
+  m_copyCommand = copyButton(tr("Copy"), "assistantCopyCommand", tr("Copy command"));
+  // The commands on Windows are PowerShell's (its quoting, $env:CODEX_HOME).
+  m_commandBox = labelledField(windows ? tr("PowerShell command") : tr("Command"), m_copyCommand, m_command);
+  m_commandBox->setObjectName(QStringLiteral("assistantCommandBox"));
+  advanced->addWidget(m_commandBox);
+  m_windowsRow = new QWidget;
+  auto* windowsRow = new QHBoxLayout(m_windowsRow);
+  windowsRow->setContentsMargins(0, 0, 0, 0);
+  m_windows = new QLabel;
+  m_windows->setObjectName(QStringLiteral("assistantWindows"));
+  windowsRow->addWidget(m_windows, 1);
+  auto* copyWindow = copyButton(tr("Copy Command for This Window"), "assistantCopyWindowCommand");
+  copyWindow->setToolTip(tr("A command that connects to this window only; a saved setup never names a window"));
+  windowsRow->addWidget(copyWindow);
+  m_windowsRow->hide();
+  advanced->addWidget(m_windowsRow);
+  m_advanced->hide();
+  layout->addWidget(m_advanced);
+  layout->addStretch();
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
-  connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close); outer->addWidget(buttons);
-  connect(m_client, &QComboBox::currentIndexChanged, this, [this] { updateClient(); });
+  for (QAbstractButton* button : buttons->buttons()) {
+    if (auto* push = qobject_cast<QPushButton*>(button)) push->setAutoDefault(false);
+  }
+  connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);
+  layout->addWidget(buttons);
+
+  connect(m_clients, &QButtonGroup::idClicked, this, [this] { updateClient(); });
   connect(m_config, &QLineEdit::editingFinished, this, [this] { updateClient(); });
-  connect(m_setup, &QPushButton::clicked, this, [this] { setup(); });
-  connect(refresh, &QPushButton::clicked, this, [this] { refreshConnection(); });
-  connect(m_disconnect, &QPushButton::clicked, this, [this] { if (m_host.disconnect) m_host.disconnect(); refreshConnection(); });
-  connect(allow, &QPushButton::clicked, this, [this] { grantFolder(); });
-  connect(chooseFolder, &QPushButton::clicked, this, [this] {
-    const QString chosen = dialogDirectory(this, tr("Allow Folder for Agents"), m_folder->text());
-    if (!chosen.isEmpty()) m_folder->setText(chosen);
+  connect(m_setup, &QPushButton::clicked, this, [this] { primaryAction(); });
+  connect(m_connectAnyway, &QPushButton::clicked, this, [this] { connectAssistant(); });
+  connect(changeFolder, &QPushButton::clicked, this, [this] {
+    const QString chosen = dialogDirectory(this, tr("Folder for Designs"), m_folderPath);
+    if (!chosen.isEmpty()) setFolder(chosen);
+  });
+  connect(m_advancedToggle, &QToolButton::toggled, this, [this](bool open) {
+#ifdef Q_OS_MACOS
+    m_advancedToggle->setIcon(mac::symbolIcon(open ? QStringLiteral("chevron.down") : QStringLiteral("chevron.right")));
+#else
+    m_advancedToggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+#endif
+    if (open) refreshWindows();
+    m_advanced->setVisible(open);
+    if (open) {
+      // The configuration's width is known only once Advanced is laid out:
+      // its height counts the scroll bar from that width.
+      this->layout()->activate();
+      m_advanced->layout()->activate();
+      fitConfigurationHeight();
+    }
+    refit();
   });
   connect(chooseConfig, &QPushButton::clicked, this, [this] {
-    const QString chosen = dialogOpenFileName(this, tr("Choose Codex Settings"), m_config->text(), tr("TOML files (*.toml)"));
-    if (!chosen.isEmpty()) { m_config->setText(chosen); updateClient(); }
+    const QString chosen = dialogOpenFileName(this, tr("Codex Settings File"), configPath(), tr("TOML files (*.toml)"));
+    if (!chosen.isEmpty()) { m_config->setText(QDir::toNativeSeparators(chosen)); updateClient(); }
   });
-  connect(copy, &QPushButton::clicked, this, [this] {
-    const QString configuration = client() == AssistantClient::Codex
-        ? QStringLiteral("[mcp_servers.mitcad-desktop]\ncommand = %1\nargs = [\"mcp\", \"--connect\"]\n").arg(jsonString(m_bridge))
-        : QString::fromUtf8(QJsonDocument(assistantJsonConfiguration(m_bridge)).toJson(QJsonDocument::Indented));
-    QApplication::clipboard()->setText(configuration);
-    message(client() == AssistantClient::Codex ? tr("Copied Codex TOML configuration.") : tr("Copied mcpServers JSON configuration."));
+  connect(m_copyConfiguration, &QPushButton::clicked, this, [this] {
+    QApplication::clipboard()->setText(manualConfiguration());
+    showCopied(m_copyConfiguration);
   });
-  connect(copyCommand, &QPushButton::clicked, this, [this] {
-    const AssistantClient selected = client();
-    if (selected == AssistantClient::Codex && QFileInfo(m_config->text()).fileName() != QStringLiteral("config.toml")) {
-      QApplication::clipboard()->setText(QStringLiteral("[mcp_servers.mitcad-desktop]\ncommand = %1\nargs = [\"mcp\", \"--connect\"]\n").arg(jsonString(m_bridge)));
-      message(tr("Copied TOML for the selected settings file. The Codex CLI only registers into CODEX_HOME/config.toml."));
-      return;
+  connect(m_copyCommand, &QPushButton::clicked, this, [this] {
+    QApplication::clipboard()->setText(manualCommand());
+    showCopied(m_copyCommand);
+  });
+  connect(copyWindow, &QPushButton::clicked, this, [this, copyWindow] {
+    QApplication::clipboard()->setText(assistantCommand(m_bridge,
+        {QStringLiteral("mcp"), QStringLiteral("--connect"), QStringLiteral("--instance"), m_ownInstance}, windows));
+    showCopied(copyWindow);
+  });
+
+  applyStyles();
+  // The folder already allowed, else the suggested one.
+  const QStringList allowed = savedAgentFolders();
+  setFolder(allowed.isEmpty() ? m_host.suggestedFolder : allowed.first());
+  // The last assistant chosen, else the first one installed here, else
+  // Claude Desktop where it can be installed.
+  QAbstractButton* initial = m_clients->button(QSettings().value(kClientSetting, -1).toInt());
+  for (const AssistantClient candidate : {AssistantClient::ClaudeDesktop, AssistantClient::ClaudeCode, AssistantClient::Codex}) {
+    if (initial) break;
+    if ((candidate != AssistantClient::ClaudeDesktop || desktopExtensions) && installed(candidate)) {
+      initial = m_clients->button(int(candidate));
     }
-    const bool registration = selected == AssistantClient::ClaudeCode || selected == AssistantClient::Codex;
-    const QString program = registration ? (selected == AssistantClient::ClaudeCode ? QStringLiteral("claude") : QStringLiteral("codex")) : m_bridge;
-    const QStringList arguments = registration ? assistantRegistration(selected, m_bridge)
-        : QStringList{QStringLiteral("mcp"), QStringLiteral("--connect")};
-    QString command = assistantCommand(program, arguments, windows);
-    if (selected == AssistantClient::Codex) {
-      command = codexHomeCommand(command, m_config->text());
-    }
-    QApplication::clipboard()->setText(command);
-    message(tr("Copied the registration command. Run it on the same computer as Mitcad."));
-  });
-  connect(install, &QPushButton::clicked, this, [this] {
-    const QString link = client() == AssistantClient::ClaudeDesktop ? QStringLiteral("https://claude.ai/download")
-        : client() == AssistantClient::ClaudeCode ? QStringLiteral("https://code.claude.com/docs/en/quickstart")
-        : QStringLiteral("https://learn.chatgpt.com/docs/extend/mcp");
-    QDesktopServices::openUrl(QUrl(link));
-  });
+  }
+  if (!initial) initial = m_clients->button(int(desktopExtensions ? AssistantClient::ClaudeDesktop : AssistantClient::ClaudeCode));
+  initial->setChecked(true);
+  // The state is read every second: installations, setups and connections
+  // change outside the dialog. Settings files are read again only when they
+  // changed (cachedCheck).
   auto* timer = new QTimer(this); timer->setInterval(1000);
-  connect(timer, &QTimer::timeout, this, [this] { refreshConnection(); }); timer->start();
+  connect(timer, &QTimer::timeout, this, [this] {
+    if (m_advanced->isVisible()) refreshWindows();
+    refreshConnection();
+  });
+  timer->start();
   updateClient();
   fitWindowToContents(this);
 }
 
-AssistantClient ConnectAssistantDialog::client() const { return AssistantClient(m_client->currentData().toInt()); }
+AssistantClient ConnectAssistantDialog::client() const { return AssistantClient(m_clients->checkedId()); }
 
-void ConnectAssistantDialog::message(const QString& text, bool error) {
-  m_result->setText(text);
-  m_result->setProperty("setupError", error);
-  qInfo().noquote() << QStringLiteral("Assistant setup: %1").arg(error ? QStringLiteral("error") : QStringLiteral("updated"));
+// The Codex settings file as typed (shown with the platform's separators).
+QString ConnectAssistantDialog::configPath() const { return QDir::fromNativeSeparators(m_config->text().trimmed()); }
+
+// The look that follows the palette: tiles outlined and tinted in the
+// accent colour when chosen (the icon stays visible), the primary button
+// filled with it (the system's default button on macOS), and the Advanced
+// disclosure as a plain chevron.
+void ConnectAssistantDialog::applyStyles() {
+  const QColor accent = accentColor(palette());
+  const QString tile = QStringLiteral(
+      "QToolButton { border: 1px solid transparent; border-radius: 8px; padding: 6px 4px; background: transparent; }"
+      "QToolButton:hover { background: rgba(128, 128, 128, 40); }"
+      "QToolButton:checked { border: 1.5px solid %1; background: %2; }")
+      .arg(accent.name(), rgba(accent, 36));
+  for (QAbstractButton* button : m_clients->buttons()) button->setStyleSheet(tile);
+  m_advancedToggle->setStyleSheet(QStringLiteral(
+      "QToolButton { border: none; background: transparent; padding: 2px 0; }"));
+  m_connectAnyway->setStyleSheet(QStringLiteral(
+      "QPushButton { border: none; background: transparent; color: palette(link); padding: 0 2px; }"
+      "QPushButton:hover { text-decoration: underline; }"));
+#ifndef Q_OS_MACOS
+  const QColor text = palette().color(QPalette::HighlightedText);
+  m_setup->setStyleSheet(QStringLiteral(
+      "QPushButton { background: %1; color: %2; border: 1px solid %1; border-radius: 5px; padding: 5px 16px;"
+      " font-weight: 600; }"
+      "QPushButton:hover { background: %3; border-color: %3; }"
+      "QPushButton:pressed { background: %4; border-color: %4; }"
+      "QPushButton:disabled { background: %5; border-color: transparent; }")
+      .arg(accent.name(), text.name(), accent.lighter(112).name(), accent.darker(120).name(), rgba(accent, 90)));
+#endif
 }
 
-void ConnectAssistantDialog::updateClient() {
-  m_result->clear();
-  const auto selected = client();
-  if (auto* install = findChild<QPushButton*>(QStringLiteral("assistantInstallation"))) {
-    install->setEnabled(selected != AssistantClient::Other);
+bool ConnectAssistantDialog::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == m_folder && event->type() == QEvent::Resize) updateFolderText();
+  return QDialog::eventFilter(watched, event);
+}
+
+void ConnectAssistantDialog::changeEvent(QEvent* event) {
+  QDialog::changeEvent(event);
+  if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange) applyStyles();
+}
+
+void ConnectAssistantDialog::setFolder(const QString& path) {
+  m_folderPath = path.trimmed();
+  if (auto* change = findChild<QPushButton*>(QStringLiteral("assistantChangeFolder"))) {
+    change->setText(m_folderPath.isEmpty() ? tr("Choose…") : tr("Change…"));
   }
-  m_config->setEnabled(selected == AssistantClient::Codex);
-  if (selected == AssistantClient::ClaudeDesktop) {
-    m_details->setText(tr("Set up connection opens a Mitcad MCP Bundle in Claude Desktop. Approve installation "
-        "and enable it there, then start a new conversation. If tools are missing, fully quit and reopen Claude Desktop. "
-        "Opening the installer does not prove installation or an active connection."));
-  } else if (selected == AssistantClient::ClaudeCode) {
-    m_details->setText(tr("Set up connection registers the installed bridge in Claude Code's user scope, for all projects. "
-        "Claude Code must be installed first. Open a new session after setup and check /mcp. Client trust approvals still apply."));
-  } else if (selected == AssistantClient::Codex) {
-    m_details->setText(tr("Set up connection uses Codex's shared local MCP settings, with its CLI when available and "
-        "a backed-up atomic TOML update otherwise. CODEX_HOME is respected; choose the actual settings file if the client "
-        "uses another location. Restart the desktop client or start a new CLI conversation after setup. Managed policies still apply."));
-  } else {
-    m_details->setText(tr("Copy the mcpServers JSON into your local MCP client's supported setup interface. "
-        "The command runs this installed bridge on the same computer. This fallback does not register a client automatically."));
-  }
-  const QString program = selected == AssistantClient::ClaudeCode ? QStringLiteral("claude") : QStringLiteral("codex");
-  const bool registration = selected == AssistantClient::ClaudeCode || selected == AssistantClient::Codex;
-  QString fallbackCommand = assistantCommand(registration ? program : m_bridge,
-      registration ? assistantRegistration(selected, m_bridge) : QStringList{QStringLiteral("mcp"), QStringLiteral("--connect")}, windows);
-  if (selected == AssistantClient::Codex) {
-    fallbackCommand = QFileInfo(m_config->text()).fileName() == QStringLiteral("config.toml")
-        ? codexHomeCommand(fallbackCommand, m_config->text())
-        : tr("Apply the TOML above to the selected settings file: %1").arg(m_config->text());
-  }
-  m_fallback->setPlainText((selected == AssistantClient::Codex
-      ? QStringLiteral("Codex TOML:\n[mcp_servers.mitcad-desktop]\ncommand = %1\nargs = [\"mcp\", \"--connect\"]\n").arg(jsonString(m_bridge))
-      : QStringLiteral("mcpServers JSON:\n") + QString::fromUtf8(QJsonDocument(assistantJsonConfiguration(m_bridge)).toJson(QJsonDocument::Indented)))
-      + QStringLiteral("\n") + fallbackCommand);
+  updateFolderText();
+}
+
+// "Folder for designs: <path>", the path cut in the middle to the label's
+// width; the whole path and what the folder is for in its tooltip.
+void ConnectAssistantDialog::updateFolderText() {
+  const QString native = QDir::toNativeSeparators(m_folderPath);
+  const QString purpose = tr("The folder the assistant can open designs from and save them to");
+  m_folder->setToolTip(native.isEmpty() ? purpose : QString(native + QLatin1Char('\n') + purpose));
+  if (m_folderPath.isEmpty()) { m_folder->setText(tr("Folder for designs: none chosen")); return; }
+  const QString format = tr("Folder for designs: %1");
+  const QFontMetrics metrics = m_folder->fontMetrics();
+  const int room = m_folder->width() - metrics.horizontalAdvance(format.arg(QString())) - 4;
+  m_folder->setText(format.arg(metrics.elidedText(native, Qt::ElideMiddle, qMax(room, 40))));
+}
+
+void ConnectAssistantDialog::message(const QString& text, bool error, const QString& detail) {
+  m_result->setText(text);
+  m_result->setToolTip(detail);
+  m_result->setProperty("setupError", error);
+  // A setup may have written the settings within the same second.
+  m_claudeRead = {};
+  m_codexRead = {};
+  qInfo().noquote() << QStringLiteral("Assistant setup: %1").arg(error ? QStringLiteral("error") : QStringLiteral("updated"));
   refreshConnection();
 }
 
-QString ConnectAssistantDialog::configuredBridge() const {
-  QString text, error;
-  if (!readAssistantConfiguration(m_config->text(), text, error)) return {};
-  try {
-    if (codexPlan(text, m_bridge).value(QStringLiteral("status")).toString() == QStringLiteral("unchanged")) return m_bridge;
-  } catch (const std::exception&) { }
-  return {};
+void ConnectAssistantDialog::clearMessage() {
+  m_result->clear();
+  m_result->setToolTip(QString());
+  m_result->setProperty("setupError", false);
 }
 
-void ConnectAssistantDialog::refreshConnection() {
-  const QStringList clients = m_host.clients ? m_host.clients() : QStringList();
-  const bool connected = !clients.isEmpty();
-  m_disconnect->setEnabled(connected);
-  m_client->setEnabled(!m_process);
-  m_config->setEnabled(!m_process && client() == AssistantClient::Codex);
-  bool configured = client() == AssistantClient::Codex && !m_bridge.isEmpty() && !configuredBridge().isEmpty();
-  if (client() == AssistantClient::ClaudeCode) {
+void ConnectAssistantDialog::updateClient() {
+  clearMessage();
+  m_copied = false;
+  m_desktopNotFound = false;
+  const auto selected = client();
+  QSettings().setValue(kClientSetting, int(selected));
+  m_configRow->setVisible(selected == AssistantClient::Codex);
+  // Another assistant's primary button is Copy configuration already.
+  m_copyConfiguration->setVisible(selected != AssistantClient::Other);
+  m_configuration->setPlainText(manualConfiguration().trimmed());
+  fitConfigurationHeight();
+  // A Codex settings file the CLI cannot address takes the configuration
+  // only: no command.
+  const QString command = manualCommand();
+  m_command->setText(command);
+  m_command->setCursorPosition(0);
+  m_command->setToolTip(command);
+  m_commandBox->setVisible(!command.isEmpty());
+  refreshConnection();
+}
+
+// The configuration's lines without empty room below them, up to
+// kConfigurationHeight; with the horizontal scroll bar's height when a line
+// is wider than the box, or the bar covers the last line.
+void ConnectAssistantDialog::fitConfigurationHeight() {
+  const QStringList lines = m_configuration->toPlainText().split(QLatin1Char('\n'));
+  const QFontMetrics metrics = m_configuration->fontMetrics();
+  const int margin = int(m_configuration->document()->documentMargin());
+  int widest = 0;
+  for (const QString& line : lines) widest = qMax(widest, metrics.horizontalAdvance(line));
+  const int bar = widest + 2 * margin > m_configuration->viewport()->width()
+      ? m_configuration->horizontalScrollBar()->sizeHint().height()
+      : 0;
+  const int content = int(lines.size()) * metrics.lineSpacing() + 2 * margin + 2 * m_configuration->frameWidth() + 2 + bar;
+  m_configuration->setFixedHeight(qMin(content, kConfigurationHeight));
+}
+
+// The configuration and command show the bridge with the platform's
+// separators (JSON and TOML escape them as their syntax needs).
+QString ConnectAssistantDialog::manualConfiguration() const {
+  const QString bridge = QDir::toNativeSeparators(m_bridge);
+  return client() == AssistantClient::Codex
+      ? codexToml(bridge)
+      : QString::fromUtf8(QJsonDocument(assistantJsonConfiguration(bridge)).toJson(QJsonDocument::Indented));
+}
+
+// The registration command (Claude Code, Codex) or the bridge's own launch;
+// empty for a Codex settings file the CLI cannot address.
+QString ConnectAssistantDialog::manualCommand() const {
+  const AssistantClient selected = client();
+  if (selected == AssistantClient::Codex && !standardCodexFile(configPath())) return {};
+  const QString bridge = QDir::toNativeSeparators(m_bridge);
+  const bool registration = selected == AssistantClient::ClaudeCode || selected == AssistantClient::Codex;
+  const QString program = registration ? (selected == AssistantClient::ClaudeCode ? QStringLiteral("claude") : QStringLiteral("codex")) : bridge;
+  const QStringList arguments = registration ? assistantRegistration(selected, bridge)
+      : QStringList{QStringLiteral("mcp"), QStringLiteral("--connect")};
+  const QString command = assistantCommand(program, arguments, windows);
+  return selected == AssistantClient::Codex ? codexHomeCommand(command, configPath()) : command;
+}
+
+bool ConnectAssistantDialog::cachedCheck(SettingsRead& cache, const QString& path,
+                                         const std::function<bool(const QString&)>& check) const {
+  const QFileInfo info(path);
+  const qint64 bytes = info.exists() ? info.size() : -1;
+  const QDateTime written = info.exists() ? info.lastModified() : QDateTime();
+  if (cache.path != path || cache.size != bytes || cache.modified != written) {
     QString text, error;
-    if (readAssistantConfiguration(claudeUserConfiguration(), text, error)) {
-      const auto entry = QJsonDocument::fromJson(text.toUtf8()).object().value(QStringLiteral("mcpServers")).toObject()
-          .value(QStringLiteral("mitcad")).toObject();
-      configured = entry.value(QStringLiteral("command")) == m_bridge &&
-          entry.value(QStringLiteral("args")) == QJsonArray{QStringLiteral("mcp"), QStringLiteral("--connect")};
+    cache.path = path;
+    cache.size = bytes;
+    cache.modified = written;
+    cache.configured = readAssistantConfiguration(path, text, error) && check(text);
+  }
+  return cache.configured;
+}
+
+bool ConnectAssistantDialog::installed(AssistantClient which) const {
+  switch (which) {
+  // An installer that opened proves Claude Desktop; one that no application
+  // took disproves it.
+  case AssistantClient::ClaudeDesktop: return m_bundleOpened || (!m_desktopNotFound && claudeDesktopInstalled());
+  case AssistantClient::ClaudeCode: return !assistantExecutable(QStringLiteral("claude")).isEmpty();
+  case AssistantClient::Codex: {
+    // Without its CLI, Codex's settings folder is enough: setup then writes
+    // the TOML itself.
+    const QFileInfo settings(configPath());
+    return !assistantExecutable(QStringLiteral("codex")).isEmpty() ||
+        (settings.isAbsolute() && QFileInfo(settings.absolutePath()).isDir());
+  }
+  case AssistantClient::Other: return true;
+  }
+  return false;
+}
+
+bool ConnectAssistantDialog::configured(AssistantClient which) const {
+  if (m_bridge.isEmpty()) return false;
+  if (which == AssistantClient::ClaudeDesktop) return m_bundleOpened;
+  if (which == AssistantClient::Codex) {
+    return cachedCheck(m_codexRead, configPath(), [this](const QString& text) {
+      try {
+        return codexHasBridge(text, m_bridge);
+      } catch (const std::exception&) {
+        return false;
+      }
+    });
+  }
+  if (which != AssistantClient::ClaudeCode) return false;
+  return cachedCheck(m_claudeRead, claudeUserConfiguration(), [this](const QString& text) {
+    const auto entry = QJsonDocument::fromJson(text.toUtf8()).object().value(QStringLiteral("mcpServers")).toObject()
+        .value(QStringLiteral("mitcad")).toObject();
+    return claudeEntryStarts(entry, m_bridge);
+  });
+}
+
+// The connections of the chosen assistant: what Disconnect ends.
+QStringList ConnectAssistantDialog::chosenClientIds() const {
+  QStringList ids;
+  for (const ConnectedAgent& agent : m_host.clients ? m_host.clients() : QList<ConnectedAgent>()) {
+    if (assistantLabelMatches(client(), agent.name)) ids << agent.id;
+  }
+  return ids;
+}
+
+// One state, one line naming the next step, at most one primary action. The
+// state and the action are also properties (assistantState,
+// assistantAction) for the test driver.
+void ConnectAssistantDialog::refreshConnection() {
+  const AssistantClient selected = client();
+  const QString name = assistantSentenceName(selected);
+  // Connected is the chosen assistant's state only when one of the clients
+  // is that assistant; the others are named quietly below. Each by the
+  // assistant its label matches, else by its own label.
+  QStringList mine, others;
+  for (const ConnectedAgent& agent : m_host.clients ? m_host.clients() : QList<ConnectedAgent>()) {
+    QStringList& names = assistantLabelMatches(selected, agent.name) ? mine : others;
+    const QString shown = assistantDisplayName(agent.name);
+    if (!names.contains(shown)) names << shown;
+  }
+  // Claude Desktop installed since its extension found no application.
+  if (m_desktopNotFound && windows && bundleHandlerRegistered()) m_desktopNotFound = false;
+  const bool busy = m_process != nullptr;
+  for (QAbstractButton* button : m_clients->buttons()) button->setEnabled(!busy);
+  m_config->setEnabled(!busy);
+  for (QPushButton* copy : {m_copyConfiguration, m_copyCommand}) copy->setEnabled(!m_bridge.isEmpty());
+  if (auto* button = findChild<QPushButton*>(QStringLiteral("assistantCopyWindowCommand"))) button->setEnabled(!m_bridge.isEmpty());
+  QString state, text, action;
+  bool anyway = false;
+  if (m_bridge.isEmpty()) {
+    state = QStringLiteral("failed");
+    text = tr("Mitcad's assistant connector was not found. Repair or reinstall Mitcad.");
+  } else if (busy) {
+    state = QStringLiteral("busy");
+    text = tr("Connecting %1…").arg(name);
+    action = QStringLiteral("connect");
+  } else if (selected == AssistantClient::ClaudeDesktop && m_desktopNotFound && mine.isEmpty()) {
+    // No application took the extension: not a wait for an approval.
+    state = QStringLiteral("failed");
+    text = tr("Install Claude Desktop first");
+    action = QStringLiteral("install");
+  } else if (m_result->property("setupError").toBool()) {
+    state = QStringLiteral("failed");
+    text = m_result->text();
+    action = QStringLiteral("retry");
+  } else if (!mine.isEmpty()) {
+    state = QStringLiteral("connected");
+    text = tr("✓ Connected: %1").arg(mine.join(QStringLiteral(", ")));
+    action = QStringLiteral("disconnect");
+  } else if (selected == AssistantClient::Other) {
+    state = QStringLiteral("manual");
+    text = m_copied ? tr("Copied. Paste it into your assistant's settings")
+                    : tr("Copy the configuration into your assistant's settings");
+    action = QStringLiteral("copy");
+  } else if (selected == AssistantClient::ClaudeDesktop && !desktopExtensions) {
+    state = QStringLiteral("unavailable");
+    text = tr("Claude Desktop is not available for this system");
+  } else if (!installed(selected)) {
+    state = QStringLiteral("not-installed");
+    text = selected == AssistantClient::Codex ? tr("ChatGPT or Codex was not found on this computer")
+                                              : tr("%1 was not found on this computer").arg(name);
+    action = QStringLiteral("install");
+    // Claude Code's setup runs its CLI: without one found it cannot work.
+    anyway = selected != AssistantClient::ClaudeCode;
+  } else if (configured(selected)) {
+    // The next step is the assistant's; only Claude Desktop's installer can
+    // be opened again from here.
+    state = QStringLiteral("waiting");
+    text = selected == AssistantClient::ClaudeDesktop ? tr("Approve Mitcad in Claude Desktop, then start a new chat")
+        : selected == AssistantClient::ClaudeCode ? tr("Start a new Claude Code session to use Mitcad")
+        : tr("Restart ChatGPT or start a new Codex session to use Mitcad");
+    if (selected == AssistantClient::ClaudeDesktop) action = QStringLiteral("reopen");
+  } else {
+    state = QStringLiteral("ready");
+    text = tr("Ready to connect %1").arg(name);
+    action = QStringLiteral("connect");
+  }
+  const bool failed = state == QStringLiteral("failed");
+  m_state->setText(text);
+  m_state->setToolTip(failed ? m_result->toolTip() : QString());
+  m_state->setProperty("assistantState", state);
+  if (state != m_shownState) {
+    // A failure's line is in the error colour.
+    if (failed) setErrorStyleSheet(m_state);
+    else if (m_shownState == QStringLiteral("failed")) setErrorStyleSheet(m_state, QString());
+    m_shownState = state;
+  }
+  // An error is the state line itself; other results (a backup) show below it.
+  m_result->setVisible(!m_result->text().isEmpty() && !failed);
+  m_also->setText(tr("Also connected: %1").arg(others.join(QStringLiteral(", "))));
+  m_also->setVisible(!others.isEmpty());
+  m_setup->setProperty("assistantAction", action);
+  m_setup->setVisible(!action.isEmpty());
+  m_setup->setEnabled(!busy);
+  // Disconnect ends the chosen assistant's connections only: named, by the
+  // names Connected shows (an Other client's own label), when others stay
+  // connected.
+  const QString disconnectText = others.isEmpty() ? tr("Disconnect") : tr("Disconnect %1").arg(mine.join(QStringLiteral(", ")));
+  m_setup->setText(action == QStringLiteral("install")
+          ? (selected == AssistantClient::ClaudeDesktop ? tr("Get Claude Desktop") : tr("How to install"))
+      : action == QStringLiteral("disconnect") ? disconnectText
+      : action == QStringLiteral("retry") ? tr("Try again")
+      : action == QStringLiteral("copy") ? tr("Copy configuration")
+      : action == QStringLiteral("reopen") ? tr("Open in Claude Desktop again")
+      : tr("Connect"));
+  m_connectAnyway->setVisible(anyway);
+  m_connectAnyway->setEnabled(!busy);
+  // The folder line goes with the actions that allow it.
+  const bool folderLine = anyway || action == QStringLiteral("connect") || action == QStringLiteral("copy") ||
+                          action == QStringLiteral("retry") || action == QStringLiteral("reopen");
+  m_folderRow->setVisible(folderLine);
+  // A row shown or hidden, a longer line or another configuration: the
+  // window fits its contents again.
+  const QString shown = state + text + m_setup->text() + others.join(QLatin1Char(',')) +
+      QString::number(int(m_result->isVisibleTo(this))) + QString::number(int(folderLine)) + QString::number(int(anyway)) +
+      QString::number(int(m_advanced->isVisibleTo(this))) + QString::number(int(m_configRow->isVisibleTo(this))) +
+      QString::number(int(m_commandBox->isVisibleTo(this))) + QString::number(int(m_windowsRow->isVisibleTo(this))) +
+      QString::number(m_configuration->maximumHeight());
+  if (shown != m_shownLayout) {
+    m_shownLayout = shown;
+    refit();
+  }
+}
+
+void ConnectAssistantDialog::refit() {
+  // Every inner layout first, innermost first, then the dialog's: a row
+  // shown inside Advanced or the configuration's new height (inside its
+  // labelled field) reaches the dialog's hints, and its minimum height, only
+  // once each layout around it has been activated again, which a posted
+  // request may not have done yet.
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+  const QList<QWidget*> widgets = findChildren<QWidget*>();
+  for (auto widget = widgets.crbegin(); widget != widgets.crend(); ++widget) {
+    if (QLayout* inner = (*widget)->layout()) {
+      inner->invalidate();
+      inner->activate();
     }
   }
-  m_state->setText(connected ? tr("Connected: %1").arg(clients.join(QStringLiteral(", ")))
-      : configured ? tr("Configured, waiting for connection")
-      : client() == AssistantClient::ClaudeDesktop ? tr("Not connected; installation status unknown") : tr("Not configured"));
-  m_setup->setEnabled(!m_process && !m_bridge.isEmpty() && client() != AssistantClient::Other);
-  for (const char* name : {"assistantCopyConfiguration", "assistantCopyCommand"}) {
-    if (auto* copy = findChild<QPushButton*>(QLatin1String(name))) copy->setEnabled(!m_bridge.isEmpty());
+  layout()->invalidate();
+  layout()->activate();
+  // Grow to what the contents need (the width never jumps back), then give
+  // back the height a hidden row or a shorter line left empty.
+  fitWindowToContents(this, FitMode::GrowOnly);
+  QLayout* rows = layout();
+  const int fitted = rows->hasHeightForWidth() ? rows->totalHeightForWidth(width()) : sizeHint().height();
+  const int fittedHeight = qMax(fitted, minimumSizeHint().height());
+  if (fittedHeight < height()) resize(width(), fittedHeight);
+}
+
+void ConnectAssistantDialog::refreshWindows() {
+  const QList<Endpoint> endpoints = discover();
+  m_ownInstance.clear();
+  for (const Endpoint& endpoint : endpoints) {
+    if (endpoint.pid == QCoreApplication::applicationPid()) m_ownInstance = endpoint.instance;
   }
-#ifndef Q_OS_MACOS
-#ifndef Q_OS_WIN
-  if (client() == AssistantClient::ClaudeDesktop) m_setup->setEnabled(false);
-#endif
-#endif
-  if (m_bridge.isEmpty() && m_result->text().isEmpty()) message(tr("The installed Mitcad CLI was not found. Repair or reinstall Mitcad."), true);
+  m_windows->setText(tr("%n Mitcad windows are open", nullptr, int(endpoints.size())));
+  m_windowsRow->setVisible(endpoints.size() > 1 && !m_ownInstance.isEmpty());
+}
+
+void ConnectAssistantDialog::primaryAction() {
+  const QString action = m_setup->property("assistantAction").toString();
+  if (action == QStringLiteral("install")) {
+    QDesktopServices::openUrl(QUrl(installPage(client())));
+  } else if (action == QStringLiteral("disconnect")) {
+    if (m_host.disconnect) m_host.disconnect(chosenClientIds());
+    refreshConnection();
+  } else if (!action.isEmpty()) {
+    connectAssistant(); // connect, copy, retry, reopen
+  }
+}
+
+void ConnectAssistantDialog::connectAssistant() {
+  if (m_process) return;
+  clearMessage();
+  // Pressing the button with the folder line shown is the consent.
+  if (!grantFolder()) return;
+  if (client() == AssistantClient::Other) {
+    QApplication::clipboard()->setText(manualConfiguration());
+    m_copied = true;
+    refreshConnection();
+  } else {
+    setup();
+  }
 }
 
 void ConnectAssistantDialog::setup() {
@@ -309,45 +880,55 @@ void ConnectAssistantDialog::setup() {
 }
 
 void ConnectAssistantDialog::setupCodex() {
-  const QString path = QFileInfo(m_config->text()).absoluteFilePath();
+  const QString path = QFileInfo(configPath()).absoluteFilePath();
   if (const QString policy = assistantConfigurationPolicy(path); !policy.isEmpty()) { message(policy, true); return; }
   QString current, error;
   if (!readAssistantConfiguration(path, current, error)) { message(error, true); return; }
   QJsonObject plan;
   try {
+    // Already there, as setup writes it or as the manual configuration shows it.
+    if (codexHasBridge(current, m_bridge)) { message(QString()); return; }
     plan = codexPlan(current, m_bridge);
-    if (plan.value(QStringLiteral("status")).toString() == QStringLiteral("conflict") && confirmReplacement(this)) {
+    if (plan.value(QStringLiteral("status")).toString() == QStringLiteral("conflict") &&
+        confirmReplacement(this, assistantSentenceName(AssistantClient::Codex))) {
       plan = codexPlan(current, m_bridge, true);
     }
-  } catch (const std::exception& failure) { message(errorText(failure), true); return; }
+  } catch (const std::exception& failure) {
+    message(tr("Codex's settings file could not be read. Fix it, then try again."), true, errorText(failure)); return;
+  }
   const QString status = plan.value(QStringLiteral("status")).toString();
-  if (status == QStringLiteral("unchanged")) { message(tr("Already configured. Restart the client or start a new conversation.")); return; }
-  if (status != QStringLiteral("updated")) { message(plan.value(QStringLiteral("error")).toString(tr("Setup was not changed.")), true); return; }
+  if (status == QStringLiteral("unchanged")) { message(QString()); return; }
+  if (status != QStringLiteral("updated")) {
+    message(plan.value(QStringLiteral("error")).toString(tr("Codex's settings were not changed.")), true); return;
+  }
+  const auto backedUp = [](const QString& backup) {
+    return backup.isEmpty() ? QString() : tr("Previous settings saved as %1").arg(QDir::toNativeSeparators(backup));
+  };
   QString cli = assistantExecutable(QStringLiteral("codex"));
   // A selected nonstandard TOML file cannot be addressed by the CLI's home
   // argument. The configuration action remains available without a CLI.
-  if (QFileInfo(path).fileName() != QStringLiteral("config.toml")) cli.clear();
+  if (!standardCodexFile(path)) cli.clear();
   if (!cli.isEmpty()) {
     // Let the supported CLI operate on a private copy. A faulty client or a
     // concurrent edit of the real config cannot overwrite unrelated settings.
     const QString work = !qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT") ? qEnvironmentVariable("MITCAD_ASSISTANT_TEST_WORK") : QString();
     auto staged = std::make_shared<QTemporaryDir>(QDir(work.isEmpty() ? QDir::tempPath() : work)
         .filePath(QStringLiteral("mitcad-codex-XXXXXX")));
-    if (!staged->isValid()) { message(tr("The private setup folder could not be created."), true); return; }
+    if (!staged->isValid()) { message(tr("A private setup folder could not be made. Try again."), true); return; }
     const QString stagedPath = QDir(staged->path()).filePath(QStringLiteral("config.toml"));
     QSaveFile seed(stagedPath);
     const QByteArray initial = current.toUtf8();
-    if (!seed.open(QIODevice::WriteOnly)) { message(tr("The private settings copy could not be created."), true); return; }
+    if (!seed.open(QIODevice::WriteOnly)) { message(tr("A private copy of the settings could not be made. Try again."), true); return; }
     seed.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     if (seed.write(initial) != initial.size() || !seed.commit()) {
-      message(tr("The private settings copy could not be written."), true); return;
+      message(tr("A private copy of the settings could not be made. Try again."), true); return;
     }
     auto* process = new QProcess(this);
     auto environment = QProcessEnvironment::systemEnvironment();
     environment.insert(QStringLiteral("CODEX_HOME"), staged->path());
     process->setProcessEnvironment(environment);
     m_process = process;
-    runRegistration(cli, assistantRegistration(AssistantClient::Codex, m_bridge), [this, path, current, staged] {
+    runRegistration(cli, assistantRegistration(AssistantClient::Codex, m_bridge), [this, path, current, staged, backedUp] {
       QString written, error;
       bool valid = readAssistantConfiguration(QDir(staged->path()).filePath(QStringLiteral("config.toml")), written, error);
       if (valid) {
@@ -360,11 +941,9 @@ void ConnectAssistantDialog::setupCodex() {
       if (valid) {
         QString backup;
         if (!writeAssistantConfiguration(path, current, written, backup, error)) { message(error, true); return; }
-        message(tr("Configured, waiting for connection. Restart the desktop client or start a new conversation.") +
-            (backup.isEmpty() ? QString() : tr(" Backup: %1").arg(QDir::toNativeSeparators(backup))));
+        message(backedUp(backup));
       } else {
-        message(tr("The client configuration could not be verified: %1. The original configuration was kept.")
-            .arg(error), true);
+        message(tr("Codex's registration could not be verified; nothing was changed. Try again."), true, error);
       }
     });
     return;
@@ -373,51 +952,46 @@ void ConnectAssistantDialog::setupCodex() {
   if (!writeAssistantConfiguration(path, current, plan.value(QStringLiteral("content")).toString(), backup, error)) {
     message(error, true); return;
   }
-  message(tr("Configured, waiting for connection. Restart the desktop client or start a new conversation.") +
-      (backup.isEmpty() ? QString() : tr(" Backup: %1").arg(QDir::toNativeSeparators(backup))));
-  refreshConnection();
+  message(backedUp(backup));
 }
 
 void ConnectAssistantDialog::setupClaudeCode() {
   const QString cli = assistantExecutable(QStringLiteral("claude"));
-  if (cli.isEmpty()) { message(tr("Claude Code is not installed or its executable was not found. Open Installation instructions, then try again."), true); return; }
+  if (cli.isEmpty()) { message(tr("Claude Code was not found on this computer"), true); return; }
   const QString path = claudeUserConfiguration();
   QString current, error;
   if (!readAssistantConfiguration(path, current, error)) { message(error, true); return; }
   QJsonParseError parse;
   const auto document = QJsonDocument::fromJson(current.toUtf8(), &parse);
   if (!current.isEmpty() && (parse.error != QJsonParseError::NoError || !document.isObject())) {
-    message(tr("The existing Claude Code configuration is not valid JSON."), true); return;
+    message(tr("Claude Code's settings file is not valid JSON. Fix it, then try again."), true); return;
   }
   const QJsonObject original = document.isObject() ? document.object() : QJsonObject{};
   const auto existing = original.value(QStringLiteral("mcpServers"));
   if (!existing.isUndefined() && !existing.isObject()) {
-    message(tr("Claude Code's mcpServers configuration must be a JSON object."), true); return;
+    message(tr("Claude Code's settings file has an unexpected format. Fix it, then try again."), true); return;
   }
   QJsonObject servers = existing.toObject();
   const auto entry = servers.value(QStringLiteral("mitcad"));
   if (!entry.isUndefined()) {
-    if (entry.toObject().value(QStringLiteral("command")) == m_bridge &&
-        entry.toObject().value(QStringLiteral("args")) == QJsonArray{QStringLiteral("mcp"), QStringLiteral("--connect")}) {
-      message(tr("Already configured in user scope. Start a new Claude Code session.")); return;
-    }
-    if (!confirmReplacement(this)) return;
+    if (claudeEntryStarts(entry.toObject(), m_bridge)) { message(QString()); return; }
+    if (!confirmReplacement(this, assistantSentenceName(AssistantClient::ClaudeCode))) return;
   }
   // CLAUDE_CONFIG_DIR places user-scope .claude.json inside this private
   // directory. Run the supported CLI there, never remove the real entry.
   const QString work = !qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT") ? qEnvironmentVariable("MITCAD_ASSISTANT_TEST_WORK") : QString();
   auto staged = std::make_shared<QTemporaryDir>(QDir(work.isEmpty() ? QDir::tempPath() : work)
       .filePath(QStringLiteral("mitcad-claude-XXXXXX")));
-  if (!staged->isValid()) { message(tr("The private setup folder could not be created."), true); return; }
+  if (!staged->isValid()) { message(tr("A private setup folder could not be made. Try again."), true); return; }
   QJsonObject seed = original;
   servers.remove(QStringLiteral("mitcad"));
   seed.insert(QStringLiteral("mcpServers"), servers);
   QSaveFile file(QDir(staged->path()).filePath(QStringLiteral(".claude.json")));
   const QByteArray initial = QJsonDocument(seed).toJson();
-  if (!file.open(QIODevice::WriteOnly)) { message(tr("The private settings copy could not be created."), true); return; }
+  if (!file.open(QIODevice::WriteOnly)) { message(tr("A private copy of the settings could not be made. Try again."), true); return; }
   file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
   if (file.write(initial) != initial.size() || !file.commit()) {
-    message(tr("The private settings copy could not be written."), true); return;
+    message(tr("A private copy of the settings could not be made. Try again."), true); return;
   }
   auto* process = new QProcess(this);
   auto environment = QProcessEnvironment::systemEnvironment();
@@ -439,12 +1013,11 @@ void ConnectAssistantDialog::setupClaudeCode() {
         entry.value(QStringLiteral("command")) != m_bridge ||
         entry.value(QStringLiteral("args")) != QJsonArray{QStringLiteral("mcp"), QStringLiteral("--connect")} ||
         (entry.contains(QStringLiteral("type")) && entry.value(QStringLiteral("type")) != QStringLiteral("stdio"))) {
-      message(tr("Claude Code registration could not be verified. The original configuration was kept."), true); return;
+      message(tr("Claude Code's registration could not be verified; nothing was changed. Try again."), true); return;
     }
     QString backup;
     if (!writeAssistantConfiguration(path, current, written, backup, error)) { message(error, true); return; }
-    message(tr("Configured in user scope, waiting for connection. Start a new Claude Code session and check /mcp.") +
-        (backup.isEmpty() ? QString() : tr(" Backup: %1").arg(QDir::toNativeSeparators(backup))));
+    message(backup.isEmpty() ? QString() : tr("Previous settings saved as %1").arg(QDir::toNativeSeparators(backup)));
   });
 }
 
@@ -452,23 +1025,22 @@ void ConnectAssistantDialog::runRegistration(const QString& program, const QStri
                                              std::function<void()> success) {
   QProcess* process = m_process ? m_process : new QProcess(this);
   m_process = process;
-  m_setup->setEnabled(false);
   refreshConnection();
   process->setWorkingDirectory(QDir::homePath());
   auto* timeout = new QTimer(process); timeout->setSingleShot(true); timeout->setInterval(30000);
   connect(timeout, &QTimer::timeout, process, [process] { process->kill(); });
   connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError error) {
     if (error != QProcess::FailedToStart) return;
-    message(tr("The assistant registration command could not start."), true);
-    m_process = nullptr; process->deleteLater(); refreshConnection();
+    m_process = nullptr; process->deleteLater();
+    message(tr("%1 could not be started. Check its installation, then try again.").arg(assistantSentenceName(client())), true);
   });
   connect(process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished), this,
       [this, process, timeout, success = std::move(success)](int code, QProcess::ExitStatus exit) {
         timeout->stop();
         m_process = nullptr;
         if (code == 0 && exit == QProcess::NormalExit) success();
-        else message(tr("The assistant registration command failed. %1")
-            .arg(QString::fromUtf8(process->readAllStandardError()).left(2000)), true);
+        else message(tr("%1 did not accept the connection. Try again, or set it up by hand under Advanced.")
+            .arg(assistantSentenceName(client())), true, QString::fromUtf8(process->readAllStandardError()).left(2000));
         process->deleteLater(); refreshConnection();
       });
   process->start(program, arguments, QIODevice::ReadOnly); timeout->start();
@@ -477,44 +1049,63 @@ void ConnectAssistantDialog::runRegistration(const QString& program, const QStri
 void ConnectAssistantDialog::setupBundle() {
   const QString suffix = windows ? QStringLiteral(".exe") : QString();
   const QString launcher = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("mitcad-mcp-launcher") + suffix);
-  if (!QFileInfo(launcher).isExecutable()) { message(tr("The installed MCP launcher is missing. Repair or reinstall Mitcad."), true); return; }
+  if (!QFileInfo(launcher).isExecutable()) { message(tr("Part of Mitcad is missing. Repair or reinstall Mitcad."), true, launcher); return; }
   const QString platform = windows ? QStringLiteral("win32") : QStringLiteral("darwin");
   const QByteArray manifest = QJsonDocument(assistantBundleManifest(m_bridge, windows, platform)).toJson(QJsonDocument::Indented);
   try {
     const auto bytes = build_mcp_bundle(rustStr(manifest), rustStr(launcher.toUtf8()));
     const QString work = !qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT") ? qEnvironmentVariable("MITCAD_ASSISTANT_TEST_WORK") : QString();
-    const QString folder = QDir(work.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) : work)
+    const QString bundleFolder = QDir(work.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) : work)
         .filePath(QStringLiteral("assistant-setup"));
-    if (!QDir().mkpath(folder)) { message(tr("The bundle folder could not be created."), true); return; }
-    const QString path = QDir(folder).filePath(QStringLiteral("mitcad-desktop.mcpb"));
+    if (!QDir().mkpath(bundleFolder)) { message(tr("The Claude Desktop extension could not be saved. Try again."), true, bundleFolder); return; }
+    const QString path = QDir(bundleFolder).filePath(QStringLiteral("mitcad-desktop.mcpb"));
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) ||
         file.write(reinterpret_cast<const char*>(bytes.data()), qsizetype(bytes.size())) != qsizetype(bytes.size()) || !file.commit()) {
-      message(tr("The MCP Bundle could not be saved."), true); return;
+      message(tr("The Claude Desktop extension could not be saved. Try again."), true, path); return;
     }
     if (!work.isEmpty() && qEnvironmentVariable("MITCAD_TEST_ASSISTANT_BUNDLE_OPEN") == QStringLiteral("capture")) {
       setProperty("assistantBundlePath", path);
+      m_bundleOpened = true;
       message(tr("Bundle prepared for the isolated installer test.")); return;
     }
-    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
-      message(tr("No MCP Bundle installer opened. Install Claude Desktop, then open this bundle: %1").arg(QDir::toNativeSeparators(path)), true); return;
+    // No application takes the extension: Claude Desktop is not there
+    // (Windows would offer "Open with" and report success).
+    if (!bundleHandlerRegistered()) {
+      m_desktopNotFound = true;
+      message(QString()); return;
     }
-    message(tr("Installation opened in Claude Desktop. Approve and enable the bundle, then start a new conversation. "
-               "If necessary fully quit and reopen Claude Desktop. Installation status remains unknown until the client connects."));
-  } catch (const std::exception& failure) { message(errorText(failure), true); }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
+#ifdef Q_OS_WIN
+      // The extension has an application (above), which did not open it.
+      message(tr("Claude Desktop did not open the extension. Try again."), true, path); return;
+#else
+      m_desktopNotFound = true;
+      message(QString()); return;
+#endif
+    }
+    // Whether it was installed is known only once Claude Desktop connects.
+    m_bundleOpened = true;
+    message(QString());
+  } catch (const std::exception& failure) {
+    message(tr("The Claude Desktop extension could not be made. Try again."), true, errorText(failure));
+  }
 }
 
-void ConnectAssistantDialog::grantFolder() {
-  const QFileInfo folder(m_folder->text().trimmed());
-  if (!folder.isAbsolute() || !QDir().mkpath(folder.absoluteFilePath()) || !QFileInfo(folder.absoluteFilePath()).isDir()) {
-    message(tr("Choose an absolute folder that can be created and accessed."), true); return;
+bool ConnectAssistantDialog::grantFolder() {
+  if (m_folderPath.isEmpty()) return true;
+  const QFileInfo chosen(m_folderPath);
+  if (!chosen.isAbsolute() || !QDir().mkpath(chosen.absoluteFilePath()) || !QFileInfo(chosen.absoluteFilePath()).isDir()) {
+    message(tr("The folder %1 cannot be used. Choose another.").arg(QDir::toNativeSeparators(m_folderPath)), true);
+    return false;
   }
-  QStringList folders = savedAgentFolders(); folders << folder.canonicalFilePath();
+  QStringList folders = savedAgentFolders(); folders << chosen.canonicalFilePath();
   saveAgentFolders(folders);
   for (QWidget* window : QApplication::topLevelWidgets()) {
     for (auto* preferences : window->findChildren<AgentPreferencesBox*>()) preferences->includeSavedFolders();
   }
-  message(tr("Allowed folder: %1. Open and Save As can use it and its subfolders.").arg(QDir::toNativeSeparators(folder.canonicalFilePath())));
+  qInfo().noquote() << QStringLiteral("Assistant setup: folder allowed");
+  return true;
 }
 
 } // namespace mitcad::mcp

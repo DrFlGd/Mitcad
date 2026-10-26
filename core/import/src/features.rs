@@ -18,8 +18,9 @@ use mitcad_f3d::design::ir::{
 };
 use mitcad_model::assembly::inverse;
 use mitcad_model::datum::Datum;
-use mitcad_model::features::SketchPlane;
+use mitcad_model::features::{SketchOutput, SketchPlane};
 use mitcad_model::sketch::regions::Region;
+use mitcad_model::sketch::solve::SolverItem;
 use mitcad_model::{
     BodyUid, ComponentUid, FaceName, FeatureUid, Kernel, SketchFrame, TopoName, Transform,
 };
@@ -30,7 +31,7 @@ use crate::history::{Sig, StoredBody};
 use crate::refs::Section;
 use crate::report::{InputProvenance, Outcome};
 use crate::scaffold::CandidateCore;
-use crate::sketch::{self, position_error};
+use crate::sketch::{self, inactive, position_error};
 use crate::snap;
 use crate::{Candidate, Guesses, Importer, SketchInfo, linked, refs};
 
@@ -321,19 +322,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
         let frame_def = geom::relative_frame(&plane_frame, &frame);
         let made_params = self.offset_params(&mut parts);
-        let levels: [(&[Value], &[Value], &str); 3] = [
-            (&parts.constraints, &parts.dimensions, ""),
-            (
-                &parts.constraints,
-                &parts.driven_dimensions,
-                "dimensions driven",
-            ),
-            (
-                &[],
-                &parts.driven_dimensions,
-                "without constraints, dimensions driven",
-            ),
-        ];
+        // Every constraint and dimension the file has, active (level 0); the
+        // fewest that keep the sketch off the file's geometry inactive and
+        // everything else active (level 1, mitcad#721); all of them
+        // inactive, without the patterns and offsets (level 2).
+        let all_items = inactive::item_ids(&parts.constraints, &parts.dimensions);
         // The curves the file keeps as reference geometry (linked to the model)
         // are locked in place; where their positions do not meet exactly (the
         // ends two of them share lie off one of them) no solution keeps them
@@ -375,7 +368,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let reference_points =
             sketch::reference_points(&parts.entities, &parts.constraints, &parts.dimensions);
         let mut last = String::new();
-        for (level, (constraints, dimensions, what)) in levels.iter().enumerate() {
+        // Level 1 searches one variant only (mitcad#723): the first whose
+        // sketch solves with everything inactive, where the import before
+        // inactive items solved without constraints. A variant that does not
+        // costs one sketch add; the search up to about 66.
+        let mut searched = false;
+        for level in 0..3 {
             // Reference curves locked (with the linked ones that follow an
             // edge as projections, then without), then free with the points
             // that hold the own curves pinned, then free; offsets Mitcad
@@ -404,34 +402,20 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 } else {
                     &parts.entities
                 };
-                // The level as the file has it; then, where the file's own
-                // positions break some of its constraints (a sketch that was
-                // not solved again after the geometry it is linked to
-                // changed), without those: a dimension broken that way stays
-                // as a driven one.
-                let mut skip: Vec<String> = Vec::new();
-                for round in 0..2 {
-                    let left = |v: &Value| !skip.iter().any(|s| v["id"].as_str() == Some(s));
-                    let broken = |v: &Value| !left(v);
-                    let constraints: Vec<Value> =
-                        constraints.iter().filter(|v| left(v)).cloned().collect();
-                    let dimensions: Vec<Value> = dimensions
-                        .iter()
-                        .map(|v| {
-                            if broken(v) {
-                                parts
-                                    .driven_dimensions
-                                    .iter()
-                                    .find(|d| d["id"] == v["id"])
-                                    .unwrap_or(v)
-                            } else {
-                                v
-                            }
-                        })
-                        .cloned()
-                        .collect();
+                let check = SketchCheck {
+                    unlocked,
+                    positions: &parts.positions,
+                    reference_points: &reference_points,
+                    entities,
+                };
+                // The sketch with the constraints and dimensions of
+                // `off` inactive; patterns and offsets named there are
+                // left out.
+                let def_with = |off: &BTreeSet<String>| -> Value {
+                    let left = |v: &Value| !v["id"].as_str().is_some_and(|id| off.contains(id));
                     let mut def = json!({"type": "sketch", "plane": plane, "entities": entities,
-                                     "constraints": constraints, "dimensions": dimensions,
+                                     "constraints": inactive::mark(&parts.constraints, off),
+                                     "dimensions": inactive::mark(&parts.dimensions, off),
                                      "texts": parts.texts});
                     if let Some(link) = &plane_link {
                         def["plane_link"] = link.clone();
@@ -464,64 +448,44 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     if let Some(f) = &frame_def {
                         def["frame"] = serde_json::to_value(f).expect("serializes");
                     }
+                    def
+                };
+                let mut off: BTreeSet<String> = match level {
+                    0 => BTreeSet::new(),
+                    1 => {
+                        // Everything inactive first: whether the file's
+                        // positions solve at all, and what of the constraints
+                        // and dimensions they do not meet. Then the fewest of
+                        // them inactive.
+                        let everything: BTreeSet<String> = all_items.iter().cloned().collect();
+                        if everything.is_empty() || searched {
+                            continue;
+                        }
+                        let Some(unmet) = self.sketch_attempt(&def_with(&everything), name, &check)
+                        else {
+                            continue;
+                        };
+                        searched = true;
+                        if crate::tracing() {
+                            eprintln!("import:   {name:?}: not met in the file: {unmet:?}");
+                        }
+                        inactive::fewest(&unmet, &all_items, &mut |set| {
+                            self.sketch_attempt(&def_with(set), name, &check).is_some()
+                        })
+                    }
+                    _ => all_items.iter().cloned().collect(),
+                };
+                // The level as the file has it; then, where the file's own
+                // positions break some of its constraints (a sketch that was
+                // not solved again after the geometry it is linked to
+                // changed), with those inactive.
+                for round in 0..2 {
+                    let def = def_with(&off);
                     let depth = self.doc.undo_depth();
-                    let added = match self.add(&def, name) {
-                        // The model refuses a file's parameter as a driven
-                        // dimension's reference (a feature before the sketch
-                        // uses it): the dimensions get their own (mitcad#250).
-                        Err(_) if sketch::has_references(&def) => {
-                            self.add(&sketch::without_references(&def), name)
-                        }
-                        other => other,
-                    };
-                    // A text parameter the model refuses for a text
-                    // (mitcad#664): the texts keep the file's strings.
-                    let added = match added {
-                        Err(_) if def.get("text_values").is_some() => {
-                            let plain = sketch::without_text_values(&def);
-                            match self.add(&plain, name) {
-                                Err(_) if sketch::has_references(&plain) => {
-                                    self.add(&sketch::without_references(&plain), name)
-                                }
-                                other => other,
-                            }
-                        }
-                        other => other,
-                    };
-                    match added {
+                    match self.add_sketch_def(&def, name) {
                         Ok(uid) => {
                             let output = self.doc.sketch_output(uid);
-                            // Linked curves the file keeps inconsistent among
-                            // themselves (an arc's end off its circle by a few
-                            // hundredths of a millimetre) can only be held
-                            // together by moving their points a little.
-                            let error = output.map_or(f64::INFINITY, |o| {
-                                if unlocked {
-                                    sketch::position_error_slack(
-                                        &parts.positions,
-                                        &o.solved.points,
-                                        &reference_points,
-                                        REFERENCE_SLACK,
-                                    )
-                                } else {
-                                    position_error(&parts.positions, &o.solved.points)
-                                }
-                            });
-                            // Within the import's geometric tolerance the
-                            // solve is the file's sketch too, where the
-                            // regions it bounds stay the file's (mitcad#224,
-                            // mitcad#396): the linked curves the replay's
-                            // edges give and the file's rounded numbers
-                            // differ by micrometres.
-                            let within = error <= SKETCH_TOLERANCE
-                                || error <= refs::geometric_tolerance()
-                                    && output.is_some_and(|o| {
-                                        linked::regions_kept(
-                                            entities,
-                                            &constraints,
-                                            &o.solved.points,
-                                        )
-                                    });
+                            let (error, within) = check.within(output, &def);
                             if !within {
                                 last = format!("the solved sketch moved by {error:.3e} mm");
                                 if crate::tracing() {
@@ -529,33 +493,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                                         "import: [{:.2}] {name:?}: sketch level {level}: {last}",
                                         crate::trace_clock()
                                     );
-                                }
-                                if crate::tracing()
-                                    && let Some(o) = output
-                                {
-                                    // The point that moved most and what holds it.
-                                    let worst = parts
-                                        .positions
-                                        .iter()
-                                        .filter_map(|(n, at)| {
-                                            let s = o
-                                                .solved
-                                                .points
-                                                .get(&mitcad_model::EntityUid(*n))?;
-                                            Some((*n, *at, *s, (s[0] - at[0]).hypot(s[1] - at[1])))
-                                        })
-                                        .max_by(|a, b| a.3.total_cmp(&b.3));
-                                    if let Some((n, at, s, d)) = worst {
-                                        eprintln!(
-                                            "import:   moved most: p{n} {at:?} -> {s:?} ({d:.3e})"
-                                        );
-                                        let key = format!("\"p{n}\"");
-                                        for v in constraints.iter().chain(&dimensions) {
-                                            if v.to_string().contains(&key) {
-                                                eprintln!("import:     {v}");
-                                            }
-                                        }
-                                    }
+                                    trace_worst(&def, &parts.positions, output);
                                 }
                                 // What the file's positions do not keep.
                                 let violated: Vec<String> = output
@@ -563,37 +501,25 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                                         o.status()
                                             .stored_violations
                                             .iter()
-                                            .filter_map(|v| {
-                                                match v {
-                                            mitcad_model::sketch::solve::SolverItem::Constraint(
-                                                k,
-                                            ) => Some(k.to_string()),
-                                            _ => None,
-                                        }
+                                            .filter_map(|v| match v {
+                                                SolverItem::Constraint(k) => Some(k.to_string()),
+                                                SolverItem::Fixed(_) => None,
                                             })
                                             .collect()
                                     })
                                     .unwrap_or_default();
                                 self.undo_to(depth);
-                                // (Pinned, nothing is left out: where the
-                                // pinned points do not solve, the free curves
-                                // are tried as before.)
-                                if round == 0 && !violated.is_empty() && !pin {
+                                // (Pinned, nothing is made inactive: where
+                                // the pinned points do not solve, the free
+                                // curves are tried as before.)
+                                if level == 0 && round == 0 && !violated.is_empty() && !pin {
                                     if crate::tracing() {
                                         eprintln!(
                                             "import:   not kept by the file's positions: {}",
                                             violated.join(", ")
                                         );
-                                        for v in constraints.iter().chain(&dimensions) {
-                                            if v["id"]
-                                                .as_str()
-                                                .is_some_and(|id| violated.iter().any(|k| k == id))
-                                            {
-                                                eprintln!("import:     {v}");
-                                            }
-                                        }
                                     }
-                                    skip = violated;
+                                    off = violated.into_iter().collect();
                                     continue;
                                 }
                                 break;
@@ -610,8 +536,17 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                             if !made_params.is_empty() {
                                 let _ = self.doc.adopt_parameters(uid, &made_params);
                             }
-                            if level > 0 {
-                                notes.push((*what).to_owned());
+                            if level == 2 {
+                                notes.push(
+                                    "no subset of its constraints and dimensions solves to the \
+                                     file's geometry: all of them inactive, patterns and offsets \
+                                     left out"
+                                        .to_owned(),
+                                );
+                            } else if let Some(note) =
+                                inactive::summary(&parts.constraints, &parts.dimensions, &off)
+                            {
+                                notes.push(note);
                             }
                             if error > SKETCH_TOLERANCE {
                                 notes.push(format!(
@@ -635,11 +570,18 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                                         .to_owned(),
                                 );
                             }
-                            if !skip.is_empty() {
+                            // Patterns and offsets the file's own positions
+                            // do not keep cannot be inactive: left out.
+                            let groups = parts
+                                .patterns
+                                .iter()
+                                .chain(&parts.offsets)
+                                .filter(|v| v["id"].as_str().is_some_and(|id| off.contains(id)))
+                                .count();
+                            if level < 2 && groups > 0 {
                                 notes.push(format!(
-                                    "{} constraints and dimensions the file's own positions do \
-                                 not keep left out or driven",
-                                    skip.len()
+                                    "left out: {groups} patterns and offsets the file's own \
+                                     positions do not keep"
                                 ));
                             }
                             notes.extend(linked::notes(
@@ -655,7 +597,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                             }
                             let partial = level > 0
                                 || !keep_derived
-                                || !skip.is_empty()
+                                || !off.is_empty()
                                 || !parts.dropped.is_empty();
                             let outcome = if partial {
                                 Outcome::Partial
@@ -681,6 +623,61 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // Not the plane made for it either.
         self.undo_to(start);
         Err(last)
+    }
+
+    /// Adds a sketch definition: without its driven dimensions' references
+    /// where the model refuses a file's parameter as one (a feature before
+    /// the sketch uses it; the dimensions get their own, mitcad#250), and
+    /// without its texts' text parameters where the model refuses one (the
+    /// texts keep the file's strings, mitcad#664).
+    fn add_sketch_def(&mut self, def: &Value, name: Option<&str>) -> Result<FeatureUid, String> {
+        let added = match self.add(def, name) {
+            Err(_) if sketch::has_references(def) => {
+                self.add(&sketch::without_references(def), name)
+            }
+            other => other,
+        };
+        match added {
+            Err(_) if def.get("text_values").is_some() => {
+                let plain = sketch::without_text_values(def);
+                match self.add(&plain, name) {
+                    Err(_) if sketch::has_references(&plain) => {
+                        self.add(&sketch::without_references(&plain), name)
+                    }
+                    other => other,
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Adds a sketch definition, checks that it solves to the file's
+    /// geometry and takes it back (mitcad#721): Some with the inactive
+    /// constraints and dimensions its solution does not meet when it does,
+    /// None when it does not.
+    fn sketch_attempt(
+        &mut self,
+        def: &Value,
+        name: Option<&str>,
+        check: &SketchCheck<'_>,
+    ) -> Option<Vec<String>> {
+        let depth = self.doc.undo_depth();
+        let result = self.add_sketch_def(def, name).ok().and_then(|uid| {
+            let output = self.doc.sketch_output(uid);
+            check.within(output, def).1.then(|| {
+                output
+                    .map(|o| {
+                        o.status()
+                            .unmet_inactive
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+        });
+        self.undo_to(depth);
+        result
     }
 
     /// The curves of the edges of the replay's bodies (of a component's
@@ -6574,6 +6571,88 @@ fn replace_text(v: &mut Value, from: &str, to: &str) {
         Value::Array(a) => a.iter_mut().for_each(|x| replace_text(x, from, to)),
         Value::Object(m) => m.values_mut().for_each(|x| replace_text(x, from, to)),
         _ => {}
+    }
+}
+
+/// What an imported sketch's solve is checked against: the file's
+/// positions (points of reference curves within [`REFERENCE_SLACK`] when
+/// they are free) and, within the geometric tolerance, the regions the
+/// file's numbers bound with `entities`.
+struct SketchCheck<'a> {
+    unlocked: bool,
+    positions: &'a [(u32, [f64; 2])],
+    reference_points: &'a std::collections::HashSet<u32>,
+    entities: &'a [Value],
+}
+
+impl SketchCheck<'_> {
+    /// How far a solve of `def` is from the file's positions, mm, and
+    /// whether it is the file's sketch: within [`SKETCH_TOLERANCE`], or
+    /// within the import's geometric tolerance where the regions its active
+    /// constraints bound stay the file's (mitcad#224, mitcad#396: the linked
+    /// curves the replay's edges give and the file's rounded numbers differ
+    /// by micrometres). Linked curves the file keeps inconsistent among
+    /// themselves (an arc's end off its circle by a few hundredths of a
+    /// millimetre) can only be held together by moving their points a
+    /// little.
+    fn within(&self, output: Option<&SketchOutput>, def: &Value) -> (f64, bool) {
+        let error = output.map_or(f64::INFINITY, |o| {
+            if self.unlocked {
+                sketch::position_error_slack(
+                    self.positions,
+                    &o.solved.points,
+                    self.reference_points,
+                    REFERENCE_SLACK,
+                )
+            } else {
+                position_error(self.positions, &o.solved.points)
+            }
+        });
+        let constraints: Vec<Value> = def["constraints"]
+            .as_array()
+            .map(|list| {
+                list.iter()
+                    .filter(|v| inactive::is_active(v))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let within = error <= SKETCH_TOLERANCE
+            || error <= refs::geometric_tolerance()
+                && output.is_some_and(|o| {
+                    linked::regions_kept(self.entities, &constraints, &o.solved.points)
+                });
+        (error, within)
+    }
+}
+
+/// Traces the point of an imported sketch's solve that moved most from the
+/// file's position and what holds it.
+fn trace_worst(def: &Value, positions: &[(u32, [f64; 2])], output: Option<&SketchOutput>) {
+    let Some(o) = output else {
+        return;
+    };
+    let worst = positions
+        .iter()
+        .filter_map(|(n, at)| {
+            let s = o.solved.points.get(&mitcad_model::EntityUid(*n))?;
+            Some((*n, *at, *s, (s[0] - at[0]).hypot(s[1] - at[1])))
+        })
+        .max_by(|a, b| a.3.total_cmp(&b.3));
+    let Some((n, at, s, d)) = worst else {
+        return;
+    };
+    eprintln!("import:   moved most: p{n} {at:?} -> {s:?} ({d:.3e})");
+    let key = format!("\"p{n}\"");
+    let items = def["constraints"]
+        .as_array()
+        .into_iter()
+        .chain(def["dimensions"].as_array())
+        .flatten();
+    for v in items {
+        if v.to_string().contains(&key) {
+            eprintln!("import:     {v}");
+        }
     }
 }
 

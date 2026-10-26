@@ -558,6 +558,7 @@ private:
   QJsonObject m_shownReport; // the report of the preview shown (toggles)
   QString m_loggedPreviewBodies; // the bodies the last preview logged (mitcad#266)
   QString m_loggedPreviewTool;   // where it drew its tool, as logged (mitcad#636)
+  QString m_loggedExtendedTool;  // the box of the extended tool it drew, as logged (mitcad#712)
   // A part placed by its first pick is moved out from under the panels
   // floating over the view once its preview is drawn (mitcad#656).
   bool m_clearAfterPick = false;

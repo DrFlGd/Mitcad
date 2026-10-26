@@ -4,6 +4,7 @@
 // C++ half of core/ffi/src/kernel/query.rs.
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 
 #include "bridge/shape.hpp"
@@ -28,5 +29,7 @@ std::size_t count_edges(const geometry::Shape& shape, rust::Str name);
 std::size_t count_faces(const geometry::Shape& shape, rust::Str name);
 std::unique_ptr<ShapeList> solids(const geometry::Shape& shape);
 std::size_t solid_count(const geometry::Shape& shape);
+rust::Vec<BoundingBox> face_bounding_boxes(const geometry::Shape& shape, rust::Slice<const std::uint32_t> faces);
+rust::Vec<BoundingBox> edge_bounding_boxes(const geometry::Shape& shape, rust::Slice<const std::uint32_t> edges);
 
 } // namespace mitcad::bridge

@@ -84,6 +84,8 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
   snapshot.contactSets = model.queryArray(QStringLiteral("contact_sets"));
   // Measurement objects (mitcad#649), measured at the marker.
   snapshot.measurements = model.queryArray(QStringLiteral("measurements"));
+  // Drawings of the root and the components (mitcad#707).
+  snapshot.drawings = model.queryArray(QStringLiteral("drawings"));
   const QJsonObject display = document.value(QStringLiteral("display")).toObject();
   snapshot.originShown = display.value(QStringLiteral("origin")).toBool();
   for (const QJsonValue& value : display.value(QStringLiteral("isolated")).toArray()) {
@@ -101,7 +103,7 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
   snapshot.key = QJsonDocument(QJsonArray{timeline, components, bodies, profiles, snapshot.lengthUnit,
                                           snapshot.namedViews, display, snapshot.analyses, snapshot.joints,
                                           snapshot.sheets, snapshot.motionStudies, snapshot.contactSets,
-                                          snapshot.measurements})
+                                          snapshot.measurements, snapshot.drawings})
                      .toJson(QJsonDocument::Compact);
 
   snapshot.marker = timeline.value(QStringLiteral("marker")).toInt();
@@ -157,6 +159,13 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
     body.component = b.value(QStringLiteral("component")).toString(kRoot);
     body.visible = b.value(QStringLiteral("visible")).toBool(true);
     body.mesh = b.value(QStringLiteral("mesh")).toBool();
+    // The print bed face (mitcad#731).
+    const QJsonObject bed = b.value(QStringLiteral("print_bed_face")).toObject();
+    body.printBedFace = bed.value(QStringLiteral("face")).toString();
+    for (const QJsonValue& face : bed.value(QStringLiteral("faces")).toArray()) {
+      body.printBedFaces << face.toString();
+    }
+    body.printBedError = bed.value(QStringLiteral("error")).toString();
     snapshot.bodies.insert(body.uid, body);
   }
   return snapshot;
@@ -285,6 +294,16 @@ QJsonObject DocumentSnapshot::measurement(const QString& name) const {
     }
   }
   return QJsonObject();
+}
+
+QJsonArray DocumentSnapshot::drawingsOf(const QString& component) const {
+  QJsonArray out;
+  for (const QJsonValue& value : drawings) {
+    if (value.toObject().value(QStringLiteral("component")).toString() == component) {
+      out.append(value);
+    }
+  }
+  return out;
 }
 
 QJsonObject DocumentSnapshot::joint(const QString& uid) const {

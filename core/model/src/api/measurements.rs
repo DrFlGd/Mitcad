@@ -1,29 +1,31 @@
 // SPDX-License-Identifier: MIT
-//! Measurement objects (mitcad#649, `document/measurements.rs`): the
-//! commands that add, rename, recolour, show or hide, change and delete
-//! them, and the `measurements` query, which measures each one at the
-//! timeline marker as the `measure` query measures its picks (mitcad#646,
-//! mitcad#647) and says where its dimension is drawn. See `commands.md`,
-//! "Measurement objects".
+//! Measurement objects (mitcad#649), now annotations (mitcad#702,
+//! `annotations.rs`, `document/annotations.rs`): the commands that add,
+//! rename, recolour, show or hide, change and delete them, with
+//! `add_annotation`, `edit_annotation` and `delete_annotation` beside them,
+//! and how each pair of picks is measured at the timeline marker, as the
+//! `measure` query measures them (mitcad#646, mitcad#647). See
+//! `commands.md`, "Measurement objects" and "Annotations".
 //!
 //! The geometry of a dimension is worked out here, in the design's
 //! coordinates: the two ends of a length (the closest points, the offset
 //! of two parallel planes along their normal, the axes' common
 //! perpendicular, two circles' centres), a circle's centre, normal and
-//! radius, and the corner and the two rays of an angle's sector. The
-//! application draws them in its colour over the view.
+//! radius, and the corner and the two rays of an angle's sector.
+//! `annotations.rs` lays the dimension out in its plane from them.
 
-use mitcad_vec3::{add, add_scaled, cross, dot, norm, scale, sub, unit};
+use mitcad_vec3::{add, add_scaled, cross, distance, dot, norm, scale, sub, unit};
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use super::ApiError;
 use super::analysis::{MeasuredPicks, element_plane, plane_offset};
+use super::annotations::{AnnotationEdit, NewAnnotation};
 use super::dispatch::named_enum;
 use super::measure_axes::{self, Element};
 use crate::analysis::Separation;
 use crate::datum::Vec3;
-use crate::document::{Document, MeasureKind, MeasurePick, Measurement, NewMeasurement};
+use crate::document::{Document, MeasureKind, MeasurePick, NewMeasurement};
 use crate::kernel::Kernel;
 
 /// Two directions closer than this (radians) are parallel: they have no
@@ -72,20 +74,30 @@ named_enum! {
         "delete_measurement" => DeleteMeasurement {
             name: String,
         },
+        // Annotations (mitcad#702, `annotations.rs`): the measurement
+        // commands above are their short forms.
+        "add_annotation" => AddAnnotation(Box<NewAnnotation>),
+        "edit_annotation" => EditAnnotation(Box<AnnotationEdit>),
+        "delete_annotation" => DeleteAnnotation {
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            names: Option<Vec<String>>,
+        },
     }
 }
 
 /// A value the picks have, and where its dimension is drawn.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct Found {
-    kind: MeasureKind,
-    value: f64,
-    drawn: Drawn,
+pub(super) struct Found {
+    pub(super) kind: MeasureKind,
+    pub(super) value: f64,
+    pub(super) drawn: Drawn,
 }
 
 /// Where a dimension is drawn, in the design's coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Drawn {
+pub(super) enum Drawn {
     /// A length between two points.
     Ends([Vec3; 2]),
     /// A circle's radius (from the centre to the rim) or diameter (across
@@ -98,8 +110,15 @@ enum Drawn {
     },
     /// An angle: the corner where its rays meet and the unit rays from it
     /// that bound the sector measured (the angle between them is the
-    /// value).
-    Arc { center: Vec3, from: Vec3, to: Vec3 },
+    /// value), and half the distance from the corner to the nearer pick's
+    /// point (a plane's, an edge's middle, an axis'), the arc's radius
+    /// unless it is set.
+    Arc {
+        center: Vec3,
+        from: Vec3,
+        to: Vec3,
+        reach: Option<f64>,
+    },
 }
 
 impl<K: Kernel> Document<K> {
@@ -121,13 +140,7 @@ impl<K: Kernel> Document<K> {
                 let found = values_of(&picks);
                 let kind = match kind {
                     Some(kind) => kind,
-                    None => default_kind(&picks, &found).ok_or_else(|| {
-                        ApiError(
-                            "one pick keeps its radius or diameter: pick a round edge or face, \
-                             or pick two"
-                                .to_owned(),
-                        )
-                    })?,
+                    None => default_kind(&picks, &found).ok_or_else(no_single_value)?,
                 };
                 check_kind(kind, &found)?;
                 let name = self.add_measurement(NewMeasurement {
@@ -153,6 +166,15 @@ impl<K: Kernel> Document<K> {
             }
             MeasurementCommand::SetMeasurementKind { name, kind } => {
                 let measurement = self.measurement(&name)?;
+                if kind != measurement.kind && (kind.is_leader() || measurement.kind.is_leader()) {
+                    return Err(ApiError(format!(
+                        "{name}: a {0} stays a {0}, a dimension a dimension",
+                        measurement.kind.key()
+                    )));
+                }
+                if kind.is_leader() {
+                    return Ok(json!({})); // its own kind: nothing to change
+                }
                 let picks = self
                     .measure_picks(&measurement.a, measurement.b.as_ref())
                     .map_err(|e| ApiError(format!("{name}: {e}")))?;
@@ -165,57 +187,26 @@ impl<K: Kernel> Document<K> {
                 self.delete_measurement(&name)?;
                 json!({})
             }
+            MeasurementCommand::AddAnnotation(new) => self.add_annotation_command(*new)?,
+            MeasurementCommand::EditAnnotation(edit) => self.edit_annotation_command(*edit)?,
+            MeasurementCommand::DeleteAnnotation { name, names } => {
+                let names = super::annotations::names_of(name, names)?;
+                self.delete_annotations(&names)?;
+                json!({})
+            }
         })
-    }
-
-    /// The `measurements` query: each measurement in its file form, with
-    /// what its picks give at the marker (`values`), its own `value` and
-    /// where it is drawn, or why it cannot be measured there (`error`: a
-    /// pick that is gone or rolled back, or picks that do not have its
-    /// kind any more).
-    pub(super) fn measurements_json(&self) -> Value {
-        Value::Array(
-            self.measurements()
-                .iter()
-                .map(|measurement| self.measurement_json(measurement))
-                .collect(),
-        )
-    }
-
-    fn measurement_json(&self, measurement: &Measurement) -> Value {
-        let mut value = serde_json::to_value(measurement).expect("measurements serialize");
-        value["visible"] = json!(measurement.visible);
-        let picks = match self.measure_picks(&measurement.a, measurement.b.as_ref()) {
-            Ok(picks) => picks,
-            Err(error) => {
-                value["error"] = json!(format!("a pick is not there: {error}"));
-                return value;
-            }
-        };
-        let found = values_of(&picks);
-        let mut values = Map::new();
-        for f in &found {
-            values.insert(f.kind.key().to_owned(), json!(f.value));
-        }
-        value["values"] = Value::Object(values);
-        match found.iter().find(|f| f.kind == measurement.kind) {
-            Some(f) => {
-                value["value"] = json!(f.value);
-                add_drawn(&mut value, &f.drawn);
-            }
-            None => {
-                value["error"] = json!(format!(
-                    "the picks have no {} now",
-                    measurement.kind.key().replace('_', " ")
-                ));
-            }
-        }
-        value
     }
 }
 
+/// Why one pick without a circle has nothing to keep.
+pub(super) fn no_single_value() -> ApiError {
+    ApiError(
+        "one pick keeps its radius or diameter: pick a round edge or face, or pick two".to_owned(),
+    )
+}
+
 /// Why the picks cannot keep a measurement of this kind, if they cannot.
-fn check_kind(kind: MeasureKind, found: &[Found]) -> Result<(), ApiError> {
+pub(super) fn check_kind(kind: MeasureKind, found: &[Found]) -> Result<(), ApiError> {
     if found.iter().any(|f| f.kind == kind) {
         return Ok(());
     }
@@ -238,7 +229,7 @@ fn check_kind(kind: MeasureKind, found: &[Found]) -> Result<(), ApiError> {
 /// round pick's diameter (an arc's radius); of two picks the offset of
 /// parallel planes, else the distance of axes or of circles' centres, else
 /// their closest distance, else (touching) the angle between them.
-fn default_kind(picks: &MeasuredPicks, found: &[Found]) -> Option<MeasureKind> {
+pub(super) fn default_kind(picks: &MeasuredPicks, found: &[Found]) -> Option<MeasureKind> {
     if let Some(circle) = picks.single.as_ref().and_then(|m| m.circle) {
         let full = circle.sweep == 0.0 || circle.sweep >= 2.0 * std::f64::consts::PI - 1e-9;
         return Some(if full {
@@ -271,7 +262,7 @@ fn default_kind(picks: &MeasuredPicks, found: &[Found]) -> Option<MeasureKind> {
 /// radius and diameter; of two picks their closest distance, the angle
 /// between them, the offset of two parallel planes, the distance of axes
 /// and of circles' centres, where they apply.
-fn values_of(picks: &MeasuredPicks) -> Vec<Found> {
+pub(super) fn values_of(picks: &MeasuredPicks) -> Vec<Found> {
     let mut found = Vec::new();
     if let Some(circle) = picks.single.as_ref().and_then(|m| m.circle) {
         let (center, r) = (circle.center, circle.radius);
@@ -315,7 +306,12 @@ fn values_of(picks: &MeasuredPicks) -> Vec<Found> {
         found.push(Found {
             kind: MeasureKind::Angle,
             value: angle,
-            drawn: Drawn::Arc { center, from, to },
+            drawn: Drawn::Arc {
+                center,
+                from,
+                to,
+                reach: elements.and_then(|(ea, eb)| reach(center, ea, eb)),
+            },
         });
     }
     // Two parallel planes: along the normal from the closest point on the
@@ -373,9 +369,28 @@ fn middle(between: &Separation) -> Vec3 {
     scale(add(between.on_a, between.on_b), 0.5)
 }
 
+/// Half the distance from an angle's corner to the nearer of the picks'
+/// points (a plane's point, a straight edge's middle, an axis' point, a
+/// point), where one is away from the corner: an arc's radius that suits
+/// the picks' size.
+fn reach(center: Vec3, ea: &Element, eb: &Element) -> Option<f64> {
+    let point = |element: &Element| match *element {
+        Element::Plane { origin, .. } => Some(origin),
+        Element::Point(point) => Some(point),
+        _ => line_point(element),
+    };
+    [ea, eb]
+        .into_iter()
+        .filter_map(point)
+        .map(|p| distance(p, center))
+        .filter(|d| *d > NOTHING)
+        .min_by(f64::total_cmp)
+        .map(|d| d / 2.0)
+}
+
 /// A unit vector square to `axis` (along the coordinate axis it is least
 /// along, turned square), for a circle's radius drawn across it.
-fn across(axis: Vec3) -> Vec3 {
+pub(super) fn across(axis: Vec3) -> Vec3 {
     let n = unit(axis).unwrap_or([0.0, 0.0, 1.0]);
     let e = if n[0].abs() <= n[1].abs() && n[0].abs() <= n[2].abs() {
         [1.0, 0.0, 0.0]
@@ -535,7 +550,7 @@ fn line_plane_corner(
 /// ends of a length, a radius from the centre to the rim, a diameter across
 /// the circle), a circle's `center`, `axis` and `radius`, an angle's `arc`
 /// {`center`, `from`, `to`}.
-fn add_drawn(value: &mut Value, drawn: &Drawn) {
+pub(super) fn add_drawn(value: &mut Value, drawn: &Drawn) {
     // + 0.0 turns -0.0 into 0.0.
     let v = |v: Vec3| v.map(|x| x + 0.0);
     match *drawn {
@@ -551,7 +566,9 @@ fn add_drawn(value: &mut Value, drawn: &Drawn) {
             value["axis"] = json!(v(axis));
             value["radius"] = json!(radius);
         }
-        Drawn::Arc { center, from, to } => {
+        Drawn::Arc {
+            center, from, to, ..
+        } => {
             value["arc"] = json!({"center": v(center), "from": v(from), "to": v(to)});
         }
     }

@@ -98,5 +98,16 @@ pub mod ffi {
             frame: &Frame,
             regions: &[Region],
         ) -> Result<SharedPtr<Shape>>;
+        /// The faces a split cuts with around the box from `low` to
+        /// `high`, clipped to it (the preview of an extended tool,
+        /// mitcad#712).
+        fn extended_tool(
+            tool: &ToolSpec,
+            tool_shapes: &ShapeList,
+            frame: &Frame,
+            regions: &[Region],
+            low: [f64; 3],
+            high: [f64; 3],
+        ) -> Result<SharedPtr<Shape>>;
     }
 }

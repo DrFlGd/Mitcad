@@ -210,12 +210,12 @@ int main(int argc, char* argv[]) {
   const QCommandLineOption noMcpOption(QStringLiteral("no-mcp"),
                                       QStringLiteral("Disable the local MCP connection to this application."));
   parser.addOption(noMcpOption);
-  // Folders an MCP agent may save to and open from for this run, besides
-  // Preferences > Agents (mitcad#402); repeatable.
+  // Folders for designs for this run only (mitcad#402), besides those of
+  // Preferences > AI Assistants; repeatable.
   const QCommandLineOption mcpFolderOption(
       QStringLiteral("mcp-folder"),
       QStringLiteral("Allow an MCP agent to save designs to and open them from <dir> for this run (besides the "
-                     "folders of Preferences > Agents); may be given more than once."),
+                     "folders of Preferences > AI Assistants); may be given more than once."),
       QStringLiteral("dir"));
   parser.addOption(mcpFolderOption);
   parser.addOption(screenshotOption);
@@ -393,7 +393,11 @@ int main(int argc, char* argv[]) {
     QString error;
     if (!mcpServer.start(&error)) {
       qWarning().noquote() << "Local MCP connection unavailable:" << error;
+      // The agent indicator's menu says why, first.
+      window.setMcpUnavailable(QCoreApplication::translate("main", "The listener for assistants did not start: %1").arg(error));
     }
+  } else {
+    window.setMcpUnavailable(QCoreApplication::translate("main", "Assistants are switched off (Mitcad was started with --no-mcp)"));
   }
 
   // For tests (framework/Diagnostics.hpp): the theme switched while the

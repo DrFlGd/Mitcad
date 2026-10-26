@@ -2381,7 +2381,7 @@ QJsonObject startAt(const SelectionItem& item, const gp_Pnt& start, bool onPlane
     }
   } else if (item.kind == SelectKind::Plane &&
              QStringList{QStringLiteral("xy"), QStringLiteral("xz"), QStringLiteral("yz")}.contains(item.owner)) {
-    // The root's origin plane while a new design's Part1 is the host
+    // The root's origin plane while a new design's Component1 is the host
     // (mitcad#421): the host's own plane there.
     at.insert(QStringLiteral("geometry"), item.owner);
   }

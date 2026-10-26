@@ -70,16 +70,34 @@ mod measure_axes;
 mod drives;
 // Measurement objects kept in the design (mitcad#649).
 mod measurements;
+// Annotations grown from them (mitcad#702).
+mod annotations;
 // Parameter limits: min, max, step and strict (mitcad#665).
 mod limits;
 
 // The parameters as CSV (mitcad#666).
 mod parameters_csv;
+// Drawings kept in the design: drawings, sheets and views (mitcad#707).
+mod drawings;
 // A two-sided extrusion's negative distance refused in commands (mitcad#693).
 mod two_sides;
+// Purge volumes on filament changes (mitcad#705).
+mod purge_volumes;
+// Dimensions, centre marks and notes on drawings' views (mitcad#707 phase 2).
+mod drawing_annotations;
+// Hole tables, parts lists and balloons on drawings' views (mitcad#707
+// phase 3).
+mod drawing_tables;
+// Faces and edges with geometry, filters and pages (mitcad#714).
+mod face_lists;
+// Sheet templates and revisions of drawings (mitcad#707 phase 4).
+mod drawing_templates;
 // Section Analysis worked out without the document, off the UI thread
 // (mitcad#438).
 pub use analysis::{PreparedClips, PreparedQuery};
+
+// Annotations' picks measured before (mitcad#716), kept by the document.
+pub(crate) use analysis::MeasureCache;
 
 use std::fmt;
 
@@ -395,6 +413,13 @@ named_enum! {
         "export_flat_pattern_dxf" => ExportFlatPatternDxf(exchange::ExportFlatPatternCommand),
         // Drawings: views with dimensions and a hole table (mitcad#471, `drawing.rs`).
         "export_drawing" => ExportDrawing(drawing::ExportDrawingCommand),
+        // A body's print bed face (mitcad#731, `document/print_bed.rs`).
+        "set_print_bed_face" => SetPrintBedFace {
+            uid: BodyUid,
+            /// A face name; null or left out takes it away.
+            #[serde(default)]
+            face: Option<String>,
+        },
     }
 }
 
@@ -474,6 +499,10 @@ named_enum! {
             // list the bodies a command changed).
             #[serde(default)]
             versions: bool,
+            // Each body's bounding box alone (mitcad#714: MCP's command
+            // results tell where the bodies a command changed are).
+            #[serde(default)]
+            bbox: bool,
         },
         "profiles" => Profiles {
             // A hash of each region's geometry and sketch frame (W1: the
@@ -493,12 +522,9 @@ named_enum! {
         "feature" => Feature {
             uid: FeatureUid,
         },
-        "faces" => Faces {
-            body: BodyUid,
-        },
-        "edges" => Edges {
-            body: BodyUid,
-        },
+        // With geometry, filters and pages (mitcad#714, `face_lists.rs`).
+        "faces" => Faces(face_lists::FacesQuery),
+        "edges" => Edges(face_lists::EdgesQuery),
         "report" => Report,
         // Construction geometry and analysis (F5, `analysis.rs`).
         "datums" => Datums(analysis::DatumsQuery),
@@ -698,10 +724,34 @@ named_enum! {
         // Choosable materials and profiles where they live (mitcad#655).
         "library_items" => LibraryItems(print_profiles::LibraryItemsQuery),
         // Measurement objects (mitcad#649, `measurements.rs`).
-        "measurements" => Measurements,
+        "measurements" => Measurements {
+            // Hidden annotations measured too (mitcad#716).
+            #[serde(default)]
+            measure_hidden: bool,
+        },
+        // Annotations (mitcad#702, `annotations.rs`): the same list.
+        "annotations" => Annotations {
+            #[serde(default)]
+            measure_hidden: bool,
+        },
+        // The characteristics of feature control frames and their ISO 1101
+        // rules (mitcad#702 phase 2), for an editor of frames.
+        "geometric_characteristics" => GeometricCharacteristics,
+        // The letter a new datum label takes (mitcad#702 phase 2).
+        "next_datum_letter" => NextDatumLetter,
         // The parameters as CSV (mitcad#666, `parameters_csv.rs`).
         "parameters_csv" => ParametersCsv,
         "parameters_csv_preview" => ParametersCsvPreview(parameters_csv::ParametersCsvQuery),
+        // Purge volumes on filament changes (mitcad#705, `purge_volumes.rs`).
+        "purge_volumes" => PurgeVolumes(purge_volumes::PurgeVolumesQuery),
+        "purge_defaults" => PurgeDefaults(purge_volumes::PurgeDefaultsQuery),
+        // Drawings kept in the design (mitcad#707, `drawings.rs`).
+        "drawings" => Drawings,
+        "drawing" => Drawing(drawings::DrawingQuery),
+        // What a click on a drawing's view picks (mitcad#707 phase 2).
+        "drawing_pick" => DrawingPick(drawing_annotations::PickQuery),
+        // The sheet templates a drawing can choose (mitcad#707 phase 4).
+        "drawing_templates" => DrawingTemplates(drawing_templates::TemplatesQuery),
     }
 }
 
@@ -819,6 +869,12 @@ impl<K: Kernel> Document<K> {
                 };
                 let mut reply = json!({"uid": added.uid, "name": added.name,
                                        "parameters": names(&added.parameters)});
+                // What it built with caveats, such as an angle of more than
+                // one turn (mitcad#714).
+                let warnings = self.warnings(added.uid);
+                if !warnings.is_empty() {
+                    reply["warnings"] = json!(warnings);
+                }
                 // A new component placed beside a part (mitcad#292).
                 if let Some(made) = self.assembly().created_by(added.uid) {
                     let what = format!("{}'s new component", added.name);
@@ -831,6 +887,10 @@ impl<K: Kernel> Document<K> {
                 self.check_two_side_distances(&def, Some(uid))?;
                 let created = self.edit_feature(uid, &def)?;
                 let mut reply = json!({"parameters": names(&created)});
+                let warnings = self.warnings(uid);
+                if !warnings.is_empty() {
+                    reply["warnings"] = json!(warnings);
+                }
                 // A new component the edit made, placed beside a part (mitcad#292).
                 if let (None, Some(made), Some(entry)) =
                     (before, self.assembly().created_by(uid), self.feature(uid))
@@ -1226,6 +1286,10 @@ impl<K: Kernel> Document<K> {
             }
             Command::ExportFlatPatternDxf(command) => self.export_flat_pattern_command(command)?,
             Command::ExportDrawing(command) => self.export_drawing_command(command)?,
+            Command::SetPrintBedFace { uid, face } => {
+                self.set_print_bed_face(uid, face.as_deref())?;
+                json!({})
+            }
         })
     }
 
@@ -1373,10 +1437,14 @@ impl<K: Kernel> Document<K> {
                 properties,
                 volumes,
                 versions,
+                bbox,
             } => {
                 let mut bodies = self.bodies_json(properties, volumes)?;
                 if versions {
                     self.add_body_versions(&mut bodies);
+                }
+                if bbox && !properties {
+                    self.add_body_boxes(&mut bodies);
                 }
                 bodies
             }
@@ -1432,32 +1500,8 @@ impl<K: Kernel> Document<K> {
                 }
                 value
             }
-            Query::Faces { body } => {
-                let shape = self.require_body(body)?;
-                let faces = self
-                    .kernel()
-                    .faces(shape)
-                    .map_err(|e| ApiError(e.to_string()))?;
-                Value::Array(
-                    faces
-                        .into_iter()
-                        .map(|f| json!({"names": f.names, "surface": f.surface, "area": f.area}))
-                        .collect(),
-                )
-            }
-            Query::Edges { body } => {
-                let shape = self.require_body(body)?;
-                let edges = self
-                    .kernel()
-                    .edges(shape)
-                    .map_err(|e| ApiError(e.to_string()))?;
-                Value::Array(
-                    edges
-                        .into_iter()
-                        .map(|e| json!({"name": e.name, "curve": e.curve, "length": e.length}))
-                        .collect(),
-                )
-            }
+            Query::Faces(query) => self.faces_json(&query)?,
+            Query::Edges(query) => self.edges_json(&query)?,
             Query::Report => {
                 let mut value = json!({
                     "timeline": self.timeline_json(),
@@ -1639,10 +1683,24 @@ impl<K: Kernel> Document<K> {
             // Choosable materials and profiles where they live (mitcad#655).
             Query::LibraryItems(query) => self.library_items_query(&query)?,
             // Measurement objects (mitcad#649).
-            Query::Measurements => self.measurements_json(),
+            Query::Measurements { measure_hidden } => self.annotations_json(measure_hidden),
+            // Annotations (mitcad#702).
+            Query::Annotations { measure_hidden } => self.annotations_json(measure_hidden),
+            Query::GeometricCharacteristics => annotations::geometric_characteristics_json(),
+            Query::NextDatumLetter => {
+                json!({"letter": self.next_datum_letter().map_err(ApiError)?})
+            }
             // The parameters as CSV (mitcad#666).
             Query::ParametersCsv => self.parameters_csv_json(),
             Query::ParametersCsvPreview(query) => self.parameters_csv_preview_json(&query)?,
+            // Purge volumes on filament changes (mitcad#705).
+            Query::PurgeVolumes(query) => self.purge_volumes_query(&query)?,
+            Query::PurgeDefaults(query) => purge_volumes::purge_defaults_query(&query)?,
+            // Drawings kept in the design (mitcad#707).
+            Query::Drawings => self.drawings_json(),
+            Query::Drawing(query) => self.drawing_json(&query)?,
+            Query::DrawingPick(query) => self.drawing_pick_json(&query)?,
+            Query::DrawingTemplates(query) => self.drawing_templates_json(&query),
         };
         Ok(result.to_string())
     }
@@ -1774,6 +1832,23 @@ impl<K: Kernel> Document<K> {
                 .and_then(|uid| self.body_version(uid));
             if let Some(version) = version {
                 body["version"] = json!(format!("{version:032x}"));
+            }
+        }
+    }
+
+    /// Adds each body's `bbox` {`min`, `max`} as `properties` gives it,
+    /// without the other properties (mitcad#714); none for an empty body
+    /// or one the kernel cannot measure (MCP's snapshots must not fail on
+    /// it).
+    fn add_body_boxes(&self, bodies: &mut Value) {
+        for body in bodies.as_array_mut().into_iter().flatten() {
+            let bounds = body["uid"]
+                .as_str()
+                .and_then(|uid| uid.parse::<BodyUid>().ok())
+                .and_then(|uid| self.body_shape(uid))
+                .and_then(|shape| self.kernel().bounding_box(shape).ok().flatten());
+            if let Some(bounds) = bounds {
+                body["bbox"] = json!({"min": bounds.min, "max": bounds.max});
             }
         }
     }
@@ -2048,6 +2123,16 @@ mod sketch_solve_once_tests;
 // Text parameters and the sketch texts that follow them (mitcad#664).
 #[cfg(test)]
 mod text_parameter_tests;
+// Faces and edges with geometry, the plane of a face, angle turns and the
+// boxes of bodies (mitcad#714).
+#[cfg(test)]
+mod face_lists_tests;
+// Inactive sketch constraints and dimensions (mitcad#721).
+#[cfg(test)]
+mod sketch_inactive_tests;
+// A body's print bed face and the 3D print export on it (mitcad#731).
+#[cfg(test)]
+mod print_bed_tests;
 
 /// The feature a command edits by name (mitcad#401): `edit_feature`,
 /// `suppress_feature` and `reorder_feature` its `uid`, a sketch command

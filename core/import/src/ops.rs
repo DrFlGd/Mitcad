@@ -7,7 +7,11 @@
 //! combine is found with the history: the bodies the next state changed
 //! are its target and tools; so are the faces a replace face replaced.
 
-use mitcad_f3d::design::ir::{Detail, Fingerprint, Geometry, Reference, TimelineItem, Vec3};
+use std::collections::{HashMap, HashSet};
+
+use mitcad_f3d::design::ir::{
+    Detail, EntityName, Fingerprint, Geometry, Reference, TimelineItem, Vec3,
+};
 use mitcad_model::{BodyUid, Cylinder, FaceName, FeatureUid, Kernel, Plane};
 use serde_json::{Map, Value, json};
 
@@ -917,7 +921,48 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 out.insert(0, (with, true, InputProvenance::Unknown));
             }
         }
+        // Faces with the faces between neighbours they lost (mitcad#719),
+        // first, the selection as it is after them.
+        if let Some(bridged) = self.bridged(inputs, &without) {
+            out.insert(0, (bridged, false, InputProvenance::Inferred));
+        }
         Ok(out)
+    }
+
+    /// A selection of faces (`objects`, of the face references among
+    /// `inputs`, in their order) with the faces between selected faces
+    /// whose recipes name each other as neighbours
+    /// ([`Importer::bridging_faces`]); None where there are none.
+    fn bridged(&self, inputs: &[Reference], objects: &Value) -> Option<Value> {
+        if objects["type"] != "faces" {
+            return None;
+        }
+        let body: BodyUid = objects["body"].as_str()?.parse().ok()?;
+        let names: Vec<String> = objects["faces"]
+            .as_array()?
+            .iter()
+            .filter_map(|f| f.as_str().map(str::to_owned))
+            .collect();
+        let fingerprints: Vec<&Fingerprint> = inputs
+            .iter()
+            .filter_map(|r| match r {
+                Reference::Face(fp) => Some(&**fp),
+                _ => None,
+            })
+            .collect();
+        if fingerprints.len() != names.len() {
+            return None;
+        }
+        let faces: Vec<(BodyUid, String)> = names.into_iter().map(|n| (body, n)).collect();
+        let between = self.bridging_faces(&fingerprints, &faces);
+        if between.is_empty() {
+            return None;
+        }
+        let mut bridged = objects.clone();
+        if let Some(list) = bridged["faces"].as_array_mut() {
+            list.extend(between.into_iter().map(|(_, f)| json!(f)));
+        }
+        Some(bridged)
     }
 
     /// Pattern and mirror objects: features, bodies or faces of one body.
@@ -974,12 +1019,17 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     bodies.extend(made.iter().map(ToString::to_string));
                 }
                 Reference::Feature(f) => {
-                    let uid = f
-                        .timeline_index
-                        .flatten()
+                    let index = f.timeline_index.flatten();
+                    let uid = index
                         .and_then(|i| self.features.get(&i))
                         .ok_or(PATTERNED_NOT_IMPORTED)?;
                     features.push(uid.to_string());
+                    // A tapped hole's thread with it (mitcad#719).
+                    if f.object_type.as_deref() == Some("HoleFeature")
+                        && let Some(threads) = index.and_then(|i| self.dressups.get(&i))
+                    {
+                        features.extend(threads.iter().map(ToString::to_string));
+                    }
                 }
                 Reference::Body(fp) => bodies.push(
                     self.body_ref(fp)
@@ -1008,6 +1058,41 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
             _ => Err("no inputs, or inputs of several kinds".to_owned()),
         }
+    }
+
+    /// The faces between two selected faces whose recipes name each other
+    /// as neighbours but which the replay's body has apart (mitcad#719: a
+    /// corner of the sketch rounded after the faces were selected; the
+    /// file's pattern of the faces copies the rounding's face with them,
+    /// its stored result has it on every copy). A gap takes the one face
+    /// that meets both and no other selected face, else none.
+    fn bridging_faces(
+        &self,
+        inputs: &[&Fingerprint],
+        faces: &[(BodyUid, String)],
+    ) -> Vec<(BodyUid, String)> {
+        let named: Vec<Vec<Vec<EntityName>>> = inputs
+            .iter()
+            .map(|fp| {
+                fp.f3d
+                    .as_ref()
+                    .and_then(|f| f.entities.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        bridging_faces(&named, faces, &mut |body| {
+            let Some(shape) = crate::body_scope::shape(self.doc, body) else {
+                return Vec::new();
+            };
+            self.doc
+                .kernel()
+                .edges(shape)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|edge| edge.name?.parse::<mitcad_model::EdgeName>().ok())
+                .map(|edge| edge.faces().clone().map(|f| f.to_string()))
+                .collect()
+        })
     }
 
     /// An axis reference (`GeomRef`): origin or construction axis, edge or
@@ -1084,6 +1169,30 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
     }
 
+    /// A circular pattern's angle the way round the file turns: negated
+    /// where the axis resolves in the replay against the file's stored axis
+    /// (`_f3d_axis`, the line the file turns about). Mitcad's axis of a
+    /// circular edge and its origin axes point the way of their largest
+    /// coordinate, whichever way the file's entity faces (mitcad#719: an
+    /// arc edge and the origin Y axis stored as (0, -1, 0), the copies
+    /// turned off the body the other way).
+    fn circular_angle(&self, axis: &Value, angle: Value, stored: Option<&Value>) -> Value {
+        let stored = stored
+            .and_then(|s| serde_json::from_value::<Vec3>(s.get("direction")?.clone()).ok())
+            .and_then(geom::unit);
+        let resolved = serde_json::from_value::<mitcad_model::GeomRef>(axis.clone())
+            .ok()
+            .and_then(|r| self.doc.resolve_axis(&r).ok());
+        match (stored, resolved) {
+            (Some(s), Some(a)) if geom::dot(s, a.direction) < -0.5 => match angle {
+                Value::String(s) => json!(format!("-({s})")),
+                Value::Number(n) => n.as_f64().map_or(Value::Number(n), |x| json!(-x)),
+                other => other,
+            },
+            _ => angle,
+        }
+    }
+
     /// A pattern axis: an axis reference, or a line of an imported sketch.
     pub(crate) fn pattern_axis(&self, r: &Reference) -> Option<Value> {
         if let Reference::SketchEntity(e) = r {
@@ -1146,11 +1255,17 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // (mitcad#641: a pattern along Z stored with the vector (0, 0, -1)
         // and a negative distance copies upwards): the copies go against the
         // axis, as a negated distance takes them.
+        // So too an edge or an axis of its own whose direction the replay
+        // resolves the other way (mitcad#719, as circular patterns do:
+        // `Importer::circular_angle`).
         let along = match axis.as_str() {
             Some("x") => Some([1.0, 0.0, 0.0]),
             Some("y") => Some([0.0, 1.0, 0.0]),
             Some("z") => Some([0.0, 0.0, 1.0]),
-            _ => None,
+            _ => serde_json::from_value::<mitcad_model::GeomRef>(axis.clone())
+                .ok()
+                .and_then(|r| self.doc.resolve_axis(&r).ok())
+                .map(|a| a.direction),
         };
         let stored_vector: Option<[f64; 3]> = d
             .get(vector)
@@ -1288,7 +1403,27 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             _ => &[],
         };
         let map = detail_map(item);
-        if !self.oracle.enabled || !decoded.iter().any(|k| map.contains_key(*k)) {
+        let guessed_too = self.oracle.enabled && decoded.iter().any(|k| map.contains_key(*k));
+        // A hole's guesses come after its decoded definitions have been
+        // tried, where the guesses are asked for in parts (mitcad#719): they
+        // take the material its state removes, a boolean of the replay's
+        // bodies with the state's, which took minutes and gigabytes on a
+        // body with modelled threads, where the decoded definition was the
+        // file's. The first part is the decoded definitions, the second the
+        // guesses; there is none after those (nor after the first where
+        // nothing is guessed).
+        let mut lazy_hole = false;
+        if object_type == "HoleFeature"
+            && let Some(g) = self.guesses.as_mut()
+        {
+            if guessed_too && !g.named && explicit.as_ref().is_ok_and(|c| !c.is_empty()) {
+                g.named = true;
+                return explicit;
+            }
+            lazy_hole = g.named;
+            g.done = true;
+        }
+        if !guessed_too {
             return explicit;
         }
         // A combine's operation the `.ipt` decoder read from the record's
@@ -1362,6 +1497,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     Ok(b)
                 }
             });
+        // (A hole's second part: its guesses alone.)
+        if lazy_hole {
+            return guesses.map(|b| {
+                let given: Vec<Vec<Value>> = explicit
+                    .map(|a| a.into_iter().map(|c| c.defs.clone()).collect())
+                    .unwrap_or_default();
+                b.into_iter().filter(|c| !given.contains(&c.defs)).collect()
+            });
+        }
         match (explicit, guesses) {
             (Ok(mut a), Ok(b)) => {
                 a.extend(b);
@@ -1578,6 +1722,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 let angle = self
                     .value_of(get("totalAngle"))
                     .ok_or("the angle was not decoded")?;
+                let angle = self.circular_angle(&axis, angle, get("_f3d_axis"));
                 // Every setting the file stores is read (mitcad#186).
                 let settings = [
                     "isSymmetric",
@@ -2297,6 +2442,51 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         Ok(vec![apart, transfer, together])
     }
 
+    /// A hole's place by its distances from the lines of two edges of its
+    /// face (`PlaneAndOffsetsHolePositionDefinition`: `edgeOne`,
+    /// `offsetOne`, `edgeTwo`, `offsetTwo`, mitcad#719): the `face_offsets`
+    /// placement on `face` of `body`, when both edges are on that body.
+    ///
+    /// On a cylindrical face (a shaft's side) the definition gives one
+    /// face and the hole's distance from it (the shaft's end):
+    /// the `cylinder_offset` placement, on the side of the axis where the
+    /// point `at` the file keeps with the hole lies.
+    fn hole_offsets(
+        &self,
+        d: &Map<String, Value>,
+        body: &str,
+        face: &str,
+        at: Vec3,
+    ) -> Option<Value> {
+        let position = d.get("holePositionDefinition")?.as_object()?;
+        if position.get("_type")?.as_str()? != "PlaneAndOffsetsHolePositionDefinition" {
+            return None;
+        }
+        if let Some(Reference::Face(from)) = position.get("edgeOne").and_then(reference)
+            && position.get("edgeTwo").is_none()
+        {
+            let uid: BodyUid = body.parse().ok()?;
+            let shape = crate::body_scope::shape(self.doc, uid)?;
+            let name: FaceName = face.parse().ok()?;
+            self.doc.kernel().face_cylinder(shape, &name).ok()?;
+            return Some(
+                json!({"type": "cylinder_offset", "body": body, "face": face,
+                "plane": self.plane_ref(&Reference::Face(from))?,
+                "offset": self.value_of(position.get("offsetOne"))?, "toward": at}),
+            );
+        }
+        let edge = |key: &str| -> Option<String> {
+            let Reference::Edge(fp) = reference(position.get(key)?)? else {
+                return None;
+            };
+            let (on, edge) = refs::resolve_edge(self.doc, &fp)?;
+            (on.to_string() == body).then(|| edge.to_string())
+        };
+        Some(json!({"type": "face_offsets", "body": body, "face": face,
+            "edge1": edge("edgeOne")?, "offset1": self.value_of(position.get("offsetOne"))?,
+            "edge2": edge("edgeTwo")?, "offset2": self.value_of(position.get("offsetTwo"))?}))
+    }
+
     /// A hole at a point of a planar face (F1 import table); without a
     /// decoded position, where the history state shows material removed.
     fn hole(&mut self, d: &Map<String, Value>) -> Result<Vec<Candidate>, String> {
@@ -2312,10 +2502,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let at = mm3(position);
         // The face: one named by the position definition, else the planar
         // face through the position.
-        let named = get("holePositionDefinition")
-            .and_then(Value::as_object)
+        // (Its planar entity first: the face a hole on a shaft is measured
+        // from is in the definition too, mitcad#719.)
+        let position = get("holePositionDefinition").and_then(Value::as_object);
+        let planar: Vec<&Value> = match position.and_then(|m| m.get("planarEntity")) {
+            Some(entity) => vec![entity],
+            None => position.into_iter().flat_map(|m| m.values()).collect(),
+        };
+        let named = planar
             .into_iter()
-            .flat_map(|m| m.values())
             .filter_map(reference)
             .find_map(|r| match r {
                 Reference::Face(fp) => self.face_input(&fp),
@@ -2353,12 +2548,24 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .map(|p| p.into_iter().map(mm3).collect())
             .unwrap_or_else(|| vec![at]);
         let mut def = self.hole_def(d, &body, &face, &points, kind)?;
+        let on_face = !inferred_face && on_plane.is_none();
         if let Some(plane) = on_plane {
             def["placement"] = json!({"type": "plane", "plane": plane, "points": points});
         }
+        let mut defs = Vec::new();
+        // One hole at its distances from two edges of its face (the file's
+        // dimensions, mitcad#719): first, as the point the file keeps with
+        // it need not be where they put the hole (3.2 mm apart in one
+        // design, the hole's volume the same either way).
+        if let (true, [_]) = (on_face, &points[..])
+            && let Some(placement) = self.hole_offsets(d, &body, &face, at)
+        {
+            let mut offsets = def.clone();
+            offsets["placement"] = placement;
+            defs.push((offsets, false));
+        }
         // A hole through all whose depth the file keeps (a lead, mitcad#96):
         // through all first, the history to check it.
-        let mut defs = Vec::new();
         if through_all_lead(d) && def["extent"]["type"] == "distance" {
             let mut all = def.clone();
             all["extent"] = json!({"type": "through_all"});
@@ -2580,6 +2787,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let kernel = self.doc.kernel();
         let state: Vec<(crate::StoredBody<K::Shape>, Sig)> =
             self.oracle.state(kernel, next)?.to_vec();
+        // The bodies of the state before it: one the file's operation left
+        // as it was has no material removed, whatever the replay's body
+        // differs in (mitcad#719: a shaft whose modelled threads start at
+        // other angles than the file's, compared at every later hole of
+        // another component, a boolean of hundreds of thread faces each).
+        let before: Vec<Sig> = match next.checked_sub(1) {
+            Some(previous) => self.oracle.sigs(kernel, previous),
+            None => Vec::new(),
+        };
         let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = crate::body_scope::bodies(self.doc)
             .iter()
             .map(|b| {
@@ -2609,6 +2825,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 continue;
             };
             used[j] = true;
+            if before.iter().any(|s| s.same(&state[j].1)) {
+                continue;
+            }
             // (Kernel calls in a row, mitcad#82.)
             crate::tick();
             let clock = std::time::Instant::now();
@@ -2707,11 +2926,33 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let mut thread_note = None;
         let mut left_out = None;
         for (k, def) in defs.iter().enumerate() {
+            // The body of its face; for holes that start on a plane (no
+            // face, mitcad#719), the first of its participants, else the
+            // one body of its component.
             let body = def["placement"]["body"]
                 .as_str()
+                .or_else(|| def["participants"].get(0).and_then(Value::as_str))
                 .and_then(|b| b.parse::<BodyUid>().ok())
+                .or_else(|| {
+                    let own: Vec<BodyUid> = crate::body_scope::bodies(self.doc)
+                        .iter()
+                        .map(|b| b.uid)
+                        .filter(|&b| self.doc.body_component(b) == Some(self.component))
+                        .collect();
+                    match own[..] {
+                        [only] => Some(only),
+                        _ => None,
+                    }
+                })
                 .ok_or("the hole's body")?;
-            let count = def["placement"]["points"].as_array().map_or(0, Vec::len);
+            // (One hole at distances from two edges, or along a shaft.)
+            let count = match def["placement"]["points"].as_array() {
+                Some(points) => points.len(),
+                None => usize::from(matches!(
+                    def["placement"]["type"].as_str(),
+                    Some("face_offsets" | "cylinder_offset")
+                )),
+            };
             match self.hole_thread(d, body, k, count) {
                 Ok(Some((thread, n))) => {
                     threads.push(thread);
@@ -4366,6 +4607,65 @@ fn axis_starts<K: Kernel>(
         }
     }
     (!found.is_empty()).then_some(found)
+}
+
+/// [`Importer::bridging_faces`] on the recipes' names (`named`, each
+/// selected face's: its own names, then its neighbours') and the faces of
+/// the replay's bodies that meet in an edge (`edges`, by name).
+pub(crate) fn bridging_faces(
+    named: &[Vec<Vec<EntityName>>],
+    faces: &[(BodyUid, String)],
+    edges: &mut dyn FnMut(BodyUid) -> Vec<[String; 2]>,
+) -> Vec<(BodyUid, String)> {
+    // A recipe's own names (its first entity) among another's neighbours.
+    let names = |i: usize, j: usize| {
+        let (Some(own), Some(others)) = (named[i].first(), named[j].get(1..)) else {
+            return false;
+        };
+        others.iter().any(|o| o.iter().any(|n| own.contains(n)))
+    };
+    let mut adjacency: HashMap<BodyUid, HashMap<String, HashSet<String>>> = HashMap::new();
+    let mut out: Vec<(BodyUid, String)> = Vec::new();
+    let count = faces.len().min(named.len());
+    for i in 0..count {
+        for j in i + 1..count {
+            let ((body, a), (other, b)) = (&faces[i], &faces[j]);
+            if body != other || !names(i, j) || !names(j, i) {
+                continue;
+            }
+            let next = adjacency.entry(*body).or_insert_with(|| {
+                let mut next: HashMap<String, HashSet<String>> = HashMap::new();
+                for [x, y] in edges(*body) {
+                    next.entry(x.clone()).or_default().insert(y.clone());
+                    next.entry(y).or_default().insert(x);
+                }
+                next
+            });
+            let (Some(on_a), Some(on_b)) = (next.get(a), next.get(b)) else {
+                continue;
+            };
+            if on_a.contains(b) {
+                continue;
+            }
+            // Not a face the others meet too (the plate's sides that every
+            // wall of a cut-out meets).
+            let between: Vec<&String> = on_a
+                .intersection(on_b)
+                .filter(|f| !faces.iter().any(|(o, s)| o == body && s == *f))
+                .filter(|f| {
+                    !faces.iter().any(|(o, s)| {
+                        o == body && s != a && s != b && next.get(s).is_some_and(|n| n.contains(*f))
+                    })
+                })
+                .collect();
+            if let [face] = between[..]
+                && !out.iter().any(|(o, s)| o == body && s == face)
+            {
+                out.push((*body, face.clone()));
+            }
+        }
+    }
+    out
 }
 
 /// A pattern axis from the line its direction input stores

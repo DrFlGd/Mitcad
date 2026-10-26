@@ -2,7 +2,9 @@
 #include "bridge/query.hpp"
 
 #include <array>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include <TopExp_Explorer.hxx>
 
@@ -100,6 +102,39 @@ std::size_t solid_count(const geometry::Shape& shape) {
     ++count;
   }
   return count;
+}
+
+namespace {
+
+std::vector<int> indices(rust::Slice<const std::uint32_t> items) {
+  std::vector<int> result;
+  result.reserve(items.size());
+  for (const std::uint32_t i : items) {
+    result.push_back(static_cast<int>(i));
+  }
+  return result;
+}
+
+rust::Vec<BoundingBox> boxes(const std::vector<geometry::BoundingBox>& found) {
+  rust::Vec<BoundingBox> result;
+  for (const geometry::BoundingBox& box : found) {
+    BoundingBox out;
+    out.empty = box.empty;
+    out.min = xyz(box.min);
+    out.max = xyz(box.max);
+    result.push_back(out);
+  }
+  return result;
+}
+
+} // namespace
+
+rust::Vec<BoundingBox> face_bounding_boxes(const geometry::Shape& shape, rust::Slice<const std::uint32_t> faces) {
+  return boxes(geometry::face_bounding_boxes(shape, indices(faces)));
+}
+
+rust::Vec<BoundingBox> edge_bounding_boxes(const geometry::Shape& shape, rust::Slice<const std::uint32_t> edges) {
+  return boxes(geometry::edge_bounding_boxes(shape, indices(edges)));
 }
 
 } // namespace mitcad::bridge

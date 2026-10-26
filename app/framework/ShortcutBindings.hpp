@@ -3,9 +3,11 @@
 
 #include <QKeySequence>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 
 namespace mitcad {
 
@@ -17,6 +19,46 @@ enum ShortcutContext : unsigned {
   CommandShortcutContext = 4,
   AllShortcutContexts = ModelShortcutContext | SketchShortcutContext | CommandShortcutContext,
 };
+
+// A command's key in each context it lives in (mitcad#720), by context.
+using ContextShortcuts = QMap<unsigned, QKeySequence>;
+
+// The single contexts of `contexts`, in the order the Keyboard Shortcuts
+// window lists them: Model, Sketch, Command Panel.
+inline QList<unsigned> shortcutContextList(unsigned contexts) {
+  QList<unsigned> list;
+  for (const unsigned context : {unsigned(ModelShortcutContext), unsigned(SketchShortcutContext),
+                                 unsigned(CommandShortcutContext)}) {
+    if ((contexts & context) != 0) list.append(context);
+  }
+  return list;
+}
+
+// "Model", "Sketch", "Command Panel" (while a command's panel is open);
+// several joined by commas.
+inline QString shortcutContextName(unsigned contexts) {
+  QStringList names;
+  for (const unsigned context : shortcutContextList(contexts)) {
+    names.append(context == ModelShortcutContext    ? QObject::tr("Model")
+                 : context == SketchShortcutContext ? QObject::tr("Sketch")
+                                                    : QObject::tr("Command Panel"));
+  }
+  return names.join(QStringLiteral(", "));
+}
+
+// Where keys meet, for a sentence: "in the model", "in a sketch", "while a
+// command panel is open", the last joined by "and".
+inline QString shortcutContextPhrase(unsigned contexts) {
+  QStringList parts;
+  for (const unsigned context : shortcutContextList(contexts)) {
+    parts.append(context == ModelShortcutContext    ? QObject::tr("in the model")
+                 : context == SketchShortcutContext ? QObject::tr("in a sketch")
+                                                    : QObject::tr("while a command panel is open"));
+  }
+  if (parts.size() < 2) return parts.value(0);
+  const QString last = parts.takeLast();
+  return QObject::tr("%1 and %2").arg(parts.join(QStringLiteral(", ")), last);
+}
 
 struct ShortcutBinding {
   QString id;
@@ -45,13 +87,19 @@ struct ShortcutConflict {
   ShortcutBinding first;
   ShortcutBinding second;
   QKeySequence keys;
+  unsigned contexts = 0; // where both are active
 
+  // "S is used by both Command Search and Fit Point Spline in a sketch.
+  // Change one of them."
   QString description() const {
-    return QObject::tr("%1 is assigned to both %2 and %3, which can be active together.%4")
-        .arg(keys.toString(QKeySequence::NativeText), first.name, second.name,
-             first.fixed || second.fixed
-                 ? QObject::tr(" This application shortcut is reserved; choose another binding.")
-                 : QObject::tr(" Change or clear one of these bindings."));
+    const QString key = keys.toString(QKeySequence::NativeText);
+    if (first.fixed || second.fixed) {
+      const ShortcutBinding& reserved = first.fixed ? first : second;
+      const ShortcutBinding& other = first.fixed ? second : first;
+      return QObject::tr("%1 is reserved for %2. Choose another key for %3.").arg(key, reserved.name, other.name);
+    }
+    return QObject::tr("%1 is used by both %2 and %3 %4. Change one of them.")
+        .arg(key, first.name, second.name, shortcutContextPhrase(contexts));
   }
 };
 
@@ -66,7 +114,7 @@ inline QList<ShortcutConflict> shortcutConflicts(const QList<ShortcutBinding>& b
         for (const auto& b : second.effectiveKeys()) {
           // Prefixes are ambiguous too if a legacy setting contains a chord.
           if (a.matches(b) != QKeySequence::NoMatch || b.matches(a) != QKeySequence::NoMatch) {
-            conflicts.append({first, second, a});
+            conflicts.append({first, second, a, first.contexts & second.contexts});
           }
         }
       }
@@ -96,6 +144,9 @@ inline QSet<QString> conflictingShortcutIds(const QList<ShortcutConflict>& confl
 }
 
 // These keys are installed outside the configurable command registry.
+// Their names are the ones users see in menus, context menus and command
+// panels (conflict messages name them), not descriptions of where a key
+// works.
 inline QList<ShortcutBinding> fixedShortcutBindings() {
   QList<ShortcutBinding> bindings;
   const auto add = [&bindings](const char* id, const QString& name, const QKeySequence& key,
@@ -111,20 +162,21 @@ inline QList<ShortcutBinding> fixedShortcutBindings() {
   add("edit.copy", QObject::tr("Copy"), QKeySequence::Copy);
   add("edit.paste", QObject::tr("Paste"), QKeySequence::Paste);
   add("edit.select_all", QObject::tr("Select All"), QKeySequence::SelectAll);
-  add("view.search_timeline", QObject::tr("Search Timeline (Browser/history focus)"), QKeySequence::Find);
-  add("browser.rename", QObject::tr("Rename (Browser/history focus)"), QKeySequence(Qt::Key_F2),
-      ModelShortcutContext);
+  // Search Timeline, Rename and Delete work while the Browser or the
+  // timeline has the keyboard focus.
+  add("view.search_timeline", QObject::tr("Search Timeline"), QKeySequence::Find);
+  add("browser.rename", QObject::tr("Rename"), QKeySequence(Qt::Key_F2), ModelShortcutContext);
   // Collection mutations require model idle, so they are exclusive with
   // sketch.delete. A global Model/Any command still conflicts with them.
-  add("browser.delete", QObject::tr("Delete selection (Browser/history focus)"), QKeySequence(Qt::Key_Delete),
-      ModelShortcutContext);
+  add("browser.delete", QObject::tr("Delete"), QKeySequence(Qt::Key_Delete), ModelShortcutContext);
 #ifdef Q_OS_MACOS
-  add("browser.delete", QObject::tr("Delete selection (Browser/history focus)"), QKeySequence(Qt::Key_Backspace),
-      ModelShortcutContext);
+  add("browser.delete", QObject::tr("Delete"), QKeySequence(Qt::Key_Backspace), ModelShortcutContext);
 #endif
-  add("command.accept", QObject::tr("Activate selection or accept command/value"), QKeySequence(Qt::Key_Return));
-  add("command.accept", QObject::tr("Activate selection or accept command/value"), QKeySequence(Qt::Key_Enter));
-  add("command.cancel", QObject::tr("Cancel or clear selection"), QKeySequence(Qt::Key_Escape));
+  // Enter and Esc are OK and Cancel of a command panel; Esc also clears
+  // the selection.
+  add("command.accept", QObject::tr("OK"), QKeySequence(Qt::Key_Return));
+  add("command.accept", QObject::tr("OK"), QKeySequence(Qt::Key_Enter));
+  add("command.cancel", QObject::tr("Cancel"), QKeySequence(Qt::Key_Escape));
 #ifdef Q_OS_MACOS
   add("window.minimize", QObject::tr("Minimize"), QKeySequence(Qt::CTRL | Qt::Key_M));
   add("application.hide", QObject::tr("Hide Mitcad"), QKeySequence(Qt::CTRL | Qt::Key_H));
@@ -133,6 +185,40 @@ inline QList<ShortcutBinding> fixedShortcutBindings() {
   add("window.full_screen", QObject::tr("Enter Full Screen"), QKeySequence(Qt::CTRL | Qt::META | Qt::Key_F));
 #endif
   return bindings;
+}
+
+// A reserved key's read-only row in Keyboard Shortcuts (mitcad#730): one
+// per name, with every key of it (OK: Return and Enter) and the contexts
+// where they work.
+struct ReservedShortcut {
+  QString id;
+  QString name;
+  unsigned contexts = 0;
+  QList<QKeySequence> keys;
+  // Search Timeline, Rename and Delete: only while the Browser or the
+  // timeline has the keyboard focus (BrowserPanel, TimelineWidget).
+  bool browserFocus = false;
+};
+
+// The reserved keys by name, in the order of fixedShortcutBindings().
+inline QList<ReservedShortcut> reservedShortcuts() {
+  QList<ReservedShortcut> rows;
+  for (const ShortcutBinding& binding : fixedShortcutBindings()) {
+    ReservedShortcut* row = nullptr;
+    for (ReservedShortcut& entry : rows) {
+      if (entry.id == binding.id) row = &entry;
+    }
+    if (row == nullptr) {
+      const bool browserFocus = binding.id == QLatin1String("view.search_timeline") ||
+                                binding.id == QLatin1String("browser.rename") ||
+                                binding.id == QLatin1String("browser.delete");
+      rows.append({binding.id, binding.name, 0, {}, browserFocus});
+      row = &rows.last();
+    }
+    row->contexts |= binding.contexts;
+    if (!row->keys.contains(binding.primary)) row->keys.append(binding.primary);
+  }
+  return rows;
 }
 
 } // namespace mitcad

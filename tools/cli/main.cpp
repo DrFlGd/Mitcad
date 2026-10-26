@@ -313,6 +313,8 @@ const char* const kUsage = R"(usage:
                     [--no-dimensions] [--sketch-dimensions] [--no-hole-table]
                     [--unit mm|cm|m|in|ft] [--title <text>] [--date YYYY-MM-DD]
                     [--per-body] [--polygonal] [--json]
+  mitcad-cli export-drawing <file.mitcad> <out.pdf|out.svg|out.dxf> --drawing <d>
+                    [--sheet N] [--title <text>] [--json]
       Writes a drawing of the shown bodies (or the listed uids or names):
       the front, top and right views (third angle; --first-angle) with
       hidden lines removed (--hidden draws them dashed), an isometric
@@ -322,7 +324,11 @@ const char* const kUsage = R"(usage:
       bodies, the scale, the date and the unit (the design's, or --unit).
       The sheet is A4 landscape and the scale fits it unless given. A PDF
       has a page per sheet; --per-body makes a sheet per body, and an SVG
-      or DXF file per sheet (<out>-2.svg, ...).
+      or DXF file per sheet (<out>-2.svg, ...). --drawing <id or name>
+      writes a drawing kept in the design as it is (its sheets, views and
+      title block; --title only where it has no title; --sheet N only its
+      Nth sheet, from 1); the options that lay out a new drawing are
+      refused with it.
 )"
                           // MSVC takes at most 16 KiB in one literal (C2026).
                           R"(  mitcad-cli project init <folder> [--author "Name <email>"] [--no-history]

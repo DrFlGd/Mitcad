@@ -222,7 +222,7 @@ class Mcp:
     # A blank design in the workspace, as mitcad-cli makes one: its root
     # takes the features. MCP's document_create makes a new design as File
     # > New does (the root an assembly, the features going into a component
-    # Part1), which a library's design must not be.
+    # Component1), which a library's design must not be.
     BLANK = "blank.mitcad"
 
     def create(self):

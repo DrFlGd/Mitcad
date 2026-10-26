@@ -132,6 +132,23 @@ fn content(sheet: &Sheet) -> Vec<u8> {
                     }
                     let _ = writeln!(text, " h f");
                 }
+                Item::Shade { points, grey } => {
+                    if points.len() < 3 {
+                        continue;
+                    }
+                    // In its own grey, then black again for the arrowheads.
+                    let _ = write!(
+                        text,
+                        "{} g {} {} m",
+                        n(grey.clamp(0.0, 1.0)),
+                        n(points[0][0]),
+                        n(points[0][1])
+                    );
+                    for q in &points[1..] {
+                        let _ = write!(text, " {} {} l", n(q[0]), n(q[1]));
+                    }
+                    let _ = writeln!(text, " h f 0 g");
+                }
                 Item::Text {
                     at,
                     height,

@@ -42,7 +42,12 @@ Matching rules:
 
 - An item with a known state must give exactly that state (measures within
   1e-3). First the replay is brought to the state before it, by a base
-  feature for what earlier items changed without being replayed.
+  feature for what earlier items changed without being replayed. The
+  item's state itself is asked for when the item first needs it, after its
+  first definition was evaluated unless its translation reads it before
+  (mitcad#701, [*An item's own state asked for when first needed*](f3d-performance.md#an-items-own-state-asked-for-when-first-needed-mitcad701));
+  where it cannot be rebuilt, nothing of the try is kept and the item's
+  definition is taken unchecked.
 - Operations no item names that come right before an item's own in its
   blob, after the operation of the item before, may be the item's own: a
   pattern makes one per copy and names the last (mitcad#156). Where the

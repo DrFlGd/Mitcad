@@ -30,6 +30,11 @@ const QColor kDrivenColor(0x70, 0x76, 0x80);
 // in their light boxes).
 const QColor kDimensionColorDark(0xd8, 0xde, 0xe8);
 const QColor kDrivenColorDark(0xa0, 0xa8, 0xb4);
+// Inactive constraints and dimensions (mitcad#721): pink, apart from the
+// conflict red and the driven grey; the lines lighter on a dark background.
+const QColor kInactiveColor(0xd6, 0x3c, 0x8f);
+const QColor kInactiveColorDark(0xf2, 0x9c, 0xc8);
+const QColor kInactiveFill(0xfd, 0xe4, 0xf1, 0xe6);
 const QColor kSelectedColor(0x1f, 0x7a, 0xff);
 const QColor kHoverColor(0x5a, 0xa8, 0xff);
 const QColor kPreviewColor(0x26, 0x6e, 0xe8);
@@ -660,7 +665,54 @@ QString SketchOverlay::dimensionTooltip(const DimensionData& d) const {
                                                               : QStringLiteral("◆step");
     text += QStringLiteral(" %1\n%2").arg(mark, d.limitMessage);
   }
-  return text;
+  // Inactive (mitcad#721): why, first.
+  const QString inactive = inactiveTooltip(d.active, d.inactiveReason);
+  return inactive.isEmpty() ? text : inactive + QLatin1Char('\n') + text;
+}
+
+QString SketchOverlay::inactiveTooltip(bool active, const QString& reason) {
+  if (active) {
+    return QString();
+  }
+  return reason.isEmpty() ? tr("Not applied: inactive (Activate applies it)")
+                          : tr("Not applied: %1").arg(reason);
+}
+
+std::map<QString, QRectF> SketchOverlay::constraintGlyphRects() const {
+  std::map<QString, QRectF> rects;
+  for (const Glyph& g : glyphs()) {
+    if (!g.constraint.isEmpty()) {
+      rects.emplace(g.constraint, g.rect);
+    }
+  }
+  return rects;
+}
+
+void SketchOverlay::logInactive() {
+  if (!m_c.isActive()) {
+    return;
+  }
+  const SketchModel& model = m_c.model();
+  QStringList drawn;
+  if (m_c.showConstraints()) {
+    for (const ConstraintData& k : model.constraints) {
+      if (!k.active) {
+        drawn << QStringLiteral("%1 constraint").arg(k.id);
+      }
+    }
+  }
+  if (m_c.showDimensions()) {
+    for (const DimensionData& d : model.dimensions) {
+      if (!d.active) {
+        drawn << QStringLiteral("%1 dimension").arg(d.id);
+      }
+    }
+  }
+  const QString line = drawn.join(QStringLiteral(", "));
+  if (line != m_loggedInactive) {
+    m_loggedInactive = line;
+    qDebug().noquote() << QStringLiteral("Sketch inactive drawn: %1").arg(line.isEmpty() ? QStringLiteral("none") : line);
+  }
 }
 
 QRectF SketchOverlay::textRect(const QPointF& at, const QString& text) const {
@@ -697,37 +749,41 @@ std::vector<SketchOverlay::Glyph> SketchOverlay::glyphs() const {
   // Glyphs per entity, in order, then laid out in a row beside it.
   // One glyph per entity and type: a polygon's side equal to both its
   // neighbours shows one "=", which picks the first of them.
+  // An inactive constraint (mitcad#721) has a glyph of its own beside an
+  // active one of its type.
   std::vector<Glyph> all;
-  const auto add = [&all](const QString& constraint, const QString& entity, const QString& type) {
+  const auto add = [&all](const QString& constraint, const QString& entity, const QString& type,
+                          bool inactive) {
     const bool shown = std::any_of(all.begin(), all.end(), [&](const Glyph& g) {
-      return g.entity == entity && g.type == type;
+      return g.entity == entity && g.type == type && g.inactive == inactive;
     });
     if (!shown) {
-      all.push_back({constraint, entity, type, QRectF()});
+      all.push_back({constraint, entity, type, QRectF(), inactive});
     }
   };
   for (const ConstraintData& k : model.constraints) {
     const QString& t = k.type;
+    const bool off = !k.active;
     if (t == QStringLiteral("coincident") || t == QStringLiteral("midpoint")) {
-      add(k.id, k.json.value(QStringLiteral("point")).toString(), t);
+      add(k.id, k.json.value(QStringLiteral("point")).toString(), t, off);
     } else if (t == QStringLiteral("symmetric")) {
-      add(k.id, k.json.value(QStringLiteral("a")).toString(), t);
-      add(k.id, k.json.value(QStringLiteral("b")).toString(), t);
+      add(k.id, k.json.value(QStringLiteral("a")).toString(), t, off);
+      add(k.id, k.json.value(QStringLiteral("b")).toString(), t, off);
     } else {
       for (const QString& entity : k.refs) {
-        add(k.id, entity, t);
+        add(k.id, entity, t, off);
       }
     }
   }
   const QString origin = model.originPoint();
   for (const PointData& p : model.points) {
     if (p.fixed && !p.reference && p.id != origin && p.axis.isEmpty()) {
-      add(QString(), p.id, QStringLiteral("fix"));
+      add(QString(), p.id, QStringLiteral("fix"), false);
     }
   }
   for (const CurveData& c : model.curves) {
     if (c.fixed && !c.reference && c.axis.isEmpty()) {
-      add(QString(), c.id, QStringLiteral("fix"));
+      add(QString(), c.id, QStringLiteral("fix"), false);
     }
   }
 
@@ -861,12 +917,14 @@ bool SketchOverlay::isSelected(const QString& kind, const QString& id) const {
 void SketchOverlay::paintGlyph(QPainter& painter, const Glyph& glyph, bool selected,
                                bool hovered) const {
   const QRectF r = glyph.rect;
-  painter.setPen(QPen(QColor(0x8a, 0x90, 0x9a), 1.0));
-  painter.setBrush(selected  ? kSelectedColor
-                   : hovered ? kHoverColor.lighter(150)
-                             : QColor(255, 255, 255, 225));
+  // An inactive constraint's (mitcad#721): pink, its frame dashed.
+  painter.setPen(glyph.inactive ? QPen(kInactiveColor, 1.0, Qt::DashLine) : QPen(QColor(0x8a, 0x90, 0x9a), 1.0));
+  painter.setBrush(selected           ? kSelectedColor
+                   : hovered          ? kHoverColor.lighter(150)
+                   : glyph.inactive   ? kInactiveFill
+                                      : QColor(255, 255, 255, 225));
   painter.drawRoundedRect(r, 2.5, 2.5);
-  const QColor ink = selected ? QColor(Qt::white) : QColor(0x30, 0x36, 0x40);
+  const QColor ink = selected ? QColor(Qt::white) : glyph.inactive ? kInactiveColor : QColor(0x30, 0x36, 0x40);
   painter.setPen(QPen(ink, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
   painter.setBrush(Qt::NoBrush);
   const QPointF c = r.center();
@@ -950,9 +1008,10 @@ void SketchOverlay::paintDimensionHalo(QPainter& painter, const DimensionShape& 
 
 void SketchOverlay::paintDimension(QPainter& painter, const DimensionShape& placed,
                                    const QRectF& rect, const QColor& color, const QColor& lines,
-                                   bool driven) const {
+                                   bool driven, bool inactive) const {
   const DimensionShape shape = onDevicePixels(placed, painter);
-  painter.setPen(QPen(lines, 1.0));
+  // An inactive one (mitcad#721) dashed, its value on pink.
+  painter.setPen(QPen(lines, 1.0, inactive ? Qt::DashLine : Qt::SolidLine));
   painter.setBrush(Qt::NoBrush);
   for (const QLineF& line : shape.lines) {
     painter.drawLine(line);
@@ -960,12 +1019,13 @@ void SketchOverlay::paintDimension(QPainter& painter, const DimensionShape& plac
   for (const QPolygonF& arc : shape.arcs) {
     painter.drawPolyline(arc);
   }
+  painter.setPen(QPen(lines, 1.0));
   painter.setBrush(lines);
   for (const auto& [tip, towards] : shape.arrows) {
     painter.drawPolygon(arrowHead(tip, towards));
   }
   painter.setPen(QPen(color.lighter(driven ? 130 : 160), 1.0));
-  painter.setBrush(QColor(255, 255, 255, 235));
+  painter.setBrush(inactive ? kInactiveFill : QColor(255, 255, 255, 235));
   painter.drawRoundedRect(rect, 3, 3);
   painter.setPen(color);
   painter.drawText(rect, Qt::AlignCenter, shape.text);
@@ -1255,15 +1315,21 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
       const DimensionData* d = model.dimension(layout.id);
       const bool selected = isSelected(QStringLiteral("dimension"), layout.id);
       const bool driven = d != nullptr && d->driven;
+      const bool inactive = d != nullptr && !d->active;
       const bool marked = selected || hover == layout.id;
       const QColor color = selected ? kSelectedColor
                            : hover == layout.id ? kHoverColor
+                           : inactive ? kInactiveColor
                            : driven ? kDrivenColor
                                     : kDimensionColor;
-      const QColor lines = !dark || marked ? color : driven ? kDrivenColorDark : kDimensionColorDark;
-      paintDimension(painter, layout.shape, layout.textRect, color, lines, driven);
+      const QColor lines = !dark || marked ? color
+                           : inactive      ? kInactiveColorDark
+                           : driven        ? kDrivenColorDark
+                                           : kDimensionColorDark;
+      paintDimension(painter, layout.shape, layout.textRect, color, lines, driven, inactive);
     }
   }
+  logInactive();
   if (m_c.showConstraints()) {
     for (const Glyph& g : glyphs()) {
       const bool selected = g.constraint.isEmpty() ? isSelected(QStringLiteral("fix"), g.entity)

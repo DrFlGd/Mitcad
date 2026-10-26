@@ -17,7 +17,7 @@ use crate::assembly::{
 };
 use crate::configurations::Configurations;
 use crate::document::{
-    Analysis, BodyAttributes, DisplayState, DocState, Measurement, NamedView, TimelineGroup,
+    Analysis, Annotation, BodyAttributes, DisplayState, DocState, NamedView, TimelineGroup,
     check_components,
 };
 use crate::expr::ParamLimits;
@@ -116,9 +116,20 @@ struct FileOut<'a> {
     // are any.
     #[serde(skip_serializing_if = "<[crate::print_profile::PrintProfile]>::is_empty")]
     print_profiles: &'a [crate::print_profile::PrintProfile],
-    // Measurement objects (mitcad#649), when there are any.
-    #[serde(skip_serializing_if = "<[Measurement]>::is_empty")]
-    measurements: &'a [Measurement],
+    // Annotations (mitcad#702; the measurement objects of mitcad#649),
+    // when there are any: as `measurements` while they all have only what
+    // those had, which older versions read; else as `annotations`.
+    #[serde(skip_serializing_if = "<[Annotation]>::is_empty")]
+    measurements: &'a [Annotation],
+    #[serde(skip_serializing_if = "<[Annotation]>::is_empty")]
+    annotations: &'a [Annotation],
+    // Purge volumes set by hand (mitcad#705), when there are any.
+    #[serde(skip_serializing_if = "<[crate::print_purge::PurgeOverride]>::is_empty")]
+    purge_volumes: &'a [crate::print_purge::PurgeOverride],
+    // Drawings of the root and the components (mitcad#707), when there are
+    // any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    drawings: Vec<&'a crate::drawing::def::Drawing>,
 }
 
 /// A component's default material (mitcad#640).
@@ -259,6 +270,9 @@ struct BodyOut<'a> {
     // Appearances of single faces by face name (mitcad#53).
     #[serde(skip_serializing_if = "Option::is_none")]
     face_appearances: Option<&'a BTreeMap<String, String>>,
+    // The face that lies on the print bed (mitcad#731).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    print_bed_face: Option<&'a str>,
 }
 
 pub(super) fn save(state: &DocState) -> String {
@@ -266,6 +280,11 @@ pub(super) fn save(state: &DocState) -> String {
     let parameters = &state.parameters;
     let context = parameters.context();
     let assembly = &state.assembly;
+    // Annotations as older versions read them while they can (mitcad#702).
+    let old_form = state
+        .annotations
+        .iter()
+        .all(Annotation::is_measurement_form);
     let file = FileOut {
         format: FORMAT,
         // Version 3 only when base features refer to a project's B-rep store.
@@ -358,6 +377,7 @@ pub(super) fn save(state: &DocState) -> String {
                     face_appearances: attributes
                         .map(|a| &a.face_appearances)
                         .filter(|faces| !faces.is_empty()),
+                    print_bed_face: attributes.and_then(|a| a.print_bed_face.as_deref()),
                 }
             })
             .collect(),
@@ -403,7 +423,23 @@ pub(super) fn save(state: &DocState) -> String {
             })
             .collect(),
         print_profiles: &state.print_profiles,
-        measurements: &state.measurements,
+        measurements: if old_form {
+            state.annotations.as_slice()
+        } else {
+            &[]
+        },
+        annotations: if old_form {
+            &[]
+        } else {
+            state.annotations.as_slice()
+        },
+        purge_volumes: &state.purge_volumes,
+        // Only the components the design has.
+        drawings: state
+            .drawings
+            .iter()
+            .filter(|d| assembly.exists(d.component))
+            .collect(),
     };
     let mut json =
         serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
@@ -583,6 +619,8 @@ struct BodyIn {
     appearance: Option<String>,
     #[serde(default)]
     face_appearances: BTreeMap<String, String>,
+    #[serde(default)]
+    print_bed_face: Option<String>,
 }
 
 fn visible() -> bool {
@@ -641,7 +679,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 32] = [
+const TOP_FIELDS: [&str; 35] = [
     "format",
     "version",
     "units",
@@ -684,8 +722,14 @@ const TOP_FIELDS: [&str; 32] = [
     "component_materials",
     // The design's printer and process profiles (mitcad#640).
     "print_profiles",
-    // Measurement objects (mitcad#649).
+    // Measurement objects (mitcad#649), read as annotations.
     "measurements",
+    // Annotations (mitcad#702).
+    "annotations",
+    // Purge volumes set by hand (mitcad#705).
+    "purge_volumes",
+    // Drawings of the root and the components (mitcad#707).
+    "drawings",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -1082,25 +1126,94 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
             )));
         }
     }
-    // Measurement objects (mitcad#649): their picks are resolved when they
-    // are asked for, so one whose pick is gone loads and says why.
-    let measurements = array(&mut top, "measurements", false)?
+    // Annotations (mitcad#702), and the measurement objects older files
+    // keep as `measurements` (mitcad#649), read as annotations unchanged:
+    // their picks are resolved when they are asked for, so one whose pick
+    // is gone loads and says why.
+    let mut annotations: Vec<Annotation> = Vec::new();
+    for key in ["measurements", "annotations"] {
+        for (i, a) in array(&mut top, key, false)?.into_iter().enumerate() {
+            let annotation = serde_json::from_value::<Annotation>(a)
+                .map_err(|e| schema(format!("{key}[{i}]: {e}")))?;
+            annotation
+                .check()
+                .map_err(|e| invalid(format!("{key}[{i}]: {e}")))?;
+            if annotations.iter().any(|m| m.name == annotation.name) {
+                return Err(invalid(format!(
+                    "{key}[{i}]: annotation '{}' is listed more than once",
+                    annotation.name
+                )));
+            }
+            // Each datum letter on one label, as every edit keeps it.
+            if let Some(letter) = &annotation.letter
+                && let Some(other) = annotations
+                    .iter()
+                    .find(|m| m.letter.as_ref() == Some(letter))
+            {
+                return Err(invalid(format!(
+                    "{key}[{i}]: datum {letter} is lettered on '{}' and on '{}'",
+                    other.name, annotation.name
+                )));
+            }
+            annotations.push(annotation);
+        }
+    }
+    // A frame under no dimension (one deleted or renamed by an older
+    // version) stands on its leader.
+    crate::document::settle_frames(&mut annotations);
+    // Purge volumes set by hand (mitcad#705): each valid, each pair once. A
+    // pair of a material the design no longer has is kept as it is.
+    let purge_volumes = array(&mut top, "purge_volumes", false)?
         .into_iter()
         .enumerate()
-        .map(|(i, m)| {
-            let measurement = serde_json::from_value::<Measurement>(m)
-                .map_err(|e| schema(format!("measurements[{i}]: {e}")))?;
-            measurement
-                .check()
-                .map_err(|e| invalid(format!("measurements[{i}]: {e}")))?;
-            Ok(measurement)
+        .map(|(i, p)| {
+            let pair = serde_json::from_value::<crate::print_purge::PurgeOverride>(p)
+                .map_err(|e| schema(format!("purge_volumes[{i}]: {e}")))?;
+            pair.check()
+                .map_err(|e| invalid(format!("purge_volumes[{i}]: {e}")))?;
+            Ok(pair)
         })
         .collect::<Result<Vec<_>, FileError>>()?;
-    for (i, measurement) in measurements.iter().enumerate() {
-        if measurements[..i].iter().any(|m| m.name == measurement.name) {
+    for (i, pair) in purge_volumes.iter().enumerate() {
+        if purge_volumes[..i]
+            .iter()
+            .any(|p| p.from == pair.from && p.to == pair.to)
+        {
             return Err(invalid(format!(
-                "measurements[{i}]: measurement '{}' is listed more than once",
-                measurement.name
+                "purge_volumes[{i}]: from {} to {} is listed more than once",
+                pair.from, pair.to
+            )));
+        }
+    }
+    // Drawings (mitcad#707): definitions only; their views are projected
+    // when they are asked for, so one whose subject is gone loads and says
+    // why.
+    let drawings = array(&mut top, "drawings", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let drawing = serde_json::from_value::<crate::drawing::def::Drawing>(d)
+                .map_err(|e| schema(format!("drawings[{i}]: {e}")))?;
+            drawing
+                .check()
+                .map_err(|e| invalid(format!("drawings[{i}]: {e}")))?;
+            Ok(drawing)
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    for (i, drawing) in drawings.iter().enumerate() {
+        if drawings[..i].iter().any(|d| d.uid == drawing.uid) {
+            return Err(invalid(format!(
+                "drawings[{i}]: drawing {} is listed more than once",
+                drawing.uid
+            )));
+        }
+        if drawings[..i]
+            .iter()
+            .any(|d| d.component == drawing.component && d.name == drawing.name)
+        {
+            return Err(invalid(format!(
+                "drawings[{i}]: two drawings of {} are named '{}'",
+                drawing.component, drawing.name
             )));
         }
     }
@@ -1267,11 +1380,21 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
                 "bodies[{i}]: '{face}' is no face name in face_appearances"
             )));
         }
+        if let Some(face) = body
+            .print_bed_face
+            .as_deref()
+            .filter(|face| face.parse::<crate::topo::FaceName>().is_err())
+        {
+            return Err(invalid(format!(
+                "bodies[{i}]: '{face}' is no face name in print_bed_face"
+            )));
+        }
         let attributes = BodyAttributes {
             visible: body.visible,
             material: body.material,
             appearance: body.appearance,
             face_appearances: body.face_appearances,
+            print_bed_face: body.print_bed_face,
         };
         if !attributes.is_default() {
             state.body_attributes.insert(body.uid, attributes);
@@ -1420,7 +1543,17 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
     }
     state.materials = materials;
     state.print_profiles = print_profiles;
-    state.measurements = measurements;
+    state.annotations = annotations;
+    state.purge_volumes = purge_volumes;
+    for (i, drawing) in drawings.iter().enumerate() {
+        if !state.assembly.exists(drawing.component) {
+            return Err(invalid(format!(
+                "drawings[{i}]: there is no component {}",
+                drawing.component
+            )));
+        }
+    }
+    state.drawings = drawings;
     state.render = render;
     // The configuration table (mitcad#64): rows of the file's parameters,
     // under the names they were loaded with.

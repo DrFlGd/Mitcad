@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "CommandRegistry.hpp"
 
+#include <algorithm>
+
 #include <QAction>
 #include <QJsonObject>
 #include <QSettings>
@@ -15,6 +17,19 @@ namespace {
 const QString kShortcutGroup = QStringLiteral("shortcuts");
 
 QString settingsKey(const QString& id) { return kShortcutGroup + QLatin1Char('/') + id; }
+
+// A command's key in one context where its keys differ by context
+// (mitcad#720); "shortcuts/<id>" stays the key of every context.
+QString contextSettingsKey(const QString& id, unsigned context) {
+  const QString group = context == SketchShortcutContext    ? QStringLiteral("shortcuts.sketch")
+                        : context == CommandShortcutContext ? QStringLiteral("shortcuts.commands")
+                                                            : QStringLiteral("shortcuts.model");
+  return group + QLatin1Char('/') + id;
+}
+
+QKeySequence storedKey(const QSettings& settings, const QString& key) {
+  return QKeySequence(settings.value(key).toString(), QKeySequence::PortableText);
+}
 
 } // namespace
 
@@ -42,13 +57,20 @@ void CommandRegistry::alias(const QString& oldId, const QString& id) {
   }
   m_aliases.insert(oldId, id);
   // A shortcut saved under the former id (a custom one only: the default
-  // is the command's own) is the new command's, unless that has one.
+  // is the command's own) is the new command's, unless that has one; so
+  // are its keys per context.
   QSettings settings;
-  if (settings.contains(settingsKey(oldId))) {
-    if (!settings.contains(settingsKey(id))) {
-      settings.setValue(settingsKey(id), settings.value(settingsKey(oldId)));
+  const auto move = [&settings](const QString& from, const QString& to) {
+    if (settings.contains(from)) {
+      if (!settings.contains(to)) {
+        settings.setValue(to, settings.value(from));
+      }
+      settings.remove(from);
     }
-    settings.remove(settingsKey(oldId));
+  };
+  move(settingsKey(oldId), settingsKey(id));
+  for (const unsigned context : shortcutContextList(AllShortcutContexts)) {
+    move(contextSettingsKey(oldId, context), contextSettingsKey(id, context));
   }
 }
 
@@ -88,15 +110,7 @@ QKeySequence CommandRegistry::defaultShortcut(const QString& id) const {
   return def != nullptr ? def->shortcut : QKeySequence();
 }
 
-QKeySequence CommandRegistry::shortcut(const QString& id) const {
-  const QSettings settings;
-  if (settings.contains(settingsKey(id))) {
-    return QKeySequence(settings.value(settingsKey(id)).toString(), QKeySequence::PortableText);
-  }
-  return defaultShortcut(id);
-}
-
-ShortcutBinding CommandRegistry::binding(const CommandDef& def, const QKeySequence& primary) const {
+unsigned CommandRegistry::contextsOf(const CommandDef& def) const {
   unsigned contexts = def.mode == CommandDef::Mode::Sketch ? SketchShortcutContext : ModelShortcutContext;
   if (def.mode == CommandDef::Mode::Any) contexts = ModelShortcutContext | SketchShortcutContext;
   if (def.mode == CommandDef::Mode::Model && def.kind == CommandDef::Kind::Feature) {
@@ -106,17 +120,98 @@ ShortcutBinding CommandRegistry::binding(const CommandDef& def, const QKeySequen
     if (input != nullptr && input->filter.testFlag(SelectKind::Profile)) contexts |= SketchShortcutContext;
   }
   if (def.duringCommands) contexts |= CommandShortcutContext;
+  return contexts;
+}
+
+unsigned CommandRegistry::shortcutContexts(const QString& id) const {
+  const CommandDef* def = find(id);
+  return def != nullptr ? contextsOf(*def) : 0u;
+}
+
+unsigned CommandRegistry::activeContext(unsigned contexts) const {
+  if ((contexts & m_context) != 0) return m_context;
+  const QList<unsigned> list = shortcutContextList(contexts);
+  return list.isEmpty() ? unsigned(ModelShortcutContext) : list.front();
+}
+
+void CommandRegistry::setShortcutContext(unsigned context) {
+  if (context == m_context) return;
+  m_context = context;
+  const QSettings settings;
+  for (const auto& def : m_commands) {
+    // Only a command of several contexts (more than one bit) changes keys.
+    const unsigned contexts = contextsOf(*def);
+    if ((contexts & (contexts - 1)) != 0) applyShortcut(*def, settings);
+  }
+}
+
+QKeySequence CommandRegistry::savedShortcut(const QSettings& settings, const CommandDef& def,
+                                            unsigned context) const {
+  const QString own = contextSettingsKey(def.id, context);
+  if ((contextsOf(def) & context) != 0 && settings.contains(own)) return storedKey(settings, own);
+  if (settings.contains(settingsKey(def.id))) return storedKey(settings, settingsKey(def.id));
+  return def.shortcut;
+}
+
+QKeySequence CommandRegistry::shortcut(const QString& id, unsigned context) const {
+  const CommandDef* def = find(id);
+  if (def == nullptr) return QKeySequence();
+  const QSettings settings;
+  return savedShortcut(settings, *def, context);
+}
+
+QKeySequence CommandRegistry::shortcut(const QString& id) const {
+  const CommandDef* def = find(id);
+  return def != nullptr ? shortcut(id, activeContext(contextsOf(*def))) : QKeySequence();
+}
+
+ContextShortcuts CommandRegistry::shortcuts(const QString& id) const {
+  ContextShortcuts keys;
+  const CommandDef* def = find(id);
+  if (def == nullptr) return keys;
+  const QSettings settings;
+  for (const unsigned context : shortcutContextList(contextsOf(*def))) {
+    keys.insert(context, savedShortcut(settings, *def, context));
+  }
+  return keys;
+}
+
+ShortcutBinding CommandRegistry::binding(const CommandDef& def, unsigned contexts,
+                                         const QKeySequence& primary) const {
   return {def.id, def.name, contexts, primary, def.shortcut, def.alternates, false};
+}
+
+QList<ShortcutBinding> CommandRegistry::bindings(const CommandDef& def, const ContextShortcuts& keys) const {
+  QList<ShortcutBinding> list;
+  for (auto it = keys.cbegin(); it != keys.cend(); ++it) {
+    const auto same = std::find_if(list.begin(), list.end(),
+                                   [&it](const ShortcutBinding& entry) { return entry.primary == it.value(); });
+    if (same != list.end()) {
+      same->contexts |= it.key();
+    } else {
+      list.append(binding(def, it.key(), it.value()));
+    }
+  }
+  return list;
 }
 
 QList<QKeySequence> CommandRegistry::effectiveShortcuts(const QString& id,
                                                         const QKeySequence& primary) const {
   const CommandDef* def = find(id);
-  return def != nullptr ? binding(*def, primary).effectiveKeys() : QList<QKeySequence>();
+  return def != nullptr ? binding(*def, contextsOf(*def), primary).effectiveKeys() : QList<QKeySequence>();
+}
+
+QList<QKeySequence> CommandRegistry::effectiveKeys(const CommandDef& def, const QSettings& settings) const {
+  if (m_disabledShortcuts.contains(def.id)) return {};
+  const unsigned context = activeContext(contextsOf(def));
+  return binding(def, context, savedShortcut(settings, def, context)).effectiveKeys();
 }
 
 QList<QKeySequence> CommandRegistry::effectiveShortcuts(const QString& id) const {
-  return m_disabledShortcuts.contains(id) ? QList<QKeySequence>() : effectiveShortcuts(id, shortcut(id));
+  const CommandDef* def = find(id);
+  if (def == nullptr) return {};
+  const QSettings settings;
+  return effectiveKeys(*def, settings);
 }
 
 QString CommandRegistry::shortcutHint(const QString& id) const {
@@ -127,31 +222,77 @@ QString CommandRegistry::shortcutHint(const QString& id) const {
                         : tr("%1 (%2)").arg(def->name, keys.front().toString(QKeySequence::NativeText));
 }
 
-QList<ShortcutConflict> CommandRegistry::shortcutConflicts(const QHash<QString, QKeySequence>& proposed) const {
-  QList<ShortcutBinding> bindings = fixedShortcutBindings();
+QList<ShortcutConflict> CommandRegistry::shortcutConflicts(const QHash<QString, ContextShortcuts>& proposed) const {
+  const QSettings settings;
+  QList<ShortcutBinding> all = fixedShortcutBindings();
   for (const auto& def : m_commands) {
-    bindings.append(binding(*def, proposed.contains(def->id) ? proposed.value(def->id) : shortcut(def->id)));
+    const ContextShortcuts wanted = proposed.value(def->id);
+    ContextShortcuts keys;
+    for (const unsigned context : shortcutContextList(contextsOf(*def))) {
+      keys.insert(context, wanted.contains(context) ? wanted.value(context) : savedShortcut(settings, *def, context));
+    }
+    // A command's keys meet another's only in the contexts that have them.
+    all.append(bindings(*def, keys));
   }
-  return mitcad::shortcutConflicts(bindings);
+  return mitcad::shortcutConflicts(all);
 }
 
 QList<ShortcutConflict> CommandRegistry::defaultShortcutConflicts() const {
-  QHash<QString, QKeySequence> defaults;
-  for (const auto& def : m_commands) defaults.insert(def->id, def->shortcut);
+  QHash<QString, ContextShortcuts> defaults;
+  for (const auto& def : m_commands) {
+    ContextShortcuts& keys = defaults[def->id];
+    for (const unsigned context : shortcutContextList(contextsOf(*def))) keys.insert(context, def->shortcut);
+  }
   return shortcutConflicts(defaults);
 }
 
 void CommandRegistry::setShortcut(const QString& id, const QKeySequence& sequence) {
-  setShortcuts({{id, sequence}});
+  const CommandDef* def = find(id);
+  if (def == nullptr) return;
+  ContextShortcuts keys;
+  for (const unsigned context : shortcutContextList(contextsOf(*def))) keys.insert(context, sequence);
+  QHash<QString, ContextShortcuts> proposal;
+  proposal.insert(def->id, keys);
+  setShortcuts(proposal);
 }
 
-void CommandRegistry::setShortcuts(const QHash<QString, QKeySequence>& shortcuts) {
+void CommandRegistry::setShortcut(const QString& id, unsigned context, const QKeySequence& sequence) {
+  ContextShortcuts keys;
+  keys.insert(context, sequence);
+  QHash<QString, ContextShortcuts> proposal;
+  proposal.insert(id, keys);
+  setShortcuts(proposal);
+}
+
+void CommandRegistry::setShortcuts(const QHash<QString, ContextShortcuts>& proposal) {
   QSettings settings;
-  for (auto it = shortcuts.cbegin(); it != shortcuts.cend(); ++it) {
+  for (auto it = proposal.cbegin(); it != proposal.cend(); ++it) {
     const CommandDef* def = find(it.key());
     if (def == nullptr) continue;
-    if (it.value() == def->shortcut) settings.remove(settingsKey(it.key()));
-    else settings.setValue(settingsKey(it.key()), it.value().toString(QKeySequence::PortableText));
+    ContextShortcuts keys;
+    for (const unsigned context : shortcutContextList(contextsOf(*def))) {
+      keys.insert(context, it.value().contains(context) ? it.value().value(context)
+                                                        : savedShortcut(settings, *def, context));
+    }
+    for (const unsigned context : shortcutContextList(AllShortcutContexts)) {
+      settings.remove(contextSettingsKey(def->id, context));
+    }
+    const QList<QKeySequence> values = keys.values();
+    const bool same = std::all_of(values.cbegin(), values.cend(),
+                                  [&values](const QKeySequence& key) { return key == values.front(); });
+    if (same) {
+      // One key in every context: saved as before mitcad#720.
+      const QKeySequence key = values.value(0);
+      if (key == def->shortcut) settings.remove(settingsKey(def->id));
+      else settings.setValue(settingsKey(def->id), key.toString(QKeySequence::PortableText));
+    } else {
+      settings.remove(settingsKey(def->id));
+      for (auto key = keys.cbegin(); key != keys.cend(); ++key) {
+        if (key.value() != def->shortcut) {
+          settings.setValue(contextSettingsKey(def->id, key.key()), key.value().toString(QKeySequence::PortableText));
+        }
+      }
+    }
   }
   refreshShortcuts();
 }
@@ -163,7 +304,28 @@ void CommandRegistry::refreshShortcuts() {
   for (const auto& conflict : conflicts) {
     m_shortcutWarnings.append(conflict.description());
   }
-  for (const auto& def : m_commands) applyShortcut(*def);
+  const QSettings settings;
+  for (const auto& def : m_commands) {
+    // A command's keys that differ by context, in the log (the UI tests).
+    const QList<unsigned> contexts = shortcutContextList(contextsOf(*def));
+    if (contexts.size() > 1) {
+      const QKeySequence first = savedShortcut(settings, *def, contexts.front());
+      bool differ = false;
+      QStringList parts;
+      for (const unsigned context : contexts) {
+        const QKeySequence key = savedShortcut(settings, *def, context);
+        differ = differ || key != first;
+        parts.append(QStringLiteral("%1 %2").arg(shortcutContextName(context),
+                                                 key.isEmpty() ? QStringLiteral("(none)")
+                                                               : key.toString(QKeySequence::PortableText)));
+      }
+      if (differ) {
+        qInfo().noquote() << QStringLiteral("Shortcut keys of %1 by context: %2")
+                                 .arg(def->id, parts.join(QStringLiteral(", ")));
+      }
+    }
+    applyShortcut(*def, settings);
+  }
   if (!m_shortcutWarnings.isEmpty()) {
     qWarning().noquote() << tr("Conflicting saved shortcuts are disabled; commands remain in menus. "
                                "Open Keyboard Shortcuts to repair them.")
@@ -171,10 +333,10 @@ void CommandRegistry::refreshShortcuts() {
   }
 }
 
-void CommandRegistry::applyShortcut(const CommandDef& def) {
+void CommandRegistry::applyShortcut(const CommandDef& def, const QSettings& settings) {
   QAction* action = m_actions.value(def.id);
   if (action == nullptr) return;
-  const QList<QKeySequence> keys = effectiveShortcuts(def.id);
+  const QList<QKeySequence> keys = effectiveKeys(def, settings);
   action->setShortcuts(keys);
   QString tip = def.tooltip.isEmpty() ? def.name : QStringLiteral("%1: %2").arg(def.name, def.tooltip);
   if (!keys.isEmpty()) {

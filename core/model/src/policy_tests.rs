@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Design policy (mitcad#220) with the mock kernel: the new design's
-//! root and Part1 with everything allowed (mitcad#421), creation
+//! root and Component1 with everything allowed (mitcad#421), creation
 //! refused where an owner does not allow it, attachment and reference permissions in both directions,
 //! violations of existing content counted and listed, moves validated
 //! before anything changes, and the policy kept in the design file and in
@@ -121,17 +121,17 @@ fn presets(doc: &mut Document<MockKernel>, owners: &[(&str, &str)]) {
 }
 
 #[test]
-fn a_new_design_has_a_hybrid_root_and_an_active_part1() {
+fn a_new_design_has_a_hybrid_root_and_an_active_component1() {
     // mitcad#421: everything allowed in both.
     let doc = Document::new_design(MockKernel::default());
     assert!(!doc.is_modified());
     let policies = query(&doc, json!({"query": "policies"}));
     assert_eq!(policies[0]["name"], "Root");
     assert_eq!(policies[0]["policy"]["preset"], "hybrid");
-    assert_eq!(policies[1]["name"], "Part1");
+    assert_eq!(policies[1]["name"], "Component1");
     assert_eq!(policies[1]["policy"]["preset"], "hybrid");
     let part = doc.active_component();
-    assert_eq!(doc.assembly().name(part), "Part1");
+    assert_eq!(doc.assembly().name(part), "Component1");
     assert_eq!(doc.policy(ComponentUid::ROOT), Policy::GENERAL);
     assert_eq!(doc.policy(part), Policy::GENERAL);
     // Nothing of it is stored: the file has no policy.
@@ -142,15 +142,15 @@ fn a_new_design_has_a_hybrid_root_and_an_active_part1() {
 #[test]
 fn a_new_design_takes_sketches_components_and_links_without_a_violation() {
     let mut doc = Document::new_design(MockKernel::default());
-    let part1 = doc.active_component();
+    let component1 = doc.active_component();
     *doc.kernel().curves.borrow_mut() = vec![Curve3::Line {
         start: [0.0, 0.0, 5.0],
         end: [10.0, 0.0, 5.0],
     }];
-    // The first sketch and feature go into Part1.
+    // The first sketch and feature go into Component1.
     let (body, face) = block(&mut doc);
-    assert_eq!(doc.feature(body.feature).unwrap().component, part1);
-    // A component made in Part1 stays there, active.
+    assert_eq!(doc.feature(body.feature).unwrap().component, component1);
+    // A component made in Component1 stays there, active.
     let made = command(
         &mut doc,
         json!({"cmd": "create_component", "name": "Part2"}),
@@ -161,9 +161,12 @@ fn a_new_design_takes_sketches_components_and_links_without_a_violation() {
     assert_eq!(doc.policy(part2), Policy::GENERAL);
     let occurrence: crate::ids::OccurrenceUid =
         made["occurrence"].as_str().unwrap().parse().unwrap();
-    assert_eq!(doc.assembly().occurrence(occurrence).unwrap().parent, part1);
-    // Part2's sketches on Part1's face, its first and a later one, and a
-    // linked projection of the face: nothing is left out or refused.
+    assert_eq!(
+        doc.assembly().occurrence(occurrence).unwrap().parent,
+        component1
+    );
+    // Part2's sketches on Component1's face, its first and a later one,
+    // and a linked projection of the face: nothing is left out or refused.
     let supports = query(&doc, json!({"query": "sketch_supports"}));
     assert_eq!(supports["denied"], json!([]), "{supports}");
     let create = json!({"cmd": "sketch.create", "plane": {"face": face, "body": body},
@@ -198,7 +201,7 @@ fn a_new_design_takes_sketches_components_and_links_without_a_violation() {
 fn the_assembly_preset_refuses_sketches_and_features_with_the_reason() {
     let mut doc = Document::new_design(MockKernel::default());
     presets(&mut doc, &[("Root", "assembly")]);
-    // The first sketch and feature go into Part1.
+    // The first sketch and feature go into Component1.
     let part = doc.active_component();
     let sketch = uid(&command(&mut doc, json!({"cmd": "sketch.create"})));
     assert_eq!(doc.feature(sketch).unwrap().component, part);
@@ -257,17 +260,17 @@ fn the_assembly_preset_refuses_sketches_and_features_with_the_reason() {
 #[test]
 fn the_hybrid_preset_is_the_general_defaults_and_defaults_an_alias() {
     let mut doc = Document::new_design(MockKernel::default());
-    presets(&mut doc, &[("Part1", "part")]);
+    presets(&mut doc, &[("Component1", "part")]);
     for name in ["hybrid", "defaults"] {
         let report = query(
             &doc,
-            json!({"query": "policy", "component": "Part1", "preset": name}),
+            json!({"query": "policy", "component": "Component1", "preset": name}),
         );
         assert_eq!(report["policy"]["preset"], "hybrid", "{name}");
     }
     let set = command(
         &mut doc,
-        json!({"cmd": "set_policy", "component": "Part1", "preset": "defaults"}),
+        json!({"cmd": "set_policy", "component": "Component1", "preset": "defaults"}),
     );
     assert_eq!(set["policy"]["preset"], "hybrid");
     assert_eq!(doc.policy(doc.active_component()), Policy::GENERAL);
@@ -351,7 +354,7 @@ fn an_older_design_loads_with_the_general_defaults_and_unchanged() {
             .assembly()
             .components
             .iter()
-            .all(|c| c.name != "Part1")
+            .all(|c| c.name != "Component1")
     );
     assert_eq!(loaded.active_component(), b);
     for owner in ["C0", "C1", "C2"] {
@@ -788,17 +791,17 @@ fn new_component_extrude(doc: &mut Document<MockKernel>) -> Value {
 
 #[test]
 fn a_new_component_refused_by_a_part_goes_beside_it() {
-    // mitcad#292: Part1 (a part) placed 100 mm along X in the root.
+    // mitcad#292: Component1 (a part) placed 100 mm along X in the root.
     let mut doc = Document::new_design(MockKernel::default());
-    presets(&mut doc, &[("Part1", "part")]);
+    presets(&mut doc, &[("Component1", "part")]);
     let part = doc.active_component();
     command(
         &mut doc,
-        json!({"cmd": "set_occurrence_transform", "occurrence": "Part1:1",
+        json!({"cmd": "set_occurrence_transform", "occurrence": "Component1:1",
                "transform": {"translation": [100, 0, 0]}}),
     );
 
-    // New Component in Part1: made in the root, where Part1 shows.
+    // New Component in Component1: made in the root, where Component1 shows.
     let before = doc.to_json();
     let depth = doc.undo_depth();
     let made = command(
@@ -809,7 +812,7 @@ fn a_new_component_refused_by_a_part_goes_beside_it() {
     assert_eq!(made["instead_of"], json!(part));
     assert_eq!(
         made["placement_warning"],
-        "Part1 does not take components (its policy): New Component made in Root instead"
+        "Component1 does not take components (its policy): New Component made in Root instead"
     );
     let inner: ComponentUid = made["component"].as_str().unwrap().parse().unwrap();
     let occurrence: crate::ids::OccurrenceUid =
@@ -824,9 +827,9 @@ fn a_new_component_refused_by_a_part_goes_beside_it() {
     assert_eq!(doc.to_json(), before);
     assert_eq!(doc.active_component(), part);
 
-    // Extrude with New Component in Part1: the feature stays in Part1, its
-    // component goes into the root and the body is where it would have
-    // been.
+    // Extrude with New Component in Component1: the feature stays in
+    // Component1, its component goes into the root and the body is where
+    // it would have been.
     let extrude = new_component_extrude(&mut doc);
     let before = doc.to_json();
     let added = command(&mut doc, extrude);
@@ -835,7 +838,7 @@ fn a_new_component_refused_by_a_part_goes_beside_it() {
     assert_eq!(added["instead_of"], json!(part));
     assert_eq!(
         added["placement_warning"],
-        "Part1 does not take components (its policy): Extrude1's new component made in Root \
+        "Component1 does not take components (its policy): Extrude1's new component made in Root \
          instead"
     );
     assert_eq!(doc.feature(feature).unwrap().component, part);
@@ -852,7 +855,7 @@ fn a_new_component_refused_by_a_part_goes_beside_it() {
     assert_eq!(instance.path, [placed.uid]);
     assert!(near(instance.transform.translation, [100.0, 0.0, 0.0]));
     assert_eq!(doc.active_component(), part);
-    assert!(breaking(&doc, "Part1", "components").is_empty());
+    assert!(breaking(&doc, "Component1", "components").is_empty());
     doc.undo().unwrap();
     assert_eq!(doc.to_json(), before);
     assert!(doc.assembly().created_by(feature).is_none());
@@ -893,14 +896,20 @@ fn a_new_component_goes_into_the_nearest_owner_that_takes_components() {
 fn a_new_component_is_refused_when_no_owner_above_takes_components() {
     let mut doc = Document::new_design(MockKernel::default());
     set(&mut doc, "Root", json!({"components": false}));
-    set(&mut doc, "Part1", json!({"components": false}));
+    set(&mut doc, "Component1", json!({"components": false}));
     let extrude = new_component_extrude(&mut doc);
     let depth = doc.undo_depth();
     let before = doc.to_json();
     let error = rejected(&mut doc, json!({"cmd": "create_component"}));
-    assert!(error.contains("Part1 does not allow components"), "{error}");
+    assert!(
+        error.contains("Component1 does not allow components"),
+        "{error}"
+    );
     let error = rejected(&mut doc, extrude);
-    assert!(error.contains("Part1 does not allow components"), "{error}");
+    assert!(
+        error.contains("Component1 does not allow components"),
+        "{error}"
+    );
     assert_eq!(doc.undo_depth(), depth);
     assert_eq!(doc.to_json(), before);
 }
@@ -961,10 +970,10 @@ fn a_part_s_first_sketch_may_attach_to_another_part() {
         assert_eq!(row["items"][0]["uid"], json!(first), "{report}");
     }
 
-    // A new design's Part1 and Part2 as parts: Part2's first sketch may lie
-    // on Part1's faces.
+    // A new design's Component1 and Part2 as parts: Part2's first sketch
+    // may lie on Component1's faces.
     let mut doc = Document::new_design(MockKernel::default());
-    presets(&mut doc, &[("Part1", "part")]);
+    presets(&mut doc, &[("Component1", "part")]);
     block(&mut doc);
     command(
         &mut doc,
@@ -1037,7 +1046,8 @@ fn an_older_stored_policy_reads_the_first_sketch_settings_as_on() {
     assert_eq!(part, Policy::PART);
     assert_eq!(part.preset_name(), Some("part"));
 
-    // A new design saved before them: the root an Assembly, Part1 a part.
+    // A new design saved before them: the root an Assembly, its component
+    // a part.
     let doc = Document::new_design(MockKernel::default());
     let mut file: Value = serde_json::from_str(&doc.to_json()).unwrap();
     file["root_policy"] = older(false, true);

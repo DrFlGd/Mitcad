@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <stdexcept>
 #include <utility>
 
@@ -27,6 +28,7 @@
 #include <TopExp_Explorer.hxx>
 #include <NCollection_HSequence.hxx>
 #include <NCollection_IndexedDataMap.hxx>
+#include <NCollection_IndexedMap.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
@@ -397,21 +399,79 @@ FaceTool face_tool(const Shape& body, const std::vector<std::string>& names) {
       builder.Add(shell, cap);
     }
 
-    TopoDS_Solid solid;
-    builder.MakeSolid(solid);
-    builder.Add(solid, shell);
-    GProp_GProps props;
-    BRepGProp::VolumeProperties(solid, props);
-    FaceTool result;
-    // The faces point away from the body's material: outward of a boss,
-    // into a pocket.
-    result.material = props.Mass() > 0.0;
-    if (!result.material) {
-      builder.MakeSolid(solid);
-      builder.Add(solid, shell.Reversed());
+    // The faces and caps in groups that share edges, a solid of each: faces
+    // of separate cut-outs or bosses (mitcad#719) are not one shell.
+    std::vector<TopoDS_Shape> members;
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> index_of;
+    for (TopoDS_Iterator it(shell); it.More(); it.Next()) {
+      members.push_back(it.Value());
+      index_of.Add(it.Value());
     }
-    detail::require_valid(solid, "the solid of the faces");
-    detail::FaceNamer namer(solid);
+    std::vector<int> root(members.size());
+    std::iota(root.begin(), root.end(), 0);
+    const auto find = [&root](int k) {
+      while (root[k] != k) {
+        root[k] = root[root[k]];
+        k = root[k];
+      }
+      return k;
+    };
+    NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+        edge_faces;
+    TopExp::MapShapesAndUniqueAncestors(shell, TopAbs_EDGE, TopAbs_FACE, edge_faces);
+    for (int i = 1; i <= edge_faces.Extent(); ++i) {
+      const NCollection_List<TopoDS_Shape>& at = edge_faces(i);
+      const int first = find(index_of.FindIndex(at.First()) - 1);
+      for (NCollection_List<TopoDS_Shape>::Iterator it(at); it.More(); it.Next()) {
+        const int other = find(index_of.FindIndex(it.Value()) - 1);
+        root[other] = first;
+      }
+    }
+    std::vector<std::vector<std::size_t>> groups;
+    std::vector<int> group_of(members.size(), -1);
+    for (std::size_t k = 0; k < members.size(); ++k) {
+      const int r = find(static_cast<int>(k));
+      if (group_of[r] < 0) {
+        group_of[r] = static_cast<int>(groups.size());
+        groups.emplace_back();
+      }
+      groups[group_of[r]].push_back(k);
+    }
+    FaceTool result;
+    TopoDS_Compound solids;
+    builder.MakeCompound(solids);
+    TopoDS_Shape tool;
+    for (std::size_t g = 0; g < groups.size(); ++g) {
+      TopoDS_Shell part;
+      builder.MakeShell(part);
+      for (std::size_t k : groups[g]) {
+        builder.Add(part, members[k]);
+      }
+      TopoDS_Solid solid;
+      builder.MakeSolid(solid);
+      builder.Add(solid, part);
+      GProp_GProps props;
+      BRepGProp::VolumeProperties(solid, props);
+      // The faces point away from the body's material: outward of a boss,
+      // into a pocket.
+      const bool material = props.Mass() > 0.0;
+      if (g == 0) {
+        result.material = material;
+      } else if (material != result.material) {
+        throw std::invalid_argument("the faces make both bosses and pockets");
+      }
+      if (!material) {
+        builder.MakeSolid(solid);
+        builder.Add(solid, part.Reversed());
+      }
+      detail::require_valid(solid, "the solid of the faces");
+      builder.Add(solids, solid);
+      tool = solid;
+    }
+    if (groups.size() > 1) {
+      tool = solids;
+    }
+    detail::FaceNamer namer(tool);
     for (std::size_t k = 0; k < faces.size(); ++k) {
       for (const std::string& name : body.face_names(indices[k])) {
         namer.add(faces[k], name);

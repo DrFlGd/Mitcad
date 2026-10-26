@@ -184,4 +184,9 @@ PrintImportSummary printImportSummary(const QString& file, const QString& into, 
   return summary;
 }
 
+QString slicerFileFilter() {
+  return QObject::tr("Slicer settings (*.3mf *.json *.ini *.bbscfg *.bbsflmt *.zip *.orca_printer *.orca_filament);;"
+                     "All files (*)");
+}
+
 } // namespace mitcad

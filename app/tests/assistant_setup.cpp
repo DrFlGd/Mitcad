@@ -30,10 +30,36 @@ int assistantSetupTests() {
   CHECK(claude.mid(2, 2) == QStringList({QStringLiteral("--scope"), QStringLiteral("user")}));
   CHECK(claude.at(6) == bridge);
   CHECK(assistantCommand(QStringLiteral("codex"), codex, false).contains(QStringLiteral("Example'\\''s app")));
-  CHECK(assistantCommand(QStringLiteral("codex"), codex, true).startsWith(QStringLiteral("& 'codex'")));
+  // Only the words that need it are quoted; PowerShell's `--` always is, and
+  // its call operator comes only before a quoted program.
+  CHECK(assistantCommand(QStringLiteral("codex"), codex, true).startsWith(QStringLiteral("codex mcp add mitcad-desktop '--' '")));
   CHECK(assistantCommand(QStringLiteral("codex"), codex, true).contains(QStringLiteral("Example''s app")));
+  CHECK(assistantCommand(QStringLiteral("codex"), codex, false).startsWith(QStringLiteral("codex mcp add mitcad-desktop -- '")));
+  // A program without a folder, as the native separators differ by platform.
+  CHECK(assistantCommand(QStringLiteral("mitcad-cli"), {QStringLiteral("mcp"), QStringLiteral("--connect")}, false) ==
+        QStringLiteral("mitcad-cli mcp --connect"));
+  CHECK(assistantCommand(QStringLiteral("/opt/My Apps/mitcad-cli"), {QStringLiteral("mcp")}, true).startsWith(QStringLiteral("& '")));
+  CHECK(assistantShellWord(QStringLiteral("/home/user/.codex"), true, true) == QStringLiteral("'/home/user/.codex'"));
+  // The connected clients' names for people (mitcad#706, mitcad#710).
+  CHECK(assistantDisplayName(QStringLiteral("claude-ai")) == QStringLiteral("Claude Desktop"));
+  CHECK(assistantDisplayName(QStringLiteral("claude-code")) == QStringLiteral("Claude Code"));
+  // "ChatGPT / Codex" names its choice only; a sentence says "Codex" (mitcad#724).
+  CHECK(assistantName(AssistantClient::Codex) == QStringLiteral("ChatGPT / Codex"));
+  CHECK(assistantSentenceName(AssistantClient::Codex) == QStringLiteral("Codex"));
+  CHECK(assistantSentenceName(AssistantClient::ClaudeCode) == QStringLiteral("Claude Code"));
+  CHECK(assistantDisplayName(QStringLiteral("codex-mcp-client")) == QStringLiteral("Codex"));
+  CHECK(assistantDisplayName(QStringLiteral("example-client")) == QStringLiteral("example-client"));
   const auto json = assistantJsonConfiguration(bridge).value(QStringLiteral("mcpServers")).toObject()
       .value(QStringLiteral("mitcad")).toObject();
+  // Connected shows for the assistant whose label a client gave (mitcad#706).
+  CHECK(assistantLabelMatches(AssistantClient::ClaudeDesktop, QStringLiteral("claude-ai")));
+  CHECK(!assistantLabelMatches(AssistantClient::ClaudeCode, QStringLiteral("claude-ai")));
+  CHECK(assistantLabelMatches(AssistantClient::ClaudeCode, QStringLiteral("claude-code")));
+  CHECK(!assistantLabelMatches(AssistantClient::ClaudeDesktop, QStringLiteral("claude-code")));
+  CHECK(assistantLabelMatches(AssistantClient::Codex, QStringLiteral("codex-mcp-client")));
+  CHECK(!assistantLabelMatches(AssistantClient::Other, QStringLiteral("Codex")));
+  CHECK(assistantLabelMatches(AssistantClient::Other, QStringLiteral("example-client")));
+  CHECK(!assistantLabelMatches(AssistantClient::Codex, QStringLiteral("example-client")));
   CHECK(json.value(QStringLiteral("command")) == bridge);
   CHECK(json.value(QStringLiteral("args")) == QJsonArray({QStringLiteral("mcp"), QStringLiteral("--connect")}));
   for (bool win : {false, true}) {

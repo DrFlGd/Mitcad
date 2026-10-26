@@ -52,5 +52,9 @@ pub mod ffi {
         fn solids(shape: &Shape) -> Result<UniquePtr<ShapeList>>;
         /// How many solids the shape holds (mitcad#658).
         fn solid_count(shape: &Shape) -> usize;
+        /// The tight boxes of the faces or edges at these indices
+        /// (mitcad#714); `empty` for one without geometry.
+        fn face_bounding_boxes(shape: &Shape, faces: &[u32]) -> Result<Vec<BoundingBox>>;
+        fn edge_bounding_boxes(shape: &Shape, edges: &[u32]) -> Result<Vec<BoundingBox>>;
     }
 }

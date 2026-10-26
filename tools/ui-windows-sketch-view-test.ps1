@@ -104,7 +104,7 @@ Write-Host '--- A sketch on XY, its origin the design origin (mitcad#254)'
 Ui-StartApp 'sketch-view'
 Ui-Step 'light background (F9)'          { Ui-Key 'F9' }
 Ui-Step 'create sketch on XY (F7)'       { Ui-CreateSketch 'F7' 'xy' }
-Ui-ExpectLog 'Create Sketch: origin planes shown' 'a new design (its empty Part1 active): the origin planes shown (mitcad#294)'
+Ui-ExpectLog 'Create Sketch: origin planes shown' 'a new design (its empty Component1 active): the origin planes shown (mitcad#294)'
 Ui-ExpectLog 'Sketch view' 'the sketch view is logged'
 Ui-ExpectLog 'Sketch origin at 0.00, 0.00, 0.00 mm in the design; the design origin at x 0.00, y 0.00 mm in the sketch' `
   'the sketch origin is the design origin'
@@ -131,7 +131,7 @@ Expect-Pointer 30 20
 Expect-Pointer -15 -10
 
 Write-Host '--- Outside sketch editing the sketch keeps its colours (mitcad#286)'
-# A new design's first sketch goes into a new component, Part1 (O1;
+# A new design's first sketch goes into a new component, Component1 (O1;
 # mitcad#220): outside its edit that occurrence places it.
 $sketch1 = 'F1(?: in O\d+)?'
 $editing = Expect-Colours $sketch1 { param($c, $u) $c -ge 4 -and $u -eq 0 } 'in its edit the rectangle is fully constrained'

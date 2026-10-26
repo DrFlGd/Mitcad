@@ -33,6 +33,18 @@
 //! an object of its own there); Cura each part's settings as the mesh
 //! object's `cura:` metadata (Cura takes per-model settings; its printer
 //! and the global settings stay the user's choice in Cura).
+//!
+//! **Purge volumes** (mitcad#705, [`crate::print_purge`]): the export writes
+//! the table of the filament slots, computed from the materials and the
+//! multiplier with the design's overrides, as the Bambu family's
+//! `flush_volumes_matrix` (divided by the multiplier, which it writes
+//! beside it as `flush_multiplier`; one table per extruder) and
+//! `flush_volumes_vector`, and as PrusaSlicer's `wiping_volumes_matrix`
+//! (with `wiping_volumes_use_custom_matrix` on) and
+//! `wiping_volumes_extruders`. Cura has no table, and its per-material
+//! prime volumes are extruder settings, which its export does not write.
+//! The import reads a project's table ([`Imported::purge`]) and keeps none
+//! of these keys as the slicer's text.
 
 mod bambu;
 #[cfg(test)]
@@ -42,6 +54,9 @@ mod prusa;
 mod source;
 #[cfg(test)]
 mod tests;
+// Purge volumes on filament changes (mitcad#705).
+#[cfg(test)]
+mod purge_tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,6 +67,7 @@ use crate::document::EffectivePrint;
 use crate::material::{self, Material};
 use crate::print_keys::{self, Dialect, KeyDef, PrintSet};
 use crate::print_profile::{PrintProfile, ProfileKind, dialect_value, free_id, slug, value_of};
+use crate::print_purge::{self, PurgeOverride};
 
 /// What an import read.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -62,6 +78,24 @@ pub struct Imported {
     /// Materials with the appearance each carries (from its colour).
     pub materials: Vec<(Material, Option<Appearance>)>,
     pub report: ImportReport,
+    /// The project's purge volumes (mitcad#705): from a filament to another
+    /// (indices of `materials`), in mm³ as the slicer purges them.
+    pub purge: Vec<(usize, usize, f64)>,
+}
+
+/// The slicers' keys of the purge table (mitcad#705): read into the
+/// design's overrides, written from its table, never kept as text.
+pub(crate) const PURGE_KEYS: &[&str] = &[
+    "flush_volumes_matrix",
+    "flush_volumes_vector",
+    "wiping_volumes_matrix",
+    "wiping_volumes_extruders",
+    "wiping_volumes_use_custom_matrix",
+];
+
+/// The numbers of a table's entries (texts), when every entry is one.
+pub(crate) fn table_numbers<'a>(entries: impl Iterator<Item = &'a str>) -> Option<Vec<f64>> {
+    entries.map(|e| print_keys::parse_number(e).ok()).collect()
 }
 
 /// What an import did with the file's keys.
@@ -196,7 +230,8 @@ pub(crate) fn read_flat(
         if source::BOOKKEEPING.contains(&key.as_str()) {
             continue;
         }
-        if mapped.contains(key.as_str()) {
+        // The purge table: the reader's own (mitcad#705).
+        if mapped.contains(key.as_str()) || PURGE_KEYS.contains(&key.as_str()) {
             out.report.mapped.insert(key);
             continue;
         }
@@ -446,10 +481,12 @@ pub(crate) struct Shared<'a> {
     pub values: BTreeMap<String, Value>,
     /// Each part's values that are not shared.
     pub overrides: Vec<BTreeMap<String, Value>>,
+    /// The purge table of the slots (mitcad#705).
+    pub purge: print_purge::Matrix,
 }
 
 impl<'a> Shared<'a> {
-    fn new(dialect: Dialect, parts: &'a [ExportPart<'a>]) -> Self {
+    fn new(dialect: Dialect, parts: &'a [ExportPart<'a>], purge: &[PurgeOverride]) -> Self {
         let mut materials: Vec<&str> = Vec::new();
         let mut slot_parts = Vec::new();
         let slots = parts
@@ -488,6 +525,8 @@ impl<'a> Shared<'a> {
                     .collect()
             })
             .collect();
+        let firsts: Vec<&EffectivePrint> = slot_parts.iter().map(|&i| parts[i].settings).collect();
+        let purge = purge_matrix(&firsts, purge);
         Shared {
             dialect,
             parts,
@@ -495,6 +534,7 @@ impl<'a> Shared<'a> {
             slot_parts,
             values,
             overrides,
+            purge,
         }
     }
 
@@ -555,9 +595,36 @@ pub(crate) fn dialect_texts(
     }
 }
 
-/// Writes the parts' settings for a slicer.
-pub fn export(dialect: Dialect, model_name: &str, parts: &[ExportPart<'_>]) -> ExportOutput {
-    let shared = Shared::new(dialect, parts);
+/// The purge table of filament slots, each the settings of its first
+/// part (in slot order): the materials' values, the first slot's
+/// multiplier (the design's printer and process are the first part's) and
+/// `overrides`.
+pub fn purge_matrix(slots: &[&EffectivePrint], overrides: &[PurgeOverride]) -> print_purge::Matrix {
+    let values: Vec<(&str, print_purge::PurgeValues)> = slots
+        .iter()
+        .map(|settings| {
+            let values = print_purge::filament_values(|k| settings.filament.get(k).map(|(v, _)| v));
+            (settings.material.as_str(), values)
+        })
+        .collect();
+    let multiplier = print_purge::multiplier_of(
+        slots
+            .first()
+            .and_then(|s| s.values.get(print_purge::MULTIPLIER))
+            .map(|(v, _)| v),
+    );
+    print_purge::Matrix::new(&values, multiplier, overrides)
+}
+
+/// Writes the parts' settings for a slicer, with the design's purge
+/// volumes set by hand (mitcad#705).
+pub fn export(
+    dialect: Dialect,
+    model_name: &str,
+    parts: &[ExportPart<'_>],
+    purge: &[PurgeOverride],
+) -> ExportOutput {
+    let shared = Shared::new(dialect, parts, purge);
     let mut out = match dialect {
         Dialect::BambuStudio | Dialect::OrcaSlicer | Dialect::QidiStudio => {
             bambu::export(&shared, model_name)

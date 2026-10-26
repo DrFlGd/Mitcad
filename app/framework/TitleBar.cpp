@@ -152,6 +152,23 @@ void TitleBar::setIndicator(QWidget* indicator) {
   update();
 }
 
+void TitleBar::setAgentIndicator(QWidget* indicator) {
+  auto* row = qobject_cast<QHBoxLayout*>(layout());
+  if (row == nullptr || indicator == nullptr) {
+    return;
+  }
+  m_agentIndicator = indicator;
+  indicator->setParent(this);
+  indicator->setFixedHeight(kControlHeight);
+  row->insertWidget(row->indexOf(m_search), indicator);
+  indicator->show();
+  if (m_floatingRow) {
+    indicator->installEventFilter(this);
+    updateRowMask();
+  }
+  update();
+}
+
 void TitleBar::setFloatingRow(bool floating) {
   if (floating == m_floatingRow) {
     return;
@@ -164,7 +181,8 @@ void TitleBar::setFloatingRow(bool floating) {
   layout()->setContentsMargins(floating ? 0 : 12, 0, floating ? 0 : 12, 0);
   m_inset->setVisible(!floating);
   m_history->setCardMaterial(floating);
-  for (QWidget* part : std::initializer_list<QWidget*>{m_history, m_tabs, m_search, m_indicator.data()}) {
+  for (QWidget* part :
+       std::initializer_list<QWidget*>{m_history, m_tabs, m_search, m_indicator.data(), m_agentIndicator.data()}) {
     if (part == nullptr) {
       continue;
     }
@@ -195,6 +213,7 @@ std::vector<std::pair<QString, QRect>> TitleBar::rowParts() const {
   add("titleHistory", m_history);
   add("titleTabs", m_tabs);
   add("titleIndicator", m_indicator.data());
+  add("titleAgent", m_agentIndicator.data());
   add("titleSearch", m_search);
   const QRect box = titleBox();
   if (!box.isEmpty()) {
@@ -338,7 +357,13 @@ TitleBar::TitleText TitleBar::titleText() const {
   // Between the tabs and the search field; the middle of the window when the
   // text fits there.
   const int freeLeft = m_tabs->geometry().right() + 16;
-  const QWidget* right = m_indicator != nullptr && !m_indicator->isHidden() ? m_indicator.data() : m_search;
+  // The leftmost of the indicators and the search field.
+  const QWidget* right = m_search;
+  for (const QWidget* part : {m_agentIndicator.data(), m_indicator.data()}) {
+    if (part != nullptr && !part->isHidden()) {
+      right = part;
+    }
+  }
   const int freeRight = right->geometry().left() - 16;
   if (freeRight - freeLeft < 60) {
     return text;

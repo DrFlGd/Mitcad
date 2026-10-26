@@ -4,65 +4,120 @@
 ## Connect from Mitcad
 
 For a design already open in Mitcad, choose **Help › Connect AI Assistant…**.
-The project indicator's menu and **Preferences › Agents** offer the same
-command; command search also finds `claude`, `codex`, `chatgpt` and `mcp`.
-Choose the assistant that runs on this computer:
+The assistant indicator (a click with no assistant connected, or **Connect
+AI Assistant…** in its menu) and **Preferences › AI Assistants** offer the same command; command search also finds `claude`, `codex`, `chatgpt` and `mcp`.
+The dialog has three parts: the assistant (**Claude Desktop**, **Claude
+Code**, **ChatGPT / Codex** or **Other**; the dialog's lines say just
+Codex), a state line with one button, and the folder line. Everything else is under **Advanced**.
 
-- **Claude Desktop:** **Set up connection** generates an MCP Bundle and
-  opens its installer in Claude Desktop on macOS or Windows. Approve the
-  installation and enable the extension there, then start a new conversation.
-  If the tools are missing, fully quit and reopen Claude Desktop. The bundle
+The state line names the next step, and its button does it:
+
+- ***Assistant* was not found on this computer** with **Get Claude
+  Desktop** (the download page) or **How to install** (Claude Code's
+  quickstart, OpenAI's Codex documentation). Mitcad looks for Claude Code's and Codex's
+  executables (on `PATH`, `~/.local/bin`, `~/.cargo/bin`, and the ChatGPT
+  application on macOS), for Codex's settings folder, and for the Claude
+  Desktop application or the settings folder it makes on its first start.
+  The line changes by itself once the assistant is there. Since this is a
+  guess, Claude Desktop and ChatGPT / Codex also offer a small **Connect
+  anyway**, which runs the same setup as **Connect**; Claude Code's setup
+  runs its CLI, so it has none. An extension installer that opens shows
+  that Claude Desktop is there; one that no application takes shows that it
+  is not: **Install Claude Desktop first** in the error colour, with **Get
+  Claude Desktop**. On Windows, which offers "Open with" for any file,
+  Mitcad asks first whether an application is associated with `.mcpb`
+  files, and the line clears once one is.
+- **Ready to connect *assistant*** with **Connect**: Mitcad sets the
+  connection up (below).
+- The assistant's own next step: **Approve Mitcad in Claude Desktop, then
+  start a new chat** with **Open in Claude Desktop again** (which runs the
+  setup again), or, with no button, **Start a new Claude Code session to
+  use Mitcad** or **Restart ChatGPT or start a new Codex session to use
+  Mitcad**. This means the settings exist, not that the assistant is
+  running. Repeating a setup changes nothing and makes no new backup.
+- **✓ Connected: *assistant*** with **Disconnect**: shown only after the
+  MCP initialization handshake completes, and only for the chosen
+  assistant's clients, recognised by the names they give themselves
+  (`claude-ai` is Claude Desktop, `claude-code` Claude Code, and a name
+  with `codex`, `chatgpt` or `openai` is Codex; any other name counts as
+  **Other** and is shown as given). Clients of other assistants are named
+  quietly below the line (**Also connected: …**). Names are labels, not
+  authentication identities. **Disconnect** ends the chosen assistant's
+  connections only (**Disconnect *assistant*** while others stay connected,
+  an **Other** client by its own name) and keeps the design and its
+  unsaved edits.
+- A failure: one short line in the error colour saying what to do, with
+  **Try again**. The details (a client's error output, for instance) are
+  in the line's tooltip.
+
+**Connect** does, per assistant:
+
+- **Claude Desktop** (Windows and macOS): generates a Mitcad extension
+  (an MCP Bundle) and opens its installer in Claude Desktop. Approve the
+  installation and enable the extension there, then start a new chat. If
+  the tools are missing, fully quit and reopen Claude Desktop. The bundle
   contains a small native launcher that starts the installed Mitcad CLI;
-  Claude's configuration file is not edited. The installer opening is not
-  proof of installation: that status is unknown until the client connects.
-- **Claude Code:** install the client if necessary using **Installation
-  instructions**, then choose **Set up connection**. Mitcad runs the supported
-  registration command with **user** scope, so the connection is available
-  across projects. Registration runs against a private `CLAUDE_CONFIG_DIR`
-  first. Mitcad verifies the entry and unchanged unrelated JSON before
-  atomically applying it to `~/.claude.json`, or `.claude.json` inside an
-  existing `CLAUDE_CONFIG_DIR`. A failed registration or closing the setup
-  dialog leaves the previous connection intact. Start a new session and check
-  `/mcp`; normal client trust approvals still apply.
-- **Codex / ChatGPT Desktop (local MCP):** choose **Set up connection**.
-  Mitcad uses the shared local Codex configuration. It respects `CODEX_HOME`;
-  use **Choose…** to select the settings file actually used by a desktop
-  client with another location. A Codex CLI is used when available, including
-  the desktop client's bundled CLI. Otherwise Mitcad updates the selected
-  TOML file directly, without requiring a separate CLI installation. Restart
-  the desktop client or start a new CLI conversation after setup. The copied
-  command includes the selected `CODEX_HOME`; for a filename other than
-  `config.toml`, the copy action provides TOML for that file instead.
-- **Other MCP client:** **Copy configuration** gives the generic
-  `mcpServers` JSON with the installed executable path. Add it through that
-  client's supported setup interface. Codex's copy action gives TOML instead;
-  these formats are deliberately distinct. **Copy command** is a fallback,
-  with platform-appropriate quoting, rather than a prerequisite.
+  Claude's configuration file is not edited. Whether the extension was
+  installed is known only once Claude Desktop connects.
+- **Claude Code:** runs the supported registration command with **user**
+  scope, so the connection is available across projects. Registration runs
+  against a private `CLAUDE_CONFIG_DIR` first. Mitcad verifies the entry
+  and the unchanged unrelated JSON before atomically applying it to
+  `~/.claude.json`, or `.claude.json` inside an existing
+  `CLAUDE_CONFIG_DIR`. A failed registration or closing the dialog leaves
+  the previous connection intact. Start a new session and check `/mcp`;
+  normal client trust approvals still apply.
+- **ChatGPT / Codex:** uses the shared local Codex configuration. It
+  respects `CODEX_HOME`; under **Advanced**, **Change…** selects the
+  settings file actually used by a desktop client with another location.
+  A Codex CLI is used when available, including the desktop client's
+  bundled CLI. Otherwise Mitcad updates the selected TOML file directly,
+  without a separate CLI installation. Restart the desktop client or start
+  a new CLI conversation after setup.
+- **Other:** the button is **Copy configuration**: the generic
+  `mcpServers` JSON with the installed executable path, to add through
+  that client's supported setup interface.
 
 Codex registration first runs against a private settings copy. Mitcad checks
 the result and atomically changes only its own entry in the actual file,
 preserving unrelated settings and comments. Existing configuration is backed
-up before replacement; a matching entry needs no write or new backup. A
-different Mitcad entry requires explicit replacement. Invalid TOML, a
-concurrent edit, a disabled entry or detected managed policy stops setup
-without overwriting the configuration. Ask the client's administrator to
-allow the entry when managed requirements apply.
+up before replacement (the dialog names the backup); a matching entry needs
+no write or new backup. A different Mitcad entry requires explicit
+replacement. Invalid TOML, a concurrent edit, a disabled entry or detected
+managed policy stops setup without overwriting the configuration. Ask the
+client's administrator to allow the entry when managed requirements apply.
 
-In the same dialog, choose a folder and press **Allow folder** to grant Open
-and Save As access, including subfolders. The button creates the selected
-folder if needed. Without this consent those operations are refused; saving
-an open design to its existing file remains available. No access is granted
-merely by opening the connection dialog.
+The folder line, **Folder for designs: *path*** with **Change…**, shows the first
+folder already allowed for AI assistants, or the projects folder. Pressing
+**Connect** (or **Connect anyway**, **Open in Claude Desktop again**, or
+**Copy configuration** for another assistant) with the line shown is the
+consent: it allows that folder for Open and Save As, including subfolders,
+and creates it if needed. **Change…** picks another folder first; it
+allows nothing by itself. No access is granted merely by opening the
+dialog. Without an allowed folder those operations are refused; saving an
+open design to its existing file remains available. The allowed folders
+are listed, and can be removed, in **Preferences › AI Assistants**.
 
-**Configured, waiting for connection** means settings exist, not that an
-assistant is running. **Connected** appears only after the MCP initialization
-handshake completes, and lists each client's supplied display name. Names
-are labels, not authentication identities. **Disconnect Agent** retains the
-design and its unsaved edits.
+**Advanced** holds the manual route and the rarer cases:
 
-The existing bridge refuses to choose between several live Mitcad windows.
-Keep only the intended window open, or use `--list` and `--instance` for a
-particular bridge launch. Saved setup never records a temporary instance id.
+- Two read-only fields, **Configuration** and **Command** (**PowerShell
+  command** on Windows), each with its
+  own **Copy** button. Codex gets TOML, the others the `mcpServers` JSON;
+  these formats are deliberately distinct. Paths use the platform's
+  separators (escaped as JSON requires; a TOML literal string where it
+  can be one). For Claude Code and Codex the command is the registration
+  command, for the others the bridge's own launch; the Codex command
+  includes the selected `CODEX_HOME`, and a settings file not named
+  `config.toml` takes the configuration only (no command). Only the words
+  that need it are quoted (PowerShell on Windows, a POSIX shell
+  elsewhere). The copies are a fallback, not a prerequisite.
+- **Codex settings file** with **Change…** (ChatGPT / Codex only).
+- With several Mitcad windows open, **Copy Command for This Window**. The
+  bridge refuses to choose between several live Mitcad windows: keep only
+  the intended window open, or start the bridge with this command (it adds
+  `--instance` for this window; `--list-instances` lists them). A saved
+  setup never records a temporary instance id.
+
 A WSL, remote or cloud client is not automatically on the native application's
 host. Browser and mobile conversations cannot launch this stdio bridge;
 setup does not expose a public listener or enable a tunnel.
@@ -146,7 +201,7 @@ memory, and Mitcad does not write them.
 ## Connect to the open desktop document
 
 The desktop application starts a local MCP listener automatically. An
-agent can find the listener after the application is open. A restart
+AI assistant can find the listener after the application is open. A restart
 with special arguments is not necessary. To disable the listener, start
 Mitcad with `--no-mcp`.
 
@@ -246,18 +301,20 @@ The live catalogue has these tools:
 - `model_query`
 - `model_command`
 - `model_export`
+- `model_reference` (the command reference in parts, as in headless
+  mode; [Look up the reference](#look-up-the-reference))
 - `document_save`
 - `document_open`
 - The application's own tools `ui_state`, `ui_log`, `ui_screenshot`,
   `ui_select`, `ui_command` and `ui_camera`
 
-The rule of thumb: what the user can see and do in the window, an agent
-can read and do through these tools. The agent gets the same undo and
+The rule of thumb: what the user can see and do in the window, an AI assistant
+can read and do through these tools. The assistant gets the same undo and
 the same refusals.
 
 `document_list` returns the opaque handle of the GUI document, with its
 `path`, `name`, `state`, `busy` and `editable`. `editable` means that
-model commands run now. The result also lists the folders that agents
+model commands run now. The result also lists the folders for designs that AI assistants
 can use. Commands change that actual document through its normal
 computation and undo workflow. They update its viewport, browser and
 history.
@@ -270,13 +327,20 @@ handle: `model_query`, `model_command`, `model_export`, `document_save`,
 `ui_state`, `ui_log`, `ui_screenshot` and `ui_camera`. `document_open`
 takes no handle, because it replaces the document.
 
-**Folders for agents** are the live-mode counterpart of `--workspace` in
+**Folders for designs** are the live-mode counterpart of `--workspace` in
 headless mode. `document_save` with a `path` (Save As) and
 `document_open` work only on `.mitcad` files in folders that the user
 permits. By default, the user permits no folder. The user lists the
-folders in Preferences › Agents (the setting `mcp/folders`). Or the user
-permits one folder for a single run: start the application with
-`--mcp-folder DIR`. The option is repeatable.
+folders in Preferences › AI Assistants (Settings › AI Assistants on
+macOS; the setting `mcp/folders`; **Add…**
+chooses a folder, **Remove** takes it off the list), or Connect in Connect
+AI Assistant permits the folder it shows. Or the user permits one folder
+for a single run: start the application with `--mcp-folder DIR`. The
+option is repeatable. A refusal says why in words the assistant can relay
+to the user: "No folder for designs is allowed: add one in Preferences ›
+AI Assistants." (Settings › AI Assistants on macOS; the command-line
+option is left to this guide) or "<path> is not in a folder for designs
+(<folders>)".
 
 A path is permitted when its folder is a permitted folder or below one.
 Mitcad resolves symbolic links before this check. `..` is refused. A
@@ -293,7 +357,7 @@ document has failed features. `ui_screenshot` with a `path` writes its
 image into these folders as well.
 
 Without a `path`, `document_save` writes the document's own file as
-before, in any folder. Thus an agent that works in the untitled window
+before, in any folder. Thus an AI assistant that works in the untitled window
 of the user can make the work crash-safe. Call `document_save` with a
 path once. Then do plain saves.
 
@@ -337,12 +401,19 @@ the command changed, in `changes`:
   whose entries changed, that it recomputed, or that are left failed,
   each with `change` (`added`, `changed`, `recomputed`, `failed`)
 - `bodies`: the bodies it added or changed (their shape or their
-  attributes), each with `change` (`added`, `changed`)
+  attributes), each with `change` (`added`, `changed`) and its `bbox`
+  {`min`, `max`} (mitcad#714), so that the side of each piece of a split
+  and the place of a moved body show in the reply
 - `removed_features`, `removed_bodies`: the uids of what it removed
 - `marker`, `feature_count`, `body_count`
 
 A command that recomputes nothing, such as `set_body_visible`, answers
-with that one body. `"timeline": "full"` gives the whole `timeline` and
+with that one body. The native `result` of `add_feature` and
+`edit_feature` has the feature's `warnings` when it has any, such as a
+rotation, revolve, draft, taper or chamfer angle of more than one turn:
+a JSON number there is radians, and `"angle": 90` warns
+`Move1 angle: 90 is read as radians (5156.6°); write "90 deg" for
+degrees` (mitcad#714, commands.md "Values"). `"timeline": "full"` gives the whole `timeline` and
 `bodies` instead, as before; `"timeline": "none"` only `state`.
 
 **A sketch that is open for edit** takes its own commands through the
@@ -396,22 +467,34 @@ it has only these items:
 - An environment that is not an image path
 
 The call is refused when a texture image or `environment.image` would be
-read from a file. The refusal names the path. Thus an agent can make and
+read from a file. The refusal names the path. Thus an AI assistant can make and
 assign a custom or emissive appearance in a live session. The user does
 not have to open the design again.
 
-Each change that an agent makes is labelled `… (agent)` in the undo text
+Each change that an AI assistant makes is labelled `… (agent)` in the undo text
 and in the version history. Examples are `Add Line (agent)` and `Edit
-Sketch2 (agent)`. The second occurs when an agent changed the open
+Sketch2 (agent)`. The second occurs when an assistant changed the open
 sketch. The user undoes such a change with Ctrl+Z, like their own
 changes.
 
-An MCP client is connected when it has initialized a session. While an
-MCP client is connected, the project indicator says "Agent connected".
-The project indicator is in the status bar of the Docked layout. In the
-Floating layout, it is in the title row. In the native macOS window, it
-is in the toolbar. The Disconnect Agent item of its menu ends the
-connection.
+An MCP client is connected when it has initialized a session. The
+assistant indicator, beside the project indicator, shows the connection:
+"No assistant" while none is connected and the window accepts them,
+"<assistant> connected" while one is connected ("2 assistants connected"
+with several), and "Assistants unavailable" when the listener did not
+start (or Mitcad was started with `--no-mcp`). A client is named by the
+assistant its `clientInfo` name matches ("Claude Code connected" for
+`claude-code`), else by that name. It is in the status bar of the Docked
+layout, in the title row of the Floating layout and in the toolbar of the
+native macOS window; its tooltip adds the window's instance id and port.
+With no assistant connected, a click on it opens Connect AI Assistant;
+otherwise a click opens its menu. The menu says first why assistants are
+unavailable, or lists each connected client (the assistant's name, its
+`clientInfo` name and version, and when it connected) with Disconnect
+<assistant> (Disconnect All with several), then Connect AI Assistant…,
+Copy Command for This Window (only while several Mitcad windows listen; for this
+window, `mitcad-cli mcp --connect --instance <id>`) and Folders
+for Designs… (Preferences › AI Assistants). Disconnect ends the connection.
 
 If the stdin of the bridge closes, the connection ends after the bridge
 forwards the requested replies. The GUI and its unsaved work stay open.
@@ -421,10 +504,11 @@ A new bridge can connect again to the same document. `--workspace` and
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `document_list` | `{}` | `documents`: the document of the window, with `document`, `path`, `name`, `state`, `busy` and `editable`. `folders`: the folders that agents can save to and open from. An empty list means no folder. |
+| `document_list` | `{}` | `documents`: the document of the window, with `document`, `path`, `name`, `state`, `busy` and `editable`. `folders`: the folders for designs, which AI assistants can save to and open from. An empty list means no folder. |
 | `model_query` | `document`, `query` | `document`. Native JSON in `result`. |
 | `model_command` | `document`, `command` (an object or an array). Optional `timeline` (`changed` default, `full`, `none`). | `document`, `applied`, native `result`, `failed_features`, `state`, `changes` (with `full` `timeline` and `bodies` instead). For an array also `ran`, `results`, `stopped_at`. In a sketch, also `sketch`. Refer to the command arrays above and [failed features](#transport-errors-and-limits). |
-| `model_export` | `document`, `path` (a new file in a folder for agents), `format`. Optional `bodies`, `sketch`, `flat_pattern`, `drawing`, as in headless mode. | `document`, `path`, `exported`, native export `result`. |
+| `model_export` | `document`, `path` (a new file in a folder for designs), `format`. Optional `bodies`, `sketch`, `flat_pattern`, `drawing`, as in headless mode. | `document`, `path`, `exported`, native export `result`. |
+| `model_reference` | As in headless mode: none, or one of `section`, `query`, `command`, `feature`, `search`; optional `offset`. | As in headless mode ([Look up the reference](#look-up-the-reference)). The protocol answers it, without the document. |
 | `document_save` | `document`. Optional `path`. Optional `overwrite` (default false). | `document`, `path`, `saved`, `status`, `state`. `status` is the text of the status bar, with the recorded version. Refer to the text below the table. |
 | `document_open` | `path`. Optional `discard` (default false). | `document` (the new handle), `path`, `name`, `state`, `busy`, `editable`, `opened`, `replaced` (the old handle). Refer to the text below the table. |
 | `ui_state` | `{}` | `document`, `name`, `path`, `modified`, `read_only`, `read_only_reason`, `mode`, `busy`, `editable`, `active_component`, `undo`, `redo`, `undo_depth`, `selection`, `hint`, `hint_is_error`, `status_line`, `status_line_is_error`, `agents`, `sketch`, `command`, `app`. Refer to the text below the table. |
@@ -437,7 +521,7 @@ A new bridge can connect again to the same document. `--workspace` and
 **`document_save`** without `path` saves to the document's own path, as
 File > Save does. In a project with versions, it uses the version and
 the commit message of the project (`Save …: …`). With `path`, it saves
-to that `.mitcad` file in a folder for agents, as Save As does.
+to that `.mitcad` file in a folder for designs, as Save As does.
 Afterwards, the document is that file. An existing file must have
 `overwrite: true`. The tool is refused in these cases:
 
@@ -448,7 +532,7 @@ Afterwards, the document is that file. An existing file must have
 - The save would ask the user something. Then Mitcad closes the dialog
   of the question and names it.
 
-**`document_open`** opens a `.mitcad` design from a folder for agents in
+**`document_open`** opens a `.mitcad` design from a folder for designs in
 the window, as File > Open does. It replaces the open document. The tool
 is refused in these cases:
 
@@ -500,7 +584,7 @@ as the window server composes it. Mitcad scales the image to fit
 The image comes as an MCP `image` content block after the text block,
 not as text (mitcad#689); `format` `jpeg` with `quality` makes it
 smaller. With `path`, the image is written to that `.png` or `.jpg`
-file in a folder for agents instead (an existing file only with
+file in a folder for designs instead (an existing file only with
 `overwrite: true`), at its full size, and only the path, the size and
 the bytes come back.
 
@@ -634,6 +718,7 @@ required.
 | `model_query` | `document`, `query` (a native JSON object) | `document`, native JSON in `result` |
 | `document_save` | `document`, `path`, `overwrite` (default false) | `document`, canonical `path`, saved `state` |
 | `model_export` | `document`, `path`, `format`. Optional `bodies` (an array of names or UIDs). Optional `sketch`. For DXF, `flat_pattern`. For a drawing, `drawing`. Refer to the text below the table. | `document`, canonical `path`, native export `result` |
+| `model_reference` | None, or one of `section`, `query`, `command`, `feature`, `search`. Optional `offset`. Refer to [Look up the reference](#look-up-the-reference). | The contents and the permitted names, or one part of the reference, at most 64 kB of text |
 
 `document_open` imports a `.solidcraft` design with its history into a
 new document without a `path`. Save that document with `document_save`
@@ -672,11 +757,14 @@ it refuses appearances with external image paths before export.
 A document save always writes a single self-contained
 `.mitcad` file, also in a project with a B-rep store.
 
-The command reference is available through `resources/list` and
-`resources/read` at `mitcad://reference/commands`. It is also in
-[the native API reference](../core/model/src/api/commands.md). Use that
-reference for feature definitions, sketch entities, parameters and
-topological names. The server permits the commands, feature types and
+The command reference is
+[the native API reference](../core/model/src/api/commands.md). Use it
+for feature definitions, sketch entities, parameters and topological
+names. The tool `model_reference` gives it in parts (below). The whole
+reference is also available through `resources/list` and
+`resources/read` at `mitcad://reference/commands`, for clients that
+read resources; it is about 1 MB, more than an AI assistant's context. The
+server permits the commands, feature types and
 queries of the model class. These operate on the data of the document.
 The server refuses the file IO, remote and internal ones by their class
 (refer to "Live tools" above). These are file imports, external
@@ -684,7 +772,39 @@ component refresh, raw save and export commands, disk cache access and
 remote operations.
 Files are accessed through the dedicated document and export tools.
 
-## Keep an agent-built timeline readable
+### Look up the reference
+
+`model_reference` (mitcad#714) is in both servers. It is read-only and
+needs no document; the protocol answers it from the reference built
+into the server. Some clients forward tools only and cannot read a
+resource; this tool works for them too. The instructions and the
+descriptions of `model_query` and `model_command` point to it.
+
+| Arguments | Result |
+|---|---|
+| none | `contents`: the `##` and `###` headings of the reference, one a line (`###` indented); `queries`, `commands`, `features`: every query, command and feature type the server permits; `usage` |
+| `section` | One section with its subsections: `section` (its heading), `path` (the headings above it), `text`. The name is a heading (`"Values"`, `"Sketch commands"`, in any case), a name a heading lists (`"split_body"` finds *Face features: shell, …, split_body, split_face*) or a part of a heading, in that order; `other_sections` names the other matches |
+| `query`, `command` | The reference rows of that query or command, each table with its header and the headings above it, in `text`; `sections`: the headings that list the name; `permitted`. A name without rows gives the lines that name it |
+| `feature` | The section of that feature type (the heading that lists it, or the section of its first example definition), as `section` gives it, with `feature`, `example` (its first example definition) and `permitted` |
+| `search` | `headings` that contain the text, and `hits`: `section` (the headings above the line) and `excerpt` (240 characters around the text) of each line that contains it, in any case; `total` |
+
+Every answer holds at most 64 kB of text. A longer one has `truncated:
+true`, `next_offset` and a `note`: call again with the same argument and
+`offset` set to `next_offset` for the rest. A cut section also lists its
+`subsections`, which are smaller to ask for. For `search`, `offset` is the
+number of hits to skip; a page holds at most 200 hits. An unknown
+section, query, command or feature type is an error (`isError`) that
+lists the names there are. Give one argument at a time.
+
+```json
+{"name": "model_reference", "arguments": {"feature": "construction_plane"}}
+```
+
+answers with the section *construction_plane, construction_axis,
+construction_point*, its table of definitions and the example
+`{"type": "construction_plane", "definition": {"type": "offset", "plane": "xy", "distance": 10}}`.
+
+## Keep an assistant-built timeline readable
 
 Give features descriptive names and group each contiguous modeling stage as it
 is completed. Use `model_command` with the ordinary model command
@@ -796,9 +916,12 @@ The result lists what the array changed: the new box and its body.
 
 An existing save destination must have an explicit `"overwrite":true`.
 An export destination must be new. When you extend an existing design,
-use the actual IDs that queries returned. Native lengths are in
-millimetres and angles are in radians. The model also accepts
-expressions such as `"15 mm"` or `"30 deg"`.
+use the actual IDs that queries returned. JSON numbers are millimetres
+and radians; write `"90 deg"` for degrees. The instructions and the
+description of `command` say so (mitcad#714). The model also accepts
+expressions such as `"15 mm"` or `"30 deg"`. A string without a unit,
+`"90"`, takes the document's unit, but a JSON number `90` in an angle
+is 90 radians.
 
 ## Transport, errors and limits
 
@@ -830,6 +953,27 @@ notification never invokes a tool, never changes a document and has no
 response. Model, workspace and file errors return tool results with
 `isError:true`, usually `structuredContent:{"error":"..."}`. If a
 command validation fails, the document stays unchanged.
+
+Errors give the choices (mitcad#714), in both servers:
+
+- An unknown query says `unknown query 'bbox'` and lists the queries the
+  server permits; an unknown command lists the permitted commands. A
+  query or command that exists but that MCP refuses by its class keeps
+  its own error (`query 'dxf_info' is not available through MCP`).
+- A command or query object without its name shows the form:
+  `{"command": "list"}` as `command` gives `a command is {"cmd":
+  "<name>", ...its fields}, for example {"cmd": "add_feature", "def":
+  {...}}; this one has no 'cmd' (its fields: command)`. A definition
+  without `type` asks for it the same way.
+- The model names only the first missing field of a definition. When a
+  refused `model_command` misses a field, the result also has
+  `reference`: the section of the feature type that its `def` names
+  (`feature`, `section`, `example`, `text`, at most 12 kB, `truncated`),
+  or the reference rows of its command (`command`, `text`) when the
+  missing field is one of the command's own. The error then says so and
+  names the `model_reference` call that gives the rest.
+- The model's `unknown variant … expected one of …` and `unknown field …
+  expected one of …` errors stay as they are.
 
 Request and response frames are limited to 8 MiB. The limit includes
 the JSON escaping and both the text and the structured tool content. An
@@ -922,9 +1066,18 @@ computations can still use much time and memory.
   conflicts; command arrays (a box placed by parameter expressions, a
   refused entry undoing the ones before it), the compact command results
   and their size, `"timeline": "full"`, and the `print_thickness`
-  summary (mitcad#689).
-- Protocol unit tests are with the Rust protocol crate, and the native
-  CLI integration tests exercise the FFI backend.
+  summary (mitcad#689); `model_reference` (the contents and the
+  permitted names, a section, a query row, a feature type's example, a
+  search, a cut section continued) and the errors that give the choices:
+  an unknown query and command, a refused query, a command without
+  `cmd`, definitions that miss fields, an unknown variant (mitcad#714).
+- Protocol unit tests are with the Rust protocol crate (`core.mcp`;
+  `core/mcp/src/reference_tests.rs` for `model_reference` and its
+  errors: the contents, a section, a query row, a feature type, a
+  search, a long section cut and continued to its end, the unknown names
+  and the form of a command, the reference of a definition or a command
+  that misses fields, in both servers), and the native CLI integration
+  tests exercise the FFI backend.
 - [tools/cli/mcp-results-test.cmake](../tools/cli/mcp-results-test.cmake)
   (`cli.mcp_results`, no Python) checks `isError` and `failed_features`
   with a failed feature in the timeline, `changes` without the whole
@@ -938,7 +1091,8 @@ computations can still use much time and memory.
   full-width integer request IDs, and `--no-mcp`.
 - [tools/ui-mcp-live.py](../tools/ui-mcp-live.py) then runs the live
   debugging flow on a design whose sketch holds a projection that no
-  longer follows: queries, `sketch.add_line` with the sketch open and
+  longer follows: `model_reference` and the queries an unknown query lists
+  (mitcad#714), queries, `sketch.add_line` with the sketch open and
   undo, `ui_state` with the warning of the Sketch Palette and its
   entities, `ui_select`, `ui_screenshot`, `ui_command` Clean Up Stale
   Projections and Finish Sketch, `document_save` and `ui_log`.

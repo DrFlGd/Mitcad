@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 use super::ApiError;
 use crate::document::Document;
 use crate::exchange::{
-    Coordinates, ExportFormat, ExportOptions, ExportPlacement, Imported, LengthUnit, ReadOptions,
-    Refinement, StepSchema,
+    Coordinates, ExportFormat, ExportOptions, ExportPlacement, Imported, LengthUnit, OnBed,
+    ReadOptions, Refinement, StepSchema,
 };
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::Kernel;
@@ -64,6 +64,10 @@ pub(super) struct ExportCommand {
     /// `orcaslicer`, `qidi_studio`, `prusaslicer`, `cura`; mitcad#640).
     #[serde(default)]
     dialect: Option<String>,
+    /// 3MF and STL: the bodies on the print bed by their print bed faces,
+    /// centred on the plate (mitcad#731).
+    #[serde(default)]
+    on_bed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,6 +166,7 @@ impl<K: Kernel> Document<K> {
         let placement = ExportPlacement {
             coordinates: command.coordinates,
             within,
+            on_bed: command.on_bed,
         };
         let exported = self.export_bodies(&command.path, &bodies, &options, &colors, &placement)?;
         let mut result =
@@ -207,7 +212,40 @@ impl<K: Kernel> Document<K> {
                 .collect();
             result["warnings"] = json!(exported.warnings);
         }
+        // How the bodies were put on the print bed (mitcad#731).
+        if let Some(on_bed) = &exported.on_bed {
+            result["bed"] = self.on_bed_json(on_bed);
+            result["warnings"] = json!(exported.warnings);
+        }
         Ok(result)
+    }
+
+    /// The `bed` of an export's result: the body and face on the bed, the
+    /// transform after the design's placements (rows of the turn with the
+    /// move last), the plate's centre, the bodies kept as assembled and
+    /// the bed faces that cannot be used.
+    fn on_bed_json(&self, on_bed: &OnBed) -> Value {
+        let rows = on_bed.transform.map(|t| {
+            let row = |r: usize| {
+                let [x, y, z] = t.linear[r];
+                [x, y, z, t.translation[r]]
+            };
+            [row(0), row(1), row(2)]
+        });
+        let problems: Vec<Value> = on_bed
+            .problems
+            .iter()
+            .map(|(uid, why)| json!({"body": uid, "name": self.body_name(*uid), "reason": why}))
+            .collect();
+        json!({
+            "body": on_bed.face.as_ref().map(|(uid, _)| *uid),
+            "name": on_bed.face.as_ref().map(|(uid, _)| self.body_name(*uid)),
+            "face": on_bed.face.as_ref().map(|(_, face)| face),
+            "transform": rows,
+            "plate": on_bed.plate,
+            "kept": on_bed.kept,
+            "problems": problems,
+        })
     }
 
     pub(super) fn export_sketch_command(

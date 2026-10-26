@@ -55,6 +55,47 @@ not a level of its own, and Mitcad has no separate assembly file.
   reports and messages shown to the user use Mitcad's terms, naming the
   source's term only where it helps to find the item in the source.
 
+## Annotations
+
+| Term | What it is | In the code |
+|---|---|---|
+| **Annotation** | A dimension, a leader note, a datum label or a feature control frame kept in the design and drawn in the view in its plane; listed in the Annotations window. The kept measurements of Measure are annotations: user-facing text no longer calls them *measurement objects*. | `Annotation` (`core/model/src/document/annotations.rs`; `Measurement` is its old name), `AnnotationsWindow` |
+| **Dimension** | An annotation that shows a measured value: a distance, an angle, an offset, an axis or centre distance, a radius or a diameter, with its prefix, decimals, own text and tolerance. Not a sketch dimension, which drives a sketch; this one only measures. | `MeasureKind` other than the leaders (`Note`, `Datum`, `Frame`) |
+| **Leader note** | An annotation of text on an arrow to a face, edge or vertex. Short: **note**. | `MeasureKind::Note` |
+| **Annotation group** | A name annotations share (`Manufacturing`), to show or hide them at once and to take one group into a snapshot. Not a timeline group. Short in the Annotations window: **group**. | `Annotation::group` |
+| **Tolerance** | A dimension's permitted deviation: symmetric (±), deviations, limits (written as the largest and smallest size) or an ISO 286 **fit code** (`H7`, `g6`). | `Tolerance`, `iso286.rs` |
+| **Datum label** | A letter (A, B, C …; never I, O or Q) in a square on a leader ending in a filled triangle on a planar face, an edge, a round face's axis or a datum plane or axis (ISO 5459): the datum feature frames refer to. Not a datum plane, axis or point of construction geometry. | `MeasureKind::Datum`, `Annotation::letter` |
+| **Feature control frame** | A geometric tolerance (ISO 1101) in a row of cells: the characteristic's symbol (flatness ⏥, perpendicularity ⟂, position ⌖ …), the tolerance zone's width with Ø and Ⓜ or Ⓛ where they apply, and the datum letters in order; on a leader to a face or edge, or under a dimension. Short: **frame**. | `MeasureKind::Frame`, `GeometricTolerance`, `Characteristic` |
+
+## Drawings
+
+| Term | What it is | In the code |
+|---|---|---|
+| **Drawing** | A 2D drawing kept in the design, in the **Drawings** folder of the root or of a component; its sheets and views are definitions, drawn from the model when shown or exported. Not the export file, which is a PDF, SVG or DXF file of a drawing. | `Drawing`, `DrawingUid` (`core/model/src/drawing/def.rs`), `DrawingWorkspace` |
+| **Sheet** | A page of a drawing: its size, orientation, projection method (first or third angle), title block and views. | `DrawingSheet` |
+| **View** | A projection on a sheet: a **base view** of the design, a component or chosen bodies; a **projected view** from another view; a **section view** cut along a line on a view; a **detail view** enlarging a circle of a view. Not the 3D view, which user-facing text calls *the 3D view* where both could be meant. | `DrawingView`, `ViewKind` |
+| **Break** | A band taken out of a view to shorten it, its sides moved together. | `ViewBreak` |
+| **Close Drawing** | Leaves the open drawing for the 3D view. It replaces *Back to Model*: the model is not elsewhere, the drawing is a view of it. | `drawing.close`, `DrawingWorkspace::closeDrawing` |
+| **Annotation** (on a view) | A dimension, a centre mark or centreline, a leader note, a datum label, a feature control frame or a surface finish symbol on a drawing's view, its picks edges and faces of the model seen in the view; the same kinds of dimension, tolerance, datum and frame as the model's annotations. Broken when what it picks is gone. | `ViewAnnotation`, `AnnotationType` (`core/model/src/drawing/annotate.rs`) |
+| **Pick** (on a view) | An edge, a point of an edge or a round face of a body that a click on a view finds, kept by its topological name so that the annotation follows the model. | `ViewPick`, `drawing_pick` |
+| **Centre mark** | Crossed centre lines through the centre of a circle seen end on. UI: *Center Mark*. | `AnnotationType::CenterMark` |
+| **Centreline** | The axis of a round face seen from the side, or a line through two centres or between two edges. UI: *Centerline*. | `AnnotationType::Centerline` |
+| **Surface finish symbol** | ISO 1302's symbol on a surface: any process, material removed or no material removed, with its requirement (`Ra 1.6`). UI: *Surface Finish*. | `AnnotationType::Finish`, `SurfaceFinish` |
+| **Text note** | Text on a sheet without a leader. UI: *Text*. Not a leader note (*Note*). | `SheetNote` |
+| **Sketch dimensions** (of a view) | The dimensions of the sketches a view sees square on, drawn from the sketches (retrieved). | `DrawingView::retrieved_dimensions` |
+| **Datum label** (on a view) | A datum label on a drawing's view; its letter is one of the same set as the model's datum labels. UI: the *Datum Label* tool, not *Datum*. | `AnnotationType::Datum` |
+| **Hole table** | A table of the round holes a view sees end on, each tagged in the view (A1, A2, B1 by size, or numbered) and listed with its place from an origin, size, depth and thread. Not File › Export Drawing's sheet-wide hole table of its own. UI: *Hole Table*. | `AnnotationType::HoleTable`, `TableSettings` (`core/model/src/drawing/tables.rs`) |
+| **Parts list** (on a sheet) | A numbered table of the components a view shows, with their quantities and what the design says of them; the drawing's own form of the design's **Parts List**. UI: *Parts List*. | `AnnotationType::PartsList` |
+| **Balloon** | A component's number in a parts list, in a circle on a leader to the component on a view. UI: *Balloon*. | `AnnotationType::Balloon` |
+| **Sheet template** | A sheet's frame, title block and revision table as data: its fields filled in from the design (name, part number, material, mass, author, date, scale, sheet, revision, any property). Built in (ISO, ANSI), the user's or a project's; a sheet keeps a copy. UI: *Template*, *Save as Template…*; *Simple Title Block* for a sheet without one. | `SheetTemplate` (`core/model/src/drawing/template.rs`) |
+| **Revision** (of a drawing) | A row of a drawing's revision table: its letter, description, date and author; the title block shows the latest one's letter. UI: *Add Revision*. | `Revision`, `Drawing::revisions` |
+
+## Sketches
+
+| Term | What it is | In the code |
+|---|---|---|
+| **Inactive** (constraint, dimension) | A sketch constraint or dimension kept in the sketch and drawn (pink), but left out of the solve until it is activated; an inactive dimension keeps its value. An import makes those its file does not meet inactive. Not *suppressed*, which is said of features, and not *driven*, which is a dimension that only measures. UI: *Activate*, *Deactivate*; the tooltip *Not applied: …*. | `Constraint::active`, `Dimension::active` (`core/model/src/sketch/mod.rs`), `sketch.set_active` |
+
 ## UI names in user-facing text
 
 The user guide, the help, the README, tooltips, status messages and

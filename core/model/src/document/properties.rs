@@ -975,17 +975,60 @@ impl<K: Kernel> Document<K> {
         row: &PartsListRow,
         key: &str,
     ) -> Option<String> {
-        let (set, key) = match key.rsplit_once('/') {
-            Some((set, key)) => (Some(set.trim()), key.trim()),
-            None => (None, key.trim()),
-        };
+        self.component_property_of(component, Some(row), key)
+    }
+
+    /// A mass in kilograms as the design's properties write it (its mass
+    /// unit), for a drawing's title block (mitcad#707 phase 4).
+    pub(crate) fn mass_text(&self, kg: f64) -> String {
+        format_value(
+            BaseType::Mass,
+            &PropertyValue::Number(kg),
+            self.property_unit(BaseType::Mass.as_str()),
+            None,
+        )
+    }
+
+    /// The text of a component's property, `Key` or `Set/Key`: stored,
+    /// library and computed values alike; its parts list row looked up
+    /// when not given (a drawing's title block, mitcad#707 phase 4).
+    pub(crate) fn component_property_of(
+        &self,
+        component: ComponentUid,
+        row: Option<&PartsListRow>,
+        key: &str,
+    ) -> Option<String> {
+        let (set, name) = set_and_key(key);
         let computed = set.is_none_or(|s| same_name(s, COMPUTED_SET))
-            && COMPUTED_KEYS.iter().any(|k| same_name(k, key));
+            && COMPUTED_KEYS.iter().any(|k| same_name(k, name));
+        self.component_level_text(component, row, key, computed)
+    }
+
+    /// The text of a component's own property, `Key` or `Set/Key`: stored
+    /// or from its library, never one worked out (a drawing's title block
+    /// honours a stored `Mass` and works the mass out itself otherwise,
+    /// mitcad#722).
+    pub(crate) fn component_stored_property(
+        &self,
+        component: ComponentUid,
+        key: &str,
+    ) -> Option<String> {
+        self.component_level_text(component, None, key, false)
+    }
+
+    fn component_level_text(
+        &self,
+        component: ComponentUid,
+        row: Option<&PartsListRow>,
+        key: &str,
+        computed: bool,
+    ) -> Option<String> {
+        let (set, name) = set_and_key(key);
         let owner = PropertyOwner::Component(component);
-        self.level_properties(owner, computed, Some(row))
+        self.level_properties(owner, computed, row)
             .iter()
             .find(|s| {
-                same_name(&s.property.key, key) && set.is_none_or(|set| same_name(set, &s.set))
+                same_name(&s.property.key, name) && set.is_none_or(|set| same_name(set, &s.set))
             })
             .map(|s| {
                 self.property_json(s)["text"]
@@ -993,5 +1036,13 @@ impl<K: Kernel> Document<K> {
                     .unwrap_or("")
                     .to_owned()
             })
+    }
+}
+
+/// A property's `Set/Key` or `Key` split, trimmed.
+fn set_and_key(key: &str) -> (Option<&str>, &str) {
+    match key.rsplit_once('/') {
+        Some((set, key)) => (Some(set.trim()), key.trim()),
+        None => (None, key.trim()),
     }
 }

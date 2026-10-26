@@ -62,7 +62,7 @@ source "$(dirname "$0")/ui-timber-lib.sh"
 timber_library ui-timber-wall
 
 ui_start_display
-# A new design (mitcad#394): Part1 active.
+# A new design (mitcad#394): Component1 active.
 ui_start_app --no-native-dialogs
 
 echo "--- 1. Wall: a wall from the origin"

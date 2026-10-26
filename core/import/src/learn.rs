@@ -155,6 +155,12 @@ impl Clock {
             None => elapsed,
         }
     }
+
+    /// Leaves `spent` out of the clock's time (the wait for an item's own
+    /// state, [`crate::Oracle::watch`], mitcad#701).
+    pub(crate) fn leave_out(&mut self, spent: Duration) {
+        self.started += spent;
+    }
 }
 
 /// The dump directory: the options', else none.

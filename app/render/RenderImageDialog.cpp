@@ -234,10 +234,9 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
   m_transparent = check(QStringLiteral("transparent"), tr("Transparent background"),
                         tr("Only the bodies and their shadows, with an alpha channel (not JPEG)"));
   file->addRow(m_transparent);
-  // The shown measurement objects drawn over the saved image (mitcad#649);
-  // the application's choice, not the design's.
-  m_measurements = new QCheckBox(tr("Measurements"));
-  m_measurements->setToolTip(tr("Draws the measurements shown in the view over the saved image (not OpenEXR)"));
+  // The shown annotations drawn over the saved image (mitcad#649,
+  // mitcad#702); the application's choice, not the design's.
+  m_measurements = new QCheckBox(tr("Annotations"));
   m_measurements->setChecked(true);
   connect(m_measurements, &QCheckBox::toggled, this, [](bool on) {
     qDebug().noquote() << QStringLiteral("Render image measurements %1").arg(on ? QStringLiteral("on") : QStringLiteral("off"));

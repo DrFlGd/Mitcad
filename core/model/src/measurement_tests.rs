@@ -44,6 +44,22 @@ fn measurement(doc: &Document<MockKernel>, name: &str) -> Value {
         .unwrap_or_else(|| panic!("no measurement {name}"))
 }
 
+/// The measurement of this name measured even while hidden (mitcad#716).
+fn measured(doc: &Document<MockKernel>, name: &str) -> Value {
+    let answer: Value = serde_json::from_str(
+        &doc.query(r#"{"query": "measurements", "measure_hidden": true}"#)
+            .unwrap(),
+    )
+    .unwrap();
+    answer
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["name"] == name)
+        .cloned()
+        .unwrap_or_else(|| panic!("no measurement {name}"))
+}
+
 fn undo_label(doc: &Document<MockKernel>) -> Value {
     let answer: Value =
         serde_json::from_str(&doc.query(r#"{"query": "document"}"#).unwrap()).unwrap();
@@ -242,13 +258,13 @@ fn measurements_are_renamed_recoloured_hidden_changed_and_deleted() {
         &mut doc,
         json!({"cmd": "rename_measurement", "name": "Height", "new_name": "Angle1"}),
     );
-    assert!(error.contains("a measurement 'Angle1' exists"), "{error}");
+    assert!(error.contains("an annotation 'Angle1' exists"), "{error}");
     let error = refused(
         &mut doc,
         json!({"cmd": "rename_measurement", "name": "Offset1", "new_name": "X"}),
     );
     assert!(
-        error.contains("there is no measurement 'Offset1'"),
+        error.contains("there is no annotation 'Offset1'"),
         "{error}"
     );
 
@@ -270,15 +286,15 @@ fn measurements_are_renamed_recoloured_hidden_changed_and_deleted() {
     );
     assert_eq!(undo_label(&doc), "Hide Height");
     assert_eq!(measurement(&doc, "Height")["visible"], false);
-    // A hidden one is measured all the same.
-    near(&measurement(&doc, "Height")["value"], 20.0);
+    // A hidden one is measured when asked for (mitcad#716).
+    near(&measured(&doc, "Height")["value"], 20.0);
 
     command(
         &mut doc,
         json!({"cmd": "set_measurement_kind", "name": "Height", "kind": "angle"}),
     );
     assert_eq!(undo_label(&doc), "Kind of Height");
-    near(&measurement(&doc, "Height")["value"], PI);
+    near(&measured(&doc, "Height")["value"], PI);
     let error = refused(
         &mut doc,
         json!({"cmd": "set_measurement_kind", "name": "Height", "kind": "diameter"}),
@@ -341,14 +357,14 @@ fn measurements_are_saved_and_read_back() {
     command(&mut loaded, json!({"cmd": "recompute"}));
     assert_eq!(measurements(&loaded), measurements(&doc));
     near(&measurement(&loaded, "Offset1")["value"], 20.0);
-    near(&measurement(&loaded, "Distance1")["value"], 20.0);
+    near(&measured(&loaded, "Distance1")["value"], 20.0);
     // Reopened, it follows the model as before.
     command(
         &mut loaded,
         json!({"cmd": "set_parameter", "name": "height", "value": 12}),
     );
     near(&measurement(&loaded, "Offset1")["value"], 12.0);
-    near(&measurement(&loaded, "Distance1")["value"], 12.0);
+    near(&measured(&loaded, "Distance1")["value"], 12.0);
 
     // Older files without measurements load as before.
     let old = Document::from_json(&plain, MockKernel::default()).unwrap();
@@ -356,9 +372,9 @@ fn measurements_are_saved_and_read_back() {
 
     // The comparison of versions lists them.
     let diff = diff_states(&before, doc.state());
-    let texts: Vec<&str> = diff.measurements.iter().map(|c| c.text.as_str()).collect();
+    let texts: Vec<&str> = diff.annotations.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, ["Offset1: added", "Distance1: added"]);
-    assert!(diff.summary.contains("+2 measurements"), "{}", diff.summary);
+    assert!(diff.summary.contains("+2 annotations"), "{}", diff.summary);
 
     // Broken entries are refused with where they are.
     let twice = saved.replace("\"Distance1\"", "\"Offset1\"");

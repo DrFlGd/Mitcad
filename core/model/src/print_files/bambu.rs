@@ -90,6 +90,26 @@ pub(super) fn read_project(
         names,
         &mut out,
     );
+    // The purge table (mitcad#705): the slicer multiplies it.
+    if let Some(Value::Array(items)) = map.get(FLUSH_MATRIX) {
+        let n = filament_count(&map);
+        let multiplier = entry(&map, MULTIPLIER, 0)
+            .and_then(|t| print_keys::parse_number(&t).ok())
+            .filter(|m| *m > 0.0)
+            .unwrap_or(1.0);
+        let texts: Vec<String> = items
+            .iter()
+            .map(|v| source::json_text(v).unwrap_or_default())
+            .collect();
+        let pairs = super::table_numbers(texts.iter().map(String::as_str))
+            .and_then(|entries| crate::print_purge::table_pairs(&entries, n, multiplier));
+        match pairs {
+            Some(pairs) => out.purge = pairs,
+            None => out.report.left_out.push(format!(
+                "the purge volumes (the table is not one of {n} filaments)"
+            )),
+        }
+    }
     // The printer's whole block, written back to this slicer only: its
     // keys of the map's printer layer and the kept ones of the printer,
     // with the preset it inherits from and the keys it says differ.
@@ -322,15 +342,12 @@ const FILAMENTS: &str = "@filaments";
 /// Bambu Studio's filament of each entry of the filament lists (from 1).
 const SELF_INDEX: &str = "filament_self_index";
 
-/// The flushing volumes between filaments, a matrix of `n × n` per
-/// extruder (row by row), and two per filament.
+/// The purge (flushing) volumes between filaments, a table of `n × n` per
+/// extruder (row by row, from then to), two per filament (out, then in)
+/// and the multiplier the slicer applies to the table (mitcad#705).
 const FLUSH_MATRIX: &str = "flush_volumes_matrix";
 const FLUSH_VECTOR: &str = "flush_volumes_vector";
-
-/// The volumes a written filament without a source takes: the slicers'
-/// own defaults (mm³; none from a filament to itself).
-const FLUSH_VOLUME: &str = "280";
-const FLUSH_LOAD: &str = "140";
+const MULTIPLIER: &str = crate::print_purge::MULTIPLIER;
 
 /// The project's filament each written slot came from (its place in the
 /// project's lists), and the number of the project's filaments when the
@@ -380,9 +397,9 @@ fn filament_sources(
 /// Writes every list across filaments that was not written per slot (the
 /// kept text of a profile, the printer's raw block: of the imported
 /// project's number of filaments) with one entry per written slot: each
-/// slot's entry of its source filament, else the first entry. The
-/// flushing volumes take the rows and columns of the slots' sources (else
-/// the slicers' defaults), and `filament_self_index` numbers the slots.
+/// slot's entry of its source filament, else the first entry.
+/// `filament_self_index` numbers the slots; the purge volumes are the
+/// design's ([`write_purge`]).
 fn fit_to_filaments(
     config: &mut Map<String, Value>,
     per_slot: &BTreeSet<String>,
@@ -391,10 +408,6 @@ fn fit_to_filaments(
     count: Option<usize>,
 ) {
     let slots = sources.len().max(1);
-    let extruders = match config.get("nozzle_diameter") {
-        Some(Value::Array(items)) if !items.is_empty() => items.len(),
-        _ => 1,
-    };
     let per_filament = source::per_filament_keys(dialect);
     let keys: Vec<String> = config.keys().cloned().collect();
     for key in keys {
@@ -406,8 +419,7 @@ fn fit_to_filaments(
         }
         let fitted: Vec<Value> = match key.as_str() {
             SELF_INDEX => (1..=slots).map(|i| json!(i.to_string())).collect(),
-            FLUSH_MATRIX => flush_matrix(items, extruders, sources, count),
-            FLUSH_VECTOR => flush_vector(items, sources, count),
+            FLUSH_MATRIX | FLUSH_VECTOR => continue,
             _ if per_slot.contains(&key) || !per_filament(key.as_str()) => continue,
             _ => {
                 // By the sources when the list is the project's; one
@@ -440,61 +452,37 @@ fn source_of(sources: &[Option<usize>], slot: usize) -> Option<usize> {
     sources.get(slot).copied().flatten()
 }
 
-/// The flushing volumes between the written slots: per extruder, the
-/// entries between their source filaments of the project's matrix (its
-/// filaments as the raw block says, else as its size says), else the
-/// default.
-fn flush_matrix(
-    items: &[Value],
-    extruders: usize,
-    sources: &[Option<usize>],
-    count: Option<usize>,
-) -> Vec<Value> {
-    let slots = sources.len().max(1);
-    let n = count
-        .filter(|n| items.len() == extruders * n * n)
-        .or_else(|| {
-            let per = items.len() / extruders;
-            let n = (per as f64).sqrt().round() as usize;
-            (items.len().is_multiple_of(extruders) && n > 0 && n * n == per).then_some(n)
-        });
-    let blocks = n.map_or(extruders, |n| items.len() / (n * n));
-    let mut fitted = Vec::with_capacity(blocks * slots * slots);
-    for block in 0..blocks {
-        for i in 0..slots {
-            for j in 0..slots {
-                let kept = n.and_then(|n| {
-                    let (from, to) = (source_of(sources, i)?, source_of(sources, j)?);
-                    if from < n && to < n {
-                        items.get(block * n * n + from * n + to)
-                    } else {
-                        None
-                    }
-                });
-                let default = if i == j { "0" } else { FLUSH_VOLUME };
-                fitted.push(kept.cloned().unwrap_or_else(|| json!(default)));
-            }
-        }
+/// Writes the design's purge table of the slots (mitcad#705): the table
+/// divided by the multiplier, which the slicer applies, once per extruder
+/// (the printer's `nozzle_diameter` entries); the multiplier; each slot's
+/// two values (out, then in), unmultiplied.
+fn write_purge(config: &mut Map<String, Value>, purge: &crate::print_purge::Matrix) {
+    if purge.slots.is_empty() {
+        return;
     }
-    fitted
-}
-
-/// The two volumes of each written slot: its source filament's pair of the
-/// project's, else the default.
-fn flush_vector(items: &[Value], sources: &[Option<usize>], count: Option<usize>) -> Vec<Value> {
-    let slots = sources.len().max(1);
-    let n = count
-        .filter(|n| items.len() == 2 * n)
-        .or_else(|| items.len().is_multiple_of(2).then_some(items.len() / 2));
-    let mut fitted = Vec::with_capacity(2 * slots);
-    for slot in 0..slots {
-        let from = source_of(sources, slot).filter(|from| n.is_some_and(|n| *from < n));
-        for k in 0..2 {
-            let kept = from.and_then(|from| items.get(2 * from + k));
-            fitted.push(kept.cloned().unwrap_or_else(|| json!(FLUSH_LOAD)));
-        }
+    let extruders = match config.get("nozzle_diameter") {
+        Some(Value::Array(items)) if !items.is_empty() => items.len(),
+        _ => 1,
+    };
+    let m = purge.multiplier;
+    let text = |x: f64| json!(print_keys::number_text((x * 1000.0).round() / 1000.0));
+    let table: Vec<Value> = purge.volumes().into_iter().map(|v| text(v / m)).collect();
+    let mut matrix = Vec::with_capacity(extruders * table.len());
+    for _ in 0..extruders {
+        matrix.extend(table.iter().cloned());
     }
-    fitted
+    config.insert(FLUSH_MATRIX.to_owned(), Value::Array(matrix));
+    config.insert(
+        FLUSH_VECTOR.to_owned(),
+        Value::Array(
+            purge
+                .slots
+                .iter()
+                .flat_map(|v| [text(v.out), text(v.into)])
+                .collect(),
+        ),
+    );
+    config.insert(MULTIPLIER.to_owned(), text(m));
 }
 
 /// The project's settings and the parts' filaments and overrides.
@@ -714,6 +702,8 @@ pub(super) fn export(shared: &Shared<'_>, model_name: &str) -> ExportOutput {
     // written filament.
     let (sources, count) = filament_sources(shared, raw);
     fit_to_filaments(&mut config, &per_slot_keys, dialect, &sources, count);
+    // The design's purge volumes (mitcad#705).
+    write_purge(&mut config, &shared.purge);
     let mut project =
         serde_json::to_string_pretty(&Value::Object(config)).expect("settings serialize");
     project.push('\n');

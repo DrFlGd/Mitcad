@@ -108,7 +108,45 @@ const IGNORED: &[&str] = &[
 /// decoder's sketch is taken (its curves, the points' curve lists and the
 /// design's count of non-finite numbers).
 fn line_subclasses(current: &Value, reference: Value) -> Value {
-    own_sketches(current, faulty_lines(current, reference))
+    own_sketches(
+        current,
+        faulty_lines(current, false_tails(current, reference)),
+    )
+}
+
+/// Item tails the reference decoder found 20 bytes too late (mitcad#719):
+/// the zeros before a reference in the sub-items read as an empty base
+/// name, the index 0 or 256 and no sub-items, and the `u32` before the
+/// base name as a result number below -1, which no item has (-1 is none).
+/// The `u32` after the index is zero on every tail, which rules such a
+/// candidate out here: where the reference's result number is below -1,
+/// this decoder's tail is taken (base name, index, result number,
+/// sub-items) and with it its count of decoded bytes.
+fn false_tails(current: &Value, mut reference: Value) -> Value {
+    let Some(items) = reference
+        .pointer_mut("/timeline/items")
+        .and_then(Value::as_array_mut)
+    else {
+        return reference;
+    };
+    let mut any = false;
+    for (i, it) in items.iter_mut().enumerate() {
+        let false_tail = it["_f3d"]["result_no"].as_i64().is_some_and(|n| n < -1);
+        let ours = &current["timeline"]["items"][i]["_f3d"];
+        if !false_tail || ours.is_null() {
+            continue;
+        }
+        any = true;
+        for k in ["base_name", "index", "result_no", "sub_features"] {
+            if !ours[k].is_null() {
+                it["_f3d"][k] = ours[k].clone();
+            }
+        }
+    }
+    if any && let Some(bytes) = current.pointer("/_f3d/coverage/decoded_bytes") {
+        reference["_f3d"]["coverage"]["decoded_bytes"] = bytes.clone();
+    }
+    reference
 }
 
 /// Sketches this decoder reads differently from the reference decoder

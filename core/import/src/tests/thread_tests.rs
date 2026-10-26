@@ -429,6 +429,252 @@ fn a_tapped_hole_comes_in_with_its_thread_on_the_wall() {
     );
 }
 
+/// A hole placed at distances from two edges of its face comes in at those
+/// distances (`face_offsets`), before the point the file keeps with it
+/// (mitcad#719: the point need not be where the distances put the hole).
+#[test]
+fn a_hole_at_distances_from_two_edges_keeps_them() {
+    let kernel = || TestKernel {
+        face_listing: true,
+        edge_points: true,
+        ..TestKernel::default()
+    };
+    let mut items = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    let mut reference = Document::new(kernel());
+    import_design(
+        &mut reference,
+        &timeline_dump(items.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let faces = reference.bodies()[0].shape.faces.clone();
+    let top = faces.iter().find(|f| f.role == "end").cloned().unwrap();
+    let sides: Vec<_> = faces.iter().filter(|f| f.role == "side").cloned().collect();
+    let edge = |side: &mitcad_model::FaceName| {
+        json!({"kind": "edge", "objectType": "BRepEdge", "length": 0.1,
+               "mid_point": edge_point(&top, side).map(|x| x / 10.0)})
+    };
+    items.push(json!({
+        "index": 2, "name": "Hole1", "objectType": "HoleFeature",
+        "detail": {
+            "holeType": "SimpleHoleType",
+            "holeDiameter": param("d6", "5 mm", 0.5, "mm"),
+            "tipAngle": param("d7", "118 deg", 2.0594885173533086, "deg"),
+            "extentDefinition": {"_type": "DistanceExtentDefinition",
+                                 "distance": param("d8", "15 mm", 1.5, "mm")},
+            "position": [2.0, 1.0, 1.0],
+            "holePositionDefinition": {
+                "_type": "PlaneAndOffsetsHolePositionDefinition",
+                "planarEntity": {"kind": "face", "geometry": {"type": "Plane"},
+                                 "point_on_face": face_point(&top).map(|x| x / 10.0)},
+                "edgeOne": edge(&sides[0]),
+                "edgeTwo": edge(&sides[1]),
+                "offsetOne": param("d9", "10 mm", 1.0, "mm"),
+                "offsetTwo": param("d10", "12 mm", 1.2, "mm")},
+            "holeTapType": "TappedHoleTapType",
+            "tappedHoleInfo": {"_type": "ThreadInfo", "threadType": "ISO Metric profile",
+                               "threadDesignation": "M6x1", "threadClass": "6H",
+                               "isInternal": true, "minorDiameter": 0.5035},
+            "thread": {"_type": "ThreadFeature", "isModeled": false, "isFullLength": true}
+        }
+    }));
+    let mut doc = Document::new(kernel());
+    // The two edges' lines: along x and along y.
+    for (side, end) in [(&sides[0], [1.0, 0.0, 0.0]), (&sides[1], [0.0, 1.0, 0.0])] {
+        doc.kernel().mock.edge_curves.borrow_mut().insert(
+            mitcad_model::EdgeName::new(top.clone(), side.clone()).to_string(),
+            mitcad_model::datum::CurveGeometry::Line {
+                start: [0.0; 3],
+                end,
+            },
+        );
+    }
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    assert_eq!(
+        report.items[2].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    let hole =
+        serde_json::from_str::<Value>(&doc.query(r#"{"query": "feature", "uid": "F3"}"#).unwrap())
+            .unwrap()["def"]
+            .clone();
+    let placement = &hole["placement"];
+    assert_eq!(placement["type"], "face_offsets", "{hole}");
+    assert_eq!(placement["face"], top.to_string(), "{hole}");
+    assert_eq!(
+        placement["edge1"],
+        mitcad_model::EdgeName::new(top.clone(), sides[0].clone()).to_string(),
+        "{hole}"
+    );
+    // Its thread on its wall.
+    let thread =
+        serde_json::from_str::<Value>(&doc.query(r#"{"query": "feature", "uid": "F4"}"#).unwrap())
+            .unwrap()["def"]
+            .clone();
+    assert_eq!(thread["faces"][0]["face"], "F3:hole0.wall", "{thread}");
+    let params = doc.parameters();
+    let value = |slot: &str| {
+        placement[slot]
+            .as_str()
+            .and_then(|n| params.find(n))
+            .and_then(|id| params.get(id))
+            .map(|p| p.value())
+    };
+    assert_eq!(
+        (value("offset1"), value("offset2")),
+        (Some(10.0), Some(12.0)),
+        "{hole}"
+    );
+}
+
+/// A hole on a shaft's side measured along the axis from the shaft's end
+/// face comes in at that distance (`cylinder_offset`), on the side of the
+/// point the file keeps with it (mitcad#719).
+#[test]
+fn a_hole_on_a_shaft_at_a_distance_from_its_end_keeps_it() {
+    let kernel = || TestKernel {
+        face_listing: true,
+        ..TestKernel::default()
+    };
+    let mut items = vec![
+        circle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    let mut reference = Document::new(kernel());
+    import_design(
+        &mut reference,
+        &timeline_dump(items.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let faces = reference.bodies()[0].shape.faces.clone();
+    let side = faces.iter().find(|f| f.role == "side").cloned().unwrap();
+    let start = faces.iter().find(|f| f.role == "start").cloned().unwrap();
+    let face = |f: &mitcad_model::FaceName, kind: &str| {
+        json!({"kind": "face", "geometry": {"type": kind},
+               "point_on_face": face_point(f).map(|x| x / 10.0)})
+    };
+    items.push(json!({
+        "index": 2, "name": "Hole1", "objectType": "HoleFeature",
+        "detail": {
+            "holeType": "SimpleHoleType",
+            "holeDiameter": param("d6", "2 mm", 0.2, "mm"),
+            "tipAngle": param("d7", "118 deg", 2.0594885173533086, "deg"),
+            "extentDefinition": {"_type": "DistanceExtentDefinition",
+                                 "distance": param("d8", "3 mm", 0.3, "mm")},
+            "position": [2.0, 1.5, 0.5],
+            "holePositionDefinition": {
+                "_type": "PlaneAndOffsetsHolePositionDefinition",
+                "planarEntity": face(&side, "Cylinder"),
+                "edgeOne": face(&start, "Plane"),
+                "offsetOne": param("d9", "4 mm", 0.4, "mm")}
+        }
+    }));
+    let mut doc = Document::new(kernel());
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    assert_eq!(
+        report.items[2].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    let hole =
+        serde_json::from_str::<Value>(&doc.query(r#"{"query": "feature", "uid": "F3"}"#).unwrap())
+            .unwrap()["def"]
+            .clone();
+    let placement = &hole["placement"];
+    assert_eq!(placement["type"], "cylinder_offset", "{hole}");
+    assert_eq!(placement["face"], side.to_string(), "{hole}");
+    assert_eq!(
+        placement["plane"],
+        json!({"body": "F2.b0", "face": start.to_string()}),
+        "{hole}"
+    );
+    assert_eq!(placement["toward"], json!([20.0, 15.0, 5.0]), "{hole}");
+    let params = doc.parameters();
+    let offset = placement["offset"]
+        .as_str()
+        .and_then(|n| params.find(n))
+        .and_then(|id| params.get(id))
+        .map(|p| p.value());
+    assert_eq!(offset, Some(4.0), "{hole}");
+}
+
+/// A tapped hole that starts on a plane (no face of a body) takes its
+/// thread on the wall it makes in the one body of its component
+/// (mitcad#719).
+#[test]
+fn a_tapped_hole_on_a_plane_threads_its_wall_in_its_components_body() {
+    let mut items = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    items.push(json!({
+        "index": 2, "name": "Hole1", "objectType": "HoleFeature",
+        "detail": {
+            "holeType": "SimpleHoleType", "holeTapType": "TappedHoleTapType",
+            "holeDiameter": param("d6", "5 mm", 0.5, "mm"),
+            "tipAngle": param("d7", "118 deg", 2.0594885173533086, "deg"),
+            "extentDefinition": {"_type": "DistanceExtentDefinition",
+                                 "distance": param("d8", "15 mm", 1.5, "mm")},
+            "position": [2.0, 1.0, 0.0],
+            "holePositionDefinition": {
+                "_type": "PlaneAndOffsetsHolePositionDefinition",
+                "planarEntity": {"kind": "construction_plane", "origin": "XY"}},
+            "tappedHoleInfo": {"_type": "ThreadInfo", "threadType": "ISO Metric profile",
+                               "threadDesignation": "M6x1", "threadClass": "6H",
+                               "isInternal": true, "minorDiameter": 0.5035},
+            "thread": {"_type": "ThreadFeature", "isModeled": false, "isFullLength": true}
+        }
+    }));
+    let mut doc = Document::new(TestKernel {
+        face_listing: true,
+        ..TestKernel::default()
+    });
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    assert_eq!(
+        report.items[2].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    let def = |uid: &str| -> Value {
+        serde_json::from_str::<Value>(
+            &doc.query(&format!(r#"{{"query": "feature", "uid": "{uid}"}}"#))
+                .unwrap(),
+        )
+        .unwrap()["def"]
+            .clone()
+    };
+    assert_eq!(def("F3")["placement"]["type"], "plane");
+    let thread = def("F4");
+    assert_eq!(
+        thread["faces"][0],
+        json!({"body": "F2.b0", "face": "F3:hole0.wall"}),
+        "{thread}"
+    );
+}
+
 /// A modelled thread's groove found where the faces cross a segment one
 /// pitch long at the pitch radius (mitcad#161): its middle, also where the
 /// groove runs across the segment's ends; none for two grooves.

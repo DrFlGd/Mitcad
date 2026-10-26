@@ -38,7 +38,8 @@ key F6
 
 # Selecting the source before opening the command leaves only Target Points
 # to pick. No source-anchor prompt is required for a complete preview. The
-# box is the new design's Part1's (mitcad#220): its row is Part1:1's (O1).
+# box is the new design's Component1's (mitcad#220): its row is
+# Component1:1's (O1).
 native-expand native.modelTree
 native-select native.model.body:F1.b0@O1
 mark

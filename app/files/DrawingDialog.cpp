@@ -57,7 +57,8 @@ QCheckBox* check(const QString& text, bool on, const QString& tip = {}) {
 } // namespace
 
 std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, int selectedBodies,
-                                        const QStringList& analyses) {
+                                        const QStringList& analyses, const QList<DrawingTarget>& drawings,
+                                        const QString& last) {
   QSettings store;
   DrawingSettings s = DrawingSettings::load(store);
   QDialog dialog(parent);
@@ -84,6 +85,21 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
   }
   format->setCurrentIndex(std::max(0, formatOfSuffix(QFileInfo(start).suffix())));
   form->addRow(QObject::tr("F&ormat:"), format);
+  // Which drawing of the design it writes (mitcad#725): the one it laid out
+  // last first; another of the root's drawings, written as it is (it
+  // follows the model; what was made on it by hand stays); or a new one,
+  // laid out from the settings below.
+  auto* target = new QComboBox;
+  for (const DrawingTarget& d : drawings) {
+    target->addItem(d.uid == last ? QObject::tr("%1 (laid out last)").arg(d.name) : d.name, d.uid);
+  }
+  target->addItem(QObject::tr("New Drawing"), QString());
+  target->setCurrentIndex(last.isEmpty() || target->findData(last) < 0 ? target->count() - 1 : target->findData(last));
+  target->setToolTip(QObject::tr("The drawing of the design written, or a new one laid out with these settings"));
+  form->addRow(QObject::tr("Dra&wing:"), target);
+  auto* asItIs = new QLabel(QObject::tr("Exported as it is; change it in its own workspace."));
+  asItIs->setWordWrap(true);
+  form->addRow(QString(), asItIs);
   auto* bodies = new QComboBox;
   bodies->addItem(QObject::tr("All shown bodies"));
   if (selectedBodies > 0) {
@@ -106,7 +122,7 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
   form->addRow(QObject::tr("O&rientation:"), orientation);
   auto* scale = new QComboBox;
   scale->setEditable(true);
-  scale->addItem(QObject::tr("Fit to sheet"), QStringLiteral("fit"));
+  scale->addItem(QObject::tr("Fit the Sheet"), QStringLiteral("fit"));
   for (const char* ratio : {"1:1", "1:2", "1:5", "1:10", "1:20", "1:50", "2:1", "5:1", "10:1"}) {
     scale->addItem(QLatin1String(ratio), QLatin1String(ratio));
   }
@@ -119,7 +135,7 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
   scale->setToolTip(QObject::tr("The largest standard scale whose views fit the sheet, or a scale such as 1:2"));
   form->addRow(QObject::tr("S&cale:"), scale);
   auto* projection = new QComboBox;
-  projection->addItems({QObject::tr("Third angle"), QObject::tr("First angle")});
+  projection->addItems({QObject::tr("Third Angle"), QObject::tr("First Angle")});
   projection->setCurrentIndex(s.firstAngle ? 1 : 0);
   projection->setToolTip(QObject::tr("Where the top and right views go: third or first angle projection"));
   form->addRow(QObject::tr("&Projection:"), projection);
@@ -142,8 +158,8 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
   section->setToolTip(QObject::tr("A section view cut where a Section Analysis cuts the bodies"));
   form->addRow(QObject::tr("Sec&tion view:"), section);
 
-  auto* hidden = check(QObject::tr("Hidden edges dashed"), s.hiddenLines);
-  auto* tangent = check(QObject::tr("Tangent edges"), s.tangentEdges,
+  auto* hidden = check(QObject::tr("Hidden Edges"), s.hiddenLines);
+  auto* tangent = check(QObject::tr("Tangent Edges"), s.tangentEdges,
                         QObject::tr("Thin lines where faces meet smoothly"));
   auto* lines = new QHBoxLayout;
   lines->addWidget(hidden);
@@ -163,6 +179,23 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
   auto* perBody = check(QObject::tr("One sheet per body"), s.perBody,
                         QObject::tr("A PDF gets a page per body; SVG and DXF a file per body"));
   form->addRow(QString(), perBody);
+  // The layout's settings are a new drawing's only (mitcad#725): with a
+  // drawing of the design chosen they are off, and the hint says why.
+  const QList<QWidget*> layoutInputs = {bodies, sheet, orientation, scale, projection, front, top, right, iso,
+                                        section, hidden, tangent, dimensions, holeTable, sketchDimensions, perBody};
+  const auto followTarget = [target, asItIs, layoutInputs] {
+    const bool fresh = target->currentData().toString().isEmpty();
+    for (QWidget* input : layoutInputs) {
+      input->setEnabled(fresh);
+    }
+    asItIs->setVisible(!fresh);
+  };
+  followTarget();
+  QObject::connect(target, &QComboBox::currentIndexChanged, &dialog, [target, followTarget] {
+    followTarget();
+    const QString uid = target->currentData().toString();
+    qDebug().noquote() << QStringLiteral("Drawing dialog: drawing = %1").arg(uid.isEmpty() ? QStringLiteral("new") : uid);
+  });
 
   auto* message = new QLabel;
   setErrorStyleSheet(message);
@@ -201,18 +234,20 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
   file->setFocus();
   file->selectAll();
   dialog.resize(520, dialog.sizeHint().height());
-  qDebug().noquote() << QStringLiteral("Drawing dialog opened: format %1, sheet %2, scale %3")
-                            .arg(format->currentData().toString(), sheet->currentData().toString(), s.scale);
+  qDebug().noquote() << QStringLiteral("Drawing dialog opened: format %1, sheet %2, scale %3, drawing %4")
+                            .arg(format->currentData().toString(), sheet->currentData().toString(), s.scale,
+                                 target->currentData().toString().isEmpty() ? QStringLiteral("new")
+                                                                            : target->currentData().toString());
   // Where the inputs are, in the dialog's own coordinates (UI tests post
   // their clicks and wheel steps to the dialog's window).
-  TestSync::singleShot(200, &dialog, [&dialog, file, format, sheet, scale, buttons] {
+  TestSync::singleShot(200, &dialog, [&dialog, file, format, sheet, scale, target, buttons] {
     QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
     const auto at = [&dialog](const QWidget* widget) {
       const QPoint p = widget->mapTo(&dialog, widget->rect().center());
       return QStringLiteral("%1,%2").arg(p.x()).arg(p.y());
     };
     const std::pair<const char*, QWidget*> places[] = {
-        {"file", file}, {"format", format}, {"sheet", sheet}, {"scale", scale}};
+        {"file", file}, {"format", format}, {"sheet", sheet}, {"scale", scale}, {"drawing", target}};
     for (const auto& [name, widget] : places) {
       qDebug().noquote() << QStringLiteral("Drawing dialog %1 at %2").arg(QLatin1String(name), at(widget));
     }
@@ -246,6 +281,7 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
     c.perBody = perBody->isChecked();
     choice.selectedOnly = bodies->currentIndex() == 1;
     choice.section = section->currentData().toString();
+    choice.drawing = target->currentData().toString();
     if (choice.path.isEmpty()) {
       message->setText(QObject::tr("Give the file to write."));
       continue;
@@ -253,11 +289,12 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
     if (QFileInfo(choice.path).suffix().isEmpty()) {
       choice.path += QLatin1Char('.') + c.format;
     }
-    if (c.scale.isEmpty()) {
-      message->setText(QObject::tr("A scale is \"Fit to sheet\" or a ratio such as 1:2."));
+    // A drawing of the design is written as it is: no layout to check.
+    if (choice.drawing.isEmpty() && c.scale.isEmpty()) {
+      message->setText(QObject::tr("A scale is \"Fit the Sheet\" or a ratio such as 1:2."));
       continue;
     }
-    if (c.views().isEmpty() && choice.section.isEmpty()) {
+    if (choice.drawing.isEmpty() && c.views().isEmpty() && choice.section.isEmpty()) {
       message->setText(QObject::tr("Choose at least one view."));
       continue;
     }

@@ -98,7 +98,7 @@ ui_start_app
 
 echo "--- Create Sketch asks for a plane and looks at it"
 ui_step "create sketch on XY"            ui_create_sketch xy
-ui_expect_log "Create Sketch: origin planes shown" "a new design (its empty Part1 active): the origin planes shown (mitcad#294)"
+ui_expect_log "Create Sketch: origin planes shown" "a new design (its empty Component1 active): the origin planes shown (mitcad#294)"
 ui_expect_log "Sketch view" "the sketch's place in the view is logged"
 ui_expect_log "Sketch Sketch1: 0 DOF" "an empty sketch"
 

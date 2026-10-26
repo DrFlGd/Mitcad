@@ -12,8 +12,11 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include <QAction>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QMenu>
 #include <QPair>
 #include <QtLogging>
@@ -23,6 +26,7 @@
 #include "framework/CommandRegistry.hpp"
 #include "framework/Icons.hpp"
 #include "mitcad/geometry/import.hpp"
+#include "mitcad/geometry/shape.hpp"
 
 namespace mitcad {
 namespace {
@@ -66,6 +70,27 @@ PropertyTarget propertyTarget(const SelectionItem& item) {
 bool isSketchPlane(const SelectionItem& item) {
   return item.kind == SelectKind::Plane ||
          (item.kind == SelectKind::Face && item.geometry == QStringLiteral("plane"));
+}
+
+// Whether a face is its body's print bed face (mitcad#731): one of the
+// faces the stored name finds, by name or by the faces of the shape.
+bool isPrintBedFace(const SelectionItem& face, const QStringList& bedFaces,
+                    const std::shared_ptr<geometry::Shape>& shape) {
+  if (bedFaces.contains(face.name)) {
+    return true;
+  }
+  if (!shape) {
+    return false;
+  }
+  const std::vector<int> picked = shape->find_faces(face.name.toStdString());
+  for (const QString& name : bedFaces) {
+    for (const int index : shape->find_faces(name.toStdString())) {
+      if (std::find(picked.begin(), picked.end(), index) != picked.end()) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // A submenu whose entries are logged as "Context menu <title>: A | B".
@@ -228,6 +253,39 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   if (const PropertyTarget target = propertyTarget(first); !target.isEmpty()) {
     addCall(QStringLiteral("parameters"), tr("Property Sets…"),
             [this, target] { m_controller->openPropertySets(target); });
+  }
+  // The face that lies on the print bed (mitcad#731): a planar face of a
+  // solid sets it, the body's own clears it. While the menu is open, the
+  // body's bed face elsewhere shows in the bed's colour.
+  if (selection.size() == 1 && first.kind == SelectKind::Face && !surfaces && !windowReadOnly()) {
+    const DocumentSnapshot::Body body = m_snapshot.bodies.value(first.owner);
+    const QString uid = first.owner;
+    const auto setBedFace = [this, uid](const QString& face) {
+      const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("set_print_bed_face")},
+                                {QStringLiteral("uid"), uid},
+                                {QStringLiteral("face"), face.isEmpty() ? QJsonValue() : QJsonValue(face)}};
+      if (runModelCommand(command)) {
+        qInfo().noquote() << QStringLiteral("Print bed face of %1: %2")
+                                 .arg(bodyName(uid), face.isEmpty() ? QStringLiteral("none") : face);
+      }
+    };
+    // A stored face that is gone or not planar is cleared from any face of
+    // the body; a planar face can still take its place.
+    const bool broken = !body.printBedFace.isEmpty() && !body.printBedError.isEmpty();
+    const bool onBed = !broken && isPrintBedFace(first, body.printBedFaces, bodyShape(uid));
+    if (!onBed && first.geometry == QStringLiteral("plane")) {
+      const QString face = first.name;
+      addCall(QStringLiteral("print-3d"), tr("Set as Print Bed Face"), [setBedFace, face] { setBedFace(face); });
+    }
+    if (onBed || broken) {
+      addCall(QStringLiteral("print-3d"), tr("Clear Print Bed Face"), [setBedFace] { setBedFace(QString()); });
+    }
+    if (!onBed && body.printBedError.isEmpty() && !body.printBedFaces.isEmpty()) {
+      m_printBedShown = SelectionItem{SelectKind::Face, uid, body.printBedFaces.first(), QStringLiteral("plane"),
+                                      first.occurrence};
+      updateIdleView();
+      qDebug().noquote() << QStringLiteral("Print bed face shown: %1/%2").arg(uid, m_printBedShown.name);
+    }
   }
 
   // Delete: whole things, each shown when the selection has it, each one

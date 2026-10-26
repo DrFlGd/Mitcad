@@ -11,6 +11,7 @@
 #include <vector>
 
 #include <GeomAbs_SurfaceType.hxx>
+#include <IMeshTools_MeshAlgoFactory.hxx>
 #include <Message_ProgressRange.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Standard_Handle.hxx>
@@ -60,9 +61,43 @@ struct MeshOptions {
   // at the view's deviation) takes about 0.5 s, Delabella's 30 ms
   // (mitcad#635). The view's interactive preview tier (ViewTessellation.hpp).
   bool fast_planes = false;
+  // With fast_planes: each plane's triangulation checked (mitcad#644). A
+  // plane that Delabella leaves without one, or whose triangles' area
+  // differs from the area its boundary's discretization encloses (the
+  // outer wire's polygon less the holes', in the plane's parameters) by
+  // more than 0.1 % of it or 0.001 mm², whichever is larger, is
+  // triangulated again by the default insertion. Delabella's base
+  // triangulation can cover a sliver many times over, or leave a regular
+  // face undrawn where the default meshes it; the default's result is
+  // kept as it comes, a face it fails on left undrawn. The check is one
+  // area sum per plane. The view's final tier (ViewTessellation.hpp).
+  bool check_planes = false;
 
   static MeshOptions from(Refinement refinement);
 };
+
+// The area (mm²) a plane's triangulation covers, and the area its edges'
+// polygons on it enclose (the outer wire's less the holes'), both in the
+// plane's parameters, which are lengths; -1 for both when the face is not
+// a plane, has no triangulation with parameter nodes, or an edge has no
+// polygon on it. What MeshOptions::check_planes compares, measured on a
+// meshed face (tests, mitcad#644).
+struct PlaneMeshArea {
+  double triangles = -1.0;
+  double boundary = -1.0;
+};
+PlaneMeshArea plane_mesh_area(const TopoDS_Face& face);
+
+// Whether a plane's triangulated area fits the area its boundary encloses
+// (MeshOptions::check_planes): within 0.1 % of it or 0.001 mm², whichever
+// is larger.
+bool plane_area_fits(double triangulated, double boundary);
+
+// For tests (mitcad#644): the algorithms MeshOptions::fast_planes takes a
+// plane's triangulation from, in place of Delabella's, for the meshings
+// started after the call (a stand-in that fails or covers too much, which
+// check_planes must catch); a null handle restores Delabella's.
+void use_fast_plane_algorithms_for_tests(const occ::handle<IMeshTools_MeshAlgoFactory>& factory);
 
 // The smallest surface deviation (mm) that keeps a face's mesh within
 // about `face_triangles` triangles: proportional to the integral of the
@@ -94,6 +129,9 @@ struct MeshReport {
   std::size_t kept = 0;
   std::size_t meshed = 0;
   std::size_t failed = 0;
+  // Planes triangulated again by the default insertion after Delabella's
+  // triangulation was missing or its area off (MeshOptions::check_planes).
+  std::size_t planes_redone = 0;
   double build = 0.0;
   double edges = 0.0;
   double heal = 0.0;
@@ -117,7 +155,8 @@ struct MeshReport {
   bool every_face = false;
   std::vector<FaceTime> every_face_time;
   // One line: "faces=94 kept=0 meshed=94 failed=0 build=... ms; meshed
-  // plane 3, cylinder 91; slowest plane wires=84 points=6060 412.3 ms, ...".
+  // plane 3, cylinder 91; slowest plane wires=84 points=6060 412.3 ms, ...",
+  // with "; planes redone 2" when any were.
   std::string line() const;
 };
 

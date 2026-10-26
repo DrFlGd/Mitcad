@@ -57,10 +57,11 @@ ui_start_app --no-native-dialogs --open "$FILE"
 echo "--- Preferences, Fonts: a folder of fonts"
 ui_mark
 ui_step "Preferences: Fonts"               ui_command "Preferences: Fonts"
-ui_expect_new "Preferences font folder at" "the Fonts page"
+ui_expect_new "Preferences font folder add at" "the Fonts page"
 ui_focus_dialog '^Preferences$'
-ui_step "click the folder field"           ui_click_logged "Preferences font folder"
-ui_step "type the folder"                  xdotool type --delay 20 -- "$WORK/fonts"
+ui_step "Add..."                           ui_click_logged "Preferences font folder add"
+ui_step "choose the folder"                ui_type_path "Font Folder" "$WORK/fonts"
+ui_focus_dialog '^Preferences$'
 ui_step "OK (Return)"                      ui_key Return
 ui_expect_new "Preferences: font folders $WORK/fonts" "the folder is added"
 grep -q "^folders=.*$WORK/fonts" "$UI_CONFIG/Mitcad/Mitcad.conf" || ui_fail "the settings do not keep the folder"

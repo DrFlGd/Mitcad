@@ -70,7 +70,7 @@ ui_step "click inside the profile"       xdotool mousemove $(((bx + tx) / 2)) $(
 grep -q "Revolve Axis: 1" "$UI_LOG" && ui_fail "the axis input took a profile or a plane"
 echo "ok   the axis input refuses the profile"
 ui_step "pick the left sketch line"      ui_click_logged "Sketch entity F1/c4"
-# The new design's sketch is Part1's (mitcad#220), placed by Part1:1 (O1).
+# The new design's sketch is Component1's (mitcad#220), placed by Component1:1 (O1).
 ui_expect_log "Revolve Axis: 1 sketch curve [sketch curve c4 of F1 in O1]" "sketch line as the axis"
 ui_expect_log "Preview Revolve: ok" "revolve about the line previewed"
 ui_step "pick the Y axis"                ui_click_logged "Datum y"

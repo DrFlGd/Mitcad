@@ -9,7 +9,6 @@
 #include <stdexcept>
 #include <utility>
 
-#include <QAction>
 #include <QApplication>
 #include <QDebug>
 #include <QDir>
@@ -27,9 +26,10 @@
 
 #include "browser/BrowserController.hpp"
 #include "files/LockController.hpp"
-#include "files/ProjectIndicator.hpp"
 #include "framework/Json.hpp"
 #include "mcp/AgentFolders.hpp"
+#include "mcp/AgentIndicator.hpp"
+#include "mcp/AssistantSetup.hpp"
 #include "mcp/LiveErrors.hpp"
 #include "mcp/ModalGuard.hpp"
 #ifdef MITCAD_MACOS_NATIVE_UI
@@ -335,7 +335,7 @@ QJsonObject MainWindow::mcpSnapshot() const {
 
 QJsonObject MainWindow::mcpExport(const QJsonObject& arguments) {
   mcpRefuseBusy();
-  // Into a folder the user allows agents, a new file, as document_save's
+  // Into a folder for designs, a new file, as document_save's
   // path (mitcad#689); the document does not change.
   if (m_session || m_mode == Mode::Command) {
     refuse(tr("Finish the current command before exporting."));
@@ -410,7 +410,7 @@ QJsonObject MainWindow::mcpSave(const QJsonObject& arguments) {
   mcpRefuseBusy();
   // As File > Save does (mitcad#265): to the document's own path, with the
   // project's version and commit message; with a path as Save As does, into
-  // a folder the user allows agents (mitcad#402).
+  // a folder for designs (mitcad#402).
   if (m_session || m_mode == Mode::Command) {
     refuse(tr("Finish the current command before saving."));
   }
@@ -429,7 +429,7 @@ QJsonObject MainWindow::mcpSave(const QJsonObject& arguments) {
       refuse(reason);
     }
   } else if (m_filePath.isEmpty()) {
-    refuse(tr("%1 has never been saved: it has no path to save to. Give a path in a folder agents may use "
+    refuse(tr("%1 has never been saved: it has no path to save to. Give a path in a folder for designs "
               "(document_list lists them), or save it in the application (File › Save As).")
                .arg(documentName()));
   }
@@ -458,7 +458,7 @@ QJsonObject MainWindow::mcpSave(const QJsonObject& arguments) {
 QJsonObject MainWindow::mcpOpen(const QJsonObject& arguments) {
   mcpRefuseBusy();
   // As File > Open does, without its dialogs (mitcad#402): a design from a
-  // folder the user allows agents; the window's document is replaced and
+  // folder for designs; the window's document is replaced and
   // with it the handle.
   QString reason;
   const QString path = mcp::agentDesignPath(arguments.value(QStringLiteral("path")).toString(), false, false, reason);
@@ -506,37 +506,52 @@ QJsonObject MainWindow::mcpOpen(const QJsonObject& arguments) {
   return result;
 }
 
-void MainWindow::setMcpAgents(const QStringList& clients, std::function<void()> disconnectAll) {
-  m_mcpDisconnectAll = std::move(disconnectAll);
-  if (clients == m_mcpAgentNames) {
+void MainWindow::setMcpAgents(const QList<mcp::ConnectedAgent>& agents,
+                              std::function<void(const QStringList& ids)> disconnect) {
+  m_mcpDisconnect = std::move(disconnect);
+  if (agents == m_agentIndicator->agents()) {
     return;
   }
   const bool before = m_mcpAgents > 0;
-  const int count = int(clients.size());
-  m_mcpAgentNames = clients;
-  m_mcpAgents = count;
-  if (m_mcpDisconnect == nullptr) {
-    m_mcpDisconnect = new QAction(tr("Disconnect Agent"), this);
-    m_mcpDisconnect->setObjectName(QStringLiteral("disconnectAgent"));
-    m_mcpDisconnect->setMenuRole(QAction::NoRole);
-    connect(m_mcpDisconnect, &QAction::triggered, this, [this] {
-      qInfo().noquote() << QStringLiteral("Agent disconnected by the user");
-      if (m_mcpDisconnectAll) {
-        m_mcpDisconnectAll();
-      }
-    });
+  // ui_state's agent_clients keeps the clients' own labels; people see the
+  // assistants' names.
+  QStringList names;
+  QStringList shown;
+  for (const mcp::ConnectedAgent& agent : agents) {
+    names << agent.name;
+    if (const QString name = mcp::assistantDisplayName(agent.name); !shown.contains(name)) {
+      shown << name;
+    }
   }
-  m_indicator->setAgentText(count == 0 ? QString() : tr("Connected: %1").arg(clients.join(QStringLiteral(", "))));
-  QList<QAction*> actions{m_registry->action(QStringLiteral("help.connect_assistant"))};
-  if (count > 0) actions << m_mcpDisconnect;
-  m_indicator->setAgentActions(actions);
-  if (count > 0 && !before) {
+  m_mcpAgentNames = names;
+  m_mcpAgents = int(agents.size());
+  m_agentIndicator->setAgents(agents);
+  if (m_mcpAgents > 0 && !before) {
     qInfo().noquote() << QStringLiteral("Agent connected");
-    showHint(tr("An agent is connected through MCP; the project indicator's menu disconnects it."));
-  } else if (count == 0 && before) {
+    showHint(tr("%1 connected.").arg(shown.join(QStringLiteral(", "))));
+  } else if (m_mcpAgents == 0 && before) {
     qInfo().noquote() << QStringLiteral("Agent disconnected");
-    showHint(tr("The agent disconnected."));
+    showHint(tr("The AI assistant disconnected."));
   }
+}
+
+void MainWindow::disconnectAllMcpAgents() {
+  if (!m_mcpDisconnect) {
+    return;
+  }
+  QStringList ids;
+  for (const mcp::ConnectedAgent& agent : m_agentIndicator->agents()) {
+    ids << agent.id;
+  }
+  m_mcpDisconnect(ids);
+}
+
+void MainWindow::setMcpListener(const QString& instance, int port) {
+  m_agentIndicator->setListener(instance, port);
+}
+
+void MainWindow::setMcpUnavailable(const QString& reason) {
+  m_agentIndicator->setUnavailable(reason);
 }
 
 QJsonObject MainWindow::mcpTool(const QString& name, const QJsonObject& arguments) {

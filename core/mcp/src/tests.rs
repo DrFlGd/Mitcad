@@ -286,7 +286,8 @@ fn discovery_contains_typed_tools_without_unimplemented_capabilities() {
             "model_query",
             "model_command",
             "document_save",
-            "model_export"
+            "model_export",
+            "model_reference"
         ]
     );
     for tool in tools {
@@ -620,6 +621,7 @@ fn live_catalog_has_only_supported_tools_and_live_handles() {
             "model_query",
             "model_command",
             "model_export",
+            "model_reference",
             "document_save",
             "document_open",
             "ui_state",
@@ -673,7 +675,7 @@ fn live_catalog_has_only_supported_tools_and_live_handles() {
         assert_eq!(response["error"]["code"], -32602);
         assert!(session.finish(json!({}), false).is_err());
     }
-    // The live export writes into the folders agents may use (mitcad#689).
+    // The live export writes into the folders for designs (mitcad#689).
     let export = tools
         .iter()
         .find(|tool| tool["name"] == "model_export")
@@ -1300,6 +1302,48 @@ fn changes_list_added_changed_recomputed_failed_and_removed_items() {
     assert_eq!(bodies, [("F1.b0", "changed"), ("F6.b0", "added")]);
     assert_eq!(changes["removed_bodies"], json!(["F3.b0"]));
     assert_eq!(changes["marker"], 5);
+}
+
+#[test]
+fn changes_give_the_boxes_of_the_bodies_a_split_left() {
+    // mitcad#714: the snapshot reads every body's box, and the changed and
+    // added bodies carry it, so a split's pieces show their sides.
+    let (_, bodies_query) = SNAPSHOT_QUERIES
+        .iter()
+        .find(|(key, _)| *key == "bodies")
+        .unwrap();
+    let bodies_query: Value = serde_json::from_str(bodies_query).unwrap();
+    assert_eq!(bodies_query["bbox"], true);
+    assert_eq!(bodies_query["versions"], true);
+
+    let mut before = snapshot(1, 1);
+    before["bodies"][0]["bbox"] = json!({"min": [0, 0, 0], "max": [2012, 600, 18]});
+    let mut after = snapshot(2, 1);
+    after["bodies"][0]["version"] = json!("ff");
+    after["bodies"][0]["bbox"] = json!({"min": [0, 0, 0], "max": [1000, 600, 18]});
+    after["bodies"].as_array_mut().unwrap().push(
+        json!({"uid": "F2.b1", "name": "Body2", "visible": true, "version": "1",
+                     "bbox": {"min": [1000, 0, 0], "max": [2012, 600, 18]}}),
+    );
+    let compact = Value::Object(command_document(
+        TimelineMode::Changed,
+        Some(&before),
+        &after,
+        &["F2".to_owned()],
+    ));
+    let bodies = compact["changes"]["bodies"].as_array().unwrap();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(
+        (&bodies[0]["uid"], &bodies[0]["change"]),
+        (&json!("F1.b0"), &json!("changed"))
+    );
+    assert_eq!(bodies[0]["bbox"]["max"], json!([1000, 600, 18]));
+    assert_eq!(
+        (&bodies[1]["uid"], &bodies[1]["change"]),
+        (&json!("F2.b1"), &json!("added"))
+    );
+    assert_eq!(bodies[1]["bbox"]["min"], json!([1000, 0, 0]));
+    assert!(bodies.iter().all(|b| b.get("version").is_none()));
 }
 
 #[test]

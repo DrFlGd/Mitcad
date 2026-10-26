@@ -102,6 +102,18 @@ struct ItemResult {
     owner: Option<u64>,
 }
 
+/// Whether an item changed its blob's bodies: its operation `result` did
+/// (it is among `changed`), or one of the operations no item names between
+/// the last one an earlier item named in the blob (`after`) and its own,
+/// which are its own (mitcad#719: a pattern of holes whose copies are
+/// operations of their own before its last, which changes nothing). The
+/// operations before the first named one are the blob's own start, not
+/// the item's: an item that failed in the file there stays one.
+fn item_changed(changed: &HashSet<i64>, after: Option<i64>, result: i64) -> bool {
+    changed.contains(&result)
+        || after.is_some_and(|after| changed.iter().any(|&op| after < op && op < result))
+}
+
 /// The bodies of one document of an .f3d or .f3z file, converted to the
 /// neutral model: read once for all tries of an import (mitcad#80), each of
 /// which builds them with OCCT as it needs them ([`F3dGeometry`]).
@@ -568,7 +580,13 @@ impl StoredFile {
                 let f3d = item.f3d.as_ref()?;
                 // A component made from bodies: the operation that put its
                 // bodies into the new component (mitcad#156).
-                let result = f3d.result_no.filter(|&n| n > 0).or(f3d.made_result_no)?;
+                // A tapped hole with a modelled thread: the thread's
+                // operation, after the bore's (mitcad#719), whose state
+                // the hole's definition with its thread makes.
+                let result = f3d
+                    .last_result_no
+                    .or(f3d.result_no.filter(|&n| n > 0))
+                    .or(f3d.made_result_no)?;
                 Some(ItemResult {
                     index: item.index?,
                     result: i64::from(result),
@@ -1071,6 +1089,8 @@ impl StoredFile {
         self.states.push(current.clone());
         // The operations an earlier item took (blob, number).
         let mut named: HashSet<(usize, i64)> = HashSet::new();
+        // Per blob, the last operation an earlier item named.
+        let mut last_named: Vec<Option<i64>> = vec![None; self.history.len()];
         for item in items {
             let (index, result) = (item.index, item.result);
             let Some(all) = at.get(&result) else {
@@ -1110,9 +1130,12 @@ impl StoredFile {
             self.item_components.insert(index, components);
             if !targets
                 .iter()
-                .any(|&(h, _)| blob_of(h).changed.contains(&result))
+                .any(|&(h, _)| item_changed(&blob_of(h).changed, last_named[h], result))
             {
                 self.unchanged_items.insert(index);
+            }
+            for &(h, _) in &targets {
+                last_named[h] = Some(last_named[h].map_or(result, |n| n.max(result)));
             }
             // An item that names the operation an earlier item took has none
             // of its own (mitcad#343: a chamfer after a rounding, both naming
@@ -3276,6 +3299,24 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An item changed its blob where its operation did, or where the
+    /// operations no item names since the last named one did (a pattern
+    /// whose copies come before its last operation, mitcad#719); the
+    /// operations before the blob's first named one are not an item's.
+    #[test]
+    fn an_item_changed_its_blob_by_its_own_operations() {
+        // Operations 2 (the blob's start), 10 (named), 12, 13 (no item
+        // names them) changed the bodies; 11 and 14 did not.
+        let changed: HashSet<i64> = [2, 10, 12, 13].into();
+        assert!(item_changed(&changed, None, 10));
+        // An item that failed in the file after the blob's start.
+        assert!(!item_changed(&changed, None, 11));
+        // A pattern whose copies are 12 and 13, its own last 14.
+        assert!(item_changed(&changed, Some(10), 14));
+        // An item that failed in the file right after a named one.
+        assert!(!item_changed(&changed, Some(10), 11));
+    }
 
     /// A history like a path pattern's (mitcad#676): three small states
     /// the replay asks for, the copies' states it skips, the pattern's own

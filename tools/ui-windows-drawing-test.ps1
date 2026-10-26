@@ -84,6 +84,7 @@ Ui-Step 'OK' {
 }
 Ui-FocusMain
 Ui-ExpectNew "Drawing dialog: svg A3 to $svg" 'the choices taken'
+Ui-ExpectNew 'Drawing kept: D1 Drawing1' 'the drawing kept in the design (mitcad#707)'
 Ui-ExpectNew "Exported ${svg}: drawing, 3 views, 2 bodies, A3, 1:1" 'the drawing written' 60
 if (-not (Test-Path $svg)) { Ui-Fail 'no SVG file' }
 $text = [System.IO.File]::ReadAllText($svg, [System.Text.Encoding]::UTF8)

@@ -317,7 +317,9 @@ $script:UiThumbnails = $null
 
 # Ui-Init app out [qtBin] [shortcuts]: where the app, its Qt and the test's
 # files are; shortcuts (@{'sketch.create' = 'F7'}) go into the test's own
-# settings, which the app reads from MITCAD_SETTINGS_DIR.
+# settings, which the app reads from MITCAD_SETTINGS_DIR. A key of one
+# context names its group ('shortcuts.sketch/tools.search' = 'F3',
+# mitcad#720).
 function Ui-Init([string]$App, [string]$Out, [string]$QtBin = '', [hashtable]$Shortcuts = @{}) {
   $script:UiApp = (Resolve-Path $App).Path
   New-Item -ItemType Directory -Force $Out | Out-Null
@@ -340,7 +342,15 @@ function Ui-Init([string]$App, [string]$Out, [string]$QtBin = '', [hashtable]$Sh
   $script:UiSettings = Join-Path $script:UiOut 'settings'
   Remove-Item -Recurse -Force $script:UiSettings -ErrorAction SilentlyContinue
   New-Item -ItemType Directory -Force (Join-Path $script:UiSettings 'Mitcad') | Out-Null
-  $ini = @('[shortcuts]') + ($Shortcuts.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" })
+  $groups = [ordered]@{ 'shortcuts' = @() }
+  foreach ($entry in $Shortcuts.GetEnumerator()) {
+    $group = 'shortcuts'
+    $key = [string]$entry.Key
+    if ($key.Contains('/')) { $group, $key = $key -split '/', 2 }
+    if (-not $groups.Contains($group)) { $groups[$group] = @() }
+    $groups[$group] = @($groups[$group]) + "$key=$($entry.Value)"
+  }
+  $ini = @(foreach ($group in $groups.Keys) { "[$group]"; $groups[$group] })
   Set-Content -Encoding ascii (Join-Path $script:UiSettings 'Mitcad\Mitcad.ini') $ini
   # Autosave's recovery folder of the test's own: a killed app leaves its
   # files there, which neither the user's sessions nor other tests may see.

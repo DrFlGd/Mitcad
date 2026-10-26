@@ -245,9 +245,39 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("set_measurement_visible", Model),
     ("set_measurement_kind", Model),
     ("delete_measurement", Model),
+    // Annotations (mitcad#702).
+    ("add_annotation", Model),
+    ("edit_annotation", Model),
+    ("delete_annotation", Model),
     // The parameters as CSV (mitcad#666): the CSV is the command's text, the
     // application reads the file.
     ("import_parameters_csv", Model),
+    // Purge volumes on filament changes (mitcad#705).
+    ("set_purge_volumes", Model),
+    // Drawings kept in the design (mitcad#707).
+    ("add_drawing", Model),
+    ("edit_drawing", Model),
+    ("delete_drawing", Model),
+    ("add_drawing_sheet", Model),
+    ("edit_drawing_sheet", Model),
+    ("delete_drawing_sheet", Model),
+    ("add_drawing_view", Model),
+    ("edit_drawing_view", Model),
+    ("delete_drawing_view", Model),
+    // Annotations on drawings' views (mitcad#707 phase 2).
+    ("add_drawing_annotation", Model),
+    ("edit_drawing_annotation", Model),
+    ("delete_drawing_annotation", Model),
+    // Revisions and templates of drawings (mitcad#707 phase 4); a template
+    // is saved to a library's folder.
+    ("add_drawing_revision", Model),
+    ("edit_drawing_revision", Model),
+    ("delete_drawing_revision", Model),
+    ("save_drawing_template", FileIo),
+    // Inactive sketch constraints and dimensions (mitcad#721).
+    ("sketch.set_active", Model),
+    // A body's print bed face (mitcad#731).
+    ("set_print_bed_face", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -380,9 +410,22 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("library_items", FileIo),
     // Measurement objects (mitcad#649).
     ("measurements", Model),
+    // Annotations (mitcad#702).
+    ("annotations", Model),
+    ("geometric_characteristics", Model),
+    ("next_datum_letter", Model),
     // The parameters as CSV (mitcad#666).
     ("parameters_csv", Model),
     ("parameters_csv_preview", Model),
+    // Purge volumes on filament changes (mitcad#705).
+    ("purge_volumes", Model),
+    ("purge_defaults", Model),
+    // Drawings kept in the design (mitcad#707).
+    ("drawings", Model),
+    ("drawing", Model),
+    ("drawing_pick", Model),
+    // The sheet templates of the libraries (mitcad#707 phase 4).
+    ("drawing_templates", FileIo),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {
@@ -684,6 +727,38 @@ pub fn external_command_allowed(name: &str) -> bool {
 /// which the caller checks).
 pub fn external_query_allowed(name: &str) -> bool {
     query_class(name) == Some(Model)
+}
+
+/// The commands of another class that are the model's own in some form
+/// ([`command_class_with`]: without a file or a library to read).
+const MODEL_FORMS: &[&str] = &[
+    "create_appearance",
+    "edit_appearance",
+    "set_render_settings",
+    "build_place",
+    "build_connect",
+    "build_panel",
+    "build_swap_fasteners",
+];
+
+/// The commands an external client may run, in some form (mitcad#714:
+/// what MCP lists and names in its errors), in the order of the table.
+pub fn external_commands() -> Vec<&'static str> {
+    COMMANDS
+        .iter()
+        .filter(|(name, class)| *class == Model || MODEL_FORMS.contains(name))
+        .map(|(name, _)| *name)
+        .collect()
+}
+
+/// The queries an external client may run (mitcad#714), in the order of
+/// the table.
+pub fn external_queries() -> Vec<&'static str> {
+    QUERIES
+        .iter()
+        .filter(|(_, class)| *class == Model)
+        .map(|(name, _)| *name)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1001,5 +1076,49 @@ mod tests {
         assert!(external_query_allowed("sketch"));
         assert_eq!(feature_class("extrude"), Model);
         assert_eq!(FileIo.name(), "file IO");
+    }
+
+    /// What MCP lists (mitcad#714): the model's own commands, and those
+    /// that are the model's own in a form without a file or a library.
+    #[test]
+    fn external_names_are_the_models_own_in_some_form() {
+        let commands = external_commands();
+        for name in &commands {
+            assert!(command_class(name).is_some(), "{name}");
+        }
+        for request in [
+            json!({"cmd": "create_appearance"}),
+            json!({"cmd": "edit_appearance", "id": "a"}),
+            json!({"cmd": "set_render_settings"}),
+            json!({"cmd": "build_place", "part": {"source": "S1"}}),
+            json!({"cmd": "build_connect", "part": {"source": "S1"}}),
+            json!({"cmd": "build_panel", "part": {"source": "S1"}}),
+            json!({"cmd": "build_swap_fasteners", "part": {"source": "S1"}}),
+        ] {
+            let name = request["cmd"].as_str().unwrap();
+            assert!(MODEL_FORMS.contains(&name), "{name}");
+            assert!(commands.contains(&name), "{name}");
+            assert_eq!(command_class_with(&request), Some(Model), "{name}");
+        }
+        assert_eq!(MODEL_FORMS.len(), 7);
+        assert!(commands.contains(&"add_feature"));
+        assert!(commands.contains(&"sketch.add_line"));
+        for name in [
+            "export",
+            "import_file",
+            "begin_command",
+            "update_library_parts",
+        ] {
+            assert!(!commands.contains(&name), "{name}");
+        }
+        let queries = external_queries();
+        assert!(queries.contains(&"bodies") && queries.contains(&"faces"));
+        assert!(!queries.contains(&"dxf_info") && !queries.contains(&"compare_step"));
+        assert!(queries.iter().all(|name| external_query_allowed(name)));
+        let features = <crate::features::FeatureDef>::TYPE_NAMES;
+        assert_eq!(features[0], "sketch");
+        assert!(features.contains(&"construction_plane") && features.contains(&"split_body"));
+        let unique: BTreeSet<&str> = features.iter().copied().collect();
+        assert_eq!(unique.len(), features.len());
     }
 }

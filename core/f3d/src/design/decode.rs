@@ -590,6 +590,14 @@ fn tail_at(seg: &Segment, d: &[u8], b: usize, p: usize) -> Option<ItemTail> {
     }
     let index = u32_at(d, q)?;
     let after_index = u32_at(d, q + 4)?;
+    // (Zero on every item. A hole whose sub-items list the hole itself,
+    // `u32 1 | ref self`, ends its tail with `ref self | 00 00 00`; read
+    // from 20 bytes later, the zeros before that reference look like an
+    // empty base name, the index 256 and no sub-items, with the
+    // reference's first bytes as this `u32`.)
+    if after_index != 0 {
+        return None;
+    }
     let (custom, q) = str16_at(d, q + 8)?;
     if !unicode::is_printable(&custom) || q + 7 > p {
         return None;
@@ -1021,13 +1029,18 @@ pub fn parse_parameter(seg: &Segment, o: &Object) -> Option<ParameterEntry> {
     let (g1, nstr) = match version {
         ..=6 => (5, 3),
         7 => (9, 4),
-        _ => (10, 4),
+        8 | 9 => (10, 4),
+        _ => (11, 4),
     };
     // Version 8 (2026 writers; verified on the reference models): the gap
     // is `u8 | u32 | u8 | str16 comment`, so the comment comes before the
     // number (the string after the role stays empty), and the flags after
     // the expression take 10 bytes.
     // Version 9 (writer 2705): one more `u32 0` in front of the `u32 6`.
+    // Version 10 (writer 2706): `u32 5` in place of that `u32 6`, and the
+    // flags after the expression take 11 bytes, the user flag still last
+    // (every parameter of a writer-2706 design: its 263 parameters decode
+    // only so, and the user parameters' flag is the 11th byte).
     let v8_comment = if version >= 8 {
         let (c, q) = str16_at(d, p + if version >= 9 { 10 } else { 6 })?;
         Some((c, q - p))

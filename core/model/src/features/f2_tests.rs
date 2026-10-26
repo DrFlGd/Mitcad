@@ -6,7 +6,8 @@
 use serde_json::{Value, json};
 
 use crate::FeatureStatus;
-use crate::document_tests::{Block, block, corner, def, side, top_edge};
+use crate::document_tests::{Block, block, corner, def, extrude, num, side, top_edge};
+use crate::features::SketchPlane;
 use crate::ids::{BodyUid, FeatureUid};
 use crate::topo::{EdgeName, FaceName};
 
@@ -530,6 +531,93 @@ fn split_body_by_several_tools_divides_the_pieces_each_reaches() {
         panic!("not a split");
     };
     assert_eq!(def.more_tools.len(), 1);
+}
+
+#[test]
+fn a_split_previews_its_extended_tool_past_the_bodies() {
+    // The block is 60 x 40 x 20 mm from the origin: its box's diagonal is
+    // about 74.8 mm, so the preview reaches 5 % of that past every side.
+    let mut b = block();
+    let margin = 5600f64.sqrt() * 0.05;
+    let reaches = |b: &Block| {
+        let tool = b.doc.preview_tool().expect("an extended tool");
+        let bounds = tool.bounds.expect("bounds");
+        for (i, (low, high)) in [(0.0, 60.0), (0.0, 40.0), (0.0, 20.0)]
+            .into_iter()
+            .enumerate()
+        {
+            assert!((bounds.min[i] - (low - margin)).abs() < 1e-6, "{bounds:?}");
+            assert!((bounds.max[i] - (high + margin)).abs() < 1e-6, "{bounds:?}");
+        }
+        tool.history.clone()
+    };
+    let face = json!({"body": b.body, "face": top(&b)});
+    // Split Body by a face, extended (the default): the face grown through
+    // the body, clipped a little past it.
+    let split = def(json!({"type": "split_body", "bodies": [b.body], "tool": face}));
+    b.doc.preview_add(&split, None).unwrap();
+    assert_eq!(reaches(&b), format!("extended_tool(face {},true)", top(&b)));
+    // The same preview again takes the split from the cache and still
+    // shows the tool: it is made for every preview, never cached.
+    let made = b.doc.kernel().count("extended_tool");
+    let splits = b.doc.kernel().count("split_body");
+    let report = b.doc.preview_add(&split, None).unwrap();
+    assert!(report.tool);
+    assert_eq!(b.doc.kernel().count("split_body"), splits);
+    assert_eq!(b.doc.kernel().count("extended_tool"), made + 1);
+    reaches(&b);
+    // Committing reuses the preview's result and makes no tool; nor does
+    // a split that is evaluated outside a preview (a recompute, an import).
+    let made = b.doc.kernel().count("extended_tool");
+    let committed = b.doc.add_feature(&split, None).unwrap().uid;
+    assert_eq!(b.doc.kernel().count("split_body"), splits);
+    let again = def(
+        json!({"type": "split_body", "bodies": [b.body], "tool": face,
+                           "more_tools": ["xz"]}),
+    );
+    b.doc.add_feature(&again, None).unwrap();
+    assert!(b.doc.kernel().count("split_body") > splits);
+    assert_eq!(b.doc.kernel().count("extended_tool"), made);
+    assert!(b.doc.preview_tool().is_none());
+    b.doc.undo();
+    b.doc.undo();
+    assert!(b.doc.feature(committed).is_none());
+    // Not extended: the preview shows the tool as picked, nothing more.
+    let plain = def(
+        json!({"type": "split_body", "bodies": [b.body], "tool": face,
+                           "extend": false}),
+    );
+    b.doc.preview_add(&plain, None).unwrap();
+    assert!(b.doc.preview_tool().is_none());
+    // Split Face by a plane.
+    let split = def(
+        json!({"type": "split_face", "body": b.body, "faces": [top(&b)],
+                           "tool": "yz", "offset": 20.0}),
+    );
+    b.doc.preview_add(&split, None).unwrap();
+    assert_eq!(reaches(&b), "extended_tool(plane,true)");
+    // A body tool is not extended.
+    let sketch = b.doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = b
+        .doc
+        .add_rectangle(sketch, [10.0, 10.0], &num(5.0), &num(5.0))
+        .unwrap()
+        .region;
+    let other = b
+        .doc
+        .add_feature(&extrude(sketch, &[&region], 50.0, "new_body", &[]), None)
+        .unwrap()
+        .uid;
+    let by_body = def(json!({"type": "split_body", "bodies": [b.body],
+                             "tool": {"type": "body", "body": BodyUid::new(other, 0)}}));
+    b.doc.preview_add(&by_body, None).unwrap();
+    assert!(b.doc.preview_tool().is_none());
+    // A kernel that cannot extend a tool still splits.
+    b.doc.kernel().fail.borrow_mut().insert("extended_tool");
+    let split = def(json!({"type": "split_body", "bodies": [b.body], "tool": face}));
+    let report = b.doc.preview_add(&split, None).unwrap();
+    assert_eq!(report.status, FeatureStatus::Ok);
+    assert!(b.doc.preview_tool().is_none());
 }
 
 #[test]

@@ -1145,6 +1145,22 @@ fn sub_base_result(seg: &Segment, tail: &decode::ItemTail) -> Option<i32> {
         })
 }
 
+/// The operation of a tapped hole's modelled thread (mitcad#719): the
+/// thread sub-item has a result number of its own, the hole's plus one,
+/// and its history state cuts the thread into the hole's bore (an M10
+/// thread's 195 mm³ in a 20 mm deep hole); the hole's own state has only
+/// the bore. `None` for other items and cosmetic threads.
+fn modelled_thread_result(seg: &Segment, tail: &decode::ItemTail) -> Option<i32> {
+    tail.sub_features
+        .iter()
+        .flatten()
+        .filter(|&&s| thread_fields(seg, s).is_some_and(|t| t.modeled))
+        .find_map(|&s| {
+            let t = decode::feature_tail(seg, seg.object(s)?)?;
+            (t.result_no > tail.result_no && tail.result_no > 0).then_some(t.result_no)
+        })
+}
+
 /// Names of the parameters that depend on `p`: those whose expression
 /// mentions it (as a name token) and, through them, those that mention
 /// those, in the parameters' order (the API reference dumps list all of
@@ -2602,12 +2618,15 @@ impl Builder<'_> {
                 // outward normal on all ten holes of the API reference
                 // dumps, which go against it; a flipped hole goes with it
                 // (`is_default_direction`, [`hole_flipped`]), so the vector
-                // itself is not taken.
+                // itself is not taken. A hole on a cylindrical face is
+                // measured from a face (the shaft's end) along the axis: its
+                // one slot of role 33 holds that face (mitcad#719).
                 if let Some((face, _, _)) = self.directions(it).into_iter().next() {
-                    let mut edges = slots
-                        .iter()
-                        .filter(|s| s.role == 33)
-                        .filter_map(|s| s.inputs.first().and_then(|&i| edge_input(seg, i)));
+                    let mut edges = slots.iter().filter(|s| s.role == 33).filter_map(|s| {
+                        s.inputs
+                            .first()
+                            .and_then(|&i| edge_input(seg, i).or_else(|| face_input(seg, i)))
+                    });
                     x.hole_position_definition = Some(HolePositionDefinition {
                         definition_type: Some("PlaneAndOffsetsHolePositionDefinition".into()),
                         // A face, or a construction or origin plane the holes start on.
@@ -3462,6 +3481,9 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
             f3d.flags = Some(super::stream::hex(&t.flags));
             f3d.after = t.after.map(|a| super::stream::hex(&a));
             f3d.sub_features = Some(t.sub_features.clone());
+        }
+        if let Some(t) = &it.tail {
+            f3d.last_result_no = modelled_thread_result(seg, t);
         }
         if it.class == COMPONENT_FROM_BODIES {
             f3d.made_result_no = made_result(seg, it.id);

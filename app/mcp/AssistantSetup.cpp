@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QUuid>
@@ -80,10 +81,22 @@ QString codexConfigurationPath() {
       .absoluteFilePath(QStringLiteral("config.toml"));
 }
 
+QString assistantShellWord(const QString& value, bool windows, bool always) {
+  static const QRegularExpression posix(QStringLiteral("^[A-Za-z0-9_@%+=:,./-]+$"));
+  static const QRegularExpression powershell(QStringLiteral("^[A-Za-z0-9_.:/\\\\-]+$"));
+  // PowerShell takes a bare `--` as the end of a script's own parameters
+  // (an npm-installed client is a script there).
+  const bool plain = !always && (windows ? value != QStringLiteral("--") && powershell.match(value).hasMatch()
+                                         : posix.match(value).hasMatch());
+  return plain ? value : quoted(value, windows);
+}
+
 QString assistantCommand(const QString& program, const QStringList& arguments, bool windows) {
-  QStringList words{quoted(QDir::toNativeSeparators(program), windows)};
-  for (const QString& argument : arguments) words << quoted(argument, windows);
-  return (windows ? QStringLiteral("& ") : QString()) + words.join(QLatin1Char(' '));
+  const QString first = assistantShellWord(QDir::toNativeSeparators(program), windows);
+  QStringList words{first};
+  for (const QString& argument : arguments) words << assistantShellWord(argument, windows);
+  const bool callOperator = windows && first.startsWith(QLatin1Char('\''));
+  return (callOperator ? QStringLiteral("& ") : QString()) + words.join(QLatin1Char(' '));
 }
 
 QStringList assistantRegistration(AssistantClient client, const QString& bridge) {
@@ -182,9 +195,45 @@ QString assistantConfigurationPolicy(const QString& path) {
            << QStringLiteral("/Library/Managed Preferences/com.openai.chat.plist");
 #endif
   for (const QString& policy : policies) {
-    if (QFileInfo::exists(policy)) return QObject::tr("Managed configuration is present. Ask its administrator to allow the Mitcad MCP entry.");
+    if (QFileInfo::exists(policy)) return QObject::tr("Managed settings block this change. Ask your administrator to allow Mitcad.");
   }
   return {};
+}
+
+bool assistantLabelMatches(AssistantClient client, const QString& label) {
+  const QString name = label.toLower();
+  const bool code = name.contains(QStringLiteral("claude-code")) || name.contains(QStringLiteral("claude code"));
+  const bool claude = name.contains(QStringLiteral("claude"));
+  const bool codex = name.contains(QStringLiteral("codex")) || name.contains(QStringLiteral("chatgpt")) ||
+                     name.contains(QStringLiteral("openai"));
+  switch (client) {
+  case AssistantClient::ClaudeDesktop: return claude && !code;
+  case AssistantClient::ClaudeCode: return code;
+  case AssistantClient::Codex: return codex && !claude;
+  case AssistantClient::Other: return !claude && !codex;
+  }
+  return false;
+}
+
+QString assistantName(AssistantClient client) {
+  switch (client) {
+  case AssistantClient::ClaudeDesktop: return QObject::tr("Claude Desktop");
+  case AssistantClient::ClaudeCode: return QObject::tr("Claude Code");
+  case AssistantClient::Codex: return QObject::tr("ChatGPT / Codex");
+  case AssistantClient::Other: return QObject::tr("Other");
+  }
+  return {};
+}
+
+QString assistantSentenceName(AssistantClient client) {
+  return client == AssistantClient::Codex ? QObject::tr("Codex") : assistantName(client);
+}
+
+QString assistantDisplayName(const QString& label) {
+  for (const AssistantClient client : {AssistantClient::ClaudeCode, AssistantClient::ClaudeDesktop, AssistantClient::Codex}) {
+    if (assistantLabelMatches(client, label)) return assistantSentenceName(client);
+  }
+  return label;
 }
 
 } // namespace mitcad::mcp

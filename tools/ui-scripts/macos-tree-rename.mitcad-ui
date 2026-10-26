@@ -32,12 +32,6 @@ dblclick-logged '^Browser Root/Bracket:1 at '
 expect-tree-rename Bracket:1
 screenshot ${MITCAD_TEST_SHOTS}/component.png
 key Escape
-click-logged '^Browser Root/Measurements at '
-key Right
-dblclick-logged '^Browser Root/Measurements/Angle1 at '
-expect-tree-rename Angle1
-screenshot ${MITCAD_TEST_SHOTS}/measurement.png
-key Escape
 focus-widget projectsTree
 key Home Right End
 key F2

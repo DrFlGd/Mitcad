@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Easy placement (mitcad#394) with the mock kernel: BUILD places parts in
 //! the nearest component up from the active one that takes components (the
-//! root while a Part1 set to the Part policy is active; a new design's
-//! Part1 itself since mitcad#421), the first part at the origin
+//! root while a Component1 set to the Part policy is active; a new design's
+//! Component1 itself since mitcad#421), the first part at the origin
 //! or on the root's XY plane along X, Y or Z, and a part on a side measured
 //! to its near face: flush with either end within one section width of it,
 //! the middle and the grid points snapped, and never past an end.
@@ -16,21 +16,21 @@ use crate::ids::ComponentUid;
 use crate::testing::MockKernel;
 use crate::transform::Transform;
 
-/// A new design as File › New makes it (the root and an active Part1, both
-/// Hybrid since mitcad#421), with the test library.
+/// A new design as File › New makes it (the root and an active Component1,
+/// both Hybrid since mitcad#421), with the test library.
 fn hybrid_design() -> Document<MockKernel> {
     let mut doc = Document::new_design(MockKernel::default());
     doc.set_link_resolver(Some(TestLibrary::new()));
     doc
 }
 
-/// A new design whose Part1 takes no components (the Part policy, as File ›
-/// New made it before mitcad#421): BUILD goes up to the root.
+/// A new design whose Component1 takes no components (the Part policy, as
+/// File › New made it before mitcad#421): BUILD goes up to the root.
 fn new_design() -> Document<MockKernel> {
     let mut doc = hybrid_design();
     command(
         &mut doc,
-        json!({"cmd": "set_policy", "component": "Part1", "preset": "part"}),
+        json!({"cmd": "set_policy", "component": "Component1", "preset": "part"}),
     )
     .unwrap();
     doc
@@ -81,14 +81,14 @@ fn along(doc: &Document<MockKernel>, answer: &serde_json::Value) -> f64 {
 #[test]
 fn a_new_design_places_on_the_root_s_xy_plane_and_on_a_side_without_activating_root() {
     let mut doc = new_design();
-    let part1 = doc.assembly().active;
-    assert!(!part1.is_root());
+    let component1 = doc.assembly().active;
+    assert!(!component1.is_root());
     // BUILD's host is the root, as the query tells the app.
     let host = query(&doc, json!({"query": "build_host"}));
     assert_eq!(host["component"], "C0", "{host}");
     assert_eq!(host["name"], "Root");
     assert_eq!(host["path"], "");
-    assert_eq!(host["active"], json!(part1));
+    assert_eq!(host["active"], json!(component1));
     // A profile on the root's XY plane, at the click, standing along +Z.
     let first = place(
         &mut doc,
@@ -149,8 +149,8 @@ fn a_new_design_places_on_the_root_s_xy_plane_and_on_a_side_without_activating_r
     // From x = 115 (the first's x+ side) to x = 585 (the third's x- side).
     let length = doc.part_info(component(&fourth)).unwrap().length.unwrap().1;
     assert!((length - 470.0).abs() < 1e-9, "{length}");
-    // Part1 stays the active component.
-    assert_eq!(doc.assembly().active, part1);
+    // Component1 stays the active component.
+    assert_eq!(doc.assembly().active, component1);
 }
 
 #[test]
@@ -409,16 +409,17 @@ fn a_part_in_a_component_that_takes_components_stays_there() {
 }
 
 #[test]
-fn a_new_hybrid_design_places_in_its_active_part1() {
-    // mitcad#421: Part1 takes components, so BUILD's host is Part1 itself.
+fn a_new_hybrid_design_places_in_its_active_component1() {
+    // mitcad#421: Component1 takes components, so BUILD's host is
+    // Component1 itself.
     let mut doc = hybrid_design();
-    let part1 = doc.assembly().active;
-    assert!(!part1.is_root());
+    let component1 = doc.assembly().active;
+    assert!(!component1.is_root());
     let host = query(&doc, json!({"query": "build_host"}));
-    assert_eq!(host["component"], json!(part1), "{host}");
+    assert_eq!(host["component"], json!(component1), "{host}");
     let first = place(&mut doc, json!({"part": part("p30"), "length": 500}));
     all_ok(&doc);
     assert!(first["warnings"].as_array().unwrap().is_empty(), "{first}");
-    assert_eq!(parent(&doc, &first), part1);
-    assert_eq!(doc.assembly().active, part1);
+    assert_eq!(parent(&doc, &first), component1);
+    assert_eq!(doc.assembly().active, component1);
 }

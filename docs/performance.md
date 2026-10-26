@@ -335,8 +335,10 @@ software-rendered timings, not a frame rate of a GPU or of the model.
 Whether the final display tier (commit, refinement, opening a design) could
 triangulate planes through Delabella as the interactive preview tier does
 (mitcad#635). `mitcad-cli mesh-compare` meshes every body of a design twice,
-all bodies together as the final tier does: (a) `viewMeshOptions`, (b) the
-same with planes through Delabella (`previewMeshOptions`). Per face it
+all bodies together as the final tier does: (a) `viewMeshOptions` as it was
+then (planes by the default insertion; now `defaultPlaneMeshOptions`, the
+variant `default`), (b) the same with planes through Delabella
+(`previewMeshOptions`, the variant `delabella`). Per face it
 records the triangles, the largest distance of triangle centroids and edge
 midpoints from the surface, the triangulated area against the face's own
 (BRepGProp), triangles folded over others in the parameter plane, whether
@@ -372,3 +374,17 @@ real: a quarter disc (Watson: 36 triangles) and a sliver left without a
 triangulation, and a 0.018 mm² face that (a) leaves undrawn drawn by (b)
 with 181 triangles over 11.8 mm², which nothing but the area comparison
 detects. The ticket has the tables and the faces by design content id.
+
+The final tier now triangulates planes through Delabella and checks each
+one (`io::MeshOptions::check_planes`): a plane left without a
+triangulation, or whose triangles' area differs from the area its
+boundary's discretization encloses (the outer wire's polygon less the
+holes', from the edge points the mesher made, so next to no cost) by more
+than 0.1 % or 0.001 mm², is triangulated again by the default insertion,
+whose result stands. On the trial's faces that gives the default's
+triangulation where Delabella left the quarter disc undrawn, leaves the
+sliver undrawn as the default does instead of the 11.8 mm² patch, and
+keeps Delabella's where it is right, also where the default had none.
+`MeshReport::planes_redone` counts the planes made again
+(`MITCAD_MESH_TRACE=1`: "planes redone N"); `mitcad-cli mesh-compare --b
+checked` repeats the trial against the switched tier.

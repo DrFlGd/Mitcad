@@ -35,6 +35,7 @@
 #include "framework/Dialogs.hpp"
 #include "framework/Icons.hpp"
 #include "framework/Ribbon.hpp"
+#include "mcp/AgentIndicator.hpp"
 #include "platform/NativeDialogs.hpp"
 #include "platform/NativeForms.hpp"
 #include "platform/NativeMacWindow.hpp"
@@ -243,6 +244,24 @@ void MainWindow::createNativeWindow() {
     }
     execMenu(m_indicator->menu(), point);
   };
+  // The agent indicator (mitcad#710): a click connects an assistant while
+  // none is connected, else (connected or unavailable) opens the menu, as
+  // the Qt indicator does.
+  callbacks.agentClicked = [this](const QPoint& point) {
+    if (!m_agentIndicator) {
+      return;
+    }
+    if (m_agentIndicator->state() == mcp::AgentIndicator::State::NoAgent) {
+      m_agentIndicator->openConnect();
+    } else {
+      execMenu(m_agentIndicator->agentMenu(), point);
+    }
+  };
+  callbacks.agentMenu = [this](const QPoint& point) {
+    if (m_agentIndicator) {
+      execMenu(m_agentIndicator->agentMenu(), point);
+    }
+  };
   callbacks.requestClose = [this] { return requestNativeClose(); };
   callbacks.closed = [] { QCoreApplication::quit(); };
   callbacks.openFile = [this](const QString& path) {
@@ -300,6 +319,16 @@ void MainWindow::createNativeWindow() {
     }
   });
   m_nativeWindow->setProjectStatus(m_indicator->shownText(), m_indicator->toolTip());
+  const auto agentStatus = [this] {
+    if (m_nativeWindow) {
+      const auto state = m_agentIndicator->state();
+      m_nativeWindow->setAgentStatus(m_agentIndicator->shownText(), m_agentIndicator->toolTip(),
+                                     state == mcp::AgentIndicator::State::Connected,
+                                     state != mcp::AgentIndicator::State::Unavailable);
+    }
+  };
+  connect(m_agentIndicator, &mcp::AgentIndicator::presentationChanged, this, agentStatus);
+  agentStatus();
   // Notices remain shared state, but their Qt toolbar does not enter
   // AppKit's viewport. The native status and menus expose their actions.
   auto* noticeStore = new QWidget(this);
@@ -589,7 +618,7 @@ void MainWindow::refreshNativeWindow() {
                                    row.node.type == BrowserNode::Type::Component || row.node.type == BrowserNode::Type::Datum ||
                                    row.node.type == BrowserNode::Type::Analysis || row.node.type == BrowserNode::Type::Joint ||
                                    row.node.type == BrowserNode::Type::Feature ||
-                                   row.node.type == BrowserNode::Type::Measurement ||
+                                   row.node.type == BrowserNode::Type::Drawing ||
                                    (row.node.type == BrowserNode::Type::NamedView && row.node.uid.startsWith(QStringLiteral("named:"))));
       item.hasVisibility = row.node.hasEye;
       // Bodies, sketches, construction and components in every mode (mitcad#295).

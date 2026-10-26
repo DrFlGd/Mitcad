@@ -46,6 +46,12 @@ BoundingBox bounding_box(const Shape& shape);
 // computed it already.
 BoundingBox enclosing_box(const Shape& shape);
 
+// The tight box of each face (edge) at these indices of the shape's face
+// (edge) order, as bounding_box measures a body; empty for a face without
+// geometry or a degenerate edge (the faces and edges queries, mitcad#714).
+std::vector<BoundingBox> face_bounding_boxes(const Shape& shape, const std::vector<int>& faces);
+std::vector<BoundingBox> edge_bounding_boxes(const Shape& shape, const std::vector<int>& edges);
+
 struct FaceInfo {
   NameList names;
   std::string surface; // plane, cylinder, cone, sphere, torus, bspline, ...

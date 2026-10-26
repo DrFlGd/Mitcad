@@ -56,6 +56,13 @@ key Escape
 command inspect.measure
 click-pick-offset 'edge F1.b0/E\{F2:side0\|F2:top\}' 0 0 '^edge E\{F2:side0\|F2:top\} of F1.b0$'
 expect-log 'Measure Selection 1: 1 edge'
+# The computed row grows the Measure card; fit after its layout has settled
+# so the endpoint is in the free viewport, not behind that card at 2x.
+expect-log '^Inspect Measure: length 60$'
+expect-log '^Measure history: 1 rows$'
+wait-idle
+command view.fit
+expect-viewport
 click-pick-offset 'vertex F1.b0/V\{[^}]*F2:side0\|[^}]*F2:top[^}]*\}' 0 0 '^vertex .* of F1.b0$'
 expect-log 'Measure Selection 2: 1 vertex'
 screenshot '${MITCAD_TEST_WORK}/edge-vertex.png'

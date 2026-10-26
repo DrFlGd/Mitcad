@@ -4,6 +4,13 @@
 //! dimensions, the diameters of round holes with leaders, the hole table
 //! and the title block (ISO 5457 frame, ISO 7200 title block, ISO 129
 //! dimensions, ISO 128 lines).
+//!
+//! Two steps: [`layout`] places an export's views in a grid at one scale,
+//! and [`render`] draws placed views with their marks (section lines,
+//! detail circles, breaks), the automatic annotations, the frame and the
+//! title block. A drawing kept in the design places its views itself
+//! (mitcad#707) and is drawn by [`render`] alone; [`compose`] is the two
+//! together.
 
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
@@ -12,10 +19,13 @@ use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 use mitcad_vec3::vec2::{self, perp};
 use mitcad_vec3::vec2::{add as add2, dot as dot2, norm as len2, scale as mul2, sub as sub2};
 
+use super::clip::ViewMap;
+use super::def::Annotations;
 use super::sheet::{Anchor, Group, Item, Pen, Sheet, text_width};
 use super::{
-    CutPlane, DrawingOptions, Orientation, P2, Projection, RoundHole, ScaleChoice, Units,
-    ViewCurve, ViewEdgeKind, ViewName, ViewProjection, ViewSpec, cross, dot, scale_text, unit,
+    CutPlane, DrawingOptions, Orientation, P2, Projection, RoundHole, ScaleChoice, SheetSize,
+    Units, ViewCurve, ViewEdgeKind, ViewName, ViewProjection, ViewSpec, cross, dot, scale_text,
+    unit,
 };
 use crate::datum::Vec3;
 
@@ -89,15 +99,15 @@ const MARGIN_LEFT: f64 = 20.0; // ISO 5457: the filing margin
 const MARGIN: f64 = 10.0;
 const TITLE_WIDTH: f64 = 180.0;
 const TITLE_HEIGHT: f64 = 32.0;
-const DIMENSION_TEXT: f64 = 3.5;
+pub(crate) const DIMENSION_TEXT: f64 = 3.5;
 const CALLOUT_TEXT: f64 = 3.0;
 const SMALL_TEXT: f64 = 2.5;
 const LABEL_TEXT: f64 = 2.0;
-const ARROW_LENGTH: f64 = 3.0;
+pub(crate) const ARROW_LENGTH: f64 = 3.0;
 // ISO 129-1: a closed filled arrowhead of 30 degrees.
 const ARROW_HALF_WIDTH: f64 = 0.8;
-const EXTENSION_GAP: f64 = 1.0;
-const EXTENSION_BEYOND: f64 = 2.0;
+pub(crate) const EXTENSION_GAP: f64 = 1.0;
+pub(crate) const EXTENSION_BEYOND: f64 = 2.0;
 const DIMENSION_OFFSET: f64 = 10.0;
 // The room around a view for its dimensions (left, below) and leaders.
 const ROOM_LEFT: f64 = 16.0;
@@ -108,11 +118,27 @@ const HATCH_SPACING: f64 = 2.5;
 const ROW_HEIGHT: f64 = 5.0;
 /// Under the hole table: where its X and Y are measured from.
 const TABLE_NOTE: [&str; 2] = ["X, Y FROM THE LOWER LEFT", "CORNER OF THE VIEW"];
+/// How far a break line reaches beyond its view's box, mm.
+const BREAK_BEYOND: f64 = 3.0;
 
 /// ISO 5455's scales, largest first.
-const SCALES: [f64; 15] = [
+pub const SCALES: [f64; 15] = [
     50.0, 20.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001,
 ];
+
+/// The frame's corners on a sheet of this size.
+pub fn frame(width: f64, height: f64) -> (P2, P2) {
+    ([MARGIN_LEFT, MARGIN], [width - MARGIN, height - MARGIN])
+}
+
+/// The title block's box on a sheet of this size.
+pub fn title_box(width: f64, height: f64) -> (P2, P2) {
+    let (min, max) = frame(width, height);
+    (
+        [max[0] - TITLE_WIDTH.min(max[0] - min[0]), min[1]],
+        [max[0], min[1] + TITLE_HEIGHT],
+    )
+}
 
 /// An axis-aligned box.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -122,19 +148,19 @@ pub struct Bounds {
 }
 
 impl Bounds {
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             min: [f64::INFINITY; 2],
             max: [f64::NEG_INFINITY; 2],
         }
     }
-    fn add(&mut self, p: P2) {
+    pub fn add(&mut self, p: P2) {
         for (i, v) in p.into_iter().enumerate() {
             self.min[i] = self.min[i].min(v);
             self.max[i] = self.max[i].max(v);
         }
     }
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         !(self.min[0] <= self.max[0] && self.min[1] <= self.max[1])
     }
     pub fn width(&self) -> f64 {
@@ -143,7 +169,7 @@ impl Bounds {
     pub fn height(&self) -> f64 {
         self.max[1] - self.min[1]
     }
-    fn center(&self) -> P2 {
+    pub fn center(&self) -> P2 {
         [
             (self.min[0] + self.max[0]) / 2.0,
             (self.min[1] + self.max[1]) / 2.0,
@@ -200,22 +226,142 @@ pub fn view_bounds(projection: &ViewProjection) -> Bounds {
     b
 }
 
-/// Where a view goes: the sheet point of view coordinates.
-#[derive(Debug, Clone, Copy)]
-struct Placement {
-    scale: f64,
-    /// The view's box centre in view coordinates and on the sheet.
-    model_center: P2,
-    sheet_center: P2,
+/// What a view is for the automatic annotations: an orthographic view
+/// gets its overall sizes and tags the holes it sees end on; a pictorial
+/// (isometric) view, a section and a detail get none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewRole {
+    Orthographic,
+    Pictorial,
+    Section,
+    Detail,
 }
 
-impl Placement {
-    fn at(&self, p: P2) -> P2 {
-        [
-            self.sheet_center[0] + self.scale * (p[0] - self.model_center[0]),
-            self.sheet_center[1] + self.scale * (p[1] - self.model_center[1]),
-        ]
+impl ViewRole {
+    /// An export's view by its name (None: the section).
+    pub fn of(name: Option<ViewName>) -> Self {
+        match name {
+            None => Self::Section,
+            Some(ViewName::Iso) => Self::Pictorial,
+            Some(_) => Self::Orthographic,
+        }
     }
+}
+
+/// A view placed on a sheet.
+#[derive(Debug, Clone)]
+pub struct PlacedView {
+    /// The id of its group (`view-front`).
+    pub id: String,
+    pub role: ViewRole,
+    pub spec: ViewSpec,
+    /// In view coordinates, cut to a detail's circle and its breaks.
+    pub projection: ViewProjection,
+    pub map: ViewMap,
+    /// Its box in view coordinates.
+    pub bounds: Bounds,
+    /// Written under it (`SECTION A-A`).
+    pub label: Option<String>,
+    /// Its cut faces hatched.
+    pub hatch: bool,
+    /// Faces shaded under the lines, each a polygon in view coordinates
+    /// with its grey (0 black, 1 white), the farthest first.
+    pub shading: Vec<(Vec<P2>, f64)>,
+    /// The holes of the bodies it shows (indices into the sheet's holes);
+    /// all of them when None.
+    pub holes: Option<Vec<usize>>,
+}
+
+impl PlacedView {
+    /// Its box on the sheet.
+    pub fn sheet_box(&self) -> Bounds {
+        let mut b = Bounds::empty();
+        if !self.bounds.is_empty() {
+            b.add(self.map.at(self.bounds.min));
+            b.add(self.map.at(self.bounds.max));
+        }
+        b
+    }
+}
+
+/// A section's cutting plane drawn across a view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SectionMark {
+    /// The view it is drawn on (an index into the sheet's views).
+    pub on: usize,
+    pub plane: CutPlane,
+    /// From and to along the line (view millimetres from the projection of
+    /// the plane's origin); across the view's box when None.
+    pub span: Option<[f64; 2]>,
+    pub letter: String,
+}
+
+/// A detail's circle drawn on its parent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailMark {
+    pub on: usize,
+    /// View coordinates.
+    pub center: P2,
+    pub radius: f64,
+    pub letter: String,
+}
+
+/// A sheet's size, orientation and projection method.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SheetSetup {
+    pub size: SheetSize,
+    pub orientation: Orientation,
+    pub projection: Projection,
+}
+
+impl SheetSetup {
+    pub fn of(options: &DrawingOptions) -> Self {
+        Self {
+            size: options.sheet,
+            orientation: options.orientation,
+            projection: options.projection,
+        }
+    }
+
+    /// Width and height, mm.
+    pub fn dimensions(&self) -> (f64, f64) {
+        let (long, short) = self.size.landscape();
+        match self.orientation {
+            Orientation::Landscape => (long, short),
+            Orientation::Portrait => (short, long),
+        }
+    }
+}
+
+/// The fields of the title block.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TitleInfo {
+    pub title: String,
+    /// The drawing number; without one the block names the bodies.
+    pub number: Option<String>,
+    pub author: Option<String>,
+    pub bodies: Vec<String>,
+    pub date: String,
+    /// The sheet's number of how many (`1/2`), for a drawing of several.
+    pub page: Option<String>,
+    /// A sheet template's frame, title block and revision table with their
+    /// fields filled in (mitcad#707 phase 4): drawn instead of the simple
+    /// title block above.
+    pub template: Option<super::template::Filled>,
+}
+
+/// What a sheet shows.
+#[derive(Debug, Clone, Default)]
+pub struct SheetContent {
+    pub views: Vec<PlacedView>,
+    pub sections: Vec<SectionMark>,
+    pub details: Vec<DetailMark>,
+    /// In the coordinates of the views' model.
+    pub holes: Vec<HoleInput>,
+    pub sketch_dimensions: Vec<SketchDimension>,
+    /// Drawn after the views and their marks: the annotations of a kept
+    /// drawing's views and sheet (mitcad#707, `annotate`).
+    pub annotations: Vec<Group>,
 }
 
 /// The unit vector along `a`, or the sheet's x axis when `a` has no length.
@@ -224,7 +370,7 @@ fn unit2(a: P2) -> P2 {
 }
 
 /// A filled arrowhead whose tip is at `tip`, pointing along `direction`.
-fn arrow(group: &mut Group, tip: P2, direction: P2) {
+pub(crate) fn arrow(group: &mut Group, tip: P2, direction: P2) {
     let d = unit2(direction);
     let base = sub2(tip, mul2(d, ARROW_LENGTH));
     let side = mul2(perp(d), ARROW_HALF_WIDTH);
@@ -235,7 +381,7 @@ fn arrow(group: &mut Group, tip: P2, direction: P2) {
 
 /// A text's baseline direction that reads from below or from the right
 /// (ISO 129-1), and the side its text goes to.
-fn upright(direction: P2) -> f64 {
+pub(crate) fn upright(direction: P2) -> f64 {
     let mut angle = direction[1].atan2(direction[0]);
     if angle > PI / 2.0 + 1e-9 {
         angle -= PI;
@@ -383,14 +529,14 @@ fn cell(name: Option<ViewName>, projection: super::Projection) -> (usize, usize)
 
 /// The text lines of a hole's callout (without the count) and its row of
 /// the hole table.
-struct HoleText {
-    size: String,
-    depth: String,
-    extra: Option<String>,
-    thread: Option<String>,
+pub(crate) struct HoleText {
+    pub(crate) size: String,
+    pub(crate) depth: String,
+    pub(crate) extra: Option<String>,
+    pub(crate) thread: Option<String>,
 }
 
-fn hole_text(h: &HoleInput, units: Units) -> HoleText {
+pub(crate) fn hole_text(h: &HoleInput, units: Units) -> HoleText {
     let hole = &h.hole;
     let extra = match (hole.counterbore, hole.countersink) {
         (Some((d, depth)), _) => Some(format!(
@@ -434,53 +580,72 @@ struct ViewHole<'a> {
     tag: String,
 }
 
-pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Composed {
-    let (long, short) = options.sheet.landscape();
-    let (width, height) = match options.orientation {
-        Orientation::Landscape => (long, short),
-        Orientation::Portrait => (short, long),
-    };
-    let mut warnings = Vec::new();
-    let frame_min = [MARGIN_LEFT, MARGIN];
-    let frame_max = [width - MARGIN, height - MARGIN];
-    let mut groups = Vec::new();
+/// The automatic annotations of views: the holes each orthographic view
+/// sees end on with their tags, the callouts of their sizes and the rows
+/// of the hole table with its columns.
+struct Plan<'a> {
+    tagged: Vec<(usize, Vec<ViewHole<'a>>)>,
+    callouts: Vec<Callout>,
+    table_rows: Vec<[String; 6]>,
+    header: [String; 6],
+    columns: [f64; 6],
+    table_width: f64,
+}
 
-    // The views with something to show, and their boxes.
-    let views: Vec<(&ViewInput, Bounds)> = input
-        .views
-        .iter()
-        .filter_map(|v| {
-            let b = view_bounds(&v.projection);
-            if b.is_empty() {
-                warnings.push(format!(
-                    "the {} view shows nothing",
-                    v.name.map_or("section", ViewName::as_str)
-                ));
-                None
-            } else {
-                Some((v, b))
-            }
-        })
-        .collect();
+/// A view as the automatic annotations see it.
+struct PlanView<'a> {
+    role: ViewRole,
+    spec: &'a ViewSpec,
+    bounds: Bounds,
+    /// The holes of the bodies it shows (indices); all when None.
+    holes: Option<&'a [usize]>,
+    /// Its breaks: a hole inside one is not shown.
+    map: Option<&'a ViewMap>,
+}
 
+impl<'a> PlanView<'a> {
+    fn of(view: &'a PlacedView) -> Self {
+        Self {
+            role: view.role,
+            spec: &view.spec,
+            bounds: view.bounds,
+            holes: view.holes.as_deref(),
+            map: Some(&view.map),
+        }
+    }
+}
+
+fn plan<'a>(
+    views: &[PlanView<'_>],
+    holes: &'a [HoleInput],
+    annotations: &Annotations,
+    units: Units,
+) -> Plan<'a> {
     // The holes each orthographic view shows end on, tagged per view.
     let mut tagged: Vec<(usize, Vec<ViewHole<'_>>)> = Vec::new();
     let mut letter = b'A';
-    for (index, (view, _)) in views.iter().enumerate() {
-        if view.name.is_none() || view.name == Some(ViewName::Iso) {
+    for (index, view) in views.iter().enumerate() {
+        if view.role != ViewRole::Orthographic {
             continue;
         }
         let eye = view.spec.toward_eye;
-        let mut shown: Vec<ViewHole<'_>> = input
-            .holes
+        let spec = view.spec;
+        let mut shown: Vec<ViewHole<'_>> = holes
             .iter()
+            .enumerate()
+            .filter(|(i, _)| view.holes.is_none_or(|own| own.contains(i)))
+            .map(|(_, h)| h)
             .filter(|h| {
                 let along = dot(h.hole.direction, eye);
                 along.abs() > 1.0 - 1e-6 && (h.hole.through || along < 0.0)
             })
+            .filter(|h| {
+                view.map
+                    .is_none_or(|m| !m.in_break(spec.project(h.hole.opening)))
+            })
             .map(|h| ViewHole {
                 input: h,
-                at: view.spec.project(h.hole.opening),
+                at: spec.project(h.hole.opening),
                 tag: String::new(),
             })
             .collect();
@@ -498,13 +663,12 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
         letter = letter.saturating_add(1);
         tagged.push((index, shown));
     }
-    let hole_count: usize = tagged.iter().map(|(_, h)| h.len()).sum();
 
     // The diameters of round holes, once per size ("4x Ø6.6 THRU"), each
     // on a leader from the first hole of its size in the first view that
     // shows it end on.
     let mut callouts: Vec<Callout> = Vec::new();
-    if options.dimensions {
+    if annotations.dimensions {
         let mut labelled: Vec<String> = Vec::new();
         for (index, holes) in &tagged {
             let mut sizes: Vec<(String, Vec<&ViewHole<'_>>)> = Vec::new();
@@ -538,26 +702,13 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
             }
         }
     }
-    // The room above a view for its callouts.
-    let above = |view: usize| {
-        let needed: f64 = callouts
-            .iter()
-            .filter(|c| c.view == view)
-            .map(|c| callout_height(c.lines.len()) + 2.0)
-            .sum();
-        if needed > 0.0 {
-            ROOM_ABOVE.max(needed + 6.0)
-        } else {
-            ROOM_ABOVE
-        }
-    };
 
     // The hole table's columns and rows.
-    let table_rows: Vec<[String; 6]> = if options.hole_table {
+    let table_rows: Vec<[String; 6]> = if annotations.hole_table {
         tagged
             .iter()
             .flat_map(|(index, holes)| {
-                let bounds = views[*index].1;
+                let bounds = views[*index].bounds;
                 holes.iter().map(move |h| {
                     let text = hole_text(h.input, units);
                     let mut size = text.size.clone();
@@ -596,18 +747,88 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
     } else {
         columns.iter().sum()
     };
-    // Rows that fit beside the views, above the title block.
-    let room_rows =
-        ((frame_max[1] - frame_min[1] - TITLE_HEIGHT - 12.0) / ROW_HEIGHT).floor() as usize;
-    let shown_rows = table_rows.len().min(room_rows.saturating_sub(3));
-    if shown_rows < table_rows.len() {
-        warnings.push(format!(
-            "the hole table shows {shown_rows} of {} holes: the sheet has no room for more",
-            table_rows.len()
-        ));
+    Plan {
+        tagged,
+        callouts,
+        table_rows,
+        header,
+        columns,
+        table_width,
     }
+}
+
+/// The views of an export with something to show, and their boxes.
+pub fn shown_views<'a>(
+    views: &'a [ViewInput],
+    warnings: &mut Vec<String>,
+) -> Vec<(&'a ViewInput, Bounds)> {
+    views
+        .iter()
+        .filter_map(|v| {
+            let b = view_bounds(&v.projection);
+            if b.is_empty() {
+                warnings.push(format!(
+                    "the {} view shows nothing",
+                    v.name.map_or("section", ViewName::as_str)
+                ));
+                None
+            } else {
+                Some((v, b))
+            }
+        })
+        .collect()
+}
+
+/// Where an export's views go: each view's map (by the index of `views`),
+/// the scale and the warnings.
+#[derive(Debug, Clone)]
+pub struct Layout {
+    pub scale: f64,
+    pub maps: Vec<Option<ViewMap>>,
+    pub warnings: Vec<String>,
+}
+
+/// An export's views in a grid after the projection method, at a scale
+/// that fits beside the hole table and the callouts (or the one given),
+/// each view's box centred in its cell, the grid centred above the title
+/// block.
+pub fn layout(
+    options: &DrawingOptions,
+    units: Units,
+    views: &[(&ViewInput, Bounds)],
+    holes: &[HoleInput],
+) -> Layout {
+    let (width, height) = SheetSetup::of(options).dimensions();
+    let (frame_min, frame_max) = frame(width, height);
+    let mut warnings = Vec::new();
+    let specs: Vec<PlanView<'_>> = views
+        .iter()
+        .map(|(v, b)| PlanView {
+            role: ViewRole::of(v.name),
+            spec: &v.spec,
+            bounds: *b,
+            holes: None,
+            map: None,
+        })
+        .collect();
+    let plan = plan(&specs, holes, &Annotations::of(options), units);
+    // The room above a view for its callouts.
+    let above = |view: usize| {
+        let needed: f64 = plan
+            .callouts
+            .iter()
+            .filter(|c| c.view == view)
+            .map(|c| callout_height(c.lines.len()) + 2.0)
+            .sum();
+        if needed > 0.0 {
+            ROOM_ABOVE.max(needed + 6.0)
+        } else {
+            ROOM_ABOVE
+        }
+    };
 
     // The area of the views.
+    let table_width = plan.table_width;
     let area_min = [frame_min[0] + 4.0, frame_min[1] + TITLE_HEIGHT + 4.0];
     let area_max = [
         frame_max[0]
@@ -719,7 +940,7 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
     let total_h: f64 = row_sheet.iter().sum();
     let left = area_min[0] + ((avail_w - total_w) / 2.0).max(0.0);
     let top = area_max[1] - ((avail_h - total_h) / 2.0).max(0.0);
-    let mut placements: Vec<Option<Placement>> = vec![None; views.len()];
+    let mut maps: Vec<Option<ViewMap>> = vec![None; views.len()];
     for (&(r, c), &i) in &cells {
         let ci = cols.iter().position(|x| *x == c).unwrap_or(0);
         let ri = rows.iter().position(|x| *x == r).unwrap_or(0);
@@ -729,38 +950,156 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
             - row_sheet[..ri].iter().sum::<f64>()
             - row_above[ri]
             - scale * row_height[ri] / 2.0;
-        placements[i] = Some(Placement {
-            scale,
-            model_center: views[i].1.center(),
-            sheet_center: [x, y],
+        maps[i] = Some(ViewMap::new(scale, views[i].1.center(), [x, y]));
+    }
+    Layout {
+        scale,
+        maps,
+        warnings,
+    }
+}
+
+/// The first orthographic view that sees a plane edge on: where the
+/// cutting plane of a section without a parent is drawn.
+pub fn edge_on_view(views: &[PlacedView], plane: &CutPlane) -> Option<usize> {
+    views.iter().position(|v| {
+        v.role == ViewRole::Orthographic && dot(v.spec.toward_eye, plane.normal).abs() < 1e-9
+    })
+}
+
+pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Composed {
+    let mut warnings = Vec::new();
+    let shown = shown_views(&input.views, &mut warnings);
+    let laid = layout(options, units, &shown, &input.holes);
+    warnings.extend(laid.warnings);
+    let mut views = Vec::new();
+    for ((view, bounds), map) in shown.iter().zip(laid.maps) {
+        let Some(map) = map else { continue };
+        views.push(PlacedView {
+            id: format!("view-{}", view.name.map_or("section", ViewName::as_str)),
+            role: ViewRole::of(view.name),
+            spec: view.spec.clone(),
+            projection: view.projection.clone(),
+            map,
+            bounds: *bounds,
+            label: view.name.is_none().then(|| "SECTION A-A".to_owned()),
+            hatch: true,
+            shading: Vec::new(),
+            holes: None,
         });
+    }
+    // The section's cutting plane in a view that sees it edge on.
+    let sections = views
+        .iter()
+        .find(|v| v.role == ViewRole::Section)
+        .and_then(|v| v.spec.section)
+        .and_then(|plane| {
+            edge_on_view(&views, &plane).map(|on| SectionMark {
+                on,
+                plane,
+                span: None,
+                letter: "A".to_owned(),
+            })
+        })
+        .into_iter()
+        .collect();
+    let content = SheetContent {
+        views,
+        sections,
+        details: Vec::new(),
+        holes: input.holes.clone(),
+        sketch_dimensions: input.sketch_dimensions.clone(),
+        annotations: Vec::new(),
+    };
+    let title = TitleInfo {
+        title: input.title.clone(),
+        bodies: input.bodies.clone(),
+        date: input.date.clone(),
+        ..TitleInfo::default()
+    };
+    render(
+        &SheetSetup::of(options),
+        &Annotations::of(options),
+        units,
+        &title,
+        laid.scale,
+        &content,
+        warnings,
+    )
+}
+
+/// The pen of an edge.
+fn edge_pen(visible: bool, kind: ViewEdgeKind) -> Pen {
+    match (visible, kind) {
+        (false, _) => Pen::Hidden,
+        (true, ViewEdgeKind::Smooth) => Pen::Thin,
+        (true, _) => Pen::Thick,
+    }
+}
+
+/// Draws placed views on a sheet: each view (shading, hatching, edges,
+/// break lines) with its label, the section lines and detail circles, the
+/// automatic annotations, the hole table, the frame and the title block
+/// (`scale` the one it gives).
+pub fn render(
+    setup: &SheetSetup,
+    annotations: &Annotations,
+    units: Units,
+    title: &TitleInfo,
+    scale: f64,
+    content: &SheetContent,
+    mut warnings: Vec<String>,
+) -> Composed {
+    let (width, height) = setup.dimensions();
+    let (frame_min, frame_max) = match &title.template {
+        Some(filled) => filled.template.frame(width, height),
+        None => frame(width, height),
+    };
+    // A template's block with its revision table's room (mitcad#722).
+    let title_height = title.template.as_ref().map_or(TITLE_HEIGHT, |filled| {
+        filled.template.title_block.height + filled.template.revision_room()
+    });
+    let mut groups = Vec::new();
+    let views = &content.views;
+    let specs: Vec<PlanView<'_>> = views.iter().map(PlanView::of).collect();
+    let plan = plan(&specs, &content.holes, annotations, units);
+    let hole_count: usize = plan.tagged.iter().map(|(_, h)| h.len()).sum();
+    // Rows that fit beside the views, above the title block.
+    let room_rows =
+        ((frame_max[1] - frame_min[1] - title_height - 12.0) / ROW_HEIGHT).floor() as usize;
+    let shown_rows = plan.table_rows.len().min(room_rows.saturating_sub(3));
+    if shown_rows < plan.table_rows.len() {
+        warnings.push(format!(
+            "the hole table shows {shown_rows} of {} holes: the sheet has no room for more",
+            plan.table_rows.len()
+        ));
     }
 
     // The views.
     let mut polygonal = false;
     let mut dimensions = 0;
-    let section_letter = "A";
-    for (i, (view, bounds)) in views.iter().enumerate() {
-        let Some(place) = placements[i] else { continue };
+    for view in views {
+        let place = &view.map;
         polygonal |= view.projection.polygonal;
         let mut g = Group::new("view");
-        g.id = Some(format!(
-            "view-{}",
-            view.name.map_or("section", ViewName::as_str)
-        ));
-        for face in &view.projection.cuts {
-            let loops: Vec<Vec<P2>> = face
-                .iter()
-                .map(|l| l.iter().map(|p| place.at(*p)).collect())
-                .collect();
-            hatch(&mut g, &loops);
+        g.id = Some(view.id.clone());
+        for (polygon, grey) in &view.shading {
+            g.items.push(Item::Shade {
+                points: polygon.iter().map(|p| place.at(*p)).collect(),
+                grey: *grey,
+            });
+        }
+        if view.hatch {
+            for face in &view.projection.cuts {
+                let loops: Vec<Vec<P2>> = face
+                    .iter()
+                    .map(|l| l.iter().map(|p| place.at(*p)).collect())
+                    .collect();
+                hatch(&mut g, &loops);
+            }
         }
         for edge in &view.projection.edges {
-            let pen = match (edge.visible, edge.kind) {
-                (false, _) => Pen::Hidden,
-                (true, ViewEdgeKind::Smooth) => Pen::Thin,
-                (true, _) => Pen::Thick,
-            };
+            let pen = edge_pen(edge.visible, edge.kind);
             g.items.push(match &edge.curve {
                 ViewCurve::Line(p, q) => Item::Line {
                     pen,
@@ -775,7 +1114,7 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
                 } => Item::Arc {
                     pen,
                     center: place.at(*center),
-                    radius: radius * scale,
+                    radius: radius * place.scale,
                     start: *start,
                     end: *end,
                 },
@@ -786,60 +1125,74 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
                 },
             });
         }
+        if !view.bounds.is_empty() {
+            break_lines(&mut g, view);
+        }
         groups.push(g);
-        let lo = place.at(bounds.min);
-        let hi = place.at(bounds.max);
-        if view.name.is_none() {
+        if view.bounds.is_empty() {
+            continue;
+        }
+        let lo = place.at(view.bounds.min);
+        let hi = place.at(view.bounds.max);
+        if let Some(text) = &view.label {
             let mut label = Group::new("view-label");
             label.text(
                 [(lo[0] + hi[0]) / 2.0, lo[1] - 9.0],
                 5.0,
                 0.0,
                 Anchor::Middle,
-                format!("SECTION {section_letter}-{section_letter}"),
+                text.clone(),
             );
             groups.push(label);
         }
         // Overall dimensions of the orthographic views.
-        let orthographic = view.name.is_some_and(|n| n != ViewName::Iso);
-        if options.dimensions && orthographic {
+        if annotations.dimensions && view.role == ViewRole::Orthographic {
             groups.push(linear_dimension(
                 lo,
                 [hi[0], lo[1]],
                 [1.0, 0.0],
                 -DIMENSION_OFFSET,
-                &units.length(bounds.width()),
+                &units.length(view.bounds.width()),
             ));
             groups.push(linear_dimension(
                 lo,
                 [lo[0], hi[1]],
                 [0.0, 1.0],
                 DIMENSION_OFFSET,
-                &units.length(bounds.height()),
+                &units.length(view.bounds.height()),
             ));
             dimensions += 2;
         }
     }
 
-    // The section's cutting plane in a view that sees it edge on.
-    if let Some(section) = views
-        .iter()
-        .find(|(v, _)| v.name.is_none())
-        .and_then(|(v, _)| v.spec.section)
-        && let Some(g) = section_line(&views, &placements, &section, section_letter)
-    {
-        groups.push(g);
+    // The sections' cutting planes and the details' circles.
+    for mark in &content.sections {
+        if let Some(g) = section_line(views, mark) {
+            groups.push(g);
+        }
+    }
+    for mark in &content.details {
+        if let Some(view) = views.get(mark.on) {
+            groups.push(detail_circle(view, mark));
+        }
+    }
+    // The annotations placed on the views and the sheet.
+    for g in &content.annotations {
+        if g.class == "dimension" {
+            dimensions += 1;
+        }
+        groups.push(g.clone());
     }
 
     // The callouts above their views, stacked, each shoulder pointing away
     // from the view's middle.
     let mut stacked: BTreeMap<usize, f64> = BTreeMap::new();
-    for callout in &callouts {
-        let Some(place) = placements[callout.view] else {
-            continue;
-        };
-        let lo = place.at(views[callout.view].1.min);
-        let hi = place.at(views[callout.view].1.max);
+    for callout in &plan.callouts {
+        let view = &views[callout.view];
+        let place = &view.map;
+        let lo = place.at(view.bounds.min);
+        let hi = place.at(view.bounds.max);
+        let middle = place.at(view.bounds.center());
         let rise = stacked.entry(callout.view).or_insert(4.0);
         let center = place.at(callout.at);
         let knee_y = hi[1] + *rise;
@@ -854,11 +1207,7 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
                 .clamp(lo[0] - 4.0, hi[0] + 4.0)
         };
         // Away from the view's middle, unless the text would leave the frame.
-        let mut side = if center[0] >= place.sheet_center[0] {
-            1.0
-        } else {
-            -1.0
-        };
+        let mut side = if center[0] >= middle[0] { 1.0 } else { -1.0 };
         if (side < 0.0 && knee_x(side) - width < frame_min[0] + 2.0)
             || (side > 0.0 && knee_x(side) + width > frame_max[0] - 2.0)
         {
@@ -868,7 +1217,7 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
         *rise += callout_height(callout.lines.len()) + 2.0;
         groups.push(leader(
             center,
-            callout.radius * scale,
+            callout.radius * place.scale,
             knee,
             side,
             &callout.lines,
@@ -878,16 +1227,15 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
 
     // The holes' tags, below right of each, and the origin of the table's
     // X and Y: the view's lower left corner.
-    for (index, holes) in &tagged {
-        let Some(place) = placements[*index] else {
-            continue;
-        };
-        if !options.hole_table {
+    for (index, holes) in &plan.tagged {
+        let view = &views[*index];
+        let place = &view.map;
+        if !annotations.hole_table {
             continue;
         }
         for h in holes {
             let at = place.at(h.at);
-            let r = h.input.hole.diameter / 2.0 * scale;
+            let r = h.input.hole.diameter / 2.0 * place.scale;
             let mut tag = Group::new("hole-tag");
             tag.id = Some(h.tag.clone());
             tag.text(
@@ -902,48 +1250,45 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
             );
             groups.push(tag);
         }
-        // The origin of the table's X and Y: the view's lower left corner.
-        if options.hole_table {
-            let corner = place.at(views[*index].1.min);
-            let mut datum = Group::new("hole-datum");
-            datum.items.push(Item::Arc {
-                pen: Pen::Thin,
-                center: corner,
-                radius: 1.2,
-                start: 0.0,
-                end: TAU,
-            });
-            datum.line(
-                Pen::Thin,
-                add2(corner, [-2.0, 0.0]),
-                add2(corner, [2.0, 0.0]),
-            );
-            datum.line(
-                Pen::Thin,
-                add2(corner, [0.0, -2.0]),
-                add2(corner, [0.0, 2.0]),
-            );
-            groups.push(datum);
-        }
+        let corner = place.at(view.bounds.min);
+        let mut datum = Group::new("hole-datum");
+        datum.items.push(Item::Arc {
+            pen: Pen::Thin,
+            center: corner,
+            radius: 1.2,
+            start: 0.0,
+            end: TAU,
+        });
+        datum.line(
+            Pen::Thin,
+            add2(corner, [-2.0, 0.0]),
+            add2(corner, [2.0, 0.0]),
+        );
+        datum.line(
+            Pen::Thin,
+            add2(corner, [0.0, -2.0]),
+            add2(corner, [0.0, 2.0]),
+        );
+        groups.push(datum);
     }
 
     // Sketch dimensions in the views that look along their sketches.
-    if options.sketch_dimensions {
-        for dim in &input.sketch_dimensions {
+    if annotations.sketch_dimensions {
+        for dim in &content.sketch_dimensions {
             let normal = match dim {
                 SketchDimension::Linear { normal, .. } | SketchDimension::Radial { normal, .. } => {
                     *normal
                 }
             };
-            let target = views.iter().enumerate().find(|(_, (v, _))| {
-                v.name.is_some_and(|n| n != ViewName::Iso)
+            let target = views.iter().find(|v| {
+                v.role == ViewRole::Orthographic
                     && dot(v.spec.toward_eye, normal).abs() > 1.0 - 1e-9
             });
-            let Some((i, (view, _))) = target else {
+            let Some(view) = target else {
                 continue;
             };
-            let Some(place) = placements[i] else { continue };
-            if let Some(g) = sketch_dimension(dim, &view.spec, &place, units) {
+            if let Some(g) = sketch_dimension(dim, &view.spec, &view.map, &sketch_text(dim, units))
+            {
                 groups.push(g);
                 dimensions += 1;
             }
@@ -953,6 +1298,8 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
     // The hole table, top right.
     let mut hole_rows = 0;
     if shown_rows > 0 {
+        let table_width = plan.table_width;
+        let columns = plan.columns;
         let x0 = frame_max[0] - 4.0 - table_width;
         let mut y = frame_max[1] - 4.0;
         let mut table = Group::new("hole-table");
@@ -976,12 +1323,12 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
                 SMALL_TEXT,
                 0.0,
                 Anchor::Start,
-                header[i].clone(),
+                plan.header[i].clone(),
             );
             x += w;
         }
         groups.push(table);
-        for row in table_rows.iter().take(shown_rows) {
+        for row in plan.table_rows.iter().take(shown_rows) {
             y -= ROW_HEIGHT;
             let mut g = Group::new("hole-row");
             g.id = Some(row[0].clone());
@@ -1013,27 +1360,30 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
         groups.push(note);
     }
 
-    // The frame and the title block.
-    let mut frame = Group::new("frame");
-    frame.rect(Pen::Frame, frame_min, frame_max);
-    groups.push(frame);
-    groups.push(title_block(
-        options,
-        units,
-        input,
-        scale,
-        [
-            frame_max[0] - TITLE_WIDTH.min(frame_max[0] - frame_min[0]),
-            frame_min[1],
-        ],
-        frame_max[0],
-    ));
+    // The frame and the title block: a template's, or the simple one.
+    match &title.template {
+        Some(filled) => groups.extend(super::template::draw(filled, width, height)),
+        None => {
+            let mut frame_group = Group::new("frame");
+            frame_group.rect(Pen::Frame, frame_min, frame_max);
+            groups.push(frame_group);
+            let (title_min, title_max) = title_box(width, height);
+            groups.push(title_block(
+                setup,
+                units,
+                title,
+                scale,
+                title_min,
+                title_max[0],
+            ));
+        }
+    }
 
     Composed {
         sheet: Sheet {
             width,
             height,
-            title: input.title.clone(),
+            title: title.title.clone(),
             groups,
         },
         scale,
@@ -1046,39 +1396,90 @@ pub fn compose(options: &DrawingOptions, units: Units, input: &SheetInput) -> Co
     }
 }
 
-/// The cutting plane of the section as a chain line across the first
-/// orthographic view that sees it edge on, thick at its ends, with arrows
-/// in the direction of sight and the section's letter.
-fn section_line(
-    views: &[(&ViewInput, Bounds)],
-    placements: &[Option<Placement>],
-    section: &CutPlane,
-    letter: &str,
-) -> Option<Group> {
-    let (i, (view, bounds)) = views.iter().enumerate().find(|(_, (v, _))| {
-        v.name.is_some_and(|n| n != ViewName::Iso)
-            && dot(v.spec.toward_eye, section.normal).abs() < 1e-9
-    })?;
-    let place = placements[i]?;
+/// The break lines of a view: a thin line with a zigzag across the view
+/// at each side of each break, in the view's group.
+fn break_lines(group: &mut Group, view: &PlacedView) {
+    let place = &view.map;
+    let b = view.sheet_box();
+    for band in &place.breaks {
+        let k = band.axis;
+        let across = 1 - k;
+        if band.from > view.bounds.max[k] || band.to < view.bounds.min[k] {
+            continue;
+        }
+        // The two sides of the gap on the sheet.
+        let mut at = [0.0; 2];
+        at[across] = view.bounds.min[across];
+        at[k] = band.from;
+        let near = place.at(at)[k];
+        let far = near + band.gap;
+        for side in [near, far] {
+            let (low, high) = (b.min[across] - BREAK_BEYOND, b.max[across] + BREAK_BEYOND);
+            let middle = (low + high) / 2.0;
+            let zig = 1.5;
+            let along = [
+                (low, 0.0),
+                (middle - zig, 0.0),
+                (middle - zig / 2.0, zig),
+                (middle + zig / 2.0, -zig),
+                (middle + zig, 0.0),
+                (high, 0.0),
+            ];
+            let points = along
+                .iter()
+                .map(|(t, off)| {
+                    let mut p = [0.0; 2];
+                    p[k] = side + off;
+                    p[across] = *t;
+                    p
+                })
+                .collect();
+            group.items.push(Item::Polyline {
+                pen: Pen::Thin,
+                points,
+                closed: false,
+            });
+        }
+    }
+}
+
+/// A section's cutting plane as a chain line across a view that sees it
+/// edge on, thick at its ends, with arrows in the direction of sight and
+/// the section's letter; None when the view does not see it edge on.
+fn section_line(views: &[PlacedView], mark: &SectionMark) -> Option<Group> {
+    let view = views.get(mark.on)?;
+    let section = &mark.plane;
+    if dot(view.spec.toward_eye, section.normal).abs() >= 1e-9 || view.bounds.is_empty() {
+        return None;
+    }
+    let place = &view.map;
+    let bounds = view.bounds;
     let along3 = cross(section.normal, view.spec.toward_eye);
     let along = unit2([
         dot(along3, view.spec.x_axis),
         dot(along3, view.spec.y_axis()),
     ]);
     let through = view.spec.project(section.origin);
-    // The line's run across the view's box.
-    let corners = [
-        bounds.min,
-        [bounds.max[0], bounds.min[1]],
-        bounds.max,
-        [bounds.min[0], bounds.max[1]],
-    ];
-    let ts: Vec<f64> = corners
-        .iter()
-        .map(|c| dot2(sub2(*c, through), along))
-        .collect();
-    let t0 = ts.iter().copied().fold(f64::INFINITY, f64::min);
-    let t1 = ts.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let (t0, t1) = match mark.span {
+        Some([t0, t1]) => (t0, t1),
+        None => {
+            // The line's run across the view's box.
+            let corners = [
+                bounds.min,
+                [bounds.max[0], bounds.min[1]],
+                bounds.max,
+                [bounds.min[0], bounds.max[1]],
+            ];
+            let ts: Vec<f64> = corners
+                .iter()
+                .map(|c| dot2(sub2(*c, through), along))
+                .collect();
+            (
+                ts.iter().copied().fold(f64::INFINITY, f64::min),
+                ts.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            )
+        }
+    };
     let a = place.at(add2(through, mul2(along, t0)));
     let b = place.at(add2(through, mul2(along, t1)));
     let a = sub2(a, mul2(along, 6.0));
@@ -1103,18 +1504,49 @@ fn section_line(
             5.0,
             0.0,
             Anchor::Middle,
-            letter,
+            mark.letter.clone(),
         );
     }
     Some(g)
 }
 
-/// A dimension of a sketch in a view that looks along its normal.
-fn sketch_dimension(
+/// A detail's circle on its parent, thin, with its letter beside it.
+fn detail_circle(view: &PlacedView, mark: &DetailMark) -> Group {
+    let mut g = Group::new("detail-circle");
+    let center = view.map.at(mark.center);
+    let radius = mark.radius * view.map.scale;
+    g.items.push(Item::Arc {
+        pen: Pen::Thin,
+        center,
+        radius,
+        start: 0.0,
+        end: TAU,
+    });
+    let at = add2(center, mul2([FRAC_1_SQRT_2, FRAC_1_SQRT_2], radius + 2.0));
+    g.text(at, 5.0, 0.0, Anchor::Start, mark.letter.clone());
+    g
+}
+
+/// A sketch dimension's value as File › Export Drawing writes it.
+pub(crate) fn sketch_text(dim: &SketchDimension, units: Units) -> String {
+    match dim {
+        SketchDimension::Linear { value, .. } => units.length(value.abs()),
+        SketchDimension::Radial {
+            diameter: true,
+            value,
+            ..
+        } => format!("Ø{}", units.length(*value)),
+        SketchDimension::Radial { value, .. } => format!("R{}", units.length(*value)),
+    }
+}
+
+/// A dimension of a sketch in a view that looks along its normal, its
+/// value written `text`.
+pub(crate) fn sketch_dimension(
     dim: &SketchDimension,
     spec: &ViewSpec,
-    place: &Placement,
-    units: Units,
+    place: &ViewMap,
+    text: &str,
 ) -> Option<Group> {
     let to_sheet = |p: Vec3| place.at(spec.project(p));
     match dim {
@@ -1122,8 +1554,7 @@ fn sketch_dimension(
             a,
             b,
             along,
-            text,
-            value,
+            text: at,
             ..
         } => {
             let pa = to_sheet(*a);
@@ -1138,28 +1569,26 @@ fn sketch_dimension(
             let d = unit2(direction);
             let n = perp(d);
             // The dimension line through the text, or 8 mm off.
-            let mut offset = match text {
+            let mut offset = match at {
                 Some(t) => dot2(sub2(to_sheet(*t), pa), n),
                 None => 8.0,
             };
             if offset.abs() < 6.0 {
                 offset = if offset < 0.0 { -6.0 } else { 6.0 };
             }
-            let mut g = linear_dimension(pa, pb, d, offset, &units.length(value.abs()));
+            let mut g = linear_dimension(pa, pb, d, offset, text);
             g.class = "sketch-dimension";
             Some(g)
         }
         SketchDimension::Radial {
             center,
             radius,
-            diameter,
-            text,
-            value,
+            text: at,
             ..
         } => {
             let c = to_sheet(*center);
             let r = radius * place.scale;
-            let direction = match text {
+            let direction = match at {
                 Some(t) => unit2(sub2(to_sheet(*t), c)),
                 None => [FRAC_1_SQRT_2, FRAC_1_SQRT_2],
             };
@@ -1168,11 +1597,7 @@ fn sketch_dimension(
             let mut g = Group::new("sketch-dimension");
             g.line(Pen::Thin, on, end);
             arrow(&mut g, on, mul2(direction, -1.0));
-            let label = if *diameter {
-                format!("Ø{}", units.length(*value))
-            } else {
-                format!("R{}", units.length(*value))
-            };
+            let label = text.to_owned();
             let anchor = if direction[0] >= 0.0 {
                 Anchor::Start
             } else {
@@ -1192,7 +1617,7 @@ fn sketch_dimension(
 }
 
 /// A text fitted into a cell's width: smaller down to 2 mm, then cut.
-fn fitted(text: &str, height: f64, width: f64) -> (String, f64) {
+pub(crate) fn fitted(text: &str, height: f64, width: f64) -> (String, f64) {
     let w = text_width(text, height);
     if w <= width {
         return (text.to_owned(), height);
@@ -1208,12 +1633,13 @@ fn fitted(text: &str, height: f64, width: f64) -> (String, f64) {
     (format!("{cut}..."), 2.0)
 }
 
-/// ISO 7200's title block: the design, the bodies, the scale, the units,
-/// the date, the sheet, the projection method and where it was made.
+/// ISO 7200's title block: the title, the drawing number (or the bodies),
+/// the scale, the units, the date, the sheet, the projection method and
+/// who drew it (or where it was made).
 fn title_block(
-    options: &DrawingOptions,
+    setup: &SheetSetup,
     units: Units,
-    input: &SheetInput,
+    title: &TitleInfo,
     scale: f64,
     min: P2,
     right: f64,
@@ -1246,10 +1672,13 @@ fn title_block(
             let (text, h) = fitted(value, size, to - from - 3.0);
             g.text([from + 1.5, bottom + 2.0], h, 0.0, Anchor::Start, text);
         };
-    let bodies = input.bodies.join(", ");
-    cell("TITLE", &input.title, x0, split, row1, top, 5.0);
+    cell("TITLE", &title.title, x0, split, row1, top, 5.0);
     cell("SCALE", &scale_text(scale), split, right, row1, top, 5.0);
-    cell("BODY", &bodies, x0, split, row2, row1, DIMENSION_TEXT);
+    let (label, value) = match &title.number {
+        Some(number) => ("DRAWING NO.", number.clone()),
+        None => ("BODY", title.bodies.join(", ")),
+    };
+    cell(label, &value, x0, split, row2, row1, DIMENSION_TEXT);
     cell(
         "UNITS",
         units.symbol,
@@ -1259,17 +1688,21 @@ fn title_block(
         row1,
         DIMENSION_TEXT,
     );
-    cell("DATE", &input.date, x0, third[0], y0, row2, DIMENSION_TEXT);
+    cell("DATE", &title.date, x0, third[0], y0, row2, DIMENSION_TEXT);
+    let sheet = match &title.page {
+        Some(page) => format!("{} {page}", setup.size.name()),
+        None => setup.size.name().to_owned(),
+    };
     cell(
         "SHEET",
-        options.sheet.name(),
+        &sheet,
         third[0],
         third[1],
         y0,
         row2,
         DIMENSION_TEXT,
     );
-    let method = match options.projection {
+    let method = match setup.projection {
         Projection::ThirdAngle => "THIRD ANGLE",
         Projection::FirstAngle => "FIRST ANGLE",
     };
@@ -1282,22 +1715,24 @@ fn title_block(
         row2,
         DIMENSION_TEXT,
     );
-    cell(
-        "MADE WITH",
-        "Mitcad",
-        third[2],
-        right,
-        y0,
-        row2,
-        DIMENSION_TEXT,
-    );
-    // ISO 5456-2's symbol: a truncated cone's side view and its end view
-    // (the end view to the right of the side view in third angle, to the
-    // left in first angle).
-    let cy = y0 + 3.5;
-    let (cone_x, circles_x) = match options.projection {
-        Projection::ThirdAngle => (third[1] + 3.0, third[1] + 12.0),
-        Projection::FirstAngle => (third[1] + 11.0, third[1] + 3.0),
+    let (label, value) = match &title.author {
+        Some(author) => ("DRAWN BY", author.as_str()),
+        None => ("MADE WITH", "Mitcad"),
+    };
+    cell(label, value, third[2], right, y0, row2, DIMENSION_TEXT);
+    projection_symbol(&mut g, setup.projection, [third[1], y0 + 3.5]);
+    g
+}
+
+/// ISO 5456-2's symbol of the projection method: a truncated cone's side
+/// view and its end view (the end view to the right of the side view in
+/// third angle, to the left in first angle), from `at` (its left end, on
+/// its axis) about 17 mm to the right.
+pub(crate) fn projection_symbol(g: &mut Group, projection: Projection, at: P2) {
+    let cy = at[1];
+    let (cone_x, circles_x) = match projection {
+        Projection::ThirdAngle => (at[0] + 3.0, at[0] + 12.0),
+        Projection::FirstAngle => (at[0] + 11.0, at[0] + 3.0),
     };
     let r_big = 2.2;
     let r_small = 1.2;
@@ -1320,7 +1755,6 @@ fn title_block(
             end: TAU,
         });
     }
-    g
 }
 
 /// The axes of a section view of the plane.

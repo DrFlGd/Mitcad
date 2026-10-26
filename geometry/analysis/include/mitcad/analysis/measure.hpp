@@ -16,9 +16,17 @@ struct Distance {
   Vec3 on_b;
   // One shape lies (partly) inside a solid of the other; the distance is 0.
   bool inside = false;
+  // Found as the gap of two planar faces in parallel planes, from a point
+  // of one over the other (mitcad#716), without the full extrema.
+  bool parallel_faces = false;
 };
 
-// Works for any pair of vertices, edges, faces, shells and solids.
+// Works for any pair of vertices, edges, faces, shells and solids. Two
+// planar faces in parallel planes are measured from a few points of each
+// (a point inside it, its vertices) whose foot on the other's plane lies in
+// the other face: the planes' gap, the same minimum the full extrema give,
+// without pairing every edge and vertex of the two faces; when no such
+// point is found, the full extrema as for any other pair.
 Distance min_distance(const TopoDS_Shape& a, const TopoDS_Shape& b);
 
 // Angle between two planar faces (between their outward normals, in

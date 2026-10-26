@@ -135,4 +135,14 @@ std::shared_ptr<geometry::Shape> split_faces(rust::Str feature, const geometry::
                                to_tool(tool, tool_shapes, &frame, regions), tool.extend);
 }
 
+std::shared_ptr<geometry::Shape> extended_tool(const ToolSpec& tool, const ShapeList& tool_shapes,
+                                               const Frame& frame,
+                                               rust::Slice<const Region> regions,
+                                               std::array<double, 3> low,
+                                               std::array<double, 3> high) {
+  return geometry::extended_tool(to_tool(tool, tool_shapes, &frame, regions),
+                                 gp_Pnt(low[0], low[1], low[2]), gp_Pnt(high[0], high[1], high[2]),
+                                 tool.extend);
+}
+
 } // namespace mitcad::bridge

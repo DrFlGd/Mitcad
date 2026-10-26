@@ -37,6 +37,8 @@ public:
   // The project indicator (mitcad#89), beside the document's name: right of
   // it, before the search field.
   void setIndicator(QWidget* indicator);
+  // The agent indicator (mitcad#710), right of the project indicator.
+  void setAgentIndicator(QWidget* indicator);
 
   // The height of the row.
   static int rowHeight();
@@ -44,7 +46,7 @@ public:
   // The Floating layout's title row on Windows and Linux (mitcad#425,
   // mitcad#429; FloatingLayout::addTopRow): no card behind the row and no
   // margins at its ends. Its controls (the Undo and Redo pair, the tabs, the
-  // project indicator, the search field) are capsules of
+  // project and agent indicators, the search field) are capsules of
   // their own over the 3D view, on the cards' material (legible over the
   // view in both themes); the document's name is on a small box of the
   // cards' material, as wide as the text (titleBox). The row takes the
@@ -54,7 +56,7 @@ public:
   bool isFloatingRow() const { return m_floatingRow; }
   // setFloatingRow: the controls shown and the title's box, named
   // ("titleHistory", "titleTabs", "titleBox", "titleIndicator",
-  // "titleSearch"), in the row's coordinates, left to
+  // "titleAgent", "titleSearch"), in the row's coordinates, left to
   // right.
   std::vector<std::pair<QString, QRect>> rowParts() const;
   // The box behind the document's name in the row's coordinates (empty
@@ -98,6 +100,7 @@ private:
   QWidget* m_tabs = nullptr;
   QWidget* m_search = nullptr;
   QPointer<QWidget> m_indicator;
+  QPointer<QWidget> m_agentIndicator;
   QPointer<QWidget> m_watched;
   bool m_floatingRow = false;
 };

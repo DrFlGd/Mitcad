@@ -62,6 +62,11 @@ fn keys_are_unique_and_every_reference_is_a_key() {
 #[test]
 fn every_key_has_two_dialects_and_one_entry_per_dialect() {
     for k in keys() {
+        // Mitcad's own keys (mitcad#705) have none.
+        if MITCAD_OWN.contains(&k.key) {
+            assert!(k.dialects.is_empty(), "{} is Mitcad's own", k.key);
+            continue;
+        }
         let mut bits = 0u8;
         for d in k.dialects {
             assert_eq!(bits & d.dialects, 0, "{}: a dialect twice", k.key);
@@ -744,11 +749,15 @@ fn no_group_is_empty_and_the_rows_are_in_display_order() {
         );
     }
     // The common keys of the proposal's map: printer 5, process 60,
-    // filament 25.
+    // filament 25; and the purge multiplier and a filament's two purge
+    // volumes (mitcad#705).
     let common = |set: PrintSet| keys_in(set).filter(|k| !k.advanced).count();
     assert_eq!(common(PrintSet::Printer), 5);
-    assert_eq!(common(PrintSet::Process), 60);
-    assert_eq!(common(PrintSet::Filament), 25);
+    assert_eq!(common(PrintSet::Process), 61);
+    assert_eq!(common(PrintSet::Filament), 27);
+    assert_eq!(def("purge_into").group, Group::Purge);
+    assert_eq!(def("purge_out").category(), Category::Filament);
+    assert_eq!(def("flush_multiplier").category(), Category::Others);
 }
 
 #[test]

@@ -949,6 +949,11 @@ struct CommandDef {
   // Whether describe reads the model as it was before OK (edges a fillet
   // rounds are gone after it), not after (the datum a feature added).
   bool describeBefore = false;
+  // The preview's tool is the splitting or trimming tool as the feature
+  // extends it (mitcad#712: Split Body, Split Face, Trim; the model gives
+  // one while Extend is checked and the tool is a plane or a face): drawn
+  // see-through orange, in the tool input's colour, instead of blue.
+  bool extendedToolPreview = false;
 
   // Actions and tools.
   std::function<void()> run;

@@ -49,4 +49,4 @@ for chrome in floating docked; do
   done
 done
 [ "$UI_FAILURES" = 0 ] || exit 1
-echo 'PASS: Browser body/component/measurement and Projects renaming, Floating/Docked, light/dark, 1x/2x Qt layouts'
+echo 'PASS: Browser body/component and Projects renaming, Floating/Docked, light/dark, 1x/2x Qt layouts'

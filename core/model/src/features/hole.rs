@@ -56,7 +56,9 @@ pub struct ThreadedWall {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HolePlacement<P = ParamId> {
     /// Points on a planar face, each put on its plane
-    /// (`setPositionByPoint` in .f3d designs): one hole per point.
+    /// (`setPositionByPoint` in .f3d designs): one hole per point. On a
+    /// cylindrical face each point is put on the cylinder and the hole goes
+    /// along its radius (mitcad#719).
     Face {
         body: BodyUid,
         face: FaceName,
@@ -90,6 +92,20 @@ pub enum HolePlacement<P = ParamId> {
     /// One hole placed by picked geometry (mitcad#656, `place_at.rs`):
     /// along the axis into a shaft or hole, against the normal into a face.
     At { at: Box<PlaceAt<P>> },
+    /// One hole on a cylindrical face (a shaft's side) whose axis point
+    /// lies `offset` from `plane` (a planar face or a plane the axis
+    /// crosses), measured along the plane's normal, on the face's side of
+    /// the plane; on the side of the axis where `toward` lies; along the
+    /// radius into the material (`setPositionByPlaneAndOffsets` on a
+    /// cylindrical face in .f3d designs, mitcad#719). Across a plane square
+    /// to the axis the offset is the distance along the axis.
+    CylinderOffset {
+        body: BodyUid,
+        face: FaceName,
+        plane: GeomRef,
+        offset: P,
+        toward: [f64; 3],
+    },
 }
 
 /// A point of a sketch: coordinates in it, the centre of a circle, arc or
@@ -282,6 +298,19 @@ impl<P> HoleDef<P> {
             HolePlacement::At { at } => HolePlacement::At {
                 at: Box::new(at.map_params("placement.at.", &mut *f)?),
             },
+            HolePlacement::CylinderOffset {
+                body,
+                face,
+                plane,
+                offset,
+                toward,
+            } => HolePlacement::CylinderOffset {
+                body: *body,
+                face: face.clone(),
+                plane: plane.clone(),
+                offset: f("placement.offset", offset)?,
+                toward: *toward,
+            },
         };
         let diameter = f("diameter", &self.diameter)?;
         let kind = match &self.kind {
@@ -355,7 +384,7 @@ impl<P> HoleDef<P> {
             HolePlacement::FaceOffsets { .. } => 1,
             HolePlacement::SketchPoints { points, .. } => points.len(),
             HolePlacement::Plane { points, .. } => points.len(),
-            HolePlacement::At { .. } => 1,
+            HolePlacement::At { .. } | HolePlacement::CylinderOffset { .. } => 1,
         }
     }
 }
@@ -400,6 +429,13 @@ impl FeatureInfo for HoleDef {
             }
             HolePlacement::Plane { plane, .. } => plane.add_to(&mut references),
             HolePlacement::At { at } => at.add_to(&mut references),
+            HolePlacement::CylinderOffset {
+                body, face, plane, ..
+            } => {
+                references.body(*body);
+                references.features.extend(face.features());
+                plane.add_to(&mut references);
+            }
         }
         if let HoleExtent::ToObject { object, .. } = &self.extent {
             object.add_references(&mut references);
@@ -449,6 +485,23 @@ impl FeatureInfo for HoleDef {
                 }
             }
             HolePlacement::At { at } => at.check(ctx)?,
+            HolePlacement::CylinderOffset {
+                body,
+                face,
+                plane,
+                toward,
+                ..
+            } => {
+                ctx.body(*body)?;
+                for feature in face.features() {
+                    ctx.feature(feature)
+                        .map_err(|e| format!("face {face}: {e}"))?;
+                }
+                plane.check(ctx, Want::Plane)?;
+                if !toward.iter().all(|v| v.is_finite()) {
+                    return Err("the hole's side must be a finite point".to_owned());
+                }
+            }
             HolePlacement::SketchPoints { sketch, points } => {
                 ctx.sketch(*sketch)?;
                 if points.is_empty() {
@@ -561,6 +614,14 @@ impl FeatureInfo for HoleDef {
                 }
             }
         }
+        if let HolePlacement::CylinderOffset { offset, .. } = &self.placement
+            && value(*offset) < 0.0
+        {
+            return Err(format!(
+                "the hole's offset must not be negative, got {}",
+                value(*offset)
+            ));
+        }
         if let Some(thread) = &self.thread {
             clearance_value("radial clearance", thread.radial_clearance.map(value))?;
             clearance_value("flank clearance", thread.flank_clearance.map(value))?;
@@ -586,6 +647,67 @@ impl FeatureInfo for HoleDef {
 }
 
 impl HoleDef {
+    /// Holes at points of a cylindrical face: each point moved across the
+    /// axis onto the cylinder, the hole along the radius into the material
+    /// (towards the axis on a shaft, away from it on a bore's wall), the
+    /// other way with `flip`.
+    fn on_cylinder(&self, cylinder: &Cylinder, points: &[[f64; 3]]) -> Result<Vec<Axis>, String> {
+        if points.is_empty() {
+            return Err("the hole has no position".to_owned());
+        }
+        let axis = &cylinder.axis;
+        points
+            .iter()
+            .map(|p| {
+                let from: [f64; 3] = std::array::from_fn(|i| p[i] - axis.origin[i]);
+                let along = dot(from, axis.direction);
+                let out = normalized(std::array::from_fn(|i| from[i] - along * axis.direction[i]))
+                    .ok_or("a hole's point lies on the axis of its cylindrical face")?;
+                let origin = std::array::from_fn(|i| {
+                    axis.origin[i] + along * axis.direction[i] + cylinder.radius * out[i]
+                });
+                let inward = if cylinder.internal { 1.0 } else { -1.0 };
+                let sense = if self.flip { -inward } else { inward };
+                Ok(Axis {
+                    origin,
+                    // (`+ 0.0`: no negative zeros.)
+                    direction: out.map(|v| sense * v + 0.0),
+                })
+            })
+            .collect()
+    }
+
+    /// The hole on a cylindrical face at the point of its axis `offset`
+    /// from a plane through `origin` with `normal` (the distance along the
+    /// normal, on the side of the face's middle), on the side of the axis
+    /// where `toward` lies ([`HolePlacement::CylinderOffset`]).
+    fn at_offset(
+        &self,
+        cylinder: &Cylinder,
+        origin: [f64; 3],
+        normal: [f64; 3],
+        offset: f64,
+        toward: [f64; 3],
+    ) -> Result<Vec<Axis>, String> {
+        let axis = &cylinder.axis;
+        let across = dot(axis.direction, normal);
+        if across.abs() < 1e-9 {
+            return Err("the hole's plane does not cross the axis of its face".to_owned());
+        }
+        // Where the axis meets the plane, and the way to the face's middle.
+        let t = dot(std::array::from_fn(|i| origin[i] - axis.origin[i]), normal) / across;
+        let middle = cylinder.length / 2.0 - t;
+        let along = t + middle.signum() * offset / across.abs();
+        let centre: [f64; 3] = std::array::from_fn(|i| axis.origin[i] + along * axis.direction[i]);
+        let from: [f64; 3] = std::array::from_fn(|i| toward[i] - centre[i]);
+        let out = normalized(std::array::from_fn(|i| {
+            from[i] - dot(from, axis.direction) * axis.direction[i]
+        }))
+        .ok_or("the hole's side point lies on the axis of its face")?;
+        let point: [f64; 3] = std::array::from_fn(|i| centre[i] + cylinder.radius * out[i]);
+        self.on_cylinder(cylinder, &[point])
+    }
+
     /// The holes' start points and their direction into the material.
     pub(crate) fn positions<K: Kernel>(
         &self,
@@ -595,10 +717,18 @@ impl HoleDef {
             HolePlacement::Face { body, face, points } => {
                 let shape = ctx.surface_body(*body)?;
                 let face = super::renamed::face_for(ctx, &shape, face)?;
-                let plane = ctx
-                    .kernel
-                    .face_plane(&shape, &face)
-                    .map_err(|e| e.to_string())?;
+                let plane = match ctx.kernel.face_plane(&shape, &face) {
+                    Ok(plane) => plane,
+                    Err(not_planar) => {
+                        // A cylindrical face (a shaft's side, mitcad#719):
+                        // each point put on the cylinder, the hole across
+                        // its axis.
+                        let Ok(cylinder) = ctx.kernel.face_cylinder(&shape, &face) else {
+                            return Err(not_planar.to_string());
+                        };
+                        return self.on_cylinder(&cylinder, points);
+                    }
+                };
                 let on_plane = points
                     .iter()
                     .map(|p| {
@@ -678,6 +808,23 @@ impl HoleDef {
                     })
                     .collect();
                 (on_plane, normal)
+            }
+            HolePlacement::CylinderOffset {
+                body,
+                face,
+                plane,
+                offset,
+                toward,
+            } => {
+                let shape = ctx.surface_body(*body)?;
+                let face = super::renamed::face_for(ctx, &shape, face)?;
+                let cylinder = ctx
+                    .kernel
+                    .face_cylinder(&shape, &face)
+                    .map_err(|e| e.to_string())?;
+                let frame = ctx.plane(plane)?.frame();
+                let offset = ctx.param(*offset)?;
+                return self.at_offset(&cylinder, frame.origin, frame.normal(), offset, *toward);
             }
             // Placed by picked geometry (mitcad#656): into a shaft or a hole
             // along its axis, into a face against its normal.

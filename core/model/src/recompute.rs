@@ -471,6 +471,10 @@ pub(crate) struct Cache<S> {
     /// ([`Kernel::adopt_shape`]) instead of reading the data. Set only
     /// while a command that adds such features computes; not forked.
     pub(crate) written_from: Vec<(Brep, S)>,
+    /// The feature the open command previews (mitcad#712): the recompute
+    /// makes its [`Recomputed::preview_tool`]. Set only while a preview
+    /// computes; not forked, and not part of any cached result.
+    pub(crate) preview: Option<FeatureUid>,
 }
 
 /// Results kept per feature: enough for a few undo steps and value changes.
@@ -486,6 +490,7 @@ impl<S> Default for Cache<S> {
             clock: 0,
             stats: CacheStats::default(),
             written_from: Vec::new(),
+            preview: None,
         }
     }
 }
@@ -549,6 +554,7 @@ impl<S> Cache<S> {
             clock: self.clock,
             stats: CacheStats::default(),
             written_from: Vec::new(),
+            preview: None,
         }
     }
 
@@ -622,6 +628,7 @@ impl<S: Clone> Recomputed<S> {
             split_pieces: self.split_pieces.clone(),
             changed_pieces: self.changed_pieces.clone(),
             gone_pieces: self.gone_pieces.clone(),
+            preview_tool: self.preview_tool.clone(),
         }
     }
 }
@@ -826,6 +833,11 @@ pub(crate) struct Recomputed<S> {
     /// with the feature that made them, at the marker.
     pub changed_pieces: BTreeMap<BodyUid, String>,
     pub gone_pieces: BTreeMap<BodyUid, FeatureUid>,
+    /// What the open command's preview shows of the previewed feature
+    /// besides its result ([`crate::features::Evaluate::preview_tool`],
+    /// mitcad#712): made by a recompute for [`Cache::preview`] only, never
+    /// cached.
+    pub preview_tool: Option<S>,
 }
 
 impl<S> Default for Recomputed<S> {
@@ -848,6 +860,7 @@ impl<S> Default for Recomputed<S> {
             split_pieces: BTreeMap::new(),
             changed_pieces: BTreeMap::new(),
             gone_pieces: BTreeMap::new(),
+            preview_tool: None,
         }
     }
 }
@@ -976,6 +989,14 @@ pub(crate) fn recompute<K: Kernel>(
                 }
             }
         };
+        // What the open command's preview shows of its feature besides the
+        // result (mitcad#712): made for the preview only, against what the
+        // feature saw, whether its result was cached or not, and kept out
+        // of the cache.
+        if cache.preview == Some(entry.uid) && output.result.is_ok() {
+            let mut ctx = EvalContext::new(kernel, entry.uid, env);
+            done.preview_tool = entry.def.evaluator::<K>().preview_tool(&mut ctx);
+        }
         drop(own);
 
         let mut status = match &output.result {
@@ -1241,6 +1262,8 @@ fn evaluate<K: Kernel>(
     let (split_pieces, changed_pieces) = ctx.finish_pieces();
     let reads = std::mem::take(&mut ctx.reads);
     let warnings = std::mem::take(&mut ctx.warnings);
+    // Angles of more than one turn where one is the most (mitcad#714).
+    let turns = turn_warnings(entry, params);
     let elements = std::mem::take(&mut ctx.elements);
     let version = output_version(entry.uid, def_fp, &reads, params);
     let output = match result {
@@ -1257,7 +1280,7 @@ fn evaluate<K: Kernel>(
             time,
             persisted: Flag::new(false),
             result: Ok(()),
-            warnings,
+            warnings: with_turns(warnings, &turns),
             elements,
             pattern_anchor: ctx.pattern_anchor,
             owners: produced.owners,
@@ -1302,7 +1325,7 @@ fn evaluate<K: Kernel>(
             reads,
             time,
             persisted: Flag::new(false),
-            result: Err(message),
+            result: Err(failed_with_turns(message, &turns)),
             warnings: Vec::new(),
             elements: Vec::new(),
             pattern_anchor: None,
@@ -1321,4 +1344,65 @@ fn evaluate<K: Kernel>(
         },
     };
     Arc::new(output)
+}
+
+/// What a feature's angles of more than one turn say, in slots where more
+/// than one turn means nothing (mitcad#714, `parameters::one_turn_slot`):
+/// a JSON number in a slot is radians, so `"angle": 90` meant as degrees
+/// turns by 5156.6°. A value that is a short number in radians but not in
+/// degrees came as such a number and says how to write degrees:
+/// `Move3 angle: 90 is read as radians (5156.6°); write "90 deg" for
+/// degrees`; any other says it is more than one turn.
+fn turn_warnings(entry: &FeatureEntry, params: &Parameters) -> Vec<String> {
+    let feature = entry.def.type_name();
+    let mut found = Vec::new();
+    let _ = entry.def.map_params(&mut |slot, id: &ParamId| {
+        if crate::parameters::one_turn_slot(feature, slot)
+            && let Some(value) = params.value(*id)
+            && value.abs() > std::f64::consts::TAU * (1.0 + 1e-9)
+        {
+            found.push(turn_warning(&entry.name, slot, value));
+        }
+        Ok::<_, ()>(())
+    });
+    found
+}
+
+fn turn_warning(feature: &str, slot: &str, radians: f64) -> String {
+    let label = crate::features::slot_label(slot);
+    let degrees = radians.to_degrees();
+    let shown = format!("{degrees:.1}");
+    let shown = shown.strip_suffix(".0").unwrap_or(&shown);
+    if short_number(radians) && !short_number(degrees) {
+        format!(
+            "{feature} {label}: {radians} is read as radians ({shown}°); write \"{radians} deg\" for degrees"
+        )
+    } else {
+        format!("{feature} {label}: {shown}° is more than one turn")
+    }
+}
+
+/// At most six significant digits (`90`, `1.5`, `720`), as typed.
+fn short_number(value: f64) -> bool {
+    let text = value.abs().to_string();
+    let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+    digits.trim_start_matches('0').trim_end_matches('0').len() <= 6
+}
+
+fn with_turns(mut warnings: Vec<String>, turns: &[String]) -> Vec<String> {
+    for turn in turns {
+        if !warnings.contains(turn) {
+            warnings.push(turn.clone());
+        }
+    }
+    warnings
+}
+
+/// A failed feature's message with what its angles say (the warnings of
+/// a feature that failed are not shown).
+fn failed_with_turns(message: String, turns: &[String]) -> String {
+    if turns.is_empty() {
+        return message;
+    }
+    format!("{message}; {}", turns.join("; "))
 }

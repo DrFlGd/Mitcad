@@ -142,6 +142,10 @@ bool SketchModel::load(const QJsonObject& sketch) {
   dimensions.clear();
   texts.clear();
   conflicts.clear();
+  unmetInactive.clear();
+  for (const QJsonValue& id : sketch.value(QStringLiteral("unmet_inactive")).toArray()) {
+    unmetInactive << id.toString();
+  }
   const bool framed = sketchFrame(sketch, frame);
 
   for (const QJsonValue& value : sketch.value(QStringLiteral("entities")).toArray()) {
@@ -211,6 +215,8 @@ bool SketchModel::load(const QJsonObject& sketch) {
     c.type = k.value(QStringLiteral("type")).toString();
     c.json = k;
     c.refs = refsOf(k);
+    c.active = k.value(QStringLiteral("active")).toBool(true);
+    c.inactiveReason = k.value(QStringLiteral("inactive_reason")).toString();
     if (c.type == QStringLiteral("equal_spacing")) {
       // Its anchors in their order; the direction line is not one.
       c.refs.clear();
@@ -229,6 +235,8 @@ bool SketchModel::load(const QJsonObject& sketch) {
     d.json = k;
     d.refs = refsOf(k);
     d.driven = flag(k, "driven");
+    d.active = k.value(QStringLiteral("active")).toBool(true);
+    d.inactiveReason = k.value(QStringLiteral("inactive_reason")).toString();
     // A driving dimension's parameter, a driven one's reference (mitcad#231).
     d.parameter = k.value(d.driven ? QStringLiteral("reference") : QStringLiteral("value")).toString();
     d.expression = k.value(QStringLiteral("expression")).toString();

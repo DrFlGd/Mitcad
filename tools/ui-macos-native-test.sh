@@ -15,7 +15,7 @@ fi
 ui_init "$1" "${2:-ui-macos-native}"
 scenario=${3:-workflow}
 # A scenario that models in the root starts from an empty design without a
-# stored policy (written below), not from a new design, whose active Part1
+# stored policy (written below), not from a new design, whose active Component1
 # would take the features (mitcad#220, mitcad#421).
 plain_design=0
 case "$scenario" in
@@ -65,43 +65,58 @@ fi
 
 if [ "$scenario" = toolbar ]; then
   # Cocoa toolbar defaults are separate from the isolated QSettings store.
-  # Preserve only this test's two preferences, including their absence.
+  # Preserve only this test's preferences (the configuration and the
+  # migrations that add Project and AI Assistants, mitcad#710), including their
+  # absence.
   UI_TOOLBAR_DOMAIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$(dirname "$(dirname "$UI_APP")")/Info.plist") || exit 1
   UI_TOOLBAR_CONFIG_KEY='NSToolbar Configuration com.mitcad.toolbar.floating.v2'
-  UI_TOOLBAR_MIGRATION_KEY='com.mitcad.toolbar.floating.v2.projectStatusInstalled'
+  UI_TOOLBAR_MIGRATION_KEYS=('com.mitcad.toolbar.floating.v2.projectStatusInstalled'
+    'com.mitcad.toolbar.floating.v2.agentStatusInstalled')
   UI_TOOLBAR_CONFIG_PRESENT=0
-  UI_TOOLBAR_MIGRATION_PRESENT=0
   UI_TOOLBAR_CONFIG=""
-  UI_TOOLBAR_MIGRATION=""
+  UI_TOOLBAR_MIGRATION_PRESENT=()
+  UI_TOOLBAR_MIGRATION=()
   if UI_TOOLBAR_CONFIG=$(defaults read "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" 2> /dev/null); then
     UI_TOOLBAR_CONFIG_PRESENT=1
   fi
-  if UI_TOOLBAR_MIGRATION=$(defaults read "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" 2> /dev/null); then
-    UI_TOOLBAR_MIGRATION_PRESENT=1
-  fi
+  for index in "${!UI_TOOLBAR_MIGRATION_KEYS[@]}"; do
+    UI_TOOLBAR_MIGRATION_PRESENT[index]=0
+    UI_TOOLBAR_MIGRATION[index]=""
+    if value=$(defaults read "$UI_TOOLBAR_DOMAIN" "${UI_TOOLBAR_MIGRATION_KEYS[index]}" 2> /dev/null); then
+      UI_TOOLBAR_MIGRATION_PRESENT[index]=1
+      UI_TOOLBAR_MIGRATION[index]=$value
+    fi
+  done
   ui_toolbar_cleanup() {
+    local index key value
     ui_cleanup
     if [ "$UI_TOOLBAR_CONFIG_PRESENT" = 1 ]; then
       defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" "$UI_TOOLBAR_CONFIG"
     else
       defaults delete "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" > /dev/null 2>&1 || true
     fi
-    if [ "$UI_TOOLBAR_MIGRATION_PRESENT" = 1 ]; then
-      # `defaults read` commonly prints booleans as 0/1; `write -bool`
-      # expects a boolean word on some macOS versions.
-      case "${UI_TOOLBAR_MIGRATION//[[:space:]]/}" in
-        1|true|TRUE|yes|YES) defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" -bool true ;;
-        0|false|FALSE|no|NO) defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" -bool false ;;
-        *) defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" "$UI_TOOLBAR_MIGRATION" ;;
-      esac
-    else
-      defaults delete "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" > /dev/null 2>&1 || true
-    fi
+    for index in "${!UI_TOOLBAR_MIGRATION_KEYS[@]}"; do
+      key=${UI_TOOLBAR_MIGRATION_KEYS[index]}
+      value=${UI_TOOLBAR_MIGRATION[index]}
+      if [ "${UI_TOOLBAR_MIGRATION_PRESENT[index]}" = 1 ]; then
+        # `defaults read` commonly prints booleans as 0/1; `write -bool`
+        # expects a boolean word on some macOS versions.
+        case "${value//[[:space:]]/}" in
+          1|true|TRUE|yes|YES) defaults write "$UI_TOOLBAR_DOMAIN" "$key" -bool true ;;
+          0|false|FALSE|no|NO) defaults write "$UI_TOOLBAR_DOMAIN" "$key" -bool false ;;
+          *) defaults write "$UI_TOOLBAR_DOMAIN" "$key" "$value" ;;
+        esac
+      else
+        defaults delete "$UI_TOOLBAR_DOMAIN" "$key" > /dev/null 2>&1 || true
+      fi
+    done
   }
   trap ui_toolbar_cleanup EXIT
   defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" \
     '{"TB Item Identifiers" = ("mitcad.sidebar", "NSToolbarFlexibleSpaceItem", "mitcad.search"); "TB Is Shown" = 1; "TB Display Mode" = 2; "TB Size Mode" = 1;}' || exit 1
-  defaults delete "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_MIGRATION_KEY" > /dev/null 2>&1 || true
+  for key in "${UI_TOOLBAR_MIGRATION_KEYS[@]}"; do
+    defaults delete "$UI_TOOLBAR_DOMAIN" "$key" > /dev/null 2>&1 || true
+  done
   rm -rf "$MITCAD_TEST_WORK/ToolbarProject" "$MITCAD_TEST_WORK/ToolbarOtherProject"
   MITCAD_TEST_INPUT=$here/ui-scripts/$script \
     ui_run_app toolbar --ui=native --no-recovery

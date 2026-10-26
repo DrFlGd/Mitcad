@@ -45,18 +45,44 @@ QString text(const QJsonObject& object, const char* field) {
   return object.value(QLatin1String(field)).toString();
 }
 
-const QStringList& kinds() {
-  static const QStringList all{QStringLiteral("printer"), QStringLiteral("process")};
-  return all;
-}
-
 } // namespace
 
-ProfilesDialog::ProfilesDialog(DocumentHost& host, QWidget* parent) : QDialog(parent), m_host(host) {
+ProfilesDialog::ProfilesDialog(DocumentHost& host, QWidget* parent) : QDialog(parent), m_designHost(host) {
   setWindowTitle(tr("Printers and Processes"));
   setWindowIcon(themeIcon(QStringLiteral("print-3d")));
   resize(960, 620);
   auto* layout = new QVBoxLayout(this);
+  m_panel = new ProfilesPanel(m_designHost, QStringLiteral("Profiles"));
+  layout->addWidget(m_panel);
+  // The user's library without a design (mitcad#704), then Close.
+  auto* myLibrary = new QPushButton(tr("My Library…"));
+  auto* close = new QPushButton(tr("Close"));
+  m_panel->addButton(myLibrary, QStringLiteral("my_library"));
+  m_panel->addButton(close, QStringLiteral("close"));
+  mac::styleDialog(this);
+  connect(myLibrary, &QPushButton::clicked, this, [this] {
+    qDebug().noquote() << QStringLiteral("Profiles: My Library…");
+    if (openMyLibrary) {
+      openMyLibrary();
+    }
+  });
+  connect(close, &QPushButton::clicked, this, &QDialog::reject);
+}
+
+ProfilesDialog::~ProfilesDialog() {
+  // The panel before the host it works through.
+  delete m_panel;
+}
+
+void ProfilesDialog::showItem(const QString& kind, const QString& key) { m_panel->showItem(kind, key); }
+
+void ProfilesDialog::refresh() { m_panel->refresh(); }
+
+ProfilesPanel::ProfilesPanel(PrintItemsHost& host, const QString& logName, QWidget* parent)
+    : QWidget(parent), m_host(host), m_log(logName),
+      m_kinds{QStringLiteral("printer"), QStringLiteral("process")} {
+  auto* layout = new QVBoxLayout(this);
+  layout->setContentsMargins(0, 0, 0, 0);
   auto* splitter = new QSplitter(Qt::Horizontal);
 
   // The list, as Materials': under Printers and Processes, no filter; the
@@ -100,25 +126,22 @@ ProfilesDialog::ProfilesDialog(DocumentHost& host, QWidget* parent) : QDialog(pa
   m_message->setWordWrap(true);
   layout->addWidget(m_message);
   // New, Duplicate and Delete under the list, as in Materials.
-  auto* buttons = new QHBoxLayout;
+  m_buttons = new QHBoxLayout;
   m_new = new QPushButton(tr("New ▾"));
   m_duplicate = new QPushButton(tr("Duplicate"));
   m_delete = new QPushButton(tr("Delete"));
   // The selected one as the design's printer or process (mitcad#655).
   m_use = new QPushButton(tr("Use in this design"));
-  m_close = new QPushButton(tr("Close"));
-  buttons->addWidget(m_new);
-  buttons->addWidget(m_duplicate);
-  buttons->addWidget(m_delete);
-  buttons->addStretch(1);
-  buttons->addWidget(m_use);
-  buttons->addWidget(m_close);
-  layout->addLayout(buttons);
+  m_buttons->addWidget(m_new);
+  m_buttons->addWidget(m_duplicate);
+  m_buttons->addWidget(m_delete);
+  m_buttons->addStretch(1);
+  m_buttons->addWidget(m_use);
+  layout->addLayout(m_buttons);
   // Enter in a field saves it: no button takes Enter.
-  for (QPushButton* button : {m_headerDuplicate, m_saveTo, m_new, m_duplicate, m_delete, m_use, m_close}) {
+  for (QPushButton* button : {m_headerDuplicate, m_saveTo, m_new, m_duplicate, m_delete, m_use}) {
     mac::auxiliaryButton(button);
   }
-  mac::styleDialog(this);
 
   connect(m_list, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* row) {
     if (m_building || row == nullptr || row->data(0, kKeyRole).toString().isEmpty()) {
@@ -150,25 +173,56 @@ ProfilesDialog::ProfilesDialog(DocumentHost& host, QWidget* parent) : QDialog(pa
                                                                 : value.toVariant().toString());
     edit({{QStringLiteral("values"), QJsonObject{{key, value}}}}, QStringLiteral("%1 = %2").arg(key, shown), key);
   });
-  connect(m_form, &SettingsForm::layoutChanged, this, &ProfilesDialog::scheduleLogPlaces);
-  connect(m_saveTo, &QPushButton::clicked, this, &ProfilesDialog::saveTo);
-  connect(m_new, &QPushButton::clicked, this, &ProfilesDialog::newProfile);
-  connect(m_duplicate, &QPushButton::clicked, this, &ProfilesDialog::duplicate);
-  connect(m_headerDuplicate, &QPushButton::clicked, this, &ProfilesDialog::duplicate);
-  connect(m_use, &QPushButton::clicked, this, &ProfilesDialog::useInDesign);
-  connect(m_delete, &QPushButton::clicked, this, &ProfilesDialog::remove);
-  connect(m_close, &QPushButton::clicked, this, &QDialog::reject);
+  connect(m_form, &SettingsForm::layoutChanged, this, &ProfilesPanel::scheduleLogPlaces);
+  connect(m_saveTo, &QPushButton::clicked, this, &ProfilesPanel::saveTo);
+  connect(m_new, &QPushButton::clicked, this, &ProfilesPanel::newProfile);
+  connect(m_duplicate, &QPushButton::clicked, this, &ProfilesPanel::duplicate);
+  connect(m_headerDuplicate, &QPushButton::clicked, this, &ProfilesPanel::duplicate);
+  connect(m_use, &QPushButton::clicked, this, &ProfilesPanel::useInDesign);
+  connect(m_delete, &QPushButton::clicked, this, &ProfilesPanel::remove);
 }
 
-ProfilesDialog::~ProfilesDialog() = default;
+ProfilesPanel::~ProfilesPanel() = default;
 
-QString ProfilesDialog::rowKey(const LibraryItem& item) { return item.kind + QLatin1Char('|') + item.key(); }
+void ProfilesPanel::setKinds(const QStringList& kinds) {
+  m_kinds = kinds;
+  // One kind: New makes it at once, no menu (mitcad#704).
+  m_new->setText(kinds.size() == 1 ? tr("New") : tr("New ▾"));
+  m_emptyState->setText(kinds == QStringList{QStringLiteral("printer")}   ? tr("No printer selected")
+                        : kinds == QStringList{QStringLiteral("process")} ? tr("No process selected")
+                                                                          : tr("No printer or process selected"));
+}
 
-QString ProfilesDialog::kindTitle(const QString& kind) {
+void ProfilesPanel::setLibrary(const QString& library) {
+  if (library == m_libraryPlace) {
+    return;
+  }
+  m_libraryPlace = library;
+  m_currentKey.clear();
+  m_currentDesignId.clear();
+  m_loggedRows.clear();
+  m_loggedValues.clear();
+  refresh();
+}
+
+QString ProfilesPanel::itemsProject() const {
+  // My library is the same wherever the design is: no project's items.
+  return m_libraryPlace == QStringLiteral("user") ? QString() : m_host.projectFolder();
+}
+
+void ProfilesPanel::addButton(QPushButton* button, const QString& name) {
+  mac::auxiliaryButton(button);
+  m_buttons->addWidget(button);
+  m_windowButtons.append({name, button});
+}
+
+QString ProfilesPanel::rowKey(const LibraryItem& item) { return item.kind + QLatin1Char('|') + item.key(); }
+
+QString ProfilesPanel::kindTitle(const QString& kind) {
   return kind == QStringLiteral("printer") ? tr("Printers") : tr("Processes");
 }
 
-void ProfilesDialog::showItem(const QString& kind, const QString& key) {
+void ProfilesPanel::showItem(const QString& kind, const QString& key) {
   m_currentKind = kind;
   m_currentKey = key.isEmpty() ? QString() : kind + QLatin1Char('|') + key;
   m_currentDesignId.clear();
@@ -200,7 +254,7 @@ void ProfilesDialog::showItem(const QString& kind, const QString& key) {
   }
 }
 
-const LibraryItem* ProfilesDialog::current() const {
+const LibraryItem* ProfilesPanel::current() const {
   for (const LibraryItem& item : m_items) {
     if (rowKey(item) == m_currentKey) {
       return &item;
@@ -209,12 +263,18 @@ const LibraryItem* ProfilesDialog::current() const {
   return nullptr;
 }
 
-void ProfilesDialog::refresh() {
-  const QString project = m_host.projectFolder();
+void ProfilesPanel::refresh() {
+  const QString project = itemsProject();
   QString error;
   m_items.clear();
-  for (const QString& kind : kinds()) {
-    m_items += queryLibraryItems(m_host.model(), kind, project, &error);
+  for (const QString& kind : std::as_const(m_kinds)) {
+    for (const LibraryItem& item : queryLibraryItems(m_host.model(), kind, project, &error)) {
+      // In a library its items and the built-in ones to duplicate
+      // (mitcad#704).
+      if (!inLibrary() || item.place == m_libraryPlace || item.readOnly) {
+        m_items.append(item);
+      }
+    }
   }
   try {
     m_profiles = m_host.model().queryArray(QStringLiteral("print_profiles"));
@@ -254,33 +314,47 @@ void ProfilesDialog::refresh() {
   }
 }
 
-void ProfilesDialog::rebuildList() {
+void ProfilesPanel::rebuildList() {
   m_building = true;
   m_list->clear();
   QTreeWidgetItem* selected = nullptr;
-  QHash<QString, QTreeWidgetItem*> headings;
-  for (const QString& kind : kinds()) {
-    auto* heading = new QTreeWidgetItem(m_list, {kindTitle(kind)});
-    heading->setFlags(Qt::ItemIsEnabled);
-    heading->setFirstColumnSpanned(true);
-    heading->setData(1, kKeyRole, kind);
-    QFont bold = heading->font(0);
+  const auto heading = [this](const QString& title, const QString& group) {
+    auto* made = new QTreeWidgetItem(m_list, {title});
+    made->setFlags(Qt::ItemIsEnabled);
+    made->setFirstColumnSpanned(true);
+    made->setData(1, kKeyRole, group);
+    QFont bold = made->font(0);
     bold.setBold(true);
-    heading->setFont(0, bold);
-    headings.insert(kind, heading);
+    made->setFont(0, bold);
+    return made;
+  };
+  QHash<QString, QTreeWidgetItem*> headings;
+  for (const QString& kind : std::as_const(m_kinds)) {
+    headings.insert(kind, heading(kindTitle(kind), kind));
   }
   // Each kind's items in the query's order (by name), the design's choice
-  // marked; no places (mitcad#655).
-  for (const QString& kind : kinds()) {
-    for (const LibraryItem& item : std::as_const(m_items)) {
-      if (item.kind != kind) {
-        continue;
-      }
-      auto* row = new QTreeWidgetItem(headings.value(kind), {item.name, QString()});
-      row->setData(0, kKeyRole, rowKey(item));
-      markInDesign(row, usedByDesign(item), tr("Used in this design"));
-      if (rowKey(item) == m_currentKey) {
-        selected = row;
+  // marked; no places (mitcad#655). In a library its own items, then the
+  // built-in ones under Built-in (mitcad#704).
+  QTreeWidgetItem* builtIn = nullptr;
+  for (const bool readOnly : {false, true}) {
+    for (const QString& kind : std::as_const(m_kinds)) {
+      for (const LibraryItem& item : std::as_const(m_items)) {
+        if (item.kind != kind || (inLibrary() && item.readOnly != readOnly) || (!inLibrary() && readOnly)) {
+          continue;
+        }
+        QTreeWidgetItem* under = headings.value(kind);
+        if (inLibrary() && readOnly) {
+          if (builtIn == nullptr) {
+            builtIn = heading(placeName(QStringLiteral("mitcad")), QStringLiteral("built_in"));
+          }
+          under = builtIn;
+        }
+        auto* row = new QTreeWidgetItem(under, {item.name, QString()});
+        row->setData(0, kKeyRole, rowKey(item));
+        markInDesign(row, usedByDesign(item), tr("Used in this design"));
+        if (rowKey(item) == m_currentKey) {
+          selected = row;
+        }
       }
     }
   }
@@ -294,7 +368,7 @@ void ProfilesDialog::rebuildList() {
   scheduleLogPlaces();
 }
 
-void ProfilesDialog::selectKey(const QString& key) {
+void ProfilesPanel::selectKey(const QString& key) {
   for (QTreeWidgetItemIterator it(m_list); *it != nullptr; ++it) {
     if ((*it)->data(0, kKeyRole).toString() == key) {
       m_list->setCurrentItem(*it);
@@ -304,13 +378,13 @@ void ProfilesDialog::selectKey(const QString& key) {
   }
 }
 
-void ProfilesDialog::showCurrent() {
+void ProfilesPanel::showCurrent() {
   const LibraryItem* item = current();
   const bool project = !m_host.projectFolder().isEmpty();
   m_duplicate->setEnabled(item != nullptr);
   // Only for an item the design does not use (mitcad#655): its state is
   // the header's "● Used in this design", never a disabled button.
-  m_use->setVisible(item != nullptr && !usedByDesign(*item));
+  m_use->setVisible(item != nullptr && !usedByDesign(*item) && m_host.hasDesign());
   m_delete->setEnabled(item != nullptr && !item->readOnly);
   m_saveTo->setText(saveToText(project));
   // Nothing selected (Slicer default): a quiet line, never a blank side
@@ -339,9 +413,10 @@ void ProfilesDialog::showCurrent() {
   // Built-in or the user's own, no place (mitcad#655); Save to only for
   // the user's own that is in no library yet.
   m_builtIn->setVisible(item->readOnly);
-  showSavedState(m_saved, item);
+  // In a library every item is the library's: no saved state (mitcad#704).
+  showSavedState(m_saved, inLibrary() ? nullptr : item);
   m_usedState->setVisible(usedByDesign(*item));
-  m_saveTo->setVisible(item->unsaved());
+  m_saveTo->setVisible(item->unsaved() && m_host.hasDesign());
   m_form->setKeys(m_keys, item->kind, m_dialect);
   m_form->setReadOnly(!editable);
   const QJsonObject values = fields.value(QStringLiteral("values")).toObject();
@@ -377,7 +452,7 @@ void ProfilesDialog::showCurrent() {
   }
 }
 
-bool ProfilesDialog::canChange() {
+bool ProfilesPanel::canChange() {
   if (m_host.canChangePrintSettings()) {
     return true;
   }
@@ -385,10 +460,11 @@ bool ProfilesDialog::canChange() {
   return false;
 }
 
-bool ProfilesDialog::run(const QJsonObject& command, QJsonObject* result) {
+bool ProfilesPanel::run(const QJsonObject& command, QJsonObject* result) {
   if (m_host.runModelCommand(command, result)) {
     setMessage(QString());
     m_host.commandInputsChanged();
+    emit changed();
     return true;
   }
   if (!m_host.lastCancelled()) {
@@ -396,12 +472,12 @@ bool ProfilesDialog::run(const QJsonObject& command, QJsonObject* result) {
     setMessage(plainModelError(m_host.lastError(), m_keys, command, item != nullptr ? item->name : QString()),
                true); // plain words (mitcad#655)
   }
-  qDebug().noquote() << QStringLiteral("Profiles: %1 refused: %2")
+  qDebug().noquote() << QStringLiteral("%1: %2 refused: %3").arg(m_log)
                             .arg(command.value(QStringLiteral("cmd")).toString(), m_host.lastError());
   return false;
 }
 
-void ProfilesDialog::setMessage(const QString& message, bool error) {
+void ProfilesPanel::setMessage(const QString& message, bool error) {
   m_message->setText(message);
   if (error) {
     setErrorStyleSheet(m_message);
@@ -410,7 +486,7 @@ void ProfilesDialog::setMessage(const QString& message, bool error) {
   }
 }
 
-void ProfilesDialog::edit(const QJsonObject& change, const QString& what, const QString& field) {
+void ProfilesPanel::edit(const QJsonObject& change, const QString& what, const QString& field) {
   const LibraryItem* item = current();
   if (item == nullptr || item->readOnly) {
     return;
@@ -425,10 +501,10 @@ void ProfilesDialog::edit(const QJsonObject& change, const QString& what, const 
     // Edited while another design's change waits: asked first
     // (mitcad#655).
     if (target.changed && !changeAsked(target)) {
-      run(askChangedElsewhere(this, target, QStringLiteral("Profiles"), m_host.projectFolder()));
+      run(askChangedElsewhere(this, target, m_log, itemsProject()));
     }
     QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("edit_print_profile")}};
-    nameItem(command, target, m_host.projectFolder());
+    nameItem(command, target, itemsProject());
     if (!target.library.isEmpty()) {
       command.insert(QStringLiteral("kind"), target.kind); // a library may have a printer and a process of the id
     }
@@ -448,46 +524,63 @@ void ProfilesDialog::edit(const QJsonObject& change, const QString& what, const 
   });
 }
 
-void ProfilesDialog::newProfile() {
+void ProfilesPanel::newProfile() {
   if (!canChange()) {
     return;
   }
   // A printer or a process (mitcad#655): made in this design as its
-  // choice, one undo step; put into a library only by Save to.
-  QMenu menu(this);
-  QAction* printer = menu.addAction(tr("Printer"));
-  QAction* process = menu.addAction(tr("Process"));
-  qDebug().noquote() << QStringLiteral("Profiles new menu: %1 | %2").arg(printer->text(), process->text());
-  QAction* chosen = execMenu(&menu, m_new->mapToGlobal(QPoint(0, m_new->height())));
-  if (chosen == nullptr) {
-    return;
+  // choice, one undo step; put into a library only by Save to. In My
+  // Library the tab's one kind, made in its library (mitcad#704).
+  QString kind = m_kinds.value(0);
+  if (m_kinds.size() > 1) {
+    QMenu menu(this);
+    QAction* printer = menu.addAction(tr("Printer"));
+    QAction* process = menu.addAction(tr("Process"));
+    qDebug().noquote() << QStringLiteral("%1 new menu: %2 | %3").arg(m_log).arg(printer->text(), process->text());
+    QAction* chosen = execMenu(&menu, m_new->mapToGlobal(QPoint(0, m_new->height())));
+    if (chosen == nullptr) {
+      return;
+    }
+    kind = chosen == printer ? QStringLiteral("printer") : QStringLiteral("process");
   }
-  const QString kind = chosen == printer ? QStringLiteral("printer") : QStringLiteral("process");
-  const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("create_print_profile")},
-                            {QStringLiteral("kind"), kind},
-                            {QStringLiteral("choose"), true}};
+  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("create_print_profile")}, {QStringLiteral("kind"), kind}};
+  inPlace(command);
   QJsonObject result;
   if (run(command, &result)) {
+    const QString place = inLibrary() ? m_libraryPlace : QStringLiteral("design");
     m_currentKind = kind;
-    m_currentKey = kind + QStringLiteral("|design/") + text(result, "id");
-    m_currentDesignId = text(result, "id");
+    m_currentKey = kind + QLatin1Char('|') + place + QLatin1Char('/') + text(result, "id");
+    m_currentDesignId = inLibrary() ? QString() : text(result, "id");
     m_pendingFocus = m_currentKey;
     m_loggedValues.clear();
-    qDebug().noquote() << QStringLiteral("Profile created: %1 %2 in design").arg(kind, text(result, "id"));
+    qDebug().noquote() << QStringLiteral("Profile created: %1 %2 in %3").arg(kind, text(result, "id"), place);
   }
   refresh();
 }
 
-void ProfilesDialog::duplicate() {
+void ProfilesPanel::inPlace(QJsonObject& command) const {
+  if (inLibrary()) {
+    command.insert(QStringLiteral("library"), m_libraryPlace);
+    if (!itemsProject().isEmpty()) {
+      command.insert(QStringLiteral("project"), itemsProject());
+    }
+  } else {
+    // The design's choice in the same undo step (mitcad#655).
+    command.insert(QStringLiteral("choose"), true);
+  }
+}
+
+void ProfilesPanel::duplicate() {
   const LibraryItem* item = current();
   if (item == nullptr || !canChange()) {
     return;
   }
   const LibraryItem source = *item;
-  const QString project = m_host.projectFolder();
+  const QString project = itemsProject();
   // The user's own copy in this design, made its choice in the same undo
   // step (mitcad#655): from the design's copy of the source when it has
-  // one, else from the library's item.
+  // one, else from the library's item. In My Library the copy is made in
+  // its library (mitcad#704).
   const QJsonValue basedOn = source.library.isEmpty() || !source.inDesign.isEmpty()
                                  ? QJsonValue(source.designId())
                                  : QJsonValue(QJsonObject{{QStringLiteral("library"), source.library},
@@ -495,27 +588,28 @@ void ProfilesDialog::duplicate() {
   // The model names the copy after the source ("Standard 2").
   QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("create_print_profile")},
                       {QStringLiteral("kind"), source.kind},
-                      {QStringLiteral("based_on"), basedOn},
-                      {QStringLiteral("choose"), true}};
+                      {QStringLiteral("based_on"), basedOn}};
   if (!project.isEmpty() && basedOn.isObject()) {
     command.insert(QStringLiteral("project"), project);
   }
+  inPlace(command);
   QJsonObject result;
   if (!run(command, &result)) {
     refresh();
     return;
   }
   const QString id = text(result, "id");
-  qDebug().noquote() << QStringLiteral("Profile duplicated: %1 as %2 in design").arg(source.name, id);
+  const QString place = inLibrary() ? m_libraryPlace : QStringLiteral("design");
+  qDebug().noquote() << QStringLiteral("Profile duplicated: %1 as %2 in %3").arg(source.name, id, place);
   m_currentKind = source.kind;
-  m_currentKey = source.kind + QStringLiteral("|design/") + id;
-  m_currentDesignId = id;
+  m_currentKey = source.kind + QLatin1Char('|') + place + QLatin1Char('/') + id;
+  m_currentDesignId = inLibrary() ? QString() : id;
   m_pendingFocus = m_currentKey;
   m_loggedValues.clear();
   refresh();
 }
 
-void ProfilesDialog::useInDesign() {
+void ProfilesPanel::useInDesign() {
   const LibraryItem* item = current();
   if (item == nullptr || item->chosen || !canChange()) {
     return;
@@ -528,25 +622,25 @@ void ProfilesDialog::useInDesign() {
                       {QStringLiteral("set"), target.kind == QStringLiteral("printer") ? QStringLiteral("Print Printer")
                                                                                        : QStringLiteral("Print Process")},
                       {QStringLiteral("key"), QStringLiteral("profile")}};
-  nameItem(command, target, m_host.projectFolder(), QStringLiteral("value"));
+  nameItem(command, target, itemsProject(), QStringLiteral("value"));
   if (run(command)) {
     qDebug().noquote() << QStringLiteral("Profile used in this design: %1 %2").arg(target.kind, target.name);
   }
   refresh();
 }
 
-void ProfilesDialog::remove() {
+void ProfilesPanel::remove() {
   const LibraryItem* item = current();
   if (item == nullptr || item->readOnly || !canChange()) {
     return;
   }
   const LibraryItem target = *item;
   // Always asked, naming what uses it (mitcad#655).
-  if (!confirmDelete(this, target, QStringLiteral("Profiles"))) {
+  if (!confirmDelete(this, target, m_log)) {
     return;
   }
   QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("delete_print_profile")}};
-  nameItem(command, target, m_host.projectFolder());
+  nameItem(command, target, itemsProject());
   if (!target.library.isEmpty()) {
     command.insert(QStringLiteral("kind"), target.kind);
   }
@@ -556,14 +650,14 @@ void ProfilesDialog::remove() {
   refresh();
 }
 
-void ProfilesDialog::saveTo() {
+void ProfilesPanel::saveTo() {
   const LibraryItem* item = current();
   if (item == nullptr || !item->unsaved() || !canChange()) {
     return;
   }
   const LibraryItem target = *item;
   const QString project = m_host.projectFolder();
-  const QString library = choosePlace(m_saveTo, QStringLiteral("Profiles save_to"), !project.isEmpty());
+  const QString library = choosePlace(m_saveTo, m_log + QStringLiteral(" save_to"), !project.isEmpty());
   if (library.isEmpty()) {
     return;
   }
@@ -584,7 +678,7 @@ void ProfilesDialog::saveTo() {
   refresh();
 }
 
-void ProfilesDialog::askChanges() {
+void ProfilesPanel::askChanges() {
   const LibraryItem* item = current();
   if (item == nullptr || !item->changed || changeAsked(*item) || !isVisible() ||
       !m_host.canChangePrintSettings()) {
@@ -592,7 +686,7 @@ void ProfilesDialog::askChanges() {
   }
   const LibraryItem target = *item;
   // Use the changes or Keep these, one undo step either way (mitcad#655).
-  const QJsonObject command = askChangedElsewhere(this, target, QStringLiteral("Profiles"), m_host.projectFolder());
+  const QJsonObject command = askChangedElsewhere(this, target, m_log, itemsProject());
   if (run(command)) {
     qDebug().noquote() << QStringLiteral("Profile %1: %2").arg(target.name, command.value(QStringLiteral("cmd")).toString());
   }
@@ -600,7 +694,7 @@ void ProfilesDialog::askChanges() {
   refresh();
 }
 
-void ProfilesDialog::logRows() {
+void ProfilesPanel::logRows() {
   if (!isVisible()) {
     return;
   }
@@ -614,14 +708,14 @@ void ProfilesDialog::logRows() {
     return;
   }
   m_loggedRows = logged;
-  qDebug().noquote() << QStringLiteral("Profiles: %1 items").arg(rows.size());
+  qDebug().noquote() << QStringLiteral("%1: %2 items").arg(m_log).arg(rows.size());
   for (const QString& row : std::as_const(rows)) {
-    qDebug().noquote() << QStringLiteral("Profiles row: %1").arg(row);
+    qDebug().noquote() << QStringLiteral("%1 row: %2").arg(m_log).arg(row);
   }
 }
 
-void ProfilesDialog::showEvent(QShowEvent* event) {
-  QDialog::showEvent(event);
+void ProfilesPanel::showEvent(QShowEvent* event) {
+  QWidget::showEvent(event);
   m_loggedRows.clear();
   m_loggedPlaces.clear();
   m_loggedValues.clear();
@@ -630,12 +724,12 @@ void ProfilesDialog::showEvent(QShowEvent* event) {
   scheduleLogPlaces();
 }
 
-void ProfilesDialog::resizeEvent(QResizeEvent* event) {
-  QDialog::resizeEvent(event);
+void ProfilesPanel::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
   scheduleLogPlaces();
 }
 
-bool ProfilesDialog::eventFilter(QObject* watched, QEvent* event) {
+bool ProfilesPanel::eventFilter(QObject* watched, QEvent* event) {
   // F2 on a row: its name.
   if (watched == m_list && event->type() == QEvent::KeyPress &&
       static_cast<QKeyEvent*>(event)->key() == Qt::Key_F2 && current() != nullptr && !current()->readOnly) {
@@ -643,19 +737,20 @@ bool ProfilesDialog::eventFilter(QObject* watched, QEvent* event) {
     m_name->selectAll();
     return true;
   }
-  return QDialog::eventFilter(watched, event);
+  return QWidget::eventFilter(watched, event);
 }
 
-void ProfilesDialog::scheduleLogPlaces() {
+void ProfilesPanel::scheduleLogPlaces() {
   TestSync::singleShot(0, this, [this] { logPlaces(); });
 }
 
-void ProfilesDialog::logPlaces() {
-  if (!isVisible() || parentWidget() == nullptr) {
+void ProfilesPanel::logPlaces() {
+  // In the main window's coordinates (the parent of the panel's window), as
+  // the other logged places.
+  if (!isVisible() || window()->parentWidget() == nullptr) {
     return;
   }
-  // In the main window's coordinates, as the other logged places.
-  const QPoint origin = parentWidget()->window()->mapToGlobal(QPoint(0, 0));
+  const QPoint origin = window()->parentWidget()->window()->mapToGlobal(QPoint(0, 0));
   const auto at = [&origin](QWidget* widget, const QPoint& point) {
     const QPoint global = widget->mapToGlobal(point) - origin;
     return QStringLiteral("%1,%2").arg(global.x()).arg(global.y());
@@ -668,17 +763,25 @@ void ProfilesDialog::logPlaces() {
     if (key.isEmpty() || row->isHidden() || !rect.isValid() || !m_list->viewport()->rect().contains(rect.center())) {
       continue;
     }
-    lines << QStringLiteral("Profiles item %1 at %2").arg(row->text(0), at(m_list->viewport(), QPoint(60, rect.center().y())));
+    lines << QStringLiteral("%1 item %2 at %3").arg(m_log).arg(row->text(0), at(m_list->viewport(), QPoint(60, rect.center().y())));
   }
-  const std::pair<const char*, QWidget*> widgets[] = {
-      {"name", m_name},           {"save_to", m_saveTo}, {"header_duplicate", m_headerDuplicate}, {"new", m_new},
-      {"duplicate", m_duplicate}, {"delete", m_delete},  {"use", m_use}, {"close", m_close}};
-  for (const auto& [name, widget] : widgets) {
+  QVector<std::pair<QString, QWidget*>> widgets{{QStringLiteral("name"), m_name},
+                                               {QStringLiteral("save_to"), m_saveTo},
+                                               {QStringLiteral("header_duplicate"), m_headerDuplicate},
+                                               {QStringLiteral("new"), m_new},
+                                               {QStringLiteral("duplicate"), m_duplicate},
+                                               {QStringLiteral("delete"), m_delete},
+                                               {QStringLiteral("use"), m_use}};
+  // The window's buttons (My Library…, Close).
+  for (const auto& [name, button] : std::as_const(m_windowButtons)) {
+    widgets.append(std::pair<QString, QWidget*>(name, button));
+  }
+  for (const auto& [name, widget] : std::as_const(widgets)) {
     if (widget->isVisibleTo(this)) {
-      lines << QStringLiteral("Profiles %1 at %2").arg(QString::fromLatin1(name), at(widget, widget->rect().center()));
+      lines << QStringLiteral("%1 %2 at %3").arg(m_log).arg(name, at(widget, widget->rect().center()));
     }
   }
-  lines << m_form->places(QStringLiteral("Profiles settings"), at);
+  lines << m_form->places(m_log + QStringLiteral(" settings"), at);
   const QString logged = lines.join(QLatin1Char('\n'));
   if (logged != m_loggedPlaces) {
     m_loggedPlaces = logged;

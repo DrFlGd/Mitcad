@@ -613,6 +613,204 @@ fn parameters_of_class_version_9() {
     );
 }
 
+/// A class-version-10 parameter (writer 2706) has the version 9 layout with
+/// `u32 5` in place of the `u32 6` and one more byte in the flags after the
+/// expression, the user flag still the last of them.
+#[test]
+fn parameters_of_class_version_10() {
+    let mut d = Doc::default();
+    d.class(ROOT, "", 0);
+    d.class(PARAMETER, ROOT, 10);
+    d.class(PARAMETER_LIST, ROOT, 4);
+    d.class(PARAMETER_HOLDER, ROOT, 0);
+    d.obj(30, PARAMETER_HOLDER, vec![0, 0]);
+    d.obj(32, PARAMETER_LIST, vec![0, 0]);
+    let v10 = |number, holder, expr: &str, role, name, value| {
+        let mut p = parameter_v8(number, holder, expr, role, "", "mm", name, value);
+        p.splice(3..3, [0, 0, 0, 0]);
+        p[7] = 5;
+        // The flags start after the expression.
+        let at = 3 + 4 + 4 + 1 + 4 + 4 + holder.map_or(1, |_| 11) + 4 + 2 * expr.len();
+        p.insert(at, 0);
+        p
+    };
+    d.obj(
+        40,
+        PARAMETER,
+        v10(1, Some(30), "Bore", "Diameter Dimension-2", "d1", 4.5),
+    );
+    d.obj(
+        41,
+        PARAMETER,
+        v10(2, None, "64 mm", "User Parameter", "Height", 6.4),
+    );
+    let dec = decode::decode(&d.segment());
+    assert_eq!(dec.parameter_failures, 0);
+    let p: Vec<_> = dec
+        .parameters
+        .iter()
+        .map(|p| {
+            (
+                p.number,
+                p.holder,
+                p.expression.as_str(),
+                p.role.as_str(),
+                p.name.as_str(),
+                p.value,
+                p.list,
+                p.gap1.len(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        p,
+        [
+            (
+                1,
+                Some(30),
+                "Bore",
+                "Diameter Dimension-2",
+                "d1",
+                4.5,
+                Some(32),
+                11
+            ),
+            (
+                2,
+                None,
+                "64 mm",
+                "User Parameter",
+                "Height",
+                6.4,
+                Some(32),
+                11
+            ),
+        ]
+    );
+    assert!(dec.parameters[1].is_user());
+    assert_eq!(dec.parameters[1].gap1[10], 1);
+}
+
+/// A hole whose sub-items list the hole itself (`u32 1 | ref self`): the
+/// zeros before that reference, read from 20 bytes later, look like a tail
+/// with an empty base name, the index 256 and no sub-items, whose `u32`
+/// after the index (zero on every item) is the reference's first bytes.
+#[test]
+fn a_tail_listing_the_item_itself_keeps_its_name() {
+    const HOLE: &str = "1C037A07-4A15-43F6-ABFC-BBF61B9038D4";
+    let mut d = Doc::default();
+    for (g, p, v) in [
+        (ROOT, "", 0),
+        (TIMELINE, ROOT, 3),
+        (FEATURE_MANAGER, ROOT, 1),
+        (HOLE, ROOT, 7),
+        (HEALTH, ROOT, 1),
+    ] {
+        d.class(g, p, v);
+    }
+    d.obj(1, FEATURE_MANAGER, vec![0, 0]);
+    d.obj(3, TIMELINE, cat(&[&[0, 0], &r(1), &u32b(1), &r(600)]));
+    d.obj(
+        600,
+        HOLE,
+        cat(&[
+            &[0, 0],
+            &8i32.to_le_bytes(),
+            &s16("Hole"),
+            &u32b(1),
+            &u32b(0),
+            &s16(""),
+            &u32b(1),
+            &r(600),
+            &[0, 0, 0],
+            &r(601),
+            &[0],
+        ]),
+    );
+    d.obj(601, HEALTH, vec![0, 0]);
+    let dec = decode::decode(&d.segment());
+    let item = &dec.timeline[0];
+    let tail = item.tail.as_ref().unwrap();
+    assert_eq!(item.name.as_deref(), Some("Hole1"));
+    assert_eq!((tail.result_no, tail.index, tail.after_index), (8, 1, 0));
+    assert_eq!(tail.sub_features, [Some(600)]);
+}
+
+/// A tapped hole's modelled thread is a sub-item with a result number of
+/// its own after the hole's: the hole's last operation (mitcad#719). A
+/// cosmetic thread's is not taken.
+#[test]
+fn a_modelled_thread_of_a_hole_is_its_last_operation() {
+    const HOLE: &str = "1C037A07-4A15-43F6-ABFC-BBF61B9038D4";
+    // A thread sub-item (class version 5) after its root part, then its tail.
+    let thread = |modeled: u8| {
+        cat(&[
+            &[0, 0],
+            &f64s(&[60.0]),
+            &[0],
+            &u32b(0),
+            &s16("6H"),
+            &s16("M10x1.5"),
+            &s16("M10x1.5"),
+            &s16("10.0"),
+            &s16("ISO Metric profile"),
+            &[1],
+            &u32b(2),
+            &f64s(&[1.0198, 0.8526]),
+            &[modeled],
+            &f64s(&[0.15, 0.9116]),
+            &r(600),
+            &r(653),
+            &r(654),
+            &[1],
+            &[0; 4],
+            &tail(7, "Thread", 1, "", [0, 0, 0], 652),
+        ])
+    };
+    let mut results = Vec::new();
+    for modeled in [1, 0] {
+        let mut d = sample();
+        d.class(HOLE, ROOT, 7);
+        d.class(THREAD, ROOT, 5);
+        d.objects.retain(|o| o.0 != 3);
+        d.obj(
+            3,
+            TIMELINE,
+            cat(&[&[0, 0], &r(1), &u32b(3), &r(10), &r(20), &r(600)]),
+        );
+        d.obj(
+            600,
+            HOLE,
+            cat(&[
+                &[0, 0],
+                &6i32.to_le_bytes(),
+                &s16("Hole"),
+                &u32b(1),
+                &u32b(0),
+                &s16(""),
+                &u32b(2),
+                &r(600),
+                &r(650),
+                &[0, 0, 0],
+                &r(601),
+                &[0],
+            ]),
+        );
+        d.obj(601, HEALTH, vec![0, 0]);
+        d.obj(650, THREAD, thread(modeled));
+        d.obj(652, HEALTH, vec![0, 0]);
+        let (m, b) = d.streams();
+        let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+        let hole = &v["timeline"]["items"][2];
+        assert_eq!(hole["detail"]["thread"]["isModeled"], modeled == 1);
+        results.push((
+            hole["_f3d"]["result_no"].clone(),
+            hole["_f3d"]["last_result_no"].clone(),
+        ));
+    }
+    assert_eq!(results, [(json!(6), json!(7)), (json!(6), Value::Null)]);
+}
+
 /// A text parameter keeps a default expression with a unit (`1 mm`) in the
 /// string after its role: it is no comment, and the parameter has no number.
 #[test]

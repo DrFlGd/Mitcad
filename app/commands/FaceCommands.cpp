@@ -357,6 +357,7 @@ CommandDef splitFaceCommand(const CommandContext& context) {
   def.tooltip = QObject::tr("Splits faces along a plane, a face, a body or sketch curves");
   def.group = QStringLiteral("MODIFY");
   def.featureType = QStringLiteral("split_face");
+  def.extendedToolPreview = true; // the splitting tool as it is extended (mitcad#712)
   def.inputs = {
       selectionInput(QStringLiteral("faces"), QObject::tr("Faces to Split"), SelectKind::Face, 1, 0).withoutMeshes(),
       toolInput(),
@@ -401,6 +402,7 @@ CommandDef splitBodyCommand(const CommandContext& context) {
   def.group = QStringLiteral("MODIFY");
   def.keywords = {QStringLiteral("cut"), QStringLiteral("divide")};
   def.featureType = QStringLiteral("split_body");
+  def.extendedToolPreview = true; // the splitting tool as it is extended (mitcad#712)
   def.inputs = {
       selectionInput(QStringLiteral("bodies"), QObject::tr("Bodies to Split"), SelectKind::Body, 1, 0).withoutMeshes(),
       toolInput(),

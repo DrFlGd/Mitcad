@@ -83,7 +83,7 @@ Ui-StartApp 'inactive-ghost' @('--open', $design)
 Ui-ExpectLog 'F2.b0 in O1' "Part's block shown"
 Ui-ExpectLog 'Opened with the root active; C3 was active in the file (unmodified)' 'opened with the root active (mitcad#426)'
 Ui-Sync
-# After the design opened: the empty design of the start has Part1 active.
+# After the design opened: the empty design of the start has Component1 active.
 $lines = @(Ui-LogLines)
 $opened = [array]::FindLastIndex($lines, [Predicate[string]] { param($l) $l.StartsWith('Opened with the root active') })
 $ghosts = @($lines | Select-Object -Skip ($opened + 1) | Where-Object { $_.StartsWith('View inactive ghosts: ') -and -not $_.EndsWith(': none') })

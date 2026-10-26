@@ -178,6 +178,74 @@ fn a_hole_by_at_goes_into_the_shaft_along_its_axis() {
     );
 }
 
+/// A hole at a point of a shaft's side goes across the axis into the
+/// shaft, from the point moved onto the cylinder (mitcad#719).
+#[test]
+fn a_hole_on_a_shafts_side_goes_across_its_axis() {
+    let mut doc = Document::new(MockKernel::default());
+    let (body, side) = shaft(&mut doc);
+    let hole = add(
+        &mut doc,
+        json!({"type": "hole", "diameter": 3, "extent": {"type": "distance", "depth": 4},
+               "placement": {"type": "face", "body": body, "face": side,
+                             "points": [[0, 9, 10]]}}),
+    )
+    .unwrap();
+    ok(&doc, hole);
+    let specs = doc.kernel().specs.borrow();
+    let line = specs
+        .iter()
+        .find(|s| s.starts_with(&format!("hole {hole} at")))
+        .expect("the hole's call");
+    // On the cylinder of radius 4 at y = 4, z = 10, towards the axis.
+    assert!(
+        line.contains("([0.0, 4.0, 10.0], [0.0, -1.0, 0.0])"),
+        "{line}"
+    );
+}
+
+/// A hole on a shaft's side at a distance along its axis from its end
+/// face, on the side of a point, follows the distance (mitcad#719).
+#[test]
+fn a_hole_at_a_distance_from_a_shafts_end_follows_it() {
+    let mut doc = Document::new(MockKernel::default());
+    let (body, side) = shaft(&mut doc);
+    let hole = add(
+        &mut doc,
+        json!({"type": "hole", "diameter": 3, "extent": {"type": "distance", "depth": 4},
+               "placement": {"type": "cylinder_offset", "body": body, "face": side,
+                             "plane": "xy", "offset": "12 mm", "toward": [-9, 0, 0]}}),
+    )
+    .unwrap();
+    ok(&doc, hole);
+    let line = |doc: &Document<MockKernel>| {
+        doc.kernel()
+            .specs
+            .borrow()
+            .iter()
+            .rev()
+            .find(|s| s.starts_with(&format!("hole {hole} at")))
+            .cloned()
+            .expect("the hole's call")
+    };
+    // 12 mm up from the shaft's bottom (the XY plane), on its -X side,
+    // towards the axis.
+    let at = line(&doc);
+    assert!(at.contains("([-4.0, 0.0, 12.0], [1.0, 0.0, 0.0])"), "{at}");
+    // The distance is a parameter of the hole.
+    let name = query(&doc, json!({"query": "feature", "uid": hole}))["def"]["placement"]["offset"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    command(
+        &mut doc,
+        json!({"cmd": "set_parameter", "name": name, "expression": "20 mm"}),
+    );
+    ok(&doc, hole);
+    let at = line(&doc);
+    assert!(at.contains("([-4.0, 0.0, 20.0], [1.0, 0.0, 0.0])"), "{at}");
+}
+
 #[test]
 fn a_gear_on_an_axis_of_its_own_keeps_its_bore() {
     let mut doc = Document::new(MockKernel::default());

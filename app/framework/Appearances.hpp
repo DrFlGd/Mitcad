@@ -3,7 +3,7 @@
 
 // Appearances (mitcad#46): the model keeps Mitcad's library and the
 // document's own appearances as physically based parameter sets
-// (core/model/src/appearance.rs, the `appearances` query); a body names one
+// (core/model-base/src/appearance.rs, the `appearances` query); a body names one
 // by id (`set_body_appearance`), and so can single faces
 // (`set_face_appearance`, mitcad#53). The shaded view colours a body or a
 // face with the appearance's display colour, the rendered view uses every

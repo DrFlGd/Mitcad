@@ -22,6 +22,7 @@ use crate::remote::{
     BACKUP_PREFIX, ConflictCopy, ConflictKind, Control, ErrorClass, GitCli, Resolution, SyncCase,
     SyncOptions, SyncOutcome, clone_project,
 };
+use mitcad_model_api::DocumentApi;
 
 /// The author of B's versions.
 fn other() -> Identity {

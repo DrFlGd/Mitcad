@@ -3,6 +3,7 @@
 //! including matching geometry, fallback replacement and candidate workers.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 #[test]
 fn verified_replay_and_fallback_preserve_existing_bodies() {
@@ -189,7 +190,7 @@ fn an_explicit_candidate_cannot_remove_a_receivers_body() {
         progress: None,
         memory: false,
     };
-    let result = crate::add(
+    let result = mitcad_import_replay::internal::add(
         &mut doc,
         &json!({"type":"remove_body","bodies":[uid]}),
         None,

@@ -2,6 +2,7 @@
 //! Components and occurrences: which component owns an item, placements, and cut and paste into components.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 /// History data without states: which components items changed.
 #[derive(Default)]

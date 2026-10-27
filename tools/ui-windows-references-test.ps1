@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files app/framework/Dialogs.cpp core/import core/f3d tools/cli
+# check-all sources: app/files app/framework/Dialogs.cpp core/import core/import-base core/f3d tools/cli
+# check-all sources: core/import-replay core/import-joints core/import-sheet core/import-primitives core/import-appearances
 # check-all sources: core/ffi/src/f3d_import.rs core/ffi/src/f3d_references.rs core/tests
 # Input-driven Windows UI test of the .f3d import of a design whose
 # components come from other documents (mitcad#196), in the build VM

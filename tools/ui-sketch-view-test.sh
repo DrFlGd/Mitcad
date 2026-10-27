@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/OcctViewer.cpp app/OcctViewer.hpp app/view app/MainWindow.cpp tools/cli
 # check-all sources: app/framework/FloatingLayout.cpp
-# check-all sources: core/model/src/api/sketch.rs core/model/src/features/sketch.rs
+# check-all sources: core/model-api/src/sketch.rs core/model/src/features/sketch.rs core/sketch/src/def.rs
 # How sketch mode shows its geometry, through the real UI:
 #   - A sketch on XY: its origin is the design's (mitcad#254).
 #   - A rectangle from the origin, its width and height dimensioned: fully

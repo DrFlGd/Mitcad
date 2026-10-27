@@ -1,37 +1,37 @@
 # Automatic updates
 
-Mitcad checks for newer releases. Where it can replace itself, Mitcad
+MitCad checks for newer releases. Where it can replace itself, MitCad
 installs a newer release with your consent. The user guide also gives
 the user-level description, refer to [Updates](user-guide.md#updates).
 
 ## Behaviour
 
-Mitcad checks for a newer release, shows a notice and, if the
+MitCad checks for a newer release, shows a notice and, if the
 installation permits it, installs the release. This section gives the
 check, the notice and the installation on each platform. It also gives
 the installations that only announce, a download that does not verify
 and the report after an update.
 
-**Check:** Mitcad checks for updates at start-up, at most once a day.
+**Check:** MitCad checks for updates at start-up, at most once a day.
 The check starts 3 s after the window opens. You can also start a check
 from *Help › Check for Updates*. A silent automatic check reports
-nothing on failure. It also reports nothing when Mitcad is up to date.
+nothing on failure. It also reports nothing when MitCad is up to date.
 The manual check always reports.
 
-**Notice:** when a newer release is available, Mitcad shows a bar under
+**Notice:** when a newer release is available, MitCad shows a bar under
 the toolbar. The bar does not block your work. It has the buttons
 *Release Notes*, *Install*, *Skip This Version* and *Later*. If you
-skip a version, Mitcad does not announce that version again
+skip a version, MitCad does not announce that version again
 automatically.
 
-**Install on Windows (NSIS installation):** Mitcad downloads the
+**Install on Windows (NSIS installation):** MitCad downloads the
 installer to a private folder with a random name in the temp folder,
 `%TEMP%\mitcad-update-<random>`, and verifies it. Then the window
-closes. Mitcad asks you to save your work first. After Mitcad has quit,
+closes. MitCad asks you to save your work first. After MitCad has quit,
 the installer runs silently into the same folder and scope as the
-current installation. Then Mitcad starts again.
+current installation. Then MitCad starts again.
 
-The installer runs only after a second check. Mitcad passes the SHA-256
+The installer runs only after a second check. MitCad passes the SHA-256
 of the verified manifest to `mitcad-updater.exe` on its command line
 (`--sha256`). Right before the installer runs, the updater opens the
 installer with read sharing only. While that handle is open, no other
@@ -43,8 +43,8 @@ stays open until the installer has ended. Thus a program that replaces
 the file between the first check and the start (for example, at the
 UAC prompt of an installation for all users) cannot get its own file
 run. If the check fails, the updater does not run the installer. It
-starts Mitcad again, and Mitcad reports the reason from the last line
-of the updater's log. The next start of Mitcad removes the folder
+starts MitCad again, and MitCad reports the reason from the last line
+of the updater's log. The next start of MitCad removes the folder
 (`updates/downloadFolders` lists it until then).
 
 The scope comes from the `installation.ini` of the installation (refer
@@ -58,15 +58,15 @@ an installation was for all users, thus it continues to update there.
 The installer recognises the folder of the installation for all users
 and elevates itself.
 
-**Install on Linux (AppImage in a writable folder):** Mitcad downloads
+**Install on Linux (AppImage in a writable folder):** MitCad downloads
 the new AppImage next to the installed file, as the hidden file
-`.<name>.update`. Mitcad verifies the download and makes it executable.
-After Mitcad has quit, the new file replaces the old file in one atomic
-step. Then the new Mitcad starts.
+`.<name>.update`. MitCad verifies the download and makes it executable.
+After MitCad has quit, the new file replaces the old file in one atomic
+step. Then the new MitCad starts.
 
-**Install on macOS (application bundle in a writable folder):** Mitcad
+**Install on macOS (application bundle in a writable folder):** MitCad
 downloads the `macos-arm64` disk image to a private temporary folder and
-verifies it. Then the window closes. Mitcad asks you to save your work
+verifies it. Then the window closes. MitCad asks you to save your work
 first. After the process has quit, a helper mounts the disk image
 read-only, without a Finder window. The helper checks the identifier,
 the version and the code signature of the new app. Then it copies
@@ -92,15 +92,15 @@ installed bundle does not move.
 - On macOS, a quarantined bundle in Downloads
 
 The startup log gives the reason. On macOS, copy the app to a writable
-Applications folder first. Mitcad requests no elevation to replace a
+Applications folder first. MitCad requests no elevation to replace a
 bundle that the current user cannot write.
 
 **A download that does not verify:** if the signature, the SHA-256 or
-the size of a download does not match, Mitcad deletes the download and
-reports the problem. Mitcad never runs such a download. Mitcad refuses a
+the size of a download does not match, MitCad deletes the download and
+reports the problem. MitCad never runs such a download. MitCad refuses a
 manifest with a bad signature.
 
-**Report:** after an update, the new Mitcad reports the result. The
+**Report:** after an update, the new MitCad reports the result. The
 report comes from the settings in
 [Settings and turning checks off](#settings-and-turning-checks-off).
 
@@ -125,7 +125,7 @@ Ed25519 release signature authenticates the disk image. macOS code
 signing and Gatekeeper apply independently.
 
 An ad-hoc signature, as development builds use, does not establish a
-notarized developer identity. Mitcad can verify an unsigned local bundle
+notarized developer identity. MitCad can verify an unsigned local bundle
 as a download, but macOS can still refuse the bundle at launch. The
 updater cannot change an unsigned or ad-hoc build into a notarized
 application. It cannot give such a build a new Gatekeeper exception.
@@ -139,7 +139,7 @@ page has two settings:
 - The **channel**: *Releases* (stable, the default) or *Pre-releases
   too*
 
-Mitcad stores the settings under these keys:
+MitCad stores the settings under these keys:
 
 | Key | Content |
 |---|---|
@@ -152,11 +152,11 @@ Mitcad stores the settings under these keys:
 | `updates/downloadFolders` | Windows: the private download folders that the next start removes |
 | `updates/lastResult` | the result after an update: `installed 0.1.0 -> 0.2.0`, or `failed ...: <reason>` |
 
-With the setting off, Mitcad makes no request at start-up. *Check for
+With the setting off, MitCad makes no request at start-up. *Check for
 Updates* still asks when you select it.
 
 An administrator can set update checks to off for every user, for
-example for offline or managed installations. Then Mitcad makes no
+example for offline or managed installations. Then MitCad makes no
 request at all. *Check for Updates* makes none either. Preferences
 shows the switch off and gives the reason. The administrator has two
 switches:
@@ -180,12 +180,12 @@ User-Agent `Mitcad/<version> (<platform>; <channel>)`, for example
 `Mitcad/0.2.0 (windows-x64; stable)`. The requests carry nothing that
 identifies you or the machine:
 
-- No cookies. Mitcad keeps none and sends none.
+- No cookies. MitCad keeps none and sends none.
 - No cache
 - `Accept-Language: *` instead of your languages
 - No telemetry
 
-Mitcad uses HTTPS only. It follows a redirect only from HTTPS to HTTPS,
+MitCad uses HTTPS only. It follows a redirect only from HTTPS to HTTPS,
 and at most five redirects. GitHub's downloads redirect to its CDN.
 
 ## Releases on GitHub
@@ -204,19 +204,19 @@ release carries these assets:
 The tag is `v<version>`. The version is a semantic version, for example
 `0.2.0` or `0.3.0-beta.1`. The two channels read different addresses:
 
-- **stable:** Mitcad reads
+- **stable:** MitCad reads
   `https://github.com/mitcad/Mitcad/releases/latest/download/update-manifest.json`.
-  GitHub's *latest* release is never a pre-release or a draft. Mitcad
+  GitHub's *latest* release is never a pre-release or a draft. MitCad
   ignores a pre-release version in it anyway.
-- **pre-release:** Mitcad reads
+- **pre-release:** MitCad reads
   `https://api.github.com/repos/mitcad/Mitcad/releases?per_page=20`.
   This is the REST API, unauthenticated. One request a day stays far
-  below the rate limit. Mitcad takes the release with the highest
+  below the rate limit. MitCad takes the release with the highest
   version that is not a draft and has an `update-manifest.json`. Then
-  Mitcad gets the manifest of that release and verifies it as on the
+  MitCad gets the manifest of that release and verifies it as on the
   stable channel.
 
-Mitcad never offers a version that is not newer than the installed
+MitCad never offers a version that is not newer than the installed
 version. Thus there are no downgrades. Build metadata (`+...`) does not
 count in the comparison.
 
@@ -258,7 +258,7 @@ The update code has three parts:
 - `signature`: the Ed25519 signature of `mitcad-update-manifest\n`
   followed by the exact bytes of the `manifest` value as the file has
   them. No canonical JSON is necessary. If you edit the file in any way,
-  the signature breaks. Mitcad checks the signature before it reads
+  the signature breaks. MitCad checks the signature before it reads
   anything else of the manifest.
 - `version`, `date` (`YYYY-MM-DD`) and `notes` (the release page,
   HTTPS).
@@ -275,16 +275,16 @@ The update code has three parts:
   sha256 <64 hex digits>
   ```
 
-  If a platform has no asset, Mitcad shows the notice without
+  If a platform has no asset, MitCad shows the notice without
   *Install*.
-- Keys, signatures and digests are lowercase hex. `format` is 1. Mitcad
+- Keys, signatures and digests are lowercase hex. `format` is 1. MitCad
   refuses a manifest of another format.
 
 ### Signing a release
 
 The release key is an Ed25519 key. Its private half exists only in the
 release environment, as a CI secret. The private half is never in the
-repository. Its public half is built into Mitcad.
+repository. Its public half is built into MitCad.
 
 1. **Make the key** once and keep it secret. For example,
    `openssl rand -hex 32 > mitcad-release.key` writes the 32-byte seed
@@ -296,7 +296,7 @@ repository. Its public half is built into Mitcad.
    alternative, point the CMake cache variable `MITCAD_UPDATE_KEY_FILE`
    at a file with the key. **Until then, the file holds a placeholder.
    A build without a key makes no update request at all.** Its *Check
-   for Updates* says "This build of Mitcad has no release key, so it
+   for Updates* says "This build of MitCad has no release key, so it
    cannot verify updates". **The core refuses every manifest.** CMake
    reports this when it configures.
 3. **Sign the release** after `package`, in the release environment.
@@ -341,11 +341,11 @@ repository. Its public half is built into Mitcad.
    of the GitHub release.
 
 There is no Authenticode signature yet. Thus Windows SmartScreen can
-warn about a downloaded installer that you run by hand. Mitcad itself
+warn about a downloaded installer that you run by hand. MitCad itself
 checks the Ed25519 signature.
 
 To change to a new release key, first build a release with both keys.
-`packaging/update-key.txt` takes one key per line, and Mitcad accepts a
+`packaging/update-key.txt` takes one key per line, and MitCad accepts a
 manifest signed with any of them. Sign that release with the old key.
 Then installations can move to the new key.
 
@@ -357,7 +357,7 @@ No test contacts any host but the machine itself. The tests are:
   private download folder of Windows and macOS (a random name in the
   temp folder, owner-only on Linux and macOS, a new one after removal,
   nothing else removed as a leftover). It also checks the updater's
-  command line with `--sha256`, which Mitcad writes and the updater
+  command line with `--sha256`, which MitCad writes and the updater
   reads (`app/update/UpdaterChecks.hpp`). The updater refuses a missing
   or malformed hash. The hash comparison of a file tells a changed file
   apart.
@@ -406,11 +406,11 @@ No test contacts any host but the machine itself. The tests are:
   once `appimage` has made the AppImage of the build, and is skipped
   otherwise. The real AppImage is signed as the `linux-x64` download
   with a key made for the test and served over HTTPS from 127.0.0.1.
-  Mitcad offers it with *Install*. The AppImage replaces itself after
-  Mitcad has quit and starts again as the release.
+  MitCad offers it with *Install*. The AppImage replaces itself after
+  MitCad has quit and starts again as the release.
 
-The tests point Mitcad at their server with environment variables. An
-installed Mitcad reads these variables too. They open no new way in: a
+The tests point MitCad at their server with environment variables. An
+installed MitCad reads these variables too. They open no new way in: a
 person who can set the environment of a user can also change what Qt
 loads.
 
@@ -420,7 +420,7 @@ loads.
 | `MITCAD_UPDATE_RELEASES_URL` | the pre-release channel's list of releases |
 | `MITCAD_UPDATE_TEST_KEY` | a public key trusted besides the built-in one |
 | `MITCAD_UPDATE_TEST_CA` | a PEM certificate the update requests trust besides the system's |
-| `MITCAD_TEST_VERSION` | the version Mitcad compares with (the new Mitcad an update starts does not get it) |
+| `MITCAD_TEST_VERSION` | the version MitCad compares with (the new MitCad an update starts does not get it) |
 
 The other UI tests set `MITCAD_NO_UPDATE_CHECK=1` (in `ui-test-lib.sh`
 and `ui-windows-lib.ps1`). Thus they make no requests.

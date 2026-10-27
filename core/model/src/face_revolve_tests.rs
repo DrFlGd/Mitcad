@@ -9,9 +9,9 @@
 use serde_json::{Value, json};
 
 use crate::datum::SurfaceGeometry;
-use crate::document_tests::{block, def};
 use crate::features::SketchPlane;
 use crate::ids::{BodyUid, FeatureUid};
+use crate::test_support::{block, def};
 use crate::testing::MockKernel;
 use crate::{Document, FeatureStatus};
 
@@ -187,8 +187,8 @@ fn a_face_that_is_gone_or_not_planar_fails_without_taking_another_profile() {
         .add_rectangle(
             sketch,
             [100.0, 0.0],
-            &crate::document_tests::num(10.0),
-            &crate::document_tests::num(10.0),
+            &crate::test_support::num(10.0),
+            &crate::test_support::num(10.0),
         )
         .unwrap();
     let uid = add(

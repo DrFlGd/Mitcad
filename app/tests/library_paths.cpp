@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // The GUI and CLI use one cache; existing GUI caches retain their default path.
 #include "files/Libraries.hpp"
+#include "framework/AppSettings.hpp"
 
 #include <cstdio>
 
@@ -29,11 +30,20 @@ QJsonObject configuration() {
 
 int main(int argc, char* argv[]) {
   QCoreApplication app(argc, argv);
-  QCoreApplication::setOrganizationName(QStringLiteral("Mitcad"));
-  QCoreApplication::setApplicationName(QStringLiteral("Mitcad"));
+  // The names the application sets (app/main.cpp).
+  QCoreApplication::setOrganizationName(mitcad::storedApplicationName());
+  QCoreApplication::setApplicationName(mitcad::storedApplicationName());
   qunsetenv("MITCAD_LIBRARIES_DIR");
   const QString expected = QDir::fromNativeSeparators(
       QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)) + QStringLiteral("/libraries");
+  // The settings and the data folders keep their spelling Mitcad/Mitcad,
+  // although the program is written MitCad (mitcad#822): an installation
+  // keeps its settings, libraries and autosaves (Linux paths are
+  // case-sensitive).
+  if (!expected.endsWith(QStringLiteral("/Mitcad/Mitcad/libraries"))) {
+    std::fprintf(stderr, "the data folder moved: %s\n", expected.toUtf8().constData());
+    return 1;
+  }
   const QString shared = root(mitcad::default_libraries_directory());
   if (shared != expected || QDir::fromNativeSeparators(mitcad::librariesDirectory()) != shared
       || QDir::fromNativeSeparators(configuration().value(QStringLiteral("root")).toString()) != shared) {

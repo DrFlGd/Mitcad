@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/browser/PropertySetsDialog.cpp app/browser/BrowserController.cpp app/browser/FindDialog.cpp
 # check-all sources: app/browser/FindInDesign.cpp app/build/BuildLists.cpp app/MainWindow.cpp tools/cli
-# check-all sources: core/model/src/properties.rs core/model/src/document/properties.rs core/model/src/api/properties.rs
+# check-all sources: core/model-base/src/properties.rs core/model/src/document/properties.rs core/model-api/src/properties.rs
 # Input-driven Windows UI test of Property Sets (mitcad#496) in the build
 # VM (tools/ui-windows-lib.ps1 says how the input is posted), on a design
 # mitcad-cli makes, as tools/ui-property-sets-test.sh does on Linux: a

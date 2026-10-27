@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MIT
+expect-ever 'Projects panel at the start: shown \(no choice yet, projects configured\)'
+wait-log 'Projects panel: 1 project' 30
+native-resize 1280 820
+expect-native-visible native.projectsCard true
+native-expand projectsTree
+sleep 250
+screenshot '${MITCAD_TEST_WORK}/projects-expanded.png'
+expect-native-layout
+native-select projects.row.Project-01/base.mitcad
+native-activate projects.row.Project-01/base.mitcad
+expect-native-text native.documentTitle '^base\.mitcad$'
+expect-native-visible native.projectsCard true
+native-expand projectsTree
+sleep 250
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/projects-open.png'
+native-resize 900 640
+native-select projects.row.Project-01/design-12.mitcad
+screenshot '${MITCAD_TEST_WORK}/projects-scrolled.png'
+expect-native-layout
+menu 'View/Projects'
+expect-native-visible native.projectsCard false
+menu 'View/Projects'
+expect-native-visible native.projectsCard true
+native-click native.projects.disclosure
+expect-native-visible native.projectsCard true
+expect-native-visible projectsTree false
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/projects-collapsed.png'
+native-click native.projects.disclosure
+expect-native-visible projectsTree true
+expect-native-layout
+native-click native.projects.disclosure
+expect-native-visible native.projectsCard true
+expect-native-visible projectsTree false

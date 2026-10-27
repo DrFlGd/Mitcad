@@ -46,12 +46,13 @@ use super::{
     CheckContext, EvalContext, Evaluate, FeatureDef, FeatureInfo, FeatureOutput, References,
     ToolUse, is_false,
 };
-use crate::datum::{add, norm, scale, sub};
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{BooleanOp, GearConeSpec, GearStep, GearSweepSpec, Kernel};
 use crate::parameters::ParamId;
-use crate::profile::{SketchFrame, cross, dot};
+use crate::profile::SketchFrame;
 use crate::recompute::Read;
+use mitcad_vec3::{add, norm, scale, sub};
+use mitcad_vec3::{cross, dot};
 
 /// What kind of gear.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -439,7 +440,7 @@ impl GearDef<f64> {
         positive(self.module, "module")?;
         positive(self.face_width, "face width")?;
         if (self.teeth - self.teeth.round()).abs() > 1.0e-9 {
-            return Err(crate::parameters::count_error(
+            return Err(mitcad_model_base::internal::parameters::count_error(
                 format!(
                     "the {name}'s number of teeth must be whole, got {}",
                     self.teeth
@@ -540,7 +541,7 @@ impl GearDef<f64> {
                     ));
                 }
                 if (mate - mate.round()).abs() > 1.0e-9 || mate < gear_profile::MIN_TEETH {
-                    return Err(crate::parameters::count_error(
+                    return Err(mitcad_model_base::internal::parameters::count_error(
                         format!(
                             "the mate's number of teeth must be whole and at least {}, got {mate}",
                             gear_profile::MIN_TEETH

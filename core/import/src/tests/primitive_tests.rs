@@ -2,6 +2,7 @@
 //! Primitives and coils read from their matrices.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 /// Imports one primitive or coil item and returns its definition and the
 /// provenance of its inputs (mitcad#25).

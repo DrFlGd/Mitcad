@@ -47,7 +47,7 @@ impl<K: Kernel> Document<K> {
         preview.result.datums.get(&preview.uid).map(|d| d.value)
     }
 
-    pub(crate) fn resolver(&self) -> DocResolver<'_, K> {
+    pub fn resolver(&self) -> DocResolver<'_, K> {
         DocResolver { document: self }
     }
 
@@ -68,7 +68,7 @@ impl<K: Kernel> Document<K> {
 }
 
 /// Resolves references at the timeline marker.
-pub(crate) struct DocResolver<'a, K: Kernel> {
+pub struct DocResolver<'a, K: Kernel> {
     document: &'a Document<K>,
 }
 

@@ -26,7 +26,7 @@
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-mount-test.sh
-# check-all sources: core/model/src/document/mounts.rs core/model/src/api/mounts.rs core/vcs/src/library tools/cli
+# check-all sources: core/model/src/document/mounts.rs core/model-api/src/mounts.rs core/vcs/src/library tools/cli
 
 source "$(dirname "$0")/ui-test-lib.sh"
 

@@ -1,9 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
-# Mitcad Model Context Protocol server
+# MitCad Model Context Protocol server
 
-## Connect from Mitcad
+## Connect from MitCad
 
-For a design already open in Mitcad, choose **Help › Connect AI Assistant…**.
+For a design already open in MitCad, choose **Help › Connect AI Assistant…**.
 The assistant indicator (a click with no assistant connected, or **Connect
 AI Assistant…** in its menu) and **Preferences › AI Assistants** offer the same command; command search also finds `claude`, `codex`, `chatgpt` and `mcp`.
 Opened from Preferences, the dialog opens over Preferences and takes
@@ -17,7 +17,7 @@ The state line names the next step, and its button does it:
 
 - ***Assistant* was not found on this computer** with **Get Claude
   Desktop** (the download page) or **How to install** (Claude Code's
-  quickstart, OpenAI's Codex documentation). Mitcad looks for Claude Code's and Codex's
+  quickstart, OpenAI's Codex documentation). MitCad looks for Claude Code's and Codex's
   executables (on `PATH`, `~/.local/bin`, `~/.cargo/bin`, and the ChatGPT
   application on macOS), for Codex's settings folder, and for the Claude
   Desktop application or the settings folder it makes on its first start.
@@ -30,14 +30,14 @@ The state line names the next step, and its button does it:
   which stays after an uninstall, does not count), shows that it is not:
   **Install Claude Desktop first** in the error colour, with **Get Claude
   Desktop**. On
-  Windows, which offers "Open with" for any file, Mitcad asks first
+  Windows, which offers "Open with" for any file, MitCad asks first
   whether an application is associated with `.mcpb` files, and the line
   clears once one is.
 - **Install the extension in Claude Desktop** with **Show in Explorer**
   (**Show in Finder** on macOS) and a small **Open Claude Desktop**: Claude
   Desktop is installed, but no application opens its extension files. This
   is the case on Windows with Claude Desktop from the Microsoft Store,
-  which Mitcad finds as the installed package `Claude_pzs8sxrjxfjjc` and
+  which MitCad finds as the installed package `Claude_pzs8sxrjxfjjc` and
   which registers no `.mcpb` association. The line below says where:
   **In Claude Desktop: Settings › Extensions › Advanced settings ›
   Install Extension…, then choose** the saved extension (on Windows
@@ -48,13 +48,13 @@ The state line names the next step, and its button does it:
   there, the line becomes **Install Claude Desktop first**. Approve the
   installation in Claude Desktop and enable the extension, then start a
   new chat. Once Claude Desktop connects, the line goes away.
-- **Ready to connect *assistant*** with **Connect**: Mitcad sets the
+- **Ready to connect *assistant*** with **Connect**: MitCad sets the
   connection up (below).
-- The assistant's own next step: **Approve Mitcad in Claude Desktop, then
+- The assistant's own next step: **Approve MitCad in Claude Desktop, then
   start a new chat** with **Open in Claude Desktop again** (which runs the
   setup again), or, with no button, **Start a new Claude Code session to
-  use Mitcad** or **Restart ChatGPT or start a new Codex session to use
-  Mitcad**. This means the settings exist, not that the assistant is
+  use MitCad** or **Restart ChatGPT or start a new Codex session to use
+  MitCad**. This means the settings exist, not that the assistant is
   running. Repeating a setup changes nothing and makes no new backup.
 - **✓ Connected: *assistant*** with **Disconnect**: shown only after the
   MCP initialization handshake completes, and only for the chosen
@@ -73,42 +73,42 @@ The state line names the next step, and its button does it:
 
 **Connect** does, per assistant:
 
-- **Claude Desktop** (Windows and macOS): generates a Mitcad extension
+- **Claude Desktop** (Windows and macOS): generates a MitCad extension
   (an MCP Bundle) and opens its installer in Claude Desktop. Approve the
   installation and enable the extension there, then start a new chat. If
   the tools are missing, fully quit and reopen Claude Desktop. When no
   application opens the bundle although Claude Desktop is installed (the
   Microsoft Store install on Windows), the bundle is installed from Claude
   Desktop's settings instead (above). The bundle
-  contains a small native launcher that starts the installed Mitcad CLI;
+  contains a small native launcher that starts the installed MitCad CLI;
   Claude's configuration file is not edited. Whether the extension was
   installed is known only once Claude Desktop connects.
 - **Claude Code:** runs the supported registration command with **user**
   scope, so the connection is available across projects. Registration runs
-  against a private `CLAUDE_CONFIG_DIR` first. Mitcad verifies the entry
+  against a private `CLAUDE_CONFIG_DIR` first. MitCad verifies the entry
   and the unchanged unrelated JSON before atomically applying it to
   `~/.claude.json`, or `.claude.json` inside an existing
   `CLAUDE_CONFIG_DIR`. A failed registration or closing the dialog leaves
   the previous connection intact. Start a new session and check `/mcp`;
   normal client trust approvals still apply. That file keeps Claude
-  Code's projects and history and grows large over time: Mitcad reads it
+  Code's projects and history and grows large over time: MitCad reads it
   up to 256 MB (other assistants' settings files up to 4 MB, mitcad#760).
 - **ChatGPT / Codex:** uses the shared local Codex configuration. It
   respects `CODEX_HOME`; under **Advanced**, **Change…** selects the
   settings file actually used by a desktop client with another location.
   A Codex CLI is used when available, including the desktop client's
-  bundled CLI. Otherwise Mitcad updates the selected TOML file directly,
+  bundled CLI. Otherwise MitCad updates the selected TOML file directly,
   without a separate CLI installation. Restart the desktop client or start
   a new CLI conversation after setup.
 - **Other:** the button is **Copy configuration**: the generic
   `mcpServers` JSON with the installed executable path, to add through
   that client's supported setup interface.
 
-Codex registration first runs against a private settings copy. Mitcad checks
+Codex registration first runs against a private settings copy. MitCad checks
 the result and atomically changes only its own entry in the actual file,
 preserving unrelated settings and comments. Existing configuration is backed
 up before replacement (the dialog names the backup); a matching entry needs
-no write or new backup. A different Mitcad entry requires explicit
+no write or new backup. A different MitCad entry requires explicit
 replacement. Invalid TOML, a concurrent edit, a disabled entry or detected
 managed policy stops setup without overwriting the configuration. Ask the
 client's administrator to allow the entry when managed requirements apply.
@@ -138,8 +138,8 @@ are listed, and can be removed, in **Preferences › AI Assistants**.
   that need it are quoted (PowerShell on Windows, a POSIX shell
   elsewhere). The copies are a fallback, not a prerequisite.
 - **Codex settings file** with **Change…** (ChatGPT / Codex only).
-- With several Mitcad windows open, **Copy Command for This Window**. The
-  bridge refuses to choose between several live Mitcad windows: keep only
+- With several MitCad windows open, **Copy Command for This Window**. The
+  bridge refuses to choose between several live MitCad windows: keep only
   the intended window open, or start the bridge with this command (it adds
   `--instance` for this window; `--list-instances` lists them). A saved
   setup never records a temporary instance id.
@@ -157,7 +157,7 @@ and the [MCP Bundle manifest](https://github.com/modelcontextprotocol/mcpb/blob/
 ## Manual setup and headless use
 
 `mitcad-cli mcp` gives an MCP client access to the native parametric
-model of Mitcad. Use `--connect` to edit the document in a desktop
+model of MitCad. Use `--connect` to edit the document in a desktop
 application that is already open. Use `--workspace DIR` to run without a
 UI. The server uses the same JSON commands, queries and OCCT geometry
 kernel as the application.
@@ -222,14 +222,14 @@ The client starts the process and owns its stdin and stdout pipes. No
 HTTP listener, desktop session or plugin package is necessary. stdout
 carries only MCP messages. stderr carries diagnostics. If the client
 closes stdin, the headless session ends. Unsaved documents then leave
-memory, and Mitcad does not write them.
+memory, and MitCad does not write them.
 
 ## Connect to the open desktop document
 
 The desktop application starts a local MCP listener automatically. An
 AI assistant can find the listener after the application is open. A restart
 with special arguments is not necessary. To disable the listener, start
-Mitcad with `--no-mcp`.
+MitCad with `--no-mcp`.
 
 On macOS, the installed bundle includes the CLI:
 
@@ -274,7 +274,7 @@ Configure an MCP client to start the stdio bridge:
 ```
 
 The bridge authenticates the local socket before it forwards MCP
-messages. The listener binds only to `127.0.0.1`. Mitcad selects the
+messages. The listener binds only to `127.0.0.1`. MitCad selects the
 port automatically. The discovery record and the token are private to
 the current user. They are under `GenericCacheLocation/Mitcad/mcp`:
 
@@ -292,10 +292,10 @@ an HTTP endpoint for remote clients.
 
 ### Windows
 
-The installer puts the CLI beside the application. If Mitcad is
+The installer puts the CLI beside the application. If MitCad is
 installed for all users, the CLI is in `C:\Program Files\Mitcad\bin`.
-If Mitcad is installed for the user only, the CLI is in
-`%LOCALAPPDATA%\Programs\Mitcad\bin`. With Mitcad open, run:
+If MitCad is installed for the user only, the CLI is in
+`%LOCALAPPDATA%\Programs\Mitcad\bin`. With MitCad open, run:
 
 ```powershell
 & "C:\Program Files\Mitcad\bin\mitcad-cli.exe" mcp --list-instances
@@ -369,7 +369,7 @@ option is left to this guide) or "<path> is not in a folder for designs
 (<folders>)".
 
 A path is permitted when its folder is a permitted folder or below one.
-Mitcad resolves symbolic links before this check. `..` is refused. A
+MitCad resolves symbolic links before this check. `..` is refused. A
 relative path is relative to the first folder. An existing file is
 replaced only with `overwrite: true`, and never through a link.
 
@@ -514,7 +514,7 @@ assistant indicator, beside the project indicator, shows the connection:
 "No assistant" while none is connected and the window accepts them,
 "<assistant> connected" while one is connected ("2 assistants connected"
 with several), and "Assistants unavailable" when the listener did not
-start (or Mitcad was started with `--no-mcp`). A client is named by the
+start (or MitCad was started with `--no-mcp`). A client is named by the
 assistant its `clientInfo` name matches ("Claude Code connected" for
 `claude-code`), else by that name. It is in the status bar of the Docked
 layout, in the title row of the Floating layout and in the toolbar of the
@@ -524,7 +524,7 @@ otherwise a click opens its menu. The menu says first why assistants are
 unavailable, or lists each connected client (the assistant's name, its
 `clientInfo` name and version, and when it connected) with Disconnect
 <assistant> (Disconnect All with several), then Connect AI Assistant…,
-Copy Command for This Window (only while several Mitcad windows listen; for this
+Copy Command for This Window (only while several MitCad windows listen; for this
 window, `mitcad-cli mcp --connect --instance <id>`) and Folders
 for Designs… (Preferences › AI Assistants). Disconnect ends the connection.
 
@@ -561,7 +561,7 @@ Afterwards, the document is that file. An existing file must have
 - The path is outside the folders
 - The document is read-only
 - A command panel is open
-- The save would ask the user something. Then Mitcad closes the dialog
+- The save would ask the user something. Then MitCad closes the dialog
   of the question and names it.
 
 **`document_open`** opens a `.mitcad` design from a folder for designs in
@@ -573,7 +573,7 @@ is refused in these cases:
 - A sketch or a command panel is open
 - The open would ask the user something
 
-If `discard` is true, Mitcad discards the unsaved changes and their
+If `discard` is true, MitCad discards the unsaved changes and their
 recovery data.
 
 **`ui_state`** reads the window. `read_only` comes with
@@ -604,12 +604,12 @@ key, with `label`, `type` and the values. `panel` holds `message`,
 is the number of the next line. `dropped` counts the lines after `since`
 that are no longer kept. The lines are the application's own log lines,
 the same as on stderr: what commands did, `Selected: …`, `Preview …`,
-refusals and `MCP refused: …`. Mitcad keeps the newest 5000 lines.
+refusals and `MCP refused: …`. MitCad keeps the newest 5000 lines.
 
 **`ui_screenshot`** returns the image that the user sees, with the
 sketch overlay. By default, it shows the 3D view. With `window`, it
 shows the whole window. In the native macOS window, this is the window
-as the window server composes it. Mitcad scales the image to fit
+as the window server composes it. MitCad scales the image to fit
 `max_size`. Then it scales the image further until the file is under
 5 MiB, well in the 8 MiB frame.
 
@@ -675,7 +675,7 @@ it was opened, and leaves it.
 Commands that open a file dialog or another window are refused:
 `file.*`, `insert.*`, `tools.*`, `help.*`, 3D Print, DXF import and
 export, and others. `document_save` with a path and `document_open` do
-Save As and Open. If a command opens any other modal dialog, Mitcad
+Save As and Open. If a command opens any other modal dialog, MitCad
 closes the dialog at once and refuses the call with the name of the
 dialog.
 
@@ -790,7 +790,7 @@ A document save always writes a single self-contained
 `.mitcad` file, also in a project with a B-rep store.
 
 The command reference is
-[the native API reference](../core/model/src/api/commands.md). Use it
+[the native API reference](../core/model-api/src/commands.md). Use it
 for feature definitions, sketch entities, parameters and topological
 names. The tool `model_reference` gives it in parts (below). The whole
 reference is also available through `resources/list` and
@@ -1064,7 +1064,7 @@ B-rep store in that root.
 
 An open does not refresh linked components, does not read per-user
 display state and does not configure the global library resolver.
-Embedded bodies stay usable. Mitcad can use installed fonts when it
+Embedded bodies stay usable. MitCad can use installed fonts when it
 evaluates sketch text. MCP refuses sketch feature definitions and designs
 opened through MCP with `font_file` metadata. In a live document, existing
 file-backed text can keep using its stored outlines; an edit that would

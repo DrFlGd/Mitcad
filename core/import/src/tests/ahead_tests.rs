@@ -2,6 +2,7 @@
 //! Definitions evaluated ahead in parallel (mitcad#95) and work beside the replay (mitcad#103).
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 // An item's definitions evaluated ahead, in parallel (mitcad#95).
 

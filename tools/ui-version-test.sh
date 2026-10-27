@@ -279,19 +279,19 @@ ui_mark
 ui_step "undo the change of d3 (Ctrl+Z)" ui_key ctrl+z
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
 ui_expect_new "Save conflict: $FILE changed outside Mitcad (the file)" "Save notices the change"
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_step "compare (O)"                    ui_key o
 ui_expect_new "Save conflict: compare: Changes from the file in the folder to the open design:" "Compare"
 ui_expect_new "d3 (Extrude1 distance): 40 mm -> 20 mm" "it shows d3"
 ui_focus_dialog '^Compare block.mitcad$'
 ui_step "close the comparison (Esc)"     ui_key Escape
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_step "save as a new version (N)"      ui_key n
 ui_focus_main
 ui_expect_new "Save conflict: new version" "a new version"
 ui_expect_new "Version recorded: block.mitcad " "versions recorded"
 expect_git "$PROJECT" "log -2 --format=%s" "Save block.mitcad: Undo Change d3
-Save block.mitcad as changed outside Mitcad" "the change outside first, the design on top"
+Save block.mitcad as changed outside MitCad" "the change outside first, the design on top"
 [ "$(file_d3 "$FILE")" = "[20.0]" ] || ui_fail "the file has d3 $(file_d3 "$FILE")"
 [ "$(in_git "$PROJECT" show HEAD~1:block.mitcad | python3 -c 'import json, sys; print([p["value"] for p in json.load(sys.stdin)["parameters"] if p["name"] == "d3"])')" = "[40.0]" ] ||
   ui_fail "the version before has not the other program's d3"
@@ -306,7 +306,7 @@ ui_mark
 ui_step "redo the change of d3 (Ctrl+Y)" ui_key ctrl+y
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
 ui_expect_new "Save conflict: $FILE changed outside Mitcad (a newer version)" "Save notices the newer version"
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_step "cancel (Esc)"                   ui_key Escape
 ui_focus_main
 ui_expect_new "Save conflict: cancelled" "cancelled"
@@ -314,7 +314,7 @@ ui_expect_new "Save conflict: cancelled" "cancelled"
 echo "ok   nothing written"
 ui_mark
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_step "save as a new version (N)"      ui_key n
 ui_focus_main
 ui_expect_new "Version recorded: block.mitcad " "recorded"
@@ -601,7 +601,7 @@ ui_step "open (Alt+O)"                   ui_key alt+o
 ui_focus_main
 ui_expect_new "Opened version v11 ($(version_id 11)) of plate.mitcad as plate v11" "opened as a new design"
 ui_expect_new "Version status: none" "untitled: no version history"
-xdotool search --name '^plate v11 - Mitcad$' > /dev/null || ui_fail "the window is not titled plate v11"
+xdotool search --name '^plate v11 - MitCad$' > /dev/null || ui_fail "the window is not titled plate v11"
 echo "ok   the window is titled plate v11"
 ui_mark
 ui_step "version history (Ctrl+Shift+H)" ui_key ctrl+shift+h
@@ -661,7 +661,7 @@ for failure in detached index-lock; do
     if [ "$operation" = save ]; then
       ui_key ctrl+s
       ui_expect_new "Save conflict: $FILE changed outside Mitcad" "external change found"
-      ui_focus_dialog '^Mitcad$'
+      ui_focus_dialog '^MitCad$'
       ui_key n
       ui_focus_main
       ui_expect_new "Could not preserve the external changes of plate.mitcad. Save cancelled. $why" \

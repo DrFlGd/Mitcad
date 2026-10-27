@@ -2,6 +2,7 @@
 //! The replay's basics on the block design: parameters, sketches, extrusions, the geometric tolerance, undo and forked documents.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 #[test]
 fn the_imports_joins_fuse_within_its_geometric_tolerance() {

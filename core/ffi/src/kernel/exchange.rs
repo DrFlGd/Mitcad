@@ -222,7 +222,7 @@ pub mod ffi {
         /// Writes a design whose rounding deviates from the file's
         /// (mitcad#379) into `dir`: `Rounding.f3d`, whose ASM history makes
         /// a 10 mm cube and then bevels one edge by 2 mm
-        /// (`mitcad_f3d::testdata::bevelled_cube_history_blob`), and
+        /// (`mitcad_asm::testdata::bevelled_cube_history_blob`), and
         /// `Rounding.dump.json`, its timeline as a dump (a sketch, the
         /// extrusion and a rounding of that edge of radius 2 mm): replayed
         /// with it (`import_f3d`'s `dump`), the extrusion gives the file's
@@ -274,8 +274,8 @@ fn f3d_build_progress() {
 
 /// The blobs of [`ffi::f3d_write_test_file`] in a zip of stored entries.
 fn f3d_write_test_file(path: &str) -> Result<(), String> {
-    use mitcad_f3d::testdata::{cube_blob, cylinder_blob};
-    use mitcad_f3d::zip::{Method, Writer};
+    use mitcad_asm::testdata::{cube_blob, cylinder_blob};
+    use mitcad_zip::{Method, Writer};
 
     let blob = |name: &str| format!("FusionAssetName[Active]/Breps.BlobParts/BREP.{name}.smb");
     let mut writer = Writer::new();
@@ -325,7 +325,7 @@ fn f3d_write_test_package(dir: &str) -> Result<(), String> {
 
 /// The files of [`ffi::f3d_write_test_deviation`].
 fn f3d_write_test_deviation(dir: &str) -> Result<(), String> {
-    use mitcad_f3d::zip::{Method, Writer};
+    use mitcad_zip::{Method, Writer};
     use serde_json::json;
 
     let dir = std::path::Path::new(dir);
@@ -334,7 +334,7 @@ fn f3d_write_test_deviation(dir: &str) -> Result<(), String> {
     writer
         .add(
             "FusionAssetName[Active]/Breps.BlobParts/BREP.mitcad-test-rounding.smbh",
-            &mitcad_f3d::testdata::bevelled_cube_history_blob(0.2),
+            &mitcad_asm::testdata::bevelled_cube_history_blob(0.2),
             Method::Stored,
         )
         .map_err(|e| e.to_string())?;

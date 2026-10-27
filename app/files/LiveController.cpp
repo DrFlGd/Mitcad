@@ -784,7 +784,7 @@ void LiveController::signIn(const QString& root) {
         m_keychainUnavailable = true;
         m_keychainError = error;
         if (m_host.status) {
-          m_host.status(tr("The keychain did not take the password for %1 (%2): it is kept until Mitcad closes.")
+          m_host.status(tr("The keychain did not take the password for %1 (%2): it is kept until MitCad closes.")
                             .arg(key, error),
                         true);
         }

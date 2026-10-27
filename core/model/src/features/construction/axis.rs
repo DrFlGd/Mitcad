@@ -11,13 +11,14 @@ use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 
 use super::{GeomRef, Want, distinct, finite};
-use crate::datum::{Datum, DatumAxis, SurfaceGeometry, Vec3, unit};
+use crate::datum::{Datum, DatumAxis, SurfaceGeometry, Vec3};
 use crate::features::mapping::map_params;
 use crate::features::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, is_false,
 };
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
+use mitcad_vec3::unit;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

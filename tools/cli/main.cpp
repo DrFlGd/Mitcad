@@ -58,7 +58,7 @@ const char* const kUsage = R"(usage:
       Runs a script of JSON commands and expectations on a new document, or
       on an opened one, then prints the same report. A script is a JSON
       array of commands ({"cmd": ...}), expectations ({"expect": {...}}) and
-      comments ({"comment": "..."}); see core/model/src/api/commands.md.
+      comments ({"comment": "..."}); see core/model-api/src/commands.md.
       --save writes the resulting design.
       --timings prints how long each step of the script took first,
       "Timing steps[i] <command>: <ms> ms", and adds the last recompute's

@@ -144,8 +144,8 @@ fn corpus_bodies_convert() {
         let states: Vec<i64> = records
             .iter()
             .filter_map(|r| {
-                let asm = mitcad_f3d::asm::AsmFile::parse(&r.asm).ok()?;
-                mitcad_f3d::asm::history::History::parse(&asm)
+                let asm = mitcad_asm::asm::AsmFile::parse(&r.asm).ok()?;
+                mitcad_asm::asm::history::History::parse(&asm)
                     .ok()
                     .flatten()
             })

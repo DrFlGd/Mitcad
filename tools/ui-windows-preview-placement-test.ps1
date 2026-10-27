@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/framework/PreviewBodies.cpp app/framework/CommandSession.cpp app/browser
-# check-all sources: core/model/src/document.rs core/model/src/assembly.rs core/model/src/api/components.rs
+# check-all sources: core/model/src/document.rs core/model/src/assembly.rs core/model-api/src/components.rs
 # check-all sources: tools/cli
 # Input-driven Windows UI test of Extrude's preview in a design of
 # components placed off the origin (mitcad#266), in the build VM

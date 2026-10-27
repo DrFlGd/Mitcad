@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/framework/PreviewBodies.cpp app/framework/CommandSession.cpp app/browser
-# check-all sources: core/model/src/document.rs core/model/src/assembly.rs core/model/src/api/components.rs
+# check-all sources: core/model/src/document.rs core/model/src/assembly.rs core/model-api/src/components.rs
 # check-all sources: tools/cli
 # Extrude's preview in a design of components placed off the origin, with
 # hidden bodies and occurrences and a linked component, through the real UI

@@ -19,8 +19,10 @@ path = "src/bin/mitcad-ipt-inspect.rs"
 # The compound file container (MS-CFB), shared with the .rvt reader.
 mitcad-cfb = { path = "../cfb" }
 # The B-rep record holds an ASM binary file, read and converted by the
-# .f3d reader's ASM code.
-mitcad-f3d = { path = "../f3d" }
+# ASM code the .f3d reader uses.
+mitcad-asm = { path = "../asm" }
+# The design as the import's dump IR.
+mitcad-dump = { path = "../dump" }
 # Vector helpers on [f64; 3].
 mitcad-vec3 = { path = "../vec3" }
 # Pure-Rust decompressors of the segment streams (zlib, zstd); zlib also
@@ -35,3 +37,4 @@ serde_json = { workspace = true }
 # The design replayed by the import on the model's mock geometry kernel.
 mitcad-import = { path = "../import" }
 mitcad-model = { workspace = true, features = ["testing"] }
+mitcad-model-api = { path = "../model-api" }

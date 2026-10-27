@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-ffi"
+description = "The static library of Mitcad's C++ bridges, linked by the Qt/OCCT application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Corrosion imports this package (core/CMakeLists.txt) as the target
+# `mitcad_ffi`. The bridges themselves are the rlib `mitcad-ffi-bridges`
+# (core/ffi, mitcad#792).
+[lib]
+name = "mitcad_ffi"
+crate-type = ["staticlib"]
+# Nothing to test here; the bridges are tested through the application
+# build (ctest).
+test = false
+doctest = false
+
+[dependencies]
+mitcad-ffi-bridges = { path = "../ffi" }

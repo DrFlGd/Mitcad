@@ -6,9 +6,9 @@
 use serde_json::{Value, json};
 
 use crate::FeatureStatus;
-use crate::document_tests::{Block, block, corner, def, extrude, num, side, top_edge};
 use crate::features::SketchPlane;
 use crate::ids::{BodyUid, FeatureUid};
+use crate::test_support::{Block, block, corner, def, extrude, num, side, top_edge};
 use crate::topo::{EdgeName, FaceName};
 
 /// Adds a feature; the definition is built before the document is borrowed.
@@ -662,4 +662,87 @@ fn move_face_moves_faces_by_a_rigid_motion() {
                                                         [0.0, 0.0, 1.0, 0.0]]}}),
     );
     assert!(scaled.is_err() || matches!(status(&b, scaled.unwrap()), FeatureStatus::Failed(_)));
+}
+
+/// The faces a fillet or chamfer made on the body.
+fn dressed_faces(b: &Block, role: &str) -> usize {
+    b.doc.body_shape(b.body).map_or(0, |s| {
+        s.faces
+            .iter()
+            .filter(|f| f.to_string().contains(&format!(":{role}(")))
+            .count()
+    })
+}
+
+#[test]
+fn a_set_of_every_edge_follows_the_body() {
+    // mitcad#793: a set of every edge (the FreeCAD import's "use all
+    // edges") lists none; it rounds the edges the body has when the fillet
+    // is computed, also after an edit upstream takes some away.
+    let mut b = block();
+    let (_, _, boss) = b.join_boss();
+    let with_boss = b.doc.body_shape(b.body).unwrap().edges.len();
+    assert!(with_boss > 12, "{with_boss}");
+    let fillet = add!(
+        b,
+        json!({"type": "fillet", "body": b.body, "sets": [
+            {"all_edges": true, "size": {"type": "constant", "radius": 1.0}}]}),
+    )
+    .unwrap();
+    assert_eq!(status(&b, fillet), FeatureStatus::Ok);
+    assert!(dressed_faces(&b, "fillet") >= with_boss);
+    // The definition keeps the whole-body set, not a list of edges.
+    let crate::features::FeatureDef::Fillet(def) = &b.doc.feature(fillet).unwrap().def else {
+        panic!("a fillet");
+    };
+    assert!(def.sets[0].all_edges && def.sets[0].edges.is_empty());
+    let named = def
+        .map_params(&mut |slot, _| Ok::<_, ()>(slot.to_owned()))
+        .unwrap();
+    let written = serde_json::to_value(&named).unwrap();
+    assert_eq!(written["sets"][0]["all_edges"], true, "{written}");
+    assert!(written.get("edges").is_none(), "{written}");
+    // Without the boss the block's twelve edges are rounded, with no error
+    // about edges that are gone.
+    b.doc.set_suppressed(boss, true).unwrap();
+    assert_eq!(status(&b, fillet), FeatureStatus::Ok);
+    assert_eq!(dressed_faces(&b, "fillet"), 12);
+    b.doc.set_suppressed(boss, false).unwrap();
+    assert_eq!(status(&b, fillet), FeatureStatus::Ok);
+    assert!(dressed_faces(&b, "fillet") >= with_boss);
+
+    // Chamfers take the same set; a whole-body set lists nothing else and
+    // is the only set.
+    let mut c = block();
+    let chamfer = add!(
+        c,
+        json!({"type": "chamfer", "body": c.body, "sets": [
+            {"all_edges": true, "size": {"type": "equal_distance", "distance": 1.0}}]}),
+    )
+    .unwrap();
+    assert_eq!(status(&c, chamfer), FeatureStatus::Ok);
+    assert_eq!(dressed_faces(&c, "chamfer"), 12);
+    let edge = corner(c.extrude, 1, 0);
+    for (value, expected) in [
+        (
+            json!({"type": "fillet", "body": c.body, "sets": [
+                {"all_edges": true, "edges": [edge], "size": {"type": "constant", "radius": 1.0}}]}),
+            "lists no edges or faces",
+        ),
+        (
+            json!({"type": "chamfer", "body": c.body, "sets": [
+                {"all_edges": true, "size": {"type": "equal_distance", "distance": 1.0}},
+                {"edges": [edge], "size": {"type": "equal_distance", "distance": 2.0}}]}),
+            "the only set",
+        ),
+        (
+            json!({"type": "fillet", "body": c.body, "sets": [
+                {"all_edges": true, "size": {"type": "variable", "start": 1.0, "end": 2.0,
+                 "start_vertex": "V{F2:a|F2:b|F2:c}"}}]}),
+            "no start vertex",
+        ),
+    ] {
+        let error = add!(c, value).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error}");
+    }
 }

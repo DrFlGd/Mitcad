@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands app/framework core/model/src/api tools/cli
+# check-all sources: app/commands app/framework core/model-api/src tools/cli
 # check-all sources: app/MainWindowMeasureHistory.cpp
 # Measure through the real UI, in the Docked layout, on two cylinders of
 # radius 5, 20 high (Body1 about Z through the origin, Body2 through

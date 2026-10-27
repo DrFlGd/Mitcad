@@ -22,7 +22,7 @@ native-click commandOk
 expect-log 'Added box \(New Body\)' 30
 capture baseline 'New body \S+ \(F1\.b0\): volume ([0-9.]+) mm3' 30
 expect-near ${baseline} 10000
-menu 'View/Show History'
+expect-native-visible native.historyCard true
 
 # Change an input while its previous preview runs. A stale preview must
 # neither overwrite the native field nor become the committed definition.

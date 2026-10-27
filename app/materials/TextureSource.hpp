@@ -27,7 +27,7 @@
 
 namespace mitcad {
 
-// The maps of a set by the model's names (core/model/src/appearance.rs):
+// The maps of a set by the model's names (core/model-base/src/appearance.rs):
 // `base_color` (the texture's own image), `normal` (OpenGL convention),
 // `roughness`, `metalness`, `occlusion`.
 const QStringList& textureSetMapNames();

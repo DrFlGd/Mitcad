@@ -2,7 +2,7 @@
 #pragma once
 
 // Numbers typed in the application's own fields. A decimal comma counts as
-// a decimal point, as in the model's expressions (core/model/src/expr,
+// a decimal point, as in the model's expressions (core/expr/src,
 // mitcad#2); numbers are always shown with a point.
 
 #include <optional>

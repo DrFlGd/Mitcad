@@ -37,7 +37,7 @@ the import's time limit (`learn::Clock`; the deadlines move by it), so
 that a dump run gives no item up that a run without it keeps; candidates
 are kept once by a hash of their definitions, and at most 1000 per item
 (an item can have tens of thousands, which took gigabytes). The import reports to
-`src/learn.rs` at four points: the candidates translated
+`core/import-replay/src/learn.rs` at four points: the candidates translated
 (`Importer::translate`), ranked (`Importer::rank`), the one accepted
 (`Importer::accepted`) and the end of the import; the raw records come
 from `mitcad_f3d::design::learn`.
@@ -51,11 +51,11 @@ One line (`schema` 1):
 | `translation_error` | present only when a fillet or chamfer translation failed: the most recent failure text, including the input position and decoder/replay reason when available. Retained if a later translation offers candidates |
 | `known` | what the decoder made of the item (the dump IR's item without `_f3d`) |
 | `record` | the item's object and the input objects it refers to, three references deep: `objects[]` with `path` (`item`, `item>0897AF07#0>C46D3EEB#0`: the class's first eight digits and the position among the parent's references to that class), `id`, `class`, `module`, `version`, `len`, `hex` (up to 16 KiB), `sub` (sub-chunk start) and `tokens` (`header`, `root` with its references and attributes, `ref` with `id` and `class`, `str16` with `text`, `sub`). Other timeline items, sketches and their entities, parameters, components and the like are not followed |
-| `context.sketches` | per sketch the candidates use (`T<index>`): `regions[]` as Mitcad computes them, in the file's ids (`key`, `outer` and `holes` curve lists, `area` mm², `centroid` and an `inside` point in sketch mm), the `frame` the import placed the sketch on (`origin`, `x_axis`, `y_axis`, `normal`; model mm, the space of an extrusion's stored direction) and `curves` by the file's ids (`object`, `class`, the `u64` root attributes such as `crv_primary_id`, `crv_secondary_id`, `pt_tag`; `type`, `construction`, `geometry` from the dump, sketch space in cm). Curves Mitcad made itself appear as `m<id>` |
+| `context.sketches` | per sketch the candidates use (`T<index>`): `regions[]` as MitCad computes them, in the file's ids (`key`, `outer` and `holes` curve lists, `area` mm², `centroid` and an `inside` point in sketch mm), the `frame` the import placed the sketch on (`origin`, `x_axis`, `y_axis`, `normal`; model mm, the space of an extrusion's stored direction) and `curves` by the file's ids (`object`, `class`, the `u64` root attributes such as `crv_primary_id`, `crv_secondary_id`, `pt_tag`; `type`, `construction`, `geometry` from the dump, sketch space in cm). Curves MitCad made itself appear as `m<id>` |
 | `context.bodies`, `context.edges` | the bodies before the item (`uid`, `volume`, `area`, `center`, `faces`; at most 200) and the edges the candidates name (`mid`, `length`, `body`), mm |
 | `context.resolved` | the bodies, faces and edges the decoder gave for the item (by JSON pointer into `known`, e.g. `/detail/edgeSets/0/edges/2`) as the replay's (`{"kind": "body", "uid"}`, `{"kind", "body", "name"}`; `null`: not found), so that a decoded input can be compared with the answer |
 | `context.edge_matches` | additive dressup matcher diagnostics for decoded edge inputs at those same pointers (mitcad#106): `status` (`matched`, `decoder_unresolved`, `missing_in_replay`, `ambiguous_in_replay`), `decoder_found` (the decoder's `found` text), `count` and either `matches[]` (`body`, `name`, `mid` mm, `direction`) or ambiguity `candidates[]` (`body`, `name`). A matched result also has `chosen_from_multiple`: at least one match selected among multiple distinct replay edges (absent in older dumps). The first 64 decoded inputs are considered, with at most 16 matches or candidates per edge; `count` retains the full number. Bodies and names use the file's timeline indices. This uses the actual dressup matcher, including circles and split edges; `context.resolved` retains its older midpoint matching for compatibility. The recipe tail's order of the faces round the edge's ends (`_f3d.end_faces`) tells equal mirror-image edges apart in the decoder (EDGE_ORDER.md) |
-| `candidates[]` | in the order tried, the first 1000 (`cost.candidates` counts all, `accepted` is the rank among all): `defs` (Mitcad feature definitions in the file's terms: feature uids as timeline indices `T<i>`, profile regions as `{"sketch": "T<i>", "region": <index in regions>}`, sketch curves by the file's ids), `note`, `guess`, `input_provenance` (`read`, `inferred`, `unknown`), `predicted` |
+| `candidates[]` | in the order tried, the first 1000 (`cost.candidates` counts all, `accepted` is the rank among all): `defs` (MitCad feature definitions in the file's terms: feature uids as timeline indices `T<i>`, profile regions as `{"sketch": "T<i>", "region": <index in regions>}`, sketch curves by the file's ids), `note`, `guess`, `input_provenance` (`read`, `inferred`, `unknown`), `predicted` |
 | `accepted`, `answer` | the accepted candidate's rank and the candidate itself |
 | `cost` | `candidates`, `rank`, `seconds` from the translation to the acceptance |
 
@@ -84,7 +84,7 @@ One line (`schema` 1):
   target.
 
 Its unit tests (`tools/f3d-learn/test_learn.py`, the ctest
-`tools.f3d_learn`) run on a synthetic dataset; `src/learn.rs` and
+`tools.f3d_learn`) run on a synthetic dataset; `core/import-replay/src/learn.rs` and
 `mitcad_f3d::design::learn` have their own.
 
 A rule that explains every settled example (or every counterexample with
@@ -321,7 +321,7 @@ designs, 1,132 + 5,169 parametric items).
 | Thread side (external / internal) | the flag byte after the angle (1 external, 0 internal), as read before; the class (`6g`/`6H`) and diameters follow it | 78 + 3 threads agree with their decoded ThreadInfo |
 | Thread kind (cosmetic / modelled) | the modelled byte after the diameters, and a list of one `(1, id)` pair before the class (`u32 n`, n × 16 bytes, `(1, id)` of another object of the file; none on a cosmetic thread, one per face on a modelled one) | as before |
 | Thread designation, class, length | strings (`M10x1.5`, `6g` / `4g6g`), the full-length byte and the thread length and offset parameters (`10 mm` / `3 mm`; a full thread keeps the default `10 mm` and `0 mm`) | all agree |
-| Thread handedness | one byte after the object's two references following the pitch diameter (1 right-handed, 0 left-handed; the hole reference, a null byte for a thread item, comes before them): the left-handed variants of a cosmetic and a modelled thread differ from their right-handed ones in this byte (and the list) alone | 81 threads (versions 4 and 5) have 1, none 0; the census has no left-handed thread, so the rule cannot be contradicted. Version 1 and 2 layouts are not read. Implemented: `ThreadInfo.isRightHanded`, read first by the import; a thread that is not modelled, whose faces the decoder named, whose handedness is read and whose class Mitcad lists has `input_provenance` `read` (a modelled thread keeps `inferred` for its start angle) |
+| Thread handedness | one byte after the object's two references following the pitch diameter (1 right-handed, 0 left-handed; the hole reference, a null byte for a thread item, comes before them): the left-handed variants of a cosmetic and a modelled thread differ from their right-handed ones in this byte (and the list) alone | 81 threads (versions 4 and 5) have 1, none 0; the census has no left-handed thread, so the rule cannot be contradicted. Version 1 and 2 layouts are not read. Implemented: `ThreadInfo.isRightHanded`, read first by the import; a thread that is not modelled, whose faces the decoder named, whose handedness is read and whose class MitCad lists has `input_provenance` `read` (a modelled thread keeps `inferred` for its start angle) |
 | Thread start angle (phase) | not found: no field of the thread's object, its sub-objects or the body object its list names holds it (checked for the angle in degrees and radians on the 20 census threads with a nonzero phase); the variants all start at 0. It stays inferred from the history | n/a |
 | Suppressed itself or through a dependent | `000100` or `010000`, see [*Items suppressed in the file*](f3d-fallbacks.md#items-suppressed-in-the-file) | 24 of 27 designs consistent, 3 (one design) not explained; 32 of 39 `010000` fillets have a face no state holds, 0 of 9 `000100` |
 | Suppression by API, timeline menu, configuration, group | the same bytes (the hole's object in the API, UI and configuration variants differs in ids and a random value only) | n/a |
@@ -335,7 +335,7 @@ option, symmetry, distance type and suppressed elements. One-option variant
 models (a design per value of each option, made from scripts; the flip of a
 rectangular pattern also by hand) show them in the bytes of the pattern's
 data object, the item's first reference after its root part
-(`core/f3d/src/design/build/patterns.rs` has the layout; the decoder gives
+(`core/f3d-design/src/build/patterns.rs` has the layout; the decoder gives
 the dump IR's `isSymmetric`, `isSymmetricInDirectionOne/Two`,
 `patternComputeOption`, `patternDistanceType`, `suppressedElementsIds` and
 a mirror's `isCombine`):
@@ -460,7 +460,7 @@ Every field below was read against the dump of the same model.
 What the variants showed about geometry: the stored coil's section lies in
 the plane through the axis (its size is the circle's diameter, the square's
 side, the triangle's height; the radial extent is placed on the diameter),
-which Mitcad's coil now builds by the helix's screw motion; a pipe's square
+which MitCad's coil now builds by the helix's screw motion; a pipe's square
 size is its side and a triangle's its height with the path at its middle.
 
 What the loft, sweep and font variants showed, and the kernel work that
@@ -494,7 +494,7 @@ followed (each checked against the stored bodies, import report
   fallbacks of the history (0.5 % accepted).
 - *A tapered sweep* leans each side of the profile by the angle (the
   outline offset by the distance times the tangent; a square stays a
-  square, a circle is a cone), as an extrusion's taper does; Mitcad scaled
+  square, a circle is a cone), as an extrusion's taper does; MitCad scaled
   the whole profile (10650.14 mm3 for the reference model, exact now).
 - *Sketch text height*: the file's capital height is that of the glyph A
   (the apex is flat in a sans-serif face but reaches the roman face's
@@ -540,7 +540,7 @@ thread with offsets 0, 1 and 2.5 mm) and checked on the census.
   nothing. The file's helix starts at the seam of the cylinder's surface at
   the end of the face the file's axis starts from. The decoder gives a whole
   cylinder's seam direction (`_f3d.seam`); with the file's axis pointing up
-  (Mitcad's helix starts at the low end of the axis pointing up) the import's
+  (MitCad's helix starts at the low end of the axis pointing up) the import's
   angle is the seam's direction about the axis from the world X (Y) reference
   (`thread_phase`), and the measurement in later states is skipped. Of the
   census' 20 modelled threads of this kind 18 agree exactly and two within
@@ -561,7 +561,7 @@ An edge input (`5662F619`) refers, besides its recipe, to the curve of the
 edge as it was when the input was made: after the reference's two GUIDs a
 list `u32 n | n refs` of curve objects (classes deriving from `518AD6D6`),
 in the component's coordinates, cm and rad
-(`core/f3d/src/design/curve.rs`). After the root part:
+(`core/f3d-decode/src/curve.rs`). After the root part:
 
 | Class | Layout |
 |---|---|
@@ -666,7 +666,7 @@ first such extrusion made are searched for one on the circle's axis and in a
 plane across the sketch's normal with its radius; at the sketch's plane
 first, else at the other end of the extrusion if the ends agree; its start
 vertex's angle from the sketch's x axis is the circle's start. The model's
-sketch circle has `start_angle` (radians, default 0, so Mitcad's own
+sketch circle has `start_angle` (radians, default 0, so MitCad's own
 sketches are unchanged), carried into the profile (`SegmentGeometry::Circle`
 `start`), the path curves of sweeps and the kernel's circle (the axes of the
 circle are turned by it, so the one edge, the cylinder's seam and its
@@ -714,7 +714,7 @@ designs' API dumps, below.
 
 Not decoded: the point of a perpendicular axis is not an input, only the
 axis' origin; four axes normal to a sketch profile at a point; the face or
-plane of a dimension outside the sketch (an `error` reference). Mitcad has
+plane of a dimension outside the sketch (an `error` reference). MitCad has
 no line-to-circle or point-to-surface dimension, so those dimensions are left
 out of the sketch (`partial`). A smooth join with a fitted spline cannot be
 kept either (the spline's control points are fixed, not shared with the
@@ -731,7 +731,7 @@ does. New plane definition `offset_through_point`.
 On the 27 designs of both private corpora that hold the planes left fixed,
 the axes and the one point (a targeted run, not a coverage run): of 33 fixed
 planes 9 are now parametric and read, of 8 fixed axes 4 (inferred: the stored
-direction is the reverse of Mitcad's rule) and the point (read); 40 planes
+direction is the reverse of MitCad's rule) and the point (read); 40 planes
 of 93 datum items are `read` (none was before). What stays fixed: items with no ASM state to
 find a vertex in, faces the replay cannot name, planes along several sketch
 curves, a mid plane and an offset whose inputs the file does not name, and
@@ -871,7 +871,7 @@ whose last bytes are the block `01 | u32 n | n references | 13 bytes | f32
 1.0, f32 1.0`. The block holds offset chains (`n` is 0 for all but the
 curves an offset touches) and moves with them; the flags lie a fixed
 number of bytes before its `01`, by the class's version (`curve_flags` in
-`core/f3d/src/design/sketch.rs` has the table; versions 7, 8 and 9 occur).
+`core/f3d-decode/src/sketch.rs` has the table; versions 7, 8 and 9 occur).
 The earlier rule (kind 22 bytes before the pair) was right for version 9 and
 no references only, and gave nothing for curves with a reference (the
 construction lines of offsets) and the older layouts. Against the API
@@ -884,7 +884,7 @@ reference dumps, 29,762 curves of 321 designs:
 | `isFixed` | 717 | not read | 29,762 (717 set) |
 | `isLinked`, `isReference` (always equal) | 18,577 | not read | 29,762 (18,577 set) |
 
-A linked curve comes in as a fixed reference entity (Mitcad's `fixed` and
+A linked curve comes in as a fixed reference entity (MitCad's `fixed` and
 `reference` flags, as the model gives its own projections) and the sketch's
 import note counts them. The model has linked projections (`Projection`:
 a topological name and the entities made from it), but the curve does not
@@ -1183,7 +1183,7 @@ against the API reference dumps and the controlled models.
   tangent-chain flag are, are `read` (the dumps agree on all 33 combines'
   operation and keep flag and on all 7 shells' type and chain). A pipe
   thread's class `A` is on the internal threads of the stored designs (6 of
-  6), which Mitcad's table listed for the external ones only, so the class was
+  6), which MitCad's table listed for the external ones only, so the class was
   left out with a note and the thread stayed `unknown`; the table lists it for
   both. On one design with 94 items, 7 items (a shell and six threads) went from `unknown` to `read`.
 
@@ -1269,7 +1269,7 @@ corners of a post whose walls are drafted by 3 degrees above a vertical
 part), while the faces across the vertex go on tangentially within OCCT's
 0.1 rad, so OCCT's contour ran on over the turned edges. The file's chain
 stops there and the face beyond the crease, extended, cuts the rounding.
-With the OCCT port's patch 0180 Mitcad's fillets stop their contours at
+With the OCCT port's patch 0180 MitCad's fillets stop their contours at
 such turns unless the next edge is rounded too, the face beyond cuts the
 rounding where the crease is concave (both items), and the vertex left
 between two pieces of that face's edge is removed: both items are

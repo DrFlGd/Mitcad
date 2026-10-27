@@ -2,7 +2,7 @@
 #pragma once
 
 // One remote operation (P12 remote): a command of a project's version
-// history (core/model/src/api/commands.md, "Remote repositories": fetch,
+// history (core/model-api/src/commands.md, "Remote repositories": fetch,
 // push, sync, connect, ...) or a project opened from a remote (a clone),
 // run on a thread of its own. Network work takes seconds to minutes, so it
 // is neither on the UI thread nor on the model's worker. A project is used

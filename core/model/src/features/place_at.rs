@@ -27,12 +27,14 @@ use serde::{Deserialize, Serialize};
 use super::geom_ref::{GeomRef, Resolver, Want, resolve_axis, resolve_plane, resolve_point};
 use super::seat::{Seat, SeatFrame, round_of};
 use super::{CheckContext, EvalContext, References, is_false};
-use crate::datum::{DatumAxis, DatumPlane, Vec3, add, norm, scale, sub, unit};
+use crate::datum::{DatumAxis, DatumPlane, Vec3};
 use crate::document::Document;
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
-use crate::profile::{SketchFrame, cross, dot};
+use crate::profile::SketchFrame;
 use crate::sketch::geometry::Curve2;
+use mitcad_vec3::{add, norm, scale, sub, unit};
+use mitcad_vec3::{cross, dot};
 
 fn none<P>() -> Option<P> {
     None

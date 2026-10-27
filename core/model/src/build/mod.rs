@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 //! The BUILD tab's assemblies of slot profiles (mitcad#375; `commands.md`,
-//! "BUILD: profile assemblies"): the library parts a design keeps once as
-//! its **sources**, what a library's `build` block says about a part
-//! ([`BuildMeta`], `docs/libraries.md`, "BUILD parts"), what BUILD records
-//! on the components it makes ([`BuildRecord`]), and the commands and
-//! queries: placing, editing, connecting, panels and removing
-//! (`place.rs`), the junctions where profiles meet (`junctions.rs`) and the
-//! cut list (`cut_list.rs`).
+//! "BUILD: profile assemblies"): what the design file keeps of them. The
+//! library parts a design keeps once as its **sources**, what a library's
+//! `build` block says about a part ([`BuildMeta`], `docs/libraries.md`,
+//! "BUILD parts"), what BUILD records on the components it makes
+//! ([`BuildRecord`]), what BUILD reads of a placed part (`part_info.rs`:
+//! the parts list and the properties use it), and the vector helpers the
+//! features share. The commands' planning (placing, editing, connecting,
+//! panels, removing, the junctions and the cut list) is the crate
+//! `mitcad-model-build` above the model (mitcad#777).
 //!
 //! Everything BUILD makes is ordinary design content: components,
 //! occurrences, `derived_part` and `bound_length` features
@@ -14,97 +16,28 @@
 //! parameters on the one timeline. The records only say what BUILD made,
 //! so that it can edit, connect and remove it again.
 
-mod connect;
-mod cut_list;
-mod geometry;
-mod junctions;
+pub(crate) mod geometry;
 mod meta;
-pub(crate) mod parts;
-pub(crate) mod place;
+// What BUILD reads of a placed part; the parts list and the properties
+// use it (mitcad#777).
+pub(crate) mod part_info;
 pub(crate) mod sources;
-pub(crate) mod tilt;
-// Timber construction (mitcad#478).
-pub(crate) mod joinery;
-pub(crate) mod spacing;
-pub(crate) mod timber;
-pub(crate) mod wood;
-// Profiled boards (mitcad#477).
-pub(crate) mod profiled;
-// Timber frames (mitcad#479).
-pub(crate) mod frames;
-// Fasteners chosen and swapped (mitcad#497).
-pub(crate) mod swap;
 
-pub use connect::{ConnectInput, PanelInput, RemoveResult};
-pub use cut_list::{
-    BoardColumns, CutList, CutListOptions, CutRow, MachiningItem, StockEntry, TimberColumns,
-    TimberTotals,
-};
-pub use frames::{FrameInput, FrameKind, Opening, OpeningOffset, RoofKind};
 pub(crate) use geometry::*;
-pub use joinery::JointInput;
-pub use junctions::{Junction, JunctionSide};
 pub use meta::*;
-pub use place::{
-    BindInput, EditAt, EditInput, EndCutInput, EndFrom, EndsInput, LengthInput, MitreCut,
-    MitreInput, OwnMachining, PartInput, PlaceAt, PlaceInput, PlaceKind, Placed, SideFrom,
-};
 pub use sources::{LibrarySourceDef, LibrarySources, SourceDesign};
-pub use spacing::{SpacingInput, SpacingMode};
-pub use swap::{SwapInput, Swapped};
-pub use timber::{Lie, PointTo};
-pub use wood::EndInput;
-
-#[cfg(test)]
-mod bound_tests;
-#[cfg(test)]
-mod close_tests;
-#[cfg(test)]
-mod cut_list_tests;
-#[cfg(test)]
-mod easy_tests;
-#[cfg(test)]
-mod face_start_tests;
-#[cfg(test)]
-mod fastener_tests;
-#[cfg(test)]
-mod frame_component_tests;
-#[cfg(test)]
-mod frame_tests;
-#[cfg(test)]
-mod junction_tests;
-#[cfg(test)]
-mod place_tests;
-#[cfg(test)]
-mod profiled_tests;
-#[cfg(test)]
-mod roof_fastener_tests;
-#[cfg(test)]
-mod side_end_tests;
-#[cfg(test)]
-mod source_tests;
-#[cfg(test)]
-mod test_library;
-#[cfg(test)]
-mod tilt_tests;
-#[cfg(test)]
-mod timber_tests;
-#[cfg(test)]
-mod two_points_tests;
-#[cfg(test)]
-mod wall_bearing_tests;
-#[cfg(test)]
-mod wall_splice_tests;
-// A side placement's Offset measured in the design (mitcad#646).
-#[cfg(test)]
-mod side_offset_tests;
 
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ComponentUid, FeatureUid, IdError, parse_number, string_serde};
+use crate::document::{Document, ModelError};
+use crate::expr::Unit;
+use crate::features::ValueInput;
+use crate::ids::{ComponentUid, FeatureUid, IdError};
+use crate::kernel::Kernel;
+use mitcad_model_base::internal::ids::{parse_number, string_serde};
 
 /// A library source of the design, written `S<n>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -189,7 +122,7 @@ pub struct BuildRecord {
     /// What a part on a side or a rail is placed from (mitcad#417): its
     /// joint's slide is bound to that end or the middle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<place::SideFrom>,
+    pub from: Option<SideFrom>,
     /// A profile on a side tilted along its host (mitcad#444), radians,
     /// positive towards the host's end B.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,6 +151,50 @@ pub struct BuildRecord {
     /// The member's place in its frame (`stud.3`, `plate.top.0`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member: Option<String>,
+}
+
+/// What a placement's offset along a profile is measured from
+/// (mitcad#417): end A, end B or the middle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SideFrom {
+    #[default]
+    #[serde(rename = "a")]
+    A,
+    #[serde(rename = "b")]
+    B,
+    #[serde(rename = "middle")]
+    Middle,
+}
+
+impl SideFrom {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::A => "a",
+            Self::B => "b",
+            Self::Middle => "middle",
+        }
+    }
+}
+
+/// The value of a command's value in the document: a number as it is
+/// (millimetres, radians), a text evaluated with the parameters.
+#[doc(hidden)]
+pub fn value_in<K: Kernel>(
+    doc: &Document<K>,
+    value: &ValueInput,
+    unit: Unit,
+) -> Result<f64, ModelError> {
+    match value {
+        ValueInput::Number(n) if n.is_finite() => Ok(*n),
+        ValueInput::Number(n) => Err(ModelError::Invalid(format!("{n} is not a finite number"))),
+        ValueInput::Name(text) => {
+            let expression = crate::document::split_named(text).map_or(text.as_str(), |(_, e)| e);
+            let params = doc.parameters();
+            crate::expr::evaluate(expression, params.table(), &params.context(), unit)
+                .map(|q| q.value)
+                .map_err(|e| ModelError::Invalid(format!("'{text}': {e}")))
+        }
+    }
 }
 
 /// What a BUILD part is (`docs/libraries.md`, "BUILD parts").

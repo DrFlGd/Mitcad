@@ -5,10 +5,10 @@
 
 use serde_json::{Value, json};
 
-use crate::document_tests::{Block, block, def, extrude, num};
 use crate::features::SketchPlane;
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::BoundingBox;
+use crate::test_support::{Block, block, def, extrude, num};
 use crate::testing::MockKernel;
 use crate::{Document, FeatureStatus};
 

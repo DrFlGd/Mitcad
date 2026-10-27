@@ -13,11 +13,12 @@ use super::copy::CopySource;
 use super::mounts::{Inserted, SourceMount};
 use super::{DocState, Document, ModelError, invalid};
 use crate::assembly::ExternalLink;
-use crate::configurations::{ConfigurationRow, Configurations, apply_values};
+use crate::configurations::{ConfigurationRow, Configurations};
 use crate::features::{BaseBody, BaseDef, FeatureDef};
 use crate::ids::{ComponentUid, OccurrenceUid};
 use crate::kernel::Kernel;
 use crate::library::{LibraryRef, LibraryRequest, LibrarySource, designation};
+use mitcad_model_base::internal::configurations::apply_values;
 
 /// A library component to insert: the library, the version, the
 /// component and its configuration row.

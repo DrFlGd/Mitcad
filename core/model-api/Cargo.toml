@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-model-api"
+description = "The JSON command and query interface of the Mitcad model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+mitcad-model.workspace = true
+# The BUILD tab's planning (mitcad#777).
+mitcad-model-build = { path = "../model-build" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
+# Drawings and sketches written as DXF.
+mitcad-dxf = { path = "../dxf" }
+# The drawing layout and writers (mitcad#777).
+mitcad-model-drawing = { path = "../model-drawing" }
+# 3MF export for slicers.
+mitcad-3mf = { path = "../3mf" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The mock kernel and the shared fixtures of the model's tests.
+mitcad-model = { workspace = true, features = ["testing"] }

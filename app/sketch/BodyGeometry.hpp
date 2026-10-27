@@ -3,7 +3,7 @@
 
 // Body edges and vertices in the sketch plane (mitcad#256, mitcad#258), as
 // the model's `plane_geometry` query lists them in sketch coordinates
-// (core/model/src/api/commands.md, "Body geometry in a sketch's plane"):
+// (core/model-api/src/commands.md, "Body geometry in a sketch's plane"):
 // what the Dimension tool picks and the Point tool snaps to. Nothing is
 // projected while a tool picks or snaps; the dimension or point made from
 // one projects it then (linked, SketchOp::projectBody), or takes the

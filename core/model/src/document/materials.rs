@@ -89,7 +89,7 @@ impl DocState {
     /// document's state: an id the target has with other fields gets a new
     /// one (`id_1`, ...), a name taken another; returns the source's ids
     /// with the copies' where they differ.
-    pub(crate) fn copy_materials(
+    pub fn copy_materials(
         &mut self,
         source: &DocState,
         needed: &BTreeSet<String>,
@@ -415,7 +415,7 @@ impl<K: Kernel> Document<K> {
     /// `replaces_built_in` (a document material with a built-in's id), its
     /// `class` (stored or worked out, mitcad#655), the bodies that name it
     /// and the components whose default it is.
-    pub(crate) fn materials_json(&self) -> Value {
+    pub fn materials_json(&self) -> Value {
         let replaced: Vec<&str> = self.state.materials.iter().map(|m| m.id.as_str()).collect();
         let built_in = material::built_in()
             .iter()
@@ -450,7 +450,7 @@ impl<K: Kernel> Document<K> {
 
     /// The `body_material` query: the material a body is made of (in the
     /// occurrence `path` when given), its fields and where it comes from.
-    pub(crate) fn body_material_json(&self, uid: BodyUid, path: Option<&[OccurrenceUid]>) -> Value {
+    pub fn body_material_json(&self, uid: BodyUid, path: Option<&[OccurrenceUid]>) -> Value {
         let (m, source) = self.body_material(uid, path);
         let mut value = serde_json::to_value(m).expect("materials serialize");
         match source {

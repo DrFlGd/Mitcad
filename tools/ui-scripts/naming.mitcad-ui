@@ -1,6 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Renamed UI controls retain their existing commands and serialized policy ids.
 wait-idle
+expect-ribbon-labels Solid Build
+screenshot '${MITCAD_TEST_SHOTS}/solid.png'
+click-logged '^Ribbon tab BUILD at '
+expect-ribbon-labels Solid Build
+screenshot '${MITCAD_TEST_SHOTS}/build.png'
+click-logged '^Ribbon tab SOLID at '
 expect-ever '^Browser Root/Design Settings at '
 click-logged '^Browser arrow Root/Design Settings at '
 expect-log '^Browser Root/Design Settings/Units: mm at '

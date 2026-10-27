@@ -5,6 +5,7 @@
 //! report's texts.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 /// The timeline query's entry of a feature.
 fn timeline_item(doc: &Document<TestKernel>, name: &str) -> Value {
@@ -148,7 +149,9 @@ fn items_suppressed_or_failed_in_the_file_become_placeholders() {
     assert_eq!(fillet["status"], "suppressed", "{fillet}");
     assert_eq!(
         fillet["error"],
-        crate::timeline_notes::sentence(report.items[2].note.as_deref().unwrap()),
+        mitcad_import_replay::internal::timeline_notes::sentence(
+            report.items[2].note.as_deref().unwrap()
+        ),
         "{text}"
     );
     assert!(

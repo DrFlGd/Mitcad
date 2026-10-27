@@ -9,6 +9,7 @@ use mitcad_model::assembly::inverse;
 use mitcad_model::features::{GeomRef, JointDef};
 use mitcad_model::joints::{JointKind, Motion};
 use mitcad_model::{ComponentUid, Datum, OccurrenceUid, Transform};
+use mitcad_model_api::DocumentApi;
 
 use super::*;
 
@@ -1073,7 +1074,7 @@ fn the_joint_test_model() {
         eprintln!("the joint test model was not found; skipped");
         return;
     }
-    let designs = mitcad_f3d::design::decode_path(&f3d).expect("decoded");
+    let designs = mitcad_f3d_design::decode_path(&f3d).expect("decoded");
     let dump = designs.into_iter().find_map(|d| d.dump).expect("a design");
     let mut doc = Document::new(MockKernel::default());
     let report = import(&mut doc, &dump);

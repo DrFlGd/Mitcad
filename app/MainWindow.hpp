@@ -59,6 +59,7 @@ class CommandRegistry;
 class CommandSearch;
 class ComputeProgress;
 class F3dImport;
+class ImageCalibration;
 struct PrintImport;
 struct MeshPlan;
 class FloatingLayout;
@@ -104,7 +105,7 @@ class DrawingWorkspace;
 }
 
 // The model is driven with JSON commands and queries (see
-// core/model/src/api/commands.md); geometry comes as Shape handles.
+// core/model-api/src/commands.md); geometry comes as Shape handles.
 // Commands are defined declaratively (app/COMMANDS.md) and run by
 // CommandSession; sketch mode is SketchController's; the browser, the
 // timeline and the parameters dialog are BrowserController's (U3). The
@@ -308,6 +309,12 @@ public:
   ParameterEditScope parameterScope() const override;
   // Annotations (mitcad#702; MainWindowAnnotations.cpp).
   void openAnnotations() override;
+  // Image references (mitcad#782; MainWindowImageReferences.cpp): one in
+  // the Image Reference panel; calibrated by two points clicked on it and
+  // a typed distance (when `name` is empty, the shown image the first click
+  // lands on).
+  void editImageReference(const QString& name) override;
+  void calibrateImageReference(const QString& name) override;
 
 protected:
   void closeEvent(QCloseEvent* event) override;
@@ -327,11 +334,14 @@ private:
   void refreshNativeWindow();
   void refreshNativeActions();
   void refreshNativeInspector();
+  void refreshNativeProjects();
   bool requestNativeClose();
   void nativeAction(const QString& id);
   std::unique_ptr<NativeMacWindow> m_nativeWindow;
   std::unique_ptr<NativeCommandForm> m_nativeForm;
   std::unique_ptr<NativeWidgetView> m_nativeIdleForm;
+  std::unique_ptr<NativeWidgetView> m_nativeProjectsForm;
+  bool m_nativeProjectsShown = false;
   QHash<QString, QPointer<QAction>> m_nativeActions;
   QHash<QString, BrowserNode> m_nativeNodes;
   QByteArray m_nativeSnapshotKey;
@@ -1537,6 +1547,24 @@ private:
   QString annotationPickText() const;
   // The view's filter while it is.
   void applyAnnotationPickFilter();
+
+  // Image references (mitcad#782; MainWindowImageReferences.cpp).
+  void registerImageReferenceCommands();
+  CommandDef imageReferenceCommand();
+  // After a refresh: the shown images drawn in the view (their pictures
+  // decoded once, by digest); a calibration whose image is gone or hidden
+  // ends.
+  void followImageReferences();
+  // The places of the images being calibrated (UI tests: "Calibrate Image1
+  // left at x,y", right, top, bottom: a tenth of the image in from its
+  // edges, through its middle).
+  void logImageCalibrationPlaces();
+  // Ends a calibration; `cancelled` logs it.
+  void endImageCalibration(bool cancelled);
+  // Asks for the distance between the two points and calibrates.
+  void finishImageCalibration(const QString& name, const ImagePoint& first, const ImagePoint& second);
+  QHash<QString, QImage> m_imageReferenceImages; // by digest
+  ImageCalibration* m_imageCalibration = nullptr;
 };
 
 } // namespace mitcad

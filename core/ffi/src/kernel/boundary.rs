@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
 //! Bodies from their boundaries and from triangles (the IFC import's breps
 //! and face sets, mitcad#273): a [`BoundaryBody`] becomes the neutral B-rep
-//! model of the `.f3d` reader (`mitcad_f3d::brep`), which the B-rep builder
+//! model of the `.f3d` reader (`mitcad_asm::brep`), which the B-rep builder
 //! of the imports builds with OCCT (`geometry/src/brep_import.cpp`: edges
 //! and faces made from their curves and surfaces, healed, shells sewn by
 //! their shared edges and closed shells made solids); triangles become a
 //! mesh body as an STL file's do.
 
 use cxx::SharedPtr;
-use mitcad_f3d::brep::{
+use mitcad_asm::brep::{
     BSplineCurve, BSplineSurface, Body, Coedge, Curve, Edge, Face, Lump, Shell, Surface, Vertex,
 };
-use mitcad_f3d::convert::ConvertedBody;
+use mitcad_asm::convert::ConvertedBody;
 use mitcad_model::KernelError;
 use mitcad_model::boundary::{BoundaryBody, BoundaryCurve, BoundaryReport, BoundarySurface};
 

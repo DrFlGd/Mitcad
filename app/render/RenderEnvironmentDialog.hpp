@@ -33,7 +33,7 @@ class RenderLightsOverlay;
 }
 
 // Render Environment (mitcad#47, View menu): the document's render settings
-// (core/model/src/api/commands.md, "Render settings"): the environment (a
+// (core/model-api/src/commands.md, "Render settings"): the environment (a
 // studio, outdoor or an HDR image, its strength and rotation, the sun),
 // the background, the ground, the film (exposure, view transform) and the
 // user's lights (mitcad#54: added, chosen, placed by numbers, at a face

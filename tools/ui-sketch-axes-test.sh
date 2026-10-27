@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/framework/ModelShapes.cpp tools/cli
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs core/solver
+# check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
 # The sketch's axes and origin as picks of Sketch Dimension and the
 # constraint tools (mitcad#500), on a design mitcad-cli makes: Sketch1 (F1)
 # on XY with a free point p1 at (20, 12), a free line c2 from (40, 5) to

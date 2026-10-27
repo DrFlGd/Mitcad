@@ -158,9 +158,13 @@ inline QList<ShortcutBinding> fixedShortcutBindings() {
   add("file.save", QObject::tr("Save"), QKeySequence::Save);
   add("file.save_as", QObject::tr("Save As"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S));
   add("file.quit", QObject::tr("Quit"), QKeySequence::Quit);
-  add("edit.cut", QObject::tr("Cut"), QKeySequence::Cut);
-  add("edit.copy", QObject::tr("Copy"), QKeySequence::Copy);
-  add("edit.paste", QObject::tr("Paste"), QKeySequence::Paste);
+  // A text field's Cut, Copy and Paste. In a sketch they are the sketch's
+  // own commands (sketch.cut, sketch.copy, sketch.paste; mitcad#788), which
+  // a focused text field still takes first: QLineEdit accepts the
+  // ShortcutOverride for them.
+  add("edit.cut", QObject::tr("Cut Text"), QKeySequence::Cut, ModelShortcutContext | CommandShortcutContext);
+  add("edit.copy", QObject::tr("Copy Text"), QKeySequence::Copy, ModelShortcutContext | CommandShortcutContext);
+  add("edit.paste", QObject::tr("Paste Text"), QKeySequence::Paste, ModelShortcutContext | CommandShortcutContext);
   add("edit.select_all", QObject::tr("Select All"), QKeySequence::SelectAll);
   // Search Timeline, Rename and Delete work while the Browser or the
   // timeline has the keyboard focus.
@@ -179,7 +183,7 @@ inline QList<ShortcutBinding> fixedShortcutBindings() {
   add("command.cancel", QObject::tr("Cancel"), QKeySequence(Qt::Key_Escape));
 #ifdef Q_OS_MACOS
   add("window.minimize", QObject::tr("Minimize"), QKeySequence(Qt::CTRL | Qt::Key_M));
-  add("application.hide", QObject::tr("Hide Mitcad"), QKeySequence(Qt::CTRL | Qt::Key_H));
+  add("application.hide", QObject::tr("Hide MitCad"), QKeySequence(Qt::CTRL | Qt::Key_H));
   add("application.hide_others", QObject::tr("Hide Others"), QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_H));
   // Qt Meta represents the physical Control key on macOS.
   add("window.full_screen", QObject::tr("Enter Full Screen"), QKeySequence(Qt::CTRL | Qt::META | Qt::Key_F));

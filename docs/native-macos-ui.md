@@ -6,6 +6,29 @@ undo history, imports and OCCT viewport. Its outer window and general
 controls are AppKit. The shared session owns a single document; enabling
 the frontend does not introduce multiple documents or a new renderer.
 
+## Design contract
+
+The native frontend preserves the default frontend's information structure:
+menu and command locations, ordering, workspace groups, CAD artwork and
+workflow capabilities. AppKit supplies the controls, typography, materials,
+focus, accessibility and system conventions. Differences in those platform
+conventions must preserve the task and its discoverability.
+
+The generic presenter bridge is an implementation tool, not a design limit.
+A tile picker still needs its pictures, groups and tile interaction; a tree
+still needs its editing, keyboard and move actions; a parameter table still
+needs its validation states. Use a dedicated AppKit presentation where the
+generic bridge cannot preserve these capabilities. Fixed prototype dimensions,
+missing interactions and historical descriptions of absent panels are not
+requirements. Validate visible content and ordinary input against the default
+frontend, beyond merely opening each native window.
+
+Qt remains the normal macOS build and release default. Explicit native test
+builds do not change that policy. The interaction sections below describe
+implementation and validation progress, not an assertion of complete parity.
+
+## Building the experimental frontend
+
 ```bash
 cmake --preset dev -DMITCAD_MACOS_NATIVE_UI=ON
 cmake --build --preset dev
@@ -19,16 +42,21 @@ the frontend is selected by default. `--ui=native` selects it explicitly;
 
 ## Interaction
 
-- The top CAD ribbon retains its command groups and
-  coloured CAD icons from the shared command registry, matching the sketch
-  palette. Native AppKit buttons, system typography and menu controls supply
-  the macOS appearance. Utility controls retain native SF Symbols.
-  Ribbon buttons have eight-point gaps, with wider spacing between groups.
-  Model and sketch workspaces keep their existing command membership and
-  order; grouped menus expose additional commands. Narrow windows collapse
-  trailing icons into those menus while keeping Finish Sketch visible.
-  Group menus use the same workspace membership as the shared Qt ribbon.
-  Repeated action snapshots reuse native artwork and preserve menu objects
+- The native shell follows the default Qt layout: Undo/Redo and the
+  Solid/Build workspace selector on the left, the document title in the
+  centre, and Project, AI Assistant and Search Commands on the right.
+  Sketch adds and selects the same temporary workspace tab. The native
+  menu bar keeps File, Edit, View, Tools, Window and Help in the shared
+  order; CAD groups belong to the ribbon rather than additional menu-bar
+  headings. Settings and About retain their standard application-menu roles.
+- Ribbon snapshots come from the actual shared ribbon widgets and menus.
+  Both frontends use the same pinned button order, artwork, subgroup
+  defaults, section separators, selection filters and full/collapsed group
+  widths. AppKit supplies the segmented workspace selector, buttons,
+  popups, system typography and appearance; CAD command icons retain
+  their familiar colours. The rightmost groups collapse as whole button
+  rows, matching the default layout, while their menus stay accessible.
+- Repeated action snapshots reuse native artwork and preserve menu objects
   while only availability or checked states change. Artwork is cached by its
   Qt icon key, symbol, palette, template mode and logical size; palette changes
   discard the cached images. Shortcut bindings are parsed with each changed
@@ -51,6 +79,21 @@ the frontend is selected by default. `--ui=native` selects it explicitly;
 - The model browser shows selections, names and visibility. Its context
   menu uses the shared browser command semantics. The outline and its
   scroll view stay transparent over the rounded native card.
+  Browser rows use the shared CAD artwork and initial expansion state,
+  with visibility before the icon and component activation after the name.
+  Its header retains Find in Design. Projects is an AppKit presentation of
+  the existing Projects presenter, stacked above Browser and controlled
+  by the same View > Projects action. Its native toolbar and outline bind
+  the same commands, item model, selection and edits.
+  Projects uses a bounded native outline below its toolbar. Its height follows
+  actual AppKit row geometry, including source-list insets, and long lists
+  scroll within that viewport. Browser is placed below the resulting card.
+  The Projects disclosure arrow collapses only the content and leaves its
+  header available to reopen it. View > Projects independently remembers
+  whether the whole panel is shown across application restarts.
+  Failure and warning counts appear in a native row below the Browser title,
+  with the shared messages as tooltips and shared issue navigation on click.
+  Their retained Qt presenters stay hidden so they cannot paint under the card.
 - The inspector stays hidden until a command, sketch or selection needs it.
   It hosts one native command form, selection details or the sketch palette.
   Expressions, decimal commas, choices, repeated inputs, selection lists,
@@ -58,13 +101,21 @@ the frontend is selected by default. `--ui=native` selects it explicitly;
   native buttons with the shared CAD icons and option labels as tooltips.
   Disclosure rows reveal their dependent inputs while keeping the inspector's
   height cap and scrolling rules.
-- View controls show or hide the model, inspector and feature-history
-  cards. Feature history is a compact horizontal timeline of the shared
+- View > Browser and View > Timeline control the shared floating cards.
+  The inspector follows the active command or selection; its optional native
+  toolbar shortcut remains available through toolbar customization.
+  Feature history is a compact horizontal timeline of the shared
   coloured CAD icons in native buttons, with its marker between features
   and native step controls. It floats above the canvas and supports edit,
   selection, reordering and marker movement. Resizing keeps visible cards
   inside the document and preserves their input routing above the embedded
   viewport. Marker drags use the shared rollback and undo transaction.
+  The timeline is visible initially, as in the default frontend, and keeps
+  playback, filter and search controls to the left of the feature strip.
+  Both frontends share 28-point cells, 22-point artwork and 3-point gaps.
+  The native card is 42 points high. Neutral cells are borderless; errors
+  have a red fill and outline, warnings a yellow fill and outline, and import
+  notes a warning outline. Selection preserves the issue fill.
 - Settings, parameters, appearances, version/library/remote dialogs,
   reports, progress and alerts bind existing workflow presenters to native
   controls. File open/save panels use NSOpenPanel/NSSavePanel, and colours
@@ -416,7 +467,7 @@ Hiding and showing an active inspector is checked with an invalid
 expression: its text and disabled confirmation state remain intact.
 The actual native ribbon popup menus are compared recursively with the
 retained Qt CAD menus for the active workspace, including command order,
-submenu structure and checked states. Settings must remain in the Mitcad
+submenu structure and checked states. Settings must remain in the MitCad
 application menu, and search-only settings pages must stay out of CAD menus.
 The secondary-window and panel tests open the Cache settings page through
 native command search.

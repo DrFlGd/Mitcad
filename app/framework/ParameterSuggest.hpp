@@ -9,7 +9,7 @@
 // tested (app/tests/parameter_suggest.cpp); the list and the fx
 // button are framework/ParameterField.hpp.
 //
-// The rules follow the model's expressions (core/model/src/expr/mod.rs):
+// The rules follow the model's expressions (core/expr/src/lib.rs):
 // a name is a letter or `_` and then letters, digits and `_`; units,
 // functions and constants are reserved; names are case-sensitive; a word
 // right after a number, a name or `)` is a unit; `name = expression` names

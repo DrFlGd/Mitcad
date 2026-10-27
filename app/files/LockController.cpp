@@ -851,7 +851,7 @@ void LockController::taken(const QJsonObject& answer) {
       if (wasReadOnly) {
         m_host.readOnlyChanged();
       }
-      m_host.status(tr("This remote does not accept Mitcad's lock references: %1 has no edit lock.").arg(fileName()),
+      m_host.status(tr("This remote does not accept MitCad's lock references: %1 has no edit lock.").arg(fileName()),
                     true);
       updateIndicator();
       updateBanner();
@@ -948,7 +948,7 @@ void LockController::becomeHolder(const QJsonObject& answer, const QJsonObject& 
     qInfo().noquote() << QStringLiteral("Edit lock taken: %1 from %2 (%3)").arg(fileName(), str(from, "name"), reason);
     const QString name = str(from, "name");
     if (reason == QLatin1String("no_receipt") || reason == QLatin1String("unanswered")) {
-      m_host.status(tr("%1's Mitcad did not answer; the edit lock of %2 is yours.").arg(name, fileName()), false);
+      m_host.status(tr("%1's MitCad did not answer; the edit lock of %2 is yours.").arg(name, fileName()), false);
     } else if (reason == QLatin1String("take_over")) {
       m_host.status(tr("You took over the edit lock of %1.").arg(fileName()), false);
     } else {
@@ -1049,7 +1049,7 @@ void LockController::handleView(const QJsonObject& view) {
     return;
   }
   m_dropped = view.value(QStringLiteral("dropped")).toInt();
-  // Requests kept alive, and others' that went stale (their Mitcad no
+  // Requests kept alive, and others' that went stale (their MitCad no
   // longer refreshes them) removed by this poll (mitcad#89).
   for (const QJsonValue& value : view.value(QStringLiteral("refreshed_requests")).toArray()) {
     qInfo().noquote() << QStringLiteral("Edit lock request refreshed: %1").arg(value.toString());
@@ -1104,7 +1104,7 @@ void LockController::handleHolding(const QJsonObject& lock) {
   }
   m_lock = lock;
   // The requests waiting, in the order served: others', readable, not
-  // stale (a requester whose Mitcad no longer refreshes its request), and
+  // stale (a requester whose MitCad no longer refreshes its request), and
   // not declined already (an answer of this or an earlier run stands).
   QJsonArray requests;
   for (const QJsonValue& value : lock.value(QStringLiteral("requests")).toArray()) {
@@ -1340,7 +1340,7 @@ void LockController::lost(const QJsonObject& lock) {
   } else if (reason == QLatin1String("take_over")) {
     text = tr("%1 took over the edit lock at %2.").arg(name, at);
   } else if (!reason.isEmpty()) {
-    text = tr("%1 took the edit lock at %2 (your Mitcad did not answer).").arg(name, at);
+    text = tr("%1 took the edit lock at %2 (your MitCad did not answer).").arg(name, at);
   } else {
     text = tr("%1 has the edit lock since %2.").arg(name, at);
   }
@@ -1997,7 +1997,7 @@ void LockController::showDetails() {
     if (request.value(QStringLiteral("mine")).toBool()) {
       requests << tr("yours");
     } else if (request.value(QStringLiteral("stale")).isString()) {
-      requests << tr("%1 (stale: their Mitcad no longer asks)").arg(requesterName(request));
+      requests << tr("%1 (stale: their MitCad no longer asks)").arg(requesterName(request));
     } else {
       requests << requesterName(request);
     }
@@ -2225,7 +2225,7 @@ void LockController::offlineWill(const QString& session, const QJsonObject& even
   m_offlineAsked.insert(session);
   const QString name = ownerName(m_lock);
   const QString at = clockText(timeOf(event.value(QStringLiteral("since"))));
-  const QString text = tr("%1's Mitcad lost its connection at %2. Take the edit lock of %3?").arg(name, at, fileName());
+  const QString text = tr("%1's MitCad lost its connection at %2. Take the edit lock of %3?").arg(name, at, fileName());
   auto* box = new QMessageBox(QMessageBox::Question, tr("Edit Lock"), text, QMessageBox::NoButton, &m_window);
   box->setAttribute(Qt::WA_DeleteOnClose);
   box->setTextFormat(Qt::PlainText);

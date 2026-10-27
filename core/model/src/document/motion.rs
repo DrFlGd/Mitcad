@@ -477,11 +477,7 @@ impl<K: Kernel> Document<K> {
     /// A value of a joint's motion in a command: a number (mm, radians) or
     /// an expression (`30 deg`, `crank_angle`), read as a turn's angle or a
     /// slide's length.
-    pub(crate) fn motion_value(
-        &self,
-        input: &ValueInput,
-        motion: Motion,
-    ) -> Result<f64, ModelError> {
+    pub fn motion_value(&self, input: &ValueInput, motion: Motion) -> Result<f64, ModelError> {
         match input {
             ValueInput::Number(v) if v.is_finite() => Ok(*v),
             ValueInput::Number(_) => Err(invalid(format!("{motion}: the value is not finite"))),

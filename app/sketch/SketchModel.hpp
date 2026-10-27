@@ -2,7 +2,7 @@
 #pragma once
 
 // The sketch being edited as the model's `sketch` query describes it
-// (core/model/src/api/commands.md, "Sketch commands (S1)"): solved points
+// (core/model-api/src/commands.md, "Sketch commands (S1)"): solved points
 // and curves, constraints, dimensions and status, in sketch coordinates.
 
 #include <optional>
@@ -34,6 +34,9 @@ struct CurveData {
   Curve2 curve;
   QString start, end, center; // point ids, where the curve has them
   QStringList points;         // every point it refers to
+  // A closed fitted spline (mitcad#783): no start or end, its points listed
+  // once.
+  bool closed = false;
   bool construction = false;
   bool centerline = false;
   bool fixed = false;
@@ -246,7 +249,7 @@ QString axisPick(const QString& axis);
 bool isAxisPick(const QString& id);
 // What `sketch.axis` takes for a pick ("origin", "x", "y"), or empty.
 QString axisPickName(const QString& id);
-// How long the model makes an axis line (core/model/src/sketch/axes.rs).
+// How long the model makes an axis line (core/sketch/src/axes.rs).
 constexpr double kAxisLineLength = 100.0;
 
 // The sketch point of a 3D frame point and back.

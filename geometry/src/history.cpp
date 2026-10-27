@@ -3,10 +3,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <stdexcept>
+#include <set>
+#include <string>
 #include <utility>
 
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepTools.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_CurveOnClosedSurface.hxx>
 #include <BRep_CurveOnSurface.hxx>
@@ -20,15 +26,22 @@
 #include <Geom2d_Curve.hxx>
 #include <Geom_Curve.hxx>
 #include <GProp_GProps.hxx>
+#include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_Surface.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
+#include <Standard_ErrorHandler.hxx>
+#include <Standard_Failure.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopoDS_Face.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Pln.hxx>
+#include <gp_Pnt.hxx>
 
 #include "util.hpp"
 
@@ -74,6 +87,79 @@ void copy_points(const TopoDS_Shape& from, const TopoDS_Shape& to) {
       target->ChangePoints().Append(copy);
     }
   }
+}
+
+// Whether MITCAD_DEBUG_NAMING is set (FaceNamer::carry_by_surface).
+bool debug_naming() {
+  static const bool on = [] {
+#ifdef _MSC_VER
+    char* value = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&value, &length, "MITCAD_DEBUG_NAMING") != 0 || value == nullptr) {
+      return false;
+    }
+    std::free(value);
+    return true;
+#else
+    return std::getenv("MITCAD_DEBUG_NAMING") != nullptr;
+#endif
+  }();
+  return on;
+}
+
+std::string number(double value) {
+  char text[32];
+  std::snprintf(text, sizeof text, "%.3g", value);
+  return text;
+}
+
+// The direction a planar face faces.
+gp_Dir facing(const TopoDS_Face& face, const gp_Pln& plane) {
+  const gp_Dir normal = plane.Axis().Direction();
+  return face.Orientation() == TopAbs_REVERSED ? normal.Reversed() : normal;
+}
+
+// The point of the face's surface at the middle of the face's parameters.
+gp_Pnt parameter_middle(const TopoDS_Face& face) {
+  double u1 = 0.0, u2 = 0.0, v1 = 0.0, v2 = 0.0;
+  BRepTools::UVBounds(face, u1, u2, v1, v2);
+  return BRepAdaptor_Surface(face, false).Value(0.5 * (u1 + u2), 0.5 * (v1 + v2));
+}
+
+// Whether faces a and b lie on one surface: the same plane facing the same
+// way, or surfaces of one kind each through the middle of the other face
+// (within the faces' tolerances, at least 1e-6 mm). `why` says why not.
+bool on_one_surface(const TopoDS_Face& a, const TopoDS_Face& b, std::string& why) {
+  const double tolerance = std::max({1.0e-6, BRep_Tool::Tolerance(a), BRep_Tool::Tolerance(b)});
+  const BRepAdaptor_Surface sa(a, false);
+  const BRepAdaptor_Surface sb(b, false);
+  if (sa.GetType() != sb.GetType()) {
+    why = "another kind of surface";
+    return false;
+  }
+  if (sa.GetType() == GeomAbs_Plane) {
+    const double angle = facing(a, sa.Plane()).Angle(facing(b, sb.Plane()));
+    if (angle > 1.0e-7) {
+      why = "a plane facing " + number(angle) + " rad another way";
+      return false;
+    }
+    const double distance = sb.Plane().Distance(sa.Plane().Location());
+    if (distance > tolerance) {
+      why = "a parallel plane " + number(distance) + " mm away";
+      return false;
+    }
+    return true;
+  }
+  for (const auto& [from, to] : {std::make_pair(&a, &b), std::make_pair(&b, &a)}) {
+    GeomAPI_ProjectPointOnSurf projection(parameter_middle(*from), BRep_Tool::Surface(*to));
+    if (projection.NbPoints() == 0 || projection.LowerDistance() > tolerance) {
+      why = "a surface of its kind " +
+            (projection.NbPoints() == 0 ? std::string("not reached") : number(projection.LowerDistance()) + " mm") +
+            " from the other face's middle";
+      return false;
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -294,6 +380,64 @@ void FaceNamer::generated(const BRepTools_History& history, const TopoDS_Shape& 
   for (const TopoDS_Shape& image : history.Generated(source)) {
     if (image.ShapeType() == TopAbs_FACE) {
       add(image, name);
+    }
+  }
+}
+
+void FaceNamer::carry_by_surface(const Shape& input, const char* operation) {
+  std::set<std::string> held;
+  bool unnamed = false;
+  for (const NameList& names : m_names) {
+    held.insert(names.begin(), names.end());
+    unnamed = unnamed || names.empty();
+  }
+  if (!unnamed) {
+    return;
+  }
+  // The input's faces whose names reach no face of the result: deleted by
+  // the history, or carried to images that are no faces of the result.
+  std::vector<int> lost;
+  for (int i = 0; i < input.face_count(); ++i) {
+    const NameList& names = input.face_names(i);
+    if (!names.empty() &&
+        std::none_of(names.begin(), names.end(), [&held](const std::string& name) { return held.count(name) > 0; })) {
+      lost.push_back(i);
+    }
+  }
+  const bool debug = debug_naming();
+  for (int f = 1; f <= m_faces.Extent(); ++f) {
+    NameList& names = m_names[static_cast<std::size_t>(f - 1)];
+    if (!names.empty()) {
+      continue;
+    }
+    const TopoDS_Face& face = TopoDS::Face(m_faces(f));
+    std::string report;
+    for (int i = 0; i < input.face_count(); ++i) {
+      const bool candidate = std::find(lost.begin(), lost.end(), i) != lost.end();
+      if (input.face_names(i).empty() || (!candidate && !debug)) {
+        continue;
+      }
+      std::string why;
+      bool same = false;
+      try {
+        OCC_CATCH_SIGNALS
+        same = on_one_surface(input.face(i), face, why);
+      } catch (const Standard_Failure& failure) {
+        why = std::string("the comparison failed: ") + failure.what();
+      }
+      if (same && candidate) {
+        names.insert(names.end(), input.face_names(i).begin(), input.face_names(i).end());
+        report += "\n  taken: " + input.face_names(i).front();
+      } else if (same) {
+        report += "\n  on its surface, but its names are on another face of the result: " +
+                  input.face_names(i).front();
+      } else if (candidate) {
+        report += "\n  " + input.face_names(i).front() + ": " + why;
+      }
+    }
+    if (debug) {
+      std::fprintf(stderr, "%s: face %d of the result had no name; %zu input faces lost theirs%s\n", operation,
+                   f - 1, lost.size(), report.c_str());
     }
   }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch tools/cli
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs core/solver
+# check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
 # Inactive sketch constraints (mitcad#721), on a design mitcad-cli makes:
 # Sketch1 (F1) on XY with a fixed point p1 at the origin and a line c2 from
 # it to p3 at (30, 20); a horizontal constraint k1 on c2, made inactive as

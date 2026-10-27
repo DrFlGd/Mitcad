@@ -91,6 +91,9 @@ public:
   // Reads the projects again (on a thread; requests while one runs make one
   // more read). Only while the panel is shown; showing it reads them.
   void refresh();
+  // A toolkit-independent presenter may be visible in an AppKit host while
+  // its QWidget remains hidden. It still needs project refreshes.
+  void setNativePresented(bool shown);
   // The open design or the current project's remote changed: the marks
   // (bold, sync state) again, nothing read.
   void updateMarks();
@@ -162,6 +165,7 @@ protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
+  bool m_nativePresented = false;
   friend class ProjectsTreeWidget;
 
   // A name being typed in place.

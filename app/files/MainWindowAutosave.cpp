@@ -195,7 +195,7 @@ std::optional<bool> MainWindow::askOverwriteChanged() {
   }
   const QString name = documentName();
   qInfo().noquote() << QStringLiteral("Save conflict: %1 changed since it was opened").arg(m_filePath);
-  QMessageBox box(QMessageBox::Warning, tr("Mitcad"),
+  QMessageBox box(QMessageBox::Warning, tr("MitCad"),
                   tr("%1 has changed since the recovered design was opened from it.").arg(name),
                   QMessageBox::NoButton, this);
   box.setInformativeText(tr("Overwrite the file with the recovered design, or save the recovered design "

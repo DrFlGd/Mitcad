@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/drawings app/browser app/MainWindow.cpp core/model/src/drawing tools/cli
-# check-all sources: core/model/src/api/drawings.rs core/model/src/api/drawing_annotations.rs core/model/src/api/drawing_tables.rs
+# check-all sources: app/drawings app/browser app/MainWindow.cpp core/model/src/drawing core/model-drawing/src tools/cli
+# check-all sources: core/model-api/src/drawings.rs core/model-api/src/drawing_annotations.rs core/model-api/src/drawing_tables.rs
 # The drawing features of mitcad#729 through the real UI, in the Docked
 # layout, on a 60 x 60 x 10 plate with four 6 mm holes on a circle of 20
 # about its middle that mitcad-cli makes:

@@ -72,7 +72,7 @@ void readSession(RecoverableSession& found) {
   found.digest = about.value(QStringLiteral("digest")).toString();
   const int version = about.value(QStringLiteral("version")).toInt();
   if (version != 1 && version != 2) {
-    found.damage = QObject::tr("written by another version of Mitcad");
+    found.damage = QObject::tr("written by another version of MitCad");
     return;
   }
   // The design file's name; the key keeps its old name.
@@ -213,7 +213,7 @@ std::optional<std::size_t> askRecovery(QWidget* parent, std::vector<RecoverableS
   QDialog dialog(parent);
   dialog.setWindowTitle(QObject::tr("Recover Unsaved Work"));
   auto* layout = new QVBoxLayout(&dialog);
-  auto* text = new QLabel(QObject::tr("<b>Mitcad ended without closing these designs.</b> Their changes that "
+  auto* text = new QLabel(QObject::tr("<b>MitCad ended without closing these designs.</b> Their changes that "
                                       "were not saved are kept."));
   text->setWordWrap(true);
   layout->addWidget(text);

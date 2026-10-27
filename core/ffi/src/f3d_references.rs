@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use mitcad_f3d::design::ir::Dump;
+use mitcad_dump::Dump;
 use mitcad_import::components::external_documents;
 use mitcad_import::reference_folder::{Found, MAX_DEPTH, Resolver, stem_name};
 use mitcad_import::references::Referenced;
@@ -385,14 +385,14 @@ impl crate::Document {
 /// The files of the documents the design refers to (found as
 /// [`crate::Document::load_references`] finds them), opened, with the GUIDs
 /// its inputs name their entities with (lower case) and its keys for them:
-/// for the entities it names in them (`mitcad_f3d::design::resolve_external_inputs`).
+/// for the entities it names in them (`mitcad_f3d_design::resolve_external_inputs`).
 /// `label` is the design's label in its file.
 pub(crate) fn external_files(
     path: &str,
     label: &str,
     options: &TimelineOptions,
     dump: &Dump,
-) -> Vec<(String, String, mitcad_f3d::F3dFile)> {
+) -> Vec<(String, String, mitcad_f3d_file::F3dFile)> {
     let mut documents = external_documents(dump);
     // The derives' source designs, for their placements (mitcad#324).
     for d in mitcad_import::derive::source_documents(dump) {
@@ -418,7 +418,7 @@ pub(crate) fn external_files(
         let Some(file) = found.file else {
             continue;
         };
-        let Ok(designs) = mitcad_f3d::design::documents(&file) else {
+        let Ok(designs) = mitcad_f3d_design::documents(&file) else {
             continue;
         };
         let wanted = found.design;

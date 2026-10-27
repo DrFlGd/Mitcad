@@ -46,14 +46,21 @@ mkdir -p "$WORK"
 # (their RUNPATH: Qt's and vcpkg's folders, and the render worker's).
 runpath() { readelf -d "$1" | sed -n 's/.*(RUNPATH).*\[\(.*\)\]$/\1/p'; }
 libraries=$(runpath "$APP")
-executables=(--executable "$APPDIR/usr/bin/mitcad" --executable "$APPDIR/usr/bin/mitcad-cli")
+# Every executable the install rules put in usr/bin (mitcad, mitcad-cli,
+# the render worker, the assistant's launcher, ...): linuxdeploy gives
+# each its $ORIGIN RUNPATH, so none of them can load a system's Qt or
+# other libraries in place of the AppImage's (mitcad#789).
+executables=()
+for file in "$APPDIR"/usr/bin/*; do
+  [ -f "$file" ] && [ ! -L "$file" ] && [ "$(head -c 4 "$file" | od -An -c | tr -d ' ')" = '177ELF' ] &&
+    executables+=(--executable "$file")
+done
 # The render worker (docs/rendering.md), which every build has, and what
 # it loads without linking it: Open Image Denoise's device modules, next
 # to its core library.
 WORKER=$(dirname "$APP")/mitcad-render
 [ -f "$APPDIR/usr/bin/mitcad-render" ] || { echo "no render worker in $APPDIR/usr/bin" >&2; exit 1; }
 libraries=$libraries:$(runpath "$WORKER")
-executables+=(--executable "$APPDIR/usr/bin/mitcad-render")
 oidn=$(LD_LIBRARY_PATH=$libraries ldd "$WORKER" | sed -n 's/.*libOpenImageDenoise_core[^ ]* => \([^ ]*\) .*/\1/p')
 [ -n "$oidn" ] || { echo "mitcad-render does not link Open Image Denoise's core library" >&2; exit 1; }
 # The GPU devices' modules too, when Open Image Denoise has them

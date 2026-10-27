@@ -10,7 +10,7 @@ list the other topics.
 
 The roundings that still fell back in `5ef2dbd5`, `a9e82a9a`/`de7b8b9d`
 and `6418ebb1`/`920a1cef`, each design imported alone with the failure
-dump, every failing definition run through Mitcad's dressup and OCCT's
+dump, every failing definition run through MitCad's dressup and OCCT's
 fillet alone on the replay's body and on the history's stored body before
 the item (its edges found there on the stored edges' curves). `a9e82a9a`'s
 item 159 (Fillet37) is parametric and verified since round 4 (0580,
@@ -941,7 +941,7 @@ new faces (0.8 % of their area) up to 0.044 mm off at its corners.
 ## A fin's top chamfered over slight creases; a rounding past a concave corner tighter than its ball; an outline's rounding again (round 19 of mitcad#343, `5ef2dbd5` items 86, 30 and 91)
 
 Each item traced with the dressup dump and OCCT's chamfer or fillet alone
-(and Mitcad's dressup) on the replay's body before it and on the history's
+(and MitCad's dressup) on the replay's body before it and on the history's
 stored body (a probe outside the repository).
 
 - **Item 86 (Chamfer2, 0.263 at 45 degrees on both top chains of the fin
@@ -1066,7 +1066,7 @@ before: main 962006e9 with its port):
 ## A bore's rim chamfered over a pocket; moved faces; a rounding's end at a torus' seam (round 19 of mitcad#343, `a9e82a9a` items 99, 123 and 186)
 
 Each item traced with the dressup dump and OCCT's chamfer or fillet alone
-(and Mitcad's dressup) on the replay's body before it and on the history's
+(and MitCad's dressup) on the replay's body before it and on the history's
 stored body (a probe outside the repository). The same items in
 `de7b8b9d`, the same design, follow.
 
@@ -1086,10 +1086,10 @@ stored body (a probe outside the repository). The same items in
   either arc first, the seam at either corner; fails without the patch).
 - **Item 123 (MoveFace2, faces of a body moved by a translation): parametric
   and verified (the new `move_face`).** Moved faces fell back to the stored
-  body: Mitcad had no such operation. The decoder now reads a move face's
+  body: MitCad had no such operation. The decoder now reads a move face's
   faces (named, found in the history at the item's place) and the rigid
   matrix of its transform input, and the import gives one `move_face` per
-  body ([commands.md](../../model/src/api/commands.md), *Move face*): the moved
+  body ([commands.md](../../model-api/src/commands.md), *Move face*): the moved
   faces keep their surfaces, moved, and their neighbours extend or shorten
   along their own surfaces up to them (`geometry/src/move_faces.cpp`).
   Tests: `moved_faces_come_in_as_a_move_face` (`src/tests.rs`),
@@ -1130,7 +1130,7 @@ as before or closer to the file's.
 Item 37 (Fillet6) of `52ba7a15` fell back on main f1cae0d2 ("the geometry
 kernel's computation of the rounding along edge … fails"), where round 17
 had it parametric and verified. Traced with the dressup dump and OCCT's
-fillet alone (and Mitcad's dressup) on the replay's body before the item,
+fillet alone (and MitCad's dressup) on the replay's body before the item,
 with TKFillet built from the port at each patch from 0951 on and with the
 dressup's healing (`detail::own_pcurves`) switched off.
 
@@ -1303,7 +1303,7 @@ before it*, below.)
 
 An item whose decoded definition builds a result that is not the file's
 takes the file's bodies, as before (*Matching rules*, [*Fallback*](f3d-fallbacks.md#fallback)). That
-result is not thrown away unmeasured any more (`src/deviations.rs`):
+result is not thrown away unmeasured any more (`core/import-replay/src/deviations.rs`):
 
 - While the item's definitions are tried, the first decoded definition
   (not a guess) that builds a result the history does not take is
@@ -1579,7 +1579,7 @@ showed:
   the copies of their faces (`dressup_copies.rs`; a mirror's image turns
   the other way), and the import lists a tapped hole's thread with the
   hole in a pattern's features.
-- **Circular patterns about an arc edge.** Mitcad's axis of a circular
+- **Circular patterns about an arc edge.** MitCad's axis of a circular
   edge (and an origin axis) points the way of its largest coordinate; the
   file turns about its stored axis line, here (0, -1, 0). The angle is
   negated where they disagree (`Importer::circular_angle`), so the copies
@@ -1619,11 +1619,11 @@ the placing of occurrences and one pattern skipped with it. What is left:
 
 - **Tapered pipe threads.** Two holes on the shaft are tapped `1/2 - 14
   NPT` (cosmetic): the file's thread sizes each bore to its taper in two
-  operations of its own (75 mm³ a hole), which Mitcad has no thread for.
+  operations of its own (75 mm³ a hole), which MitCad has no thread for.
   The holes come in, but the state after them is brought by a base
   feature; the rectangular pattern of the holes is 1.1 % off and skipped,
   and the circular pattern of both falls back.
-- **The start of a tapped hole's modelled thread.** Mitcad's thread on a
+- **The start of a tapped hole's modelled thread.** MitCad's thread on a
   hole's wall starts at angle 0 (the walls do not exist before the hole);
   the file's starts elsewhere, 0.42 mm apart, and the pattern's copies
   take the angle about their own axes. The bodies match the file's in
@@ -1652,7 +1652,7 @@ others exactly), from three:
   hole's start is the small end's pitch diameter grown over the length,
   less h (NPT: E1 − 0.8 P, within 1e-4 mm of ASME B1.20.1; the `Rc 1/2`
   hole's 0.22 mm below ISO 7-1's gauge diameter less 2 h, so the import
-  takes the file's numbers as the thread's `diameters`). Mitcad has taper
+  takes the file's numbers as the thread's `diameters`). MitCad has taper
   pipe threads now (`npt`, `iso_taper` with `taper`, which the import sets;
   threads saved before stay straight), cosmetic ones tapering the bore,
   and the thread's operations end the hole's state, as a modelled one's

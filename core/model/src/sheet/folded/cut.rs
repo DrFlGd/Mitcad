@@ -18,7 +18,7 @@ use mitcad_vec3::{add, sub};
 use super::develop::{bend_record, domain_label, loop_area, planar_map, reconfigure};
 use super::*;
 use crate::features::sheet_cut::SheetCutDef;
-use crate::profile::dot;
+use mitcad_vec3::dot;
 use std::collections::BTreeMap;
 
 /// A trimmed edge before its identity is settled.

@@ -334,7 +334,7 @@ QImage appearanceSwatch(const Appearance& a, int size, qreal devicePixelRatio) {
 }
 
 const QVector<QPair<QString, QString>>& physicalMaterials() {
-  // core/model/src/analysis.rs, MATERIALS.
+  // core/model-base/src/analysis.rs, MATERIALS.
   static const QVector<QPair<QString, QString>> list = {
       {QStringLiteral("steel"), QObject::tr("Steel")},
       {QStringLiteral("stainless_steel"), QObject::tr("Stainless Steel")},

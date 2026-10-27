@@ -3,7 +3,7 @@
 # check-all sources: app/MainWindowMcp.cpp app/MainWindowMcpUi.cpp app/mcp core/mcp core/ffi/src/mcp.rs
 # check-all sources: app/framework/CommandSessionScript.cpp app/framework/CommandPanelState.cpp
 # check-all sources: app/sketch/SketchReveal.cpp app/view/ViewReveal.cpp app/files/ProjectIndicator.cpp
-# check-all sources: core/model/src/api/classes.rs tools/cli tools/ui-mcp-live.py
+# check-all sources: core/model-api/src/classes.rs tools/cli tools/ui-mcp-live.py
 # check-all sources: app/framework/TestDriverAssistant.cpp app/tests/assistant_client.cpp tools/ui-assistant-setup-test.py
 # Live MCP for debugging (mitcad#265) through the real UI on Xvfb and the
 # actual bridge, `mitcad-cli mcp --connect`: the application opens a design

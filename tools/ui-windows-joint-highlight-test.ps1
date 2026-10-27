@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/MainWindowJointHighlight.cpp app/framework/JointHighlight.cpp app/framework/JointHighlight.hpp
-# check-all sources: app/MainWindow.cpp app/OcctViewer.cpp app/browser core/model/src/api/joints.rs
-# check-all sources: core/model/src/build core/vcs/src/library tools/cli
+# check-all sources: app/MainWindow.cpp app/OcctViewer.cpp app/browser core/model-api/src/joints.rs
+# check-all sources: core/model/src/build core/model-build core/vcs/src/library tools/cli
 # Input-driven Windows UI test of the joint highlight (mitcad#523) in the
 # build VM (tools/ui-windows-lib.ps1 says how the input is posted), as
 # tools/ui-joint-highlight-test.sh on Linux. A design mitcad-cli makes:

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! The `.rvt` / `.rfa` import, phase 1 (mitcad#274): `mitcad_rvt` reads the
 //! file (metadata, schema, element table, element records), and
-//! `mitcad_import::rvt` brings a project's building elements in as one
+//! `mitcad_import_rvt` brings a project's building elements in as one
 //! component per level, each element a body: its saved mesh, or its box
 //! at its transform (OCCT through the model's kernel). A family file
 //! (`.rfa`, `.rft`) opens with its metadata and report only: its forms are
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use mitcad_model::api::ApiError;
+use mitcad_model_api::ApiError;
 use mitcad_rvt::elements::Model;
 use mitcad_rvt::{Kind, RvtFile};
 
@@ -396,19 +396,19 @@ pub(crate) fn rvt_write_test_file(path: &str, family: bool) -> Result<(), String
 /// box (mm, the design's coordinates), imported with the kernel into a
 /// document of their own (its type's maps copied into each element); and
 /// its openings by the GlobalIds of the elements filling them (mitcad#345,
-/// [`mitcad_import::rvt::reference_openings`]).
-fn ifc_reference(path: &str) -> Result<(mitcad_import::rvt::Reference, IfcOpenings), String> {
+/// [`mitcad_import_rvt::reference_openings`]).
+fn ifc_reference(path: &str) -> Result<(mitcad_import_rvt::Reference, IfcOpenings), String> {
     use mitcad_ifc::{IfcFile, ReadOptions};
     let name = file_name(path).to_string();
     let file = IfcFile::open_with(Path::new(path), &ReadOptions::import())
         .map_err(|e| format!("{name}: {e}"))?;
     crate::kernel::exchange::ffi::catch_occt_crashes();
     let mut doc = mitcad_model::Document::new(crate::kernel::OcctKernel);
-    let options = mitcad_import::ifc::IfcOptions {
+    let options = mitcad_import_ifc::IfcOptions {
         occurrences: false,
-        ..mitcad_import::ifc::IfcOptions::default()
+        ..mitcad_import_ifc::IfcOptions::default()
     };
-    let report = mitcad_import::ifc::import_ifc(&mut doc, &file, &name, &options);
+    let report = mitcad_import_ifc::import_ifc(&mut doc, &file, &name, &options);
     let kernel = doc.kernel();
     let instances = doc.instances();
     let mut solids = std::collections::HashMap::new();
@@ -454,7 +454,7 @@ fn ifc_reference(path: &str) -> Result<(mitcad_import::rvt::Reference, IfcOpenin
         }
         solids.insert(
             line.global_id.clone(),
-            mitcad_import::rvt::ReferenceSolid {
+            mitcad_import_rvt::ReferenceSolid {
                 kind: line.kind.clone(),
                 name: line.name.clone(),
                 volume: line.volume,
@@ -463,9 +463,9 @@ fn ifc_reference(path: &str) -> Result<(mitcad_import::rvt::Reference, IfcOpenin
             },
         );
     }
-    let openings = mitcad_import::rvt::reference_openings(&file);
+    let openings = mitcad_import_rvt::reference_openings(&file);
     Ok((
-        mitcad_import::rvt::Reference { file: name, solids },
+        mitcad_import_rvt::Reference { file: name, solids },
         openings,
     ))
 }
@@ -555,7 +555,7 @@ impl Document {
         model: &Model,
         options: &Options,
         progress: &Arc<mitcad_import::Progress>,
-    ) -> Result<mitcad_import::rvt::Report, String> {
+    ) -> Result<mitcad_import_rvt::Report, String> {
         // The reference: the IFC export given, else one next to the project
         // by its name (mitcad#333).
         let beside = Path::new(path).with_extension("ifc");
@@ -573,7 +573,7 @@ impl Document {
             }
             None => (None, IfcOpenings::new()),
         };
-        let mut import_options = mitcad_import::rvt::RvtOptions {
+        let mut import_options = mitcad_import_rvt::RvtOptions {
             progress: Some(progress),
             reference: reference.as_ref(),
             mesh_only: options.mesh_only,
@@ -608,7 +608,7 @@ impl Document {
                             &mitcad_ifc::ReadOptions::import(),
                         );
                         match read {
-                            Ok(ifc) => import_options.ifc_links.push(mitcad_import::rvt::IfcLink {
+                            Ok(ifc) => import_options.ifc_links.push(mitcad_import_rvt::IfcLink {
                                 link: link.clone(),
                                 file: file_name(&found.display().to_string()).to_string(),
                                 ifc,
@@ -641,7 +641,7 @@ impl Document {
                 Model::read(&f, &schema)
             });
             match read {
-                Ok(m) => import_options.links.push(mitcad_import::rvt::LinkedModel {
+                Ok(m) => import_options.links.push(mitcad_import_rvt::LinkedModel {
                     link: link.clone(),
                     file: file_name(&found.display().to_string()).to_string(),
                     model: m,
@@ -652,7 +652,7 @@ impl Document {
                 )),
             }
         }
-        let mut report = mitcad_import::rvt::import_rvt(&mut self.0, file, model, &import_options)
+        let mut report = mitcad_import_rvt::import_rvt(&mut self.0, file, model, &import_options)
             .map_err(|e| e.to_string())?;
         if found_beside {
             report.warnings.push(format!(

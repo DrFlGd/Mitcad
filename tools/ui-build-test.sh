@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp
-# check-all sources: core/model/src/build core/model/src/api core/vcs/src/library tools/cli
+# check-all sources: core/model/src/build core/model-build core/model-api/src core/vcs/src/library tools/cli
 # The BUILD tab (mitcad#375) through the real UI, with a small library of
 # synthetic BUILD parts made here (mitcad-cli: a 20 x 20 profile of I-type
 # slot 5, a corner block, a panel, a rail, a carriage and a slider; no supplier's
@@ -1228,7 +1228,7 @@ ui_expect_new "Panel Profile tile part: $(part_name "$SECOND")" "its tile"
 ui_step "Close (Escape)"                   ui_key Escape
 ui_mark
 ui_step "new design (Ctrl+N)"              ui_key ctrl+n
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_step "don't save (D)"                   ui_key d
 ui_focus_main
 ui_expect_new "New document" "a new design"

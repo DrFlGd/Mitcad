@@ -67,6 +67,7 @@
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolBar>
 #include <QTreeView>
 #include <QValidator>
 #include <QWidget>
@@ -363,7 +364,9 @@ public:
     m_target = [MitcadNativeWidgetTarget new];
     m_target->owner = this;
     m_root = stack();
-    m_root.edgeInsets = NSEdgeInsetsMake(16, 16, 16, 16);
+    m_root.edgeInsets = source->property("nativeCompactPanel").toBool()
+                            ? NSEdgeInsetsMake(0, 0, 0, 0) : NSEdgeInsetsMake(16, 16, 16, 16);
+    if (source->property("nativeCompactPanel").toBool()) m_root.distribution = NSStackViewDistributionFill;
     m_root.accessibilityIdentifier = ns(source->objectName());
     connect(source, &QObject::destroyed, this, [this] { m_root.hidden = YES; });
     m_refreshTimer.setSingleShot(true);
@@ -448,7 +451,13 @@ public:
         NATIVE_SET(binding.view, hidden, YES);
         continue;
       }
-      NATIVE_SET(binding.view, hidden, widget != m_source && widget->isHidden());
+      // QToolBar may hide generated buttons when its retained Qt layout
+      // overflows. The native toolbar has its own layout and uses actions.
+      const auto* toolButton = qobject_cast<QToolButton*>(widget);
+      const QAction* toolbarAction = toolButton && qobject_cast<QToolBar*>(widget->parentWidget())
+                                         ? toolButton->defaultAction() : nullptr;
+      NATIVE_SET(binding.view, hidden, toolbarAction ? !toolbarAction->isVisible()
+                                                    : widget != m_source && widget->isHidden());
       if (qobject_cast<QAbstractButton*>(widget) == nullptr) { NATIVE_STRING(binding.view, toolTip, widget->toolTip()); }
       if (binding.control != nil) {
         NATIVE_SET(binding.control, enabled, widget->isEnabled());
@@ -869,6 +878,10 @@ public:
     } else {
       cell.accessibilityIdentifier = ns(index.data(NativeControlIdentifierRole).toString());
       NSTextField* field = label(index.data().toString());
+      if (view->property("nativeSourceList").toBool()) {
+        field.maximumNumberOfLines = 1;
+        field.lineBreakMode = NSLineBreakByTruncatingMiddle;
+      }
       const QVariant permission = index.data(NativeEditableRole);
       field.editable = permission.isValid() ? permission.toBool()
                                            : index.flags().testFlag(Qt::ItemIsEditable) && view->editTriggers() != QAbstractItemView::NoEditTriggers;
@@ -1401,6 +1414,31 @@ private:
       bind(widget, row);
       return row;
     }
+    if (auto* toolbar = qobject_cast<QToolBar*>(widget)) {
+      NSStackView* row = stack(true);
+      row.spacing = 2;
+      bind(widget, row);
+      for (QAction* action : toolbar->actions()) {
+        if (action->isSeparator()) {
+          NSBox* divider = [NSBox new];
+          divider.boxType = NSBoxSeparator;
+          add(row, divider);
+        } else if (QWidget* control = toolbar->widgetForAction(action)) {
+          // QToolBar's generated buttons have no name of their own.
+          // Retain the presenter's stable action identity in AppKit too.
+          if (control->objectName().isEmpty()) control->setObjectName(action->objectName());
+          NSView* native = renderWidget(control);
+          if ([native isKindOfClass:NSButton.class]) {
+            NSButton* button = (NSButton*)native;
+            button.bordered = NO;
+            [button.widthAnchor constraintEqualToConstant:24].active = YES;
+            [button.heightAnchor constraintEqualToConstant:24].active = YES;
+          }
+          add(row, native);
+        }
+      }
+      return row;
+    }
     if (auto* view = qobject_cast<QAbstractItemView*>(widget)) { return renderModel(view); }
     if (qobject_cast<QPlainTextEdit*>(widget) != nullptr || qobject_cast<QTextEdit*>(widget) != nullptr) {
       NSTextView* view = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 440, 130)];
@@ -1444,6 +1482,33 @@ private:
         view.boxType = NSBoxSeparator;
         bind(widget, view);
         return view;
+      }
+    }
+    if (widget->property("nativeCompactPanel").toBool()) {
+      // A source list stretches into its bounded viewport. A generic form
+      // stack sizes by intrinsic heights and can leave project rows clipped.
+      auto* toolbar = widget->findChild<QToolBar*>(QString(), Qt::FindDirectChildrenOnly);
+      auto* tree = widget->findChild<QTreeView*>(QString(), Qt::FindDirectChildrenOnly);
+      if (toolbar && tree) {
+        NSView* panel = [NSView new];
+        NSView* buttons = renderWidget(toolbar);
+        NSView* outline = renderWidget(tree);
+        buttons.translatesAutoresizingMaskIntoConstraints = NO;
+        outline.translatesAutoresizingMaskIntoConstraints = NO;
+        [panel addSubview:buttons];
+        [panel addSubview:outline];
+        [NSLayoutConstraint activateConstraints:@[
+          [buttons.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor],
+          [buttons.trailingAnchor constraintLessThanOrEqualToAnchor:panel.trailingAnchor],
+          [buttons.topAnchor constraintEqualToAnchor:panel.topAnchor],
+          [buttons.heightAnchor constraintEqualToConstant:24],
+          [outline.leadingAnchor constraintEqualToAnchor:panel.leadingAnchor],
+          [outline.trailingAnchor constraintEqualToAnchor:panel.trailingAnchor],
+          [outline.topAnchor constraintEqualToAnchor:buttons.bottomAnchor constant:2],
+          [outline.bottomAnchor constraintEqualToAnchor:panel.bottomAnchor]
+        ]];
+        bind(widget, panel);
+        return panel;
       }
     }
     NSView* view = renderLayout(widget->layout());
@@ -1512,7 +1577,15 @@ private:
     NSTableView* table = hierarchical ? [[MitcadNativeOutline alloc] initWithFrame:NSMakeRect(0, 0, 520, 180)]
                                      : [[MitcadNativeTable alloc] initWithFrame:NSMakeRect(0, 0, 520, 180)];
     table.rowHeight = std::max(25, std::min(100, view->iconSize().height() + 4));
-    table.usesAlternatingRowBackgroundColors = YES;
+    table.usesAlternatingRowBackgroundColors = !view->property("nativeSourceList").toBool();
+    if (view->property("nativeSourceList").toBool()) {
+      table.style = NSTableViewStyleSourceList;
+      table.backgroundColor = NSColor.clearColor;
+      table.rowHeight = 24;
+      table.intercellSpacing = NSMakeSize(0, 0);
+      table.frame = NSMakeRect(0, 0, 248, 180);
+      table.autoresizingMask = NSViewWidthSizable;
+    }
     table.allowsMultipleSelection = view->selectionMode() == QAbstractItemView::ExtendedSelection || view->selectionMode() == QAbstractItemView::MultiSelection;
     table.delegate = m_target;
     table.dataSource = m_target;
@@ -1523,16 +1596,24 @@ private:
     for (int i = 0; i < count; ++i) {
       NSTableColumn* column = [[NSTableColumn alloc] initWithIdentifier:ns(QString::number(i))];
       column.title = ns(view->model() == nullptr ? QString() : view->model()->headerData(i, Qt::Horizontal).toString());
-      column.width = i == 0 ? 220 : 130;
-      column.minWidth = 70;
+      column.width = view->property("nativeSourceList").toBool() ? (i == 0 ? 190 : 40) : (i == 0 ? 220 : 130);
+      column.minWidth = view->property("nativeSourceList").toBool() ? 16 : 70;
       [table addTableColumn:column];
       if (hierarchical && i == 0) { ((NSOutlineView*)table).outlineTableColumn = column; }
     }
     auto* tree = qobject_cast<QTreeView*>(view);
     if (qobject_cast<QListView*>(view) != nullptr || (tree != nullptr && tree->isHeaderHidden())) { table.headerView = nil; }
     // The native default must fit within the presenter's required upper bound.
-    const int minimumHeight = std::min(view->maximumHeight(), std::max(120, std::min(280, view->minimumHeight())));
+    const int minimumHeight = view->property("nativeSourceList").toBool() ? 24
+        : std::min(view->maximumHeight(), std::max(120, std::min(280, view->minimumHeight())));
     NSScrollView* box = scroll(table, minimumHeight);
+    if (view->horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOff) box.hasHorizontalScroller = NO;
+    if (view->property("nativeSourceList").toBool()) {
+      box.borderType = NSNoBorder;
+      box.drawsBackground = NO;
+      box.automaticallyAdjustsContentInsets = NO;
+      box.contentInsets = NSEdgeInsetsMake(0, 0, 0, 0);
+    }
     if (view->maximumHeight() < QWIDGETSIZE_MAX) {
       [box.heightAnchor constraintLessThanOrEqualToConstant:view->maximumHeight()].active = YES;
     }
@@ -1600,6 +1681,10 @@ private:
         [binding.table selectRowIndexes:selected byExtendingSelection:NO];
         ++g_widgetPropertyWrites;
       }
+      // Source-list reloads rebuild native nodes when a project opens or
+      // refreshes. Keep its restored selection inside the bounded viewport.
+      if (view->property("nativeSourceList").toBool() && binding.table.selectedRow >= 0)
+        [binding.table scrollRowToVisible:binding.table.selectedRow];
     }
   }
   void rebuild() {
@@ -1832,8 +1917,10 @@ int messageBox(QMessageBox* box) {
     // QMessageBox adds its own ActionRole details toggle. It is a
     // disclosure in the accessory, never a response that ends NSAlert.
     if (!box->detailedText().isEmpty() && role == QMessageBox::ActionRole &&
-        (title(button->text()) == title(QMessageBox::tr("Show Details…")) ||
-         title(button->text()) == title(QMessageBox::tr("Hide Details…")))) {
+        (title(button->text()).replace(QStringLiteral("..."), QStringLiteral("…")) ==
+             title(QMessageBox::tr("Show Details...")).replace(QStringLiteral("..."), QStringLiteral("…")) ||
+         title(button->text()).replace(QStringLiteral("..."), QStringLiteral("…")) ==
+             title(QMessageBox::tr("Hide Details...")).replace(QStringLiteral("..."), QStringLiteral("…")))) {
       continue;
     }
     NSButton* native = [alert addButtonWithTitle:ns(title(button->text()))];

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands app/framework/CommandSession.cpp app/framework/Selection.cpp
-# check-all sources: app/OcctViewer.cpp core/model/src/sketch/regions.rs core/model/src/features/sketch.rs tools/cli
+# check-all sources: app/OcctViewer.cpp core/sketch/src/regions.rs core/model/src/features/sketch.rs core/sketch/src/def.rs tools/cli
 # Extrude's profile picker with a region a sketch edit split (mitcad#410),
 # through the real UI, in the Docked and the Floating chrome:
 #   - A bar's tip between two circles is extruded; the bar is lengthened

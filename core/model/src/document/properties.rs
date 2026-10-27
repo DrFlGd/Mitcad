@@ -836,7 +836,7 @@ impl<K: Kernel> Document<K> {
 
     /// One level of the `property_sets` query: the owner, its name and its
     /// sets with their properties.
-    pub(crate) fn property_level_json(&self, owner: PropertyOwner, computed: bool) -> Value {
+    pub fn property_level_json(&self, owner: PropertyOwner, computed: bool) -> Value {
         let name = match owner {
             PropertyOwner::Component(c) => self.assembly().name(c),
             PropertyOwner::Occurrence(o) => self.assembly().occurrence_name(o),
@@ -874,7 +874,7 @@ impl<K: Kernel> Document<K> {
     /// The `property_types` query: the standard types and the design's
     /// own, each own type with its values as numbers and text and how many
     /// properties use it.
-    pub(crate) fn property_types_json(&self) -> Value {
+    pub fn property_types_json(&self) -> Value {
         let store = &self.state.properties;
         let standard: Vec<&str> = BaseType::ALL.iter().map(|t| t.as_str()).collect();
         let types: Vec<Value> = store
@@ -907,7 +907,7 @@ impl<K: Kernel> Document<K> {
     /// inherited values) and body at the marker that has a property the
     /// search matches (`FireRating = EI60`, `Pset_WallCommon/FireRating`,
     /// `Mass > 10 kg`); computed values only when the search names one.
-    pub(crate) fn property_search_json(&self, text: &str) -> Result<Value, String> {
+    pub fn property_search_json(&self, text: &str) -> Result<Value, String> {
         let filter = PropertyFilter::parse(text)?;
         let computed = filter
             .set
@@ -969,7 +969,7 @@ impl<K: Kernel> Document<K> {
 
     /// The text of a component's property for a parts list column: `key`
     /// is `Key` or `Set/Key`; stored, library and computed values alike.
-    pub(crate) fn component_property_text(
+    pub fn component_property_text(
         &self,
         component: ComponentUid,
         row: &PartsListRow,
@@ -980,7 +980,7 @@ impl<K: Kernel> Document<K> {
 
     /// A mass in kilograms as the design's properties write it (its mass
     /// unit), for a drawing's title block (mitcad#707 phase 4).
-    pub(crate) fn mass_text(&self, kg: f64) -> String {
+    pub fn mass_text(&self, kg: f64) -> String {
         format_value(
             BaseType::Mass,
             &PropertyValue::Number(kg),
@@ -992,7 +992,7 @@ impl<K: Kernel> Document<K> {
     /// The text of a component's property, `Key` or `Set/Key`: stored,
     /// library and computed values alike; its parts list row looked up
     /// when not given (a drawing's title block, mitcad#707 phase 4).
-    pub(crate) fn component_property_of(
+    pub fn component_property_of(
         &self,
         component: ComponentUid,
         row: Option<&PartsListRow>,
@@ -1008,11 +1008,7 @@ impl<K: Kernel> Document<K> {
     /// or from its library, never one worked out (a drawing's title block
     /// honours a stored `Mass` and works the mass out itself otherwise,
     /// mitcad#722).
-    pub(crate) fn component_stored_property(
-        &self,
-        component: ComponentUid,
-        key: &str,
-    ) -> Option<String> {
+    pub fn component_stored_property(&self, component: ComponentUid, key: &str) -> Option<String> {
         self.component_level_text(component, None, key, false)
     }
 

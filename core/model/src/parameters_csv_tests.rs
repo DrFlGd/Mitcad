@@ -13,9 +13,9 @@ use std::f64::consts::PI;
 
 use crate::Document;
 use crate::document::{CsvAction, CsvImport, CsvLimits, CsvRowOutcome};
-use crate::document_tests::block;
 use crate::expr::{ParamLimits, Unit};
 use crate::parameters_csv::{self, CsvFormat};
+use crate::test_support::block;
 use crate::testing::MockKernel;
 
 fn close(a: f64, b: f64) -> bool {

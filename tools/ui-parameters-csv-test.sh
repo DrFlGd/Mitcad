@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/framework/DialogFolders.cpp app/framework/DialogFolders.hpp core/model/src/parameters_csv.rs core/model/src/document/parameters_csv.rs core/model/src/api/parameters_csv.rs
+# check-all sources: app/browser app/framework/DialogFolders.cpp app/framework/DialogFolders.hpp core/model/src/parameters_csv.rs core/model/src/document/parameters_csv.rs core/model-api/src/parameters_csv.rs
 # The parameters as CSV (mitcad#666) in Change Parameters, on the demo
 # block (60 x 40 x 20 mm: d1, d2, d3), with Qt's own file dialogs
 # (--no-native-dialogs):

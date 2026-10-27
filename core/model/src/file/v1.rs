@@ -30,9 +30,10 @@ use crate::features::{
 };
 use crate::ids::{BodyUid, ComponentUid, EntityUid, FeatureUid};
 use crate::parameters::ParamId;
-use crate::sketch::legacy::{LegacyShape, convert, settle};
+use crate::sketch::legacy::{LegacyShape, convert};
 use crate::sketch::regions::Region;
 use crate::topo::{EdgeName, FaceName, RegionKey, SegmentKey};
+use mitcad_sketch::internal::settle;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -109,7 +109,7 @@ qt-type-now input_height '16 mm'
 wait-log 'Computing preview started' 30
 expect-model-busy true
 open-file-now '${MITCAD_TEST_WORK}/root-design.mitcad'
-focus-dialog '^Mitcad$|^Save changes'
+focus-dialog '^MitCad$|^Save changes'
 button '^Cancel$'
 focus-main
 expect-log 'Command Box cancelled' 30
@@ -129,7 +129,7 @@ qt-type-now input_height '15 mm'
 wait-log 'Computing preview started' 30
 expect-model-busy true
 menu-now 'File/Exit'
-focus-dialog '^Mitcad$|^Save changes'
+focus-dialog '^MitCad$|^Save changes'
 button '^Cancel$'
 focus-main
 expect-log 'Command Box cancelled' 30

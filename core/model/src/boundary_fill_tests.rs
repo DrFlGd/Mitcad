@@ -5,10 +5,10 @@
 
 use serde_json::{Value, json};
 
-use crate::document_tests::def;
 use crate::features::FeatureDef;
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::BoundingBox;
+use crate::test_support::def;
 use crate::testing::{MockKernel, MockShape};
 use crate::topo::FaceName;
 use crate::{Document, FeatureStatus};

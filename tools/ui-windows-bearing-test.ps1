@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/BearingCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/printable_bearing.rs core/model/src/features/bearing_sizes.rs
-# check-all sources: core/model/src/api/bearings.rs tools/cli
-# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs
+# check-all sources: core/model-api/src/bearings.rs tools/cli
+# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model-api/src/seats.rs
 # Input-driven Windows UI test of Bearing (mitcad#577) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted), on a design
 # mitcad-cli makes: a shaft 10 mm across and 20 long at (60, 0)

@@ -20,6 +20,7 @@ scenario=${3:-workflow}
 plain_design=0
 case "$scenario" in
   workflow) script=native-macos.mitcad-ui ;;
+  familiar) script=native-macos-familiar.mitcad-ui ;;
   cancel)
     script=native-macos-cancel.mitcad-ui
     export MITCAD_TEST_RECOMPUTE_DELAY_MS=0,preview=1500,add_feature=1500,edit_feature=1500
@@ -63,64 +64,33 @@ if command -v launchctl > /dev/null; then
   fi
 fi
 
-if [ "$scenario" = toolbar ]; then
-  # Cocoa toolbar defaults are separate from the isolated QSettings store.
-  # Preserve only this test's preferences (the configuration and the
-  # migrations that add Project and AI Assistants, mitcad#710), including their
-  # absence.
+{
+  # Cocoa owns toolbar customizations independently of isolated QSettings.
+  # Preserve this test's configuration, including its original absence.
   UI_TOOLBAR_DOMAIN=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$(dirname "$(dirname "$UI_APP")")/Info.plist") || exit 1
-  UI_TOOLBAR_CONFIG_KEY='NSToolbar Configuration com.mitcad.toolbar.floating.v2'
-  UI_TOOLBAR_MIGRATION_KEYS=('com.mitcad.toolbar.floating.v2.projectStatusInstalled'
-    'com.mitcad.toolbar.floating.v2.agentStatusInstalled')
+  UI_TOOLBAR_CONFIG_KEY='NSToolbar Configuration com.mitcad.toolbar.familiar.v1'
   UI_TOOLBAR_CONFIG_PRESENT=0
   UI_TOOLBAR_CONFIG=""
-  UI_TOOLBAR_MIGRATION_PRESENT=()
-  UI_TOOLBAR_MIGRATION=()
   if UI_TOOLBAR_CONFIG=$(defaults read "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" 2> /dev/null); then
     UI_TOOLBAR_CONFIG_PRESENT=1
   fi
-  for index in "${!UI_TOOLBAR_MIGRATION_KEYS[@]}"; do
-    UI_TOOLBAR_MIGRATION_PRESENT[index]=0
-    UI_TOOLBAR_MIGRATION[index]=""
-    if value=$(defaults read "$UI_TOOLBAR_DOMAIN" "${UI_TOOLBAR_MIGRATION_KEYS[index]}" 2> /dev/null); then
-      UI_TOOLBAR_MIGRATION_PRESENT[index]=1
-      UI_TOOLBAR_MIGRATION[index]=$value
-    fi
-  done
   ui_toolbar_cleanup() {
-    local index key value
     ui_cleanup
     if [ "$UI_TOOLBAR_CONFIG_PRESENT" = 1 ]; then
       defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" "$UI_TOOLBAR_CONFIG"
     else
       defaults delete "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" > /dev/null 2>&1 || true
     fi
-    for index in "${!UI_TOOLBAR_MIGRATION_KEYS[@]}"; do
-      key=${UI_TOOLBAR_MIGRATION_KEYS[index]}
-      value=${UI_TOOLBAR_MIGRATION[index]}
-      if [ "${UI_TOOLBAR_MIGRATION_PRESENT[index]}" = 1 ]; then
-        # `defaults read` commonly prints booleans as 0/1; `write -bool`
-        # expects a boolean word on some macOS versions.
-        case "${value//[[:space:]]/}" in
-          1|true|TRUE|yes|YES) defaults write "$UI_TOOLBAR_DOMAIN" "$key" -bool true ;;
-          0|false|FALSE|no|NO) defaults write "$UI_TOOLBAR_DOMAIN" "$key" -bool false ;;
-          *) defaults write "$UI_TOOLBAR_DOMAIN" "$key" "$value" ;;
-        esac
-      else
-        defaults delete "$UI_TOOLBAR_DOMAIN" "$key" > /dev/null 2>&1 || true
-      fi
-    done
   }
   trap ui_toolbar_cleanup EXIT
-  defaults write "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" \
-    '{"TB Item Identifiers" = ("mitcad.sidebar", "NSToolbarFlexibleSpaceItem", "mitcad.search"); "TB Is Shown" = 1; "TB Display Mode" = 2; "TB Size Mode" = 1;}' || exit 1
-  for key in "${UI_TOOLBAR_MIGRATION_KEYS[@]}"; do
-    defaults delete "$UI_TOOLBAR_DOMAIN" "$key" > /dev/null 2>&1 || true
-  done
+  defaults delete "$UI_TOOLBAR_DOMAIN" "$UI_TOOLBAR_CONFIG_KEY" > /dev/null 2>&1 || true
+}
+
+if [ "$scenario" = toolbar ]; then
   rm -rf "$MITCAD_TEST_WORK/ToolbarProject" "$MITCAD_TEST_WORK/ToolbarOtherProject"
   MITCAD_TEST_INPUT=$here/ui-scripts/$script \
     ui_run_app toolbar --ui=native --no-recovery
-  ui_expect_log 'TestDriver: done' 'legacy toolbar upgraded and customized status stayed removed'
+  ui_expect_log 'TestDriver: done' 'familiar toolbar defaults and customized status stayed removed'
   MITCAD_TEST_INPUT=$here/ui-scripts/native-macos-toolbar-restored.mitcad-ui \
     ui_run_app toolbar-restored --ui=native --no-recovery
   ui_expect_log 'TestDriver: done' 'customized toolbar survived application relaunch'
@@ -135,7 +105,7 @@ elif [ "$scenario" = panels ]; then
     UI_PANEL_FRAME_PRESENT=1
   fi
   ui_panels_cleanup() {
-    ui_cleanup
+    ui_toolbar_cleanup
     if [ "$UI_PANEL_FRAME_PRESENT" = 1 ]; then
       defaults write "$UI_PANEL_DOMAIN" "$UI_PANEL_FRAME_KEY" -string "$UI_PANEL_FRAME"
     else
@@ -163,7 +133,7 @@ elif [ "$scenario" = replacement ]; then
   # The coordinator must not inherit the parent test's cleanup trap.
   (trap - EXIT INT TERM; ui_replacement_coordinate) > "$UI_OUT/replacement-fixture.log" 2>&1 &
   UI_REPLACEMENT_PID=$!
-  trap 'ui_replacement_cleanup; ui_cleanup' EXIT
+  trap 'ui_replacement_cleanup; ui_toolbar_cleanup' EXIT
   MITCAD_TEST_INPUT=$here/ui-scripts/$script \
     ui_run_app native --ui=native --no-recovery --open "$MITCAD_TEST_REPLACEMENT/ada/part.mitcad" --set d3=27
   touch "$MITCAD_TEST_REPLACEMENT/app-finished"

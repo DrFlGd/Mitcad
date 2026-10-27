@@ -14,7 +14,7 @@ UpdatePreferencesBox::UpdatePreferencesBox(QWidget* parent)
   auto* form = new QFormLayout(this);
   m_automatic = new QCheckBox(tr("Check for &updates at start-up, once a day"));
   m_automatic->setChecked(m_settings.automatic);
-  m_automatic->setToolTip(tr("Asks Mitcad's release page for a newer version; nothing is installed without asking"));
+  m_automatic->setToolTip(tr("Asks MitCad's release page for a newer version; nothing is installed without asking"));
   m_channel = new QComboBox;
   m_channel->addItem(tr("Releases"), static_cast<int>(UpdateSettings::Channel::Stable));
   m_channel->addItem(tr("Pre-releases too"), static_cast<int>(UpdateSettings::Channel::Prerelease));

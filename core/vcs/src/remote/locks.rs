@@ -39,7 +39,7 @@
 //!   receipt and is removed by whoever's poll sees it
 //!   (`ProjectRepo::tidy_requests`).
 //!
-//! The JSON commands are in `commands.rs` (`core/model/src/api/commands.md`,
+//! The JSON commands are in `commands.rs` (`core/model-api/src/commands.md`,
 //! "Edit locks").
 
 pub(crate) mod commands;

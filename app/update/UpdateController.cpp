@@ -47,7 +47,7 @@ void UpdateController::registerCommands(CommandRegistry& registry) {
   check.kind = CommandDef::Kind::Action;
   check.mode = CommandDef::Mode::Any;
   check.tab.clear();
-  check.tooltip = tr("Asks whether a newer Mitcad is out (Tools › Preferences: automatic checks)");
+  check.tooltip = tr("Asks whether a newer MitCad is out (Tools › Preferences: automatic checks)");
   check.keywords = {QStringLiteral("update"), QStringLiteral("new version"), QStringLiteral("release"),
                     QStringLiteral("upgrade")};
   check.duringCommands = true;
@@ -93,7 +93,7 @@ void UpdateController::startUp() {
   connect(m_client, &UpdateClient::failed, this, &UpdateController::onFailed);
   connect(m_client, &UpdateClient::progress, this, [this](qint64 received, qint64 total) {
     if (m_state == State::Downloading) {
-      m_notice->showProgress(tr("Downloading Mitcad %1…").arg(m_offer.version), received, total);
+      m_notice->showProgress(tr("Downloading MitCad %1…").arg(m_offer.version), received, total);
     }
   });
   connect(m_client, &UpdateClient::downloaded, this, &UpdateController::onDownloaded);
@@ -105,13 +105,13 @@ void UpdateController::startUp() {
   if (const std::optional<FinishedUpdate> finished = takeFinishedUpdate(source.currentVersion)) {
     if (finished->installed) {
       qInfo().noquote() << QStringLiteral("Update installed: %1 -> %2").arg(finished->from, finished->to);
-      m_notice->showMessage(tr("Mitcad was updated to %1.").arg(finished->to));
+      m_notice->showMessage(tr("MitCad was updated to %1.").arg(finished->to));
     } else {
       qWarning().noquote() << QStringLiteral("Update not installed: %1 -> %2 (%3)")
                                   .arg(finished->from, finished->to, finished->detail);
       m_notice->showMessage(finished->detail.isEmpty()
-                                ? tr("The update to Mitcad %1 was not installed.").arg(finished->to)
-                                : tr("The update to Mitcad %1 was not installed: %2").arg(finished->to, finished->detail),
+                                ? tr("The update to MitCad %1 was not installed.").arg(finished->to)
+                                : tr("The update to MitCad %1 was not installed: %2").arg(finished->to, finished->detail),
                             true);
     }
     showNotice();
@@ -166,7 +166,7 @@ void UpdateController::check(bool manual) {
   if (m_client->source().keys.trimmed().isEmpty()) {
     qInfo() << "Update check skipped: this build has no release key";
     if (manual) {
-      m_notice->showMessage(tr("This build of Mitcad has no release key, so it cannot verify updates."), true);
+      m_notice->showMessage(tr("This build of MitCad has no release key, so it cannot verify updates."), true);
       showNotice();
     }
     return;
@@ -191,7 +191,7 @@ void UpdateController::onChecked(const UpdateOffer& offer) {
   if (offer.status == QStringLiteral("current")) {
     qInfo().noquote() << QStringLiteral("Update check: Mitcad %1 is up to date").arg(current);
     if (m_manual) {
-      m_notice->showMessage(tr("Mitcad %1 is up to date.").arg(current));
+      m_notice->showMessage(tr("MitCad %1 is up to date.").arg(current));
       showNotice();
     } else {
       hideNotice();
@@ -210,7 +210,7 @@ bool UpdateController::installable() const {
 }
 
 void UpdateController::offer(const UpdateOffer& offer) {
-  QString text = tr("<b>Mitcad %1</b> is available (this is %2).").arg(offer.version, m_client->source().currentVersion);
+  QString text = tr("<b>MitCad %1</b> is available (this is %2).").arg(offer.version, m_client->source().currentVersion);
   if (offer.prerelease) {
     text += QLatin1Char(' ') + tr("It is a pre-release.");
   }
@@ -222,7 +222,7 @@ void UpdateController::offer(const UpdateOffer& offer) {
   }
   UpdateSettings settings = UpdateSettings::load();
   if (!settings.hintShown) {
-    text += QLatin1Char(' ') + tr("Mitcad checks for updates once a day; Tools › Preferences turns that off.");
+    text += QLatin1Char(' ') + tr("MitCad checks for updates once a day; Tools › Preferences turns that off.");
     settings.hintShown = true;
     settings.save();
   }
@@ -234,7 +234,7 @@ void UpdateController::onFailed(const QString& message) {
   const State state = m_state;
   m_state = State::Idle;
   if (state == State::Downloading) {
-    m_notice->showMessage(tr("Mitcad %1 was not installed: %2").arg(m_offer.version, message), true);
+    m_notice->showMessage(tr("MitCad %1 was not installed: %2").arg(m_offer.version, message), true);
     showNotice();
   } else if (m_manual) {
     m_notice->showMessage(tr("The update check failed: %1").arg(message), true);
@@ -249,12 +249,12 @@ void UpdateController::install() {
     return;
   }
   m_state = State::Downloading;
-  m_notice->showProgress(tr("Downloading Mitcad %1…").arg(m_offer.version), 0, m_offer.size);
+  m_notice->showProgress(tr("Downloading MitCad %1…").arg(m_offer.version), 0, m_offer.size);
   m_client->download(m_offer, m_installation.downloadPath(m_offer.version));
 }
 
 void UpdateController::onDownloaded(const QString& path) {
-  m_notice->showProgress(tr("Verifying Mitcad %1…").arg(m_offer.version), 0, 0);
+  m_notice->showProgress(tr("Verifying MitCad %1…").arg(m_offer.version), 0, 0);
   const UpdateSource& source = m_client->source();
   try {
     updates::update_verify_download(
@@ -265,7 +265,7 @@ void UpdateController::onDownloaded(const QString& path) {
     QFile::remove(path);
     m_state = State::Idle;
     qWarning().noquote() << QStringLiteral("Update rejected: %1 (deleted %2)").arg(errorText(e), path);
-    m_notice->showMessage(tr("Mitcad %1 was not installed: %2. The download was deleted.")
+    m_notice->showMessage(tr("MitCad %1 was not installed: %2. The download was deleted.")
                               .arg(m_offer.version, errorText(e)),
                           true);
     showNotice();
@@ -282,11 +282,11 @@ void UpdateController::finish(const QString& path) {
   if (!stageUpdate(m_installation, path, m_offer.sha256, current, m_offer.version, error)) {
     QFile::remove(path);
     m_state = State::Idle;
-    m_notice->showMessage(tr("Mitcad %1 was not installed: %2").arg(m_offer.version, error), true);
+    m_notice->showMessage(tr("MitCad %1 was not installed: %2").arg(m_offer.version, error), true);
     showNotice();
     return;
   }
-  m_notice->showProgress(tr("Mitcad closes to install %1…").arg(m_offer.version), 0, 0);
+  m_notice->showProgress(tr("MitCad closes to install %1…").arg(m_offer.version), 0, 0);
   qInfo() << "Update: closing the window to install";
   if (m_host.closeWindow()) {
     QCoreApplication::quit();
@@ -297,7 +297,7 @@ void UpdateController::finish(const QString& path) {
   QFile::remove(path);
   m_installation.removeLeftovers();
   m_state = State::Idle;
-  m_notice->showMessage(tr("Mitcad %1 was not installed: Mitcad stayed open.").arg(m_offer.version));
+  m_notice->showMessage(tr("MitCad %1 was not installed: MitCad stayed open.").arg(m_offer.version));
   showNotice();
 }
 

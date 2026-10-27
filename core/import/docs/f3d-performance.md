@@ -448,7 +448,7 @@ item:
   which took 30 s a definition on the 14 000-face bodies.
 - **No inverted-solid check in booleans.** OCCT checked each solid of a
   boolean for being inverted by building a point classifier of all its
-  faces on one thread; Mitcad's solids are oriented, so the check is off
+  faces on one thread; MitCad's solids are oriented, so the check is off
   (`SetCheckInverted(false)`).
 - **A pattern's consecutive cuts in one operation.** A pattern of features
   cut each place (a feature at one of the places a pattern of patterns gives

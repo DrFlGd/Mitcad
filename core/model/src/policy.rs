@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use crate::assembly::Assembly;
 use crate::features::{FeatureDef, FeatureEntry};
 use crate::ids::{ComponentUid, FeatureUid, OccurrenceUid};
-use crate::links::OccurrenceLink;
+use crate::links::{OccurrenceLink, OccurrenceLinkExt};
 
 /// The nine settings of one owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

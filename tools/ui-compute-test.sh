@@ -204,7 +204,7 @@ ui_start_display
 
 echo "--- Open, cancelled in the progress dialog"
 ui_start_app --no-native-dialogs
-expect_title "Untitled - Mitcad"
+expect_title "Untitled - MitCad"
 ui_mark
 ui_step "open boss.mitcad (Ctrl+O)"      open_through_dialog
 ui_expect_new "Computing boss.mitcad started" "opening is a job"
@@ -216,7 +216,7 @@ ui_expect_new "Computing boss.mitcad: cancel requested" "Esc asks the job to sto
 ui_expect_new "Computing boss.mitcad cancelled after" "the job stopped"
 ui_expect_new "Opening boss.mitcad cancelled" "the open was cancelled"
 ui_focus_main
-expect_title "Untitled - Mitcad"
+expect_title "Untitled - MitCad"
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "Opened " && ui_fail "opened after the cancel"
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "Computing boss.mitcad done" &&
   ui_fail "the job ended after the cancel"
@@ -237,7 +237,7 @@ ui_expect_new "Opened $FILE" "opened"
 ui_expect_new "Bodies shown: F2.b0" "the design is shown"
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "Recompute failed" && ui_fail "a feature failed"
 ui_focus_main
-expect_title "boss.mitcad - Mitcad"
+expect_title "boss.mitcad - MitCad"
 ui_step "fit (F6)"                       ui_key F6
 
 echo "--- Change Parameters: cancelled over the Parameters window, then done"
@@ -351,7 +351,7 @@ echo "--- --open at start-up: the dialog before the window"
 ui_start_app --open "$FILE"
 ui_expect_log "Progress dialog shown: boss.mitcad" "the progress dialog at start-up"
 ui_expect_log "Opened $FILE" "opened with --open"
-expect_title "boss.mitcad - Mitcad"
+expect_title "boss.mitcad - MitCad"
 ui_stop_app
 
 echo "--- --open at start-up, cancelled"
@@ -367,12 +367,12 @@ ui_focus_dialog '^Computing$'
 ui_key Escape # not a step: it waits for the job
 ui_expect_log "Opening boss.mitcad cancelled" "the open at start-up was cancelled"
 for _ in $(seq 1 50); do
-  UI_WINDOW=$(xdotool search --onlyvisible --name ' - Mitcad$' 2> /dev/null | head -1)
+  UI_WINDOW=$(xdotool search --onlyvisible --name ' - MitCad$' 2> /dev/null | head -1)
   [ -n "$UI_WINDOW" ] && break
   sleep 0.2
 done
 [ -n "$UI_WINDOW" ] || ui_fail "the window did not appear after the cancel"
-expect_title "Untitled - Mitcad"
+expect_title "Untitled - MitCad"
 grep -q "Could not open" "$UI_LOG" && ui_fail "a cancel reported as an error"
 ui_crashed && ui_fail "crashed after the cancel"
 echo "ok   the window started with an empty document"

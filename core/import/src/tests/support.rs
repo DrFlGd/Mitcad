@@ -2,6 +2,7 @@
 //! Shared by the topic modules: the test kernel, the stored-geometry fixture and the builders of the block design and of sketches.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 pub(super) fn dump(value: Value) -> Dump {
     Dump::from_json(&value.to_string()).expect("a dump")

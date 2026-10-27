@@ -3,7 +3,7 @@
 # check-all sources: app/commands/ExtrudeCommands.cpp app/commands/CommandSupport.cpp
 # check-all sources: app/framework/CommandSession.cpp app/framework/CommandSessionAuto.cpp
 # check-all sources: app/framework/AutoOperationPolicy.hpp app/framework/Command.hpp
-# check-all sources: core/model/src/document/auto_operation.rs core/model/src/api/mod.rs
+# check-all sources: core/model/src/document/auto_operation.rs core/model-api/src/lib.rs
 # check-all sources: geometry/src/contact.cpp geometry/src/boolean.cpp tools/cli
 # Extrude's automatic operation (mitcad#289, mitcad#575) through the real UI, on a
 # design mitcad-cli makes: a 40 x 30 block 20 deep under the XY plane

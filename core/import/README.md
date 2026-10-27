@@ -1,23 +1,92 @@
-# mitcad-import: .f3d and FreeCAD designs with their history
+# mitcad-import: .f3d designs with their history
 
-`core/import` replays a design's history as Mitcad features, checks each
+`core/import` replays a design's history as MitCad features, checks each
 step against the bodies stored in the file, and brings in what it cannot
 replay as the stored bodies. These imports are described here:
 
-- **.f3d** (`src/*.rs`): the design dump IR
-  (`mitcad_f3d::design::ir::Dump`, [SCHEMA.md](SCHEMA.md)), checked
-  against the file's ASM history.
-- **FreeCAD .FCStd** (`src/freecad/`), checked against every feature's
-  stored result.
+- **.f3d**: the design dump IR (`mitcad_dump::Dump`,
+  [SCHEMA.md](SCHEMA.md)), checked against the file's ASM history. The
+  replay is split into crates (mitcad#785, *The replay's crates* below);
+  this one, `mitcad-import`, puts them together and holds the replay's
+  tests.
 - **.ipt** and **.iam**: read by `core/ipt` and replayed on the same dump
   IR as the `.f3d` import.
-- **.solidcraft** (`src/solidcraft/`): built again from the file's
-  definitions; the file keeps no bodies to check against.
+- **.solidcraft**: built again from the file's definitions; the file
+  keeps no bodies to check against. A crate of its own,
+  [mitcad-import-solidcraft](../import-solidcraft/README.md) (mitcad#785),
+  re-exported as `mitcad_import::solidcraft`.
 
-The imports are generic over the [`Kernel`](../model/src/kernel.rs); the
+The other imports are crates of their own (mitcad#775), so that a change
+to one does not rebuild the `.f3d` replay:
+
+| Crate | What it holds |
+|---|---|
+| [mitcad-import-base](../import-base/README.md) | What the imports share: `Progress` and the import running on a thread, vector helpers, the bodies of one replay, planar faces, the candidate core, the notes' texts, the sketch helpers. `mitcad-import` re-exports what it exported before (`Progress`, `tick`, `current_progress`, `abandoned`, `Ticking`, `Helper`, `DEFAULT_GEOMETRIC_TOLERANCE`, `geom`). |
+| [mitcad-import-fcstd](../import-fcstd/README.md) | FreeCAD `.FCStd` documents, checked against every feature's stored result. |
+| [mitcad-import-ifc](../import-ifc/README.md) | IFC building models. |
+| [mitcad-import-rvt](../import-rvt/README.md) | `.rvt` projects, built with the IFC import's builder. |
+| [mitcad-import-replay](../import-replay/README.md) | The core of the `.f3d` dump replay (mitcad#785): `Importer`'s state, the timeline walk, references, fallbacks, the report. `mitcad-import` re-exports its public paths. |
+| [mitcad-import-joints](../import-joints/README.md) | The replay's joints family: joints, joint origins, captured positions, ground items, assembly relationships (mitcad#785). |
+| [mitcad-import-sheet](../import-sheet/README.md) | The replay's sheet-metal family: sheet items as native sheet features (mitcad#785). |
+| [mitcad-import-primitives](../import-primitives/README.md) | The replay's primitives family: boxes, cylinders, spheres, tori and coils on a plane (mitcad#785). |
+| [mitcad-import-appearances](../import-appearances/README.md) | The replay's appearances family: the file's appearances and physical materials on bodies, faces and occurrences (mitcad#791; re-exported as `appearances`). |
+| [mitcad-import-solidcraft](../import-solidcraft/README.md) | `.solidcraft` designs with their history (mitcad#785; re-exported as `solidcraft`). |
+
+The imports are generic over the [`Kernel`](../model-base/src/kernel.rs); the
 tests run them on the model's mock kernel. The JSON commands and report
-fields are in `core/model/src/api/commands.md` (*.f3d import with the
-timeline*, *FreeCAD import (.FCStd)*).
+fields are in `core/model-api/src/commands.md` (*.f3d import with the
+timeline*).
+
+The crate sits above `mitcad-model`, not above the JSON api
+`mitcad-model-api` (mitcad#778), so that an edit of the api does not
+rebuild the replay. What the replay asks of the document goes to the
+model's typed methods (`Document::sheet_state_json`, `sheet_rules_json`,
+`sheet_reference_json`, `joint_frame`, `constraint_row`), which the api's
+queries of the same names answer with. The one place that runs a JSON
+command, a cut and paste moved by Move to Component
+(`core/import-replay/src/pasting.rs`), runs it through
+[`Options::commands`](../import-replay/src/lib.rs): a `Commands` the
+caller makes for its document's kernel from the api's `command`
+(`mitcad-ffi`'s `f3d_import::import_commands`, used by the `.f3d` and
+`.ipt` imports), still without design policy checks. A caller that
+wants such pastes moved must pass `commands`: `Options::default()` has
+none, and then such a paste is not moved by a command (`MITCAD_IMPORT_TRACE`
+says "no commands to run the move with") and takes the usual route, the
+file's history state or its stored bodies, like an item without a
+translation. Other crates' tests that run the import pass the api's
+`command` the same way (`core/ipt/tests/design_import.rs`). Only this
+crate's own unit tests, which keep the api as a dev-dependency, run its
+commands when they give none (`import_design_with` under `cfg(test)`).
+
+## The replay's crates
+
+The replay is in crates of its own (mitcad#785), so that an edit in a
+family above the core rechecks only its crate and this one:
+
+- [mitcad-import-replay](../import-replay/README.md) (`core/import-replay`):
+  the core, all of the replay that calls itself both ways (the timeline
+  walk in `lib.rs`, `features`, `ops`, `sweeps`, `linked`, the retries,
+  the deviations, the learning dump, the notes, ...) and the shared
+  helpers (`refs`, `sketch`, `profiles`, `history`, `report`, ...). Its
+  timeline walk reaches the families above it only through its
+  `Families` trait; its `replay_design` takes them.
+- The families above the core, as extension traits on its `Importer`:
+  [mitcad-import-joints](../import-joints/README.md) (`Joints`,
+  `Relationships`), [mitcad-import-sheet](../import-sheet/README.md)
+  (`Sheets`; the core keeps `is_corner` for its edge guesses) and
+  [mitcad-import-primitives](../import-primitives/README.md)
+  (`Primitives`) and
+  [mitcad-import-appearances](../import-appearances/README.md)
+  (`Appearances`, mitcad#791; the core keeps the report's types in
+  `appearance_report`, since `DesignReport` holds them).
+- `mitcad-import` (this crate): `import_design` and `import_design_with`
+  over `replay_design` with the families filled in, the core's public
+  paths re-exported (`pub use mitcad_import_replay::*`, also the core's
+  modules, which are public for the families and the tests but hidden
+  from the docs), `.solidcraft` as `solidcraft`, and the replay's tests
+  (`src/tests/`), which need the whole replay.
+
+The map the cut was chosen by (which family calls which) is on mitcad#785.
 
 ## Documents
 
@@ -36,10 +105,10 @@ format and, for the `.f3d` import, per topic:
 | [docs/f3d-learning.md](docs/f3d-learning.md) | Learning the undecoded inputs: the learning dump and the input decoding audits. |
 | [docs/f3d-undecoded.md](docs/f3d-undecoded.md) | What the file does not settle yet, the published format descriptions against the decoder. |
 | [docs/f3d-rounds-1.md](docs/f3d-rounds-1.md), [-2](docs/f3d-rounds-2.md), [-3](docs/f3d-rounds-3.md), [-4](docs/f3d-rounds-4.md) | Notes on single rounds of work on the corpus: the censuses, model by model, and the fillet and chamfer rounds. |
-| [docs/freecad.md](docs/freecad.md) | The FreeCAD import. |
+| [../import-fcstd/docs/freecad.md](../import-fcstd/docs/freecad.md) | The FreeCAD import (in its crate, `mitcad-import-fcstd`). |
 | [docs/ipt.md](docs/ipt.md) | The `.ipt` import. |
 | [docs/iam.md](docs/iam.md) | The `.iam` import. |
-| [docs/solidcraft.md](docs/solidcraft.md) | The `.solidcraft` import. |
+| [../import-solidcraft/docs/solidcraft.md](../import-solidcraft/docs/solidcraft.md) | The `.solidcraft` import (in its crate, `mitcad-import-solidcraft`). |
 
 The documents cite each other's sections by their titles in italics, with
 a link where the section is in another document. [SCHEMA.md](SCHEMA.md)
@@ -63,11 +132,13 @@ is the dump format.
 ## Tests and coverage runs
 
 The crate's unit tests run on the model's mock kernel (`cargo test -p
-mitcad-import`, the ctest `core.import`). Those of the `.f3d` import are
+mitcad-import`, the ctest `core.import`); the core's own unit tests,
+beside its modules, run with `cargo test -p mitcad-import-replay`
+(`core.import-replay`). Those of the `.f3d` import are
 in `src/tests/`: `src/tests.rs` only declares the modules, `support.rs`
 holds the test kernel and the builders several of them share, and every
 other module holds the tests of one topic. The corpus tests of the other
-formats are described with them: [FreeCAD](docs/freecad.md#tests),
+formats are described with them: [FreeCAD](../import-fcstd/docs/freecad.md#tests),
 [.ipt](docs/ipt.md#corpus-test), [.iam](docs/iam.md#iam-corpus-test).
 
 ### Corpus test

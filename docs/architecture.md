@@ -1,4 +1,4 @@
-# Mitcad architecture
+# MitCad architecture
 
 Three layers: a Rust model that knows the document, timeline and features
 but no geometry; a thin C++ facade over Open CASCADE Technology (OCCT)
@@ -14,31 +14,58 @@ values continue to reach the model through the existing sketch commands.
 
 | Part | Language | Responsibility |
 |---|---|---|
-| `core/model` (`mitcad-model`) | Rust | Document, timeline, features, parameters and expressions, units, sketches, topological naming, cached recompute, undo, design file, design comparison, JSON command API. No OCCT. |
+| `core/model` (`mitcad-model`) | Rust | Document, timeline, features, parameters and expressions, units, sketches, topological naming, cached recompute, undo, design file, design comparison. No OCCT. Its `testing` feature gives other crates' tests the mock kernel (`testing`, the crate `mitcad-model-testkit`) and the shared fixtures (`test_support`). |
 | `core/solver` (`mitcad-solver`) | Rust | 2D constraint solver and the joint solver of assemblies behind a narrow API ([README](../core/solver/README.md)). |
 | `core/vec3` (`mitcad-vec3`) | Rust | The `[f64; 3]` helpers (`add`, `sub`, `dot`, `cross`, `norm`, the unit-vector variants) that the model, the solver and the readers share, and the same for `[f64; 2]` in its `vec2` module; no dependencies, no vector type. |
-| `core/f3d` (`mitcad-f3d`) | Rust | `.f3d` container, ASM B-rep, design streams decoded into the dump IR. |
-| `core/import` (`mitcad-import`) | Rust | Replays `.f3d` dumps and FreeCAD documents as Mitcad commands, checked against the file's stored results ([README](../core/import/README.md)). |
+| `core/f3d` (`mitcad-f3d`) | Rust | The `.f3d` reader's facade: re-exports the crates below under their old paths (`mitcad_f3d::design::ir`, `mitcad_f3d::asm`, ...), reads a document's body blobs, and has the test references, `mitcad-f3d-inspect` and the corpus tests. |
+| `core/dump` (`mitcad-dump`) | Rust | The design dump IR of [SCHEMA.md](../core/import/SCHEMA.md) as Rust types, with the items' file states; written by the `.f3d` and `.ipt` readers, replayed by the import ([README](../core/dump/README.md)). |
+| `core/asm` (`mitcad-asm`) | Rust | The ASM B-rep data of `.f3d` body blobs, `.ipt` B-rep records and `.dwg` solids (binary and text form, the history), a neutral B-rep model in millimetres with checks, and the conversion to it ([README](../core/asm/README.md)). |
+| `core/f3d-names` (`mitcad-f3d-names`) | Rust | The names that faces and bodies of `.f3d` body blobs carry, and the faces, edges and vertices of a history state that feature inputs name by them ([README](../core/f3d-names/README.md)). |
+| `core/f3d-file` (`mitcad-f3d-file`) | Rust | The document inside an `.f3d` file's zip container (segments, body blobs, `.f3z` packages), its display meshes and its appearance asset packages ([README](../core/f3d-file/README.md)). |
+| `core/f3d-design` (`mitcad-f3d-design`) | Rust | The design segment of `.f3d` files (timeline, parameters, sketches, features, components) built into the dump IR from the decoded streams, with the feature inputs found in the bodies' ASM history; re-exports `mitcad-f3d-decode`'s modules under their old paths ([README](../core/f3d-design/README.md)). |
+| `core/f3d-decode` (`mitcad-f3d-decode`) | Rust | The streams, object records, sketches, recipes and stored curves of the `.f3d` design segment decoded, below the feature building of `mitcad-f3d-design` (mitcad#779; [README](../core/f3d-decode/README.md)). |
+| `core/expr` (`mitcad-expr`) | Rust | Parameter expressions with units: lexer, parser, evaluation, formatting, units and dimensions, parameter limits, the parameter table and the `.f3d` expression checks ([README](../core/expr/README.md)). No dependencies; the model re-exports it as `mitcad_model::expr`. |
+| `core/print-keys` (`mitcad-print-keys`) | Rust | The print settings' key map: MitCad's printer, process and filament keys with their types, units, form places and, per slicer dialect, the slicer's key and value conversion ([README](../core/print-keys/README.md)). Re-exported as `mitcad_model::print_keys`. |
+| `core/model-api` (`mitcad-model-api`) | Rust | The JSON command, query and preview API of a document, with its reference [commands.md](../core/model-api/src/commands.md) ([README](../core/model-api/README.md)). Above the model (mitcad#777): the document's api methods are extension traits (`DocumentApi`, `prelude`). |
+| `core/model-build` (`mitcad-model-build`) | Rust | The BUILD tab's planning: placing and editing parts, connectors, panels, timber members, joinery, spacing sets, frames, fasteners, the junctions and the cut list ([README](../core/model-build/README.md)). Above the model, below the api (mitcad#777); what the design file keeps of BUILD stays in `mitcad_model::build` and is re-exported. The document's BUILD methods are extension traits (`prelude`). |
+| `core/model-diff` (`mitcad-model-diff`) | Rust | Comparison of two designs or versions in the model's terms, for the version history ([README](../core/model-diff/README.md)). Above the model (mitcad#777); used by `vcs` and `ffi`. |
+| `core/model-tests/<area>` (`mitcad-model-tests-<area>`) | Rust | The model's tests through the JSON api, a small crate per area (sketch, features, parts, assembly, joints, drawing, print, BUILD, ...; ctest `core.model.<area>`), so that a new test recompiles only its own crate ([README](../core/model-tests/README.md)); `support` holds BUILD's test library. |
+| `core/model-base` (`mitcad-model-base`) | Rust | Below the model's core (mitcad#777): the `Kernel` trait with the data it takes and gives (exchange options and meshes, drawing views, sheet metal charts, named segments), and the base data that needs nothing of the core: ids, topological names, profiles, datums, transforms, sweep and surface specifications, parameters, properties, configurations, appearances, render settings, the recompute monitor, fingerprints, hashes ([README](../core/model-base/README.md)). The model re-exports every module at its old path (`mitcad_model::kernel`, `mitcad_model::topo`, ...). |
+| `core/model-testkit` (`mitcad-model-testkit`) | Rust | The mock geometry kernel of the model's tests (`MockKernel`, `MockShape`) on `mitcad-model-base` alone, so that an edit in it rebuilds only test binaries ([README](../core/model-testkit/README.md)). The model's own tests use it as a dev-dependency; its `testing` feature re-exports it as `mitcad_model::testing`. |
+| `core/model-drawing` (`mitcad-model-drawing`) | Rust | The drawing layout and writers above the model (mitcad#777): sheets laid out with their views, dimensions, annotations, hole tables, parts lists, frame and title block from a sheet template, written as PDF, SVG, DXF and DWG; the built-in templates and the template libraries; the projection cache (`DrawingCache`, in the document's side cache). What a design file keeps of a drawing stays in the model (`core/model/src/drawing`: `def.rs`, `annotate_def.rs`, `tables_def.rs`, `template_def.rs`), which this crate re-exports under the same paths ([README](../core/model-drawing/README.md)). |
+| `core/sketch` (`mitcad-sketch`) | Rust | The general sketch below the model's core (mitcad#780): 2D geometry, entities, constraints and dimensions, the solve, profile regions, projections, offsets, patterns, equal spacing, texts, fonts, QR codes, SVG and DXF drawings, the sketch edits (`SketchEdit`) and the sketch feature's definition (`def.rs`: `SketchDef`, `SketchOutput`), on `mitcad-model-base`, `mitcad-expr`, `mitcad-solver` and `mitcad-dxf` ([README](../core/sketch/README.md)). The model re-exports it as `mitcad_model::sketch` and the definition as `mitcad_model::features::sketch`, where the feature's references, checks against the timeline and evaluation stay. |
+| `core/import` (`mitcad-import`) | Rust | Replays `.f3d` dumps (also those `core/ipt` makes of `.ipt` parts) as MitCad commands, checked against the file's stored results ([README](../core/import/README.md)): the replay's core (`mitcad-import-replay`) with its families (`mitcad-import-joints`, `mitcad-import-sheet`, `mitcad-import-primitives`, `mitcad-import-appearances`) put together, and the replay's tests (mitcad#785); `.solidcraft` designs through `mitcad-import-solidcraft`. Above `core/model`, not the api (mitcad#778): it asks the model for sheet states, joint frames and constraint rows directly, and runs the JSON commands a cut and paste needs through `Options::commands`, which `core/ffi` fills with the api's `command` (`mitcad_import::Commands`). |
+| `core/import-base` (`mitcad-import-base`) | Rust | What the imports share: the import's `Progress` (one per process, for the watchdog, the memory guard and the kernel's cancel check), vector helpers, the bodies of one replay, planar faces, the candidate core, the notes' texts, the sketch helpers ([README](../core/import-base/README.md)). No reader. |
+| `core/import-ifc` (`mitcad-import-ifc`) | Rust | The IFC import: the building model as components, features and bodies ([README](../core/import-ifc/README.md)). |
+| `core/import-rvt` (`mitcad-import-rvt`) | Rust | The `.rvt` import: building elements as features and bodies, one component per level, with the IFC import's builder ([README](../core/import-rvt/README.md)). |
+| `core/import-fcstd` (`mitcad-import-fcstd`) | Rust | The FreeCAD import: structure, stored bodies, sketches, history and parameters, checked against FreeCAD's per-feature shapes ([README](../core/import-fcstd/README.md)). |
+| `core/import-solidcraft` (`mitcad-import-solidcraft`) | Rust | The `.solidcraft` import: designs with their history built again as MitCad features, with an importer of its own (mitcad#785; `mitcad-import` re-exports it as `solidcraft`) ([README](../core/import-solidcraft/README.md)). |
+| `core/import-replay` (`mitcad-import-replay`) | Rust | The core of the `.f3d` dump replay: `Importer`'s state, the timeline walk, references, the history check, fallbacks and the report (mitcad#785; `mitcad-import` re-exports its public paths). Reaches the families above it through its `Families` trait ([README](../core/import-replay/README.md)). |
+| `core/import-joints` (`mitcad-import-joints`) | Rust | The replay's joints family above its core: joints, joint origins, captured positions, ground items and assembly relationships, as extension traits on the core's `Importer` (mitcad#785; [README](../core/import-joints/README.md)). |
+| `core/import-sheet` (`mitcad-import-sheet`) | Rust | The replay's sheet-metal family above its core: sheet items as native sheet features, roundings and chamfers as sheet corners (mitcad#785; [README](../core/import-sheet/README.md)). |
+| `core/import-primitives` (`mitcad-import-primitives`) | Rust | The replay's primitives family above its core: boxes, cylinders, spheres, tori and coils placed on a plane (mitcad#785; [README](../core/import-primitives/README.md)). |
+| `core/import-appearances` (`mitcad-import-appearances`) | Rust | The replay's appearances family above its core: the file's appearances and physical materials on the replay's bodies, faces and occurrences, as an extension trait on the core's `Importer`; the report's types stay in the core (mitcad#791; [README](../core/import-appearances/README.md)). |
 | `core/freecad` (`mitcad-freecad`) | Rust | `.FCStd` reader: typed objects and properties, placements, links, sketches, spreadsheets, expressions. No geometry. |
 | `core/zip` (`mitcad-zip`) | Rust | Zip container for `.f3d` and `.FCStd` (stored, deflate, zstd; a writer for tests). |
-| `core/ipt` (`mitcad-ipt`) | Rust | `.ipt` part files: compound file container (MS-CFB), property sets (MS-OLEPS), the segment database, the B-rep record converted by `core/f3d`'s ASM code, the meshes of mesh features, the definitions segment (parameters, sketches, features) as the import's dump IR, and `.iam` assemblies (referenced files, occurrences, placements; [README](../core/ipt/README.md)). No geometry. |
+| `core/ipt` (`mitcad-ipt`) | Rust | `.ipt` part files: compound file container (MS-CFB), property sets (MS-OLEPS), the segment database, the B-rep record converted by `core/asm`, the meshes of mesh features, the definitions segment (parameters, sketches, features) as the import's dump IR, and `.iam` assemblies (referenced files, occurrences, placements; [README](../core/ipt/README.md)). No geometry. |
 | `core/ifc` (`mitcad-ifc`) | Rust | IFC files (IFC2X3, IFC4, IFC4X3; `.ifczip`): an own ISO 10303-21 reader, units, the spatial structure, products and their placements, relationships, styles, and the shapes' representation items decoded (profiles, swept solids, booleans, breps, face sets, mapped items; [README](../core/ifc/README.md)). No geometry. |
-| `core/solidcraft` (`mitcad-solidcraft`) | Rust | `.solidcraft` designs: the JSON document or its container, upgraded from any file format to one by SolidCraft's own steps (`third_party/solidcraft`), typed sketches and feature kinds, expressions in Mitcad's language. No geometry. |
+| `core/solidcraft` (`mitcad-solidcraft`) | Rust | `.solidcraft` designs: the JSON document or its container, upgraded from any file format to one by SolidCraft's own steps (`third_party/solidcraft`), typed sketches and feature kinds, expressions in MitCad's language. No geometry. |
 | `core/dxf` | Rust | DXF read and write. |
-| `core/dwg` (`mitcad-dwg`) | Rust | `.dwg` drawings, R13 to R2018: the containers and their compression, header variables, classes, the object map, objects, the data storage; the 3D content (B-rep records parsed by `core/f3d`'s ASM code, meshes, blocks and inserts) and the plan of components; the writer of 2D drawings in R2000 for the drawing export (mitcad#728) ([README](../core/dwg/README.md)). No geometry. |
+| `core/dwg` (`mitcad-dwg`) | Rust | `.dwg` drawings, R13 to R2018: the containers and their compression, header variables, classes, the object map, objects, the data storage; the 3D content (B-rep records parsed by `core/asm`, meshes, blocks and inserts) and the plan of components; the writer of 2D drawings in R2000 for the drawing export (mitcad#728) ([README](../core/dwg/README.md)). No geometry. |
 | `core/3mf` (`mitcad-3mf`) | Rust | 3MF writer (one object of parts) and a checking reader for tests. |
 | `core/usdz` (`mitcad-usdz`) | Rust | USDZ writer: the binary USD layer (crate format 0.8.0, LZ4 and USD's integer coding written here, no USD library) of a scene of meshes, `Xform`s and `UsdPreviewSurface` materials, packed with its textures 64-byte aligned; a checking reader for tests (mitcad#123). |
 | `core/vcs` (`mitcad-vcs`) | Rust | Version history of projects in git (gitoxide, only here); remotes through the system's git; component libraries and community indexes in git repositories ([libraries.md](libraries.md)). |
 | `core/update` (`mitcad-update`) | Rust | Release manifest, signatures, version selection; the `mitcad-release` tool. No network ([updates.md](updates.md)). |
 | `core/mcp` (`mitcad-mcp`) | Rust | MCP lifecycle, JSON-RPC envelopes, tool schemas, the command-reference resource and `model_reference`, the reference in sections (mitcad#714); headless stdio and live application profiles. No geometry dependency ([mcp.md](mcp.md)). |
-| `core/ffi`, `core/cpp` | Rust, C++ | CXX bridges: the `Kernel` on OCCT, the document API for C++. |
+| `core/ffi` (`mitcad-ffi-bridges`), `core/cpp` | Rust, C++ | CXX bridges: the `Kernel` on OCCT, the document API for C++. An rlib (mitcad#792), so that Cargo starts it on its dependencies' metadata. |
+| `core/ffi-staticlib` (`mitcad-ffi`) | Rust | The static library the application links (CMake target `mitcad_ffi`): `mitcad-ffi-bridges` with every Rust library it uses, no code of its own ([README](../core/ffi-staticlib/README.md)). |
 | `geometry` (`mitcad_geometry`) | C++ | OCCT facade: profiles, features, booleans, name transfer, queries, file formats, ASM bodies, analyses. No Qt. |
 | `tools/cli` (`mitcad-cli`) | C++ | Headless open/import, recompute, properties, export; kernel and import tests run through it. Also `render` (the final render through the render worker), which links Qt Core and Gui for the application's scene and job code. |
 | `app` | C++/Qt, Objective-C++/AppKit | Shared document and command orchestration; Qt desktop UI and native macOS UI. |
 | `tools/freecad-export` | Python, Bash | FreeCAD macros that make the FreeCAD import's reference models and dumps. |
 
-Dependencies point one way: `app` → `core/ffi` → `core/model` (with
-`solver`, `vec3`, `f3d`, `import`, `freecad`, `zip`, `3mf`, `usdz`, `vcs`, `ipt`, `ifc`, `solidcraft`, `dwg`; `update`
+Dependencies point one way: `app` → `core/ffi` → `core/model-api` → `core/model-build`, `core/model-drawing` → `core/model` (with
+`model-diff`, `solver`, `vec3`, `f3d` (over `f3d-design`, `f3d-decode`, `f3d-file`, `f3d-names`, `asm`, `dump`), `import`, `freecad`, `zip`, `3mf`, `usdz`, `vcs`, `ipt`, `ifc`, `solidcraft`, `dwg`, `expr`, `print-keys`, `import-base`, `import-ifc`, `import-rvt`, `import-fcstd`, `model-base`, `sketch`; `update`
 stands alone) and `core/ffi` → `geometry` → OCCT. The model reaches geometry only
 through the `Kernel` trait, so model tests run on a mock kernel.
 
@@ -92,7 +119,7 @@ design in a project.
   the parameters it uses and the versions of its inputs; reads of other
   features' results are recorded in the key (`Read::Output`,
   `Read::Datum`). A result's version is a 128-bit fingerprint of uid,
-  definition and inputs (`core/model/src/fingerprint.rs`), stable across
+  definition and inputs (`core/model-base/src/fingerprint.rs`), stable across
   documents and processes.
 - **Result store** (`core/model/src/store.rs`): costly results are also
   kept on disk under the same key, so reopening a design or an older
@@ -195,7 +222,7 @@ design in a project.
 - **Parameters:** name, expression (`d1 * 2 + 5 mm`), unit, comment,
   kind (model or user), evaluated in dependency order; cycles and unit
   mismatches are errors. Internal units are mm and radians. Input accepts
-  a decimal comma (`core/model/src/expr/mod.rs`); stored expressions
+  a decimal comma (`core/expr/src/lib.rs`); stored expressions
   always use points. The language is a superset of `.f3d` expressions
   with the functions and syntax of spreadsheet formulas (mitcad#663):
   case-insensitive function names, `=` comparing inside parentheses,
@@ -207,7 +234,7 @@ design in a project.
   undo step. The UI reads their names from the model; expression hints
   and generator reports evaluate prospective defaults on parameter copies,
   while previews use the usual private definition-state copy.
-  Limits (mitcad#665, `expr/limits.rs`): a parameter's optional `min`,
+  Limits (mitcad#665, `core/expr/src/limits.rs`): a parameter's optional `min`,
   `max` (expressions that join the dependency graph) and `step` clamp and
   snap its value, or refuse it when `strict`; the table keeps the result
   before them and which limit took effect.
@@ -236,8 +263,8 @@ design in a project.
   nearest component's default up the occurrence path, else the root's,
   else steel. Setting a body's material sets its appearance too, unless
   the body's was set by hand.
-- **Print settings key map** (mitcad#640, `core/model/src/print_keys/`):
-  one Rust table of Mitcad's printer, process and filament keys, each
+- **Print settings key map** (mitcad#640, `core/print-keys`):
+  one Rust table of MitCad's printer, process and filament keys, each
   with its type, unit, choices, plain name and, per slicer dialect (the
   Bambu Studio family, PrusaSlicer, Cura), the slicer's key and the
   conversion of values; built from the slicers' option definitions by
@@ -270,7 +297,7 @@ design in a project.
   geometry; the 3MF export writes each body's effective settings in a
   slicer's dialect (`core/3mf` carries more metadata, per-object
   metadata and files; `read_package` reads them without the geometry).
-- **Appearances** (mitcad#46, `core/model/src/appearance.rs`): physically
+- **Appearances** (mitcad#46, `core/model-base/src/appearance.rs`): physically
   based parameter sets (base colour, metalness, roughness, specular,
   transmission, IOR, coat, emission, opacity, and a texture for the base
   colour: an image file or one embedded in the design file, mitcad#53,
@@ -290,7 +317,7 @@ design in a project.
   occurrences). This user preference does not
   change appearances, exports or the document. Enabling it leaves the
   rendered view; entering the rendered view turns component colours off.
-- **Render settings** (mitcad#47, `core/model/src/render_settings.rs`):
+- **Render settings** (mitcad#47, `core/model-base/src/render_settings.rs`):
   how the rendered view lights and shows the design, per document: the
   environment (a built-in studio or outdoor setup, or an HDR image), the
   background, the ground and the film (exposure, view transform), and
@@ -318,6 +345,18 @@ design in a project.
   bounding volume hierarchy of their own for the wall rays, no kernel
   method of their own; the results are kept in memory by the bodies'
   shape versions and the settings.
+- **Image references** (mitcad#782;
+  `core/model/src/document/image_references.rs`,
+  `core/model-base/src/image_header.rs`, `api/image_references.rs`):
+  pictures kept in the definition state with a name, a plane reference
+  resolved at the marker as an analysis' is, a centre, angle and flip in
+  the plane's frame, the size of a pixel, an opacity, a light bulb and
+  the image file's bytes (an `ImageData`, saved base64 in the design
+  file). The model reads only the files' headers (size and resolution);
+  the app decodes the pictures and draws them as textured quads by the
+  corners the `image_references` query gives
+  (`MainWindowImageReferences.cpp`, `view/ImageReferenceView.cpp`).
+  Their commands are undo steps that recompute nothing.
 - **Annotations** (mitcad#702, grown from the measurement objects of
   mitcad#649; `core/model/src/document/annotations.rs`,
   `api/measurements.rs`, `api/annotations.rs`, `iso286.rs`): dimensions,
@@ -354,15 +393,17 @@ design in a project.
   go with it. The `drawing` query works a sheet out at the marker: each
   base view's subject in the drawing's component's coordinates, projected
   by `Kernel::project_view` (no kernel method of their own) and kept in
-  the document's projection cache (`drawing::ProjectionCache`, by shape
+  the document's projection cache (`mitcad_model_drawing::ProjectionCache`, by shape
   versions, placements and the view's spec); details and breaks are cut
-  in Rust in the view's plane (`drawing::clip`), shaded views from
+  in Rust in the view's plane (`core/model-drawing/src/clip.rs`), shaded views from
   `Kernel::triangle_mesh`; the sheet is drawn by the export's
-  `drawing::compose::render`. A view's place is where the component's
+  `compose::render` (`core/model-drawing`). A view's place is where the component's
   origin lies on the sheet, so views in line share a coordinate. The
   application paints the query's groups in a sheet view of its own
   ([app/COMMANDS.md](../app/COMMANDS.md), "Drawings"). Annotations on
-  views (phase 2, `drawing/annotate.rs`, `api/drawing_annotations.rs`)
+  views (phase 2, stored in `core/model/src/drawing/annotate_def.rs`,
+  laid out by `core/model-drawing/src/annotate.rs`,
+  `api/drawing_annotations.rs`)
   keep picks of model topology (a body, its occurrence, an edge or a round
   face by its topological name): a click is matched in Rust against the
   bodies' named edges and faces as the view projects them
@@ -377,13 +418,15 @@ design in a project.
   cut faces); a detail and a broken view the parts of edges they show; of
   picks as near, the one the projection draws visible, then the one nearest
   the eye; a pictorial view measures aligned dimensions in 3D and refuses
-  foreshortened ones. Tables (phase 3, `drawing/tables.rs`,
+  foreshortened ones. Tables (phase 3, `drawing/tables_def.rs`,
+  `core/model-drawing/src/tables.rs`,
   `api/drawing_tables.rs`) are annotations of a view too: a hole table
   (`Kernel::round_holes` of the bodies it shows, seen end on) and a parts
   list (the view's occurrences counted per component, the `parts_list`
   rows' and properties' words) are worked out whenever the sheet is drawn
   and drawn in Rust; balloons take their numbers from the sheet's parts
-  lists. Sheet templates (phase 4, `drawing/template.rs`,
+  lists. Sheet templates (phase 4, `drawing/template_def.rs`,
+  `core/model-drawing/src/template.rs`,
   `api/drawing_templates.rs`) are data: a frame, a title block's lines
   and fields with names in braces, a revision table; built in (JSON files
   compiled in), or files in the user's and the project's library folders
@@ -393,7 +436,7 @@ design in a project.
   volumes) whenever it is drawn. A drawing's revisions are rows of the
   drawing itself.
 - **Parameters as CSV** (mitcad#666, `core/model/src/parameters_csv.rs`,
-  `document/parameters_csv.rs`, `api/parameters_csv.rs`): Mitcad's
+  `document/parameters_csv.rs`, `api/parameters_csv.rs`): MitCad's
   parameter table and the `.f3d` application's parameter table CSV are
   read and written in Rust; the queries and the command carry the CSV
   text, and the app only reads and writes the file (Change Parameters'
@@ -414,7 +457,7 @@ design in a project.
   component's bodies, `Read::Placement`, `Read::BodyIn`). The `.f3d` import
   makes them for sketches on other components' faces and for linked
   sketch curves that follow one edge of the replay (mitcad#225,
-  `core/import/src/linked.rs`). A linked
+  `core/import-replay/src/linked.rs`). A linked
   external component is read-only; its bodies are stored in a base
   feature refreshed on open. Since a feature's component is only its
   `FeatureEntry::component`, features made in the root can later move
@@ -452,13 +495,13 @@ design in a project.
   the joint equations; a drag query and command move occurrences while
   the joints hold. A joint moves only top-level occurrences of its
   component (a sub-assembly as a whole). Commands and queries:
-  [commands.md](../core/model/src/api/commands.md) ("Joints"). In the
+  [commands.md](../core/model-api/src/commands.md) ("Joints"). In the
   application (phase 3) the ASSEMBLE group's panels add and edit them, a
   preview reports the placements it changes so that panels show the
   moved bodies, components are dragged in the view through the drag
   query, and joints are animated as previews of driven positions
   ([app/COMMANDS.md](../app/COMMANDS.md), "Joints"). The `.f3d` import
-  (phase 4, `core/import/src/joints.rs`) maps the file's joints to these
+  (phase 4, `core/import-joints/src/joints.rs`) maps the file's joints to these
   features (*Imports with history* below).
 - **Assembly constraints** (mitcad#148, `core/model/src/constraints.rs`,
   `features/constraint_set.rs`): a `constraint_set` feature's rows (align,
@@ -471,7 +514,7 @@ design in a project.
   analysis, degrees of freedom and drags; conflicts name rows
   (`Constraint1 row 2 (insert)`). The application's Constraint command
   edits the rows in one panel, the type inferred from the picks by the
-  `constraint_row` query ([commands.md](../core/model/src/api/commands.md),
+  `constraint_row` query ([commands.md](../core/model-api/src/commands.md),
   "Assembly constraints").
 - **Motion studies and contact sets** (mitcad#454, `core/model/src/motion.rs`,
   `contact.rs`, `document/motion.rs`): definition state beside the
@@ -487,7 +530,7 @@ design in a project.
   the step before the first contact bisected; recompute itself never
   checks contact. The application plays a study in a panel of previews
   (`app/motion/MotionStudyDialog`), the document unchanged until Keep
-  ([commands.md](../core/model/src/api/commands.md), "Motion studies and
+  ([commands.md](../core/model-api/src/commands.md), "Motion studies and
   contact sets"). The `.solidcraft` import maps the file's onto them.
 - **Motion links** (mitcad#466, `features/motion_link.rs`,
   `core/model/src/motion_links.rs`): `motion_link` timeline features that
@@ -504,7 +547,7 @@ design in a project.
   motions of motion studies take the links in, so linked joints move
   together. A follower whose driver is driven lets go of its own
   position; Drive Joint and studies take the positions of linked motions
-  away, so the last driven one drives ([commands.md](../core/model/src/api/commands.md),
+  away, so the last driven one drives ([commands.md](../core/model-api/src/commands.md),
   "Motion links"). The application adds them with ASSEMBLE › Motion Link
   and lists them in each component's Motion Links folder; the
   `.solidcraft` import maps the file's.
@@ -528,7 +571,7 @@ design in a project.
   change modifies no content. Importers that call the model directly are
   not checked. Later move and reparent operations get the check by building
   their next state through `apply`/`apply_move`
-  ([commands.md](../core/model/src/api/commands.md), "Design policy").
+  ([commands.md](../core/model-api/src/commands.md), "Design policy").
   The one redirection: a new component (New Component, a feature's
   new-component operation) that an owner's policy refuses is placed in the
   nearest owner above that takes components, at the same place, and the
@@ -540,7 +583,7 @@ design in a project.
   plastic rule is a timeline feature that changes no body; the features
   that name it read its parameters and its result (`Read::Output`), so
   an edit of the rule computes them again
-  ([commands.md](../core/model/src/api/commands.md), "Plastic part
+  ([commands.md](../core/model-api/src/commands.md), "Plastic part
   features").
 - **Gears** (mitcad#472, `core/model/src/features/gear.rs`): the teeth
   are worked out in the model (`gear_profile.rs`: involute flanks fitted
@@ -555,7 +598,7 @@ design in a project.
   reads that gear's definition and parameters (and its result,
   `Read::Output`) to place itself; its result keeps its frame as the
   mount `gear`, which `link_gears` reads to couple the gears' joints with
-  a motion link ([commands.md](../core/model/src/api/commands.md),
+  a motion link ([commands.md](../core/model-api/src/commands.md),
   "Gears").
 - **Pulleys** (mitcad#562, `core/model/src/features/pulley.rs`): the
   grooves of the timing belt profiles are worked out in the model
@@ -565,7 +608,7 @@ design in a project.
   `belt_with` reads the other pulley's definition and parameters (and its
   result, `Read::Output`) to place itself; the belt's length is a derived
   value of the `pulley_values` query. Its result keeps its frame as the
-  mount `bore` ([commands.md](../core/model/src/api/commands.md),
+  mount `bore` ([commands.md](../core/model-api/src/commands.md),
   "Pulleys").
 - **Printable bearings** (mitcad#577,
   `core/model/src/features/printable_bearing.rs`): no kernel method of
@@ -581,7 +624,7 @@ design in a project.
   new-component operation makes (`FeatureInfo::component_name`, used by
   the document when it makes the component); an airsoft bearing's balls
   are purchased rows of `parts_list` (`api/bearings.rs`), not components
-  ([commands.md](../core/model/src/api/commands.md), "Printable
+  ([commands.md](../core/model-api/src/commands.md), "Printable
   bearings"). The seat on a shaft or in a hole is the shared seat
   resolver's (mitcad#578).
 - **Seats on shafts** (mitcad#578, `core/model/src/features/seat.rs`): a
@@ -620,7 +663,7 @@ design in a project.
   marker. The report and retained geometry remain the supplied definition's
   ordinary preview, including any Cut scope, without changing the document
   or its undo history. The app decides when to take the answer into the
-  panel ([commands.md](../core/model/src/api/commands.md),
+  panel ([commands.md](../core/model-api/src/commands.md),
   "Extrude's automatic operation"). Contact preparation (mitcad#638) retains
   geometry-only face bounds, edge counts and eligible planes on the immutable
   `Shape`, keyed also by contact tolerance. A changed BRep, orientation or location has a
@@ -645,11 +688,12 @@ design in a project.
   every recompute and `Kernel::extrude_face` sweeps a copy of it, holes
   kept, along its outward normal (`geometry/src/face_extrude.cpp`); the
   side faces are named after the face's edges, the caps after the face
-  ([commands.md](../core/model/src/api/commands.md), "extrude"). A
+  ([commands.md](../core/model-api/src/commands.md), "extrude"). A
   revolution takes one the same way (mitcad#539, `features/revolve.rs`,
   `Kernel::revolve_face`, `geometry/src/face_revolve.cpp`; the FreeCAD
   import's face profiles), by angles only.
-- **BUILD** (mitcad#375, `core/model/src/build/`): the library parts the
+- **BUILD** (mitcad#375, `core/model/src/build/` for what the design
+  file keeps, the planning in the crate `core/model-build/`): the library parts the
   BUILD tab places are kept once as the design's **library sources**
   (`library_sources`: the library record, the design's text, inside a
   single file or in a project's store, and the manifest's `build`
@@ -675,9 +719,9 @@ design in a project.
   refuses where a part goes; bound lengths count as assembly features
   there, as joints do. Everything else treats
   them as ordinary components, features, joints and parameters
-  ([commands.md](../core/model/src/api/commands.md), "BUILD: profile
+  ([commands.md](../core/model-api/src/commands.md), "BUILD: profile
   assemblies").
-- **Timber frames** (mitcad#479, `core/model/src/build/frames.rs`): a
+- **Timber frames** (mitcad#479, `core/model-build/src/frames.rs`): a
   wall, floor or roof frame is a set of ordinary BUILD members (grounded
   members by two points, with plumb end cuts and `birdsmouth` cuts in
   their derived parts) whose definition the lead member's record keeps
@@ -688,7 +732,7 @@ design in a project.
   on it, keeps the members whose place stays (`replace_member`), makes
   and removes the others in one `apply`, drives the fasteners through
   `build_connect` and merges it all into one undo step (`merge_undo`)
-  ([commands.md](../core/model/src/api/commands.md), "BUILD: timber
+  ([commands.md](../core/model-api/src/commands.md), "BUILD: timber
   frames"). Since mitcad#522 each frame is a component of its own in the
   BUILD host (`framing.component`), its definition in that component's
   coordinates: its members are made there, and its fasteners are driven
@@ -717,7 +761,7 @@ design in a project.
   `geometry/src/boundary_fill.cpp`) and gives each point's cell with the
   tools that hold it; the cells become new bodies or one tool that joins,
   cuts or intersects participants as an extrusion's does
-  ([commands.md](../core/model/src/api/commands.md), "Boundary Fill").
+  ([commands.md](../core/model-api/src/commands.md), "Boundary Fill").
 - **Surface modelling** (mitcad#455, beside Patch, Stitch and Thicken of
   mitcad#456): surface (sheet) bodies are ordinary bodies whose shape is
   open shells; `Kernel::body_kind` tells them from solids. Extrude,
@@ -730,12 +774,12 @@ design in a project.
   same pattern: a feature module, a block of `Kernel` methods with a
   default `Unsupported`, and a geometry file of their own
   (`surface_offsets.cpp`, `surface_edits.cpp`, `surface_fills.cpp`;
-  [commands.md](../core/model/src/api/commands.md), "Surface
+  [commands.md](../core/model-api/src/commands.md), "Surface
   modelling"); the application has them in the SOLID tab's SURFACE group.
   Free edges (of one face only) have no names: features take them as
   openings of the body, narrowed by faces and points
   (`features/sheet_edges.rs`).
-- **Properties** (mitcad#496, `core/model/src/properties.rs`,
+- **Properties** (mitcad#496, `core/model-base/src/properties.rs`,
   `document/properties.rs`): typed key/value properties in named sets on
   components (the definition's), occurrences (their own values over their
   component's) and bodies, with the design's own types (allowed values,
@@ -748,7 +792,7 @@ design in a project.
   are worked out at query time and never stored, so a recompute never
   changes the file. Importers add theirs with `Document::import_properties`
   (one step, merged into the import's); copies of components take theirs
-  along ([commands.md](../core/model/src/api/commands.md), "Properties").
+  along ([commands.md](../core/model-api/src/commands.md), "Properties").
 - **Reorient Design** (mitcad#502, `core/model/src/reorient.rs`,
   `document/reorient.rs`): the whole design turned by quarter turns as a
   rewrite of its definition, every component but linked ones in its own
@@ -762,7 +806,7 @@ design in a project.
   evaluation, base features a Move, occurrences `R · T · R⁻¹`. The
   command computes the result and refuses it unless every body and
   occurrence is where the turn takes it
-  ([commands.md](../core/model/src/api/commands.md), "Reorient Design").
+  ([commands.md](../core/model-api/src/commands.md), "Reorient Design").
 
 ### Units
 
@@ -773,7 +817,7 @@ own units are kept.
 
 ## Geometry kernel
 
-The `Kernel` trait (`core/model/src/kernel.rs`) is grouped by feature
+The `Kernel` trait (`core/model-base/src/kernel.rs`) is grouped by feature
 family. New methods default to `Err(Unsupported)`, so the mock kernel
 implements only what tests use. Bridges are split per family
 (`core/ffi/src/kernel/<family>.rs`, `geometry/src/<family>.cpp`) and share
@@ -1029,7 +1073,7 @@ the `Shape` type.
   section's cut faces (Section Analysis' `analysis::clip` and
   `analysis::section`), `Kernel::round_holes` the holes (coaxial
   cylinders with the material outside, a counterbore or countersink
-  beside them); the model (`core/model/src/drawing`, no geometry library)
+  beside them); the drawing crate (`core/model-drawing`, no geometry library)
   lays the sheet out (views by the projection method, sizes, callouts,
   the hole table with the `threads` query's threads, the title block)
   and writes PDF and SVG itself and DXF through `core/dxf`. An export
@@ -1058,7 +1102,7 @@ References to faces and edges are names derived from how faces came to
 be; edges and vertices are named by their faces. Face names travel through
 OCCT's history (`Modified`/`Generated`), and edge names are rebuilt from
 neighbouring faces, so a reference survives a rebuild with new dimensions.
-Grammar: `core/model/src/topo.rs`. C++ treats names as strings, carries
+Grammar: `core/model-base/src/topo.rs`. C++ treats names as strings, carries
 them through operations and derives edge names.
 
 **Face name:** `<feature uid>:<role>[(<key>)]`, e.g. `F3:side(c1[c4,c2])`.
@@ -1129,23 +1173,31 @@ them through operations and derives edge names.
   evaluated with and the one left, so taking it into the document costs no
   second evaluation.
 - Imports resolve the source file's references geometrically against the
-  replayed body and store Mitcad names.
+  replayed body and store MitCad names.
 
 ## Sketch and solver
 
-A sketch definition (`SketchDef`, `core/model/src/sketch/`) is stored; its
-evaluation is not.
+A sketch definition (`SketchDef`, `core/sketch/src/def.rs`; the sketch code
+is the crate `core/sketch`, mitcad#780) is stored; its evaluation
+(`core/model/src/features/sketch.rs`) is not.
 
 - **Plane:** origin plane, construction plane or planar face, with an
-  optional frame relative to it (imports keep the source's exact frame).
+  optional frame relative to it (imports keep the source's exact frame),
+  and an optional placement after that frame: an offset along the
+  normal, a move, a rotation and a flip, each value a parameter of the
+  sketch (`sketch/placement.rs`; Redefine Sketch Plane moves a sketch to
+  another plane and places it there, `sketch.redefine_plane`,
+  mitcad#787).
 - **Entities:** point, line, circle, arc (centre/start/end, CCW), ellipse,
-  elliptical arc, spline (fit or control points, degree, weights, knots),
-  text, projections (optionally linked). Flags `construction` and `fixed`.
+  elliptical arc, spline (fit or control points, degree, weights, knots; a
+  fit point spline may be closed: periodic, C2 through its first point,
+  mitcad#783), text, projections (optionally linked). Flags `construction` and `fixed`.
   Points are entities and curves refer to them, so a shared point is a
   real connection.
 - **Constraints:** coincident, horizontal, vertical, parallel,
   perpendicular, tangent, equal, fix, midpoint, concentric, collinear,
-  symmetric, smooth. **Dimensions:** distance (aligned, horizontal,
+  symmetric, smooth; a tangent or smooth may name the point (an end of the
+  curves) it applies at (mitcad#783). **Dimensions:** distance (aligned, horizontal,
   vertical), length, angle, radius, diameter, arc length. A driving
   dimension is bound to a parameter (`d<n>`); a driven one only measures,
   into a read-only reference parameter that features after the sketch
@@ -1180,7 +1232,7 @@ overlap, so each region once whatever the order or repetition of the list
 that find the same region count once). Toggling a region is the
 application's: a click on a selected region takes its entry out
 (mitcad#199; [commands.md, Profile
-selections](../core/model/src/api/commands.md#profile-selections)).
+selections](../core/model-api/src/commands.md#profile-selections)).
 
 Solid mode's Autoselect groups come from the model's `autoselect_profiles`
 query (`document/autoselect.rs`, mitcad#193). Only the final unused sketch
@@ -1263,6 +1315,12 @@ entities and constraints, shared by the UI and the imports.
   successive interval (x, y, along a line, or a distance) equal to the
   next, and an optional `spacing` dimension (`Spacing`, on the first
   interval) drives them all. No copies, no alignment, no sizes bound.
+- **Copy and paste** (`sketch/clipboard.rs`, mitcad#788): a fragment is
+  plain data (entities, texts, constraints and dimensions with the
+  source's ids, values with the expressions and parameter names they
+  use, and the ids that stood for the origin and axes), so it goes
+  between sketches and designs through the clipboard; a paste maps every
+  id anew and the origin and axes to the target's own.
 
 The solver works on its own ids; the sketch model maps entity ids to them.
 
@@ -1276,7 +1334,7 @@ formula text and normal parameter-limit edits; it stores no additional design
 state. Both the fx browser and Change Parameters open the same editor.
 
 The app uses the model only through JSON commands and queries
-([commands.md](../core/model/src/api/commands.md)); geometry comes back as
+([commands.md](../core/model-api/src/commands.md)); geometry comes back as
 `SharedPtr<Shape>` handles, so new commands need no bridge changes.
 A `preview` computes on a copy and leaves results in the cache, so OK does
 not recompute.
@@ -1542,7 +1600,7 @@ not recompute.
   connection has a Rust `LiveSession` for protocol state and a pending request; it owns no detached document. The
   FFI prepares a validated tool and wraps its completed result. What MCP
   allows follows each command's and query's class in the model's API
-  (`core/model/src/api/classes.rs`: model, file IO, remote, internal),
+  (`core/model-api/src/classes.rs`: model, file IO, remote, internal),
   not a list of names. Commands follow the ordinary window workflow and run
   on the same model worker; in an open sketch its own commands go through
   `SketchOp` as the user's would, and an agent's undo steps are labelled
@@ -1698,7 +1756,7 @@ not recompute.
   (home folder, other absolute paths, user and host names) before the
   preview, where the user edits, leaves out or cancels; then the issue
   tracker's form, filled in through its address and opened in the
-  browser. Mitcad holds no token and sends nothing itself; a relay
+  browser. MitCad holds no token and sends nothing itself; a relay
   service could take the delivery's place later. The tracker is a build
   setting (`MITCAD_ISSUE_URL`) with a user setting over it. Crash capture
   is plain C++ (`CrashHandler.cpp`) in the application, the import worker
@@ -1711,7 +1769,7 @@ not recompute.
   the exception's context (`StackWalk64`, on a thread of its own), so it
   starts at the faulting function, and dbghelp names the frames from the
   PDB file next to the executable where there is one (module and offset
-  otherwise). On Linux the executables export Mitcad's own symbols
+  otherwise). On Linux the executables export MitCad's own symbols
   (`app/report/crash-symbols.list`) so that stacks name its functions. The application offers a worker's report at once (it watches
   the folder; `MITCAD_CRASH_PARENT` tells its workers' from others') and
   its own at the next start. The duplicate key is a hash of the signal and
@@ -1748,7 +1806,7 @@ not recompute.
   the model's worker makes the same meshes beforehand (`mesh_in_place`,
   for all the bodies of a job at once `mesh_all_in_place`),
   and the exports' presets bound their faces the same way
-  ([commands.md](../core/model/src/api/commands.md), Mesh refinement).
+  ([commands.md](../core/model-api/src/commands.md), Mesh refinement).
 - **Theme and icons** (`app/framework/Theme`, `Icons`): dark mode is read
   from the application palette (`isDarkPalette`), and the error, warning
   and accent colours and the `set*StyleSheet` helpers follow palette
@@ -1858,9 +1916,9 @@ one for the next starts (`appearance/layout`, `layoutPreference()`; a change
 offers to restart, `framework/Restart`), and `--chrome=docked|floating`
 overrides both for a run (mitcad#419). `MainWindow` builds either from the
 same panels, so object names and the positions the UI tests click are
-the same in both. The ribbon's workspace tabs are SOLID and BUILD
+the same in both. The ribbon's workspace tabs are Solid and Build
 (mitcad#375: slot-profile assemblies, whose commands call only the
-model's BUILD commands and queries; app/COMMANDS.md, *BUILD*), with SKETCH
+model's BUILD commands and queries; app/COMMANDS.md, *BUILD*), with Sketch
 after them while a sketch is edited; the AppKit frontend lists BUILD's
 commands in a menu.
 
@@ -1869,8 +1927,8 @@ mitcad#251), the same on every platform and in both themes: the docks and
 the ribbon's toolbar are raised surfaces (slightly lighter than the window,
 rounded, 6 px apart: the main window's separators are the gap and paint
 nothing); each dock's title bar is a `PanelTitleBar` with its title in
-small grey capitals and float and close buttons that show while the mouse
-is over it (the timeline's is a strip at its left); one accent colour, the
+small grey text, preserving its spelling, and float and close buttons that
+show while the mouse is over it (the timeline's is a strip at its left); one accent colour, the
 icons' action blue (`actionColor`), is the palette's Highlight and Accent,
 the selected rows' rounded bands (28 px rows, `stylePanelTree`), the
 timeline's selection and its marker's handle, and the ribbon's selected
@@ -1930,8 +1988,10 @@ are slots in parent coordinates mapped to the screen and kept there when the
 main window moves, resizes, minimizes or goes full screen; card windows stay
 out of the Window menu, the window cycle and other Spaces; a card window
 without a focused widget forwards keys to the main window's focus widget
-(`GlassCard::forwardKey`); logged positions are in host window coordinates
-(`GlassCard::mapToHost`).
+(`GlassCard::forwardKey`); a command panel that focuses a value field
+activates its card window first when another window of the same main window
+has the keys (`focusField` in `CommandPanel.cpp`); logged positions are in
+host window coordinates (`GlassCard::mapToHost`).
 
 Dialogs modal to the main window are sheets on macOS (`app/framework/Dialogs`:
 `prepareModal`, `sheetWarning`, `sheetInformation`, `sheetQuestion`). On
@@ -2043,10 +2103,10 @@ rename is retried for up to 2 s while another program holds the file
 
 `core/vcs`, gitoxide (`gix =0.88.0`, default features off: only `sha1`
 and `index`; a default feature pulls in an MPL-2.0 crate). No gix types
-in the crate's API. JSON commands: [commands.md](../core/model/src/api/commands.md)
+in the crate's API. JSON commands: [commands.md](../core/model-api/src/commands.md)
 ("Version history").
 
-- Mitcad commits only when the project folder is the root of a git
+- MitCad commits only when the project folder is the root of a git
   repository, so a user's enclosing repository is never touched.
 - A version is a commit built from HEAD's tree plus the saved paths (like
   `git commit --only`), adding the B-rep files they reference and removing
@@ -2070,7 +2130,7 @@ in the crate's API. JSON commands: [commands.md](../core/model/src/api/commands.
   versions are read from the commit tree with `GitTreeStore`, no checkout.
   Restore writes the old content back as a new version; history is never
   rewritten.
-- **Comparison** (`core/model/src/diff/`): two document snapshots are
+- **Comparison** (the crate `core/model-diff/`): two document snapshots are
   compared in model terms without computing them (parameters by name,
   features by uid with moves, definition fields, sketch elements,
   components, bodies, views; optionally computed volumes and areas). The
@@ -2084,7 +2144,7 @@ message is the undo labels since the saved state
 (`changes_since_saved`), excluding display-only changes. Before
 overwriting, Save compares the file's blob ids in the folder and HEAD
 (`status`) with those at open/save and asks on a mismatch. A file renamed
-outside Mitcad (`status`'s `renamed_from`) takes its display state along
+outside MitCad (`status`'s `renamed_from`) takes its display state along
 (`follow_rename`), and the next save records the rename first. Projects
 are made by the core's `create_project` (below); an older project without
 history gets it from `init_project_history`. Autosave never records a
@@ -2107,7 +2167,7 @@ agent, credential helpers). git runs non-interactively (no stdin,
 `GIT_TERMINAL_PROMPT=0`, `setsid` outside Windows), with `LC_ALL=C` so
 failures can be classified (`errors.rs`), `GIT_ALLOW_PROTOCOL` limited to
 ssh/https/http/file, and `-c core.autocrlf=false -c core.eol=lf`. Runs
-are cancellable and time out after 5 minutes without output. Mitcad never
+are cancellable and time out after 5 minutes without output. MitCad never
 handles passwords: URLs with credentials and `ext::` helpers are refused,
 and credentials are hidden in output.
 
@@ -2147,7 +2207,7 @@ repository, designs, inside a project, inside another repository) without
 the network or writes, so a project cloned with any git tool is Cloud.
 JSON commands without a project go through the bridge's
 `projects_command` with a `SyncControl`; a project's own are `Project`
-commands ([commands.md](../core/model/src/api/commands.md), "Projects").
+commands ([commands.md](../core/model-api/src/commands.md), "Projects").
 
 - **Made in one step** (`create_project`): the folder, the repository, the
   marker, `.gitattributes`, `.gitignore`, the author in the repository's
@@ -2290,8 +2350,12 @@ just made).
   elided in the middle by the rows' delegate, and the width dragged by the
   panel's edge and remembered (the card's grip,
   `GlassCard::setWidthAdjustable` with `FloatingLayout::setCardWidth`; the
-  dock's edge). The AppKit frontend has no panel: File › New Design in a project
-  asks for a name in a dialog there. Shown or hidden at the start (mitcad#151): the
+  dock's edge). The AppKit frontend presents the shared Projects panel through
+  `NativeDialogs`, in a bounded native outline above Browser. Its header
+  disclosure collapses the content; View > Projects controls whole-panel
+  visibility. The native bridge must preserve the panel's workflow capabilities;
+  generic model binding alone does not establish keyboard/editing/move parity.
+  Shown or hidden at the start (mitcad#151): the
   user's last choice (`ProjectsSettings::panelShown`, written only by a
   show or hide), else shown when `anyProjectConfigured` finds a project
   (folder entries only, nothing opened). A project row shows a display
@@ -2313,7 +2377,7 @@ just made).
 In a Cloud project a design has one editor at a time (mitcad#89,
 `core/vcs/src/remote/locks.rs`). The lock is a git ref on the remote
 outside the branches, so it works with any git host that accepts such
-refs; it is advisory (Mitcad honours it, other git tools do not see it).
+refs; it is advisory (MitCad honours it, other git tools do not see it).
 
 - `refs/mitcad/locks/<sha256 of the path>` points to a parentless commit
   whose tree holds `lock.json` (holder, session, times, idle time and
@@ -2337,7 +2401,7 @@ refs; it is advisory (Mitcad honours it, other git tools do not see it).
   process's monotonic clock. The observations are kept per project folder
   in the process, shared by every `Project` of it, since the application
   opens one per task.
-- Requests go stale the same way, so that a requester whose Mitcad was
+- Requests go stale the same way, so that a requester whose MitCad was
   killed is not asked about for ever: the requester's polls write a
   waiting request again every half idle time as a refresh of itself (its
   id, the commit it was first written as, stays, and with it the
@@ -2400,7 +2464,7 @@ lock controller per window keeps the open design's lock:
 
 An optional MQTT broker tells the open projects at once about edit locks,
 requests for them, pushed versions and who has a design open (mitcad#89;
-commands and events: [commands.md](../core/model/src/api/commands.md#live-updates)).
+commands and events: [commands.md](../core/model-api/src/commands.md#live-updates)).
 It only speeds things up: a message makes the application poll git at
 once, and only the lock refs on the remote grant a lock.
 
@@ -2488,7 +2552,7 @@ it is installed; fuzz targets for the decoder and the readers are in
 Libraries of parts (mitcad#64) and the community library (mitcad#63) are
 git repositories with a manifest (`mitcad-library.json`) whose components
 are ordinary designs, usually with a **configuration table**
-(`core/model/src/configurations.rs`: named rows of parameter expressions
+(`core/model-base/src/configurations.rs`: named rows of parameter expressions
 with selectors such as Size and Length; applying a row only changes
 expressions). Formats: [libraries.md](libraries.md).
 
@@ -2529,7 +2593,7 @@ expressions). Formats: [libraries.md](libraries.md).
   per library (URL, licence, components, reviewed versions); search runs
   over the fetched indexes and libraries locally, with a licence filter;
   items without a licence are hidden unless asked for.
-- **Publishing:** a library of one's own is a Mitcad project folder with
+- **Publishing:** a library of one's own is a MitCad project folder with
   version history; the library commands write its manifest and items, and
   the version history and remote commands record and push it.
 - **BUILD parts** (mitcad#375, `core/vcs/src/library/build.rs`): a
@@ -2578,7 +2642,7 @@ but is modified and has no undo history.
 
 ## Imports with history
 
-`.f3d` designs and FreeCAD documents are replayed as Mitcad features,
+`.f3d` designs and FreeCAD documents are replayed as MitCad features,
 each step checked against what the file stores (the `.f3d` ASM history;
 FreeCAD's per-feature shapes). What cannot be translated or does not match
 falls back to a base feature of the stored bodies, and the replay
@@ -2588,7 +2652,7 @@ the fallbacks' base features and partial items show as warnings, and an
 item the file had suppressed or failed becomes a suppressed `placeholder`
 feature at its place. An `.f3d` item suppressed in the file comes in as
 its own feature, suppressed, where its definition translates
-(mitcad#180, `core/import/src/suppressed.rs`). The `.f3d` history is matched by its solids; its surface
+(mitcad#180, `core/import-replay/src/suppressed.rs`). The `.f3d` history is matched by its solids; its surface
 bodies come in with the fallbacks as stored bodies, which joins and cuts
 without participants then leave alone. Both run over the `Kernel` trait,
 so they are testable on the mock kernel; the app runs them in the import
@@ -2602,7 +2666,7 @@ geometry is taken as the file's where no exact match is: the lookups of
 decoded edges, faces and vertices look within 1e-3 mm first and then
 within it, and an item's new faces must lie on the file's within it
 (mitcad#224, `core/import/docs/f3d-fallbacks.md`). Fillets and chamfers with a tangent
-chain follow Mitcad's own chain (edges that meet end to end in the same
+chain follow MitCad's own chain (edges that meet end to end in the same
 direction), not only the kernel's (`commands.md`, fillet).
 
 - `.f3d`: the design streams are decoded into the dump IR
@@ -2623,7 +2687,7 @@ direction), not only the kernel's (`commands.md`, fillet).
   occurrences of components of other documents (inserted parts,
   fasteners) are occurrences of empty components during the replay, which
   the import then fills (mitcad#196, `core/ffi/src/f3d_references.rs`,
-  `core/import/src/references.rs`): each document the design refers to
+  `core/import-replay/src/references.rs`): each document the design refers to
   is imported from its own file (the reference folder next to the design,
   folders and files given, the GUID the file's manifest lists; the
   application asks for each one not found, the command line never) with
@@ -2642,7 +2706,9 @@ direction), not only the kernel's (`commands.md`, fillet).
   `core/freecad/data/enums.json`.
 
 How both work, their limits and corpus tests:
-[core/import/README.md](../core/import/README.md). Real files are kept
+[core/import/README.md](../core/import/README.md) and, for FreeCAD
+documents, [core/import-fcstd/docs/freecad.md](../core/import-fcstd/docs/freecad.md).
+Real files are kept
 outside the repository (`MITCAD_F3D_CORPUS`, `MITCAD_F3D_MODELS`,
 `MITCAD_FCSTD_CORPUS`, `MITCAD_IPT_CORPUS`;
 [development.md](development.md#freecad-reference-models-and-corpus)).
@@ -2672,7 +2738,7 @@ counts the parts (`part <n> of <m>`) for the application's progress
 their design history**, remembered; `app/files/IamImport.*`).
 
 IFC building models (mitcad#273) come in through `core/ifc` (the reader:
-no geometry) and `mitcad-import`'s `ifc` module on the `Kernel` trait
+no geometry) and `core/import-ifc` (`mitcad-import-ifc`) on the `Kernel` trait
 (`core/ffi/src/ifc_import.rs`; the `import_ifc` command): the spatial
 structure as components (storey planes, grid axes), each element's swept
 solids and booleans as features and its breps and face sets as bodies
@@ -2688,7 +2754,7 @@ report accounts for every product of the file.
 drawing and plans its components (each named block with 3D content a
 component, each rigid insert an occurrence; anonymous blocks and scaling
 or mirroring inserts copied in place), the B-rep records of its solids
-are converted by `core/f3d`'s ASM code (the text form of older drawings
+are converted by `core/asm` (the text form of older drawings
 through `asm::text`) and built by the imports' B-rep builder, its 3D
 faces and meshes become mesh bodies, one base feature per component and
 layer (`core/ffi/src/dwg_import.rs`; the `import_dwg` command), in the
@@ -2702,7 +2768,7 @@ schema; its `building` module reads the building elements' parameters
 (location curves, joins, layers, boundary loops, sections, cut loops,
 grids, links), and its `brep` module the geometry the file keeps of its
 elements (winged-edge B-reps in their faces' parameters, types placed by
-transforms) from the partitions' geometry chains. `mitcad_import::rvt`
+transforms) from the partitions' geometry chains. `core/import-rvt` (`mitcad_import_rvt`)
 brings a project in through the model's kernel, one component per level
 with its construction plane: walls, floors, roofs, ceilings, columns,
 beams and stair runs rebuilt as features
@@ -2710,7 +2776,7 @@ beams and stair runs rebuilt as features
 against the IFC export of the same project when one is given (by
 GlobalId) or else its stored box and undone when it disagrees; every other
 element a body: a mesh of the geometry the file keeps (triangulated in
-`mitcad_import::rvt::geometry`), else the reference's body, its saved
+`mitcad_import_rvt::geometry`), else the reference's body, its saved
 mesh or its box (hidden unless structural); linked models (projects, IFC
 files) in components of their own (`core/ffi/src/rvt_import.rs`; the
 `import_rvt` command), in the import process like the others, under the
@@ -2719,15 +2785,15 @@ memory guard.
 SolidCraft designs (`.solidcraft`, mitcad#450) come in with their history
 through `core/solidcraft` (the reader: the JSON document or its container,
 every file format upgraded to one by SolidCraft's own steps, adapted in
-`third_party/solidcraft`; no geometry) and `mitcad-import`'s `solidcraft`
+`third_party/solidcraft`; no geometry) and `mitcad-import-solidcraft`
 module on the `Kernel` trait (`core/ffi/src/solidcraft_import.rs`; the
 `import_solidcraft` command, also the headless MCP server's
 `document_open`), in the import process like the others. The file keeps
-definitions, not bodies, so every feature is Mitcad's own evaluation:
+definitions, not bodies, so every feature is MitCad's own evaluation:
 parameters keep their names and expressions, sketches their constraints
 and dimensions, and faces and edges are found by SolidCraft's persistent
-names and pick points on the rebuilt bodies, then followed by Mitcad's
+names and pick points on the rebuilt bodies, then followed by MitCad's
 topological names. Components, occurrences, joints, motion links, contact sets, motion studies and sheet
-metal map to Mitcad's; a feature without a counterpart, or one that fails, is a
+metal map to MitCad's; a feature without a counterpart, or one that fails, is a
 suppressed placeholder with the reason, and the report lists it
-([core/import/docs/solidcraft.md](../core/import/docs/solidcraft.md#solidcraft-import)).
+([core/import-solidcraft/docs/solidcraft.md](../core/import-solidcraft/docs/solidcraft.md#solidcraft-import)).

@@ -1,11 +1,13 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Table lookups in parameter expressions (design note)
 
-Design note for mitcad#667. Status: **proposal, to be agreed with the
-owner**; nothing here is implemented. It builds on the spreadsheet-style
-functions (mitcad#663), text parameters (mitcad#664), parameter limits
-(mitcad#665), the parameters CSV (mitcad#666) and the Formula Editor
-(mitcad#668).
+Design note for mitcad#667. Status: **agreed with the owner on
+2026-10-27** (every recommendation of the open questions below); nothing
+here is implemented yet. Configurations build on it
+([configurations.md](configurations.md)). It builds on the
+spreadsheet-style functions (mitcad#663), text parameters (mitcad#664),
+parameter limits (mitcad#665), the parameters CSV (mitcad#666) and the
+Formula Editor (mitcad#668).
 
 A design keeps named **tables** of data (screw sizes, standard
 dimensions, coin sizes) and parameter expressions look values up in them
@@ -110,7 +112,7 @@ formulas typed from habit work:
 
 - A number key needs a number column of its dimension. A unitless key
   next to a length column is read in the default unit, as rule 3 of
-  `core/model/src/expr/mod.rs` promotes it. Exact equality uses the
+  `core/expr/src/lib.rs` promotes it. Exact equality uses the
   tolerance of `==` (rule 10: relative 1e-9).
 - A text key needs a `Text` column. Texts are equal as `==` compares
   them: same characters, **case included** (rule 28; open question 4).
@@ -167,7 +169,7 @@ promoted (rule 4), and a text result in a number parameter is refused.
 
 ## Relation to configurations
 
-Configurations (`core/model/src/configurations.rs`, mitcad#64) and tables
+Configurations (`core/model-base/src/configurations.rs`, mitcad#64) and tables
 answer different questions and stay **separate** (open question 6):
 
 - A **configuration row** is a variant of the whole design. It sets
@@ -262,24 +264,24 @@ Changes to existing queries:
 
 - **Spreadsheet objects in the document** (the `.FCStd` format): cells
   with aliases are referenced from expressions as `Sheet.alias`. Lookups
-  there go through cell addresses. Mitcad's `.FCStd` import already turns
+  there go through cell addresses. MitCad's `.FCStd` import already turns
   aliased cells into parameters
-  (`core/import/src/freecad/params.rs`); tables do not change that.
-  Mitcad does not take over A1 addressing: named columns survive inserted
+  (`core/import-fcstd/src/params.rs`); tables do not change that.
+  MitCad does not take over A1 addressing: named columns survive inserted
   rows and columns, and read better in a formula.
 - **Design tables and family tables** (a common concept): an embedded or
   linked spreadsheet whose rows are variants and whose columns are
-  parameters and feature states. That is Mitcad's configurations, not
+  parameters and feature states. That is MitCad's configurations, not
   lookups.
 - **Parameters linked to an external spreadsheet file** (several
-  formats): a live link to a file outside the design. Mitcad imports CSV
+  formats): a live link to a file outside the design. MitCad imports CSV
   instead, so a design stays self-contained and reproducible from its
   version history.
 - **The `.f3d` parameter language** has no tables or lookups; its
   variants are configuration tables whose rows set parameters. There is
   nothing to import for this ticket.
 - **Rule-based configurators** look up rows of embedded tables by key in
-  a rule language. This is the closest in spirit; Mitcad does the same
+  a rule language. This is the closest in spirit; MitCad does the same
   with spreadsheet function names.
 
 ## Not in scope
@@ -295,7 +297,7 @@ For two keys, use a combined key column (`M5x16`) and
 ## Implementation tickets
 
 1. **Expression language: column references and lookup functions**
-   (`core/model/src/expr/`).
+   (`core/expr/src/`).
    - Adds the `Table.Column` token and node, `Lookup::column`,
      `Expr::table_references`, and XLOOKUP, MATCH and INDEX with the
      modes above.
@@ -340,6 +342,8 @@ For two keys, use a combined key column (`M5x16`) and
 
 ## Open questions for the owner
 
+Answered on 2026-10-27: the owner took every recommendation.
+
 1. **Cells: constants or expressions?** Recommended: constants. A table
    then stays data, has no dependencies, and cannot form cycles; derived
    values belong in parameters.
@@ -349,7 +353,7 @@ For two keys, use a combined key column (`M5x16`) and
    Recommended: exact. The spreadsheet default silently picks a wrong
    row; XLOOKUP is exact by default too.
 4. **Texts in lookups: case-sensitive or not?** Recommended: case-sensitive,
-   as `=` already compares texts in Mitcad (rule 28). Spreadsheets ignore
+   as `=` already compares texts in MitCad (rule 28). Spreadsheets ignore
    case, so `'m5'` would not find `M5`.
 5. **Where are tables edited: a Tables tab in Change Parameters, or a
    dialog of their own?** Recommended: the tab, next to the parameters

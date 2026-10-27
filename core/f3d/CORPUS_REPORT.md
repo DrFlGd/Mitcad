@@ -76,7 +76,7 @@ volumes agree with the display meshes within 0.1 %.
   ones (all valid so far). The `.smb` keeps bodies at earlier timeline
   steps; most `.smbh` bodies equal an `.smb` body as they are or after
   rolling back some states. Matching states to timeline features needs
-  the design stream decoder (`src/design`); the rolled-back bodies can
+  the design stream decoder (`core/f3d-design`); the rolled-back bodies can
   then serve as the expected result of each step.
 
 ## Not verified by the corpus

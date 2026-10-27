@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! FreeCAD `.FCStd` import with OCCT: `mitcad-import`'s FreeCAD front end
+//! FreeCAD `.FCStd` import with OCCT: `mitcad-import-fcstd`
 //! (the document's structure, sketches and history; the stored shapes are
 //! OCCT B-rep, which the kernel reads as it is), as the `import_fcstd`
 //! document command and for `mitcad-cli import-fcstd`.
@@ -7,8 +7,8 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use mitcad_import::freecad::{FcstdOptions, FcstdReport, import_fcstd};
-use mitcad_model::api::ApiError;
+use mitcad_import_fcstd::{FcstdOptions, FcstdReport, import_fcstd};
+use mitcad_model_api::ApiError;
 
 use crate::Document;
 

@@ -103,9 +103,14 @@ install(FILES "${mitcad_render_install}/oidn/share/doc/OpenImageDenoise/LICENSE.
 
 # --- CPack ---------------------------------------------------------------
 
-set(CPACK_PACKAGE_NAME "Mitcad")
-set(CPACK_PACKAGE_VENDOR "Mitcad developers")
-set(CPACK_PACKAGE_CONTACT "Mitcad developers <devs@mitcad.org>")
+# The names people read say MitCad (mitcad#822). The install folder, and with
+# it the uninstall entry's key (CPACK_PACKAGE_INSTALL_REGISTRY_KEY), keeps
+# "Mitcad", which the updater and the uninstaller look for; the vendor's key
+# Software\<vendor> is the same key in either spelling (the registry ignores
+# case).
+set(CPACK_PACKAGE_NAME "MitCad")
+set(CPACK_PACKAGE_VENDOR "MitCad developers")
+set(CPACK_PACKAGE_CONTACT "MitCad developers <devs@mitcad.org>")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 set(mitcad_package_name "mitcad-${PROJECT_VERSION}-windows-x64")
@@ -120,14 +125,14 @@ set(CPACK_STRIP_FILES OFF)
 # NSIS, with an installer script of our own (packaging/windows/NSIS.template.in,
 # which CPack finds in CPACK_MODULE_PATH; mitcad#118): installs just for the
 # current user (the default, no elevation) or for all users (Program Files,
-# elevation), with the Start menu shortcut, "run Mitcad" on the last page,
+# elevation), with the Start menu shortcut, "run MitCad" on the last page,
 # the .mitcad file type and an uninstall of an earlier version in the same
 # scope before the new one is put in.
 set(CPACK_MODULE_PATH "${PROJECT_SOURCE_DIR}/packaging/windows" ${CMAKE_MODULE_PATH})
-set(CPACK_NSIS_DISPLAY_NAME "Mitcad ${PROJECT_VERSION}")
-set(CPACK_NSIS_PACKAGE_NAME "Mitcad")
+set(CPACK_NSIS_DISPLAY_NAME "MitCad ${PROJECT_VERSION}")
+set(CPACK_NSIS_PACKAGE_NAME "MitCad")
 set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\mitcad.exe")
-set(CPACK_PACKAGE_EXECUTABLES "mitcad" "Mitcad")
+set(CPACK_PACKAGE_EXECUTABLES "mitcad" "MitCad")
 # NSIS wants backslashes; CPackConfig.cmake is parsed again, so they are doubled.
 string(REPLACE "/" "\\\\" mitcad_nsis_filetype "${PROJECT_SOURCE_DIR}/packaging/windows/filetype.nsh")
 string(REPLACE "/" "\\\\" mitcad_nsis_icon "${PROJECT_SOURCE_DIR}/app/branding/mitcad.ico")

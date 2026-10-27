@@ -33,6 +33,10 @@
 #      each its picks inside its outline, and a click on its top face turns
 #      the perspective and the orthographic view to the top. Perspective
 #      chosen in Preferences is applied and saved.
+#   9. Hide Above Sketch on a sketch through a block's middle (mitcad#784):
+#      a circle's pixels over the section cap are its line's or its halo's,
+#      not the cap's, in the view the sketch opened in, after two zooms, from the isometric view
+#      and in the perspective view; from below, the block hides them.
 # The app renders into an offscreen framebuffer and --screenshot reads it
 # back, so this works over SSH, in session 0 without a desktop.
 #
@@ -764,6 +768,156 @@ expect-log 'Render environment dialog opened'
   if ((Test-Path $crashes) -and (Get-ChildItem -Recurse -File $crashes)) {
     Fail 'Closing with the render dialogs open: a crash report was written'
   } else { Pass 'Closing with the render dialogs open: no crash report' }
+}
+
+Write-Host '--- Hide Above Sketch: the sketch over the section (mitcad#784)'
+# A 30 x 20 x 10 block centred on the origin, a plane through its middle
+# (z = 5) and on it a sketch with a circle of diameter 20 about the origin.
+# Edited with Hide Above Sketch on, the block is cut at the plane and its
+# cut face shown as a cap; at the circle's point (10, 0), 5 mm inside the
+# cap, the circle is drawn over it (pixels of its line or its halo, not of
+# the cap's orange or its hatch) in the view the sketch opened in, after two
+# zooms (in, then out), from the isometric view (the plane at an angle) and
+# in the perspective view (fitted: switched to in the sketch's view, the
+# camera comes very close); from below, the block's lower half hides it. The
+# pixels are read from screenshots of the 3D view, placed by the "Sketch
+# view" and "View area" lines logged before each.
+if (-not $cli) { Fail "Hide Above Sketch: no mitcad-cli.exe beside $App" }
+else {
+  $commands = Join-Path $Out 'hide-above.json'
+  $hideAbove = Join-Path $Out 'hide-above.mitcad'
+  Remove-Item -Force $hideAbove -ErrorAction SilentlyContinue
+  @'
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-15, -10], "width": 30, "height": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "construction_plane",
+    "definition": {"type": "offset", "plane": "xy", "distance": 5}}},
+  {"cmd": "sketch.create", "plane": "F3"},
+  {"cmd": "sketch.add_circle", "sketch": "F4", "center": [0, 0], "diameter": 20}
+]
+'@ | Set-Content -Encoding ascii $commands
+  $made = & $cli run $commands --save $hideAbove
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path $hideAbove)) { Fail "mitcad-cli: $($made -join ' / ')" }
+  else {
+    function Section-Path([string]$Name) { return (Join-Path $Out "section-$Name.png") -replace "'", "''" }
+    # The pointer off the sketch (a hovered curve is drawn over the view),
+    # then the 3D view's framebuffer.
+    function Section-Shot([string]$Name) {
+      return @"
+view-pointer move 3 97 none
+wait-idle
+sleep 1000
+screenshot-view '$(Section-Path $Name)'
+mark
+"@
+    }
+    $script = Join-Path $Out 'hide-above.script'
+    @"
+expect-ever 'View area'
+wait-idle
+dblclick-logged '^Timeline Sketch2 at '
+wait-log 'Editing sketch F4 \(Sketch2\)'
+mark
+click-logged 'Palette paletteHideAbove at'
+wait-log 'Hide Above Sketch on'
+wait-log 'Section caps: 1 face\(s\)' 30
+$(Section-Shot 'opened')
+wheel 50 50 2
+wait-log 'Sketch view '
+$(Section-Shot 'zoom-a')
+wheel 50 50 -4
+wait-log 'Sketch view '
+$(Section-Shot 'zoom-b')
+command view.iso
+wait-log 'Camera direction -0\.577 0\.577 -0\.577 '
+$(Section-Shot 'isometric')
+command view.top
+wait-log 'Camera direction 0 0 -1 '
+mark
+command view.perspective
+wait-log 'Camera direction 0 0 -1 .*\(perspective\)'
+mark
+command view.fit
+wait-log 'Sketch view '
+sleep 1500
+$(Section-Shot 'perspective')
+command view.orthographic
+wait-log 'Camera direction 0 0 -1 .*\(orthographic\)'
+mark
+command view.bottom
+wait-log 'Camera direction 0 0 1 '
+$(Section-Shot 'below')
+"@ | Set-Content -Encoding ascii $script
+    $log = Invoke-Mitcad 'hide-above' @('--no-recovery', '--open', $hideAbove) @{ 'MITCAD_TEST_INPUT' = $script }
+    Expect-Log $log 'TestDriver: done' 'Hide Above Sketch: the script ran'
+    # Section-Sketch name: the pixels of the sketch's curve or halo in a
+    # square about 4 mm across (3 to 8 px each way) about the circle's point
+    # (10, 0) in the screenshot, and its scale (px per mm); $null when the
+    # shot or its place is missing. A sketch pixel is not orange (the cap,
+    # #f29e1a, and its hatch, #6d4302, also under the profile's tint, have
+    # far more red than blue) and is dark (a fully constrained curve), the
+    # unconstrained blue or the light halo; the block's grey faces and the
+    # cap's lit shades are none of these.
+    function Section-Sketch([string]$Name) {
+      $path = Join-Path $Out "section-$Name.png"
+      $step = [regex]::Match($log, "TestDriver: line [0-9]+: screenshot-view [^\r\n]*[\\/]section-$Name\.png")
+      if (-not (Test-Path $path) -or -not $step.Success) { return $null }
+      $before = $log.Substring(0, $step.Index)
+      $view = [regex]::Matches($before, 'Sketch view (-?[0-9.]+),(-?[0-9.]+) (-?[0-9.]+),(-?[0-9.]+) (-?[0-9.]+),(-?[0-9.]+)')
+      $area = [regex]::Matches($before, 'View area ([0-9]+) ([0-9]+) ([0-9]+) ([0-9]+)')
+      if ($view.Count -eq 0 -or $area.Count -eq 0) { return $null }
+      $v = $view[$view.Count - 1].Groups | Select-Object -Skip 1 | ForEach-Object { [double]$_.Value }
+      $a = $area[$area.Count - 1].Groups | Select-Object -Skip 1 | ForEach-Object { [double]$_.Value }
+      $bitmap = New-Object System.Drawing.Bitmap $path
+      try {
+        $scale = $bitmap.Width / $a[2]
+        # The sketch point (10, 0) in the window, then in the view's pixels.
+        $wx = $v[0] + ($v[2] - $v[0]) * 0.1
+        $wy = $v[1] + ($v[3] - $v[1]) * 0.1
+        $px = [int][Math]::Round(($wx - $a[0]) * $scale)
+        $py = [int][Math]::Round(($wy - $a[1]) * $scale)
+        $perMm = [Math]::Sqrt([Math]::Pow($v[2] - $v[0], 2) + [Math]::Pow($v[3] - $v[1], 2)) / 100 * $scale
+        $half = [Math]::Min(8, [Math]::Max(3, [int][Math]::Round(2 * $perMm)))
+        if ($px - $half -lt 0 -or $py - $half -lt 0 -or $px + $half -ge $bitmap.Width -or $py + $half -ge $bitmap.Height) {
+          return @{ Count = -1; PerMm = $perMm }
+        }
+        $count = 0
+        for ($y = $py - $half; $y -le $py + $half; $y++) {
+          for ($x = $px - $half; $x -le $px + $half; $x++) {
+            $c = $bitmap.GetPixel($x, $y)
+            $luma = (299 * $c.R + 587 * $c.G + 114 * $c.B) / 1000
+            if ($c.R - $c.B -lt 40 -and ($luma -lt 100 -or $luma -gt 240 -or $c.B - $c.R -ge 80)) { $count++ }
+          }
+        }
+        return @{ Count = $count; PerMm = $perMm }
+      } finally { $bitmap.Dispose() }
+    }
+    $scales = @{}
+    foreach ($shot in @(@('opened', 1), @('zoom-a', 1), @('zoom-b', 1), @('isometric', 1), @('perspective', 1),
+                        @('below', 0))) {
+      $name = $shot[0]
+      $found = Section-Sketch $name
+      if ($null -eq $found) { Fail "Hide Above Sketch ($name): no screenshot or no logged view place"; continue }
+      $scales[$name] = $found.PerMm
+      Write-Host ("     {0}: {1} pixels of the sketch's curve or halo, {2:0.0} px/mm" -f $name, $found.Count, $found.PerMm)
+      if ($found.Count -lt 0) { Fail "Hide Above Sketch ($name): the circle's point is outside the view" }
+      elseif ($shot[1] -eq 1) {
+        if ($found.Count -ge 3) { Pass "Hide Above Sketch ($name): the circle is drawn over the section" }
+        else { Fail "Hide Above Sketch ($name): the circle over the section is hidden" }
+      } elseif ($found.Count -eq 0) { Pass "Hide Above Sketch ($name): the block in front of the plane hides the circle" }
+      else { Fail "Hide Above Sketch ($name): the circle shows through the block in front of it" }
+    }
+    if ($scales.ContainsKey('opened') -and $scales.ContainsKey('zoom-a') -and $scales.ContainsKey('zoom-b')) {
+      if ([Math]::Abs($scales['zoom-a'] - $scales['opened']) -gt 0.05 * $scales['opened'] -and
+          [Math]::Abs($scales['zoom-b'] - $scales['zoom-a']) -gt 0.05 * $scales['zoom-a']) {
+        Pass 'Hide Above Sketch: checked at three zooms'
+      } else { Fail "Hide Above Sketch: the wheel did not zoom ($($scales['opened']), $($scales['zoom-a']), $($scales['zoom-b']) px/mm)" }
+    }
+  }
 }
 
 Write-Host "Screenshots and logs: $Out"

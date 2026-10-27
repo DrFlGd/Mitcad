@@ -602,7 +602,7 @@ fn an_item_out_of_time_names_the_definition_its_time_went_to() {
 
 #[test]
 fn points_along_a_segment_are_inside_between_its_crossings() {
-    use crate::ops::inside_at;
+    use mitcad_import_replay::internal::ops::inside_at;
     // In at a quarter, out at a half, in again at three quarters.
     let crossings = [(0.25, true), (0.5, false), (0.75, true)];
     let inside: Vec<bool> = [0.1, 0.3, 0.6, 0.9]

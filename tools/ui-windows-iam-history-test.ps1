@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files core/ipt core/import core/f3d core/ffi/src/iam_import.rs core/ffi/src/ipt_import.rs
+# check-all sources: app/files core/ipt core/import core/import-base core/f3d core/ffi/src/iam_import.rs core/ffi/src/ipt_import.rs
+# check-all sources: core/import-replay core/import-joints core/import-sheet core/import-primitives core/import-appearances
 # check-all sources: core/ffi/src/ipt_history.rs core/model/src/document/components.rs core/tests
 # Input-driven Windows UI test of an .iam assembly's parts with their
 # design history (mitcad#507), in the build VM (tools/ui-windows-lib.ps1

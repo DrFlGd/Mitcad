@@ -1,12 +1,12 @@
-# Mitcad
+# MitCad
 
-Mitcad is an open-source parametric desktop CAD application. It runs on
+MitCad is an open-source parametric desktop CAD application. It runs on
 Windows, Linux and macOS (Apple Silicon, macOS 14.4 or newer). Its licence
 is the [MIT licence](LICENSE).
 
 - **Parametric modelling with a history.** You draw sketches with
   constraints and dimensions. Features go on a timeline. Parameters hold
-  expressions. When you change a dimension or edit a feature, Mitcad
+  expressions. When you change a dimension or edit a feature, MitCad
   rebuilds the model.
 - **Visual workflow.** The window has a tabbed toolbar, command panels
   with a live preview and drag handles, a model browser, a timeline and a
@@ -14,19 +14,19 @@ is the [MIT licence](LICENSE).
 - **Many CAD formats.** FreeCAD, `.f3d`, SolidCraft and `.ipt` files open
   with their history. IFC and `.rvt` building models open with their
   storeys and elements. DWG drawings open with their 3D solids and
-  blocks. Mitcad imports and exports STEP, IGES, BRep, STL, OBJ, DXF and
+  blocks. MitCad imports and exports STEP, IGES, BRep, STL, OBJ, DXF and
   3MF, imports SVG, and exports USDZ, web pages and drawings (PDF, SVG,
   DXF, DWG).
   The full table is in the user guide:
   [File formats](docs/user-guide.md#file-formats).
-- **3D printing.** Mitcad sends bodies directly to a slicer (Bambu
+- **3D printing.** MitCad sends bodies directly to a slicer (Bambu
   Studio, OrcaSlicer, PrusaSlicer, UltiMaker Cura).
 
-How to install and use Mitcad: [the user guide](docs/user-guide.md).
+How to install and use MitCad: [the user guide](docs/user-guide.md).
 Website: [mitcad.org](https://mitcad.org/). Downloads:
 [the releases](https://github.com/mitcad/Mitcad/releases).
 
-[![A pillow block modelled in Mitcad from an empty design, then a dimension changed: watch the demo on mitcad.org](https://mitcad.org/assets/video/mitcad-demo-poster.webp)](https://mitcad.org/#showcase)
+[![A pillow block modelled in MitCad from an empty design, then a dimension changed: watch the demo on mitcad.org](https://mitcad.org/assets/video/mitcad-demo-poster.webp)](https://mitcad.org/#showcase)
 
 <table>
   <tr>
@@ -35,7 +35,7 @@ Website: [mitcad.org](https://mitcad.org/). Downloads:
     <td><img src="https://mitcad.org/assets/shots/rendered-view.webp" alt="The rendered view: the assembly path traced with soft shadows inside the application"></td>
   </tr>
   <tr>
-    <td><b>Sketch.</b> Mitcad solves constraints and driving dimensions as you draw.</td>
+    <td><b>Sketch.</b> MitCad solves constraints and driving dimensions as you draw.</td>
     <td><b>Edit.</b> Roll back the timeline and change a feature. The model follows.</td>
     <td><b>Render.</b> A path-traced view of the design, in the window.</td>
   </tr>
@@ -44,7 +44,7 @@ Website: [mitcad.org](https://mitcad.org/). Downloads:
 ## Why
 
 The world did not have a CAD application that is easy to use, imports
-many file formats and also runs on Linux. Mitcad was started to be that
+many file formats and also runs on Linux. MitCad was started to be that
 application. It is free to use, change and share under the MIT licence.
 
 If a file does not import correctly, please
@@ -52,7 +52,7 @@ If a file does not import correctly, please
 
 ## Status
 
-Mitcad is under active development. Each release has a Windows installer,
+MitCad is under active development. Each release has a Windows installer,
 a Linux AppImage and a macOS disk image. Part modelling, sketches,
 assemblies with joints that move their components, analysis, the file
 formats of the user guide and the version history of projects work.
@@ -62,18 +62,18 @@ combinations.
 
 ## Updates
 
-Once a day, Mitcad checks for a signed release and offers to install it
+Once a day, MitCad checks for a signed release and offers to install it
 (the Windows installation, a per-user AppImage, the macOS application).
 The user or an administrator can set the checks to off
 ([docs/updates.md](docs/updates.md)).
 
 ## Building
 
-Mitcad is C++17 (Qt 6 Widgets, Open CASCADE Technology) and Rust (the
+MitCad is C++17 (Qt 6 Widgets, Open CASCADE Technology) and Rust (the
 model, the solver and the file import), built with CMake and Ninja;
 Corrosion builds the Rust crates and CXX bridges the two languages.
 Versions used in development: Qt 6.12 LTS, OCCT 8.0.1 (built by vcpkg
-with a few patches of Mitcad's that speed up booleans and the shape checker
+with a few patches of MitCad's that speed up booleans and the shape checker
 on faces with many edges, let fillets run over faces narrower than they
 are, fix other failures and crashes of the fillet, and make an allocation
 that fails throw instead of crashing:
@@ -185,30 +185,45 @@ corpus setup: [docs/development.md](docs/development.md#the-check-script).
 
 | Directory | Contents |
 |---|---|
-| `core/model` | Rust model: document, timeline, features, sketches, naming, recompute, design file, JSON API ([commands.md](core/model/src/api/commands.md)) |
+| `core/model` | Rust model: document, timeline, features, sketches, naming, recompute, design file, JSON API ([commands.md](core/model-api/src/commands.md)) |
 | `core/solver` | 2D sketch constraint solver |
 | `core/vec3` | The `[f64; 3]` helpers shared by the model, the solver and the readers |
-| `core/f3d`, `core/freecad`, `core/import`, `core/zip` | `.f3d` and FreeCAD readers and the history import |
+| `core/f3d`, `core/f3d-design`, `core/f3d-decode`, `core/f3d-file`, `core/f3d-names`, `core/asm`, `core/dump`, `core/freecad`, `core/import`, `core/zip` | `.f3d` and FreeCAD readers (the ASM B-rep reader in `core/asm`, the dump IR in `core/dump`) and the history import |
+| `core/expr`, `core/print-keys` | Parameter expressions with units; the print settings' key map (both re-exported by the model) |
 | `core/ipt` | `.ipt` reader: compound file, property sets, segments, the bodies |
 | `core/solidcraft` | `.solidcraft` reader: the JSON design or its container, upgraded to one format |
 | `core/dxf`, `core/3mf`, `core/usdz` | DXF, 3MF and USDZ |
 | `core/vcs`, `core/update` | Version history in git; automatic updates |
 | `core/ffi`, `core/cpp` | CXX bridges between Rust and C++ |
+| `core/ffi-staticlib` | The bridges' static library that the application links |
 | `geometry` | C++ facade over OCCT |
 | `app` | Qt application ([app/COMMANDS.md](app/COMMANDS.md)) |
 | `tools` | `mitcad-cli`, UI tests, dev environment scripts, FreeCAD export macros, macOS packaging |
 | `docs` | [Architecture](docs/architecture.md), [development](docs/development.md), [user guide](docs/user-guide.md), [updates](docs/updates.md), [rendering](docs/rendering.md), [naming](docs/naming.md) |
 | `third_party` | Third-party files with their own licences |
 
+## Contributions
+
+For the time being, we don't merge pull requests in this repository.
+Changes come in as a continuous stream of commits, and our development
+pipeline works best when they all flow in one direction. It is shaped
+like a tree: changes enter at its outer edges and converge, stage by
+stage, into a release. This GitHub repository sits at the trunk, where
+only finished releases arrive, one snapshot commit each. We intend to
+develop this further, but to keep the current pace, every change has to
+go through that pipeline for now. A pull request is therefore closed,
+and its change may be taken over internally. Issues are welcome and are
+the way to propose a change; a fix can be included in the issue as a
+diff.
+
 ## AI agent policy
 
-Pull requests and issues made entirely by an AI agent are welcome, with
-these conditions:
+Issues made entirely by an AI agent are welcome, with these conditions:
 
-- An agent that writes code or issues uses at least Claude Opus 5.5 or
-  GPT-6.1 Sol, with medium reasoning effort. High reasoning effort is
-  preferred. Lighter models and lower effort levels are not accepted
-  for this work.
+- An agent that writes issues (or a fix in one) uses at least Claude
+  Opus 5.5 or GPT-6.1 Sol, with medium reasoning effort. High reasoning
+  effort is preferred. Lighter models and lower effort levels are not
+  accepted for this work.
 - Before writing an issue, the agent finds the code the issue concerns
   and refers to it in the issue (files, functions, the current
   behaviour). This confirms that it has understood the context and the
@@ -217,16 +232,16 @@ these conditions:
 
 ## FAQ
 
-### Can RTX cards render faster? Can Mitcad use OptiX?
+### Can RTX cards render faster? Can MitCad use OptiX?
 
 No. The renderer can use the ray tracing cores of NVIDIA's RTX cards
 only through NVIDIA OptiX, and the OptiX licence does not fit open source
-software. The OptiX SDK headers would be compiled into Mitcad's renderer.
+software. The OptiX SDK headers would be compiled into MitCad's renderer.
 NVIDIA's licence permits the distribution of such a program only in
 binary form, only for NVIDIA hardware, and only when an enforceable
 agreement binds every recipient to NVIDIA's terms. Open source software
 that anyone can download, build, change and pass on cannot meet those
-terms. Thus Mitcad does not build or ship OptiX. NVIDIA cards render with
+terms. Thus MitCad does not build or ship OptiX. NVIDIA cards render with
 Cycles' CUDA device, which needs no such terms. The CUDA device does not
 use the RT cores, so RTX cards render slower than they could
 ([docs/rendering.md](docs/rendering.md#devices)).

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/commands/SketchCommands.cpp app/MainWindow.cpp tools/cli
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs
+# check-all sources: core/sketch core/model-api/src/sketch.rs
 # Points that become one and projected geometry made ordinary, through the
 # real UI, on a design mitcad-cli makes: Box1 (F1.b0, 30 x 20 x 10 from 20
 # above XY, its front at y = -60) and Sketch1 (F2) on XY with two collinear

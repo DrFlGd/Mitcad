@@ -15,8 +15,8 @@
 //! A pick refers to geometry as the `measure` query's selections do: a
 //! body with a face, edge or vertex by its topological name, or a datum,
 //! each with the occurrence that places it. The value is worked out at the
-//! timeline marker whenever it is asked for (`api/measurements.rs`,
-//! `api/annotations.rs`), so it follows the model; a pick that is gone
+//! timeline marker whenever it is asked for (`model-api/src/measurements.rs`,
+//! `model-api/src/annotations.rs`), so it follows the model; a pick that is gone
 //! makes the annotation broken, and the query says why instead of giving a
 //! value.
 //!
@@ -668,7 +668,7 @@ pub(crate) fn check_frame(frame: &GeometricTolerance) -> Result<(), String> {
 }
 
 /// A colour as `#rrggbb` in lower case, or why the text is not one.
-pub(crate) fn normalized_color(text: &str) -> Result<String, String> {
+pub fn normalized_color(text: &str) -> Result<String, String> {
     let text = text.trim();
     let hex = text.strip_prefix('#').unwrap_or("");
     if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -906,7 +906,7 @@ impl Annotation {
 }
 
 /// A measurement to add: what [`Document::add_measurement`] takes once the
-/// API has measured it (`api/measurements.rs`).
+/// API has measured it (`model-api/src/measurements.rs`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NewMeasurement {
     pub kind: MeasureKind,

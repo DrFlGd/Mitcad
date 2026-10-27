@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/SketchCommands.cpp
-# check-all sources: core/model/src/sketch/modify.rs core/model/src/sketch/project.rs
+# check-all sources: core/sketch/src/modify.rs core/sketch/src/project.rs
 # Offset of a projected outline whose edge was projected twice (mitcad#741),
 # through the real UI, on a design mitcad-cli makes: Sketch1 (F1) on XY as
 # an earlier version left a face projected after one of its edges, all

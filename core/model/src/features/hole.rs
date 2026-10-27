@@ -33,14 +33,15 @@ use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
     ToolUse, is_false,
 };
-use crate::ids::{BodyUid, EntityUid, FeatureUid, curve_serde};
+use crate::ids::{BodyUid, EntityUid, FeatureUid};
 use crate::kernel::{
     Axis, Bound, Cylinder, HoleEnd, HoleShape, HoleSpec, Kernel, ThreadSpec, ThreadTaper,
 };
 use crate::parameters::ParamId;
-use crate::profile::{cross, dot};
 use crate::sketch::geometry::Curve2;
 use crate::topo::{EdgeName, FaceName};
+use mitcad_model_base::internal::ids::curve_serde;
+use mitcad_vec3::{cross, dot};
 
 /// The default drill point, 118 degrees.
 pub const DEFAULT_TIP_ANGLE: f64 = 118.0 * std::f64::consts::PI / 180.0;
@@ -123,7 +124,7 @@ pub enum HolePlacement<P = ParamId> {
 pub enum SketchPoint {
     At([f64; 2]),
     Center(#[serde(with = "curve_serde")] EntityUid),
-    Point(#[serde(with = "crate::sketch::point_serde")] EntityUid),
+    Point(#[serde(with = "mitcad_sketch::internal::point_serde")] EntityUid),
 }
 
 /// The hole types; the countersink angle is the cone's full angle. A

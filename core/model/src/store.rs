@@ -300,6 +300,8 @@ struct VariantHead {
     elements: Vec<([[f64; 3]; 3], [f64; 3])>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pattern_anchor: Option<crate::features::point_pattern::PatternAnchor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sweep_place: Option<crate::features::sweep::SweepPlace>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     owners: BTreeMap<BodyUid, ComponentUid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -497,7 +499,7 @@ impl ResultStore {
     /// Writes the result of `entry` (evaluated with `params`) to the store,
     /// before the variants stored for other inputs; returns the bytes of
     /// the file.
-    pub(crate) fn write<K: Kernel>(
+    pub fn write<K: Kernel>(
         &self,
         kernel: &K,
         entry: &FeatureEntry,
@@ -536,6 +538,7 @@ impl ResultStore {
                 error: output.result.clone().err(),
                 warnings: output.warnings.clone(),
                 pattern_anchor: output.pattern_anchor.clone(),
+                sweep_place: output.sweep_place,
                 owners: output.owners.clone(),
                 cut_targets: output.cut_targets.clone(),
                 elements: output
@@ -643,6 +646,7 @@ fn restore<K: Kernel>(
         result: head.error.clone().map_or(Ok(()), Err),
         warnings: head.warnings.clone(),
         pattern_anchor: head.pattern_anchor.clone(),
+        sweep_place: head.sweep_place,
         owners: head.owners.clone(),
         cut_targets: head.cut_targets.clone(),
         elements: head
@@ -1020,8 +1024,8 @@ pub fn clear(dir: &Path) -> GcReport {
     report
 }
 
-#[cfg(test)]
-pub(crate) mod testing {
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
     //! Files of a test's own store.
     use super::*;
 

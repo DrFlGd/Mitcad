@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: MIT
 [package]
-name = "mitcad-ffi"
-description = "C++ bridge between the Mitcad model and the Qt/OCCT application"
+name = "mitcad-ffi-bridges"
+description = "C++ bridges between the Mitcad model and the Qt/OCCT application"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# An rlib (mitcad#792): the static library the application links is
+# `mitcad-ffi` (core/ffi-staticlib), a few lines that link this crate, so
+# that Cargo starts this crate on its dependencies' metadata instead of
+# waiting for their code, as it must for a static library.
 [lib]
-name = "mitcad_ffi"
-crate-type = ["staticlib"]
+name = "mitcad_ffi_bridges"
 # The bridge needs the C++ geometry library to link, so it is tested through
 # the application build (ctest) instead of `cargo test`.
 test = false
@@ -19,9 +22,27 @@ doctest = false
 [dependencies]
 cxx.workspace = true
 mitcad-model.workspace = true
+mitcad-model-api = { path = "../model-api" }
+# Comparison of two documents (P12c, mitcad#777).
+mitcad-model-diff = { path = "../model-diff" }
+# The .f3d reader's crates (mitcad#781): the ASM B-rep reader, the dump
+# IR, the document of the file and the design segment; the facade only for
+# the test references (`mitcad_f3d::testreferences`) the C++ tests write.
+mitcad-asm = { path = "../asm" }
+mitcad-dump = { path = "../dump" }
+mitcad-f3d-file = { path = "../f3d-file" }
+mitcad-f3d-design = { path = "../f3d-design" }
 mitcad-f3d = { path = "../f3d" }
+# The zip writer of the test files.
+mitcad-zip = { path = "../zip" }
 # The .f3d import with the timeline (T1).
 mitcad-import = { path = "../import" }
+# The IFC import (mitcad#273, mitcad#775).
+mitcad-import-ifc = { path = "../import-ifc" }
+# The .rvt import (mitcad#274, mitcad#775).
+mitcad-import-rvt = { path = "../import-rvt" }
+# The FreeCAD .FCStd import (mitcad#775).
+mitcad-import-fcstd = { path = "../import-fcstd" }
 # Version history (P12b).
 mitcad-vcs = { path = "../vcs" }
 serde.workspace = true

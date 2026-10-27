@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/BearingCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/printable_bearing.rs core/model/src/features/bearing_sizes.rs
-# check-all sources: core/model/src/api/bearings.rs tools/cli
-# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs
+# check-all sources: core/model-api/src/bearings.rs tools/cli
+# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model-api/src/seats.rs
 # Bearing (mitcad#577) through the real UI, on a design mitcad-cli makes: a
 # shaft 10 mm across and 20 long at (60, 0) (Extrude1, F2.b0, its round
 # face F2:side(c1)), an 8 mm cylinder 30 high at (0, 60) (Cylinder1, F3.b0,

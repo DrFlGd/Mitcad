@@ -2,7 +2,7 @@
 #pragma once
 
 // A drawing's sheet (mitcad#707): paints what the model's `drawing` query
-// gives (core/model/src/api/commands.md, "Drawings in the design": groups
+// gives (core/model-api/src/commands.md, "Drawings in the design": groups
 // of lines, arcs, polylines, fills, shading and texts in millimetres of
 // paper, the views' boxes, the annotations' boxes) on a sheet of paper,
 // zoomed and panned with the wheel and the middle button, and turns the

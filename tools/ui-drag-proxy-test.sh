@@ -3,7 +3,7 @@
 # check-all sources: app/framework/CommandSessionProxy.cpp app/framework/DragProxy.cpp
 # check-all sources: app/commands/ExtrudeDragProxy.cpp app/view/ProvisionalMesh.cpp
 # check-all sources: app/framework/CommandSession.cpp app/framework/ManipulatorOverlay.cpp app/OcctViewer.cpp
-# check-all sources: core/model/src/document.rs core/model/src/api/mod.rs tools/cli
+# check-all sources: core/model/src/document.rs core/model-api/src/lib.rs tools/cli
 # Extrude's provisional drag presentation (mitcad#636) through the real UI,
 # with held drags of the distance's arrow: 180 mouse moves 16 ms apart
 # (xdotool on the hidden Xvfb display, through the X server), a pause of

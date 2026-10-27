@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/framework/FormulaEditor app/framework/ParameterField app/browser/ParametersDialog core/model/src/expr core/model/src/api/formula_help
+# check-all sources: app/framework/FormulaEditor app/framework/ParameterField app/browser/ParametersDialog core/expr core/model-api/src/formula_help
 """Actual formula editor, model evaluation and limits in both Qt layouts."""
 import json
 import os

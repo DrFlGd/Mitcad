@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/browser
-# check-all sources: core/model/src/policy.rs core/model/src/document/policy.rs core/model/src/api/policy.rs app/MainWindow.cpp
+# check-all sources: core/model/src/policy.rs core/model/src/document/policy.rs core/model-api/src/policy.rs app/MainWindow.cpp
 # Sketches and the timeline in a design of two components side by side,
 # through the real UI (mitcad#98, mitcad#99, mitcad#100):
 #   - With Cover active, a sketch on the top face of Part's block: linked

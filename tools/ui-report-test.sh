@@ -103,7 +103,7 @@ ui_step "Preview (Enter)"                  ui_key Return
 ui_focus_dialog '^Review Report$'
 ui_expect_new "Feedback form: kind bug, summary 'Fillet fails'" "the form's content"
 ui_expect_new "Report preview: Bug: Fillet fails" "the preview's title"
-ui_expect_new "Report section diagnostics: Mitcad " "the diagnostics in the preview"
+ui_expect_new "Report section diagnostics: MitCad " "the diagnostics in the preview"
 ui_expect_new "Report section contact: tester@example.org" "the contact address, not masked"
 ui_expect_new "Report section screenshot: $CROP" "the cropped screenshot in the preview"
 PREVIEW=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep '^Report section description: ')
@@ -186,7 +186,7 @@ UI_LOG=$UI_LOG_BEFORE
 : > "$UI_LOG"
 ui_start_app --demo
 ui_focus_dialog '^Error Report$'
-ui_expect_log "Error report offered (crash): Mitcad quit unexpectedly the last time it ran (SIGSEGV)." \
+ui_expect_log "Error report offered (crash): MitCad quit unexpectedly the last time it ran (SIGSEGV)." \
   "the crash offered at the next start"
 ui_mark
 ui_step "Review Report (Enter)"            ui_key Return
@@ -194,7 +194,7 @@ ui_focus_dialog '^Review Report$'
 ui_expect_new "Report preview: Crash: SIGSEGV in mitcad::crash::crashNow [mitcad-" "the title names the crash"
 ui_expect_new "Report section stack: " "the stack in the preview"
 ui_expect_new "mitcad: mitcad::crash::crashNow() + 0x" "the crashing function in the stack"
-ui_expect_new "Report section error: Mitcad " "what happened"
+ui_expect_new "Report section error: MitCad " "what happened"
 expect_not_in "$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep '^Report section stack: ')" "$ROOT" \
   "the build folder masked in the stack"
 ui_step "Send (Alt+S)"                     ui_key alt+s
@@ -224,7 +224,7 @@ ui_step "Review Report (Alt+R)"            ui_key alt+r
 ui_focus_dialog '^Review Report$'
 ui_expect_new "Error reports: no more offers" "no more offers"
 ui_expect_new "Report preview: Crash of the import process: SIGSEGV in mitcad::crash::crashNow" "the title"
-ui_expect_new "Report section error: Mitcad 0" "what happened"
+ui_expect_new "Report section error: MitCad 0" "what happened"
 ui_expect_new "(import process, " "the import process named"
 ui_step "Cancel (Esc)"                     ui_key Escape
 ui_expect_new "Report not sent: the preview was cancelled" "nothing sent"
@@ -240,7 +240,7 @@ OFFERED=$(ls "$CRASHES"/*.crash.offered | head -1)
 cp "$OFFERED" "$CRASHES/crash-1-1.crash"
 : > "$UI_LOG"
 ui_start_app --demo
-ui_expect_log "Error report not offered (turned off): Mitcad" "not offered"
+ui_expect_log "Error report not offered (turned off): MitCad" "not offered"
 [ -f "$CRASHES/crash-1-1.crash.offered" ] || ui_fail "the report was not marked offered"
 echo "ok   marked offered"
 ui_stop_app

@@ -17,18 +17,18 @@ Fold, Corner Round and Corner Chamfer, exact cylindrical support surfaces,
 paired thickness boundaries, tangent ports and `sheet_trim_domain`. Its
 geometry tests exercise partial opening and cuts across both bend seams. The
 native JSON details are in
-[the document API](../core/model/src/api/commands.md#sheet-rules-and-base-face).
+[the document API](../core/model-api/src/commands.md#sheet-rules-and-base-face).
 Phase mitcad#208 adds `sheet_unfold`, `sheet_refold` and the Flat Pattern item
 (`set_flat_pattern`, `remove_flat_pattern`, the `flat_pattern` and `flat_point`
 queries); see
-[its API section](../core/model/src/api/commands.md#sheet-unfold-refold-and-flat-pattern)
+[its API section](../core/model-api/src/commands.md#sheet-unfold-refold-and-flat-pattern)
 and the [implementation notes](#implementation-notes-mitcad208). Phase
 mitcad#209 makes `sheet_cut` the production Cut (several sketches and contours,
 removed domains, split bodies) and adds `sheet_corner_relief`; see
 [its notes](#implementation-notes-mitcad209). Phase mitcad#210 adds the Sheet Metal
 command group, the browser's rules and Flat Pattern rows, the folded/flat
 display and `export_flat_pattern_dxf`; see
-[its API section](../core/model/src/api/commands.md#sheet-metal-command-ui-and-flat-pattern-dxf)
+[its API section](../core/model-api/src/commands.md#sheet-metal-command-ui-and-flat-pattern-dxf)
 and [its notes](#implementation-notes-mitcad210). The leftovers of these phases
 (corner reliefs without a common panel or at non-perpendicular bends, copies of
 Flat Pattern items and split pieces, design diffs of Flat Pattern items) are in
@@ -132,7 +132,7 @@ These formulas define a manufacturing allowance, not an elastic deformation
 model. For `K != 0.5`, folded solid volume need not equal developed area times
 thickness. Tests must not impose that false invariant.
 
-The side, sign, dimension and placement conventions here are Mitcad design
+The side, sign, dimension and placement conventions here are MitCad design
 decisions. Importers must translate source conventions explicitly; similarly
 named fields do not imply equivalent measurements.
 
@@ -642,7 +642,7 @@ Decisions made while implementing the production Cut and the reliefs:
   square of side `width` at `C`, sides along both strips (perpendicular bends
   only). Tear: exactly the crossing zone `0 <= s1 <= BA1, 0 <= s2 <= BA2`,
   the minimum separation of the two bend zones. The placement at the
-  centreline intersection is a Mitcad decision; importers translate other
+  centreline intersection is a MitCad decision; importers translate other
   placements explicitly. `depth` is used by bend reliefs only; the corner
   relief's size is `width`. Defaults come from the bound rules'
   `corner_relief`. A relief that removes a whole domain ("the flange is too
@@ -995,7 +995,7 @@ Decisions made while closing the import gaps of mitcad#211:
 ### Implementation notes (mitcad#461)
 
 Contour Flange, Convert to Sheet Metal and Perforate
-([their API](../core/model/src/api/commands.md#contour-flange-convert-to-sheet-metal-and-perforate)),
+([their API](../core/model-api/src/commands.md#contour-flange-convert-to-sheet-metal-and-perforate)),
 built from the same charts, bends and trims as the features above, so their
 sheets unfold, refold and have a Flat Pattern:
 
@@ -1026,7 +1026,7 @@ sheets unfold, refold and have a Flat Pattern:
   the side the front is on (outer where the bend turns towards the
   material, inner otherwise); the face across is built where the bend puts
   it and must lie in that plane, its edge along the bend running the whole
-  bend. The rules' thickness always governs: Mitcad's sheet state has one
+  bend. The rules' thickness always governs: MitCad's sheet state has one
   thickness, its rules'; an import makes rules of the thickness its file
   measured. Not supported, each refused with the edge or face: faces that
   meet at an edge that is no bend (corners that would have to be cut open
@@ -1054,7 +1054,7 @@ sheets unfold, refold and have a Flat Pattern:
 
 ## Kernel seam
 
-Add one sheet-metal family to `core/model/src/kernel.rs`, using default
+Add one sheet-metal family to `core/model-base/src/kernel.rs`, using default
 `KernelError::Unsupported` methods. Put concrete OCCT construction, history and
 transport in a new geometry family with corresponding bridge files. Logical
 interfaces use two new operations; model-side graph helpers compose them into

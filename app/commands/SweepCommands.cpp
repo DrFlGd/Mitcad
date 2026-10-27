@@ -23,9 +23,6 @@ std::function<bool(const CommandState&)> choiceIs(const QString& id, const QStri
   return [id, value](const CommandState& state) { return state.choice(id) == value; };
 }
 
-const Choices kPathExtents = {{QStringLiteral("full"), QStringLiteral("Full")},
-                              {QStringLiteral("partial"), QStringLiteral("Partial")}};
-
 // A path input: sketch curves or edges, with Chain Selection.
 QVector<InputDef> pathInputs(const QString& id, const QString& name,
                              std::function<bool(const CommandState&)> shown = {}) {
@@ -39,28 +36,80 @@ QVector<InputDef> pathInputs(const QString& id, const QString& name,
   return inputs;
 }
 
-// The partial extent of a path: fractions beyond the profile and before it.
+// The distances along a path are shown directly (mitcad#795): Distance 1,
+// the part beyond the profile, always; Distance 2, the part before it,
+// when the preview found the profile past the start of an open path (inside
+// it, or at its end, where Distance 2 is all there is), or when the edited
+// sweep has one of its own. The preview's place of the profile is kept in
+// the state as "sweep_path" (commands.md, "sweep").
+bool distance2Shown(const CommandState& state) {
+  if (state.checked(QStringLiteral("fraction2_kept"))) {
+    return true;
+  }
+  const QJsonObject place = state.object(QStringLiteral("sweep_path"));
+  const QString at = place.value(QStringLiteral("profile_at")).toString();
+  return !place.value(QStringLiteral("closed")).toBool(true) && !at.isEmpty() && at != QStringLiteral("start");
+}
+
+// A distance typed as a plain 1 (not an expression that happens to be 1,
+// which stays the expression).
+bool wholeDistance(const CommandState& state, const QString& id) {
+  bool number = false;
+  const double fraction = state.expression(id).toDouble(&number);
+  return number && fraction == 1.0;
+}
+
+// The extent of a path: `full` for 1 / 1 (the design format of before),
+// else `partial` with Distance 1 and, when shown, Distance 2.
 QJsonObject pathExtent(const CommandState& state, bool second) {
-  if (state.choice(QStringLiteral("extent")) != QStringLiteral("partial")) {
+  const bool both = second && distance2Shown(state);
+  if (wholeDistance(state, QStringLiteral("fraction")) &&
+      (!both || wholeDistance(state, QStringLiteral("fraction2")))) {
     return {{QStringLiteral("type"), QStringLiteral("full")}};
   }
   QJsonObject extent{{QStringLiteral("type"), QStringLiteral("partial")},
                      {QStringLiteral("fraction"), state.expression(QStringLiteral("fraction"))}};
-  if (second) {
+  if (both) {
     extent.insert(QStringLiteral("fraction2"), state.expression(QStringLiteral("fraction2")));
   }
   return extent;
 }
 
+// `full` leaves both distances at 1; a `partial` one keeps a Distance 2
+// of its own shown.
 void loadPathExtent(const QJsonObject& extent, CommandState& state, const QJsonObject& feature,
                     const CommandContext& context) {
   if (str(extent, "type") != QStringLiteral("partial")) {
-    state.setChoice(QStringLiteral("extent"), QStringLiteral("full"));
     return;
   }
-  state.setChoice(QStringLiteral("extent"), QStringLiteral("partial"));
   loadValue(state, QStringLiteral("fraction"), extent.value(QStringLiteral("fraction")), feature, context);
-  loadValue(state, QStringLiteral("fraction2"), extent.value(QStringLiteral("fraction2")), feature, context);
+  if (extent.contains(QStringLiteral("fraction2"))) {
+    loadValue(state, QStringLiteral("fraction2"), extent.value(QStringLiteral("fraction2")), feature, context);
+    state.setChecked(QStringLiteral("fraction2_kept"), true);
+  }
+}
+
+// The preview's place of the profile on the path (mitcad#795): true when
+// Distance 2 is shown or hidden by it now, so that the panel and the
+// preview follow.
+bool takeSweepPath(const QJsonObject& report, CommandState& state) {
+  const QJsonObject place = report.value(QStringLiteral("sweep_path")).toObject();
+  if (place.isEmpty() || place == state.object(QStringLiteral("sweep_path"))) {
+    return false;
+  }
+  const bool shown = distance2Shown(state);
+  state.setObject(QStringLiteral("sweep_path"), place);
+  const bool now = distance2Shown(state);
+  const QString at = place.value(QStringLiteral("profile_at")).toString();
+  const QString where = at == QStringLiteral("start") ? QStringLiteral("at the start of")
+                        : at == QStringLiteral("end") ? QStringLiteral("at the end of")
+                                                      : QStringLiteral("inside");
+  qDebug().noquote() << QStringLiteral("Sweep: the profile lies %1 %2 path; Distance 2 %3")
+                            .arg(where,
+                                 place.value(QStringLiteral("closed")).toBool() ? QStringLiteral("a closed")
+                                                                                 : QStringLiteral("an open"),
+                                 now ? QStringLiteral("shown") : QStringLiteral("hidden"));
+  return shown != now;
 }
 
 bool pathEditable(const QJsonValue& path) {
@@ -99,7 +148,6 @@ CommandDef sweepCommand(const CommandContext& context) {
   const auto rail = choiceIs(QStringLiteral("type"), QStringLiteral("rail"));
   const auto single = choiceIs(QStringLiteral("type"), QStringLiteral("single"));
   const auto surface = choiceIs(QStringLiteral("type"), QStringLiteral("surface"));
-  const auto partial = choiceIs(QStringLiteral("extent"), QStringLiteral("partial"));
   def.inputs = {
       choiceInput(QStringLiteral("type"), QObject::tr("Type"),
                   {{QStringLiteral("single"), QStringLiteral("Single Path")},
@@ -123,13 +171,11 @@ CommandDef sweepCommand(const CommandContext& context) {
   def.inputs += {
       checkInput(QStringLiteral("chain"), QObject::tr("Chain Selection"), true)
           .withTooltip(QObject::tr("Also take the curves joined to the selected ones")),
-      choiceInput(QStringLiteral("extent"), QObject::tr("Distance"), kPathExtents, QStringLiteral("full")),
       valueInput(QStringLiteral("fraction"), QObject::tr("Distance 1"), ValueKind::Unitless, QStringLiteral("1"))
-          .withTooltip(QObject::tr("The part of the path beyond the profile, 0 to 1"))
-          .withVisible(partial),
+          .withTooltip(QObject::tr("The part of the path beyond the profile, 0 to 1")),
       valueInput(QStringLiteral("fraction2"), QObject::tr("Distance 2"), ValueKind::Unitless, QStringLiteral("1"))
           .withTooltip(QObject::tr("The part of the path before the profile, 0 to 1"))
-          .withVisible(partial),
+          .withVisible(distance2Shown),
       choiceInput(QStringLiteral("orientation"), QObject::tr("Orientation"),
                   {{QStringLiteral("perpendicular"), QStringLiteral("Perpendicular")},
                    {QStringLiteral("parallel"), QStringLiteral("Parallel")}},
@@ -163,6 +209,7 @@ CommandDef sweepCommand(const CommandContext& context) {
   def.inputs += operationInputs();
   def.init = newestProfile;
   def.enabled = [&context] { return hasProfiles(context); };
+  def.previewReported = takeSweepPath;
 
   def.build = [](const CommandState& state, const CommandContext&) {
     Built result;
@@ -863,10 +910,10 @@ CommandDef pipeCommand(const CommandContext& context) {
   def.inputs = pathInputs(QStringLiteral("path"), QObject::tr("Path"));
   def.inputs += {
       checkInput(QStringLiteral("chain"), QObject::tr("Chain Selection"), true),
-      choiceInput(QStringLiteral("extent"), QObject::tr("Distance"), kPathExtents, QStringLiteral("full")),
+      // Shown directly (mitcad#795); the section is at the path's start,
+      // so there is no part before it.
       valueInput(QStringLiteral("fraction"), QObject::tr("Distance 1"), ValueKind::Unitless, QStringLiteral("1"))
-          .withTooltip(QObject::tr("The part of the path from its start, 0 to 1"))
-          .withVisible(choiceIs(QStringLiteral("extent"), QStringLiteral("partial"))),
+          .withTooltip(QObject::tr("The part of the path from its start, 0 to 1")),
       choiceInput(QStringLiteral("section"), QObject::tr("Section"),
                   {{QStringLiteral("circular"), QStringLiteral("Circular")},
                    {QStringLiteral("square"), QStringLiteral("Square")},

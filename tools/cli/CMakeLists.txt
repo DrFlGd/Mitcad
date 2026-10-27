@@ -784,6 +784,10 @@ if(BUILD_TESTING)
   # with a warning.
   add_test(NAME cli.p9_warnings COMMAND mitcad-cli run "${scripts}/p9_warnings.json")
 
+  # A block's end rounded to a half round in one fillet keeps its top and
+  # bottom named, as in two fillets (mitcad#821).
+  add_test(NAME cli.fillet_meeting_roundings COMMAND mitcad-cli run "${scripts}/fillet_meeting_roundings.json")
+
   # Lofts with end conditions and rails (P2): analytic volumes, rails, and
   # a conditioned loft following an edit of the face it starts from.
   add_test(NAME cli.p2_loft_conditions COMMAND mitcad-cli run "${scripts}/p2_loft_conditions.json")
@@ -1289,6 +1293,16 @@ if(BUILD_TESTING)
     set_property(TEST cli.mesh_compare_checked APPEND PROPERTY ENVIRONMENT_MODIFICATION
       "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     set_property(TEST cli.mesh_compare cli.mesh_compare_summary APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
+  # The display meshes of the blocks whose end is rounded to a half round,
+  # in one fillet and in two (mitcad#821): every face triangulated.
+  add_test(NAME cli.mesh_compare_meeting_roundings COMMAND mitcad-cli mesh-compare
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fillet_meeting_roundings.json")
+  set_tests_properties(cli.mesh_compare_meeting_roundings PROPERTIES PASS_REGULAR_EXPRESSION
+    "2 bodies, 14 faces \\([0-9]+ planes\\), without a triangulation a 0 b 0")
+  if(WIN32)
+    set_property(TEST cli.mesh_compare_meeting_roundings APPEND PROPERTY ENVIRONMENT_MODIFICATION
       "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
 endif()

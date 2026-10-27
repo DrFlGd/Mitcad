@@ -23,9 +23,9 @@ use std::sync::Arc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use mitcad_model::api::ApiError;
 use mitcad_model::exchange::ReadOptions;
 use mitcad_model::{BaseInput, BodyUid, ImportBody, Kernel};
+use mitcad_model_api::ApiError;
 
 use cxx::SharedPtr;
 
@@ -450,7 +450,7 @@ impl Document {
         if let Some(path) = &options.design_path {
             let text =
                 std::fs::read_to_string(path).map_err(|e| ApiError(format!("{path}: {e}")))?;
-            design.dump = mitcad_f3d::design::ir::Dump::from_json(&text)
+            design.dump = mitcad_dump::Dump::from_json(&text)
                 .map_err(|e| ApiError(format!("{path}: {e}")))?;
         }
         if let Some(path) = &options.dump_path {
@@ -718,14 +718,15 @@ impl Document {
             // A boolean is checked only near its change: a replay must not
             // leave an invalid body where the file's are valid.
             validate: true,
+            commands: Some(crate::f3d_import::import_commands()),
             ..mitcad_import::Options::default()
         };
         // After a hang outside the items: the stored bodies, without the
         // timeline (the importer brings them for an empty replay).
-        let stored_only = mitcad_f3d::design::ir::Dump {
+        let stored_only = mitcad_dump::Dump {
             source: design.dump.source.clone(),
             parameters: design.dump.parameters.clone(),
-            ..mitcad_f3d::design::ir::Dump::default()
+            ..mitcad_dump::Dump::default()
         };
         let dump = if attempt.bodies_only {
             &stored_only

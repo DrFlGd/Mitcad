@@ -41,6 +41,7 @@ use crate::features::{
     FeatureDef, FrameDef, HolePlacement, OccurrencePath, SketchDef, SketchPlane,
 };
 use crate::ids::{BodyUid, ComponentUid, FeatureUid};
+use crate::links::OccurrenceLinkExt;
 use crate::parameters::ParamId;
 use crate::profile::SketchFrame;
 use crate::render_settings::{LightSpace, RenderSettings};
@@ -231,7 +232,7 @@ impl Turn {
                         Some(turned) => GeomRef::Origin(turned),
                         None => GeomRef::FixedPlane {
                             origin: [0.0; 3],
-                            normal: crate::profile::cross(x, y),
+                            normal: mitcad_vec3::cross(x, y),
                             x_axis: Some(x),
                         },
                     }
@@ -257,8 +258,8 @@ impl Turn {
                 // model axes, which the turn does not move: keep the one
                 // it has.
                 let x = x_axis.unwrap_or_else(|| {
-                    crate::datum::unit(*normal)
-                        .map(crate::datum::default_x_axis)
+                    mitcad_vec3::unit(*normal)
+                        .map(mitcad_model_base::internal::datum::default_x_axis)
                         .unwrap_or([1.0, 0.0, 0.0])
                 });
                 GeomRef::FixedPlane {
@@ -648,9 +649,8 @@ fn turn_sketch_plane(sketch: &mut SketchDef, turn: Turn) {
     };
     let target_axes = [target.x_axis, target.y_axis, target.normal()];
     // m[i][k]: the turned plane's axis k in the new plane's axis i (0, ±1).
-    let m: [[f64; 3]; 3] = std::array::from_fn(|i| {
-        std::array::from_fn(|k| crate::profile::dot(axes[k], target_axes[i]))
-    });
+    let m: [[f64; 3]; 3] =
+        std::array::from_fn(|i| std::array::from_fn(|k| mitcad_vec3::dot(axes[k], target_axes[i])));
     let apply = |p: Vec3| -> Vec3 {
         std::array::from_fn(|i| {
             (0..3)

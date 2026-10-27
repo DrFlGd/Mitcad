@@ -29,10 +29,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::{GeomRef, PathRef, Want, along_slot, distinct, finite};
-use crate::datum::{
-    ANGULAR, Datum, DatumAxis, DatumPlane, LINEAR, PathParameter, SurfaceGeometry, Vec3, add, norm,
-    rotate, rotate_onto, scale, sub, unit,
-};
+use crate::datum::{Datum, DatumAxis, DatumPlane, PathParameter, SurfaceGeometry, Vec3};
 use crate::features::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, is_false,
 };
@@ -40,7 +37,9 @@ use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 use crate::links::OccurrenceLink;
 use crate::parameters::ParamId;
-use crate::profile::{cross, dot};
+use mitcad_model_base::internal::datum::{ANGULAR, LINEAR, rotate, rotate_onto};
+use mitcad_vec3::{add, norm, scale, sub, unit};
+use mitcad_vec3::{cross, dot};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -400,7 +399,8 @@ pub(crate) fn at_angle(
 
 /// The plane touching a cylinder or cone, at `angle` about its axis from
 /// the direction of the reference plane's normal.
-pub(crate) fn tangent(
+#[doc(hidden)]
+pub fn tangent(
     surface: &SurfaceGeometry,
     base: &DatumPlane,
     angle: f64,

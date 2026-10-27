@@ -17,12 +17,13 @@ use super::pattern::none;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
 };
-use crate::datum::{Vec3, unit};
+use crate::datum::Vec3;
 use crate::exchange::BodyKind;
 use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::surface_modelling::{TrimSpec, TrimTool};
+use mitcad_vec3::unit;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

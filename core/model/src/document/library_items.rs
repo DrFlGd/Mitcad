@@ -37,14 +37,14 @@ use crate::print_profile::{
 use crate::properties::{PropertyOwner, PropertyValue, same_name};
 
 /// A library a command names: `base`, `user` or `project`.
-pub(crate) fn library_kind(text: &str) -> Result<LibraryKind, ModelError> {
+pub fn library_kind(text: &str) -> Result<LibraryKind, ModelError> {
     LibraryKind::parse(text)
         .ok_or_else(|| invalid(format!("'{text}' is no library: base, user or project")))
 }
 
 /// A library a command writes in: the user's or the project's; the base
 /// library is Mitcad's and read-only.
-pub(crate) fn writable_library(text: &str) -> Result<LibraryKind, ModelError> {
+pub fn writable_library(text: &str) -> Result<LibraryKind, ModelError> {
     match library_kind(text)? {
         LibraryKind::Base => Err(invalid(
             "the base library is Mitcad's and read-only: duplicate its item into the user's or the project's library",
@@ -276,7 +276,7 @@ impl DocState {
 impl<K: Kernel> Document<K> {
     /// Runs `edit`, commands that recompute nothing, as one undo step named
     /// as its last step; on an error nothing it did stays.
-    pub(crate) fn as_one_step<T>(
+    pub fn as_one_step<T>(
         &mut self,
         edit: impl FnOnce(&mut Self) -> Result<T, ModelError>,
     ) -> Result<T, ModelError> {
@@ -353,7 +353,7 @@ impl<K: Kernel> Document<K> {
 
     /// The `library_items` query: one row per item of a kind the user can
     /// choose (see the module documentation).
-    pub(crate) fn library_items_json(&self, libraries: &Libraries, kind: ItemKind) -> Value {
+    pub fn library_items_json(&self, libraries: &Libraries, kind: ItemKind) -> Value {
         let mut rows = Vec::new();
         if kind == ItemKind::Material {
             for m in material::built_in() {

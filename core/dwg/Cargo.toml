@@ -19,10 +19,10 @@ required-features = ["solids"]
 
 [dependencies]
 # The B-rep record of solids is an ASM file (binary, or its text form),
-# parsed and converted by the .f3d reader's ASM code: only with the
+# parsed and converted by the ASM code the .f3d reader uses: only with the
 # feature `solids` (the import, core/ffi); the drawing writer that
 # mitcad-model uses (mitcad#728) needs none of it.
-mitcad-f3d = { path = "../f3d", optional = true }
+mitcad-asm = { path = "../asm", optional = true }
 # Drawing units ($INSUNITS) shared with the DXF reader.
 mitcad-dxf = { path = "../dxf" }
 # Vector helpers on [f64; 3].
@@ -36,4 +36,4 @@ default = ["solids"]
 # The 3D content: the B-rep records of solids parsed and converted by the
 # .f3d reader's ASM code, the scene and plan of the import, the test
 # drawings (`scene`, `testfile`, `solid::parse`, mitcad-dwg-inspect).
-solids = ["dep:mitcad-f3d"]
+solids = ["dep:mitcad-asm"]

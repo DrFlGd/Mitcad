@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-import-ifc"
+description = "The IFC import: an IFC file's building model as a Mitcad design (components, features, base and mesh bodies, properties)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_import_ifc"
+
+[dependencies]
+mitcad-model.workspace = true
+# The IFC reader.
+mitcad-ifc = { path = "../ifc" }
+# The import's progress (the memory guard).
+mitcad-import-base = { path = "../import-base" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The mock geometry kernel of the model tests.
+mitcad-model = { workspace = true, features = ["testing"] }
+mitcad-model-api = { path = "../model-api" }

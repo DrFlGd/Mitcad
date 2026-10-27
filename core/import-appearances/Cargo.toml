@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-import-appearances"
+description = "The appearances family of the design import's replay: the file's appearances and physical materials on the replay's bodies, faces and occurrences"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_import_appearances"
+
+[dependencies]
+mitcad-model.workspace = true
+# The dump IR the replay reads.
+mitcad-dump = { path = "../dump" }
+# The document of the file: lengths of the assets' quantities
+# (`protein::length_mm`).
+mitcad-f3d-file = { path = "../f3d-file" }
+# The replay's core this family extends (mitcad#785, mitcad#791).
+mitcad-import-replay = { path = "../import-replay" }
+# What the imports share: vector helpers, the bodies of one replay.
+mitcad-import-base = { path = "../import-base" }
+serde_json.workspace = true

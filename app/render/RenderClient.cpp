@@ -126,7 +126,7 @@ void RenderClient::start() {
   m_process->setChildProcessModifier([workerEnd] { FrameChannel::makeInheritable(workerEnd); });
 #endif
   if (program.isEmpty()) {
-    m_lastError = tr("there is no %1 next to Mitcad").arg(QString::fromLatin1(kWorkerName));
+    m_lastError = tr("there is no %1 next to MitCad").arg(QString::fromLatin1(kWorkerName));
   }
   if (!m_lastError.isEmpty()) {
     // Reported like a worker that ended at once.
@@ -340,7 +340,7 @@ void RenderClient::handle(const QJsonObject& event) {
       // Reported below (a worker that cannot start at all).
     } else {
       m_incompatible = true;
-      m_lastError = tr("%1 does not match this Mitcad (its protocol version is %2, Mitcad's is %3); "
+      m_lastError = tr("%1 does not match this MitCad (its protocol version is %2, MitCad's is %3); "
                        "install them together")
                         .arg(QString::fromLatin1(kWorkerName))
                         .arg(version)

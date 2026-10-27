@@ -88,7 +88,7 @@ ui_start_display
 
 echo "--- The File menu (mitcad#175)"
 ui_start_app --demo --no-native-dialogs
-expect_title "Untitled - Mitcad"
+expect_title "Untitled - MitCad"
 # New and New Design are one entry; 3D Print, Insert Component and Render
 # Image are on the ribbon only; the project commands in a submenu.
 project_menu="New Project | Open Project | Open from Cloud | - | Sync | Check for Newer Versions | Open in Browser"
@@ -109,11 +109,11 @@ ui_step "fillet (F)"                     ui_key f
 ui_step "pick a face of the body"        ui_view_click 50 50
 ui_step "confirm (Enter)"                ui_key Return
 ui_expect_log "Added fillet on 4 edge(s)" "fillet on the face's edges"
-expect_title "Untitled* - Mitcad"
+expect_title "Untitled* - MitCad"
 ui_step "save as (Ctrl+Shift+S)"         ui_key ctrl+shift+s
 ui_step "type the path, Enter"           type_path "Save As" "$FILE"
 ui_expect_log "Saved $FILE" "saved to the typed path"
-expect_title "block.mitcad - Mitcad"
+expect_title "block.mitcad - MitCad"
 expect_file 'doc["format"], doc["version"]' "('mitcad', 2)" "format marker and version"
 expect_file '[f["type"] for f in doc["features"]]' "['sketch', 'extrude', 'fillet']" \
   "history in the file"
@@ -128,35 +128,35 @@ ui_start_app --open "$FILE" --set d3=35 --no-native-dialogs
 ui_expect_log "Opened $FILE" "opened with --open"
 ui_expect_log "Recomputed 3 feature(s)" "sketch, extrude and fillet recomputed"
 ui_expect_log "Recomputed 2 feature(s)" "d3 change recomputed extrude and fillet"
-expect_title "block.mitcad* - Mitcad"
+expect_title "block.mitcad* - MitCad"
 # The "*" follows the model's revisions: undo back to the state opened
 # takes it away, redo brings it back.
 ui_step "undo the change of d3 (Ctrl+Z)" ui_key ctrl+z
-expect_title "block.mitcad - Mitcad"
+expect_title "block.mitcad - MitCad"
 ui_step "redo it (Ctrl+Y)"               ui_key ctrl+y
-expect_title "block.mitcad* - Mitcad"
+expect_title "block.mitcad* - MitCad"
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
 ui_expect_log "Saved $FILE" "saved without a dialog"
-expect_title "block.mitcad - Mitcad"
+expect_title "block.mitcad - MitCad"
 expect_file '[p["value"] for p in doc["parameters"] if p["name"] == "d3"]' "[35.0]" \
   "changed parameter saved"
 
 echo "--- Unsaved changes: Cancel on New Design, Save on exit"
 # Undo takes back the last command of this session: the change of d3.
 ui_step "undo the change of d3 (Ctrl+Z)" ui_key ctrl+z
-expect_title "block.mitcad* - Mitcad"
+expect_title "block.mitcad* - MitCad"
 ui_step "redo: the state saved (Ctrl+Y)" ui_key ctrl+y
-expect_title "block.mitcad - Mitcad"
+expect_title "block.mitcad - MitCad"
 ui_step "undo again (Ctrl+Z)"            ui_key ctrl+z
-expect_title "block.mitcad* - Mitcad"
+expect_title "block.mitcad* - MitCad"
 ui_step "new design (Ctrl+N)"            ui_key ctrl+n
-focus_dialog '^Mitcad$'
+focus_dialog '^MitCad$'
 ui_step "cancel (Esc)"                   ui_key Escape
 focus_main
-expect_title "block.mitcad* - Mitcad"
+expect_title "block.mitcad* - MitCad"
 grep -q "New document" "$UI_LOG" && ui_fail "New Design went ahead after Cancel"
 ui_step "exit (Ctrl+Q)"                  ui_key ctrl+q
-focus_dialog '^Mitcad$'
+focus_dialog '^MitCad$'
 ui_key Return # Save, the default button
 expect_exit "saved and exited"
 grep -qF "Saved $FILE" "$UI_LOG" || ui_fail "not saved on exit"
@@ -165,22 +165,22 @@ expect_file '[p["value"] for p in doc["parameters"] if p["name"] == "d3"]' "[20.
 
 echo "--- Open dialog, Don't Save on New Design"
 ui_start_app --no-native-dialogs
-expect_title "Untitled - Mitcad"
+expect_title "Untitled - MitCad"
 ui_step "open (Ctrl+O)"                  ui_key ctrl+o
 ui_step "type the path, Enter"           type_path "Open" "$FILE"
 ui_expect_log "Opened $FILE" "opened through the dialog"
 ui_expect_log "Recomputed 3 feature(s)" "sketch, extrude and fillet recomputed"
-expect_title "block.mitcad - Mitcad"
+expect_title "block.mitcad - MitCad"
 checksum=$(sha256sum "$FILE")
 ui_step "create a sketch on XY"          ui_create_sketch xy
-expect_title "block.mitcad* - Mitcad"
+expect_title "block.mitcad* - MitCad"
 ui_step "new design (Ctrl+N)"            ui_key ctrl+n
-focus_dialog '^Mitcad$'
+focus_dialog '^MitCad$'
 ui_step "don't save (D)"                 ui_key d
 focus_main
 ui_expect_log "New document" "new document after Don't Save"
 ui_expect_log "New Design: no project, an untitled design" "outside projects New Design is New"
-expect_title "Untitled - Mitcad"
+expect_title "Untitled - MitCad"
 [ "$(sha256sum "$FILE")" = "$checksum" ] || ui_fail "the file changed after Don't Save"
 echo "ok   file unchanged"
 ui_key ctrl+q
@@ -221,7 +221,7 @@ ui_start_app --open "$FILE"
 ui_expect_log "Opened $FILE" "opened a part with a join and a cut"
 ui_expect_log "Recomputed 6 feature(s)" "join, cut and fillet recomputed"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
-expect_title "boss.mitcad - Mitcad"
+expect_title "boss.mitcad - MitCad"
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
 ui_expect_log "Saved $FILE" "saved again"
 expect_file 'doc["version"]' "2" "saved as version 2"

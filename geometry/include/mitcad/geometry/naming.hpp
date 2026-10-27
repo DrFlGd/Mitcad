@@ -2,7 +2,7 @@
 #pragma once
 
 // Persistent topological names (see docs/architecture.md). The Rust
-// model defines the grammar with structured types (core/model/src/topo.rs);
+// model defines the grammar with structured types (core/model-base/src/topo.rs);
 // the geometry treats face names as opaque strings and only composes them,
 // compares them byte-wise and parses the edge and vertex forms:
 //

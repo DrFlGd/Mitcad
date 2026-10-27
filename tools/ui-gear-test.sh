@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/GearCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/gear.rs core/model/src/features/gear_profile.rs geometry/src/gear.cpp
-# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
-# check-all sources: core/model/src/print_fits.rs core/model/src/api/gears.rs app/commands/DriveCommands.cpp core/model/src/api/drives.rs
+# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model-api/src/seats.rs tools/cli
+# check-all sources: core/model/src/print_fits.rs core/model-api/src/gears.rs app/commands/DriveCommands.cpp core/model-api/src/drives.rs
 # Gear (mitcad#472) through the real UI; the Windows counterpart is
 # tools/ui-windows-gear-test.ps1 (ctest app.ui-windows-gear). The Backlash
 # and the Bore Clearance start as the printed-fit parameters gear_backlash

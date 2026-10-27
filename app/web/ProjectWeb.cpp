@@ -249,7 +249,7 @@ QByteArray indexHtml(const QString& projectName, const std::vector<DesignCard>& 
     html += QStringLiteral("</div>\n</a>\n");
   }
   html += QStringLiteral("</main>\n<footer>Each design opens in a viewer that runs in the browser, also offline. "
-                         "Written by Mitcad.</footer>\n</body>\n</html>\n");
+                         "Written by MitCad.</footer>\n</body>\n</html>\n");
   return html.toUtf8();
 }
 

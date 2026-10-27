@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/PulleyCommands.cpp app/framework/CommandSession.cpp
-# check-all sources: core/model/src/features/pulley.rs core/model/src/features/pulley_profile.rs core/model/src/api/pulleys.rs
-# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
-# check-all sources: core/model/src/features/place_at.rs core/model/src/features/drives.rs core/model/src/api/drives.rs
+# check-all sources: core/model/src/features/pulley.rs core/model/src/features/pulley_profile.rs core/model-api/src/pulleys.rs
+# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model-api/src/seats.rs tools/cli
+# check-all sources: core/model/src/features/place_at.rs core/model/src/features/drives.rs core/model-api/src/drives.rs
 # check-all sources: app/framework/ManipulatorOverlay.cpp
 # Input-driven Windows UI test of Pulley (mitcad#562) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted); the Linux

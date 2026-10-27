@@ -769,6 +769,11 @@ std::vector<SketchOverlay::Glyph> SketchOverlay::glyphs() const {
     } else if (t == QStringLiteral("symmetric")) {
       add(k.id, k.json.value(QStringLiteral("a")).toString(), t, off);
       add(k.id, k.json.value(QStringLiteral("b")).toString(), t, off);
+    } else if ((t == QStringLiteral("tangent") || t == QStringLiteral("smooth")) &&
+               !k.json.value(QStringLiteral("at")).toString().isEmpty()) {
+      // Beside the point it applies at (mitcad#783): a curve tangent at
+      // both ends shows both.
+      add(k.id, k.json.value(QStringLiteral("at")).toString(), t, off);
     } else {
       for (const QString& entity : k.refs) {
         add(k.id, entity, t, off);

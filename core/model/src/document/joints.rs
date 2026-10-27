@@ -15,6 +15,12 @@ use crate::features::{AsBuiltJointDef, FeatureDef, ValueInput};
 use crate::ids::{ComponentUid, FeatureUid, OccurrenceUid};
 use crate::joints::{DofReport, Dragged, JointResult, Motion, dof_report, drag, path_component};
 use crate::kernel::Kernel;
+// The joint origins and constraint rows before they are added (mitcad#778).
+use crate::constraints::{
+    Geo, RowCheck, RowReference, constraint_fits, fitting_types, measures, resolve_geo,
+};
+use crate::features::{ConstraintType, FrameOverride, GeomRef, JointOrigin, OccurrencePath};
+use crate::joints::{OriginFrame, apply_override, origin_frame};
 
 /// The largest step (mm) of the grabbed point between two samples of a
 /// drag checked against the contact sets, and the most samples.
@@ -314,5 +320,127 @@ impl<K: Kernel> Document<K> {
             Ok((format!("Drag {name}"), ()))
         })?;
         Ok(dragged)
+    }
+}
+
+// Joint origins and constraint rows before they are added (mitcad#778: the
+// api's `joint_frame` and `constraint_row` queries answer with these, and
+// the import calls them without the api).
+
+impl<K: Kernel> Document<K> {
+    /// An occurrence path from `component`: uids (`O1/O4`), names
+    /// (`Arm:1/Pin:2`), or empty for the component's own geometry.
+    pub fn occurrence_path_from(
+        &self,
+        component: ComponentUid,
+        text: &str,
+    ) -> Result<Vec<OccurrenceUid>, String> {
+        let a = self.assembly();
+        crate::joints::find_path_from(a, component, text)
+            .ok_or_else(|| format!("no occurrence {text} in {}", a.name(component)))
+    }
+
+    /// The frame a joint origin gives at the marker, as a joint would
+    /// resolve it: `geometry` on the occurrence path `occurrence` from
+    /// `from` ([`Document::occurrence_path_from`]), with `frame_override`,
+    /// placed by the path's occurrences into the coordinates of `from`.
+    /// The geometry must be the component's the path ends in.
+    pub fn joint_frame(
+        &self,
+        from: ComponentUid,
+        occurrence: &str,
+        geometry: &GeomRef,
+        frame_override: Option<&FrameOverride>,
+    ) -> Result<OriginFrame, String> {
+        let a = self.assembly();
+        let path = self.occurrence_path_from(from, occurrence)?;
+        let at = path_component(a, from, &path)?;
+        let owner = match geometry {
+            GeomRef::Face { body, .. }
+            | GeomRef::Edge { body, .. }
+            | GeomRef::Vertex { body, .. }
+            | GeomRef::Body(body) => Some(
+                self.body_component(*body)
+                    .ok_or_else(|| format!("body {body} does not exist at the marker"))?,
+            ),
+            GeomRef::Datum(uid)
+            | GeomRef::SketchCurves { sketch: uid, .. }
+            | GeomRef::SketchPoint { sketch: uid, .. }
+            | GeomRef::Mount { feature: uid, .. } => Some(
+                self.feature(*uid)
+                    .ok_or_else(|| format!("feature {uid} does not exist"))?
+                    .component,
+            ),
+            _ => None,
+        };
+        if let Some(owner) = owner
+            && owner != at
+        {
+            return Err(format!(
+                "{} is in {}, not in {}",
+                geometry,
+                a.name(owner),
+                a.name(at)
+            ));
+        }
+        let mut local = origin_frame(&mut self.resolver(), geometry)?;
+        if let Some(o) = frame_override {
+            local = apply_override(&local, o)?;
+        }
+        Ok(OriginFrame {
+            component: at,
+            frame: self.path_transform(&path).after(&local),
+            local,
+        })
+    }
+
+    /// A reference of a constraint row at the marker, its frame placed by
+    /// its path into `component`'s coordinates.
+    fn row_geo(
+        &self,
+        component: ComponentUid,
+        reference: &RowReference<'_>,
+    ) -> Result<Geo, String> {
+        let path = self.occurrence_path_from(component, reference.occurrence)?;
+        let origin = JointOrigin {
+            occurrence: OccurrencePath(path.clone()),
+            geometry: reference.geometry.clone(),
+            frame_override: reference.frame_override,
+        };
+        let mut geo = resolve_geo(&mut self.resolver(), &origin)?;
+        geo.frame = self.path_transform(&path).after(&geo.frame);
+        Ok(geo)
+    }
+
+    /// A constraint row's references before the row is added, in
+    /// `component` (paths from it): their kinds, the types they fit (the
+    /// likeliest first), what they measure where they are (an align's
+    /// `offset`, the `angle` between their z axes, an insert's `twist`: the
+    /// turn a locked insert records), and for a `kind` whether they fit
+    /// it. A reference that does not resolve fails with its key (`a: …`).
+    pub fn constraint_row(
+        &self,
+        component: ComponentUid,
+        a: &RowReference<'_>,
+        b: &RowReference<'_>,
+        a2: Option<&RowReference<'_>>,
+        b2: Option<&RowReference<'_>>,
+        kind: Option<ConstraintType>,
+    ) -> Result<RowCheck, String> {
+        let geo = |key: &str, reference: &RowReference<'_>| {
+            self.row_geo(component, reference)
+                .map_err(|e| format!("{key}: {e}"))
+        };
+        let a = geo("a", a)?;
+        let b = geo("b", b)?;
+        let a2 = a2.map(|r| geo("a2", r)).transpose()?;
+        let b2 = b2.map(|r| geo("b2", r)).transpose()?;
+        Ok(RowCheck {
+            types: fitting_types(&a, &b),
+            measures: measures(&a, &b),
+            fits: kind.map(|kind| constraint_fits(kind, &a, a2.as_ref(), &b, b2.as_ref())),
+            a,
+            b,
+        })
     }
 }

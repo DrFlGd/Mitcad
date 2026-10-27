@@ -3,7 +3,7 @@
 //! formats are `parameters_csv.rs`).
 //!
 //! An import works through the rows of the table as the `.f3d` import
-//! works through a design's parameters (`core/import/src/params.rs`):
+//! works through a design's parameters (`core/import-replay/src/params.rs`):
 //!
 //! - A name Mitcad cannot use (a unit, a function, other characters) gets
 //!   a free one ([`free_name`], from the other names of the table, so that
@@ -39,8 +39,9 @@ use crate::expr::{
     ParamKind, ParamLimits, ParamSpec, Unit, text_literal, value_to_expression, with_decimal_points,
 };
 use crate::kernel::Kernel;
-use crate::parameters::{ParameterError, expression_dims, expression_is_text, unit_for};
+use crate::parameters::{ParameterError, unit_for};
 use crate::parameters_csv::{self, CsvFormat, CsvRow, CsvTable, free_name, identifiers, rename_in};
+use mitcad_model_base::internal::parameters::{expression_dims, expression_is_text};
 
 /// What an import does with a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

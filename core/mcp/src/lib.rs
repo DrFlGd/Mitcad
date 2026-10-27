@@ -32,7 +32,7 @@ const RESPONSE_RESERVE_BYTES: usize = 4096;
 /// Resource containing the model's command and query reference.
 pub const COMMANDS_URI: &str = "mitcad://reference/commands";
 
-const COMMANDS_REFERENCE: &str = include_str!("../../model/src/api/commands.md");
+const COMMANDS_REFERENCE: &str = include_str!("../../model-api/src/commands.md");
 
 /// Data returned by a document tool. Errors remain visible to the model.
 pub struct ToolResult {

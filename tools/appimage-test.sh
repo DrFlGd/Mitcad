@@ -8,7 +8,14 @@
 #      qt.conf, OCCT and the licences; every ELF file finds its libraries
 #      inside it or in the system's library folders (ldd with an empty
 #      environment), none in the build's, Qt's or vcpkg's folders, and its
-#      RUNPATHs stay inside it. Prints the newest glibc version it needs.
+#      RUNPATHs stay inside it. Static checks of what a user's system must
+#      have (mitcad#789), in seconds: no ELF file (nor the AppImage's
+#      runtime) needs a glibc or libstdc++ symbol version newer than
+#      GLIBC_FLOOR, GLIBCXX_FLOOR and CXXABI_FLOOR, those of the oldest
+#      supported system (Ubuntu 24.04), and every ELF
+#      file that links Qt finds each libQt6 library inside the AppImage,
+#      through its own $ORIGIN RUNPATH and in ldd's view, never a system's
+#      Qt. Prints the newest glibc version it needs.
 #   2. Copied into a folder of its own and started with an empty
 #      environment (env -i; PATH /usr/bin:/bin, and update checks off):
 #      --version, then the demo block's screenshot (--screenshot), while
@@ -53,6 +60,16 @@ IMAGE=${1:?usage: tools/appimage-test.sh [--skip-stale] [--require-cuda] <AppIma
 BUILT=${2:-}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 RELEASE_TOOL=${3:-$ROOT/build/dev/core/mitcad-release}
+# The newest glibc the AppImage may need: Ubuntu 24.04's (and the
+# distributions based on it), which docs/user-guide.md promises. A release
+# built on a newer system needs that system's glibc (mitcad#789); build it
+# on Ubuntu 24.04 (docs/development.md#linux-appimage).
+GLIBC_FLOOR=2.39
+# Likewise libstdc++, which stays the system's too: the newest symbol
+# versions the libstdc++ of Ubuntu 24.04's libstdc++6 package (GCC 14's)
+# provides, so a build with g++-14 there is fine.
+GLIBCXX_FLOOR=3.4.33
+CXXABI_FLOOR=1.3.15
 # The build folder of the built mitcad (<build>/app/mitcad): a release
 # configure asks for CUDA there (cmake/Render.cmake).
 if [ -n "$BUILT" ] && grep -qE '^MITCAD_RENDER_REQUIRED_DEVICES:[A-Z]+=.*\bCUDA\b' \
@@ -80,7 +97,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for tool in python3 openssl readelf ldd; do
+for tool in python3 openssl readelf objdump ldd; do
   command -v "$tool" > /dev/null || ui_fail "$tool is required"
 done
 [ -x "$RELEASE_TOOL" ] || ui_fail "no release tool at $RELEASE_TOOL"
@@ -145,30 +162,82 @@ else
 fi
 
 elves=0
-glibc=0
+glibc=2.0
+qt_users=0
+REAL_DIR=$(readlink -f "$DIR")
+# newer a b: whether version a is newer than version b.
+newer() {
+  [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]
+}
+# check_versions name file: fails when the file needs a GLIBC_, GLIBCXX_
+# or CXXABI_ symbol version newer than its floor; a static file needs none.
+check_versions() {
+  local symbols prefix floor newest
+  symbols=$(objdump -T "$2" 2> /dev/null)
+  for prefix in GLIBC GLIBCXX CXXABI; do
+    floor=${prefix}_FLOOR
+    floor=${!floor}
+    newest=$(grep -oE "\b${prefix}_[0-9]+(\.[0-9]+)*" <<< "$symbols" | sed "s/^${prefix}_//" | sort -V | tail -1)
+    [ -n "$newest" ] || continue
+    newer "$newest" "$floor" &&
+      ui_fail "$1 needs ${prefix}_$newest, newer than ${prefix}_FLOOR $floor; build the release on Ubuntu 24.04"
+    [ "$prefix" = GLIBC ] && newer "$newest" "$glibc" && glibc=$newest
+  done
+  return 0
+}
+# The AppImage's runtime: a static one needs no glibc.
+check_versions "the AppImage's runtime" "$IMAGE"
 while IFS= read -r -d '' file; do
   [ "$(head -c 4 "$file" | od -An -c | tr -d ' ')" = '177ELF' ] || continue
   elves=$((elves + 1))
   relative=${file#"$DIR"/}
+  dynamic=$(readelf -d "$file" 2> /dev/null)
+  runpath=$(sed -n 's/.*(R*U*N*PATH).*\[\(.*\)\]$/\1/p' <<< "$dynamic")
+  runpaths=$(tr ':' '\n' <<< "$runpath")
   while IFS= read -r path; do
+    [ -n "$path" ] || continue
     case $path in
       '$ORIGIN' | '$ORIGIN/'*) ;;
       *) ui_fail "$relative: RUNPATH $path is not inside the AppImage" ;;
     esac
-  done < <(readelf -d "$file" | sed -n 's/.*(R*U*N*PATH).*\[\(.*\)\]$/\1/p' | tr ':' '\n')
-  # The runtime loader's view of it, without the caller's environment.
-  needs=$(env -i /usr/bin/ldd "$file" 2>&1) || continue # not dynamic
+  done <<< "$runpaths"
+  # Qt only from the AppImage (mitcad#789): each libQt6 library the file
+  # links is found through its own RUNPATH, inside the AppImage, so the
+  # loader never takes a system's Qt instead (whatever was loaded before).
+  while IFS= read -r library; do
+    [ -n "$library" ] || continue
+    found=""
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      below=${path#\$ORIGIN} # every entry starts with $ORIGIN (above)
+      candidate=$(readlink -f "$(dirname "$file")$below/$library")
+      case $candidate in
+        "$REAL_DIR"/*) [ -f "$candidate" ] && found=$candidate ;;
+      esac
+    done <<< "$runpaths"
+    [ -n "$found" ] || ui_fail "$relative: its RUNPATH ($runpath) does not find $library in the AppImage, so a system's Qt would be loaded"
+    qt_users=$((qt_users + 1))
+  done < <(sed -n 's/.*(NEEDED).*\[\(libQt6[^]]*\)\]$/\1/p' <<< "$dynamic")
+  check_versions "$relative" "$file"
+  # The runtime loader's view of it, without the caller's environment
+  # (no LD_LIBRARY_PATH). A file that links nothing (a static one) has none;
+  # ldd failing on any other is a fault, not a file to skip.
+  grep -q '(NEEDED)' <<< "$dynamic" || continue
+  needs=$(env -i /usr/bin/ldd "$file" 2>&1) || ui_fail "$relative: ldd failed: $(head -3 <<< "$needs")"
   while read -r name arrow path _; do
     [ "$arrow" = "=>" ] || continue
     [ "$path" = not ] && ui_fail "$relative: $name not found"
     library_ok "$path" "$DIR" || ui_fail "$relative: $name from $path, outside the AppImage and the system"
+    case $name:$path in
+      libQt6*:"$DIR"/*) ;;
+      libQt6*) ui_fail "$relative: $name from $path, not the AppImage's Qt" ;;
+    esac
   done <<< "$needs"
-  version=$(objdump -T "$file" 2> /dev/null | grep -o 'GLIBC_2\.[0-9]*' | cut -d. -f2 | sort -n | tail -1)
-  [ -n "$version" ] && [ "$version" -gt "$glibc" ] && glibc=$version
 done < <(find "$DIR" -type f -print0)
 [ "$elves" -gt 50 ] || ui_fail "only $elves ELF files"
-echo "ok   $elves ELF files: libraries inside the AppImage or the system's, RUNPATHs inside it"
-echo "note the AppImage needs glibc 2.$glibc or newer"
+[ "$qt_users" -gt 0 ] || ui_fail "no ELF file links Qt"
+echo "ok   $elves ELF files: libraries inside the AppImage or the system's, RUNPATHs inside it, Qt only the AppImage's"
+echo "ok   the AppImage needs glibc $glibc or newer (at most $GLIBC_FLOOR), libstdc++ at most GLIBCXX_$GLIBCXX_FLOOR and CXXABI_$CXXABI_FLOOR"
 rm -rf "$DIR"
 
 echo "--- 2. Started with an empty environment"
@@ -196,7 +265,7 @@ echo "ok   --version: Mitcad $VERSION"
 starter=$!
 window=""
 for _ in $(seq 1 150); do
-  window=$(xdotool search --onlyvisible --name ' - Mitcad$' 2> /dev/null | head -1)
+  window=$(xdotool search --onlyvisible --name ' - MitCad$' 2> /dev/null | head -1)
   [ -n "$window" ] && break
   sleep 0.1
 done
@@ -286,7 +355,7 @@ unset MITCAD_NO_UPDATE_CHECK
 inode=$(stat -c %i "$COPY")
 UI_GDB=0 UI_APP=$COPY ui_start_app
 ui_expect_log "Updates: Mitcad 0.0.0 for linux-x64, the AppImage $COPY" "the AppImage can update itself"
-ui_expect_log "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Mitcad checks for updates once a day; Tools › Preferences turns that off. [Release Notes, Install, Skip This Version, Later]" \
+ui_expect_log "Update notice (offer): MitCad $VERSION is available (this is 0.0.0). MitCad checks for updates once a day; Tools › Preferences turns that off. [Release Notes, Install, Skip This Version, Later]" \
   "the notice offers Install"
 OLD=$(xdotool getwindowpid "$UI_WINDOW")
 ui_mark
@@ -300,7 +369,7 @@ done
 kill -0 "$OLD" 2> /dev/null && ui_fail "Mitcad did not quit"
 ui_expect_new "Update: replaced $COPY" "the AppImage replaced once Mitcad quit"
 ui_expect_new "Update installed: 0.0.0 -> $VERSION" "the new AppImage reports the update" 30
-ui_expect_new "Update notice (message): Mitcad was updated to $VERSION. [Close]" "and tells the user"
+ui_expect_new "Update notice (message): MitCad was updated to $VERSION. [Close]" "and tells the user"
 cmp -s "$COPY" "$WWW/release/$asset" || ui_fail "the AppImage is not the release's"
 [ "$(stat -c %i "$COPY")" != "$inode" ] || ui_fail "the AppImage was not replaced"
 [ -x "$COPY" ] || ui_fail "the new AppImage is not executable"
@@ -309,7 +378,7 @@ grep -q "^GET /release/$asset " "$WORK/requests.log" || ui_fail "the AppImage wa
 # The new process is the AppImage's own, no child of this script.
 UI_WINDOW=""
 for _ in $(seq 1 100); do
-  UI_WINDOW=$(xdotool search --onlyvisible --name ' - Mitcad$' 2> /dev/null | head -1)
+  UI_WINDOW=$(xdotool search --onlyvisible --name ' - MitCad$' 2> /dev/null | head -1)
   [ -n "$UI_WINDOW" ] && break
   sleep 0.2
 done

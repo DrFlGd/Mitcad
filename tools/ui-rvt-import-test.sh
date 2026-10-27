@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files core/rvt core/cfb core/import/src/rvt core/import/src/ifc core/ffi/src/rvt_import.rs core/tests tools/cli
+# check-all sources: app/files core/rvt core/cfb core/import-rvt core/import-ifc core/import-base core/ffi/src/rvt_import.rs core/tests tools/cli
 # The .rvt import through File > Open (mitcad#274):
 #   - the reader's test project (test_exchange --write-rvt: two levels, a
 #     column of a family type at its transform, a wall, a surface's saved
@@ -33,7 +33,7 @@ open_file() {
 }
 open_unsaved() {
   ui_key ctrl+o
-  ui_focus_dialog '^Mitcad$'
+  ui_focus_dialog '^MitCad$'
   ui_key d
   ui_type_path 'Open' "$1"
 }

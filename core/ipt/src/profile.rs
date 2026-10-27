@@ -15,9 +15,9 @@
 
 use std::collections::HashMap;
 
-use mitcad_f3d::asm::file::AsmFile;
-use mitcad_f3d::asm::token::Token;
-use mitcad_f3d::convert;
+use mitcad_asm::asm::file::AsmFile;
+use mitcad_asm::asm::token::Token;
+use mitcad_asm::convert;
 use mitcad_vec3::{cross, dot, unit_div_above};
 
 use crate::dc::{Definitions, type_id};
@@ -569,11 +569,11 @@ fn wire_edges(file: &AsmFile, body: usize) -> Option<Vec<usize>> {
 /// A curve's piece over `t` as an [`OutlineEdge`], its points mapped by
 /// `to` (None when one is not mapped).
 fn outline_edge(
-    curve: &mitcad_f3d::brep::Curve,
+    curve: &mitcad_asm::brep::Curve,
     t: [f64; 2],
     to: &dyn Fn([f64; 3]) -> Option<[f64; 2]>,
 ) -> Option<OutlineEdge> {
-    use mitcad_f3d::brep::Curve;
+    use mitcad_asm::brep::Curve;
     let (t0, t1) = (t[0].min(t[1]), t[0].max(t[1]));
     if t1.partial_cmp(&t0) != Some(std::cmp::Ordering::Greater) {
         return None;
@@ -842,7 +842,7 @@ fn coedge_loop(
         let edge = ptr(file, c, 6)?;
         let reversed = matches!(file.fields(c).get(7), Some(Token::True));
         let (curve, t, transform) = convert::edge_curve(file, body, edge, &options, None).ok()?;
-        let n = if matches!(curve, mitcad_f3d::brep::Curve::Line { .. }) {
+        let n = if matches!(curve, mitcad_asm::brep::Curve::Line { .. }) {
             1
         } else {
             720
@@ -1030,7 +1030,7 @@ mod tests {
 
     #[test]
     fn outline_edges_are_the_curves_pieces() {
-        use mitcad_f3d::brep::{BSplineCurve, Curve};
+        use mitcad_asm::brep::{BSplineCurve, Curve};
         let flat = |p: [f64; 3]| Some([p[0], p[1]]);
         // A quarter and a bit of an ellipse, as rational quadratic pieces.
         let ellipse = Curve::Ellipse {

@@ -103,7 +103,7 @@ QStringList agentFolders() {
 namespace {
 
 // A file in an allowed folder (agentDesignPath, agentOutputPath): one of
-// `suffixes` (any when empty; `design` says it must be a Mitcad design).
+// `suffixes` (any when empty; `design` says it must be a MitCad design).
 QString agentPath(const QString& given, const QStringList& suffixes, bool design, bool forWriting, bool overwrite,
                   QString& reason) {
   reason.clear();
@@ -125,7 +125,7 @@ QString agentPath(const QString& given, const QStringList& suffixes, bool design
   }
   const QFileInfo info(QDir::cleanPath(QDir::isAbsolutePath(text) ? text : QDir(folders.first()).filePath(text)));
   if (!suffixes.isEmpty() && !suffixes.contains(info.suffix(), Qt::CaseInsensitive)) {
-    reason = design ? QObject::tr("%1 is not a Mitcad design: the path must end in .mitcad.")
+    reason = design ? QObject::tr("%1 is not a MitCad design: the path must end in .mitcad.")
                           .arg(QDir::toNativeSeparators(text))
                     : QObject::tr("%1 must end in .%2.")
                           .arg(QDir::toNativeSeparators(text), suffixes.join(QStringLiteral(" or .")));

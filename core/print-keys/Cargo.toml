@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-print-keys"
+description = "The print settings' key map for Mitcad: printer, process and filament keys and their slicer dialects"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_print_keys"
+
+# The model re-exports the crate as `mitcad_model::print_keys`.
+[dependencies]
+serde_json.workspace = true

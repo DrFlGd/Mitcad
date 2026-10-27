@@ -447,7 +447,8 @@ impl LengthMeta {
 }
 
 /// A number for messages: at most three decimals, no trailing zeros.
-pub(crate) fn round(value: f64) -> String {
+#[doc(hidden)]
+pub fn round(value: f64) -> String {
     let text = format!("{value:.3}");
     let text = text.trim_end_matches('0').trim_end_matches('.');
     if text == "-0" {

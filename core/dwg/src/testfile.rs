@@ -3,7 +3,7 @@
 //! and `mitcad-cli import-dwg --write-test`): the structures the reader
 //! reads, written as the specification describes them, for every
 //! version. The bodies' B-rep records come from Mitcad's own ASM writer
-//! (`mitcad_f3d::testdata`).
+//! (`mitcad_asm::testdata`).
 //!
 //! [`test_drawing`] is a small truss: a block `Brace` (a cube solid), a
 //! block `Segment` (a cylinder chord and two inserts of `Brace`), two
@@ -84,8 +84,8 @@ pub const LAYER_TUBES: u64 = 0x11;
 
 /// The test drawing described in the module docs.
 pub fn test_drawing() -> TestDrawing {
-    let cube = mitcad_f3d::testdata::cube_blob();
-    let cylinder = mitcad_f3d::testdata::cylinder_blob();
+    let cube = mitcad_asm::testdata::cube_blob();
+    let cylinder = mitcad_asm::testdata::cylinder_blob();
     let rigid = |block, point, rotation| TestEntity::Insert {
         block,
         point,
@@ -283,7 +283,7 @@ pub fn test_case(name: &str) -> Option<TestDrawing> {
             layer: LAYER_0,
             color: 256,
             entity: TestEntity::Solid {
-                asm: mitcad_f3d::testdata::cube_without_points_blob(),
+                asm: mitcad_asm::testdata::cube_without_points_blob(),
                 text: false,
             },
         }),
@@ -536,8 +536,8 @@ fn objects(d: &TestDrawing, v: Version) -> Written {
                     w.data.bit(true);
                     stored.push((p.handle, asm.clone()));
                 } else if *text {
-                    let file = mitcad_f3d::asm::AsmFile::parse(asm).expect("a test body");
-                    let sat = mitcad_f3d::asm::text::from_binary(&file);
+                    let file = mitcad_asm::asm::AsmFile::parse(asm).expect("a test body");
+                    let sat = mitcad_asm::asm::text::from_binary(&file);
                     let masked = crate::solid::mask(sat.as_bytes());
                     w.data.bit(false).bit(false).bs(1);
                     for chunk in masked.chunks(4096) {
@@ -923,7 +923,7 @@ mod tests {
         let mut w = ObjectWriter::new(v, types::SOLID3D, 0x7f, true);
         w.data.bb(2).bl(0).bit(true); // model space, no reactors, no xdictionary
         w.data.bs(256).bd(1.0).bb(0).bb(0).bs(0).rc(0x1d); // colour .. line weight
-        let asm = mitcad_f3d::testdata::cube_blob();
+        let asm = mitcad_asm::testdata::cube_blob();
         w.data.bit(false).bit(false).bs(2).bytes(&asm);
         w.h(5, LAYER_0);
         let bytes = w.finish(false);
@@ -982,7 +982,7 @@ mod tests {
             layer: LAYER_0,
             color: 256,
             entity: TestEntity::Solid {
-                asm: mitcad_f3d::testdata::cube_blob(),
+                asm: mitcad_asm::testdata::cube_blob(),
                 text: false,
             },
         });

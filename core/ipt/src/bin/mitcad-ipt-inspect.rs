@@ -574,7 +574,7 @@ fn cmd_bodies(path: &str, verbose: bool, faces: bool) -> Result<(), String> {
 /// Each face of a body: its surface (with its geometry when `surfaces`),
 /// box and loops (each edge's curve, parameter range, vertices and first
 /// point).
-fn print_faces(body: &mitcad_f3d::brep::Body, surfaces: bool) {
+fn print_faces(body: &mitcad_asm::brep::Body, surfaces: bool) {
     for (i, face) in body.faces.iter().enumerate() {
         let mut lo = [f64::INFINITY; 3];
         let mut hi = [f64::NEG_INFINITY; 3];
@@ -606,7 +606,7 @@ fn print_faces(body: &mitcad_f3d::brep::Body, surfaces: bool) {
             }
             for c in lp {
                 let curve = &body.curves[body.edges[c.edge].curve];
-                if matches!(curve, mitcad_f3d::brep::Curve::Ellipse { .. }) {
+                if matches!(curve, mitcad_asm::brep::Curve::Ellipse { .. }) {
                     kinds.push(format!(
                         "
         e{} {curve:?}",
@@ -628,7 +628,7 @@ fn print_faces(body: &mitcad_f3d::brep::Body, surfaces: bool) {
             hi[1],
             hi[2]
         );
-        if surfaces && !matches!(surface, mitcad_f3d::brep::Surface::BSpline(_)) {
+        if surfaces && !matches!(surface, mitcad_asm::brep::Surface::BSpline(_)) {
             println!("      surface {surface:?}");
         }
         for l in loops {
@@ -640,8 +640,8 @@ fn print_faces(body: &mitcad_f3d::brep::Body, surfaces: bool) {
 /// The faces of the top-level bodies as they were after an ASM history
 /// state (the history rolled back to it), with their surfaces.
 fn cmd_state_faces(path: &str, state: &str) -> Result<(), String> {
-    use mitcad_f3d::asm::AsmFile;
-    use mitcad_f3d::asm::history::History;
+    use mitcad_asm::asm::AsmFile;
+    use mitcad_asm::asm::history::History;
     let f = open(path)?;
     let state: i64 = state.parse().map_err(|_| format!("bad state {state}"))?;
     let options = mitcad_ipt::convert_options();
@@ -655,7 +655,7 @@ fn cmd_state_faces(path: &str, state: &str) -> Result<(), String> {
             .ok_or_else(|| format!("no state {state}"))?;
         let view = history.view(steps);
         let deleted = mitcad_ipt::deleted_bodies(&history, &file);
-        let bodies = mitcad_f3d::convert::body_records(&file)
+        let bodies = mitcad_asm::convert::body_records(&file)
             .into_iter()
             .filter(|(_, top)| *top)
             .map(|(b, _)| (b, None))
@@ -664,7 +664,7 @@ fn cmd_state_faces(path: &str, state: &str) -> Result<(), String> {
             if deleted_by.is_some_and(|j| steps <= j) || view.get(&body) == Some(&None) {
                 continue;
             }
-            let b = mitcad_f3d::convert::convert_body_at(&file, body, &options, Some(&view));
+            let b = mitcad_asm::convert::convert_body_at(&file, body, &options, Some(&view));
             println!(
                 "{} body {body} after state {state} ({steps} back): {} faces, {} edges",
                 record.place(),
@@ -728,8 +728,8 @@ fn cmd_result(path: &str) -> Result<(), String> {
 }
 
 fn cmd_history(path: &str) -> Result<(), String> {
-    use mitcad_f3d::asm::AsmFile;
-    use mitcad_f3d::asm::history::History;
+    use mitcad_asm::asm::AsmFile;
+    use mitcad_asm::asm::history::History;
     let f = open(path)?;
     let options = mitcad_ipt::convert_options();
     for record in f.brep_records().map_err(|e| e.to_string())? {
@@ -760,7 +760,7 @@ fn cmd_history(path: &str) -> Result<(), String> {
             states.join(" ")
         );
         let deleted = mitcad_ipt::deleted_bodies(&history, &file);
-        let bodies = mitcad_f3d::convert::body_records(&file)
+        let bodies = mitcad_asm::convert::body_records(&file)
             .into_iter()
             .filter(|(_, top)| *top)
             .map(|(b, _)| (b, None))
@@ -775,7 +775,7 @@ fn cmd_history(path: &str) -> Result<(), String> {
                     println!("  body {body} back {steps}: absent");
                     continue;
                 }
-                let b = mitcad_f3d::convert::convert_body_at(&file, body, &options, Some(&view));
+                let b = mitcad_asm::convert::convert_body_at(&file, body, &options, Some(&view));
                 let state = history
                     .states
                     .get(steps)
@@ -795,7 +795,7 @@ fn cmd_history(path: &str) -> Result<(), String> {
 }
 
 fn cmd_asm(path: &str, name: &str, index: &str, max: Option<usize>) -> Result<(), String> {
-    use mitcad_f3d::asm::AsmFile;
+    use mitcad_asm::asm::AsmFile;
     let f = open(path)?;
     let content = f
         .segment_data(segment(&f, name)?)
@@ -1345,8 +1345,8 @@ fn cmd_study(path: &str) -> Result<(), String> {
     let Some(record) = records.first() else {
         return Err("no B-rep record".to_owned());
     };
-    let file = mitcad_f3d::asm::AsmFile::parse(&record.asm).map_err(|e| e.to_string())?;
-    let asm_history = mitcad_f3d::asm::history::History::parse(&file).map_err(|e| e.0)?;
+    let file = mitcad_asm::asm::AsmFile::parse(&record.asm).map_err(|e| e.to_string())?;
+    let asm_history = mitcad_asm::asm::history::History::parse(&file).map_err(|e| e.0)?;
     let mut cache: HashMap<i64, mitcad_ipt::naming::BrepState> = HashMap::new();
     let design = mitcad_ipt::design::read(&f, path)
         .map_err(|e| e.to_string())?
@@ -1439,8 +1439,8 @@ fn cmd_brep_names(path: &str, state: &str) -> Result<(), String> {
     let records = f.brep_records().map_err(|e| e.to_string())?;
     let state: i64 = state.parse().map_err(|_| format!("bad state {state}"))?;
     for record in &records {
-        let file = mitcad_f3d::asm::AsmFile::parse(&record.asm).map_err(|e| e.to_string())?;
-        let history = mitcad_f3d::asm::history::History::parse(&file).map_err(|e| e.0)?;
+        let file = mitcad_asm::asm::AsmFile::parse(&record.asm).map_err(|e| e.to_string())?;
+        let history = mitcad_asm::asm::history::History::parse(&file).map_err(|e| e.0)?;
         let steps = history
             .as_ref()
             .and_then(|h| mitcad_ipt::naming::steps_to(h, state))

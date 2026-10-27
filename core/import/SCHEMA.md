@@ -1,16 +1,16 @@
 # The design dump schema (version 2)
 
-The design dump is Mitcad's JSON form of an `.f3d` design: parameters,
+The design dump is MitCad's JSON form of an `.f3d` design: parameters,
 components, occurrences and timeline, with each item's definition. It is
 the intermediate representation the `.f3d` import replays
-(`mitcad_f3d::design::ir::Dump`, [README.md](README.md)). `schema` is
+(`mitcad_dump::Dump`, [README.md](README.md)). `schema` is
 `"mitcad-f3d-dump"`, `schema_version` is `2`; an incompatible change
 increments `schema_version` (version 1 differences: §7).
 
 Notation: `T?` — key may be absent; `T | null` — key present, value may be
 null. `vec3` is `[x, y, z]`, `vec2` is `[x, y]`, `mat4` a 4x4 nested array.
 
-**[assumed]** marks a meaning not yet confirmed: the reading Mitcad uses,
+**[assumed]** marks a meaning not yet confirmed: the reading MitCad uses,
 with the reference-model experiment that will settle it (`K<n>`).
 
 ## 1. General rules
@@ -202,7 +202,7 @@ convert values as follows:
   (`MITCAD_F3D_MODELS`, [docs/development.md](../../docs/development.md)).
 
 The stream decoder's `_f3d.appearance` (mitcad#228;
-`mitcad_f3d::design::ir::AppearanceData`, `docs/f3d-appearances.md`, *Appearances and
+`mitcad_dump::AppearanceData`, `docs/f3d-appearances.md`, *Appearances and
 materials*) holds the appearances and physical materials: `assets` (the
 assets used, their textures and their materials' aspects: `id`, `schema`,
 `name`, `library`, `ui_name`, `category`, `description`, `properties`
@@ -699,7 +699,7 @@ parentheses.
 
 Detail keys are left out of `props`, so nothing is repeated. The stream
 decoder writes the main fields of the types it decodes; what the import
-reads is listed in `core/model/src/api/commands.md` (*From the dump IR*).
+reads is listed in `core/model-api/src/commands.md` (*From the dump IR*).
 
 Input selection details (mitcad#186):
 

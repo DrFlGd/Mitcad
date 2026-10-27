@@ -3,7 +3,7 @@
 # check-all sources: app/OcctViewer.cpp app/OcctViewer.hpp app/MainWindow.cpp app/MainWindow.hpp app/browser tools/cli
 # check-all sources: app/MainWindowSection.cpp app/framework/SectionWorker.cpp app/framework/SectionWorker.hpp
 # check-all sources: app/framework/CommandSession.cpp app/framework/DocumentSession.cpp app/commands/InspectCommands.cpp
-# check-all sources: core/cpp/bridge/analysis.cpp core/model/src/api/analysis.rs core/ffi/src/lib.rs geometry/io/src/mesh.cpp
+# check-all sources: core/cpp/bridge/analysis.cpp core/model-api/src/analysis.rs core/ffi/src/lib.rs geometry/io/src/mesh.cpp
 # The caps of Section Analysis through the real UI (mitcad#382), on a design
 # of the root and two components, each with a block:
 #   - Each component's caps take its timeline colour (the band under its

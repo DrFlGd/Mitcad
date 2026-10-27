@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch/EditTools.cpp app/sketch/SketchOverlay.cpp
-# check-all sources: core/model/src/sketch core/solver tools/cli
+# check-all sources: core/sketch core/solver tools/cli
 # Input-driven Windows UI test of the gap between two concentric circles
 # (mitcad#445) in the build VM (tools/ui-windows-lib.ps1 says how the input
 # is posted):

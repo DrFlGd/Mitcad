@@ -22,7 +22,7 @@ QString tr(const char* text) { return QCoreApplication::translate("ParameterSugg
 bool isNameStart(QChar c) { return c.isLetter() || c == QLatin1Char('_'); }
 bool isNameChar(QChar c) { return c.isLetterOrNumber() || c == QLatin1Char('_'); }
 
-// The model's reserved words (core/model/src/expr: units.rs UNIT_NAMES,
+// The model's reserved words (core/expr/src: units.rs UNIT_NAMES,
 // ast.rs FUNCTIONS and Constant, mod.rs UNSUPPORTED_NAMES). Units and the
 // constant E are reserved as written.
 const QSet<QString>& reservedNames() {

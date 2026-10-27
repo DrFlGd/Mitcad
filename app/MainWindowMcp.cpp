@@ -176,7 +176,7 @@ QJsonObject MainWindow::mcpCommand(const QJsonObject& arguments) {
       refuse(tr("%1undo and redo run alone, not in a command array.").arg(entryName(i)));
     }
     // By class: file IO, remote and internal checkpoint commands stay
-    // unavailable (mitcad#265, core/model/src/api/classes.rs).
+    // unavailable (mitcad#265, core/model-api/src/classes.rs).
     try {
       idleDocument().validate_mcp_document_command(rustStr(compactJson(entries[i])));
     } catch (const std::exception& error) {

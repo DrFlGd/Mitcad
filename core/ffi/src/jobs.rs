@@ -10,7 +10,7 @@
 //! inside the feature being evaluated (P7e, `kernel/cancel.rs`). A
 //! cancelled command, undo, redo, preview or `update_links` fails with "the
 //! computation was cancelled" and changes nothing
-//! (`core/model/src/api/commands.md`, "Progress and cancellation"); a
+//! (`core/model-api/src/commands.md`, "Progress and cancellation"); a
 //! cancelled `import_f3d` stops early and keeps what it imported (T1e).
 
 use std::sync::Arc;

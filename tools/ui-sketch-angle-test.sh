@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch tools/cli
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs core/solver
+# check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
 # Sketch Dimension's angle between two lines measures the sector the value
 # is placed in (mitcad#296), on a trapezoid mitcad-cli makes: Sketch1 (F1)
 # on XY, its bottom c1 from (0, 0) to (40, 0) (fixed), c4 up to (30, 20), c6

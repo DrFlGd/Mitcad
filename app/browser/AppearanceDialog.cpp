@@ -861,7 +861,7 @@ void AppearanceDialog::showCurrent() {
   } else {
     m_preview->setPixmap(QPixmap::fromImage(appearanceSwatch(*a, kPreviewSize, devicePixelRatioF())));
     QStringList lines;
-    lines << (a->library ? tr("Mitcad's library: read-only. New makes a copy in this design to edit.")
+    lines << (a->library ? tr("MitCad's library: read-only. New makes a copy in this design to edit.")
                          : tr("An appearance of this design."));
     if (!a->bodies.isEmpty()) {
       QStringList names;

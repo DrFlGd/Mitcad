@@ -2,7 +2,7 @@
 //! Drawings kept in the design (mitcad#707, `crate::drawing::def`): the
 //! root's and each component's Drawings folder. A drawing stores its
 //! definition only; its lines are projected from the model when the
-//! `drawing` query asks (`api/drawings.rs`). Adding, changing and deleting
+//! `drawing` query asks (`model-api/src/drawings.rs`). Adding, changing and deleting
 //! one is an undo step that recomputes nothing.
 //!
 //! A component's drawings belong to it: a copy of the component (Paste
@@ -267,11 +267,7 @@ impl<K: Kernel> Document<K> {
     /// The drawing (other than `except`) one of whose views has a datum
     /// label of this letter: the drawings' datum labels and the model's
     /// are one set of letters (mitcad#717).
-    pub(crate) fn drawing_with_datum(
-        &self,
-        letter: &str,
-        except: Option<DrawingUid>,
-    ) -> Option<&Drawing> {
+    pub fn drawing_with_datum(&self, letter: &str, except: Option<DrawingUid>) -> Option<&Drawing> {
         self.state
             .drawings
             .iter()
@@ -437,7 +433,7 @@ impl<K: Kernel> Document<K> {
 
 /// The views a view's deletion takes with it: itself and those that come
 /// from it.
-pub(crate) fn deleted_views(sheet: &crate::drawing::def::DrawingSheet, id: u32) -> Vec<u32> {
+pub fn deleted_views(sheet: &crate::drawing::def::DrawingSheet, id: u32) -> Vec<u32> {
     let mut out = vec![id];
     out.extend(sheet.dependents(id));
     out

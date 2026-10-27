@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/browser app/framework/HybridAssembly.cpp app/view/FirstBodiesFit.hpp
-# check-all sources: core/model/src/document/components.rs core/model/src/api/components.rs
+# check-all sources: core/model/src/document/components.rs core/model-api/src/components.rs
 # The browser (U3) through the real UI, on a part with a component placed
 # 40 mm along X:
 #   - The rows' layout (mitcad#10): a compact width; each light bulb just

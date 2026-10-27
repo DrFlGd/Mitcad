@@ -105,7 +105,7 @@ void MainWindow::registerProjectsPanelCommands() {
 // The panel, its dock or card
 
 void MainWindow::createProjectsPanel() {
-  if (m_nativeUi || m_projectsPanel != nullptr) {
+  if (m_projectsPanel != nullptr) {
     return;
   }
   ProjectsPanel::Host host;
@@ -270,6 +270,9 @@ bool MainWindow::projectsPanelShownAtStart() const {
 }
 
 bool MainWindow::projectsPanelShown() const {
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (m_nativeUi) return m_nativeProjectsShown;
+#endif
   if (m_projectsContainer == nullptr) {
     return false;
   }
@@ -299,6 +302,14 @@ void MainWindow::setProjectsPanelShown(bool shown, bool remember) {
   if (shown == projectsPanelShown()) {
     return;
   }
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (m_nativeUi) {
+    m_nativeProjectsShown = shown;
+    m_projectsPanel->setNativePresented(shown);
+    refreshNativeProjects();
+    return;
+  }
+#endif
   if (auto* card = qobject_cast<GlassCard*>(m_projectsContainer)) {
     card->setVisible(shown);
     m_floating->requestLayout();
@@ -770,7 +781,7 @@ void MainWindow::addExistingProjectFolder() {
   }
   qInfo().noquote() << QStringLiteral("Add Existing Project Folder: %1 is no project").arg(folder);
   QMessageBox box(QMessageBox::Question, tr("Add Existing Project Folder"),
-                  tr("%1 is not a Mitcad project.").arg(QDir::toNativeSeparators(folder)), QMessageBox::Cancel, this);
+                  tr("%1 is not a MitCad project.").arg(QDir::toNativeSeparators(folder)), QMessageBox::Cancel, this);
   box.setInformativeText(tr("Make It a Project makes it one in New Project: the designs in it become the project's."));
   QPushButton* make = box.addButton(tr("&Make It a Project…"), QMessageBox::AcceptRole);
   prepareModal(&box);

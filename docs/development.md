@@ -1,16 +1,18 @@
-# Developing Mitcad
+# Developing MitCad
 
 ## Isolated builds
 
 Dependency build scripts (Cargo, vcpkg, pip) run third-party code, so
-Mitcad is built and tested only in isolated environments. Source and git
+MitCad is built and tested only in isolated environments. Source and git
 stay on the host; the working tree is mirrored one way into the build
 environment before each build.
 
 - Windows host: a **WSL distro** (no interop, no Windows drives) for
   Linux, a **Hyper-V VM** over SSH for Windows.
 - Linux host: any Ubuntu 24.04 container or VM; `install-packages.sh` and
-  `setup-user.sh` work there.
+  `setup-user.sh` work there. A host with a newer system builds releases
+  in an Ubuntu 24.04 build root
+  ([Linux on a newer host](#linux-on-a-newer-host)).
 - Mac host (Apple Silicon): a **macOS guest VM** over SSH for macOS
   ([macOS: the build VM](#macos-the-build-vm)).
 
@@ -39,6 +41,7 @@ wsl -d mitcad-dev --cd "~/src/mitcad" -- bash -lc "cmake --preset dev && cmake -
 | `install-packages.sh` | System packages (compilers, CMake, Ninja, ccache, rsync, X11/OpenGL headers, gdb, Xvfb, xdotool, rsvg-convert, ImageMagick; mosquitto for the live updates' tests, its service disabled; libsecret's headers for QtKeychain and GNOME's keyring for the keychain's test). Run as root. |
 | `setup-user.sh` | Pinned per-user toolchain: Rust from `rust-toolchain.toml`, cargo-deny, vcpkg at `vcpkg.json`'s `builtin-baseline`, Qt via aqtinstall, the render worker's Cycles with its CUDA device and Open Image Denoise (`build-cycles.sh --cuda`, once; `MITCAD_RENDER_CUDA=0` without CUDA); writes `CMakeUserPresets.json` (`dev` = Linux debug). Under WSLg sets `GALLIUM_DRIVER=d3d12`; `MITCAD_GPU_ADAPTER=NVIDIA` picks a GPU. |
 | `install-appimage-tools.sh` | AppImage tools into `~/appimage-tools` (`MITCAD_APPIMAGE_TOOLS`), see [below](#tools-downloaded-from-releases). |
+| `build-root.sh` | An Ubuntu 24.04 build root on a newer Linux host, entered with bubblewrap, see [below](#linux-on-a-newer-host). |
 
 Parallel checkouts: `sync-to-wsl.sh mitcad-dev src/mitcad-<name>` and copy
 `CMakeUserPresets.json` from the first one.
@@ -53,6 +56,55 @@ Gotchas:
 - `/tmp` in WSL can be emptied mid-session; keep files in `~`.
 - Keep `sudo` password-protected; install as root with
   `wsl -d mitcad-dev -u root ...`.
+
+## Linux on a newer host
+
+The Linux AppImage takes glibc and libstdc++ from the user's system, so it
+needs those of the system it was built on
+([Linux AppImage](#linux-appimage)). A Linux host newer than Ubuntu 24.04
+builds the release in an **Ubuntu 24.04 build root**
+(`tools/dev-env/build-root.sh`): a debootstrapped noble file system that
+bubblewrap (`bwrap`, with unprivileged user namespaces) enters as the
+host's own user, with a home folder of its own that holds the toolchain
+built against the root's glibc. Builds and tests run there unchanged:
+`check-all.sh`, the presets and `appimage-test.sh` see an Ubuntu 24.04
+system.
+
+```bash
+# As root, once (again later to update the root's packages):
+tools/dev-env/build-root.sh create <root>
+# As the user, once: Rust, vcpkg, Qt, the render worker's libraries (with
+# CUDA) and the AppImage tools into <home>; CMakeUserPresets.json in
+# <home>/src/mitcad
+tools/dev-env/build-root.sh setup --bind <data folder> <root> <home> <checkout>
+# Any command in the root (default: a login shell)
+tools/dev-env/build-root.sh run --bind <data folder> <root> <home> bash -lc 'cmake --preset dev && ...'
+```
+
+`run` mounts the root's `/usr`, `/etc` and `/var` read-only and binds
+`<home>`, each `--bind` folder (at the same path), `/tmp` (shared, so
+Xvfb display numbers do not clash with the host's), the user's runtime
+folder (so `check-all.sh` gets its memory-capped `systemd-run --user`
+scope) and the network. The environment is cleared but for the `MITCAD_*`
+variables (corpora, test slots) and the build parallelism
+(`CMAKE_BUILD_PARALLEL_LEVEL`, `CARGO_BUILD_JOBS`,
+`VCPKG_MAX_CONCURRENCY`); a `MITCAD_*` path outside the bound folders is
+reported, since the root cannot see it. The user's `/etc/passwd` entry
+names `<home>` as the home folder. Copy the checkout's
+`CMakeUserPresets.json` from `<home>/src/mitcad`, not from the host,
+whose render prefix and toolchain are the host's.
+
+`build-root.sh create --plain <root>` makes a second root with only what an
+Ubuntu 24.04 desktop has for running MitCad (glibc, libstdc++, X11/xcb,
+Mesa, GLVND's `libOpenGL`, fontconfig, D-Bus, GLib) plus Xvfb and
+xdotool: a clean 24.04 to start an AppImage on once, on a hidden display.
+
+Memory: the root's GCC 13 and `ld` need more than a newer toolchain
+(about 2.5 GB per AVX-512 compile of a render library and per link of a
+debug test executable). Under a memory cap, lower `VCPKG_MAX_CONCURRENCY`
+and `MITCAD_RENDER_JOBS` for `setup`, and `CMAKE_BUILD_PARALLEL_LEVEL`
+(or a link job pool, `-DCMAKE_JOB_POOLS=link=1
+-DCMAKE_JOB_POOL_LINK=link`) for a fresh build.
 
 ## Windows: the build VM
 
@@ -218,6 +270,87 @@ actual validation and are not guaranteed for every crate; see upstream's
 [Rust limitations](https://github.com/mozilla/sccache/blob/v0.18.0/docs/Rust.md)
 and [Rust key implementation](https://github.com/mozilla/sccache/blob/v0.18.0/src/compiler/rust.rs).
 
+`MITCAD_CARGO_TARGET_DIR` (a path; empty by default) keeps cargo's builds
+outside the build folder, so that a new build folder reuses the Rust
+crates built before while its C++ tree starts clean (release builds:
+a fresh build folder, a persistent cargo folder). Empty, Corrosion builds
+the library in `<build>/cargo` and the crates' test fixtures in
+`<build>/core/cargo-test`. Set, they go to separate subfolders:
+
+| Folder | What |
+|---|---|
+| `<dir>/lib` | the library build (Corrosion: `mitcad_ffi`, `mitcad-release`) |
+| `<dir>/test-debug` | `core.cargo_build` and `core.doctests` |
+| `<dir>/test-release` | `core.cargo_build_release` and `core.doctests_release` |
+
+Corrosion always gives cargo a `--target-dir` inside the build folder, so
+configure makes `<build>/cargo` a link to `<dir>/lib`: a symbolic link, or
+a directory junction on Windows (no privilege needed). Delete such a build
+folder with a tool that does not follow links (`rmdir /s /q` on Windows,
+not Windows PowerShell 5.1's `Remove-Item -Recurse`, which descends into
+junctions). Configure refuses a real `<build>/cargo` folder left by a build
+without the variable, needs a single-configuration generator (the Ninja
+presets), and removes the link again when the variable is cleared. The
+lists of test binaries stay in `<build>/core/cargo-test`. Builds sharing
+the folder wait for each other on cargo's lock. cargo's fingerprints and
+Corrosion's folder name (`<dir>/lib/core_<hash>`, a hash of the manifest's
+path) depend on the checkout's path: reuse needs the same source path, or
+everything builds again beside the old builds. The test builds' folders
+are swept after each build (below); the library's folder only grows, and
+its owner trims it (e.g. deletes it when it passes a size limit or when
+`rust-toolchain.toml` changes).
+
+### The crates' test builds: sweep, jobs, debug information
+
+cargo keeps every unit it has built in its target folder: each change of a
+dependency's version, of the selected packages' features, of flags or
+environment, of the toolchain or of the checkout's path builds the units
+again under new hashes (`<name>-<hash>` in `deps/`, `.fingerprint/`,
+`build/`) beside the old ones, and the test folder grew to tens of GB
+(mitcad#796). Three things keep `<build>/core/cargo-test` (or
+`<dir>/test-debug`, `<dir>/test-release`) near the size of one build:
+
+- **Sweep.** After a successful `core.cargo_build` /
+  `core.cargo_build_release`, `core/cargo-tests.cmake` reads the units the
+  build named in its JSON messages (every `compiler-artifact`, built or
+  fresh, and `build-script-executed`) and removes from that profile's
+  folder (`debug/` or `release/` under `CARGO_TARGET_DIR`) what they do not
+  name: `deps/` files and folders `<name>-<hash>.*` of other hashes,
+  `.fingerprint/` and `build/` folders of other hashes, and the
+  `incremental/` sessions of crates no longer built (and a crate's oldest
+  sessions beyond its number of units). It logs the count and size by
+  kind. Programs' files and fingerprints stay (cargo's messages name a
+  program only by its copy outside `deps/`), as does anything written after
+  the build started. Nothing the build used is removed, so the next build
+  of the same sources compiles nothing. `MITCAD_CARGO_SWEEP=0` in the
+  environment turns the sweep off; do that when several checkouts share
+  one `MITCAD_CARGO_TARGET_DIR`, as each build would otherwise remove the
+  others' units.
+- **Jobs by memory.** Unless `CARGO_BUILD_JOBS` is set, the test builds
+  run one cargo job per 2.5 GiB of the memory available when the build
+  starts (at least one, at most the logical cores;
+  `MITCAD_CARGO_JOB_MIB` changes the 2.5 GiB): a rustc job of these builds
+  (a large crate, or a test binary's link) takes up to about 2.5 GiB, and
+  a job per core ran a Windows VM of 10-19 GB out of memory once the
+  crates were split. On Linux a memory limit of the build's cgroup
+  (check-all's slice, mitcad-testrun's scopes) counts as well.
+- **Fixed incremental setting.** `CARGO_INCREMENTAL` is part of the units'
+  hashes, so one inherited from the shell built every MitCad crate a second
+  time. The test builds and doctests set it themselves: on for debug, off
+  for release (cargo's defaults), off for debug too with
+  `-DMITCAD_CARGO_TEST_INCREMENTAL=OFF` (smaller folder, slower rebuilds of
+  a changed crate) or with the Rust compiler cache. A `CARGO_INCREMENTAL`
+  in the shell no longer affects them. Other variables that change the
+  hashes, `RUSTFLAGS` and `CARGO_PROFILE_*` / `CARGO_BUILD_*` among them,
+  are still taken from the environment: keep them the same between runs.
+- **Debug information.** `[profile.test]` in `core/Cargo.toml` keeps line
+  tables only (`debug = "line-tables-only"`): panics and backtraces still
+  show files and lines, while the test binaries, their `.pdb` files and
+  their links shrink. The application's builds keep full debug information
+  for the crash reports. `CARGO_PROFILE_TEST_DEBUG=true` builds the tests
+  with full debug information for a debugger (as a second build; the
+  sweep removes it after the next normal build).
+
 ### macOS allocator experiments
 
 The pinned OCCT 8.0.1 defaults to `USE_MMGR_TYPE=NATIVE`. In this build,
@@ -359,7 +492,7 @@ not a corpus, viewport-meshing or rendering speedup claim.
 
 Build tools that are neither Ubuntu nor winget packages are downloaded
 from a pinned GitHub release and checked against GitHub's published
-SHA-256 digest. None is linked into Mitcad; only the AppImage runtime is
+SHA-256 digest. None is linked into MitCad; only the AppImage runtime is
 shipped.
 
 | Tool | Script, folder | Release asset | SHA-256 |
@@ -395,7 +528,7 @@ https://github.com/frankosterfeld/qtkeychain/archive/refs/tags/0.17.0.tar.gz),
 as a static library against the build's Qt: the packages carry no library
 of its own, only its licence text. On Linux it needs Qt's D-Bus module and
 libsecret's headers (`libsecret-1-dev`); libsecret itself is loaded at run
-time when the system has it, so Mitcad starts without it.
+time when the system has it, so MitCad starts without it.
 
 `build-cycles.sh` also builds the render worker's libraries from pinned
 sources (`versions.sh`): Open Image Denoise 2.5.1's source release
@@ -439,7 +572,7 @@ files as a `.zip`. The installer script is our own,
   /Elevated`.
 
 The page *Choose Users* after the licence offers the choice; it starts on
-*For all users* only when Mitcad is installed for all users and not for
+*For all users* only when MitCad is installed for all users and not for
 the current user.
 An earlier version in the same scope is uninstalled first (its own
 uninstaller, silently, in place). Silent installs: `/S` installs just for
@@ -510,8 +643,9 @@ The target ([cmake/AppImage.cmake](../cmake/AppImage.cmake),
 installs into `build/dev/appimage/AppDir` (executables, desktop file,
 icons, licences incl. `packaging/linux/THIRD-PARTY-NOTICES.txt`), then:
 
-- linuxdeploy copies needed libraries into `usr/lib` with `$ORIGIN`
-  RUNPATH; its Qt plugin adds the X11/GLX platform, image formats, SVG
+- linuxdeploy copies needed libraries into `usr/lib` and gives every
+  executable in `usr/bin` and every library an `$ORIGIN` RUNPATH, so
+  none of them loads a system's Qt; its Qt plugin adds the X11/GLX platform, image formats, SVG
   icons and TLS backends. glibc, libstdc++, X11/xcb, OpenGL, fontconfig,
   FreeType and OpenSSL stay the system's.
 - The render worker `mitcad-render` goes in
@@ -519,12 +653,17 @@ icons, licences incl. `packaging/linux/THIRD-PARTY-NOTICES.txt`), then:
   their licences ([rendering.md](rendering.md#appimage)).
 - ELF files are stripped.
 - appimagetool packs it with the pinned runtime. No AppImage update
-  information and no GPG signature: Mitcad's own manifest signature is
+  information and no GPG signature: MitCad's own manifest signature is
   what counts.
 
-Release AppImages come from a `linux-release`-based preset. Built on
-Ubuntu 24.04 it needs glibc 2.39+. Without FUSE run it with
-`--appimage-extract-and-run`.
+Release AppImages come from a `linux-release`-based preset, built on
+**Ubuntu 24.04** (a 24.04 distro, VM or container: glibc 2.39), the
+oldest supported system. The AppImage needs the glibc of the system it
+was built on, so a release built on a newer distribution does not start
+on 24.04 or the distributions based on it (mitcad#789); a newer Linux
+host builds it in an Ubuntu 24.04 build root
+([Linux on a newer host](#linux-on-a-newer-host)). Without FUSE run
+it with `--appimage-extract-and-run`.
 
 At each start the AppImage writes its desktop file (`Exec` = the
 AppImage, `StartupWMClass=Mitcad`) and icons into `$XDG_DATA_HOME` if they
@@ -535,7 +674,14 @@ GTK is bundled, so it uses the `xdgdesktopportal` platform theme unless
 
 `tools/appimage-test.sh` (ctest `app.appimage` once the AppImage exists)
 checks that every ELF resolves its libraries inside the AppImage or from
-system folders, runs it with an empty environment, renders with its
+system folders (an ELF on which `ldd` fails fails the test), then two
+static checks of seconds: no ELF needs a `GLIBC_`, `GLIBCXX_` or
+`CXXABI_` symbol version newer than `GLIBC_FLOOR` (2.39),
+`GLIBCXX_FLOOR` (3.4.33) and `CXXABI_FLOOR` (1.3.15): Ubuntu 24.04's
+glibc and the libstdc++ of its `libstdc++6` package (GCC 14's), and every ELF that links Qt finds each `libQt6*` inside the AppImage,
+through its own `$ORIGIN` RUNPATH and in `ldd`'s view without
+`LD_LIBRARY_PATH`, never the system's Qt; it names the ELF that fails.
+Then it runs the AppImage with an empty environment, renders with its
 render worker when it has one, and updates it to itself from a locally
 signed manifest.
 
@@ -572,6 +718,9 @@ Run in the isolated environments:
   deletes the empty folders of git repositories just made in the
   system's temporary folder);
   `core.doctests` and `core.doctests_release` run the documentation tests.
+  The fixtures limit cargo's jobs by the memory available and sweep the
+  stale units from their target folder after the build (see
+  [the crates' test builds](#the-crates-test-builds-sweep-jobs-debug-information)).
   A large crate's tests run in parts by module
   (`mitcad_cargo_test(... PARTS <part> <filter>...)` in
   `core/CMakeLists.txt`): `core.vcs.remote`, `.sync`, `.library` and
@@ -637,6 +786,94 @@ Run in the isolated environments:
   keyring and `dbus-daemon` are installed, with one in a D-Bus session of
   the test's own.
 
+### The test runner (mitcad-testrun)
+
+`mitcad-testrun` (`tools/testrun`, mitcad#790; built with the project
+beside its other programs: `build\dev\mitcad-testrun.exe` on Windows,
+`build/dev/core/mitcad-testrun` on Linux and macOS) runs a build tree's ctests, each as
+its own `ctest -R ^name$`, measures each (wall and CPU time, peak memory of
+the process tree, the kind of result) and keeps the machine's profiles and
+failure scores in `~/.mitcad/test-profiles.json` (`MITCAD_TEST_PROFILES`,
+`--profiles`), outside the build trees and mirrors so that they survive
+fresh builds. On Linux `tools/check-all.sh` runs its ctests and its corpus
+group through it ([the check script](#the-check-script)); macOS merge and
+release checks use `tools/test-macos.sh`. The Windows release script takes
+it into use on its machine.
+
+- `--measure` (the default): a fixed number of tests at once (`-j`, by
+  default the cores / 2), recording only.
+- `--schedule`: a memory budget (85 % of the memory) as the hard limit
+  with a floor of real available memory (1.5 GiB), a CPU gate (no start
+  above 90 % load), longest first with complementary pairing, a priority
+  lane for the tests with the highest failure scores, timing-sensitive
+  tests only on a calm machine, a hard memory limit per test of at least
+  4 GiB and twice its history's peak (none for RUN_SERIAL tests or a
+  widely spread history; one rerun alone without a limit after it), a
+  disk floor. Tests
+  with no history borrow the median of their fixture or label siblings,
+  else a guess by kind (UI 1 GiB, corpus 2 GiB, others 512 MiB), and
+  while most tests have no history at most the cores / 2 run at once.
+- `--changed FILE`: the changed files, a path a line as `git diff
+  --name-only <base>` prints them; the tests related to them (the files
+  and folders their commands name, the areas their scripts declare in
+  `# check-all sources:` lines, a changed crate's tests, a test program's
+  own sources) join the priority lane with a failure's raised place.
+- **UI entries at once** (the ctests `app.ui-*` or labelled `ui`) are
+  learnt from the same runs, without a measuring run: each UI entry's run
+  records how many other UI entries ran beside it. A failure beside others
+  that passes alone is a contention failure (+2 to the failure score, not
+  +10): it halves that test's room (the UI entries it may have beside it)
+  and lowers the machine's cap (per platform, in the profile file) by
+  one; two clean runs that reached the cap raise it by one. A machine
+  opts in by giving the bound, `--ui-max` or `MITCAD_UI_JOBS`: then the
+  scheduler holds UI entries to the cap (which starts at the bound
+  and never goes above it) and to their rooms, and reruns a UI entry that
+  failed beside others alone after them, so `MITCAD_UI_JOBS` is the
+  ceiling, no longer the number at once. Without a bound the runs only
+  record and learn (within 4); UI entries are scheduled as before. For
+  the Linux UI tests that `tools/check-all.sh` runs itself,
+  `mitcad-testrun --ui-cap` prints the cap to run at and `--record-ui FILE`
+  takes the runs back (name, exit status, seconds, UI entries beside it).
+- `--dry-run` lists the tests in their starting order with predictions.
+
+The budget's basis is `MITCAD_TEST_MEMORY` when set, else the larger of
+the physical memory (on Linux the lowest memory limit on the runner's
+cgroup path where lower) and, on Windows, the commit limit. **A VM with
+dynamic memory** (the Hyper-V Windows VM) reports only its current
+assignment as physical memory: run it with `--memory-budget 24G` (a size
+is used as given) or `MITCAD_TEST_MEMORY` set to the VM's maximum memory.
+
+macOS merge checks and the release gate use `tools/test-macos.sh`:
+
+```sh
+tools/test-macos.sh --build build/macos-release -R '^(app.unit|app.ui-macos)$'
+# First take-up: profile the checks already needed, at serial parallelism.
+tools/test-macos.sh --build build/macos-release --measure -R '^tools.testrun$'
+```
+
+The default is `--schedule`, at most four tests, an 85% memory budget and
+90% CPU gate. Aqua UI tests (`app.ui-*`) are timing-sensitive from the
+start: at most one, below 70% load. `--measure` defaults to one test at a
+time. Selections and other runner arguments pass through; there is no
+second test list. The machine profile file remains outside the build
+(default `~/.mitcad/test-profiles.json`). macOS records rusage CPU time
+and the largest process's peak RSS, without a hard per-test memory limit;
+it does not claim a simultaneous process-tree memory peak.
+
+Windows (the VM, from the build's folder, `ctest` on `PATH` through
+`tools\dev-env\msvc.cmd`): a Job Object per test.
+`tools\dev-env\msvc.cmd build\dev\mitcad-testrun.exe --build build\dev
+--schedule`. Linux: a systemd user scope per test where the user's systemd
+runs (cgroup v2: the working set, `memory.max`), else rusage, the scopes in
+the slice the runner itself runs in and the budget a share of the lowest
+memory limit on its cgroup path;
+`build/dev/core/mitcad-testrun --build build/dev --schedule`. macOS:
+rusage. Failures are printed at once and appended to
+`<build>/testrun/status.txt`; the end report (`report.txt`: totals,
+resource use, the critical path, failures by kind, profiles that changed
+much) and `results.tsv` go to the same folder. Details, the profile
+file's format and what is left: [tools/testrun/README.md](../tools/testrun/README.md).
+
 ### Environment variables and options for tests
 
 | Variable | Effect |
@@ -652,7 +889,7 @@ Run in the isolated environments:
 | `MITCAD_TEST_OCCT_ALLOCATION_FAILS=<operation>` | An allocation of OCCT's collections fails in that kernel operation (e.g. `extrude`) or in the healing of a body built from B-rep data (`heal`), and is caught there as OCCT's checker catches its failures: only OCCT's count of failed allocations tells, and the operation or the body's build fails "out of memory" (mitcad#132). |
 | `MITCAD_CHECK_INPUTS=1` | Report operations that modify their input shapes ([architecture](architecture.md#geometry-kernel)). |
 | `MITCAD_NO_FAR_FEATURES=1` | Booleans on perforated bodies work on the whole body and cut a pattern's copies at once ([architecture](architecture.md#geometry-kernel)), for comparisons. |
-| `MITCAD_NO_NEAR_COPIES=1` | A mirror's `combine` joins every image with its body whole, also a near copy of it ([commands.md](../core/model/src/api/commands.md#mirror)), for comparisons. |
+| `MITCAD_NO_NEAR_COPIES=1` | A mirror's `combine` joins every image with its body whole, also a near copy of it ([commands.md](../core/model-api/src/commands.md#mirror)), for comparisons. |
 | `MITCAD_RESULT_STORE` | Result store folder; `off` disables it. |
 | `MITCAD_RESULT_STORE_MIN_MS` | Store results that took at least this long (default 100). |
 | `MITCAD_PROJECTS_DIR` | Where New Project creates projects instead of Documents/Mitcad. |
@@ -672,6 +909,7 @@ Run in the isolated environments:
 | `MITCAD_CRASH_DIR` | Where crash reports go instead of `crashes` in the local app data (the app sets it for its workers, with `MITCAD_CRASH_PARENT`). |
 | `MITCAD_CORE_DUMPS=1` | Linux: `mitcad-cli`, `mitcad_run_parallel` and the corpus tests may leave core dumps (see *Core dumps* below). |
 | `MITCAD_RENDER_SAMPLES`, `MITCAD_RENDER_TEST_SCENE=1`, `MITCAD_RENDER_WORKER` | The rendered view's samples per pixel; the fixed test scene instead of the document; another render worker than `mitcad-render` next to the app ([rendering.md](rendering.md)). |
+| `MITCAD_CARGO_SWEEP=0`, `MITCAD_CARGO_JOB_MIB` | The crates' test builds (`core.cargo_build*`): no sweep of stale units after the build; MiB of available memory per cargo job instead of 2560 ([the crates' test builds](#the-crates-test-builds-sweep-jobs-debug-information)). |
 
 App options for tests: `--demo` (a ready block), `--screenshot <png>`,
 `--no-recovery`, `--no-native-dialogs` (Qt's file dialogs, so paths can
@@ -928,7 +1166,7 @@ without the variable.
 
 ### Designs of earlier versions
 
-`MITCAD_DESIGN_CORPUS` (a `PATH`-like list) names folders of Mitcad
+`MITCAD_DESIGN_CORPUS` (a `PATH`-like list) names folders of MitCad
 projects saved by earlier versions (each design with its project's
 `.mitcad/brep` store), never committed. ctest `designs.corpus`
 (`tools/cli/designs-corpus.cmake`) opens every `.mitcad` with `mitcad-cli
@@ -941,23 +1179,24 @@ Real slicer projects are never committed. `MITCAD_3MF_CORPUS` (a
 `PATH`-like list of folders) points at them; each folder's `index.tsv`
 lists its projects (a header row naming the columns, then a row per
 project; projects named by their content id). The ctest `3mf.corpus`
-(`core/model/src/print_files/corpus.rs`, a test ignored in `core.model`
-and run with `--ignored`) imports each project's print settings into a
+(`core/model-tests/print/src/print_files_corpus.rs`, a test ignored in
+`core.model.print` and run with `--ignored`) imports each project's print
+settings into a
 fresh design as Import from slicer... does (`import_print_profile`),
 checks the row's columns where it gives them: `bytes`, `dialect`,
 `printers`, `processes` and `materials` (how many came in), `printer`
 and `process` (their names) and `problems` (the values not read as the
 import's summary lists them, separated by ` | `; empty or `none` for
 none), then exports a body of each material in the same dialect and
-reads the export back: every value read into Mitcad's keys must come
+reads the export back: every value read into MitCad's keys must come
 back alike (numbers within 1e-6). Other columns are notes. Skipped
 without the variable. Example:
 `MITCAD_3MF_CORPUS=~/3mf-corpus ctest --preset dev -R 3mf.corpus`.
 
 ### USDZ files
 
-USDZ export (mitcad#123, [commands.md](../core/model/src/api/commands.md#usdz))
-writes the binary USD layer with Mitcad's own code; the tests read it back
+USDZ export (mitcad#123, [commands.md](../core/model-api/src/commands.md#usdz))
+writes the binary USD layer with MitCad's own code; the tests read it back
 with `mitcad-usdz`'s reader (the package's 64-byte alignment, the layer's
 header and metadata, prims, points, indices, normals, materials, subsets,
 texture coordinates and transforms). The format was checked once with
@@ -984,7 +1223,7 @@ Linux, and warning-free builds with `ctest` in the Windows VM (with
 
 ### The check script
 
-`tools/check-all.sh [--full] [--ui-jobs N] [--ui auto|all] [--ctest auto|all] [--ctest-jobs N] [--corpus auto|always|never] [--corpus-tests N] [--corpus-jobs N] [--memory SIZE] [--fresh] [--only STEP,...]`
+`tools/check-all.sh [--full] [--ui-jobs N] [--ui auto|all] [--ctest auto|all] [--ctest-jobs N] [--testrun auto|off] [--corpus auto|always|never] [--corpus-tests N] [--corpus-jobs N] [--memory SIZE] [--fresh] [--only STEP,...]`
 
 It checks at two depths:
 
@@ -1004,7 +1243,7 @@ It checks at two depths:
 |---|---|
 | configure, build | Compiler warnings fail the check (an incremental build only shows those of what it compiled). |
 | fmt, clippy, deps | clippy's target dir is `build/dev/clippy`, kept across syncs. |
-| ctest | The tests whose sources changed (below), a quarter of the cores, without the corpus group; `cli.perf_*` run serially. |
+| ctest | The tests whose sources changed (below), without the corpus group, through the test runner (below); `cli.perf_*` and the Linux UI ctests run serially. |
 | corpus | `f3d.corpus*`, `f3d.models_loft`, `freecad.corpus`, `ipt.corpus`, several at once (`--corpus-tests`), each importing several files at once (`--corpus-jobs`, `MITCAD_CORPUS_JOBS`). By default all their children together fit the run's memory limit less 1G at `MITCAD_CORPUS_MEMORY` (1536M) each, and the cores of a test slot; about the square root of that many tests run at once (12G, 32 cores and three slots: two tests, three files each), each child within 300 s (`MITCAD_CORPUS_TIMEOUT`). Every corpus test is a row of the table. `auto` runs them only when `CORPUS_SOURCES` or the corpus files differ from every passing run on the machine (`~/.cache/mitcad/corpus-passed`). `CORPUS_SOURCES`: the readers and the import, the bridge's kernel and import files (`core/ffi/src/kernel`, `*_import.rs`, `ipt_history.rs`, `exchange.rs`, `memory.rs`, `core/cpp`; not `lib.rs` or other families' files), the geometry, `mitcad-cli`'s imports (`tools/cli/import.cpp`, not `main.cpp`), the build files, the OCCT port, and the resolved dependencies of the import's crates (`cargo tree` of `CORPUS_CRATES`, instead of `Cargo.toml` and `Cargo.lock`, so a crate added for something else does not count). Changes in `core/model` alone don't trigger it: use `--corpus always` when they may affect imports. |
 | `ui-<name>` | The `tools/ui-*-test.sh` whose sources changed (below), four at a time, longest first, 30 min limit each (`UI_TIMEOUT`); `ui-compute` runs alone at the end (flaky under load). A test that fails among the others without crashing runs once more alone after them: a pass shows as `ok-again` and counts, so load flakiness stays visible without failing the check; a second failure, or a crash, fails it (mitcad#657). |
 
@@ -1082,7 +1321,7 @@ or corpus test reads them):
 - its script and the test library (`UI_LIBRARY`: `tools/ui-test-lib.sh`,
   `ui-image-stats.py`, `xwd2png.py`);
 - the main window's layout as the built application lays it out:
-  `tools/ui-layout.sh` starts Mitcad with the demo design on a hidden Xvfb
+  `tools/ui-layout.sh` starts MitCad with the demo design on a hidden Xvfb
   display once per check (also in a dry run, with the last build) and
   takes its `Window layout:` line, the window's size and minimum size and
   where the menu bar, the toolbars, the docks, the status bar and the 3D
@@ -1129,21 +1368,47 @@ UI test that crashed runs once more under gdb (`UI_GDB=1`), its log
 failed whatever that run gives. UI tests run `--ui-jobs` at once, by
 default `MITCAD_UI_JOBS`, else 4 (each takes about 0.5 G without gdb).
 
-Test steps hold one of two machine-wide slots (`flock` on
-`MITCAD_TEST_LOCK`, default `~/.mitcad-test.lock` and `.2`;
-`MITCAD_TEST_SLOTS`), so at most two checks test concurrently. Each run
-has a memory limit (`--memory`, `MITCAD_CHECK_MEMORY`, default 12G,
-`none` to disable) enforced with `systemd-run --user --scope`. Build and
-lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
-`CARGO_BUILD_JOBS` are set.
+The ctest and corpus steps run through the test runner
+([mitcad-testrun](#the-test-runner-mitcad-testrun), `--schedule`) when it
+is built (`build/dev/core/mitcad-testrun`; `--testrun off` or
+`MITCAD_TESTRUN=off` turns it off): each test in a systemd scope of its
+own, as many at once as the memory budget and the CPU gate allow (the
+corpus group at most `--corpus-tests` at once), the longest first and the
+tests that failed lately early. Its output is the step's log, followed by
+the output of each test that did not pass (lines marked `| `) and its
+results in ctest's form (result lines, the summary, `The following tests
+FAILED:`), which the table's `ctest:<name>` rows, the passes kept for
+`--ctest auto` and the release scripts read as before; its own report
+(`report.txt`: resource use, the critical path, failures by kind),
+`results.tsv`, `status.txt` and each test's log are in
+`build/dev/testrun/<step>/`, the machine's profiles in
+`~/.mitcad/test-profiles.json`. When the runner is not built or does not
+finish (it cannot list the tests, it stops), the step runs as
+`ctest -j` in a test slot instead (its output kept as
+`check-logs/<step>.testrun.log`).
+
+The UI tests, and the ctest and corpus steps without the runner, hold one
+of two machine-wide slots (`flock` on `MITCAD_TEST_LOCK`, default
+`~/.mitcad-test.lock` and `.2`; `MITCAD_TEST_SLOTS`), so at most two checks
+test concurrently; the runner needs none, as it starts a test only within
+the memory left. Each run has a memory limit (`--memory`,
+`MITCAD_CHECK_MEMORY`, default 12G, `none` to disable): the run goes into
+a systemd slice of its own with that limit (no swap), made beneath the
+slice the check was started in, so that a job slice's ceiling above it
+holds too, and the runner's test scopes go into the same slice, so that
+the limit covers the tests as well and the runner's budget is a share of
+it (85 %). The slice goes when the run ends or is stopped. Without
+`busctl` the run is a scope with the limit in the caller's slice, as
+before. Build and lint use half the cores unless
+`CMAKE_BUILD_PARALLEL_LEVEL` / `CARGO_BUILD_JOBS` are set.
 
 ### Faster builds
 
-- The Linux `dev` preset builds Mitcad as Debug but links OCCT's release
+- The Linux `dev` preset builds MitCad as Debug but links OCCT's release
   libraries (`MITCAD_OCCT_RELEASE_IN_DEBUG`, default on; not on Windows,
   where debug and release runtimes don't mix). Set it `OFF` to step into
   OCCT. Cargo's dev profile optimises dependencies at `opt-level = 2` and
-  Mitcad crates at 1 (`core/Cargo.toml`).
+  MitCad crates at 1 (`core/Cargo.toml`).
 - C++ and macOS Objective-C++ go through ccache when installed (`MITCAD_COMPILER_CACHE`, default
   on). Paths are hashed relative to the checkout, so side-by-side
   checkouts share the cache. MSVC uses `/Z7` (CMP0141) because ccache
@@ -1206,23 +1471,84 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   rewritten just because it is C++. A port patch to OCCT
   (`third_party/vcpkg-ports/opencascade`) only when nothing else works.
 - New geometry operation: a `Kernel` method with a default
-  `Err(Unsupported)` in `core/model/src/kernel.rs`, grouped by family;
+  `Err(Unsupported)` in `core/model-base/src/kernel.rs`, grouped by family;
   bridges per family (`core/ffi/src/kernel/<family>.rs`,
   `core/cpp/bridge/<family>.{hpp,cpp}`, `geometry/src/<family>.cpp`).
+  The trait and the data it takes and gives live below the model's core
+  in `mitcad-model-base` (mitcad#777): a type a `Kernel` method uses goes
+  there too (the model re-exports it at its usual path), and its methods
+  that need the core stay in the model as an extension trait. The mock
+  kernel's side goes into `core/model-testkit/src/lib.rs`.
+- New plain data or helpers that need nothing of the model's core (ids,
+  names, specifications, value types): into `core/model-base`, re-exported
+  by the model; the rest into `core/model`.
+- Sketch code (2D geometry, constraints, the solve, regions, projections,
+  offsets, patterns, texts, SVG, the sketch edits and the sketch
+  definition `SketchDef`): into the crate `core/sketch` (`mitcad-sketch`,
+  below the model's core, mitcad#780), which the model re-exports as
+  `mitcad_model::sketch`; what needs the document (the sketch feature's
+  references, checks against the timeline and evaluation) into
+  `core/model/src/features/sketch.rs`. A type the sketch needs from the
+  core moves down into `core/model-base`. A sketch command goes into the
+  api's `sketch.rs`.
 - New feature: a module in `core/model/src/features/`, registered in
-  `features/mod.rs`, documented in `core/model/src/api/commands.md`. Its
+  `features/mod.rs`, documented in `core/model-api/src/commands.md`. Its
   `map_params` comes from `map_params!` (`features/mapping.rs`) when every
   value maps under its field's name; the fields are listed in the order
   the values are visited ([Adding to the
-  API](../core/model/src/api/commands.md#adding-to-the-api)). UI
+  API](../core/model-api/src/commands.md#adding-to-the-api)). UI
   commands: [app/COMMANDS.md](../app/COMMANDS.md).
 - New command or query: a variant of a `named_enum!` enum
-  (`core/model/src/api/dispatch.rs`) with its name on the wire; a family
+  (`core/model-api/src/dispatch.rs`) with its name on the wire; a family
   with an enum of its own is one row of `Document::command_families`.
+  The api is a crate above the model (`mitcad-model-api`), so its methods
+  on `Document` are extension traits: a file's methods go into its
+  `<File>Api` (public), `<File>CrateOps`/`<File>Ops` (the crate's) or
+  `<File>Local` (the file's own) trait; model items it needs are `pub`,
+  and those that are not the model's API are re-exported by the model's
+  `internal` module (`mitcad_model::internal::<module>`, mitcad#811),
+  where the api names them; their definitions stay `#[doc(hidden)]` or
+  in a private module. Every split crate does the same: what another
+  Mitcad crate needs of it but is not its API is under its `internal`
+  module, so that its root and documented modules show its API alone.
+- BUILD: the planning of the BUILD commands (placing, connecting, timber,
+  frames, junctions, the cut list) goes into `core/model-build`
+  (`mitcad-model-build`, above the model, below the api), so that a
+  planning edit does not recompile the model; its methods on `Document`
+  are extension traits (`<Block>Build` public, `<Block>CrateOps` the
+  crate's; `mitcad_model_build::prelude`). What the design file keeps of
+  BUILD (sources, records, the libraries' `build` blocks) and what the
+  features use stays in `core/model/src/build/`; the BUILD tests go
+  into `core/model-tests/build-*`.
+- Design comparison (`diff`): `core/model-diff` (`mitcad-model-diff`),
+  above the model; model items it reads that are not the model's API
+  come from `mitcad_model::internal`; its tests go into
+  `core/model-tests/files` (`diff_tests.rs`).
+- Drawings: what a design file keeps of a drawing (a new stored field and
+  its check) goes into the model's `core/model/src/drawing/` (`def.rs`,
+  `annotate_def.rs`, `tables_def.rs`, `template_def.rs`); its layout on
+  the sheet and the writers into the drawing crate `core/model-drawing`
+  (`mitcad-model-drawing`, above the model, re-exporting the model's
+  drawing types under the same paths); a drawing command into the api's
+  `drawing*.rs`.
+- New tests: a test that drives the model through the JSON api goes into
+  the test crate of its area under `core/model-tests/` (a small crate per
+  area, ctest `core.model.<area>`; [README](../core/model-tests/README.md)),
+  so that adding it recompiles only that crate; a new area is a new crate
+  there, a member in `core/Cargo.toml` and a `mitcad_cargo_test` in
+  `core/CMakeLists.txt`. Tests of the model's own code that do not need the
+  api stay in `core/model` (`core.model`), the api's unit tests in its
+  files (`core.model_api`), the base's in its files (`core.model_base`),
+  the drawing layout's in its files (`core.model_drawing`), the sketch's
+  in its files (`core.sketch`).
+  Shared fixtures: the model's `testing` (the mock kernel, the crate
+  `mitcad-model-testkit`) and `test_support` (the block document, feature
+  definitions, face and edge names) under its `testing` feature, and
+  BUILD's test library in `core/model-tests/support`.
 
 ## Licence policy
 
-- Mitcad's code is MIT with an SPDX identifier in every file.
+- MitCad's code is MIT with an SPDX identifier in every file.
 - Third-party components are used under their most permissive offered
   licence (an MIT/Apache crate as MIT, Qt as LGPL-3.0).
 - Not allowed: GPL-2.0-only, non-commercial or otherwise restricted
@@ -1233,7 +1559,7 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   unchanged except for its cleared update information;
   `packaging/linux/THIRD-PARTY-NOTICES.txt` names it with the sources.
 - Copied or adapted code keeps its licence and headers in `third_party/`.
-  OCCT is built with patches of Mitcad's (under OCCT's licence, as
+  OCCT is built with patches of MitCad's (under OCCT's licence, as
   `SPDX-License-Identifier` lines in them say) through the vcpkg overlay
   port `third_party/vcpkg-ports/opencascade`, which `vcpkg.json` names, so
   every platform builds the same OCCT, still as shared libraries; the
@@ -1245,7 +1571,7 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
 - Rust dependencies are checked by cargo-deny (`core/deny.toml`).
 - ccache (GPL-3.0-or-later) and sccache (MPL-2.0) are development tools
   invoked as separate processes. Neither is linked into or shipped with
-  Mitcad, and neither adds a Cargo or native library dependency.
+  MitCad, and neither adds a Cargo or native library dependency.
 - Native libraries built from source and linked statically: QtKeychain
   (BSD-3-Clause, `cmake/Keychain.cmake`); its licence text goes into the
   packages and the third-party notices name it. `tools/check-dependencies.sh`
@@ -1264,7 +1590,7 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   header code and calls the driver through its own runtime; it links only
   the driver's import library. NVIDIA's OptiX SDK headers
   (a proprietary licence: binary-only, NVIDIA hardware only, recipients
-  bound to its terms) would be compiled in, so Mitcad does not use OptiX
+  bound to its terms) would be compiled in, so MitCad does not use OptiX
   (README, FAQ).
 - This is not a legal review; licence combinations are checked before a
   release.
@@ -1278,8 +1604,8 @@ and `tools/cli/mcp.cpp` (command-line entry). Live GUI access adds
 `app/mcp/LocalEndpoint.*`, `app/MainWindowMcp.cpp`, the application's own
 tools in `app/MainWindowMcpUi.cpp` (mitcad#265) and the CLI's
 `tools/cli/mcp-connect.*` stdio bridge. Which commands and queries MCP
-allows follows their class in `core/model/src/api/classes.rs`; its unit
-tests (in `core.model`) fail for a command or query without one. The CLI dispatches MCP
+allows follows their class in `core/model-api/src/classes.rs`; its unit
+tests (in `core.model_api`) fail for a command or query without one. The CLI dispatches MCP
 before configuring global component libraries, and suppresses OCCT's
 stdout message printers. User setup and modeling examples:
 [mcp.md](mcp.md).

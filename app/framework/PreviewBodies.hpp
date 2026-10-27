@@ -2,7 +2,7 @@
 #pragma once
 
 // Which bodies a feature's preview draws, and where (mitcad#266): from the
-// model's preview report (`preview`, core/model/src/api/commands.md) and the
+// model's preview report (`preview`, core/model-api/src/commands.md) and the
 // bodies the view shows now. Plain Qt Core, so that the rules are tested
 // without a model or a view (app/tests).
 //

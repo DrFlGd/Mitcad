@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/SketchCommands.cpp app/framework/CommandSession.cpp app/sketch
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs core/model/src/document.rs tools/cli
+# check-all sources: core/sketch core/model-api/src/sketch.rs core/model/src/document.rs tools/cli
 # Sketch Intersect (mitcad#736) through the real UI:
 #   - A 40 x 25 block 20 high, from (-20, -10), and a sketch on XZ, which
 #     cuts it through (mitcad-cli builds them).

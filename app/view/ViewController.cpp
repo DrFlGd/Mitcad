@@ -1081,7 +1081,7 @@ void ViewController::showPreferences(const QString& page) {
   auto* folderPath = new QLineEdit(QDir::toNativeSeparators(folder));
   folderPath->setReadOnly(true);
   folderPath->setToolTip(tr("Never a project's folder. What is here goes when the design is saved or "
-                            "Mitcad ends normally."));
+                            "MitCad ends normally."));
   if (window != nullptr) {
     folderPath->setMinimumWidth(240);
   }
@@ -1129,7 +1129,7 @@ void ViewController::showPreferences(const QString& page) {
   auto* debugLog = new QCheckBox(tr("&Write a debug log"));
   debugLog->setObjectName(QStringLiteral("debugLog"));
   debugLog->setChecked(DebugLog::instance().running());
-  debugLog->setToolTip(tr("Writes what Mitcad does to a file in the log folder, so that a problem can be traced"));
+  debugLog->setToolTip(tr("Writes what MitCad does to a file in the log folder, so that a problem can be traced"));
   control(diagnosticsForm, debugLog);
   auto* logFolderPath = new QLineEdit(QDir::toNativeSeparators(DebugLog::instance().folder()));
   logFolderPath->setReadOnly(true);
@@ -1668,7 +1668,7 @@ void ViewController::showPreferences(const QString& page) {
   connect(pages, &QListWidget::currentRowChanged, stack, showPage);
   connect(pages, &QListWidget::currentRowChanged, dialog.get(), [this, pages](int row) {
     if (row >= 0) {
-      // Preferences opens there again (until Mitcad ends).
+      // Preferences opens there again (until MitCad ends).
       m_preferencesPage = pages->item(row)->data(Qt::UserRole).toString();
       // The minimum size the page shown sets (UI tests).
       const QSize minimum = pages->window()->minimumSize();
@@ -1777,10 +1777,10 @@ void ViewController::showPreferences(const QString& page) {
 
 void ViewController::askLayoutRestart(ChromeStyle chosen) {
   const QString name = chosen == ChromeStyle::Floating ? tr("Floating") : tr("Docked");
-  QMessageBox box(QMessageBox::Question, tr("Restart Mitcad"),
-                  tr("The %1 layout takes effect when Mitcad starts again. Restart now?").arg(name),
+  QMessageBox box(QMessageBox::Question, tr("Restart MitCad"),
+                  tr("The %1 layout takes effect when MitCad starts again. Restart now?").arg(name),
                   QMessageBox::Yes | QMessageBox::No, m_window);
-  box.setInformativeText(tr("A design with unsaved changes is saved or asked about first, as when Mitcad quits."));
+  box.setInformativeText(tr("A design with unsaved changes is saved or asked about first, as when MitCad quits."));
   box.button(QMessageBox::Yes)->setText(tr("&Restart Now"));
   box.button(QMessageBox::No)->setText(tr("&Later"));
   box.setDefaultButton(QMessageBox::Yes);

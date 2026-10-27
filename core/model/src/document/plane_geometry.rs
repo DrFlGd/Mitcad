@@ -15,11 +15,13 @@ use super::{Document, ModelError, invalid};
 use crate::features::FeatureDef;
 use crate::ids::{BodyUid, FeatureUid, OccurrenceUid};
 use crate::kernel::{Curve3, ElementKind, Kernel};
-use crate::profile::{SketchFrame, cross, dot};
+use crate::links::OccurrenceLinkExt;
+use crate::profile::SketchFrame;
 use crate::sketch::geometry::{Curve2, P2};
 use crate::sketch::project::{Projected, project, transform_curve};
 use crate::topo::TopoName;
 use crate::transform::Transform;
+use mitcad_vec3::{cross, dot};
 
 /// A body edge or vertex that lies in a sketch's plane.
 #[derive(Debug, Clone, PartialEq)]
@@ -225,12 +227,12 @@ impl<K: Kernel> Document<K> {
                 .sum::<f64>()
                 .sqrt();
             size = size.max(diagonal);
-            let tolerance = crate::datum::LINEAR * size;
+            let tolerance = mitcad_model_base::internal::datum::LINEAR * size;
             if low > tolerance || high < -tolerance {
                 return;
             }
         }
-        let tolerance = crate::datum::LINEAR * size;
+        let tolerance = mitcad_model_base::internal::datum::LINEAR * size;
         let item = |source: TopoName, shape: PlaneShape| PlaneItem {
             source,
             body: seen.body,

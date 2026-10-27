@@ -7,8 +7,8 @@ documents](../README.md#documents) list the other topics.
 ## Sheet metal
 
 Sheet-metal items (mitcad#211) of the `.f3d` and the `.ipt` import
-(`src/sheet.rs`) come from the decoders as the dump's sheet items
-(`SCHEMA.md`, *Sheet metal*) and replay as Mitcad's native sheet
+(`core/import-sheet/src/sheet.rs`) come from the decoders as the dump's sheet items
+(`SCHEMA.md`, *Sheet metal*) and replay as MitCad's native sheet
 features (`commands.md`, *Sheet rules and base Face*, *Folded sheet
 features*), each checked against its own history state as any other item:
 
@@ -16,7 +16,7 @@ features*), each checked against its own history state as any other item:
   body): `sheet_face` of its sketch's regions (those its decoded loops
   select, else those of its measured profile), the material on the side of
   the sketch's plane the decoder gives (the reference side `front` along
-  Mitcad's sketch normal, `back` against it), with the rules: the first
+  MitCad's sketch normal, `back` against it), with the rules: the first
   face of a rule of the file makes a `sheet_rules` feature named
   `Sheet rules <rule>` in the face's item (its own timeline row, before
   the face), and later faces of that rule and side use it. The rules'
@@ -24,7 +24,7 @@ features*), each checked against its own history state as any other item:
   radius and reliefs as expressions of it), so a changed thickness
   rebuilds the sheet. The rule's inputs the decoder did not read (the
   relief shapes; the corner relief's depth, which the files have no field
-  for and Mitcad does not use) make the item `inferred`, with a note.
+  for and MitCad does not use) make the item `inferred`, with a note.
 - **A flange on one edge** (`sheet_flange`): the `.f3d` edge flange's edge
   is found in the replay by its geometry (its names found in the
   history), and `sheet_reference` names the panel boundary it lies on;
@@ -43,7 +43,7 @@ features*), each checked against its own history state as any other item:
   the one at the boundary's axial start.
   An `.f3d` flange on several edges is one `sheet_flange` per edge in its
   item. Bend position `tangent` (4, the bend tangent to the side face) is
-  Mitcad's position `side_tangent` and height datum 3 its length mode
+  MitCad's position `side_tangent` and height datum 3 its length mode
   `outer_tangent` (mitcad#242: both measured from the bend's outer extent,
   defined up to the 180-degree hems) *(verified: the hems on two edges and
   the 90-degree flanges of both designs give their states)*. Widths are
@@ -102,7 +102,7 @@ features*), each checked against its own history state as any other item:
   two strips, which double bends join to the sheet after it)*. A face bent
   onto the sheet (its bend part's items not decoded) falls back with that
   reason. No pairs of edges are offered as candidates.
-- **Holes** through a sheet: Mitcad's simple hole through a planar panel
+- **Holes** through a sheet: MitCad's simple hole through a planar panel
   cuts the sheet's material domain (`commands.md`, *hole*), so the body
   stays a sheet for the items after it.
 - A sheet item on a body whose sheet is no longer valid (an earlier item
@@ -114,7 +114,7 @@ features*), each checked against its own history state as any other item:
   replayed as an ordinary cut, rounding or chamfer instead.
 
 The stream's records ([*From the descriptions to the decoder*](f3d-undecoded.md#from-the-descriptions-to-the-decoder), cadmpeg's
-*BaseFlange* and *EdgeFlange* layouts; `core/f3d/src/design/build/sheet.rs`):
+*BaseFlange* and *EdgeFlange* layouts; `core/f3d-design/src/build/sheet.rs`):
 
 | Record | Fields read |
 |---|---|
@@ -125,7 +125,7 @@ The stream's records ([*From the descriptions to the decoder*](f3d-undecoded.md#
 Edge recipes of some flanges have names with a nonzero word after their
 operations (`0x04000102`, `0x04000022`, `0x04000042`): the recipe reader
 reads it over, as the blobs' own names have a word there
-(`core/f3d/src/design/recipe.rs`; the design corpus comparison is
+(`core/f3d-decode/src/recipe.rs`; the design corpus comparison is
 unchanged).
 
 A flange whose trim reaches an earlier bend's seam (flanges on adjacent
@@ -146,7 +146,7 @@ Not translated yet, with the reason in each item's note:
 - `.ipt` flanges on several edges with corner settings of their own (the
   corners their walls make, `core/ipt/README.md`, *Corner settings*);
 - `.ipt` bends closing a loop of material, bends of other kinds, folds
-  with other options or across holes (Mitcad's fold needs one
+  with other options or across holes (MitCad's fold needs one
   uninterrupted line), cuts with the slot-33 option;
 - `.f3d` widths other than those above (an `EdgeOffset_1`), the `.f3d`
   hem items (`Hem…` roles), the `adjacent` position,

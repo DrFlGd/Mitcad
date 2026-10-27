@@ -86,6 +86,8 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
   snapshot.measurements = model.queryArray(QStringLiteral("measurements"));
   // Drawings of the root and the components (mitcad#707).
   snapshot.drawings = model.queryArray(QStringLiteral("drawings"));
+  // Image references (mitcad#782).
+  snapshot.imageReferences = model.queryArray(QStringLiteral("image_references"));
   const QJsonObject display = document.value(QStringLiteral("display")).toObject();
   snapshot.originShown = display.value(QStringLiteral("origin")).toBool();
   for (const QJsonValue& value : display.value(QStringLiteral("isolated")).toArray()) {
@@ -103,7 +105,7 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
   snapshot.key = QJsonDocument(QJsonArray{timeline, components, bodies, profiles, snapshot.lengthUnit,
                                           snapshot.namedViews, display, snapshot.analyses, snapshot.joints,
                                           snapshot.sheets, snapshot.motionStudies, snapshot.contactSets,
-                                          snapshot.measurements, snapshot.drawings})
+                                          snapshot.measurements, snapshot.drawings, snapshot.imageReferences})
                      .toJson(QJsonDocument::Compact);
 
   snapshot.marker = timeline.value(QStringLiteral("marker")).toInt();
@@ -280,6 +282,15 @@ QJsonObject DocumentSnapshot::contactSet(const QString& name) const {
 
 QJsonObject DocumentSnapshot::analysis(const QString& name) const {
   for (const QJsonValue& value : analyses) {
+    if (value.toObject().value(QStringLiteral("name")).toString() == name) {
+      return value.toObject();
+    }
+  }
+  return QJsonObject();
+}
+
+QJsonObject DocumentSnapshot::imageReference(const QString& name) const {
+  for (const QJsonValue& value : imageReferences) {
     if (value.toObject().value(QStringLiteral("name")).toString() == name) {
       return value.toObject();
     }

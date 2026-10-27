@@ -28,9 +28,10 @@ use crate::kernel::{
 };
 use crate::links::OccurrenceLink;
 use crate::parameters::ParamId;
-use crate::profile::{ProfileRegion, dot};
+use crate::profile::ProfileRegion;
 use crate::topo::RegionKey;
 use crate::transform::Transform;
+use mitcad_vec3::dot;
 
 /// A profile region of a sketch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -549,8 +550,9 @@ pub(crate) fn check_participants(
 /// the faces made from it keep their names). Two references that find the
 /// same region, such as a key listed twice or an old key and the current
 /// one, use it once. Err: the first reference that finds no region.
-#[cfg(test)]
-pub(crate) fn selected_regions<'a>(
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+pub fn selected_regions<'a>(
     sketch: &SketchOutput,
     profiles: &'a [ProfileRef],
 ) -> Result<Vec<ProfileRegion>, &'a ProfileRef> {
@@ -1186,7 +1188,7 @@ impl ExtrudeDef {
                         // (a cut through all one way with a negative second
                         // distance cuts that far the other way in the API
                         // reference dumps). Commands refuse a negative one
-                        // there (mitcad#693, `api/two_sides.rs`); imports add
+                        // there (mitcad#693, `model-api/src/two_sides.rs`); imports add
                         // theirs through the document's own API.
                         _ if !signed => ctx.param(id)?.abs(),
                         // Signed (mitcad#765): a negative side ends on the

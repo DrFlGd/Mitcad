@@ -10,7 +10,7 @@ use std::path::Path;
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use mitcad_model::DocState;
-use mitcad_model::diff::{DesignDiff, diff_states, read_design};
+use mitcad_model_diff::{DesignDiff, diff_states, read_design};
 use serde::Serialize;
 
 use crate::commit::{rename_trailers, user_message};
@@ -327,7 +327,7 @@ impl ProjectRepo {
 
     /// What differs in the design file `file` between version
     /// `from` and version `to`, or the file as saved in the folder when
-    /// `to` is None (P12c, `mitcad_model::diff`): parameters, timeline,
+    /// `to` is None (P12c, `mitcad_model_diff`): parameters, timeline,
     /// sketches, components and bodies, read from the versions' trees
     /// (under the path the file had there, through the renames its history
     /// follows) without computing anything.

@@ -18,8 +18,8 @@ use mitcad_vec3::{add, cross, distance, scale, sub};
 
 use super::*;
 use crate::features::sheet_unfold::{SheetRefoldDef, SheetUnfoldDef};
-use crate::profile::dot;
 use crate::transform::Transform;
+use mitcad_vec3::dot;
 use std::collections::{BTreeMap, VecDeque};
 
 use mitcad_vec3::Vec3 as V3;

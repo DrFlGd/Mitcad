@@ -9,9 +9,9 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::FeatureStatus;
-use crate::document_tests::{block, def};
 use crate::features::Brep;
 use crate::ids::FeatureUid;
+use crate::test_support::{block, def};
 use crate::testing::MockKernel;
 
 fn brep(data: &str) -> Value {

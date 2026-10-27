@@ -148,7 +148,7 @@ impl Assembly {
         self.components.iter().find(|c| c.uid == uid)
     }
 
-    pub(crate) fn component_mut(&mut self, uid: ComponentUid) -> Option<&mut ComponentDef> {
+    pub fn component_mut(&mut self, uid: ComponentUid) -> Option<&mut ComponentDef> {
         self.components.iter_mut().find(|c| c.uid == uid)
     }
 
@@ -165,7 +165,7 @@ impl Assembly {
         self.occurrences.iter().find(|o| o.uid == uid)
     }
 
-    pub(crate) fn occurrence_mut(&mut self, uid: OccurrenceUid) -> Option<&mut Occurrence> {
+    pub fn occurrence_mut(&mut self, uid: OccurrenceUid) -> Option<&mut Occurrence> {
         self.occurrences.iter_mut().find(|o| o.uid == uid)
     }
 
@@ -222,11 +222,7 @@ impl Assembly {
     }
 
     /// Makes a component (not yet placed anywhere).
-    pub(crate) fn create(
-        &mut self,
-        name: Option<&str>,
-        created_by: Option<FeatureUid>,
-    ) -> ComponentUid {
+    pub fn create(&mut self, name: Option<&str>, created_by: Option<FeatureUid>) -> ComponentUid {
         let uid = ComponentUid(self.next_component);
         self.next_component += 1;
         let name = match name {
@@ -271,7 +267,7 @@ impl Assembly {
 
     /// Places a component in `parent`; the caller checks that this makes
     /// no cycle ([`Assembly::contains`]).
-    pub(crate) fn place(
+    pub fn place(
         &mut self,
         component: ComponentUid,
         parent: ComponentUid,
@@ -300,7 +296,7 @@ impl Assembly {
 
     /// Removes a component with its occurrences and the occurrences placed
     /// in it (its features are the caller's).
-    pub(crate) fn remove(&mut self, uid: ComponentUid) {
+    pub fn remove(&mut self, uid: ComponentUid) {
         self.components.retain(|c| c.uid != uid);
         self.occurrences
             .retain(|o| o.component != uid && o.parent != uid);

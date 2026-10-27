@@ -32,7 +32,7 @@ use crate::kernel::{BooleanOp, BoundingBox, Kernel};
 use crate::parameters::ParamId;
 use crate::profile::SketchFrame;
 use crate::recompute::{Cache, FeatureResult, Read};
-use crate::topo::{FaceName, RoleKey};
+use crate::topo::FaceName;
 use crate::transform::{PrimitiveShape, PrimitiveSpec, Transform};
 
 /// The section axis an end's cut turns about; the cut's outward normal
@@ -304,13 +304,15 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
 
 /// A source's design evaluated: its visible bodies placed in its
 /// coordinates, their names, and its mount frames.
-pub(crate) struct Evaluated<S> {
+#[doc(hidden)]
+pub struct Evaluated<S> {
     pub bodies: Vec<S>,
     pub mounts: BTreeMap<String, Transform>,
 }
 
 /// The source's state with the row and the parameters applied.
-pub(crate) fn configured(
+#[doc(hidden)]
+pub fn configured(
     source: &LibrarySourceDef,
     config: Option<&str>,
     values: &[(String, f64)],
@@ -328,7 +330,7 @@ pub(crate) fn configured(
         None => table.default_row().cloned(),
     };
     if let Some(row) = &row {
-        crate::configurations::apply_values(&mut state.parameters, row)
+        mitcad_model_base::internal::configurations::apply_values(&mut state.parameters, row)
             .map_err(|e| format!("{} {}: {e}", source.label(), row.name))?;
     }
     for (name, value) in values {
@@ -345,7 +347,8 @@ pub(crate) fn configured(
 }
 
 /// Evaluates a source's state with the kernel.
-pub(crate) fn evaluate_source<K: Kernel>(
+#[doc(hidden)]
+pub fn evaluate_source<K: Kernel>(
     kernel: &K,
     state: &DocState,
 ) -> Result<Evaluated<K::Shape>, String> {
@@ -612,7 +615,8 @@ impl<K: Kernel> Evaluate<K> for DerivedPartDef {
 /// through the section's outermost edge on the other side, the long side,
 /// at the end (z = 0 or `length`), so the long point is the length. With
 /// no `section` bounds known it runs through the end's centre.
-pub(crate) fn end_plane(
+#[doc(hidden)]
+pub fn end_plane(
     section: Option<&BoundingBox>,
     b: bool,
     length: f64,
@@ -719,7 +723,8 @@ fn cut_box<K: Kernel>(
 /// The tool an end's cut takes away: a box beyond the plane `(point,
 /// normal)`, its face on the plane named the end's (`<F>:end_a`,
 /// `<F>:end_b`).
-pub(crate) fn end_tool<K: Kernel>(
+#[doc(hidden)]
+pub fn end_tool<K: Kernel>(
     kernel: &K,
     uid: FeatureUid,
     b: bool,
@@ -753,11 +758,6 @@ pub(crate) fn end_tool<K: Kernel>(
         &format!("{uid}:cut_{key}"),
         &[(FaceName::new(uid, "bottom", None), end)],
     )
-}
-
-/// The name a derived part gives a face of its source.
-pub fn part_face(feature: FeatureUid, source_face: FaceName) -> FaceName {
-    FaceName::new(feature, "part", Some(RoleKey::Face(Box::new(source_face))))
 }
 
 /// The mount frames of a derived part, shared by the results.

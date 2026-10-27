@@ -2,7 +2,7 @@
 #pragma once
 
 // Edit locks in the application (mitcad#89; the core's commands in
-// core/model/src/api/commands.md, "Edit locks"). In a Cloud project with
+// core/model-api/src/commands.md, "Edit locks"). In a Cloud project with
 // edit locks on, the design open in the window has one editor at a time:
 //
 // - Opening a design takes its lock on the remote (lock_take, on a thread

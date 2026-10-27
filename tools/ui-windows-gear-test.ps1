@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/GearCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/gear.rs core/model/src/features/gear_profile.rs geometry/src/gear.cpp
-# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
+# check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model-api/src/seats.rs tools/cli
 # Input-driven Windows UI test of Gear (mitcad#472) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted); the Linux
 # counterpart is tools/ui-gear-test.sh. The Backlash and the Bore Clearance

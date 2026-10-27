@@ -48,8 +48,9 @@ use super::{
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{BooleanOp, GearStep, GearSweepSpec, Kernel};
 use crate::parameters::ParamId;
-use crate::profile::{SketchFrame, cross};
+use crate::profile::SketchFrame;
 use crate::recompute::Read;
+use mitcad_vec3::cross;
 
 /// The clearance added to the belt's width without one (mm).
 pub const DEFAULT_CLEARANCE: f64 = 1.0;
@@ -550,7 +551,7 @@ impl PulleyDef<f64> {
                 ));
             }
             if !teeth.is_finite() || (teeth - teeth.round()).abs() > 1.0e-9 {
-                return Err(crate::parameters::count_error(
+                return Err(mitcad_model_base::internal::parameters::count_error(
                     format!("the {name}'s number of teeth must be whole, got {teeth}"),
                     teeth,
                 ));
@@ -633,7 +634,7 @@ impl PulleyDef<f64> {
                 || (count - count.round()).abs() > 1.0e-9
                 || !(1.0..=MAX_SET_SCREWS).contains(&count)
             {
-                return Err(crate::parameters::count_error(
+                return Err(mitcad_model_base::internal::parameters::count_error(
                     format!("1 to {MAX_SET_SCREWS} set screws fit a hub, got {count}"),
                     count,
                 ));

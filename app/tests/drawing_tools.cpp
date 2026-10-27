@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // The drawing tools (mitcad#707): their definitions and the model commands
-// their picks and options make (core/model/src/api/commands.md, "Drawings
+// their picks and options make (core/model-api/src/commands.md, "Drawings
 // in the design"), and the view properties' edits.
 #include "drawings/DrawingTemplates.hpp"
 #include "drawings/DrawingTools.hpp"

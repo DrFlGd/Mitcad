@@ -21,6 +21,8 @@ use super::{
     is_false,
 };
 use crate::ids::{BodyUid, FeatureUid};
+// The corner type is the kernel's input (mitcad#777).
+pub use crate::kernel::ChamferCorner;
 use crate::kernel::{Chamfer, ChamferSize, Kernel};
 use crate::parameters::ParamId;
 use crate::topo::{EdgeName, FaceName};
@@ -34,19 +36,6 @@ pub enum ChamferSizeDef<P = ParamId> {
     DistanceAngle { distance: P, angle: P },
 }
 
-/// The corner type where three or more chamfered edges meet.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChamferCorner {
-    /// The geometry kernel's own patch.
-    #[default]
-    Chamfer,
-    /// The bevels continued until they meet.
-    Miter,
-    /// A smooth patch tangent to the bevels and the faces.
-    Blend,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChamferSetDef<P = ParamId> {
@@ -55,6 +44,11 @@ pub struct ChamferSetDef<P = ParamId> {
     /// Every edge of these faces.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub faces: Vec<FaceName>,
+    /// Every edge of the body as it is when the chamfer is computed (the
+    /// FreeCAD import's "use all edges", mitcad#793): no edges or faces
+    /// listed, the only set of the chamfer.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub all_edges: bool,
     pub size: ChamferSizeDef<P>,
     /// The face the first distance (and the angle) is measured on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,7 +115,12 @@ struct ChamferFormRef<'a, P> {
 impl<P: Serialize> Serialize for ChamferDef<P> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let plain = match self.sets.as_slice() {
-            [set] if set.faces.is_empty() && set.reference_face.is_none() && set.tangent_chain => {
+            [set]
+                if set.faces.is_empty()
+                    && !set.all_edges
+                    && set.reference_face.is_none()
+                    && set.tangent_chain =>
+            {
                 Some(set)
             }
             _ => None,
@@ -145,6 +144,7 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for ChamferDef<P> {
             (Some(edges), Some(size), None) => vec![ChamferSetDef {
                 edges,
                 faces: Vec::new(),
+                all_edges: false,
                 size,
                 reference_face: None,
                 flip: form.flip,
@@ -205,6 +205,7 @@ impl<P> ChamferDef<P> {
             sets.push(ChamferSetDef {
                 edges: set.edges.clone(),
                 faces: set.faces.clone(),
+                all_edges: set.all_edges,
                 size,
                 reference_face: set.reference_face.clone(),
                 flip: set.flip,
@@ -254,7 +255,9 @@ impl FeatureInfo for ChamferDef {
                     e
                 }
             };
-            if set.edges.is_empty() && set.faces.is_empty() {
+            super::fillet::check_all_edges(set.all_edges, &set.edges, &set.faces, self.sets.len())
+                .map_err(at)?;
+            if set.edges.is_empty() && set.faces.is_empty() && !set.all_edges {
                 return Err(at("no edges selected".to_owned()));
             }
             if !set.edges.is_empty() {
@@ -310,6 +313,10 @@ impl<K: Kernel> Evaluate<K> for ChamferDef {
         // is found again (mitcad#272); the definition keeps its names.
         let mut found = self.clone();
         for set in &mut found.sets {
+            if set.all_edges {
+                set.edges = super::fillet::every_edge(ctx.kernel, &shape)?;
+                continue;
+            }
             set.edges = ctx.require_edges(self.body, &shape, &set.edges)?;
             set.faces = require_faces(ctx, self.body, &shape, &set.faces)?;
             if let Some(face) = &set.reference_face {

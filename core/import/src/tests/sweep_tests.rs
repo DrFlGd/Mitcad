@@ -2,6 +2,7 @@
 //! Sweeps, pipes and lofts, and the faces their definitions refer to.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 // Sweeps, pipes and lofts (F3).
 
@@ -287,31 +288,28 @@ fn a_decoded_face_is_resolved_uniquely_only_with_its_names_and_side() {
         for (key, value) in extra.as_object().unwrap() {
             map[key] = value.clone();
         }
-        match mitcad_f3d::design::ir::Reference::from_map(map.as_object().unwrap().clone()) {
-            mitcad_f3d::design::ir::Reference::Face(fp) => *fp,
+        match mitcad_dump::Reference::from_map(map.as_object().unwrap().clone()) {
+            mitcad_dump::Reference::Face(fp) => *fp,
             other => panic!("{other:?}"),
         }
     };
     let named = json!({"_f3d": {"recipe": "bounded_face", "entities": [[{"tag": "9", "kind": 0, "ops": [5]}]]}});
     let fp = face(named.clone());
-    let (found_body, found) = crate::refs::resolve_face(&doc, &fp).expect("the face");
+    let (found_body, found) =
+        mitcad_import_replay::internal::refs::resolve_face(&doc, &fp).expect("the face");
     assert_eq!((found_body, &found), (body, &top));
-    assert!(crate::refs::face_resolved_uniquely(&doc, &fp, (body, &top)));
+    assert!(mitcad_import_replay::internal::refs::face_resolved_uniquely(&doc, &fp, (body, &top)));
     // Without the file's names nothing says the face is the file's.
     let unnamed = face(json!({}));
-    assert!(!crate::refs::face_resolved_uniquely(
-        &doc,
-        &unnamed,
-        (body, &top)
-    ));
+    assert!(
+        !mitcad_import_replay::internal::refs::face_resolved_uniquely(&doc, &unnamed, (body, &top))
+    );
     // Facing the other way than the replay's face.
     let opposed = face(json!({"normal_at_point": [-1.0, 0.0, 0.0],
                               "_f3d": named["_f3d"].clone()}));
-    assert!(!crate::refs::face_resolved_uniquely(
-        &doc,
-        &opposed,
-        (body, &top)
-    ));
+    assert!(
+        !mitcad_import_replay::internal::refs::face_resolved_uniquely(&doc, &opposed, (body, &top))
+    );
 }
 
 // Lofts with end conditions and rails (P2).

@@ -1,11 +1,11 @@
 @private/CLAUDE.md
 
-# Mitcad – instructions for Claude
+# MitCad – instructions for Claude
 
 The import above is the maintainers' optional private instructions
 (`private/` is git-ignored; without it the import does nothing).
 
-Mitcad is an MIT-licensed parametric desktop CAD application (Rust model,
+MitCad is an MIT-licensed parametric desktop CAD application (Rust model,
 C++ OCCT facade, Qt UI). Read [docs/architecture.md](docs/architecture.md)
 and [docs/development.md](docs/development.md) before larger changes.
 
@@ -17,8 +17,8 @@ and [docs/development.md](docs/development.md) before larger changes.
   `-Wall -Wextra -Wpedantic` and AppleClang, Windows, Linux and macOS,
   metric defaults) and the
   [licence policy](docs/development.md#licence-policy).
-- Use the terms of [docs/naming.md](docs/naming.md): component, not
-  part; user-facing text names controls as the UI shows them (the
+- Use the terms of [docs/naming.md](docs/naming.md): MitCad, not
+  Mitcad; component, not part; user-facing text names controls as the UI shows them (the
   Assemble group, not ASSEMBLE).
 - Never commit real `.f3d` designs, FreeCAD documents or other
   third-party models; corpus tests read them from `MITCAD_F3D_CORPUS` and
@@ -44,7 +44,7 @@ and [docs/development.md](docs/development.md) before larger changes.
 ## Key design constraints
 
 - `core/model` has no OCCT dependency: geometry goes through the `Kernel`
-  trait (`core/model/src/kernel.rs`); model tests use a mock kernel.
+  trait (`core/model-base/src/kernel.rs`); model tests use a mock kernel.
 - Rust first for new code of our own: logic we write ourselves goes in
   Rust rather than new C++ when Rust does it well. What OCCT already
   does (fillets and blends, booleans, sweeps, exact intersections) is
@@ -52,11 +52,17 @@ and [docs/development.md](docs/development.md) before larger changes.
   just because it is C++
   ([code conventions](docs/development.md#code-conventions)).
 - The app talks to the model only through JSON commands and queries
-  ([commands.md](core/model/src/api/commands.md)); UI commands are
+  ([commands.md](core/model-api/src/commands.md)); UI commands are
   declarative definitions ([app/COMMANDS.md](app/COMMANDS.md)).
 - Platform code: few `Q_OS_MACOS` branches (GL format, menus, shortcuts)
-  and AppKit only in `app/platform/macos/`, behind
-  `app/platform/MacChrome.hpp` (inline stubs elsewhere). The layout is
+  and AppKit only in `app/platform/macos/`, behind the public interfaces
+  in `app/platform/` (`MacChrome`, `NativeMacWindow`, `NativeForms`,
+  `NativeDialogs` and related adapters, with stubs where applicable).
+  Native presentation preserves the shared UI's command locations, order,
+  CAD artwork and workflow capabilities; platform integration is not a
+  reason to omit interactions or replace a content-rich view with a less
+  capable generic control. See `docs/native-macos-ui.md` for the design
+  contract. The retained Qt layout is
   chosen at run time (`chromeStyle()`: Floating by default everywhere
   since mitcad#429, Docked by the preference or `--chrome=docked`); Docked
   must keep working everywhere.
@@ -71,12 +77,12 @@ contiguous block, appended at the end:
 
 - `core/model/src/features/mod.rs`: `pub mod`, `pub use` and one line in
   `feature_types!`.
-- `core/model/src/kernel.rs`: new `Kernel` methods with a default
+- `core/model-base/src/kernel.rs`: new `Kernel` methods with a default
   `Err(Unsupported)`, grouped under a comment naming the family.
 - `core/ffi/src/kernel/mod.rs`, `core/CMakeLists.txt` (`FILES` and
   `target_sources` of `mitcad_bridge`), `geometry/CMakeLists.txt`: one
   block per family; new families in new files.
-- `core/model/src/api/commands.md` and README sections: a section of
+- `core/model-api/src/commands.md` and README sections: a section of
   your own.
 - `tools/dev-env/versions.sh`: tool pins shared by `setup-user.sh` and
   `setup-macos.sh` (`setup-windows.ps1` mirrors them by hand).

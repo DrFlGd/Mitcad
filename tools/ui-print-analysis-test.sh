@@ -4,7 +4,7 @@
 # check-all sources: app/MainWindowPrintAnalysis.cpp app/view/PrintOverlay.cpp app/view/PrintOverlay.hpp
 # check-all sources: app/OcctViewer.hpp app/OcctViewer.cpp app/MainWindow.cpp app/MainWindow.hpp app/browser app/framework/CommandSession.cpp
 # check-all sources: app/framework/CommandSession.hpp app/framework/CommandPanel.cpp app/framework/Command.hpp
-# check-all sources: core/model/src/document/analyses.rs core/model/src/api core/model/src/print_analysis.rs tools/cli
+# check-all sources: core/model/src/document/analyses.rs core/model-api/src core/model/src/print_analysis.rs tools/cli
 # Print Analysis through the real UI (mitcad#620), on a synthetic T: a
 # stem of 10 x 20 x 20 mm (x = 15 to 25) under a bar of 40 x 20 x 0.5 mm
 # (z = 20 to 20.5), one body (Body1). Area 2860 mm², volume 4400 mm³; the

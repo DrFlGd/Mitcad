@@ -556,7 +556,7 @@ quit sam
 ui_instance ada
 ui_key ctrl+q
 ui_expect_new "Read-only: unsaved changes of part.mitcad asked about" "quitting asks about the changes kept"
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_key alt+d # Don't Save: Mitcad ends
 for _ in $(seq 1 100); do
   kill -0 "$UI_RUNNER" 2> /dev/null || break
@@ -664,7 +664,7 @@ else
   ui_stop_app
   echo "ok   Ada's Mitcad killed: its connection's will"
   ui_instance sam
-  ui_expect_new "Edit lock dialog: Ada Tester's Mitcad lost its connection at " "Sam is asked whether to take the lock" 20
+  ui_expect_new "Edit lock dialog: Ada Tester's MitCad lost its connection at " "Sam is asked whether to take the lock" 20
   ui_focus_dialog '^Edit Lock$'
   ui_step "take the edit lock (Alt+T)"  ui_key alt+t
   ui_focus_main
@@ -749,7 +749,7 @@ for action in Open New Close; do
       ui_step "take it (Enter)"          ui_key Return ;;
     Close) ui_step "close the design"      ui_key ctrl+w ;;
   esac
-  ui_focus_dialog '^Mitcad$'
+  ui_focus_dialog '^MitCad$'
   ui_step "don't save"                    ui_key alt+d
   if [ "$action" = Open ]; then
     ui_step "the exchange filename"       ui_type_path "Open" "$WORK/exchange.step"
@@ -769,7 +769,7 @@ for action in Open New Close; do
   sleep 3
   ui_sync
   title=$(xdotool getwindowname "$UI_WINDOW")
-  [ "$title" = 'part.mitcad* - Mitcad' ] || ui_fail "$action changed the design's name: $title"
+  [ "$title" = 'part.mitcad* - MitCad' ] || ui_fail "$action changed the design's name: $title"
   tail -n +$((UI_MARK + 1)) "$UI_LOG" |
     grep -qE 'Imported exchange.step|New document|New Design: made|Document closed|Autosave removed' &&
     ui_fail "$action continued after refused replacement"
@@ -781,7 +781,7 @@ done
 
 ui_mark
 ui_step "open again"                     ui_key ctrl+o
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_step "don't save"                     ui_key alt+d
 ui_step "the exchange filename"          ui_type_path "Open" "$WORK/exchange.step"
 ui_expect_new "needs a choice before the release: asked" "closing asks again" 30
@@ -791,7 +791,7 @@ ui_focus_main
 ui_expect_new "Imported exchange.step as" "successful Open imports into the new design" 30
 ui_expect_new "Autosaved exchange:" "the untitled import has recovery data" 20
 title=$(xdotool getwindowname "$UI_WINDOW")
-[ "$title" = 'exchange* - Mitcad' ] || ui_fail "the imported design's name is $title"
+[ "$title" = 'exchange* - MitCad' ] || ui_fail "the imported design's name is $title"
 python3 - "$MITCAD_AUTOSAVE_DIR" << 'EOF'
 import glob, json, os, sys
 

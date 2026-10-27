@@ -3,7 +3,7 @@
 //! what `library check` says about it, and how parts are matched to what
 //! the BUILD tab asks for (a junction of two profiles, or a role and a
 //! slot system in a picker). The format is in `docs/libraries.md`, "BUILD
-//! parts"; the commands in `core/model/src/api/commands.md`,
+//! parts"; the commands in `core/model-api/src/commands.md`,
 //! "Library commands".
 //!
 //! The block is kept in the manifest as it was written (unknown fields

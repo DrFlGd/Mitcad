@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands/BuildCommands.cpp app/build app/framework core/model/src/build core/model/src/api tools/libraries
+# check-all sources: app/commands/BuildCommands.cpp app/build app/framework core/model/src/build core/model-build core/model-api/src tools/libraries
 """Timber seating through the actual Qt GUI and localhost MCP bridge.
 
 Run only in the approved macOS VM:

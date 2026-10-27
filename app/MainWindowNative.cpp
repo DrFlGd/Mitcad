@@ -21,6 +21,7 @@
 #include <QSet>
 #include <QStackedWidget>
 #include <QTimer>
+#include <QTabBar>
 #include <QToolBar>
 #include <QToolButton>
 #include <QtLogging>
@@ -38,6 +39,7 @@
 #include "mcp/AgentIndicator.hpp"
 #include "platform/NativeDialogs.hpp"
 #include "platform/NativeForms.hpp"
+#include "projects/ProjectsPanel.hpp"
 #include "platform/NativeMacWindow.hpp"
 #include "report/ReportCenter.hpp"
 #include "sketch/SketchPalette.hpp"
@@ -175,6 +177,17 @@ void MainWindow::createNativeWindow() {
       emit m_controller->browser()->eyeClicked(node);
     }
   };
+  callbacks.componentActivated = [this](const QString& key) {
+    const BrowserNode node = m_nativeNodes.value(key);
+    if (node.isValid()) emit m_controller->browser()->activateClicked(node);
+  };
+  callbacks.treeExpanded = [this](const QString& key, bool expanded) {
+    m_controller->browser()->setPresentationExpanded(key, expanded);
+  };
+  callbacks.browserIssues = [this](bool warnings, const QPoint& position) {
+    m_controller->showIssues(warnings, position);
+    QTimer::singleShot(0, this, [this] { refreshNativeWindow(); });
+  };
   callbacks.treeContextMenu = [this](const QString& key, const QPoint& point) {
     const BrowserNode node = m_nativeNodes.value(key);
     if (node.isValid()) {
@@ -262,6 +275,10 @@ void MainWindow::createNativeWindow() {
       execMenu(m_agentIndicator->agentMenu(), point);
     }
   };
+  callbacks.workspaceChanged = [this](int index) {
+    m_ribbon->tabBar()->setCurrentIndex(index);
+    refreshNativeWindow();
+  };
   callbacks.requestClose = [this] { return requestNativeClose(); };
   callbacks.closed = [] { QCoreApplication::quit(); };
   callbacks.openFile = [this](const QString& path) {
@@ -276,6 +293,31 @@ void MainWindow::createNativeWindow() {
     throw std::runtime_error(m_nativeWindow->embeddingError().toStdString());
   }
   setNativeDialogWindow(m_nativeWindow->nativeWindow());
+  connect(m_controller->browser(), &BrowserPanel::contentHeightChanged, this, [this] {
+    m_nativeSnapshotKey.clear();
+    QTimer::singleShot(0, this, [this] { refreshNativeWindow(); });
+  });
+  createProjectsPanel();
+  m_projectsPanel->setParent(this);
+  m_projectsPanel->hide();
+  m_projectsContainer = m_projectsPanel;
+  m_nativeProjectsShown = projectsPanelShownAtStart();
+  m_projectsPanel->setNativePresented(m_nativeProjectsShown);
+  if (QAction* action = m_registry->action(QStringLiteral("view.projects"))) action->setChecked(m_nativeProjectsShown);
+  // AppKit expansion/model notifications must finish before measuring rows.
+  connect(m_projectsPanel, &ProjectsPanel::contentHeightChanged, this,
+          &MainWindow::refreshNativeProjects, Qt::QueuedConnection);
+  if (QMenu* view = findChild<QMenu*>(QStringLiteral("viewMenu"))) {
+    QAction* browser = view->addAction(tr("Browser"));
+    browser->setCheckable(true);
+    browser->setChecked(true);
+    connect(browser, &QAction::toggled, this, [this](bool shown) { m_nativeWindow->showSidebar(shown); });
+    QAction* timeline = view->addAction(tr("Timeline"));
+    timeline->setCheckable(true);
+    timeline->setChecked(true);
+    connect(timeline, &QAction::toggled, this, [this](bool shown) { m_nativeWindow->showHistory(shown); });
+  }
+
   new NativePaletteWatcher(this, [this] {
     m_nativeSnapshotKey.clear();
     refreshNativeWindow(); // A busy document refreshes from busyChanged after it becomes idle.
@@ -333,6 +375,12 @@ void MainWindow::createNativeWindow() {
   // AppKit's viewport. The native status and menus expose their actions.
   auto* noticeStore = new QWidget(this);
   noticeStore->hide();
+  // These retained Qt presenters must never paint beside the native card.
+  for (QToolButton* badge : {m_controller->failures(), m_controller->warnings(), m_controller->findButton()}) {
+    const bool shown = !badge->isHidden();
+    badge->setParent(noticeStore);
+    badge->setVisible(shown);
+  }
   for (auto* toolbar : findChildren<QToolBar*>(QString(), Qt::FindDirectChildrenOnly)) {
     removeToolBar(toolbar);
     toolbar->setParent(noticeStore);
@@ -445,6 +493,8 @@ void MainWindow::refreshNativeActions() {
       if (item.id.isEmpty()) {
         const QString key = !action->objectName().isEmpty()
                                 ? QStringLiteral("named/") + action->objectName()
+                                : action->menu() && !action->menu()->objectName().isEmpty()
+                                ? QStringLiteral("menu/") + action->menu()->objectName()
                                 : menu + QLatin1Char('/') + menuLabel(action->text());
         item.id = QStringLiteral("native.menu.") + QString::fromLatin1(
             QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha256).toHex());
@@ -455,6 +505,7 @@ void MainWindow::refreshNativeActions() {
     }
     item.label = menuLabel(action->text());
     item.menu = menu;
+    if (action->menu()) item.submenu = QStringLiteral("ribbon.popup.") + item.id;
     const bool fileMenu = menu == QStringLiteral("File") || menu.startsWith(QStringLiteral("File/"));
     item.enabled = action->isEnabled() && !modelBusy() && !(m_session && fileMenu);
     item.checked = action->isChecked();
@@ -463,7 +514,8 @@ void MainWindow::refreshNativeActions() {
     // including its palette-dependent light/dark rendering.
     item.icon = action->icon();
     item.iconTemplate = false;
-    item.symbol = symbolForAction(item.id);
+    item.symbol = (item.id == QStringLiteral("edit.undo") || item.id == QStringLiteral("edit.redo"))
+                      ? symbolForAction(item.id) : QString();
     item.shortcut = action->shortcut().toString(QKeySequence::PortableText);
     for (const QKeySequence& key : action->shortcuts()) item.shortcuts.append(key.toString(QKeySequence::PortableText));
     if (const CommandDef* def = m_registry->find(item.id)) {
@@ -482,8 +534,9 @@ void MainWindow::refreshNativeActions() {
       }
       item.shortcut = item.shortcuts.value(0);
     }
-    if (action->menuRole() == QAction::PreferencesRole || action->menuRole() == QAction::AboutRole) {
-      item.menu = QStringLiteral("Mitcad");
+    if (action->menuRole() == QAction::PreferencesRole || action->menuRole() == QAction::AboutRole ||
+        action->menuRole() == QAction::AboutQtRole) {
+      item.menu = QStringLiteral("MitCad");
     }
     m_nativeActions.insert(item.id, action);
     actions.append(item);
@@ -509,92 +562,74 @@ void MainWindow::refreshNativeActions() {
       append(action, QString());
     }
   }
-  // The ribbon's subgroups (mitcad#222: the sketch CREATE group's Circles,
-  // ...), as its group menus have them: a popup entry where its commands
-  // were, with them as its children (also a submenu of the menu bar's menu
-  // of the workspace). A pinned one (the default) keeps its button.
-  for (const QToolButton* group : m_ribbon->findChildren<QToolButton*>()) {
-    const QString name = group->objectName();
-    if (!name.startsWith(QStringLiteral("ribbonMenu_")) || group->menu() == nullptr) {
-      continue;
+  // Read the actual Qt ribbon rather than maintaining an AppKit command list.
+  // Menu order, section separators, subgroup defaults and extra filters now
+  // have one source in both frontends.
+  const auto actionId = [&](QAction* entry) {
+    if (!assigned.contains(entry)) append(entry, QString());
+    return entry->objectName().startsWith(QStringLiteral("command_"))
+               ? entry->objectName().mid(8) : entry->property("mitcadNativeActionId").toString();
+  };
+  const auto menuItems = [&](const auto& self, QMenu* menu) -> QList<mac::NativeMacMenuItem> {
+    QList<mac::NativeMacMenuItem> items;
+    for (QAction* entry : menu->actions()) {
+      if (!entry->isVisible()) continue;
+      mac::NativeMacMenuItem item;
+      item.separator = entry->isSeparator();
+      item.title = menuLabel(entry->text());
+      item.icon = entry->icon();
+      item.submenu = entry->menu() != nullptr;
+      if (!item.separator) item.action = actionId(entry);
+      if (entry->menu()) item.children = self(self, entry->menu());
+      items.append(item);
     }
-    const QString workspace = name.mid(11).section(QLatin1Char('/'), 0, 0);
-    const QString groupName = name.mid(11).section(QLatin1Char('/'), 1);
-    if (groupName == QStringLiteral("SELECT")) {
-      continue; // its filters below
-    }
-    for (QAction* entry : group->menu()->actions()) {
-      QMenu* submenu = entry->menu();
-      if (submenu == nullptr || entry->isSeparator() || !entry->isVisible()) {
-        continue;
-      }
-      const QString top = workspace == QStringLiteral("SKETCH") ? QStringLiteral("Sketch") : displayName(groupName);
-      const QString path = top + QLatin1Char('/') + menuLabel(entry->text());
-      int first = -1;
-      QString firstSection; // the popup's section: its first command's (mitcad#579)
-      for (QAction* child : submenu->actions()) {
-        const QString id = child->objectName().mid(8); // "command_<id>"
-        for (mac::NativeMacAction& item : actions) {
-          if (item.id != id || item.separator) {
-            continue;
-          }
-          if (first < 0 || item.toolbarOrder < first) {
-            first = item.toolbarOrder;
-            firstSection = item.section;
-          }
-          item.menu = path;
-          if (item.toolbarPinned) {
-            item.toolbarOnly = true; // its button stays, its menu entry is the popup's
-          } else {
-            item.group.clear();
-          }
+    return items;
+  };
+  QList<mac::NativeMacRibbonGroup> groups;
+  QStringList workspaces;
+  QTabBar* tabs = m_ribbon->tabBar();
+  for (int tab = 0; tab < tabs->count(); ++tab) workspaces.append(tabs->tabText(tab).toUpper());
+  // Keep the hidden sketch page available before its tab is added.
+  for (const QString& workspace : {QStringLiteral("SOLID"), QStringLiteral("BUILD"), QStringLiteral("SKETCH")}) {
+    for (const QString& name : Ribbon::groups(workspace)) {
+      auto* caption = m_ribbon->findChild<QToolButton*>(QStringLiteral("ribbonMenu_") + workspace + QLatin1Char('/') + name);
+      if (!caption || !caption->menu()) continue;
+      mac::NativeMacRibbonGroup group;
+      group.workspace = workspace;
+      group.name = name;
+      group.title = displayName(name);
+      const auto widths = m_ribbon->groupWidths(workspace, name);
+      group.fullWidth = widths.first;
+      group.collapsedWidth = widths.second;
+      group.menu = menuItems(menuItems, caption->menu());
+      for (QToolButton* button : caption->parentWidget()->findChildren<QToolButton*>()) {
+        if (!button->defaultAction() || button->parentWidget()->parentWidget() != caption->parentWidget()) continue;
+        mac::NativeMacRibbonButton item;
+        item.action = actionId(button->defaultAction());
+        item.width = button->sizeHint().width();
+        item.iconSize = button->iconSize().width();
+        item.menuOnly = button->popupMode() == QToolButton::InstantPopup;
+        if (button->menu()) {
+          item.menu = menuItems(menuItems, button->menu());
         }
+        group.buttons.append(item);
       }
-      const qsizetype before = actions.size();
-      append(entry, QString());
-      if (actions.size() == before) {
-        continue;
-      }
-      mac::NativeMacAction& popup = actions.last();
-      popup.group = groupName;
-      popup.workspace = workspace;
-      popup.submenu = path;
-      popup.toolbarOrder = first;
-      popup.section = firstSection;
-    }
-  }
-  // SELECT uses shared actions added to the ribbon rather than registry
-  // commands. Keep its pinned filter icon and its actual checked submenu
-  // available in both native workspaces.
-  const QString selectWorkspace = m_sketch->isActive() ? QStringLiteral("SKETCH") : QStringLiteral("SOLID");
-  if (auto* select = m_ribbon->findChild<QToolButton*>(QStringLiteral("ribbonMenu_") + selectWorkspace +
-                                                   QStringLiteral("/SELECT"))) {
-    if (QMenu* menu = select->menu()) {
-      for (QAction* action : menu->actions()) {
-        if (!action->isVisible()) {
-          continue;
-        }
-        append(action, QStringLiteral("Select"));
-        auto& item = actions.last();
-        item.group = QStringLiteral("SELECT");
-        item.workspace = selectWorkspace;
-        item.toolbarOrder = order++;
-        if (QMenu* submenu = action->menu()) {
-          item.toolbarPinned = true;
-          item.submenu = QStringLiteral("Select/") + menuLabel(action->text());
-          const QString path = item.submenu;
-          addMenu(addMenu, submenu, path);
-        }
-      }
+      // Extras such as Selection Filters use the same native popup as in Qt.
+      groups.append(group);
     }
   }
   m_nativeWindow->setActions(actions);
+  m_nativeWindow->setRibbon(groups, workspaces, tabs->currentIndex());
 }
 
 void MainWindow::refreshNativeWindow() {
   if (!m_nativeWindow || modelBusy()) {
     return;
   }
+  const auto* failed = m_controller->failures();
+  const auto* warned = m_controller->warnings();
+  m_nativeWindow->setBrowserIssues(failed->isHidden() ? QString() : failed->text(), failed->toolTip(),
+                                  warned->isHidden() ? QString() : warned->text(), warned->toolTip());
   refreshNativeActions();
   m_nativeWindow->setDocument(documentName(), m_filePath, isModified());
   m_nativeWindow->setSketchMode(m_sketch->isActive());
@@ -613,12 +648,17 @@ void MainWindow::refreshNativeWindow() {
       item.title = row.node.name;
       item.detail = row.tooltip;
       item.symbol = symbolForNode(row.node);
+      item.icon = row.icon;
+      item.expanded = row.expanded;
+      item.hasActivation = row.hasActivation;
+      item.active = row.active;
       item.kind = row.node.isFolder() ? QStringLiteral("folder") : QString::number(static_cast<int>(row.node.type));
       item.editable = canRename && (row.node.type == BrowserNode::Type::Body || row.node.type == BrowserNode::Type::Sketch ||
                                    row.node.type == BrowserNode::Type::Component || row.node.type == BrowserNode::Type::Datum ||
                                    row.node.type == BrowserNode::Type::Analysis || row.node.type == BrowserNode::Type::Joint ||
                                    row.node.type == BrowserNode::Type::Feature ||
                                    row.node.type == BrowserNode::Type::Drawing ||
+                                   row.node.type == BrowserNode::Type::ImageReference ||
                                    (row.node.type == BrowserNode::Type::NamedView && row.node.uid.startsWith(QStringLiteral("named:"))));
       item.hasVisibility = row.node.hasEye;
       // Bodies, sketches, construction and components in every mode (mitcad#295).
@@ -648,6 +688,7 @@ void MainWindow::refreshNativeWindow() {
       item.symbol = feature.isSketch() ? QStringLiteral("pencil.and.outline") : QStringLiteral("cube");
       item.icon = themeIcon(featureIcon(feature.type));
       item.status = feature.status;
+      item.noted = !feature.importNote.isEmpty();
       item.suppressed = feature.suppressed;
       item.filtered = filtered.contains(feature.uid);
       history.append(item);
@@ -667,6 +708,15 @@ void MainWindow::refreshNativeWindow() {
   m_nativeWindow->setSelection(selected);
   m_nativeWindow->setHistorySelection(m_controller->timeline()->selectedFeatures());
   refreshNativeInspector();
+  refreshNativeProjects();
+}
+
+void MainWindow::refreshNativeProjects() {
+  if (!m_nativeWindow || !m_projectsPanel) return;
+  if (!m_nativeProjectsForm) m_nativeProjectsForm = createNativeWidgetView(m_projectsPanel);
+  else m_nativeProjectsForm->refresh();
+  m_nativeWindow->setProjectsView(m_nativeProjectsForm ? m_nativeProjectsForm->nativeView() : nullptr,
+                                 m_nativeProjectsShown);
 }
 
 void MainWindow::refreshNativeInspector() {

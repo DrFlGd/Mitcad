@@ -13,7 +13,7 @@ points: `mitcad-cli import-ipt part.ipt [--save part.mitcad] [--report
 report.json] [--reference part.stp [--max-relative X] [--deviation]]
 [--bodies-only] [--no-verify] [--no-fallback] [--no-compare] [--time-limit
 S] [--hang-limit S] [--dump design.json] [--design design.json] [--json]`, the `import_ipt`
-command ([commands.md](../../model/src/api/commands.md#ipt-import)) and File ›
+command ([commands.md](../../model-api/src/commands.md#ipt-import)) and File ›
 Open or Import in the application (the import process, as for `.f3d` and
 FreeCAD documents; Cancel only).
 
@@ -40,7 +40,7 @@ FreeCAD documents; Cancel only).
   A stored body of several lumps (disjoint solids in one body, as a join
   of a piece that touches nothing makes it in the file) comes in as one
   body per lump in the history states and the stored design, as the
-  replay makes them (Mitcad keeps disjoint solids apart); before, such a
+  replay makes them (MitCad keeps disjoint solids apart); before, such a
   join's replay had one body more than its state and fell back. With `hang_limit` (`--hang-limit`; the application 90 s,
   `ipt.corpus` 300 s) the replay runs on its own thread, watched as the
   `.f3d` import's (*Hangs* above): an item whose kernel call does not
@@ -50,7 +50,7 @@ FreeCAD documents; Cancel only).
   segment): one base feature per body, solids and sheet bodies alike; a
   body that OCCT cannot build is reported (`skipped`) and left out.
 - The document's length unit becomes the part's (the model settings'
-  unit code); the material is set when Mitcad's library has it.
+  unit code); the material is set when MitCad's library has it.
 - The report lists the part number, material, units, the release that
   saved the file, each B-rep record (ASM version, bodies, the states of
   the ASM history it carries) and each body (solid or sheet, valid,
@@ -80,7 +80,7 @@ child process of its own, several at once (`mitcad_run_parallel`;
 `MITCAD_CORPUS_JOBS`, `MITCAD_CORPUS_MEMORY`, `MITCAD_CORPUS_TIMEOUT`,
 `MITCAD_CORPUS_JOBS=1` checks them in the script's process). Every body
 must be built and valid, every expression of the part's parameters must
-agree with its stored value (in the file and in Mitcad), and the final
+agree with its stored value (in the file and in MitCad), and the final
 bodies must be the file's; the line per file gives the features' outcomes.
 A file with a STEP file of the same part next to it (`<name>.stp` or
 `.step`) is compared with it: as many solids, each one's volume and area

@@ -33,7 +33,7 @@ pub struct SheetContourDef<P = ParamId> {
     /// Sketch lines joined end to end, in the order the chain runs: the
     /// first line runs away from the second (a single line runs from its
     /// start).
-    #[serde(with = "crate::sketch::curves_serde")]
+    #[serde(with = "mitcad_sketch::internal::curves_serde")]
     pub curves: Vec<EntityUid>,
     /// The sheet's extent along the sketch's normal.
     pub width: P,

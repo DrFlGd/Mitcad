@@ -22,7 +22,8 @@ use crate::kernel::{
     SideEnd, Target,
 };
 use crate::parameters::ParamId;
-use crate::profile::{ProfileRegion, SketchFrame, dot};
+use crate::profile::{ProfileRegion, SketchFrame};
+use mitcad_vec3::dot;
 
 /// Whether the profiles stand up from the face or go down into it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

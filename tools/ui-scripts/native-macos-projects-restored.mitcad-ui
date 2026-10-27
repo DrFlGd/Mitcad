@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+# Collapsing the header must not save the whole panel as hidden.
+expect-ever 'Projects panel at the start: shown \(as chosen\)'
+wait-log 'Projects panel: 1 project' 30
+expect-native-visible native.projectsCard true
+expect-native-visible projectsTree true
+native-expand projectsTree
+sleep 250
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/projects-restored.png'
+menu 'View/Projects'
+expect-native-visible native.projectsCard false
+expect-native-layout

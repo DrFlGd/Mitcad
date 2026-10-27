@@ -3,9 +3,9 @@
 `core/ifc` reads IFC files (Industry Foundation Classes, ISO 16739-1): the
 ISO 10303-21 text of the schemas IFC2X3 TC1, IFC4 ADD2 TC1 and IFC4X3
 ADD2, also zipped (`.ifczip`, a zip archive of one `.ifc`). It builds no
-geometry: the IFC import (mitcad#273, `core/import/src/ifc/`,
+geometry: the IFC import (mitcad#273, `core/import-ifc`,
 `core/ffi/src/ifc_import.rs`, the `import_ifc` command in
-[commands.md](../model/src/api/commands.md#ifc-import), `mitcad-cli
+[commands.md](../model-api/src/commands.md#ifc-import), `mitcad-cli
 import-ifc`, File › Open) builds the bodies through the model's kernel from
 what this crate decodes.
 
@@ -26,7 +26,7 @@ of the format were neither copied, translated nor linked.
 | `units` | The project's units (IfcUnitAssignment): SI units with prefixes and conversion-based units (feet, inches, degrees) as millimetres, radians, mm² and mm³. |
 | `math` | Points, directions and affine transforms (3 × 4 rows). |
 | `model` | The products (recognised by their attributes: GlobalId, ObjectPlacement, Representation), their absolute placements (local placements relative to theirs, grid placements at their grid's axes' intersections), the spatial structure (IfcRelAggregates, IfcRelContainedInSpatialStructure), openings and their fillings, types and their representation maps, materials (layer sets, constituents, profiles), element quantities (volumes), the colours of styles (IFC2X3's presentation style assignments and IFC4's styles directly), shape representations with the bodies first, grids' axes. |
-| `properties` | Property sets (single and enumerated values) and element quantities (lengths, areas, volumes, counts, weights, times) as named values in Mitcad's units, with measure units where a single value states one; an element's own sets (IfcRelDefinesByProperties, also an IFC4 set of definitions) and its type object's (HasPropertySets) are listed by the model (mitcad#496). |
+| `properties` | Property sets (single and enumerated values) and element quantities (lengths, areas, volumes, counts, weights, times) as named values in MitCad's units, with measure units where a single value states one; an element's own sets (IfcRelDefinesByProperties, also an IFC4 set of definitions) and its type object's (HasPropertySets) are listed by the model (mitcad#496). |
 | `geometry` | Representation items decoded in millimetres: curves (polylines, lines, circles and ellipses whole or trimmed by points or parameters, composite curves, indexed poly curves with arcs, B-splines rational or not, the 3D curves of surface and intersection curves), profiles (rectangle, rounded and hollow rectangle, circle, hollow circle, ellipse, I, asymmetric I, L, U, T, Z, C and trapezium with their fillet and edge radii, arbitrary closed profiles with voids, derived and composite profiles), extrusions (tapered too), revolutions, sweeps along a curve on a plane or with a fixed reference, swept disks, booleans and clipping results, half spaces (plain, boxed and polygonally bounded), CSG primitives, faceted breps and surface models, triangulated and polygonal face sets (polygons with holes triangulated), advanced breps (planes, cylinders, cones, spheres, tori, B-spline surfaces, swept surfaces; edges with their curves and vertices), mapped items, bounding boxes. What is not read is an `Unsupported` item that says why. |
 | `testdata` | A small IFC4 building written for the tests: storeys, a wall with an opening and a window of a type, a slab with a hole, an I-beam, a clipped column, a faceted cube, a tessellated tetrahedron, a space, a grid and an element without a shape. |
 | `bin/mitcad-ifc-inspect` | `header`, `entities`, `tree`, `products [--json]`, `entity <id> [depth]`, `units`, `items <id> [--json]`. |

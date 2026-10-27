@@ -2,6 +2,7 @@
 #include "SketchGeometry.hpp"
 
 #include <algorithm>
+#include <utility>
 
 namespace mitcad::sketch {
 namespace {
@@ -424,6 +425,81 @@ std::vector<V2> fitSplinePreview(const std::vector<V2>& points, int samplesPerSp
     }
   }
   result.push_back(points.back());
+  return result;
+}
+
+std::vector<V2> closedFitSplinePreview(const std::vector<V2>& points, int samplesPerSpan) {
+  const std::size_t n = points.size();
+  if (n < 3) {
+    return points;
+  }
+  // The curve the model makes (mitcad#783): the periodic cubic through the
+  // points at chord-length parameters, C2 everywhere, also where it closes.
+  // Its second derivatives m solve, for each point i (indices round the
+  // loop), h[i-1] m[i-1] + 2 (h[i-1] + h[i]) m[i] + h[i] m[i+1] =
+  // 6 ((p[i+1] - p[i]) / h[i] - (p[i] - p[i-1]) / h[i-1]).
+  std::vector<double> h(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    h[i] = dist(points[i], points[(i + 1) % n]);
+    if (h[i] <= kTiny) {
+      return points;
+    }
+  }
+  std::vector<std::vector<double>> a(n, std::vector<double>(n, 0.0));
+  std::vector<V2> rhs(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t before = (i + n - 1) % n;
+    const std::size_t after = (i + 1) % n;
+    a[i][before] += h[before];
+    a[i][i] += 2.0 * (h[before] + h[i]);
+    a[i][after] += h[i];
+    rhs[i] = ((points[after] - points[i]) / h[i] - (points[i] - points[before]) / h[before]) * 6.0;
+  }
+  // Gaussian elimination with partial pivoting (a few dozen points at most).
+  for (std::size_t c = 0; c < n; ++c) {
+    std::size_t pivot = c;
+    for (std::size_t r = c + 1; r < n; ++r) {
+      if (std::abs(a[r][c]) > std::abs(a[pivot][c])) {
+        pivot = r;
+      }
+    }
+    if (std::abs(a[pivot][c]) <= kTiny) {
+      return points;
+    }
+    std::swap(a[c], a[pivot]);
+    std::swap(rhs[c], rhs[pivot]);
+    for (std::size_t r = c + 1; r < n; ++r) {
+      const double f = a[r][c] / a[c][c];
+      if (f == 0.0) {
+        continue;
+      }
+      for (std::size_t k = c; k < n; ++k) {
+        a[r][k] -= f * a[c][k];
+      }
+      rhs[r] = rhs[r] - rhs[c] * f;
+    }
+  }
+  std::vector<V2> m(n);
+  for (std::size_t c = n; c-- > 0;) {
+    V2 s = rhs[c];
+    for (std::size_t k = c + 1; k < n; ++k) {
+      s = s - m[k] * a[c][k];
+    }
+    m[c] = s / a[c][c];
+  }
+  std::vector<V2> result;
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t next = (i + 1) % n;
+    const double len = h[i];
+    for (int s = 0; s < samplesPerSpan; ++s) {
+      const double t = len * static_cast<double>(s) / samplesPerSpan;
+      const double u = len - t;
+      result.push_back(m[i] * (u * u * u / (6.0 * len)) + m[next] * (t * t * t / (6.0 * len)) +
+                       (points[i] - m[i] * (len * len / 6.0)) * (u / len) +
+                       (points[next] - m[next] * (len * len / 6.0)) * (t / len));
+    }
+  }
+  result.push_back(points.front());
   return result;
 }
 

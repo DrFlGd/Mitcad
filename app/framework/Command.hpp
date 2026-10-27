@@ -865,6 +865,11 @@ struct CommandDef {
   // edited (`edit_analysis`), and `load` fills the inputs from an entry of
   // the `analyses` query to edit it.
   bool keepsSection = false;
+  // What `load` fills the inputs from when the panel edits an item kept in
+  // the document that is not a feature (an analysis; an image reference,
+  // mitcad#782), as the log names it: "Editing analysis Section1 with
+  // Section Analysis".
+  QString editedKind = QStringLiteral("analysis");
   // Application commands with a panel (3D Print, mitcad#234): the inputs
   // are picked and checked as a feature's are (`build` gives an empty
   // definition, or the failure the panel shows), nothing is previewed, and

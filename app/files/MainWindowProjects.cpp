@@ -216,7 +216,7 @@ bool MainWindow::handleNewProject(const std::optional<NewProjectResult>& result,
     break;
   }
   const QString root = result->folder;
-  // The author typed is Mitcad's default when there was none.
+  // The author typed is MitCad's default when there was none.
   VersionSettings defaults = VersionSettings::load();
   if (!defaults.complete() && !gitIdentity().complete()) {
     try {
@@ -338,7 +338,7 @@ void MainWindow::openProjectFolder(const QString& given, bool ask) {
 }
 
 bool MainWindow::startProjectHistory(const QString& root) {
-  // Who records the first version: git's user, else Mitcad's default
+  // Who records the first version: git's user, else MitCad's default
   // author, else asked (an older project without any author).
   QString author;
   const GitIdentity git = gitIdentity();
@@ -409,7 +409,7 @@ bool MainWindow::openProjectDesign(const QString& root, const QString& preferred
     if (!error.isEmpty()) {
       const QString message = tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error);
       qWarning().noquote() << message;
-      sheetWarning(this, tr("Mitcad"), message);
+      sheetWarning(this, tr("MitCad"), message);
     }
     return false;
   }
@@ -446,7 +446,7 @@ void MainWindow::openReadOnly() {
     return;
   }
   const QString path = dialogOpenFileName(this, tr("Open Read-Only"), dialogFolder(DialogGroup::Open),
-                                          tr("Mitcad designs (*.mitcad)"));
+                                          tr("MitCad designs (*.mitcad)"));
   if (path.isEmpty()) {
     return;
   }
@@ -463,7 +463,7 @@ void MainWindow::openReadOnlyFile(const QString& path) {
   m_openingReadOnly = false;
   qInfo().noquote() << QStringLiteral("Open Read-Only: %1%2").arg(path, opened ? QString() : QStringLiteral(" failed"));
   if (!opened && !error.isEmpty()) {
-    sheetWarning(this, tr("Mitcad"), tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error));
+    sheetWarning(this, tr("MitCad"), tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error));
   }
 }
 
@@ -583,7 +583,7 @@ void MainWindow::saveToProject() {
   }
   const QString reason =
       m_project.kind == ProjectState::Kind::NoHistory
-          ? tr("Its project %1 is inside the git repository %2, so it keeps no versions: Mitcad records versions "
+          ? tr("Its project %1 is inside the git repository %2, so it keeps no versions: MitCad records versions "
                "only in a repository of the project's own.")
                 .arg(m_project.name(), QDir::toNativeSeparators(m_project.outer))
           : QString();

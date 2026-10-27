@@ -430,7 +430,7 @@ QString reportBody(const Report& report, const QString& version) {
     }
     parts << part;
   }
-  QString footer = QStringLiteral("<sub>Sent from Mitcad %1").arg(version);
+  QString footer = QStringLiteral("<sub>Sent from MitCad %1").arg(version);
   if (!report.key.isEmpty()) {
     footer += QStringLiteral(" · duplicate key `mitcad-%1`").arg(report.key);
   }

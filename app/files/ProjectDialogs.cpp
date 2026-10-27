@@ -80,7 +80,7 @@ QString authorOf(const QLineEdit* name, const QLineEdit* email) {
   return QStringLiteral("%1 <%2>").arg(who, address);
 }
 
-// The author offered: git's configured one, else Mitcad's default author.
+// The author offered: git's configured one, else MitCad's default author.
 void fillAuthor(QLineEdit* name, QLineEdit* email) {
   const GitIdentity git = gitIdentity();
   const VersionSettings settings = VersionSettings::load();
@@ -230,7 +230,7 @@ QString describeForNewProject(const QJsonObject& answer, bool& ok) {
   }
   if (answer.value(QStringLiteral("has_project")).toBool()) {
     ok = false;
-    return tr("This repository holds a Mitcad project: Open It Instead opens it into the folder.");
+    return tr("This repository holds a MitCad project: Open It Instead opens it into the folder.");
   }
   if (!answer.value(QStringLiteral("reachable")).toBool(true)) {
     ok = false;
@@ -239,7 +239,7 @@ QString describeForNewProject(const QJsonObject& answer, bool& ok) {
   if (answer.value(QStringLiteral("empty")).toBool()) {
     return tr("✓ Reachable and empty: ready.");
   }
-  return tr("✓ Mitcad adds the project beside the repository's files (%1).")
+  return tr("✓ MitCad adds the project beside the repository's files (%1).")
       .arg(names(answer.value(QStringLiteral("files")), 5).join(QStringLiteral(", ")));
 }
 
@@ -268,7 +268,7 @@ QString describeForOpening(const QJsonObject& answer, bool& ok) {
   if (answer.value(QStringLiteral("empty")).toBool()) {
     return tr("The repository is empty: Create Project Here makes a Cloud project in it.");
   }
-  return tr("The repository has files but no Mitcad project (%1): Make It a Project adds one beside them.")
+  return tr("The repository has files but no MitCad project (%1): Make It a Project adds one beside them.")
       .arg(names(answer.value(QStringLiteral("files")), 5).join(QStringLiteral(", ")));
 }
 
@@ -298,7 +298,7 @@ GitState gitState() {
 
 QLabel* gitMissingNote() {
   auto* label = new QLabel(tr("Cloud projects need the git program, which was not found: "
-                              "<a href=\"https://git-scm.com/downloads\">install git</a> and start Mitcad again."));
+                              "<a href=\"https://git-scm.com/downloads\">install git</a> and start MitCad again."));
   label->setWordWrap(true);
   label->setOpenExternalLinks(true);
   return label;
@@ -589,7 +589,7 @@ void NewProjectDialog::folderChecked() {
   const QString dir = QDir::toNativeSeparators(folder());
   QString text;
   if (kind == QLatin1String("project")) {
-    text = tr("%1 is a Mitcad project already: Open It opens it.").arg(dir);
+    text = tr("%1 is a MitCad project already: Open It opens it.").arg(dir);
   } else if (kind == QLatin1String("inside_project")) {
     text = tr("%1 is inside the project %2: Open It opens that project.")
                .arg(dir, QDir::toNativeSeparators(answer.value(QStringLiteral("project_root")).toString()));

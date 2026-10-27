@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! The IFC import (mitcad#273): `mitcad_ifc` reads the file (`.ifc`, or
-//! `.ifczip`), `mitcad_import::ifc` builds its model through the OCCT
+//! `.ifczip`), `mitcad_import_ifc` builds its model through the OCCT
 //! kernel, under the import process's memory guard (mitcad#80: low on
 //! memory, the import stops before the next element and reports the rest
 //! as not imported). The `import_ifc` document command and `mitcad-cli
@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use mitcad_ifc::{IfcFile, ReadOptions};
-use mitcad_model::api::ApiError;
+use mitcad_model_api::ApiError;
 
 use crate::Document;
 use crate::f3d_import::MemoryGuard;
@@ -60,14 +60,14 @@ impl Document {
         let read_seconds = started.elapsed().as_secs_f64();
         catch_occt_crashes();
         let progress = Arc::new(mitcad_import::Progress::new());
-        let import_options = mitcad_import::ifc::IfcOptions {
+        let import_options = mitcad_import_ifc::IfcOptions {
             openings: options.openings,
             occurrences: options.occurrences,
             progress: Some(progress.clone()),
             ..Default::default()
         };
         let report = MemoryGuard::with_limit(options.memory_limit).around(&progress, || {
-            mitcad_import::ifc::import_ifc(&mut self.0, &file, name, &import_options)
+            mitcad_import_ifc::import_ifc(&mut self.0, &file, name, &import_options)
         });
         let mut value = serde_json::to_value(&report).expect("the report serializes");
         value["format"] = json!("ifc");

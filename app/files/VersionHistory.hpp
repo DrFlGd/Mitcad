@@ -20,7 +20,7 @@ class QTreeWidget;
 namespace mitcad {
 
 // One version of a design file: an entry of the version history's
-// `history` command (core/model/src/api/commands.md, "Version history").
+// `history` command (core/model-api/src/commands.md, "Version history").
 struct FileVersion {
   int number = 0; // v1 is the oldest
   QString id;

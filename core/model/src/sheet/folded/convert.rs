@@ -38,8 +38,8 @@ use crate::features::face_refs::kernel_error;
 use crate::features::sheet_contour::rules_of;
 use crate::features::sheet_convert::SheetConvertDef;
 use crate::kernel::Curve3;
-use crate::profile::{cross, dot};
 use crate::topo::{FaceName, TopoName};
+use mitcad_vec3::{cross, dot};
 
 use mitcad_vec3::Vec3 as V3;
 

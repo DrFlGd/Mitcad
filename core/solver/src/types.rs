@@ -62,6 +62,11 @@ pub enum SplineEnd {
     /// The end tangent is free (two degrees of freedom: direction and
     /// magnitude), to be constrained by the caller.
     Free,
+    /// A closed (periodic) spline (mitcad#783), given for both ends: the
+    /// curve runs on from the last fit point back to the first and has the
+    /// same first and second derivatives at both ends (C2 through the
+    /// first fit point). The fit points are listed once, at least three.
+    Periodic,
 }
 
 /// Where an equal spacing measures from: a point (a sketch point, the centre
@@ -297,6 +302,25 @@ pub enum Constraint {
         b: Anchor,
         mode: SpacingMode,
         value: f64,
+    },
+    // Tangency at a chosen end (mitcad#783).
+    /// [`Constraint::Tangent`] at the end of each curve that is at `at` (by
+    /// coincidence, else the nearest end), so that a curve can be tangent at
+    /// both ends to different curves, or to the same curve at both ends.
+    /// Lines, circles and arcs touch there when the curves share the point.
+    /// `a` and `b` may be the same open spline whose two ends are at `at`:
+    /// the spline is then smooth (G1) where it closes.
+    TangentAt {
+        a: EntityId,
+        b: EntityId,
+        at: PointId,
+    },
+    /// [`Constraint::Smooth`] at the end of each curve that is at `at`, as
+    /// [`Constraint::TangentAt`].
+    SmoothAt {
+        a: EntityId,
+        b: EntityId,
+        at: PointId,
     },
 }
 

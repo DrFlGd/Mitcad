@@ -86,7 +86,7 @@ QList<RenderDevice> renderDevices(const QString& worker, QString& error) {
   }
   const QJsonObject answer = QJsonDocument::fromJson(process.readAllStandardOutput().trimmed()).object();
   if (answer.value(QStringLiteral("protocol")).toInt() != static_cast<int>(kProtocolVersion)) {
-    error = QCoreApplication::translate("RenderDevice", "the render worker does not match this Mitcad");
+    error = QCoreApplication::translate("RenderDevice", "the render worker does not match this MitCad");
     return {};
   }
   QList<RenderDevice> devices;

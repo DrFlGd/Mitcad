@@ -25,7 +25,7 @@ const QColor kBackground(0xd9, 0xdc, 0xe0);
 const QColor kSelected(0x1c, 0x7e, 0xd6);
 const QColor kHovered(0x8c, 0xc1, 0xf0);
 const QColor kBroken(0xc9, 0x2a, 0x2a);
-// Helvetica's cap height per em (core/model/src/drawing/sheet.rs).
+// Helvetica's cap height per em (core/model-drawing/src/sheet.rs).
 constexpr double kCapHeight = 0.718;
 constexpr double kPi = 3.14159265358979323846;
 

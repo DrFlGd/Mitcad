@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: MIT
+# check-all sources: app/platform app/framework/Ribbon.cpp app/projects app/MainWindowNative.cpp
+# Exercise real AppKit controls against the retained Qt ribbon's actual
+# menus, including subgroup order, section boundaries and workspace changes.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+sleep 800
+expect-native-duplicate-choices
+native-resize 1280 820
+expect-native-toolbar-item mitcad.workspaces true
+expect-native-toolbar-item mitcad.sidebar false
+expect-native-toolbar-item mitcad.history false
+expect-native-toolbar-item mitcad.inspector false
+expect-native-text native.agentIndicator '^No assistant$'
+expect-native-visible native.historyCard true
+expect-native-visible native.ribbon.group.create true
+expect-native-visible native.ribbon.group.select true
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/familiar-solid.png'
+
+native-choice native.workspaces Build
+expect-native-visible native.ribbon.group.profile true
+expect-native-visible native.ribbon.group.timber true
+expect-native-visible native.ribbon.group.output true
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/familiar-build.png'
+native-choice native.workspaces Solid
+
+# Projects lives above Browser and binds the existing project commands.
+menu 'View/Projects'
+expect-native-visible native.projectsCard true
+expect-native-visible projectsNewProject true
+expect-native-layout
+sleep 250
+screenshot '${MITCAD_TEST_WORK}/familiar-projects.png'
+native-click projectsNewProject
+focus-dialog '^New Project$'
+button '^Cancel$'
+expect-native-dialog-gone '^New Project$'
+focus-main
+menu 'View/Projects'
+expect-native-visible native.projectsCard false
+
+# The native command form still validates and commits through the model.
+mark
+native-action solid.box
+expect-log 'Command Box started'
+click-logged 'Datum xy'
+native-type input_at_offset1 '0 mm'
+native-type input_at_offset2 '0 mm'
+native-type input_length '40 mm'
+native-type input_width '25 mm'
+native-type input_height '20 mm'
+expect-native-enabled commandOk true
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/familiar-command.png'
+native-click commandOk
+expect-log 'New body .*volume 20000\.000 mm3' 30
+expect-native-visible native.history.F1 true
+
+# Actual shared menu checks repeat after resizing and appearance changes.
+native-resize 900 640
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/familiar-compact.png'
+native-resize 1280 820
+native-appearance dark
+sleep 250
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/familiar-dark.png'
+native-appearance light
+sleep 250
+expect-native-layout

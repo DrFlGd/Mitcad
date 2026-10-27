@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch tools/cli
-# check-all sources: core/model/src/document/plane_geometry.rs core/model/src/api/sketch.rs
+# check-all sources: core/model/src/document/plane_geometry.rs core/model-api/src/sketch.rs
 # Input-driven Windows UI test of body edges and vertices in the sketch
 # plane (mitcad#256, mitcad#258) in the build VM (tools/ui-windows-lib.ps1
 # says how the input is posted); the Linux test is

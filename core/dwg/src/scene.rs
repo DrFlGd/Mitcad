@@ -1038,11 +1038,11 @@ mod tests {
                 for item in &b.items {
                     if let ItemKind::Brep { form, bytes, .. } = &item.kind {
                         let asm = solid::parse(*form, bytes).unwrap_or_else(|e| panic!("{v}: {e}"));
-                        let options = mitcad_f3d::convert::Options {
+                        let options = mitcad_asm::convert::Options {
                             scale: scene.unit_mm,
                             ..Default::default()
                         };
-                        let bodies = mitcad_f3d::convert::convert_file(&asm, &options);
+                        let bodies = mitcad_asm::convert::convert_file(&asm, &options);
                         assert_eq!(bodies.len(), 1, "{v}");
                         assert!(bodies[0].issues.is_empty(), "{v}: {:?}", bodies[0].issues);
                         faces.push(bodies[0].body.faces.len());

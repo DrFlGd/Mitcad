@@ -2,6 +2,7 @@
 //! Body operations: combines, splits, copies and removals, and how the bodies they use are found.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 /// The body fingerprint of an external dump for a replayed body (its volume in
 /// cm³, as the test kernel measures it).
@@ -426,6 +427,7 @@ fn a_split_in_two_operations_made_the_new_bodies_of_both() {
     let options = Options::default();
     let mut importer = Importer {
         body_scope: body_scope::Scope::capture(&doc).enter(&doc),
+        families: &crate::ReplayFamilies,
         oracle: Oracle::new(&mut geometry),
         doc: &mut doc,
         dump: &dump,
@@ -518,7 +520,7 @@ fn named_participants_alone_when_the_history_changed_only_them() {
         extrude(1, 0, "NewBodyFeatureOperation", "d2"),
         extrude(2, 0, "NewBodyFeatureOperation", "d2"),
     ];
-    let named = mitcad_f3d::design::ir::Reference::from_map(
+    let named = mitcad_dump::Reference::from_map(
         json!({"kind": "body", "objectType": "BRepBody",
                "_f3d": {"producer": 1, "body_index": 0}})
         .as_object()
@@ -544,6 +546,7 @@ fn named_participants_alone_when_the_history_changed_only_them() {
         let options = Options::default();
         let mut importer = Importer {
             body_scope: body_scope::Scope::capture(&doc).enter(&doc),
+            families: &crate::ReplayFamilies,
             oracle: Oracle::new(&mut geometry),
             doc: &mut doc,
             dump: &dump,
@@ -611,10 +614,10 @@ fn named_participants_alone_when_the_history_changed_only_them() {
 fn planar_faces_are_found_once_per_body_shape() {
     let mut doc = Document::new(MockKernel::default());
     import(&mut doc, &block_dump());
-    let found = || crate::refs::planar_faces(&doc);
+    let found = || mitcad_import_replay::internal::refs::planar_faces(&doc);
     let plain = found();
     assert!(!plain.is_empty());
-    let kept = crate::refs::KeptPlanes::new();
+    let kept = mitcad_import_replay::internal::refs::KeptPlanes::new();
     assert_eq!(found(), plain);
     assert_eq!(found(), plain);
     // Kept by version: the same version is not looked at again.
@@ -623,13 +626,13 @@ fn planar_faces_are_found_once_per_body_shape() {
         finds.set(finds.get() + 1);
         Vec::new()
     };
-    crate::refs::planes_of(1, find);
-    crate::refs::planes_of(1, find);
-    crate::refs::planes_of(2, find);
+    mitcad_import_base::planes::planes_of(1, find);
+    mitcad_import_base::planes::planes_of(1, find);
+    mitcad_import_base::planes::planes_of(2, find);
     assert_eq!(finds.get(), 2);
     drop(kept);
     // Not kept outside an import.
-    crate::refs::planes_of(1, find);
+    mitcad_import_base::planes::planes_of(1, find);
     assert_eq!(finds.get(), 3);
 }
 
@@ -1156,7 +1159,7 @@ fn a_combine_does_not_prove_local_document_from_a_missing_target_producer() {
     target["_f3d"] = combine_lost_body("the body is not in the history state")["_f3d"].clone();
     target["_f3d"]["producer"] = json!(99);
     target["_f3d"]["document"] = json!(unknown_document);
-    let fp: mitcad_f3d::design::ir::Fingerprint = serde_json::from_value(target.clone()).unwrap();
+    let fp: mitcad_dump::Fingerprint = serde_json::from_value(target.clone()).unwrap();
     assert_eq!(
         refs::resolve_body(&reference, &fp),
         Some("F2.b0".parse().unwrap()),

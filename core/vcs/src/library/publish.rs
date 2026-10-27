@@ -111,7 +111,7 @@ pub fn check_folder(dir: &Path, manifest: &Manifest, cache: Option<&LibraryCache
                     .push(format!("{}: {} is a symbolic link", c.id, c.path)),
                 Ok(_) => match fs::read_to_string(&path) {
                     Ok(text) => {
-                        if let Err(e) = mitcad_model::diff::read_design(&text) {
+                        if let Err(e) = mitcad_model_diff::read_design(&text) {
                             out.errors.push(format!("{}: {}: {e}", c.id, c.path));
                         }
                         if let Ok(design) =
@@ -328,7 +328,7 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
             MAX_COMPONENT >> 20
         )));
     }
-    let state = mitcad_model::diff::read_design(design)
+    let state = mitcad_model_diff::read_design(design)
         .map_err(|e| invalid(format!("the design cannot be read: {e}")))?;
     let _ = state;
     if !mitcad_model::file::brep_references(design)

@@ -213,7 +213,7 @@ fn face_names<K: Kernel>(kernel: &K, shape: &K::Shape) -> Vec<Vec<FaceName>> {
 
 /// Why a name finds nothing a feature can use.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Lost {
+pub enum Lost {
     /// Nothing by the name and nothing like it: the caller explains it, as
     /// before (`missing_face`, `missing_edge`).
     Gone,
@@ -297,7 +297,7 @@ fn texts<T: ToString>(names: &[T]) -> Vec<String> {
 
 /// Rule 2 for a face: None when the name finds its face (or the kernel
 /// cannot tell), else the one face most like it.
-pub(crate) fn find_face<K: Kernel>(
+pub fn find_face<K: Kernel>(
     kernel: &K,
     shape: &K::Shape,
     face: &FaceName,

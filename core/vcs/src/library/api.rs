@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! The libraries' JSON commands (`core/model/src/api/commands.md`,
+//! The libraries' JSON commands (`core/model-api/src/commands.md`,
 //! "Component libraries"). They need no project: the application and
 //! `mitcad-cli` run them with the cache of fetched libraries. A fetch's
 //! failure (the network, signing in, a URL that is no library) is an
@@ -683,7 +683,7 @@ fn diff(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
             }
         };
         let design =
-            mitcad_model::diff::diff_files(&without_table(&old.text), &without_table(&new.text))
+            mitcad_model_diff::diff_files(&without_table(&old.text), &without_table(&new.text))
                 .map_err(|e| VcsError::File(e.to_string()))?;
         if let Some(config) = config {
             let row = |text: &str| {

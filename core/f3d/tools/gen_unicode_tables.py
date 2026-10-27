@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Writes core/f3d/src/design/unicode.rs: Python's str.isprintable() and
+"""Writes core/f3d-decode/src/unicode.rs: Python's str.isprintable() and
 str.isalnum() as code point range tables.
 
-The design stream decoder (core/f3d/src/design) reproduces the reference
+The design stream decoder (core/f3d-decode) reproduces the reference
 decoder (a Python implementation of the format study, not part of this
 repository), which filters candidate strings with these Python predicates.
 Run with the Python that produced the reference JSON (its Unicode version
 is written into the file):
 
-    python3 gen_unicode_tables.py > ../src/design/unicode.rs
+    python3 gen_unicode_tables.py > ../../f3d-decode/src/unicode.rs
 """
 import sys
 import unicodedata
@@ -84,7 +84,7 @@ def main():
         "}",
         "",
         "/// Python's `str.isprintable()` (true for the empty string).",
-        "pub(crate) fn is_printable(s: &str) -> bool {",
+        "pub fn is_printable(s: &str) -> bool {",
         "    s.chars().all(is_printable_char)",
         "}",
         "",

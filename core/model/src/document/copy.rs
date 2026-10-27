@@ -1308,6 +1308,7 @@ mod tests {
                     "E{F2:a|F2:b}".parse().unwrap(),
                 ],
                 faces: Vec::new(),
+                all_edges: false,
                 size: ChamferSizeDef::TwoDistances {
                     distance1: ParamId::from_raw(1),
                     distance2: ParamId::from_raw(2),

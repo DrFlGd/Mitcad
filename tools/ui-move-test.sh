@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/framework core/model/src/document core/model/src/api/components.rs
+# check-all sources: app/browser app/framework core/model/src/document core/model-api/src/components.rs
 # Moving sketches and components from the browser, through the real UI:
 #   - Move to Component... on a sketch row of the root (mitcad#218) opens
 #     the timeline's destination picker: the sketch goes into an existing

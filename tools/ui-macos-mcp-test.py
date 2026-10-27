@@ -260,7 +260,7 @@ def run(app, cli, out, ui):
             (out / filename).unlink(missing_ok=True)
         script = "expect-ever 'View area'\n"
         if ui == "native":
-            script += "expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'\nmenu 'View/Show History'\nexpect-native-layout\n"
+            script += "expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'\nexpect-native-visible native.historyCard true\nexpect-native-layout\n"
         # #619 adds a content-sized Create row; retain the measurements caps
         # and account only for that row when it is visible.
         if ui == "qt":

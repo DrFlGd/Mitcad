@@ -42,6 +42,7 @@
 #include "../framework/PanelTree.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/WindowStyle.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "ProjectRowText.hpp"
 #include "ProjectRowDrag.hpp"
 
@@ -379,6 +380,7 @@ private:
 // The panel
 
 ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_host(std::move(host)) {
+  setProperty("nativeCompactPanel", true);
   setObjectName(QStringLiteral("projectsPanel"));
   auto* layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
@@ -390,6 +392,7 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
   layout->addWidget(m_toolbar);
   m_tree = new ProjectsTreeWidget(*this);
   m_tree->setObjectName(QStringLiteral("projectsTree"));
+  m_tree->setProperty("nativeSourceList", true);
   layout->addWidget(m_tree, 1);
   m_tree->setColumnCount(2);
   m_tree->setHeaderHidden(true);
@@ -554,6 +557,11 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
     }
   });
   connect(m_tree, &QTreeWidget::customContextMenuRequested, this, &ProjectsPanel::contextMenu);
+  // Qt's subclass handles pointer activation itself. AppKit dispatches
+  // the model-view signal instead, using the same project/design actions.
+  connect(m_tree, &QTreeView::activated, this, [this] {
+    if (m_nativePresented && !settingsOnDoubleClick(m_tree->currentItem())) openCurrent();
+  });
   const auto remember = [this](QTreeWidgetItem* item, bool expanded) {
     if (!m_building) {
       m_expanded.insert(keyOf(item), expanded);
@@ -612,8 +620,13 @@ void ProjectsPanel::watchContainer(QWidget* container) {
 // ---------------------------------------------------------------------------
 // Reading
 
+void ProjectsPanel::setNativePresented(bool shown) {
+  m_nativePresented = shown;
+  if (shown) refresh();
+}
+
 void ProjectsPanel::refresh() {
-  if (!isVisible()) {
+  if (!isVisible() && !m_nativePresented) {
     return; // read when shown
   }
   if (m_task != nullptr) {
@@ -763,6 +776,7 @@ QTreeWidgetItem* ProjectsPanel::addProjectRow(const ProjectRow& row, const QStri
   top->setData(kName, kRootRole, row.root);
   top->setData(kName, kPathRole, QString());
   top->setData(kName, kKeyRole, projectKey);
+  top->setData(kName, NativeControlIdentifierRole, QStringLiteral("projects.row.") + projectKey);
   top->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
   // Its full name first (elided in the row when it does not fit); its state
   // in full words follows it (applyMarks).
@@ -807,6 +821,7 @@ QTreeWidgetItem* ProjectsPanel::addProjectRow(const ProjectRow& row, const QStri
     folder->setData(kName, kRootRole, row.root);
     folder->setData(kName, kPathRole, path);
     folder->setData(kName, kKeyRole, QStringLiteral("%1/%2/").arg(projectKey, path));
+    folder->setData(kName, NativeControlIdentifierRole, QStringLiteral("projects.row.%1/%2/").arg(projectKey, path));
     folder->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
     folder->setToolTip(kName, QStringLiteral("%1\n%2").arg(lastPart(path),
                                                            QDir::toNativeSeparators(QDir(row.root).filePath(path))));
@@ -824,6 +839,7 @@ QTreeWidgetItem* ProjectsPanel::addProjectRow(const ProjectRow& row, const QStri
     item->setData(kName, kRootRole, row.root);
     item->setData(kName, kPathRole, design.path);
     item->setData(kName, kKeyRole, QStringLiteral("%1/%2").arg(projectKey, design.path));
+    item->setData(kName, NativeControlIdentifierRole, QStringLiteral("projects.row.%1/%2").arg(projectKey, design.path));
     item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
     item->setToolTip(kName, designTip(row.root, design));
     item->setToolTip(kState, designTip(row.root, design));

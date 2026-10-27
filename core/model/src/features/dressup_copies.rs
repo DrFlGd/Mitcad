@@ -779,6 +779,7 @@ mod tests {
         let two = |edges: Vec<EdgeName>| ChamferSetDef {
             edges,
             faces: Vec::new(),
+            all_edges: false,
             size: ChamferSizeDef::TwoDistances {
                 distance1: ParamId::from_raw(1),
                 distance2: ParamId::from_raw(2),

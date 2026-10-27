@@ -3,7 +3,7 @@
 // panel (from the Constraints, or from Sketch Dimension with three or more
 // objects selected, then with its one common spacing dimension), and Edit
 // Equal Spacing. Their definition is `sketch.add_equal_spacing` or
-// `sketch.edit_equal_spacing` (core/model/src/api/commands.md): the preview
+// `sketch.edit_equal_spacing` (core/model-api/src/commands.md): the preview
 // runs it, so a conflict or a redundancy is shown before OK, and OK keeps it
 // as one undo step. The overlay draws the previewed chain numbered in the
 // order the model keeps (SketchOverlay::paintChain).

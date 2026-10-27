@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: MIT
+//! Tests of the Mitcad model through its JSON api (mitcad#777): Files and
+//! exchange: import and export, the design file, design comparison,
+//! Reorient Design and import notes.
+//!
+//! A test crate of its own, so that a test added here recompiles only
+//! this crate (core/model-tests/README.md).
+#![cfg(test)]
+
+mod diff_tests;
+mod exchange_tests;
+mod file_tests;
+mod import_notes_tests;
+mod reorient_tests;

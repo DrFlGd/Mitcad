@@ -112,7 +112,8 @@ std::optional<EdgeAt> edgeAt(const SelectionItem& item, const CommandContext& mo
 // Distance 2 along the other face, for two distances only.
 std::optional<Manipulator> chamferHandle(const CommandState& row, const CommandContext& model, bool second) {
   const QString type = row.choice(QStringLiteral("type"));
-  if (second && type != QStringLiteral("two_distances")) {
+  // A set of all edges has no picked edge to show it on (mitcad#793).
+  if ((second && type != QStringLiteral("two_distances")) || row.checked(QStringLiteral("all_edges"))) {
     return std::nullopt;
   }
   const bool equal = type == QStringLiteral("equal_distance");
@@ -149,13 +150,46 @@ std::optional<Manipulator> chamferHandle(const CommandState& row, const CommandC
   return std::nullopt;
 }
 
-// Every edge and face of the sets, for the body they must share.
+// A set of every edge of its body (`all_edges`, mitcad#793): the set's
+// All Edges is on; it names the body instead of edges.
+bool allEdges(const CommandState& row) { return row.checked(QStringLiteral("all_edges")); }
+bool pickedEdges(const CommandState& row) { return !allEdges(row); }
+
+// A set's All Edges check, and the body it then works on.
+InputDef allEdgesInput(const QString& tip) {
+  return checkInput(QStringLiteral("all_edges"), QObject::tr("All Edges"), false).withTooltip(tip);
+}
+InputDef allEdgesBody() {
+  return selectionInput(QStringLiteral("body"), QObject::tr("Body"), SelectKind::Body, 1, 1)
+      .withTooltip(QObject::tr("The body whose every edge the set takes"))
+      .withVisible(allEdges);
+}
+
+// Every edge and face of the sets (or, for a set of all edges, its body),
+// for the body they must share.
 Selection allItems(const CommandState& state) {
   Selection items;
   for (int i = 0; i < state.rows(kSets); ++i) {
-    items += state.items(rowKey(i, "edges"));
+    items += allEdges(state.row(kSets, i)) ? state.items(rowKey(i, "body")) : state.items(rowKey(i, "edges"));
   }
   return items;
+}
+
+// A set of all edges is the feature's only set (the model's rule).
+std::optional<Built> allEdgesAlone(const CommandState& state) {
+  const int count = state.rows(kSets);
+  for (int i = 0; i < count && count > 1; ++i) {
+    if (allEdges(state.row(kSets, i))) {
+      return Built::failure(QObject::tr("All Edges takes every edge of the body: remove the other sets."),
+                            rowKey(i, "all_edges"));
+    }
+  }
+  return std::nullopt;
+}
+
+// Whether the panel's first set is of all edges (for the timeline's text).
+bool firstAllEdges(const CommandState& state) {
+  return state.rows(kSets) > 0 && allEdges(state.row(kSets, 0));
 }
 
 // Edges and faces of a set of the model's definition.
@@ -170,7 +204,13 @@ Selection setItems(const QJsonObject& set, const QString& body) {
   return items;
 }
 
-void addEdges(QJsonObject& set, const Selection& items) {
+// The set's edges and faces, or `all_edges` for a set of all edges.
+void addEdges(QJsonObject& set, const CommandState& row) {
+  if (allEdges(row)) {
+    set.insert(QStringLiteral("all_edges"), true);
+    return;
+  }
+  const Selection& items = row.items(QStringLiteral("edges"));
   const QJsonArray edges = names(items, SelectKind::Edge);
   const QJsonArray faces = names(items, SelectKind::Face);
   if (!edges.isEmpty()) {
@@ -179,6 +219,17 @@ void addEdges(QJsonObject& set, const Selection& items) {
   if (!faces.isEmpty()) {
     set.insert(QStringLiteral("faces"), faces);
   }
+}
+
+// A set of the definition into the panel's row: its edges and faces, or
+// All Edges on with the feature's body.
+void loadEdges(CommandState& state, int row, const QJsonObject& set, const QString& body) {
+  if (set.value(QStringLiteral("all_edges")).toBool()) {
+    state.setChecked(rowKey(row, "all_edges"), true);
+    state.setItems(rowKey(row, "body"), {{SelectKind::Body, body, QString(), QString()}});
+    return;
+  }
+  state.setItems(rowKey(row, "edges"), setItems(set, body));
 }
 
 // The sets of a definition: its short form is one set.
@@ -254,10 +305,13 @@ CommandDef filletCommand(const CommandContext& context) {
   };
   def.inputs = {
       listInput(kSets, QObject::tr("Edge Sets"),
-                {selectionInput(QStringLiteral("edges"), QObject::tr("Edges"),
+                {allEdgesInput(QObject::tr("Round every edge of a body, also the edges a later edit adds")),
+                 selectionInput(QStringLiteral("edges"), QObject::tr("Edges"),
                                 SelectKind::Edge | SelectKind::Face, 1, 0)
                      .withTooltip(QObject::tr("Round edges or a face's edges; click a selected item to remove it; ✕ clears the input"))
-                     .withHoverChain(SelectKind::Edge, QStringLiteral("tangent_chain")),
+                     .withHoverChain(SelectKind::Edge, QStringLiteral("tangent_chain"))
+                     .withVisible(pickedEdges),
+                 allEdgesBody(),
                  choiceInput(QStringLiteral("size"), QObject::tr("Radius Type"), kFilletSizes,
                              QStringLiteral("constant")),
                  valueInput(QStringLiteral("radius"), QObject::tr("Radius"), ValueKind::Length,
@@ -267,7 +321,7 @@ CommandDef filletCommand(const CommandContext& context) {
                                          const CommandContext& model) -> std::optional<Manipulator> {
                        // A handle at the middle of the rounding of the set's
                        // first edge, for a constant radius.
-                       if (row.choice(QStringLiteral("size")) != QStringLiteral("constant")) {
+                       if (row.choice(QStringLiteral("size")) != QStringLiteral("constant") || allEdges(row)) {
                          return std::nullopt;
                        }
                        for (const SelectionItem& item : row.items(QStringLiteral("edges"))) {
@@ -359,12 +413,16 @@ CommandDef filletCommand(const CommandContext& context) {
     if (body.isEmpty()) {
       return result;
     }
+    if (const std::optional<Built> alone = allEdgesAlone(state)) {
+      return *alone;
+    }
     const bool chain = state.checked(QStringLiteral("tangent_chain"));
     const bool rolling = state.choice(QStringLiteral("corner")) == QStringLiteral("rolling_ball");
     result.def = {{QStringLiteral("type"), QStringLiteral("fillet")}, {QStringLiteral("body"), body}};
     const int count = state.rows(kSets);
     const CommandState first = state.row(kSets, 0);
-    if (count == 1 && chain && rolling && first.choice(QStringLiteral("size")) == QStringLiteral("constant") &&
+    if (count == 1 && chain && rolling && !allEdges(first) &&
+        first.choice(QStringLiteral("size")) == QStringLiteral("constant") &&
         first.choice(QStringLiteral("continuity")) == QStringLiteral("tangent") &&
         names(first.items(QStringLiteral("edges")), SelectKind::Face).isEmpty()) {
       // The short form: one set of edges with a constant radius.
@@ -406,6 +464,10 @@ CommandDef filletCommand(const CommandContext& context) {
       const QString size = row.choice(QStringLiteral("size"));
       QJsonObject sizeDef{{QStringLiteral("type"), size}};
       QJsonObject set;
+      if (allEdges(row) && (size == QStringLiteral("variable") || size == QStringLiteral("spline")) &&
+          !row.items(QStringLiteral("start_vertex")).isEmpty()) {
+        return Built::failure(QObject::tr("All Edges has no start vertex: clear it."), rowKey(i, "start_vertex"));
+      }
       if (size == QStringLiteral("chord_length")) {
         sizeDef.insert(QStringLiteral("length"), row.expression(QStringLiteral("radius")));
       } else if (size == QStringLiteral("variable")) {
@@ -467,7 +529,7 @@ CommandDef filletCommand(const CommandContext& context) {
         sizeDef.insert(QStringLiteral("radius"), row.expression(QStringLiteral("radius")));
       }
       set.insert(QStringLiteral("size"), sizeDef);
-      addEdges(set, row.items(QStringLiteral("edges")));
+      addEdges(set, row);
       if (!chain) {
         set.insert(QStringLiteral("tangent_chain"), false);
       }
@@ -492,7 +554,7 @@ CommandDef filletCommand(const CommandContext& context) {
     int controls = 0;
     for (int i = 0; i < sets.size(); ++i) {
       const QJsonObject set = sets[i].toObject();
-      state.setItems(rowKey(i, "edges"), setItems(set, body));
+      loadEdges(state, i, set, body);
       if (!feature.contains(kSets)) {
         state.setChoice(rowKey(i, "size"), QStringLiteral("constant"));
         loadValue(state, rowKey(i, "radius"), feature.value(QStringLiteral("radius")), feature, context);
@@ -565,6 +627,9 @@ CommandDef filletCommand(const CommandContext& context) {
   def.canEdit = [](const QJsonObject& feature) { return sameChain(setsOf(feature)); };
 
   def.describe = [](const CommandState& state, const CommandContext& context) {
+    if (firstAllEdges(state)) {
+      return QStringLiteral("Added fillet on all edges");
+    }
     const int count = state.rows(kSets);
     return QStringLiteral("Added fillet on %1 edge(s)%2")
         .arg(context.edgeCount(allItems(state)))
@@ -597,10 +662,13 @@ CommandDef chamferCommand(const CommandContext& context) {
   };
   def.inputs = {
       listInput(kSets, QObject::tr("Edge Sets"),
-                {selectionInput(QStringLiteral("edges"), QObject::tr("Edges"),
+                {allEdgesInput(QObject::tr("Bevel every edge of a body, also the edges a later edit adds")),
+                 selectionInput(QStringLiteral("edges"), QObject::tr("Edges"),
                                 SelectKind::Edge | SelectKind::Face, 1, 0)
                      .withTooltip(QObject::tr("Bevel edges or a face's edges; click a selected item to remove it; ✕ clears the input"))
-                     .withHoverChain(SelectKind::Edge, QStringLiteral("tangent_chain")),
+                     .withHoverChain(SelectKind::Edge, QStringLiteral("tangent_chain"))
+                     .withVisible(pickedEdges),
+                 allEdgesBody(),
                  choiceInput(QStringLiteral("type"), QObject::tr("Chamfer Type"), kChamferTypes,
                              QStringLiteral("equal_distance")),
                  // Each distance has an arrow in the view (mitcad#534); the
@@ -649,6 +717,9 @@ CommandDef chamferCommand(const CommandContext& context) {
     if (body.isEmpty()) {
       return result;
     }
+    if (const std::optional<Built> alone = allEdgesAlone(state)) {
+      return *alone;
+    }
     const bool chain = state.checked(QStringLiteral("tangent_chain"));
     const QString corner = state.choice(QStringLiteral("corner"));
     result.def = {{QStringLiteral("type"), QStringLiteral("chamfer")}, {QStringLiteral("body"), body}};
@@ -669,7 +740,7 @@ CommandDef chamferCommand(const CommandContext& context) {
       }
       const bool equal = type == QStringLiteral("equal_distance");
       QJsonObject set{{QStringLiteral("size"), size}};
-      addEdges(set, row.items(QStringLiteral("edges")));
+      addEdges(set, row);
       const Selection& reference = row.items(QStringLiteral("reference"));
       if (!equal && !reference.isEmpty()) {
         if (reference.first().owner != body) {
@@ -688,7 +759,7 @@ CommandDef chamferCommand(const CommandContext& context) {
     }
     const QJsonObject only = sets.first().toObject();
     if (count == 1 && chain && corner == QStringLiteral("chamfer") && !only.contains(QStringLiteral("faces")) &&
-        !only.contains(QStringLiteral("reference_face"))) {
+        !only.contains(QStringLiteral("reference_face")) && !only.contains(QStringLiteral("all_edges"))) {
       // The short form: one set of edges.
       result.def.insert(QStringLiteral("edges"), only.value(QStringLiteral("edges")));
       result.def.insert(QStringLiteral("size"), only.value(QStringLiteral("size")));
@@ -710,7 +781,7 @@ CommandDef chamferCommand(const CommandContext& context) {
     state.setRows(kSets, static_cast<int>(sets.size()));
     for (int i = 0; i < sets.size(); ++i) {
       const QJsonObject set = sets[i].toObject();
-      state.setItems(rowKey(i, "edges"), setItems(set, body));
+      loadEdges(state, i, set, body);
       const QJsonObject size = set.value(QStringLiteral("size")).toObject();
       state.setChoice(rowKey(i, "type"), str(size, "type"));
       loadValue(state, rowKey(i, "distance"),
@@ -734,6 +805,10 @@ CommandDef chamferCommand(const CommandContext& context) {
   def.canEdit = [](const QJsonObject& feature) { return sameChain(setsOf(feature)); };
 
   def.describe = [](const CommandState& state, const CommandContext& context) {
+    if (firstAllEdges(state)) {
+      return QStringLiteral("Added chamfer (%1) on all edges")
+          .arg(label(kChamferTypes, state.choice(rowKey(0, "type"))));
+    }
     const int count = state.rows(kSets);
     return QStringLiteral("Added chamfer (%1) on %2 edge(s)%3")
         .arg(label(kChamferTypes, state.choice(rowKey(0, "type"))))

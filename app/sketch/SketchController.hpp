@@ -144,6 +144,12 @@ public:
   // The sketch after the commands so far.
   const SketchModel& model();
   const QString& error() const { return m_error; }
+  // Names the undo step in place of its first command's label ("Cut in
+  // Sketch1", mitcad#788): commit() then relabels even a single step.
+  void setLabel(const QString& label) {
+    m_label = label;
+    m_relabel = true;
+  }
   // Ends the action as one undo step and shows the result; or takes it
   // all back.
   bool commit();
@@ -157,6 +163,7 @@ private:
   SketchController& m_c;
   int m_depth = 0;
   QString m_label;
+  bool m_relabel = false; // setLabel() named the step
   QString m_error;
   // What the action is to tell when it ends: refused attempts, constraints
   // a new one replaced (mitcad#287).
@@ -235,6 +242,17 @@ public:
   // The selected constraints and dimensions of this sketch that are
   // inactive (`active` false) or active.
   QStringList selectedItems(bool active) const;
+  // Copy, Cut and Paste of sketch geometry (mitcad#788, SketchClipboard.cpp):
+  // the selected points, curves and texts with the constraints and
+  // dimensions that reference only them or the origin and axes go to the
+  // clipboard as a sketch fragment (the model's `sketch_fragment`); Cut then
+  // deletes them. Paste is a tool that puts the fragment's base point where
+  // a click or typed X and Y say (`sketch.paste`); Esc cancels it.
+  void copySelection();
+  void cutSelection();
+  void paste();
+  // Whether the clipboard holds a sketch fragment.
+  bool canPaste() const;
 
   // --- Options of the sketch palette
   bool construction() const { return m_construction; }

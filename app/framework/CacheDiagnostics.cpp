@@ -195,7 +195,7 @@ void CacheDiagnosticsDialog::refresh() {
     row(tr("Disk cache"), tr("off"));
   } else {
     row(tr("Disk cache"),
-        tr("%1 in %2 files (%3 of other versions of Mitcad); %4 lookups, %5 hits, %6 misses, %7 damaged")
+        tr("%1 in %2 files (%3 of other versions of MitCad); %4 lookups, %5 hits, %6 misses, %7 damaged")
             .arg(ofLimit(diskUsage.value(QStringLiteral("bytes")).toDouble(), store.value(QStringLiteral("budget"))),
                  count(diskUsage.value(QStringLiteral("files"))),
                  count(diskUsage.value(QStringLiteral("other_builds")).toObject().value(QStringLiteral("files"))),
@@ -274,7 +274,7 @@ void CacheDiagnosticsDialog::clearDisk() {
 }
 
 QString CacheDiagnosticsDialog::reportText(const QJsonObject& report) {
-  QString text = QStringLiteral("Mitcad cache diagnostics\n\n");
+  QString text = QStringLiteral("MitCad cache diagnostics\n\n");
   const QJsonObject memory = report.value(QStringLiteral("memory")).toObject();
   text += QStringLiteral("Memory cache: %1 bytes of %2, %3 results of %4 features; %5 lookups, %6 hits, %7 "
                          "from the store; %8 dropped (%9 bytes)\n")

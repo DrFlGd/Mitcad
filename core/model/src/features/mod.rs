@@ -58,8 +58,6 @@ pub mod split_face;
 
 // Sweeps, lofts, pipes, coils, ribs and webs (F3).
 pub mod coil;
-#[cfg(test)]
-mod f3_tests;
 pub mod loft;
 pub mod path;
 pub mod pipe;
@@ -182,8 +180,6 @@ pub use sheet_relief::SheetCornerReliefDef;
 mod face_copy;
 // Faces, edges and vertices found again after a sketch change (mitcad#272).
 pub(crate) mod renamed;
-#[cfg(test)]
-mod renamed_tests;
 // Body ids of a split's pieces kept by matching remembered pieces (mitcad#408).
 pub mod pieces;
 pub use pieces::{PieceGroup, PieceMark, SplitPieces};
@@ -244,8 +240,6 @@ pub use fair_surface::FairSurfaceDef;
 pub use match_surface::MatchSurfaceDef;
 // Plastic part features and plastic rules (mitcad#459).
 pub mod plastic;
-#[cfg(test)]
-mod plastic_tests;
 pub use plastic::{BossDef, GrooveDef, LipDef, PlasticRuleDef, RestDef, SnapFitDef};
 // Bodies moved into another component on the timeline (mitcad#465).
 pub mod body_transfer;
@@ -254,8 +248,6 @@ pub use body_transfer::BodyTransferDef;
 pub mod gear;
 pub mod gear_profile;
 pub use gear::{GearDef, GearKind};
-#[cfg(test)]
-mod gear_tests;
 // Faces moved by a rigid motion (mitcad#343).
 pub mod move_face;
 pub use move_face::MoveFaceDef;
@@ -266,19 +258,13 @@ pub use scale_pattern::ScalePatternDef;
 pub mod pulley;
 pub mod pulley_profile;
 pub use pulley::{PulleyDef, PulleyKind};
-#[cfg(test)]
-mod pulley_tests;
 // Printable bearings: print-in-place and airsoft-ball bearings (mitcad#577).
 pub mod bearing_sizes;
 pub mod printable_bearing;
 pub use printable_bearing::{Element, PrintableBearingDef};
-#[cfg(test)]
-mod printable_bearing_tests;
 // Seats on shafts and in holes: pulleys and gears placed by a shaft (mitcad#578).
 pub mod seat;
 pub use seat::{Seat, SeatFrame};
-#[cfg(test)]
-mod seat_tests;
 // `map_params!`: the regular `map_params` written from the fields
 // (mitcad#586).
 mod mapping;
@@ -286,26 +272,19 @@ mod mapping;
 pub mod drives;
 pub mod place_at;
 pub use place_at::{PlaceAt, Placed};
-#[cfg(test)]
-mod place_at_tests;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::Kernel;
+use crate::links::OccurrenceLinkExt;
 use crate::parameters::{ParamId, Parameters};
 use crate::recompute::{BodyState, FeatureResult, Read, Versioned};
 use crate::topo::EdgeName;
 use crate::transform::Transform;
 
-/// A value in a command: a parameter by name, or a number that becomes a
-/// new dimension parameter of the feature (`d4`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ValueInput {
-    Number(f64),
-    Name(String),
-}
+// A value in a command (moved down to the base, mitcad#780).
+pub use mitcad_model_base::values::ValueInput;
 
 macro_rules! feature_types {
     ($($variant:ident($def:ident)),* $(,)?) => {
@@ -823,6 +802,8 @@ pub struct EvalContext<'a, K: Kernel> {
     pub(crate) elements: Vec<Transform>,
     pub(crate) pattern_anchor: Option<point_pattern::PatternAnchor>,
     pub(crate) cut_targets: Option<extrude_scope::CutTargets>,
+    /// Where a sweep's profile lies on its path (mitcad#795).
+    pub(crate) sweep_place: Option<sweep::SweepPlace>,
     /// A pattern's copy of this feature (its tool rebuilt in place): an
     /// object that is no longer in its body is found in the body as it was
     /// before this feature, as the original found it.
@@ -850,6 +831,7 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
             elements: Vec::new(),
             pattern_anchor: None,
             cut_targets: None,
+            sweep_place: None,
             objects_before: None,
             geom_links: std::collections::BTreeMap::new(),
             next_body: 0,
@@ -1237,7 +1219,8 @@ pub(crate) fn is_false(value: &bool) -> bool {
 }
 
 /// The last component of a slot path: `extent.distance` -> `distance`.
-pub(crate) fn slot_label(slot: &str) -> &str {
+#[doc(hidden)]
+pub fn slot_label(slot: &str) -> &str {
     slot.rsplit('.').next().unwrap_or(slot)
 }
 

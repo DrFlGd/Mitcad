@@ -8,6 +8,15 @@
 
 namespace mitcad {
 
+// The organization and application name that Qt keys the settings and the
+// data, cache and autosave folders on (Mitcad/Mitcad, the registry's
+// HKCU\Software\Mitcad\Mitcad, fi.nocodo.Mitcad.plist). A stored name: it
+// keeps this spelling, although the program's name is written MitCad
+// (docs/naming.md, mitcad#822), so that an installation keeps its settings,
+// libraries and autosaves; the CLI's shared library cache expects the same
+// folders (app/tests/library_paths.cpp).
+inline QString storedApplicationName() { return QStringLiteral("Mitcad"); }
+
 // The application's general settings (Preferences, General), kept in the
 // user's settings (autosave/enabled, autosave/minutes). Minutes, like every
 // unit the application chooses, are metric; there is no unit to pick.

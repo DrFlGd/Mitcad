@@ -15,7 +15,7 @@ use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 
 /// Whether the shape is a mesh body; a kernel that cannot tell has none.
-pub(crate) fn is_mesh<K: Kernel>(kernel: &K, shape: &K::Shape) -> bool {
+pub fn is_mesh<K: Kernel>(kernel: &K, shape: &K::Shape) -> bool {
     matches!(kernel.body_kind(shape), Ok(BodyKind::Mesh))
 }
 
@@ -74,9 +74,9 @@ impl<K: Kernel> EvalContext<'_, K> {
 mod tests {
     use serde_json::{Value, json};
 
-    use crate::document_tests::{Block, block, def, extrude};
     use crate::exchange::{BaseInput, ImportBody};
     use crate::ids::{BodyUid, FeatureUid};
+    use crate::test_support::{Block, block, def, extrude};
     use crate::testing::MockShape;
     use crate::{Document, FeatureStatus};
 

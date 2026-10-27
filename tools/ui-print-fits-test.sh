@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands app/framework/CommandSession.cpp app/framework/TestDriver.cpp core/model/src/print_fits.rs core/model/src/print_fits
+# check-all sources: app/commands app/framework/CommandSession.cpp app/framework/TestDriver.cpp core/model/src/print_fits.rs core/model-tests/print/src/print_fits_tests.rs
 # The shared printed-fit workflow, on a private Xvfb display.
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

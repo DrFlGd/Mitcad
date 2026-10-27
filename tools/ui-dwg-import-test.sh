@@ -15,7 +15,7 @@
 # Runs headless on Xvfb (see ui-test-lib.sh); Qt's own file dialogs
 # (--no-native-dialogs), so that paths can be typed.
 # Usage: tools/ui-dwg-import-test.sh
-# check-all sources: core/model/src/monitor.rs tools/cli
+# check-all sources: core/model-base/src/monitor.rs tools/cli
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
@@ -59,7 +59,7 @@ unchanged() {
   sleep 1
   tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Imported truss.dwg|Import report|Bodies shown: F" &&
     ui_fail "the cancelled import changed the document"
-  expect_title "Untitled - Mitcad"
+  expect_title "Untitled - MitCad"
   echo "ok   the open document stays as it was"
 }
 
@@ -69,7 +69,7 @@ ui_start_display
 export MITCAD_TEST_RECOMPUTE_DELAY_MS=import_dwg=2000,truss.dwg=1500
 ui_start_app --no-native-dialogs
 unset MITCAD_TEST_RECOMPUTE_DELAY_MS
-expect_title "Untitled - Mitcad"
+expect_title "Untitled - MitCad"
 
 echo "--- The import process, cancelled"
 ui_mark
@@ -110,6 +110,6 @@ ui_expect_new "Imported truss.dwg: 6 bodies" "the drawing's bodies came in"
 ui_expect_new "Bodies shown: F" "and are shown"
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "faces that could not be meshed" &&
   ui_fail "a face of the test drawing could not be meshed"
-expect_title "truss* - Mitcad"
+expect_title "truss* - MitCad"
 
 ui_finish "UI DWG import test"

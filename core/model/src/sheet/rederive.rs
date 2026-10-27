@@ -28,7 +28,8 @@ use super::folded::{cut::developed_cut, develop::planar_map, mapped_regions, rea
 use super::*;
 use crate::features::{BodyChange, EvalContext, FeatureOutput};
 use crate::kernel::{Curve3, Kernel, KernelError};
-use crate::profile::{SegmentGeometry, dot};
+use crate::profile::SegmentGeometry;
+use mitcad_vec3::dot;
 
 use mitcad_vec3::Vec3 as V3;
 

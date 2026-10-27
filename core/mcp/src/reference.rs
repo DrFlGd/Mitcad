@@ -27,7 +27,7 @@ const EXCERPT: usize = 240;
 const USAGE: &str = "model_reference with section (a heading, or a name a heading lists), query, command, feature (a feature type) or search gives that part of the reference; offset continues a truncated answer from its next_offset (for search: the hits to skip).";
 
 /// The names MCP permits, which the backend supplies
-/// (`mitcad_model::api::classes`): the reference does not tell them.
+/// (`mitcad_model_api::classes`): the reference does not tell them.
 #[derive(Clone, Debug, Default)]
 pub struct Vocabulary {
     pub queries: Vec<String>,

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 #include "platform/NativeMacWindow.hpp"
 #include "NativeKeys.hpp"
+#include "framework/Icons.hpp"
+#include "framework/Theme.hpp"
+#include "browser/TimelinePresentation.hpp"
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -126,7 +129,7 @@ struct NativeMacWindowState;
 @interface MITCADNativeWindowDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate, NSToolbarDelegate,
     NSOutlineViewDataSource, NSOutlineViewDelegate, NSTableViewDataSource, NSTableViewDelegate,
     NSControlTextEditingDelegate, NSTextFieldDelegate, NSSearchFieldDelegate,
-    NSMenuItemValidation, NSPopoverDelegate> {
+    NSMenuItemValidation, NSToolbarItemValidation, NSPopoverDelegate> {
 @public
   mitcad::mac::NativeMacWindowState* state;
 }
@@ -134,10 +137,15 @@ struct NativeMacWindowState;
 - (void)toggleSidebar:(id)sender;
 - (void)toggleInspector:(id)sender;
 - (void)toggleHistory:(id)sender;
+- (void)changeWorkspace:(id)sender;
+- (void)collapseProjects:(id)sender;
+- (void)collapseBrowser:(id)sender;
+- (void)showBrowserIssues:(id)sender;
 - (void)openSearch:(id)sender;
 - (void)chooseSearch:(id)sender;
 - (void)searchChanged:(id)sender;
 - (void)openTimelineSearchFilter:(id)sender;
+- (void)openTimelineSearch:(id)sender;
 - (void)stepTimelineSearch:(id)sender;
 - (void)activateTree:(id)sender;
 - (void)clickHistoryFeature:(id)sender;
@@ -147,6 +155,7 @@ struct NativeMacWindowState;
 - (void)clickAgentIndicator:(id)sender;
 - (void)openAgentMenu:(id)sender;
 - (void)toggleTreeVisibility:(id)sender;
+- (void)activateComponent:(id)sender;
 - (void)renameTree:(id)sender;
 - (void)closeDocument:(id)sender;
 - (void)quitApplication:(id)sender;
@@ -170,22 +179,16 @@ namespace {
 NSString* ns(const QString& text) { return text.toNSString(); }
 QString qt(NSString* text) { return QString::fromNSString(text != nil ? text : @""); }
 
-constexpr CGFloat ribbonButtonWidth = 36;
-constexpr CGFloat ribbonButtonHeight = 32;
-constexpr CGFloat ribbonButtonGap = 8;
-constexpr CGFloat ribbonGroupGap = 24;
+constexpr CGFloat ribbonButtonHeight = 36;
+constexpr CGFloat ribbonGroupGap = 8;
 constexpr CGFloat ribbonInset = 12;
-constexpr CGFloat historyInset = 14;
-constexpr CGFloat historySlot = 44;
-constexpr CGFloat historyRunSlot = 16;
-constexpr CGFloat historyStripHeight = 56;
+constexpr CGFloat historyInset = timeline::padding;
+constexpr CGFloat historySlot = timeline::cell + timeline::gap;
+constexpr CGFloat historyRunSlot = 11;
+constexpr CGFloat historyStripHeight = timeline::height;
 
-CGFloat ribbonIconRowWidth(int count) {
-  return count > 0 ? count * ribbonButtonWidth + (count - 1) * ribbonButtonGap : 0;
-}
-
-CGFloat ribbonGroupWidth(int count, CGFloat captionWidth) {
-  return std::max(captionWidth, ribbonIconRowWidth(count) + ribbonInset);
+NSColor* nativeColor(const QColor& color) {
+  return [NSColor colorWithSRGBRed:color.redF() green:color.greenF() blue:color.blueF() alpha:color.alphaF()];
 }
 
 NSImage* symbol(const QString& name, NSString* description = nil) {
@@ -222,26 +225,11 @@ NSImage* renderActionImage(const NativeMacAction& action) {
   return symbol(QStringLiteral("square.dashed"), ns(action.label));
 }
 
-QString actionMenuPath(const NativeMacAction& item) {
-  if (!item.menu.isEmpty()) return item.menu;
-  const bool sketch = item.workspace.compare(QStringLiteral("SKETCH"), Qt::CaseInsensitive) == 0;
-  // The BUILD tab's commands (mitcad#375) in a menu of their own; this
-  // frontend has no workspace for them on its toolbar.
-  if (item.workspace.compare(QStringLiteral("BUILD"), Qt::CaseInsensitive) == 0) return QStringLiteral("Build");
-  // Menu-only commands can retain the default CREATE group. Without an
-  // explicit menu or CAD workspace they belong to command search only.
-  if (!sketch && item.workspace.compare(QStringLiteral("SOLID"), Qt::CaseInsensitive) != 0) return QString();
-  if (item.id.startsWith(QStringLiteral("file."))) return QStringLiteral("File");
-  if (item.id.startsWith(QStringLiteral("edit."))) return QStringLiteral("Edit");
-  if (item.id.startsWith(QStringLiteral("view."))) return QStringLiteral("View");
-  if (sketch) return QStringLiteral("Sketch");
-  const QString group = item.group.isEmpty() ? QStringLiteral("Tools") : item.group;
-  return group.left(1).toUpper() + group.mid(1).toLower();
-}
+QString actionMenuPath(const NativeMacAction& item) { return item.menu; }
 
 bool isAppAction(const NativeMacAction& item) {
   return item.id.startsWith(QStringLiteral("app.")) ||
-         item.menu.section(QLatin1Char('/'), 0, 0) == QStringLiteral("Mitcad");
+         item.menu.section(QLatin1Char('/'), 0, 0) == QStringLiteral("MitCad");
 }
 
 SEL editingSelector(const NativeMacAction* action) {
@@ -327,6 +315,14 @@ MITCADFloatingCard* floatingCard(NSString* identifier) {
   return card;
 }
 
+NSOutlineView* outlineIn(NSView* view) {
+  if ([view isKindOfClass:NSOutlineView.class]) return (NSOutlineView*)view;
+  for (NSView* child in view.subviews) {
+    if (NSOutlineView* outline = outlineIn(child)) return outline;
+  }
+  return nil;
+}
+
 void setShortcut(NSMenuItem* item, const QString& shortcut) {
   setKeyEquivalent(item, QKeySequence::fromString(shortcut, QKeySequence::PortableText));
 }
@@ -351,13 +347,13 @@ int searchScore(const NativeMacAction& action, const QString& query) {
   return 4;
 }
 
+NSString* const workspaceID = @"mitcad.workspaces";
+NSString* const documentTitleID = @"mitcad.documentTitle";
 NSString* const sidebarID = @"mitcad.sidebar";
 NSString* const inspectorID = @"mitcad.inspector";
 NSString* const historyID = @"mitcad.history";
 NSString* const projectID = @"mitcad.project";
-NSString* const projectToolbarMigrationKey = @"com.mitcad.toolbar.floating.v2.projectStatusInstalled";
 NSString* const agentID = @"mitcad.agent";
-NSString* const agentToolbarMigrationKey = @"com.mitcad.toolbar.floating.v2.agentStatusInstalled";
 NSString* const createID = @"mitcad.create";
 NSString* const modifyID = @"mitcad.modify";
 NSString* const searchID = @"mitcad.search";
@@ -400,6 +396,21 @@ struct NativeMacWindowState {
   bool agentConnected = false;
   bool agentAvailable = true;
   bool sketching = false;
+  bool browserCollapsed = false;
+  bool projectsCollapsed = false;
+  QList<NativeMacRibbonGroup> ribbonPresentation;
+  QStringList workspaces;
+  int workspaceIndex = 0;
+  NSSegmentedControl* __strong workspaceTabs = nil;
+  NSTextField* __strong documentTitle = nil;
+  MITCADFloatingCard* __strong projectsCard = nil;
+  NSView* __strong projectsHost = nil;
+  NSLayoutConstraint* __strong projectsHostBottom = nil;
+  NSView* __strong projectsContent = nil;
+  NSScrollView* __strong browserScroll = nil;
+  NSStackView* __strong browserIssues = nil;
+  NSArray<NSButton*>* __strong browserIssueButtons = nil;
+  NSLayoutConstraint* __strong browserTreeTop = nil;
   bool updatingSelection = false;
   bool closing = false;
   bool frameInitialized = false;
@@ -433,6 +444,8 @@ struct NativeMacWindowState {
   NSMutableDictionary<NSString*, MITCADCommandButton*>* __strong ribbonButtons = nil;
   NSMutableDictionary<NSString*, NSPopUpButton*>* __strong ribbonMenus = nil;
   NSMutableDictionary<NSString*, NSBox*>* __strong ribbonSeparators = nil;
+  NSMutableDictionary<NSString*, NSBox*>* __strong ribbonBackgrounds = nil;
+  NSMutableDictionary<NSString*, NSPopUpButton*>* __strong ribbonSplits = nil;
   QStringList ribbonGroupOrder;
   QHash<QString, QStringList> ribbonGroupButtons;
   MITCADModelOutlineView* __strong tree = nil;
@@ -520,6 +533,7 @@ struct NativeMacWindowState {
   }
 
   const NativeMacAction* action(const QString& id) const {
+    if (id.isEmpty()) return nullptr;
     const auto found = actionIndex.constFind(id);
     return found == actionIndex.cend() ? nullptr : &actions[*found];
   }
@@ -685,17 +699,22 @@ struct NativeMacWindowState {
     historyBoundaries.reserve(historyItems.size() + 1);
     CGFloat x = historyInset;
     int run = 0;
+    CGFloat markerX = x;
     for (int index = 0; index < historyItems.size(); ++index) {
       const bool hidden = historyItems[index].filtered;
       MITCADHistoryFeatureButton* button = historyButtons[ns(historyItems[index].id)];
       button.hidden = hidden;
       historyBoundaries.append(x);
+      if (index == historyMarker) {
+        markerX = x;
+        x += timeline::marker + timeline::gap;
+      }
       if (!hidden) {
-        button.frame = NSMakeRect(x + 7, 12, 30, 32);
+        button.frame = NSMakeRect(x, timeline::top, timeline::cell, timeline::cell);
         x += historySlot;
         continue;
       }
-      if (index > 0 && historyItems[index - 1].filtered) {
+      if (index > 0 && historyItems[index - 1].filtered && index != historyMarker) {
         // Internal boundaries share the run's end; pointer interaction
         // considers only its two outer boundaries.
         continue;
@@ -709,9 +728,9 @@ struct NativeMacWindowState {
         [historyRunMarks addObject:mark];
       }
       int count = 1;
-      while (index + count < historyItems.size() && historyItems[index + count].filtered) ++count;
+      while (index + count < historyItems.size() && historyItems[index + count].filtered && index + count != historyMarker) ++count;
       mark.hidden = NO;
-      mark.frame = NSMakeRect(x + 2, 21, historyRunSlot - 4, 14);
+      mark.frame = NSMakeRect(x + 1, 10, historyRunSlot - 2, 14);
       mark.toolTip = ns(QStringLiteral("%1 feature(s) hidden by the timeline filter").arg(count));
       mark.accessibilityLabel = mark.toolTip;
       mark.accessibilityIdentifier = ns(QStringLiteral("native.history.filteredRun.%1").arg(index));
@@ -719,11 +738,12 @@ struct NativeMacWindowState {
       x += historyRunSlot;
     }
     historyBoundaries.append(x);
+    if (historyMarker == historyItems.size()) { markerX = x; x += timeline::marker; }
     for (NSUInteger index = NSUInteger(run); index < historyRunMarks.count; ++index) historyRunMarks[index].hidden = YES;
     const CGFloat width = std::max(historyScroll.contentView.bounds.size.width, x + historyInset);
     history.frame = NSMakeRect(0, 0, width, historyStripHeight);
-    historyMarkerButton.frame = NSMakeRect(historyBoundaries[historyMarker] - 7, 3, 14, 48);
-    historyDropLine.frame = NSMakeRect(historyBoundaries[std::clamp(historyDropBoundary, 0, int(historyItems.size()))] - 1, 8, 2, 42);
+    historyMarkerButton.frame = NSMakeRect(markerX, 0, timeline::marker, historyStripHeight);
+    historyDropLine.frame = NSMakeRect(historyBoundaries[std::clamp(historyDropBoundary, 0, int(historyItems.size()))] - 1, 3, 2, historyStripHeight - 4);
     historyDropLine.hidden = historyDropBoundary < 0;
   }
 
@@ -750,8 +770,18 @@ struct NativeMacWindowState {
       button.state = selectedHistory.contains(item.id) ? NSControlStateValueOn : NSControlStateValueOff;
       button.wantsLayer = YES;
       button.layer.cornerRadius = 5;
-      button.layer.borderWidth = timelineMatches.contains(item.id) ? 2 : 0;
-      button.layer.borderColor = NSColor.controlAccentColor.CGColor;
+      const bool failed = item.status == QStringLiteral("error");
+      const bool warned = item.status == QStringLiteral("warning");
+      const bool selected = selectedHistory.contains(item.id);
+      const bool found = timelineMatches.contains(item.id);
+      NSColor* issue = failed ? nativeColor(errorColor(QApplication::palette()))
+                             : nativeColor(warningColor(QApplication::palette()));
+      button.layer.backgroundColor = (failed || warned ? [issue colorWithAlphaComponent:0.22]
+                                                      : selected ? [NSColor.controlAccentColor colorWithAlphaComponent:0.18]
+                                                                 : NSColor.clearColor).CGColor;
+      button.layer.borderWidth = selected || found ? 2 : failed || warned || item.noted ? 1.2 : 0;
+      button.layer.borderColor = (selected ? NSColor.controlAccentColor
+                                          : found ? NSColor.systemOrangeColor : issue).CGColor;
       button.alphaValue = item.suppressed || index >= historyMarker ? 0.42 : 1.0;
       QStringList description = {item.title};
       if (item.suppressed) description.append(QStringLiteral("Suppressed"));
@@ -900,7 +930,7 @@ struct NativeMacWindowState {
     if (items.size() != historyItems.size()) historyAppearanceValid = false;
     else for (int index = 0; index < items.size(); ++index) {
       const auto& a = items[index]; const auto& b = historyItems[index];
-      if (a.id != b.id || a.title != b.title || a.status != b.status ||
+      if (a.id != b.id || a.title != b.title || a.status != b.status || a.noted != b.noted ||
           a.suppressed != b.suppressed || a.enabled != b.enabled || a.filtered != b.filtered) {
         historyAppearanceValid = false;
         break;
@@ -920,7 +950,7 @@ struct NativeMacWindowState {
         button->state = this;
         button.featureKey = key;
         button.title = @"";
-        button.bezelStyle = NSBezelStyleRounded;
+        button.bordered = NO;
         [button setButtonType:NSButtonTypePushOnPushOff];
         button.imagePosition = NSImageOnly;
         button.imageScaling = NSImageScaleProportionallyDown;
@@ -945,7 +975,7 @@ struct NativeMacWindowState {
           if ([badge.identifier isEqualToString:@"historyStatusBadge"]) [badge removeFromSuperview];
         }
         if (item.status == QStringLiteral("error") || item.status == QStringLiteral("warning")) {
-          NSImageView* badge = [[NSImageView alloc] initWithFrame:NSMakeRect(20, 0, 10, 10)];
+          NSImageView* badge = [[NSImageView alloc] initWithFrame:NSMakeRect(17, 0, 11, 11)];
           badge.image = symbol(item.status == QStringLiteral("error") ? QStringLiteral("xmark.circle.fill") : QStringLiteral("exclamationmark.triangle.fill"));
           badge.contentTintColor = item.status == QStringLiteral("error") ? NSColor.systemRedColor : NSColor.systemOrangeColor;
           badge.identifier = @"historyStatusBadge";
@@ -980,7 +1010,9 @@ struct NativeMacWindowState {
     window.minSize = NSMakeSize(820, 560);
     window.tabbingMode = NSWindowTabbingModeDisallowed;
     window.collectionBehavior = NSWindowCollectionBehaviorFullScreenPrimary;
-    window.toolbarStyle = NSWindowToolbarStyleUnifiedCompact;
+    window.toolbarStyle = NSWindowToolbarStyleUnified;
+    window.titleVisibility = NSWindowTitleHidden;
+    window.titlebarAppearsTransparent = YES;
 
     const NSSize contentSize = [window contentRectForFrameRect:window.frame].size;
     canvasRoot = [[MITCADCanvasRoot alloc] initWithFrame:NSMakeRect(0, 0, contentSize.width, contentSize.height)];
@@ -1004,25 +1036,99 @@ struct NativeMacWindowState {
     fill(ribbonScroll, ribbon);
     [canvasRoot addSubview:ribbon];
 
+    projectsCard = floatingCard(@"native.projectsCard");
+    projectsCard.hidden = YES;
+    [canvasRoot addSubview:projectsCard];
+    NSTextField* projectsTitle = label(@"Projects", [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold]);
+    [projectsCard.body addSubview:projectsTitle];
+    NSButton* projectsClose = [NSButton buttonWithImage:symbol(QStringLiteral("chevron.down"))
+                                                target:delegate action:@selector(collapseProjects:)];
+    projectsClose.bordered = NO;
+    projectsClose.translatesAutoresizingMaskIntoConstraints = NO;
+    projectsClose.accessibilityIdentifier = @"native.projects.disclosure";
+    projectsClose.accessibilityLabel = @"Collapse Projects";
+    [projectsCard.body addSubview:projectsClose];
+    projectsHost = [[NSView alloc] initWithFrame:NSZeroRect];
+    projectsHost.translatesAutoresizingMaskIntoConstraints = NO;
+    projectsHost.wantsLayer = YES;
+    projectsHost.layer.masksToBounds = YES;
+    [projectsCard.body addSubview:projectsHost];
+    projectsHostBottom = [projectsHost.bottomAnchor constraintEqualToAnchor:projectsCard.body.bottomAnchor constant:-8];
+    // Hidden/collapsed content keeps its intrinsic size outside the header;
+    // it must not force a zero-height or collapsed card to grow underneath.
+    [NSLayoutConstraint activateConstraints:@[
+      [projectsClose.leadingAnchor constraintEqualToAnchor:projectsCard.body.leadingAnchor constant:8],
+      [projectsClose.topAnchor constraintEqualToAnchor:projectsCard.body.topAnchor constant:5],
+      [projectsClose.widthAnchor constraintEqualToConstant:18],
+      [projectsClose.heightAnchor constraintEqualToConstant:20],
+      [projectsTitle.leadingAnchor constraintEqualToAnchor:projectsClose.trailingAnchor constant:6],
+      [projectsTitle.centerYAnchor constraintEqualToAnchor:projectsClose.centerYAnchor],
+      [projectsHost.leadingAnchor constraintEqualToAnchor:projectsCard.body.leadingAnchor constant:6],
+      [projectsHost.trailingAnchor constraintEqualToAnchor:projectsCard.body.trailingAnchor constant:-6],
+      [projectsHost.topAnchor constraintEqualToAnchor:projectsCard.body.topAnchor constant:30]
+    ]];
     sidebarCard = floatingCard(@"native.sidebar");
     [canvasRoot addSubview:sidebarCard];
     NSTextField* browserTitle = label(@"Browser", [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold]);
     [sidebarCard.body addSubview:browserTitle];
-    NSButton* browserClose = [NSButton buttonWithImage:symbol(QStringLiteral("xmark"), @"Hide Browser")
-                                             target:delegate action:@selector(toggleSidebar:)];
+    NSButton* browserClose = [NSButton buttonWithImage:symbol(QStringLiteral("chevron.down"), @"Collapse Browser")
+                                             target:delegate action:@selector(collapseBrowser:)];
     browserClose.bordered = NO;
     browserClose.translatesAutoresizingMaskIntoConstraints = NO;
-    browserClose.accessibilityLabel = @"Hide Browser";
+    browserClose.accessibilityLabel = @"Collapse Browser";
     [sidebarCard.body addSubview:browserClose];
     [NSLayoutConstraint activateConstraints:@[
-      [browserTitle.leadingAnchor constraintEqualToAnchor:sidebarCard.body.leadingAnchor constant:14],
-      [browserTitle.topAnchor constraintEqualToAnchor:sidebarCard.body.topAnchor constant:12],
-      [browserClose.trailingAnchor constraintEqualToAnchor:sidebarCard.body.trailingAnchor constant:-10],
+      [browserTitle.leadingAnchor constraintEqualToAnchor:browserClose.trailingAnchor constant:6],
+      [browserTitle.topAnchor constraintEqualToAnchor:sidebarCard.body.topAnchor constant:8],
+      [browserClose.leadingAnchor constraintEqualToAnchor:sidebarCard.body.leadingAnchor constant:8],
       [browserClose.centerYAnchor constraintEqualToAnchor:browserTitle.centerYAnchor],
       [browserClose.widthAnchor constraintEqualToConstant:20],
       [browserClose.heightAnchor constraintEqualToConstant:20]
     ]];
 
+    MITCADCommandButton* find = [[MITCADCommandButton alloc] initWithFrame:NSZeroRect];
+    find.image = symbol(QStringLiteral("magnifyingglass"));
+    find.bordered = NO;
+    find.translatesAutoresizingMaskIntoConstraints = NO;
+    find.representedObject = @"view.find_in_design";
+    find.target = delegate;
+    find.action = @selector(performAction:);
+    find.accessibilityIdentifier = @"native.browser.find";
+    find.toolTip = @"Find in Design";
+    [sidebarCard.body addSubview:find];
+    [NSLayoutConstraint activateConstraints:@[
+      [find.trailingAnchor constraintEqualToAnchor:sidebarCard.body.trailingAnchor constant:-8],
+      [find.centerYAnchor constraintEqualToAnchor:browserTitle.centerYAnchor],
+      [find.widthAnchor constraintEqualToConstant:20],
+      [find.heightAnchor constraintEqualToConstant:20]
+    ]];
+    browserIssues = [NSStackView stackViewWithViews:@[]];
+    browserIssues.spacing = 6;
+    browserIssues.translatesAutoresizingMaskIntoConstraints = NO;
+    browserIssues.hidden = YES;
+    NSMutableArray<NSButton*>* issueButtons = [NSMutableArray array];
+    for (int index = 0; index < 2; ++index) {
+      NSButton* button = [NSButton buttonWithTitle:@"" target:delegate action:@selector(showBrowserIssues:)];
+      button.tag = index;
+      button.bezelStyle = NSBezelStyleRounded;
+      button.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
+      button.image = symbol(index == 0 ? QStringLiteral("xmark.octagon.fill") : QStringLiteral("exclamationmark.triangle.fill"));
+      button.imagePosition = NSImageLeft;
+      button.contentTintColor = index == 0 ? NSColor.systemRedColor : NSColor.systemOrangeColor;
+      button.accessibilityIdentifier = index == 0 ? @"native.browser.failures" : @"native.browser.warnings";
+      button.lineBreakMode = NSLineBreakByTruncatingTail;
+      [button.widthAnchor constraintLessThanOrEqualToConstant:116].active = YES;
+      [button.heightAnchor constraintEqualToConstant:24].active = YES;
+      [browserIssues addArrangedSubview:button];
+      [issueButtons addObject:button];
+    }
+    browserIssueButtons = issueButtons;
+    [sidebarCard.body addSubview:browserIssues];
+    [NSLayoutConstraint activateConstraints:@[
+      [browserIssues.leadingAnchor constraintEqualToAnchor:sidebarCard.body.leadingAnchor constant:10],
+      [browserIssues.topAnchor constraintEqualToAnchor:sidebarCard.body.topAnchor constant:32],
+      [browserIssues.trailingAnchor constraintLessThanOrEqualToAnchor:sidebarCard.body.trailingAnchor constant:-10]
+    ]];
     tree = [[MITCADModelOutlineView alloc] initWithFrame:NSZeroRect];
     tree->state = this;
     NSTableColumn* column = [[NSTableColumn alloc] initWithIdentifier:@"model"];
@@ -1030,7 +1136,8 @@ struct NativeMacWindowState {
     tree.outlineTableColumn = column;
     tree.headerView = nil;
     tree.style = NSTableViewStyleSourceList;
-    tree.rowHeight = 30;
+    tree.rowHeight = 24;
+    tree.indentationPerLevel = 16;
     tree.backgroundColor = NSColor.clearColor;
     tree.usesAlternatingRowBackgroundColors = NO;
     tree.allowsMultipleSelection = YES;
@@ -1039,8 +1146,7 @@ struct NativeMacWindowState {
     tree.delegate = delegate;
     tree.target = delegate;
     tree.doubleAction = @selector(activateTree:);
-    tree.autosaveExpandedItems = YES;
-    tree.autosaveName = @"MitcadNativeModelTree";
+    tree.autosaveExpandedItems = NO; // The shared Browser owns expansion state.
     tree.accessibilityLabel = @"Model";
     tree.accessibilityIdentifier = @"native.modelTree";
     tree.menu = [[NSMenu alloc] initWithTitle:@"Model"];
@@ -1054,12 +1160,14 @@ struct NativeMacWindowState {
     visibility.target = delegate;
     [tree.menu addItem:visibility];
     NSScrollView* treeScroll = scroll(tree);
+    browserScroll = treeScroll;
     treeScroll.backgroundColor = NSColor.clearColor;
     [sidebarCard.body addSubview:treeScroll];
+    browserTreeTop = [treeScroll.topAnchor constraintEqualToAnchor:sidebarCard.body.topAnchor constant:38];
     [NSLayoutConstraint activateConstraints:@[
       [treeScroll.leadingAnchor constraintEqualToAnchor:sidebarCard.body.leadingAnchor constant:6],
       [treeScroll.trailingAnchor constraintEqualToAnchor:sidebarCard.body.trailingAnchor constant:-6],
-      [treeScroll.topAnchor constraintEqualToAnchor:browserTitle.bottomAnchor constant:8],
+      browserTreeTop,
       [treeScroll.bottomAnchor constraintEqualToAnchor:sidebarCard.body.bottomAnchor constant:-8]
     ]];
     treeRoots = [NSMutableArray array];
@@ -1075,7 +1183,7 @@ struct NativeMacWindowState {
     [canvasRoot addSubview:statusCard];
 
     historyCard = floatingCard(@"native.historyCard");
-    historyCard.hidden = YES;
+    historyCard.hidden = NO;
     [canvasRoot addSubview:historyCard];
     NSView* historyView = historyCard.body;
     history = [[MITCADHistoryStrip alloc] initWithFrame:NSMakeRect(0, 0, 28, historyStripHeight)];
@@ -1093,21 +1201,22 @@ struct NativeMacWindowState {
     historyScroll.contentView.drawsBackground = NO;
     historyScroll.borderType = NSNoBorder;
     [historyView addSubview:historyScroll];
-    historyMarkerButton = [[MITCADHistoryMarkerButton alloc] initWithFrame:NSMakeRect(7, 3, 14, 48)];
+    historyMarkerButton = [[MITCADHistoryMarkerButton alloc] initWithFrame:NSMakeRect(6, 0, 14, historyStripHeight)];
     historyMarkerButton->state = this;
     historyMarkerButton.title = @"";
     historyMarkerButton.bordered = NO;
     historyMarkerButton.accessibilityLabel = @"History marker";
     historyMarkerButton.accessibilityIdentifier = @"native.historyMarker";
-    NSImageView* markerHandle = [[NSImageView alloc] initWithFrame:NSMakeRect(2, 0, 10, 10)];
-    markerHandle.image = symbol(QStringLiteral("arrowtriangle.down.fill"));
-    markerHandle.contentTintColor = NSColor.controlAccentColor;
+    NSBox* markerHandle = [[NSBox alloc] initWithFrame:NSMakeRect(2, 0, 10, 10)];
+    markerHandle.boxType = NSBoxCustom;
+    markerHandle.borderWidth = 0;
+    markerHandle.fillColor = [NSColor colorWithSRGBRed:224.0/255 green:123.0/255 blue:26.0/255 alpha:1];
     markerHandle.accessibilityElement = NO;
     [historyMarkerButton addSubview:markerHandle];
-    NSBox* markerLine = [[NSBox alloc] initWithFrame:NSMakeRect(6, 9, 2, 38)];
+    NSBox* markerLine = [[NSBox alloc] initWithFrame:NSMakeRect(6, 9, 2, historyStripHeight - 10)];
     markerLine.boxType = NSBoxCustom;
     markerLine.borderWidth = 0;
-    markerLine.fillColor = NSColor.controlAccentColor;
+    markerLine.fillColor = NSColor.labelColor;
     markerLine.accessibilityElement = NO;
     [historyMarkerButton addSubview:markerLine];
     [history addSubview:historyMarkerButton];
@@ -1123,8 +1232,8 @@ struct NativeMacWindowState {
     playback.spacing = 2;
     playback.translatesAutoresizingMaskIntoConstraints = NO;
     NSMutableArray<NSButton*>* steps = [NSMutableArray array];
-    const QStringList symbols = {QStringLiteral("backward.end.fill"), QStringLiteral("chevron.backward"),
-                                 QStringLiteral("chevron.forward"), QStringLiteral("forward.end.fill")};
+    const QStringList symbols = {QStringLiteral("backward.end.fill"), QStringLiteral("backward.fill"),
+                                 QStringLiteral("forward.fill"), QStringLiteral("forward.end.fill")};
     const QStringList names = {QStringLiteral("start"), QStringLiteral("back"), QStringLiteral("forward"), QStringLiteral("end")};
     const QStringList labels = {QStringLiteral("Roll back to start"), QStringLiteral("Previous feature"),
                                 QStringLiteral("Next feature"), QStringLiteral("Roll forward to end")};
@@ -1142,24 +1251,34 @@ struct NativeMacWindowState {
       [steps addObject:button];
     }
     historySteps = steps;
-    historyFilterButton = [NSButton buttonWithImage:symbol(QStringLiteral("line.3.horizontal.decrease"))
+    NativeMacAction filterArtwork; filterArtwork.icon = themeIcon(QStringLiteral("filter"));
+    historyFilterButton = [NSButton buttonWithImage:actionImage(filterArtwork, 16)
                                            target:delegate action:@selector(openHistoryFilter:)];
     historyFilterButton.bordered = NO;
     [historyFilterButton setButtonType:NSButtonTypePushOnPushOff];
     historyFilterButton.translatesAutoresizingMaskIntoConstraints = NO;
     historyFilterButton.accessibilityIdentifier = @"native.history.filter";
     historyFilterButton.accessibilityLabel = @"Timeline Filter";
-    [historyFilterButton.widthAnchor constraintEqualToConstant:28].active = YES;
+    [historyFilterButton.widthAnchor constraintEqualToConstant:24].active = YES;
     [historyFilterButton.heightAnchor constraintEqualToConstant:28].active = YES;
     [playback addArrangedSubview:historyFilterButton];
+    NSButton* searchHistory = [NSButton buttonWithImage:symbol(QStringLiteral("magnifyingglass"))
+                                                target:delegate action:@selector(openTimelineSearch:)];
+    searchHistory.bordered = NO;
+    searchHistory.translatesAutoresizingMaskIntoConstraints = NO;
+    searchHistory.accessibilityIdentifier = @"native.history.search";
+    searchHistory.toolTip = @"Search Timeline";
+    [searchHistory.widthAnchor constraintEqualToConstant:24].active = YES;
+    [searchHistory.heightAnchor constraintEqualToConstant:28].active = YES;
+    [playback addArrangedSubview:searchHistory];
     [historyView addSubview:playback];
     [NSLayoutConstraint activateConstraints:@[
-      [playback.leadingAnchor constraintEqualToAnchor:historyView.leadingAnchor constant:12],
+      [playback.leadingAnchor constraintEqualToAnchor:historyView.leadingAnchor constant:18],
       [playback.centerYAnchor constraintEqualToAnchor:historyView.centerYAnchor],
-      [historyScroll.leadingAnchor constraintEqualToAnchor:playback.trailingAnchor constant:10],
+      [historyScroll.leadingAnchor constraintEqualToAnchor:playback.trailingAnchor constant:3],
       [historyScroll.trailingAnchor constraintEqualToAnchor:historyView.trailingAnchor constant:-8],
-      [historyScroll.topAnchor constraintEqualToAnchor:historyView.topAnchor constant:10],
-      [historyScroll.bottomAnchor constraintEqualToAnchor:historyView.bottomAnchor constant:-10]
+      [historyScroll.topAnchor constraintEqualToAnchor:historyView.topAnchor constant:4],
+      [historyScroll.bottomAnchor constraintEqualToAnchor:historyView.bottomAnchor constant:-4]
     ]];
     updateHistoryAppearance();
     inspectorCard = floatingCard(@"native.inspectorCard");
@@ -1186,21 +1305,48 @@ struct NativeMacWindowState {
     layoutRibbon(width);
     viewportHost.frame = NSMakeRect(0, ribbonHeight, width, std::max(CGFloat(1), height - ribbonHeight));
     const CGFloat canvasHeight = viewportHost.bounds.size.height;
-    constexpr CGFloat historyHeight = 76;
+    constexpr CGFloat historyHeight = timeline::cardHeight;
     historyCard.frame = NSMakeRect(margin, height - margin - historyHeight,
                                    std::max(CGFloat(1), width - margin * 2), historyHeight);
     [historyCard layoutSubtreeIfNeeded];
     layoutHistory();
     const CGFloat floor = historyCard.hidden ? height - margin : historyCard.frame.origin.y - gap;
-    const CGFloat top = ribbonHeight + margin;
-    const CGFloat leftHeight = std::min(std::max(CGFloat(100), tree.numberOfRows * tree.rowHeight + 50),
+    CGFloat top = ribbonHeight + margin;
+    if (!projectsCard.hidden) {
+      // Measure AppKit rows, not the hidden Qt tree's font and size hints.
+      // Snap the viewport to whole rows before placing Browser below it.
+      NSOutlineView* outline = outlineIn(projectsContent);
+      const NSInteger count = outline.numberOfRows;
+      const NSRect first = count > 0 ? [outline rectOfRow:0] : NSZeroRect;
+      const CGFloat rowHeight = count > 1 ? [outline rectOfRow:1].origin.y - first.origin.y
+                                         : outline ? outline.rowHeight : 24;
+      // Source-list style adds its own leading inset before the first row.
+      const CGFloat chromeHeight = 38 + 24 + 2 + std::max(CGFloat(0), first.origin.y);
+      const CGFloat budget = std::max(chromeHeight + rowHeight, (floor - top) * 0.4);
+      const int capacity = std::max(1, int(std::floor((budget - chromeHeight) / rowHeight)));
+      const int rows = std::min(capacity, std::max(2, int(outline.numberOfRows)));
+      const CGFloat projectHeight = projectsCollapsed ? 30 : chromeHeight + rows * rowHeight;
+      const bool resized = projectsCard.frame.size.height != projectHeight;
+      projectsCard.frame = NSMakeRect(margin, top, 260, projectHeight);
+      [projectsCard layoutSubtreeIfNeeded];
+      if (resized && !projectsCollapsed && outline.selectedRow >= 0)
+        [outline scrollRowToVisible:outline.selectedRow];
+      top += projectHeight + gap;
+    }
+    const CGFloat leftHeight = std::min(std::max(CGFloat(100), tree.numberOfRows * tree.rowHeight + 50 + (browserIssues.hidden ? 0 : 28)),
                                        std::max(CGFloat(100), std::min(canvasHeight * 0.55, floor - top)));
-    sidebarCard.frame = NSMakeRect(margin, top, 260, leftHeight);
-    const CGFloat rightTop = ribbonHeight + 190;
-    const CGFloat available = std::max(CGFloat(1), floor - rightTop);
+    sidebarCard.frame = NSMakeRect(margin, top, 260, browserCollapsed ? (browserIssues.hidden ? 30 : 60) : leftHeight);
+    CGFloat rightTop = ribbonHeight + 190;
+    CGFloat available = std::max(CGFloat(1), floor - rightTop);
     inspectorCard.frame = NSMakeRect(width - margin - 300, rightTop, 300, available);
     [inspectorHost layoutSubtreeIfNeeded];
     const CGFloat formHeight = inspectorContent ? inspectorContent.fittingSize.height : 180;
+    // Like the shared floating layout, a long form first grows above the
+    // orientation cube before it needs a scrollbar.
+    if (formHeight + 4 > available) {
+      rightTop = ribbonHeight + margin;
+      available = std::max(CGFloat(1), floor - rightTop);
+    }
     inspectorCard.frame = NSMakeRect(width - margin - 300, rightTop, 300,
                                      std::min(available, std::max(CGFloat(160), formHeight + 4)));
     const CGFloat statusWidth = std::min(std::max(CGFloat(120), status.intrinsicContentSize.width + 24),
@@ -1208,14 +1354,15 @@ struct NativeMacWindowState {
     statusCard.frame = NSMakeRect((width - statusWidth) / 2, floor - 34, statusWidth, 34);
     if (callbacks.viewportOverlays) {
       std::vector<QRect> covered;
-      for (NSView* card in @[sidebarCard, inspectorCard, historyCard]) {
+      for (NSView* card in @[projectsCard, sidebarCard, inspectorCard, historyCard]) {
         if (card.hidden) continue;
         const NSRect rect = card.frame;
         covered.emplace_back(int(std::lround(rect.origin.x)), int(std::lround(rect.origin.y - ribbonHeight)),
                              int(std::lround(rect.size.width)), int(std::lround(rect.size.height)));
       }
       const int bottom = historyCard.hidden ? 0 : int(std::lround(height - floor));
-      callbacks.viewportOverlays(QMargins(0, 0, 0, bottom), covered);
+      const int cubeRight = !inspectorCard.hidden && rightTop < ribbonHeight + 190 ? 320 : 0;
+      callbacks.viewportOverlays(QMargins(0, 0, cubeRight, bottom), covered);
     }
     syncViewport();
     layingOut = false;
@@ -1390,8 +1537,8 @@ struct NativeMacWindowState {
       previousWindowsMenu = NSApp.windowsMenu;
     }
     mainMenu = [[NSMenu alloc] initWithTitle:@"Main Menu"];
-    NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"Mitcad"];
-    NSMenuItem* appItem = [[NSMenuItem alloc] initWithTitle:@"Mitcad" action:nil keyEquivalent:@""];
+    NSMenu* appMenu = [[NSMenu alloc] initWithTitle:@"MitCad"];
+    NSMenuItem* appItem = [[NSMenuItem alloc] initWithTitle:@"MitCad" action:nil keyEquivalent:@""];
     appItem.submenu = appMenu;
     [mainMenu addItem:appItem];
     for (const auto& item : actions) if (isAppAction(item)) [appMenu addItem:menuAction(item)];
@@ -1402,13 +1549,13 @@ struct NativeMacWindowState {
     [appMenu addItem:servicesItem];
     NSApp.servicesMenu = services;
     [appMenu addItem:NSMenuItem.separatorItem];
-    addResponderItem(appMenu, @"Hide Mitcad", @selector(hide:), @"h");
+    addResponderItem(appMenu, @"Hide MitCad", @selector(hide:), @"h");
     NSMenuItem* hideOthers = [[NSMenuItem alloc] initWithTitle:@"Hide Others" action:@selector(hideOtherApplications:) keyEquivalent:@"h"];
     hideOthers.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
     [appMenu addItem:hideOthers];
     addResponderItem(appMenu, @"Show All", @selector(unhideAllApplications:), @"");
     [appMenu addItem:NSMenuItem.separatorItem];
-    NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:@"Quit Mitcad" action:@selector(quitApplication:) keyEquivalent:@"q"];
+    NSMenuItem* quit = [[NSMenuItem alloc] initWithTitle:@"Quit MitCad" action:@selector(quitApplication:) keyEquivalent:@"q"];
     quit.target = delegate;
     [appMenu addItem:quit];
 
@@ -1419,11 +1566,21 @@ struct NativeMacWindowState {
       if (title.isEmpty()) continue;
       if (!titles.contains(title)) titles.append(title);
     }
+    const int help = titles.indexOf(QStringLiteral("Help"));
+    titles.insert(help < 0 ? titles.size() : help, QStringLiteral("Window"));
     for (const QString& title : titles) {
       NSMenu* menu = [[NSMenu alloc] initWithTitle:ns(title)];
       NSMenuItem* top = [[NSMenuItem alloc] initWithTitle:ns(title) action:nil keyEquivalent:@""];
       top.submenu = menu;
       [mainMenu addItem:top];
+      if (title == QStringLiteral("Window")) {
+        addResponderItem(menu, @"Minimize", @selector(performMiniaturize:), @"m");
+        addResponderItem(menu, @"Zoom", @selector(performZoom:), @"");
+        [menu addItem:NSMenuItem.separatorItem];
+        addResponderItem(menu, @"Bring All to Front", @selector(arrangeInFront:), @"");
+        NSApp.windowsMenu = menu;
+        continue;
+      }
       QHash<QString, NSMenu*> submenus;
       submenus.insert(title, menu);
       for (const NativeMacAction& item : actions) {
@@ -1434,7 +1591,7 @@ struct NativeMacWindowState {
         const QString path = actionMenuPath(item);
         if (path.isEmpty()) continue;
         const QStringList parts = path.split(QLatin1Char('/'), Qt::SkipEmptyParts);
-        if (parts.isEmpty() || parts.front() != title || item.id == QStringLiteral("file.close")) continue;
+        if (parts.isEmpty() || parts.front() != title) continue;
         QString prefix = title;
         NSMenu* target = menu;
         for (int index = 1; index < parts.size(); ++index) {
@@ -1447,41 +1604,15 @@ struct NativeMacWindowState {
           target = child;
           submenus.insert(prefix, child);
         }
-        [target addItem:menuAction(item)];
-      }
-      if (title == QStringLiteral("File")) {
-        [menu addItem:NSMenuItem.separatorItem];
-        NSMenuItem* close = [[NSMenuItem alloc] initWithTitle:@"Close" action:@selector(closeDocument:) keyEquivalent:@"w"];
-        close.target = delegate;
-        [menu addItem:close];
-      } else if (title == QStringLiteral("Edit")) {
-        [menu addItem:NSMenuItem.separatorItem];
-        addResponderItem(menu, @"Cut", @selector(cut:), @"x");
-        addResponderItem(menu, @"Copy", @selector(copy:), @"c");
-        addResponderItem(menu, @"Paste", @selector(paste:), @"v");
-        addResponderItem(menu, @"Select All", @selector(selectAll:), @"a");
-      } else if (title == QStringLiteral("View")) {
-        [menu addItem:NSMenuItem.separatorItem];
-        for (auto pair : {std::pair<NSString*, SEL>(@"Show Sidebar", @selector(toggleSidebar:)),
-                          std::pair<NSString*, SEL>(@"Show Inspector", @selector(toggleInspector:)),
-                          std::pair<NSString*, SEL>(@"Show History", @selector(toggleHistory:))}) {
-          NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:pair.first action:pair.second keyEquivalent:@""];
-          item.target = delegate;
-          [menu addItem:item];
+        if (item.id == QStringLiteral("file.close")) {
+          NSMenuItem* close = [[NSMenuItem alloc] initWithTitle:ns(item.label) action:@selector(closeDocument:) keyEquivalent:@"w"];
+          close.target = delegate;
+          [target addItem:close];
+        } else {
+          [target addItem:menuAction(item)];
         }
-        addResponderItem(menu, @"Enter Full Screen", @selector(toggleFullScreen:), @"f");
-        menu.itemArray.lastObject.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagControl;
       }
     }
-    NSMenu* windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
-    addResponderItem(windowMenu, @"Minimize", @selector(performMiniaturize:), @"m");
-    addResponderItem(windowMenu, @"Zoom", @selector(performZoom:), @"");
-    [windowMenu addItem:NSMenuItem.separatorItem];
-    addResponderItem(windowMenu, @"Bring All to Front", @selector(arrangeInFront:), @"");
-    NSMenuItem* windowItem = [[NSMenuItem alloc] initWithTitle:@"Window" action:nil keyEquivalent:@""];
-    windowItem.submenu = windowMenu;
-    [mainMenu addItem:windowItem];
-    NSApp.windowsMenu = windowMenu;
     NSApp.mainMenu = mainMenu;
   }
 
@@ -1499,80 +1630,57 @@ struct NativeMacWindowState {
   }
 
   void installToolbar() {
-    NSToolbar* toolbar = [[NSToolbar alloc] initWithIdentifier:@"com.mitcad.toolbar.floating.v2"];
+    NSToolbar* toolbar = [[NSToolbar alloc] initWithIdentifier:@"com.mitcad.toolbar.familiar.v1"];
     toolbar.delegate = delegate;
     toolbar.allowsUserCustomization = YES;
     toolbar.autosavesConfiguration = YES;
     toolbar.displayMode = NSToolbarDisplayModeIconOnly;
     window.toolbar = toolbar;
-    // Upgrade saved layouts that predate Project once. Later absence is
-    // the user's customization, including after the application restarts.
-    NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
-    if (![defaults boolForKey:projectToolbarMigrationKey]) {
-      bool hasProject = false;
-      for (NSToolbarItem* item in toolbar.items) {
-        if ([item.itemIdentifier isEqualToString:projectID]) hasProject = true;
-      }
-      if (!hasProject) [toolbar insertItemWithItemIdentifier:projectID
-                                                   atIndex:std::min(NSUInteger(3), toolbar.items.count)];
-      [defaults setBool:YES forKey:projectToolbarMigrationKey];
-    }
-    // The agent indicator (mitcad#710) right of Project, likewise once.
-    if (![defaults boolForKey:agentToolbarMigrationKey]) {
-      NSUInteger index = std::min(NSUInteger(4), toolbar.items.count);
-      bool hasAgent = false;
-      for (NSUInteger i = 0; i < toolbar.items.count; ++i) {
-        NSString* identifier = toolbar.items[i].itemIdentifier;
-        if ([identifier isEqualToString:agentID]) hasAgent = true;
-        if ([identifier isEqualToString:projectID]) index = i + 1;
-      }
-      if (!hasAgent) [toolbar insertItemWithItemIdentifier:agentID atIndex:index];
-      [defaults setBool:YES forKey:agentToolbarMigrationKey];
-    }
     buildRibbon();
   }
 
-  NSMenu* groupMenu(const QString& group) {
-    NSMenu* menu = [[NSMenu alloc] initWithTitle:ns(group)];
-    bool firstEntry = true;
-    QString section;
-    for (const NativeMacAction* item : groupActions(group)) {
-      if (item->toolbarOnly) continue; // listed in its subgroup's popup (mitcad#222)
-      // A separator where the section changes, as the ribbon's group menu
-      // has it (Ribbon::createGroup, mitcad#579): only between entries.
-      if (!firstEntry && item->section != section) [menu addItem:NSMenuItem.separatorItem];
-      firstEntry = false;
-      section = item->section;
-      NSMenuItem* entry = menuAction(*item, true);
-      if (!item->submenu.isEmpty()) {
-        NSMenu* children = [[NSMenu alloc] initWithTitle:ns(item->label)];
-        for (const NativeMacAction& child : actions) {
-          if (child.menu == item->submenu) [children addItem:menuAction(child)];
-        }
-        entry.submenu = children;
+  QString workspace() const { return workspaces.value(workspaceIndex, QStringLiteral("SOLID")); }
+
+  NSMenu* presentationMenu(const QList<NativeMacMenuItem>& entries) {
+    NSMenu* menu = [[NSMenu alloc] initWithTitle:@""];
+    for (const auto& entry : entries) {
+      if (entry.separator) { [menu addItem:NSMenuItem.separatorItem]; continue; }
+      const NativeMacAction* command = action(entry.action);
+      NSMenuItem* item = command ? menuAction(*command, true)
+                                : [[NSMenuItem alloc] initWithTitle:ns(entry.title) action:nil keyEquivalent:@""];
+      if (entry.submenu) item.submenu = presentationMenu(entry.children);
+      if (!entry.icon.isNull() && !command) {
+        NativeMacAction artwork; artwork.icon = entry.icon;
+        item.image = actionImage(artwork, 16);
       }
-      [menu addItem:entry];
+      [menu addItem:item];
     }
     return menu;
   }
 
-  QList<const NativeMacAction*> groupActions(const QString& group) const {
-    QList<const NativeMacAction*> result;
-    const QString workspace = sketching ? QStringLiteral("SKETCH") : QStringLiteral("SOLID");
-    for (const auto& item : actions) {
-      if (item.group != group || item.separator) continue;
-      const bool inWorkspace = item.workspace.compare(workspace, Qt::CaseInsensitive) == 0;
-      // SELECT's shared filter actions are the only ribbon extras supplied
-      // without a workspace; other empty-workspace actions are menus-only.
-      const bool selectExtra = item.workspace.isEmpty() && group == QStringLiteral("SELECT") &&
-                               item.menu == QStringLiteral("Select");
-      if (!inWorkspace && !selectExtra) continue;
-      result.append(&item);
+  NSMenu* groupMenu(const QString& group) {
+    for (const auto& item : ribbonPresentation) {
+      if (item.workspace == workspace() && item.name == group) return presentationMenu(item.menu);
     }
-    std::stable_sort(result.begin(), result.end(), [](const auto* a, const auto* b) {
-      return a->toolbarOrder < b->toolbarOrder;
-    });
-    return result;
+    return [[NSMenu alloc] initWithTitle:ns(group)];
+  }
+
+  const NativeMacRibbonGroup* ribbonGroup(const QString& name) const {
+    for (const auto& group : ribbonPresentation) {
+      if (group.workspace == workspace() && group.name == name) return &group;
+    }
+    return nullptr;
+  }
+
+  CGFloat buttonRowWidth(const NativeMacRibbonGroup& group, int count) const {
+    CGFloat width = 0;
+    for (int i = 0; i < count; ++i) width += group.buttons[i].width;
+    return width;
+  }
+
+  CGFloat groupWidth(const NativeMacRibbonGroup& group, int count, CGFloat caption) const {
+      const int shared = count > 0 ? group.fullWidth : group.collapsedWidth;
+      return shared > 0 ? shared : std::max(caption + 16, buttonRowWidth(group, count) + 16);
   }
 
   void buildRibbon() {
@@ -1580,41 +1688,39 @@ struct NativeMacWindowState {
     ribbonButtons = [NSMutableDictionary dictionary];
     ribbonMenus = [NSMutableDictionary dictionary];
     ribbonSeparators = [NSMutableDictionary dictionary];
+    ribbonBackgrounds = [NSMutableDictionary dictionary];
+    ribbonSplits = [NSMutableDictionary dictionary];
     ribbonGroupOrder.clear();
     ribbonGroupButtons.clear();
-    const QStringList groups = sketching
-        ? QStringList{QStringLiteral("CREATE"), QStringLiteral("MODIFY"), QStringLiteral("CONSTRAINTS"),
-                      QStringLiteral("INSPECT"), QStringLiteral("INSERT"), QStringLiteral("SELECT"), QStringLiteral("FINISH SKETCH")}
-        : QStringList{QStringLiteral("CREATE"), QStringLiteral("MODIFY"), QStringLiteral("SHEET METAL"), QStringLiteral("SURFACE"), QStringLiteral("ASSEMBLE"),
-                      QStringLiteral("CONSTRUCT"), QStringLiteral("INSPECT"), QStringLiteral("INSERT"),
-                      QStringLiteral("MAKE"), QStringLiteral("SELECT")};
-    CGFloat x = ribbonInset;
-    for (const QString& group : groups) {
-      const auto entries = groupActions(group);
-      if (entries.isEmpty()) continue;
-      ribbonGroupOrder.append(group);
-      QList<const NativeMacAction*> pinned;
-      for (const auto* item : entries) if (item->toolbarPinned) pinned.append(item);
-      QString captionText = group.toLower();
-      captionText[0] = captionText[0].toUpper();
+    for (const auto& group : ribbonPresentation) {
+      if (group.workspace != workspace()) continue;
+      ribbonGroupOrder.append(group.name);
+      NSBox* background = [[NSBox alloc] initWithFrame:NSZeroRect];
+      background.boxType = NSBoxCustom;
+      background.borderWidth = 0.5;
+      background.cornerRadius = 12;
+      background.fillColor = NSColor.controlBackgroundColor;
+      background.borderColor = NSColor.separatorColor;
+      background.titlePosition = NSNoTitle;
+      [ribbonGroups addSubview:background];
+      ribbonBackgrounds[ns(group.name)] = background;
       NSPopUpButton* caption = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
       caption.bordered = NO;
-      caption.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
-      caption.accessibilityLabel = ns(captionText);
-      caption.accessibilityIdentifier = ns(QStringLiteral("native.ribbon.group.") + group.toLower());
-      NSMenu* menu = groupMenu(group);
-      [menu insertItem:[[NSMenuItem alloc] initWithTitle:ns(captionText) action:nil keyEquivalent:@""] atIndex:0];
+      caption.font = [NSFont systemFontOfSize:11];
+      caption.accessibilityLabel = ns(group.title);
+      caption.accessibilityIdentifier = ns(QStringLiteral("native.ribbon.group.") + group.name.toLower());
+      NSMenu* menu = presentationMenu(group.menu);
+      [menu insertItem:[[NSMenuItem alloc] initWithTitle:ns(group.title) action:nil keyEquivalent:@""] atIndex:0];
       caption.menu = menu;
-      const CGFloat captionWidth = caption.intrinsicContentSize.width + 12;
-      const CGFloat groupWidth = ribbonGroupWidth(int(pinned.size()), captionWidth);
-      const CGFloat start = x + (groupWidth - ribbonIconRowWidth(int(pinned.size()))) / 2;
-      int index = 0;
-      for (const auto* item : pinned) {
-        MITCADCommandButton* button = [[MITCADCommandButton alloc] initWithFrame:
-            NSMakeRect(start + index++ * (ribbonButtonWidth + ribbonButtonGap), 8, ribbonButtonWidth, ribbonButtonHeight)];
-        button.bezelStyle = NSBezelStyleRounded;
-        [button setButtonType:NSButtonTypeMomentaryPushIn];
-        button.image = actionImage(*item, 18);
+      [ribbonGroups addSubview:caption];
+      ribbonMenus[ns(group.name)] = caption;
+      for (const auto& shown : group.buttons) {
+        const auto* item = action(shown.action);
+        if (!item) continue;
+        MITCADCommandButton* button = [[MITCADCommandButton alloc] initWithFrame:NSZeroRect];
+        button.bordered = NO;
+        [button setButtonType:NSButtonTypePushOnPushOff];
+        button.image = actionImage(*item, shown.iconSize);
         button.imagePosition = NSImageOnly;
         button.imageScaling = NSImageScaleProportionallyDown;
         button.representedObject = ns(item->id);
@@ -1627,20 +1733,20 @@ struct NativeMacWindowState {
         button.state = item->checked ? NSControlStateValueOn : NSControlStateValueOff;
         [ribbonGroups addSubview:button];
         ribbonButtons[ns(item->id)] = button;
-        ribbonGroupButtons[group].append(item->id);
-      }
-      caption.frame = NSMakeRect(x + (groupWidth - captionWidth) / 2, 44, captionWidth, 22);
-      [ribbonGroups addSubview:caption];
-      ribbonMenus[ns(group)] = caption;
-      x += groupWidth + ribbonGroupGap;
-      if (group != groups.back()) {
-        NSBox* separator = [[NSBox alloc] initWithFrame:NSMakeRect(x - ribbonGroupGap / 2, 12, 1, 46)];
-        separator.boxType = NSBoxSeparator;
-        [ribbonGroups addSubview:separator];
-        ribbonSeparators[ns(group)] = separator;
+        ribbonGroupButtons[group.name].append(item->id);
+          if (!shown.menuOnly && !shown.menu.isEmpty()) {
+          NSPopUpButton* arrow = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:YES];
+          arrow.bordered = NO;
+          NSMenu* submenu = presentationMenu(shown.menu);
+          [submenu insertItem:[[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""] atIndex:0];
+          arrow.menu = submenu;
+          arrow.accessibilityIdentifier = ns(QStringLiteral("native.ribbon.arrow.") + item->id);
+          arrow.accessibilityLabel = ns(item->label + QStringLiteral(" options"));
+          [ribbonGroups addSubview:arrow];
+          ribbonSplits[ns(item->id)] = arrow;
+        }
       }
     }
-    ribbonGroups.frame = NSMakeRect(0, 0, x - ribbonGroupGap + ribbonInset, 72);
     ribbonScroll.documentView = ribbonGroups;
     layoutOverlays();
   }
@@ -1648,39 +1754,44 @@ struct NativeMacWindowState {
   void layoutRibbon(CGFloat availableWidth) {
     if (!ribbonGroups) return;
     QList<int> counts;
-    QList<CGFloat> minimums;
-    for (const QString& group : ribbonGroupOrder) {
-      counts.append(int(ribbonGroupButtons.value(group).size()));
-      minimums.append(ribbonMenus[ns(group)].intrinsicContentSize.width + 12);
+    QList<CGFloat> captions;
+    for (const auto& name : ribbonGroupOrder) {
+      const auto* group = ribbonGroup(name);
+      counts.append(group ? group->buttons.size() : 0);
+      captions.append(ribbonMenus[ns(name)].intrinsicContentSize.width);
     }
     const auto totalWidth = [&] {
-      CGFloat total = 2 * ribbonInset + std::max(0, int(counts.size()) - 1) * ribbonGroupGap;
-      for (int i = 0; i < counts.size(); ++i) total += ribbonGroupWidth(counts[i], minimums[i]);
-      return total;
+      CGFloat width = 2 * ribbonInset + std::max(0, int(counts.size()) - 1) * ribbonGroupGap;
+      for (int i = 0; i < counts.size(); ++i) width += groupWidth(*ribbonGroup(ribbonGroupOrder[i]), counts[i], captions[i]);
+      return width;
     };
-    // Match the established ribbon: retain every group menu and collapse
-    // trailing pinned icons into it when the window becomes narrow.
-    for (int group = int(counts.size()) - 1; group >= 0 && totalWidth() > availableWidth; --group) {
-      if (ribbonGroupOrder[group] == QStringLiteral("FINISH SKETCH")) continue;
-      while (counts[group] > 0 && totalWidth() > availableWidth) --counts[group];
+    // Match Qt's right-to-left collapse of whole button rows. Every caption
+    // remains a native menu and Finish Sketch remains visible.
+    for (int i = int(counts.size()) - 1; i >= 0 && totalWidth() > availableWidth; --i) {
+      const auto* group = ribbonGroup(ribbonGroupOrder[i]);
+      if (groupWidth(*group, counts[i], captions[i]) > groupWidth(*group, 0, captions[i])) counts[i] = 0;
     }
     CGFloat x = ribbonInset;
     for (int i = 0; i < ribbonGroupOrder.size(); ++i) {
-      const QString& group = ribbonGroupOrder[i];
-      const CGFloat width = ribbonGroupWidth(counts[i], minimums[i]);
-      const QStringList ids = ribbonGroupButtons.value(group);
-      const CGFloat start = x + (width - ribbonIconRowWidth(counts[i])) / 2;
-      for (int buttonIndex = 0; buttonIndex < ids.size(); ++buttonIndex) {
-        MITCADCommandButton* button = ribbonButtons[ns(ids[buttonIndex])];
-        button.hidden = buttonIndex >= counts[i];
-        button.frame = NSMakeRect(start + buttonIndex * (ribbonButtonWidth + ribbonButtonGap), 8,
-                                  ribbonButtonWidth, ribbonButtonHeight);
+      const auto* group = ribbonGroup(ribbonGroupOrder[i]);
+      const CGFloat width = groupWidth(*group, counts[i], captions[i]);
+      ribbonBackgrounds[ns(group->name)].frame = NSMakeRect(x, 4, width, 67);
+      ribbonMenus[ns(group->name)].frame = NSMakeRect(x + (width - captions[i]) / 2, 43, captions[i], 22);
+      CGFloat buttonX = x + (width - buttonRowWidth(*group, counts[i])) / 2;
+      for (int j = 0; j < group->buttons.size(); ++j) {
+        const auto& shown = group->buttons[j];
+        MITCADCommandButton* button = ribbonButtons[ns(shown.action)];
+        NSPopUpButton* arrow = ribbonSplits[ns(shown.action)];
+        button.hidden = j >= counts[i];
+        if (arrow) arrow.hidden = button.hidden;
+        const CGFloat arrowWidth = arrow ? 14 : 0;
+        button.frame = NSMakeRect(buttonX, 9, shown.width - arrowWidth, ribbonButtonHeight);
+        if (arrow) arrow.frame = NSMakeRect(buttonX + shown.width - arrowWidth, 10, arrowWidth, 32);
+        buttonX += shown.width;
       }
-      ribbonMenus[ns(group)].frame = NSMakeRect(x + (width - minimums[i]) / 2, 44, minimums[i], 22);
-      ribbonSeparators[ns(group)].frame = NSMakeRect(x + width + ribbonGroupGap / 2, 12, 1, 46);
       x += width + ribbonGroupGap;
     }
-    ribbonGroups.frame = NSMakeRect(0, 0, std::max(availableWidth, x - ribbonGroupGap + ribbonInset), 72);
+    ribbonGroups.frame = NSMakeRect(0, 0, std::max(availableWidth, x - ribbonGroupGap + ribbonInset), 76);
   }
 
   void updateToolbar(bool structureChanged = false) {
@@ -1690,7 +1801,7 @@ struct NativeMacWindowState {
       if (button.enabled != command.enabled) button.enabled = command.enabled;
       const NSControlStateValue state = command.checked ? NSControlStateValueOn : NSControlStateValueOff;
       if (button.state != state) button.state = state;
-      NSImage* image = actionImage(command, 18);
+      NSImage* image = actionImage(command, 26);
       if (button.image != image) button.image = image;
       if (qt(button.accessibilityLabel) != command.label) button.accessibilityLabel = ns(command.label);
       const QString tooltip = command.tooltip.isEmpty() ? command.label : command.tooltip;
@@ -1719,13 +1830,10 @@ struct NativeMacWindowState {
 
   void rebuildTree(const QList<NativeMacTreeItem>& items) {
     QStringList selected;
-    NSMutableSet<NSString*>* expanded = [NSMutableSet set];
     for (NSInteger row = 0; row < tree.numberOfRows; ++row) {
       MITCADTreeNode* node = [tree itemAtRow:row];
-      if ([tree isItemExpanded:node]) [expanded addObject:node.key];
       if ([tree.selectedRowIndexes containsIndex:NSUInteger(row)]) selected.append(qt(node.key));
     }
-    const bool first = treeItems.isEmpty();
     treeItems = items;
     treeIndex.clear();
     treeRoots = [NSMutableArray array];
@@ -1760,8 +1868,11 @@ struct NativeMacWindowState {
     }
     updatingSelection = true;
     [tree reloadData];
-    if (first) [tree expandItem:nil expandChildren:YES];
-    else for (NSString* key in expanded) if (treeNodes[key]) [tree expandItem:treeNodes[key]];
+    for (const auto& item : items) {
+      if (!treeNodes[ns(item.id)]) continue;
+      if (item.expanded) [tree expandItem:treeNodes[ns(item.id)]];
+      else [tree collapseItem:treeNodes[ns(item.id)]];
+    }
     setSelected(selected);
     updatingSelection = false;
   }
@@ -1883,7 +1994,7 @@ struct NativeMacWindowState {
   void setActions(const QList<NativeMacAction>& snapshot) {
     // Availability changes do not recreate the menu bar while a user has a
     // menu or an editable control open. Validation reads the latest snapshot.
-    bool structureChanged = snapshot.size() != actions.size();
+    bool structureChanged = snapshot.size() != actions.size() || imagePaletteKey != QApplication::palette().cacheKey();
     bool menuStateChanged = false;
     if (!structureChanged) {
       for (int index = 0; index < snapshot.size(); ++index) {
@@ -1936,7 +2047,8 @@ struct NativeMacWindowState {
     searchResults.clear();
     const QString query = qt(searchField.stringValue).trimmed().toCaseFolded();
     for (int index = 0; index < actions.size(); ++index) {
-      if (!actions[index].separator && searchScore(actions[index], query) >= 0) searchResults.append(index);
+      if (!actions[index].separator && actions[index].submenu.isEmpty() &&
+          searchScore(actions[index], query) >= 0) searchResults.append(index);
     }
     std::stable_sort(searchResults.begin(), searchResults.end(), [&](int left, int right) {
       const auto& a = actions[left];
@@ -2015,6 +2127,56 @@ void NativeMacWindow::focusViewport() {
   }
 }
 void NativeMacWindow::setActions(const QList<NativeMacAction>& actions) { m_state->setActions(actions); }
+void NativeMacWindow::setRibbon(const QList<NativeMacRibbonGroup>& groups, const QStringList& workspaces, int selected) {
+  const bool changed = m_state->ribbonPresentation != groups || m_state->workspaces != workspaces ||
+                       m_state->workspaceIndex != selected;
+  m_state->ribbonPresentation = groups;
+  m_state->workspaces = workspaces;
+  m_state->workspaceIndex = selected;
+  NSSegmentedControl* tabs = m_state->workspaceTabs;
+  if (tabs) {
+    if (tabs.segmentCount != workspaces.size()) tabs.segmentCount = workspaces.size();
+    for (int i = 0; i < workspaces.size(); ++i) {
+      QString caption = workspaces[i].toLower(); caption[0] = caption[0].toUpper();
+      if (qt([tabs labelForSegment:i]) != caption) [tabs setLabel:ns(caption) forSegment:i];
+    }
+    if (tabs.selectedSegment != selected) tabs.selectedSegment = selected;
+  }
+  if (changed) m_state->buildRibbon();
+}
+
+void NativeMacWindow::setProjectsView(void* view, bool shown) {
+  NSView* content = (__bridge NSView*)view;
+  if (m_state->projectsContent != content) {
+    [m_state->projectsContent removeFromSuperview];
+    m_state->projectsContent = content;
+    if (content) fill(content, m_state->projectsHost);
+  }
+  m_state->projectsHostBottom.active = shown && !m_state->projectsCollapsed;
+  m_state->setCardVisible(m_state->projectsCard, shown);
+  m_state->layoutOverlays();
+  [m_state->projectsCard setNeedsDisplay:YES];
+}
+
+void NativeMacWindow::setBrowserIssues(const QString& failures, const QString& failureDetails,
+                                      const QString& warnings, const QString& warningDetails) {
+  const QStringList labels = {failures, warnings};
+  const QStringList details = {failureDetails, warningDetails};
+  const bool shown = !failures.isEmpty() || !warnings.isEmpty();
+  for (int index = 0; index < 2; ++index) {
+    NSButton* button = m_state->browserIssueButtons[NSUInteger(index)];
+    if (qt(button.title) != labels[index]) button.title = ns(labels[index]);
+    if (qt(button.toolTip) != details[index]) button.toolTip = ns(details[index]);
+    button.hidden = labels[index].isEmpty();
+  }
+  if (m_state->browserIssues.hidden == !shown) return;
+  m_state->browserIssues.hidden = !shown;
+  m_state->browserTreeTop.constant = shown ? 66 : 38;
+  m_state->layoutOverlays();
+}
+
+bool NativeMacWindow::projectsShown() const { return !m_state->projectsCard.hidden; }
+
 void NativeMacWindow::setModelItems(const QList<NativeMacTreeItem>& items) {
   m_state->rebuildTree(items);
   m_state->layoutOverlays();
@@ -2025,6 +2187,7 @@ void NativeMacWindow::setHistory(const QList<NativeMacHistoryItem>& items, int m
 }
 void NativeMacWindow::setDocument(const QString& title, const QString& path, bool edited) {
   m_state->window.title = ns(title.isEmpty() ? QStringLiteral("Untitled") : title);
+  m_state->documentTitle.stringValue = m_state->window.title;
   m_state->window.representedURL = path.isEmpty() ? nil : [NSURL fileURLWithPath:ns(path)];
   m_state->window.documentEdited = edited;
 }
@@ -2054,16 +2217,13 @@ void NativeMacWindow::setAgentStatus(const QString& text, const QString& tooltip
   m_state->agentConnected = connected;
   m_state->agentAvailable = available;
   for (NSToolbarItem* item in m_state->window.toolbar.items) {
-    if (![item.itemIdentifier isEqualToString:agentID] || ![item.view isKindOfClass:MITCADAgentButton.class]) continue;
-    m_state->applyAgentStatus((NSButton*)item.view);
+    if (![item.itemIdentifier isEqualToString:agentID]) continue;
+    for (NSView* child in item.view.subviews) {
+      if ([child isKindOfClass:MITCADAgentButton.class]) m_state->applyAgentStatus((NSButton*)child);
+    }
   }
 }
-void NativeMacWindow::setSketchMode(bool sketching) {
-  if (m_state->sketching == sketching) return;
-  m_state->sketching = sketching;
-  m_state->buildRibbon();
-  m_state->updateToolbar(true);
-}
+void NativeMacWindow::setSketchMode(bool sketching) { m_state->sketching = sketching; }
 void NativeMacWindow::setStatus(const QString& message, bool error) {
   m_state->status.stringValue = ns(message);
   m_state->status.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
@@ -2617,18 +2777,74 @@ using namespace mitcad::mac;
   if (state) state->syncViewport();
 }
 - (void)outlineViewItemDidExpand:(NSNotification*)notification {
-  (void)notification;
-  if (state) state->layoutOverlays();
+  if (!state) return;
+  MITCADTreeNode* node = notification.userInfo[@"NSObject"];
+  if (!state->updatingSelection && node && state->callbacks.treeExpanded) state->callbacks.treeExpanded(qt(node.key), true);
+  state->layoutOverlays();
 }
 - (void)outlineViewItemDidCollapse:(NSNotification*)notification {
-  (void)notification;
-  if (state) state->layoutOverlays();
+  if (!state) return;
+  MITCADTreeNode* node = notification.userInfo[@"NSObject"];
+  if (!state->updatingSelection && node && state->callbacks.treeExpanded) state->callbacks.treeExpanded(qt(node.key), false);
+  state->layoutOverlays();
+}
+- (void)showBrowserIssues:(id)sender {
+  if (state && !state->nativeModalBlocked() && state->callbacks.browserIssues)
+    state->callbacks.browserIssues(((NSButton*)sender).tag == 1, menuPoint((NSView*)sender));
+}
+- (void)changeWorkspace:(id)sender {
+  if (state && state->callbacks.workspaceChanged) state->callbacks.workspaceChanged(int(((NSSegmentedControl*)sender).selectedSegment));
+}
+- (BOOL)validateToolbarItem:(NSToolbarItem*)item {
+  if (!state || state->nativeModalBlocked()) return NO;
+  QString key = qt(item.itemIdentifier);
+  if (!key.startsWith(QStringLiteral("command."))) return YES;
+  key = key.mid(8);
+  if ([NSApp.keyWindow.firstResponder isKindOfClass:NSTextView.class]) {
+    if (key == QStringLiteral("edit.undo")) return NSApp.keyWindow.firstResponder.undoManager.canUndo;
+    if (key == QStringLiteral("edit.redo")) return NSApp.keyWindow.firstResponder.undoManager.canRedo;
+  }
+  const auto* command = state->action(key);
+  return command && command->enabled;
+}
+- (void)openTimelineSearch:(id)sender {
+  (void)sender;
+  if (state) state->openSearch(true);
+}
+- (void)collapseProjects:(id)sender {
+  if (!state || state->nativeModalBlocked() || ![state->window makeFirstResponder:nil]) return;
+  state->projectsCollapsed = !state->projectsCollapsed;
+  state->projectsHostBottom.active = !state->projectsCollapsed;
+  state->projectsHost.hidden = state->projectsCollapsed;
+  NSButton* button = (NSButton*)sender;
+  button.image = symbol(state->projectsCollapsed ? QStringLiteral("chevron.right") : QStringLiteral("chevron.down"));
+  button.accessibilityLabel = state->projectsCollapsed ? @"Expand Projects" : @"Collapse Projects";
+  state->layoutOverlays();
+}
+- (void)collapseBrowser:(id)sender {
+  if (!state) return;
+  state->browserCollapsed = !state->browserCollapsed;
+  state->browserScroll.hidden = state->browserCollapsed;
+  ((NSButton*)sender).image = symbol(state->browserCollapsed ? QStringLiteral("chevron.right") : QStringLiteral("chevron.down"));
+  state->layoutOverlays();
 }
 - (void)performAction:(id)sender {
   if (!state) return;
   NSString* identifier = [sender isKindOfClass:NSToolbarItem.class] ? [sender itemIdentifier] : [sender representedObject];
   QString key = qt(identifier);
   if (key.startsWith(QStringLiteral("command."))) key = key.mid(8);
+  if ([sender isKindOfClass:NSView.class] && !state->nativeModalBlocked()) {
+    for (const auto& group : state->ribbonPresentation) {
+      if (group.workspace != state->workspace()) continue;
+      for (const auto& shown : group.buttons) {
+        if (shown.action != key || !shown.menuOnly || shown.menu.isEmpty()) continue;
+        NSView* view = (NSView*)sender;
+        [state->presentationMenu(shown.menu) popUpMenuPositioningItem:nil
+             atLocation:NSMakePoint(0, view.bounds.size.height + 4) inView:view];
+        return;
+      }
+    }
+  }
   if (const NativeMacAction* action = state->action(key); action && !action->submenu.isEmpty() && action->enabled) {
     if (state->nativeModalBlocked()) return;
     if ([sender isKindOfClass:NSView.class]) {
@@ -2727,13 +2943,13 @@ using namespace mitcad::mac;
 }
 - (NSArray<NSToolbarItemIdentifier>*)toolbarDefaultItemIdentifiers:(NSToolbar*)toolbar {
   (void)toolbar;
-  return @[sidebarID, @"command.edit.undo", @"command.edit.redo",
-           projectID, agentID, NSToolbarFlexibleSpaceItemIdentifier, searchID, historyID, inspectorID];
+  return @[@"command.edit.undo", @"command.edit.redo", workspaceID, NSToolbarFlexibleSpaceItemIdentifier,
+           documentTitleID, NSToolbarFlexibleSpaceItemIdentifier, projectID, agentID, searchID];
 }
 - (NSArray<NSToolbarItemIdentifier>*)toolbarAllowedItemIdentifiers:(NSToolbar*)toolbar {
   (void)toolbar;
   NSMutableArray* identifiers = [NSMutableArray arrayWithArray:@[
-    sidebarID, createID, modifyID, constraintsID, searchID, historyID, inspectorID, projectID, agentID,
+    workspaceID, documentTitleID, sidebarID, createID, modifyID, constraintsID, searchID, historyID, inspectorID, projectID, agentID,
     NSToolbarFlexibleSpaceItemIdentifier, NSToolbarSpaceItemIdentifier
   ]];
   if (state) for (const auto& item : state->actions) {
@@ -2747,25 +2963,67 @@ using namespace mitcad::mac;
 }
 - (NSToolbarItem*)toolbar:(NSToolbar*)toolbar itemForItemIdentifier:(NSToolbarItemIdentifier)identifier
          willBeInsertedIntoToolbar:(BOOL)inserted {
-  (void)toolbar; (void)inserted;
+  (void)toolbar;
   if (!state) return nil;
   NSString* title = nil;
   NSString* image = nil;
   SEL selector = nil;
+  if ([identifier isEqualToString:workspaceID]) {
+    NSToolbarItem* item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
+    item.label = @"Workspace";
+    NSSegmentedControl* tabs = [NSSegmentedControl segmentedControlWithLabels:@[@"Solid", @"Build"]
+                            trackingMode:NSSegmentSwitchTrackingSelectOne target:self action:@selector(changeWorkspace:)];
+    tabs.segmentStyle = NSSegmentStyleRounded;
+    tabs.selectedSegment = state->workspaceIndex;
+    tabs.accessibilityIdentifier = @"native.workspaces";
+    if (inserted) state->workspaceTabs = tabs;
+    item.view = tabs;
+    return item;
+  }
+  if ([identifier isEqualToString:documentTitleID]) {
+    NSToolbarItem* item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
+    item.label = @"Document";
+    NSTextField* title = label(state->window.title, [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold]);
+    title.alignment = NSTextAlignmentCenter;
+    title.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    title.accessibilityIdentifier = @"native.documentTitle";
+    [title.widthAnchor constraintLessThanOrEqualToConstant:220].active = YES;
+    if (inserted) state->documentTitle = title;
+    item.view = title;
+    return item;
+  }
+  if ([identifier isEqualToString:searchID]) {
+    NSToolbarItem* item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
+    item.label = @"Search commands";
+    NSButton* button = [NSButton buttonWithTitle:@"Search commands" target:self action:@selector(openSearch:)];
+    button.image = symbol(QStringLiteral("magnifyingglass"));
+    button.imagePosition = NSImageLeft;
+    button.alignment = NSTextAlignmentLeft;
+    button.bezelStyle = NSBezelStyleRounded;
+    button.font = [NSFont systemFontOfSize:12];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    button.accessibilityIdentifier = @"native.commandSearchButton";
+    [button.widthAnchor constraintEqualToConstant:220].active = YES;
+    [button.heightAnchor constraintEqualToConstant:30].active = YES;
+    item.view = button;
+    return item;
+  }
   if ([identifier isEqualToString:projectID]) {
     NSToolbarItem* item = [[NSToolbarItem alloc] initWithItemIdentifier:identifier];
     item.label = @"Project";
     item.paletteLabel = @"Project Status";
     NSButton* button = [NSButton buttonWithTitle:ns(state->projectText) target:self action:@selector(openProjectMenu:)];
     button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.bordered = NO;
+    button.bezelStyle = NSBezelStyleRounded;
+    button.image = symbol(QStringLiteral("chevron.down"));
+    button.imagePosition = NSImageRight;
     button.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     button.lineBreakMode = NSLineBreakByTruncatingTail;
     button.toolTip = ns(state->projectTooltip);
     button.accessibilityIdentifier = @"native.projectIndicator";
     button.accessibilityLabel = ns(QStringLiteral("Project: %1").arg(state->projectText));
     [button setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [button.widthAnchor constraintLessThanOrEqualToConstant:340].active = YES;
+    [button.widthAnchor constraintLessThanOrEqualToConstant:190].active = YES;
     [button.heightAnchor constraintEqualToConstant:26].active = YES;
     item.view = button;
     return item;
@@ -2778,16 +3036,24 @@ using namespace mitcad::mac;
     button.target = self;
     button.action = @selector(clickAgentIndicator:);
     button.translatesAutoresizingMaskIntoConstraints = NO;
-    button.bordered = NO;
+    button.bezelStyle = NSBezelStyleRounded;
     button.imagePosition = NSImageLeft;
     button.font = [NSFont systemFontOfSize:11 weight:NSFontWeightMedium];
     button.lineBreakMode = NSLineBreakByTruncatingTail;
     button.accessibilityIdentifier = @"native.agentIndicator";
     state->applyAgentStatus(button);
     [button setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [button.widthAnchor constraintLessThanOrEqualToConstant:240].active = YES;
+    [button.widthAnchor constraintLessThanOrEqualToConstant:160].active = YES;
     [button.heightAnchor constraintEqualToConstant:26].active = YES;
-    item.view = button;
+    NSButton* arrow = [NSButton buttonWithImage:symbol(QStringLiteral("chevron.down")) target:self action:@selector(openAgentMenu:)];
+    arrow.bezelStyle = NSBezelStyleRounded;
+    arrow.accessibilityIdentifier = @"native.agentMenu";
+    arrow.accessibilityLabel = @"AI assistants menu";
+    [arrow.widthAnchor constraintEqualToConstant:24].active = YES;
+    [arrow.heightAnchor constraintEqualToConstant:26].active = YES;
+    NSStackView* row = [NSStackView stackViewWithViews:@[button, arrow]];
+    row.spacing = 0;
+    item.view = row;
     return item;
   }
   if ([identifier isEqualToString:sidebarID]) { title = @"Sidebar"; image = @"sidebar.left"; selector = @selector(toggleSidebar:); }
@@ -2851,50 +3117,73 @@ using namespace mitcad::mac;
   if (!cell) {
     cell = [[NSTableCellView alloc] initWithFrame:NSZeroRect];
     cell.identifier = @"modelCell";
-    NSImageView* icon = [[NSImageView alloc] initWithFrame:NSZeroRect];
-    icon.translatesAutoresizingMaskIntoConstraints = NO;
-    cell.imageView = icon;
-    [cell addSubview:icon];
-    NSTextField* title = label(@"");
-    title.delegate = self;
-    title.lineBreakMode = NSLineBreakByTruncatingTail;
-    cell.textField = title;
-    [cell addSubview:title];
-    NSButton* eye = [NSButton buttonWithImage:symbol(QStringLiteral("eye")) target:self action:@selector(toggleTreeVisibility:)];
-    eye.bordered = NO;
-    eye.translatesAutoresizingMaskIntoConstraints = NO;
-    eye.identifier = @"visibility";
-    [cell addSubview:eye];
-    [NSLayoutConstraint activateConstraints:@[
-      [icon.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:2],
-      [icon.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
-      [icon.widthAnchor constraintEqualToConstant:18],
-      [icon.heightAnchor constraintEqualToConstant:18],
-      [title.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:7],
-      [title.trailingAnchor constraintEqualToAnchor:eye.leadingAnchor constant:-4],
-      [title.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
-      [eye.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-4],
-      [eye.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor],
-      [eye.widthAnchor constraintEqualToConstant:20],
-      [eye.heightAnchor constraintEqualToConstant:20]
-    ]];
+      NSStackView* row = [NSStackView stackViewWithViews:@[]];
+      row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+      row.alignment = NSLayoutAttributeCenterY;
+      row.spacing = 4;
+      row.translatesAutoresizingMaskIntoConstraints = NO;
+      [cell addSubview:row];
+      MITCADCommandButton* eye = [MITCADCommandButton buttonWithTitle:@"" target:self action:@selector(toggleTreeVisibility:)];
+      eye.bordered = NO;
+      eye.tag = 1;
+      [eye.widthAnchor constraintEqualToConstant:16].active = YES;
+      [eye.heightAnchor constraintEqualToConstant:18].active = YES;
+      [row addArrangedSubview:eye];
+      NSImageView* icon = [NSImageView new];
+      [icon.widthAnchor constraintEqualToConstant:16].active = YES;
+      [icon.heightAnchor constraintEqualToConstant:16].active = YES;
+      cell.imageView = icon;
+      [row addArrangedSubview:icon];
+      NSTextField* title = label(@"");
+      title.delegate = self;
+      title.lineBreakMode = NSLineBreakByTruncatingMiddle;
+      [title setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+      cell.textField = title;
+      [row addArrangedSubview:title];
+      MITCADCommandButton* active = [MITCADCommandButton buttonWithTitle:@"" target:self action:@selector(activateComponent:)];
+      active.bordered = NO;
+      active.tag = 2;
+      [active.widthAnchor constraintEqualToConstant:16].active = YES;
+      [active.heightAnchor constraintEqualToConstant:18].active = YES;
+      [row addArrangedSubview:active];
+      [NSLayoutConstraint activateConstraints:@[
+        [row.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:2],
+        [row.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-4],
+        [row.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor]
+      ]];
   }
   cell.textField.stringValue = ns(item->title);
   cell.textField.identifier = node.key;
   cell.textField.editable = item->editable && bool(state->callbacks.rename);
   cell.textField.selectable = cell.textField.editable;
   cell.textField.textColor = item->enabled ? NSColor.labelColor : NSColor.tertiaryLabelColor;
-  cell.imageView.image = symbol(item->symbol.isEmpty() ? QStringLiteral("cube") : item->symbol, ns(item->title));
+  NativeMacAction artwork;
+  artwork.icon = item->icon;
+  artwork.label = item->title;
+  if (artwork.icon.isNull()) artwork.symbol = item->symbol;
+  cell.imageView.image = state->actionImage(artwork, 16);
   const bool showsVisibility = item->canToggleVisibility || item->hasVisibility;
   const bool visible = item->hasVisibility ? item->checked : item->visible;
-  for (NSView* child in cell.subviews) if ([child isKindOfClass:NSButton.class]) {
-    NSButton* eye = (NSButton*)child;
-    eye.identifier = node.key;
-    eye.hidden = !showsVisibility;
-    eye.enabled = item->enabled && item->canToggleVisibility;
-    eye.image = symbol(visible ? QStringLiteral("eye") : QStringLiteral("eye.slash"));
-    eye.toolTip = visible ? @"Hide" : @"Show";
-    eye.accessibilityLabel = [NSString stringWithFormat:@"%@ %@", eye.toolTip, ns(item->title)];
+  NSStackView* row = (NSStackView*)cell.subviews.firstObject;
+  for (NSView* child in row.arrangedSubviews) if ([child isKindOfClass:NSButton.class]) {
+    MITCADCommandButton* button = (MITCADCommandButton*)child;
+    button.representedObject = node.key;
+    NativeMacAction drawing;
+    if (button.tag == 1) {
+      button.hidden = !showsVisibility;
+      button.enabled = item->enabled && item->canToggleVisibility;
+      drawing.icon = mitcad::themeIcon(visible ? QStringLiteral("eye") : QStringLiteral("eye-off"));
+      button.toolTip = visible ? @"Hide" : @"Show";
+      button.accessibilityIdentifier = ns(QStringLiteral("native.model.eye.") + item->id);
+    } else {
+      button.hidden = !item->hasActivation;
+      button.enabled = item->enabled;
+      drawing.icon = mitcad::themeIcon(item->active ? QStringLiteral("radio-on") : QStringLiteral("radio-off"));
+      button.toolTip = @"Activate Component";
+      button.accessibilityIdentifier = ns(QStringLiteral("native.model.activate.") + item->id);
+    }
+    button.image = state->actionImage(drawing, 16);
+    button.accessibilityLabel = [NSString stringWithFormat:@"%@ %@", button.toolTip, ns(item->title)];
   }
   cell.alphaValue = showsVisibility && !visible ? 0.5 : 1.0;
   cell.toolTip = ns(item->detail);
@@ -2932,9 +3221,12 @@ using namespace mitcad::mac;
   const auto* item = node ? state->treeItem(node.key) : nullptr;
   if (item && item->editable) [state->tree editColumn:0 row:[state->tree rowForItem:node] withEvent:nil select:YES];
 }
+- (void)activateComponent:(id)sender {
+  if (state && state->callbacks.componentActivated) state->callbacks.componentActivated(qt([(MITCADCommandButton*)sender representedObject]));
+}
 - (void)toggleTreeVisibility:(id)sender {
   if (!state) return;
-  MITCADTreeNode* node = [sender isKindOfClass:NSButton.class] ? state->treeNodes[[sender identifier]] : state->contextNode();
+  MITCADTreeNode* node = [sender isKindOfClass:MITCADCommandButton.class] ? state->treeNodes[[sender representedObject]] : state->contextNode();
   const auto* item = node ? state->treeItem(node.key) : nullptr;
   if (item && item->canToggleVisibility) {
     if (state->callbacks.treeVisibility) state->callbacks.treeVisibility(item->id);

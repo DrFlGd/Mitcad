@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp
-# check-all sources: core/model/src/build core/model/src/api core/vcs/src/library tools/cli tools/ui-timber-lib.sh
+# check-all sources: core/model/src/build core/model-build core/model-api/src core/vcs/src/library tools/cli tools/ui-timber-lib.sh
 # The TIMBER group's Timber tool, its loose members (mitcad#478, mitcad#520),
 # on the members of a wall through the real UI, with a small library of
 # synthetic parts (tools/ui-timber-lib.sh: a 48 x 98 timber member and a

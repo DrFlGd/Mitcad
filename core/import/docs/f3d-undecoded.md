@@ -19,7 +19,7 @@ traces of the import (the backup corpus repeats some designs of
   from its state). A rectangular pattern of a boss, a cut and a chamfer
   between the boss and the plate gave 3979 mm³ less than its state: the
   file's six copies carry the chamfer (755 mm³ each, the five copies
-  added come to about that), Mitcad's copies of the features do not (a
+  added come to about that), MitCad's copies of the features do not (a
   chamfer leaves no tool body to copy; the decoded objects leave
   dressups out). The order of the copies does not matter there (applying
   each element's copies in the features' order gave the same volume). 36
@@ -99,7 +99,7 @@ traces of the import (the backup corpus repeats some designs of
   faces come in parametric, matching their states within 1e-5).
 
   The OCCT port's edge overflow (mitcad#121, patches 0010 to 0012 of
-  [the port](../../../third_party/vcpkg-ports/README.md)) lets the rolling
+  [the port](../../../third_party/vcpkg-ports/docs/fillet-edge-overflow.md#0010-to-0019-edge-overflow)) lets the rolling
   ball run onto the face beyond a narrow face or roll on its far edge
   where the narrow face's contact leaves it along the whole edge (OCCT
   found no start there), and drops the narrow face it consumes. Of the
@@ -231,7 +231,7 @@ traces of the import (the backup corpus repeats some designs of
   0.1 %, 1 off). No item was lost.
 
   The other classes were traced inside OCCT's fillet (mitcad#122, patches
-  0020 to 0023 of [the port](../../../third_party/vcpkg-ports/README.md)).
+  0020 to 0023 of [the port](../../../third_party/vcpkg-ports/docs/fillet-crashes.md#0020-to-0026)).
   Measured the same way, on OCCT with the edge overflow, before and after:
 
   | Class (dressups) | Cause found | File's body before → after |
@@ -256,7 +256,7 @@ traces of the import (the backup corpus repeats some designs of
   the same before and after.
 
   The classes left after mitcad#122 were traced further (mitcad#133, patches
-  0024 to 0026 of [the port](../../../third_party/vcpkg-ports/README.md)), measured
+  0024 to 0026 of [the port](../../../third_party/vcpkg-ports/docs/fillet-crashes.md#0020-to-0026)), measured
   the same way on OCCT with patches 0010 to 0023, before and after:
 
   | Class (dressups) | Cause found | File's body (within 1e-3) before → after |
@@ -279,7 +279,7 @@ traces of the import (the backup corpus repeats some designs of
 
   Where the edge overflow stands at the close of mitcad#121 (the port's
   patches up to 0077, the later rounds' details in the [port's
-  README](../../../third_party/vcpkg-ports/README.md)), measured the same way:
+  notes](../../../third_party/vcpkg-ports/docs/fillet-edge-overflow.md)), measured the same way:
   of the 249, 63 are the file's body (MATCH), 41 within 1e-3 (NEAR), 1 is
   off and 144 (117 distinct inputs) fail. By class (MATCH / NEAR of all):
   the narrow face gone 15 / 12 of 54, partly gone 6 / 13 of 59, kept
@@ -308,7 +308,7 @@ traces of the import (the backup corpus repeats some designs of
 
   The 48 that stop at the corner where a rounding ends were traced one by
   one in mitcad#236 (patches 0130, 0210, 0211, 0280 to 0283, 0290, 0291,
-  0340 to 0342 and 0410 of [the port](../../../third_party/vcpkg-ports/README.md)). Grouped by where the
+  0340 to 0342 and 0410 of [the port](../../../third_party/vcpkg-ports/docs/fillet-corners.md)). Grouped by where the
   corner code stops, with the file's body reached (within 1e-5, the same
   faces) / specs:
 
@@ -326,7 +326,7 @@ traces of the import (the backup corpus repeats some designs of
   after an edge overflow; none covers more than one part.
 
   The others (sixth round, patch 0410 of [the
-  port](../../../third_party/vcpkg-ports/README.md)): the specs that still fail
+  port](../../../third_party/vcpkg-ports/docs/fillet-corners.md#0410-an-end-section-in-the-face-the-rounding-runs-into)): the specs that still fail
   at a corner on main outside the groups of the second to fifth rounds, 17,
   grouped by their first corner failure, with the
   file's body reached / specs:
@@ -344,7 +344,7 @@ traces of the import (the backup corpus repeats some designs of
   Of the 249 specs, only the two above reach 0410's code; the 151 that
   build on main build as before.
 
-  Seventh round (port patch 0490, and Mitcad's face integrals). The specs
+  Seventh round (port patch 0490, and MitCad's face integrals). The specs
   still failing at a corner were run again on main with the failing
   corner's kind and message (`FailedCorner`, 0330). The two-roundings
   corners of the 1 mm rim (3 specs) are stale: their inputs are bodies
@@ -363,7 +363,7 @@ traces of the import (the backup corpus repeats some designs of
   roundings already did at the three other feet), `BRepTools::UVBounds`
   clips the face's bounds at the trim, and the face integrals clamped the
   boundary there (`geometry/analysis/src/face_integral.cpp`), so the
-  rounding removed 12.6 % more than the file's by Mitcad's measure (OCCT's
+  rounding removed 12.6 % more than the file's by MitCad's measure (OCCT's
   agreed with the file). The bounds now widen to the boundary curves'
   extent within the basis surface's bounds. Test: a cylinder cut by an
   inclined plane, its side on a surface trimmed below the cut, in
@@ -443,7 +443,7 @@ traces of the import (the backup corpus repeats some designs of
   The invalid results (27), the contact lines crossing on a face (8) and
   the exceptions in a rounding's computation (14) were traced in
   mitcad#239 (patches 0150 to 0153 of [the
-  port](../../../third_party/vcpkg-ports/README.md)); the first failing step
+  port](../../../third_party/vcpkg-ports/docs/fillet-results.md#0150-to-0153-invalid-or-failed-results)); the first failing step
   is found with a dump of the fillet's data structure before the
   topological build. With the file's body reached (within 1e-5, the same
   faces) / within 1e-3 / specs:
@@ -459,7 +459,7 @@ traces of the import (the backup corpus repeats some designs of
   earlier rounding.
 
   Chamfers wider than a face (mitcad#240, patches 0140 to 0143 of [the
-  port](../../../third_party/vcpkg-ports/README.md)): of the 7 specs (5
+  port](../../../third_party/vcpkg-ports/docs/chamfers.md#0140-to-0149-chamfers-wider-than-a-face-beside-them)): of the 7 specs (5
   distinct inputs), all 7 build now, 4 the file's body (MATCH: a step
   ring's rim chamfered as wide as the ring, the rim in two arcs; a
   hexagonal prism's foot under a disc whose chamfers cross beyond the
@@ -483,7 +483,7 @@ traces of the import (the backup corpus repeats some designs of
   fail (not among the specs, not traced).
 
   Rolling on an edge (mitcad#237, patches 0170 to 0172 of [the
-  port](../../../third_party/vcpkg-ports/README.md)): the blend rolling on
+  port](../../../third_party/vcpkg-ports/docs/fillet-rolling-ball.md#0170-to-0172-the-rolling-ball-and-its-pivot)): the blend rolling on
   an edge is now the rolling ball (as 0075 for two faces), turns about
   the edge's ends, and where its contact leaves its face before the end
   is walked on and cut by the face at the end. Of the 15 specs of the
@@ -507,7 +507,7 @@ traces of the import (the backup corpus repeats some designs of
   the others are as before.
 
   The two constructions round 1 lacked (mitcad#237, second round, patches
-  0390 and 0391 of the [port](../../../third_party/vcpkg-ports/README.md)): a
+  0390 and 0391 of the [port](../../../third_party/vcpkg-ports/docs/fillet-rolling-ball.md#0390-and-0391-the-next-edge-and-two-edges)): a
   ball rolling on an edge that comes to an edge turning towards it touches
   that edge before the vertex and rolls on from there, a piece of the ball
   between; a ball whose faces are both too narrow rests on both far edges
@@ -531,7 +531,7 @@ traces of the import (the backup corpus repeats some designs of
   the same results with 0390 and 0391; none of them reaches the new code.
 
   Third round (mitcad#237, patches 0500 to 0502 of the
-  [port](../../../third_party/vcpkg-ports/README.md)): neither group is a
+  [port](../../../third_party/vcpkg-ports/docs/fillet-rolling-ball.md#0500-to-0503-coaxial-surfaces-flats-and-gaps)): neither group is a
   ball rolling on an edge in the files, and both are now built the files'
   way. Reached the file's body / specs: 5 / 5. The notched rim (2 specs):
   the rounding between the coaxial cylinder and flare is a torus (0500),
@@ -550,7 +550,7 @@ traces of the import (the backup corpus repeats some designs of
   needed for the pole flats.
 
   The walks between two faces were traced further (mitcad#238, patch 0160
-  of the [port](../../../third_party/vcpkg-ports/README.md): a walk over a
+  of the [port](../../../third_party/vcpkg-ports/docs/fillet-walks-and-contours.md#0160-walks-over-a-rounded-rim): a walk over a
   hole whose rim is rounded more sharply than the ball goes on over it on
   the face's own surface and the rim cuts it). Of the 16 (12): in 9 (8)
   the ball would have to pass a face it cannot touch onto the face beyond
@@ -573,7 +573,7 @@ traces of the import (the backup corpus repeats some designs of
 
   The 2 (1) whose start overflowed an earlier rounding all round a closed
   edge (mitcad#261, patch 0190 of the
-  [port](../../../third_party/vcpkg-ports/README.md)) now reach the file's body
+  [port](../../../third_party/vcpkg-ports/docs/fillet-walks-and-contours.md#0190-round-a-closed-stripe)) now reach the file's body
   within 1e-3 (NEAR: 7.3889 mm³ removed where the file removes 7.3902, the
   walked blend in four pieces where the file has one torus). The earlier
   rounding vanishes once its neighbours are cut; what kept it was the
@@ -586,7 +586,7 @@ traces of the import (the backup corpus repeats some designs of
   their end corners).
 
   The ball turning about a standing contact (mitcad#239, patch 0200 of the
-  [port](../../../third_party/vcpkg-ports/README.md)): where a rounding runs
+  [port](../../../third_party/vcpkg-ports/docs/fillet-results.md#0200-a-walked-blend-about-a-standing-contact)): where a rounding runs
   past a corner rounded with the ball's own radius, its contact on the
   face across the corner stands still and the blend is a piece of the
   ball's sphere, as the file's sphere patches. On stored (spline) faces
@@ -613,7 +613,7 @@ traces of the import (the backup corpus repeats some designs of
 
   Two of those groups were traced further (mitcad#239, third round,
   patches 0240 and 0241 of the
-  [port](../../../third_party/vcpkg-ports/README.md)). Both are one part, an
+  [port](../../../third_party/vcpkg-ports/docs/fillet-results.md#0240-and-0241-the-third-round)). Both are one part, an
   outline of arcs of one cylinder whose rim is broken at its tips by small
   V notches (0.4 wide, 0.1 deep) whose edges are not rounded, the rounding
   (0.3 and 0.5) wider than the notch is deep: its contact on the top passes
@@ -636,14 +636,14 @@ traces of the import (the backup corpus repeats some designs of
   contact's face) give the same results with 0240 and 0241.
 
   The second group's missing arc (mitcad#305, mitcad#307, patch 0260 of
-  the [port](../../../third_party/vcpkg-ports/README.md)): the decoded edge
+  the [port](../../../third_party/vcpkg-ports/docs/fillet-walks-and-contours.md#0260-a-fillet-carried-across-a-notch-in-its-rim)): the decoded edge
   list is the file's own (both references the arc seemed to need name, in
   the file, edges the list already holds). The file's rounding carries on
   from the lower outline's left arc across the three top edges of a small
   tapered hole (0.28 to 0.29 long, 0.25 deep, 0.57 wide at the rim; the
   radius 0.5) onto the right arc between the same top face and the same
   cylinder: one torus face covers both arcs and the notch's edges, which no
-  input names. Mitcad's fillets now carry a contour of constant radius on
+  input names. MitCad's fillets now carry a contour of constant radius on
   across such a notch (its edges within the rounding's contact on the top
   and within the ball's diameter of the contour's end) onto the edge beyond
   it on the same line or circle between faces of the same surfaces; 0241
@@ -657,7 +657,7 @@ traces of the import (the backup corpus repeats some designs of
 
   The group of contact lines crossing on a face was taken up again
   (mitcad#239, fourth round, patches 0270 and 0271 of the
-  [port](../../../third_party/vcpkg-ports/README.md)), on synthetic bodies
+  [port](../../../third_party/vcpkg-ports/docs/fillet-results.md#0270-and-0271-roundings-meeting-on-one-contact-line)), on synthetic bodies
   built after the classes above; the specs themselves were not rerun in
   this round.
   - Contacts coinciding where a rib is exactly two radii wide and its top
@@ -685,7 +685,7 @@ traces of the import (the backup corpus repeats some designs of
     contact ends on another's (3, one part), not reproduced.
 
   Fifth round (mitcad#239, patch 0300 of the
-  [port](../../../third_party/vcpkg-ports/README.md)), measured the same way on
+  [port](../../../third_party/vcpkg-ports/docs/fillet-results.md#0300-a-prolonged-end-edge-across-a-seam)), measured the same way on
   the 249 with the port as of this round, before and after: MATCH 88, NEAR
   51 → 54, OFF 1, failing 109 → 106; every other spec gives the same result
   line. The three are one part (a rib of radius 2.5 along a rod of 4.5,
@@ -765,7 +765,8 @@ traces of the import (the backup corpus repeats some designs of
 ## The published format descriptions (mitcad#154)
 
 Two public descriptions of the `.f3d` streams were compared with what
-`core/f3d/src/design/` reads: the cadmpeg project's format description
+`core/f3d-decode/src/` and `core/f3d-design/src/` read: the cadmpeg
+project's format description
 and its offset tables (CC BY 4.0, <https://github.com/cadmpeg/cadmpeg>,
 `docs/formats/f3d.md`, `docs/layouts/f3d.md`, `docs/formats/asm.md`) and
 the ezf3d project's format notes (MIT licence, copyright its authors,
@@ -789,7 +790,7 @@ it ([*What the history settles*](f3d-history.md#what-the-history-settles)).
 
 | What the descriptions give (source) | Decoder | Notes |
 |---|---|---|
-| Container: ZIP with stored, deflated and zstd entries, `.f3z` packages (both) | read | `core/f3d/src/container.rs`; `.f3z` members as separate designs |
+| Container: ZIP with stored, deflated and zstd entries, `.f3z` packages (both) | read | `core/f3d-file/src/container.rs`; `.f3z` members as separate designs |
 | Segment registry `Manifest.dat`, external references `RedirectionsStream.dat`, component reference slot (cadmpeg) | not read | the import names inserted documents' occurrences from the design stream only |
 | `MetaStream.dat`: header, type table (GUID, base GUID, version, module, ids), primary and secondary record index, named ids, version contexts, property block (both) | read | the whole stream (`MetaStream::parse`); the secondary index is our sub-chunk table, the version contexts our external references, the property block our feature versions; the two `u32` after the module name, which we called a segment version, are a segment type code by cadmpeg (1 design) |
 | Reference encoding: present flag, id, same/other segment, cross-document form with link name and version; the inline type GUID of one writer generation (cadmpeg) | read | `stream::ref_at`; the cross-document form as an assembly context (`Ref::context`) |
@@ -806,7 +807,7 @@ it ([*What the history settles*](f3d-history.md#what-the-history-settles)).
 | Sketch relations: member runs, relation ordinals, constraint bits (cadmpeg) | read | constraint types by bit (format study); the ordinal meaning is new to us and not needed |
 | Dimension frames (paired, counted, null-locus, annotated) and the rules that bind a parameter to geometry by measurement (cadmpeg) | read differently | we read each dimension object's entities and holder directly; the measurement rules are the description's way to recover what we read; a driven dimension has a null holder reference, read since mitcad#178 |
 | Sketch container, member runs, placement matrix, visibility flag (cadmpeg) | read | the transform object; the light bulb (mitcad#6) |
-| Profile regions: loops by endpoint incidence, containment, arrangement (both) | read differently | Mitcad computes the regions itself; the decoder reads the selected loops (`_f3d_profile_loops`, mitcad#96) |
+| Profile regions: loops by endpoint incidence, containment, arrangement (both) | read differently | MitCad computes the regions itself; the decoder reads the selected loops (`_f3d_profile_loops`, mitcad#96) |
 | Construction recipes (body, face, bounded face, edge, vertex), generic tag attributes on the B-rep, recipe resolution against the history (cadmpeg) | read | `recipe.rs`, `names.rs`, `inputs.rs`; vertex recipes not read |
 | Parameter scopes: state identities, ordered reference table, family name and ordinal (cadmpeg) | read differently | our item tail (result number, base name, index, sub-items, state bytes) |
 | Extrude: operation, direction (one side, two sides, symmetric), face-extend option, direction reversal, geometry kind, start support, profile normal, per-side extent kinds (both; ezf3d the first three) | read; **solid, per-side kinds, thin-wall block and the intersect code now** | the reversal is our flag (mitcad#96), the normal our stored vector; `_f3d.extrude.solid`, `start`, `sides` (mitcad#154): every corpus extrusion where read is a solid, sides agree with the parameters and slots; corpora have no "up to next"; `isSolid` checked on 243 ref. model extrusions (4 surfaces); `thin`, `thin_location`, `thin_holder` (mitcad#186: see [*Extrusion options from one-option variants*](f3d-learning.md#extrusion-options-from-one-option-variants-mitcad186)) |
@@ -902,7 +903,7 @@ kernel's.
 | Offset faces whose faces were not decoded (2 + 2) | yes | read now |
 | Cylinder and sphere primitives (6 + 2) | operation and sizes yes; the placement matrix does not place the corpus' primitives | placement read in the frame of the plane (mitcad#25): 4 of 8 come in |
 | Coils (3) | yes (operation, handedness, extent kind, section) | read (mitcad#25) |
-| Drafts (1), moved faces, embosses, sheet metal | drafts yes; sheet metal yes; embosses yes; the others no | embosses read (mitcad#458: both corpus items); drafts not done (Mitcad's draft exists; one corpus item) |
+| Drafts (1), moved faces, embosses, sheet metal | drafts yes; sheet metal yes; embosses yes; the others no | embosses read (mitcad#458: both corpus items); drafts not done (MitCad's draft exists; one corpus item) |
 | Unknown item classes (`?…`) | — | none in the corpora |
 
 ### Coverage before and after
@@ -1104,12 +1105,12 @@ Found by importing real designs one at a time; each rule is general.
 - **Offsets with round corners**: an offset of a chain whose offset curves
   include arcs of the offset distance about a vertex of the chain (the
   corners the file rounds where the chain turns away from the offset side)
-  has no copy of each curve alone: Mitcad's exact offset of lines and arcs
+  has no copy of each curve alone: MitCad's exact offset of lines and arcs
   meets its curves at the corners. It is imported as the derived offset
   (computed from the source chain, as an offset of ellipses and splines is):
   the chain in the file's order, each curve's offset, and the corner arcs
   by the join they close (the offsets of the chain's curves `join` and
-  `join + 1`). Nothing else can constrain the computed curves. Mitcad
+  `join + 1`). Nothing else can constrain the computed curves. MitCad
   rounds a corner where the chain turns away from the offset side and trims
   it where the chain turns toward it; where the file does otherwise (in the
   two designs seen, one corner is extended to meet the next offset curve

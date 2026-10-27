@@ -3,7 +3,7 @@
 
 // Save As Mesh (mitcad#734): the bodies of what was chosen in a body's or
 // a component's context menu (the browser's or the view's) to mesh files,
-// written by the model's `export` (core/model/src/api/commands.md, "Save As
+// written by the model's `export` (core/model-api/src/commands.md, "Save As
 // Mesh"). This is what is saved and how the files are named, in plain Qt
 // Core; MainWindowSaveAsMesh.cpp asks and writes.
 

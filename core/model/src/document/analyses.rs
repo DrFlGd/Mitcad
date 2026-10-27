@@ -237,7 +237,7 @@ impl PrintAnalysis {
 }
 
 /// Why an overhang angle (degrees from the vertical) is not one.
-pub(crate) fn check_overhang_angle(angle: f64) -> Result<(), String> {
+pub fn check_overhang_angle(angle: f64) -> Result<(), String> {
     if (0.0..=90.0).contains(&angle) {
         Ok(())
     } else {
@@ -248,7 +248,7 @@ pub(crate) fn check_overhang_angle(angle: f64) -> Result<(), String> {
 }
 
 /// Why a minimum wall (mm) is not one.
-pub(crate) fn check_minimum_wall(minimum: f64) -> Result<(), String> {
+pub fn check_minimum_wall(minimum: f64) -> Result<(), String> {
     if minimum > 0.0 && minimum.is_finite() {
         Ok(())
     } else {
@@ -259,7 +259,7 @@ pub(crate) fn check_minimum_wall(minimum: f64) -> Result<(), String> {
 }
 
 /// A material of the library by its id (`pla`) or name (`PLA Plastic`).
-pub(crate) fn print_material(material: &str) -> Result<&'static analysis::Material, String> {
+pub fn print_material(material: &str) -> Result<&'static analysis::Material, String> {
     analysis::material(material)
         .or_else(|| {
             analysis::MATERIALS
@@ -325,7 +325,7 @@ impl Analysis {
 impl<K: Kernel> Document<K> {
     /// Resolve an analysis reference in design coordinates. Modelling
     /// features still use resolve_plane in their own component coordinates.
-    pub(crate) fn analysis_plane(
+    pub fn analysis_plane(
         &self,
         reference: &GeomRef,
         occurrence: Option<&OccurrencePath>,
@@ -340,7 +340,7 @@ impl<K: Kernel> Document<K> {
         })
     }
 
-    pub(crate) fn analysis_plane_occurrence(
+    pub fn analysis_plane_occurrence(
         &self,
         reference: &GeomRef,
         occurrence: Option<&OccurrencePath>,
@@ -397,7 +397,7 @@ impl<K: Kernel> Document<K> {
     /// The `analyses` query: each analysis in its file form, with a
     /// section's plane at the marker (`section`) or why it is not there
     /// (`error`).
-    pub(crate) fn analyses_json(&self) -> Value {
+    pub fn analyses_json(&self) -> Value {
         Value::Array(
             self.state
                 .analyses
@@ -444,7 +444,7 @@ impl<K: Kernel> Document<K> {
 
     /// Where each body is printed from: its first shown placement in the
     /// design, else its first, else its own coordinates (mitcad#620).
-    pub(crate) fn print_placements(&self, bodies: &[BodyUid]) -> Vec<Transform> {
+    pub fn print_placements(&self, bodies: &[BodyUid]) -> Vec<Transform> {
         let instances = self.instances();
         bodies
             .iter()
@@ -462,7 +462,7 @@ impl<K: Kernel> Document<K> {
     /// The print direction (unit, towards the bed) and a point of the bed
     /// that a bed face gives, in design coordinates: the face's outward
     /// normal and its plane, where its body is printed from.
-    pub(crate) fn print_bed(&self, bed_face: &GeomRef) -> Result<(Vec3, Vec3), String> {
+    pub fn print_bed(&self, bed_face: &GeomRef) -> Result<(Vec3, Vec3), String> {
         let GeomRef::Face { body, .. } = bed_face else {
             return Err("the bed face must be a planar face of a body".to_owned());
         };

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-expr"
+description = "Parameter expressions with units and the parameter table for Mitcad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_expr"
+
+# No dependencies: the model re-exports the crate as `mitcad_model::expr`.
+[dependencies]

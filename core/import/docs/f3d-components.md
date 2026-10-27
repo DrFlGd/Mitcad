@@ -81,9 +81,9 @@ feature tools and sketch faces, which stay out. Occurrence items and
 other assembly items change no body and are skipped (occurrence
 placements come from the tree; *Items without a translation* below);
 joints, as-built joints, joint origins and ground items come in as
-Mitcad's (*Joints* below).
+MitCad's (*Joints* below).
 
-**Across components.** Mitcad's features work only on their own
+**Across components.** MitCad's features work only on their own
 component's bodies, so a feature of the file that changes another
 component's bodies (the file's assembly context: a part cut by a sketch of
 the assembly) goes into the component whose bodies it changes, and what it
@@ -125,7 +125,7 @@ changing that transform. The decoder reads the occurrence's placement
 after each item that placed it (mitcad#81), so the file places an
 occurrence at the end of its timeline at its last one (else at its last
 captured position, else at its stored transform), and that is the
-occurrence's own placement in Mitcad; the captured positions also come in
+occurrence's own placement in MitCad; the captured positions also come in
 as `capture_position` features at their points of the timeline
 (*Joints*). The history's states are in each component's own
 coordinates, so the matching does not depend on placements; only the
@@ -133,14 +133,14 @@ copies above do. Those take the placements the file has at the item's
 point of the timeline (`Captures::placement_at`, mitcad#86): where the
 items before it put the occurrence (else, without its placements, its
 last captured position before the item, else its stored transform), not
-where the occurrence starts in Mitcad. Where a joint or a move places an
+where the occurrence starts in MitCad. Where a joint or a move places an
 occurrence elsewhere at an item's point in the timeline than the
 placements say, the copy does not follow it and the item falls back.
 Joints come in only where they hold where the file places the
 occurrences (*Joints*); occurrence moves are not replayed ([*Limits*](f3d.md#limits)).
 
 The placements are given per path, in the root component. An occurrence
-inside a component placed several times is one occurrence in Mitcad (in
+inside a component placed several times is one occurrence in MitCad (in
 that component) but has a path per placement of its parent: each of its
 steps is made relative to the parent's placement along the step's own path
 at the step's point of the timeline (`Captures::path_steps`), and those are
@@ -161,7 +161,7 @@ their files are kept beside it: next to `<design> vN.f3d` a folder
 version the design uses (`<name> v<version>.f3d`), for the whole tree of
 references, and `references.json`, whose tree maps each document's
 version id (the URN the design names it by) to its file (format:
-`core/model/src/api/commands.md`, *Components of other documents*).
+`core/model-api/src/commands.md`, *Components of other documents*).
 
 **What the design stores about them** (the decoder's reading,
 `core/import/SCHEMA.md` §5.2):
@@ -330,7 +330,7 @@ as before: joints on the origin, sides inside left out).
 
 **The report** (`references`): per document its URN, name, version,
 file and how it was found, `status` (`linked`, `missing`, `skipped`,
-`failed`), a note, Mitcad's components, the occurrences, its own import's
+`failed`), a note, MitCad's components, the occurrences, its own import's
 items by outcome and its own references; `components.linked` counts the
 occurrences filled, `components.placed_inside` the captured positions
 inside them that placed copied occurrences.
@@ -454,7 +454,7 @@ document the design refers to (*Components of other documents* above):
 found, imported from its own file and copied into the design, here as a
 hidden occurrence in the item's component at that placement (the levels
 the body's component sits at inside the copy taken off). The item becomes
-Mitcad's `derive` feature (`commands.md`, *derive*): a linked copy of the
+MitCad's `derive` feature (`commands.md`, *derive*): a linked copy of the
 copy's body that its own import matched to the body object (its
 `_f3d.appearance` body records, `DesignReport::body_entities`), checked
 against the file's history like any other item. A derive whose record
@@ -773,7 +773,7 @@ none got worse (the final bodies of all still agree with the file's).
   in direction one, with 5 and 11 instances; none is in direction two). A
   symmetric direction has the originals as its middle instance, so the
   copies lie on both sides: `patterns[].symmetric` in the sketch (model,
-  [commands.md](../../model/src/api/commands.md), *sketch*), the copies'
+  [commands.md](../../model-api/src/commands.md), *sketch*), the copies'
   indices counting from the end against the direction. An even count
   stays an error. 3 imports' sketches came in whole.
 - **An offset without curves** (the stored list of its offset curves is
@@ -784,7 +784,7 @@ none got worse (the final bodies of all still agree with the file's).
 
 `joints.rs` translates what the decoder reads of joints, as-built joints,
 joint origins, rigid groups and ground items (mitcad#55, mitcad#81,
-SCHEMA.md §5.3) into Mitcad's joint features (`commands.md`, *Joints*),
+SCHEMA.md §5.3) into MitCad's joint features (`commands.md`, *Joints*),
 and `captures.rs` the captured positions (mitcad#75). Their occurrence
 paths (object ids from the joint's component down) become paths of the
 occurrences the tree made, those of components of other documents
@@ -804,17 +804,17 @@ ends (1e-6 of the size, 1e-7 in rotation), else the definition is taken
 back and the next one tried.
 
 - **Joints.** Side one is origin `a` (it moves onto side two, as `a` does
-  onto `b`), side two `b`. The file's relation is Mitcad's `frame_a =
+  onto `b`), side two `b`. The file's relation is MitCad's `frame_a =
   frame_b · motion(values) · Rz(angle) · Tz(offset) · flip` with the
   angle and z offset parameters as they are, `flip` the file's flip (its
   `opposed` byte: the frames' z axes opposed), and the x and y offsets
   moving `b`'s origin within its plane (numbers). The joint test model
   (the reference model `joint_kinds` under `MITCAD_F3D_MODELS`: every kind at known values, flipped and
-  not, mitcad#81) settles the senses: Mitcad's values are the file's
+  not, mitcad#81) settles the senses: MitCad's values are the file's
   (turns, slides along x, y or z by the motion's slot, a cylindrical
   joint's turn and slide, a pin-slot's turn and slide along x, a planar
   joint's x and y slides and turn); a ball joint's file values are
-  `Rz(pitch) · Rx(yaw) · Rz(roll)`, Mitcad's `Rz · Ry · Rx`, so its
+  `Rz(pitch) · Rx(yaw) · Rz(roll)`, MitCad's `Rz · Ry · Rx`, so its
   values differ while the placements agree.
 - **Checked before it is added** (mitcad#87). The values the motions have
   where the file places the occurrences (at the marker, else right after
@@ -867,7 +867,7 @@ back and the next one tried.
   frame as their motion frame, on geometry of occurrence two's component
   as for a joint's sides, else of occurrence one's, else fixed on
   occurrence two; their limits where the recorded placement is the
-  file's (Mitcad's values are 0 there) and the limits hold 0, with 0 as
+  file's (MitCad's values are 0 there) and the limits hold 0, with 0 as
   the position where the rest value is another.
 - **Rigid groups** (mitcad#81; the file stores them as as-built joints of
   motion type 11). A `rigid_group` of the occurrences of the group's
@@ -896,7 +896,7 @@ back and the next one tried.
   occurrence has) is the one occurrence placing the component the next
   level sits in; its id then stands for that occurrence in the item's
   other paths. Positions inside components of other documents and of
-  grounded occurrences (Mitcad does not move those) are left out with a
+  grounded occurrences (MitCad does not move those) are left out with a
   note (`partial`). The features are not checked against the end
   placements: they are the file's placements at their points.
 
@@ -930,8 +930,8 @@ name).
 ## Assembly relationships
 
 `relationships.rs` (mitcad#155) brings the file's assembly relationships
-in as Mitcad's constraint sets (`commands.md`, *Assembly constraints*):
-what the decoder reads of them (`core/f3d/src/design/build/relationships.rs`,
+in as MitCad's constraint sets (`commands.md`, *Assembly constraints*):
+what the decoder reads of them (`core/f3d-design/src/build/relationships.rs`,
 SCHEMA.md §5.3 `GeometricRelationship`, `TangentRelationship`).
 
 **What the file stores** *(read from the corpora's relationship items: the
@@ -974,7 +974,7 @@ frame (the item `partial`). A side on a component of another document
 (an empty component here) is fixed geometry of it with the file's frame;
 a circle there has no edge to go on and the row is left out, as is a
 side inside a component of another document. `flip` and the sign of the
-offset come from the references as Mitcad resolves them where the file
+offset come from the references as MitCad resolves them where the file
 places the occurrences (the `constraint_row` query's measures): planes,
 circles and axes must be parallel there (within 1e-5 rad) and the offset
 the parameter or its negative (within 1e-4 mm); the offset stays the
@@ -993,7 +993,7 @@ left out by reason (`relationships`).
 **Tangent relationships** (the decoder's `TangentRelationship`, a contact
 between two bodies). A `tangent` row between the faces of the sides'
 components that the file's points lie on, where they are planar,
-cylindrical or spherical (Mitcad's tangent rows take those), `flip`
+cylindrical or spherical (MitCad's tangent rows take those), `flip`
 tried for a contact inside; else left out with the reason. The three of
 the corpora pick a plane and a cylinder: in one design they touch where
 the file places the occurrences right after the item (gap 0), in the
@@ -1017,7 +1017,7 @@ of the size).
 ## Items without a translation
 
 The decoder names timeline items whose own data it does not read by
-their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
+their class (`core/f3d-decode/src/classes.rs`, `ITEM_TYPES` and
 `ITEM_CLASSES`), and the report says what each does:
 
 - **No geometry**, skipped at once (they never wait for a fallback):
@@ -1027,7 +1027,7 @@ their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
   (`CopyPasteOccurrence`, `DerivedInstance`), patterns of occurrences
   (`RectangularOccurrencePattern`, `CircularOccurrencePattern`: their
   copies are occurrences of the tree, each placed by its stored transform;
-  Mitcad has no pattern of occurrences, so they do not follow the
+  MitCad has no pattern of occurrences, so they do not follow the
   pattern's quantities and distances), motion links and contact sets
   (assembly relationships and tangent relationships come in as
   constraint sets: *Assembly relationships*), assembly contexts
@@ -1040,31 +1040,31 @@ their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
   electronics boards
   (`PCBFeature`) and drafts
   (`DraftFeature`), whose inputs are not decoded; components mirrored into new ones (`MirrorComponent`).
-  Moved faces (`MoveFaceFeature`, mitcad#343) come in as Mitcad's
+  Moved faces (`MoveFaceFeature`, mitcad#343) come in as MitCad's
   `move_face`: the decoder reads their faces (named faces, found in the
   history at the item's place) and their motion (the rigid matrix of their
   transform input, as a move's), one `move_face` per body with a free
   move's matrix.
-  Embosses (`EmbossFeature`, mitcad#458) come in as Mitcad's `emboss`:
+  Embosses (`EmbossFeature`, mitcad#458) come in as MitCad's `emboss`:
   the decoder reads their profiles (their loops, as an extrusion's), the
   face and the parameters by role (`Depth`, negative for a sunk emboss;
   `Horizontal Distance`, `Vertical Distance` and `Rotation Angle`, the
   profiles moved on the face); the import maps the profiles as an
   extrusion's, the face by its point and names, and refuses profiles
-  moved or turned on the face (no Mitcad counterpart). Both embosses of
+  moved or turned on the face (no MitCad counterpart). Both embosses of
   the backup corpus (`547b68ad` item 29, `d73c1f69` item 15, planar,
   sunk) are parametric and verified against the history.
-  Bodies derived from other designs (`DerivedContext`) come in as Mitcad's
+  Bodies derived from other designs (`DerivedContext`) come in as MitCad's
   derives where the documents they come from are found (*Derived designs*
   below), else the history states stand in. Bodies derived from another
   design by the derive's base class (`ExternalDerived`, mitcad#641: its
   record is not `DerivedContext`'s) are static in the source too, as the
   design they follow is not in the file: the history state of their base
   feature stands in, with that reason. Copies and cuts of bodies
-  (`CopyPasteBodies`) come in as Mitcad's except a cut whose body the file
+  (`CopyPasteBodies`) come in as MitCad's except a cut whose body the file
   lost. Bodies aligned by geometry (`AlignFeature`, mitcad#641) come in as
   moves by the motion they made ([*Grid-unit designs*](f3d-history.md#grid-unit-designs-pastes-aligns-counts-and-start-faces-mitcad641)). Bodies moved into a new component
-  (`ComponentFromBodies`) come in as Mitcad's where the history settles
+  (`ComponentFromBodies`) come in as MitCad's where the history settles
   them (*Components*), else so.
 - Lofts of another class are `LoftFeature`s, translated (*Sweeps, pipes
   and lofts*); points of another class are `ConstructionPoint`s, skipped

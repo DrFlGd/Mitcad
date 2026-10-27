@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/MainWindow.cpp core/model/src/api/components.rs tools/cli
+# check-all sources: app/browser app/MainWindow.cpp core/model-api/src/components.rs tools/cli
 # The browser's Collapse All (mitcad#312), through the real UI, on a
 # synthetic design with several branches and four nested levels
 # (Root > Sketches > Sketch1 > Extrude1):
@@ -193,7 +193,7 @@ ui_sync
 sed -n '/^Opened with the root active/,$p' "$UI_LOG" | grep "^View inactive ghosts: " | grep -qv ": none$" && ui_fail "inactive components are ghosts: the root is not active"
 echo "ok   no ghosts"
 case "$(xdotool getwindowname "$UI_WINDOW")" in
-*"* - Mitcad") ui_fail "the window title marks the design modified" ;;
+*"* - MitCad") ui_fail "the window title marks the design modified" ;;
 esac
 echo "ok   the window title marks no change"
 ui_mark

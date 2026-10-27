@@ -991,7 +991,8 @@ QVector<BrowserPanel::PresentationRow> BrowserPanel::presentationRows() const {
                                   const QString& parent) -> void {
     const BrowserNode node = nodeOf(item);
     const QString key = keyOf(node);
-    rows.append({key, parent, node, item->toolTip(0)});
+    rows.append({key, parent, node, item->toolTip(0), item->icon(0), item->isExpanded(),
+                 item->data(kName, kRadioRole).isValid(), item->data(kName, kRadioRole).toBool()});
     for (int index = 0; index < item->childCount(); ++index) {
       self(self, item->child(index), key);
     }
@@ -1000,6 +1001,17 @@ QVector<BrowserPanel::PresentationRow> BrowserPanel::presentationRows() const {
     append(append, m_tree->topLevelItem(index), QString());
   }
   return rows;
+}
+
+void BrowserPanel::setPresentationExpanded(const QString& key, bool expanded) {
+  for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
+    if (keyOf(nodeOf(*it)) != key) continue;
+    if ((*it)->isExpanded() != expanded) {
+      (*it)->setExpanded(expanded);
+      emit contentHeightChanged();
+    }
+    return;
+  }
 }
 
 QString BrowserPanel::keyOf(const BrowserNode& node) const {
@@ -1062,6 +1074,10 @@ QString BrowserPanel::keyOf(const BrowserNode& node) const {
     return QStringLiteral("drawings") + at;
   case BrowserNode::Type::Drawing:
     return QStringLiteral("drawing:") + node.uid + at;
+  case BrowserNode::Type::ImageReferences:
+    return QStringLiteral("images");
+  case BrowserNode::Type::ImageReference:
+    return QStringLiteral("image:") + node.uid;
   case BrowserNode::Type::None:
     break;
   }
@@ -1090,6 +1106,7 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
                          node.type == BrowserNode::Type::MotionStudy ||
                          node.type == BrowserNode::Type::ContactSet ||
                          node.type == BrowserNode::Type::Drawing ||
+                         node.type == BrowserNode::Type::ImageReference ||
                          (node.type == BrowserNode::Type::NamedView &&
                           node.uid.startsWith(QStringLiteral("named:")));
   if (renamable) {
@@ -1102,7 +1119,8 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
                     node.type == BrowserNode::Type::Construction || node.type == BrowserNode::Type::Analyses ||
                     node.type == BrowserNode::Type::Joints || node.type == BrowserNode::Type::MotionStudies ||
                     node.type == BrowserNode::Type::ContactSets || node.type == BrowserNode::Type::MotionLinks ||
-                    node.type == BrowserNode::Type::Measurements || node.type == BrowserNode::Type::Drawings;
+                    node.type == BrowserNode::Type::Measurements || node.type == BrowserNode::Type::Drawings ||
+                    node.type == BrowserNode::Type::ImageReferences;
   item->setExpanded(m_expanded.value(key, open));
   return item;
 }
@@ -1621,6 +1639,41 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
                                      print ? QStringLiteral("print-analysis") : QStringLiteral("section-analysis"),
                                      error.isEmpty() ? QStringLiteral("%1: %2").arg(row.name, kind)
                                                      : QStringLiteral("%1: %2").arg(row.name, error));
+      if (!error.isEmpty()) {
+        item->setForeground(kName, kFailedText);
+      } else if (!row.visible) {
+        item->setForeground(kName, kHiddenText);
+      }
+    }
+  }
+
+  // Image references (mitcad#782): the root's Images folder, a row per
+  // image with its light bulb; its tooltip names the file and the size.
+  if (!snapshot.imageReferences.isEmpty()) {
+    BrowserNode folder;
+    folder.type = BrowserNode::Type::ImageReferences;
+    folder.component = rootNode.uid;
+    folder.name = tr("Images");
+    QTreeWidgetItem* images = addRow(rootItem, folder, QStringLiteral("folder"));
+    for (const QJsonValue& value : snapshot.imageReferences) {
+      const QJsonObject image = value.toObject();
+      BrowserNode row;
+      row.type = BrowserNode::Type::ImageReference;
+      row.component = rootNode.uid;
+      row.uid = image.value(QStringLiteral("name")).toString();
+      row.name = row.uid;
+      row.visible = image.value(QStringLiteral("visible")).toBool(true);
+      row.hasEye = true;
+      const QString error = image.value(QStringLiteral("error")).toString();
+      const QJsonArray size = image.value(QStringLiteral("size")).toArray();
+      const QString file = image.value(QStringLiteral("file_name")).toString();
+      const QString about = tr("%1 x %2 mm")
+                                .arg(QString::number(size.at(0).toDouble(), 'f', 1),
+                                     QString::number(size.at(1).toDouble(), 'f', 1));
+      const QString tooltip = !error.isEmpty() ? QStringLiteral("%1: %2").arg(row.name, error)
+                              : file.isEmpty() ? QStringLiteral("%1: %2").arg(row.name, about)
+                                               : QStringLiteral("%1: %2, %3").arg(row.name, file, about);
+      QTreeWidgetItem* item = addRow(images, row, QStringLiteral("image-reference"), tooltip);
       if (!error.isEmpty()) {
         item->setForeground(kName, kFailedText);
       } else if (!row.visible) {

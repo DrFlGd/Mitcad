@@ -202,7 +202,7 @@
 //!
 //! A sketch stores its entities with their last solved positions (the
 //! start of the next solve), constraints, dimensions, linked projections
-//! and texts (`core/model/src/api/commands.md`). Sketches of earlier files
+//! and texts (`core/model-api/src/commands.md`). Sketches of earlier files
 //! (`shapes`: rectangles and circles, in version 1 and early version 2) are
 //! converted to entities, constraints and dimensions with the same curve
 //! ids and parameters, so region keys and face names keep resolving.
@@ -488,7 +488,8 @@ impl<K: Kernel> Document<K> {
 
 /// The definition state of a design file (version 1, 2 or 3) and what
 /// loading changed. B-rep references stay unresolved.
-pub(crate) fn load_state(json: &str) -> Result<(DocState, Vec<String>), FileError> {
+#[doc(hidden)]
+pub fn load_state(json: &str) -> Result<(DocState, Vec<String>), FileError> {
     // Some Windows editors start UTF-8 text with a byte order mark.
     let json = json.strip_prefix('\u{feff}').unwrap_or(json);
     let value: serde_json::Value =
@@ -752,5 +753,3 @@ fn check_header(value: &serde_json::Value) -> Result<u64, FileError> {
 
 #[cfg(test)]
 mod project_tests;
-#[cfg(test)]
-mod tests;

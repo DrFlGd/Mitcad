@@ -7,7 +7,7 @@ are SolidCraft's own, adapted here. The cam geometry of motion links
 (`cam.rs`, mitcad#466: where a follower touches a cam's profile over a
 turn) is adapted from SolidCraft too and built into `core/model`
 (`motion_links.rs`). The plastic rule library (`plastic.rs`, mitcad#459)
-is SolidCraft's too, as data the import maps onto Mitcad's plastic
+is SolidCraft's too, as data the import maps onto MitCad's plastic
 rules.
 
 - Source: https://github.com/tangency-labs/solidcraft, commit
@@ -38,20 +38,20 @@ rules.
   hand-written steps up to format 22, no steps for formats 23 to 27 (their
   changes need no rewrite), then the pending changes' steps.
 - `name_all_feature_inputs` works on the design's JSON; the number of
-  inputs of a feature comes from Mitcad's port of SolidCraft's feature
+  inputs of a feature comes from MitCad's port of SolidCraft's feature
   walk (`core/solidcraft/src/inputs.rs`).
 - `cam.rs`: points are `[f64; 2]` with a small vector type of its own,
   errors are `String`s, and the setup (the profile polygon, the
-  follower's line or pivot and arm, the signs) comes from Mitcad's frames
+  follower's line or pivot and arm, the signs) comes from MitCad's frames
   and joints (`CamSetup`); the table's interpolation is the joint
   solver's (`mitcad_solver::Relation::Table`), not SolidCraft's `lift_at`.
-- `mesh_convert.rs`: the mesh is Mitcad's `TriangleMesh`, errors are
+- `mesh_convert.rs`: the mesh is MitCad's `TriangleMesh`, errors are
   `String`s, and the result is the section (a frame, the height, regions of
   polygons and circles), which the Convert Mesh feature extrudes with
-  Mitcad's kernel and names; the rebuilt volume compared with the mesh's is
+  MitCad's kernel and names; the rebuilt volume compared with the mesh's is
   the section's area times the height, and the fitted loops' nesting is
   certified geometrically (raw loops may not meet, a fitted circle may not
   reach across another loop) instead of by SolidCraft's planar booleans.
 - `plastic.rs` gives the rule library as the design file's JSON form of a
   rule (the form of a design's own rules), which the import maps onto
-  Mitcad's plastic rules.
+  MitCad's plastic rules.

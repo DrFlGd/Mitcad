@@ -8,7 +8,7 @@
 // type and (on disk) by document, the largest first; where each result of
 // the last recompute came from and how long it took; and the process's
 // memory. Clear Memory, Clear Disk and Export Report. The numbers are the
-// model's `cache` query (core/model/src/api/commands.md).
+// model's `cache` query (core/model-api/src/commands.md).
 
 #include <functional>
 

@@ -4,7 +4,7 @@
 //! the design, and what `library check` says about it. The format is in
 //! `docs/libraries.md`, *Mount frames*; the model's side (the joint
 //! origins' `mount`, placing a part by one) in
-//! `core/model/src/api/commands.md`, "Mount frames".
+//! `core/model-api/src/commands.md`, "Mount frames".
 //!
 //! The design is what counts: the model places a part by the joint
 //! origins of its design. The manifest's block tells the application which

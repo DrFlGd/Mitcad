@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-model-drawing"
+description = "The drawing layout and writers of the Mitcad model: sheets as PDF, SVG, DXF and DWG"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The model with the drawings' definitions, re-exported (mitcad#777).
+mitcad-model.workspace = true
+# Vector helpers on [f64; 3] and in 2D.
+mitcad-vec3 = { path = "../vec3" }
+# Sheets written as DXF.
+mitcad-dxf = { path = "../dxf" }
+# Sheets written as .dwg files (mitcad#728): Mitcad's own writer beside
+# its reader, without the 3D content (the feature `solids` needs the .f3d
+# reader).
+mitcad-dwg = { path = "../dwg", default-features = false }
+serde_json.workspace = true

@@ -19,6 +19,7 @@ fn library_command(cache: &LibraryCache, git: Option<&GitCli>, command: Value) -
 }
 
 use crate::remote::GitCli;
+use mitcad_model_api::DocumentApi;
 
 const SQUARE: &str = "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}";
 

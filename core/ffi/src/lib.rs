@@ -4,7 +4,7 @@
 //! library (`kernel`).
 //!
 //! The application talks to the document with JSON commands and queries
-//! (`core/model/src/api/commands.md`) and gets geometry as shared `Shape`
+//! (`core/model-api/src/commands.md`) and gets geometry as shared `Shape`
 //! handles, so a new command needs no change here.
 
 pub mod kernel;
@@ -59,8 +59,9 @@ mod dwg_import;
 use dwg_import::{dwg_report_passes, dwg_report_text, dwg_write_test_file};
 
 use cxx::SharedPtr;
-use mitcad_model::api::ApiError;
 use mitcad_model::{BodyUid, FeatureUid, RegionKey};
+use mitcad_model_api::ApiError;
+use mitcad_model_api::{AnalysisApi, DocumentApi, ReportApi, ScriptApi};
 
 use jobs::{JobControl, new_job_control};
 use kernel::{OcctKernel, Shape};
@@ -837,7 +838,7 @@ impl Document {
 }
 
 /// `Document::prepare_clips` (mitcad#438).
-pub struct PreparedClips(mitcad_model::api::PreparedClips<OcctKernel>);
+pub struct PreparedClips(mitcad_model_api::PreparedClips<OcctKernel>);
 
 impl PreparedClips {
     fn run(&self) -> Box<ClippedBodies> {
@@ -856,7 +857,7 @@ impl PreparedClips {
 }
 
 /// `Document::prepare_query` (mitcad#438).
-pub struct PreparedQuery(mitcad_model::api::PreparedQuery<OcctKernel>);
+pub struct PreparedQuery(mitcad_model_api::PreparedQuery<OcctKernel>);
 
 impl PreparedQuery {
     fn run(&self) -> Result<String, ApiError> {

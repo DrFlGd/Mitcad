@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/browser/PolicyDialog.cpp app/browser/BrowserController.cpp app/MainWindow.cpp
-# check-all sources: core/model/src/policy.rs core/model/src/document/policy.rs core/model/src/api/policy.rs
-# check-all sources: core/model/src/document/components.rs core/model/src/api/components.rs
+# check-all sources: core/model/src/policy.rs core/model/src/document/policy.rs core/model-api/src/policy.rs
+# check-all sources: core/model/src/document/components.rs core/model-api/src/components.rs
 # check-all sources: app/commands/PrimitiveCommands.cpp
 # Input-driven Windows UI test of the design policy (mitcad#220, mitcad#421)
 # in the build VM (tools/ui-windows-lib.ps1 says how the input is posted):

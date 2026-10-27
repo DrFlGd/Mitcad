@@ -677,6 +677,42 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-cube"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-sketch-cube PROPERTIES TIMEOUT 300)
+    # Copy, Cut and Paste of sketch geometry (mitcad#788): a line cut from
+    # one sketch with its constraints, pasted into another by a click and
+    # by typed X and Y, undo and Esc.
+    add_test(NAME app.ui-windows-sketch-clipboard
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sketch-clipboard-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-clipboard"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-sketch-clipboard PROPERTIES TIMEOUT 300)
+    # Redefine Sketch Plane (mitcad#787): from a sketch's browser row onto
+    # a face with an offset, undone; a face of a later feature refused.
+    add_test(NAME app.ui-windows-sketch-redefine-plane
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sketch-redefine-plane-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-redefine-plane" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-sketch-redefine-plane PROPERTIES TIMEOUT 300)
+    # Image references (mitcad#782): an image file placed on a plate's top
+    # face, calibrated by two clicks on it and a typed distance, edited in
+    # its panel (opacity, Through Bodies), hidden, saved and shown again.
+    add_test(NAME app.ui-windows-image-references
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-image-references-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-image-references"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-image-references PROPERTIES TIMEOUT 300)
+    # Closed fitted splines and tangents at a chosen end (mitcad#783): a
+    # spline tangent to two lines at its two ends, each picked near its
+    # end; a fit point spline closed by a click on its first point and
+    # extruded as one profile; the saved file has both.
+    add_test(NAME app.ui-windows-sketch-spline
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sketch-spline-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-spline" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-sketch-spline PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

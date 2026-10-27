@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/framework app/commands app/OcctViewer.cpp app/OcctViewer.hpp
-# check-all sources: geometry/src/tangent_chain.cpp geometry/src/face_select.cpp core/model/src/api tools/cli
+# check-all sources: geometry/src/tangent_chain.cpp geometry/src/face_select.cpp core/model-api/src tools/cli
 # The hover of a tangent chain (mitcad#290) through the real UI, on a
 # 60 x 40 x 30 mm box with one vertical edge rounded (8 mm):
 #   - Fillet: hovering the top front edge shows the whole tangent chain,

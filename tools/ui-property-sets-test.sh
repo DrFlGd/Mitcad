@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/build app/MainWindow.cpp app/MainWindowContextMenu.cpp tools/cli core/model/src/properties.rs core/model/src/document/properties.rs core/model/src/api/properties.rs
+# check-all sources: app/browser app/build app/MainWindow.cpp app/MainWindowContextMenu.cpp tools/cli core/model-base/src/properties.rs core/model/src/document/properties.rs core/model-api/src/properties.rs
 # Property Sets (mitcad#496) through the real UI, on a design with a
 # component Wall placed twice (Wall:1, Wall:2) holding the body Panel, and
 # an own type FireRating (EI30 / EI60 / EI90):

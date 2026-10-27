@@ -5,7 +5,7 @@
 // the model's `openings` both ways, the summary, and the checks of the
 // rows as they are typed (outside the wall, overlapping, a window without
 // its sill, the header above the top plate; a partition's narrower
-// framing). The model's side: core/model/src/build/wall_bearing_tests.rs.
+// framing). The model's side: core/model-tests/build-timber/src/wall_bearing_tests.rs.
 #include "build/TimberOpenings.hpp"
 
 #include <cmath>

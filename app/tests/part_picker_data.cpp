@@ -6,7 +6,7 @@
 // own), the groups' tree of two libraries' parts (mitcad#527: shared
 // groups by name, a part in two groups listed once, a group's star over
 // its subtree) and the design's used library parts read from the model's
-// `library_usage` answer (core/model/src/library_tests.rs and
+// `library_usage` answer (core/model-tests/links/src/library_tests.rs and
 // build/source_tests.rs check the model's side).
 #include "library/PartFavourites.hpp"
 #include "library/PartGroups.hpp"

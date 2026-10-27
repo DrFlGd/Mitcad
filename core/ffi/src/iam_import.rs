@@ -46,9 +46,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use mitcad_ipt::assembly::{Assembly, Occurrence, Reference};
-use mitcad_model::api::ApiError;
 use mitcad_model::assembly::from_rows;
 use mitcad_model::{ComponentUid, Kernel, OccurrenceUid, Transform};
+use mitcad_model_api::ApiError;
 
 use crate::Document;
 use crate::kernel::OcctKernel;

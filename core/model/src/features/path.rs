@@ -23,8 +23,9 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use mitcad_vec3::{add, distance, scale};
+use mitcad_vec3::distance;
 
+// The curves' plain geometry, below the model (mitcad#777).
 use super::geom_ref::PathRef;
 use super::{CheckContext, EvalContext, FeatureDef, References, is_false};
 use crate::ids::{BodyUid, EntityUid, FeatureUid};
@@ -33,6 +34,10 @@ use crate::profile::SketchFrame;
 use crate::sketch::geometry::Curve2;
 use crate::sweeps::PathCurve;
 use crate::topo::{EdgeName, TopoName};
+use mitcad_model_base::curves::tolerance;
+pub(crate) use mitcad_model_base::curves::{
+    bspline_point, conic_point, curve_ends, helix_point, is_closed, reversed, reversed_path,
+};
 
 const TAU: f64 = std::f64::consts::TAU;
 
@@ -170,7 +175,7 @@ impl SketchCurves {
         let mut distinct: Vec<EntityUid> = Vec::new();
         for id in ids {
             if !distinct.iter().any(|k| {
-                crate::sketch::project::same_curve(
+                mitcad_sketch::internal::same_curve(
                     &solved.curves[k],
                     &solved.curves[&id],
                     1e-6 * size,
@@ -468,229 +473,6 @@ pub(crate) fn curve3(frame: &SketchFrame, curve: &Curve2) -> Curve3 {
     }
 }
 
-/// A point of a conic at parameter `t`.
-pub(crate) fn conic_point(
-    center: [f64; 3],
-    normal: [f64; 3],
-    x_axis: [f64; 3],
-    (major, minor): (f64, f64),
-    t: f64,
-) -> [f64; 3] {
-    let y_axis = crate::profile::cross(normal, x_axis);
-    add(
-        center,
-        add(
-            scale(x_axis, major * t.cos()),
-            scale(y_axis, minor * t.sin()),
-        ),
-    )
-}
-
-/// A point of a helix at parameter `t` (see [`Curve3::Helix`]).
-pub(crate) fn helix_point(
-    center: [f64; 3],
-    axis: [f64; 3],
-    x_axis: [f64; 3],
-    (radius, pitch): (f64, f64),
-    t: f64,
-) -> [f64; 3] {
-    add(
-        conic_point(center, axis, x_axis, (radius, radius), t),
-        scale(axis, pitch * t / TAU),
-    )
-}
-
-/// A point of a B-spline with its full knot vector (de Boor, rational in
-/// homogeneous coordinates).
-pub(crate) fn bspline_point(
-    degree: usize,
-    poles: &[[f64; 3]],
-    weights: &[f64],
-    knots: &[f64],
-    t: f64,
-) -> [f64; 3] {
-    let n = poles.len();
-    let p = degree;
-    let mut k = p;
-    while k + 1 < n && knots[k + 1] <= t {
-        k += 1;
-    }
-    let mut d: Vec<[f64; 4]> = (0..=p)
-        .map(|j| {
-            let i = k + j - p;
-            let w = weights.get(i).copied().unwrap_or(1.0);
-            let q = poles[i];
-            [q[0] * w, q[1] * w, q[2] * w, w]
-        })
-        .collect();
-    for r in 1..=p {
-        for j in (r..=p).rev() {
-            let i = k + j - p;
-            let span = knots[i + p + 1 - r] - knots[i];
-            let alpha = if span == 0.0 {
-                0.0
-            } else {
-                (t - knots[i]) / span
-            };
-            d[j] = std::array::from_fn(|c| (1.0 - alpha) * d[j - 1][c] + alpha * d[j][c]);
-        }
-    }
-    let h = d[p];
-    [h[0] / h[3], h[1] / h[3], h[2] / h[3]]
-}
-
-/// The start and end of an open curve; None for a closed one.
-pub(crate) fn curve_ends(curve: &Curve3) -> Option<([f64; 3], [f64; 3])> {
-    match curve {
-        Curve3::Point(p) => Some((*p, *p)),
-        Curve3::Line { start, end } => Some((*start, *end)),
-        Curve3::Conic { closed: true, .. } => None,
-        Curve3::Conic {
-            center,
-            normal,
-            x_axis,
-            major,
-            minor,
-            start,
-            end,
-            ..
-        } => {
-            let at = |t| conic_point(*center, *normal, *x_axis, (*major, *minor), t);
-            Some((at(*start), at(*end)))
-        }
-        Curve3::BSpline {
-            degree,
-            poles,
-            weights,
-            knots,
-        } => {
-            let p = *degree as usize;
-            if p == 0 || poles.len() <= p || knots.len() != poles.len() + p + 1 {
-                return poles.first().zip(poles.last()).map(|(a, b)| (*a, *b));
-            }
-            let (t0, t1) = (knots[p], knots[poles.len()]);
-            let a = bspline_point(p, poles, weights, knots, t0);
-            let b = bspline_point(p, poles, weights, knots, t1);
-            let size = poles.iter().flatten().fold(1.0_f64, |m, v| m.max(v.abs()));
-            (distance(a, b) > 1e-9 * size).then_some((a, b))
-        }
-        Curve3::Helix {
-            center,
-            axis,
-            x_axis,
-            radius,
-            pitch,
-            start,
-            end,
-        } => {
-            let at = |t| helix_point(*center, *axis, *x_axis, (*radius, *pitch), t);
-            Some((at(*start), at(*end)))
-        }
-    }
-}
-
-/// The curve run the other way.
-pub(crate) fn reversed(curve: Curve3) -> Curve3 {
-    match curve {
-        Curve3::Point(p) => Curve3::Point(p),
-        Curve3::Line { start, end } => Curve3::Line {
-            start: end,
-            end: start,
-        },
-        // With the normal reversed, the point at t is the old point at -t.
-        Curve3::Conic {
-            center,
-            normal,
-            x_axis,
-            major,
-            minor,
-            start,
-            end,
-            closed,
-        } => Curve3::Conic {
-            center,
-            normal: normal.map(|v| -v),
-            x_axis,
-            major,
-            minor,
-            start: -end,
-            end: -start,
-            closed,
-        },
-        Curve3::BSpline {
-            degree,
-            mut poles,
-            mut weights,
-            knots,
-        } => {
-            poles.reverse();
-            weights.reverse();
-            let (first, last) = (knots[0], knots[knots.len() - 1]);
-            let knots = knots.iter().rev().map(|k| first + last - k).collect();
-            Curve3::BSpline {
-                degree,
-                poles,
-                weights,
-                knots,
-            }
-        }
-        // As a conic's: with the axis reversed the point at t is the old
-        // point at -t (the rise turns with the axis).
-        Curve3::Helix {
-            center,
-            axis,
-            x_axis,
-            radius,
-            pitch,
-            start,
-            end,
-        } => Curve3::Helix {
-            center,
-            axis: axis.map(|v| -v),
-            x_axis,
-            radius,
-            pitch,
-            start: -end,
-            end: -start,
-        },
-    }
-}
-
-/// True when the path's last curve ends where its first starts (or it is
-/// one closed curve).
-pub(crate) fn is_closed(path: &[PathCurve]) -> bool {
-    let (Some(first), Some(last)) = (path.first(), path.last()) else {
-        return false;
-    };
-    match (curve_ends(&first.curve), curve_ends(&last.curve)) {
-        (None, _) => true,
-        (Some((start, _)), Some((_, end))) => distance(start, end) <= tolerance(path),
-        _ => false,
-    }
-}
-
-/// The path run the other way.
-pub(crate) fn reversed_path(path: Vec<PathCurve>) -> Vec<PathCurve> {
-    path.into_iter()
-        .rev()
-        .map(|p| PathCurve {
-            name: p.name,
-            curve: reversed(p.curve),
-        })
-        .collect()
-}
-
-/// Ends closer than this join.
-fn tolerance(path: &[PathCurve]) -> f64 {
-    let mut size: f64 = 1.0;
-    for piece in path {
-        if let Some((a, b)) = curve_ends(&piece.curve) {
-            size = a.iter().chain(&b).fold(size, |m, v| m.max(v.abs()));
-        }
-    }
-    1e-6 * size
-}
-
 /// Orders the curves into one chain along the path (see the module
 /// documentation for its direction).
 pub(crate) fn chain(pieces: Vec<PathCurve>) -> Result<Vec<PathCurve>, String> {
@@ -910,7 +692,7 @@ fn counter_clockwise(
     let mut area = 0.0;
     for (k, p) in points.iter().enumerate() {
         let q = points[(k + 1) % points.len()];
-        area += crate::profile::dot(crate::profile::cross(*p, q), normal);
+        area += mitcad_vec3::dot(mitcad_vec3::cross(*p, q), normal);
     }
     let backwards = if area.abs() > 1e-9 * length * length {
         area < 0.0
@@ -1009,13 +791,13 @@ pub(crate) fn plane_at_start(
     } else {
         [0.0, 1.0, 0.0]
     };
-    let x = crate::profile::cross(tangent, other);
+    let x = mitcad_vec3::cross(tangent, other);
     let length = (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt();
     let x = [x[0] / length, x[1] / length, x[2] / length];
     Ok(SketchFrame {
         origin,
         x_axis: x,
-        y_axis: crate::profile::cross(tangent, x),
+        y_axis: mitcad_vec3::cross(tangent, x),
     })
 }
 

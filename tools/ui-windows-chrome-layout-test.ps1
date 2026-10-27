@@ -14,7 +14,7 @@
 #      cards float over its top, every other card starts below them; with
 #      the plate zoomed in to fill the view, a click between two group cards
 #      selects its face and a click on the title's box selects nothing.
-#      Preferences > Display > Layout Docked asks Restart Mitcad, Later
+#      Preferences > Display > Layout Docked asks Restart MitCad, Later
 #      keeps it in the settings for the next start.
 #   2. Floating again is the window's layout: saved, no question.
 #   3. Docked, Restart Now with unsaved changes: the window asks about them
@@ -263,7 +263,7 @@ Ui-StartApp 'chrome-layout-new' -DefaultChrome
 Ui-ExpectLog "Chrome: floating (the platform's default)" 'Floating without a choice'
 Choose-Layout 'Home'
 Ui-ExpectNew 'Layout preference: docked (restart asked)' 'Docked chosen, a restart asked'
-Ui-FocusDialog '^Restart Mitcad$'
+Ui-FocusDialog '^Restart MitCad$'
 Ui-Step 'later (Escape)'                   { Ui-Key 'Escape' }
 Ui-FocusMain
 Ui-ExpectNew 'Layout restart: later (docked at the next start)' 'kept for the next start'
@@ -295,13 +295,13 @@ Ui-Step 'finish the sketch from palette'  { Click-PaletteFinish }
 Ui-ExpectNew 'Sketch finished' 'the palette still finishes a sketch'
 Choose-Layout 'Home'
 Ui-ExpectNew 'Layout preference: docked (restart asked)' 'a restart asked'
-# The message boxes titled "Mitcad" are new windows (Ui-FocusDialog).
-$before = Ui-Windows '^Mitcad$'
-Ui-FocusDialog '^Restart Mitcad$'
+# The message boxes titled "MitCad" are new windows (Ui-FocusDialog).
+$before = Ui-Windows '^MitCad$'
+Ui-FocusDialog '^Restart MitCad$'
 Ui-Step 'restart now (Enter)'              { Ui-Key 'Return' }
 Ui-ExpectNew 'Layout restart: now' 'Restart Now'
 Ui-ExpectNew 'Restart: closing the window' 'the window closes first'
-Ui-FocusDialog '^Mitcad$' -Except $before
+Ui-FocusDialog '^MitCad$' -Except $before
 Ui-Step 'cancel (Escape)'                  { Ui-Key 'Escape' }
 Ui-FocusMain
 Ui-ExpectNew 'Restart cancelled: Mitcad stayed open' 'cancelled as quitting would be'
@@ -319,7 +319,7 @@ Choose-Layout 'End'
 Ui-ExpectNew 'Layout preference: floating (in use)' 'Floating again'
 Choose-Layout 'Home'
 Ui-ExpectNew 'Layout preference: docked (restart asked)' 'a restart asked'
-Ui-FocusDialog '^Restart Mitcad$'
+Ui-FocusDialog '^Restart MitCad$'
 # No step: the process ends.
 Ui-Key 'Return'
 Ui-ExpectNew 'Restart (test, not started): ' "the restart's command" 20
@@ -352,7 +352,7 @@ Ui-ExpectNew 'Sketch finished' 'Docked ribbon still finishes a sketch'
 Choose-Layout 'End' 'Home'
 Ui-ExpectNew 'Preferences: browser background card' 'the Card background chosen while Docked'
 Ui-ExpectNew 'Layout preference: floating (restart asked)' 'Floating chosen, a restart asked'
-Ui-FocusDialog '^Restart Mitcad$'
+Ui-FocusDialog '^Restart MitCad$'
 Ui-Step 'later (Escape)'                   { Ui-Key 'Escape' }
 Ui-FocusMain
 Ui-ExpectNew 'Layout restart: later (floating at the next start)' 'kept for the next start'

@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// A destination is an occurrence context, not only a shared definition.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum MoveDestination {
+pub enum MoveDestination {
     Existing {
         component: ComponentUid,
         occurrence: OccurrencePath,
@@ -36,7 +36,7 @@ pub(crate) enum MoveDestination {
     },
 }
 
-pub(crate) struct MovedDestination {
+pub struct MovedDestination {
     pub component: ComponentUid,
     pub occurrence: OccurrencePath,
     pub created: bool,
@@ -272,7 +272,7 @@ impl<K: Kernel> Document<K> {
     }
 
     /// A read-only check used by the destination picker and by the command.
-    pub(crate) fn check_move_destination(
+    pub fn check_move_destination(
         &self,
         plan: &MovePlan,
         source_occurrence: Option<&OccurrencePath>,
@@ -309,7 +309,7 @@ impl<K: Kernel> Document<K> {
         Ok(())
     }
 
-    pub(crate) fn move_to_destination(
+    pub fn move_to_destination(
         &mut self,
         source: ComponentUid,
         groups: &[super::MoveGroup],

@@ -69,7 +69,7 @@ a history the same holds after the fallback to the stored design.
 ## The outcomes on the timeline
 
 The report's outcomes stay with the features (mitcad#170, the model's
-import notes, [commands.md](../../model/src/api/commands.md#the-imports-outcomes-on-the-timeline)),
+import notes, [commands.md](../../model-api/src/commands.md#the-imports-outcomes-on-the-timeline)),
 made from the report itself at the end of the import, so that the
 timeline and the report say the same:
 
@@ -176,7 +176,7 @@ run's bodies is tried on the bodies without them (it may have been made
 while they were suppressed); when it builds there, the run before it is
 suppressed and a new one starts with it. Suppressed sketches and
 construction geometry come in as usual and are suppressed with their run.
-Unsuppressing a feature in Mitcad builds it where it stands (the items
+Unsuppressing a feature in MitCad builds it where it stands (the items
 before it in its run unsuppressed too, where it uses them, as in the
 original application).
 
@@ -215,7 +215,7 @@ The report counts them (`suppressed.rolled_back_as_features`,
 `rolled_back_as_placeholders`; the text `rolled back in the file: n
 modelling items as features after the marker, m as placeholders`). Before
 this the items were tried against states the file does not keep and ended
-as placeholders or fallbacks; Mitcad moves the marker with its timeline
+as placeholders or fallbacks; MitCad moves the marker with its timeline
 commands, so unrolling them builds them where they stand.
 
 **Inputs.** The decoder finds a suppressed item's named inputs (fillet
@@ -472,7 +472,7 @@ history):
 | `e4424061` | 7 / 8 | 8 / 8 | |
 
 The 249 fillets and chamfers of the mitcad#107 failure dump give the same
-outcome with the patches as without, through Mitcad's dressup and through
+outcome with the patches as without, through MitCad's dressup and through
 OCCT's fillet alone (161 built by the dressup, 166 by OCCT, 113 of those
 valid).
 

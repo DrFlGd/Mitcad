@@ -172,21 +172,28 @@ BrowserController::BrowserController(DocumentHost& host, QWidget* window)
   follow(m_timeline, &TimelineWidget::searchRestored, &BrowserController::restoreSearchSelection);
 
   // A click on a badge goes to its feature, or lists them to go to.
-  const auto listed = [this](QToolButton* button, const QVector<const DocumentSnapshot::Feature*>& features) {
-    if (features.size() == 1) {
-      reveal(features.first()->uid);
-      return;
-    }
-    Menu menu(m_window);
-    for (const DocumentSnapshot::Feature* feature : features) {
-      const QString uid = feature->uid;
-      menu.add(featureIcon(feature->type), QStringLiteral("%1: %2").arg(feature->name, feature->error),
-               [this, uid] { reveal(uid); });
-    }
-    menu.exec(button->mapToGlobal(QPoint(0, 0)));
-  };
-  connect(m_failures, &QToolButton::clicked, this, [this, listed] { listed(m_failures, m_snapshot.failures()); });
-  connect(m_warnings, &QToolButton::clicked, this, [this, listed] { listed(m_warnings, m_snapshot.warnings()); });
+  connect(m_failures, &QToolButton::clicked, this, [this] {
+    showIssues(false, m_failures->mapToGlobal(QPoint(0, 0)));
+  });
+  connect(m_warnings, &QToolButton::clicked, this, [this] {
+    showIssues(true, m_warnings->mapToGlobal(QPoint(0, 0)));
+  });
+}
+
+void BrowserController::showIssues(bool warnings, const QPoint& globalPosition) {
+  const auto features = warnings ? m_snapshot.warnings() : m_snapshot.failures();
+  if (features.isEmpty()) return;
+  if (features.size() == 1) {
+    reveal(features.first()->uid);
+    return;
+  }
+  Menu menu(m_window);
+  for (const DocumentSnapshot::Feature* feature : features) {
+    const QString uid = feature->uid;
+    menu.add(featureIcon(feature->type), QStringLiteral("%1: %2").arg(feature->name, feature->error),
+             [this, uid] { reveal(uid); });
+  }
+  menu.exec(globalPosition);
 }
 
 // ---------------------------------------------------------------------------
@@ -488,6 +495,10 @@ void BrowserController::toggleVisibility(const BrowserNode& node) {
     done = m_host.runModelCommand(cmd("set_analysis_visible", {{QStringLiteral("name"), node.uid},
                                                                {QStringLiteral("visible"), show}}));
     break;
+  case BrowserNode::Type::ImageReference: // mitcad#782
+    done = m_host.runModelCommand(cmd("set_image_reference_visible", {{QStringLiteral("name"), node.uid},
+                                                                      {QStringLiteral("visible"), show}}));
+    break;
   default:
     return;
   }
@@ -548,6 +559,9 @@ void BrowserController::rename(const BrowserNode& node, const QString& name) {
     break;
   case BrowserNode::Type::Drawing: // mitcad#707
     command = cmd("edit_drawing", {{QStringLiteral("drawing"), node.uid}, {QStringLiteral("name"), name}});
+    break;
+  case BrowserNode::Type::ImageReference: // mitcad#782
+    command = cmd("rename_image_reference", {{QStringLiteral("name"), node.uid}, {QStringLiteral("new_name"), name}});
     break;
   default:
     return;
@@ -617,6 +631,9 @@ void BrowserController::browserDoubleClicked(const BrowserNode& node) {
     break;
   case BrowserNode::Type::Drawing: // mitcad#707: its sheet over the view
     m_host.openDrawing(node.uid);
+    break;
+  case BrowserNode::Type::ImageReference: // mitcad#782: its panel
+    m_host.editImageReference(node.uid);
     break;
   default:
     break;
@@ -703,6 +720,11 @@ void BrowserController::deleteNode(const BrowserNode& node) {
   case BrowserNode::Type::Drawing: // mitcad#707
     if (canChange() && m_host.runModelCommand(cmd("delete_drawing", {{QStringLiteral("drawing"), node.uid}}))) {
       qDebug().noquote() << QStringLiteral("Deleted drawing %1").arg(node.name);
+    }
+    break;
+  case BrowserNode::Type::ImageReference: // mitcad#782
+    if (canChange() && m_host.runModelCommand(cmd("delete_image_reference", {{QStringLiteral("name"), node.uid}}))) {
+      qDebug().noquote() << QStringLiteral("Deleted image reference %1").arg(node.name);
     }
     break;
   default:
@@ -1144,6 +1166,11 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
   }
   case BrowserNode::Type::Sketch:
     menu.add(QStringLiteral("sketch"), tr("Edit Sketch"), [this, node] { m_host.editFeature(node.uid); });
+    // Another plane or face, an offset and a rotation on it (mitcad#787).
+    menu.add(QStringLiteral("offset-plane"), tr("Redefine Sketch Plane"), [this, node] {
+      m_host.startCommand(QStringLiteral("sketch.redefine_plane"),
+                          {SelectionItem{SelectKind::Sketch, node.uid, QString(), QString()}}, nullptr);
+    });
     menu.add(QStringLiteral("look-at"), tr("Look At"), [this, item] { m_host.lookAt(item); });
     menu.add(QStringLiteral("export"), tr("Save As DXF"), [this, node] { m_host.exportSketch(node.uid); });
     // The timeline's Move to Component (mitcad#218): the sketch from the
@@ -1363,6 +1390,27 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
   case BrowserNode::Type::Drawing:
     menu.add(QStringLiteral("drawing"), tr("Open"), [this, node] { m_host.openDrawing(node.uid); });
     menu.separator();
+    renameEntry();
+    menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
+    break;
+  // Image references (mitcad#782): a new one; one edited in its panel or
+  // calibrated by two points.
+  case BrowserNode::Type::ImageReferences:
+    menu.add(QStringLiteral("image-reference"), tr("Insert Image Reference"), [this] {
+      if (canChange()) {
+        m_host.startCommand(QStringLiteral("insert.image_reference"), {}, nullptr);
+      }
+    });
+    break;
+  case BrowserNode::Type::ImageReference:
+    menu.add(QStringLiteral("edit"), tr("Edit Image Reference"), [this, node] { m_host.editImageReference(node.uid); });
+    menu.add(QStringLiteral("image-calibrate"), tr("Calibrate Image Reference"), [this, node] {
+      if (canChange()) {
+        m_host.calibrateImageReference(node.uid);
+      }
+    });
+    menu.separator();
+    visibility();
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
     break;
@@ -1605,6 +1653,13 @@ void BrowserController::featureMenu(const QString& uid, const QPoint& at, const 
   menu.add(feature->isSketch() ? QStringLiteral("sketch") : QStringLiteral("edit"),
            feature->isSketch() ? tr("Edit Sketch") : tr("Edit Feature"),
            [this, uid] { m_host.editFeature(uid); });
+  // Another plane or face, an offset and a rotation on it (mitcad#787).
+  if (feature->isSketch()) {
+    menu.add(QStringLiteral("offset-plane"), tr("Redefine Sketch Plane"), [this, uid] {
+      m_host.startCommand(QStringLiteral("sketch.redefine_plane"),
+                          {SelectionItem{SelectKind::Sketch, uid, QString(), QString()}}, nullptr);
+    });
+  }
   // Renamed in place where the menu was opened.
   menu.add(QStringLiteral("edit"), tr("Rename"), [this, uid, row] {
     if (!canChange()) {

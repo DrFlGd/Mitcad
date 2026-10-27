@@ -154,6 +154,22 @@ const QColor kCapColor(0xf2, 0x9e, 0x1a);
 // How far the hatch lines lie off the caps, of the caps' size (see hatchOf).
 constexpr double kHatchLift = 5e-3;
 constexpr double kHatchWidth = 1.5;
+// The section's order in depth (mitcad#784). What lies in the cut plane
+// comes in three layers at the same depth: a sketch's curves and points on
+// it (Hide Above Sketch, depth-tested lines and markers, which OpenGL's
+// polygon offset does not move), the caps, and the cut bodies' own faces
+// under them (the same triangles). The caps go just behind the plane and
+// the cut bodies' faces behind the caps, so that the sketch is always in
+// front of both: units (the depth buffer's resolution) for a plane face on,
+// a factor of the faces' depth slope for one seen at an angle, large enough
+// for the pixels of a 2 px line, its 6 px halo and a point's marker beside
+// the line's or the marker's centre, whose depth they take. The cut bodies'
+// faces take the caps' factor (the same plane, the same slope) and more
+// units. Geometry beyond the plane still hides the sketch: these are a few
+// units of depth, not a distance.
+constexpr float kSectionOffsetFactor = 4.0f;
+constexpr float kSectionCapOffsetUnits = 2.0f;
+constexpr float kSectionedBodyOffsetUnits = 6.0f;
 // Cosmetic threads' rings: darker than the body, lighter than its edges.
 const Quantity_Color kThreadColor(0.30, 0.33, 0.40, Quantity_TOC_RGB);
 // The build volume's lines (mitcad#640): a muted blue.
@@ -611,13 +627,31 @@ bool sameFaceLooks(const std::vector<BodyDisplay::FaceLook>& a, const std::vecto
                     });
 }
 
+// A body a section's plane cuts (Section Analysis, Hide Above Sketch): its
+// faces behind the caps drawn on its cut faces, which lie behind the plane
+// (mitcad#784, kSectionOffsetFactor). OCCT's own offset leaves a body's
+// faces too near the plane: the caps had to come in front of the plane to
+// cover them, and hid a sketch's curves and points on it.
+void behindSection(const occ::handle<AIS_Shape>& body, bool sectioned) {
+  if (!sectioned) {
+    return;
+  }
+  const occ::handle<Prs3d_Drawer>& drawer = body->Attributes();
+  if (!drawer->HasOwnShadingAspect()) {
+    drawer->SetupOwnShadingAspect();
+  }
+  drawer->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, kSectionOffsetFactor,
+                                                       kSectionedBodyOffsetUnits);
+}
+
 occ::handle<AIS_Shape> makeBodyObject(const geometry::Shape& named, BodyDisplay::Style style, const QColor& color,
                                       const std::vector<BodyDisplay::FaceLook>& faceLooks, VisualStyle visual,
-                                      const QColor& paper) {
+                                      const QColor& paper, bool sectioned) {
   const TopoDS_Shape& shape = named.occt();
   if (style == BodyDisplay::Style::New) {
     occ::handle<AIS_Shape> body = new AIS_Shape(shape);
     body->SetColor(kPreviewColor);
+    behindSection(body, sectioned);
     body->SetTransparency(0.5);
     return body;
   }
@@ -625,6 +659,7 @@ occ::handle<AIS_Shape> makeBodyObject(const geometry::Shape& named, BodyDisplay:
     // As the command's tool preview (setPreview), but pickable (mitcad#561).
     occ::handle<AIS_Shape> body = new AIS_Shape(shape);
     body->SetColor(style == BodyDisplay::Style::CutTool ? kCutPreviewColor : kPreviewColor);
+    behindSection(body, sectioned);
     body->SetTransparency(0.5);
     return body;
   }
@@ -632,6 +667,7 @@ occ::handle<AIS_Shape> makeBodyObject(const geometry::Shape& named, BodyDisplay:
     // Faint enough to see and pick what lies behind (mitcad#147).
     occ::handle<AIS_Shape> body = new AIS_Shape(shape);
     body->SetColor(color.isValid() ? occtColor(color) : kBodyColor);
+    behindSection(body, sectioned);
     body->SetTransparency(0.8);
     return body;
   }
@@ -641,6 +677,8 @@ occ::handle<AIS_Shape> makeBodyObject(const geometry::Shape& named, BodyDisplay:
   occ::handle<AIS_ColoredShape> colored = faceColors ? new AIS_ColoredShape(shape) : nullptr;
   occ::handle<AIS_Shape> body = faceColors ? occ::handle<AIS_Shape>(colored) : new AIS_Shape(shape);
   body->SetColor(color.isValid() ? occtColor(color) : kBodyColor);
+  // Before the faces' own colours: their aspects copy the body's.
+  behindSection(body, sectioned);
   if (faceColors) {
     for (const BodyDisplay::FaceLook& look : faceLooks) {
       for (const int face : look.faces) {
@@ -703,8 +741,8 @@ bool hasAnyTriangulation(const TopoDS_Shape& shape) {
 
 occ::handle<AIS_Shape> makeBody(const geometry::Shape& named, BodyDisplay::Style style, const QColor& color,
                                 const std::vector<BodyDisplay::FaceLook>& faceLooks, VisualStyle visual,
-                                const QColor& paper) {
-  occ::handle<AIS_Shape> body = makeBodyObject(named, style, color, faceLooks, visual, paper);
+                                const QColor& paper, bool sectioned) {
+  occ::handle<AIS_Shape> body = makeBodyObject(named, style, color, faceLooks, visual, paper, sectioned);
   if (!viewMeshes(named)) {
     body->Attributes()->SetAutoTriangulation(false);
   }
@@ -1115,6 +1153,20 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   sketchHalos.SetName("sketch halos");
   sketchHalos.SetClearDepth(false);
   m_viewer->InsertLayerBefore(m_sketchHaloLayer, sketchHalos, Graphic3d_ZLayerId_Top);
+  // Image references drawn through the bodies (mitcad#782): over the
+  // bodies and their edges, without depth, before the sketches, their
+  // halos, previews and highlights, so that what is traced stays on top.
+  // Depth writes stay on, as the hidden edges' do: a layer between the
+  // default and the top layer that writes no depth splits them into two
+  // groups for picking, and highlights in the top layer (a picked origin
+  // plane or profile) then win over closer items. The images write no
+  // depth all the same: they are blended, drawn in OCCT's transparent pass,
+  // which turns depth writes off.
+  Graphic3d_ZLayerSettings images;
+  images.SetName("image references");
+  images.SetEnableDepthTest(false);
+  images.SetClearDepth(false);
+  m_viewer->InsertLayerBefore(m_imageLayer, images, m_sketchHaloLayer);
   // The rendered view (docs/rendering.md, "Overlays in depth"): the bodies
   // in a layer of their own, then the rendered image over the whole view
   // without depth (it covers their colour, their depth stays), then the
@@ -1536,6 +1588,7 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
         existing->second.object->Shape().IsEqual(shape) &&
         sameTransformation(existing->second.placement.Transformation(), body.placement.Transformation()) &&
         existing->second.component == body.component && existing->second.color == body.color &&
+        existing->second.sectioned == body.sectioned &&
         sameFaceColors(existing->second.faceLooks, body.faceLooks)) {
       BodyEntry entry = existing->second;
       entry.shape = body.shape; // the same geometry may come with new names
@@ -1569,6 +1622,7 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
     entry.color = body.color;
     entry.appearance = body.appearance;
     entry.faceLooks = body.faceLooks;
+    entry.sectioned = body.sectioned;
     showBody(entry);
     ++shown;
     kept.emplace(key, entry);
@@ -1604,6 +1658,7 @@ std::vector<BodyDisplay> OcctViewer::shownBodies() const {
     body.color = entry.color;
     body.appearance = entry.appearance;
     body.faceLooks = entry.faceLooks;
+    body.sectioned = entry.sectioned;
     bodies.push_back(body);
   }
   return bodies;
@@ -1961,7 +2016,7 @@ void OcctViewer::showBody(BodyEntry& entry) {
   const bool inactive = entry.inactive && entry.style == BodyDisplay::Style::Normal;
   entry.object = makeBody(*entry.shape, inactive ? BodyDisplay::Style::Ghost : entry.style, color,
                          componentColors ? std::vector<BodyDisplay::FaceLook>{} : entry.faceLooks,
-                         m_visualStyle, m_paper);
+                         m_visualStyle, m_paper, entry.sectioned);
   const bool placed = !entry.placement.IsIdentity();
   if (placed) {
     entry.object->SetLocalTransformation(entry.placement.Transformation());
@@ -4523,8 +4578,11 @@ void OcctViewer::setSectionCaps(const std::vector<SectionCap>& caps, const gp_Ax
     // it (a cap facing away from the light would hide its hatch).
     object->SetMaterial(flatMaterial(0.0f));
     // Over the clipped body's own face on the plane (the same triangles),
-    // under a sketch's profiles on it (Hide Above Sketch).
-    object->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, -1.0f, -1.0f);
+    // under a sketch's curves, points and profiles on it (Hide Above
+    // Sketch): just behind the plane, not in front of it (mitcad#784; see
+    // kSectionOffsetFactor).
+    object->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, kSectionOffsetFactor,
+                                                                       kSectionCapOffsetUnits);
     const occ::handle<Prs3d_Drawer>& drawer = object->Attributes();
     drawer->SetFaceBoundaryDraw(true);
     drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(kEdgeColor, Aspect_TOL_SOLID, 1.5));

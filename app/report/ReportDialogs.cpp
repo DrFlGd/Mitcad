@@ -232,7 +232,7 @@ FeedbackDialog::FeedbackDialog(const QImage& screenshot, std::function<bool(cons
   form->addRow(tr("C&ontact:"), m_contact);
   layout->addLayout(form);
 
-  m_diagnostics = new QCheckBox(tr("Include &diagnostics (Mitcad's version, the system, the graphics)"), this);
+  m_diagnostics = new QCheckBox(tr("Include &diagnostics (MitCad's version, the system, the graphics)"), this);
   m_diagnostics->setChecked(true);
   layout->addWidget(m_diagnostics);
   m_screenshot = new QCheckBox(tr("Include a &screenshot of the window"), this);

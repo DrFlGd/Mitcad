@@ -3,7 +3,7 @@
 
 // Local and Cloud projects in the application (mitcad#89): the current
 // project as state of the window's own, and the core's project commands
-// (core/model/src/api/commands.md, "Projects") that need no thread of
+// (core/model-api/src/commands.md, "Projects") that need no thread of
 // their own.
 //
 // A project is a folder with .mitcad/project.json. It is Local when the

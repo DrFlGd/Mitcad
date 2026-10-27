@@ -2,6 +2,7 @@
 //! Rectangular, circular and path patterns of features and bodies.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 #[test]
 fn pattern_provenance_marks_only_omitted_dressup_inputs() {
@@ -15,6 +16,7 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
     // no geometry is evaluated or selected in this test.
     let mut importer = Importer {
         body_scope: body_scope::Scope::capture(&doc).enter(&doc),
+        families: &crate::ReplayFamilies,
         oracle,
         doc: &mut doc,
         dump: &dump,
@@ -286,7 +288,7 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
     // after its first part where nothing is guessed: without the history,
     // and with the history but no decoded position (its definitions are
     // the history's alone).
-    let hole = |position: bool| -> mitcad_f3d::design::ir::TimelineItem {
+    let hole = |position: bool| -> mitcad_dump::TimelineItem {
         let mut detail = json!({
             "holeType": "SimpleHoleType",
             "holeDiameter": {"kind": "parameter", "value": 0.5, "unit": "mm"},
@@ -482,7 +484,7 @@ fn a_circular_pattern_turns_the_way_of_its_stored_axis() {
 /// wall, and walls that still meet need nothing.
 #[test]
 fn a_face_selection_takes_the_face_between_neighbours_it_names() {
-    use mitcad_f3d::design::ir::EntityName;
+    use mitcad_dump::EntityName;
     let tag = |t: &str| {
         vec![EntityName {
             tag: t.to_owned(),
@@ -519,7 +521,8 @@ fn a_face_selection_takes_the_face_between_neighbours_it_names() {
         walls.push(pair(w, "U"));
     }
     let edges = walls.clone();
-    let found = crate::ops::bridging_faces(&named, &faces, &mut |_| edges.clone());
+    let found =
+        mitcad_import_replay::internal::ops::bridging_faces(&named, &faces, &mut |_| edges.clone());
     assert_eq!(found, [(body, "R".to_owned())]);
     // A face of that name on another body selected too is another face.
     let other: BodyUid = "F5.b0".parse().unwrap();
@@ -527,9 +530,10 @@ fn a_face_selection_takes_the_face_between_neighbours_it_names() {
     named_other.push(recipe("r", &["t"]));
     let mut with_other = faces.clone();
     with_other.push((other, "R".to_owned()));
-    let found = crate::ops::bridging_faces(&named_other, &with_other, &mut |b| {
-        if b == body { edges.clone() } else { Vec::new() }
-    });
+    let found =
+        mitcad_import_replay::internal::ops::bridging_faces(&named_other, &with_other, &mut |b| {
+            if b == body { edges.clone() } else { Vec::new() }
+        });
     assert_eq!(found, [(body, "R".to_owned())]);
     // Where a and b meet, nothing is added.
     let mut closed: Vec<[String; 2]> = walls
@@ -537,7 +541,11 @@ fn a_face_selection_takes_the_face_between_neighbours_it_names() {
         .filter(|[x, y]| x != "R" && y != "R")
         .collect();
     closed.push(pair("A", "B"));
-    assert!(crate::ops::bridging_faces(&named, &faces, &mut |_| closed.clone()).is_empty());
+    assert!(
+        mitcad_import_replay::internal::ops::bridging_faces(&named, &faces, &mut |_| closed
+            .clone())
+        .is_empty()
+    );
 }
 
 /// A rectangular pattern along an edge the replay runs the other way from

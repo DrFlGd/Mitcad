@@ -166,14 +166,14 @@ impl CutScope {
         Ok(bodies)
     }
 
-    pub(crate) fn stored_targets(&self) -> &[ComponentTarget] {
+    pub fn stored_targets(&self) -> &[ComponentTarget] {
         match &self.targets {
             TargetScope::Automatic { excluded, .. } => excluded,
             TargetScope::Explicit { included, .. } => included,
         }
     }
 
-    pub(crate) fn excluded_bodies(&self) -> &[BodyTarget] {
+    pub fn excluded_bodies(&self) -> &[BodyTarget] {
         match &self.targets {
             TargetScope::Automatic {
                 excluded_bodies, ..

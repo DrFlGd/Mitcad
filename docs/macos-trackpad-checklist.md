@@ -106,7 +106,7 @@ bodies.
       eye, or with `MITCAD_LOG_TIMING=1`).
 - [ ] Clicking a card (its header, a tree row, a field) keeps the main
       window active: the traffic lights stay coloured, the title row does not
-      grey out, the menu bar stays Mitcad's.
+      grey out, the menu bar stays MitCad's.
 - [ ] With viewport focus, the configured command shortcuts work (defaults:
       E, S and L to start commands, Command+Z to undo, Command+Return to
       Finish Sketch). In a text editor, ordinary typing and text editing
@@ -158,7 +158,7 @@ bodies.
 - [ ] Sheets: Save before closing, the Parameters dialog and message boxes
       hang from the title bar and block only that window; the cards cannot
       be used meanwhile, the others can.
-- [ ] Mitcad › About Mitcad shows the standard About panel with the version
+- [ ] MitCad › About MitCad shows the standard About panel with the version
       and the credits.
 - [ ] The menu bar's menus have no icons, while the ribbon's group menus
       do.

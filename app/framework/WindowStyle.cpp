@@ -248,7 +248,7 @@ SectionTitle::SectionTitle(const QString& text, QWidget* parent) : QWidget(paren
 
 QSize SectionTitle::sizeHint() const {
   const QFontMetrics metrics(panelTitleFont(font()));
-  return QSize(metrics.horizontalAdvance(m_text.toUpper()) + 2, metrics.height() + 6);
+  return QSize(metrics.horizontalAdvance(m_text) + 2, metrics.height() + 6);
 }
 
 QSize SectionTitle::minimumSizeHint() const { return QSize(0, sizeHint().height()); }
@@ -267,7 +267,7 @@ void SectionTitle::paintEvent(QPaintEvent*) {
   QPainter painter(this);
   painter.setFont(panelTitleFont(font()));
   painter.setPen(windowColors(palette()).titleText);
-  const QString text = painter.fontMetrics().elidedText(m_text.toUpper(), Qt::ElideRight, width());
+  const QString text = painter.fontMetrics().elidedText(m_text, Qt::ElideRight, width());
   painter.drawText(rect().adjusted(0, 0, 0, -2), Qt::AlignLeft | Qt::AlignBottom, text);
 }
 
@@ -337,7 +337,7 @@ QSize PanelTitleBar::sizeHint() const {
     return QSize(panel::kStripWidth, 2 * kButton + 2 + 2 * panel::kGap);
   }
   const QFontMetrics metrics(panelTitleFont(font()));
-  return QSize(kTitleLeft + metrics.horizontalAdvance(m_dock->windowTitle().toUpper()) + 8 + 2 * kButton + 2 + m_extraWidth + kTitleRight,
+  return QSize(kTitleLeft + metrics.horizontalAdvance(m_dock->windowTitle()) + 8 + 2 * kButton + 2 + m_extraWidth + kTitleRight,
                panel::kTitleHeight);
 }
 
@@ -386,7 +386,7 @@ void PanelTitleBar::paintEvent(QPaintEvent*) {
   painter.setPen(windowColors(palette()).titleText);
   const QRect area(kTitleLeft, 0, std::max(0, width() - kTitleLeft - kTitleRight - 2 * kButton - 2 - m_extraWidth - 8), height());
   const QString text =
-      painter.fontMetrics().elidedText(m_dock->windowTitle().toUpper(), Qt::ElideRight, area.width());
+      painter.fontMetrics().elidedText(m_dock->windowTitle(), Qt::ElideRight, area.width());
   painter.drawText(area, Qt::AlignLeft | Qt::AlignVCenter, text);
 }
 

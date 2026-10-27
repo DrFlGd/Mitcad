@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files core/import/src/deviations.rs core/import/src/report.rs
-# check-all sources: core/import/src/lib.rs core/ffi/src/f3d_import.rs core/ffi/src/kernel/exchange.rs
-# check-all sources: core/f3d/src/testdata.rs core/tests/test_exchange.cpp
+# check-all sources: app/files core/import-replay/src/deviations.rs core/import-replay/src/report.rs
+# check-all sources: core/import-replay/src/lib.rs core/ffi/src/f3d_import.rs core/ffi/src/kernel/exchange.rs
+# check-all sources: core/asm/src/testdata.rs core/tests/test_exchange.cpp
 # Results that deviate from the file's, kept at the user's choice
 # (mitcad#379): an item of an .f3d design whose decoded definition builds a
 # result off the bodies stored in the file comes in as the file's stored
@@ -38,7 +38,7 @@ NAME=$(basename "$PART")
 open_design() {
   ui_key ctrl+o
   if [ -n "${2:-}" ]; then
-    ui_focus_dialog '^Mitcad$'
+    ui_focus_dialog '^MitCad$'
     ui_key d
   fi
   ui_type_path 'Open' "$1"

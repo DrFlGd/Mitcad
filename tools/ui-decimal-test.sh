@@ -8,7 +8,7 @@
 #     once the field is left; the body is 42.5 x 20 x 12.5 mm.
 #   - Change Parameters lists both with points; an entry of 7,5 is 7.5 mm,
 #     and max(1,5) is refused with the hint to write max(1; 5).
-# The model's rule: core/model/src/expr/mod.rs and its tests.
+# The model's rule: core/expr/src/lib.rs and its tests.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-decimal-test.sh

@@ -964,7 +964,7 @@ impl<K: Kernel> Document<K> {
 
     /// The `print_settings` query: the effective values of the three sets
     /// for a target, each with where it comes from.
-    pub(crate) fn print_settings_json(&self, target: &PrintTarget) -> Value {
+    pub fn print_settings_json(&self, target: &PrintTarget) -> Value {
         let effective = self.effective_print(target);
         let entry = |def: &KeyDef, value: &Value, from: &PrintFrom| -> Value {
             let mut out = self.print_from_json(from);
@@ -1036,7 +1036,7 @@ impl<K: Kernel> Document<K> {
     /// with its surface at Z = 0, and the shown bodies that do not fit
     /// (their box beyond the bed's outline or its height, below the bed, or
     /// over an excluded area).
-    pub(crate) fn build_volume_json(&self) -> Value {
+    pub fn build_volume_json(&self) -> Value {
         let effective = self.effective_print(&PrintTarget::Component(ComponentUid::ROOT));
         let printer = effective
             .printer
@@ -1145,7 +1145,7 @@ impl<K: Kernel> Document<K> {
     /// The `print_profiles` query: the design's profiles, each with its
     /// fields (not the raw printer blocks: which slicers have one) and the
     /// owners that chose it.
-    pub(crate) fn print_profiles_json(&self) -> Value {
+    pub fn print_profiles_json(&self) -> Value {
         Value::Array(
             self.state
                 .print_profiles

@@ -10,7 +10,7 @@
 //! list below, which lets every module reach it through `use super::*`.
 
 #[allow(unused_imports)]
-use mitcad_f3d::design::ir::Dump;
+use mitcad_dump::Dump;
 #[allow(unused_imports)]
 use mitcad_model::testing::MockKernel;
 #[allow(unused_imports)]
@@ -27,6 +27,37 @@ use serde_json::{Value, json};
 
 #[allow(unused_imports)]
 use super::*;
+// What the replay core's root uses, which these tests reached through
+// `use super::*` while they were in the core's crate (mitcad#785).
+#[allow(unused_imports)]
+use mitcad_dump::{Detail, ItemState, TimelineItem};
+#[allow(unused_imports)]
+use mitcad_import_base::body_scope;
+#[allow(unused_imports)]
+use mitcad_import_base::scaffold::{self, CandidateCore, substitute};
+#[allow(unused_imports)]
+use mitcad_import_replay::internal::ahead::Adding;
+#[allow(unused_imports)]
+use mitcad_import_replay::internal::retry::{Retry, Stay};
+#[allow(unused_imports)]
+use mitcad_import_replay::params::ParamMap;
+#[allow(unused_imports)]
+use mitcad_model::assembly::inverse;
+#[allow(unused_imports)]
+use mitcad_model::features::ValueInput;
+#[allow(unused_imports)]
+use mitcad_model::{
+    BaseInput, BodyUid, ComponentUid, FeatureUid, ImportBody, Kernel, OccurrenceUid,
+    RecomputeMonitor, SketchFrame, Transform,
+};
+#[allow(unused_imports)]
+use std::cell::Cell;
+#[allow(unused_imports)]
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+#[allow(unused_imports)]
+use std::sync::Arc;
+#[allow(unused_imports)]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // The shared test kernel, fixtures and builders.
 mod support;

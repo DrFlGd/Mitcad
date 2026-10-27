@@ -68,6 +68,8 @@
 //                           slots, toolbar containment and loaded project count
 //   expect-sketch-finish-layout  no title-row Finish Sketch or reserved gap;
 //                           ribbon and palette retain the enabled action
+//   expect-ribbon-labels <label>...  actual workspace labels, including
+//                           accessibility, and no all-caps group captions
 //   collapse-card <object-name> true|false  use the card's chevron button
 //   expect-setting <key> <value>     the current saved QSettings value
 //   expect-dialog-gone <title-regex> no matching Qt tool window remains visible
@@ -138,7 +140,7 @@
 //   native-hover <id> enter|leave send an AppKit tracking event through the
 //                           control's registered hover owner
 //   native-type <id> <text> replace an AppKit field editor's text
-//   native-choice <id> <title> choose a native popup's menu item
+//   native-choice <id> <title> choose a native popup item or workspace segment
 //   expect-native-duplicate-choices
 //                           verify distinct values with duplicate native labels
 //                           in command forms and secondary-dialog bindings
@@ -429,6 +431,7 @@ private:
   void testDialogControls(const QString& kind);
   void testMacToolButtons();
   void testSketchFinishLayout();
+  void testRibbonLabels(const QStringList& expected);
   void testNavigationRuntime();
   void testNavigationControls(const QString& mode);
   void testAssistantSetup(const QString& mode);

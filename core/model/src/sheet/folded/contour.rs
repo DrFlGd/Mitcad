@@ -18,8 +18,8 @@
 use super::bends::{BendMetrics, add_bend_strip, construction, port_frame, side};
 use super::*;
 use crate::features::sheet_contour::{ContourSide, SheetContourDef, rules_of};
-use crate::profile::cross;
 use crate::sketch::geometry as g2;
+use mitcad_vec3::cross;
 
 fn world(frame: &SketchFrame, v: [f64; 2]) -> [f64; 3] {
     std::array::from_fn(|i| v[0] * frame.x_axis[i] + v[1] * frame.y_axis[i])
@@ -167,7 +167,7 @@ pub(crate) fn contour<K: Kernel>(
     } else {
         std::array::from_fn(|i| start[i] + t * material[i])
     };
-    let parity = if crate::profile::dot(cross(x, y), front_to_back) > 0.0 {
+    let parity = if mitcad_vec3::dot(cross(x, y), front_to_back) > 0.0 {
         MaterialParity::Positive
     } else {
         MaterialParity::Negative

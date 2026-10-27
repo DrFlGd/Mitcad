@@ -33,7 +33,7 @@ use crate::kernel::Kernel;
 use crate::transform::Transform;
 
 /// An sRGB component in [0, 1] as linear light.
-pub(super) fn linear(c: f64) -> f64 {
+pub fn linear(c: f64) -> f64 {
     let c = c.clamp(0.0, 1.0);
     if c <= 0.04045 {
         c / 12.92

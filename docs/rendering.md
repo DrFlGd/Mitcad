@@ -39,7 +39,7 @@ this investigation does not change the renderer or enable AppKit by default.
 ### What the pinned application actually uses
 
 The pins are Qt 6.12.0 (`tools/dev-env/versions.sh`) and OCCT 8.0.1 with
-Mitcad's overlay patches (`vcpkg.json`, `third_party/vcpkg-ports`).
+MitCad's overlay patches (`vcpkg.json`, `third_party/vcpkg-ports`).
 `OcctViewer` derives from `QOpenGLWidget`; `initializeGL()` attaches OCCT to
 Qt's current context and `paintGL()` wraps the currently bound Qt FBO.
 `macSurfaceFormat()` currently lives in `app/OcctViewer.cpp`, and
@@ -124,10 +124,10 @@ renderer/version/extensions rather than relying on a default. Its current
 Metal implementation gates its maximum GLES version by GPU capability,
 caps conformant GLES at 3.0, and exposes IOSurface and native Metal texture
 interoperability. This is upstream capability evidence, not a validated
-Mitcad dependency pin. See [ANGLE Metal implementation](https://github.com/google/angle/blob/main/src/libANGLE/renderer/metal/DisplayMtl.mm)
+MitCad dependency pin. See [ANGLE Metal implementation](https://github.com/google/angle/blob/main/src/libANGLE/renderer/metal/DisplayMtl.mm)
 and [ANGLE development and backend selection](https://chromium.googlesource.com/angle/angle/+/main/doc/DevSetup.md).
 The pinned vcpkg baseline does offer an `angle[metal]` port at commit
-`d9fc4a372074b1079c193c422fc4a180e79b6636` (chromium/7258); Mitcad does not
+`d9fc4a372074b1079c193c422fc4a180e79b6636` (chromium/7258); MitCad does not
 depend on it. Any experiment should select and validate that exact build
 or explicitly review another pin rather than treating upstream `main`
 as a reproducible dependency.
@@ -148,9 +148,9 @@ following feature limits; these still require runtime image validation:
 | Feature | GLES path and consequence |
 |---|---|
 | MSAA into FBOs | `OpenGl_View::prepareFrameBuffers()` clamps to runtime sample limits and distinguishes MSAA textures from renderbuffers. GLES 3.0 can resolve a multisample renderbuffer into a single-sample immediate FBO; do not assume desktop texture-MSAA behavior or the same memory use. |
-| Polygon offsets | `OpenGl_Context::SetPolygonOffset()` supports fill offset but skips line/point offset enables for GLES. Current Mitcad offsets use `Aspect_POM_Fill`; future desktop-only line/point assumptions would need repair. |
+| Polygon offsets | `OpenGl_Context::SetPolygonOffset()` supports fill offset but skips line/point offset enables for GLES. Current MitCad offsets use `Aspect_POM_Fill`; future desktop-only line/point assumptions would need repair. |
 | Z-layer depth | `OpenGl_LayerList` applies depth test/write settings through GLES-compatible depth state. The rendered-image layer, grid, hidden geometry and selection layers still need visual checks for ordering. |
-| FXAA | No FXAA implementation or control was found in the pinned OCCT visualization sources or Mitcad. OCCT's `IsAntialiasingEnabled` is used by its ray-tracing path; it is not evidence of a raster FXAA pass. |
+| FXAA | No FXAA implementation or control was found in the pinned OCCT visualization sources or MitCad. OCCT's `IsAntialiasingEnabled` is used by its ray-tracing path; it is not evidence of a raster FXAA pass. |
 
 These checks correspond to the pinned [OCCT context](https://github.com/Open-Cascade-SAS/OCCT/blob/V8_0_1/src/Visualization/TKOpenGl/OpenGl/OpenGl_Context.cxx)
 and [view implementation](https://github.com/Open-Cascade-SAS/OCCT/blob/V8_0_1/src/Visualization/TKOpenGl/OpenGl/OpenGl_View.cxx),
@@ -267,11 +267,11 @@ with an embedded XPC service and leased IOSurfaces instead; see
   of an old protocol version, or none).
 - **Protocol** (`app/render/RenderProtocol.hpp`): one JSON object per
   line. The worker's first line is `hello` with its protocol version
-  (`kProtocolVersion`, now 8) and Mitcad's version, written before the
+  (`kProtocolVersion`, now 8) and MitCad's version, written before the
   renderer starts; the application sends nothing to a worker of another
   version, stops it and shows "The renderer cannot be used:
-  mitcad-render does not match this Mitcad (its protocol version is 1,
-  Mitcad's is 8); install them together" over the view. The final
+  mitcad-render does not match this MitCad (its protocol version is 1,
+  MitCad's is 8); install them together" over the view. The final
   render's batch mode is another way to run it, with its own events
   ([Final render](#final-render)). Commands: `device` (the first
   command, which the application sends once it has read `hello`: the
@@ -391,7 +391,7 @@ with an embedded XPC service and leased IOSurfaces instead; see
   whose appearance changes while the view renders is logged as `Render
   material swap <id>: <old> -> <new>; mesh reused|meshed again|sent
   again`. The
-  writer is Mitcad's own: OCCT's `RWGltf_CafWriter` needs OCCT built with
+  writer is MitCad's own: OCCT's `RWGltf_CafWriter` needs OCCT built with
   RapidJSON (vcpkg's `opencascade[rapidjson]`) and an XCAF document, which
   would have changed the normal build's OCCT.
 - **Camera**: the worker follows `V3d_View`'s camera: eye, target, up and
@@ -564,7 +564,7 @@ and the view shows the shaded bodies.
 
 Decisions: this uses OCCT's depth of the bodies, not a depth pass of
 the render (writing a render's depth into OCCT's depth buffer would need
-an OpenGL element of Mitcad's own, and its depth would fight with
+an OpenGL element of MitCad's own, and its depth would fight with
 sketches on faces). Bodies drawn without colour cannot do it: OCCT has
 no per-object colour mask, and an object blended with an alpha of 0
 (`Graphic3d_AlphaMode_MaskBlend`) did not hide the overlays drawn after
@@ -634,7 +634,7 @@ first denoised frame after a camera change came after 45–60 ms.
 
 ## Materials
 
-A body's appearance (`core/model/src/appearance.rs`, commands.md
+A body's appearance (`core/model-base/src/appearance.rs`, commands.md
 "Appearances") is a physically based parameter set with an optional
 texture for its base colour, which can bring a normal, a roughness, a
 metalness and an occlusion map (mitcad#313, commands.md "Texture map
@@ -851,7 +851,7 @@ Decisions and limits:
   so a body cut by a section analysis keeps its faces' colours where the
   cut shape keeps their names.
 - Texture coordinates come from Cycles' object coordinates rather than
-  UVs written by Mitcad: a texture change does not change the mesh's
+  UVs written by MitCad: a texture change does not change the mesh's
   hash, and the worker stays free of B-rep knowledge. The price is that a
   projection can only use what a shader sees at a point (its position and
   normal): box chooses per point, not per face, so a curved face shows
@@ -869,7 +869,7 @@ Decisions and limits:
   generates texture coordinates from object coordinates
   (`Graphic3d_TOTM_OBJECT`) only in its fixed-function pipeline, not in
   the shaders the view uses, so it would need texture coordinates of
-  Mitcad's own in each face's triangulation.
+  MitCad's own in each face's triangulation.
 - Cost: `mitcad-render --bench 640x480 --samples 64` with the 64 x 64
   checker on the block took 2.97–3.11 s with box projection and
   2.97–3.02 s planar, against 2.79–2.84 s without (load about 12 on the
@@ -897,7 +897,7 @@ Decisions and limits:
 ## Environment
 
 The light, the background, the ground and the film are the document's
-render settings (mitcad#47, `core/model/src/render_settings.rs`,
+render settings (mitcad#47, `core/model-base/src/render_settings.rs`,
 commands.md "Render settings"), saved with the design; View > Render
 Environment edits them as undo steps ([app/COMMANDS.md](../app/COMMANDS.md)).
 The worker gets the environment, the ground and whether the camera sees
@@ -1332,7 +1332,7 @@ Decisions and limits:
   distribution only in binary form, only for NVIDIA hardware and only
   under an agreement that binds the recipients to its terms, which the
   licence policy does not allow ([Licences](#licences)), and which cannot
-  work for open source software that anyone may build and pass on. Mitcad
+  work for open source software that anyone may build and pass on. MitCad
   neither builds nor ships it (the README's FAQ); CUDA renders on the same
   GPUs, without their RT cores.
 - Pascal, Maxwell and Volta need CUDA 12: CUDA 13 compiles for sm_75
@@ -1359,7 +1359,7 @@ cmake --preset dev
   folder restores them from vcpkg's binary cache.
 - Nothing of the renderer is built again when it has not changed: Cycles
   and Open Image Denoise stay prebuilt in the prefix, outside the build
-  folders, and no Mitcad build ever builds them; the worker's own sources
+  folders, and no MitCad build ever builds them; the worker's own sources
   (`app/render`) compile incrementally and through the shared compiler
   cache like the rest; a change elsewhere (in `core/`, say) compiles none
   of them, and `tools/check-all.sh` runs the render tests only when
@@ -1375,7 +1375,7 @@ cmake --preset dev
   ray tracing filter's weights) and Cycles (CPU with Embree and Open Image
   Denoise; no OSL, USD, Alembic, OpenVDB or OpenSubdiv) as
   release builds, and writes `install/cycles/mitcad-cycles.cmake` for
-  `cmake/Render.cmake`. A Debug build of Mitcad links the release
+  `cmake/Render.cmake`. A Debug build of MitCad links the release
   libraries, as it links OCCT's.
 - Cycles' tag v5.2.0 calls itself 5.3.0 (`util/version.h`).
 - GPU devices (mitcad#50, `build-cycles.sh --help`): `--cuda` builds
@@ -1545,7 +1545,7 @@ longest the first time (hwloc alone 10 minutes, Embree next), Cycles
 builds 390 MB). `mitcad-render.exe` is 11 MB, Open Image Denoise's core
 45 MB, Embree 33 MB, OpenImageIO 6 MB, OpenColorIO 5 MB.
 
-With `-Cuda` (mitcad#202, the same VM, 16 threads, while a Mitcad build
+With `-Cuda` (mitcad#202, the same VM, 16 threads, while a MitCad build
 ran beside it): the ten CUDA kernels took about 13 minutes with three
 parallel compiles, Cycles' host code 99 s more. The kernels are 29 MB
 compressed with zstd (2.8 to 3.8 MB per cubin, 1.2 MB of PTX; 161 MB of
@@ -2084,7 +2084,7 @@ retains its CPU/BNNS implementation. The generated
 options, both libraries' device configurations, source/tool pins and hashes of the builder,
 manifest, triplet and patches. Those inputs form the completion stamp.
 An old CPU-only prefix or changed input is rebuilt in place by the script;
-Mitcad's configure rejects an outdated export with the rebuild command.
+MitCad's configure rejects an outdated export with the rebuild command.
 OIDN's installed files are refreshed before its install-time rpath edits,
 so rebuilding an existing prefix is safe.
 
@@ -2810,7 +2810,7 @@ about 3 s.
 
 ## Licences
 
-Cycles (Apache-2.0; the code it bundles and Mitcad links, the sky model,
+Cycles (Apache-2.0; the code it bundles and MitCad links, the sky model,
 atomic operations and mikktspace, is Apache-2.0, BSD or MIT; its CUDA and
 HIP loaders are linked only with those devices, below), Open Image Denoise
 (Apache-2.0), Embree, oneTBB, OpenImageIO (Apache-2.0), OpenColorIO,
@@ -2835,7 +2835,7 @@ GPU devices (mitcad#50; also in [development.md](development.md#licence-policy))
   (section 1.1.2: an application with material functionality of its own).
   No toolkit file is shipped (not even the runtime, which the EULA's
   Attachment A would allow): the user's driver runs the kernels.
-- **OptiX**: not used by Mitcad. The SDK's headers are
+- **OptiX**: not used by MitCad. The SDK's headers are
   on GitHub (NVIDIA/optix-dev) without a login, but under NVIDIA's
   proprietary SDK licence (binary-only distribution, NVIDIA hardware
   only, recipients bound to its terms), and Cycles compiles them into the

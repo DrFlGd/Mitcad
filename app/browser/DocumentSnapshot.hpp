@@ -133,6 +133,11 @@ struct DocumentSnapshot {
   // entries (drawing, name, component, sheets), and those of a component.
   QJsonArray drawings;
   QJsonArray drawingsOf(const QString& component) const;
+  // Image references (mitcad#782): the `image_references` query's entries
+  // (settings, pixels, size, digest, and the corners at the marker or why
+  // the plane is not there), and one by name (an empty object when none).
+  QJsonArray imageReferences;
+  QJsonObject imageReference(const QString& name) const;
   // Saved in the document (P9): the root's Origin folder shown, and what
   // the view is isolated to (bodies and occurrences; none: everything).
   bool originShown = false;

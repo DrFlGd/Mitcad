@@ -1174,11 +1174,11 @@ Ui-Step 'Profile in the same design (F3)' { Ui-Key 'F3' }
 Ui-ExpectNew "BUILD profile starts with test-profiles/${second}: " 'the part placed last in this design'
 Ui-ExpectNew "Panel Profile tile part: $($p30Names[$second])" 'its tile'
 Ui-Step 'Close (Escape)'                 { Ui-Key 'Escape' }
-# The message boxes titled "Mitcad" are new windows (Ui-FocusDialog).
-$before = Ui-Windows '^Mitcad$'
+# The message boxes titled "MitCad" are new windows (Ui-FocusDialog).
+$before = Ui-Windows '^MitCad$'
 Ui-Mark
 Ui-Step 'new design (Ctrl+N)'            { Ui-Key 'ctrl+n' }
-Ui-FocusDialog '^Mitcad$' -Except $before
+Ui-FocusDialog '^MitCad$' -Except $before
 Ui-Step "don't save (D)"                 { Ui-Key 'd' }
 Ui-FocusMain
 Ui-ExpectNew 'New document' 'a new design'

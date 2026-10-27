@@ -11,10 +11,10 @@
 
 use std::collections::HashMap;
 
-use mitcad_f3d::asm::AsmFile;
-use mitcad_f3d::asm::history::History;
-use mitcad_f3d::asm::token::Token;
-use mitcad_f3d::ids::View;
+use mitcad_asm::asm::AsmFile;
+use mitcad_asm::asm::history::History;
+use mitcad_asm::asm::token::Token;
+use mitcad_asm::ids::View;
 
 use crate::dc::{self, Definitions, type_id};
 
@@ -841,7 +841,7 @@ impl BrepState {
         // operation deleted, their copies standing for them.
         // (As the history's bodies are converted: `deleted_bodies`, the
         // `history` command of `mitcad-ipt-inspect`.)
-        let mut bodies: Vec<usize> = mitcad_f3d::convert::body_records(file)
+        let mut bodies: Vec<usize> = mitcad_asm::convert::body_records(file)
             .into_iter()
             .filter(|(_, top)| *top)
             .map(|(b, _)| b)

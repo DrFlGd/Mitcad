@@ -119,10 +119,10 @@ QJsonObject assistantBundleManifest(const QString& bridge, bool windows, const Q
   const QString entry = QStringLiteral("server/mitcad-mcp-launcher") + (windows ? QStringLiteral(".exe") : QString());
   return {{QStringLiteral("manifest_version"), QStringLiteral("0.3")},
           {QStringLiteral("name"), QStringLiteral("mitcad-desktop")},
-          {QStringLiteral("display_name"), QStringLiteral("Mitcad")},
+          {QStringLiteral("display_name"), QStringLiteral("MitCad")},
           {QStringLiteral("version"), QStringLiteral("1.0.0")},
-          {QStringLiteral("description"), QStringLiteral("Inspect and edit the open Mitcad design through local MCP")},
-          {QStringLiteral("author"), QJsonObject{{QStringLiteral("name"), QStringLiteral("Mitcad developers")}}},
+          {QStringLiteral("description"), QStringLiteral("Inspect and edit the open MitCad design through local MCP")},
+          {QStringLiteral("author"), QJsonObject{{QStringLiteral("name"), QStringLiteral("MitCad developers")}}},
           {QStringLiteral("server"), QJsonObject{{QStringLiteral("type"), QStringLiteral("binary")},
               {QStringLiteral("entry_point"), entry},
               {QStringLiteral("mcp_config"), QJsonObject{
@@ -201,7 +201,7 @@ QString assistantConfigurationPolicy(const QString& path) {
            << QStringLiteral("/Library/Managed Preferences/com.openai.chat.plist");
 #endif
   for (const QString& policy : policies) {
-    if (QFileInfo::exists(policy)) return QObject::tr("Managed settings block this change. Ask your administrator to allow Mitcad.");
+    if (QFileInfo::exists(policy)) return QObject::tr("Managed settings block this change. Ask your administrator to allow MitCad.");
   }
   return {};
 }

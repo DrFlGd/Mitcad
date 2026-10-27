@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! The remote repositories' JSON commands (`core/model/src/api/commands.md`,
+//! The remote repositories' JSON commands (`core/model-api/src/commands.md`,
 //! "Remote repositories"). Every answer has `error` (null, or `class`,
 //! `message` and `detail`) and `log` (the git commands run, credentials
 //! hidden): a failure of the network or of signing in is an answer the

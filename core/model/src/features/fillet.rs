@@ -167,6 +167,12 @@ pub struct FilletSetDef<P = ParamId> {
     /// Every edge of these faces.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub faces: Vec<FaceName>,
+    /// Every edge of the body as it is when the fillet is computed (the
+    /// FreeCAD import's "use all edges", mitcad#793): no edges or faces
+    /// listed, the only set of the fillet. Edges an earlier feature adds or
+    /// takes away after an edit are rounded or not with it.
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub all_edges: bool,
     pub size: FilletSizeDef<P>,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub tangent_chain: bool,
@@ -187,6 +193,7 @@ impl<P> FilletSetDef<P> {
         Self {
             edges,
             faces: Vec::new(),
+            all_edges: false,
             size,
             tangent_chain: true,
             continuity: Continuity::Tangent,
@@ -252,6 +259,7 @@ impl<P: Serialize> Serialize for FilletDef<P> {
         let plain = match self.sets.as_slice() {
             [set]
                 if set.faces.is_empty()
+                    && !set.all_edges
                     && set.tangent_chain
                     && is_tangent(&set.continuity)
                     && set.tangency_weight.is_none()
@@ -383,6 +391,7 @@ impl<P> FilletDef<P> {
             sets.push(FilletSetDef {
                 edges: set.edges.clone(),
                 faces: set.faces.clone(),
+                all_edges: set.all_edges,
                 size,
                 tangent_chain: set.tangent_chain,
                 continuity: set.continuity,
@@ -428,7 +437,8 @@ impl FeatureInfo for FilletDef {
                     e
                 }
             };
-            if set.edges.is_empty() && set.faces.is_empty() {
+            check_all_edges(set.all_edges, &set.edges, &set.faces, self.sets.len()).map_err(at)?;
+            if set.edges.is_empty() && set.faces.is_empty() && !set.all_edges {
                 return Err(at("no edges selected".to_owned()));
             }
             if !set.edges.is_empty() {
@@ -441,6 +451,11 @@ impl FeatureInfo for FilletDef {
                 if self.sets[..i].iter().any(|s| s.edges.contains(edge)) {
                     return Err(at(format!("edge {edge} is in two edge sets")));
                 }
+            }
+            if set.all_edges && set.size.start_vertex().is_some() {
+                return Err(at(
+                    "a set of every edge has no start vertex (it is no one chain)".to_owned(),
+                ));
             }
             if let FilletSizeDef::Variable { mid, .. } = &set.size {
                 if let Some(m) = mid.iter().find(|m| !(m.position > 0.0 && m.position < 1.0)) {
@@ -520,6 +535,42 @@ impl FeatureInfo for FilletDef {
     }
 }
 
+/// A set of every edge (`all_edges`, mitcad#793) lists no edges or faces
+/// and is the feature's only set (fillets and chamfers).
+pub(super) fn check_all_edges(
+    all_edges: bool,
+    edges: &[EdgeName],
+    faces: &[FaceName],
+    sets: usize,
+) -> Result<(), String> {
+    if !all_edges {
+        return Ok(());
+    }
+    if !edges.is_empty() || !faces.is_empty() {
+        return Err("a set of every edge lists no edges or faces".to_owned());
+    }
+    if sets > 1 {
+        return Err("a set of every edge is the only set".to_owned());
+    }
+    Ok(())
+}
+
+/// Every edge of a body as the kernel names them, for a set of every edge
+/// (`all_edges`, mitcad#793): taken when the feature is computed, so that
+/// the edges an edit upstream adds are in it.
+pub(super) fn every_edge<K: Kernel>(kernel: &K, shape: &K::Shape) -> Result<Vec<EdgeName>, String> {
+    let edges: Vec<EdgeName> = kernel
+        .edges(shape)
+        .map_err(kernel_error)?
+        .into_iter()
+        .filter_map(|e| e.name?.parse().ok())
+        .collect();
+    if edges.is_empty() {
+        return Err("the body has no named edges".to_owned());
+    }
+    Ok(edges)
+}
+
 fn check_weight(weight: f64) -> Result<(), String> {
     if (0.1..=2.0).contains(&weight) {
         Ok(())
@@ -549,6 +600,10 @@ impl<K: Kernel> Evaluate<K> for FilletDef {
         // is found again (mitcad#272); the definition keeps its names.
         let mut found = self.clone();
         for set in &mut found.sets {
+            if set.all_edges {
+                set.edges = every_edge(ctx.kernel, &shape)?;
+                continue;
+            }
             set.edges = ctx.require_edges(self.body, &shape, &set.edges)?;
             set.faces = require_faces(ctx, self.body, &shape, &set.faces)?;
             if let Some(face) = &set.reference_face {

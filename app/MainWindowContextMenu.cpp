@@ -238,6 +238,11 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   const QString sketch = sketchOf(first);
   if (selection.size() == 1 && !sketch.isEmpty()) {
     addCall(QStringLiteral("sketch"), tr("Edit Sketch"), [this, sketch] { editSketch(sketch); });
+    // Another plane or face, an offset and a rotation on it (mitcad#787).
+    addCall(QStringLiteral("offset-plane"), tr("Redefine Sketch Plane"), [this, sketch] {
+      startCommand(QStringLiteral("sketch.redefine_plane"),
+                   {SelectionItem{SelectKind::Sketch, sketch, QString(), QString()}}, nullptr);
+    });
     addCall(QStringLiteral("export"), tr("Save As DXF"), [this, sketch] { exportSketch(sketch); });
   }
   for (const QPair<const CommandDef*, bool>& command : fitting[static_cast<int>(Kind::Inspect)]) {

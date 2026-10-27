@@ -456,7 +456,8 @@ Handle(Geom_Surface) closed_round(const Handle(Geom_Surface)& surface) {
                              " mm apart");
   }
   b->SetVPeriodic();
-  return b;
+  // (An explicit upcast: GCC 13 does not convert the handle on return.)
+  return Handle(Geom_Surface)(b);
 }
 
 } // namespace

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/framework app/MainWindow.cpp app/commands/SketchCommands.cpp app/sketch tools/cli
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs
+# check-all sources: core/sketch core/model-api/src/sketch.rs
 # A dimension is typed without a click into its field (mitcad#338), on a
 # design mitcad-cli makes: Sketch1 (F1) on XY with one fixed line c1 from
 # (0, 0) to (40, 0).

@@ -62,7 +62,7 @@ use crate::assembly::{Assembly, inverse};
 use crate::constraints::{
     self, ConstraintSetResult, Geo, RowResult, RowValues, resolve_geo, row_spec,
 };
-use crate::datum::{Datum, Vec3, canonical_axis, default_x_axis, unit};
+use crate::datum::{Datum, Vec3};
 use crate::document::DocState;
 use crate::features::constraint_set::row_label;
 use crate::features::geom_ref::{self, GeomRef, Resolver};
@@ -71,10 +71,12 @@ use crate::features::{FeatureDef, FeatureEntry, PlacementChange, SketchOutput};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::Kernel;
 use crate::parameters::{ParamId, Parameters};
-use crate::profile::{cross, dot};
 use crate::recompute::{BodyState, Recomputed, Versioned, place};
 use crate::sketch::geometry::Curve2;
 use crate::transform::Transform;
+use mitcad_model_base::internal::datum::{canonical_axis, default_x_axis};
+use mitcad_vec3::unit;
+use mitcad_vec3::{cross, dot};
 
 /// Distances below this hold a joint, mm.
 const LINEAR: f64 = 1e-6;
@@ -235,7 +237,8 @@ impl SlideAxis {
 
 /// A frame as the rigid transform from its own coordinates to the
 /// coordinates it is given in: x, y = z × x and z as the columns.
-pub(crate) fn frame(origin: Vec3, x_axis: Vec3, z_axis: Vec3) -> Transform {
+#[doc(hidden)]
+pub fn frame(origin: Vec3, x_axis: Vec3, z_axis: Vec3) -> Transform {
     let y_axis = cross(z_axis, x_axis);
     Transform {
         linear: std::array::from_fn(|r| [x_axis[r], y_axis[r], z_axis[r]]),
@@ -250,7 +253,8 @@ fn frame_along(origin: Vec3, z: Vec3) -> Transform {
 }
 
 /// The columns of a frame: origin, x, y and z axes.
-pub(crate) fn frame_parts(t: &Transform) -> [Vec3; 4] {
+#[doc(hidden)]
+pub fn frame_parts(t: &Transform) -> [Vec3; 4] {
     let column = |c: usize| -> Vec3 { std::array::from_fn(|r| t.linear[r][c]) };
     [t.translation, column(0), column(1), column(2)]
 }
@@ -272,7 +276,8 @@ pub fn motion_transform(
 
 /// The fixed part of a joint between its frames: the angle about z, the
 /// offset along z and the flip (half a turn about x).
-pub(crate) fn alignment(angle: f64, offset: f64, flip: bool) -> Transform {
+#[doc(hidden)]
+pub fn alignment(angle: f64, offset: f64, flip: bool) -> Transform {
     let turn = Motion::Rz.transform(angle);
     let lift = Motion::Tz.transform(offset);
     let over = if flip {
@@ -345,7 +350,8 @@ pub fn motion_values(
 /// A frame's override: given parts replace the resolved ones (in the
 /// component's coordinates); the x axis is projected onto the plane across
 /// z, or the default when it is along z.
-pub(crate) fn apply_override(frame_in: &Transform, o: &FrameOverride) -> Result<Transform, String> {
+#[doc(hidden)]
+pub fn apply_override(frame_in: &Transform, o: &FrameOverride) -> Result<Transform, String> {
     let [origin, x, _, z] = frame_parts(frame_in);
     let origin = o.origin.unwrap_or(origin);
     let z = match o.z_axis {
@@ -383,7 +389,8 @@ pub(crate) fn apply_override(frame_in: &Transform, o: &FrameOverride) -> Result<
 ///
 /// Other x axes are the default for z (the model X projected, Y when z is
 /// along X).
-pub(crate) fn origin_frame(r: &mut impl Resolver, geometry: &GeomRef) -> Result<Transform, String> {
+#[doc(hidden)]
+pub fn origin_frame(r: &mut impl Resolver, geometry: &GeomRef) -> Result<Transform, String> {
     let identity_at = Transform::translation;
     let datum_frame = |datum: Datum| match datum {
         Datum::Plane(p) => frame(p.origin, p.x_axis, p.normal()),
@@ -481,7 +488,8 @@ pub(crate) fn origin_frame(r: &mut impl Resolver, geometry: &GeomRef) -> Result<
 /// The component an occurrence path from `component` ends in: the last
 /// occurrence's, or `component` itself for the empty path. Fails for an
 /// occurrence that does not exist or is not placed where the path says.
-pub(crate) fn path_component(
+#[doc(hidden)]
+pub fn path_component(
     assembly: &Assembly,
     component: ComponentUid,
     path: &[OccurrenceUid],
@@ -506,7 +514,8 @@ pub(crate) fn path_component(
 
 /// Finds an occurrence path from `component` by uids (`O1/O4`) or names
 /// (`Arm:1/Pin:2`); the empty text is the component itself.
-pub(crate) fn find_path_from(
+#[doc(hidden)]
+pub fn find_path_from(
     assembly: &Assembly,
     component: ComponentUid,
     text: &str,
@@ -660,7 +669,8 @@ pub(crate) fn occurrences_used(def: &FeatureDef) -> Vec<OccurrenceUid> {
 }
 
 /// Explicit occurrence references, including geometry links and timeline moves.
-pub(crate) fn referenced_occurrences(def: &FeatureDef) -> Vec<OccurrenceUid> {
+#[doc(hidden)]
+pub fn referenced_occurrences(def: &FeatureDef) -> Vec<OccurrenceUid> {
     let mut out = occurrences_used(def);
     // A move's points and axes picked in occurrences (mitcad#699).
     if let Some(spec) = def.move_spec() {
@@ -828,7 +838,8 @@ pub struct JointResult {
 /// driven to (its position, else its rest value), at the joint's point of
 /// the timeline.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct MotionSpec {
+#[doc(hidden)]
+pub struct MotionSpec {
     pub motion: Motion,
     pub min: Option<f64>,
     pub max: Option<f64>,
@@ -841,7 +852,8 @@ pub(crate) struct MotionSpec {
 /// timeline), and the joint holds when
 /// `frame_a = frame_b · motion(values) · alignment`.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ActiveJoint {
+#[doc(hidden)]
+pub struct ActiveJoint {
     pub uid: FeatureUid,
     pub component: ComponentUid,
     pub kind: JointKind,
@@ -913,7 +925,8 @@ impl ActiveJoint {
 
 /// The joints' part of a recompute's results.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct JointsState {
+#[doc(hidden)]
+pub struct JointsState {
     pub joints: BTreeMap<FeatureUid, JointResult>,
     /// Rigid groups in effect, in timeline order: the feature, its
     /// component and the occurrences.
@@ -2138,7 +2151,8 @@ pub(crate) fn orphaned(state: &DocState) -> BTreeSet<FeatureUid> {
 }
 
 /// Every free motion's limits as values: min, max and rest.
-pub(crate) fn limit_values(
+#[doc(hidden)]
+pub fn limit_values(
     params: &Parameters,
     limits: &BTreeMap<Motion, crate::features::joint::Limit<ParamId>>,
 ) -> BTreeMap<Motion, [Option<f64>; 3]> {
@@ -2149,4 +2163,20 @@ pub(crate) fn limit_values(
             (*m, [v(&l.min), v(&l.max), v(&l.rest)])
         })
         .collect()
+}
+
+// The frame of a joint origin before the joint exists (mitcad#778).
+
+/// The frame a joint origin gives at the marker
+/// ([`Document::joint_frame`](crate::document::Document::joint_frame); the
+/// api's `joint_frame` query and the import's joints ask for it).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OriginFrame {
+    /// The component the occurrence path ends in, whose geometry the
+    /// origin is.
+    pub component: ComponentUid,
+    /// The frame in the coordinates of the component the path starts in.
+    pub frame: Transform,
+    /// The frame in the coordinates of its own component.
+    pub local: Transform,
 }

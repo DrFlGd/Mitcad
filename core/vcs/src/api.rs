@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! The version history as JSON commands, for the application and
-//! `mitcad-cli` through the C++ bridge (`core/model/src/api/commands.md`,
+//! `mitcad-cli` through the C++ bridge (`core/model-api/src/commands.md`,
 //! "Version history" and "Remote repositories"). [`ProjectRepo::command`]
 //! answers in JSON, [`ProjectRepo::command_text`] in text for people;
 //! [`ProjectRepo::command_with`] runs a remote command with a [`Control`]
@@ -290,7 +290,7 @@ fn outcome_json(outcome: &CommitOutcome, files: &str) -> Value {
 
 // Local and Cloud projects (mitcad#89).
 
-/// Runs a command without a project (`core/model/src/api/commands.md`,
+/// Runs a command without a project (`core/model-api/src/commands.md`,
 /// "Projects": inspect_folder, check_remote, create_project, clone_project,
 /// init_bare, host_keys, trust_host_key, ssh_public_key, git_info) whose
 /// progress `control` shows and whose cancel request it carries; the

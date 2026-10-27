@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch tools/cli
-# check-all sources: core/model/src/document/plane_geometry.rs core/model/src/api/sketch.rs
+# check-all sources: core/model/src/document/plane_geometry.rs core/model-api/src/sketch.rs
 # Body edges and vertices in the sketch plane through the real UI
 # (mitcad#256, mitcad#258), with sketches on the top face of a 60 x 40 x 20
 # block. Sketch2 has two free points:

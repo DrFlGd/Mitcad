@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/commands/SketchCommands.cpp tools/cli
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs core/solver
+# check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
 # Regular polygons stay regular (mitcad#303), through the real UI, on a
 # design mitcad-cli makes with an empty Sketch1 (F1) on XY:
 #   - Circumscribed Polygon: a hexagon from the origin (its centre joins

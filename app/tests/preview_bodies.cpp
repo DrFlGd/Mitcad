@@ -4,7 +4,7 @@
 // preview report and the bodies the view shows, for a synthetic design with
 // components placed off the origin, hidden bodies and occurrences and a
 // linked component. The reports are those the model gives for such a design
-// (core/model/src/preview_placement_tests.rs checks the model's side).
+// (core/model-tests/api/src/preview_placement_tests.rs checks the model's side).
 #include "framework/PreviewBodies.hpp"
 
 #include <cmath>

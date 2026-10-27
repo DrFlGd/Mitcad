@@ -47,16 +47,12 @@
 //! of these keys as the slicer's text.
 
 mod bambu;
-#[cfg(test)]
-mod corpus;
+/// The slicer version the 3MF project files name, for tests (mitcad#777).
+#[cfg(any(test, feature = "testing"))]
+pub use bambu::version as bambu_version;
 mod cura;
 mod prusa;
-mod source;
-#[cfg(test)]
-mod tests;
-// Purge volumes on filament changes (mitcad#705).
-#[cfg(test)]
-mod purge_tests;
+pub(crate) mod source;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -392,7 +388,8 @@ pub(crate) fn material_from_filament(
 }
 
 /// `#RRGGBB` (or `#RRGGBBAA`) as sRGB components in [0, 1].
-pub(crate) fn hex_rgb(text: &str) -> Option<[f64; 3]> {
+#[doc(hidden)]
+pub fn hex_rgb(text: &str) -> Option<[f64; 3]> {
     let hex = print_keys::color(text)?;
     let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
     Some([byte(1)?, byte(3)?, byte(5)?].map(|c| f64::from(c) / 255.0))

@@ -101,8 +101,8 @@ $uninstallKeys = @{
            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Mitcad')
 }
 $vendorKeys = @{
-  user = @('HKCU:\Software\Mitcad developers')
-  all  = @('HKLM:\Software\WOW6432Node\Mitcad developers', 'HKLM:\Software\Mitcad developers')
+  user = @('HKCU:\Software\MitCad developers')
+  all  = @('HKLM:\Software\WOW6432Node\MitCad developers', 'HKLM:\Software\MitCad developers')
 }
 $startMenu = @{
   user = [Environment]::GetFolderPath('Programs')
@@ -181,7 +181,7 @@ function Test-Registered([string]$In, [string]$Install, [string]$When) {
     $allCommand = Get-Default 'HKLM:\Software\Classes\Mitcad.Project\shell\open\command'
     if ($allCommand -and $allCommand.Contains("$Install\bin\mitcad.exe")) { Fail "${When}: .mitcad registered for all users too" }
   }
-  $shortcut = Join-Path $startMenu[$In] 'Mitcad\Mitcad.lnk'
+  $shortcut = Join-Path $startMenu[$In] 'MitCad\MitCad.lnk'
   if (Test-Path $shortcut) { Pass "${When}: Start menu shortcut $shortcut" } else { Fail "${When}: no $shortcut" }
 }
 
@@ -194,7 +194,7 @@ function Test-Unregistered([string]$In, [string]$Install) {
     Where-Object { Test-Path $_ })
   if ($left.Count -eq 0) { Pass "no registry key of the installation left in $($hive[$In])" }
   else { Fail "left in the registry: $($left -join ', ')" }
-  $folder = Join-Path $startMenu[$In] 'Mitcad'
+  $folder = Join-Path $startMenu[$In] 'MitCad'
   if (Test-Path $folder) { Fail "the Start menu folder $folder remains" } else { Pass 'Start menu folder removed' }
 }
 
@@ -486,9 +486,10 @@ function Test-Update([string]$In, [string]$Install, [string]$Work, [switch]$Full
     Ui-ExpectLog "\Mitcad $($scopeLog[$In])" "the installation is $($scopeName[$In])"
     Ui-ExpectLog '[Release Notes, Install, Skip This Version, Later]' 'the start-up check offers Install' 30
     Ui-ExpectLog 'Update notice Install at ' 'the notice places Install'
-    # The question to save is titled "Mitcad", as are hidden windows of the
-    # app (the 3D view's offscreen surfaces): it is the new one.
-    $hidden = Ui-Windows '^Mitcad$'
+    # The question to save is titled "MitCad"; hidden windows of the app
+    # (the 3D view's offscreen surfaces) take the application name: it is
+    # the new one.
+    $hidden = Ui-Windows '^MitCad$'
     Ui-ClickLogged 'Update notice Install'
     Ui-ExpectLog 'Update verified: ' 'the download is verified' 120
     # A private folder of a random name (mitcad#603), not the fixed
@@ -498,7 +499,7 @@ function Test-Update([string]$In, [string]$Install, [string]$Work, [switch]$Full
     if ($folder -match '^mitcad-update-.+$') { Pass "the download is in a private folder ($folder)" }
     else { Fail "the download is not in a private folder: '$verified'" }
     Ui-ExpectLog "Update staged: 0.0.0 -> $version" 'the update waits for Mitcad to quit'
-    Ui-FocusDialog '^Mitcad$' -Except $hidden
+    Ui-FocusDialog '^MitCad$' -Except $hidden
     Ui-Key 'Return' # Save, the default
     if (-not $script:UiProcess.WaitForExit(60000)) { Ui-Fail 'Mitcad did not quit' }
     Pass 'asked to save, saved, quit'

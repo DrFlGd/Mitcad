@@ -153,6 +153,82 @@ fn check_fractions(one: f64, two: f64, closed: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Where a sweep's profile lies on its path (mitcad#795): the preview
+/// reports it as `sweep_path`, and the Sweep panel shows Distance 2 (the
+/// part before the profile) only for a profile past the start of an open
+/// path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SweepPlace {
+    pub closed: bool,
+    pub profile_at: ProfileAt,
+}
+
+/// The place of the profile along the path as it is swept (after `flip`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileAt {
+    Start,
+    End,
+    /// Between the ends, or anywhere on a closed path.
+    Inside,
+}
+
+/// Where the profile of plane `frame` whose middle is `center` lies on
+/// `path`: at an end of an open path when that end lies in the profile's
+/// plane (the end nearer to `center` when both do), otherwise inside. The
+/// geometry starts the sweep where the path crosses the profile's plane;
+/// this tells the ends from the rest without the kernel.
+pub(crate) fn profile_place(
+    path: &[PathCurve],
+    frame: &SketchFrame,
+    center: [f64; 3],
+) -> SweepPlace {
+    let closed = path::is_closed(path);
+    let ends = match (path.first(), path.last()) {
+        (Some(first), Some(last)) => path::curve_ends(&first.curve)
+            .zip(path::curve_ends(&last.curve))
+            .map(|((start, _), (_, end))| (start, end)),
+        _ => None,
+    };
+    let normal = mitcad_vec3::unit(frame.normal());
+    let (Some((start, end)), Some(normal), false) = (ends, normal, closed) else {
+        return SweepPlace {
+            closed,
+            profile_at: ProfileAt::Inside,
+        };
+    };
+    let tolerance = mitcad_model_base::curves::tolerance(path);
+    let on_plane = |p: [f64; 3]| {
+        mitcad_vec3::dot(mitcad_vec3::sub(p, frame.origin), normal).abs() <= tolerance
+    };
+    let profile_at = match (on_plane(start), on_plane(end)) {
+        (true, true)
+            if mitcad_vec3::distance(end, center) < mitcad_vec3::distance(start, center) =>
+        {
+            ProfileAt::End
+        }
+        (true, _) => ProfileAt::Start,
+        (false, true) => ProfileAt::End,
+        (false, false) => ProfileAt::Inside,
+    };
+    SweepPlace { closed, profile_at }
+}
+
+/// The middle of the profile regions' bounds, in model space.
+fn regions_center(frame: &SketchFrame, regions: &[crate::profile::ProfileRegion]) -> [f64; 3] {
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    for region in regions {
+        let (lo, hi) = region.bounds();
+        min = [min[0].min(lo[0]), min[1].min(lo[1])];
+        max = [max[0].max(hi[0]), max[1].max(hi[1])];
+    }
+    if !(min[0].is_finite() && max[0].is_finite() && min[1].is_finite() && max[1].is_finite()) {
+        return frame.origin;
+    }
+    frame.point([(min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0])
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SweepDef<P = ParamId> {
@@ -685,6 +761,11 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
         .map_err(|e| format!("path: {e}"))?;
         if self.flip {
             path = path::reversed_path(path);
+        }
+        // Where the profile lies on the path, for the panel (mitcad#795).
+        if face_profile.is_none() && !fixed && !regions.is_empty() {
+            let center = regions_center(&frame, &regions);
+            ctx.sweep_place = Some(profile_place(&path, &frame, center));
         }
         // Fixed curves (mitcad#548): their chains, from the plane square to
         // the path at its start through their first point.

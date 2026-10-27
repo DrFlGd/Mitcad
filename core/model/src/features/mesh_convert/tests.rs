@@ -10,9 +10,9 @@ use serde_json::json;
 
 use super::prism::{certify_nesting, fit_loop};
 use super::{SectionLoop, convert_prismatic_mesh, profile_regions};
-use crate::document_tests::{block, def};
 use crate::exchange::{BaseInput, ImportBody, TriangleMesh};
 use crate::kernel::BoundingBox;
+use crate::test_support::{block, def};
 use crate::testing::MockShape;
 use crate::{Document, FeatureStatus};
 

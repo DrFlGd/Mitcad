@@ -52,16 +52,19 @@ use super::construction::datum_kind;
 use super::sketch::SketchOutput;
 use super::{CheckContext, EvalContext, References};
 use crate::datum::{
-    CurveGeometry, Datum, DatumAxis, DatumKind, DatumPlane, LINEAR, OriginDatum, PathParameter,
-    PathPoint, SurfaceGeometry, SurfacePoint, Vec3, add, canonical_axis, norm, scale, sub, unit,
+    CurveGeometry, Datum, DatumAxis, DatumKind, DatumPlane, OriginDatum, PathParameter, PathPoint,
+    SurfaceGeometry, SurfacePoint, Vec3,
 };
 use crate::ids::{BodyUid, EntityUid, FeatureUid};
 use crate::kernel::Kernel;
-use crate::profile::{SegmentGeometry, dot};
+use crate::profile::SegmentGeometry;
 use crate::recompute::Read;
 use crate::sketch::geometry::Curve2;
 use crate::topo::{EdgeName, FaceName, VertexName};
 use crate::transform::Transform;
+use mitcad_model_base::internal::datum::{LINEAR, canonical_axis};
+use mitcad_vec3::dot;
+use mitcad_vec3::{add, norm, scale, sub, unit};
 
 /// A geometric input of a feature (see the module documentation).
 #[derive(Debug, Clone, PartialEq)]
@@ -909,7 +912,8 @@ impl PathRef {
 
 /// Where references resolve: a feature being evaluated, which records what
 /// it reads for the recompute cache, or the document at the marker.
-pub(crate) trait Resolver {
+#[doc(hidden)]
+pub trait Resolver {
     type Kernel: Kernel;
 
     fn kernel(&self) -> &Self::Kernel;
@@ -1259,7 +1263,7 @@ fn sketch_chain(
                 end,
                 closed: false,
             } if (major - minor).abs() <= LINEAR => {
-                let y_axis = crate::profile::cross(normal, x_axis);
+                let y_axis = mitcad_vec3::cross(normal, x_axis);
                 let (sin, cos) = start.sin_cos();
                 Ok(PathCurve::Arc {
                     center,
@@ -1582,7 +1586,7 @@ impl PathCurve {
             } => {
                 let speed = Self::speed(*radius, *pitch);
                 let t = start + s / speed;
-                let y = crate::profile::cross(*axis, *x);
+                let y = mitcad_vec3::cross(*axis, *x);
                 let d = add(
                     add(scale(*x, -radius * t.sin()), scale(y, radius * t.cos())),
                     scale(*axis, pitch / std::f64::consts::TAU),
@@ -2048,7 +2052,8 @@ impl GeomRef {
                 },
                 (None, None, Some(point)) => Self::SketchPoint {
                     sketch,
-                    point: crate::sketch::point_serde::parse(&point).map_err(|e| e.to_string())?,
+                    point: mitcad_sketch::internal::point_serde::parse(&point)
+                        .map_err(|e| e.to_string())?,
                 },
                 _ => {
                     return Err(

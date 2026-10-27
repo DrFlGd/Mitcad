@@ -85,7 +85,7 @@ constexpr int kLibraryColumn = 3;
 constexpr int kVersionsColumn = 4;
 constexpr int kLicenceColumn = 5;
 
-QString autoUpdateTip() { return QObject::tr("Fetch this library when Mitcad starts"); }
+QString autoUpdateTip() { return QObject::tr("Fetch this library when MitCad starts"); }
 
 // Fetches the sources one after another (Fetch All in Libraries..., Update in
 // the library browser, mitcad#317), then refreshes the dialog, and reports
@@ -244,7 +244,7 @@ LibrariesDialog::LibrariesDialog(QWidget* parent) : QDialog(parent) {
   auto* intro = new QLabel(tr("Component libraries and community indexes are git repositories. The parts a design "
                               "uses keep the version chosen for them; fetching only brings newer versions to "
                               "choose from. Libraries are fetched when you ask. A source with Auto-update on is "
-                              "also fetched in the background when Mitcad starts."));
+                              "also fetched in the background when MitCad starts."));
   intro->setWordWrap(true);
   layout->addWidget(intro);
   m_table = new QTableWidget(0, 6);
@@ -1267,7 +1267,7 @@ PublishLibraryDialog::PublishLibraryDialog(std::function<QString()> design, std:
   setWindowTitle(tr("Publish to Library"));
   resize(640, 640);
   auto* layout = new QVBoxLayout(this);
-  auto* intro = new QLabel(tr("Adds this design to a library of your own: a folder that is a Mitcad project with "
+  auto* intro = new QLabel(tr("Adds this design to a library of your own: a folder that is a MitCad project with "
                               "version history. Push it to a git host, then others add its URL in Libraries; "
                               "a community index lists it when its maintainers take the entry."));
   intro->setWordWrap(true);

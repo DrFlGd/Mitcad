@@ -7,6 +7,7 @@
 use super::*;
 use crate::references::{Referenced, link_references};
 use mitcad_model::OccurrenceUid;
+use mitcad_model_api::DocumentApi;
 
 /// No bodies named by body objects (no derive names them).
 static NO_ENTITIES: std::collections::BTreeMap<u64, BodyUid> = std::collections::BTreeMap::new();

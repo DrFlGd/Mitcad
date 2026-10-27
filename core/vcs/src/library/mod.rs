@@ -31,7 +31,7 @@
 //! links are not followed, and sizes are limited. Nothing in a library is
 //! run.
 //!
-//! The JSON commands are in [`api`] (`core/model/src/api/commands.md`,
+//! The JSON commands are in [`api`] (`core/model-api/src/commands.md`,
 //! "Component libraries").
 
 pub mod api;

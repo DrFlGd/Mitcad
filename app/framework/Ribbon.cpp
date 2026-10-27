@@ -163,7 +163,7 @@ public:
 
 protected:
   QSize tabSizeHint(int index) const override {
-    return QSize(fontMetrics().horizontalAdvance(displayName(tabText(index))) + 30, kHeight);
+    return QSize(fontMetrics().horizontalAdvance(tabText(index)) + 30, kHeight);
   }
   QSize minimumTabSizeHint(int index) const override { return tabSizeHint(index); }
 
@@ -208,7 +208,7 @@ protected:
       f.setWeight(selected ? QFont::DemiBold : QFont::Medium);
       painter.setFont(f);
       painter.setPen(sketch ? (dark ? accentColor(pal).lighter(135) : accentColor(pal)) : (selected ? pal.color(QPalette::WindowText) : textTint(pal, 200)));
-      painter.drawText(tabRect(i), Qt::AlignCenter, displayName(tabText(i)));
+      painter.drawText(tabRect(i), Qt::AlignCenter, tabText(i));
     }
   }
 };
@@ -517,6 +517,16 @@ const QStringList& Ribbon::groups(const QString& tab) {
   return tab == kSketch ? sketch : solid;
 }
 
+std::pair<int, int> Ribbon::groupWidths(const QString& tab, const QString& group) const {
+  const QString object = QStringLiteral("ribbonGroup_") + key(tab, group);
+  for (const auto& page : m_groupsOfPage) {
+    for (const auto& info : page) {
+      if (info.capsule->objectName() == object) return {info.fullWidth, info.collapsedWidth};
+    }
+  }
+  return {0, 0};
+}
+
 void Ribbon::addGroupExtras(const QString& tab, const QString& group, const QList<QAction*>& menu,
                             const QList<QAction*>& pinned) {
   Extras& extras = m_extras[key(tab, group)];
@@ -529,11 +539,11 @@ void Ribbon::build() {
   m_sketchPage = createPage(kSketch);
   m_pages->addWidget(m_sketchPage);
   m_pages->addWidget(createPage(kBuild));
-  const int solid = m_tabs->addTab(kSolid);
+  const int solid = m_tabs->addTab(displayName(kSolid));
   m_tabs->setTabData(solid, kSolidPage);
   m_tabs->setTabToolTip(solid, tr("Solid modelling"));
   // BUILD (mitcad#375) beside SOLID; SKETCH comes after them while sketching.
-  const int build = m_tabs->addTab(kBuild);
+  const int build = m_tabs->addTab(displayName(kBuild));
   m_tabs->setTabData(build, kBuildPage);
   m_tabs->setTabToolTip(build, tr("Build: frames of slot profiles with their connectors, panels and linear parts"));
 }
@@ -692,7 +702,7 @@ QWidget* Ribbon::createGroup(const QString& tab, const QString& group, GroupInfo
   }
 
   if (!mac) {
-    menuButton->setText(group + QStringLiteral(" ▾"));
+    menuButton->setText(displayName(group) + QStringLiteral(" ▾"));
     menuButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
     menuButton->setAutoRaise(true);
     QFont font = menuButton->font();
@@ -914,7 +924,7 @@ void Ribbon::setSketchMode(bool sketching) {
   if (sketching && shown < 0) {
     // Back to the tab the sketch started from afterwards (SOLID or BUILD).
     m_pageBeforeSketch = m_tabs->tabData(m_tabs->currentIndex()).toInt();
-    const int index = m_tabs->addTab(kSketch);
+    const int index = m_tabs->addTab(displayName(kSketch));
     m_tabs->setTabData(index, kSketchPage);
     m_tabs->setTabTextColor(index, accentColor(palette()));
     m_tabs->setTabToolTip(index, tr("Sketch: the tools of the sketch being edited"));
@@ -935,7 +945,9 @@ QStringList Ribbon::layoutLines() const {
   if (m_tabs->isVisible()) {
     for (int i = 0; i < m_tabs->count(); ++i) {
       const QPoint center = m_tabs->mapTo(m_tabs->window(), m_tabs->tabRect(i).center());
-      lines << QStringLiteral("Ribbon tab %1 at %2,%3").arg(m_tabs->tabText(i)).arg(center.x()).arg(center.y());
+      const int page = m_tabs->tabData(i).toInt();
+      const QString& id = page == kSolidPage ? kSolid : page == kBuildPage ? kBuild : kSketch;
+      lines << QStringLiteral("Ribbon tab %1 at %2,%3").arg(id).arg(center.x()).arg(center.y());
     }
   }
   for (auto it = m_groupButtons.cbegin(); it != m_groupButtons.cend(); ++it) {

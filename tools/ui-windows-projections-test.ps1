@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/SketchCommands.cpp app/framework/CommandSession.cpp app/sketch
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs tools/cli
+# check-all sources: core/sketch core/model-api/src/sketch.rs tools/cli
 # Input-driven Windows UI test of Clean Up Projections (mitcad#232) in the
 # build VM (tools/ui-windows-lib.ps1 says how the input is posted):
 #   1. A 40 x 25 block 20 high; a sketch on its front face.

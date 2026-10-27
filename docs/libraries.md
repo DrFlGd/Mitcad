@@ -1,6 +1,6 @@
 # Component libraries
 
-Mitcad's component libraries hold fasteners and other standard components.
+MitCad's component libraries hold fasteners and other standard components.
 Each component library and the community library are plain git
 repositories. No server is necessary. To publish a library, push it to a
 git host or to a shared folder. A community index is one more
@@ -9,30 +9,30 @@ repository. It lists libraries.
 This page gives the formats, so that you can make and publish a library.
 The application's side is in the
 [user guide](user-guide.md#component-libraries). The commands are in
-[commands.md](../core/model/src/api/commands.md#component-libraries).
+[commands.md](../core/model-api/src/commands.md#component-libraries).
 
 ## A library repository
 
 ```
-my-parts/                        a git repository, also a Mitcad project
+my-parts/                        a git repository, also a MitCad project
   mitcad-library.json            the manifest (required)
   LICENSE                        the licence's text or a note naming it
   README.md
   SOURCES.md                     where data such as dimension tables came from
-  .mitcad/project.json           Mitcad's project marker
+  .mitcad/project.json           MitCad's project marker
   screws/iso4762.mitcad          the components' designs
   previews/iso4762.png           preview images (PNG, at most 512 KB)
 ```
 
-The designs are ordinary Mitcad designs (`.mitcad` files). A design can
+The designs are ordinary MitCad designs (`.mitcad` files). A design can
 have a configuration table
 ([Configuration tables](#configuration-tables)). Then one design stands
 for a family of sizes.
 
 A library holds data only:
 
-- Mitcad runs nothing in it.
-- Mitcad refuses symbolic links.
+- MitCad runs nothing in it.
+- MitCad refuses symbolic links.
 - Paths stay in the repository.
 
 ### `mitcad-library.json`
@@ -83,7 +83,7 @@ Three fields tell who sells the component:
 
 A configuration row can have its own `part_number` and `supplier_url`.
 The row's values come first. For example, a sheet sold in widths has a
-number and a page for each width. Mitcad shows these fields where you
+number and a page for each width. MitCad shows these fields where you
 select and list the component: Insert from Library, Library Parts, the parts
 list and the Build tab's cut list. `build` makes the component a part of
 the Build tab ([Build parts](#build-parts)).
@@ -99,13 +99,13 @@ with `config`).
 configuration row of the design. It also makes sure that every path
 names a PNG image in the folder.
 
-`designation` is the name of a part in a bill of materials. Mitcad
+`designation` is the name of a part in a bill of materials. MitCad
 replaces these placeholders in braces: `{standard}`, `{name}`,
 `{config}` and the selectors' names (`{Size}`). Without `designation`,
 the name is `{standard} {config}`. A configuration row's own
 `designation` comes first.
 
-Mitcad ignores unknown fields. Thus newer libraries stay readable.
+MitCad ignores unknown fields. Thus newer libraries stay readable.
 
 ### Groups
 
@@ -152,9 +152,9 @@ group of its id at the top. It comes after the others.
 
 **What `library check` warns of.** `library check` warns of:
 
-- A `parent` that is no category of the library. Mitcad shows the
+- A `parent` that is no category of the library. MitCad shows the
   group at the top.
-- Categories that are each other's parents, a cycle. Mitcad cuts the
+- Categories that are each other's parents, a cycle. MitCad cuts the
   path where it closes.
 - A component's category that the list lacks.
 
@@ -190,7 +190,7 @@ Each row sets the expressions of the table's parameters. These are
 parameters of the design, usually user parameters that its features
 use. Selectors are the cascaded choices that the application shows
 (Size, then Length). Each row's combination of selectors is unique.
-When Mitcad applies a row, it changes parameter expressions only, as
+When MitCad applies a row, it changes parameter expressions only, as
 Change Parameters does.
 
 ### Mount frames
@@ -201,7 +201,7 @@ baseplate. Its design marks a Joint Origin as a **mount frame**. In
 the application, this is Joint Origin's Mount Frame check
 ([app/COMMANDS.md](../app/COMMANDS.md#joints)). In the commands, it is
 the `mount` of a `joint_origin`
-([commands.md](../core/model/src/api/commands.md#mount-frames)). The
+([commands.md](../core/model-api/src/commands.md#mount-frames)). The
 mark gives the frame's name, what it mounts on and how the component can
 move after you put it. A joint origin named `mount:<name>`, as Build's
 components name theirs ([Build parts](#build-parts)), is a face frame of
@@ -257,7 +257,7 @@ face, a hole or a grid snaps the selected frame to it and makes the
 joint that the frame asks for. Enter without a click still drops the
 component in ([app/COMMANDS.md](../app/COMMANDS.md#component-libraries)).
 On a grid, the foot goes on the cells under the click. Rotate turns
-its footprint in quarter turns. Mitcad refuses a cell that another
+its footprint in quarter turns. MitCad refuses a cell that another
 component stands on, and names that component.
 
 **Gridfinity** is an open system of bins on baseplates, with 42 mm
@@ -266,13 +266,13 @@ has a `grid` frame at the corner of its first cell, with `pitch`
 [42, 42] and `cells` its size. Each bin's bottom has a `foot` frame in
 its middle, with `footprint` its size in cells and `pitch` [42, 42].
 The tests use synthetic parts of those sizes. Ready-made Gridfinity
-models are third-party files. They stay out of Mitcad's repositories.
+models are third-party files. They stay out of MitCad's repositories.
 
 ### Build parts
 
 A component with a `build` block is placed by the Build tab.
 It is a slot profile, a connector, a nut, a panel or a linear part. The
-design stays an ordinary design. The `build` block says how Mitcad cuts the
+design stays an ordinary design. The `build` block says how MitCad cuts the
 component, where it mounts and what it fits. `library check` checks its
 rules. Example:
 
@@ -296,7 +296,7 @@ rules. Example:
 ```
 
 A value is a number (mm, kg) or a text with a unit: `"9 mm"`, `"6 m"`,
-`"0.9 kg"`, `"900 g"`. Mitcad keeps unknown fields and ignores them.
+`"0.9 kg"`, `"900 g"`. MitCad keeps unknown fields and ignores them.
 
 The fields of the block:
 
@@ -318,7 +318,7 @@ The fields of the block:
   `first` and repeats at `distance`, with as many holes as fit the
   length.
 - Profiles have `section` (the outer size), `slot` (the depth from the
-  face, the opening and the inner width) and `mass_per_metre`. Mitcad
+  face, the opening and the inner width) and `mass_per_metre`. MitCad
   uses `slot` to size panels and to fit nuts.
 - `frames` names the design's **mount frames**. Each frame is a
   `joint_origin` feature of the design, named `mount:<name>`
@@ -341,7 +341,7 @@ The fields of the block:
 **The direction of a frame's z axis.** Two frames that mate face each
 other. Their z axes are opposite. Thus every joint that Build makes
 between them is flipped
-([Joints Build makes](../core/model/src/api/commands.md#placement)).
+([Joints Build makes](../core/model-api/src/commands.md#placement)).
 
 - These frames point out of their component, towards the component that mates
   there:
@@ -358,7 +358,7 @@ between them is flipped
   out of end A. A bearing's or a nut's bore points along the axis about
   which the component turns or slides.
 
-**Profile designs** obey one layout. Thus Mitcad places and cuts every
+**Profile designs** obey one layout. Thus MitCad places and cuts every
 profile the same way:
 
 - The cross-section's sketch lies on the XY plane. The profile's centre
@@ -375,7 +375,7 @@ profile the same way:
 - `core` is the central bore's axis at z = 0. It points out of end A, as
   `end_a` does.
 - A profile without a central bore names its bores `core_1`, `core_2`
-  and so on. A 40x80 has two. Mitcad counts them from the lower y, then
+  and so on. A 40x80 has two. MitCad counts them from the lower y, then
   from the lower x.
 - `end_b` follows the length. Its joint origin lies on a construction
   plane offset from XY by `L`. `end_a` is XY turned over. The slot frames
@@ -414,7 +414,7 @@ profile the same way:
   smaller does not take the connector.
 
 `library_build_candidates`
-([commands.md](../core/model/src/api/commands.md#library-commands))
+([commands.md](../core/model-api/src/commands.md#library-commands))
 offers connectors to a junction. A connector is offered when:
 
 - Its `junctions` hold the junction's kind.
@@ -446,7 +446,7 @@ junction only.
 - `mate`: for a component that moves on another component,
   `{"frame": "rail", "on": "rail", "joint": "slider", "axis": "x"}`.
   `joint` and `axis` are the joint kind and its axis, as
-  [joints](../core/model/src/api/commands.md#kinds-and-frames) have
+  [joints](../core/model-api/src/commands.md#kinds-and-frames) have
   them.
 - `size` (a text or a number): what components that go together share.
   Examples:
@@ -520,7 +520,7 @@ Timber construction uses Build parts of its own:
 None of them has a slot system. The slot path does not offer them. The
 pickers list them only where timber is asked for (refer to **Pickers**
 below). How the Build tab places and lists them is in
-[commands.md](../core/model/src/api/commands.md#build-timber-construction).
+[commands.md](../core/model-api/src/commands.md#build-timber-construction).
 
 ```json
 {"id": "timber-dimensioned", "path": "dimensioned-timber/timber-dimensioned.mitcad", "name": "Dimensioned timber",
@@ -614,7 +614,7 @@ the next board. Thus a board whose `groove` frame mates another board's
 `tongue` frame lies beside it, tongue into groove. A row of boards steps
 by the cover width.
 
-The profiles are Mitcad's own parametric sections. No manufacturer's
+The profiles are MitCad's own parametric sections. No manufacturer's
 drawing is used. Their sizes and cover widths are those of public
 product lists:
 
@@ -658,7 +658,7 @@ use the connector frames that they already have, unchanged.
 with when you have not selected one. `library check` accepts true or
 false. The tools are Timber's frames and spacing sets, and a timber
 junction's Connector. The wood picker (`library_build_candidates` with
-`kind: wood`) lists the marked fastener first. Mitcad's library marks
+`kind: wood`) lists the marked fastener first. MitCad's library marks
 **Wood screw, countersunk**. It is driven flush (`seat: head_top`).
 The library does not mark the pan-head **Connector screw**. That screw
 bears on a metal connector's plate. On bare wood it stands proud.
@@ -745,11 +745,11 @@ with the reason (`it fits 48 x 148, the member is 48 x 123`).
 ### Versions
 
 A library's versions are its commits. Released versions are tags
-(`v1.0.0`). Mitcad lists the tags, newest first, and the default
+(`v1.0.0`). MitCad lists the tags, newest first, and the default
 branch's tip as "latest, unreleased".
 
 A design records, for each component, the commit of the version that you
-selected. When you open the design, Mitcad reads that commit, also after
+selected. When you open the design, MitCad reads that commit, also after
 the library has moved on. Only Library Parts › Update changes it. Keep
 old tags. Designs refer to their commits.
 
@@ -773,7 +773,7 @@ community-index/
 }
 ```
 
-`components` lets Mitcad find a library before it is fetched.
+`components` lets MitCad find a library before it is fetched.
 `reviewed` lists the versions that the index's maintainers looked at.
 An index only lists. The libraries stay where their authors keep them.
 An index's checks, if it has any, only check entries.
@@ -782,7 +782,7 @@ for a library.
 
 ## Licences
 
-Every item must have a licence. Mitcad hides items without a licence,
+Every item must have a licence. MitCad hides items without a licence,
 unless you ask for them. A community index accepts these licences. This
 is not legal advice.
 
@@ -795,7 +795,7 @@ is not legal advice.
 | Apache-2.0 | Keep the copyright, licence and notice files |
 | CERN-OHL-P-2.0, -W-2.0, -S-2.0 | Permissive, weakly and strongly reciprocal hardware licences |
 
-Mitcad records the licence, the library, its URL and the version with
+MitCad records the licence, the library, its URL and the version with
 each component in the design, also for a copied component. Library Parts › Components
 List shows them.
 
@@ -825,10 +825,10 @@ mitcad-cli remote add my-parts https://example.org/you/my-parts.git
 mitcad-cli library index-entry my-parts --url https://example.org/you/my-parts.git
 ```
 
-## Mitcad's parts library
+## MitCad's parts library
 
-`mitcad-parts` ("Mitcad components", MIT) is the one library of the components
-that Mitcad offers. It is kept in a repository of its own
+`mitcad-parts` ("MitCad components", MIT) is the one library of the components
+that MitCad offers. It is kept in a repository of its own
 (`https://github.com/mitcad/parts.git`). It holds:
 
 - The metric fasteners: ISO 4762, ISO 4017 and ISO 10642 screws, ISO
@@ -848,7 +848,7 @@ that Mitcad offers. It is kept in a repository of its own
 
   The screws and the rods have their threads as cosmetic thread
   features.
-- The timber components ([Timber components](#timber-components)). They are Mitcad's
+- The timber components ([Timber components](#timber-components)). They are MitCad's
   own, in industry-standard sizes, and name no supplier:
   - Sawn, planed and dimensioned timber. Each is one component, with its
     sizes as rows. The less common sizes are marked.
@@ -858,7 +858,7 @@ that Mitcad offers. It is kept in a repository of its own
   - Spruce and birch plywood, OSB and chipboard sheets
 
   Their group files' notes give the grounds of the densities.
-- The profiled boards. They are Mitcad's own parametric sections, in
+- The profiled boards. They are MitCad's own parametric sections, in
   industry-standard sizes and cover widths, and name no supplier:
   - Tongue and groove floorboards and panel boards with a V-joint
     (category `tongue-and-groove`)
@@ -901,7 +901,7 @@ fastener library `mitcad-fasteners`
 the components repository. At 2.0.0, the repository became the parts library,
 with the new id.
 
-Designs made with `mitcad-fasteners` continue to work. Mitcad reads a
+Designs made with `mitcad-fasteners` continue to work. MitCad reads a
 component at the commit that its design recorded. It reads it from any clone
 that has that commit, with the recorded id in its manifest there. Thus
 a clone of the components repository reads them under their old id and
@@ -1073,13 +1073,13 @@ the result. To publish a version is the maintainers' step.
 
 `make-profile-library.py` makes them from the group files.
 
-The supplier's files are not part of Mitcad. `--source` points at a copy
+The supplier's files are not part of MitCad. `--source` points at a copy
 of them. Only the designs made from them go into the library.
 
 A group file is a JSON array of components. The generator also reads
 `{"categories": [{"id", "name"}], "parts": [...], "left_out": [...]}`.
 `categories` names the categories for the manifest, under their main
-group ([Mitcad's parts library](#mitcads-parts-library)). A name with
+group ([MitCad's parts library](#mitcads-parts-library)). A name with
 a slash is kept as it is. `left_out` lists
 the supplier's files that the group makes no part of, each
 `{"source", "reason"}`. Examples: an assembly, a copy of another component's
@@ -1181,12 +1181,12 @@ such as a sheet's `W` that its rows set. The shapes:
   `end_b` and `shaft` frames are those of a shaft. With `thread`, the
   rod has a cosmetic thread over its whole side. `thread` is a thread
   size as the
-  [thread feature](../core/model/src/api/commands.md#thread) takes it:
+  [thread feature](../core/model-api/src/commands.md#thread) takes it:
   `standard`, `designation`, `class`, `right_handed`. The thread follows
   the length. The `threads` query lists it. Examples:
   `{"standard": "trapezoidal", "designation": "Tr8x1.5", "class": "7e"}`
   for a lead screw, `{"designation": "M8"}` for a threaded rod.
-- `commands` (optional) add more. They are Mitcad commands as
+- `commands` (optional) add more. They are MitCad commands as
   `mitcad-cli run` takes them.
 
 The [timber components](#timber-components)' shapes:
@@ -1371,7 +1371,7 @@ left out. Their timelines:
 `mitcad-cli import`. It models with `mitcad-cli mcp --workspace`:
 commands, and the queries whose answers it needs (the end face, the
 section's curves, its regions). It works in a temporary folder in
-`--work`. The default is the folder above `--out`, not in a Mitcad
+`--work`. The default is the folder above `--out`, not in a MitCad
 project.
 
 The generator draws a section's preview as the section seen from end B.
@@ -1405,8 +1405,8 @@ of its output. The run fails only on a broken group file:
 - An id used twice
 - A frame without a name, kind or numbers
 
-Mitcad lists the library among its default libraries (Libraries…), as
-Mitcad's one library of components. Mitcad fetches it when you ask.
+MitCad lists the library among its default libraries (Libraries…), as
+MitCad's one library of components. MitCad fetches it when you ask.
 
 **Tests:**
 
@@ -1474,7 +1474,7 @@ Mitcad's one library of components. Mitcad fetches it when you ask.
 ## Materials and print profiles
 
 Materials and printer and process profiles of 3D printing (mitcad#640)
-are items of libraries too: one JSON file each, in Mitcad's own format.
+are items of libraries too: one JSON file each, in MitCad's own format.
 
 ```
 materials/pla.json                    a material: density, appearance, filament
@@ -1497,12 +1497,12 @@ print/processes/standard-0-20.json    a process profile
 ```
 
 - An item is one `material` (with an `appearance` object beside it when
-  its appearance is not one of Mitcad's library appearances) or one
+  its appearance is not one of MitCad's library appearances) or one
   `profile`. The fields are those of the design's materials and profiles
-  ([commands.md](../core/model/src/api/commands.md#print-profiles)):
-  values of the print settings' key map by Mitcad's keys.
+  ([commands.md](../core/model-api/src/commands.md#print-profiles)):
+  values of the print settings' key map by MitCad's keys.
 - A material's `class` (`metal`, `plastic`, `other`) is the group it is
-  listed in; a file without one is grouped as Mitcad works it out (a
+  listed in; a file without one is grouped as MitCad works it out (a
   metal by its id or the built-in it is based on, a plastic by its
   filament settings).
 - The file is named after the item's id in its kind's folder; a vendor's
@@ -1515,7 +1515,7 @@ print/processes/standard-0-20.json    a process profile
   item (a newer version with other values), the design asks once: it
   takes the change, or keeps its values and remembers that version as
   declined until the item changes again.
-- Values are a library's own: a printer carries what Mitcad uses (the
+- Values are a library's own: a printer carries what MitCad uses (the
   bed, the printable height, the nozzle, the filament slots, the printer
   model and the slicers' preset names), never a slicer's machine
   settings or system presets.
@@ -1527,14 +1527,14 @@ wins.
 |---|---|---|
 | project | `print-library/` in the project's folder | versioned with the project |
 | user | `print-library` in the platform's data folder under `Mitcad/Mitcad`, beside `libraries` (`MITCAD_PRINT_LIBRARY_DIR` replaces it) | the user's own |
-| base | Mitcad's parts library, its newest version fetched | read only |
+| base | MitCad's parts library, its newest version fetched | read only |
 
 The user's and the project's library are managed in the application
 without a design: Tools › My Library… ([user guide](user-guide.md#my-library),
 mitcad#704) makes, duplicates (also from the base library and the
 built-in materials), renames, edits and deletes their items, and
 imports a slicer's project or preset into them. It runs the library
-commands of [commands.md](../core/model/src/api/commands.md#print-profiles)
+commands of [commands.md](../core/model-api/src/commands.md#print-profiles)
 (*Items where they live*, `import_print_profile` with `into`) on a model
 of its own, so an open design changes only through its own question
 about an item changed elsewhere. A library can also be written by hand
@@ -1550,7 +1550,7 @@ and path:
 ```
 
 The check of a manifest refuses paths outside their folders and an id
-listed twice. Mitcad's parts library takes its items from
+listed twice. MitCad's parts library takes its items from
 `tools/libraries/print-library/` (with their `SOURCES.md`):
 `make-parts-library.py` copies them and lists them in the manifest.
 
@@ -1564,7 +1564,7 @@ The default configuration also reads the earlier CLI cache under
 `mitcad/libraries`, preserving versions already fetched there without moving
 or deleting them; new fetches use the shared folder. Explicit overrides do
 not add this legacy cache. There is
-one clone for each URL. Mitcad makes and updates the clones with the
+one clone for each URL. MitCad makes and updates the clones with the
 system's git only when you ask, or at start-up for a source with
 Auto-update (the check box in Libraries). These commands ask for it:
 
@@ -1573,7 +1573,7 @@ Auto-update (the check box in Libraries). These commands ask for it:
 - Library Parts › Check for Newer Versions
 - Get Library
 
-A source with Auto-update is fetched in the background when Mitcad
+A source with Auto-update is fetched in the background when MitCad
 starts, without a dialog. The setting `autoUpdate` is kept with the
 source's `url` and `enabled` (`libraries/sources`) and is off when it is
 missing. The CLI and the MCP server do not fetch at start-up.

@@ -10,8 +10,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use mitcad_mcp::{Backend, LiveSession, TimelineMode, ToolResult, Vocabulary};
-use mitcad_model::api::classes::{self, ApiClass};
 use mitcad_model::{BlobStore, Sha256};
+use mitcad_model_api::DrawingApi;
+use mitcad_model_api::classes::{self, ApiClass};
 use serde_json::{Map, Value, json};
 
 use crate::Document;

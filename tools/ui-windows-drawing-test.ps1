@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/files/DrawingDialog.cpp app/files/DrawingSettings.cpp app/files/MainWindowDrawing.cpp
-# check-all sources: core/model/src/drawing core/model/src/api/drawing.rs geometry/src/drawing.cpp tools/cli
+# check-all sources: core/model/src/drawing core/model-drawing/src core/model-api/src/drawing.rs geometry/src/drawing.cpp tools/cli
 # Input-driven Windows UI test of File > Export Drawing (mitcad#471) in the
 # build VM (tools/ui-windows-lib.ps1 says how the input is posted), on a
 # design mitcad-cli makes: a 120 x 80 x 10 plate with four through holes of

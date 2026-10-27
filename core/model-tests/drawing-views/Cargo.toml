@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-model-tests-drawing-views"
+description = "Tests of the Mitcad model through its JSON api: drawing-views"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dev-dependencies]
+mitcad-model = { workspace = true, features = ["testing"] }
+mitcad-model-api = { path = "../../model-api" }
+mitcad-model-drawing = { path = "../../model-drawing" }
+serde_json.workspace = true

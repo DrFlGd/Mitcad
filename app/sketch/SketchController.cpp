@@ -448,7 +448,7 @@ const SketchModel& SketchOp::model() {
 bool SketchOp::commit() {
   m_finished = true;
   const int depth = m_c.undoDepth();
-  if (depth > m_depth + 1) {
+  if (depth > m_depth + 1 || (m_relabel && depth > m_depth)) {
     try {
       m_c.runModel({{QStringLiteral("cmd"), QStringLiteral("merge_undo")},
                     {QStringLiteral("depth"), m_depth},
@@ -660,7 +660,7 @@ void SketchController::setStalePreview(const QJsonObject& answer) {
     const QJsonArray xy = value.toArray();
     return V2{xy.at(0).toDouble(), xy.at(1).toDouble()};
   };
-  // `stale` of sketch.clean_up_stale_projections (core/model/src/api/commands.md).
+  // `stale` of sketch.clean_up_stale_projections (core/model-api/src/commands.md).
   const QJsonObject stale = answer.value(QStringLiteral("stale")).toObject();
   const QJsonObject shown = stale.value(QStringLiteral("preview")).toObject();
   StalePreview preview;

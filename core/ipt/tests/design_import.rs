@@ -9,6 +9,18 @@ use mitcad_ipt::dc::Definitions;
 use mitcad_ipt::params::DisplayUnit;
 use mitcad_model::Document;
 use mitcad_model::testing::MockKernel;
+use mitcad_model_api::DocumentApi;
+
+/// The import's settings with the api's commands, as `mitcad-ffi` gives
+/// them (mitcad#778: a cut and paste moves by a command only with them).
+fn options() -> Options {
+    Options {
+        commands: Some(mitcad_import::Commands::new::<MockKernel>(|doc, json| {
+            doc.command(json).map_err(|e| e.to_string())
+        })),
+        ..Options::default()
+    }
+}
 
 #[test]
 fn the_cube_design_replays_parametric() {
@@ -16,7 +28,7 @@ fn the_cube_design_replays_parametric() {
         let dc = Definitions::from_records(major, &mitcad_ipt::testdesign::cube_design(major));
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "cube.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(
             outcomes,
@@ -50,7 +62,7 @@ fn a_two_sided_extrusion_replays_parametric() {
         let dc = Definitions::from_records(major, &records);
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "cube.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(
             outcomes,
@@ -75,7 +87,7 @@ fn a_placed_sketch_block_replays_parametric() {
         let dc = Definitions::from_records(major, &records);
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "block.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(
             outcomes,
@@ -96,7 +108,7 @@ fn flagged_lines_of_a_selected_profile_make_the_cube() {
             Definitions::from_records(major, &mitcad_ipt::testdesign::flagged_cube_design(major));
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "cube.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(
             outcomes,
@@ -116,7 +128,7 @@ fn the_offset_replays_parametric() {
         let dc = Definitions::from_records(major, &mitcad_ipt::testdesign::offset_design(major));
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "offset.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(outcomes, [Outcome::Parametric], "{}", report.text());
     }
@@ -131,7 +143,7 @@ fn the_sketch_groups_replay_parametric() {
         let dc = Definitions::from_records(major, &mitcad_ipt::testdesign::groups_design(major));
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "groups.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(outcomes, [Outcome::Parametric], "{}", report.text());
     }
@@ -145,7 +157,7 @@ fn planes_through_points_and_axes_replay_parametric() {
         let dc = Definitions::from_records(major, &mitcad_ipt::testdesign::planes_design(major));
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "planes.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(outcomes, [Outcome::Parametric; 4], "{}", report.text());
     }
@@ -160,7 +172,7 @@ fn the_sketch_fixes_replay_parametric() {
             Definitions::from_records(major, &mitcad_ipt::testdesign::sketch_fixes_design(major));
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "fixes.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(outcomes, [Outcome::Parametric], "{}", report.text());
     }
@@ -173,7 +185,7 @@ fn functions_replay_and_unused_parameters_keep_their_values() {
     let dc = Definitions::from_records(25, &mitcad_ipt::testdesign::function_design(25));
     let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "functions.ipt", None);
     let mut doc = Document::new(MockKernel::default());
-    let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+    let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
     assert!(
         report.parameters.mismatched.is_empty(),
         "{:?}",
@@ -198,7 +210,7 @@ fn a_combine_joins_the_bodies_its_record_names() {
             Definitions::from_records(major, &mitcad_ipt::testdesign::combine_design(major, false));
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "combine.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(outcomes, [Outcome::Parametric; 5], "{}", report.text());
         assert_eq!(doc.bodies().len(), 1, "{}", report.text());
@@ -228,7 +240,7 @@ fn a_sheet_metal_face_replays_as_sheet_rules_and_a_sheet_face() {
         let design =
             mitcad_ipt::design::design_with(&dc, DisplayUnit::Mm, "sheet.ipt", None, &style);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
         assert_eq!(outcomes, [Outcome::Parametric; 3], "{}", report.text());
         // The timeline: the sketch, the rules and the face, by name.
@@ -289,7 +301,7 @@ fn a_driven_dimensions_table_parameter_is_its_reference() {
         let dc = Definitions::from_records(major, &records);
         let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "driven.ipt", None);
         let mut doc = Document::new(MockKernel::default());
-        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &options());
         assert_eq!(report.items.len(), 1, "{}", report.text());
         let params = doc.parameters();
         let d0 = params

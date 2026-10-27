@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // The sketch's origin and its x and y axes as picks of the tools that
 // constrain and dimension (mitcad#500): the entities the model makes for
-// them (`sketch.axis`, core/model/src/sketch/axes.rs), and the pick ids
+// them (`sketch.axis`, core/sketch/src/axes.rs), and the pick ids
 // that stand for them until a step makes them. Only the sketch model's
 // data: the app's unit tests take this file alone.
 #include "SketchModel.hpp"

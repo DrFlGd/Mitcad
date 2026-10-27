@@ -3,7 +3,7 @@
 
 // Construction geometry: analytic descriptions of named faces, edges and
 // vertices, points on paths and faces, and display shapes of datums
-// (planes, axes, points). Mirrors core/model/src/datum.rs.
+// (planes, axes, points). Mirrors core/model-base/src/datum.rs.
 
 #include <string>
 #include <vector>

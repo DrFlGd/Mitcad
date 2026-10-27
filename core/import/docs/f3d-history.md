@@ -190,7 +190,7 @@ Matching rules:
   `docs/architecture.md`).
 - Where the volumes do not settle an item (its own difference above
   0.5 %, `history::UNSETTLED`), its faces do (mitcad#138,
-  `src/geometric.rs`): a wrong rounding (its surface 0.15 mm off along its
+  `core/import-replay/src/geometric.rs`): a wrong rounding (its surface 0.15 mm off along its
   whole length), differences at the corners of a rounding only and the
   file's spline approximations (every face within 1e-4 mm, a thin layer
   over the body) all come to a few per cent of a small change. The faces
@@ -231,7 +231,7 @@ Matching rules:
   misses of an item: each side's new faces that lie off the other side
   (area, distance, the point) and the faces before it each side changed.
 - Lofts with end conditions or rails match within 5e-3, with a warning
-  beyond 1e-3. Mitcad builds their weights, angles and free ends by its
+  beyond 1e-3. MitCad builds their weights, angles and free ends by its
   own rule (`commands.md`, `loft`), while the file's surfaces may be
   fitted otherwise (between round sections the stored ones are not round,
   0.3–1.2 % below that rule; stored rails with end conditions differ too),
@@ -243,10 +243,10 @@ Feature inputs in the streams name faces, edges and bodies as the body
 blobs name theirs: every face and body of the ASM history carries
 `generic_tag_attrib_def` names (a tag chosen by the operation that made
 it and the operations that made and changed it), and an input's recipe
-lists entities by such names (`core/f3d/src/design/recipe.rs`,
-`core/f3d/src/names.rs`). The decoder rolls the `.smbh` blobs back to
+lists entities by such names (`core/f3d-decode/src/recipe.rs`,
+`core/f3d-names/src/lib.rs`). The decoder rolls the `.smbh` blobs back to
 just before the item (its `_f3d.result_no`) and finds them there
-(`core/f3d/src/design/inputs.rs`):
+(`core/f3d-design/src/inputs.rs`):
 
 - **Fillet and chamfer edges**: the edge between the faces named first
   and second; where several are, the one whose start and end touch the
@@ -359,7 +359,7 @@ just before the item (its `_f3d.result_no`) and finds them there
   also refers to the body's record, which names the timeline item that
   made the body (`_f3d.producer`) and, by the record's position among
   that item's own records, which of its bodies (`_f3d.body_index`;
-  `core/f3d/src/design/build/producers.rs`). The import keeps what each
+  `core/f3d-design/src/build/producers.rs`). The import keeps what each
   item made (`producers.rs`): the bodies of the features made for it (a
   split's pieces from the bodies it split, which keep their ids; a
   combine's own bodies, the pieces a cut makes, without its target, which
@@ -456,7 +456,7 @@ The decoder reads what these constraints keep beyond their entity lists
 a rectangular pattern's quantities, distances and directions (the copies
 are the entities after the originals), and an offset's parent and child
 chains, distance and dimension, from the offset object that refers to the
-constraint. `sketch/groups.rs` translates them into what Mitcad's own
+constraint. `sketch/groups.rs` translates them into what MitCad's own
 sketch tools make, each checked against the stored geometry:
 
 - **Polygon**: a construction circle about the centre through the
@@ -465,7 +465,7 @@ sketch tools make, each checked against the stored geometry:
   are the file's copies, matched to the originals instance by instance
   (a full turn spreads the instances, a partial angle ends at it; a
   rectangular distance is the spacing or the whole extent, whichever the
-  copies show). Mitcad's second direction is its first turned a quarter
+  copies show). MitCad's second direction is its first turned a quarter
   and its spacings are positive: a negative distance turns the direction
   and its spacing becomes `-(d8)`, and the two directions are swapped
   where that keeps them at a right angle. The angle and spacings refer to
@@ -491,15 +491,15 @@ measured from; a tapped hole's thread is the hole's sub-item, read alike.
 The translation (`ops.rs`, `commands.md` *From the dump IR*):
 
 - **Threads**: a `thread` on the faces found through the history, with
-  the size Mitcad's table lists (ISO metric, the ISO 261 series up to
+  the size MitCad's table lists (ISO metric, the ISO 261 series up to
   M300, above M64 with fine pitches only, also the `M` sizes of other
   metric types; the forming (tapping) screw threads `ST3.5x1.3`, also
   stored without the `ST`; Unified; the parallel pipe threads `G <size>-<tpi>` as
-  Mitcad's `G <size>`). A class Mitcad does not list for the face's side
+  MitCad's `G <size>`). A class MitCad does not list for the face's side
   is left out (it only labels the thread), with a note. A partial thread
   starts at the end the file's cylinder axis points to (or the other):
-  where Mitcad's cylinder of the face runs the other way, the ends swap.
-  Sizes Mitcad lacks fall back. A cylindrical face the file keeps whole
+  where MitCad's cylinder of the face runs the other way, the ends swap.
+  Sizes MitCad lacks fall back. A cylindrical face the file keeps whole
   may be in pieces in the replay (a join across a bore splits it where
   the file's face goes on): the thread is tried first on the face with the
   pieces of the same cylinder end to end with it (a modelled thread one
@@ -536,7 +536,7 @@ The translation (`ops.rs`, `commands.md` *From the dump IR*):
   1e-4 of the volume). The hole comes in with that bore and a `thread`
   feature on its walls (`hole<i>.wall`, from the hole's start, the wall's
   low end, for a partial thread), not with the hole's own `thread`, which
-  would make the bore Mitcad's basic minor diameter; then the minor
+  would make the bore MitCad's basic minor diameter; then the minor
   diameter and the hole without its thread are tried. Holes placed by the
   history are tried on all bodies, then on the bodies they go into only,
   and through all where the depth is not decoded.
@@ -563,7 +563,7 @@ The translation (`ops.rs`, `commands.md` *From the dump IR*):
   classifying the points against every spline face of a stored thread
   took about 5 s a thread, the crossings take milliseconds (mitcad#68). The
   reference bolt and a corpus design's nut, both on axes along +Z, start
-  where Mitcad's angle 0 does. The groove's middle at each angle is the
+  where MitCad's angle 0 does. The groove's middle at each angle is the
   middle of the stretch between the crossings where the segment leaves
   and enters the material, and the angle is kept to 1e-4° (mitcad#161:
   the 48 samples a pitch and tenths of a degree placed a thread's flanks
@@ -573,7 +573,7 @@ The translation (`ops.rs`, `commands.md` *From the dump IR*):
   each point along the sketch's normal out of the body crosses it (they
   took a minute for a sketch of 80 regions beside a stored thread of 720
   spline faces).
-  Whitworth and ISO 7-1 threads fall back (Mitcad models only 60°
+  Whitworth and ISO 7-1 threads fall back (MitCad models only 60°
   threads; NPT tapered, mitcad#733). A tapped hole with a modelled thread
   gets a modelled `thread` on its walls at the angle its state shows,
   measured on the hole made alone first (the walls do not exist before
@@ -590,7 +590,7 @@ The translation (`ops.rs`, `commands.md` *From the dump IR*):
 ## Sweeps, pipes and lofts
 
 The decoder reads their inputs (SCHEMA.md, *SweepFeature*, *PipeFeature*,
-*LoftFeature*; `core/f3d/src/design/build/sweeps.rs`):
+*LoftFeature*; `core/f3d-design/src/build/sweeps.rs`):
 
 - **Paths, guide rails, centre lines and rails**: lists of sketch curves,
   named by the ids the sketch's curves carry (`crv_primary_id`,
@@ -638,7 +638,7 @@ section, probed ones first, at most twelve choices of all sections), a
 second fraction 0 as none first (a profile at the path's end), both
 directions where a partial extent or a rail makes them differ (with a
 rail the file's direction flag reads the other way: the reference
-models' rail sweep, flipped, is Mitcad's sweep without `flip`), a rail's
+models' rail sweep, flipped, is MitCad's sweep without `flip`), a rail's
 point where it crosses the plane square to the path (`rail_point`
 `plane`, mitcad#469), the
 perpendicular orientation before the parallel one, a rail's scaling
@@ -649,20 +649,20 @@ join as a new body. The reference models'
 sweeps and lofts come in from their streams as from their dumps
 (`test_f3d_import --models`). The corpus's sweep, a cut swept only
 backwards from a profile at the path's end along a path with a slight
-kink between its curves, comes in parametric since Mitcad's sweep rounds
+kink between its curves, comes in parametric since MitCad's sweep rounds
 corners whose mitre does not build (mitcad#56).
 
 ## Path patterns (mitcad#468)
 
-A path pattern item (`PathPatternFeature`) becomes Mitcad's
+A path pattern item (`PathPatternFeature`) becomes MitCad's
 `path_pattern` (`ops.rs`, `commands.md` *Patterns*):
 
-| The file's | Mitcad's |
+| The file's | MitCad's |
 |---|---|
 | `inputEntities` (bodies, features or faces of one body, as a rectangular pattern's) | `objects` |
 | `path`: one sketch curve | `{"sketch", "curve"}` |
 | `path`: several lines and arcs of one sketch (mitcad#464) | `{"sketch", "curves"}`, joined end to end as a sweep's path |
-| `path`: edges | not translated: Mitcad's path pattern follows sketch curves only (the item falls back, the report names the reason) |
+| `path`: edges | not translated: MitCad's path pattern follows sketch curves only (the item falls back, the report names the reason) |
 | `quantity`, `distance` | `quantity`, `distance` (arc length along the path) |
 | `patternDistanceType` Spacing / Extent | `distance_type` `spacing` / `extent` |
 | `startPoint`, `isFlipDirection`, `isOrientationAlongPath`, `isSymmetric` | `start`, `flip`, `along_path`, `symmetric` |
@@ -670,7 +670,7 @@ A path pattern item (`PathPatternFeature`) becomes Mitcad's
 | the stream decoder's count of the bodies the pattern made (`_f3d_new_bodies`), 0 for a pattern of features | `combine`: the copies of a feature that made a new body join its body |
 | `patternComputeOption`, `suppressedElementsIds` | `compute`, `suppressed_elements` |
 
-The stream decoder (`core/f3d/src/design/build/patterns.rs`, `path`)
+The stream decoder (`core/f3d-design/src/build/patterns.rs`, `path`)
 reads the item's class and its data object: the objects (the item's
 first selection), the quantity (its integer input), the distance (the
 `PathPatternDelta` parameter), the path (a list input of entity and edge
@@ -721,7 +721,7 @@ The pattern makes no body (the item object's own `u32 0 | u32 n` body
 records, as a mirror's `combine`, are none) while it copies a feature
 that made a new body (the rib's extrusion, whose body the outline's
 extrusion then joined): the file keeps the copies in that body. The
-import sets `combine`, and Mitcad's pattern joins the copies' bodies to
+import sets `combine`, and MitCad's pattern joins the copies' bodies to
 it in one operation (a compound of them, as they are apart). The copies
 of the feature's own solid cannot carry the rounding patterned with it,
 which that body holds at every copy, so only the definition that
@@ -757,7 +757,7 @@ candidates against the next state:
 - **Profiles.** The decoder reads the loops of the profiles an extrusion
   or revolution selected (`_f3d_profile_loops`, mitcad#96: the file's
   curve ids, which piece of each curve, outer loop or hole, the pieces a
-  profile is split into). `src/profiles.rs` maps them onto Mitcad's
+  profile is split into). `core/import-replay/src/profiles.rs` maps them onto MitCad's
   regions: a listed profile is a face (its outer loops less its holes),
   and a region is selected when its inside point lies inside one by the
   even-odd rule against the listed curve pieces, with the file's curve
@@ -872,7 +872,7 @@ candidates against the next state:
   chain after another (sets and edges in order); those edges with the
   gone edges that continue them tangentially (a rounding that ends where
   its edge runs on tangentially takes the next edge's middle away too,
-  and Mitcad's fillet follows the chain: also where a third sharp edge
+  and MitCad's fillet follows the chain: also where a third sharp edge
   meets the vertex, at which OCCT's own chain stops, mitcad#224,
   `commands.md`, fillet); the edges whose dressup the
   state has whatever their distance, with their continuations; then
@@ -909,7 +909,7 @@ candidates against the next state:
   - A rounding or bevel of a whole circle that runs over a neighbouring
     face (the rim of a hole near a side), which OCCT stops at, is built
     as a ring about the circle's axis when both faces are planes,
-    cylinders or cones on it ([fillet](../../model/src/api/commands.md#fillet)).
+    cylinders or cones on it ([fillet](../../model-api/src/commands.md#fillet)).
 - **Combine** target and tools, when the decoded ones are not found: the
   bodies the next state changed (a body with a stored body's measures
   counts as unchanged even where its faces are split otherwise), the
@@ -924,13 +924,13 @@ candidates against the next state:
   each; where the bodies cannot be brought to that state, the guesses are
   tried on the bodies as they are after all).
 - **Split bodies** the tool does not divide: the file's split leaves such
-  a selected body as it is, Mitcad's fails, so each body alone is tried
+  a selected body as it is, MitCad's fails, so each body alone is tried
   after the decoded set (mitcad#96).
 - **Replace face's replaced faces** (dumps do not record them): faces of a
   body the next state changed none of whose interior points
   (`Kernel::face_points`, up to nine) lie on the state's faces (1e-3 mm);
   neighbours that extend or shorten keep some. They are listed without the
-  tangent chain, and the result is matched within 0.5 % (Mitcad's own
+  tangent chain, and the result is matched within 0.5 % (MitCad's own
   conventions for curved faces and targets). The target comes from the
   dump.
 - **Holes** whose item's through-all flag is set while the file keeps a
@@ -1106,7 +1106,7 @@ as well:
   projections; a second kept an arc's ends at its own stale angles, and
   the grid design's sketches then lost edges when a grid cell was added.
 - **A face as the profile**: an extrusion of one face the decoder found in
-  its profile, by a distance from the face, is Mitcad's extrusion of that
+  its profile, by a distance from the face, is MitCad's extrusion of that
   face (`profile_face`, mitcad#535), tried before a sketch on the face with
   its boundary projected. The face follows the model as the file's face
   profile does; the projected boundary of the chute's end face did not

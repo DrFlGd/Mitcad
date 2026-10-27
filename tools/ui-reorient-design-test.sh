@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/browser/ReorientDialog.cpp app/browser/BrowserController.cpp app/MainWindow.cpp tools/cli
-# check-all sources: core/model/src/reorient.rs core/model/src/document/reorient.rs core/model/src/api/reorient.rs
+# check-all sources: core/model/src/reorient.rs core/model/src/document/reorient.rs core/model-api/src/reorient.rs
 # Reorient Design (mitcad#502) through the real UI, on a design mitcad-cli
 # makes: Block, 60 x 40 x 20 from a sketch on XY with a hole through its
 # top.

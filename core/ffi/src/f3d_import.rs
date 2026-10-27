@@ -13,7 +13,7 @@
 //!   design.
 //!
 //! Which states hold the same bodies is told from the history when the
-//! file is opened (`mitcad_f3d::history_states`); a state's bodies are
+//! file is opened (`mitcad_asm::history_states`); a state's bodies are
 //! converted to the neutral model when the importer first asks for them,
 //! or for those of a state it asks for by the timeline when the file is
 //! opened (mitcad#675), and built with OCCT only when the importer asks for
@@ -26,15 +26,15 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cxx::SharedPtr;
-use mitcad_f3d::F3dFile;
-use mitcad_f3d::asm::AsmFile;
-use mitcad_f3d::asm::history::History;
-use mitcad_f3d::convert::{self, BodyPrefix, ConvertedBody, Options as ConvertOptions};
-use mitcad_f3d::design::ir::Dump;
-use mitcad_f3d::history_states::{self, DistinctBody};
+use mitcad_asm::asm::AsmFile;
+use mitcad_asm::asm::history::History;
+use mitcad_asm::convert::{self, BodyPrefix, ConvertedBody, Options as ConvertOptions};
+use mitcad_asm::history_states::{self, DistinctBody};
+use mitcad_dump::Dump;
+use mitcad_f3d_file::F3dFile;
 use mitcad_import::{StoredBody, StoredGeometry};
 use mitcad_model::RecomputeMonitor;
-use mitcad_model::api::ApiError;
+use mitcad_model_api::ApiError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -2423,6 +2423,16 @@ pub fn abandoned_imports() -> usize {
         + BUILDING_AHEAD.load(Ordering::SeqCst)
 }
 
+/// The model's JSON commands for the import (mitcad#778): the features a
+/// cut and paste carries run through the api's `command`, which
+/// `mitcad-import` does not depend on (also the `.ipt` import's).
+pub(crate) fn import_commands() -> mitcad_import::Commands {
+    mitcad_import::Commands::new::<OcctKernel>(|doc, json| {
+        use mitcad_model_api::DocumentApi;
+        doc.command(json).map_err(|e| e.to_string())
+    })
+}
+
 /// Starts the threads that evaluate an item's definitions ahead
 /// (mitcad#95): an import thread's stack, with OCCT's crash handlers as on
 /// the import's thread. None start when the stack cannot be reserved (the
@@ -2658,7 +2668,7 @@ struct Prepared {
 fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> {
     let fail = |e: String| ApiError(e);
     let clock = Instant::now();
-    let package = mitcad_f3d::design::package(std::path::Path::new(path)).map_err(fail)?;
+    let package = mitcad_f3d_design::package(std::path::Path::new(path)).map_err(fail)?;
     let (documents, root) = (package.documents, package.root);
     if documents.is_empty() {
         return Err(ApiError(format!("{path} holds no design")));
@@ -2667,7 +2677,7 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
     // are found in the bodies' history (mitcad#103).
     let mut designs = Vec::new();
     for (label, doc) in &documents {
-        let design = mitcad_f3d::design::decode_streams(doc, label).map_err(fail)?;
+        let design = mitcad_f3d_design::decode_streams(doc, label).map_err(fail)?;
         designs.push((label.clone(), doc, design));
     }
     let chosen = match &options.design {
@@ -2745,7 +2755,7 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !design.1 {
                 let clock = Instant::now();
-                mitcad_f3d::design::resolve_inputs(&mut design.0, doc, finding);
+                mitcad_f3d_design::resolve_inputs(&mut design.0, doc, finding);
                 design.1 = true;
                 trace_reading("inputs found", clock);
             }
@@ -2777,7 +2787,7 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
     } else {
         if resolve {
             let clock = Instant::now();
-            mitcad_f3d::design::resolve_inputs(&mut decoded, doc, threads);
+            mitcad_f3d_design::resolve_inputs(&mut decoded, doc, threads);
             trace_reading("inputs found", clock);
         }
         let clock = Instant::now();
@@ -2795,20 +2805,20 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
         let files = crate::f3d_references::external_files(path, &label, options, dump);
         if !files.is_empty() {
             let clock = Instant::now();
-            let documents: Vec<mitcad_f3d::design::inputs::ExternalFile<'_>> = files
+            let documents: Vec<mitcad_f3d_design::inputs::ExternalFile<'_>> = files
                 .iter()
                 .map(
-                    |(guid, key, file)| mitcad_f3d::design::inputs::ExternalFile {
+                    |(guid, key, file)| mitcad_f3d_design::inputs::ExternalFile {
                         guid: guid.clone(),
                         key: key.clone(),
                         file,
                     },
                 )
                 .collect();
-            mitcad_f3d::design::resolve_external_inputs(&mut decoded, &documents);
+            mitcad_f3d_design::resolve_external_inputs(&mut decoded, &documents);
             // Derives' placements kept as occurrence paths of their source
             // designs (mitcad#324).
-            mitcad_f3d::design::resolve_derive_placements(&mut decoded, &documents);
+            mitcad_f3d_design::resolve_derive_placements(&mut decoded, &documents);
             trace_reading("inputs in other documents found", clock);
         }
     }
@@ -2853,10 +2863,10 @@ fn prepare_on_thread(path: &str, options: &TimelineOptions) -> Result<Prepared, 
 
 /// The designs of a file as JSON: `{"designs": [{"label", "items"}]}`.
 fn list_designs(path: &str) -> Result<String, ApiError> {
-    let documents = mitcad_f3d::design::documents(std::path::Path::new(path)).map_err(ApiError)?;
+    let documents = mitcad_f3d_design::documents(std::path::Path::new(path)).map_err(ApiError)?;
     let mut designs = Vec::new();
     for (label, doc) in &documents {
-        let design = mitcad_f3d::design::decode_streams(doc, label).map_err(ApiError)?;
+        let design = mitcad_f3d_design::decode_streams(doc, label).map_err(ApiError)?;
         let items = design.dump.as_ref().map_or(0, |d| d.timeline_items().len());
         designs.push(json!({"label": label, "items": items}));
     }
@@ -3184,7 +3194,7 @@ impl Document {
         // Without a design segment, the stored bodies come in as they are
         // (the importer compares and replaces the empty replay).
         let bodies_only = Dump {
-            source: Some(mitcad_f3d::design::ir::Source {
+            source: Some(mitcad_dump::Source {
                 mode: Some("f3d_stream".to_owned()),
                 file: Some(prepared.label.clone()),
                 ..Default::default()
@@ -3195,7 +3205,7 @@ impl Document {
                 .as_ref()
                 .and_then(|d| d.f3d.as_ref())
                 .and_then(|f| f.appearance.clone())
-                .map(|a| mitcad_f3d::design::ir::DumpF3d {
+                .map(|a| mitcad_dump::DumpF3d {
                     appearance: Some(a),
                     ..Default::default()
                 }),
@@ -3219,6 +3229,7 @@ impl Document {
             failed_items: attempt.failed.clone(),
             threads: options.threads.unwrap_or(1).max(1),
             spawn: Some(worker_spawner()),
+            commands: Some(import_commands()),
             geometric_tolerance: options
                 .geometric_tolerance
                 .filter(|t| t.is_finite() && *t > 0.0)

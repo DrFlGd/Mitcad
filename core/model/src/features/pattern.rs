@@ -658,7 +658,7 @@ pub(super) fn check_suppressed(suppressed: &[u32]) -> Result<(), String> {
 pub(super) fn quantity(what: &str, value: f64) -> Result<u32, String> {
     let rounded = value.round();
     if !value.is_finite() || (value - rounded).abs() > 1e-9 || rounded < 1.0 {
-        return Err(crate::parameters::count_error(
+        return Err(mitcad_model_base::internal::parameters::count_error(
             format!("{what} must be a whole number of at least 1, got {value}"),
             value,
         ));
@@ -2838,7 +2838,3 @@ impl<K: Kernel> Evaluate<K> for PathPatternDef {
         )
     }
 }
-
-#[cfg(test)]
-#[path = "f4_tests.rs"]
-mod f4_tests;

@@ -28,7 +28,7 @@ impl DocState {
     /// The sketches some feature uses (a profile, curves or points).
     /// Suppressed features and those after the timeline marker count too,
     /// so suppressing or rolling back neither shows nor hides a sketch.
-    pub(crate) fn used_sketches(&self) -> BTreeSet<FeatureUid> {
+    pub fn used_sketches(&self) -> BTreeSet<FeatureUid> {
         let sketches: BTreeSet<FeatureUid> = self
             .features
             .iter()
@@ -50,7 +50,7 @@ impl DocState {
     /// counts them, in timeline order; features that use none are left
     /// out. The browser lists a feature under each of its sketches
     /// (mitcad#177).
-    pub(crate) fn sketches_used_by(&self) -> BTreeMap<FeatureUid, Vec<FeatureUid>> {
+    pub fn sketches_used_by(&self) -> BTreeMap<FeatureUid, Vec<FeatureUid>> {
         let order: HashMap<FeatureUid, usize> = self
             .features
             .iter()
@@ -92,11 +92,7 @@ impl DocState {
 
     /// Whether a sketch or construction feature is shown: its light bulb
     /// when set, else the default; None for features without one.
-    pub(crate) fn feature_shown(
-        &self,
-        entry: &FeatureEntry,
-        used: &BTreeSet<FeatureUid>,
-    ) -> Option<bool> {
+    pub fn feature_shown(&self, entry: &FeatureEntry, used: &BTreeSet<FeatureUid>) -> Option<bool> {
         has_visibility(&entry.def).then(|| {
             self.feature_visibility
                 .get(&entry.uid)

@@ -778,6 +778,8 @@ void MainWindow::registerCommands() {
   registerConstructCommands(*m_registry, *this);
   registerInspectCommands(*m_registry, *this, this, [this] { return m_selection; });
   registerSketchCommands(*m_registry, *m_sketch);
+  // Redefine Sketch Plane (mitcad#787).
+  registerSketchPlaneCommands(*m_registry, *m_sketch);
   // The BUILD tab (mitcad#375).
   registerBuildCommands(*m_registry, *this, *this, this, [this] { return documentName(); });
 
@@ -1046,6 +1048,8 @@ void MainWindow::registerCommands() {
   registerDebugLogCommands();
   // The wait cursor's test hooks (mitcad#268, MITCAD_TEST_WAIT_CURSOR).
   registerWaitCursorTestCommands();
+  // Insert: Image Reference and Calibrate Image Reference (mitcad#782).
+  registerImageReferenceCommands();
 }
 
 void MainWindow::showDiagnostics() {
@@ -1122,7 +1126,7 @@ void MainWindow::createMenus() {
 #ifndef Q_OS_MACOS
   help->addSeparator();
 #endif
-  QAction* about = help->addAction(tr("&About Mitcad"));
+  QAction* about = help->addAction(tr("&About MitCad"));
   about->setMenuRole(QAction::AboutRole);
   connect(about, &QAction::triggered, this, [this] { showAboutDialog(this); });
   QAction* aboutQt = help->addAction(tr("About &Qt"));
@@ -1708,6 +1712,7 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
   setSelection({});
   m_placementNote.clear(); // what this command places, it says (mitcad#292)
   endAnnotationPick(); // an annotation's pick waited for ends with it
+  endImageCalibration(true); // and a calibration of an image reference (mitcad#782)
   m_mode = Mode::Command;
   if (!m_commandInSketch && !editUid.isEmpty()) {
     // The sketches the edited feature uses are shown for its time
@@ -1853,7 +1858,7 @@ void MainWindow::editFeature(const QString& uid) {
   const CommandDef* def = editorOf(uid, &name);
   if (def == nullptr) {
     // Inputs Mitcad's panels do not have yet (U4) would be lost.
-    showError(tr("%1 cannot be edited in Mitcad yet.").arg(name));
+    showError(tr("%1 cannot be edited in MitCad yet.").arg(name));
     return;
   }
   startFeatureCommand(*def, uid);
@@ -2786,6 +2791,8 @@ void MainWindow::refreshScene() {
   followMeasurements();
   // The drawing open over the view follows the model (mitcad#707).
   followDrawing();
+  // The image references shown, on their planes (mitcad#782).
+  followImageReferences();
   // The Origin folder and Isolate are the document's (P9).
   m_originShown = m_snapshot.originShown;
   m_isolation = m_snapshot.isolation;
@@ -3073,6 +3080,7 @@ void MainWindow::useClips(const SectionTargets& cut, std::vector<BodyDisplay>& b
     const auto found = kept.clips.constFind(cut.keys.value(static_cast<qsizetype>(i)));
     if (found != kept.clips.cend() && found->source == body.shape) {
       if (found->shape) {
+        body.sectioned = !found->shape->occt().IsSame(body.shape->occt());
         body.shape = found->shape;
       }
       continue;
@@ -3093,6 +3101,8 @@ void MainWindow::useClips(const SectionTargets& cut, std::vector<BodyDisplay>& b
     const std::shared_ptr<geometry::Shape> shape = k < left.size() ? left[k] : nullptr;
     kept.clips.insert(cut.keys.value(static_cast<qsizetype>(missing[k])), SectionClip{body.shape, shape});
     if (shape) {
+      // Cut, not left whole: drawn behind its caps (mitcad#784).
+      body.sectioned = !shape->occt().IsSame(body.shape->occt());
       body.shape = shape;
     }
   }
@@ -4546,8 +4556,23 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
           menu.addSeparator();
         }
       }
+      // Copy, Cut and Paste of sketch geometry (mitcad#788).
+      if (std::any_of(m_selection.begin(), m_selection.end(), [](const SelectionItem& s) {
+            return s.kind == SelectKind::SketchCurve || s.kind == SelectKind::SketchPoint;
+          })) {
+        add(m_registry->action(QStringLiteral("sketch.cut")));
+        add(m_registry->action(QStringLiteral("sketch.copy")));
+      }
+      if (m_sketch->canPaste()) {
+        add(m_registry->action(QStringLiteral("sketch.paste")));
+      }
       for (const char* id : {"sketch.line", "sketch.rectangle", "sketch.circle", "sketch.dimension", "sketch.trim"}) {
         add(m_registry->action(QString::fromLatin1(id)));
+      }
+      // The sketch on another plane or face (mitcad#787).
+      if (QAction* redefine = m_registry->action(QStringLiteral("sketch.redefine_plane"))) {
+        menu.addSeparator();
+        add(redefine);
       }
     }
     menu.addSeparator();
@@ -5067,7 +5092,7 @@ void MainWindow::openDocument() {
   if (!opened && !error.isEmpty()) {
     const QString message = tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error);
     qWarning().noquote() << message;
-    sheetWarning(this, tr("Mitcad"), message);
+    sheetWarning(this, tr("MitCad"), message);
   }
 }
 
@@ -5220,7 +5245,7 @@ bool MainWindow::saveAs() {
     }
   }
   QFileDialog dialog(this, tr("Save As"), dialogFolder(DialogGroup::Open),
-                     tr("Mitcad designs (*.%1)").arg(kFileSuffix));
+                     tr("MitCad designs (*.%1)").arg(kFileSuffix));
   prepareFileDialog(&dialog);
   dialog.setAcceptMode(QFileDialog::AcceptSave);
   dialog.setDefaultSuffix(kFileSuffix);
@@ -5317,7 +5342,7 @@ bool MainWindow::writeFile(const QString& path, const QString& description, Vers
   if (!json) {
     const QString failure = tr("Could not save %1:\n%2").arg(QDir::toNativeSeparators(path), error);
     qWarning().noquote() << failure;
-    sheetWarning(this, tr("Mitcad"), failure);
+    sheetWarning(this, tr("MitCad"), failure);
     if (required != nullptr) {
       required->failure = failure;
     }
@@ -5391,7 +5416,7 @@ bool MainWindow::maybeSave() {
   if (!isModified()) {
     return true;
   }
-  QMessageBox box(QMessageBox::Warning, tr("Mitcad"), tr("Save changes to %1?").arg(documentName()),
+  QMessageBox box(QMessageBox::Warning, tr("MitCad"), tr("Save changes to %1?").arg(documentName()),
                   QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
   box.setInformativeText(tr("Your changes will be lost if you don't save them."));
   // The same words on every platform, with keys for the keyboard.
@@ -5635,7 +5660,7 @@ bool MainWindow::installEmptyDocument(const QString& name, QString* error) {
     if (error != nullptr) {
       *error = reason;
     } else if (!reason.isEmpty()) {
-      sheetWarning(this, tr("Mitcad"), tr("Could not create a new design:\n%1").arg(reason));
+      sheetWarning(this, tr("MitCad"), tr("Could not create a new design:\n%1").arg(reason));
     }
     return false;
   }
@@ -5677,7 +5702,7 @@ void MainWindow::updateWindowTitle() {
   if (windowFilePath() != filePath) {
     setWindowFilePath(filePath);
   }
-  setWindowTitle(QStringLiteral("%1[*] - Mitcad").arg(documentName()));
+  setWindowTitle(QStringLiteral("%1[*] - MitCad").arg(documentName()));
   const bool modified = isModified();
   setWindowModified(modified);
   // The first change since opening: a newer version on the remote is

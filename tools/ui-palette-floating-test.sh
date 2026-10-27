@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch/SketchPalette.cpp app/sketch/SketchPalette.hpp app/MainWindow.cpp
 # check-all sources: app/framework/FloatingLayout.cpp app/framework/FloatingLayout.hpp app/framework/GlassCard.cpp
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs tools/cli
+# check-all sources: core/sketch core/model-api/src/sketch.rs tools/cli
 # The Sketch Palette in the Floating layout's command card at the default
 # window size, 1280 x 800 (mitcad#470), through the real UI:
 #   - A sketch with a rectangle (mitcad-cli), edited from the timeline.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/main.cpp app/MainWindow.cpp app/commands/InspectCommands.cpp app/framework/CommandSession.cpp core/cpp/bridge/analysis.cpp geometry/src/guard.cpp geometry/analysis/src/section.cpp core/model/src/api/analysis.rs core/ffi/src/kernel/mod.rs tools/cli
+# check-all sources: app/main.cpp app/MainWindow.cpp app/commands/InspectCommands.cpp app/framework/CommandSession.cpp core/cpp/bridge/analysis.cpp geometry/src/guard.cpp geometry/analysis/src/section.cpp core/model-api/src/analysis.rs core/ffi/src/kernel/mod.rs tools/cli
 # check-all sources: app/MainWindowSection.cpp app/framework/SectionWorker.cpp core/ffi/src/lib.rs
 # A crash inside OCCT during Section Analysis is an error, not a crash of
 # the application (mitcad#392). Its booleans run off the UI thread, each

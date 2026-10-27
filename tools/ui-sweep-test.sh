@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands
+# check-all sources: core/model/src/features/sweep.rs
 # Sweep, Pipe, Loft, Coil, Rib and Web (U4) through the real UI, with the
 # volumes the model reports (tools/cli/tests/f3_*.json):
-#   - Sweep: a 10 mm circle on YZ along a 50 mm line: a cylinder; edited
-#     to half the path.
+#   - Sweep: a 10 mm circle on YZ along a 75 mm line through it, 50 mm
+#     on one side and 25 on the other: the profile lies inside the path, so
+#     the panel shows Distance 2 (mitcad#795) and the whole path makes a
+#     75 mm cylinder (saved as `full`); edited to Distance 2 = 0 and
+#     Distance 1 = 0.5: half of the 25 mm beyond the profile, saved as
+#     `partial` with `fraction2` 0, and opened again with those values.
 #   - Pipe: hollow, 10 mm with a 1 mm wall along a 50 mm line.
 #   - Loft: a 40 mm square up to a 20 mm one 30 mm above: a frustum; again
 #     with a Direction start condition (the squares' sketches, hidden since
@@ -13,7 +18,8 @@
 #   - Coil: 3 turns of pitch 10 round a 40 mm diameter, placed by a click.
 #   - Rib and Web on the bracket of ui_rib; then a 2 mm square swept
 #     along a line on the base's top with that face as its guide surface
-#     (mitcad#157).
+#     (mitcad#157); its profile at the start of the path, Distance 2 stays
+#     hidden.
 #   - Helix (mitcad#27): a 2 mm square turned about Z, its volume by
 #     Pappus' rule (the turns times 2 pi times the square's distance from
 #     the axis times its area): one made as the FreeCAD import writes a
@@ -44,8 +50,25 @@ expect_file() {
   echo "ok   $4"
 }
 PI=3.14159265358979
+# expect_row COMMAND INPUT shown|hidden description: the panel row INPUT as
+# the panel laid it out last ("Panel <command> input <id> at x,y", with
+# " (hidden)" when hidden).
+expect_row() {
+  local line=""
+  for _ in $(seq 1 30); do
+    line=$(grep -F "Panel $1 input $2 at " "$UI_LOG" | tail -1)
+    if [ "$3" = hidden ]; then
+      [[ $line == *"(hidden)" ]] && { echo "ok   $4"; return; }
+    else
+      [ -n "$line" ] && [[ $line != *"(hidden)" ]] && { echo "ok   $4"; return; }
+    fi
+    sleep 0.2
+  done
+  ui_fail "$4: Panel $1 input $2 is not $3 (${line:-never laid out})"
+}
 
-# Sketch1 (F1): the path, (0, 0)-(50, 0); Sketch2 (F2) on YZ: a 10 mm
+# Sketch1 (F1): the path, (0, 0)-(50, 0) (c1) and (-25, 0)-(0, 0) (c4)
+# joined to it, so that the circle lies inside it; Sketch2 (F2) on YZ: a 10 mm
 # circle; Sketch3 (F3): the pipe's path (0, 100)-(50, 100); Sketch4 (F4): a
 # 40 mm square at (100, 0); Plane1 (F5) 30 mm up; Sketch5 (F6) on it: a 20
 # mm square at (110, 10); Plane2 (F7) through the squares' corners (100, 0)
@@ -55,6 +78,7 @@ cat > "$WORK/sweeps.json" << EOF
 [
   {"cmd": "sketch.create"},
   {"cmd": "sketch.add_line", "sketch": "F1", "start": [0, 0], "end": [50, 0]},
+  {"cmd": "sketch.add_line", "sketch": "F1", "start": [-25, 0], "end": [0, 0]},
   {"cmd": "sketch.create", "plane": "yz"},
   {"cmd": "sketch.add_circle", "sketch": "F2", "center": [0, 0], "diameter": 10},
   {"cmd": "sketch.create"},
@@ -139,8 +163,12 @@ echo "=== Sweep, Pipe, Loft, Coil"
 ui_start_app --open "$WORK/sweeps.mitcad"
 ui_step "fit (F6)"                         ui_key F6
 
-echo "--- Sweep: the circle along the line"
+echo "--- Sweep: the circle along the line through it"
+ui_mark
 ui_step "sweep (search)"                   ui_command "Sweep"
+ui_expect_new "Panel Sweep input fraction at" "the panel laid out"
+expect_row Sweep fraction shown "Distance 1 shown at once (no Full / Partial choice, mitcad#795)"
+expect_row Sweep fraction2 hidden "Distance 2 hidden while the path is not known"
 ui_step "the profiles input"               ui_click_logged "Panel Sweep input profiles"
 ui_step "take the newest profile away"     ui_click_pick "profile F6/"
 ui_step "pick the circle"                  ui_click_pick "profile F2/"
@@ -148,23 +176,58 @@ ui_expect_log "Sweep Profiles: 1 profile [profile r{c1} of F2]" "circle picked"
 ui_step "the path input"                   ui_click_logged "Panel Sweep input path"
 ui_step "pick the line"                    ui_click_logged "Sketch entity F1/c1"
 ui_expect_log "Sweep Path: 1 sketch curve [sketch curve c1 of F1]" "path picked"
+ui_expect_new "Sweep: the profile lies inside an open path; Distance 2 shown" \
+  "the preview finds the profile inside the chained path"
 ui_expect_log "Preview Sweep: ok" "previewed"
+ui_sync
+expect_row Sweep fraction2 shown "Distance 2 shown"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_log "Added sweep (New Body) along 1 curve(s)" "sweep added"
 ui_expect_volume "New body Body1 (F9.b0): volume \([0-9.]*\) mm3" \
-  "$(awk -v pi=$PI 'BEGIN { printf "%.6f", pi * 25 * 50 }')" "cylinder" 1e-4
+  "$(awk -v pi=$PI 'BEGIN { printf "%.6f", pi * 25 * 75 }')" "cylinder along the whole path, both ways" 1e-4
+ui_mark
+ui_key ctrl+s
+ui_expect_new "Saved $WORK/sweeps.mitcad" "saved"
+# (A full extent is the default, which the file leaves out.)
+expect_file "$WORK/sweeps.mitcad" \
+  '[f.get("extent", {"type": "full"})["type"] for f in doc["features"] if f["type"] == "sweep"]' \
+  "['full']" "1 / 1 saved as full"
 
-echo "--- Sweep1 edited to half the path"
+echo "--- Sweep1 edited: nothing before the profile, half of the part beyond it"
+ui_mark
 ui_step "double-click Sweep1"              ui_double_click_logged "Timeline Sweep1"
-ui_expect_log "Editing F9 with Sweep" "editing Sweep1"
-ui_step "Partial"                          ui_choose "Panel Sweep input extent" 1
-ui_step "half"                             ui_type_in "Panel Sweep input fraction" "0.5"
-ui_expect_log "Sweep Distance 1: 0.5 = 0.5" "half of the path"
-ui_expect_log "Preview Sweep: ok" "previewed"
+ui_expect_new "Editing F9 with Sweep" "editing Sweep1"
+ui_expect_new "Sweep: the profile lies inside an open path; Distance 2 shown" "Distance 2 shown again"
+ui_expect_new "Preview Sweep: ok" "previewed as it is"
+ui_sync
+expect_row Sweep fraction2 shown "Distance 2 shown for the edit"
+ui_step "Distance 2: 0"                    ui_type_in "Panel Sweep input fraction2" "0"
+ui_expect_new "Sweep Distance 2: 0 = 0" "nothing before the profile"
+ui_step "Distance 1: half"                 ui_type_in "Panel Sweep input fraction" "0.5"
+ui_expect_new "Sweep Distance 1: 0.5 = 0.5" "half of the part beyond it"
+ui_expect_new "Preview Sweep: ok" "previewed"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_log "Edited F9" "Sweep1 edited"
 ui_expect_volume "Body Body1 (F9.b0): volume [0-9.]* -> \([0-9.]*\) mm3" \
-  "$(awk -v pi=$PI 'BEGIN { printf "%.6f", pi * 25 * 25 }')" "half the cylinder" 1e-4
+  "$(awk -v pi=$PI 'BEGIN { printf "%.6f", pi * 25 * 12.5 }')" "12.5 mm of the cylinder" 1e-4
+ui_mark
+ui_key ctrl+s
+ui_expect_new "Saved $WORK/sweeps.mitcad" "saved"
+expect_file "$WORK/sweeps.mitcad" \
+  '[(f["extent"]["type"], [p["value"] for p in doc["parameters"] if p["name"] in (f["extent"]["fraction"], f["extent"]["fraction2"])]) for f in doc["features"] if f["type"] == "sweep"]' \
+  "[('partial', [0.5, 0.0])]" "saved as partial, fraction 0.5 and fraction2 0"
+
+echo "--- Sweep1 opens with its distances"
+ui_mark
+ui_step "double-click Sweep1"              ui_double_click_logged "Timeline Sweep1"
+ui_expect_new "Editing F9 with Sweep" "editing Sweep1"
+ui_expect_new "Sweep Distance 1: 0.5" "Distance 1 is 0.5"
+ui_expect_new "Sweep Distance 2: 0" "Distance 2 is 0"
+ui_expect_new "Preview Sweep: ok" "previewed as it is"
+ui_sync
+expect_row Sweep fraction2 shown "Distance 2 shown"
+ui_step "cancel (Esc)"                     ui_key Escape
+ui_expect_new "Command Sweep cancelled" "nothing changed"
 
 echo "--- Pipe: hollow along the second line"
 ui_step "pipe (search)"                    ui_command "Pipe"
@@ -284,6 +347,11 @@ ui_step "the guide surface input"          ui_click_logged "Panel Sweep input su
 ui_step "pick the base's top face"         ui_click_pick "face F2.b0/F2:end("
 ui_expect_log "Sweep Guide Surface: 1 face" "guide surface picked"
 ui_expect_log "Preview Sweep: ok" "previewed"
+ui_expect_new "Sweep: the profile lies at the start of an open path; Distance 2 hidden" \
+  "the profile at the start of the path"
+ui_sync
+expect_row Sweep fraction shown "Distance 1 shown"
+expect_row Sweep fraction2 hidden "Distance 2 hidden: nothing lies before the profile"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_log "Added sweep (New Body) along 1 curve(s)" "sweep added"
 ui_expect_volume "New body Body2 (F14.b0): volume \([0-9.]*\) mm3" 160 "the square along 40 mm" 1e-5

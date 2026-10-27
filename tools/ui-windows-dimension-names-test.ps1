@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/framework/CommandPanel.cpp app/framework/CommandSession.cpp
 # check-all sources: app/framework/Command.cpp app/commands/CommandSupport.cpp core/model/src/document.rs
-# check-all sources: core/model/src/api/sketch.rs tools/cli
+# check-all sources: core/model-api/src/sketch.rs tools/cli
 # check-all sources: app/framework/ParameterPicker.cpp app/framework/CommandSessionPicks.cpp
 # check-all sources: app/framework/CommandPresenter.hpp app/MainWindowParameterPicks.cpp app/commands/FilletCommands.cpp
 # Input-driven Windows UI test of dimension names (mitcad#231, mitcad#250)

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch tools/cli
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs core/solver
+# check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
 # Input-driven Windows UI test of inactive sketch constraints (mitcad#721)
 # in the build VM (tools/ui-windows-lib.ps1 says how the input is posted),
 # as tools/ui-sketch-inactive-test.sh on Linux:

@@ -113,10 +113,10 @@ std::optional<QString> askVersionDescription(QWidget* parent, const QString& fil
 
 std::optional<ExternalChange> askExternalChange(QWidget* parent, const QString& file, bool newerVersion,
                                                 bool unrecorded) {
-  QMessageBox box(QMessageBox::Warning, QObject::tr("Mitcad"),
+  QMessageBox box(QMessageBox::Warning, QObject::tr("MitCad"),
                   QObject::tr("%1 has changed since you opened it.").arg(file), QMessageBox::Cancel, parent);
   QString details = newerVersion ? QObject::tr("The project's history has a newer version of it (saved by "
-                                               "another Mitcad, or brought in with git).")
+                                               "another MitCad, or brought in with git).")
                                  : QObject::tr("The file in the folder was changed by another program.");
   details += QLatin1Char(' ');
   details += unrecorded ? QObject::tr("Save as New Version records that change as a version first, then yours "

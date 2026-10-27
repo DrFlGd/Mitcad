@@ -27,9 +27,9 @@ use crate::features::sheet_cut::SheetCutMode;
 use crate::features::sheet_folded::SheetFlangeWidth;
 use crate::features::{BodyChange, EvalContext, FeatureDef, FeatureOutput};
 use crate::kernel::{BooleanOp, Kernel};
-use crate::profile::dot;
 use crate::recompute::Versioned;
 use crate::transform::{Instance, Transform};
+use mitcad_vec3::dot;
 
 /// One copy: the feature, the transform from its place to the copy's, and
 /// the instance that names the copy.

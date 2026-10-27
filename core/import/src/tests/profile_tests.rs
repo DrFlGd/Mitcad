@@ -2,6 +2,7 @@
 //! Extrusion inputs: how the profile and the extent are chosen from the history, the decoded stream and measured regions, and approximate extrusions.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 #[test]
 fn the_history_chooses_the_profile() {

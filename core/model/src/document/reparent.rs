@@ -83,43 +83,43 @@ use crate::transform::Transform;
 /// A timeline feature that places the moved occurrence and goes with it
 /// (mitcad#301).
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Carried {
+pub struct Carried {
     /// The feature's name.
-    pub(crate) name: String,
+    pub name: String,
     /// Its component, and the new parent it goes into.
-    pub(crate) from: ComponentUid,
-    pub(crate) to: ComponentUid,
+    pub from: ComponentUid,
+    pub to: ComponentUid,
     /// When the feature also places other occurrences: the new feature of
     /// the new parent that takes the moved occurrence's part of it.
-    pub(crate) split: Option<String>,
+    pub split: Option<String>,
 }
 
 /// A validated move of one occurrence to another parent.
 #[derive(Debug, Clone)]
-pub(crate) struct ReparentPlan {
-    pub(crate) occurrence: OccurrenceUid,
+pub struct ReparentPlan {
+    pub occurrence: OccurrenceUid,
     /// The component it places.
-    pub(crate) component: ComponentUid,
+    pub component: ComponentUid,
     /// Its path from the root before the move.
-    pub(crate) source: Vec<OccurrenceUid>,
+    pub source: Vec<OccurrenceUid>,
     /// The component it is placed in before the move.
-    pub(crate) parent: ComponentUid,
+    pub parent: ComponentUid,
     /// The component it goes into, and the path to that component.
-    pub(crate) destination: ComponentUid,
-    pub(crate) destination_path: Vec<OccurrenceUid>,
+    pub destination: ComponentUid,
+    pub destination_path: Vec<OccurrenceUid>,
     /// Its placement in the destination: the same place in the design.
-    pub(crate) transform: Transform,
+    pub transform: Transform,
     /// What follows it: the features, analyses and Isolate whose
     /// occurrence paths lead through it.
-    pub(crate) updates: Vec<String>,
+    pub updates: Vec<String>,
     /// The features that place it and go with it, in timeline order.
-    pub(crate) carried: Vec<Carried>,
+    pub carried: Vec<Carried>,
     changes: Rewritten,
 }
 
 impl ReparentPlan {
     /// Its path from the root after the move.
-    pub(crate) fn path(&self) -> Vec<OccurrenceUid> {
+    pub fn path(&self) -> Vec<OccurrenceUid> {
         let mut path = self.destination_path.clone();
         path.push(self.occurrence);
         path
@@ -1084,7 +1084,7 @@ impl<K: Kernel> Document<K> {
 
     /// The checks of the occurrence to move, whatever the destination:
     /// its component and its parent.
-    pub(crate) fn reparent_source(
+    pub fn reparent_source(
         &self,
         source: &[OccurrenceUid],
     ) -> Result<(OccurrenceUid, ComponentUid, ComponentUid), ModelError> {
@@ -1137,7 +1137,7 @@ impl<K: Kernel> Document<K> {
     /// into the component placed at `destination` (empty: the root), and
     /// what the move does: the one validation of hierarchy moves (design
     /// policies, mitcad#220, belong here too). Err lists the blockers.
-    pub(crate) fn plan_reparent(
+    pub fn plan_reparent(
         &self,
         source: &[OccurrenceUid],
         destination: &[OccurrenceUid],
@@ -1320,7 +1320,7 @@ impl<K: Kernel> Document<K> {
     /// step. Refused, changing nothing, when [`Document::plan_reparent`]
     /// refuses it, a feature that built would fail, or an occurrence would
     /// be somewhere else in the design at the marker.
-    pub(crate) fn reparent_occurrence(
+    pub fn reparent_occurrence(
         &mut self,
         source: &[OccurrenceUid],
         destination: &[OccurrenceUid],

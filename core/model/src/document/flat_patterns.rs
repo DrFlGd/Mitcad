@@ -147,7 +147,7 @@ impl<K: Kernel> Document<K> {
     }
 
     /// The `flat_pattern` query: one body's pattern, or all of them.
-    pub(crate) fn flat_pattern_json(&self, body: Option<BodyUid>) -> Value {
+    pub fn flat_pattern_json(&self, body: Option<BodyUid>) -> Value {
         let one = |body: BodyUid| {
             let mut value = match &*self.flat_pattern(body) {
                 Ok(pattern) => pattern.json(),
@@ -237,7 +237,7 @@ impl<K: Kernel> Document<K> {
 
     /// The `flat_point` query: a flat position on the body, or the flat
     /// position of a body point.
-    pub(crate) fn flat_point_json(
+    pub fn flat_point_json(
         &self,
         body: BodyUid,
         flat: Option<[f64; 2]>,
@@ -279,7 +279,7 @@ impl<K: Kernel> Document<K> {
     /// body picked in the view as the semantic reference sheet features
     /// take (its panel or bend, the boundary along a wall, the corner of
     /// two walls); `at` chooses among pieces of one curve.
-    pub(crate) fn sheet_reference_json(
+    pub fn sheet_reference_json(
         &self,
         body: BodyUid,
         face: Option<&str>,
@@ -312,7 +312,7 @@ impl<K: Kernel> Document<K> {
 
     /// The `sheet_seam` query (mitcad#210): the boundaries of the seam two
     /// panels of a sheet share, which a Bend folds.
-    pub(crate) fn sheet_seam_json(
+    pub fn sheet_seam_json(
         &self,
         body: BodyUid,
         stationary: PanelId,
@@ -325,7 +325,7 @@ impl<K: Kernel> Document<K> {
     /// The `sheet_bodies` query (mitcad#210): each sheet-metal body at the
     /// marker with its rules, its domains and its Flat Pattern's state, for
     /// the browser.
-    pub(crate) fn sheet_bodies_json(&self) -> Value {
+    pub fn sheet_bodies_json(&self) -> Value {
         let result = self.last_result();
         let rows = result
             .sheets
@@ -408,5 +408,23 @@ impl<K: Kernel> Document<K> {
         self.check_profiles(&def)?;
         let added = state.add_feature(&def, name)?;
         self.preview_state(state, added.uid)
+    }
+}
+
+// The sheet state and rules at the marker (mitcad#778: the api's
+// `sheet_state` and `sheet_rules` queries answer with these, and the import
+// calls them without the api).
+
+impl<K: Kernel> Document<K> {
+    /// The `sheet_state` query: one sheet body's state at the marker, or
+    /// every sheet body's, as the query answers it.
+    pub fn sheet_state_json(&self, body: Option<BodyUid>) -> Value {
+        crate::sheet::state_query(self.last_result(), body)
+    }
+
+    /// The `sheet_rules` query: one sheet-metal rules feature's rules at
+    /// the marker, or every one's, as the query answers it.
+    pub fn sheet_rules_json(&self, feature: Option<FeatureUid>) -> Value {
+        crate::sheet::rules_query(self.last_result(), feature)
     }
 }

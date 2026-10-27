@@ -477,7 +477,7 @@ QString plainModelError(const QString& error, const PrintKeyTable& keys, const Q
     return QObject::tr("Could not delete it from %1. Check that its folder can be written.").arg(place);
   }
   if (is("there is no user library folder")) {
-    return QObject::tr("My library has no folder. Check that Mitcad's data folder can be written.");
+    return QObject::tr("My library has no folder. Check that MitCad's data folder can be written.");
   }
   if (is("the design is in no project")) {
     return QObject::tr("This design is in no project. Save it in a project first.");

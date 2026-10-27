@@ -130,7 +130,7 @@ pub enum StationarySide {
 #[serde(deny_unknown_fields)]
 pub struct FoldLine {
     pub sketch: FeatureUid,
-    #[serde(with = "crate::ids::curve_serde")]
+    #[serde(with = "mitcad_model_base::internal::ids::curve_serde")]
     pub curve: EntityUid,
 }
 

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [Desktop Entry]
 Type=Application
-Name=Mitcad
+Name=MitCad
 GenericName=Parametric CAD
 Comment=Parametric 3D CAD with a design history
 Exec=mitcad

@@ -723,7 +723,18 @@ if(BUILD_TESTING)
     target_sources(test_app PRIVATE platform/macos/MacChrome.mm)
   endif()
   add_test(NAME app.unit COMMAND test_app)
-  add_test(NAME app.default_shortcuts COMMAND mitcad --ui=qt --no-recovery --no-mcp)
+  # The viewer opens an X display even on Qt's offscreen platform (OCCT's
+  # Aspect_DisplayConnection): on Linux a hidden one of its own, so that the
+  # test neither needs nor uses the desktop's (the release's build root has
+  # none).
+  set(default_shortcuts_prefix "")
+  if(UNIX AND NOT APPLE)
+    find_program(MITCAD_XVFB_RUN_EXECUTABLE xvfb-run)
+    if(MITCAD_XVFB_RUN_EXECUTABLE)
+      set(default_shortcuts_prefix "${MITCAD_XVFB_RUN_EXECUTABLE}" -a -s "-screen 0 1280x1024x24")
+    endif()
+  endif()
+  add_test(NAME app.default_shortcuts COMMAND ${default_shortcuts_prefix} $<TARGET_FILE:mitcad> --ui=qt --no-recovery --no-mcp)
   set_tests_properties(app.default_shortcuts PROPERTIES TIMEOUT 90
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;MITCAD_TEST_DEFAULT_SHORTCUTS=1;MITCAD_SETTINGS_DIR=${CMAKE_CURRENT_BINARY_DIR}/default-shortcuts-settings;MITCAD_AUTOSAVE_DIR=${CMAKE_CURRENT_BINARY_DIR}/default-shortcuts-autosave;MITCAD_RESULT_STORE=off"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
@@ -1641,4 +1652,28 @@ if(BUILD_TESTING)
   target_link_libraries(test_assistant_client PRIVATE Qt6::Core mitcad_warnings)
   mitcad_utf8_code_page(test_assistant_client)
   add_dependencies(mitcad test_assistant_client)
+endif()
+
+# Copy, Cut and Paste of sketch geometry (mitcad#788): the sketch fragment
+# on the clipboard and the Paste tool.
+target_sources(mitcad PRIVATE sketch/SketchClipboard.cpp)
+
+# Redefine Sketch Plane (mitcad#787): a sketch moved to another plane or
+# face and placed there by an offset, a move, a rotation and a flip.
+target_sources(mitcad PRIVATE commands/SketchPlaneCommands.cpp)
+
+# Image references (mitcad#782, app/COMMANDS.md "Image references"): the
+# Image Reference panel, the images drawn in the view and their
+# calibration by two points clicked on them.
+target_sources(mitcad PRIVATE
+  MainWindowImageReferences.cpp
+  view/ImageCalibration.cpp
+  view/ImageCalibration.hpp
+  view/ImageReferenceView.cpp
+  view/ImageReferences.cpp
+  view/ImageReferences.hpp)
+if(BUILD_TESTING)
+  # The query's entries, points on an image and on its plane, the log
+  # line and the calibration's distance: plain Qt Core.
+  target_sources(test_app PRIVATE tests/image_references.cpp view/ImageReferences.cpp view/ImageReferences.hpp)
 endif()

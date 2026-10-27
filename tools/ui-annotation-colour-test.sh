@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands app/framework app/view core/model/src/api tools/cli
+# check-all sources: app/commands app/framework app/view core/model-api/src tools/cli
 # check-all sources: app/MainWindowAnnotations.cpp app/MainWindowMeasurements.cpp app/MainWindowVisibility.cpp
 # Edit Annotation's Colour through the real UI (mitcad#764), in the Docked
 # layout, with the Measure panel closed and open. Box:1 (O1) is a 30 x 20 x

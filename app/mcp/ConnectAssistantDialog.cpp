@@ -132,8 +132,8 @@ bool claudeEntryStarts(const QJsonObject& entry, const QString& bridge) {
 }
 
 bool confirmReplacement(QWidget* parent, const QString& name) {
-  return sheetQuestion(parent, QObject::tr("Replace Mitcad Connection"),
-      QObject::tr("%1 is already connected to another Mitcad installation. Connect it to this one instead? "
+  return sheetQuestion(parent, QObject::tr("Replace MitCad Connection"),
+      QObject::tr("%1 is already connected to another MitCad installation. Connect it to this one instead? "
                   "Your current settings are backed up first.").arg(name), QMessageBox::Yes | QMessageBox::No,
                   QMessageBox::No) == QMessageBox::Yes;
 }
@@ -430,7 +430,7 @@ ConnectAssistantDialog::ConnectAssistantDialog(Host host, QWidget* parent)
   layout->addWidget(m_folderRow);
 
   // Advanced: the manual configuration and command, the Codex settings file
-  // and several Mitcad windows.
+  // and several MitCad windows.
   m_advancedToggle = new QToolButton;
   m_advancedToggle->setObjectName(QStringLiteral("assistantAdvancedToggle"));
   m_advancedToggle->setText(tr("Advanced"));
@@ -840,7 +840,7 @@ void ConnectAssistantDialog::refreshConnection() {
   bool anyway = false;
   if (m_bridge.isEmpty()) {
     state = QStringLiteral("failed");
-    text = tr("Mitcad's assistant connector was not found. Repair or reinstall Mitcad.");
+    text = tr("MitCad's assistant connector was not found. Repair or reinstall MitCad.");
   } else if (busy) {
     state = QStringLiteral("busy");
     text = tr("Connecting %1…").arg(name);
@@ -884,9 +884,9 @@ void ConnectAssistantDialog::refreshConnection() {
     // The next step is the assistant's; only Claude Desktop's installer can
     // be opened again from here.
     state = QStringLiteral("waiting");
-    text = selected == AssistantClient::ClaudeDesktop ? tr("Approve Mitcad in Claude Desktop, then start a new chat")
-        : selected == AssistantClient::ClaudeCode ? tr("Start a new Claude Code session to use Mitcad")
-        : tr("Restart ChatGPT or start a new Codex session to use Mitcad");
+    text = selected == AssistantClient::ClaudeDesktop ? tr("Approve MitCad in Claude Desktop, then start a new chat")
+        : selected == AssistantClient::ClaudeCode ? tr("Start a new Claude Code session to use MitCad")
+        : tr("Restart ChatGPT or start a new Codex session to use MitCad");
     if (selected == AssistantClient::ClaudeDesktop) action = QStringLiteral("reopen");
   } else {
     state = QStringLiteral("ready");
@@ -984,7 +984,7 @@ void ConnectAssistantDialog::refreshWindows() {
   for (const Endpoint& endpoint : endpoints) {
     if (endpoint.pid == QCoreApplication::applicationPid()) m_ownInstance = endpoint.instance;
   }
-  m_windows->setText(tr("%n Mitcad windows are open", nullptr, int(endpoints.size())));
+  m_windows->setText(tr("%n MitCad windows are open", nullptr, int(endpoints.size())));
   m_windowsRow->setVisible(endpoints.size() > 1 && !m_ownInstance.isEmpty());
 }
 
@@ -1220,7 +1220,7 @@ void ConnectAssistantDialog::setupBundle() {
   m_desktopNotFound = false;
   const QString suffix = windows ? QStringLiteral(".exe") : QString();
   const QString launcher = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("mitcad-mcp-launcher") + suffix);
-  if (!QFileInfo(launcher).isExecutable()) { message(tr("Part of Mitcad is missing. Repair or reinstall Mitcad."), true, launcher); return; }
+  if (!QFileInfo(launcher).isExecutable()) { message(tr("Part of MitCad is missing. Repair or reinstall MitCad."), true, launcher); return; }
   const QString platform = windows ? QStringLiteral("win32") : QStringLiteral("darwin");
   const QByteArray manifest = QJsonDocument(assistantBundleManifest(m_bridge, windows, platform)).toJson(QJsonDocument::Indented);
   try {

@@ -33,7 +33,7 @@
 //! - [`ProjectRepo::remote_info`] and [`git_info`]: what the status bar and
 //!   the settings show.
 //!
-//! The JSON commands are in `commands.rs` (`core/model/src/api/commands.md`,
+//! The JSON commands are in `commands.rs` (`core/model-api/src/commands.md`,
 //! "Remote repositories").
 
 pub(crate) mod cli;

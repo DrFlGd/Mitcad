@@ -311,7 +311,7 @@ bool FinalRender::start(const QString& worker, const QJsonObject& job, const QSt
   m_cancelling = false;
   QString problem;
   if (worker.isEmpty()) {
-    problem = tr("there is no %1 next to Mitcad").arg(QString::fromLatin1(kWorkerName));
+    problem = tr("there is no %1 next to MitCad").arg(QString::fromLatin1(kWorkerName));
   } else {
     QSaveFile file(jobPath);
     if (!file.open(QIODevice::WriteOnly) || file.write(QJsonDocument(job).toJson()) < 0 || !file.commit()) {
@@ -407,7 +407,7 @@ void FinalRender::handle(const QJsonObject& event) {
       return;
     }
     if (name != QLatin1String("error")) {
-      m_lastError = tr("%1 does not match this Mitcad (its protocol version is %2, Mitcad's is %3); "
+      m_lastError = tr("%1 does not match this MitCad (its protocol version is %2, MitCad's is %3); "
                        "install them together")
                         .arg(QString::fromLatin1(kWorkerName))
                         .arg(version)

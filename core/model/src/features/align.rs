@@ -32,7 +32,8 @@ use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::profile::SketchFrame;
-use crate::transform::{Transform, rotation_between};
+use crate::transform::Transform;
+use mitcad_model_base::internal::transform::rotation_between;
 
 /// The geometry an alignment moves from or to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -157,7 +158,7 @@ fn alignment(
             )
         }
         (Resolved::Axis(a), Resolved::Axis(b)) => {
-            let fallback = crate::transform::perpendicular(a.direction);
+            let fallback = mitcad_model_base::internal::transform::perpendicular(a.direction);
             let turn = rotation_between(a.origin, a.direction, scaled(b.direction, sign), fallback);
             // The axis's own point lands on the target line; centres of
             // circles meet.

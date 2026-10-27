@@ -1136,3 +1136,199 @@ fn points_horizontal_and_vertical_to_each_other_coincide() {
         mitcad_solver::SolveStatus::Conflicting
     );
 }
+
+// Closed fitted splines and tangents at a chosen end (mitcad#783).
+
+/// The leg of a clamped spline at an end: from the end point into the curve.
+fn leg(control: &[[f64; 2]], end: usize) -> [f64; 2] {
+    let n = control.len() - 1;
+    let (p, q) = if end == 0 {
+        (control[0], control[1])
+    } else {
+        (control[n], control[n - 1])
+    };
+    [q[0] - p[0], q[1] - p[1]]
+}
+
+/// The sine of the angle between two directions.
+fn sine(u: [f64; 2], v: [f64; 2]) -> f64 {
+    (u[0] * v[1] - u[1] * v[0]) / (dist(u, [0.0, 0.0]) * dist(v, [0.0, 0.0]))
+}
+
+#[test]
+fn closed_fitted_spline_is_smooth_through_its_first_point() {
+    let mut s = System::new();
+    let f: Vec<_> = [[0.0, 0.0], [20.0, -5.0], [30.0, 10.0], [5.0, 18.0]]
+        .iter()
+        .map(|c| s.add_point(c[0], c[1]))
+        .collect();
+    let sp = s.add_fitted_spline(&f, [SplineEnd::Periodic; 2]).unwrap();
+    assert_eq!(s.entity_kind(sp), Some(EntityKind::FittedSpline));
+    assert_eq!(
+        s.entity_points(sp).unwrap(),
+        f,
+        "the fit points, listed once"
+    );
+    s.add_constraint(FixPoint(f[0])).unwrap();
+    s.add_constraint(Distance {
+        a: f[0],
+        b: f[2],
+        value: 40.0,
+    })
+    .unwrap();
+    solve_ok(&mut s);
+    let g = s.spline(sp).unwrap();
+    assert_eq!(g.control_points.first(), g.control_points.last(), "closed");
+    assert_near(dist(pt(&s, f[0]), pt(&s, f[2])), 40.0, "distance");
+    // Through every fit point.
+    for &p in &f {
+        let at = pt(&s, p);
+        let best = (0..=4000)
+            .map(|i| dist(s.spline_point(sp, i as f64 / 4000.0).unwrap(), at))
+            .fold(f64::INFINITY, f64::min);
+        assert!(best < 1e-2, "through {at:?} ({best})");
+    }
+    // The same first and second derivative at both ends (finite
+    // differences).
+    let p = |t: f64| s.spline_point(sp, t).unwrap();
+    let h = 1e-6;
+    let (a, b) = (p(0.0), p(1.0));
+    let d0 = [(p(h)[0] - a[0]) / h, (p(h)[1] - a[1]) / h];
+    let d1 = [(b[0] - p(1.0 - h)[0]) / h, (b[1] - p(1.0 - h)[1]) / h];
+    let size = dist(d0, [0.0, 0.0]);
+    assert!(dist(d0, d1) < 1e-3 * size, "C1: {d0:?} vs {d1:?}");
+    let h = 1e-5;
+    let second = |t0: f64, t1: f64, t2: f64| {
+        let (x, y, z) = (p(t0), p(t1), p(t2));
+        [
+            (x[0] - 2.0 * y[0] + z[0]) / (h * h),
+            (x[1] - 2.0 * y[1] + z[1]) / (h * h),
+        ]
+    };
+    let s0 = second(0.0, h, 2.0 * h);
+    let s1 = second(1.0 - 2.0 * h, 1.0 - h, 1.0);
+    assert!(
+        dist(s0, s1) < 1e-2 * (1.0 + dist(s0, [0.0, 0.0])),
+        "C2: {s0:?} vs {s1:?}"
+    );
+    // The hidden control points follow the fit points: only the fit
+    // points are free.
+    let an = s.analyze();
+    assert_eq!(an.dof, 2 * f.len() - 3, "{an:?}");
+    assert!(an.redundant.is_empty() && an.conflicts.is_empty(), "{an:?}");
+    // A closed spline needs three fit points and is periodic at both ends.
+    let two = s.add_fitted_spline(&f[..2], [SplineEnd::Periodic; 2]);
+    assert!(two.is_err());
+    let one_end = s.add_fitted_spline(&f, [SplineEnd::Periodic, SplineEnd::Natural]);
+    assert!(one_end.is_err());
+}
+
+#[test]
+fn tangent_at_chosen_ends_joins_two_splines_at_both_ends() {
+    let mut s = System::new();
+    let a = s.add_point(0.0, 0.0);
+    let b = s.add_point(20.0, 0.0);
+    s.add_constraint(FixPoint(a)).unwrap();
+    s.add_constraint(FixPoint(b)).unwrap();
+    let up = s.add_point(10.0, 6.0);
+    let down = s.add_point(10.0, -4.0);
+    let natural = [SplineEnd::Natural; 2];
+    let s1 = s.add_fitted_spline(&[a, up, b], natural).unwrap();
+    let s2 = s.add_fitted_spline(&[a, down, b], natural).unwrap();
+    s.add_constraint(TangentAt {
+        a: s1,
+        b: s2,
+        at: a,
+    })
+    .unwrap();
+    s.add_constraint(TangentAt {
+        a: s2,
+        b: s1,
+        at: b,
+    })
+    .unwrap();
+    solve_ok(&mut s);
+    let (g1, g2) = (s.spline(s1).unwrap(), s.spline(s2).unwrap());
+    for end in 0..2 {
+        let sin = sine(leg(&g1.control_points, end), leg(&g2.control_points, end));
+        assert!(sin.abs() < 1e-6, "G1 at end {end}: {sin}");
+    }
+    let an = s.analyze();
+    assert!(an.redundant.is_empty() && an.conflicts.is_empty(), "{an:?}");
+}
+
+#[test]
+fn spline_tangent_to_one_line_at_both_ends() {
+    let mut s = System::new();
+    let a = s.add_point(0.0, 0.0);
+    let b = s.add_point(30.0, 0.0);
+    let m = s.add_point(15.0, 8.0);
+    for p in [a, b, m] {
+        s.add_constraint(FixPoint(p)).unwrap();
+    }
+    let line = s.add_line(a, b).unwrap();
+    let natural = [SplineEnd::Natural; 2];
+    let sp = s.add_fitted_spline(&[a, m, b], natural).unwrap();
+    // At the far end: the end the point names, not the first end on the
+    // line (which a plain tangent takes).
+    s.add_constraint(TangentAt {
+        a: line,
+        b: sp,
+        at: b,
+    })
+    .unwrap();
+    solve_ok(&mut s);
+    let c = s.spline(sp).unwrap().control_points;
+    assert_near(c[c.len() - 2][1], 0.0, "the leg at the end is horizontal");
+    assert!(c[1][1].abs() > 1e-3, "the start is left free: {:?}", c[1]);
+    // And at the start too.
+    s.add_constraint(TangentAt {
+        a: line,
+        b: sp,
+        at: a,
+    })
+    .unwrap();
+    solve_ok(&mut s);
+    let c = s.spline(sp).unwrap().control_points;
+    assert_near(c[1][1], 0.0, "the leg at the start is horizontal");
+    assert_near(c[c.len() - 2][1], 0.0, "the leg at the end still is");
+    let an = s.analyze();
+    assert!(an.redundant.is_empty() && an.conflicts.is_empty(), "{an:?}");
+}
+
+#[test]
+fn spline_tangent_to_itself_where_its_ends_meet() {
+    let mut s = System::new();
+    let f: Vec<_> = [[0.0, 0.0], [20.0, -5.0], [30.0, 10.0], [5.0, 18.0]]
+        .iter()
+        .map(|c| s.add_point(c[0], c[1]))
+        .collect();
+    for &p in &f {
+        s.add_constraint(FixPoint(p)).unwrap();
+    }
+    let fit = [f[0], f[1], f[2], f[3], f[0]];
+    let sp = s.add_fitted_spline(&fit, [SplineEnd::Natural; 2]).unwrap();
+    s.add_constraint(TangentAt {
+        a: sp,
+        b: sp,
+        at: f[0],
+    })
+    .unwrap();
+    solve_ok(&mut s);
+    let c = s.spline(sp).unwrap().control_points;
+    let sin = sine(leg(&c, 0), leg(&c, 1));
+    assert!(sin.abs() < 1e-6, "G1 where the spline closes: {sin}");
+    // A closed spline is smooth there already, and a spline whose ends do
+    // not meet is not tangent to itself.
+    let closed = s.add_fitted_spline(&f, [SplineEnd::Periodic; 2]).unwrap();
+    assert!(
+        s.add_constraint(TangentAt {
+            a: closed,
+            b: closed,
+            at: f[0],
+        })
+        .is_err()
+    );
+    let open = s.add_fitted_spline(&f, [SplineEnd::Natural; 2]).unwrap();
+    assert!(s.add_constraint(Tangent(open, open)).is_err());
+}

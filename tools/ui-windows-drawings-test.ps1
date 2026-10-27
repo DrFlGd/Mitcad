@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/drawings app/browser app/files app/MainWindow.cpp core/model/src/drawing
-# check-all sources: core/model/src/api/drawings.rs core/model/src/api/drawing.rs core/model/src/document/drawings.rs tools/cli
-# check-all sources: core/model/src/api/drawing_annotations.rs core/model/src/api/drawing_tables.rs
-# check-all sources: core/model/src/api/drawing_templates.rs
+# check-all sources: app/drawings app/browser app/files app/MainWindow.cpp core/model/src/drawing core/model-drawing/src
+# check-all sources: core/model-api/src/drawings.rs core/model-api/src/drawing.rs core/model/src/document/drawings.rs tools/cli
+# check-all sources: core/model-api/src/drawing_annotations.rs core/model-api/src/drawing_tables.rs
+# check-all sources: core/model-api/src/drawing_templates.rs
 # Input-driven Windows UI test of drawings kept in the design (mitcad#707)
 # in the build VM (tools/ui-windows-lib.ps1 says how the input is posted),
 # as tools/ui-drawings-test.sh does on Linux, on a 40 x 30 x 20 block

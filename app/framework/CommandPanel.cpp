@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <QAbstractScrollArea>
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -86,6 +87,21 @@ bool splitKey(const QString& key, QString& list, int& index) {
   index = parts[1].toInt(&number);
   list = parts[0];
   return number;
+}
+
+// Gives a value field the keyboard. With native glass the panel's card is a
+// window of its own, so the field's window is activated first when another
+// window of the same main window has the keys (the timeline card); a popup,
+// a dialog or another application keeps them.
+void focusField(QLineEdit* edit) {
+  QWidget* window = edit->window();
+  const QWidget* active = QApplication::activeWindow();
+  if (active != nullptr && active != window && QApplication::activePopupWidget() == nullptr &&
+      GlassCard::hostWindow(active) == GlassCard::hostWindow(window)) {
+    window->activateWindow();
+  }
+  edit->setFocus();
+  edit->selectAll();
 }
 
 QToolButton* smallButton(const QString& text, const QString& tip) {
@@ -1552,8 +1568,7 @@ bool CommandPanel::focusFirstValue() {
   for (const Row* row : orderedRows()) {
     if (row->edit != nullptr && row->input->type == InputDef::Type::Value &&
         row->field->isVisibleTo(this)) {
-      row->edit->setFocus();
-      row->edit->selectAll();
+      focusField(row->edit);
       return true;
     }
   }
@@ -1565,8 +1580,7 @@ bool CommandPanel::focusValue(const QString& key) {
   if (row == nullptr || row->edit == nullptr || !row->field->isVisibleTo(this)) {
     return false;
   }
-  row->edit->setFocus();
-  row->edit->selectAll();
+  focusField(row->edit);
   return true;
 }
 

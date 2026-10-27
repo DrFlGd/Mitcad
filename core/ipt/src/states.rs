@@ -15,9 +15,9 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use mitcad_f3d::asm::AsmFile;
-use mitcad_f3d::asm::history::History;
-use mitcad_f3d::convert::{self, ConvertedBody};
+use mitcad_asm::asm::AsmFile;
+use mitcad_asm::asm::history::History;
+use mitcad_asm::convert::{self, ConvertedBody};
 
 use crate::BrepRecord;
 
@@ -159,7 +159,7 @@ impl States {
             let mut newer: Vec<(usize, ConvertedBody)> = Vec::new();
             let mut ops: Vec<(i64, usize)> = Vec::new();
             // The view of step k, grown state by state (as `History::view`).
-            let mut view = mitcad_f3d::ids::View::default();
+            let mut view = mitcad_asm::ids::View::default();
             let steps = if rolled { h.states.len() } else { 0 };
             for k in 0..=steps {
                 if let Some(state) = k.checked_sub(1).and_then(|j| h.states.get(j)) {
@@ -302,7 +302,7 @@ mod tests {
 
     #[test]
     fn distinct_states_are_kept_by_their_steps() {
-        let records = [record(mitcad_f3d::testdata::cube_with_history_blob())];
+        let records = [record(mitcad_asm::testdata::cube_with_history_blob())];
         // Items 0, 1 and 2 made the states 1, 2 and 3.
         let results = BTreeMap::from([(0, 1), (1, 2), (2, 3)]);
         let g = States::new(&records, &results, true).unwrap();
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn without_items_only_the_stored_bodies_are_read() {
-        let records = [record(mitcad_f3d::testdata::cube_with_history_blob())];
+        let records = [record(mitcad_asm::testdata::cube_with_history_blob())];
         let g = States::new(&records, &BTreeMap::new(), false).unwrap();
         assert_eq!(g.states, vec![vec![0]]);
         assert_eq!(g.variants.len(), 1);
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn records_without_a_history_keep_their_bodies() {
-        let records = [record(mitcad_f3d::testdata::cube_blob())];
+        let records = [record(mitcad_asm::testdata::cube_blob())];
         let g = States::new(&records, &BTreeMap::new(), true).unwrap();
         assert_eq!(g.history_record, None);
         assert!(g.states.is_empty());

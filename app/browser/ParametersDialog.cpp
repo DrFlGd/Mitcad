@@ -213,7 +213,7 @@ public:
     auto* label = new QLabel(tr("%1 (%2): %3.")
                                  .arg(file,
                                       table ? tr("the parameter table of the .f3d application")
-                                            : tr("a Mitcad parameter table"),
+                                            : tr("a MitCad parameter table"),
                                       summary));
     label->setObjectName(QStringLiteral("parametersImportSummary"));
     label->setWordWrap(true);

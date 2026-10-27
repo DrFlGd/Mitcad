@@ -171,7 +171,7 @@ in_git "$SEED" add README.md
 in_git "$SEED" -c user.name="Readme Author" -c user.email=readme@example.invalid commit -qm "Add a README"
 in_git "$SEED" push -q "$FILES" HEAD:main 2> /dev/null
 open_from_cloud "$FILES"
-ui_expect_new "The repository has files but no Mitcad project (README.md): Make It a Project adds one beside them." \
+ui_expect_new "The repository has files but no MitCad project (README.md): Make It a Project adds one beside them." \
   "files, no project"
 ui_expect_new "Open from Cloud dialog: adopt, enabled" "Make It a Project" 20
 ui_step "make it a project (Enter)"      ui_key Return

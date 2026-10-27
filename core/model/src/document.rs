@@ -45,11 +45,11 @@ mod library_parts;
 pub use library_parts::{LibraryChange, LibraryPart, PartsListRow};
 // Move Features into a Component (mitcad#171).
 mod move_features;
-pub(crate) use move_features::MoveDestination;
 pub use move_features::{MoveConflict, MoveGroup, MovePlan, MovedGroup, PlannedGroup};
+pub use move_features::{MoveDestination, MovedDestination};
 // What the importers say about the features they made (mitcad#170).
 mod import_notes;
-pub(crate) use import_notes::{status_message as noted_message, status_text as noted_status};
+pub use import_notes::{status_message as noted_message, status_text as noted_status};
 // Origin groups of the final unused sketch (mitcad#193).
 mod autoselect;
 pub use autoselect::AutoselectProfiles;
@@ -60,7 +60,7 @@ mod policy;
 pub use policy::{PolicyItem, PolicyReport};
 // Moving an occurrence to another parent (mitcad#219).
 mod reparent;
-pub(crate) use reparent::ReparentPlan;
+pub use reparent::{Carried, ReparentPlan};
 // Body edges and vertices in a sketch's plane (mitcad#256).
 mod plane_geometry;
 pub use plane_geometry::PlaneShape;
@@ -73,6 +73,7 @@ pub use auto_operation::AutoOperation;
 // The failed features after a command, and whether it made them
 // (mitcad#401); a feature added at a timeline position (mitcad#403).
 mod command_outcome;
+pub use command_outcome::TimelineBefore;
 mod insert;
 // Motion studies and contact sets (mitcad#454).
 mod motion;
@@ -93,7 +94,8 @@ pub use reorient::ReorientReport;
 // Mount frames of any part and placing a part by one (mitcad#525).
 mod mounts;
 pub use mounts::{
-    GridPlace, Inserted, MountAt, MountFrame, MountInput, MountPlan, MountPreview, MountSource,
+    FrameAt, GridPlace, Inserted, MountAt, MountFrame, MountInput, MountPlan, MountPreview,
+    MountSource,
 };
 // Materials as objects, component default materials (mitcad#640).
 mod materials;
@@ -112,18 +114,17 @@ pub use print_import::read_print_file;
 // Materials and print profiles listed, edited and chosen where they live
 // (mitcad#655).
 mod library_items;
-pub(crate) use library_items::{library_kind, writable_library};
+pub use library_items::{library_kind, writable_library};
 // Annotations: dimensions and notes kept in the design (mitcad#702), grown
 // from the measurement objects of mitcad#649.
 mod annotations;
+pub use annotations::normalized_color;
 pub use annotations::{
     ANNOTATION_COLORS, Annotation, AnnotationFormat, AnnotationPlane, Characteristic, DatumNeed,
     GeometricTolerance, MAX_DECIMALS, MEASUREMENT_COLORS, MaterialCondition, MeasureKind,
     MeasurePick, Measurement, NewMeasurement, Tolerance, datum_letter,
 };
-pub(crate) use annotations::{
-    check_format, check_frame, check_tolerance, normalized_color, settle_frames,
-};
+pub(crate) use annotations::{check_format, check_frame, check_tolerance, settle_frames};
 // The parameters exported to and imported from CSV (mitcad#666).
 mod parameters_csv;
 pub use parameters_csv::{CsvAction, CsvImport, CsvLimits, CsvRowOutcome};
@@ -131,14 +132,26 @@ pub use parameters_csv::{CsvAction, CsvImport, CsvLimits, CsvRowOutcome};
 // the pairs set by hand (mitcad#705).
 mod purge_volumes;
 pub use purge_volumes::PurgeChange;
-pub(crate) use purge_volumes::purge_defaults_json;
+pub use purge_volumes::purge_defaults_json;
 // Drawings kept in the root's and components' Drawings folders (mitcad#707).
 mod drawings;
-pub(crate) use drawings::deleted_views;
+pub use drawings::deleted_views;
 // A body's print bed face, which the 3D print export turns down onto the
 // plate (mitcad#731).
 mod print_bed;
 pub use print_bed::PrintBedFace;
+// Runtime caches kept beside the results, one per type (mitcad#777).
+mod side_caches;
+// Redefine Sketch Plane: a sketch moved to another plane and placed there
+// (mitcad#787).
+mod sketch_plane;
+pub use sketch_plane::SketchPlaneChange;
+// Image references: images placed on planes and faces to model from
+// (mitcad#782).
+mod image_references;
+pub use image_references::{
+    CalibrationPoint, EmbeddedImage, ImageEdit, ImageReference, ImageSize, ImageSource, ImageTarget,
+};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -148,11 +161,11 @@ use std::time::{Duration, Instant};
 
 pub use analyses::{Analysis, AnalysisDef, SectionAnalysis, SectionPlane};
 pub use analyses::{EstimateCheck, OverhangCheck, PrintAnalysis, ThinWallCheck};
-pub(crate) use analyses::{check_minimum_wall, check_overhang_angle, print_material};
+pub use analyses::{check_minimum_wall, check_overhang_angle, print_material};
 pub use appearances::DeletedAppearance;
 pub use bodies::{BodyAttributes, FaceAppearance};
 pub use components::{InsertOptions, InstanceView};
-pub use datums::DatumView;
+pub use datums::{DatumView, DocResolver};
 pub use display::{DisplayState, Isolated};
 pub use groups::TimelineGroup;
 pub use views::NamedView;
@@ -160,19 +173,17 @@ pub use views::NamedView;
 use crate::appearance::Appearance;
 use crate::assembly::Assembly;
 use crate::expr::ParamLimits;
-use crate::expr::{
-    LengthUnit, ParamSpec, Unit, is_valid_name, value_to_expression, with_decimal_points,
-};
+use crate::expr::{LengthUnit, ParamSpec, Unit, value_to_expression, with_decimal_points};
+use crate::features::sketch::LinkedReferences;
 use crate::features::{
     CheckContext, FeatureDef, FeatureEntry, HelixConstruction, SketchDef, SketchPlane, ValueInput,
     slot_label,
 };
 use crate::ids::{BodyUid, ComponentUid, EntityUid, FeatureUid, OccurrenceUid};
 use crate::kernel::Kernel;
-use crate::monitor::{Cancelled, RecomputeMonitor};
-use crate::parameters::{
-    ParamId, ParameterError, Parameters, describe, expression_dims, fits_slot, slot_unit, unit_for,
-};
+use crate::links::OccurrenceLinkExt;
+use crate::monitor::RecomputeMonitor;
+use crate::parameters::{ParamId, ParameterError, Parameters, fits_slot, slot_unit, unit_for};
 use crate::profile::{ProfileRegion, SketchFrame};
 use crate::recompute::{Cache, FeatureStatus, Recomputed, def_fingerprint, recompute};
 use crate::render_settings::RenderSettings;
@@ -180,55 +191,13 @@ use crate::sketch::edit::{EditReport, SketchEdit};
 use crate::store::{self, PersistReport, ResultStore};
 use crate::topo::RegionKey;
 use crate::topo::SegmentKey;
+use mitcad_model_base::internal::parameters::expression_dims;
 
-/// Rejected command; the document is left unchanged.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ModelError {
-    NoSuchFeature(FeatureUid),
-    /// A reference or a value the command cannot accept.
-    Invalid(String),
-    /// Deleting the feature would break the features that use it.
-    Dependents {
-        feature: String,
-        dependents: Vec<String>,
-    },
-    Parameter(ParameterError),
-    /// The computation was cancelled through the monitor (P7).
-    Cancelled,
-}
-
-impl fmt::Display for ModelError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoSuchFeature(uid) => write!(f, "feature {uid} does not exist"),
-            Self::Invalid(message) => f.write_str(message),
-            Self::Dependents {
-                feature,
-                dependents,
-            } => write!(
-                f,
-                "{feature} is used by {}; delete them too, or change them first",
-                dependents.join(", ")
-            ),
-            Self::Parameter(error) => error.fmt(f),
-            Self::Cancelled => Cancelled.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for ModelError {}
-
-impl From<ParameterError> for ModelError {
-    fn from(error: ParameterError) -> Self {
-        Self::Parameter(error)
-    }
-}
-
-impl From<Cancelled> for ModelError {
-    fn from(_: Cancelled) -> Self {
-        Self::Cancelled
-    }
-}
+// Moved down to the base so that the sketch resolves its values as the
+// document does (mitcad#780).
+pub(crate) use mitcad_model_base::internal::values::resolve_value;
+pub use mitcad_model_base::internal::values::split_named;
+pub use mitcad_model_base::values::ModelError;
 
 fn invalid(message: impl Into<String>) -> ModelError {
     ModelError::Invalid(message.into())
@@ -237,44 +206,44 @@ fn invalid(message: impl Into<String>) -> ModelError {
 /// The definition state: everything a design file saves.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocState {
-    pub(crate) parameters: Parameters,
+    pub parameters: Parameters,
     /// In timeline order.
-    pub(crate) features: Vec<Arc<FeatureEntry>>,
+    pub features: Vec<Arc<FeatureEntry>>,
     /// The number of features before the timeline marker; features after it
     /// are rolled back (not evaluated), and new features go in at it.
-    pub(crate) marker: usize,
+    pub marker: usize,
     /// Display names given to bodies, by the commands or the user.
-    pub(crate) body_names: BTreeMap<BodyUid, String>,
+    pub body_names: BTreeMap<BodyUid, String>,
     /// Visibility, material and appearance of bodies; only those that
     /// differ from the default are listed.
-    pub(crate) body_attributes: BTreeMap<BodyUid, BodyAttributes>,
+    pub body_attributes: BTreeMap<BodyUid, BodyAttributes>,
     /// The number of the next feature uid.
     pub(crate) next_uid: u64,
     /// Components, occurrences and the active component (F6).
-    pub(crate) assembly: Assembly,
+    pub assembly: Assembly,
     /// Light bulbs of sketches and construction features set by the user
     /// (browser, U3) where they differ from the default (a sketch hidden
     /// while a feature uses it, construction geometry shown; see
     /// `document/browser.rs`).
-    pub(crate) feature_visibility: BTreeMap<FeatureUid, bool>,
+    pub feature_visibility: BTreeMap<FeatureUid, bool>,
     /// Cameras saved by name (U5), in the order they were added.
-    pub(crate) named_views: Vec<NamedView>,
+    pub named_views: Vec<NamedView>,
     /// The Origin folder's light bulb and Isolate (P9).
     pub(crate) display: DisplayState,
     /// Favourite parameters (P9: Change Parameters' star).
-    pub(crate) favorites: BTreeSet<ParamId>,
+    pub favorites: BTreeSet<ParamId>,
     /// Timeline groups (P9), in the order they were made.
-    pub(crate) groups: Vec<TimelineGroup>,
+    pub groups: Vec<TimelineGroup>,
     /// Analyses kept in the document (mitcad#41), in the order they were
     /// added.
-    pub(crate) analyses: Vec<Analysis>,
+    pub analyses: Vec<Analysis>,
     /// The document's own appearances (mitcad#46), in the order they were
     /// made; the library's are not listed.
-    pub(crate) appearances: Vec<Appearance>,
+    pub appearances: Vec<Appearance>,
     /// How the rendered view lights and shows the design (mitcad#47).
-    pub(crate) render: RenderSettings,
+    pub render: RenderSettings,
     /// The configuration table (mitcad#64): sizes of the design.
-    pub(crate) configurations: crate::configurations::Configurations,
+    pub configurations: crate::configurations::Configurations,
     /// A component made where modelled bodies are does not offer to move
     /// them into a component first (mitcad#171: "don't ask again").
     pub(crate) hybrid_assembly: bool,
@@ -284,14 +253,14 @@ pub struct DocState {
     /// its definition builds.
     pub(crate) import_notes: BTreeMap<FeatureUid, String>,
     /// Flat Patterns of sheet-metal bodies (mitcad#208), by body.
-    pub(crate) flat_patterns: BTreeMap<BodyUid, crate::sheet::flat::FlatPatternDef>,
+    pub flat_patterns: BTreeMap<BodyUid, crate::sheet::flat::FlatPatternDef>,
     /// The distance (mm) within which the features' joins still fuse
     /// where they fail exactly ([`Kernel::join_within`], mitcad#298): set
     /// by an importer whose bodies match a file's only within its
     /// geometric tolerance; None (exact joins) for the model's own designs.
     pub(crate) join_tolerance: Option<f64>,
     /// The library parts BUILD placed, each kept once (mitcad#375).
-    pub(crate) library_sources: crate::build::LibrarySources,
+    pub library_sources: crate::build::LibrarySources,
     /// What features remember of the pieces they split bodies into, by
     /// feature (mitcad#408, `features/pieces.rs`): taken from each
     /// recompute, saved with the features.
@@ -305,21 +274,23 @@ pub struct DocState {
     pub(crate) properties: crate::properties::PropertyStore,
     /// The document's own materials (mitcad#640), in the order they were
     /// made; one with a built-in's id takes its place.
-    pub(crate) materials: Vec<crate::material::Material>,
+    pub materials: Vec<crate::material::Material>,
     /// Default materials of components (C0: the root's), by component.
-    pub(crate) component_materials: BTreeMap<ComponentUid, String>,
+    pub component_materials: BTreeMap<ComponentUid, String>,
     /// The design's printer and process profiles (mitcad#640, part 3), in
     /// the order they were made.
-    pub(crate) print_profiles: Vec<crate::print_profile::PrintProfile>,
+    pub print_profiles: Vec<crate::print_profile::PrintProfile>,
     /// Annotations (mitcad#702; the measurement objects of mitcad#649), in
     /// the order they were added.
-    pub(crate) annotations: Vec<Annotation>,
+    pub annotations: Vec<Annotation>,
     /// Purge volumes set by hand for pairs of materials (mitcad#705), in
     /// the order they were set.
     pub(crate) purge_volumes: Vec<crate::print_purge::PurgeOverride>,
     /// Drawings of the root and the components (mitcad#707), in the order
     /// they were made.
-    pub(crate) drawings: Vec<crate::drawing::def::Drawing>,
+    pub drawings: Vec<crate::drawing::def::Drawing>,
+    /// Image references (mitcad#782), in the order they were inserted.
+    pub(crate) image_references: Vec<ImageReference>,
 }
 
 impl Default for DocState {
@@ -356,6 +327,7 @@ impl Default for DocState {
             annotations: Vec::new(),
             purge_volumes: Vec::new(),
             drawings: Vec::new(),
+            image_references: Vec::new(),
         }
     }
 }
@@ -388,11 +360,11 @@ pub struct ShapeAdded {
 }
 
 impl DocState {
-    pub(crate) fn position(&self, uid: FeatureUid) -> Option<usize> {
+    pub fn position(&self, uid: FeatureUid) -> Option<usize> {
         self.features.iter().position(|f| f.uid == uid)
     }
 
-    pub(crate) fn entry(&self, uid: FeatureUid) -> Option<&FeatureEntry> {
+    pub fn entry(&self, uid: FeatureUid) -> Option<&FeatureEntry> {
         self.features.iter().find(|f| f.uid == uid).map(|f| &**f)
     }
 
@@ -401,11 +373,7 @@ impl DocState {
     }
 
     /// Checks a feature placed at `position` against the features before it.
-    pub(crate) fn check_feature(
-        &self,
-        position: usize,
-        entry: &FeatureEntry,
-    ) -> Result<(), String> {
+    pub fn check_feature(&self, position: usize, entry: &FeatureEntry) -> Result<(), String> {
         let ctx = CheckContext {
             uid: entry.uid,
             earlier: &self.features[..position],
@@ -493,7 +461,7 @@ impl DocState {
         })?;
         // Driven dimensions get their reference parameters (mitcad#231).
         if let FeatureDef::Sketch(sketch) = &mut resolved {
-            let new = crate::sketch::edit::settle_references(
+            let new = mitcad_sketch::internal::settle_references(
                 sketch,
                 params,
                 owner,
@@ -530,7 +498,7 @@ impl DocState {
 
     /// The features that refer to any of `of`, directly or through each
     /// other, in timeline order.
-    pub(crate) fn dependents(&self, of: &BTreeSet<FeatureUid>) -> Vec<FeatureUid> {
+    pub fn dependents(&self, of: &BTreeSet<FeatureUid>) -> Vec<FeatureUid> {
         let mut affected = of.clone();
         let mut dependents = Vec::new();
         // A feature only refers to earlier ones, so one pass in order finds
@@ -576,7 +544,7 @@ impl DocState {
     /// Removes the parameters a feature owned that nothing uses any more
     /// (no feature and no other parameter's expression); used ones become
     /// user parameters when the feature is gone.
-    pub(crate) fn release_params(&mut self, owner: FeatureUid) {
+    pub fn release_params(&mut self, owner: FeatureUid) {
         let used = used_params(&self.features);
         let exists = self.position(owner).is_some();
         self.parameters
@@ -710,7 +678,7 @@ impl DocState {
             };
             let mut def = def.clone();
             let (uid, name) = (entry.uid, entry.name.clone());
-            crate::sketch::edit::settle_references(
+            mitcad_sketch::internal::settle_references(
                 &mut def,
                 &mut self.parameters,
                 uid,
@@ -775,7 +743,7 @@ impl DocState {
 
     /// Adds a feature to a component at the marker; a new-component
     /// operation also makes its component, placed in that one.
-    pub(crate) fn add_feature_in(
+    pub fn add_feature_in(
         &mut self,
         def: &FeatureDef<ValueInput>,
         name: Option<&str>,
@@ -851,7 +819,7 @@ impl DocState {
     /// Removes features with the parameters they owned, their bodies'
     /// names and attributes and the components they made (when nothing
     /// else is in them). Returns the removed features in timeline order.
-    pub(crate) fn remove_features(&mut self, removed: &BTreeSet<FeatureUid>) -> Vec<FeatureUid> {
+    pub fn remove_features(&mut self, removed: &BTreeSet<FeatureUid>) -> Vec<FeatureUid> {
         let order: Vec<FeatureUid> = self
             .features
             .iter()
@@ -910,7 +878,7 @@ impl DocState {
         }
     }
 
-    pub(crate) fn edit_feature(
+    pub fn edit_feature(
         &mut self,
         uid: FeatureUid,
         def: &FeatureDef<ValueInput>,
@@ -1014,76 +982,6 @@ pub(crate) fn used_params(features: &[Arc<FeatureEntry>]) -> BTreeSet<ParamId> {
     features.iter().flat_map(|f| f.def.params()).collect()
 }
 
-/// Resolves one command value (see [`DocState::resolve`]): an existing
-/// parameter by name, or a number or an expression for the slot's own
-/// parameter (`old`, when the feature owns it) or a new dimension
-/// parameter. Numbers are millimetres or radians; new parameters show
-/// lengths in millimetres and angles in degrees (see [`slot_unit`]).
-pub(crate) fn resolve_value(
-    params: &mut Parameters,
-    slot: &str,
-    value: &ValueInput,
-    owner: FeatureUid,
-    comment: &str,
-    old: Option<&ParamId>,
-) -> Result<(ParamId, Option<String>), ModelError> {
-    let unit = match slot_unit(slot) {
-        Unit::MM => Unit::of_length(params.context().default_length_unit),
-        unit => unit,
-    };
-    let own = old.copied().filter(|id| params.owner(*id) == Some(owner));
-    let in_slot = |e: ParameterError| invalid(format!("{slot}: {e}"));
-    let expression = match value {
-        ValueInput::Number(number) => {
-            if !number.is_finite() {
-                return Err(invalid(format!(
-                    "{slot}: the value must be a finite number, got {number}"
-                )));
-            }
-            if let Some(id) = own {
-                params.set_value(id, *number).map_err(in_slot)?;
-                return Ok((id, None));
-            }
-            value_to_expression(*number, unit)
-        }
-        ValueInput::Name(text) => {
-            if let Some((name, rest)) = split_named(text) {
-                return resolve_named(params, slot, unit, (name, rest), owner, comment, old);
-            }
-            if let Some(id) = params.find(text.trim()) {
-                let param = params.get(id).expect("found");
-                // A design from before mitcad#662 may use a length parameter
-                // in a count slot (its load warning says so); the slot keeps
-                // it until it is changed.
-                if !fits_slot(param.unit(), unit) && old != Some(&id) {
-                    return Err(invalid(format!(
-                        "{slot}: parameter '{}' is {}, not {}",
-                        param.name(),
-                        describe(param.unit()),
-                        describe(unit)
-                    )));
-                }
-                return Ok((id, None));
-            }
-            if is_valid_name(text.trim()) {
-                return Err(invalid(format!(
-                    "{slot}: parameter '{}' does not exist",
-                    text.trim()
-                )));
-            }
-            if let Some(id) = own {
-                params.set_expression(id, text).map_err(in_slot)?;
-                return Ok((id, None));
-            }
-            text.clone()
-        }
-    };
-    let id = params
-        .add_dimension(&expression, unit, comment, Some(owner))
-        .map_err(in_slot)?;
-    Ok((id, Some(params.name(id))))
-}
-
 /// The parameters an edit renamed, as (old name, new name): the same id
 /// under a new name, where the old name is gone and the new one was free.
 fn renamed_parameters(before: &Parameters, after: &Parameters) -> Vec<(String, String)> {
@@ -1096,48 +994,6 @@ fn renamed_parameters(before: &Parameters, after: &Parameters) -> Vec<(String, S
                 .then(|| (old.to_owned(), p.name().to_owned()))
         })
         .collect()
-}
-
-/// Splits `name = expression` (mitcad#231): a single `=` after a word.
-/// Expressions compare with `==`, so a single `=` is never one of theirs.
-pub(crate) fn split_named(text: &str) -> Option<(&str, &str)> {
-    let at = text.find('=')?;
-    if text[at + 1..].starts_with('=') {
-        return None;
-    }
-    let name = text[..at].trim();
-    let word = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
-    word.then_some((name, text[at + 1..].trim()))
-}
-
-/// `name = expression` in a slot: the slot's own parameter (or the one it
-/// uses, when that has the name) is renamed and takes the expression, or a
-/// new dimension parameter of that name is made. A name another parameter
-/// has, or an invalid one, is refused.
-fn resolve_named(
-    params: &mut Parameters,
-    slot: &str,
-    unit: Unit,
-    (name, expression): (&str, &str),
-    owner: FeatureUid,
-    comment: &str,
-    old: Option<&ParamId>,
-) -> Result<(ParamId, Option<String>), ModelError> {
-    let in_slot = |e: ParameterError| invalid(format!("{slot}: {e}"));
-    if expression.is_empty() {
-        return Err(invalid(format!("{slot}: '{name} =' needs a value")));
-    }
-    let target = old
-        .copied()
-        .filter(|id| params.owner(*id) == Some(owner) || params.name(*id) == name);
-    if let Some(id) = target {
-        params.rename(id, name).map_err(in_slot)?;
-        params.set_expression(id, expression).map_err(in_slot)?;
-        return Ok((id, None));
-    }
-    let spec = ParamSpec::model(name, expression, unit).with_comment(comment);
-    let id = params.add(spec, Some(owner)).map_err(in_slot)?;
-    Ok((id, Some(params.name(id))))
 }
 
 /// A feature in the timeline with its status after the last recompute.
@@ -1168,7 +1024,7 @@ impl TimelineItem<'_> {
 
 /// A feature's status as the queries give it: `warning` for one that
 /// succeeded with warnings.
-pub(crate) fn status_text(status: Option<&FeatureStatus>, warnings: &[String]) -> &'static str {
+pub fn status_text(status: Option<&FeatureStatus>, warnings: &[String]) -> &'static str {
     match status {
         Some(FeatureStatus::Ok) if !warnings.is_empty() => "warning",
         Some(status) => status.as_str(),
@@ -1177,10 +1033,7 @@ pub(crate) fn status_text(status: Option<&FeatureStatus>, warnings: &[String]) -
 }
 
 /// A failed feature's error, or a feature's warnings joined.
-pub(crate) fn status_message(
-    status: Option<&FeatureStatus>,
-    warnings: &[String],
-) -> Option<String> {
+pub fn status_message(status: Option<&FeatureStatus>, warnings: &[String]) -> Option<String> {
     match status.and_then(FeatureStatus::error) {
         Some(error) => Some(error.to_owned()),
         None if !warnings.is_empty() => Some(warnings.join("; ")),
@@ -1248,6 +1101,8 @@ pub struct PreviewReport {
     /// A pattern's elements by number, suppressed ones too (P9).
     pub elements: Vec<crate::transform::Transform>,
     pub anchor: Option<crate::features::point_pattern::PatternAnchor>,
+    /// Where a sweep's profile lies on its path (mitcad#795).
+    pub sweep_place: Option<crate::features::sweep::SweepPlace>,
     /// New shared-body occurrence instances, in world coordinates.
     pub instances: Vec<crate::assembly::Instance>,
     pub removed_instances: Vec<(Vec<OccurrenceUid>, BodyUid)>,
@@ -1278,8 +1133,8 @@ struct Preview<S> {
 }
 
 /// The versions of each feature's result and of each body (P7d tests).
-#[cfg(test)]
-pub(crate) type ResultVersions = (Vec<(FeatureUid, Option<u128>)>, Vec<(BodyUid, u128)>);
+#[cfg(any(test, feature = "testing"))]
+pub type ResultVersions = (Vec<(FeatureUid, Option<u128>)>, Vec<(BodyUid, u128)>);
 
 /// An undo or redo step: the command's label and the state on the other
 /// side of it, with that state's revision, and the library files the
@@ -1339,12 +1194,10 @@ pub struct Document<K: Kernel> {
     /// Print Analysis meshes and results (mitcad#620), separate from
     /// modelling results.
     print_cache: crate::print_analysis::PrintCache,
-    /// Drawing views projected before (mitcad#707), separate from modelling
-    /// results.
-    drawing_cache: crate::drawing::ProjectionCache,
-    /// Annotations' picks measured before (mitcad#716), separate from
-    /// modelling results.
-    measure_cache: crate::api::MeasureCache,
+    /// Runtime caches separate from modelling results, one per type
+    /// ([`Document::side_cache`]): the drawing views projected before
+    /// (mitcad#707), the annotations' picks measured before (mitcad#716).
+    side_caches: side_caches::SideCaches,
     /// The components an import filled from other documents, by the
     /// document's name for them, with their sub-components
     /// ([`Document::set_import_scopes`]). Runtime context only.
@@ -1396,7 +1249,7 @@ impl<K: Kernel> Document<K> {
     /// [`Document::recompute`]. It is modified until
     /// [`Document::mark_saved`]: the definition need not come from the file
     /// it will be saved to (an imported design, recovered work).
-    pub(crate) fn from_state(kernel: K, state: DocState) -> Self {
+    pub fn from_state(kernel: K, state: DocState) -> Self {
         Self {
             kernel,
             state,
@@ -1417,8 +1270,7 @@ impl<K: Kernel> Document<K> {
             source_directory: RwLock::new(None),
             flat_cache: Default::default(),
             print_cache: Default::default(),
-            drawing_cache: Default::default(),
-            measure_cache: Default::default(),
+            side_caches: Default::default(),
             import_scopes: Vec::new(),
             import_focus: Default::default(),
             policy_checks: false,
@@ -1430,16 +1282,13 @@ impl<K: Kernel> Document<K> {
 
     /// The component BUILD places parts in instead of the active one's
     /// host while a timber frame drives its own fasteners (mitcad#522).
-    pub(crate) fn build_host_override(&self) -> Option<ComponentUid> {
+    pub fn build_host_override(&self) -> Option<ComponentUid> {
         self.build_host_override
     }
 
     /// Sets (or with None ends) the BUILD host override; returns the one
     /// before, to restore.
-    pub(crate) fn set_build_host_override(
-        &mut self,
-        host: Option<ComponentUid>,
-    ) -> Option<ComponentUid> {
+    pub fn set_build_host_override(&mut self, host: Option<ComponentUid>) -> Option<ComponentUid> {
         std::mem::replace(&mut self.build_host_override, host)
     }
 
@@ -1471,7 +1320,7 @@ impl<K: Kernel> Document<K> {
         &self.kernel
     }
 
-    pub(crate) fn state(&self) -> &DocState {
+    pub fn state(&self) -> &DocState {
         &self.state
     }
 
@@ -1548,7 +1397,7 @@ impl<K: Kernel> Document<K> {
 
     /// The resolver of library components: the document's, else the
     /// process's.
-    pub(crate) fn link_resolver(&self) -> Option<Arc<dyn crate::library::LinkResolver>> {
+    pub fn link_resolver(&self) -> Option<Arc<dyn crate::library::LinkResolver>> {
         self.resolver.clone().or_else(crate::library::link_resolver)
     }
 
@@ -1558,8 +1407,8 @@ impl<K: Kernel> Document<K> {
     }
 
     /// The versions of the last recompute's results and bodies (P7d tests).
-    #[cfg(test)]
-    pub(crate) fn versions(&self) -> ResultVersions {
+    #[cfg(any(test, feature = "testing"))]
+    pub fn versions(&self) -> ResultVersions {
         let outputs = self
             .result
             .results
@@ -1663,8 +1512,7 @@ impl<K: Kernel> Document<K> {
             source_directory: RwLock::new(self.source_directory()),
             flat_cache: Default::default(),
             print_cache: Default::default(),
-            drawing_cache: Default::default(),
-            measure_cache: Default::default(),
+            side_caches: Default::default(),
             import_scopes: self.import_scopes.clone(),
             import_focus: self.import_focus.clone(),
             policy_checks: false,
@@ -1682,8 +1530,8 @@ impl<K: Kernel> Document<K> {
         self.cache.adopt(&fork.cache, uids)
     }
 
-    /// The cache and the last recompute, for diagnostics (`api/cache.rs`).
-    pub(crate) fn cache(&self) -> &Cache<K::Shape> {
+    /// The cache and the last recompute, for diagnostics (`model-api/src/cache.rs`).
+    pub fn cache(&self) -> &Cache<K::Shape> {
         &self.cache
     }
 
@@ -1702,23 +1550,21 @@ impl<K: Kernel> Document<K> {
         result
     }
 
-    pub(crate) fn last_result(&self) -> &Recomputed<K::Shape> {
+    pub fn last_result(&self) -> &Recomputed<K::Shape> {
         &self.result
     }
 
     /// The Print Analysis meshes and results kept (mitcad#620).
-    pub(crate) fn print_cache(&self) -> &crate::print_analysis::PrintCache {
+    pub fn print_cache(&self) -> &crate::print_analysis::PrintCache {
         &self.print_cache
     }
 
-    /// The drawing views projected before (mitcad#707).
-    pub(crate) fn drawing_cache(&self) -> &crate::drawing::ProjectionCache {
-        &self.drawing_cache
-    }
-
-    /// Annotations' picks measured before (mitcad#716).
-    pub(crate) fn measure_cache(&self) -> &crate::api::MeasureCache {
-        &self.measure_cache
+    /// The document's runtime cache of type `T`, made empty on first use
+    /// (mitcad#777). Side caches change no state and are not kept by a
+    /// fork; a layer above the model keeps its own caches here, such as
+    /// the annotations' measured picks (mitcad#716).
+    pub fn side_cache<T: std::any::Any + Send + Sync + Default>(&self) -> Arc<T> {
+        self.side_caches.get()
     }
 
     /// Writes to the result store the results of the last recompute that
@@ -2036,10 +1882,7 @@ impl<K: Kernel> Document<K> {
     /// same. None for a sketch with projections (its evaluation solves
     /// what its links follow, the query the definition as it evaluated),
     /// and when anything differs: the caller solves.
-    pub(crate) fn evaluated_solve(
-        &self,
-        sketch: FeatureUid,
-    ) -> Option<Arc<crate::sketch::solve::Solved>> {
+    pub fn evaluated_solve(&self, sketch: FeatureUid) -> Option<Arc<crate::sketch::solve::Solved>> {
         let entry = self.feature(sketch)?;
         let FeatureDef::Sketch(def) = &entry.def else {
             return None;
@@ -2092,7 +1935,7 @@ impl<K: Kernel> Document<K> {
     /// itself: an edit makes a new one, as the answer holds the old), the
     /// same evaluation, warnings and parameters. The application asks it
     /// several times per refresh, and a large sketch's answer takes long.
-    pub(crate) fn known_sketch_answer(&self, sketch: FeatureUid) -> Option<String> {
+    pub fn known_sketch_answer(&self, sketch: FeatureUid) -> Option<String> {
         let (entry, result, warnings) = self.sketch_answer_inputs(sketch)?;
         let answers = self.sketch_answers.lock().ok()?;
         answers
@@ -2108,7 +1951,7 @@ impl<K: Kernel> Document<K> {
     }
 
     /// Keeps a `sketch` query's answer for [`Self::known_sketch_answer`].
-    pub(crate) fn keep_sketch_answer(&self, sketch: FeatureUid, answer: &str) {
+    pub fn keep_sketch_answer(&self, sketch: FeatureUid, answer: &str) {
         let Some((entry, result, warnings)) = self.sketch_answer_inputs(sketch) else {
             return;
         };
@@ -2131,7 +1974,7 @@ impl<K: Kernel> Document<K> {
 
     /// Runs a command on a copy of the state; on success the copy becomes
     /// the state and the old one an undo step.
-    pub(crate) fn apply<T>(
+    pub fn apply<T>(
         &mut self,
         edit: impl FnOnce(&mut DocState) -> Result<(String, T), ModelError>,
     ) -> Result<T, ModelError> {
@@ -2517,7 +2360,11 @@ impl<K: Kernel> Document<K> {
             let unit = match unit {
                 Some(unit) => unit,
                 // A text expression makes a text parameter (mitcad#664).
-                None if crate::parameters::expression_is_text(&state.parameters, expression) => {
+                None if mitcad_model_base::internal::parameters::expression_is_text(
+                    &state.parameters,
+                    expression,
+                ) =>
+                {
                     Unit::TEXT
                 }
                 None => {
@@ -2824,7 +2671,7 @@ impl<K: Kernel> Document<K> {
 
     /// A body as it was before the feature `uid` (its input), from the
     /// last recompute; none when the body was not there yet.
-    pub(crate) fn body_before(&self, uid: FeatureUid, body: BodyUid) -> Option<&K::Shape> {
+    pub fn body_before(&self, uid: FeatureUid, body: BodyUid) -> Option<&K::Shape> {
         let position = self.state.position(uid)?;
         self.result
             .results
@@ -2848,7 +2695,7 @@ impl<K: Kernel> Document<K> {
     /// has its crest off it (leaving no piece of it, or only pieces outside
     /// the thread's part), as the hole measured it before the thread
     /// (mitcad#436, mitcad#628); none for any other wall.
-    pub(crate) fn threaded_wall(
+    pub fn threaded_wall(
         &self,
         uid: FeatureUid,
         body: BodyUid,
@@ -3359,7 +3206,7 @@ impl<K: Kernel> Document<K> {
 
     /// The definitions a history command would restore, for file-read
     /// auditing before an external client asks to recompute that state.
-    pub(crate) fn history_state(&self, back: bool) -> Option<&DocState> {
+    pub fn history_state(&self, back: bool) -> Option<&DocState> {
         (if back { &self.undo } else { &self.redo })
             .last()
             .map(|step| &step.state)
@@ -3630,6 +3477,10 @@ impl<K: Kernel> Document<K> {
                 .result(uid)
                 .and_then(|r| r.output.as_ref())
                 .and_then(|o| o.pattern_anchor.clone()),
+            sweep_place: result
+                .result(uid)
+                .and_then(|r| r.output.as_ref())
+                .and_then(|o| o.sweep_place),
             instances: preview_instances
                 .into_iter()
                 .filter(|i| !old_instances.contains(&(i.path.clone(), i.body)))

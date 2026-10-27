@@ -190,7 +190,7 @@ impl<K: Kernel> Document<K> {
     /// `bodies`), the `multiplier`, and `volumes[from][to]`: each pair's
     /// `computed` volume, the `volume` used and whether it is `edited`
     /// (set by hand).
-    pub(crate) fn purge_volumes_json(&self, bodies: &[BodyUid]) -> Result<Value, ModelError> {
+    pub fn purge_volumes_json(&self, bodies: &[BodyUid]) -> Result<Value, ModelError> {
         let slots = self.purge_slots(bodies)?;
         let firsts: Vec<&EffectivePrint> = slots.settings.iter().collect();
         let matrix = crate::print_files::purge_matrix(&firsts, &self.state.purge_volumes);
@@ -238,7 +238,7 @@ impl<K: Kernel> Document<K> {
 /// The `purge_defaults` query: a colour's purge values (`purge_into`,
 /// `purge_out`), what a material without its own takes; `color` `#RRGGBB`,
 /// none for mid grey.
-pub(crate) fn purge_defaults_json(color: Option<&str>) -> Result<Value, ModelError> {
+pub fn purge_defaults_json(color: Option<&str>) -> Result<Value, ModelError> {
     let rgb = match color {
         Some(text) => Some(
             crate::print_files::hex_rgb(text)

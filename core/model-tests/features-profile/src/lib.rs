@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: MIT
+//! Tests of the Mitcad model through its JSON api (mitcad#777): Profile
+//! features: extrudes and their scopes, extrudes from faces, revolves and
+//! sweeps (F1 to F3).
+//!
+//! A test crate of its own, so that a test added here recompiles only
+//! this crate (core/model-tests/README.md).
+#![cfg(test)]
+
+mod extrude_scope_tests;
+mod f3_tests;
+mod face_extrude_tests;
+mod profile_feature_tests;

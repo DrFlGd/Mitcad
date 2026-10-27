@@ -8,15 +8,16 @@ use serde::{Deserialize, Serialize};
 
 use super::{GeomRef, PathRef, Want, along_slot, distinct, finite};
 use crate::datum::{
-    ANGULAR, CurveGeometry, Datum, DatumAxis, DatumPlane, DatumPoint, LINEAR, PathParameter,
-    SurfaceGeometry, Vec3, add, norm, scale, sub,
+    CurveGeometry, Datum, DatumAxis, DatumPlane, DatumPoint, PathParameter, SurfaceGeometry, Vec3,
 };
 use crate::features::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, is_false,
 };
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
-use crate::profile::{cross, dot};
+use mitcad_model_base::internal::datum::{ANGULAR, LINEAR};
+use mitcad_vec3::{add, norm, scale, sub};
+use mitcad_vec3::{cross, dot};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

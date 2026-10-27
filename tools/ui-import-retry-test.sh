@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files core/import/src/retry.rs core/import/src/report.rs
-# check-all sources: core/ffi/src/f3d_import.rs core/ffi/src/jobs.rs core/model/src/monitor.rs
+# check-all sources: app/files core/import-replay/src/retry.rs core/import-replay/src/report.rs
+# check-all sources: core/ffi/src/f3d_import.rs core/ffi/src/jobs.rs core/model-base/src/monitor.rs
 # The import's question about the bodies it imported (mitcad#283): when an
 # item of an .f3d design is tried again on the file's stored bodies before
 # it and that would replace imported bodies that match them, File > Open
@@ -38,7 +38,7 @@ PART="$WORK/bodies.f3d"
 open_design() {
   ui_key ctrl+o
   if [ -n "${2:-}" ]; then
-    ui_focus_dialog '^Mitcad$'
+    ui_focus_dialog '^MitCad$'
     ui_key d
   fi
   ui_type_path 'Open' "$1"

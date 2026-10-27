@@ -11,6 +11,7 @@ use gix::bstr::ByteSlice;
 use mitcad_model::features::Brep;
 use mitcad_model::testing::MockKernel;
 use mitcad_model::{Document, FileFormat};
+use mitcad_model_api::DocumentApi;
 
 use super::*;
 

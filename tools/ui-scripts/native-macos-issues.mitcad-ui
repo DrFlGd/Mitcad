@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: MIT
+# Synthetic geometry uses real warning/error states from the shared model.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'Feature warnings: Fillet1:'
+expect-ever 'Failed features: Missing edge:'
+sleep 800
+native-resize 1280 820
+native-appearance light
+expect-native-text native.browser.failures '^1 failed$'
+expect-native-text native.browser.warnings '^1 warning'
+expect-native-layout
+expect-native-history
+screenshot '${MITCAD_TEST_WORK}/issues-light.png'
+mark
+native-click native.browser.failures
+expect-log 'Revealed Missing edge'
+expect-native-history F4
+expect-native-layout
+mark
+native-click native.browser.warnings
+expect-log 'Revealed Fillet1'
+expect-native-history F3
+expect-native-layout
+native-resize 900 640
+expect-native-history F3
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/issues-compact.png'
+native-appearance dark
+sleep 250
+expect-native-history F3
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/issues-dark.png'
+native-resize 1280 820
+native-appearance light
+expect-native-layout

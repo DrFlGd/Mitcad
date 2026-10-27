@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-model-base"
+description = "The geometry kernel trait and the base data of the Mitcad model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The model re-exports every module as `mitcad_model::<module>`.
+[dependencies]
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
+# Parameter expressions (parameters, properties, configurations) and the
+# print settings' dialects (3MF export options).
+mitcad-expr = { path = "../expr" }
+mitcad-print-keys = { path = "../print-keys" }
+serde.workspace = true
+serde_json.workspace = true

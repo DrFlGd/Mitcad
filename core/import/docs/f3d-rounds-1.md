@@ -46,7 +46,7 @@ Non-parametric items by category, both corpora (before → after):
 | geometry kernel: fillets, chamfers, tapers, booleans that fail or come out off the file's | 220 → 221 | mitcad#121 and others |
 | the file's own base features (bodies without a parametric history in the file) | 166 → 166 | nothing to read |
 | construction planes as fixed planes | 96 → 40 | done below |
-| no translation in Mitcad (bodies of other designs 20, sheet metal 18, copied bodies 14, deleted faces 8, primitives 8, forming threads 5, removed items 4, coils, electronics boards, mirrored components 3 each) | 93 → 93 | |
+| no translation in MitCad (bodies of other designs 20, sheet metal 18, copied bodies 14, deleted faces 8, primitives 8, forming threads 5, removed items 4, coils, electronics boards, mirrored components 3 each) | 93 → 93 | |
 | sketches partial | 72 → 53 | done below |
 | positions inside components of other documents (captured positions, relationships) | 47 → 47 | not in the file |
 | after a fallback to the stored bodies (no history to continue from) | 18 → 18 | |
@@ -104,7 +104,7 @@ What was read (each checked before the import relies on it):
   the file's is: every definition but a fixed one is now checked (before,
   offset planes were taken unchecked). Left fixed: 20 planes whose
   inputs are vertices (vertex recipes are not read) or not decoded, 12
-  along paths of several sketch curves (Mitcad's path is one curve or
+  along paths of several sketch curves (MitCad's path is one curve or
   connected edges), 8 offsets from faces the file's history has no
   names for (faces of inserted components or of base features, named by
   operations before the history's first), 7 tangent planes and 5 offsets whose
@@ -228,7 +228,7 @@ Found and left, each with its cause:
 
 - **Planes through sketch lines in three dimensions** (2 designs: a plane
   through two edges of a pyramid drawn in a sketch): the import flattens
-  a sketch's points into its plane, and Mitcad's sketches are planar;
+  a sketch's points into its plane, and MitCad's sketches are planar;
   the lines are not representable. 11 of 358 designs have such a sketch.
 - **Three vertices at tangent contacts** (1 design: a plane through three
   vertices of a cylinder, where a plate's face touches it along a line):
@@ -359,7 +359,7 @@ ellipses or splines in their loops, 43 had records that name curves the
 sketch no longer has (7 of them only in holes), 17 had a different cause.
 
 - **Ellipses, elliptical arcs and splines take part in the piece
-  matching** (`src/profiles/curves.rs`). An ellipse is parameterised from
+  matching** (`core/import-replay/src/profiles/curves.rs`). An ellipse is parameterised from
   its major axis end, an arc by its start and end angles, a NURBS curve
   (rational or not, clamped or not) by its knot domain. Where each of them
   meets another curve is found on the curves flattened to polylines and
@@ -405,7 +405,7 @@ sketch no longer has (7 of them only in holes), 17 had a different cause.
   (agreeing with the API reference dumps' profile lists in 28 of 36
   where a dump exists, counting each design version; in the others the
   application's profile is one
-  region that Mitcad's sketch splits, or the reverse).
+  region that MitCad's sketch splits, or the reverse).
 
 On the 74 designs (the extrusion and revolve items; the before column is
 the branch's base, and the 5 fallback items fewer come from other changes
@@ -761,7 +761,7 @@ Left, each with its cause:
   their origins).
 - **Sketch lines in three dimensions** (a lamp holder: a sketch whose
   lines slope out of its plane and an extrusion and a plane taken from
-  them): Mitcad's sketches are planar.
+  them): MitCad's sketches are planar.
 - **Stale profile records** (a pyramid: the profile curve of a revolution
   is no curve of its sketch any more; the bodies after it, cut and
   rounded on the stored one, make invalid wires in the boolean): no
@@ -949,7 +949,7 @@ Non-parametric items by category, both corpora, the files of #178:
 | geometry kernel: fillets, chamfers, booleans that fail or come out off the file's | 221 | 226 (fillets 206) | 30 |
 | the file's own base features (where the state before them cannot be rebuilt) | 166 | 17 | 29 |
 | construction planes as fixed planes | 40 | 11 | 3 |
-| no translation in Mitcad (bodies of other designs 20, electronics boards 3, mirrored components 3, emboss, faces moved, Whitworth threads 2 each, a draft) | 93 | 33 | 44 |
+| no translation in MitCad (bodies of other designs 20, electronics boards 3, mirrored components 3, emboss, faces moved, Whitworth threads 2 each, a draft) | 93 | 33 | 44 |
 | sketches partial | 53 | 36 | 13 |
 | assembly positions (relationships, captured positions, as-built joints that do not hold) | 47 | 49 | 22 |
 | after a fallback to the stored bodies | 18 | 0 | 0 |

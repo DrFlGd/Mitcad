@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-model-build"
+description = "The BUILD tab's planning above the Mitcad model: placing, connecting, frames and the cut list"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+mitcad-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true

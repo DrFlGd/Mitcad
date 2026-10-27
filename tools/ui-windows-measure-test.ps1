@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands app/framework core/model/src/api tools/cli
+# check-all sources: app/commands app/framework core/model-api/src tools/cli
 # Input-driven Windows UI test of Measure in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted), as
 # tools/ui-measure-test.sh on Linux, on a design mitcad-cli makes: two

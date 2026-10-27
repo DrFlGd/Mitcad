@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/framework/ModelShapes.cpp
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs core/solver tools/cli
+# check-all sources: core/sketch core/model-api/src/sketch.rs core/solver tools/cli
 # Input-driven Windows UI test of the sketch's axes and origin as picks of
 # Sketch Dimension and the constraint tools (mitcad#500) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted), as

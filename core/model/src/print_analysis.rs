@@ -28,7 +28,7 @@
 //!
 //! The functions take a [`TriangleMesh`] and the settings, so they are
 //! tested without a kernel (`print_analysis_tests.rs`); the queries that
-//! use them are in `api/print.rs`.
+//! use them are in `model-api/src/print.rs`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
@@ -1117,7 +1117,8 @@ const CACHED_RESULTS: usize = 32;
 /// analysis again computes nothing. Separate from modelling results:
 /// analysing changes no state. The oldest go first.
 #[derive(Default)]
-pub(crate) struct PrintCache {
+#[doc(hidden)]
+pub struct PrintCache {
     inner: Mutex<CacheEntries>,
 }
 
@@ -1143,21 +1144,21 @@ fn keep<T>(entries: &mut VecDeque<(u128, Arc<T>)>, key: u128, value: Arc<T>, bou
 }
 
 impl PrintCache {
-    pub(crate) fn mesh(&self, key: u128) -> Option<Arc<TriangleMesh>> {
+    pub fn mesh(&self, key: u128) -> Option<Arc<TriangleMesh>> {
         self.inner.lock().ok().and_then(|c| find(&c.meshes, key))
     }
 
-    pub(crate) fn keep_mesh(&self, key: u128, mesh: Arc<TriangleMesh>) {
+    pub fn keep_mesh(&self, key: u128, mesh: Arc<TriangleMesh>) {
         if let Ok(mut c) = self.inner.lock() {
             keep(&mut c.meshes, key, mesh, CACHED_MESHES);
         }
     }
 
-    pub(crate) fn result(&self, key: u128) -> Option<Arc<Value>> {
+    pub fn result(&self, key: u128) -> Option<Arc<Value>> {
         self.inner.lock().ok().and_then(|c| find(&c.results, key))
     }
 
-    pub(crate) fn keep_result(&self, key: u128, result: Arc<Value>) {
+    pub fn keep_result(&self, key: u128, result: Arc<Value>) {
         if let Ok(mut c) = self.inner.lock() {
             keep(&mut c.results, key, result, CACHED_RESULTS);
         }

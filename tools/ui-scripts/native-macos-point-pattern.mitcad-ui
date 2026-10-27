@@ -75,7 +75,7 @@ expect-model-bodies 3 3000
 
 # Editing reconstructs both references and the default mode. An explicit
 # anchor is persisted by the edit; cancel and undo restore complete definitions.
-menu 'View/Show History'
+expect-native-visible native.historyCard true
 mark
 native-activate native.history.F3
 expect-log 'Editing F3 with Pattern at Points'

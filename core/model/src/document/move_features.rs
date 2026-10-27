@@ -46,7 +46,7 @@ use crate::transform::Transform;
 
 #[path = "move_destination.rs"]
 mod destination;
-pub(crate) use destination::MoveDestination;
+pub use destination::{MoveDestination, MovedDestination};
 
 /// What one new component is to get: bodies of the source component at
 /// the timeline marker, and features besides those that made them.

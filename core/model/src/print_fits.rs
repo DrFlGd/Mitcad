@@ -110,7 +110,7 @@ pub(crate) fn ensure(
 
 /// Expression hints may evaluate a not-yet-created fit in a private copy.
 /// This does not add parameters to a design, its undo stack or its file.
-pub(crate) fn evaluation_parameters(params: &Parameters) -> Result<Parameters, ParameterError> {
+pub fn evaluation_parameters(params: &Parameters) -> Result<Parameters, ParameterError> {
     let mut copy = params.clone();
     for fit in FITS {
         add(&mut copy, fit)?;
@@ -118,7 +118,7 @@ pub(crate) fn evaluation_parameters(params: &Parameters) -> Result<Parameters, P
     Ok(copy)
 }
 
-pub(crate) fn json() -> serde_json::Value {
+pub fn json() -> serde_json::Value {
     serde_json::Value::Array(
         FITS.iter()
             .map(|fit| {
@@ -130,6 +130,3 @@ pub(crate) fn json() -> serde_json::Value {
             .collect(),
     )
 }
-
-#[cfg(test)]
-mod tests;

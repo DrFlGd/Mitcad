@@ -90,7 +90,7 @@ impl Default for InsertOptions {
 impl DocState {
     /// Refuses changes to a component that does not exist or is linked
     /// from another file.
-    pub(crate) fn editable(&self, component: ComponentUid) -> Result<(), ModelError> {
+    pub fn editable(&self, component: ComponentUid) -> Result<(), ModelError> {
         let a = &self.assembly;
         if !a.exists(component) {
             return Err(invalid(format!("component {component} does not exist")));
@@ -140,7 +140,7 @@ impl DocState {
     }
 
     /// A component name not in use: `name`, else `name (1)`, `name (2)`, ...
-    pub(crate) fn free_component_name(&self, name: &str) -> String {
+    pub fn free_component_name(&self, name: &str) -> String {
         let taken = |n: &str| {
             n == self.assembly.root_name || self.assembly.components.iter().any(|c| c.name == n)
         };
@@ -158,11 +158,7 @@ impl DocState {
             .map(|name| self.free_component_name(&name))
     }
 
-    pub(crate) fn check_component_name(
-        &self,
-        name: &str,
-        uid: ComponentUid,
-    ) -> Result<(), ModelError> {
+    pub fn check_component_name(&self, name: &str, uid: ComponentUid) -> Result<(), ModelError> {
         if name.trim().is_empty() {
             return Err(invalid("the component name is empty"));
         }
@@ -179,10 +175,7 @@ impl DocState {
     /// them (a component made from bodies gives them back to its parent)
     /// and what depends on those, and the components only they contained.
     /// Returns the deleted features in timeline order.
-    pub(crate) fn delete_components(
-        &mut self,
-        components: BTreeSet<ComponentUid>,
-    ) -> Vec<FeatureUid> {
+    pub fn delete_components(&mut self, components: BTreeSet<ComponentUid>) -> Vec<FeatureUid> {
         let mut gone = components;
         let mut makers = BTreeSet::new();
         loop {

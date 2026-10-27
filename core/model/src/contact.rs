@@ -56,7 +56,8 @@ pub struct ContactHit {
 }
 
 /// The bodies of the active contact sets and the pairs to check.
-pub(crate) struct ContactPairs<S> {
+#[doc(hidden)]
+pub struct ContactPairs<S> {
     bodies: Vec<(ContactBody, S, Option<BoundingBox>)>,
     /// Indices into `bodies`, with the set that holds the pair.
     pairs: Vec<(usize, usize, usize)>,
@@ -66,11 +67,7 @@ pub(crate) struct ContactPairs<S> {
 impl<S: Clone> ContactPairs<S> {
     /// The pairs of the active contact sets of `state` with the bodies a
     /// recompute of it gave (the shapes do not change while joints move).
-    pub(crate) fn new<K: Kernel<Shape = S>>(
-        kernel: &K,
-        state: &DocState,
-        result: &Recomputed<S>,
-    ) -> Self {
+    pub fn new<K: Kernel<Shape = S>>(kernel: &K, state: &DocState, result: &Recomputed<S>) -> Self {
         let mut out = Self {
             bodies: Vec::new(),
             pairs: Vec::new(),
@@ -172,7 +169,7 @@ impl<S: Clone> ContactPairs<S> {
     /// The pairs (by index) that pass through each other with these
     /// placements of the occurrences, and their common volumes; the pairs
     /// in `skip` are left out.
-    pub(crate) fn overlapping<K: Kernel<Shape = S>>(
+    pub fn overlapping<K: Kernel<Shape = S>>(
         &self,
         kernel: &K,
         placements: &BTreeMap<OccurrenceUid, Transform>,
@@ -221,7 +218,7 @@ impl<S: Clone> ContactPairs<S> {
     }
 
     /// A pair as the contact a motion stopped at.
-    pub(crate) fn hit(&self, pair: usize, volume: f64) -> ContactHit {
+    pub fn hit(&self, pair: usize, volume: f64) -> ContactHit {
         let (set, a, b) = self.pairs[pair];
         ContactHit {
             set: self.sets[set].clone(),

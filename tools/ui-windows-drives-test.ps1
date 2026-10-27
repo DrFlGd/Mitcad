@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/DriveCommands.cpp app/commands/PlaceInputs.cpp app/framework/CommandPanel.cpp
 # check-all sources: app/framework/CommandSession.cpp core/model/src/features/drives.rs
-# check-all sources: core/model/src/features/place_at.rs core/model/src/api/drives.rs tools/cli
+# check-all sources: core/model/src/features/place_at.rs core/model-api/src/drives.rs tools/cli
 # Input-driven Windows UI test of Gear Pair and Belt Drive (mitcad#656) in
 # the build VM (tools/ui-windows-lib.ps1 says how the input is posted); on
 # Linux the same steps are the last parts of tools/ui-gear-test.sh and

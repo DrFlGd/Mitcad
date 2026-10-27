@@ -2,7 +2,7 @@
 #pragma once
 
 // Builds OCCT shapes from the neutral B-rep model of an imported body (see
-// core/f3d/src/brep.rs and flat.rs). Lengths are millimetres.
+// core/asm/src/brep.rs and flat.rs). Lengths are millimetres.
 //
 // Conventions of the model: an edge runs along increasing parameter of its
 // curve from v0 (t0) to v1 (t1); a coedge uses its edge forward or reversed;

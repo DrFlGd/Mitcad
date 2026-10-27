@@ -3,9 +3,9 @@
 
 use serde_json::{Value, json};
 
-use crate::document_tests::{def, num};
 use crate::features::SketchPlane;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
+use crate::test_support::{def, num};
 use crate::testing::MockKernel;
 use crate::{Document, FeatureStatus, Transform};
 

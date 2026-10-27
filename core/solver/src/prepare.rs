@@ -269,11 +269,19 @@ pub(crate) fn prepare(sys: &System) -> Prepared {
             Some(ConstraintRec {
                 def: Constraint::Tangent(a, b),
                 ..
-            }) => Some(tangent_plan(sys, &classes, &on, *a, *b)),
+            }) => Some(tangent_plan(sys, &classes, &on, *a, *b, None)),
             Some(ConstraintRec {
                 def: Constraint::Smooth(a, b),
                 ..
-            }) => Some(smooth_plan(sys, &classes, *a, *b)),
+            }) => Some(smooth_plan(sys, &classes, *a, *b, None)),
+            Some(ConstraintRec {
+                def: Constraint::TangentAt { a, b, at },
+                ..
+            }) => Some(tangent_plan(sys, &classes, &on, *a, *b, Some(at.index()))),
+            Some(ConstraintRec {
+                def: Constraint::SmoothAt { a, b, at },
+                ..
+            }) => Some(smooth_plan(sys, &classes, *a, *b, Some(at.index()))),
             _ => None,
         };
         if let Some(TanPlan::SplineEnd {
@@ -362,7 +370,9 @@ fn entity_equations(
             params,
             ends,
         } => {
-            let k = fit.len() - 1;
+            // The fit points at the parameters (a closed spline's last
+            // parameter is its first point's again).
+            let k = params.len() - 1;
             let support_eq =
                 |b: &mut Builder, t: f64, what: &dyn Fn(&mut Vars, &Ctx) -> SplineEq| {
                     let range = basis.support(t);
@@ -389,18 +399,65 @@ fn entity_equations(
                     }
                 }
             }
+            if ends[0] == SplineEnd::Periodic {
+                // A closed spline (mitcad#783): the same first and second
+                // derivatives at both ends, over all control points (the
+                // supports of both ends). A tangent at the closing point
+                // keeps them.
+                for order in 1..=2 {
+                    for axis in 0..2 {
+                        b.push(ValueSrc::Zero, |v, x| EqKind::Spline {
+                            basis: basis.clone(),
+                            first: 0,
+                            ctrl: ctrl.iter().map(|&p| x.p(v, p)).collect(),
+                            t: TParam::Const(lo),
+                            what: SplineEq::Periodic { order, axis },
+                        });
+                    }
+                }
+            }
         }
         _ => {}
     }
 }
 
+/// The end of an open curve (`ends`) at the point `at` (mitcad#783): the one
+/// joined to it, else the nearer one.
+fn end_at(sys: &System, classes: &[usize], ends: [usize; 2], at: usize) -> usize {
+    let d = |p: usize| {
+        if classes[p] == classes[at] {
+            -1.0
+        } else {
+            sys.xy(p).sub(sys.xy(at)).norm()
+        }
+    };
+    usize::from(d(ends[1]) < d(ends[0]))
+}
+
+/// A spline tangent or smooth to itself (mitcad#783): its start joined to
+/// its end, where its two ends meet.
+fn self_join(spline: usize) -> TanPlan {
+    TanPlan::SplineEnd {
+        spline,
+        end: 0,
+        other: spline,
+        other_end: Some(1),
+    }
+}
+
+/// How a tangent is formulated; `at` is the point of a tangent at a chosen
+/// end (mitcad#783).
 fn tangent_plan(
     sys: &System,
     classes: &[usize],
     on: &[Vec<(usize, usize)>],
     a: EntityId,
     b: EntityId,
+    at: Option<usize>,
 ) -> TanPlan {
+    if a == b {
+        return self_join(a.index());
+    }
     let kind = |e: usize| match sys.entities[e].as_ref().expect("live").data {
         EntityData::Line { .. } => 0,
         EntityData::Circle { .. } | EntityData::Arc { .. } => 1,
@@ -410,9 +467,13 @@ fn tangent_plan(
     if kind(lo) > kind(hi) {
         std::mem::swap(&mut lo, &mut hi);
     }
+    // A point on both curves: the chosen one when it is.
     let common = |x: &[(usize, usize)], y: &[(usize, usize)]| {
+        let shared = |c: usize| y.iter().any(|&(cy, _)| cy == c);
+        let both = |c: usize| x.iter().any(|&(cx, _)| cx == c) && shared(c);
+        let chosen = at.map(|at| classes[at]).filter(|&c| both(c));
         x.iter()
-            .find(|(cx, _)| y.iter().any(|(cy, _)| cx == cy))
+            .find(|&&(cx, _)| chosen.is_none_or(|c| c == cx) && shared(cx))
             .map(|&(_, p)| p)
     };
     let spline_ends = |e: usize| {
@@ -443,6 +504,14 @@ fn tangent_plan(
             let ends = spline_ends(hi);
             if k == 2 {
                 let other = spline_ends(lo);
+                if let Some(at) = at {
+                    return TanPlan::SplineEnd {
+                        spline: hi,
+                        end: end_at(sys, classes, ends, at),
+                        other: lo,
+                        other_end: Some(end_at(sys, classes, other, at)),
+                    };
+                }
                 let mut best = (f64::INFINITY, 0, 0);
                 for (i, &p) in ends.iter().enumerate() {
                     for (j, &q) in other.iter().enumerate() {
@@ -463,15 +532,23 @@ fn tangent_plan(
                     other_end: Some(best.2),
                 };
             }
-            for (end, &p) in ends.iter().enumerate() {
-                if on[lo].iter().any(|&(c, _)| c == classes[p]) {
-                    return TanPlan::SplineEnd {
-                        spline: hi,
-                        end,
-                        other: lo,
-                        other_end: None,
-                    };
+            // The spline's end on the other curve: the chosen one, or the
+            // first one; inside the spline when the end is not on it.
+            let on_other = |end: usize| on[lo].iter().any(|&(c, _)| c == classes[ends[end]]);
+            let end = match at {
+                Some(at) => {
+                    let end = end_at(sys, classes, ends, at);
+                    on_other(end).then_some(end)
                 }
+                None => (0..2).find(|&end| on_other(end)),
+            };
+            if let Some(end) = end {
+                return TanPlan::SplineEnd {
+                    spline: hi,
+                    end,
+                    other: lo,
+                    other_end: None,
+                };
             }
             TanPlan::SplineInterior {
                 spline: hi,
@@ -482,8 +559,18 @@ fn tangent_plan(
 }
 
 /// The joined ends of a smooth (G2) constraint: the spline's end and the
-/// other curve's end (nearest ends if they are not joined).
-fn smooth_plan(sys: &System, classes: &[usize], a: EntityId, b: EntityId) -> TanPlan {
+/// other curve's end (nearest ends if they are not joined), those at `at`
+/// when it is given (mitcad#783).
+fn smooth_plan(
+    sys: &System,
+    classes: &[usize],
+    a: EntityId,
+    b: EntityId,
+    at: Option<usize>,
+) -> TanPlan {
+    if a == b {
+        return self_join(a.index());
+    }
     let data = |e: usize| &sys.entities[e].as_ref().expect("live").data;
     let (spline, other) = if data(a.index()).spline().is_some() {
         (a.index(), b.index())
@@ -494,6 +581,14 @@ fn smooth_plan(sys: &System, classes: &[usize], a: EntityId, b: EntityId) -> Tan
         data(spline).ends().expect("open"),
         data(other).ends().expect("open"),
     );
+    if let Some(at) = at {
+        return TanPlan::SplineEnd {
+            spline,
+            end: end_at(sys, classes, es, at),
+            other,
+            other_end: Some(end_at(sys, classes, eo, at)),
+        };
+    }
     let mut best = (f64::INFINITY, 0, 0);
     for (i, &p) in es.iter().enumerate() {
         for (j, &q) in eo.iter().enumerate() {
@@ -785,12 +880,12 @@ fn constraint_equations(
                 }
             });
         }
-        Tangent(..) => {
+        Tangent(..) | TangentAt { .. } => {
             if let Some(plan) = tangent {
                 tangent_equations(b, rec, plan);
             }
         }
-        Smooth(..) => {
+        Smooth(..) | SmoothAt { .. } => {
             if let Some(
                 plan @ TanPlan::SplineEnd {
                     spline,

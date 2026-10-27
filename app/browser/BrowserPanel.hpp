@@ -4,6 +4,7 @@
 #include <functional>
 
 #include <QHash>
+#include <QIcon>
 #include <QPoint>
 #include <QRegion>
 #include <QSet>
@@ -66,6 +67,10 @@ struct BrowserNode {
     // folder (the root's too) and its rows (uid: the drawing, D1).
     Drawings,
     Drawing,
+    // Image references (mitcad#782): the root's Images folder and its rows
+    // (uid: the name).
+    ImageReferences,
+    ImageReference,
   };
 
   Type type = Type::None;
@@ -85,7 +90,8 @@ struct BrowserNode {
   bool isFolder() const {
     return type == Type::Bodies || type == Type::Sketches || type == Type::Construction ||
            type == Type::Origin || type == Type::Analyses || type == Type::Joints ||
-           type == Type::MotionLinks || type == Type::Measurements || type == Type::Drawings;
+           type == Type::MotionLinks || type == Type::Measurements || type == Type::Drawings ||
+           type == Type::ImageReferences;
   }
   // The selection item the row stands for; invalid for folders and settings.
   SelectionItem item() const;
@@ -114,8 +120,13 @@ public:
     QString parent;
     BrowserNode node;
     QString tooltip;
+    QIcon icon;
+    bool expanded = false;
+    bool hasActivation = false;
+    bool active = false;
   };
   QVector<PresentationRow> presentationRows() const;
+  void setPresentationExpanded(const QString& key, bool expanded);
 
   // Rebuilds the rows, keeping what was expanded, selected and scrolled to.
   void rebuild(const DocumentSnapshot& snapshot, bool originShown);

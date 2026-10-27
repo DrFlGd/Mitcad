@@ -187,7 +187,7 @@ impl<K: Kernel> Document<K> {
     /// A body's print bed face in the `bodies` query: `face` (as assigned),
     /// `faces` (those it finds at the marker) and `error` (why it cannot
     /// lie on the bed, when it cannot); None without one.
-    pub(crate) fn print_bed_face_json(&self, uid: BodyUid) -> Option<Value> {
+    pub fn print_bed_face_json(&self, uid: BodyUid) -> Option<Value> {
         let bed = self.print_bed_face(uid)?;
         let mut value = json!({"face": bed.face, "faces": bed.faces});
         if let Err(error) = &bed.plane {

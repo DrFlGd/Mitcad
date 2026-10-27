@@ -55,7 +55,8 @@ pub use cam::CAM_SAMPLES;
 
 /// A motion link in effect: the joints' motions it couples and how.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ActiveLink {
+#[doc(hidden)]
+pub struct ActiveLink {
     pub uid: FeatureUid,
     pub component: ComponentUid,
     pub a: (FeatureUid, Motion),

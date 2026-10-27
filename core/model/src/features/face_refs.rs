@@ -16,13 +16,14 @@ use serde_json::{Map, Value};
 
 use super::geom_ref::{GeomRef, Want};
 use super::{CheckContext, EvalContext, References};
-use crate::datum::{Vec3, add, scale, unit};
+use crate::datum::Vec3;
 use crate::ids::{BodyUid, EntityUid};
 use crate::kernel::{BoundingBox, Kernel, KernelError, ToolInput};
 use crate::parameters::ParamId;
 use crate::profile::{ProfileRegion, SketchFrame};
 use crate::recompute::FeatureStatus;
 use crate::topo::FaceName;
+use mitcad_vec3::{add, scale, unit};
 
 /// The start of the message of a feature that failed because the geometry
 /// kernel lacks an option.

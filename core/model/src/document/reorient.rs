@@ -18,10 +18,11 @@ use crate::features::sketch::FrameDef;
 use crate::features::{FeatureDef, FeatureEntry};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::kernel::{BoundingBox, Kernel};
-use crate::profile::{SketchFrame, cross, dot};
+use crate::profile::SketchFrame;
 use crate::recompute::Recomputed;
 use crate::reorient::{PieceRenames, Turn, Turned};
 use crate::topo::{EdgeName, FaceName, TopoName};
+use mitcad_vec3::{cross, dot};
 
 /// What Reorient Design changed, for the command's reply.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -912,11 +913,14 @@ fn ok_features<S>(result: &Recomputed<S>) -> BTreeSet<FeatureUid> {
         .collect()
 }
 
+/// The sketches' base frames, before their placements on their planes
+/// (mitcad#787): the own frame the fixes give is what moves them, and the
+/// placement turns with it.
 fn sketch_frames<S>(result: &Recomputed<S>) -> BTreeMap<FeatureUid, SketchFrame> {
     result
         .sketches
         .iter()
-        .map(|(uid, output)| (*uid, output.value.frame))
+        .map(|(uid, output)| (*uid, output.value.base))
         .collect()
 }
 
@@ -941,7 +945,7 @@ fn frame_fixes<S>(
             continue;
         };
         let target = turn.frame(was);
-        let now = now.value.frame;
+        let now = now.value.base;
         if same_frame(&now, &target) {
             continue;
         }

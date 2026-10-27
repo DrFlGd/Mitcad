@@ -5,9 +5,9 @@
 // the undo steps since the last save, and File > Save with Description one
 // with a description written. The author is the project's (its
 // repository's or git's configuration), else Preferences' default author,
-// asked when none has one. A file changed outside Mitcad since it was
+// asked when none has one. A file changed outside MitCad since it was
 // opened is noticed before Save writes over it, and a file renamed outside
-// Mitcad takes its display state along and gets its rename recorded.
+// MitCad takes its display state along and gets its rename recorded.
 // Projects are made and opened
 // in files/MainWindowProjects.cpp (mitcad#89). Autosave never records a
 // version (files/Autosave.hpp). File > Version History (P12e,
@@ -46,7 +46,7 @@ namespace {
 
 QString qstr(const rust::String& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 
-// A version history command (core/model/src/api/commands.md, "Version
+// A version history command (core/model-api/src/commands.md, "Version
 // history"); throws rust::Error when it fails.
 QJsonObject vcs(const Project& project, const QJsonObject& command) {
   return parseObject(project.command(rustStr(compactJson(command))));
@@ -260,7 +260,7 @@ std::optional<bool> MainWindow::askVersionConflict(const Project& project, const
       qInfo().noquote() << QStringLiteral("Save conflict: new version");
       if (unrecorded) {
         const VersionRecord recorded =
-            recordVersion(project, path, {path}, tr("Save %1 as changed outside Mitcad").arg(name), author);
+            recordVersion(project, path, {path}, tr("Save %1 as changed outside MitCad").arg(name), author);
         if (!recorded.preserved) {
           failure = tr("Could not preserve the external changes of %1. Save cancelled. %2")
                         .arg(name, recorded.failure);
@@ -613,7 +613,7 @@ void MainWindow::openVersion(const QString& file, const FileVersion& version) {
       const QString message =
           tr("Could not open %1 of %2:\n%3").arg(version.label(), QFileInfo(file).fileName(), error);
       qWarning().noquote() << message;
-      sheetWarning(this, tr("Mitcad"), message);
+      sheetWarning(this, tr("MitCad"), message);
     }
     return;
   }
@@ -687,7 +687,7 @@ void MainWindow::restoreVersion(const QString& file, const FileVersion& version,
     const QString inFolder = status.value(QStringLiteral("file")).toString();
     if (!inFolder.isEmpty() && inFolder != status.value(QStringLiteral("head")).toString()) {
       const VersionRecord recorded =
-          recordVersion(**project, file, {file}, tr("Save %1 as changed outside Mitcad").arg(name), *author);
+          recordVersion(**project, file, {file}, tr("Save %1 as changed outside MitCad").arg(name), *author);
       if (!recorded.preserved) {
         showError(tr("Could not preserve the external changes of %1. Restore cancelled. %2")
                       .arg(name, recorded.failure));
@@ -710,7 +710,7 @@ void MainWindow::restoreVersion(const QString& file, const FileVersion& version,
   } catch (const std::exception& e) {
     const QString failure = tr("Could not restore %1 of %2:\n%3").arg(version.label(), name, errorText(e));
     qWarning().noquote() << failure;
-    sheetWarning(this, tr("Mitcad"), failure);
+    sheetWarning(this, tr("MitCad"), failure);
     return;
   }
   QStringList warnings;
@@ -789,7 +789,7 @@ void MainWindow::saveVersionCopy(QWidget* parent, const QString& file, const Fil
   if (chosen.isEmpty()) {
     // Always the design's own folder: no remembered one (mitcad#498).
     QFileDialog dialog(parent, tr("Save Copy As"), dialogStartFolder(DialogGroup::SaveCopy, info.absolutePath()),
-                       tr("Mitcad designs (*.mitcad)"));
+                       tr("MitCad designs (*.mitcad)"));
     prepareFileDialog(&dialog);
     dialog.setAcceptMode(QFileDialog::AcceptSave);
     dialog.setDefaultSuffix(QStringLiteral("mitcad"));

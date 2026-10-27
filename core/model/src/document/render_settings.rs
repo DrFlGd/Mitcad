@@ -16,7 +16,7 @@ impl<K: Kernel> Document<K> {
 
     /// The `render_settings` query: every section with every field (the
     /// optional `image` and `height` when set).
-    pub(crate) fn render_settings_json(&self) -> Value {
+    pub fn render_settings_json(&self) -> Value {
         serde_json::to_value(&self.state.render).expect("render settings serialize")
     }
 

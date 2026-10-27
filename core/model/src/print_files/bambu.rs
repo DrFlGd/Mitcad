@@ -779,7 +779,7 @@ pub(super) fn export(shared: &Shared<'_>, model_name: &str) -> ExportOutput {
     out
 }
 
-#[cfg(test)]
-pub(super) fn version() -> &'static str {
+#[cfg(any(test, feature = "testing"))]
+pub fn version() -> &'static str {
     VERSION
 }

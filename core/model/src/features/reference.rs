@@ -13,8 +13,9 @@ use super::{CheckContext, EvalContext, References, is_false};
 use crate::ids::BodyUid;
 use crate::kernel::{Axis, Kernel, Plane, Target};
 use crate::links::OccurrenceLink;
-use crate::profile::{SketchFrame, dot};
+use crate::profile::SketchFrame;
 use crate::topo::FaceName;
+use mitcad_vec3::dot;
 
 /// An object a sweep runs up to (the "To Object" extent) or starts
 /// from ("From Object", planes and planar faces only).

@@ -875,7 +875,7 @@ QString freeCadBodies(const QJsonObject& report, int bodies) {
       ++fallback;
     }
   }
-  return QObject::tr("%1 bodies; of the history's %2 features, %3 were replayed as Mitcad features (checked "
+  return QObject::tr("%1 bodies; of the history's %2 features, %3 were replayed as MitCad features (checked "
                      "against the shapes FreeCAD stored), %4 came in as their stored shapes (fallback) and %5 "
                      "were skipped.")
       .arg(bodies)
@@ -1001,8 +1001,8 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
   const QJsonObject replay = design.value(QStringLiteral("design")).toObject();
   const QString iptMaterial =
       design.value(QStringLiteral("mitcad_material")).isString()
-          ? QObject::tr("%1 (Mitcad's %2)").arg(field("material", QString()), field("mitcad_material", QString()))
-          : QObject::tr("%1 (not in Mitcad's library: the bodies keep the default)")
+          ? QObject::tr("%1 (MitCad's %2)").arg(field("material", QString()), field("mitcad_material", QString()))
+          : QObject::tr("%1 (not in MitCad's library: the bodies keep the default)")
                 .arg(field("material", QObject::tr("none")));
   const QJsonObject boxes = design.value(QStringLiteral("boxes")).toObject();
   const QJsonObject display = design.value(QStringLiteral("display")).toObject();
@@ -1020,7 +1020,7 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
     leftOut << QStringLiteral("%1 %2").arg(it.value().toInt()).arg(it.key());
   }
   const QJsonObject rvtElements = design.value(QStringLiteral("elements")).toObject();
-  // A SolidCraft design's kinds without a Mitcad counterpart (mitcad#450).
+  // A SolidCraft design's kinds without a MitCad counterpart (mitcad#450).
   QStringList unmapped;
   for (const QJsonValue& value : design.value(QStringLiteral("unmapped")).toArray()) {
     const QJsonArray kind = value.toArray();
@@ -1037,7 +1037,7 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
   QString summary =
       isSolidcraftImport(result)
           ? QObject::tr("<b>%1</b> (SolidCraft design %2, file format %3)<br>%4 timeline features: %5.<br>%6 bodies, "
-                        "%7 sketches, %8 parameters, %9 joints.<br>Without a Mitcad counterpart: %10.")
+                        "%7 sketches, %8 parameters, %9 joints.<br>Without a MitCad counterpart: %10.")
                 .arg(file.toHtmlEscaped(), field("design", QString()))
                 .arg(design.value(QStringLiteral("format")).toInt())
                 .arg(design.value(QStringLiteral("features")).toArray().size())

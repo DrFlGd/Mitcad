@@ -23,7 +23,7 @@
 # status is 0 only if every step passed.
 #
 # Usage: tools/check-all.sh [--full] [--ui-jobs N] [--ui auto|all]
-#          [--ctest auto|all] [--ctest-jobs N]
+#          [--ctest auto|all] [--ctest-jobs N] [--testrun auto|off]
 #          [--corpus auto|always|never] [--corpus-tests N] [--corpus-jobs N]
 #          [--memory SIZE] [--fresh] [--only STEP,...]
 #   --full          the full check, before a release build: --ctest all,
@@ -64,7 +64,20 @@
 #                   tests run only with "all". --only ctest:<name> runs that
 #                   test whatever changed (with "ctest" also the others
 #                   that changed).
-#   --ctest-jobs N  ctest's parallel tests (default: the cores / 4).
+#   --ctest-jobs N  the most ctests at once (default: the test runner
+#                   decides by memory and CPU; ctest -j without it: the
+#                   cores / 4).
+#   --testrun MODE  "auto" (default, $MITCAD_TESTRUN): the ctests and the
+#                   corpus group run through the test runner
+#                   build/dev/core/mitcad-testrun --schedule (tools/testrun,
+#                   mitcad#790) when it is built: each test in a systemd
+#                   scope of its own, as many at once as the memory budget
+#                   (85 % of the check's limit, or of what a slice above it
+#                   allows) and a CPU gate allow, the longest first,
+#                   chronic failures early; its report, results and each
+#                   test's log in build/dev/testrun/<step>/, its profiles in
+#                   ~/.mitcad/test-profiles.json. "off", or when it is not
+#                   built or does not finish: ctest -j in a test slot.
 #   --corpus MODE   the corpus group: f3d.corpus*, f3d.models_loft (the
 #                   reference models replayed), freecad.corpus,
 #                   ipt.corpus, iam.corpus*, ifc.corpus and solidcraft.corpus, after
@@ -91,8 +104,10 @@
 #                   MITCAD_CORPUS_TIMEOUT).
 #   --memory SIZE   the memory the whole run may use (default
 #                   $MITCAD_CHECK_MEMORY, else 12G; "none": no limit), in a
-#                   systemd scope of its own (MemoryMax, no swap): what
-#                   needs more is killed, not the machine's other work.
+#                   systemd slice of its own (MemoryMax, no swap) beneath
+#                   the caller's slice, the test runner's per-test scopes
+#                   in it too: what needs more is killed, not the
+#                   machine's other work (without busctl: a scope).
 #   --fresh         configure from scratch (cmake --fresh), as after
 #                   changes of CMake files.
 #   --only STEPS    only these steps: configure, build, fmt, clippy, deps,
@@ -111,11 +126,13 @@
 # does not count for newer sources. The tests left out appear as "skipped"
 # rows of the table (a ctest's indented, as ctest:<name>).
 #
-# The test steps (ctest, corpus, UI) hold one of two test slots, files that
+# The UI tests, and the ctests and the corpus group when they run without
+# the test runner (ctest -j), hold one of two test slots, files that
 # flock(1) locks ($MITCAD_TEST_LOCK, default ~/.mitcad-test.lock, and
 # $MITCAD_TEST_LOCK.2; $MITCAD_TEST_SLOTS of them), so that at most two
 # checks on one machine test at the same time, each within its memory;
-# "flock ~/.mitcad-test.lock <command>" takes the first slot. Building and
+# "flock ~/.mitcad-test.lock <command>" takes the first slot. The runner
+# needs no slot: it fits its tests into the memory that is left. Building and
 # lint take none; unless set, they use half the cores
 # (CMAKE_BUILD_PARALLEL_LEVEL, CARGO_BUILD_JOBS). tools/ui-compute-test.sh
 # runs alone after the other UI tests: it fails intermittently under load
@@ -141,12 +158,14 @@ UI_TIMEOUT=${UI_TIMEOUT:-1800}
 # main.cpp), how they are built, and the import's crates' resolved
 # dependencies (cargo tree; not Cargo.toml and Cargo.lock, which change for
 # crates of other parts too).
+# The OCCT port counts, its docs (third_party/vcpkg-ports/README.md, docs/)
+# do not (mitcad#794).
 CORPUS_TESTS='^(f3d\.corpus|f3d\.models_loft$|freecad\.corpus$|ipt\.corpus$|iam\.corpus|ifc\.corpus$|solidcraft\.corpus$)'
 CORPUS_SOURCES=(core/f3d core/import core/freecad core/zip core/ipt core/tests
   core/ffi/src/kernel core/ffi/src/*_import.rs core/ffi/src/ipt_history.rs core/ffi/src/exchange.rs
   core/ffi/src/memory.rs core/cpp core/CMakeLists.txt geometry tools/cli/import.cpp tools/cli/import.hpp
   tools/cli/CMakeLists.txt tools/cli/fcstd-corpus.cmake tools/cli/ipt-corpus.cmake tools/cli/iam-corpus.cmake
-  CMakeLists.txt rust-toolchain.toml vcpkg.json third_party/vcpkg-ports)
+  CMakeLists.txt rust-toolchain.toml vcpkg.json third_party/vcpkg-ports/opencascade)
 # The IFC import (mitcad#273).
 CORPUS_SOURCES+=(core/ifc tools/cli/ifc-corpus.cmake)
 # The vector helpers the readers and the import use (mitcad#582).
@@ -155,7 +174,24 @@ CORPUS_SOURCES+=(core/vec3)
 CORPUS_SOURCES+=(tools/cli/f3d-designs.cmake)
 # The .solidcraft import (mitcad#450).
 CORPUS_SOURCES+=(core/solidcraft third_party/solidcraft tools/cli/solidcraft-corpus.cmake)
+# The crates split off the .f3d reader (mitcad#776).
+CORPUS_SOURCES+=(core/dump core/asm core/f3d-names core/f3d-file core/f3d-design)
 CORPUS_CRATES=(mitcad-import mitcad-f3d mitcad-freecad mitcad-ipt mitcad-zip mitcad-ifc mitcad-solidcraft)
+CORPUS_CRATES+=(mitcad-dump mitcad-asm mitcad-f3d-names mitcad-f3d-file mitcad-f3d-design)
+# The design segment's decoding split off mitcad-f3d-design (mitcad#779).
+CORPUS_SOURCES+=(core/f3d-decode)
+CORPUS_CRATES+=(mitcad-f3d-decode)
+# The imports' crates split from mitcad-import (mitcad#775).
+CORPUS_SOURCES+=(core/import-base core/import-ifc core/import-rvt core/import-fcstd)
+CORPUS_CRATES+=(mitcad-import-base mitcad-import-ifc mitcad-import-rvt mitcad-import-fcstd)
+# The crates split from the dump replay (mitcad#785).
+CORPUS_SOURCES+=(core/import-solidcraft core/import-replay core/import-joints core/import-sheet
+  core/import-primitives)
+CORPUS_CRATES+=(mitcad-import-solidcraft mitcad-import-replay mitcad-import-joints mitcad-import-sheet
+  mitcad-import-primitives)
+# The appearances family above the replay's core (mitcad#791).
+CORPUS_SOURCES+=(core/import-appearances)
+CORPUS_CRATES+=(mitcad-import-appearances)
 CORPUS_PASSED=${XDG_CACHE_HOME:-$HOME/.cache}/mitcad/corpus-passed
 # The build files every UI test depends on, what the application is built
 # from (which the smoke set depends on), the smoke set, and the test
@@ -171,10 +207,16 @@ CORPUS_MEMORY=${MITCAD_CORPUS_MEMORY:-1536M}
 CORPUS_TIMEOUT=${MITCAD_CORPUS_TIMEOUT:-300}
 
 UI_JOBS=${MITCAD_UI_JOBS:-4}
+UI_JOBS_GIVEN=0
 UI=auto
 CTEST=auto
 CTEST_JOBS=$(($(nproc) / 4))
 [ "$CTEST_JOBS" -ge 1 ] || CTEST_JOBS=1
+# The test runner (tools/testrun, mitcad#790), built with the project; its
+# most tests at once only when --ctest-jobs is given.
+TESTRUN=${MITCAD_TESTRUN:-auto}
+TESTRUN_BIN=$BUILD/core/mitcad-testrun
+TESTRUN_JOBS=""
 CORPUS=auto
 CORPUS_TESTS_AT_ONCE=""
 CORPUS_JOBS=""
@@ -186,11 +228,12 @@ ONLY=""
 ARGS=("$@")
 while [ $# -gt 0 ]; do
   case $1 in
-    --ui-jobs) UI_JOBS=$2; shift 2 ;;
+    --ui-jobs) UI_JOBS=$2; UI_JOBS_GIVEN=1; shift 2 ;;
     --ui) UI=$2; shift 2 ;;
     --full | --release) FULL=1; shift ;;
     --ctest) CTEST=$2; shift 2 ;;
-    --ctest-jobs) CTEST_JOBS=$2; shift 2 ;;
+    --ctest-jobs) CTEST_JOBS=$2; TESTRUN_JOBS=$2; shift 2 ;;
+    --testrun) TESTRUN=$2; shift 2 ;;
     --corpus) CORPUS=$2; shift 2 ;;
     --corpus-tests) CORPUS_TESTS_AT_ONCE=$2; shift 2 ;;
     --corpus-jobs) CORPUS_JOBS=$2; shift 2 ;;
@@ -205,6 +248,7 @@ done
 case $CORPUS in auto | always | never) ;; *) echo "--corpus auto, always or never" >&2; exit 2 ;; esac
 case $UI in auto | all) ;; *) echo "--ui auto or all" >&2; exit 2 ;; esac
 case $CTEST in auto | all) ;; *) echo "--ctest auto or all" >&2; exit 2 ;; esac
+case $TESTRUN in auto | off) ;; *) echo "--testrun auto or off" >&2; exit 2 ;; esac
 if [ "$FULL" = 1 ]; then
   CTEST=all
   CORPUS=always
@@ -217,16 +261,74 @@ if [ "$DRY" = 1 ]; then
   MEMORY=none
 fi
 
-# The whole run in a systemd scope with the memory limit (the script again,
-# inside it), when the user's systemd can make one.
+# mib size: a size such as 12G, 1536M or 800K (MemoryMax's, bytes without
+# a unit) in MiB.
+mib() {
+  local n=${1%[KkMmGgTt]}
+  case $1 in
+    *[Kk]) echo $((n / 1024)) ;;
+    *[Mm]) echo "$n" ;;
+    *[Gg]) echo $((n * 1024)) ;;
+    *[Tt]) echo $((n * 1024 * 1024)) ;;
+    *) echo $((n / 1024 / 1024)) ;;
+  esac
+}
+
+# caller_slice: the slice of the user's systemd this script runs in (the
+# last *.slice below user@<uid>.service in its cgroup, e.g. a job slice
+# with a memory ceiling of its own), empty outside the user's systemd.
+caller_slice() {
+  local path part slice="" parts=()
+  path=$(sed -n 's/^0:://p' /proc/self/cgroup 2> /dev/null)
+  [[ $path == */user@*.service/* ]] || return 0
+  IFS=/ read -ra parts <<< "${path#*/user@*.service/}"
+  for part in "${parts[@]}"; do
+    [[ $part == *.slice ]] && slice=$part
+  done
+  echo "$slice"
+}
+
+# check_slice name bytes: a transient slice of the user's systemd with the
+# memory limit (and no swap), through systemd's D-Bus API.
+check_slice() {
+  busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager \
+    StartTransientUnit 'ssa(sv)a(sa(sv))' "$1" fail 3 MemoryMax t "$2" MemorySwapMax t 0 \
+    Description s "tools/check-all.sh in $ROOT" 0 > /dev/null 2>&1
+}
+
+# The whole run under the memory limit (the script again, inside it), when
+# the user's systemd can do it: in a slice of its own with the limit,
+# beneath the slice the caller runs in (so that a job slice's ceiling holds
+# it too), where the test runner (mitcad-testrun) starts each test's scope
+# beside the check, so that the limit covers the tests as well. The slice
+# goes when the run ends (or this script is stopped). Without busctl, in a
+# scope with the limit in the caller's slice.
 if [ "$MEMORY" != none ] && [ -z "${MITCAD_CHECK_SCOPE:-}" ]; then
   if command -v systemd-run > /dev/null && systemd-run --user --scope --quiet true 2> /dev/null; then
-    MITCAD_CHECK_SCOPE=$MEMORY exec systemd-run --user --scope --quiet \
+    parent=$(caller_slice)
+    slice=${parent:-app.slice}
+    slice=${slice%.slice}-check$$.slice
+    if command -v busctl > /dev/null && check_slice "$slice" $(($(mib "$MEMORY") * 1024 * 1024)); then
+      trap 'systemctl --user stop "$slice" 2> /dev/null' EXIT
+      trap 'exit 129' HUP
+      trap 'exit 130' INT
+      trap 'exit 143' TERM
+      # In the background, so that a signal reaches the traps at once.
+      MITCAD_CHECK_SCOPE=$MEMORY MITCAD_CHECK_SLICE=$slice systemd-run --user --scope --quiet \
+        --slice="$slice" -- "$SELF" "${ARGS[@]}" &
+      wait $!
+      exit
+    fi
+    MITCAD_CHECK_SCOPE=$MEMORY exec systemd-run --user --scope --quiet ${parent:+--slice="$parent"} \
       -p MemoryMax="$MEMORY" -p MemorySwapMax=0 -- "$SELF" "${ARGS[@]}"
   fi
   echo "note: no systemd scope for the memory limit; running without it"
 fi
-[ -n "${MITCAD_CHECK_SCOPE:-}" ] && echo "== memory limit $MITCAD_CHECK_SCOPE (systemd scope)"
+if [ -n "${MITCAD_CHECK_SLICE:-}" ]; then
+  echo "== memory limit $MITCAD_CHECK_SCOPE (systemd slice $MITCAD_CHECK_SLICE, the tests' scopes in it too)"
+elif [ -n "${MITCAD_CHECK_SCOPE:-}" ]; then
+  echo "== memory limit $MITCAD_CHECK_SCOPE (systemd scope)"
+fi
 export CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL:-$(($(nproc) / 2))}
 # At most 8 cargo jobs: ctest runs the debug and the release cargo builds
 # at once, and at 16 jobs each a fresh build peaked at 12.7G, past the
@@ -346,19 +448,6 @@ take_lock() {
     fi
   done
   record "wait for a test slot" "$(seconds_since "$start")" -
-}
-
-# mib size: a size such as 12G, 1536M or 800K (MemoryMax's, bytes without
-# a unit) in MiB.
-mib() {
-  local n=${1%[KkMmGgTt]}
-  case $1 in
-    *[Kk]) echo $((n / 1024)) ;;
-    *[Mm]) echo "$n" ;;
-    *[Gg]) echo $((n * 1024)) ;;
-    *[Tt]) echo $((n * 1024 * 1024)) ;;
-    *) echo $((n / 1024 / 1024)) ;;
-  esac
 }
 
 # corpus_plan: CORPUS_TESTS_AT_ONCE and CORPUS_JOBS unless given. All the
@@ -490,6 +579,109 @@ ctest_regex() {
     paste -sd '|' | sed 's/^\(..*\)$/^(\1)$/'
 }
 
+# testrun_lines results.tsv: mitcad-testrun's results as ctest prints them,
+# so that what reads ctest's output reads the runner's too (ctest_rows, the
+# passes that tools/ctest-fingerprints.py keeps, the release scripts): the
+# output of each test that did not pass (marked "| ", from its log), a
+# result line per test, ctest's summary and its list of failed tests.
+testrun_lines() {
+  local results=$1 logs=$2 name kind log
+  awk -F'\t' 'NR > 1 && $2 != "passed" && $2 != "skipped" { print $1 }' "$results" | while read -r name; do
+    log=$logs/$(tr -c 'A-Za-z0-9._\n-' '_' <<< "$name")
+    # A test rerun after its memory limit ended in its rerun.
+    if [ -f "$log.rerun.log" ]; then log=$log.rerun.log; else log=$log.log; fi
+    echo "---- $name: output ($log)"
+    [ -f "$log" ] && sed 's/^/| /' "$log"
+  done
+  awk -F'\t' '
+    function verdict(kind) {
+      if (kind == "passed") return "   Passed"
+      if (kind == "skipped") return "***Skipped"
+      if (kind == "failed") return "***Failed"
+      if (kind == "timeout") return "***Timeout"
+      if (kind == "not run") return "***Not Run"
+      if (kind == "killed for memory") return "***Killed for memory"
+      return "***Environment"
+    }
+    function status(kind) {
+      if (kind == "not run") return "Not Run"
+      if (kind == "killed for memory") return "Killed for memory"
+      return toupper(substr(kind, 1, 1)) substr(kind, 2)
+    }
+    NR == 1 { next }
+    {
+      n++; name[n] = $1; kind[n] = $2
+      end = $3 + $4; if (end > total) total = end
+      dots = 48 - length($1); if (dots < 3) dots = 3
+      printf "%3d/%d Test #%d: %s %s %s %7.2f sec\n", n, rows, n, $1, substr("................................................", 1, dots), verdict($2), $4
+      if ($2 != "passed" && $2 != "skipped") failed++
+    }
+    END {
+      if (n == 0) exit
+      printf "\n%d%% tests passed, %d tests failed out of %d\n\n", int(100 * (n - failed) / n), failed, n
+      printf "Total Test time (real) = %.2f sec\n", total
+      if (failed == 0) exit
+      print "\nThe following tests FAILED:"
+      for (i = 1; i <= n; i++) if (kind[i] != "passed" && kind[i] != "skipped") printf "\t%3d - %s (%s)\n", i, name[i], status(kind[i])
+    }' rows="$(($(wc -l < "$results") - 1))" "$results"
+}
+
+# changed_files: the paths this checkout changes against origin/main (since
+# their merge base, committed or not), one per line; nothing when there is
+# no origin/main or no merge base.
+changed_files() {
+  local base
+  base=$(git -C "$ROOT" merge-base origin/main HEAD 2> /dev/null) || return 0
+  { git -C "$ROOT" diff --name-only "$base" HEAD; git -C "$ROOT" diff --name-only HEAD; } |
+    sort -u
+}
+
+# test_step name fallback-jobs ctest-arguments...: the step's ctests
+# (ctest's -R/-E selection) through the test runner, mitcad-testrun
+# --schedule (tools/testrun: each test in a systemd scope of its own, by
+# a memory budget from the check's limit and a CPU gate, with the
+# machine's profiles in ~/.mitcad/test-profiles.json), its output in
+# check-logs/<name>.log and the runner's report, results and each test's log
+# in build/dev/testrun/<name>/; without the runner (not built, --testrun
+# off), or when it does not finish (it cannot list the tests, it stops),
+# ctest -j <fallback-jobs> in a test slot as before.
+test_step() {
+  local name=$1 jobs=$2 out=$BUILD/testrun/$1 start status=0 result changed=()
+  shift 2
+  if [ "$TESTRUN" != off ] && [ -x "$TESTRUN_BIN" ]; then
+    start=$(now_us)
+    echo "== $name (mitcad-testrun --schedule; build/dev/testrun/$name)"
+    mkdir -p "$out"
+    : > "$out/status.txt"
+    # The change's files (since the merge base with origin/main, and what is
+    # not committed yet): their tests go into the runner's priority lane
+    # (mitcad#790 step 4), so their failures show first.
+    if changed_files > "$out/changed.txt" && [ -s "$out/changed.txt" ]; then
+      changed=(--changed "$out/changed.txt")
+    fi
+    "$TESTRUN_BIN" --build "$BUILD" --schedule --out "$out" ${TESTRUN_JOBS:+-j "$TESTRUN_JOBS"} \
+      "${changed[@]}" "$@" \
+      > "$LOGS/$name.log" 2>&1 9>&- || status=$?
+    if grep -q '^finished' "$out/status.txt" && [ -f "$out/results.tsv" ]; then
+      testrun_lines "$out/results.tsv" "$out/logs" >> "$LOGS/$name.log"
+      result=ok
+      if [ "$status" != 0 ]; then
+        result=FAIL
+        sed -n 's/^Results: /   mitcad-testrun: /p' "$out/report.txt"
+        sed -n '/The following tests FAILED:/,$p' "$LOGS/$name.log"
+      fi
+      record "$name" "$(seconds_since "$start")" "$result"
+      [ "$result" = ok ]
+      return
+    fi
+    cp "$LOGS/$name.log" "$LOGS/$name.testrun.log"
+    echo "   mitcad-testrun did not finish (exit $status, check-logs/$name.testrun.log): ctest -j $jobs instead"
+    tail -n 5 "$LOGS/$name.testrun.log"
+  fi
+  take_lock
+  step "$name" ctest --preset dev -j "$jobs" "$@"
+}
+
 # --- Build and lint
 # CMake's file API: the targets the ctests' fingerprints follow.
 mkdir -p "$BUILD/.cmake/api/v1/query"
@@ -540,8 +732,7 @@ if wanted ctest || [ -n "$(ctest_named)" ]; then
   elif [ -z "$regex" ]; then
     record ctest 0 skipped
   else
-    take_lock
-    step ctest ctest --preset dev -j "$CTEST_JOBS" -R "$regex" -E "$CORPUS_TESTS"
+    test_step ctest "$CTEST_JOBS" -R "$regex" -E "$CORPUS_TESTS"
     ctest_rows "$LOGS/ctest.log"
     if [ "$BUILT" = 1 ]; then
       python3 tools/ctest-fingerprints.py record --plan "$LOGS/ctest-plan.tsv" --log "$LOGS/ctest.log" \
@@ -567,12 +758,13 @@ if wanted corpus; then
   elif [ "$DRY" = 1 ]; then
     echo "== corpus: would run"
   else
-    take_lock
     [ -n "$fingerprint" ] || fingerprint=$(corpus_fingerprint)
     corpus_plan
     echo "== corpus: $CORPUS_TESTS_AT_ONCE tests at once, $CORPUS_JOBS files each at once, $CORPUS_MEMORY each"
-    if step corpus env MITCAD_CORPUS_JOBS="$CORPUS_JOBS" MITCAD_CORPUS_MEMORY="$CORPUS_MEMORY" \
-      MITCAD_CORPUS_TIMEOUT="$CORPUS_TIMEOUT" ctest --preset dev -j "$CORPUS_TESTS_AT_ONCE" -R "$CORPUS_TESTS" &&
+    # The runner takes the plan's tests at once as its most (a test's
+    # children are within its own scope's limit).
+    if MITCAD_CORPUS_JOBS=$CORPUS_JOBS MITCAD_CORPUS_MEMORY=$CORPUS_MEMORY MITCAD_CORPUS_TIMEOUT=$CORPUS_TIMEOUT \
+      TESTRUN_JOBS=$CORPUS_TESTS_AT_ONCE test_step corpus "$CORPUS_TESTS_AT_ONCE" -R "$CORPUS_TESTS" &&
       [ "$BUILT" = 1 ]; then
       mkdir -p "$(dirname "$CORPUS_PASSED")"
       echo "$fingerprint" >> "$CORPUS_PASSED"
@@ -609,6 +801,22 @@ UI_RUNNING=0
 # window (ui-drag-proxy, ui-pick, ui-render, ui-sweep) miss under load.
 UI_AGAIN=()
 UI_ALONE=0
+# How many other UI tests ran beside each one (its most), handed to the test
+# runner afterwards so that it learns this machine's UI cap (mitcad#790 step
+# 5): a test that fails beside others and passes alone lowers it.
+declare -A UI_BESIDE
+# ui_started name: the new test and every running one count each other.
+ui_started() {
+  local other
+  UI_BESIDE[$1]=$((UI_RUNNING - 1))
+  for other in "${UI_PIDS[@]}"; do
+    [ "${UI_BESIDE[$other]:-0}" -ge $((UI_RUNNING - 1)) ] || UI_BESIDE[$other]=$((UI_RUNNING - 1))
+  done
+}
+# ui_run_line name status seconds: one run for the test runner's --record-ui.
+ui_run_line() {
+  printf 'ui-%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${UI_BESIDE[$1]:-0}" >> "$LOGS/ui-runs.tsv"
+}
 # reap_ui: waits for a UI test to end and records it; a pass in a run that
 # built is kept for the test's fingerprint. A failure among the others
 # that is not a crash is not recorded yet: the test runs again alone
@@ -632,6 +840,7 @@ reap_ui() {
     "$LOGS/ui-$name.log" "$LOGS/ui-$name".*app.log "$LOGS/ui-$name".app.log; then
     crashed=1
   fi
+  ui_run_line "$name" "$status" "$seconds"
   if [ "$result" != ok ] && [ "$crashed" = 0 ] && [ "$UI_ALONE" = 0 ]; then
     echo "   $result ui-$name ($seconds s): again, alone after the others"
     tail -n 40 "$LOGS/ui-$name.log"
@@ -707,6 +916,12 @@ if [ "$DRY" = 1 ]; then
   echo "== UI tests that would run: ${UI_TESTS[*]}"
 elif [ ${#UI_TESTS[@]} -gt 0 ]; then
   take_lock
+  # The cap the test runner learnt for this machine, within UI_JOBS
+  # (mitcad#790 step 5), unless --ui-jobs set the number.
+  if [ "$UI_JOBS_GIVEN" = 0 ] && [ "$TESTRUN" != off ] && [ -x "$TESTRUN_BIN" ]; then
+    UI_JOBS=$("$TESTRUN_BIN" --ui-cap --ui-max "$UI_JOBS" 2> /dev/null || echo "$UI_JOBS")
+  fi
+  : > "$LOGS/ui-runs.tsv"
   echo "== UI tests, $UI_JOBS at once"
   start=$(now_us)
   # Longest first (unknown ones count as long); the compute test at the end.
@@ -718,6 +933,7 @@ elif [ ${#UI_TESTS[@]} -gt 0 ]; then
     run_ui "$name" &
     UI_PIDS[$!]=$name
     UI_RUNNING=$((UI_RUNNING + 1))
+    ui_started "$name"
   done
   while [ "$UI_RUNNING" -gt 0 ]; do reap_ui; done
   if [[ " ${UI_TESTS[*]} " == *" compute "* ]]; then
@@ -725,6 +941,7 @@ elif [ ${#UI_TESTS[@]} -gt 0 ]; then
     run_ui compute &
     UI_PIDS[$!]=compute
     UI_RUNNING=1
+    UI_BESIDE[compute]=0
     reap_ui
   fi
   if [ ${#UI_AGAIN[@]} -gt 0 ]; then
@@ -734,10 +951,15 @@ elif [ ${#UI_TESTS[@]} -gt 0 ]; then
       run_ui "$name" &
       UI_PIDS[$!]=$name
       UI_RUNNING=1
+      UI_BESIDE[$name]=0
       while [ "$UI_RUNNING" -gt 0 ]; do reap_ui; done
     done
   fi
   record "ui (all)" "$(seconds_since "$start")" -
+  if [ "$TESTRUN" != off ] && [ -x "$TESTRUN_BIN" ] && [ -s "$LOGS/ui-runs.tsv" ]; then
+    "$TESTRUN_BIN" --record-ui "$LOGS/ui-runs.tsv" --ui-max "${MITCAD_UI_JOBS:-$UI_JOBS}" \
+      > "$LOGS/ui-runs.log" 2>&1 || echo "   the test runner did not take the UI runs (check-logs/ui-runs.log)"
+  fi
 fi
 
 record total "$(seconds_since "$RUN_START")" -

@@ -8,8 +8,8 @@ family and type, transform, bounding box, saved meshes, levels,
 materials), the building elements' parameters (mitcad#275) and the
 geometry the file keeps of its elements (B-reps, mitcad#333). It builds no
 bodies: the `.rvt` import (mitcad#274, mitcad#275, mitcad#333,
-`mitcad_import::rvt`, `core/ffi/src/rvt_import.rs`, the `import_rvt`
-command in [commands.md](../model/src/api/commands.md#rvt-import),
+`mitcad_import_rvt` in `core/import-rvt`, `core/ffi/src/rvt_import.rs`, the `import_rvt`
+command in [commands.md](../model-api/src/commands.md#rvt-import),
 `mitcad-cli import-rvt`, File › Open) builds the bodies through the
 model's geometry kernel.
 
@@ -410,7 +410,7 @@ walls)*.
 A reference plane (`RefPlane`) is its `m_pSurface`, a `Plane` (`m_origin`,
 `m_xVec`, `m_yVec`), and its name `m_text` *(seen)*.
 
-The import (`mitcad_import::rvt::plan`) builds an attached wall from its
+The import (`mitcad_import_rvt::plan`) builds an attached wall from its
 base to above the surface and cuts away what lies beyond the surface's
 planes: a floor's or ceiling's bottom (top) or top (base), a footprint
 roof's slopes' lower (top) or upper (base) planes (its layer faces), a
@@ -888,7 +888,7 @@ shape described (`mitcad-rvt-inspect geometry <id> --points`).
   every group type, placed or not, carry `m_unplacedOwnerId` *(verified on
   the MIT project's 11 groups)*.
 
-The import (`mitcad_import::rvt::plan`) sweeps a profile along each chain
+The import (`mitcad_import_rvt::plan`) sweeps a profile along each chain
 of its paths as one solid: a straight chain an extrusion of its length, a
 planar chain of lines and arcs one sweep (the profile square to the
 chain's start, its x across the path, `Item::Sweep` with the profile's
@@ -911,7 +911,7 @@ arc's axis, the pieces joined (mitcad#390); a corner rounded in plan along
 a helix swept, mitred to its lines, and a free end on a sloped line cut
 plumb (mitcad#391); a rail's copies up a multistory stair moved up with
 it (mitcad#391). The design the import makes has the default geometric
-tolerance (0.01 mm) as its join tolerance (mitcad#397, [commands.md](../model/src/api/commands.md#combines-joins-within-the-join-tolerance-the-rvt-imports-tolerance)):
+tolerance (0.01 mm) as its join tolerance (mitcad#397, [commands.md](../model-api/src/commands.md#combines-joins-within-the-join-tolerance-the-rvt-imports-tolerance)):
 its joins, cuts and unions fuse within it where they fail exactly (a
 rail's sloped elliptical piece and the level arc after it meet in faces
 1.2 µm apart).
@@ -990,7 +990,7 @@ cubic feet, radians, kilograms); its definition tells what they are
   element *(seen: the parameter definitions of the 2024 and 2025 projects
   `c805df44`, `bb62c161`, `33271010` and `037165e5`; verified: lengths,
   areas and angles against the types' names and the sections' published
-  areas, in `core/import/tests/rvt_corpus.rs`)*. Before 2021 the
+  areas, in `core/import-rvt/tests/rvt_corpus.rs`)*. Before 2021 the
   definition has a `m_unitType` number instead of the spec *(seen)*; it
   is not read.
 - The values: an element's own in its parameter sets
@@ -1013,12 +1013,12 @@ cubic feet, radians, kilograms); its definition tells what they are
 `cargo test -p mitcad-rvt` (`core.rvt` in ctest): the written project and
 family (container, pages, members, metadata, schema, walks, chains,
 element views, saved meshes) and `tests/corpus.rs` on the corpus (skipped
-without `MITCAD_RVT_CORPUS`). The import: `core/import/src/rvt.rs` (mock
-kernel), `core/import/tests/rvt_mullion_trims.rs` (the trimmed mullions' rule
+without `MITCAD_RVT_CORPUS`). The import: `core/import-rvt/src` (mock
+kernel), `core/import-rvt/tests/rvt_mullion_trims.rs` (the trimmed mullions' rule
 against their stored ends on three projects),
-`core/import/tests/rvt_corpus.rs` (mitcad#501: parameters in their
+`core/import-rvt/tests/rvt_corpus.rs` (mitcad#501: parameters in their
 units against the types' names on `c805df44` and `bb62c161`),
-`core/import/tests/rvt_rails.rs` (mitcad#391: the multistory stairs' copies
+`core/import-rvt/tests/rvt_rails.rs` (mitcad#391: the multistory stairs' copies
 where the file places them, the helix corner on its stored Hermite
 faces; mitcad#395: the landings with their run's treads against their
 stored treads, the mitred rails against their stored faces; mitcad#397:

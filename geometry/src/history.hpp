@@ -101,6 +101,16 @@ public:
   // Takes over the names and tags of another namer's faces, each at its
   // image in this result (`image`; the face itself where it is null).
   void adopt(const FaceNamer& other, const std::function<TopoDS_Shape(const TopoDS_Shape&)>& image);
+  // Gives each face of the result that has no name the names of the input's
+  // faces on its surface (the same plane facing the same way, or the same
+  // kind of surface through the middles of both faces) whose names no face
+  // of the result holds: faces cut by an operation whose history gives them
+  // no image (a block's end rounded to a half round in one fillet,
+  // mitcad#821). Call after the other naming, before finish(). With the
+  // environment variable MITCAD_DEBUG_NAMING set, prints for each face left
+  // without a name the input's faces it was compared with and why none was
+  // taken (`operation` heads the lines).
+  void carry_by_surface(const Shape& input, const char* operation);
   // True when the face of the result has a name.
   bool named(const TopoDS_Shape& face) const;
   // True when the face is a face of the result.

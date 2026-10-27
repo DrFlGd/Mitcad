@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT
+expect-ever 'Projects panel at the start: shown \(as chosen\)'
+wait-log 'Projects panel: 24 projects' 30
+native-resize 900 640
+native-expand projectsTree
+sleep 250
+expect-native-layout
+native-select projects.row.Project-24/base.mitcad
+expect-native-layout
+native-activate projects.row.Project-24/base.mitcad
+expect-native-text native.documentTitle '^base\.mitcad$'
+expect-native-visible native.projectsCard true
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/projects-many.png'
+native-appearance dark
+sleep 250
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/projects-many-dark.png'
+native-resize 1280 820
+expect-native-layout
+native-appearance light

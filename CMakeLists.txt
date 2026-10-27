@@ -13,7 +13,7 @@ endif()
 include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.30.0
+  VERSION 0.31.0
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 
@@ -85,6 +85,80 @@ if(MITCAD_RUST_COMPILER_CACHE)
     message(STATUS "Rust compiler cache: ${MITCAD_SCCACHE} (${MITCAD_SCCACHE_FOLDER}; incremental compilation off)")
   else()
     message(STATUS "Rust compiler cache: sccache not found; install it with setup-macos.sh or setup-user.sh, or disable MITCAD_RUST_COMPILER_CACHE")
+  endif()
+endif()
+
+# Linux: the debug builds keep Rust's debug information in the object files
+# (split-debuginfo "unpacked", .dwo files beside them) instead of copying it
+# into every linked binary. The crate split left dozens of test binaries, and
+# linking each with the whole debug information made the cargo test build the
+# longest step of the check; debuggers still read the .dwo files. Windows
+# (pdb) and macOS (dsym) keep their own defaults. Applied wherever the cache
+# environment above is, so Corrosion and the test fixtures share one build.
+if(UNIX AND NOT APPLE)
+  list(APPEND MITCAD_RUST_CACHE_ENVIRONMENT "CARGO_PROFILE_DEV_SPLIT_DEBUGINFO=unpacked")
+endif()
+
+# cargo's build folders outside the build folder (mitcad_private#131), so
+# that a new build folder (a release build's fresh C++ tree) reuses the Rust
+# crates cargo built before; cargo's own change detection decides what to
+# build again. Empty (the default): everything stays in the build folder,
+# Corrosion's library build in <build>/cargo and the crates' test builds in
+# <build>/core/cargo-test. Set: the library build in <dir>/lib, the debug
+# and release test builds in <dir>/test-debug and <dir>/test-release
+# (core/CMakeLists.txt). Corrosion always passes a --target-dir inside the
+# build folder, so <build>/cargo becomes a link to <dir>/lib (a directory
+# junction on Windows, which needs no privilege). Builds that share the
+# folder wait for each other on cargo's lock. Paths are in cargo's
+# fingerprints: build from a fixed source path, or the crates build again.
+set(MITCAD_CARGO_TARGET_DIR "" CACHE PATH "A persistent folder for cargo's builds (empty: inside the build folder)")
+set(MITCAD_CARGO_TARGET_ROOT "")
+if(MITCAD_CARGO_TARGET_DIR)
+  get_property(mitcad_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+  if(mitcad_multi_config)
+    message(FATAL_ERROR "MITCAD_CARGO_TARGET_DIR needs a single-configuration generator (Ninja)")
+  endif()
+  cmake_path(ABSOLUTE_PATH MITCAD_CARGO_TARGET_DIR NORMALIZE OUTPUT_VARIABLE MITCAD_CARGO_TARGET_ROOT)
+  string(REGEX REPLACE "/+$" "" MITCAD_CARGO_TARGET_ROOT "${MITCAD_CARGO_TARGET_ROOT}")
+  set(mitcad_cargo_library "${MITCAD_CARGO_TARGET_ROOT}/lib")
+  set(mitcad_cargo_link "${CMAKE_BINARY_DIR}/cargo")
+  file(MAKE_DIRECTORY "${mitcad_cargo_library}")
+  file(TO_NATIVE_PATH "${mitcad_cargo_link}" mitcad_cargo_link_native)
+  file(TO_NATIVE_PATH "${mitcad_cargo_library}" mitcad_cargo_library_native)
+  # The link of an earlier configure goes (it may name another folder); a
+  # real folder there is an earlier build's without the variable.
+  if(IS_SYMLINK "${mitcad_cargo_link}")
+    if(WIN32)
+      # rmdir without /s removes the junction only, never its target's files.
+      execute_process(COMMAND cmd /c rmdir "${mitcad_cargo_link_native}" RESULT_VARIABLE mitcad_status)
+    else()
+      file(REMOVE "${mitcad_cargo_link}")
+      set(mitcad_status 0)
+    endif()
+    if(NOT mitcad_status EQUAL 0)
+      message(FATAL_ERROR "cannot remove the link ${mitcad_cargo_link}")
+    endif()
+  elseif(EXISTS "${mitcad_cargo_link}")
+    message(FATAL_ERROR "${mitcad_cargo_link} is a folder of a build without MITCAD_CARGO_TARGET_DIR: "
+                        "delete it (or use a new build folder) to build in ${MITCAD_CARGO_TARGET_ROOT}")
+  endif()
+  if(WIN32)
+    execute_process(COMMAND cmd /c mklink /J "${mitcad_cargo_link_native}" "${mitcad_cargo_library_native}"
+                    RESULT_VARIABLE mitcad_status OUTPUT_QUIET)
+  else()
+    file(CREATE_LINK "${mitcad_cargo_library}" "${mitcad_cargo_link}" RESULT mitcad_status SYMBOLIC)
+  endif()
+  if(NOT mitcad_status EQUAL 0)
+    message(FATAL_ERROR "cannot link ${mitcad_cargo_link} to ${mitcad_cargo_library}: ${mitcad_status}")
+  endif()
+  message(STATUS "cargo's builds: ${MITCAD_CARGO_TARGET_ROOT} (the library through ${mitcad_cargo_link})")
+elseif(IS_SYMLINK "${CMAKE_BINARY_DIR}/cargo")
+  # The variable was cleared: the library builds in the build folder again.
+  if(WIN32)
+    file(TO_NATIVE_PATH "${CMAKE_BINARY_DIR}/cargo" mitcad_cargo_link_native)
+    execute_process(COMMAND cmd /c rmdir "${mitcad_cargo_link_native}")
+  else()
+    file(REMOVE "${CMAKE_BINARY_DIR}/cargo")
   endif()
 endif()
 

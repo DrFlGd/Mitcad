@@ -28,8 +28,8 @@ use serde::Deserialize;
 
 use super::{ComponentCopy, DocState, Document, ModelError, invalid};
 use crate::assembly::{Assembly, inverse};
-use crate::build::place::value_in;
-use crate::datum::{Datum, SurfaceGeometry, Vec3, add, scale, unit};
+use crate::build::value_in;
+use crate::datum::{Datum, SurfaceGeometry, Vec3};
 use crate::expr::Unit;
 use crate::features::geom_ref::{GeomRef, Resolver};
 use crate::features::joint::{
@@ -43,9 +43,10 @@ use crate::joints::{
     origin_frame, path_component,
 };
 use crate::kernel::{Cylinder, Kernel};
-use crate::profile::dot;
 use crate::recompute::{Cache, Recomputed, recompute};
 use crate::transform::Transform;
+use mitcad_vec3::dot;
+use mitcad_vec3::{add, scale, unit};
 
 /// A mount frame of a design: its joint origin and where it is in the
 /// design's root coordinates.
@@ -147,7 +148,7 @@ pub struct MountPlan {
 /// frame, its joint origin's frame in its own component and in the
 /// component asked for.
 #[derive(Debug, Clone)]
-pub(crate) struct FrameAt {
+pub struct FrameAt {
     pub frame: MountFrame,
     pub local: Transform,
     pub at: Transform,
@@ -531,7 +532,7 @@ impl<K: Kernel> Document<K> {
 
     /// The mount frames at the marker in `component` and the components
     /// placed in it, with their frames there.
-    pub(crate) fn frames_under(&self, component: ComponentUid) -> Vec<FrameAt> {
+    pub fn frames_under(&self, component: ComponentUid) -> Vec<FrameAt> {
         let a = &self.state.assembly;
         let end = self.state.marker.min(self.state.features.len());
         let mut out = Vec::new();
@@ -1108,7 +1109,7 @@ impl<K: Kernel> Document<K> {
     }
 
     /// Where the active component is in the design: its first placement.
-    pub(crate) fn host_world(&self) -> Transform {
+    pub fn host_world(&self) -> Transform {
         let a = &self.state.assembly;
         crate::links::first_path(a, a.active, None)
             .map(|path| self.path_transform(&path))

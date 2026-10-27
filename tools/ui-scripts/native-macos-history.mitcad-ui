@@ -51,7 +51,7 @@ native-type input_height '30 mm'
 native-click commandOk
 expect-log 'Added box \(New Body\)' 30
 expect-model-bodies 3 6000
-menu 'View/Show History'
+expect-native-visible native.historyCard true
 expect-native-visible native.historyCard true
 expect-native-visible native.history.F1 true
 expect-native-visible native.history.F2 true
@@ -151,10 +151,10 @@ expect-log 'Marker at 2 of 3' 30
 expect-model-bodies 2 3000
 expect-native-history
 screenshot '${MITCAD_TEST_WORK}/native-macos-history-middle.png'
-menu 'View/Hide History'
+menu 'View/Timeline'
 expect-native-visible native.historyCard false
 expect-native-layout
-menu 'View/Show History'
+menu 'View/Timeline'
 expect-native-visible native.historyCard true
 expect-model-bodies 2 3000
 expect-native-history

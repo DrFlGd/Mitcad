@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-sketch"
+description = "The general 2D sketch of Mitcad: geometry, constraints, solving, regions, offsets, patterns, text and SVG"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# Below the model's core (mitcad#780), which re-exports it as
+# `mitcad_model::sketch`.
+[dependencies]
+# Ids, topological names, profiles, datums, parameters, the Kernel trait
+# and command values.
+mitcad-model-base = { path = "../model-base" }
+mitcad-expr = { path = "../expr" }
+mitcad-solver = { path = "../solver" }
+mitcad-vec3 = { path = "../vec3" }
+# A DXF drawing into a sketch.
+mitcad-dxf = { path = "../dxf" }
+serde.workspace = true
+serde_json.workspace = true
+# Sketch text from font files, shaped, in both directions (mitcad#473).
+harfrust = "0.14.0"
+skrifa = "0.48.0"
+unicode-bidi = "0.3.18"
+wuff = "0.2.9"
+# SVG drawings into sketches (mitcad#473).
+roxmltree = "0.20.0"
+svgtypes = "0.16.1"
+# QR codes in sketches (mitcad#473).
+qrcode = { version = "0.14.1", default-features = false }

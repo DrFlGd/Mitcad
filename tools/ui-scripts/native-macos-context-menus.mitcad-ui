@@ -69,7 +69,7 @@ native-click commandOk
 expect-log 'Added box \(New Body\)' 30
 expect-model-bodies 1 1000
 native-expand native.modelTree
-menu 'View/Show History'
+expect-native-visible native.historyCard true
 expect-native-visible native.history.F1 true
 sleep 350
 

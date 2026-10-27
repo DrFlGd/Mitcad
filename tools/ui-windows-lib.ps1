@@ -366,7 +366,7 @@ function Ui-Init([string]$App, [string]$Out, [string]$QtBin = '', [hashtable]$Sh
 
 # Ui-StartApp name arguments... [-Recovery] [-Updates] [-DefaultChrome]:
 # starts Mitcad with its log in <out>\<name>.log and waits for the main
-# window ("<document> - Mitcad"). The app offers no recovery of autosaved
+# window ("<document> - MitCad"). The app offers no recovery of autosaved
 # work at start-up (--no-recovery: a test that killed it and starts it
 # again would get the question) unless -Recovery is given, and checks for
 # no updates unless -Updates is given (a test with a server of its own:
@@ -416,7 +416,7 @@ function Ui-StartApp([string]$Name, [string[]]$Arguments = @(), [switch]$Recover
     -RedirectStandardError $script:UiLog -RedirectStandardOutput (Join-Path $script:UiOut "$Name.out")
   $script:UiMark = 0
   for ($i = 0; $i -lt 100; $i++) {
-    $windows = [UiInput]::Windows($script:UiProcess.Id, ' - Mitcad\*?$')
+    $windows = [UiInput]::Windows($script:UiProcess.Id, ' - MitCad\*?$')
     if ($windows.Count -gt 0) { break }
     Start-Sleep -Milliseconds 200
   }
@@ -845,7 +845,8 @@ function Ui-Windows([string]$TitlePattern) { return , [UiInput]::Windows($script
 # modal dialog blocks. Windows in -Except (Ui-Windows before the dialog
 # opens) do not count: Qt titles a hidden window that has no title of its
 # own after the application, such as the 3D view's offscreen surfaces
-# ("Mitcad"), so a message box titled "Mitcad" is found only as a new window.
+# ("Mitcad", the application name), so a message box (titled "MitCad") is
+# best found as a new window.
 function Ui-FocusDialog([string]$TitlePattern, [IntPtr[]]$Except = @()) {
   for ($i = 0; $i -lt 50; $i++) {
     $windows = @([UiInput]::Windows($script:UiProcess.Id, $TitlePattern) | Where-Object { $Except -notcontains $_ })

@@ -1492,22 +1492,38 @@ dependencies = [
 
 [[package]]
 name = "mitcad-3mf"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "mitcad-zip",
  "roxmltree",
 ]
 
 [[package]]
+name = "mitcad-asm"
+version = "0.31.0"
+dependencies = [
+ "mitcad-vec3",
+]
+
+[[package]]
 name = "mitcad-cfb"
-version = "0.30.0"
+version = "0.31.0"
+
+[[package]]
+name = "mitcad-dump"
+version = "0.31.0"
+dependencies = [
+ "mitcad-vec3",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "mitcad-dwg"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
+ "mitcad-asm",
  "mitcad-dxf",
- "mitcad-f3d",
  "mitcad-vec3",
  "serde",
  "serde_json",
@@ -1515,16 +1531,48 @@ dependencies = [
 
 [[package]]
 name = "mitcad-dxf"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "mitcad-vec3",
 ]
 
 [[package]]
+name = "mitcad-expr"
+version = "0.31.0"
+
+[[package]]
 name = "mitcad-f3d"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
- "mitcad-model",
+ "mitcad-asm",
+ "mitcad-expr",
+ "mitcad-f3d-design",
+ "mitcad-f3d-file",
+ "mitcad-f3d-names",
+ "mitcad-zip",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-f3d-decode"
+version = "0.31.0"
+dependencies = [
+ "mitcad-asm",
+ "mitcad-dump",
+ "mitcad-f3d-names",
+ "mitcad-vec3",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-f3d-design"
+version = "0.31.0"
+dependencies = [
+ "mitcad-asm",
+ "mitcad-dump",
+ "mitcad-f3d-decode",
+ "mitcad-f3d-file",
+ "mitcad-f3d-names",
  "mitcad-vec3",
  "mitcad-zip",
  "serde",
@@ -1532,27 +1580,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "mitcad-f3d-file"
+version = "0.31.0"
+dependencies = [
+ "mitcad-vec3",
+ "mitcad-zip",
+]
+
+[[package]]
+name = "mitcad-f3d-names"
+version = "0.31.0"
+dependencies = [
+ "mitcad-asm",
+ "mitcad-dump",
+]
+
+[[package]]
 name = "mitcad-ffi"
-version = "0.30.0"
+version = "0.31.0"
+dependencies = [
+ "mitcad-ffi-bridges",
+]
+
+[[package]]
+name = "mitcad-ffi-bridges"
+version = "0.31.0"
 dependencies = [
  "cxx",
+ "mitcad-asm",
+ "mitcad-dump",
  "mitcad-dwg",
  "mitcad-f3d",
+ "mitcad-f3d-design",
+ "mitcad-f3d-file",
  "mitcad-ifc",
  "mitcad-import",
+ "mitcad-import-fcstd",
+ "mitcad-import-ifc",
+ "mitcad-import-rvt",
  "mitcad-ipt",
  "mitcad-mcp",
  "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-diff",
  "mitcad-rvt",
  "mitcad-update",
  "mitcad-vcs",
+ "mitcad-zip",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "mitcad-freecad"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "mitcad-vec3",
  "mitcad-zip",
@@ -1563,7 +1644,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-ifc"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "mitcad-vec3",
  "mitcad-zip",
@@ -1573,29 +1654,156 @@ dependencies = [
 
 [[package]]
 name = "mitcad-import"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
- "mitcad-f3d",
- "mitcad-freecad",
- "mitcad-ifc",
+ "mitcad-dump",
+ "mitcad-f3d-design",
+ "mitcad-import-appearances",
+ "mitcad-import-base",
+ "mitcad-import-joints",
+ "mitcad-import-primitives",
+ "mitcad-import-replay",
+ "mitcad-import-sheet",
+ "mitcad-import-solidcraft",
  "mitcad-model",
- "mitcad-rvt",
- "mitcad-solidcraft",
+ "mitcad-model-api",
+ "mitcad-zip",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-import-appearances"
+version = "0.31.0"
+dependencies = [
+ "mitcad-dump",
+ "mitcad-f3d-file",
+ "mitcad-import-base",
+ "mitcad-import-replay",
+ "mitcad-model",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-import-base"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
  "mitcad-vec3",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-import-fcstd"
+version = "0.31.0"
+dependencies = [
+ "mitcad-freecad",
+ "mitcad-import-base",
+ "mitcad-model",
+ "mitcad-model-api",
  "mitcad-zip",
  "serde",
  "serde_json",
 ]
 
 [[package]]
+name = "mitcad-import-ifc"
+version = "0.31.0"
+dependencies = [
+ "mitcad-ifc",
+ "mitcad-import-base",
+ "mitcad-model",
+ "mitcad-model-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-import-joints"
+version = "0.31.0"
+dependencies = [
+ "mitcad-dump",
+ "mitcad-import-base",
+ "mitcad-import-replay",
+ "mitcad-model",
+ "mitcad-vec3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-import-primitives"
+version = "0.31.0"
+dependencies = [
+ "mitcad-dump",
+ "mitcad-import-replay",
+ "mitcad-model",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-import-replay"
+version = "0.31.0"
+dependencies = [
+ "mitcad-dump",
+ "mitcad-f3d",
+ "mitcad-f3d-design",
+ "mitcad-f3d-file",
+ "mitcad-import-base",
+ "mitcad-model",
+ "mitcad-vec3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-import-rvt"
+version = "0.31.0"
+dependencies = [
+ "mitcad-ifc",
+ "mitcad-import-base",
+ "mitcad-import-ifc",
+ "mitcad-model",
+ "mitcad-rvt",
+ "mitcad-vec3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-import-sheet"
+version = "0.31.0"
+dependencies = [
+ "mitcad-dump",
+ "mitcad-import-replay",
+ "mitcad-model",
+ "mitcad-vec3",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-import-solidcraft"
+version = "0.31.0"
+dependencies = [
+ "mitcad-import-base",
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-solidcraft",
+ "mitcad-vec3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mitcad-ipt"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "miniz_oxide 0.8.9",
+ "mitcad-asm",
  "mitcad-cfb",
- "mitcad-f3d",
+ "mitcad-dump",
  "mitcad-import",
  "mitcad-model",
+ "mitcad-model-api",
  "mitcad-vec3",
  "ruzstd",
  "serde",
@@ -1604,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-mcp"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "mitcad-zip",
  "serde_json",
@@ -1613,20 +1821,316 @@ dependencies = [
 
 [[package]]
 name = "mitcad-model"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
- "harfrust",
  "miniz_oxide 0.8.9",
  "mitcad-3mf",
- "mitcad-dwg",
  "mitcad-dxf",
+ "mitcad-expr",
+ "mitcad-model-base",
+ "mitcad-model-testkit",
+ "mitcad-print-keys",
+ "mitcad-sketch",
  "mitcad-solver",
  "mitcad-usdz",
  "mitcad-vec3",
+ "roxmltree",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-api"
+version = "0.31.0"
+dependencies = [
+ "mitcad-3mf",
+ "mitcad-dxf",
+ "mitcad-model",
+ "mitcad-model-build",
+ "mitcad-model-drawing",
+ "mitcad-vec3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-base"
+version = "0.31.0"
+dependencies = [
+ "mitcad-expr",
+ "mitcad-print-keys",
+ "mitcad-vec3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-build"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-diff"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-drawing"
+version = "0.31.0"
+dependencies = [
+ "mitcad-dwg",
+ "mitcad-dxf",
+ "mitcad-model",
+ "mitcad-vec3",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-testkit"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model-base",
+ "mitcad-vec3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-analysis"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-diff",
+ "mitcad-vec3",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-api"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-appearance"
+version = "0.31.0"
+dependencies = [
+ "mitcad-3mf",
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-diff",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-assembly"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-build-frames"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-build",
+ "mitcad-model-tests-support",
+ "mitcad-vec3",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-build-timber"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-build",
+ "mitcad-model-tests-support",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-drawing"
+version = "0.31.0"
+dependencies = [
+ "mitcad-dwg",
+ "mitcad-dxf",
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-diff",
+ "mitcad-model-drawing",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-drawing-views"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-drawing",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-features-profile"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-features-solid"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-files"
+version = "0.31.0"
+dependencies = [
+ "mitcad-3mf",
+ "mitcad-dxf",
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-diff",
+ "mitcad-usdz",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-joints"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-vec3",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-links"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-diff",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-parts"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-print"
+version = "0.31.0"
+dependencies = [
+ "mitcad-3mf",
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-diff",
  "mitcad-zip",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-sheet"
+version = "0.31.0"
+dependencies = [
+ "mitcad-dxf",
+ "mitcad-model",
+ "mitcad-model-api",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-sketch"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "rqrr",
+ "serde_json",
+ "skrifa",
+]
+
+[[package]]
+name = "mitcad-model-tests-sketch-refs"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-vec3",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-model-tests-support"
+version = "0.31.0"
+dependencies = [
+ "mitcad-model",
+ "mitcad-model-api",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-print-keys"
+version = "0.31.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-rvt"
+version = "0.31.0"
+dependencies = [
+ "miniz_oxide 0.8.9",
+ "mitcad-cfb",
+ "mitcad-vec3",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "mitcad-sketch"
+version = "0.31.0"
+dependencies = [
+ "harfrust",
+ "mitcad-dxf",
+ "mitcad-expr",
+ "mitcad-model-base",
+ "mitcad-solver",
+ "mitcad-vec3",
  "qrcode",
  "roxmltree",
- "rqrr",
  "serde",
  "serde_json",
  "skrifa",
@@ -1636,19 +2140,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "mitcad-rvt"
-version = "0.30.0"
-dependencies = [
- "miniz_oxide 0.8.9",
- "mitcad-cfb",
- "mitcad-vec3",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "mitcad-solidcraft"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "mitcad-zip",
  "serde",
@@ -1657,14 +2150,23 @@ dependencies = [
 
 [[package]]
 name = "mitcad-solver"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "mitcad-vec3",
 ]
 
 [[package]]
+name = "mitcad-testrun"
+version = "0.31.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mitcad-update"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "ed25519-dalek",
  "semver",
@@ -1675,18 +2177,20 @@ dependencies = [
 
 [[package]]
 name = "mitcad-usdz"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "mitcad-zip",
 ]
 
 [[package]]
 name = "mitcad-vcs"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "gix",
  "libc",
  "mitcad-model",
+ "mitcad-model-api",
+ "mitcad-model-diff",
  "rustls",
  "rustls-native-certs",
  "serde",
@@ -1695,11 +2199,11 @@ dependencies = [
 
 [[package]]
 name = "mitcad-vec3"
-version = "0.30.0"
+version = "0.31.0"
 
 [[package]]
 name = "mitcad-zip"
-version = "0.30.0"
+version = "0.31.0"
 dependencies = [
  "miniz_oxide 0.8.9",
  "ruzstd",

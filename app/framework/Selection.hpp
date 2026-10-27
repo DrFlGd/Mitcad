@@ -46,7 +46,7 @@ Q_DECLARE_OPERATORS_FOR_FLAGS(SelectFilter)
 constexpr SelectFilter kConstructionGeometry =
     SelectKind::Plane | SelectKind::Axis | SelectKind::Point;
 
-// A picked entity, named as the model names it (core/model/src/api/commands.md).
+// A picked entity, named as the model names it (core/model-api/src/commands.md).
 struct SelectionItem {
   SelectKind kind = SelectKind::None;
   // Body uid (F2.b0) of faces, edges, vertices and bodies; sketch uid of

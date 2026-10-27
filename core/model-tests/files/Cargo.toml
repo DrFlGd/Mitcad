@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-model-tests-files"
+description = "Tests of the Mitcad model through its JSON api: files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dev-dependencies]
+mitcad-model = { workspace = true, features = ["testing"] }
+mitcad-model-api = { path = "../../model-api" }
+mitcad-model-diff = { path = "../../model-diff" }
+serde_json.workspace = true
+mitcad-3mf = { path = "../../3mf" }
+mitcad-dxf = { path = "../../dxf" }
+mitcad-usdz = { path = "../../usdz" }

@@ -7,7 +7,7 @@
 // view, picks of model edges on a view), the hint the sheet shows
 // meanwhile, and its options (drop-downs, check boxes, texts) that the
 // workspace's panel shows; `command` turns the picks and the options into
-// the model's command (core/model/src/api/commands.md, "Drawings in the
+// the model's command (core/model-api/src/commands.md, "Drawings in the
 // design" and "Annotations on drawing views"). Plain Qt Core: app.unit
 // tests it.
 

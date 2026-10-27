@@ -2,6 +2,7 @@
 //! Fillets, chamfers, shells, replaced and moved faces, and embossing.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 #[test]
 fn edges_the_decoder_found_by_their_names_come_first() {

@@ -1,9 +1,33 @@
 # Naming
 
-This page fixes the words that Mitcad uses for its own concepts, so that
+This page fixes the words that MitCad uses for its own concepts, so that
 the code, the user interface and the documentation say the same thing.
 A new term, or a new meaning for an existing one, is added here in the
 same change that introduces it.
+
+## The program's name
+
+The program is **MitCad**, with a capital M and a capital C, in every
+text a person reads: the documents, the UI, window titles, messages,
+the installers, crate descriptions and comments. *Mitcad*, *MitCAD* and
+*MITCAD* are not its name.
+
+- The lower-case `mitcad` is an identifier, not the name, and stays as
+  it is: the `.mitcad` suffix, crates, targets and namespaces
+  (`mitcad_bridge`, `mitcad::`), the executables (`mitcad`,
+  `mitcad-cli`), the `MITCAD_*` variables, the bundle id
+  `fi.nocodo.mitcad` and the references `mitcad#N`.
+- A name that the program stores or that other programs read keeps the
+  spelling it has until a change of its own moves it with a migration
+  (mitcad#822): the Qt organization and application name, and with them the settings
+  and the data, cache and autosave folders (`Mitcad/Mitcad`), the
+  registry keys (`Policies\Mitcad\Mitcad`, `Mitcad.Project`), the
+  install folders, the keychain service, the git trailers
+  `Mitcad-Version` and `Mitcad-Format`, the release file names and the
+  GitHub repository `mitcad/Mitcad`. Documents quote such a name as it
+  is, in backticks.
+- A document quotes the program's output (a message, a log line) as the
+  program writes it, and changes with it.
 
 ## The design hierarchy
 
@@ -30,7 +54,7 @@ Project                 a folder; optional
 
 The structure of components and occurrences is the design's
 **assembly**. "Assembly" describes a design that has components; it is
-not a level of its own, and Mitcad has no separate assembly file.
+not a level of its own, and MitCad has no separate assembly file.
 
 ### Words that are not synonyms
 
@@ -57,7 +81,7 @@ not a level of its own, and Mitcad has no separate assembly file.
 - Importers keep the vocabulary of their source format (an `.ipt`
   part, a 3MF `Part`, a SolidCraft `Occurrence`) inside their own
   crate and map it to these terms where the design is built. Import
-  reports and messages shown to the user use Mitcad's terms, naming the
+  reports and messages shown to the user use MitCad's terms, naming the
   source's term only where it helps to find the item in the source.
 
 ## Annotations
@@ -81,7 +105,7 @@ not a level of its own, and Mitcad has no separate assembly file.
 | **View** | A projection on a sheet: a **base view** of the design, a component or chosen bodies; a **projected view** from another view; a **section view** cut along a line on a view; a **detail view** enlarging a circle of a view. Not the 3D view, which user-facing text calls *the 3D view* where both could be meant. | `DrawingView`, `ViewKind` |
 | **Break** | A band taken out of a view to shorten it, its sides moved together. | `ViewBreak` |
 | **Close Drawing** | Leaves the open drawing for the 3D view. It replaces *Back to Model*: the model is not elsewhere, the drawing is a view of it. | `drawing.close`, `DrawingWorkspace::closeDrawing` |
-| **Annotation** (on a view) | A dimension, a centre mark or centreline, a leader note, a datum label, a feature control frame or a surface finish symbol on a drawing's view, its picks edges and faces of the model seen in the view; the same kinds of dimension, tolerance, datum and frame as the model's annotations. Broken when what it picks is gone. | `ViewAnnotation`, `AnnotationType` (`core/model/src/drawing/annotate.rs`) |
+| **Annotation** (on a view) | A dimension, a centre mark or centreline, a leader note, a datum label, a feature control frame or a surface finish symbol on a drawing's view, its picks edges and faces of the model seen in the view; the same kinds of dimension, tolerance, datum and frame as the model's annotations. Broken when what it picks is gone. | `ViewAnnotation`, `AnnotationType` (`core/model/src/drawing/annotate_def.rs`) |
 | **Pick** (on a view) | An edge, a point of an edge or a round face of a body that a click on a view finds, kept by its topological name so that the annotation follows the model. | `ViewPick`, `drawing_pick` |
 | **Centre mark** | Crossed centre lines through the centre of a circle seen end on. UI: *Center Mark*. | `AnnotationType::CenterMark` |
 | **Centreline** | The axis of a round face seen from the side, or a line through two centres or between two edges. UI: *Centerline*. | `AnnotationType::Centerline` |
@@ -89,17 +113,17 @@ not a level of its own, and Mitcad has no separate assembly file.
 | **Text note** | Text on a sheet without a leader. UI: *Text*. Not a leader note (*Note*). | `SheetNote` |
 | **Sketch dimensions** (of a view) | The dimensions of the sketches a view sees square on, drawn from the sketches (retrieved). | `DrawingView::retrieved_dimensions` |
 | **Datum label** (on a view) | A datum label on a drawing's view; its letter is one of the same set as the model's datum labels. UI: the *Datum Label* tool, not *Datum*. | `AnnotationType::Datum` |
-| **Hole table** | A table of the round holes a view sees end on, each tagged in the view (A1, A2, B1 by size, or numbered) and listed with its place from an origin, size, depth and thread. Not File › Export Drawing's sheet-wide hole table of its own. UI: *Hole Table*. | `AnnotationType::HoleTable`, `TableSettings` (`core/model/src/drawing/tables.rs`) |
+| **Hole table** | A table of the round holes a view sees end on, each tagged in the view (A1, A2, B1 by size, or numbered) and listed with its place from an origin, size, depth and thread. Not File › Export Drawing's sheet-wide hole table of its own. UI: *Hole Table*. | `AnnotationType::HoleTable`, `TableSettings` (`core/model/src/drawing/tables_def.rs`) |
 | **Parts list** (on a sheet) | A numbered table of the components a view shows, with their quantities and what the design says of them; the drawing's own form of the design's **Parts List**. UI: *Parts List*. | `AnnotationType::PartsList` |
 | **Balloon** | A component's number in a parts list, in a circle on a leader to the component on a view. UI: *Balloon*. | `AnnotationType::Balloon` |
-| **Sheet template** | A sheet's frame, title block and revision table as data: its fields filled in from the design (name, part number, material, mass, author, date, scale, sheet, revision, any property). Built in (ISO, ANSI), the user's or a project's; a sheet keeps a copy. UI: *Template*, *Save as Template…*; *Simple Title Block* for a sheet without one. | `SheetTemplate` (`core/model/src/drawing/template.rs`) |
+| **Sheet template** | A sheet's frame, title block and revision table as data: its fields filled in from the design (name, part number, material, mass, author, date, scale, sheet, revision, any property). Built in (ISO, ANSI), the user's or a project's; a sheet keeps a copy. UI: *Template*, *Save as Template…*; *Simple Title Block* for a sheet without one. | `SheetTemplate` (`core/model/src/drawing/template_def.rs`) |
 | **Revision** (of a drawing) | A row of a drawing's revision table: its letter, description, date and author; the title block shows the latest one's letter. UI: *Add Revision*. | `Revision`, `Drawing::revisions` |
 
 ## Sketches
 
 | Term | What it is | In the code |
 |---|---|---|
-| **Inactive** (constraint, dimension) | A sketch constraint or dimension kept in the sketch and drawn (pink), but left out of the solve until it is activated; an inactive dimension keeps its value. An import makes those its file does not meet inactive. Not *suppressed*, which is said of features, and not *driven*, which is a dimension that only measures. UI: *Activate*, *Deactivate*; the tooltip *Not applied: …*. | `Constraint::active`, `Dimension::active` (`core/model/src/sketch/mod.rs`), `sketch.set_active` |
+| **Inactive** (constraint, dimension) | A sketch constraint or dimension kept in the sketch and drawn (pink), but left out of the solve until it is activated; an inactive dimension keeps its value. An import makes those its file does not meet inactive. Not *suppressed*, which is said of features, and not *driven*, which is a dimension that only measures. UI: *Activate*, *Deactivate*; the tooltip *Not applied: …*. | `Constraint::active`, `Dimension::active` (`core/sketch/src/lib.rs`), `sketch.set_active` |
 
 ## UI names in user-facing text
 
@@ -109,13 +133,12 @@ interface, the Floating chrome. The internal identifier of a control is
 not a name for it.
 
 - **Tabs and groups.** Their identifiers are upper case (`SOLID`,
-  `BUILD`, `ASSEMBLE`, `SHEET METAL`). The Floating chrome, and the
-  native macOS interface, show them in title case (`displayName()` in
-  `app/framework/Ribbon.cpp`): write *the Solid tab*, *the Build tab*,
+  `BUILD`, `ASSEMBLE`, `SHEET METAL`). Every layout and frontend shows
+  them in title case (`displayName()` in `app/framework/Ribbon.cpp`):
+  write *the Solid tab*, *the Build tab*,
   *the Assemble group*, *the Sheet Metal group*. The upper-case form
   belongs to code and to developer documents that quote the identifier
-  in backticks. The Docked chrome shows the group menus in upper case
-  (`ASSEMBLE ▾`); the documentation does not follow that.
+  in backticks. Docked has no exception.
 - **Commands.** The command's label as its `CommandDef` gives it, with
   the same spelling and capitals: *New Component*, *Insert from
   Library*, *Create Components from Bodies*.
@@ -124,8 +147,14 @@ not a name for it.
 - **Dialogs, panels, inputs and settings.** Their title or label as
   shown: *the Projects panel*, *the Display page of Tools › Preferences*,
   *Ghost inactive components*.
-- **Names in the browser and the timeline** as Mitcad makes them:
+- **Names in the browser and the timeline** as MitCad makes them:
   `Root`, `Component1:2`, `Body1`.
+
+Do not force user-facing words to all capitals for visual styling, including
+custom-painted titles and accessibility labels. Preserve the control's normal
+spelling in every frontend, layout and theme: `Sketch`, `Projects`, `Autoselect`.
+This does not change genuine acronyms (`CAD`, `STL`, `CSV`), technical notation
+(`XY`, datum letters, units), user-entered names or internal identifiers.
 
 A change that renames a control changes the user-facing documents that
 name it in the same change. Developer documents (`app/COMMANDS.md`,

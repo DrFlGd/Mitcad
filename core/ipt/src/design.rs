@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! The part's design as the import's dump IR (`mitcad_f3d::design::ir::Dump`,
+//! The part's design as the import's dump IR (`mitcad_dump::Dump`,
 //! `core/import/SCHEMA.md`), so that `mitcad-import` replays it against the
 //! ASM history of the B-rep record as it replays an `.f3d` design:
 //!
@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use mitcad_f3d::design::ir::Dump;
+use mitcad_dump::Dump;
 use serde_json::{Value, json};
 
 use crate::dc::{self, Definitions, Label, type_id};
@@ -1422,8 +1422,8 @@ pub fn design_of_file(
     }
     let count = items.len();
     let dump = json!({
-        "schema": mitcad_f3d::design::ir::SCHEMA_NAME,
-        "schema_version": mitcad_f3d::design::ir::SCHEMA_VERSION,
+        "schema": mitcad_dump::SCHEMA_NAME,
+        "schema_version": mitcad_dump::SCHEMA_VERSION,
         "generator": {"decoder": "mitcad-ipt"},
         "units": {"length": "cm", "angle": "rad"},
         "source": {"mode": "ipt", "file": label},

@@ -885,8 +885,8 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
   if (isEditing()) {
     qDebug().noquote() << QStringLiteral("Editing %1 with %2").arg(m_editUid, m_def.name);
   } else if (!m_analysis.isEmpty()) {
-    qDebug().noquote() << QStringLiteral("Editing analysis %1 with %2")
-                              .arg(m_analysis.value(QStringLiteral("name")).toString(), m_def.name);
+    qDebug().noquote() << QStringLiteral("Editing %1 %2 with %3")
+                              .arg(m_def.editedKind, m_analysis.value(QStringLiteral("name")).toString(), m_def.name);
   } else {
     qDebug().noquote() << QStringLiteral("Command %1 started").arg(m_def.name);
   }

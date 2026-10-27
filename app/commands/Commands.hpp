@@ -91,4 +91,10 @@ bool dimensionEqualSpacing(sketch::SketchController& controller);
 // surface features that make and change surface bodies.
 void registerSurfaceCommands(CommandRegistry& registry, const CommandContext& context);
 
+// Redefine Sketch Plane (mitcad#787, SketchPlaneCommands.cpp): a sketch
+// moved to another plane or face and placed there, from the sketch's
+// context menus; in the sketch `controller` edits it always takes that
+// sketch.
+void registerSketchPlaneCommands(CommandRegistry& registry, sketch::SketchController& controller);
+
 } // namespace mitcad

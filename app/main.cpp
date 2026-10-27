@@ -21,6 +21,7 @@
 #include "OcctViewer.hpp"
 #include "files/F3dImport.hpp"
 #include "files/FileOpenFilter.hpp"
+#include "framework/AppSettings.hpp"
 #include "framework/ChromeStyle.hpp"
 #include "framework/DebugLog.hpp"
 #include "framework/DesktopEntry.hpp"
@@ -114,7 +115,9 @@ int main(int argc, char* argv[]) {
   // The key presses the Windows UI tests post, with their modifiers
   // (MITCAD_LOG_KEYS, mitcad#271).
   mitcad::installKeyLogIfRequested();
-  QApplication::setOrganizationName(QStringLiteral("Mitcad"));
+  // The stored names (Mitcad/Mitcad), not the program's name MitCad: the
+  // settings and the data folders are keyed on them (mitcad#822).
+  QApplication::setOrganizationName(mitcad::storedApplicationName());
 #ifdef Q_OS_MACOS
   // macOS names the settings file after the reversed domain
   // (fi.nocodo.Mitcad.plist, not com.Mitcad.Mitcad.plist); it should match
@@ -124,7 +127,7 @@ int main(int argc, char* argv[]) {
   const QString kOrganizationDomain = QStringLiteral("nocodo.fi");
   QApplication::setOrganizationDomain(kOrganizationDomain);
 #endif
-  QApplication::setApplicationName(QStringLiteral("Mitcad"));
+  QApplication::setApplicationName(mitcad::storedApplicationName());
   QApplication::setApplicationVersion(QStringLiteral(MITCAD_VERSION));
   // Every rendered size, so that the title bar and the taskbar each get the
   // one drawn for them (the small ones are simplified).
@@ -185,7 +188,7 @@ int main(int argc, char* argv[]) {
       QStringLiteral("demo"), QStringLiteral("Start with a dimensioned demo block."));
   const QCommandLineOption openOption(
       QStringLiteral("open"),
-      QStringLiteral("Open <file> at start-up: a Mitcad design (.mitcad), an .f3d or .f3z design, "
+      QStringLiteral("Open <file> at start-up: a MitCad design (.mitcad), an .f3d or .f3z design, "
                      "a FreeCAD document (.FCStd), an .ipt part, an .iam assembly, an IFC file (.ifc, .ifczip), an "
                      ".rvt project or .rfa family, a SolidCraft design (.solidcraft), a .dwg drawing's 3D content, "
                      "STEP, IGES, BRep, STL, OBJ or DXF as a new document."),
@@ -397,7 +400,7 @@ int main(int argc, char* argv[]) {
       window.setMcpUnavailable(QCoreApplication::translate("main", "The listener for assistants did not start: %1").arg(error));
     }
   } else {
-    window.setMcpUnavailable(QCoreApplication::translate("main", "Assistants are switched off (Mitcad was started with --no-mcp)"));
+    window.setMcpUnavailable(QCoreApplication::translate("main", "Assistants are switched off (MitCad was started with --no-mcp)"));
   }
 
   // For tests (framework/Diagnostics.hpp): the theme switched while the

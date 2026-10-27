@@ -7,11 +7,11 @@
 
 use serde_json::{Value, json};
 
-use crate::document_tests::{Block, block, def, num, top_edge};
 use crate::exchange::BodyKind;
 use crate::features::SketchPlane;
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::Kernel;
+use crate::test_support::{Block, block, def, num, top_edge};
 use crate::testing::MockKernel;
 use crate::topo::RegionKey;
 use crate::{Document, FeatureStatus};

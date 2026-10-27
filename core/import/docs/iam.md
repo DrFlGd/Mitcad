@@ -5,7 +5,7 @@ Part of the [import documents](../README.md#documents).
 mitcad#60, stage 4. [core/ipt](../../ipt/README.md#assemblies) reads the
 assembly (referenced files, occurrences, placements, the range boxes and
 display transforms the file stores); `core/ffi/src/iam_import.rs` makes
-Mitcad's components and occurrences of them and imports each part with
+MitCad's components and occurrences of them and imports each part with
 the `.ipt` import above, in a document of its own: its bodies become a
 base feature of a component, or with `--history` its replayed design is
 copied into one (`Document::add_component_copy`). Entry points: `mitcad-cli
@@ -13,7 +13,7 @@ import-iam assembly.iam [--save out.mitcad] [--report report.json]
 [--search folder]... [--history [--no-verify] [--no-fallback]
 [--no-compare] [--time-limit S]] [--json]` (`import-ipt` takes an `.iam`
 too), the `import_iam` command
-([commands.md](../../model/src/api/commands.md#iam-import)) and File › Open
+([commands.md](../../model-api/src/commands.md#iam-import)) and File › Open
 or Import in the application (the import process, as for parts).
 
 - Each part file comes in once, its stored bodies as base features (with

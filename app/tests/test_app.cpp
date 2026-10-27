@@ -297,6 +297,17 @@ void shortcutBindingTests() {
   QList<ShortcutBinding> defaults = fixed;
   defaults.append(removeSketch);
   CHECK(shortcutConflicts(defaults).isEmpty());
+  // Cut, Copy and Paste of sketch geometry take the reserved keys in a
+  // sketch (mitcad#788); a command of the model cannot.
+  {
+    QList<ShortcutBinding> withClipboard = fixed;
+    withClipboard.append(make("sketch.cut", SketchShortcutContext, QKeySequence(QKeySequence::Cut)));
+    withClipboard.append(make("sketch.copy", SketchShortcutContext, QKeySequence(QKeySequence::Copy)));
+    withClipboard.append(make("sketch.paste", SketchShortcutContext, QKeySequence(QKeySequence::Paste)));
+    CHECK(shortcutConflicts(withClipboard).isEmpty());
+    withClipboard.append(make("solid.copy", ModelShortcutContext, QKeySequence(QKeySequence::Copy)));
+    CHECK(shortcutConflicts(withClipboard).size() == 1);
+  }
   // Create Sketch's Alt+S (mitcad#267) beside the reserved keys and the
   // S keys of the registry's defaults: Command Search (S) and Save with
   // Description (Ctrl+Alt+S). The whole registry's defaults are checked by
@@ -1677,7 +1688,7 @@ void reportLinkTests() {
                      Section{QStringLiteral("contact"), QStringLiteral("Contact"), QString(), true, false, false}};
   CHECK(reportBody(report, QStringLiteral("0.1.0")) ==
         QStringLiteral("### What happened\n\nIt broke.\n\n### Stack\n\n```\na\nb\n```\n\n"
-                       "<sub>Sent from Mitcad 0.1.0 · duplicate key `mitcad-0123456789ab`</sub>\n"));
+                       "<sub>Sent from MitCad 0.1.0 · duplicate key `mitcad-0123456789ab`</sub>\n"));
 }
 
 // The addresses of Cloud projects (mitcad#89).
@@ -2480,6 +2491,7 @@ int formulaEditorTests();
 int drawingToolsTests();
 int saveAsMeshTests();
 int drawingSheetViewTests();
+int imageReferencesTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2575,6 +2587,7 @@ int main(int argc, char* argv[]) {
     failures += drawingToolsTests();
     failures += saveAsMeshTests();
     failures += drawingSheetViewTests();
+    failures += imageReferencesTests();
     mitcad::tests::navigationSettingsTests(check);
   }
   if (failures != 0) {

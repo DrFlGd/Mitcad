@@ -2,17 +2,45 @@
 #include "TestDriver.hpp"
 
 #include <QAction>
+#include <QAccessible>
 #include <QDebug>
 #include <QLayout>
 #include <QMenu>
 #include <QRegion>
 #include <QToolButton>
+#include <QTabBar>
 
 #include "ChromeStyle.hpp"
 #include "Ribbon.hpp"
 #include "TitleBar.hpp"
 
 namespace mitcad {
+
+void TestDriver::testRibbonLabels(const QStringList& expected) {
+  whenReady([this, expected] {
+    auto* ribbon = m_main ? m_main->findChild<Ribbon*>() : nullptr;
+    QTabBar* tabs = ribbon ? ribbon->tabBar() : nullptr;
+    if (tabs == nullptr || tabs->count() != expected.size()) return false;
+    QAccessibleInterface* accessible = QAccessible::queryAccessibleInterface(tabs);
+    for (int i = 0; i < tabs->count(); ++i) {
+      if (tabs->tabText(i) != expected.at(i)) return false;
+      QAccessibleInterface* tab = accessible ? accessible->child(i) : nullptr;
+      if (tab == nullptr || tab->text(QAccessible::Name) != expected.at(i)) return false;
+    }
+    for (QToolButton* button : ribbon->findChildren<QToolButton*>()) {
+      if (!button->objectName().startsWith(QLatin1String("ribbonMenu_"))) continue;
+      // These captions are ordinary words (Create, Sheet Metal, ...), not
+      // file formats or user names. Check the actual text used by painting.
+      const QString text = button->text();
+      if (text.isEmpty() || text == text.toUpper() || button->font().capitalization() == QFont::AllUppercase) {
+        m_waitDetail = QStringLiteral("all-caps group caption: %1").arg(text);
+        return false;
+      }
+    }
+    qInfo() << "Ribbon labels: passed" << expected;
+    return true;
+  }, 6, QStringLiteral("workspace text/accessibility or group captions violate UI naming"));
+}
 
 void TestDriver::testSketchFinishLayout() {
   whenReady([this] {

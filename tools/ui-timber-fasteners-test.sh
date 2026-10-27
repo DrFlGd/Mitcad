@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp
-# check-all sources: app/MainWindowContextMenu.cpp core/model/src/build core/model/src/api core/vcs/src/library tools/cli
+# check-all sources: app/MainWindowContextMenu.cpp core/model/src/build core/model-build core/model-api/src core/vcs/src/library tools/cli
 # The fasteners of the TIMBER group's walls and spacing sets, and Swap
 # Fastener (mitcad#497), through the real UI, with a small library of
 # synthetic parts made here (mitcad-cli: a 48 x 98 timber member, a wood

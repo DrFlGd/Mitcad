@@ -28,8 +28,8 @@ use serde_json::{Value, json};
 use mitcad_dwg::DwgFile;
 use mitcad_dwg::scene::{Affine, ItemKind, Plan, Scene};
 use mitcad_dwg::solid;
-use mitcad_model::api::ApiError;
 use mitcad_model::{BaseInput, ComponentUid, ImportBody, Kernel, Transform};
+use mitcad_model_api::ApiError;
 
 use crate::Document;
 use crate::brep_import::{Source, to_ffi};
@@ -187,7 +187,7 @@ impl Document {
         let mut records = Vec::new();
         // Cylindrical faces by diameter (in 0.01 mm).
         let mut diameters: BTreeMap<i64, usize> = BTreeMap::new();
-        let convert = mitcad_f3d::convert::Options {
+        let convert = mitcad_asm::convert::Options {
             scale: scene.unit_mm,
             ..Default::default()
         };
@@ -232,13 +232,13 @@ impl Document {
                         history_step: 0,
                     };
                     let mut list = new_shape_list();
-                    for body in mitcad_f3d::convert::convert_file(&asm, &convert)
+                    for body in mitcad_asm::convert::convert_file(&asm, &convert)
                         .iter()
                         .filter(|b| b.top_level && !b.body.faces.is_empty())
                     {
                         // The diameters of its cylindrical faces (tubes).
                         for f in &body.body.faces {
-                            if let Some(mitcad_f3d::brep::Surface::Cone {
+                            if let Some(mitcad_asm::brep::Surface::Cone {
                                 radius, half_angle, ..
                             }) = body.body.surfaces.get(f.surface)
                                 && half_angle.abs() < 1e-9

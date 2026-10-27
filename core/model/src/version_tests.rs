@@ -4,9 +4,9 @@
 //! built apart, read from a design file, and after the cache let a result
 //! go, while the cache behaves as before.
 
-use crate::document_tests::{Block, block, extrude, num};
 use crate::features::SketchPlane;
 use crate::ids::FeatureUid;
+use crate::test_support::{Block, block, extrude, num};
 use crate::testing::MockKernel;
 use crate::{Document, ModelError};
 

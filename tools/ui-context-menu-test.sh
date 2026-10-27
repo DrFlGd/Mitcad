@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/MainWindow.cpp app/MainWindowContextMenu.cpp app/framework/Command.cpp
 # check-all sources: app/framework/Command.hpp app/browser app/build app/commands tools/cli
-# check-all sources: core/model/src/build core/vcs/src/library
+# check-all sources: core/model/src/build core/model-build core/vcs/src/library
 # The view's context menu (mitcad#494) through the real UI, on a design
 # with an ordinary body in a component, a surface body, and BUILD timber
 # members (a synthetic library made here: a 200 x 300 member; no supplier's

@@ -17,6 +17,7 @@ use crate::library::manifest::Manifest;
 use crate::library::{LibraryCache, LibraryResolver, api};
 use crate::remote::GitCli;
 use mitcad_model::{InsertOptions, LibraryPart};
+use mitcad_model_api::DocumentApi;
 
 const SQUARE: &str = "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}";
 

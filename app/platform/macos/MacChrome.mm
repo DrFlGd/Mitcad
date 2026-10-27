@@ -343,7 +343,9 @@ bool captureOwnWindows(const QString& path) {
 
 void showAboutPanel(const QString& credits) {
   NSMutableDictionary* options = [NSMutableDictionary dictionary];
-  options[NSAboutPanelOptionApplicationName] = QGuiApplication::applicationDisplayName().toNSString();
+  // The program's name, not the application name "Mitcad" that keys the
+  // settings (mitcad#822).
+  options[NSAboutPanelOptionApplicationName] = @"MitCad";
   options[NSAboutPanelOptionApplicationVersion] = QCoreApplication::applicationVersion().toNSString();
   // The credits' HTML in the system font and colours (the colour of labels
   // follows the light and dark appearance).

@@ -18,53 +18,28 @@
 //!
 //! The format knowledge comes from inspecting files only (black-box reverse
 //! engineering); see `ASM_FORMAT.md` and `OGS_FORMAT.md`.
+//!
+//! Since mitcad#776 the layers are crates of their own (`mitcad-asm`,
+//! `mitcad-dump`, `mitcad-f3d-names`, `mitcad-f3d-file`,
+//! `mitcad-f3d-design`), re-exported here under their old paths; this
+//! crate keeps [`read_document_bodies`], the test references, the
+//! `mitcad-f3d-inspect` tool and the corpus tests.
 
-pub mod asm;
-pub mod brep;
-pub mod container;
-pub mod convert;
-pub mod design;
-pub mod flat;
-pub mod history_states;
-pub mod ids;
-pub mod names;
-pub mod ogs;
-pub mod protein;
+// The reader is split into crates (mitcad#776); this one keeps their
+// paths: the ASM part (`mitcad-asm`), the names of B-rep entities
+// (`mitcad-f3d-names`), the document of the file (`mitcad-f3d-file`) and
+// the design segment (`mitcad-f3d-design`). The dump IR (`mitcad-dump`)
+// is `design::ir`.
 #[doc(hidden)]
-pub mod testdata;
-#[doc(hidden)]
-pub mod testreferences;
+pub use mitcad_asm::testdata;
+pub use mitcad_asm::{BlobBodies, asm, brep, convert, flat, history_states, ids, read_blob};
+pub use mitcad_f3d_design as design;
+pub use mitcad_f3d_file::{F3dFile, container, ogs, protein};
+pub use mitcad_f3d_names as names;
 pub use mitcad_zip as zip;
 
-pub use container::F3dFile;
-
-/// All bodies of one body blob.
-pub struct BlobBodies {
-    pub entry: String,
-    pub header: asm::Header,
-    pub coverage: asm::Coverage,
-    /// Tokenising stopped early (unknown tag); the message.
-    pub truncated: Option<String>,
-    pub bodies: Vec<convert::ConvertedBody>,
-}
-
-/// Parses one body blob and converts its top-level bodies.
-pub fn read_blob(
-    entry: &str,
-    data: &[u8],
-    options: &convert::Options,
-) -> Result<BlobBodies, asm::AsmError> {
-    let file = asm::AsmFile::parse(data)?;
-    let coverage = asm::Coverage::of(&file);
-    let bodies = convert::convert_file(&file, options);
-    Ok(BlobBodies {
-        entry: entry.to_string(),
-        header: file.header.clone(),
-        coverage,
-        truncated: file.truncated.as_ref().map(|e| e.to_string()),
-        bodies,
-    })
-}
+#[doc(hidden)]
+pub mod testreferences;
 
 /// Reads and converts every body blob of a document (`.f3d`).
 pub fn read_document_bodies(

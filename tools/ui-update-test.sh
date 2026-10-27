@@ -162,7 +162,7 @@ if ! grep -qE '^[0-9a-fA-F]{64}$' "$ROOT/packaging/update-key.txt"; then
   MITCAD_UPDATE_TEST_KEY="" ui_start_app
   ui_mark
   ui_step "check for updates (search)"   ui_command "Check for Updates"
-  ui_expect_new "Update notice (error): This build of Mitcad has no release key, so it cannot verify updates. [Close]" \
+  ui_expect_new "Update notice (error): This build of MitCad has no release key, so it cannot verify updates. [Close]" \
     "a build without a release key says so"
   no_requests 4 "no request without a release key, at start-up or asked"
   ui_stop_app
@@ -173,7 +173,7 @@ fresh_settings
 ui_start_app
 ui_expect_log "Updates: Mitcad 0.0.0 for linux-x64, announce only: not an AppImage" "a development build announces only"
 ui_expect_log "Update request redirected to https://127.0.0.1" "the HTTPS redirect is followed"
-ui_expect_log "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Download it from its release page. Mitcad checks for updates once a day; Tools › Preferences turns that off. [Release Notes, Skip This Version, Later]" \
+ui_expect_log "Update notice (offer): MitCad $VERSION is available (this is 0.0.0). Download it from its release page. MitCad checks for updates once a day; Tools › Preferences turns that off. [Release Notes, Skip This Version, Later]" \
   "the notice: no Install, the release page, where checks are turned off"
 grep -qxF "GET /redirect/stable/update-manifest.json ua=Mitcad/0.0.0 (linux-x64; stable) lang=* cookie=-" \
   "$WORK/requests.log" || ui_fail "the request said more: $(cat "$WORK/requests.log")"
@@ -193,7 +193,7 @@ ui_expect_log "Update check: the last was at" "the next start does not check (on
 no_requests 4 "no request at the next start"
 ui_mark
 ui_step "check for updates (search)"     ui_command "Check for Updates"
-ui_expect_new "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Download it from its release page. You skipped this version. [Release Notes, Skip This Version, Later]" \
+ui_expect_new "Update notice (offer): MitCad $VERSION is available (this is 0.0.0). Download it from its release page. You skipped this version. [Release Notes, Skip This Version, Later]" \
   "asked, the skipped version is offered"
 ui_step "later (Alt+L)"                  ui_key alt+l
 ui_expect_new "Update notice closed" "Later closes the notice"
@@ -213,7 +213,7 @@ ui_expect_new "the update manifest's signature does not match Mitcad's release k
 release stable 0.0.0 "$SEED"
 ui_mark
 ui_step "check for updates (search)"     ui_command "Check for Updates"
-ui_expect_new "Update notice (message): Mitcad 0.0.0 is up to date. [Close]" "the same version is no update"
+ui_expect_new "Update notice (message): MitCad 0.0.0 is up to date. [Close]" "the same version is no update"
 cp "$WORK/good-manifest.json" "$WWW/stable/update-manifest.json"
 ui_stop_app
 MITCAD_UPDATE_URL=$BASE/redirect-http/stable/update-manifest.json ui_start_app
@@ -250,7 +250,7 @@ ui_expect_new "Preferences: update checks on, channel prerelease" "the pre-relea
 [ "$(setting channel)" = prerelease ] || ui_fail "the channel is not kept"
 ui_mark
 ui_step "check for updates (search)"     ui_command "Check for Updates"
-ui_expect_new "Update notice (offer): Mitcad $BETA is available (this is 0.0.0). It is a pre-release. Download it from its release page. [Release Notes, Skip This Version, Later]" \
+ui_expect_new "Update notice (offer): MitCad $BETA is available (this is 0.0.0). It is a pre-release. Download it from its release page. [Release Notes, Skip This Version, Later]" \
   "the newest release of the list, a beta"
 grep -qxF "GET /releases.json ua=Mitcad/0.0.0 (linux-x64; prerelease) lang=* cookie=-" "$WORK/requests.log" ||
   ui_fail "the list of releases was not asked for: $(cat "$WORK/requests.log")"
@@ -282,13 +282,13 @@ export UI_GDB=0
 MITCAD_UPDATE_URL=$BASE/appimage/update-manifest.json UI_APP=$APPS/Mitcad.AppImage \
   ui_start_app --open "$WORK/block.mitcad" --set d3=35
 ui_expect_log "Updates: Mitcad 0.0.0 for linux-x64, the AppImage $APPS/Mitcad.AppImage" "a per-user AppImage can update itself"
-ui_expect_log "Update notice (offer): Mitcad $VERSION is available (this is 0.0.0). Mitcad checks for updates once a day; Tools › Preferences turns that off. [Release Notes, Install, Skip This Version, Later]" \
+ui_expect_log "Update notice (offer): MitCad $VERSION is available (this is 0.0.0). MitCad checks for updates once a day; Tools › Preferences turns that off. [Release Notes, Install, Skip This Version, Later]" \
   "the notice offers Install"
 ui_mark
 ui_step "install (Alt+I)"                ui_key alt+i
 ui_expect_new "Update rejected: the download is not the release's: its SHA-256 differs from the release's (deleted $APPS/.Mitcad.AppImage.update)" \
   "a tampered download is refused"
-ui_expect_new "Update notice (error): Mitcad $VERSION was not installed: the download is not the release's: its SHA-256 differs from the release's. The download was deleted. [Close]" \
+ui_expect_new "Update notice (error): MitCad $VERSION was not installed: the download is not the release's: its SHA-256 differs from the release's. The download was deleted. [Close]" \
   "and the user is told"
 [ -e "$APPS/.Mitcad.AppImage.update" ] && ui_fail "the tampered download is left"
 cmp -s "$APPS/Mitcad.AppImage" "$WORK/old.AppImage" || ui_fail "the AppImage changed"
@@ -302,7 +302,7 @@ OLD=$UI_RUNNER
 ui_key alt+i
 ui_expect_new "Update verified: $APPS/.Mitcad.AppImage.update" "the download is verified"
 ui_expect_new "Update staged: 0.0.0 -> $VERSION" "the update waits for Mitcad to quit"
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_key Return # Save, the default
 for _ in $(seq 1 100); do
   kill -0 "$OLD" 2> /dev/null || break
@@ -313,7 +313,7 @@ echo "ok   asked to save, saved, quit"
 ui_expect_new "Update: replaced $APPS/Mitcad.AppImage" "the AppImage replaced once Mitcad quit"
 ui_expect_new "Fake AppImage $VERSION started" "the new AppImage started"
 ui_expect_new "Update installed: 0.0.0 -> $VERSION" "the new version reports the update" 30
-ui_expect_new "Update notice (message): Mitcad was updated to $VERSION. [Close]" "and tells the user"
+ui_expect_new "Update notice (message): MitCad was updated to $VERSION. [Close]" "and tells the user"
 cmp -s "$APPS/Mitcad.AppImage" "$WORK/new/Mitcad.AppImage" || ui_fail "the AppImage is not the release's"
 [ -x "$APPS/Mitcad.AppImage" ] || ui_fail "the new AppImage is not executable"
 [ -e "$APPS/.Mitcad.AppImage.update" ] && ui_fail "the download is left"
@@ -325,7 +325,7 @@ echo "ok   the release's AppImage, executable, the design saved"
 # The new process is the AppImage's own, no child of this script.
 UI_WINDOW=""
 for _ in $(seq 1 100); do
-  UI_WINDOW=$(xdotool search --onlyvisible --name ' - Mitcad$' 2> /dev/null | head -1)
+  UI_WINDOW=$(xdotool search --onlyvisible --name ' - MitCad$' 2> /dev/null | head -1)
   [ -n "$UI_WINDOW" ] && break
   sleep 0.2
 done

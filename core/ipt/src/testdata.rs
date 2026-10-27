@@ -3,7 +3,7 @@
 //! bridge and in the command line and UI tests (no third-party files are
 //! needed): a compound file with the segment database's streams, a B-rep
 //! segment whose B-rep records hold ASM bodies written by the `.f3d`
-//! reader's ASM writer (`mitcad_f3d::testdata`), and the property sets the
+//! reader's ASM writer (`mitcad_asm::testdata`), and the property sets the
 //! import reads.
 
 use crate::cfb::{Writer, guid_bytes};
@@ -108,7 +108,7 @@ pub fn part_file_with_streams(part: &TestPart, streams: &[(&str, Vec<u8>)]) -> V
 /// An ASM file without bodies: the B-rep record of a part whose bodies
 /// are meshes, or of an empty part.
 pub fn empty_asm() -> Vec<u8> {
-    let mut w = mitcad_f3d::asm::writer::Writer::new(1, 0);
+    let mut w = mitcad_asm::asm::writer::Writer::new(1, 0);
     w.record("asmheader")
         .ptr(-1)
         .int(-1)
@@ -174,13 +174,13 @@ pub fn test_empty_part() -> Vec<u8> {
 }
 
 /// A part with two bodies (one B-rep record each): the 10 mm cube and the
-/// cylinder of radius 10 mm and height 20 mm of `mitcad_f3d::testdata`,
+/// cylinder of radius 10 mm and height 20 mm of `mitcad_asm::testdata`,
 /// part number `MITCAD-TEST-1`, material `Aluminum`, inches.
 pub fn test_part() -> Vec<u8> {
     part_file(&TestPart {
         bodies: vec![
-            mitcad_f3d::testdata::cube_blob(),
-            mitcad_f3d::testdata::cylinder_blob(),
+            mitcad_asm::testdata::cube_blob(),
+            mitcad_asm::testdata::cylinder_blob(),
         ],
         part_number: "MITCAD-TEST-1",
         material: "Aluminum",
@@ -216,8 +216,8 @@ pub fn test_part_with_hidden_body() -> Vec<u8> {
     part_file_with_streams(
         &TestPart {
             bodies: vec![
-                mitcad_f3d::testdata::cube_blob(),
-                mitcad_f3d::testdata::cylinder_blob(),
+                mitcad_asm::testdata::cube_blob(),
+                mitcad_asm::testdata::cylinder_blob(),
             ],
             part_number: "MITCAD-TEST-HIDDEN",
             material: "Generic",
@@ -236,7 +236,7 @@ pub fn test_part_with_hidden_body() -> Vec<u8> {
 /// millimetres. The B-rep record has no ASM history.
 pub fn test_part_with_design() -> Vec<u8> {
     part_file(&TestPart {
-        bodies: vec![mitcad_f3d::testdata::cube_blob()],
+        bodies: vec![mitcad_asm::testdata::cube_blob()],
         part_number: "MITCAD-TEST-2",
         material: "Steel",
         length_unit: 11269,
@@ -266,7 +266,7 @@ pub fn test_part_with_hidden_design_body() -> Vec<u8> {
     );
     part_file_with_streams(
         &TestPart {
-            bodies: vec![mitcad_f3d::testdata::cube_blob()],
+            bodies: vec![mitcad_asm::testdata::cube_blob()],
             part_number: "MITCAD-TEST-HIDDEN-DESIGN",
             material: "Steel",
             length_unit: 11269,

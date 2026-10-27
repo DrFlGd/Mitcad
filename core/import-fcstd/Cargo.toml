@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-import-fcstd"
+description = "The FreeCAD document import: structure, stored bodies, sketches, the PartDesign and Part history, parameters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_import_fcstd"
+
+[dependencies]
+mitcad-model.workspace = true
+# The FreeCAD .FCStd reader.
+mitcad-freecad = { path = "../freecad" }
+# What the imports share: geom, planar faces, the candidate core, notes,
+# names and the sketch helpers.
+mitcad-import-base = { path = "../import-base" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The mock geometry kernel of the model tests.
+mitcad-model = { workspace = true, features = ["testing"] }
+mitcad-model-api = { path = "../model-api" }
+# Test documents packed in memory.
+mitcad-zip = { path = "../zip" }

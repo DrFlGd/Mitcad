@@ -17,6 +17,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
@@ -29,9 +30,11 @@
 #include <GProp_GProps.hxx>
 #include <Geom2d_Curve.hxx>
 #include <NCollection_List.hxx>
+#include <Poly_Triangulation.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Vec2d.hxx>
@@ -876,6 +879,90 @@ void test_dressups_that_take_a_face_away() {
   CHECK(bevelled->notes().empty());
 }
 
+// A 50 x 100 rectangle extruded 10 high: its end side 0, 50 wide, between
+// sides 1 and 3 (mitcad#821).
+ShapePtr end_block() { return extrude("F1", {rectangle(1, 0, 0, 50, 100)}, 0, 10); }
+
+// Whether every face of the shape has a name, an area and a display mesh,
+// and every edge a length; what is missing is printed.
+bool named_meshed_and_whole(const char* what, const Shape& shape) {
+  bool ok = true;
+  // (Meshed on a copy: the mesh stays on the faces it is made on.)
+  const ShapePtr copy = mitcad::geometry::detail::working_copy(shape);
+  BRepMesh_IncrementalMesh mesh(copy->occt(), 0.05, false, 0.5);
+  for (int i = 0; i < copy->face_count(); ++i) {
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(copy->face(i), props);
+    TopLoc_Location location;
+    const occ::handle<Poly_Triangulation> triangles = BRep_Tool::Triangulation(copy->face(i), location);
+    const bool named = !copy->face_names(i).empty();
+    const bool meshed = !triangles.IsNull() && triangles->NbTriangles() > 0;
+    if (!named || !(props.Mass() > 1e-6) || !meshed) {
+      std::fprintf(stderr, "%s: face %d (%s), area %.9g, %s\n", what, i,
+                   named ? copy->face_names(i).front().c_str() : "no name", props.Mass(),
+                   meshed ? "meshed" : "no mesh");
+      ok = false;
+    }
+  }
+  for (int i = 0; i < copy->edge_count(); ++i) {
+    if (BRep_Tool::Degenerated(copy->edge(i))) {
+      continue;
+    }
+    GProp_GProps props;
+    BRepGProp::LinearProperties(copy->edge(i), props);
+    if (!(props.Mass() > 1e-6)) {
+      std::fprintf(stderr, "%s: edge %d (%s) of length %.9g\n", what, i, copy->edge_name(i).c_str(), props.Mass());
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+void test_end_rounded_to_a_half_round_in_one_fillet() {
+  // mitcad#821: both vertical edges of the block's 50 wide end rounded with
+  // 25 in one fillet. The two roundings take the end face away and meet on
+  // one line in its middle (a half round). The top and the bottom keep their
+  // names, once each, and are meshed, as where the edges are rounded in two
+  // fillets one after the other, or with 24.9, which leaves a strip of the
+  // end face.
+  const std::string left = edge(side("F1", 1, 0), side("F1", 1, 3));
+  const std::string right = edge(side("F1", 1, 0), side("F1", 1, 1));
+  const ShapePtr one = fillet("F3", *end_block(), {left, right}, 25.0);
+  const ShapePtr two = fillet("F4", *fillet("F3", *end_block(), {left}, 25.0), {right}, 25.0);
+  const ShapePtr apart = fillet("F3", *end_block(), {left, right}, 24.9);
+  const std::vector<std::pair<const char*, ShapePtr>> cases = {{"one fillet", one}, {"two fillets", two},
+                                                               {"radius 24.9", apart}};
+  for (const auto& [what, rounded] : cases) {
+    CHECK(mitcad::geometry::detail::is_valid(rounded->occt()));
+    CHECK(rounded->notes().empty());
+    CHECK(named_meshed_and_whole(what, *rounded));
+    CHECK(faces_named(*rounded, end_cap("F1", 1)) == 1);
+    CHECK(faces_named(*rounded, start_cap("F1", 1)) == 1);
+    CHECK(edge_names_unique(*rounded));
+    // (The caps hold their own names only.)
+    for (int i = 0; i < rounded->face_count(); ++i) {
+      const NameList& names = rounded->face_names(i);
+      if (has_name(names, end_cap("F1", 1)) || has_name(names, start_cap("F1", 1))) {
+        CHECK(names.size() == 1);
+      }
+    }
+  }
+  const double cap = 50.0 * 100.0 - 2.0 * fillet_loss(25.0);
+  for (const ShapePtr& rounded : {one, two}) {
+    CHECK_NEAR_TOL(named_face_area(*rounded, end_cap("F1", 1)), cap, 1e-6);
+    CHECK_NEAR_TOL(named_face_area(*rounded, start_cap("F1", 1)), cap, 1e-6);
+    CHECK_NEAR_TOL(volume(*rounded), cap * 10.0, 1e-6);
+  }
+  CHECK_NEAR_TOL(named_face_area(*apart, end_cap("F1", 1)), 50.0 * 100.0 - 2.0 * fillet_loss(24.9), 1e-6);
+  // No end face left: four sides less the end, two caps, two roundings; the
+  // two fillets give the same faces, 24.9 the strip besides.
+  CHECK(one->face_count() == 7);
+  CHECK(two->face_count() == one->face_count());
+  CHECK(apart->face_count() == 8);
+  CHECK(faces_named(*one, "F3:fillet(" + left + ")") == 1);
+  CHECK(faces_named(*one, "F3:fillet(" + right + ")") == 1);
+}
+
 // Faces named `name` or one of its split pieces.
 int faces_matching(const Shape& shape, const std::string& name) {
   int count = 0;
@@ -1474,6 +1561,7 @@ void dressup_tests() {
   guarded("test_chamfer_sets_and_reference_faces", test_chamfer_sets_and_reference_faces);
   guarded("test_angle_chamfer_measures_one_face_along_a_chain", test_angle_chamfer_measures_one_face_along_a_chain);
   guarded("test_dressups_that_take_a_face_away", test_dressups_that_take_a_face_away);
+  guarded("test_end_rounded_to_a_half_round_in_one_fillet", test_end_rounded_to_a_half_round_in_one_fillet);
   guarded("test_dressups_of_circles_built_as_rings", test_dressups_of_circles_built_as_rings);
   guarded("test_dressups_of_faulty_inputs", test_dressups_of_faulty_inputs);
   guarded("test_own_tangent_chains", test_own_tangent_chains);

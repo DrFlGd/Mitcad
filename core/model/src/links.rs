@@ -18,37 +18,50 @@
 //! placements and the other component's bodies it reads, so the recompute
 //! cache keys on them like on the feature's own inputs.
 
-use serde::{Deserialize, Serialize};
-
 use crate::assembly::{Assembly, inverse};
 use crate::features::joint::OccurrencePath;
 use crate::ids::{ComponentUid, OccurrenceUid};
 use crate::joints::path_component;
 use crate::transform::Transform;
 
-/// Where linked geometry and the feature that uses it are placed: two
-/// occurrence paths from the root (empty for the root itself).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OccurrenceLink {
-    /// To the component the geometry is in.
-    #[serde(default, skip_serializing_if = "OccurrencePath::is_empty")]
-    pub source: OccurrencePath,
-    /// To the component of the feature that uses it.
-    #[serde(default, skip_serializing_if = "OccurrencePath::is_empty")]
-    pub target: OccurrencePath,
+// The link itself is plain data in the base (mitcad#780); what of it
+// needs the assembly is here.
+pub use mitcad_model_base::occurrence::OccurrenceLink;
+
+/// The link's components and transform, resolved in the assembly.
+pub(crate) trait OccurrenceLinkExt {
+    /// The component the geometry is in.
+    fn source_component(&self, assembly: &Assembly) -> Result<ComponentUid, String>;
+
+    /// The path `component` (the using feature's) is seen at: the target,
+    /// else the first path to it.
+    fn target_path(
+        &self,
+        assembly: &Assembly,
+        component: ComponentUid,
+    ) -> Result<Vec<OccurrenceUid>, String>;
+
+    /// The transform from the source component's coordinates into those of
+    /// `component` (the using feature's), with `placement` giving each
+    /// occurrence's placement at that point of the timeline.
+    fn transform(
+        &self,
+        assembly: &Assembly,
+        component: ComponentUid,
+        placement: &mut dyn FnMut(OccurrenceUid) -> Transform,
+    ) -> Result<Transform, String>;
 }
 
-impl OccurrenceLink {
+impl OccurrenceLinkExt for OccurrenceLink {
     /// The component the geometry is in.
-    pub(crate) fn source_component(&self, assembly: &Assembly) -> Result<ComponentUid, String> {
+    fn source_component(&self, assembly: &Assembly) -> Result<ComponentUid, String> {
         path_component(assembly, ComponentUid::ROOT, &self.source.0)
             .map_err(|e| format!("the linked geometry's occurrence: {e}"))
     }
 
     /// The path `component` (the using feature's) is seen at: the target,
     /// else the first path to it.
-    pub(crate) fn target_path(
+    fn target_path(
         &self,
         assembly: &Assembly,
         component: ComponentUid,
@@ -59,7 +72,7 @@ impl OccurrenceLink {
     /// The transform from the source component's coordinates into those of
     /// `component` (the using feature's), with `placement` giving each
     /// occurrence's placement at that point of the timeline.
-    pub(crate) fn transform(
+    fn transform(
         &self,
         assembly: &Assembly,
         component: ComponentUid,
@@ -80,7 +93,8 @@ impl OccurrenceLink {
 /// to it in a depth-first walk of the occurrence tree (where the
 /// application shows the component's sketches). Fails for a component
 /// placed nowhere.
-pub(crate) fn first_path(
+#[doc(hidden)]
+pub fn first_path(
     assembly: &Assembly,
     component: ComponentUid,
     given: Option<&[OccurrenceUid]>,
@@ -129,7 +143,8 @@ pub(crate) fn first_path(
 /// root) for a feature of `component` seen at `target` (the first path to
 /// it when None or not leading there). None when the geometry is in the
 /// feature's own component, whose coordinates need no link.
-pub(crate) fn link_for(
+#[doc(hidden)]
+pub fn link_for(
     assembly: &Assembly,
     component: ComponentUid,
     source: &[OccurrenceUid],

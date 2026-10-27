@@ -146,7 +146,7 @@ set(MITCAD_RENDER_THIRD_PARTY_NOTES
 "The CPU and Metal render worker (mitcad-render, Contents/MacOS):
   Cycles (https://projects.blender.org/blender/cycles): Apache-2.0, linked
   statically into the worker, with Metal runtime sources under
-  Contents/Resources/cycles (cycles/LICENSE). Mitcad updates its Metal resource
+  Contents/Resources/cycles (cycles/LICENSE). MitCad updates its Metal resource
   usage for the deployment target, exposes denoiser selection for diagnostics,
   and ends waits for failed or cancelled Metal pipelines;
   the patches are published in third_party/cycles/.
@@ -154,7 +154,7 @@ set(MITCAD_RENDER_THIRD_PARTY_NOTES
   MIT (cycles/*license*.txt).
   Open Image Denoise (https://github.com/RenderKit/oidn): Apache-2.0, linked
   dynamically, with its CPU/BNNS and Metal devices loaded at run time from Contents/Frameworks
-  (openimagedenoise/LICENSE.txt and third-party-programs.txt). Mitcad's patch
+  (openimagedenoise/LICENSE.txt and third-party-programs.txt). MitCad's patch
   preserves the requested deployment target; published in third_party/oidn/.
   The Metal module embeds OIDN's compiled Metal kernels; it needs no separate
   kernel files. Its Metal, MetalPerformanceShaders and MetalPerformanceShadersGraph
@@ -205,7 +205,7 @@ foreach(mitcad_qt_license IN LISTS mitcad_qt_license_files)
 endforeach()
 
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/THIRD-PARTY-NOTICES.txt"
-"Mitcad is distributed under the MIT licence (Mitcad-LICENSE.txt). The application
+"MitCad is distributed under the MIT licence (Mitcad-LICENSE.txt). The application
 bundle contains these third-party components, which are used under the licences
 below; the texts the packages ship are in this directory.
 
@@ -215,11 +215,11 @@ Qt ${Qt6_VERSION}: GNU LGPL-3.0, linked dynamically (the QtCore, QtGui, ... fram
   installation had them).
 Open CASCADE Technology ${OpenCASCADE_VERSION}: GNU LGPL-2.1 with the Open CASCADE exception,
   linked dynamically (libTK*.dylib in Contents/Frameworks); source code at
-  https://dev.opencascade.org/ . With changes of Mitcad's that speed up
+  https://dev.opencascade.org/ . With changes of MitCad's that speed up
   booleans, the face merge after them and the shape checker on faces with many
   edges, that let fillets run over faces narrower than they are, that fix
   other failures and crashes of the fillet, and that make an allocation that
-  fails throw instead of crashing; the patches are in Mitcad's source code
+  fails throw instead of crashing; the patches are in MitCad's source code
   (third_party/vcpkg-ports/opencascade).
 FreeType: used under the FreeType Licence (FTL), not the GPL, which the package
   offers as an alternative.
@@ -236,7 +236,7 @@ SolidCraft (https://github.com/tangency-labs/solidcraft), the design file format
   (c) 2026 SolidCraft contributors (SolidCraft-MIT.txt).
 ${MITCAD_RENDER_THIRD_PARTY_NOTES}The vcpkg ports that make the libraries above (licence text per port):
 ${MITCAD_THIRD_PARTY_NOTES}
-The Rust crates in Mitcad's core are under MIT, Apache-2.0 and similar licences
+The Rust crates in MitCad's core are under MIT, Apache-2.0 and similar licences
 (checked with cargo-deny); their texts are not collected here yet. Among them the
 TLS of live updates (connections to an MQTT broker): rustls (Apache-2.0, ISC or
 MIT), rustls-webpki and untrusted (ISC, Copyright 2015 Brian Smith), and ring (ISC,

@@ -15,7 +15,7 @@ use crate::ids::FeatureUid;
 use crate::kernel::Kernel;
 
 /// The timeline before a command, to compare with the one after it.
-pub(crate) struct TimelineBefore {
+pub struct TimelineBefore {
     /// Every feature's entry, by uid (shared with the state: no copies).
     features: BTreeMap<FeatureUid, Arc<FeatureEntry>>,
     /// The features in error.
@@ -39,7 +39,7 @@ pub struct FailedFeature {
 
 impl<K: Kernel> Document<K> {
     /// The timeline as it is now, before a command.
-    pub(crate) fn timeline_before(&self) -> TimelineBefore {
+    pub fn timeline_before(&self) -> TimelineBefore {
         TimelineBefore {
             features: self
                 .state
@@ -62,7 +62,7 @@ impl<K: Kernel> Document<K> {
     /// The features in error now, in timeline order, compared with the
     /// timeline `before` a command; `target` is the feature the command
     /// names as the one it edits, if any.
-    pub(crate) fn failed_features(
+    pub fn failed_features(
         &self,
         before: &TimelineBefore,
         target: Option<FeatureUid>,

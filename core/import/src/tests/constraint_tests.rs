@@ -2,6 +2,7 @@
 //! Sketch constraints and dimensions, and construction datums.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 // Construction points, planes and axes from what they are made from
 // (mitcad#186).

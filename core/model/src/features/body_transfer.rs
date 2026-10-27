@@ -27,7 +27,7 @@ use super::{
 };
 use crate::ids::BodyUid;
 use crate::kernel::Kernel;
-use crate::links::OccurrenceLink;
+use crate::links::{OccurrenceLink, OccurrenceLinkExt};
 use crate::parameters::ParamId;
 use crate::transform::Transform;
 

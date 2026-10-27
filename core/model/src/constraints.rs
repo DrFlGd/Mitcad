@@ -35,16 +35,17 @@ use std::f64::consts::PI;
 
 use mitcad_solver::{Amount, ConstraintPart, Freedom, JointMotion, Pose, RigidConstraint, Sense};
 
-use crate::datum::{CurveGeometry, Datum, SurfaceGeometry, Vec3, unit};
+use crate::datum::{CurveGeometry, Datum, SurfaceGeometry, Vec3};
 use crate::features::geom_ref::{GeomRef, Resolver};
 use crate::features::{ConstraintRow, ConstraintType, JointOrigin};
 use crate::ids::OccurrenceUid;
 use crate::joints::{JointState, Motion, MotionSpec, apply_override, frame_parts, origin_frame};
 use crate::kernel::Kernel;
 use crate::parameters::{ParamId, Parameters};
-use crate::profile::dot;
 use crate::sketch::geometry::Curve2;
 use crate::transform::Transform;
+use mitcad_vec3::dot;
+use mitcad_vec3::unit;
 
 /// What a reference of a constraint is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -558,7 +559,8 @@ pub struct ConstraintSetResult {
 /// Lengths within this hold a constraint, mm.
 pub(crate) const LINEAR: f64 = 1e-6;
 /// Directions within this hold a constraint, radians.
-pub(crate) const ANGULAR: f64 = 1e-6;
+#[doc(hidden)]
+pub const ANGULAR: f64 = 1e-6;
 
 /// The solver's constraint for frames where they are.
 pub(crate) fn rigid_constraint(
@@ -606,4 +608,38 @@ pub(crate) fn check(
             .chain(&frame_b.translation)
             .fold(0.0_f64, |m, v| m.max(v.abs()));
     (d <= LINEAR * scale && angle <= ANGULAR, c.measured())
+}
+
+// A constraint row's references before the row is added (mitcad#778).
+
+/// One reference of a constraint row before the row is added
+/// ([`Document::constraint_row`](crate::document::Document::constraint_row)).
+#[derive(Debug, Clone, Copy)]
+pub struct RowReference<'a> {
+    /// The occurrence path from the row's component: uids (`O1/O4`) or
+    /// names (`Arm:1/Pin:2`); empty for the component's own geometry.
+    pub occurrence: &'a str,
+    /// The geometry picked on the path's last occurrence.
+    pub geometry: &'a GeomRef,
+    /// The frame's override, as a joint origin has it.
+    pub frame_override: Option<crate::features::joint::FrameOverride>,
+}
+
+/// What a constraint row's references are before the row is added
+/// ([`Document::constraint_row`](crate::document::Document::constraint_row);
+/// the api's `constraint_row` query and the import's assembly
+/// relationships ask for it).
+#[derive(Debug, Clone)]
+pub struct RowCheck {
+    /// The references `a` and `b` resolved, their frames in the row's
+    /// component.
+    pub a: Geo,
+    pub b: Geo,
+    /// The types `a` and `b` fit, the likeliest first ([`fitting_types`]).
+    pub types: Vec<ConstraintType>,
+    /// What they measure where they are ([`measures`]).
+    pub measures: BTreeMap<&'static str, f64>,
+    /// With a type to check: whether the references fit it, else why not
+    /// ([`constraint_fits`]).
+    pub fits: Option<Result<(), String>>,
 }

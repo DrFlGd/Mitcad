@@ -3,7 +3,7 @@
 
 // Export Drawing (mitcad#471): the choices of its dialog, kept in the
 // settings (group `drawing`) as the other export dialogs keep theirs, and
-// the model's export_drawing command they make (core/model/src/api/
+// the model's export_drawing command they make (core/model-api/src/
 // commands.md). Plain Qt Core: app.unit tests it.
 
 #include <QJsonObject>

@@ -21,27 +21,28 @@ mitcad-dxf = { path = "../dxf" }
 mitcad-3mf = { path = "../3mf" }
 # USDZ export for AR viewers and other programs (mitcad#123).
 mitcad-usdz = { path = "../usdz" }
-# Sketch text from font files, shaped, in both directions (mitcad#473).
-harfrust = "0.14.0"
-skrifa = "0.48.0"
-unicode-bidi = "0.3.18"
-wuff = "0.2.9"
-# SVG drawings into sketches (mitcad#473).
+# The print settings files of slicers (XML).
 roxmltree = "0.20.0"
-svgtypes = "0.16.1"
-# QR codes in sketches (mitcad#473).
-qrcode = { version = "0.14.1", default-features = false }
-# Drawings written as .dwg files (mitcad#728): Mitcad's own writer beside
-# its reader, without the 3D content (the feature `solids` needs the .f3d
-# reader, whose tests use this crate).
-mitcad-dwg = { path = "../dwg", default-features = false }
+# Parameter expressions and the print settings' key map, crates of their
+# own re-exported as `expr` and `print_keys` (mitcad#777).
+mitcad-expr = { path = "../expr" }
+mitcad-print-keys = { path = "../print-keys" }
+# The Kernel trait and the base data below the model's core, re-exported
+# at their old paths (mitcad#777).
+mitcad-model-base = { path = "../model-base" }
+# The mock kernel, re-exported as `mitcad_model::testing` under the
+# `testing` feature (mitcad#777).
+mitcad-model-testkit = { path = "../model-testkit", optional = true }
+# The general sketch below the model's core, re-exported as
+# `mitcad_model::sketch` (mitcad#780).
+mitcad-sketch = { path = "../sketch" }
 
 [dev-dependencies]
-# QR codes read back in the tests (mitcad#473).
-rqrr = { version = "0.11.0", default-features = false }
-# Slicers' preset bundles (zips) the print settings tests write (mitcad#640).
-mitcad-zip = { path = "../zip" }
+# The mock kernel of the model's own unit tests (mitcad#777).
+mitcad-model-testkit = { path = "../model-testkit" }
 
 [features]
-# The mock geometry kernel (`mitcad_model::testing`) for other crates' tests.
-testing = []
+# The mock geometry kernel (`mitcad_model::testing`, the crate
+# mitcad-model-testkit) and the shared test fixtures
+# (`mitcad_model::test_support`) for other crates' tests.
+testing = ["dep:mitcad-model-testkit"]

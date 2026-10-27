@@ -188,13 +188,31 @@ pub(crate) fn clamped_uniform_knots(n_ctrl: usize, degree: usize) -> Vec<f64> {
 /// knot vector (interior knots at the interior parameters) and control points
 /// `[fit[0], h_1, ..., h_{k+1}, fit[k]]` with natural end conditions
 /// (zero second derivative at both ends).
+///
+/// With `closed` (mitcad#783) the curve runs on from the last fit point back
+/// to the first (the fit points are listed once, at least three) and is C2
+/// through it: equal first and second derivatives at both ends of the
+/// parameter range replace the natural end conditions. The knots stay
+/// clamped, so the curve is an ordinary B-spline that starts and ends at
+/// `fit[0]`: control points `[fit[0], h_1, ..., fit[0]]`, and `params` has
+/// the closing point's parameter 1 last.
 pub(crate) struct Interpolation {
     pub params: Vec<f64>,
     pub basis: SplineBasis,
     pub ctrl: Vec<[f64; 2]>,
 }
 
-pub(crate) fn interpolate(fit: &[[f64; 2]]) -> Option<Interpolation> {
+pub(crate) fn interpolate(fit: &[[f64; 2]], closed: bool) -> Option<Interpolation> {
+    if closed && fit.len() < 3 {
+        return None;
+    }
+    let looped: Vec<[f64; 2]>;
+    let fit = if closed {
+        looped = fit.iter().copied().chain(fit.first().copied()).collect();
+        &looped[..]
+    } else {
+        fit
+    };
     let k = fit.len().checked_sub(1).filter(|&k| k >= 1)?;
     let mut params = vec![0.0];
     let mut total = 0.0;
@@ -224,7 +242,7 @@ pub(crate) fn interpolate(fit: &[[f64; 2]]) -> Option<Interpolation> {
         weights: vec![1.0; n_ctrl],
     };
     // Linear system in all control points: rows are the end points, the
-    // interior fit points and the two natural end conditions.
+    // interior fit points and the two natural (or periodic) end conditions.
     let mut rows: Vec<(Vec<f64>, [f64; 2])> = Vec::new();
     let unit = |i: usize| {
         let mut v = vec![0.0; n_ctrl];
@@ -242,6 +260,7 @@ pub(crate) fn interpolate(fit: &[[f64; 2]]) -> Option<Interpolation> {
             let e = basis.eval(&ctrl, t, der);
             *r = match der {
                 0 => e.p.x,
+                1 => e.d1.x,
                 _ => e.d2.x,
             };
         }
@@ -250,8 +269,20 @@ pub(crate) fn interpolate(fit: &[[f64; 2]]) -> Option<Interpolation> {
     for (j, &t) in params.iter().enumerate().take(k).skip(1) {
         rows.push((basis_row(t, 0), fit[j]));
     }
-    rows.push((basis_row(0.0, 2), [0.0, 0.0]));
-    rows.push((basis_row(1.0, 2), [0.0, 0.0]));
+    if closed {
+        // The same first and second derivative at both ends.
+        for der in [1, 2] {
+            let row = basis_row(0.0, der)
+                .iter()
+                .zip(basis_row(1.0, der))
+                .map(|(a, b)| a - b)
+                .collect();
+            rows.push((row, [0.0, 0.0]));
+        }
+    } else {
+        rows.push((basis_row(0.0, 2), [0.0, 0.0]));
+        rows.push((basis_row(1.0, 2), [0.0, 0.0]));
+    }
     let mut a: Vec<Vec<f64>> = rows.iter().map(|r| r.0.clone()).collect();
     let mut b: Vec<[f64; 2]> = rows.iter().map(|r| r.1).collect();
     let ctrl = solve_dense(&mut a, &mut b)?;
@@ -362,7 +393,7 @@ mod tests {
     #[test]
     fn interpolation_passes_through_points() {
         let fit = [[0.0, 0.0], [10.0, 5.0], [20.0, 0.0], [30.0, 8.0]];
-        let it = interpolate(&fit).expect("interpolates");
+        let it = interpolate(&fit, false).expect("interpolates");
         let c = pts(&it.ctrl);
         for (j, &t) in it.params.iter().enumerate() {
             let e = it.basis.eval(&c, t, 2);
@@ -370,5 +401,27 @@ mod tests {
         }
         let e0 = it.basis.eval(&c, 0.0, 2);
         assert!(e0.d2.x.abs() < 1e-9 && e0.d2.y.abs() < 1e-9);
+    }
+
+    #[test]
+    fn closed_interpolation_is_c2_through_the_first_point() {
+        let fit = [[0.0, 0.0], [20.0, -5.0], [30.0, 10.0], [5.0, 18.0]];
+        let it = interpolate(&fit, true).expect("interpolates");
+        assert_eq!(it.params.len(), fit.len() + 1);
+        assert_eq!(it.ctrl.len(), fit.len() + 3);
+        let (first, last) = (it.ctrl[0], it.ctrl[it.ctrl.len() - 1]);
+        assert!((first[0] - last[0]).abs() < 1e-9 && (first[1] - last[1]).abs() < 1e-9);
+        assert!(it.basis.is_clamped());
+        let c = pts(&it.ctrl);
+        for (j, &t) in it.params.iter().enumerate() {
+            let e = it.basis.eval(&c, t, 0);
+            let f = fit[j % fit.len()];
+            assert!((e.p.x - f[0]).abs() < 1e-9 && (e.p.y - f[1]).abs() < 1e-9);
+        }
+        let (e0, e1) = (it.basis.eval(&c, 0.0, 2), it.basis.eval(&c, 1.0, 2));
+        assert!((e0.d1.x - e1.d1.x).abs() < 1e-9 && (e0.d1.y - e1.d1.y).abs() < 1e-9);
+        assert!((e0.d2.x - e1.d2.x).abs() < 1e-9 && (e0.d2.y - e1.d2.y).abs() < 1e-9);
+        // A closed curve needs three points.
+        assert!(interpolate(&fit[..2], true).is_none());
     }
 }

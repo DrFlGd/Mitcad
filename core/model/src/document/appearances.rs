@@ -34,7 +34,7 @@ impl<K: Kernel> Document<K> {
     /// colour or another map, mitcad#313) is listed as `"embedded": true`
     /// with its `image_sha256` instead of its data (the `appearance_image`
     /// query gives it).
-    pub(crate) fn appearances_json(&self) -> Value {
+    pub fn appearances_json(&self) -> Value {
         let library = appearance::library().iter().map(|a| (a, true));
         let custom = self.state.appearances.iter().map(|a| (a, false));
         Value::Array(
@@ -70,11 +70,7 @@ impl<K: Kernel> Document<K> {
     /// texture, the base colour's or that of another map (`map`,
     /// mitcad#313), as base64 (`data`), with its `format` (`png`, `jpeg`)
     /// and `sha256`.
-    pub(crate) fn appearance_image_json(
-        &self,
-        id: &str,
-        map: Option<&str>,
-    ) -> Result<Value, ModelError> {
+    pub fn appearance_image_json(&self, id: &str, map: Option<&str>) -> Result<Value, ModelError> {
         let a = self
             .appearance(id)
             .ok_or_else(|| invalid(format!("there is no appearance '{id}'")))?;

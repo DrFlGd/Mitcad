@@ -90,8 +90,8 @@ std::optional<BrokerSignIn> askBrokerSignIn(QWidget* parent, const QString& addr
   layout->addWidget(remember);
   layout->addWidget(plainLabel(keychain ? tr("They go only to %1, and only over an encrypted connection.")
                                               .arg(brokers::credentialKey(address))
-                                        : tr("This computer has no keychain Mitcad can use: they are kept until "
-                                             "Mitcad closes, and go only to %1.")
+                                        : tr("This computer has no keychain MitCad can use: they are kept until "
+                                             "MitCad closes, and go only to %1.")
                                               .arg(brokers::credentialKey(address))));
   auto* problem = plainLabel();
   setErrorStyleSheet(problem);

@@ -33,7 +33,7 @@ with a test that writes the layout found field by field:
   the topology lacks fields the later layout has (edge parameters, a
   vertex's end integer, a coedge's integer before its pcurve); an edge's
   parameters are then where its vertices lie on its curve
-  (`mitcad_f3d::convert::project_on_curve`).
+  (`mitcad_asm::convert::project_on_curve`).
 - **The binary form of R2004 drawings is ASM 208** (the older magic): its
   vertices have no end integer either.
 - **Extents never computed** are stored empty (minimum 1e20, maximum
@@ -42,7 +42,7 @@ with a test that writes the layout found field by field:
   drawing of ASM 21200): `par_int_cur` and `blend_int_cur` records in
   the summary form keep only the knots and fit tolerance of their
   approximation, then their support surfaces and parameter curves. The
-  ASM reader (`mitcad_f3d::asm::geom`, `IntGeom::OnSurface`) takes such a
+  ASM reader (`mitcad_asm::asm::geom`, `IntGeom::OnSurface`) takes such a
   curve as its support along its parameter curve. Rolling-ball blend
   surfaces (`rb_blend_spl_sur`) in the summary form, or stored with no
   approximation at all, are made from their definition (mitcad#621): the
@@ -147,7 +147,7 @@ bytes are the binary ASM form.
 
 | Entity | Comes in as |
 |---|---|
-| `3DSOLID`, `BODY`, `REGION`, surfaces with B-rep data (`PLANESURFACE`, `EXTRUDEDSURFACE`, `LOFTEDSURFACE`, `REVOLVEDSURFACE`, `SWEPTSURFACE`, `NURBSURFACE`) | Bodies: the B-rep record (text form in blocks, masked c → 0x9F - c, up to R2010; binary form in the entity or in the data storage) parsed by `mitcad_f3d::asm` (`AsmFile`, the text through `asm::text`) |
+| `3DSOLID`, `BODY`, `REGION`, surfaces with B-rep data (`PLANESURFACE`, `EXTRUDEDSURFACE`, `LOFTEDSURFACE`, `REVOLVEDSURFACE`, `SWEPTSURFACE`, `NURBSURFACE`) | Bodies: the B-rep record (text form in blocks, masked c → 0x9F - c, up to R2010; binary form in the entity or in the data storage) parsed by `mitcad_asm::asm` (`AsmFile`, the text through `asm::text`) |
 | `3DFACE` | Mesh bodies: one per block, layer and colour |
 | `POLYLINE` polyface mesh (with its vertices and face records) | A mesh body |
 | `POLYLINE` polygon mesh (M × N vertices, closed in M or N) | A mesh body |
@@ -189,12 +189,12 @@ export's sheet with a layer per pen, mitcad#728) as an R2000 (`AC1015`)
 file, the version other drawing programs read most widely and the one
 with the plain container: the sections one after another at the
 addresses the file header's five locators give, nothing compressed.
-Mitcad's own code from the same specification as the reader; no
+MitCad's own code from the same specification as the reader; no
 third-party writer.
 
 The 3D content needs the `.f3d` reader's ASM code: the feature `solids`
 (on by default; `core/ffi` asks for it) brings `scene`, `testfile`,
-`solid::parse`, `mitcad-dwg-inspect` and the dependency on `mitcad-f3d`.
+`solid::parse`, `mitcad-dwg-inspect` and the dependency on `mitcad-asm`.
 `mitcad-model` uses the crate without it (`default-features = false`),
 for the writer, the reader of the sections and objects and `flat`; so
 the model does not depend on the `.f3d` reader, whose tests use the
@@ -264,7 +264,7 @@ leaves 2D entities out as before.
   3D faces, a polyface and a subdivision mesh, a line) written and read
   back in every version: header variables, classes, objects, the B-rep
   records parsed and converted, the scene and the plan.
-- `asm::text` in `core.f3d`: Mitcad's ASM test bodies written in the text
+- `asm::text` in `core.f3d`: MitCad's ASM test bodies written in the text
   form convert exactly as their binary form.
 - `cli.import_dwg_<version>`: the test drawing imported through OCCT.
 - `tools/ui-dwg-import-test.sh`: the test drawing opened in the

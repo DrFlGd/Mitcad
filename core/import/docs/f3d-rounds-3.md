@@ -279,7 +279,7 @@ patch.
   mitcad#439: the file names one arc of the post's top circle (half of it)
   with its tangent chain, and the circle is three arcs, split at the two
   points. There the next arc and the block's long bottom edge both run on
-  from an arc in its direction; Mitcad's own chain took the long edges
+  from an arc in its direction; MitCad's own chain took the long edges
   too, the rounding with them failed, and the fillet fell back to the
   kernel's contour, the one arc (a change of 426.3 against the file's
   852.7), so that the import took the arcs gone in history state 75
@@ -546,7 +546,7 @@ other side's nearest body, and flagged when that body is one the other
 side did not change). Item 131 is skipped as failed in the file, and item
 133 is parametric on the replay, its inputs read, its faces the file's
 within 0.01 mm. Tests: `no_corner_patch_where_the_file_changes_nothing`
-and `a_body_the_file_leaves_is_measured_alone` in `src/geometric.rs`.
+and `a_body_the_file_leaves_is_measured_alone` in `core/import-replay/src/geometric.rs`.
 
 `db73863f` imported again by content id (debug build): 131 parametric,
 6 fallbacks, 8 skipped of 145 (before: 132 / 6 / 7, item 131 parametric
@@ -711,7 +711,7 @@ for on the faces of the edges found gone, and not between faces within
 more than off the state before, its rounding 5.99e-5 deep. Where the state
 before cannot be measured, the edges are judged by the next state alone,
 as before. Test: `edges_gone_with_the_item_and_a_nearly_tangent_one` in
-`src/refs.rs` (a planar body whose quarter-turn edge and nearly tangent
+`core/import-replay/src/refs.rs` (a planar body whose quarter-turn edge and nearly tangent
 edge are rounded, beside an edge as far off the state before and two
 nearly tangent edges left).
 

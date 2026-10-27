@@ -155,7 +155,7 @@ void TestDriver::testAssistantSetup(const QString& mode) {
     QTimer::singleShot(100, dialog, [] {
       for (QWidget* top : QApplication::topLevelWidgets()) {
         if (auto* question = qobject_cast<QMessageBox*>(top); question &&
-            dialogMatches(question, QRegularExpression(QStringLiteral("^Replace Mitcad Connection$|is already connected to another Mitcad installation\\.")))) {
+            dialogMatches(question, QRegularExpression(QStringLiteral("^Replace MitCad Connection$|is already connected to another MitCad installation\\.")))) {
           question->button(QMessageBox::Yes)->click();
         }
       }

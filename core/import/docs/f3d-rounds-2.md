@@ -315,7 +315,7 @@ file's history; final bodies):
 
 | design | features before → after | final bodies within 0.001 % before → after | what still falls back, and why |
 |---|---|---|---|
-| `7b638e0c` | 129 → 131 / 134 | 4 → 3 / 4 | the chamfer and the thread are parametric. The bolt's final body is 0.0057 % off the file's (0.16 mm at the thread), as whenever this thread is built: Mitcad's modelled thread is not the file's. Two roundings whose edge no longer exists after an earlier item and one that fails at a vertex, as before |
+| `7b638e0c` | 129 → 131 / 134 | 4 → 3 / 4 | the chamfer and the thread are parametric. The bolt's final body is 0.0057 % off the file's (0.16 mm at the thread), as whenever this thread is built: MitCad's modelled thread is not the file's. Two roundings whose edge no longer exists after an earlier item and one that fails at a vertex, as before |
 | `f9d49409` | 123 → 124 / 129 | 4 → 4 / 4 | the chamfer is parametric. The thread (on a bolt of diameter 16.0, moved to 15.822) comes in 0.9 % off the file's change (-549.2 mm³ against -554.3; one face up to 0.063 mm off), and without the move its result is 7.8 mm³ off: the modelled thread's profile, not this ticket's cause. A rounding 20 % off the file's change, and the three of the other design |
 
 The chamfer's result still has one face more than the stored body: the
@@ -366,8 +366,8 @@ copy of the design):
 - **A 3D sketch** (`a33cb893`/`ebd77010` item 12): the profile is a
   triangle of the sketch's lines, two of which run from the square's
   corners to a point 226 mm off the sketch's plane; it lies in the plane
-  of item 10, which those two lines define. Mitcad's sketch entities are
-  planar (`EntityKind::Point { at: [f64; 2] }`, `core/model/src/sketch`;
+  of item 10, which those two lines define. MitCad's sketch entities are
+  planar (`EntityKind::Point { at: [f64; 2] }`, `core/sketch`;
   the import keeps a point's x and y, `sketch.rs`), so the lines and the
   plane come out in the sketch's plane. Needed: sketch geometry off the
   sketch's plane.
@@ -415,7 +415,7 @@ otherwise" (5 items besides the 2 of mitcad#300) and "the replay's body
 differs where the edges are" (4 items). Each was traced to the first item
 whose result deviates from the file's, comparing the replay's bodies with
 the history's stored bodies item by item (`MITCAD_IMPORT_DRESSUPS_ITEMS`,
-`src/dressups.rs`: the bodies after the items it names) and trying the
+`core/import-replay/src/dressups.rs`: the bodies after the items it names) and trying the
 fillet on both.
 
 The largest cause was not the fallback nor a split: where OCCT walks a
@@ -942,7 +942,7 @@ references as the edges that join the found ones end to end along their
 common face (the torus's edges with the two narrow cylinders): the file's
 five edges, after the three found ones alone (`joining_edges`, as many as
 the references lost, on one face only; unit test in
-`core/import/src/features.rs`). OCCT fails on them as before. Its walk of
+`core/import-replay/src/features.rs`). OCCT fails on them as before. Its walk of
 each narrow cylinder's rounding (the cylinder a strip 1.3 wide between the
 big torus, an earlier rounding of 0.6 and the plane at both ends) has its
 contact on the cylinder reach the cylinder's short edges with the plane

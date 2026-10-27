@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "mitcad-import"
-description = "Design import: the dump IR of an .f3d file replayed as Mitcad features; FreeCAD documents' bodies and structure"
+description = "Design import: the dump IR of an .f3d file (also of an .ipt file) replayed as Mitcad features with all its families; .solidcraft designs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,22 +13,31 @@ name = "mitcad_import"
 
 [dependencies]
 mitcad-model.workspace = true
-mitcad-f3d = { path = "../f3d" }
-# FreeCAD .FCStd import (freecad/).
-mitcad-freecad = { path = "../freecad" }
-# IFC files (ifc/).
-mitcad-ifc = { path = "../ifc" }
-# The .rvt/.rfa reader (mitcad#274).
-mitcad-rvt = { path = "../rvt" }
-# .solidcraft designs (mitcad#450).
-mitcad-solidcraft = { path = "../solidcraft" }
-# Vector helpers on [f64; 3].
-mitcad-vec3 = { path = "../vec3" }
-serde.workspace = true
+# The dump IR the replay reads.
+mitcad-dump = { path = "../dump" }
+# The replay's core (mitcad#785), re-exported with its public paths.
+mitcad-import-replay = { path = "../import-replay" }
+# The replay's families above its core (mitcad#785).
+mitcad-import-joints = { path = "../import-joints" }
+mitcad-import-primitives = { path = "../import-primitives" }
+mitcad-import-sheet = { path = "../import-sheet" }
+# The appearances family (mitcad#791), re-exported as `appearances`.
+mitcad-import-appearances = { path = "../import-appearances" }
+# .solidcraft designs (mitcad#450), re-exported as `solidcraft` (mitcad#785).
+mitcad-import-solidcraft = { path = "../import-solidcraft" }
 serde_json.workspace = true
 
 [dev-dependencies]
 # The mock geometry kernel of the model tests.
 mitcad-model = { workspace = true, features = ["testing"] }
+# The .f3d reader's crates the replay's tests build their dumps and
+# stored geometry with.
+mitcad-f3d-design = { path = "../f3d-design" }
+# What the imports share (the tests use the progress, planar faces, the
+# sketch helpers and the bodies of one replay).
+mitcad-import-base = { path = "../import-base" }
 # Test documents packed in memory.
 mitcad-zip = { path = "../zip" }
+# The JSON api: the tests' commands and queries, and the commands a cut
+# and paste runs (mitcad#778: the import's callers pass them in).
+mitcad-model-api = { path = "../model-api" }

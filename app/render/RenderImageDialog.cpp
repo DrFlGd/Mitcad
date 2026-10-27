@@ -270,7 +270,7 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
 
   auto* buttons = new QDialogButtonBox;
   m_render = new QPushButton(themeIcon(QStringLiteral("render-image")), tr("Render"));
-  m_render->setToolTip(tr("Renders the image in the background; Mitcad stays usable"));
+  m_render->setToolTip(tr("Renders the image in the background; MitCad stays usable"));
   m_cancel = new QPushButton(tr("Cancel"));
   m_cancel->setToolTip(tr("Stops the render"));
   m_save = new QPushButton(tr("Save…"));

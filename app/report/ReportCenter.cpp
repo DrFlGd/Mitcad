@@ -191,7 +191,7 @@ QString ReportCenter::recentActions() const { return m_actions.join(QLatin1Char(
 
 QString ReportCenter::diagnostics() const {
   QStringList lines;
-  lines << QStringLiteral("Mitcad %1").arg(QApplication::applicationVersion());
+  lines << QStringLiteral("MitCad %1").arg(QApplication::applicationVersion());
   lines << QStringLiteral("System: %1 (%2 %3, %4)")
                .arg(QSysInfo::prettyProductName(), QSysInfo::kernelType(), QSysInfo::kernelVersion(),
                     QSysInfo::currentCpuArchitecture());
@@ -382,7 +382,7 @@ void ReportCenter::scanCrashes(bool atStart) {
       m_seenFiles.insert(path);
       earlier << crash;
     }
-    // Otherwise another Mitcad's, running now: its own, or the next start's.
+    // Otherwise another MitCad's, running now: its own, or the next start's.
   }
   if (earlier.isEmpty()) {
     return;
@@ -394,8 +394,8 @@ void ReportCenter::scanCrashes(bool atStart) {
   Offer offer;
   offer.kind = QStringLiteral("crash");
   offer.message = newest.process == QStringLiteral("app")
-                      ? tr("Mitcad quit unexpectedly the last time it ran (%1).").arg(newest.signal)
-                      : tr("Mitcad's %1 quit unexpectedly when it last ran (%2).")
+                      ? tr("MitCad quit unexpectedly the last time it ran (%1).").arg(newest.signal)
+                      : tr("MitCad's %1 quit unexpectedly when it last ran (%2).")
                             .arg(processLabel(newest.process), newest.signal);
   if (earlier.size() > 1) {
     offer.message += QLatin1Char(' ') + tr("%n more crash(es) before it are not offered.", nullptr,
@@ -428,7 +428,7 @@ report::Report ReportCenter::crashReport(const report::CrashReport& crash, int e
                      : QStringLiteral("Crash of the %1: %2%3 [mitcad-%4]")
                            .arg(processLabel(crash.process), crash.signal, where, report.key);
   QStringList what;
-  what << QStringLiteral("Mitcad %1 (%2, %3) crashed: %4 at address %5.")
+  what << QStringLiteral("MitCad %1 (%2, %3) crashed: %4 at address %5.")
               .arg(crash.version, processLabel(crash.process), crash.platform, crash.signal, crash.address);
   what << QStringLiteral("Time: %1").arg(QDateTime::fromSecsSinceEpoch(crash.time).toUTC().toString(Qt::ISODate));
   if (!crash.message.isEmpty()) {
@@ -534,7 +534,7 @@ bool ReportCenter::showOffer(const Offer& offer) {
   box.setIcon(QMessageBox::Warning);
   box.setWindowTitle(tr("Error Report"));
   box.setText(offer.message);
-  box.setInformativeText(tr("You can send a report to Mitcad's developers. You will see everything it contains, "
+  box.setInformativeText(tr("You can send a report to MitCad's developers. You will see everything it contains, "
                             "and can change it, before anything is sent."));
   QPushButton* review = box.addButton(tr("&Review Report…"), QMessageBox::AcceptRole);
   box.addButton(tr("&Don't Send"), QMessageBox::RejectRole);

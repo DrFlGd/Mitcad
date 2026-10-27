@@ -16,7 +16,7 @@
 namespace mitcad::render {
 
 // A body's physically based material: its appearance's parameters
-// (core/model/src/appearance.rs), mapped to Cycles' Principled BSDF.
+// (core/model-base/src/appearance.rs), mapped to Cycles' Principled BSDF.
 // Colours are linear RGB.
 struct MaterialData {
   std::array<float, 3> baseColor{0.6f, 0.6f, 0.62f};
@@ -161,7 +161,7 @@ struct LightData {
 
 // The light around the bodies, what the camera sees behind them and the
 // ground (the document's render settings, mitcad#47,
-// core/model/src/render_settings.rs; exposure and the view transform are
+// core/model-base/src/render_settings.rs; exposure and the view transform are
 // the display's, RenderImage.hpp). Angles in radians, lengths in mm, Z up.
 struct EnvironmentData {
   enum class Preset { Studio, StudioWhite, StudioDark, Outdoor, Image };

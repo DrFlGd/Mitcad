@@ -68,7 +68,7 @@ struct WindowColors {
 WindowColors windowColors(const QPalette& palette = QGuiApplication::palette());
 
 // The font of the panels' and sections' titles: the widget's, smaller,
-// semibold and spaced out (the titles are written in capitals).
+// semibold and spaced out, preserving the title's spelling.
 QFont panelTitleFont(const QFont& font);
 
 // A selected row of a tree in a panel: a rounded band of the accent colour
@@ -99,7 +99,7 @@ public:
 };
 
 // A section's title in a panel (the Command panel's Autoselect): small grey
-// capitals instead of a group box's frame.
+// text instead of a group box's frame, preserving its spelling.
 class SectionTitle : public QWidget {
   Q_OBJECT
 
@@ -118,7 +118,7 @@ private:
   QString m_text;
 };
 
-// A panel's title row: the dock's title in small grey capitals and its float
+// A panel's title row: the dock's title in small grey text and its float
 // and close buttons, which show while the mouse is over the row. A dock
 // with a vertical title bar (the timeline) gets a strip at its left with the
 // buttons and no text. Clicks on the row go to the dock (QDockWidget moves,

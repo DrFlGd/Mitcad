@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files core/ipt core/import core/f3d core/ffi/src/iam_import.rs core/ffi/src/ipt_import.rs
+# check-all sources: app/files core/ipt core/import core/import-base core/f3d core/ffi/src/iam_import.rs core/ffi/src/ipt_import.rs
+# check-all sources: core/import-replay core/import-joints core/import-sheet core/import-primitives core/import-appearances
 # check-all sources: core/ffi/src/ipt_history.rs core/model/src/document/components.rs core/tests
+# check-all sources: core/dump core/asm core/f3d-names core/f3d-file core/f3d-design core/f3d-decode
 # An .iam assembly's parts with their design history (mitcad#507), through
 # File > Open:
 #   - the test project of test_exchange --write-iam: Import Assembly asks

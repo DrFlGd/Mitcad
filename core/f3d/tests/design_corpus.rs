@@ -18,8 +18,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+use mitcad_expr::{LengthUnit, Quantity, f3d};
 use mitcad_f3d::design::{self, Design, ir};
-use mitcad_model::expr::{LengthUnit, Quantity, f3d};
 use serde_json::Value;
 
 fn home_dir(var: &str, default: &str) -> Option<PathBuf> {

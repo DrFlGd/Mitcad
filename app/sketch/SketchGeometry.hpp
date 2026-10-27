@@ -102,6 +102,9 @@ std::optional<V2> circumcenter(const V2& a, const V2& b, const V2& c);
 // A cubic B-spline through points (chord-length parameters, natural ends),
 // as Bezier control points: for previews of fit-point splines.
 std::vector<V2> fitSplinePreview(const std::vector<V2>& points, int samplesPerSpan = 16);
+// The closed curve through the points as the model makes it (mitcad#783):
+// periodic, C2 through the first point, chord-length parameters.
+std::vector<V2> closedFitSplinePreview(const std::vector<V2>& points, int samplesPerSpan = 16);
 // A clamped uniform B-spline of control points, sampled.
 std::vector<V2> controlSplinePreview(const std::vector<V2>& control, int degree,
                                      int samples = 96);

@@ -451,7 +451,7 @@ chmod +x "$WORK/old-render"
 export MITCAD_RENDER_WORKER=$WORK/old-render
 ui_start_app --open "$WORK/block.mitcad" --no-native-dialogs
 ui_step "View > Rendered" ui_command "Rendered"
-ui_expect_log "View message: The renderer cannot be used: mitcad-render does not match this Mitcad (its protocol version is 1, Mitcad's is " \
+ui_expect_log "View message: The renderer cannot be used: mitcad-render does not match this MitCad (its protocol version is 1, MitCad's is" \
   "the view says the worker does not match"
 ui_expect_log "Render worker stopped:" "the worker was stopped"
 ui_crashed && ui_fail "the app ended"

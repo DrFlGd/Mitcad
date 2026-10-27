@@ -34,7 +34,7 @@
 //!   two versions.
 //! - **Comparison** ([`ProjectRepo::diff`], P12c): what differs in a
 //!   design between two versions, or a version and the saved file
-//!   (`mitcad_model::diff`), without computing them.
+//!   (`mitcad_model_diff`), without computing them.
 //! - **Restore** ([`ProjectRepo::restore`]): an older version written back
 //!   and recorded as a new version; history is never rewritten.
 //! - **Remote repositories** ([`remote`], P12 remote): the history shared
@@ -44,7 +44,7 @@
 //!   ones, file by file, with a choice for each file changed on both sides.
 //!
 //! The JSON commands for the application and `mitcad-cli` are in [`api`]
-//! (`core/model/src/api/commands.md`, "Version history" and "Remote
+//! (`core/model-api/src/commands.md`, "Version history" and "Remote
 //! repositories").
 
 use std::cell::RefCell;

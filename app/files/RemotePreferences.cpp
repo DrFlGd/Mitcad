@@ -113,7 +113,7 @@ RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
   m_minutes->setSuffix(tr(" min"));
   m_minutes->setSpecialValueText(tr("never"));
   m_minutes->setValue(m_settings.checkMinutes);
-  m_minutes->setToolTip(tr("How often Mitcad asks the remote for newer versions; never: only when you ask"));
+  m_minutes->setToolTip(tr("How often MitCad asks the remote for newer versions; never: only when you ask"));
   auto* minutesRow = new QHBoxLayout;
   minutesRow->addWidget(m_minutes);
   minutesRow->addWidget(new QLabel(tr("(default for projects)")));
@@ -195,7 +195,7 @@ void RemotePreferencesBox::detect() {
                                   QDir::toNativeSeparators(info.value(QStringLiteral("path")).toString()));
     text += lfs.isEmpty() ? tr(", without git-lfs") : tr(", git-lfs %1").arg(lfs);
     if (!info.value(QStringLiteral("supported")).toBool()) {
-      text += QLatin1Char(' ') + tr("(older than %1, which Mitcad is tested with)")
+      text += QLatin1Char(' ') + tr("(older than %1, which MitCad is tested with)")
                                      .arg(info.value(QStringLiteral("minimum")).toString());
     }
   }

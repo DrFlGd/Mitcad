@@ -115,7 +115,7 @@ less time than the replay. Without the design it is skipped.
 
 `Importer::light_bulbs`, after the replay: each imported sketch and
 construction plane, axis and point keeps the file's light bulb only where
-it differs from Mitcad's default (sketch hidden while a feature uses it,
+it differs from MitCad's default (sketch hidden while a feature uses it,
 construction geometry shown) — a used sketch the file shows, an unused one
 it hides, a hidden plane. A sketch that follows the default keeps nothing,
 so deleting its last consumer shows it again.
@@ -141,18 +141,19 @@ on the occurrence node at the path; the others stay unknown (shown).
 Against the API reference dumps: the hidden occurrences of all 35 designs
 that have any agree by count per component (two designs name the
 components differently), and in one design of 113 occurrences one by one.
-An occurrence the file hides is hidden in Mitcad
+An occurrence the file hides is hidden in MitCad
 (`set_occurrence_visible`); one inside a component placed several times
-(one occurrence in Mitcad, a path per placement in the file) follows its
+(one occurrence in MitCad, a path per placement in the file) follows its
 first path.
 
 ## Appearances and materials
 
 The file's appearances and physical materials (mitcad#228): the decoder
 reads them into `_f3d.appearance` (`mitcad_f3d::design::appearance`,
-`mitcad_f3d::protein`; SCHEMA.md §2), and `appearances.rs` gives them to
-the replayed bodies and faces after the replay (commands.md, *Appearances
-and materials of the file*). `mitcad-f3d-inspect assets <file> [-v]` lists
+`mitcad_f3d::protein`; SCHEMA.md §2), and `appearances.rs`
+(`mitcad-import-appearances`, mitcad#791) gives them to the replayed
+bodies and faces after the replay (commands.md, *Appearances and
+materials of the file*). `mitcad-f3d-inspect assets <file> [-v]` lists
 a document's assets, `appearances <file> [--json]` what the design gives
 its bodies and faces, `blob-bodies <file> <blob>` a blob's bodies with
 their keys and their faces' appearance GUIDs.
@@ -264,7 +265,7 @@ from its reflectance `f0 = ((n − 1)/(n + 1))²`; transparent: transmission
 images and texture images are listed as notes.
 
 **Materials.** A physical material's density is its structural aspect's
-`structural_Density` (kg/m³); Mitcad's material is set where its name is
+`structural_Density` (kg/m³); MitCad's material is set where its name is
 the file material's description up to the first comma or the last part of
 its classification (also with a grade after it, `Aluminum 6061`; ABS
 written out), and its density the file's within 2 %.
@@ -280,7 +281,7 @@ The appearance variant models (`MITCAD_F3D_MODELS`, `diff_appearance_*`,
 | faces with their own appearance | 1 / 1 |
 | occurrence overrides applied | 1 / 1 |
 | bodies with the file's material recorded | 15 / 15 |
-| bodies with Mitcad's material set (steel, aluminium) | 15 / 15 |
+| bodies with MitCad's material set (steel, aluminium) | 15 / 15 |
 | colours within ΔE 1 (CIE76) of the dump's colour property | 15 / 16 |
 
 The one colour off is the textured oak: its colour is the image (the
@@ -307,7 +308,7 @@ way):
 | the stored design's solids with the file's appearance | 5 726 / 5 741 |
 | faces with their own appearance | 3 088 / 3 088 |
 | solids with the file's material recorded (with its density) | 5 719 / 5 719 |
-| solids with Mitcad's material set | 4 482 / 5 719 |
+| solids with MitCad's material set | 4 482 / 5 719 |
 | occurrence overrides applied | 40 / 58 |
 
 - The 15 solids without: no body record names them. 7 are bodies of a
@@ -316,10 +317,10 @@ way):
   bodies of a snapshot blob whose body map is empty (one design and its
   copy). Whether the stored design holds them at all is open: the import
   takes every top-level body of the stored state.
-- The materials not set are ones Mitcad's library does not have (a generic
+- The materials not set are ones MitCad's library does not have (a generic
   electronic component material of 6 020 kg/m³ on 1 120 bodies,
   polyoxymethylene, PC/ABS blends, …); they are listed with their density.
-- 18 overrides are on components placed several times (Mitcad keeps one
+- 18 overrides are on components placed several times (MitCad keeps one
   appearance per body).
 - 4 face references name faces the stored design no longer has; 4 566
   body records are of bodies the stored design does not hold (a snapshot

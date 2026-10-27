@@ -89,11 +89,10 @@ use super::{
 use crate::ids::{BodyUid, EntityUid};
 use crate::kernel::{Axis, BooleanOp, Kernel, RevolveSpec};
 use crate::parameters::ParamId;
-use crate::profile::{
-    ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchFrame, cross,
-};
+use crate::profile::{ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchFrame};
 use crate::topo::{RegionKey, SegmentKey};
 use crate::transform::{Instance, PrimitiveShape, PrimitiveSpec, Transform};
+use mitcad_vec3::cross;
 
 /// FDM defaults (mm): the gap across the cylindrical faces, the gap along
 /// the axis at the flanks, between neighbouring elements, the races'
@@ -824,7 +823,7 @@ impl PrintableBearingDef<f64> {
         if let Some(n) = self.element_count
             && (!n.is_finite() || (n - n.round()).abs() > 1.0e-9 || n < MIN_ELEMENTS)
         {
-            return Err(crate::parameters::count_error(
+            return Err(mitcad_model_base::internal::parameters::count_error(
                 format!(
                     "the number of elements must be a whole number of at least {MIN_ELEMENTS}, \
                      got {n}"

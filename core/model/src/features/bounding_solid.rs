@@ -146,8 +146,8 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::document_tests::{block, def, num};
     use crate::features::SketchPlane;
+    use crate::test_support::{block, def, num};
     use crate::testing::{MockKernel, MockShape};
     use crate::topo::FaceName;
     use crate::{Document, FeatureStatus};

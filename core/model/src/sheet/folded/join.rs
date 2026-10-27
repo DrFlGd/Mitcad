@@ -9,7 +9,7 @@ use mitcad_vec3::sub;
 
 use super::*;
 use crate::features::sheet::SheetFaceDef;
-use crate::profile::dot;
+use mitcad_vec3::dot;
 
 pub(crate) fn join_face<K: Kernel>(
     d: &SheetFaceDef,

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/MainWindowJointHighlight.cpp app/framework/JointHighlight.cpp app/framework/JointHighlight.hpp
-# check-all sources: app/MainWindow.cpp app/OcctViewer.cpp app/browser core/model/src/api/joints.rs
-# check-all sources: core/model/src/build core/vcs/src/library tools/cli
+# check-all sources: app/MainWindow.cpp app/OcctViewer.cpp app/browser core/model-api/src/joints.rs
+# check-all sources: core/model/src/build core/model-build core/vcs/src/library tools/cli
 # The joint highlight (mitcad#523) through the real UI. A design mitcad-cli
 # makes: Plate:1 (a 40 x 40 x 10 block, grounded), Pin:1 (a 10 x 10 x 20
 # block) and Shaft:1 (a cylinder of diameter 6); Joint1 puts the pin's

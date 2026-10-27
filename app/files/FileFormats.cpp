@@ -68,7 +68,7 @@ QString kinds(bool designs) {
   filters << QObject::tr("Supported files (%1%2 %3 %4)")
                  .arg(designs ? QStringLiteral("*.mitcad ") : QString(), QLatin1String(kCad), QLatin1String(kMesh),
                       QLatin1String(kDrawing));
-  filters << QObject::tr("Mitcad designs (*.mitcad)");
+  filters << QObject::tr("MitCad designs (*.mitcad)");
   filters << QObject::tr("CAD files (%1)").arg(QLatin1String(kCad));
   filters << QObject::tr("Meshes: STL and OBJ (%1)").arg(QLatin1String(kMesh));
   filters << QObject::tr("Drawings: DXF and SVG (%1)").arg(QLatin1String(kDrawing));

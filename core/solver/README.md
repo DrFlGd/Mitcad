@@ -1,6 +1,6 @@
 # mitcad-solver
 
-2D sketch constraint solver for Mitcad, without third-party dependencies: residual
+2D sketch constraint solver for MitCad, without third-party dependencies: residual
 equations, Newton / Levenberg-Marquardt with minimum-norm steps, LDL^T
 factorization of the Gram matrix in a minimum degree ordering, rank
 detection by pivot thresholds, forward-mode automatic differentiation.
@@ -58,7 +58,7 @@ between entities: a shared point is a join; an explicit `Coincident` works too.
 | Ellipse | centre, major-axis end point, minor radius | 5 |
 | Elliptical arc | ellipse + start/end points, each tied to the ellipse by an internal parameter | 7 |
 | B-spline | control points; degree, knots, weights fixed (default: clamped uniform, non-rational) | 2 per control point |
-| Fitted spline | fit points; cubic, internal control points, interpolation at fixed chord-length parameters; natural or free ends | 2 per fit point (+2 per free end) |
+| Fitted spline | fit points; cubic, internal control points, interpolation at fixed chord-length parameters; natural or free ends, or closed (periodic at both ends, mitcad#783: the curve runs back to the first fit point with equal first and second derivatives at both ends of its clamped knots) | 2 per fit point (+2 per free end) |
 
 Internal unknowns (curve parameters of point-on-curve and spline tangency,
 hidden control points of fitted splines) are balanced by their equations, so
@@ -78,6 +78,7 @@ on the curve would slide along it (mitcad#396).
 | `Parallel(a, b)`, `Perpendicular(a, b)` | `unit(a) x b`, `unit(a) . b` |
 | `Tangent(a, b)` | line-circle/arc: signed centre distance `= side * r`; circle/arc-circle/arc: `|c1-c2| = r1 + r2` or `side (r1 - r2)`; at a shared/coincident/point-on-curve contact point: line perpendicular to the radius, or centres collinear with the point (G1 join); line, arc or spline at a spline end: end leg parallel/perpendicular; line or circle/arc inside a spline: contact point `C(t)` on the curve and `C'(t)` tangent (2, internal `t`) |
 | `Smooth(a, b)` (G2) | spline end joined to a line, arc or spline: G1 plus equal signed curvature |
+| `TangentAt { a, b, at }`, `SmoothAt { a, b, at }` (mitcad#783) | as `Tangent` and `Smooth`, at the end of each curve at the point `at` (joined to it, else the nearer end): a curve can be tangent at both ends; `a == b`: an open spline whose ends meet at `at`, its two end legs joined (G1, G2) |
 | `Equal(a, b)` | lines: equal length; circles/arcs: equal radius; ellipses and elliptical arcs: equal minor radius |
 | `FixPoint`, `FixEntity` | unknowns stay at their value when the solve starts (as many equations as the entity has DOF) |
 | `Midpoint(p, e)` | line: `2p - a - b` (2); arc: `p = c + r unit(rot_cw(e - s))` (2) |
@@ -356,7 +357,8 @@ which includes the preparation.
 - Fitted splines keep the chord-length parameters of their fit points from
   creation; after large edits the caller may recreate the spline. A tangent or
   smooth constraint at a natural end replaces the natural condition, leaving
-  the tangent magnitude free (like a tangent handle).
+  the tangent magnitude free (like a tangent handle). A closed fitted
+  spline keeps its periodic conditions with a tangent at its first point.
 - Point on a line, circle, arc or ellipse means the infinite line or full
   curve; point on a spline stays within the parameter range.
 - Ellipses support point-on-curve, concentric, axis dimensions and fix, but

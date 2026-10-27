@@ -160,7 +160,7 @@ void MainWindow::registerFileCommands() {
   svgSketch.mode = CommandDef::Mode::Sketch;
   m_registry->add(svgSketch);
   CommandDef component = def("insert.component", tr("Insert Component"), "insert-component",
-                             tr("Places another Mitcad design here, linked or as a copy"),
+                             tr("Places another MitCad design here, linked or as a copy"),
                              [this] { insertComponent(); });
   component.group = QStringLiteral("ASSEMBLE");
   component.pinned = true;
@@ -212,7 +212,7 @@ void MainWindow::registerFileCommands() {
   // Printers and Processes (mitcad#655): next to 3D Print.
   m_registry->add(printersCommand());
   CommandDef recover = def("file.recover", tr("Recover Designs…"), "recover",
-                           tr("Restores changes that were not saved when Mitcad last ended without closing"),
+                           tr("Restores changes that were not saved when MitCad last ended without closing"),
                            [this] { recoverDocuments(false); });
   recover.tab.clear(); // the File menu
   recover.mode = CommandDef::Mode::Any;
@@ -291,7 +291,7 @@ void MainWindow::createFileMenu() {
   // macOS moves Quit to the application menu.
   file->addSeparator();
 #endif
-  // QuitRole: "Quit Mitcad" (Cmd+Q) in the application menu on macOS.
+  // QuitRole: "Quit MitCad" (Cmd+Q) in the application menu on macOS.
   add(tr("E&xit"), QKeySequence::Quit, &MainWindow::close)->setMenuRole(QAction::QuitRole);
   // For the UI tests: the entries as the menu opens.
   connect(file, &QMenu::aboutToShow, this, [this, file] {
@@ -377,7 +377,7 @@ bool MainWindow::openFile(const QString& path, QString& error) {
   case FileKind::None:
     break;
   }
-  error = tr("Mitcad cannot open %1 files.").arg(info.suffix());
+  error = tr("MitCad cannot open %1 files.").arg(info.suffix());
   return false;
 }
 
@@ -395,7 +395,7 @@ void MainWindow::openPath(const QString& path) {
   if (!opened && !error.isEmpty()) { // empty: cancelled
     const QString message = tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error);
     qWarning().noquote() << message;
-    sheetWarning(this, tr("Mitcad"), message);
+    sheetWarning(this, tr("MitCad"), message);
   }
 }
 
@@ -413,9 +413,9 @@ void MainWindow::openExternalFile(const QString& path) {
     activateWindow();
   }
   if (fileKind(path) == FileKind::None) {
-    const QString message = tr("Mitcad cannot open %1 files.").arg(QFileInfo(path).suffix());
+    const QString message = tr("MitCad cannot open %1 files.").arg(QFileInfo(path).suffix());
     qWarning().noquote() << QStringLiteral("Could not open %1: %2").arg(path, message);
-    sheetWarning(this, tr("Mitcad"), message);
+    sheetWarning(this, tr("MitCad"), message);
     return;
   }
   openPath(path);
@@ -594,7 +594,7 @@ bool MainWindow::importPath(const QString& path, bool interactive, QString* erro
     ok = importDrawing(path, interactive, &reason);
     break;
   case FileKind::None:
-    reason = tr("Mitcad cannot import %1 files.").arg(QFileInfo(path).suffix());
+    reason = tr("MitCad cannot import %1 files.").arg(QFileInfo(path).suffix());
     ok = false;
     break;
   }
@@ -845,7 +845,7 @@ void MainWindow::insertComponent(const QString& given) {
   }
   if (path.isEmpty()) {
     path = dialogOpenFileName(this, tr("Insert Component"), dialogFolder(DialogGroup::Import),
-                              tr("Mitcad designs (*.mitcad)"));
+                              tr("MitCad designs (*.mitcad)"));
     if (path.isEmpty()) {
       return;
     }

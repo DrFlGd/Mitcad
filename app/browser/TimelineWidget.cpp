@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "TimelineWidget.hpp"
+#include "TimelinePresentation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -59,15 +60,15 @@ bool isDeleteKey(int key) {
 #endif
 }
 
-constexpr int kPad = 6;
-constexpr int kItem = 28;     // an icon's cell
-constexpr int kIcon = 22;
-constexpr int kGap = 3;
-constexpr int kMarkerSlot = 14; // the marker's place between two cells
-constexpr int kTop = 5; // room for an open group's band (P9) and the marker's handle
+constexpr int kPad = timeline::padding;
+constexpr int kItem = timeline::cell;
+constexpr int kIcon = timeline::icon;
+constexpr int kGap = timeline::gap;
+constexpr int kMarkerSlot = timeline::marker;
+constexpr int kTop = timeline::top;
 constexpr int kBand = 3; // the component colour, in the cell's room under its icon
 constexpr int kBandTop = kTop + kItem - kBand;
-constexpr int kHeight = kTop + kItem + 1;
+constexpr int kHeight = timeline::height;
 constexpr int kDragPixels = 6;
 constexpr int kRunMark = 8; // stands for a run of features the filter hides (mitcad#98)
 

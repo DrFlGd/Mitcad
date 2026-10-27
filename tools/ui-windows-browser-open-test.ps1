@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/MainWindow.cpp core/model/src/api/components.rs tools/cli
+# check-all sources: app/browser app/MainWindow.cpp core/model-api/src/components.rs tools/cli
 # Input-driven Windows UI test of a design as it opens (mitcad#426) in the
 # build VM (tools/ui-windows-lib.ps1 says how the input is posted); the
 # Linux test is the last part of tools/ui-browser-collapse-test.sh:

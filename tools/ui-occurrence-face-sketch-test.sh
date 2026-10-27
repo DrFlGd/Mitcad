@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/browser app/MainWindow.cpp app/MainWindow.hpp app/MainWindowVisibility.cpp
 # check-all sources: app/OcctViewer.cpp app/OcctViewer.hpp app/framework/ModelShapes.cpp app/framework/DocumentSession.hpp
-# check-all sources: core/model/src/links.rs core/model/src/api/sketch.rs tools/cli
+# check-all sources: core/model/src/links.rs core/model-api/src/sketch.rs tools/cli
 # A sketch on a face of an occurrence placed by a turn and a move, through
 # the real UI (mitcad#505). Box:1 (O1) is turned 90 degrees about X and
 # moved by (100, 0, 50); its 30 x 20 x 10 block's top face (z = 10 in Box)

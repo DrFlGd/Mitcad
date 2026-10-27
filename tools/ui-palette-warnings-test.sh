@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch/PaletteWarnings.cpp app/sketch/PaletteWarnings.hpp app/sketch/SketchPalette.cpp
 # check-all sources: app/sketch/SketchReveal.cpp app/sketch/SketchModel.cpp app/view/ViewReveal.cpp
-# check-all sources: core/model/src/api/sketch.rs core/model/src/sketch core/model/src/features/sketch.rs tools/cli
+# check-all sources: core/model-api/src/sketch.rs core/sketch core/model/src/features/sketch.rs tools/cli
 # The Sketch Palette's warnings select what they are about (mitcad#264),
 # through the real UI:
 #   - A design (mitcad-cli): a 60 x 40 block 20 high, a fillet of 5 on its

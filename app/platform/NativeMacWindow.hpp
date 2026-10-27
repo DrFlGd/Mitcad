@@ -48,12 +48,58 @@ struct NativeMacAction {
   QString section;
 };
 
+// Both frontends consume the existing ribbon's menu tree and button order.
+// These snapshots contain presentation only; actions retain their shared IDs.
+struct NativeMacMenuItem {
+  QString action;
+  QString title;
+  QIcon icon;
+  bool separator = false;
+  QList<NativeMacMenuItem> children;
+  bool submenu = false;
+  bool operator==(const NativeMacMenuItem& other) const {
+    return action == other.action && title == other.title && icon.cacheKey() == other.icon.cacheKey() &&
+           separator == other.separator && submenu == other.submenu && children == other.children;
+  }
+};
+
+struct NativeMacRibbonButton {
+  QString action;
+  int width = 36;
+  int iconSize = 26;
+  bool menuOnly = false;
+  QList<NativeMacMenuItem> menu;
+  bool operator==(const NativeMacRibbonButton& other) const {
+    return action == other.action && width == other.width && iconSize == other.iconSize &&
+           menuOnly == other.menuOnly && menu == other.menu;
+  }
+};
+
+struct NativeMacRibbonGroup {
+  QString workspace;
+  QString name;
+  QString title;
+  int fullWidth = 0;
+  int collapsedWidth = 0;
+  QList<NativeMacRibbonButton> buttons;
+  QList<NativeMacMenuItem> menu;
+  bool operator==(const NativeMacRibbonGroup& other) const {
+    return workspace == other.workspace && name == other.name && title == other.title &&
+           fullWidth == other.fullWidth && collapsedWidth == other.collapsedWidth &&
+           buttons == other.buttons && menu == other.menu;
+  }
+};
+
 struct NativeMacTreeItem {
   QString id; // Unique presentation key, also used by parentId and callbacks.
   QString parentId;
   QString title;
   QString detail;
   QString symbol;
+  QIcon icon; // The browser's shared CAD artwork.
+  bool expanded = false;
+  bool hasActivation = false;
+  bool active = false;
   bool enabled = true;
   bool checked = false;
   QString kind; // body, component, occurrence, feature, folder, ...
@@ -70,6 +116,7 @@ struct NativeMacHistoryItem {
   QString symbol;
   QIcon icon; // Same coloured feature artwork as the shared CAD timeline.
   QString status; // ok, warning, error, suppressed, rolled_back, pending.
+  bool noted = false; // Import note: warning outline even for a placeholder.
   bool suppressed = false;
   bool enabled = true;
   bool filtered = false; // Hidden by the shared component timeline filter.
@@ -96,6 +143,9 @@ struct NativeMacWindowCallbacks {
   std::function<void(int)> historyMarkerDragged;
   std::function<void(int)> historyMarkerDragFinished;
   std::function<void(const QString&)> treeVisibility;
+  std::function<void(const QString&)> componentActivated;
+  std::function<void(const QString&, bool)> treeExpanded;
+  std::function<void(bool, const QPoint&)> browserIssues;
   std::function<void(const QString&, const QPoint&)> treeContextMenu;
   std::function<void(const QStringList&)> historySelection;
   std::function<void(const QString&, int)> historyReordered;
@@ -112,6 +162,7 @@ struct NativeMacWindowCallbacks {
   // menu, as the Qt indicator decides) and its menu.
   std::function<void(const QPoint&)> agentClicked;
   std::function<void(const QPoint&)> agentMenu;
+  std::function<void(int)> workspaceChanged;
   std::function<void(const QString&)> openFile;
   std::function<bool()> confirm;
   std::function<bool()> cancel;
@@ -148,15 +199,20 @@ public:
   void focusViewport();
 
   void setActions(const QList<NativeMacAction>& actions);
+  void setRibbon(const QList<NativeMacRibbonGroup>& groups, const QStringList& workspaces, int selected);
   void setModelItems(const QList<NativeMacTreeItem>& items);
   void setSelection(const QStringList& keys);
   void setHistory(const QList<NativeMacHistoryItem>& items, int marker = -1);
   void setHistorySelection(const QStringList& keys);
+  void setBrowserIssues(const QString& failures, const QString& failureDetails,
+                        const QString& warnings, const QString& warningDetails);
   void setHistoryFilter(const QString& label, bool active);
   void setProjectStatus(const QString& text, const QString& tooltip);
   void setAgentStatus(const QString& text, const QString& tooltip, bool connected, bool available);
   void setDocument(const QString& title, const QString& path, bool edited);
   void setSketchMode(bool sketching);
+  void setProjectsView(void* view, bool shown);
+  bool projectsShown() const;
   void setStatus(const QString& message, bool error = false);
   void setInspectorText(const QString& title, const QString& text);
   // The shell retains this NSView while installed. nullptr clears it.

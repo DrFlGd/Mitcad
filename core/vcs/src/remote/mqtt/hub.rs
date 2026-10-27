@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! The hub of an application's live updates: its connections, one per
 //! broker, user and prefix, shared by the projects on them; the JSON
-//! commands (`core/model/src/api/commands.md`, "Live updates"); and the
+//! commands (`core/model-api/src/commands.md`, "Live updates"); and the
 //! events of every connection in one queue.
 //!
 //! A [`LiveHub`] is `Sync`: the application runs the commands on its UI

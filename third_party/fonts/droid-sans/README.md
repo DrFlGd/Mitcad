@@ -1,6 +1,6 @@
 # Droid Sans
 
-The font Mitcad bundles for sketch text (`geometry/src/text.cpp`): the
+The font MitCad bundles for sketch text (`geometry/src/text.cpp`): the
 default font of new texts, and the fallback for a font that is not
 installed, so that text outlines are the same on every machine.
 
@@ -12,7 +12,7 @@ installed, so that text outlines are the same on every machine.
   - `DroidSans-Bold.ttf`: 2f529a3e60c007979d95d29794c3660694217fb882429fb33919d2245fe969e9
 - Licence: Apache License, Version 2.0 (`LICENSE.txt`), as the fonts'
   own name tables state ("Licensed under the Apache License, Version 2.0").
-  "Droid" is a trademark of Google; Mitcad does not rename or modify the
+  "Droid" is a trademark of Google; MitCad does not rename or modify the
   fonts.
 - The build embeds the files in the geometry library
   (`geometry/cmake/embed.cmake`); italic is synthesized by slanting.

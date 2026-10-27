@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-model-tests-support"
+description = "Fixtures shared by the Mitcad model's test crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dependencies]
+mitcad-model = { workspace = true, features = ["testing"] }
+mitcad-model-api = { path = "../../model-api" }
+serde_json.workspace = true

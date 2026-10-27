@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-import-rvt"
+description = "The .rvt import: a project's building elements as features and bodies, one component per level, with links and the IFC reference check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_import_rvt"
+
+[dependencies]
+mitcad-model.workspace = true
+# The .rvt/.rfa reader (mitcad#274).
+mitcad-rvt = { path = "../rvt" }
+# IFC geometry items, which the element plans are made of.
+mitcad-ifc = { path = "../ifc" }
+# The IFC import: its builder, meshes and transforms; IFC links and the
+# IFC reference.
+mitcad-import-ifc = { path = "../import-ifc" }
+# The import's progress and the default geometric tolerance.
+mitcad-import-base = { path = "../import-base" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The mock geometry kernel of the model tests.
+mitcad-model = { workspace = true, features = ["testing"] }

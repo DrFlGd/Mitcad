@@ -1,8 +1,8 @@
-# Mitcad user guide
+# MitCad user guide
 
-Mitcad is an open-source parametric desktop CAD application for Windows,
+MitCad is an open-source parametric desktop CAD application for Windows,
 Linux and macOS (Apple Silicon, macOS 14.4 or newer). It has the MIT
-licence. This guide tells you how to install Mitcad and how to use it.
+licence. This guide tells you how to install MitCad and how to use it.
 The chapters that follow describe the window, the commands, sketches,
 features, components, files, libraries, import and export, outputs and
 preferences.
@@ -31,11 +31,11 @@ assistant indicator, or choose **Connect AI Assistant…** in
    | State line | Button | What to do |
    |---|---|---|
    | *Assistant* was not found on this computer | **Get Claude Desktop** or **How to install** | Install it from the page that opens, then come back. If it is installed after all, press **Connect anyway** (Claude Desktop, ChatGPT / Codex) |
-   | Ready to connect *assistant* | **Connect** | Mitcad sets the connection up |
-   | Approve Mitcad in Claude Desktop, then start a new chat | **Open in Claude Desktop again** | Approve the extension in Claude Desktop; the button opens it again if needed |
+   | Ready to connect *assistant* | **Connect** | MitCad sets the connection up |
+   | Approve MitCad in Claude Desktop, then start a new chat | **Open in Claude Desktop again** | Approve the extension in Claude Desktop; the button opens it again if needed |
    | Install Claude Desktop first, in red | **Get Claude Desktop** | No application on this computer took the extension and Claude Desktop was not found (also after **Open Claude Desktop** found it gone): install Claude Desktop, then choose it again |
    | Install the extension in Claude Desktop | **Show in Explorer** (**Show in Finder** on macOS), and **Open Claude Desktop** | Claude Desktop is installed but does not open the extension by itself (Claude Desktop from the Microsoft Store). The line below says where: **In Claude Desktop: Settings › Extensions › Advanced settings › Install Extension…, then choose** the saved `mitcad-desktop.mcpb`, which the button shows (do not double-click it). Approve and enable the extension, then start a new chat |
-   | Start a new Claude Code session to use Mitcad / Restart ChatGPT or start a new Codex session to use Mitcad | none | Start a new conversation in the assistant |
+   | Start a new Claude Code session to use MitCad / Restart ChatGPT or start a new Codex session to use MitCad | none | Start a new conversation in the assistant |
    | ✓ Connected: *assistant* | **Disconnect** | Work with the assistant; **Disconnect** keeps the design and its unsaved changes |
    | A short message saying what went wrong, in red | **Try again** | Do what the message says, then try again |
 
@@ -56,17 +56,17 @@ assistant indicator, or choose **Connect AI Assistant…** in
 
 **Advanced** shows what sets the connection up by hand: the
 **Configuration** (the settings to paste) and the **Command** that
-registers Mitcad (**PowerShell command** on Windows), each with its own
+registers MitCad (**PowerShell command** on Windows), each with its own
 **Copy** button, and the **Codex settings file** with **Change…** (for
 ChatGPT / Codex; a file other than `config.toml` takes the configuration
-only). When several Mitcad windows are open, **Copy
+only). When several MitCad windows are open, **Copy
 Command for This Window** gives a command that connects to this window
 only. The dialog checks the installations and the connection every
 second.
 
 Connect never changes unrelated settings: it backs up the assistant's
-settings first, changes only Mitcad's entry, and asks before it replaces
-a connection to another Mitcad installation. Settings managed by an
+settings first, changes only MitCad's entry, and asks before it replaces
+a connection to another MitCad installation. Settings managed by an
 administrator are not changed. See [the MCP guide](mcp.md#connect-from-mitcad)
 for the details of each assistant.
 
@@ -75,7 +75,7 @@ indicator shows whether AI assistants are connected to the window: **No
 assistant** with a hollow dot (the window accepts them), **Claude Code
 connected** with a coloured dot (one assistant; **2 assistants connected**
 with several), or **Assistants unavailable** with a struck-through dot
-(the window cannot accept them, for example when Mitcad was started with
+(the window cannot accept them, for example when MitCad was started with
 `--no-mcp`). It is in the title row of the Floating layout, in the status
 bar of the Docked layout and in the toolbar of the native macOS window.
 Its tooltip gives the details, with the window's instance id and port.
@@ -87,16 +87,16 @@ first. With assistants connected, it lists each (its name, the name and
 version the client gave itself, and the time it connected) and has
 **Disconnect *assistant*** (**Disconnect All** with several). It always
 has **Connect AI Assistant…** and **Folders for Designs…** (**Preferences ›
-AI Assistants**), and with several Mitcad windows open **Copy Command for
+AI Assistants**), and with several MitCad windows open **Copy Command for
 This Window** (a command that connects to this window only).
 
 ## Installation
 
-Mitcad runs on Windows, Linux and macOS. On macOS it needs Apple Silicon
+MitCad runs on Windows, Linux and macOS. On macOS it needs Apple Silicon
 and macOS 14.4 or newer. The website is
 [mitcad.org](https://mitcad.org/). The downloads are on
 [the releases page](https://github.com/mitcad/Mitcad/releases) on
-GitHub. Mitcad is under active development. A release comes as a Windows
+GitHub. MitCad is under active development. A release comes as a Windows
 installer, a Linux AppImage and a macOS disk image.
 
 Each release on GitHub has these files:
@@ -109,7 +109,7 @@ Each release on GitHub has these files:
 | `Mitcad-<version>-macos-arm64.dmg` | The macOS application disk image |
 | `update-manifest.json` | The signed manifest for automatic updates |
 
-Mitcad checks once a day for a signed release and offers to install it.
+MitCad checks once a day for a signed release and offers to install it.
 The user or an administrator can set the checks to off. These
 installations update themselves:
 
@@ -127,13 +127,13 @@ Other installations only announce a new release:
   path or quarantined in Downloads
 
 The startup log gives the reason. On macOS, copy the app to a writable
-Applications folder first. Mitcad does not ask for elevation to replace
+Applications folder first. MitCad does not ask for elevation to replace
 a bundle that the current user cannot write. Refer to
 [Updates](#updates) and [updates.md](updates.md).
 
 ### Windows
 
-Mitcad needs OpenGL 2.1 or newer on Windows. The installer runs as the
+MitCad needs OpenGL 2.1 or newer on Windows. The installer runs as the
 user. It installs in one of two scopes:
 
 - **just for me** (the default): into `%LOCALAPPDATA%\Programs\Mitcad`,
@@ -145,7 +145,7 @@ user. It installs in one of two scopes:
   itself again elevated.
 
 The page *Choose Users* after the licence offers the choice. It starts
-on *For all users* only when Mitcad is installed for all users and not
+on *For all users* only when MitCad is installed for all users and not
 for the current user. The installer first uninstalls an earlier version
 in the same scope. It runs that version's own uninstaller silently, in
 place.
@@ -185,7 +185,9 @@ update itself. It only announces a new release.
 
 ### Linux
 
-The AppImage is built on Ubuntu 24.04 and needs glibc 2.39 or newer.
+The AppImage is built on Ubuntu 24.04 and needs glibc 2.39 or newer:
+Ubuntu 24.04 or newer, or a distribution based on them. It brings its
+own Qt and does not use the system's.
 Without FUSE, run it with `--appimage-extract-and-run`. At each start
 the AppImage writes its desktop file and its icons into `$XDG_DATA_HOME`
 if they differ, so docks show the icon. In the desktop file, `Exec` is
@@ -196,7 +198,7 @@ itself.
 
 ### macOS
 
-Mitcad needs Apple Silicon, macOS 14.4 or newer and OpenGL 4.1 core.
+MitCad needs Apple Silicon, macOS 14.4 or newer and OpenGL 4.1 core.
 Apple has deprecated OpenGL, but it is present. The release is an
 application disk image (`.dmg`). Copy the app to a writable
 Applications folder. An app in a writable folder updates itself. An
@@ -220,7 +222,7 @@ This procedure makes a body from a sketch and gives it a fillet.
    Type the radius and press Enter.
 6. To change a dimension, open **Change Parameters** (in Modify or in the
    Edit menu). Double-click a value and type `50` or the expression
-   `d2 * 2`. Mitcad recomputes the design, and the fillet stays on the
+   `d2 * 2`. MitCad recomputes the design, and the fillet stays on the
    same edges.
 7. To edit a feature, double-click it on the timeline. A sketch opens in
    sketch mode. An edit is one undo step (Ctrl+Z).
@@ -244,7 +246,7 @@ other keys that differ on macOS.
 ### Layouts
 
 The **Layout** setting on the Display page of Preferences selects how
-Mitcad arranges the window:
+MitCad arranges the window:
 
 - **Floating** (the default): the panels are cards over a full-window
   3D view.
@@ -253,11 +255,11 @@ Mitcad arranges the window:
 Tools › Preferences has a page for each kind of setting. Refer to
 [Preferences](#preferences).
 
-The layout takes effect when Mitcad starts. After a change, Mitcad asks
+The layout takes effect when MitCad starts. After a change, MitCad asks
 if you want to restart now. Restart Now closes the window as a quit
-does and starts Mitcad again with the design open. If the design has
-unsaved changes, Mitcad saves it or asks about it first. Cancel keeps
-Mitcad open. Later keeps the choice for the next start. On the command
+does and starts MitCad again with the design open. If the design has
+unsaved changes, MitCad saves it or asks about it first. Cancel keeps
+MitCad open. Later keeps the choice for the next start. On the command
 line, `--chrome=docked|floating` overrides the setting for one run.
 
 On macOS the Floating layout follows the system's own apps. In the
@@ -300,11 +302,11 @@ any window size. The parts of the Floating layout are:
   as folders close.
 - **Messages** show for a few seconds in a capsule above the Timeline.
   Update and remote notices show under the toolbar (on Windows and
-  Linux in a card under the groups). Mitcad does not show the remote's
+  Linux in a card under the groups). MitCad does not show the remote's
   state. The remote's commands are in File › Project.
 - **Glass:** on macOS 26 and later the cards are Liquid Glass. With
   `--no-glass`, or on older systems, they are translucent panels.
-- **Settings** (Mitcad › Settings, Cmd+,) is a window with the same
+- **Settings** (MitCad › Settings, Cmd+,) is a window with the same
   pages as Preferences elsewhere, as panes. Changes apply at once. There
   is no OK. Typed cache budgets apply when editing finishes; arrow buttons
   apply immediately. Camera and background controls follow changes made
@@ -365,7 +367,7 @@ The **View menu** has the standard views, Look At, Fit, the camera, the
 display styles, the background, Grid and Snaps, and the named views.
 The display styles are Shaded, Shaded with Visible Edges Only, Shaded
 with Hidden Edges, Wireframe and Wireframe with Hidden Edges. Named
-views are stored in the design. Mitcad remembers the settings.
+views are stored in the design. MitCad remembers the settings.
 
 View › Visual Style › Rendered shows the bodies path traced: refer to
 [The rendered view](#the-rendered-view) for the render environment, the
@@ -377,7 +379,7 @@ A click selects. Ctrl or Shift adds to the selection or removes from
 it. A drag from left to right selects what lies inside the window. A
 drag from right to left also selects what the window crosses. In a
 design with components, a drag that starts on a body drags the
-component, or Mitcad says why it does not. Refer to
+component, or MitCad says why it does not. Refer to
 [Components](#components).
 
 The filters of the Select group limit what you can select. Sketch mode
@@ -385,7 +387,7 @@ has its own filters. Refer to
 [Selection in sketch mode](#selection-in-sketch-mode). A selection that
 you make before a command goes into the command's input.
 
-Mitcad highlights under the pointer what a click would select. A face
+MitCad highlights under the pointer what a click would select. A face
 shows see-through in light blue, with its boundary drawn, so that its
 shading still shows. In a command, the highlight has the colour of the
 command's input. An edge or a vertex shows in the same colour. Geometry
@@ -444,7 +446,7 @@ error.
 
 To open a large design, or to change it, can take a while. The window
 continues to draw. After a moment a progress dialog shows the feature
-that Mitcad computes, how many features there are and the time so far.
+that MitCad computes, how many features there are and the time so far.
 **Cancel** (or Esc) stops the computation in a fraction of a second,
 also inside a long feature. It also undoes what started the
 computation: an open leaves the previous design. A command, a
@@ -480,7 +482,9 @@ in grey and marked (reserved): Ctrl+F under Search Timeline, and Enter
 for OK, Esc for Cancel and the others after the commands. A command
 cannot take them ("Ctrl+F is reserved for Search Timeline"). Ctrl+F, F2
 (Rename) and Delete work while the Browser or the timeline has the
-keyboard focus.
+keyboard focus. Ctrl+C, Ctrl+X and Ctrl+V are reserved in the model and
+in command panels; in a sketch they are Copy, Cut and Paste of sketch
+geometry.
 Help › Keyboard and Mouse Overview lists all
 shortcuts. Commands without a shortcut are in command search (S) and in
 the menus of the groups.
@@ -511,6 +515,7 @@ the menus of the groups.
 | Offset, Project, Move/Copy | O, P, M | In a sketch: offset a curve, make a projection, move. Project is also in the context menu of a face, an edge or a vertex |
 | Construction | X | Change the selected curves to construction geometry and back |
 | Delete | Delete | Delete the selected sketch geometry, constraints and dimensions |
+| Copy, Cut, Paste | Ctrl+C, Ctrl+X, Ctrl+V | In a sketch: copy or cut the selected sketch geometry with its constraints and dimensions, and paste it into this or another sketch ([Copy, Cut and Paste](#copy-cut-and-paste)) |
 | Extrude | E | Extrude profiles, also directly from sketch mode, or one planar face of a body. Set the direction, the extent, the taper, a thin wall and the Operation ([Extrude](#extrude), [Thin Extrude](#thin-extrude)) |
 | Hole | H | Click a face for the hole positions. Types: simple, counterbore, countersink, counterdrill, taper, thread ([Hole](#hole)) |
 | Fillet | F | Round edges or faces, in several radius sets ([Fillet](#fillet)) |
@@ -530,7 +535,7 @@ the menus of the groups.
 | Delete: the Delete key | Delete: the Delete key and the delete key (Backspace) |
 | Create Sketch: Alt+S | Create Sketch: Option+S (⌥S in the menus) |
 
-On macOS, Cmd+, opens Settings and Cmd+Q quits Mitcad. These two
+On macOS, Cmd+, opens Settings and Cmd+Q quits MitCad. These two
 commands and About are in the application menu. The Window menu has
 Minimize (Cmd+M), Zoom and Bring All to Front.
 
@@ -724,7 +729,7 @@ body as its profile, with no sketch. Select the face and press **E**.
 Or right-click the face and select Solid › Extrude. Or select the face
 in Profiles. The face's whole area goes along the face's own normal,
 holes included. This also applies to a slanted face. A positive
-distance goes out of the material, and Mitcad selects Join for you. A
+distance goes out of the material, and MitCad selects Join for you. A
 negative distance, or Flip, goes into the material (Cut). New Body is
 also available. Two sides, symmetric distances and a start offset from
 the face work as for profiles. Tapers, To Object and All do not work.
@@ -794,6 +799,17 @@ moves them in. Thus Growth widens the helix into a cone or a spiral.
 
 ### Sweep
 
+**Sweep** starts where the path meets the profile. *Distance 1* is
+the part of the path beyond the profile that the sweep covers, from 0
+to 1 (1 is all of it). If the profile lies inside the path, or at its
+far end, the path also runs on before the profile. *Distance 2* then
+shows: the part of the path before the profile, also from 0 to 1. Both
+are 1 for a new sweep, so it covers the whole path both ways from the
+profile. Set Distance 2 to 0 to sweep only forwards from the profile.
+On a closed path the sweep goes once round; Distance 1 less than 1
+covers that part of it. **Pipe** has Distance 1 only: its section is at
+the start of the path.
+
 **Sweep** can obey a *Guide Rail* as well as the path. *Rail Point* says
 where the rail meets the profile. This is on the plane square to the
 path. Or it is at the same fraction of the length of the rail as of
@@ -806,7 +822,7 @@ Each end of a **Loft** has a *Start Condition* or an *End Condition*.
 The condition is one of these:
 
 - Free
-- For a profile: a Direction. Mitcad measures the *Takeoff Angle* from
+- For a profile: a Direction. MitCad measures the *Takeoff Angle* from
   the normal of the profile. A positive angle points outwards
 - For a face: Tangent or Smooth to the faces next to it
 - For a point: a sharp tip, or a rounded (tangent) tip
@@ -865,7 +881,7 @@ of a hole, or the end of a shaft. If both ends or neither is free, it
 starts at the end that *Thread Location* names. Its size sets the
 diameters there. From there they shrink into a hole and grow along a
 shaft. Even a cosmetic tapered thread changes the geometry: it tapers
-the bore, or the shaft's end, to the thread's cone. Mitcad can model
+the bore, or the shaft's end, to the thread's cone. MitCad can model
 tapered NPT threads; ISO 7-1 threads are cosmetic only. Tapered threads
 have no end chamfers, so the panel does not offer *Chamfer Ends*. A
 thread saved by an earlier version stays as it was, straight, until you
@@ -873,7 +889,7 @@ check *Tapered*.
 
 *Chamfer Ends* cuts a cone at the free ends through which the thread
 runs out. Examples are the tip of a shaft and the mouth of a hole. Thus
-the first turn starts on the cone, without a knife edge. Mitcad
+the first turn starts on the cone, without a knife edge. MitCad
 chamfers an external thread to below its minor diameter. It
 countersinks an internal thread past its major diameter. Ends inside
 the face, or against more material, get no chamfer. *Ends* selects both ends, the start or
@@ -893,8 +909,8 @@ size, its class and its pitch stay. There are two clearances:
   profile away from the material. Thus it enlarges an internal thread
   and shrinks an external one. It is not a diameter: 0.2 mm changes each
   diameter by 0.4 mm.
-- *Flank clearance* is on each flank. Mitcad measures it perpendicular
-  to the flank, not along the axis, and it is not a scale factor. Mitcad
+- *Flank clearance* is on each flank. MitCad measures it perpendicular
+  to the flank, not along the axis, and it is not a scale factor. MitCad
   applies it after the radial clearance. It thins the teeth of an
   external thread or widens the groove of an internal thread. The pitch
   and the flank angle stay.
@@ -904,12 +920,12 @@ crest must stay at least a fiftieth of the pitch wide. An internal M6x1
 takes at most 0.0996 mm, an external M6x1 at most 0.0455 mm. The panel's
 default, the parameter `thread_flank_clearance` (0.1 mm), is a fit for
 your printer and serves threads of every size: where a thread's pitch is
-too fine for it, Mitcad uses the largest flank clearance that the thread
+too fine for it, MitCad uses the largest flank clearance that the thread
 takes, and the parameter keeps its value. A number that you type is
 used as it is. If it is too large, the thread fails, and the message
 says the largest value that fits.
 
-Clearances on both mating bodies add up. Mitcad does not change the
+Clearances on both mating bodies add up. MitCad does not change the
 other body.
 
 ### Patterns
@@ -935,7 +951,7 @@ imported pattern.
 
 **Pattern on Path** repeats its objects along a path. The path is a
 sketch line, an arc or a circle, or lines and arcs of one sketch that
-are joined end to end. Mitcad goes along the path from the free end of
+are joined end to end. MitCad goes along the path from the free end of
 the first curve.
 
 **Pattern at Points** repeats Features, Bodies or Components at sketch
@@ -946,10 +962,10 @@ points, construction points or vertices. To make the pattern:
 
 Every target receives one more copy with the orientation of the source.
 The originals stay. The targets stay linked to their geometry. Thus, if
-you move a point, Mitcad updates its copy. Components stay occurrences of
+you move a point, MitCad updates its copy. Components stay occurrences of
 the same definition. Features replay their operations. To repeat a hole
 and its finishing features as one group, select them together. Then
-Mitcad repeats the group and does not copy the resulting body. For
+MitCad repeats the group and does not copy the resulting body. For
 Bodies and Features, first activate the component that owns the
 sources. Use Components to repeat placed occurrences from other
 components.
@@ -970,7 +986,7 @@ These group rules do not depend on the order of selection. Under
 different anchor. Set Anchor to **Automatic** to go back to the rules. A
 group keeps its relative positions. You cannot select a repeated target
 reference twice. Coincident targets, and targets at the anchor, cause
-an error. Mitcad does not silently omit a copy. Edit the timeline
+an error. MitCad does not silently omit a copy. Edit the timeline
 feature to change the sources, the targets or the anchor.
 
 ## Modify features
@@ -1004,7 +1020,7 @@ Each face keeps its surface, moved. The faces around it extend or
 shorten along their own surfaces up to it. Thus an end face pushed out
 makes the block longer. A top face turned about one of its edges tilts
 the top. Sometimes the faces around cannot follow the motion: a face
-would vanish, split or no longer meet its neighbour. Then Mitcad
+would vanish, split or no longer meet its neighbour. Then MitCad
 refuses the motion, and the panel says why.
 
 The panel's note and the selection card of its timeline item say what
@@ -1029,6 +1045,11 @@ all the edges of that face. Each set has its own Radius Type:
   the knots are evenly spaced, with a degree of 3 at most.
 
 The Radius field holds the first of these values.
+
+*All Edges* rounds every edge of a body. Turn it on, then select the
+body in the Body field that replaces Edges. The fillet also rounds the
+edges that you add later, for example when you change a sketch. A fillet
+with All Edges has only one set. Chamfer has the same option.
 
 In Fillet and Chamfer, click a selected face or edge again to remove it,
 including while the preview is visible. The Edges input's ✕ clears that
@@ -1079,7 +1100,7 @@ other command fields.
 
 The preview obeys the checked targets. Exclusions stay when you change
 the distance, the start, the direction or the profile. They also stay
-for targets that are temporarily outside the cut. Mitcad automatically
+for targets that are temporarily outside the cut. MitCad automatically
 checks new eligible targets that the tool intersects, except what the
 view hides. A component starts unchecked if its light bulb is off, if a
 light bulb above it is off, or if Isolate leaves it out. A hidden body
@@ -1099,7 +1120,7 @@ definition, like its other features. So it can cut its own bodies even
 when the component has several occurrences, and every occurrence shows
 the result. Its row says so. Older
 cuts keep their **Local bodies** scope when you edit them. When you open
-an existing cut, Mitcad does not add other component targets.
+an existing cut, MitCad does not add other component targets.
 
 ### Inspect: Measure, Annotations and Section Analysis
 
@@ -1134,7 +1155,7 @@ design. A row whose geometry is gone is grey.
 the Measure panel, or click a row of the history and then *Keep Row*.
 The measurement becomes an *annotation*: a dimension drawn in the view
 as on a drawing
-(ISO 129 style, millimetres), in its own colour. Mitcad names it after
+(ISO 129 style, millimetres), in its own colour. MitCad names it after
 what it shows (`Distance1`, `Angle1`, `Offset1`, `Diameter1`, …). With
 one face, edge or vertex picked, *Note…* adds a *leader note* instead:
 an arrow to the pick and a text of one or more lines.
@@ -1144,7 +1165,7 @@ an arrow to the pick and a text of one or more lines.
 Measure panel and click *Datum Label…* or *Frame…* (not a vertex or a
 point: they mark a feature). *Datum Label…* adds a *datum label*: a
 letter in a square on a leader that ends in a filled triangle on the
-pick (ISO 5459). Mitcad
+pick (ISO 5459). MitCad
 offers the first free letter, A, B, C …; it skips I, O and Q, and each
 letter is used once. *Frame…* adds a *feature control frame* on a leader
 with an arrow to the pick: a row of boxes with the characteristic's symbol
@@ -1181,7 +1202,7 @@ its place (`4 x`, `THRU`), its tolerance, colour, group and whether it
 is shown. A tolerance is symmetric (`±0.1`), deviations (`+0.2` over
 `-0.1`), limits (the largest and the smallest size, `10.1` over `9.9`;
 type them as the sizes in the editor), or an ISO 286 fit code (`H7` for
-a hole, `g6` for a shaft) whose deviations Mitcad can show in brackets.
+a hole, `g6` for a shaft) whose deviations MitCad can show in brackets.
 Fit codes cover sizes up to 500 mm, the grades IT5 to IT11 and the
 common holes and shafts (C to S, c to s); a radius takes the fit of its
 diameter. A tolerance shows the decimals it needs, whatever the value
@@ -1193,13 +1214,13 @@ The editor also shows what the annotation points at and its plane. Click
 *Pick Again…* beside a pick to choose another face, edge, vertex or
 datum in the view, or *Pick…* beside the plane to lay the annotation in
 a planar face's or a datum plane's plane; *Automatic* gives the plane
-back to Mitcad. The editor closes for the pick, a banner says what to
+back to MitCad. The editor closes for the pick, a banner says what to
 pick, and the editor opens again after it. Press Esc to cancel the pick.
 A radius, a diameter and an angle have no plane to pick: they lie in
 their circle's plane or in the plane of their sides. A frame under a
 dimension stands in the dimension's place; to put it on a leader, set
 *Placed* to *On its leader* and click *Pick Again…* or OK. When it
-stood on a vertex, a point or a whole body, Mitcad asks you to pick the
+stood on a vertex, a point or a whole body, MitCad asks you to pick the
 face, edge or axis its leader points at first.
 
 The **Annotations** window (*View › Annotations…*, *Annotations…* in the
@@ -1217,7 +1238,7 @@ why; the annotation comes back when the pick does.
 
 The design file saves the annotations. Designs saved with measurement
 objects open with them as annotations, with the same values. A design
-with dimensions kept from the view needs this version of Mitcad: Keep
+with dimensions kept from the view needs this version of MitCad: Keep
 stores the plane and the places you saw them in, which older versions do
 not read.
 
@@ -1245,9 +1266,9 @@ tell the components of an assembly apart on the plane.
 The caps of the root component are orange. The lines are a darker shade
 of the colour of the cap. From one component to the next, the lines
 alternate between 45 degrees and 135 degrees. The lines stay in every
-visual style. They also stay when Mitcad draws the bodies in Component
+visual style. They also stay when MitCad draws the bodies in Component
 Colors, by appearance or rendered. Small caps get fewer lines, closer
-together. Mitcad does not fill large caps with lines.
+together. MitCad does not fill large caps with lines.
 
 ## Sketches
 
@@ -1271,7 +1292,7 @@ folder is open or closed again as before. Its eye does not change.
 
 Some faces cannot take a sketch: a cylinder, a thread or another curved
 surface, or a face that the design policy leaves out. If you click such
-a face, Mitcad says why. Then select a planar face or a plane, or make
+a face, MitCad says why. Then select a planar face or a plane, or make
 one with Construct.
 
 A new sketch opens with the view looking at its plane and the design's
@@ -1287,8 +1308,9 @@ The Sketch tab has three groups:
 
 - Create: the sketch curve tools (refer to [Sketch curve tools](#sketch-curve-tools))
 - Modify: fillet, chamfer, Trim, Extend, Offset, Move/Copy, Edit
-  Pattern, Edit Offset, Edit Text, construction, centre line and
-  Convert to Sketch Geometry
+  Pattern, Edit Offset, Edit Text, construction, centre line,
+  Convert to Sketch Geometry, Delete, Cut, Copy and Paste (refer to
+  [Copy, Cut and Paste](#copy-cut-and-paste))
 - Constraints: the constraint buttons (refer to
   [Constraints](#constraints))
 
@@ -1299,7 +1321,7 @@ dimensions, constraints and profiles, Hide Above Sketch and Look At.
 
 *Hide Above Sketch* cuts the bodies at the sketch plane. Thus other
 parts of a body do not hide a sketch on a face below them. You cannot
-select the cut bodies while they are cut. Mitcad draws the faces where
+select the cut bodies while they are cut. MitCad draws the faces where
 it cuts the bodies in a colour of their own, with hatches, as in Section
 Analysis. The bodies stay cut while the panel of a sketch command is
 open and its preview is shown (Offset, Mirror, the patterns, Project,
@@ -1332,7 +1354,7 @@ The colours of the geometry tell its state:
 | Construction geometry | An orange dashed line |
 | Projected geometry | Purple |
 
-Mitcad draws fully constrained geometry dark, or light on a dark
+MitCad draws fully constrained geometry dark, or light on a dark
 background. This also applies to the sketches shown when you do not
 edit a sketch. Thus one look tells you which sketches are fully
 constrained. Fully constrained curves and centre lines have a thin
@@ -1404,12 +1426,22 @@ A polygon (Circumscribed, Inscribed or Edge Polygon) stays regular. Its
 construction circles keep the sides equal and the corners evenly
 spaced. Thus when you drag a corner, the whole polygon rotates, moves or
 changes its size, and it does not skew. The same occurs when you rotate
-the polygon with Move/Copy (Rotate). Mitcad refuses a dimension that
+the polygon with Move/Copy (Rotate). MitCad refuses a dimension that
 would make the polygon irregular.
 
 The centre, the size and the orientation of a polygon stay free until
 you constrain them. To constrain them, fix the centre or set its place,
 dimension a circle or a side, or make a side horizontal.
+
+**Closed splines.** Fit Point Spline draws a smooth curve through the
+points that you click. Press Enter or double-click to end it. To close
+it, click its first point again (after at least three points). The
+preview shows the closed curve and a ring on the first point when a
+click there closes the spline.
+A closed spline is one curve without ends. It is smooth where it closes,
+with no corner. It is one profile, so you can extrude it. Offset makes a
+closed curve around it, and Trim keeps the rest of it between the curves
+that cross it.
 
 **Extend** (Modify) extends a curve at one end. The extended end obeys
 these rules:
@@ -1427,7 +1459,7 @@ these rules:
 A Coincident constraint between the ends of two curves makes the two
 ends one point, as if you had drawn both curves from that point. Thus
 Offset and chain selection see the corner as joined. If one end is
-fixed, Mitcad keeps that end. Mitcad removes a distance between the two
+fixed, MitCad keeps that end. MitCad removes a distance between the two
 ends. A point and a curve, a centre, a lone point or a projected point
 stay a coincident constraint.
 
@@ -1435,7 +1467,7 @@ stay a coincident constraint.
 Selection, a click on one curve also takes the curves that are joined
 to it end to end. Sometimes a curve lies on another curve, for example
 the edge that two projected faces share, or an edge that an earlier
-version of Mitcad projected again after its face. Offset then uses the curve of the two that is joined to the other
+version of MitCad projected again after its face. Offset then uses the curve of the two that is joined to the other
 curves, so that the whole outline is offset. If you select both curves,
 Offset uses one of them, and the panel tells which. If the curves are
 not one chain, the panel tells why: two ends at the same place that are
@@ -1463,14 +1495,14 @@ bodies that lie in the sketch plane. It also snaps to the middles of
 their edges in the plane (lines and arcs). This includes the bodies of
 other components. The marker and the hint are those of a point or a midpoint.
 When a body and the sketch's own geometry are both under the pointer,
-the sketch's geometry wins. While the pointer only hovers, Mitcad adds
+the sketch's geometry wins. While the pointer only hovers, MitCad adds
 nothing.
 
 A click projects the corner or the edge into the sketch, linked, as
 Project does it. Then it adds the point and holds it on the projected
 corner or at the middle of the projected edge. This is one undo step.
 Thus the point follows the body when the design changes. If the sketch
-already has a projection of the same corner or edge, Mitcad uses that
+already has a projection of the same corner or edge, MitCad uses that
 projection again. A click on a corner that already has a point does
 nothing.
 
@@ -1495,7 +1527,7 @@ Lines offer these constraints:
 - *Perpendicular*
 
 Thus *Equal* and *Perpendicular* with *Link to last* draw square corners
-with equal sides. Mitcad makes the new entity where the checked
+with equal sides. MitCad makes the new entity where the checked
 constraints put it. The preview shows the entity, with the reference
 highlighted. The preview also shows while the pointer is over the
 section. The entity gets the constraints in the same undo step. The
@@ -1515,7 +1547,7 @@ value fields that show while you draw also make dimensions (refer to
 
 **Angles:** Sketch Dimension (D) on two lines measures the angle on the
 side where you put the value. The two lines, extended, make four angles
-at their crossing. Mitcad measures the angle that the pointer is in.
+at their crossing. MitCad measures the angle that the pointer is in.
 For a shape with the pointer inside it, that is the inner corner.
 
 The arc and the value of an angle follow the pointer. Thus when you
@@ -1524,11 +1556,11 @@ angle and its supplement. The dimension keeps that side when its value
 changes. When you move the value afterwards, only the text moves.
 
 **Signed distances:** a horizontal or vertical distance is normally a
-size. It is never negative, and Mitcad keeps it on the side where the
+size. It is never negative, and MitCad keeps it on the side where the
 point is. With the palette's *Signed distances* option checked, Sketch
 Dimension makes such distances signed. The value is then the offset
 from the first point selected. It is negative to the left of that point
-or below it. Mitcad shows the value with its sign (`+25.98`, `-15.00`).
+or below it. MitCad shows the value with its sign (`+25.98`, `-15.00`).
 
 Thus a point that you dimension from a centre with `r * cos(a)` and
 `r * sin(a)` follows `a` through all four quadrants.
@@ -1547,10 +1579,10 @@ It also works while Hide Above Sketch cuts the bodies. The edges and
 corners highlight under the pointer as sketch geometry does. When both
 are under the pointer, the sketch geometry wins.
 
-Mitcad adds nothing while you select. When it makes the dimension, it
+MitCad adds nothing while you select. When it makes the dimension, it
 projects the edge or corner into the sketch, linked, as Project does
 it. The dimension attaches to the projection. This is one undo step. If
-the sketch already has a projection of the same edge or corner, Mitcad
+the sketch already has a projection of the same edge or corner, MitCad
 uses that projection again.
 
 Projected geometry is fixed. Thus a dimension to sketch geometry moves
@@ -1577,25 +1609,25 @@ Constraints use the axes and the origin in these ways:
 - Symmetry mirrors about an axis.
 - Horizontal/Vertical and Midpoint take the origin as a point.
 
-The first time something refers to an axis or the origin, Mitcad adds
+The first time something refers to an axis or the origin, MitCad adds
 it to the sketch as fixed construction geometry. This occurs in the
-same undo step. Afterwards Mitcad uses it again. It never bounds a profile. It is not
+same undo step. Afterwards MitCad uses it again. It never bounds a profile. It is not
 drawn apart from the axes themselves.
 
 A double-click on a dimension edits its value. You can drag a
 dimension's text. If a dimension would over-constrain the sketch,
-Mitcad adds it as driven, in parentheses. If a constraint would
-over-constrain the sketch, Mitcad refuses it with a message.
+MitCad adds it as driven, in parentheses. If a constraint would
+over-constrain the sketch, MitCad refuses it with a message.
 
 The value of a driven dimension is a read-only parameter (`d7`, kind
 reference). You can rename it and use it in expressions of features
 after the sketch. If you type a value into a driven dimension, it
 becomes driving.
 
-**Dimension names:** when you hover a dimension, Mitcad shows its
+**Dimension names:** when you hover a dimension, MitCad shows its
 parameter (`d3 = d1 / 2 → 20 mm (Sketch1 distance)`). The value editor
 shows the name before the field (`d3 =`). If you type `width = 40`,
-Mitcad renames the parameter as it sets it. A click on another
+MitCad renames the parameter as it sets it. A click on another
 dimension while the editor is open inserts that dimension's name. The
 palette's *Dimension text* option shows each dimension's value, its
 name, or both (`d3 = 20`).
@@ -1631,10 +1663,21 @@ several circles equal to a dimensioned one. Horizontal/Vertical on
 several lines makes each line horizontal or vertical. The constraints
 are one undo step.
 
-If the sketch refuses some of the constraints, Mitcad leaves them out
+If the sketch refuses some of the constraints, MitCad leaves them out
 with a message. The sketch refuses a constraint that is already implied
-or that conflicts. Mitcad also refuses a constraint that would
+or that conflicts. MitCad also refuses a constraint that would
 over-constrain the sketch, with a message.
+
+**Tangent at an end.** When the two curves share an end, or one of them
+is a spline, Tangent and Curvature apply at the end where you pick each
+curve. Pick each curve near the end where it should be tangent. While
+you pick, the constraint's symbol shows that end. Thus a curve can be
+tangent at both of its ends, to two curves or to the same curve twice.
+A line or a circle that shares no end with the other curve stays tangent
+wherever the two curves touch. A spline whose two ends are at one point
+becomes smooth there when you pick it twice for Tangent. A closed spline
+is smooth where it closes already. Tangents of older designs keep their
+meaning.
 
 Coincident between the ends of two curves joins them to one point
 (refer to [Sketch curve tools](#sketch-curve-tools)). The constraint tools also
@@ -1644,7 +1687,7 @@ Equal Spacing keeps intervals equal (refer to
 
 **Inactive constraints and dimensions.** An inactive constraint or
 dimension stays in the sketch, but it does not hold the geometry.
-Mitcad draws it pink, with dashed lines. Its tooltip tells why it is not
+MitCad draws it pink, with dashed lines. Its tooltip tells why it is not
 applied, for example "Not applied: not met in the imported file". An
 import makes inactive the constraints and dimensions of a sketch that
 the file's own geometry does not meet (refer to [.f3d
@@ -1653,7 +1696,7 @@ parameter.
 
 Right-click a selected inactive constraint or dimension and select
 **Activate** to apply it. If the sketch cannot solve with it, or if it
-over-constrains the sketch, Mitcad does not activate it and shows the
+over-constrains the sketch, MitCad does not activate it and shows the
 reason. Then change the geometry or delete the constraints that are in
 conflict, and try again. **Deactivate** in the same menu makes an
 active constraint or dimension inactive. **Delete** removes it. An
@@ -1665,7 +1708,7 @@ activates both.
 
 **Project** (P, in Create) projects references from the bodies into the
 sketch. Projected geometry is linked: it follows its source when the
-design changes. Mitcad draws projected geometry purple. For edges that
+design changes. MitCad draws projected geometry purple. For edges that
 are not in the sketch plane, Project is necessary. The Point tool and
 Sketch Dimension project corners and edges of bodies as Project does it
 (refer to [Snaps and auto constraints](#snaps-and-auto-constraints) and
@@ -1676,7 +1719,7 @@ Projected geometry obeys these rules:
 - Projected geometry is fixed. A dimension to sketch geometry moves
   that geometry. A dimension between two projected edges is driven.
 - If the sketch already has a projection of the same edge or corner,
-  Mitcad uses that projection again. This also applies to an edge of a
+  MitCad uses that projection again. This also applies to an edge of a
   face that you projected before, and to a face after one of its edges:
   the sketch gets no second curve on the edge, and the new curves end
   on the points that are already there. Thus the outline stays one
@@ -1690,7 +1733,7 @@ Projected geometry obeys these rules:
 
 **Intersect** (Create › References) adds the curves where the sketch
 plane cuts the bodies and faces that you select. It adds points where
-the sketch plane crosses the edges that you select. For a body, Mitcad
+the sketch plane crosses the edges that you select. For a body, MitCad
 cuts every face of the body. For example, a sketch through a shaft gets
 the section of the shaft as a circle. Project is different: it flattens
 edges onto the sketch plane.
@@ -1723,7 +1766,7 @@ more independent objects equal. It does not copy the objects. The
 objects can be points, circles and arcs (their centres) and lines
 (their midpoints), mixed as necessary.
 
-Select how Mitcad measures the intervals:
+Select how MitCad measures the intervals:
 
 | Measurement | Interval |
 | --- | --- |
@@ -1756,8 +1799,8 @@ every interval changes. When you delete it, the intervals stay equal.
 A double-click on the symbol of the equal spacing opens **Edit Equal
 Spacing**. The command is also in the context menu of a right-clicked
 symbol. It changes the objects, their order, the measurement and the
-dimension. When you delete one of the objects, Mitcad takes it out of
-the chain. With fewer than three objects left, Mitcad removes the
+dimension. When you delete one of the objects, MitCad takes it out of
+the chain. With fewer than three objects left, MitCad removes the
 constraint.
 
 Copies of a sketch pattern are spaced by the pattern. Change them with
@@ -1779,14 +1822,14 @@ chooser selects any font file (`.ttf`, `.otf`, `.ttc`, `.woff`,
 A text in a font file keeps the file's outlines, its path and its
 licence note in the design. Thus the design looks the same on a
 computer without the file. On such a computer, a new string or style
-asks for the file again. Mitcad finds a file of the same name in the
+asks for the file again. MitCad finds a file of the same name in the
 font folders by itself.
 
 A font file is one face. Bold leaves it as it is: select the bold file.
 Italic slants an upright font.
 
 **Right-to-left and joined scripts:** Hebrew, Arabic and other scripts
-join their letters or carry marks. Mitcad shapes them as the font says,
+join their letters or carry marks. MitCad shapes them as the font says,
 with joined forms, ligatures and marks. They are read from right to
 left. A line that mixes them with Latin text or numbers is ordered as
 it is read. This works with font files and with installed fonts that
@@ -1858,6 +1901,79 @@ You can change the rows while Project runs. Shift+click
 reaches an edge behind faces. Project takes nothing but edges, faces and
 vertices. OK and Cancel bring back the sketch's rows as they were. The
 projected geometry then follows the projected geometry row.
+
+### Copy, Cut and Paste
+
+You can copy sketch geometry from one sketch to another sketch, or to
+another place in the same sketch. Select points, curves and texts, then
+use **Copy** (Ctrl+C) or **Cut** (Ctrl+X). Cut also deletes the
+selection. Open the sketch that gets the geometry and use **Paste**
+(Ctrl+V). The three commands are in the Modify menu of the Sketch tab and
+in the context menu.
+
+Paste shows the geometry at the pointer. The pointer holds the base
+point, shown as a dot: the first point of the item that you selected
+first. Click where the base point goes, or type X and Y in the boxes and
+press Enter. Esc cancels the paste. The coordinates are the sketch's
+own, so a sketch on another plane gets the same 2D coordinates. You can
+paste into a design that is open in another MitCad window too. Undo
+names the steps Cut and Paste.
+
+The constraints and dimensions come with the geometry when they
+reference only copied geometry or the sketch's origin and axes. The
+others are left out, and MitCad says how many. A copy that is
+dimensioned to the origin or an axis keeps those distances in the new
+sketch too, so a click cannot move it away from them: in that direction
+the preview stays where the copy was, and only the other value box is
+shown. A copy that is dimensioned to the origin in both directions is
+pasted at once where it was. A dimension keeps its expression
+when the design has all the parameters that the expression uses.
+Otherwise it gets the value. Projected geometry becomes ordinary sketch
+geometry. Construction lines, centre lines, splines, arcs, ellipses,
+points and texts stay what they are.
+
+In a text box, Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste the text as
+usual.
+
+### Redefine Sketch Plane
+
+**Redefine Sketch Plane** moves a sketch to another plane or planar
+face. You can also move the sketch on its plane. Right-click the sketch
+in the Browser or the Timeline, or a curve or profile of it in the view,
+and select **Redefine Sketch Plane**. While you edit a sketch, the same
+command is in the sketch's context menu, and it always moves the sketch
+that you edit.
+
+The panel has these inputs:
+
+- **Sketch**: the sketch to move (not shown while you edit a sketch)
+- **Plane**: an origin plane, a construction plane or a planar face. It
+  starts as **Same Plane**: the sketch stays on its plane until you
+  select another one. A face of another component is linked, as with
+  Create Sketch.
+- **Offset**: the distance along the plane's normal. **Flip** beside it
+  turns the sketch over, to the other side of the plane.
+- **Move X** and **Move Y**: the distances along the sketch's x and y
+  axes on the plane
+- **Angle**: the angle about the plane's normal, from the sketch's x
+  axis towards its y axis
+
+The values can be expressions with parameters, for example `Gap * 2`.
+The sketch keeps them as its own parameters. Thus you can change them
+again later in this panel or in the parameters table.
+
+The preview shows the sketch and the features built on it in their new
+places. The sketch geometry keeps its own coordinates. Extrudes,
+revolves, holes and other features on the sketch follow it. Linked
+projections and intersections are made again from the new plane. When
+they cannot follow, the sketch palette says so. OK makes one undo step.
+While you edit a sketch, the change is undone with the sketch edit.
+
+On a new plane, the sketch opens upright, as a new sketch does. The
+plane must be made before the sketch in the Timeline. If you select a
+construction plane or a face of a later feature, the panel tells why it
+cannot be used. To use such a plane, move the sketch after it in the
+Timeline first.
 
 ## Browser, timeline and parameters
 
@@ -1973,7 +2089,7 @@ wrong origin plane.
 
 Reorient Design is not a move of the bodies. The sketches, the
 construction planes, axes and points, and every feature turn with the
-design. Mitcad rewrites their references to the origin planes and axes
+design. MitCad rewrites their references to the origin planes and axes
 to the turned ones. For example, a sketch on XY turned 90 degrees about
 X lies on XZ. It faces the other way, and its geometry is turned, not
 mirrored. Imported bodies get a Move after their base feature.
@@ -2029,7 +2145,7 @@ these entries:
 - Edit
 - Rename
 - Suppress
-- Delete. Mitcad asks you about the dependent features.
+- Delete. MitCad asks you about the dependent features.
 - Move to Component. For a component made from bodies, the entry is
   **Move the Features That Made It into the Component**.
 - Roll History Marker Here
@@ -2066,7 +2182,7 @@ Its tooltip says how many hidden features it rolled back. The playback
 buttons step between the shown features only. A feature that you drag
 lands directly before or after a shown neighbour. Find in Timeline on a
 hidden feature shows all features again. The filter belongs to the
-window. Mitcad does not save it.
+window. MitCad does not save it.
 
 **The timeline search.** The search opens a field on the timeline.
 Open it in one of these ways:
@@ -2091,7 +2207,7 @@ Move between the matches in these ways:
 - Shift+Enter or Up goes to the previous match.
 - A click on a listed match goes to that match.
 
-Mitcad scrolls the match into sight and selects it. The selection is
+MitCad scrolls the match into sight and selects it. The selection is
 the same as the selection of a click on the feature.
 
 You can type filters in the same field. The filter menu of the field
@@ -2109,9 +2225,9 @@ Filters of one kind are alternatives: `is:failed is:warning` finds
 either. Filters of different kinds all apply: `fillet in:Cover
 is:warning` finds the fillets with a warning in the Cover components.
 
-Press Esc to close the search. When you clear the search, Mitcad brings
+Press Esc to close the search. When you clear the search, MitCad brings
 back the scroll position and the selection from before the search. But
-if you selected something else in the meantime, Mitcad keeps that
+if you selected something else in the meantime, MitCad keeps that
 selection.
 
 ### Find in Design
@@ -2125,7 +2241,7 @@ ways:
 - Select Edit › Find in Design.
 - Use the command search.
 
-**The search text.** Mitcad matches the text anywhere in a name. The
+**The search text.** MitCad matches the text anywhere in a name. The
 case of the letters makes no difference. `*` stands for any characters,
 and `?` stands for one character. Examples are `bracket*left` and
 `plat?`.
@@ -2143,7 +2259,7 @@ never opened. A component that is put in place twice gives one row for
 each place for each of its bodies. But the body is one body. Thus,
 when you hide it, it is hidden in every place.
 
-**Selection in the list.** When you select rows, Mitcad selects them in
+**Selection in the list.** When you select rows, MitCad selects them in
 the view and in the Browser. Select All and Select None select the
 rows of the list. A double-click on a row shows the row in the
 Browser.
@@ -2175,10 +2291,10 @@ them, and you can change them later in the parameters.
 or from the Edit menu. It lists the user parameters and the model
 parameters with their expressions and comments. To change a value,
 double-click it and type a number such as `50` or an expression such
-as `d2 * 2`. Mitcad computes the design again. A fillet stays on the
-same edges. Mitcad refuses a change that makes a cycle or has a wrong
+as `d2 * 2`. MitCad computes the design again. A fillet stays on the
+same edges. MitCad refuses a change that makes a cycle or has a wrong
 unit. The refused change stays in the cell in red with the reason.
-When you rename a parameter, Mitcad updates the expressions that use
+When you rename a parameter, MitCad updates the expressions that use
 it.
 
 **Change Parameters while you edit.** You do not have to finish a
@@ -2188,7 +2304,7 @@ search. The sketch stays open, and its dimensions and geometry follow
 each change at once. Undo in the sketch takes a change back. In a
 feature panel, click the **Change Parameters** button at the right of
 the panel title, or use the command search. The panel stays open
-with your values, expressions and selections. Mitcad calculates the
+with your values, expressions and selections. MitCad calculates the
 values in the panel and the preview again after each change. If you
 rename a parameter, the expressions in the panel use the new name. A
 change stays when you cancel the panel. When you click OK in the panel,
@@ -2201,7 +2317,7 @@ parameter table to go back to the sketch or the panel.
 decimal separators of the numbers are on one vertical line. A whole
 number such as `3 mm` has its separator after the last digit. The units
 are in a column of their own, so a unit of another length does not move
-the numbers. A formula such as `d1 * 2` stays a text. Mitcad does not
+the numbers. A formula such as `d1 * 2` stays a text. MitCad does not
 change the value or the expression for this: when you edit a cell, you
 see and change the whole text. If a column is too narrow for its
 numbers, make it wider.
@@ -2225,7 +2341,7 @@ comes from. While you type an expression, the message line below the
 table tells you at once if the value will be limited. Select **Only
 limited** to see only the parameters whose value a limit changed.
 
-Select **Strict** if a value outside the limits is an error: Mitcad
+Select **Strict** if a value outside the limits is an error: MitCad
 then refuses such a value, as it refuses a wrong unit, and tells you
 why. A parameter with a minimum and a maximum has a slider in the
 **Slider** column. Drag it, or click its handle and use the arrow keys,
@@ -2246,7 +2362,7 @@ point dimensioned from a centre with `r * cos(a)` and `r * sin(a)`
 moves with `a` through all four quadrants.
 
 **Decimal comma and decimal point.** A number takes a decimal comma or
-a decimal point. `1,5 mm` is `1.5 mm`, and Mitcad shows it as `1.5 mm`.
+a decimal point. `1,5 mm` is `1.5 mm`, and MitCad shows it as `1.5 mm`.
 A comma directly between two digits is a decimal comma. Any other comma
 separates the arguments of a function. A `;` always separates the
 arguments. Thus `max(a, b)`, `max(1, 5)` and `max(1; 5)` have two
@@ -2262,7 +2378,7 @@ before work as they did.
   of a parameter name and of a unit matters: `d1` and `D1` are two
   parameters, and `MM` is not a unit. A parameter cannot have the name of
   a function in any case, for example `Max` or `Sum`. When an older
-  design or an imported file has such a parameter, Mitcad gives it a new
+  design or an imported file has such a parameter, MitCad gives it a new
   name, for example `Max_1`, tells you so, and changes the expressions
   that use it.
 - Inside parentheses a single `=` compares, as in a spreadsheet:
@@ -2318,7 +2434,7 @@ text, type it twice: `'It''s'`. A text can use other parameters:
 - `IF`, `IFS`, `SWITCH` and `CHOOSE` can choose texts, for example
   `IF(GridX > 4; "large"; "small")`, and `=` compares texts.
 
-A text is never a number: Mitcad refuses a text parameter in a length,
+A text is never a number: MitCad refuses a text parameter in a length,
 an angle or a count, and a number as the value of a text parameter. Use
 `&` or `TEXT(…)` to make a text from a number. A text parameter has no
 limits and no slider. A parameter can still be named `Text`, `Left` or
@@ -2336,10 +2452,10 @@ parameter (`d7`, of the kind reference). You can rename it, and you can
 use it in the expressions of the features after the sketch. If you type
 a value into a driven dimension, the dimension becomes driving.
 
-**Parameter names.** When you hold the pointer over a dimension, Mitcad
+**Parameter names.** When you hold the pointer over a dimension, MitCad
 shows its parameter, for example `d3 = d1 / 2 → 20 mm (Sketch1
 distance)`. The value editor shows the name before the field (`d3 =`).
-If you type `width = 40`, Mitcad renames the parameter and sets its
+If you type `width = 40`, MitCad renames the parameter and sets its
 value at the same time. While the editor is open, a click on another
 dimension inserts the name of that dimension. The *Dimension text*
 option of the palette shows the value of each dimension, its name, or
@@ -2381,9 +2497,9 @@ field's own parameter a name, for example `width = 30 mm`. When you type
 a name that no parameter has, the list offers this form. The list also
 offers **Create User Parameter**. It makes a new user parameter that is
 independent of the field's own parameter. Give its value or expression
-and its unit. Mitcad refuses a name that exists already, an invalid
+and its unit. MitCad refuses a name that exists already, an invalid
 name, a wrong unit or an expression that the model refuses. The editor
-then stays open with the reason. When the parameter is made, Mitcad puts
+then stays open with the reason. When the parameter is made, MitCad puts
 its name into the field where you typed it. The new parameter is in
 Change Parameters and in the lists at once. In a sketch, Undo takes it
 back. In a feature panel it stays when you cancel the panel. The
@@ -2424,7 +2540,7 @@ for example to edit them in a spreadsheet or to use the same values in
 another design.
 
 **Export.** In **Change Parameters**, click **Export...** and choose a
-file. Mitcad writes one row for each parameter: `name`, `kind` (user,
+file. MitCad writes one row for each parameter: `name`, `kind` (user,
 model or reference), `unit` (empty for a number without a unit),
 `expression`, `value` (a number in the unit of the parameter), `comment`,
 `favorite` (`true` or `false`), and the limits of the parameter: `min`,
@@ -2432,7 +2548,7 @@ model or reference), `unit` (empty for a number without a unit),
 and `strict` (`true` or `false`). The file is UTF-8 text. Numbers have a
 decimal point. A field with a comma is in quotes.
 
-**Import.** Click **Import...** and choose a file. Mitcad reads its own
+**Import.** Click **Import...** and choose a file. MitCad reads its own
 CSV files and also the parameter table CSV of the `.f3d` application
 (the header `Name,Unit,Expression,Value,Comments,Favorite`). Before
 anything changes, the **Import Parameters** window shows each row of the
@@ -2458,10 +2574,10 @@ file and what the import does with it:
 
 The **Limits** column shows the limits of each parameter after the
 import, and the **Value** column says when a limit changes the value.
-A row can use a parameter of a later row. A name that Mitcad cannot use,
+A row can use a parameter of a later row. A name that MitCad cannot use,
 such as `mil` (a unit), gets a new name such as `mil_1`, and the
 expressions that use it follow. When an expression does not work (an
-unknown name, a wrong unit, a circular reference), Mitcad uses the number
+unknown name, a wrong unit, a circular reference), MitCad uses the number
 in the `Value` column and says why. Click **Import** to import, or
 **Cancel** to keep the design as it is. The import is one step to undo.
 You cannot import while a sketch or a command panel is open.
@@ -2520,14 +2636,14 @@ in the shaded and wireframe views. The colour is stable, and all
 occurrences of the component share it. It temporarily replaces the
 colours of the bodies and faces. Component Colors is a user preference.
 It does not change the appearances, the exports or the design. If you
-enable it in the rendered view, Mitcad leaves the rendered view. If you
-enter the rendered view, Mitcad sets Component Colors to off.
+enable it in the rendered view, MitCad leaves the rendered view. If you
+enter the rendered view, MitCad sets Component Colors to off.
 
 ### Materials
 
 A material tells what a body is made of: its density, which gives the
 mass, its appearance, and its print settings for 3D printing (the
-filament type, the temperatures, the cooling, and so on). Mitcad has
+filament type, the temperatures, the cooling, and so on). MitCad has
 built-in materials: Steel, Stainless Steel, Cast Iron, Aluminum, Copper,
 Brass, Titanium, ABS Plastic, PLA Plastic, Nylon, Polycarbonate, Glass
 and Water.
@@ -2579,11 +2695,11 @@ in your library, Delete removes it from there ("Delete Shop PETG from
 My library? This design keeps using it."): the design keeps it as its
 own, and Save to shows again.
 
-When you changed a material of your library in another design, Mitcad
+When you changed a material of your library in another design, MitCad
 asks once, when this design uses the material or you edit it: "Shop PETG
 was changed in another design. Use the changes or keep this design's
 settings?" **Use the changes** takes them into this design; **Keep
-this design's settings** keeps them, and Mitcad does not ask again
+this design's settings** keeps them, and MitCad does not ask again
 until the material changes again.
 
 **Material...** in the context menu of a body (in the Browser or in the
@@ -2595,7 +2711,7 @@ bodies** gives the material to each of them in one step; on a body that
 is not selected, the menu is for that body only. When the bodies have
 different materials, nothing is selected at first ("2 materials" beside
 Assign) until you choose one. If you set the appearance of the body
-yourself, Mitcad asks first:
+yourself, MitCad asks first:
 
 - **Replace** gives the body the appearance of the material.
 - **Keep** keeps the appearance that you set. The body gets only the
@@ -2657,7 +2773,7 @@ of 3D Print, above Printer and Process, reads a
 slicer's settings: a 3MF project of Bambu Studio, OrcaSlicer, QIDI
 Studio, PrusaSlicer or UltiMaker Cura, a preset or an exported bundle of
 Bambu Studio, OrcaSlicer or QIDI Studio, or a configuration or config
-bundle of PrusaSlicer. Mitcad reads the settings only, never the
+bundle of PrusaSlicer. MitCad reads the settings only, never the
 geometry. The printer and the process come into the design, and the
 design uses them. A material for each filament is added to Materials. A
 short line under the button says so, for example "plate.3mf imported",
@@ -2756,7 +2872,7 @@ between the appearances and the texture sources. The sources are
 
 *Local Folders* are the folders that you add in Preferences › Textures.
 **Add…** chooses a folder, and **Remove** takes the selected folders off
-the list. Mitcad also searches the subfolders.
+the list. MitCad also searches the subfolders.
 
 A material in a local folder is a set of PNG or JPEG images. A suffix
 in the name of each image says which map the image holds:
@@ -2769,7 +2885,7 @@ in the name of each image says which map the image holds:
 | Metalness | `_metal` |
 | Ambient occlusion | `_ao` |
 
-The base colour is necessary. The other maps are optional. Mitcad
+The base colour is necessary. The other maps are optional. MitCad
 leaves out normal maps in the DirectX convention (`_nor_dx`). The
 images of one material have the same name before the suffix, for
 example `oak_diff_2k.jpg` and `oak_nor_gl_2k.png`. A material can also
@@ -2785,12 +2901,12 @@ Design. The materials show as thumbnails.
 To use a material from a local folder:
 
 1. Select the material.
-2. Select a resolution. Mitcad offers the resolution that you selected
+2. Select a resolution. MitCad offers the resolution that you selected
    last, at first 2k. The line next to the resolution says how much
    space the images take.
 3. Click **Use**.
 
-The material becomes a new appearance of the design. Mitcad embeds all
+The material becomes a new appearance of the design. MitCad embeds all
 its images in the design file. Thus the design opens on any computer
 without the folder. An image that the design embeds already is kept
 once. The texture is 100 mm wide, and its height follows the
@@ -2805,23 +2921,23 @@ selected. Thus **Assign** gives it to the selection.
 [Poly Haven](https://polyhaven.com). All of them are under the CC0
 licence (`CC0-1.0`). The licence permits any use and asks for no
 attribution. Thus you can embed the textures in designs and share the
-designs. Mitcad searches the textures through the public API of
-Poly Haven. Mitcad is not made or endorsed by Poly Haven.
+designs. MitCad searches the textures through the public API of
+Poly Haven. MitCad is not made or endorsed by Poly Haven.
 
-Mitcad uses the internet only when you permit it. The first time that
-you select an online source, Mitcad asks. If you click **No**, Mitcad
+MitCad uses the internet only when you permit it. The first time that
+you select an online source, MitCad asks. If you click **No**, MitCad
 asks for nothing. The setting *Allow texture sources on the internet*
 in Preferences › Textures changes the choice later.
 
-When you select a texture of Poly Haven, Mitcad shows its resolutions
+When you select a texture of Poly Haven, MitCad shows its resolutions
 with their download size. **Use** downloads only the maps of that
 resolution. These are the base colour, normal, roughness, metalness and
 ambient occlusion maps, where the texture has them. The texture has its
 real size. Poly Haven gives the size in metres. The source records the
 page of the texture and its licence.
 
-Mitcad keeps the list of textures, the thumbnails and the downloads in
-the texture cache. Thus Mitcad asks Poly Haven again only now and then.
+MitCad keeps the list of textures, the thumbnails and the downloads in
+the texture cache. Thus MitCad asks Poly Haven again only now and then.
 If Poly Haven cannot be reached, the texture list says why. The other
 sources continue to work.
 
@@ -2837,8 +2953,8 @@ does the same. Screenshots show the view as it is. The ghost display
 and its preference are described in
 [Components](#components).
 
-If you enter the rendered view, Mitcad sets View › Component Colors to
-off. If you enable Component Colors, Mitcad leaves the rendered view.
+If you enter the rendered view, MitCad sets View › Component Colors to
+off. If you enable Component Colors, MitCad leaves the rendered view.
 
 **View › Render Environment** sets how the rendered view lights and
 shows the design. The command is also in Visual Style and Environment.
@@ -2851,13 +2967,13 @@ It has these settings:
 | The ground | Shadows, reflections and the height of the ground |
 | The film | The exposure, and Standard, Filmic or Neutral |
 
-Mitcad keeps these settings in the design and saves them with it. Each
+MitCad keeps these settings in the design and saves them with it. Each
 change is a step of Undo.
 
 ### Lights
 
 The Lights page of Render Environment adds lights of your own. A light
-is a point, spot, area or sun light. Mitcad keeps the lights in the
+is a point, spot, area or sun light. MitCad keeps the lights in the
 design and saves them with it. Each change is a step of Undo.
 
 The Power of a point, spot or area light is in watts. A light of 5 W
@@ -2905,7 +3021,7 @@ Render Image works in the background. You can continue to work. The
 dialog shows the image as it refines, the samples and the time left.
 **Render** is the default button. **Cancel** stops the render; Escape or
 **Close** also stops a pending or running render and closes the dialog.
-**Save…** writes the finished image. Mitcad saves these choices with the design too.
+**Save…** writes the finished image. MitCad saves these choices with the design too.
 
 ### Render device
 
@@ -2940,12 +3056,12 @@ occurs when the driver or the kernels of the device are missing, or
 when the device is not there. If the device fails while it renders,
 the CPU also replaces it. For example, the memory of a GPU can run
 out. The CPU gets the bodies, the environment, the view and the samples
-of the failed device, and renders the same view again. Mitcad shows the
+of the failed device, and renders the same view again. MitCad shows the
 reason over the view: "Rendering on the CPU: NVIDIA GeForce GTX 1060
 3GB (CUDA) failed (…)". Render Image and `mitcad-cli render` show the
 reason as a warning.
 
-A GPU can also denoise on the GPU. If such a GPU fails, Mitcad first
+A GPU can also denoise on the GPU. If such a GPU fails, MitCad first
 tries the same GPU with denoising on the CPU. The message is then
 "Denoising on the CPU: Open Image Denoise on NVIDIA GeForce RTX 3080
 (CUDA) failed (…)". Only if that fails too, the CPU replaces the GPU
@@ -2956,7 +3072,7 @@ Open Image Denoise denoises on the GPU when it has a module for that
 GPU. On NVIDIA cards, these are the Turing cards and newer. Otherwise,
 it denoises on the CPU.
 
-Mitcad does not offer several GPUs together, the CPU together with a
+MitCad does not offer several GPUs together, the CPU together with a
 GPU, or OptiX.
 
 The renderer can reach the ray tracing cores of NVIDIA RTX cards only
@@ -2964,7 +3080,7 @@ through NVIDIA OptiX. The licence of OptiX does not fit open source
 software. It permits distribution only in binary form, only for NVIDIA
 hardware and only under an agreement that binds every recipient to its
 terms. Open source software that anyone can download, build, change
-and pass on cannot obey that. Thus Mitcad does not build or ship OptiX.
+and pass on cannot obey that. Thus MitCad does not build or ship OptiX.
 NVIDIA cards render with the CUDA device, which does not use the ray
 tracing cores. As a result, RTX cards render slower than they could.
 
@@ -3007,20 +3123,20 @@ Ground fixes an occurrence. Move/Copy moves components as a timeline
 feature. It is also in the context menu of a component's row and, for a
 selected component, in the context menu of the view. With Point to Point, the Origin Point and the Target Point can
 be on any component: a vertex, a sketch point, a construction point or
-the centre of a circle, picked where the view shows it. Mitcad keeps the
+the centre of a circle, picked where the view shows it. MitCad keeps the
 occurrence that you picked it in, so the point is where that occurrence
 places it, also on the second copy of a component placed twice. When
 that occurrence moves later, the move follows it. The Point of Point to
 Position and the Axis of Rotate work the same way. Insert Component
 inserts another design, linked or as a copy.
-Mitcad reads a linked design again when you open the design that
+MitCad reads a linked design again when you open the design that
 holds it.
 
 **The active component in the view.** While a component other than
-the root is active, Mitcad draws everything outside it as a ghost.
+the root is active, MitCad draws everything outside it as a ghost.
 Outside it are the root's own bodies, the other components, their
 sketches and their construction geometry. A ghost body is see-through
-in its own colour. Ghost lines and planes are pale. Mitcad draws these
+in its own colour. Ghost lines and planes are pale. MitCad draws these
 normally: the active component's sub-components, the sketch that you
 edit and the origin's planes.
 
@@ -3029,7 +3145,7 @@ highlights. Examples are a face to sketch on, a face to project and a
 measurement. A click takes the active component's own item under the
 cursor first. This occurs also where a ghost lies in front of that
 item. Thus, to pick a ghost, click where only the ghost lies. When you
-activate the root, or undo the activation, Mitcad draws everything
+activate the root, or undo the activation, MitCad draws everything
 normally again.
 
 Two settings on the Display page of Tools › Preferences set each of
@@ -3089,7 +3205,7 @@ the policy.
 
 **Modelled bodies in the root.** A design often starts with sketches
 and features in the root. Components come later. When you make a
-component in a root that has modelled bodies, Mitcad asks first. This
+component in a root that has modelled bodies, MitCad asks first. This
 occurs with New Component, Create Components from Bodies and the New
 Component operation of a feature. The question has three answers:
 
@@ -3134,13 +3250,13 @@ body. A move of the destination takes the body along.
 Some features work on bodies that would end up in different
 components. Examples are a combine, a cut through both bodies and a
 sketch on a face of another body. Such a feature cannot go with only
-one of the bodies. Mitcad lists such features and offers to keep those
+one of the bodies. MitCad lists such features and offers to keep those
 bodies together. Each move is one undo step.
 
 **Move a component to another parent.** If a component is active when
 you make a new component, the new one is inside it. You can move it
 out. **Move to Component...** on its row in the browser lists the root
-and the other components by their full paths. Select one. Mitcad moves
+and the other components by their full paths. Select one. MitCad moves
 the component, with everything in it, under the one that you selected.
 This changes the structure only. To move the component in space, use
 Move/Copy, which is also in the context menu of its row.
@@ -3204,7 +3320,7 @@ You can also select the row's type:
 - **Insert**: a pin into a hole. Lock Rotation keeps its turn.
 - **Insert (Axis)**: the depth stays free.
 
-Add Constraint adds rows and does not close the panel. Mitcad solves
+Add Constraint adds rows and does not close the panel. MitCad solves
 the rows together with the joints. The set is one timeline feature.
 Its rows are under it in the Joints folder.
 
@@ -3283,11 +3399,11 @@ example is FireRating with the values EI30, EI60 and EI90.
 The source says where the value came from: you, an import (`rvt`,
 `ifc`, `ipt`, `f3d`), a library part or the design (`computed`).
 
-To change a value in place, double-click it or press F2. Mitcad reads
+To change a value in place, double-click it or press F2. MitCad reads
 lengths and other quantities in the design's units, unless you type a
 unit (`1.2 m`, `500 g`). For a value of an own type with permitted
 values, or a yes/no value, select the value from a list. If you change
-an imported value, Mitcad keeps the value that the source gave. The
+an imported value, MitCad keeps the value that the source gave. The
 source column then says *edited*, and the tooltip shows the original.
 
 Add... adds a property to one of the levels. Remove removes one. Type
@@ -3324,7 +3440,7 @@ hold:
 - An `.f3d` dump's part numbers and descriptions go on its components.
 
 In an `.rvt` file, lengths, areas, volumes, angles and masses are
-imported as those quantities. Mitcad shows them in the design's units.
+imported as those quantities. MitCad shows them in the design's units.
 A wall's width of 200 mm shows as 200 mm, not as the file's 0.656
 feet. A number whose kind the file does not tell is marked `internal
 units`, as the file keeps it.
@@ -3447,10 +3563,10 @@ from the clicks.
 The result is ordinary design content. Each placed item is a component
 of its own. It has its occurrence, its features and its joint on the
 timeline. You can edit it with the Solid tab's commands, for example a
-hole sketched on a profile, or a cut. Mitcad saves it in the design and
+hole sketched on a profile, or a cut. MitCad saves it in the design and
 opens it again as it was.
 
-The components come from Mitcad's parts library. To get the library, add it
+The components come from MitCad's parts library. To get the library, add it
 and fetch it in Tools › Libraries, or use Update in Insert from Library.
 Each component lists its supplier and part number. A component placed once stays in
 the design. Thus you need no library to place more of it.
@@ -3479,7 +3595,7 @@ tile has the keyboard, Enter or Space also opens it. The
 - Find the profiles this design already uses in *In this design*
 
 The picker opens with the system of the profile you selected last. Click
-a picture. Mitcad selects that profile, and the preview shows it at
+a picture. MitCad selects that profile, and the preview shows it at
 once. The view stays yours to click in. The picker closes with the
 command unless you pin it. A pinned picker stays open. It shows the components
 of the next Build command that selects one (Panel, Linear Part,
@@ -3510,7 +3626,7 @@ The click fills **Offset** and **From** (End A, End B or Middle):
 
 The profile stays bound to that place. When the profile it is on becomes
 longer, one flush with end B stays flush with end B. One on the middle
-stays on the middle. When you type an offset, Mitcad moves the profile
+stays on the middle. When you type an offset, MitCad moves the profile
 from the same reference. From end A the reference is its near face. From
 end B it is its far face, and from the middle it is its centre. When you
 change **From**, the profile stays where it is, and the panel shows its
@@ -3518,14 +3634,14 @@ offset from the new reference. A new click replaces both.
 
 **Tilt** leans the profile along the profile it stands on. A positive
 value leans it towards that profile's end B, a negative value towards
-end A. The limit is 80 degrees. 0 stands square. Mitcad cuts its foot to
+end A. The limit is 80 degrees. 0 stands square. MitCad cuts its foot to
 lie on the side. An automatic length ends flush on the face it meets.
 
 On an end: a click on a profile's end face puts the new profile on that
 end. The click decides the direction. In the middle of the end face, the
 new profile continues straight on. Near an edge, it turns towards that
 edge (a corner), in the profile's own axes. With the mouse over an end
-face, the preview shows which before you click. Mitcad marks the face's
+face, the preview shows which before you click. MitCad marks the face's
 zones (*straight*, *turn +X*, ...). **Direction** changes it afterwards.
 The options are Straight, or one of the four sides. When the profile
 turns, its side is named by the axis it runs along (+X, -Y, ...).
@@ -3533,7 +3649,7 @@ turns, its side is named by the axis it runs along (+X, -Y, ...).
 A corner lies in the profile's plane with its outer faces flush. By
 default (Mitre *Auto (none)*) the new profile sits on the end face. Its
 end is flush with the outer side, and both ends are square. With Mitre
-*Shared*, Mitcad cuts both profiles on the bisector, and their outer
+*Shared*, MitCad cuts both profiles on the bisector, and their outer
 corners meet. The corner's **Offset** moves the new profile's end from
 that outer side towards the turn. A shared mitre meets only at 0. Thus at
 any other offset, Shared is not offered. **Mitre** can also cut only the
@@ -3591,7 +3707,7 @@ generic panel takes any thickness.
 ### Connect
 
 **Connector** places a connector at a junction. With the mouse over a
-profile, Mitcad marks the places where it meets other profiles (L, T,
+profile, MitCad marks the places where it meets other profiles (L, T,
 cross, inline). Connected junctions say so. *Show All Junctions* marks
 every one. Click a profile near a junction, or select the junction in
 the list.
@@ -3611,7 +3727,7 @@ The picker follows the junction you move on to.
 **Connect** places the selected connector with its nuts and screws and
 the end machining it needs, for example a bore in the profile's end.
 Then it moves on to the next junction. When you remove a connector,
-Mitcad removes what it added.
+MitCad removes what it added.
 
 At a timber junction the connector is a wood fastener or a joint. A wood
 fastener has a count of screws or nails in a row along the contact, and
@@ -3684,11 +3800,11 @@ where the row goes:
 **Spacing** is a centre distance or a gap between boards. A centre
 distance is for studs, joists and rafters (400 mm). A gap is for a deck,
 a fence or cladding (5 mm). With a gap, **Last Board** sets the result:
-Mitcad cuts the last board to what is left, or spreads the gaps evenly.
+MitCad cuts the last board to what is left, or spreads the gaps evenly.
 
 In **Two points** mode, **Start** is a plane or a face the member lies
 on, or another member. Another member's ends, sides and centre lines
-snap. **End** is where the member ends. Mitcad moves the end onto the
+snap. **End** is where the member ends. MitCad moves the end onto the
 start's plane. Shift+click places the member.
 
 **Lie** lays a member placed by two points, over faces or on the ground.
@@ -3696,7 +3812,7 @@ start's plane. Shift+click places the member.
 the wider side across it. Tab turns it.
 
 **Spacing Set** (Modify) changes a row afterwards. Select one of its
-members. Change its distance, count or the members' size. Mitcad lays
+members. Change its distance, count or the members' size. MitCad lays
 the members out again.
 
 ### Timber frames
@@ -3735,25 +3851,25 @@ meets* ends the wall at the first wall frame or other face that its run
 reaches. The wall then butts against it. An End that you click has
 priority. When you type a Length, Length changes to *Typed length*. The
 panel shows what the run met and the length of the wall. It also shows
-them when Mitcad cannot make the wall.
+them when MitCad cannot make the wall.
 
 A plate that is longer than the longest timber is made of pieces. The
 pieces are butted end to end, and each joint is over a stud. Where no
-stud is near, Mitcad adds a backing stud. With two top plates, the
+stud is near, MitCad adds a backing stud. With two top plates, the
 joints are one stud spacing apart. The panel lists the joints, and the
 cut list shows the pieces.
 
 A **Floor / Roof** frame of Kind **Floor or ceiling** fills a rectangle.
 Click two opposite corners, or give Length and Width. The frame gets rim
 joists all round and joists at the spacing (400 mm). It gets a row of
-**Blocking** if you want it. Mitcad frames stair **Openings** (in the
+**Blocking** if you want it. MitCad frames stair **Openings** (in the
 Openings window) with doubled trimmers and headers.
 
 A **Floor / Roof** frame of Kind **Roof** goes on two walls. Click a
 member of each of two parallel wall frames. Select **Gable** or
 **Mono-pitch**, the **Pitch** and the **Overhang**. The roof gets
 rafters at the spacing (600 mm). The rafters are plumb cut at their
-ends. Mitcad notches them with a birdsmouth over each wall's top plate.
+ends. MitCad notches them with a birdsmouth over each wall's top plate.
 A gable roof also gets a ridge board.
 
 **The Openings window.** The **Openings** window lists a wall's windows
@@ -3803,7 +3919,7 @@ screw. They are sized from the members and driven flush with the wood.
 The pan-head connector screw is for metal connectors: it fixes them. The
 Timber tools remember your selection. Timber's **Spacing** has the same
 **Fasteners** row. It is off at first. When it is on,
-Mitcad fastens each member of the row to the members it stands on,
+MitCad fastens each member of the row to the members it stands on,
 reaches or crosses.
 
 **Swap Fastener** (Build, Connect) changes the fasteners you selected
@@ -3822,12 +3938,12 @@ timber, grouped by size.
 **Timber Frame** (Modify) changes a frame afterwards. Select one of its
 members. Change what Wall or Floor / Roof showed for it: its length,
 height, spacing, openings, or a roof's pitch. Or change the members'
-size. Mitcad lays the frame out again in one step. An undo takes it
+size. MitCad lays the frame out again in one step. An undo takes it
 back. A roof on a wall follows the wall.
 
 The Build commands work through live MCP as the other panels do
 ([docs/mcp.md](mcp.md)). The model's commands behind them are in
-[commands.md](../core/model/src/api/commands.md), *Build: profile
+[commands.md](../core/model-api/src/commands.md), *Build: profile
 assemblies*.
 
 ## More features
@@ -3911,7 +4027,7 @@ continuity:
 - G1: the blend is tangent to the face beside the edges
 - G2: the blend also has the curvature of the face beside the edges.
 
-A bulge makes the blend fuller or flatter. With Stitch, Mitcad sews the
+A bulge makes the blend fuller or flatter. With Stitch, MitCad sews the
 blend onto both bodies.
 
 **Boundary Surface** fills a loop of sketch curves and open edges. If
@@ -3936,7 +4052,7 @@ a guide rail. Such a surface opens in no panel. It stays as it is. But the
 timeline still suppresses it, rolls it back and deletes it.
 
 The details are in
-[commands.md](../core/model/src/api/commands.md#surface-modelling).
+[commands.md](../core/model-api/src/commands.md#surface-modelling).
 
 ### Patch, Stitch and Thicken
 
@@ -3953,7 +4069,7 @@ body for each region. Patch can also fill a closed loop of a body's
 edges with a new surface body. When the loop lies in a plane, the new
 body is a flat face. Otherwise the new body is a surface fitted to the
 edges. The loop can be edges you select, or an opening of a surface
-body. An opening is the free edges of the body, which Mitcad finds by
+body. An opening is the free edges of the body, which MitCad finds by
 the faces around the opening.
 
 The patch can meet the faces beside the loop in three ways:
@@ -3974,14 +4090,14 @@ stitched with a patch of its opening becomes a solid box.
 **Thicken** makes surface bodies solid with a wall along the normals of
 their faces. With a negative thickness, the wall goes the other way.
 Thicken can also put half of the wall on each side. Like an extrusion,
-the result is a new body, or Mitcad joins it to, cuts it from or
+the result is a new body, or MitCad joins it to, cuts it from or
 intersects it with other bodies. The surfaces stay.
 
 The faces that these features make have names that later features
 follow. A patch's face gets its name from the patch. The front, back and
 side faces of a thickened wall get their names from the surface they
 come from. The details are in
-[commands.md](../core/model/src/api/commands.md#patch-stitch-and-thicken).
+[commands.md](../core/model-api/src/commands.md#patch-stitch-and-thicken).
 
 The panels of Patch, Stitch and Thicken accept what the panel shows: a
 patch of profiles, or a patch of edges you select with one continuity
@@ -4020,12 +4136,12 @@ rule. The timeline also shows a warning when a wall is outside the walls
 of the rule.
 
 A boss, a snap fit and a rest grow out of the face from the point you
-click. You can type the coordinates of the point. Mitcad measures the
+click. You can type the coordinates of the point. MitCad measures the
 sizes at the face. A draft makes the walls narrower from the face. A lip
-or a groove must have a flat face around one opening. Mitcad refuses a
+or a groove must have a flat face around one opening. MitCad refuses a
 face whose inner edges are the feet of features that stand on it. The
 model's definitions are in
-[commands.md](../core/model/src/api/commands.md#plastic-part-features).
+[commands.md](../core/model-api/src/commands.md#plastic-part-features).
 
 ### Placing a feature
 
@@ -4080,7 +4196,7 @@ line leads back to it.
 When you first select where a feature goes, the view moves the feature out
 from under the panel if it is hidden there.
 
-A field that says *Auto* when it is empty is worked out by Mitcad. The
+A field that says *Auto* when it is empty is worked out by MitCad. The
 grey text in the field shows the value it uses. Type a value to use
 your own, or clear the field to go back to Auto.
 
@@ -4102,7 +4218,7 @@ involute teeth from the values you give. Its **Type** selects the gear:
   right-handed unless you set **Left-Handed**. The module of a helical
   gear is the normal module.
 - **Herringbone:** two helical halves of opposite hands. An optional
-  **Gap** lies between the halves. Mitcad cuts the gap a quarter module
+  **Gap** lies between the halves. MitCad cuts the gap a quarter module
   below the roots.
 - **Ring:** an internal gear. Its teeth are inside a rim of the **Rim
   Thickness**. The teeth are straight or helical.
@@ -4178,15 +4294,15 @@ To let meshed gears turn together, do these steps:
 2. Give each gear a joint to its frame: a revolute joint on its bore, or
    a slider for a rack.
 3. Press OK on a gear that meshes with another gear. If both gears have
-   a joint, Mitcad links their joints with a
+   a joint, MitCad links their joints with a
    [motion link](#motion-links). The motion link is a gear link, an
    internal link or a rack and pinion link.
 4. If the joints came after the gears, edit the gear that meshes and
-   press OK. Mitcad then links the gears.
+   press OK. MitCad then links the gears.
 
 A gear exports as any body (STL, 3MF, STEP). The design keeps the
 definition of the gear. The model's definition is in
-[commands.md](../core/model/src/api/commands.md#gears).
+[commands.md](../core/model-api/src/commands.md#gears).
 
 ### Pulleys
 
@@ -4200,7 +4316,7 @@ pulley:
 - **Toothed Idler:** teeth on a bearing bore.
 
 The **Belt Profile** is GT2 2 mm, GT2 3 mm, HTD 3M, HTD 5M, T5 or XL.
-Mitcad makes the grooves of the profile from its published dimensions.
+MitCad makes the grooves of the profile from its published dimensions.
 The pitch diameter is the number of teeth times the pitch, divided by
 pi. The belt's pitch line runs on this diameter. The outside diameter
 is smaller by twice the pitch line offset of the profile. HTD 5M needs
@@ -4298,10 +4414,10 @@ The panel shows the results of the values:
 - With Check Belt: the belt, in the three lines under Check Belt
 
 The result of a pulley keeps a mount frame `bore` on its axis, as a
-pulley from the library has. Joints can use this frame. Mitcad makes no
+pulley from the library has. Joints can use this frame. MitCad makes no
 belt body. A pulley exports as any body (STL, 3MF, STEP). The model's
 definition is in
-[commands.md](../core/model/src/api/commands.md#pulleys).
+[commands.md](../core/model-api/src/commands.md#pulleys).
 
 ### Gear Pair and Belt Drive
 
@@ -4344,7 +4460,7 @@ make two bodies that work together between two shafts or axes:
    note at the bottom gives a gear pair's profile shifts and an undercut,
    or a belt drive's belt length and teeth in mesh; its centre distance
    is in the heading of the Travel column.
-5. Set the **Face Width** or the **Belt Width**, then press OK. Mitcad
+5. Set the **Face Width** or the **Belt Width**, then press OK. MitCad
    makes both bodies on their axes. On a shaft, the bore has the
    diameter of the shaft plus the **Bore Clearance**.
 
@@ -4400,7 +4516,7 @@ The print values have defaults for FDM printers:
 
 The panel shows the result of the values: the pitch diameter, the
 elements, the walls and the smallest gap. If the values do not print,
-the panel shows an error and Mitcad changes nothing by itself. For
+the panel shows an error and MitCad changes nothing by itself. For
 example: too many elements for the pitch circle, a wall thinner than
 the smallest wall, a clearance below 0.2 mm, an overhang steeper than
 45 degrees, a ball that is too small, or airsoft balls that do not fit
@@ -4412,7 +4528,7 @@ the normal of what you select (see [Placing a feature](#placing-a-feature)).
 **Place On** a shaft or a hole puts the bearing on the shaft or into the
 hole. Select the end
 edge or the round side face of a shaft, or the rim or the wall of a
-hole. On a shaft, Mitcad selects the standard size whose bore fits the
+hole. On a shaft, MitCad selects the standard size whose bore fits the
 shaft; in a hole, the size whose outside diameter fits the hole. The
 size fits when its diameter is within the **Fit Clearance** (0.5 mm) of
 the shaft or the hole. You can select another size after that. On a
@@ -4425,7 +4541,7 @@ the bearing follows it.
 **Groove Into** cuts the
 raceway into a round face of a body instead, for example the bore of a
 pulley or a wheel, or the outside of a shaft. That body is then one race.
-Mitcad makes the other race as a new body, in the same component, and
+MitCad makes the other race as a new body, in the same component, and
 fills the gap with the elements. **Offset** is the distance along the
 face from its end; with 0, the bearing is in the middle of the face.
 
@@ -4443,7 +4559,7 @@ leave the balls out: you buy them. The **Parts List** shows the balls to
 buy, `Airsoft ball 6 mm`, with the number for all the bearings.
 
 The model's definition is in
-[commands.md](../core/model/src/api/commands.md#printable-bearings).
+[commands.md](../core/model-api/src/commands.md#printable-bearings).
 
 ### Boundary Fill
 
@@ -4453,7 +4569,7 @@ some of the tools and outside the others. Examples of a cell are the
 space that two bodies share where they overlap, and the part of one body that
 another body does not reach. You select a cell by a point inside it. You
 can select as many cells as you want. When the tools cut the space of a
-cell apart, the cell is several separate pieces. Mitcad fills the whole
+cell apart, the cell is several separate pieces. MitCad fills the whole
 cell.
 
 The operations of Boundary Fill are:
@@ -4480,7 +4596,7 @@ cell once.
 
 Note: Boundary Fill has no panel yet. You make it through the model's
 commands: scripts, `mitcad-cli run` or MCP
-([commands.md](../core/model/src/api/commands.md#boundary-fill)). The
+([commands.md](../core/model-api/src/commands.md#boundary-fill)). The
 `.solidcraft` import also makes it. You edit, suppress and undo it in
 the timeline like any feature.
 
@@ -4504,7 +4620,7 @@ references when the box grows or becomes smaller.
 
 Note: Bounding Solid has no panel yet. You make it through the model's
 commands: scripts, `mitcad-cli run` or MCP
-([`bounding_solid`](../core/model/src/api/commands.md#bounding_solid)).
+([`bounding_solid`](../core/model-api/src/commands.md#bounding_solid)).
 The `.solidcraft` import also makes it.
 
 ### Convert Mesh
@@ -4530,14 +4646,14 @@ of its facets lies in the tolerance of the circle. Otherwise the hole or
 the rod stays flat facets. Straight runs of corners become one flat face.
 
 The mesh must be closed, and every triangle must face out. The mesh
-must have at most 50000 triangles. Mitcad refuses a mesh that is not one profile
+must have at most 50000 triangles. MitCad refuses a mesh that is not one profile
 extruded straight, with a message. Examples are a tapered, twisted or
-stepped body, a sphere, and a freeform scan. Then Mitcad converts
+stepped body, a sphere, and a freeform scan. Then MitCad converts
 nothing.
 
 The new faces have names like the faces of an extrusion: by the edges of
 the section in turn
-([commands.md](../core/model/src/api/commands.md#convert-mesh)).
+([commands.md](../core/model-api/src/commands.md#convert-mesh)).
 
 ### Sheet metal
 
@@ -4588,7 +4704,7 @@ model's commands (scripts, `mitcad-cli run`, MCP) and by the
   select. If you also select bend edges, the flat faces reached across
   those edges become panels bent at those edges. Thus a thin-walled
   channel or bracket keeps its walls, and a solid block becomes the
-  sheet of its outer faces. Mitcad refuses faces that meet at an edge
+  sheet of its outer faces. MitCad refuses faces that meet at an edge
   that is not a bend.
 - **Perforate** cuts a field of round holes over a whole sheet, on a
   staggered or a square grid. A margin keeps the holes clear of the
@@ -4601,24 +4717,24 @@ has a Flat Pattern like any other sheet. The details are in
 
 ## Files and projects
 
-Mitcad saves a design as a `.mitcad` file. A design is a single file, or
+MitCad saves a design as a `.mitcad` file. A design is a single file, or
 it is part of a project. A **project** is a folder whose designs keep
-their versions. This chapter tells how Mitcad saves and recovers
+their versions. This chapter tells how MitCad saves and recovers
 designs, how projects and versions work, and how you share a project
 with other people.
 
 ### Saving and recovery
 
 A design is a `.mitcad` file. Outside a project, the design is a
-single-file design: Mitcad stores its imported bodies inside the file.
-In a project, Mitcad stores the imported bodies in the project's folder
+single-file design: MitCad stores its imported bodies inside the file.
+In a project, MitCad stores the imported bodies in the project's folder
 instead (refer to [Versions](#versions)).
 
 A `*` in the window title shows that the design has unsaved changes.
 **New**, **Open** and the close of a design ask about unsaved changes
 first. If another program changed the file after you opened it, **Save**
 asks before it writes over the file. If you open a file that is not a
-valid design, Mitcad names the place of the error.
+valid design, MitCad names the place of the error.
 
 **Autosave** writes the unsaved changes every 5 minutes to a recovery
 folder in your user data. It never writes next to your design. The
@@ -4628,10 +4744,10 @@ settings are on the General page of **Tools › Preferences**:
 - The interval, 1 to 60 minutes
 - **Open Folder**, which opens the recovery folder
 
-When you save, when you close the design and when Mitcad ends normally,
-Mitcad removes the autosaved design. After a crash, Mitcad offers the
+When you save, when you close the design and when MitCad ends normally,
+MitCad removes the autosaved design. After a crash, MitCad offers the
 autosaved designs at the next start. **Recover Unsaved Work** lists
-the designs with the time that Mitcad autosaved them. The dialog has
+the designs with the time that MitCad autosaved them. The dialog has
 three buttons:
 
 - **Restore** opens the selected design as the file it came from. Its
@@ -4640,7 +4756,7 @@ three buttons:
 - **Later** keeps the designs for the next start, or for **File ›
   Recover Designs**.
 
-If you select **Discard**, Mitcad deletes the selected autosaved
+If you select **Discard**, MitCad deletes the selected autosaved
 designs. You cannot get them back.
 
 ### Versions
@@ -4652,7 +4768,7 @@ that other people share (refer to [Sharing a
 project](#sharing-a-project)).
 
 Every **Save** (Ctrl+S) of a design in a project records a version.
-Mitcad names the version after what you did since the last save, for
+MitCad names the version after what you did since the last save, for
 example `Save bracket.mitcad: Add Fillet1, Change d3`. **File › Save
 with Description…** (Ctrl+Alt+S) records a version with a description
 that you type. A save without a change records no version. A save after
@@ -4666,27 +4782,27 @@ dialog has these fields:
   the first such folder that is free. If the folder is a project
   already, **Create** becomes **Open It**. Designs in the folder become
   the project's designs, in its first version. Other files stay in the
-  folder, and Mitcad does not version them. A folder inside another git
+  folder, and MitCad does not version them. A folder inside another git
   repository gets a repository of its own, and a warning says so.
 - **Storage:** Local, or Cloud with the Cloud section (refer to [Sharing
   a project](#sharing-a-project)).
 - **Author:** the name and the email address that every version records.
-  Mitcad fills them in from git's settings, or else from Preferences ›
-  Cloud. Mitcad keeps them in the project's repository. The email
+  MitCad fills them in from git's settings, or else from Preferences ›
+  Cloud. MitCad keeps them in the project's repository. The email
   address is part of every version.
 
 **Create** makes the folder, its repository and the project's first
 version. The project starts empty, or with the designs that its folder
-had. Mitcad shows the project in the **Projects panel**, ready for **New
+had. MitCad shows the project in the **Projects panel**, ready for **New
 Design** (refer to [The Projects panel](#the-projects-panel)). If you
 cancel, the folder stays as it was.
 
 **Open Project.** **File › Project › Open Project…** opens a folder. If
-the folder is a project, Mitcad shows it in the Projects panel. Then it
+the folder is a project, MitCad shows it in the Projects panel. Then it
 opens the design that you opened last in that project, or else the
 newest design. An empty project opens no design. An older project
 without versions gets its versions at once. If the folder is a git
-repository, a folder of designs or an empty folder, Mitcad goes to New
+repository, a folder of designs or an empty folder, MitCad goes to New
 Project with the folder filled in. A project inside another git
 repository opens without versions.
 
@@ -4744,7 +4860,7 @@ list does not have. Every save of the design in a project records a
 version. Save with Description, Version History and Project Settings
 offer Save to Project for a design in no project.
 
-Note: Older versions of Mitcad had **File › Project › Move to a
+Note: Older versions of MitCad had **File › Project › Move to a
 Project…**. It moved the design out of its folder. A shortcut that you
 gave it now starts Save to Project.
 
@@ -4754,8 +4870,8 @@ settings:
 - The project's display name
 - The project's folder
 - The project's storage, Local or Cloud
-- On this computer: the author, if Mitcad sends each version at once,
-  and how often Mitcad checks the remote. Preferences › Cloud gives the
+- On this computer: the author, if MitCad sends each version at once,
+  and how often MitCad checks the remote. Preferences › Cloud gives the
   defaults.
 
 The **Display name** is the name that the Projects panel shows for the
@@ -4764,19 +4880,19 @@ If you clear it, the default name comes back: a Cloud project's
 repository address such as `github.com/acme/gripper`, or a Local
 project's folder name.
 
-**Save when the file changed outside Mitcad.** If the file changed
-outside Mitcad since you opened it, Save asks first. The change can come
-from another program, another Mitcad or git. Save offers **Save as New
+**Save when the file changed outside MitCad.** If the file changed
+outside MitCad since you opened it, Save asks first. The change can come
+from another program, another MitCad or git. Save offers **Save as New
 Version**, **Save As** or **Compare**. Save as New Version records the
 outside change as a version first. Thus both changes stay in the
 history.
 
-Sometimes Mitcad cannot record the outside change: HEAD is detached, a
+Sometimes MitCad cannot record the outside change: HEAD is detached, a
 merge is in progress, or another program locked the repository's index.
 Then Save stops with an error and leaves the file as it is. Save also
-stops when Mitcad cannot read the version status. Save As still keeps
+stops when MitCad cannot read the version status. Save As still keeps
 your design in another file. If a design was renamed or moved in its
-project outside Mitcad, it keeps its view settings. Its next save
+project outside MitCad, it keeps its view settings. Its next save
 records the rename.
 
 **Git.** A project is an ordinary git repository, so git tools work on
@@ -4790,7 +4906,7 @@ Ctrl+Shift+H) lists the versions of the open design, newest first. Each
 version shows when it was saved, who saved it, its description and what
 it changed, for example `d3 20 mm -> 25 mm, 1 feature modified`. The
 selected version shows its whole description, its id and a preview of
-the view as it was saved on this computer. Below the list, Mitcad
+the view as it was saved on this computer. Below the list, MitCad
 compares the selected version with the version before it, or with the
 open design. The open design includes its unsaved changes. The
 comparison lists parameters, timeline features, sketches, components and
@@ -4803,14 +4919,14 @@ Version History has these buttons:
   "bracket v3". The file and its history stay as they are.
 - **Restore** makes a version the latest again. It records the design of
   that version as a new version, for example `Restore v3 of
-  bracket.mitcad (abc1234)`. The versions since then stay. Mitcad never
+  bracket.mitcad (abc1234)`. The versions since then stay. MitCad never
   rewrites the history.
 - **Save Copy As** writes a version to a file that you select.
 
-Before Restore records the new version, Mitcad saves your unsaved
-changes as a version, or drops them if you select that. Mitcad also
-records a change made to the file outside Mitcad as a version first. If
-Mitcad cannot record one of these as a version, Restore stops with an
+Before Restore records the new version, MitCad saves your unsaved
+changes as a version, or drops them if you select that. MitCad also
+records a change made to the file outside MitCad as a version first. If
+MitCad cannot record one of these as a version, Restore stops with an
 error that says why. Then Restore writes nothing over the file. Unsaved
 changes that Restore already saved stay in the file, without a version
 yet.
@@ -4835,7 +4951,7 @@ Robot arm
 The panel starts shown when you have a project. You have a project when
 you made, opened or cloned one here, or when one is in the projects
 folder. The panel starts hidden when you have no project. When you show
-or hide the panel yourself (View › Projects), Mitcad remembers your
+or hide the panel yourself (View › Projects), MitCad remembers your
 choice.
 
 **Which projects.** The panel lists the projects that you made, opened
@@ -4862,13 +4978,13 @@ shows a lock icon when someone edits it, you elsewhere included. It
 shows a pencil when you edit it here. The open design is in bold. A name
 too long for the panel is shortened in the middle (`mounting-br…rev-b`).
 Its start and its end stay. Its tooltip has the whole name and the
-path. Drag the panel's right edge to make the panel wider. Mitcad
+path. Drag the panel's right edge to make the panel wider. MitCad
 remembers the width in both layouts. The panel reads the projects again
-after a save, after a sync and when Mitcad gets the focus back. Thus
+after a save, after a sync and when MitCad gets the focus back. Thus
 changes made with other programs show then.
 
 **Open.** Open a design with a double-click or with Enter. If the open
-design has unsaved changes, Mitcad asks about them as with Open.
+design has unsaved changes, MitCad asks about them as with Open.
 
 **New Design.** **New Design** adds a design to the selected folder of
 the current project. It is in the toolbar, in the context menu, in
@@ -4880,7 +4996,7 @@ instead. To add a design:
 2. Type the name of the design in the panel.
 3. Press Enter.
 
-Mitcad records the design as a version (`Add parts/bracket.mitcad`) and
+MitCad records the design as a version (`Add parts/bracket.mitcad`) and
 opens it. **New Folder** adds a folder the same way (`Add folder
 parts`).
 
@@ -4894,7 +5010,7 @@ name. You cannot move a design between projects.
 **Delete.** **Delete** (Del) asks first. Then it removes a design or a
 folder as a new version. The project's history keeps the design or the
 folder. A design that is open closes. If no version holds some of its
-changes, Mitcad loses those changes, and the question says so.
+changes, MitCad loses those changes, and the question says so.
 
 **Project Settings.** **Project Settings…** (the settings button of the
 toolbar) opens the settings of the selected project. For a selected
@@ -4910,8 +5026,8 @@ the panel too.
 **Save.** **Save** of a new, untitled design in a project starts in the
 folder that is selected in the panel.
 
-You cannot move or delete a design that someone else locked. Mitcad
-refuses a name that is taken. Mitcad sends each change as it sends a
+You cannot move or delete a design that someone else locked. MitCad
+refuses a name that is taken. MitCad sends each change as it sends a
 saved version.
 
 ### Sharing a project
@@ -4931,7 +5047,7 @@ You get a Cloud project in three ways:
   that exists
 
 **The Cloud section.** Paste the repository's address into **Repository
-address**. Mitcad accepts these forms:
+address**. MitCad accepts these forms:
 
 - The address that your server's clone button shows:
   `https://git.example.org/team/robot-arm.git`,
@@ -4943,14 +5059,14 @@ address**. Mitcad accepts these forms:
 - The `git clone …` line
 - A folder
 
-Any server works. Mitcad reads an address on a host that it does not
-know as `owner/repository` on a Forgejo / Gitea style server. Mitcad
+Any server works. MitCad reads an address on a host that it does not
+know as `owner/repository` on a Forgejo / Gitea style server. MitCad
 uses an address with a port, another SSH user or a deeper path as it is
-(**Other address**). Mitcad refuses a malformed address at once with
+(**Other address**). MitCad refuses a malformed address at once with
 "This is not a valid repository address". It does not give the address
 to git.
 
-**Details** shows how Mitcad read the address and lets you change it:
+**Details** shows how MitCad read the address and lets you change it:
 
 - The **Service**: GitHub, GitLab, Forgejo / Gitea with its server,
   Shared folder, or Other address
@@ -4960,7 +5076,7 @@ to git.
   one
 - **HTTPS** or **SSH**
 
-The address follows what you change in Details. Mitcad reads an address
+The address follows what you change in Details. MitCad reads an address
 pasted into the Server, Owner or Repository field like an address pasted
 into Repository address. `https://gitlab.com/group/sub/robot-arm.git`
 gives the owner `group/sub`. GitHub and Forgejo / Gitea have one owner
@@ -4968,9 +5084,9 @@ level. An address with a part that starts with `~` stays an Other
 address. **Create Repository in Browser…** (under Details) opens the
 service's page for a new repository. On GitHub, the form is filled in,
 also for an organisation. On GitLab and Forgejo, select the owner on the
-page. Mitcad makes an empty shared folder a repository.
+page. MitCad makes an empty shared folder a repository.
 
-**The check of the address.** Mitcad checks the address as you type. It
+**The check of the address.** MitCad checks the address as you type. It
 checks the address again when the dialog gets the focus back, for
 example after you made the repository in the browser. The result is one
 of these:
@@ -4978,11 +5094,11 @@ of these:
 - Empty and ready
 - Files but no project, for example a README. The project goes beside
   the files, and its history after theirs.
-- A Mitcad project. **Open It Instead** opens it.
+- A MitCad project. **Open It Instead** opens it.
 - Not found
 - A problem of the sign-in or of the network
 
-When Mitcad cannot reach the server, **Create as Local for Now** makes a
+When MitCad cannot reach the server, **Create as Local for Now** makes a
 Local project. You can share it later in Project Settings.
 
 **Open from Cloud.** **Open from Cloud** clones a project into a new or
@@ -4996,7 +5112,7 @@ opens as it is (**Open It**). The project shows in the Projects panel
 with its repository's address. It opens the design that you opened last,
 or else the newest design.
 
-**The sign-in.** The sign-in is git's. Mitcad never asks for, keeps or
+**The sign-in.** The sign-in is git's. MitCad never asks for, keeps or
 passes a password or a token. It refuses an address that has one in it.
 Over SSH, git uses your SSH key and its agent. If the server refuses the
 key, **Copy Public Key** puts your key on the clipboard for the
@@ -5004,20 +5120,20 @@ service's **SSH Keys Page**. The key goes to your own user account, also
 for an organisation's repository. Over HTTPS, git uses a credential
 helper. Git Credential Manager comes with Git for Windows.
 
-If this computer does not know the identity of the server yet, Mitcad
+If this computer does not know the identity of the server yet, MitCad
 shows **Trust This Server…**. It shows the fingerprints of the server's
-keys. Mitcad checks them against the keys that GitHub, GitLab and
+keys. MitCad checks them against the keys that GitHub, GitLab and
 Codeberg publish. For another server, compare them with the fingerprints
-that its administrator gives. If you trust the server, Mitcad adds the
+that its administrator gives. If you trust the server, MitCad adds the
 keys to your `~/.ssh/known_hosts`.
 
 **In a Cloud project.** These rules apply in a Cloud project:
 
-- Mitcad sends every version that Save records at once. Project Settings
+- MitCad sends every version that Save records at once. Project Settings
   can set that to off, with Preferences › Cloud as the default. Offline,
   versions wait, and the indicator shows them (`Offline, ↑2 waiting`).
-  Mitcad sends them when it can reach the repository again.
-- Mitcad checks the repository for newer versions when a design opens,
+  MitCad sends them when it can reach the repository again.
+- MitCad checks the repository for newer versions when a design opens,
   every 10 minutes and at the first change after the design opened.
   Project Settings sets how often, or never. The indicator shows newer
   versions (`↓1`). A newer version of the open design shows a notice
@@ -5025,28 +5141,28 @@ keys to your `~/.ssh/known_hosts`.
 - **Sync** (File › Project › Sync, Ctrl+Alt+Y) saves the open design,
   takes the newer versions of the remote and sends your versions after
   them. Thus the history stays one line. If the file of the design
-  changed, Mitcad opens the design again.
+  changed, MitCad opens the design again.
 - When you and someone else both changed a design, **Resolve Sync
   Conflicts** asks what to keep: **Keep mine**, **Take theirs** or
   **Save mine as a copy**. Save mine as a copy is the default: the file
-  becomes theirs, and Mitcad keeps yours next to it as `bracket
+  becomes theirs, and MitCad keeps yours next to it as `bracket
   (conflict copy Your Name 2026-10-05 14.03).mitcad`. **Compare** lists
-  what differs. Mitcad never merges designs, and nothing is lost. The
+  what differs. MitCad never merges designs, and nothing is lost. The
   versions that are left out stay in a backup of the history.
 - **Project Settings** shows the address with **Change…** and **Open in
   Browser**. Change… accepts a new address of the same repository, when
   the repository moved. It refuses another repository. Project Settings
-  shows the state with **Sync Now**. **Local** stops the sync: Mitcad
+  shows the state with **Sync Now**. **Local** stops the sync: MitCad
   removes the remote, and the versions stay here and in the repository.
   Under **For everyone in this project** are the settings that the
-  project's members share. Mitcad records them as a version and sends
-  them. The Mitcad of the other members obeys them after its next sync.
-- Mitcad does not share designs that are linked from outside the
+  project's members share. MitCad records them as a version and sends
+  them. The MitCad of the other members obeys them after its next sync.
+- MitCad does not share designs that are linked from outside the
   project.
 - A repository with **several remotes** (configured with git) syncs with
   the remote that its branch follows. Without one, it syncs with
   `origin`, or else with the only remote. When none of these applies,
-  the indicator says `No remote chosen`. Then Mitcad sends and fetches
+  the indicator says `No remote chosen`. Then MitCad sends and fetches
   nothing, and Project Settings asks which remote to follow (**Remote**
   and **Follow**). `mitcad-cli remote follow` does the same.
 
@@ -5060,11 +5176,11 @@ by default. Under Live updates here, **Another broker** or **Off**
 changes the setting for this computer only. The versions stay in the git
 repository. The broker only says that something changed.
 
-**Trust.** The first time a project wants to connect to a broker, Mitcad
+**Trust.** The first time a project wants to connect to a broker, MitCad
 asks: "Robot arm uses live updates through broker.example.com. Your name
 and the designs you open are sent there." Select **Connect** or **Not
 Now**. Anyone who can send versions to the project can change its
-broker. Thus nothing connects before you answer. Mitcad keeps the answer
+broker. Thus nothing connects before you answer. MitCad keeps the answer
 for that address. Another address asks again. For a plain-text broker
 (`mqtt://`), the question says so: anyone on the network can read its
 messages.
@@ -5072,18 +5188,18 @@ messages.
 **The sign-in.** If a broker wants a user name and a password, a notice
 shows under the toolbar: "Live updates need you to sign in to
 broker.example.com", with **Sign In** and **Not Now**. The design opens
-meanwhile. Mitcad keeps the user name and the password in the system's
+meanwhile. MitCad keeps the user name and the password in the system's
 keychain: Windows Credential Manager, the macOS Keychain, or the Secret
 Service or KWallet on Linux. It never keeps them in the project or in
-Mitcad's settings. They go only to that broker's host and port, and only
-over an encrypted connection (`mqtts://`). Mitcad refuses a password for
-`mqtt://`. Without a keychain, Mitcad keeps them until it closes.
+MitCad's settings. They go only to that broker's host and port, and only
+over an encrypted connection (`mqtts://`). MitCad refuses a password for
+`mqtt://`. Without a keychain, MitCad keeps them until it closes.
 
 **The indicator.** The indicator says `· Live` while the connection is
 up. It says `· Live offline (polling)` while the connection is down.
-Then Mitcad checks the repository on its own again. While live, a
+Then MitCad checks the repository on its own again. While live, a
 version that someone sends shows at once: `↓1`, and the notice of a
-newer version of the open design. While live, Mitcad does not check the
+newer version of the open design. While live, MitCad does not check the
 repository on the timer.
 
 **Test.** **Test** in Project Settings connects to the broker,
@@ -5094,11 +5210,11 @@ lists the steps.
 settings:
 
 - The git program that sends and gets the versions of Cloud projects.
-  Mitcad finds it on `PATH`, on Windows also where Git for Windows
+  MitCad finds it on `PATH`, on Windows also where Git for Windows
   installs itself, or you select it. The sign-in is git's own. Local
   projects need no git program.
 - The default author, used when git has none
-- The defaults of projects: if Mitcad sends each version at once, and
+- The defaults of projects: if MitCad sends each version at once, and
   how often it checks for newer versions
 - If live updates are permitted. When off, no project connects to a
   broker.
@@ -5111,7 +5227,7 @@ settings:
 ### Edit locks
 
 In a Cloud project, a design has one editor at a time. When you open a
-design, Mitcad takes its **edit lock** on the remote. The lock is a
+design, MitCad takes its **edit lock** on the remote. The lock is a
 reference of the repository's own, outside its branches. Anyone else who
 opens the design gets it **read-only** and can ask for the lock. Other
 git tools do not see the locks. A remote that does not accept such
@@ -5119,13 +5235,13 @@ references has no locks, and Project Settings says so.
 
 Locks are on by default. Project Settings sets them to off for everyone.
 Project Settings also sets the idle time (1 to 120 minutes, 10 by
-default) and how often Mitcad reads the remote (5 s to 10 min, 10 s by
-default). While live updates are connected, Mitcad reads the remote
+default) and how often MitCad reads the remote (5 s to 10 min, 10 s by
+default). While live updates are connected, MitCad reads the remote
 every 2 minutes, because live updates tell of every change at once.
 
 **When you open a design.** If the lock is free, the design opens with
 the lock, and the indicator says `Editing`. If the remote has a newer
-version of the design, Mitcad takes that version first, as Sync does. If
+version of the design, MitCad takes that version first, as Sync does. If
 someone else edits the design, it opens read-only with "part.mitcad is
 being edited by Alex (since 13:40, last active 2 min ago)". Select
 **Continue Read-Only** or **Request Edit Access…**. If you opened the
@@ -5133,15 +5249,15 @@ design elsewhere yourself, on another computer or in another window,
 select **Take Over** or **Open Read-Only**. With Take Over, the other
 window becomes read-only and keeps its changes.
 
-Mitcad takes a lock as free when its holder is gone, and tells you whose
+MitCad takes a lock as free when its holder is gone, and tells you whose
 it was. The holder is gone in these cases:
 
-- Its Mitcad ended and did not release the lock
+- Its MitCad ended and did not release the lock
 - It did not answer
 - With live updates, its connection was lost and you said so
 
-When Mitcad cannot reach the remote, the design opens with `Edit lock
-not confirmed (offline)`, and you can edit it. Mitcad takes the lock
+When MitCad cannot reach the remote, the design opens with `Edit lock
+not confirmed (offline)`, and you can edit it. MitCad takes the lock
 when the remote answers. If someone else holds the lock by then, the
 window becomes read-only. **File › Open Read-Only…** opens a design
 without a lock. An older version opened from Version History takes no
@@ -5163,11 +5279,11 @@ copy. The copy opens with a lock of its own.
 
 **While you hold a lock.** A command, an edit, a selection or a change
 of the view keeps the lock active. After the idle time without any of
-these, Mitcad does one of these:
+these, MitCad does one of these:
 
-- With no unsaved changes, Mitcad sends the versions of the design and
+- With no unsaved changes, MitCad sends the versions of the design and
   releases the lock.
-- With unsaved changes and autosave on (Preferences › General), Mitcad
+- With unsaved changes and autosave on (Preferences › General), MitCad
   saves them as a version first ("Saved automatically before releasing
   the edit lock").
 - With autosave off, the lock stays, marked idle. A request gets it at
@@ -5179,43 +5295,43 @@ menu has **Release Edit Lock** and **Edit Lock Details…**. Edit Lock
 Details shows the holder, since when, the requests, who else has the
 design open, and the connection of the live updates.
 
-**Requests.** When someone asks for your lock, your Mitcad answers with
+**Requests.** When someone asks for your lock, your MitCad answers with
 a receipt by itself. Then it asks you:
 
-- **Release**: Mitcad saves unsaved changes first. Or **Release Without
-  Saving** keeps them in your read-only window. Mitcad sends the
+- **Release**: MitCad saves unsaved changes first. Or **Release Without
+  Saving** keeps them in your read-only window. MitCad sends the
   versions, and the lock goes straight to the one who asked.
-- **Keep 15 More Minutes**: Mitcad asks you again after 15 minutes.
+- **Keep 15 More Minutes**: MitCad asks you again after 15 minutes.
 - **Decline…** with a message
 
-Without an answer in the idle time, Mitcad releases the lock as at the
-idle time. Your Mitcad does not answer at all when it ended or when the
+Without an answer in the idle time, MitCad releases the lock as at the
+idle time. Your MitCad does not answer at all when it ended or when the
 computer is off. Then the one who asked takes the lock after two of its
-polls. The other way round, the Mitcad that asks renews its request
-while it waits. If that Mitcad ended, or if its window closed without a
+polls. The other way round, the MitCad that asks renews its request
+while it waits. If that MitCad ended, or if its window closed without a
 withdrawal of the request, it no longer renews the request. After the
-idle time and two polls, Mitcad asks nobody about the request any more,
-and the next Mitcad that sees it removes it. A declined request goes the
+idle time and two polls, MitCad asks nobody about the request any more,
+and the next MitCad that sees it removes it. A declined request goes the
 same way unless you ask again.
 
 **When you lose a lock.** If someone took your lock over, or took it
-because your Mitcad did not answer, the window becomes read-only and
+because your MitCad did not answer, the window becomes read-only and
 says who took it. Unsaved changes stay. **Save as Copy…** or **Save as
 New Version** keeps them. Sync then asks which version of the file to
 keep.
 
-**When you close a design.** When you close a design or quit, Mitcad
+**When you close a design.** When you close a design or quit, MitCad
 sends the versions not sent yet and releases its lock and its requests.
 When that sync needs your choice, select **Resolve Sync**, **Release
 Without Sending** or **Keep Lock**. Offline, the lock stays until it is
 stale. After a crash, the lock stays too. When you open the design
-again, or restore its autosaved work, Mitcad checks the lock as it does
+again, or restore its autosaved work, MitCad checks the lock as it does
 when it opens a design.
 
 **Sync.** Sync asks before it sends a version of a file whose lock
 someone else holds: **Send Anyway** or **Cancel**.
 
-**Locks set to off.** If you set edit locks to off, Mitcad releases your
+**Locks set to off.** If you set edit locks to off, MitCad releases your
 locks. The locks of other people stay. `mitcad-cli lock status` lists
 them, and `mitcad-cli lock release --force` removes them.
 
@@ -5223,8 +5339,8 @@ them, and `mitcad-cli lock release --force` removes them.
 
 Libraries give you standard components and the designs that other people
 share. Component libraries and community indexes are git repositories.
-Mitcad fetches them with the git program, when you ask or, for the
-sources that you choose, when Mitcad starts. This
+MitCad fetches them with the git program, when you ask or, for the
+sources that you choose, when MitCad starts. This
 chapter describes the component libraries, the part picker that shows
 their components, and the community library.
 
@@ -5234,7 +5350,7 @@ Fasteners and other standard components come from component libraries. A
 component library is a git repository of designs. Each design has a
 table of its sizes.
 
-Mitcad's parts library has these components:
+MitCad's parts library has these components:
 
 - ISO metric screws (ISO 4762, ISO 4017, ISO 10642)
 - Nuts (ISO 4032)
@@ -5245,31 +5361,31 @@ The screws, nuts and washers have the sizes M3 to M12. Up to its version
 1.0.0, this library was the fastener library. Designs made with the
 fastener library keep their components.
 
-Mitcad must have the git program to fetch a library. For components that are
+MitCad must have the git program to fetch a library. For components that are
 already in a design, git is not necessary.
 
 **Tools › Libraries › Libraries...** lists the libraries and the
-community indexes that Mitcad uses. At the start, the list has Mitcad's
+community indexes that MitCad uses. At the start, the list has MitCad's
 parts library and the community index. In **Libraries...** you can:
 
 - Add a library by its URL or by a folder
 - Disable a library
 - Select **Fetch** to get a library or its newer versions
-- Select **Auto-update** for a library that Mitcad must fetch when it
+- Select **Auto-update** for a library that MitCad must fetch when it
   starts
 
-**Auto-update** is off at first. When it is on, Mitcad fetches the
+**Auto-update** is off at first. When it is on, MitCad fetches the
 library in the background when it starts. No dialog opens, and you can
 work at once. The status bar shows the new versions, for example
-`Libraries updated: mitcad-parts v2.7.0`. If Mitcad cannot reach a
+`Libraries updated: mitcad-parts v2.7.0`. If MitCad cannot reach a
 library, it writes a short note in the status bar and goes on. The
 library browser and the part picker show new versions when they are
 open. The components in your designs keep their version. You choose a newer
 version yourself.
 
 **Auto-update** has an effect only while the library is on. When you
-switch the library off, the check box is grey. Mitcad keeps its state.
-Without **Auto-update**, Mitcad fetches a library only when you ask for
+switch the library off, the check box is grey. MitCad keeps its state.
+Without **Auto-update**, MitCad fetches a library only when you ask for
 it.
 
 **Insert from Library** is in the Assemble group and in **Tools ›
@@ -5283,7 +5399,7 @@ picker (refer to [Part picker](#part-picker)). To insert a component:
 4. Insert the component **linked** or as a **copy**. A linked component is
    read-only. A copy is editable and has its history.
 
-Mitcad shows the licence and the attribution before you insert the component.
+MitCad shows the licence and the attribution before you insert the component.
 
 On a new installation, the list of components is empty until you press
 **Update**. **Update** fetches all enabled libraries and searches again.
@@ -5292,7 +5408,7 @@ later to get newer versions to select from. Components that are already in a
 design keep their versions.
 
 Each linked component keeps the library version that you selected for it.
-When you open the design, Mitcad reads that version, also when the
+When you open the design, MitCad reads that version, also when the
 library has newer versions. Thus the design always rebuilds in the same
 way.
 
@@ -5302,13 +5418,13 @@ sizes. To change a component:
 1. Select another version or size.
 2. Select **Show Changes** to list what changes
    (`M5x16: dk 8.5 mm -> 8.7 mm`).
-3. Select **Update**. Mitcad applies the change as one undo step.
+3. Select **Update**. MitCad applies the change as one undo step.
 
 **Check for Newer Versions** first fetches the libraries.
 
 Library parts carry their standard designation (`ISO 4762 M5x16`). The
 **Parts List** tab of **Library Parts** lists every component with its
-quantity, library, version and licence. It copies the list as CSV. Mitcad
+quantity, library, version and licence. It copies the list as CSV. MitCad
 records the licence, the library, its URL and the version with each component
 in the design, also with a copied component.
 
@@ -5317,7 +5433,7 @@ computer. Then the design keeps the saved bodies of its components and says
 so. **Get Missing Libraries** in **Library Parts** shows the addresses of
 the libraries, then fetches them.
 
-Mitcad and `mitcad-cli` share one default cache of fetched libraries:
+MitCad and `mitcad-cli` share one default cache of fetched libraries:
 
 | Platform | Default library cache |
 |---|---|
@@ -5330,7 +5446,7 @@ sets a different folder for both, and the CLI's `--libraries` overrides it
 for that command. Earlier CLI caches in the data folder's `mitcad/libraries`
 remain readable with the default configuration; new fetches use the shared
 cache. Explicit cache overrides read only the selected folder.
-Mitcad makes and
+MitCad makes and
 updates the clones with the git program of the system, and only when you
 ask with one of these commands:
 
@@ -5355,13 +5471,13 @@ The groups are on the left of the grid:
 
 - **Favourites**
 - **In this design**: the library parts that the open design uses, each
-  with the number of times (`×4`). Mitcad shows this group while the
+  with the number of times (`×4`). MitCad shows this group while the
   design has library parts. A component with several sizes shows each size's
   own count, only on the sizes that the design uses.
 - **All parts**
 - The groups of the libraries, as a tree
 
-Mitcad's library has these groups, each with its subgroups:
+MitCad's library has these groups, each with its subgroups:
 
 - **Wood**: timber, boards, sheets, wood fasteners, timber connectors
 - **Slot profile**: profiles, connectors, panels, caps, accessories,
@@ -5397,7 +5513,7 @@ the group and its subgroups first. In **Favourites**, the parts of that
 group and its subgroups come first. A click on a star changes only the
 star. The tiles and the groups stay where they are while you look at
 that list. Thus you can star several sizes one after the other. The
-starred components move to the front the next time Mitcad makes the list
+starred components move to the front the next time MitCad makes the list
 again. That occurs when the picker opens, or when the group, the search
 or the system changes. Stars belong to you on this computer, not to the
 design. Library updates
@@ -5423,10 +5539,10 @@ components that other people share in their own git repositories.
 Community indexes list these repositories. An index is also a git
 repository. Each item shows its licence and the conditions of the
 licence. The licences are CC0, CC-BY, CC-BY-SA, MIT, Apache, BSD and
-CERN-OHL. Mitcad hides items without a licence unless you ask for them.
+CERN-OHL. MitCad hides items without a licence unless you ask for them.
 
 **Get Library** fetches a library that an index lists. Then you can
-insert its components linked or as copies. Mitcad records the licence and the
+insert its components linked or as copies. MitCad records the licence and the
 source with every component in the design.
 
 Every item must have a licence. A community index accepts these
@@ -5443,7 +5559,7 @@ licences. The table is not legal advice.
 
 **Tools › Libraries › Publish to Library...** adds the open design to a
 library of your own. This library is a folder that keeps versions like a
-project. When the library is new, Mitcad makes the folder and you select
+project. When the library is new, MitCad makes the folder and you select
 its licence. The command does these steps:
 
 1. Records the design with an image of the view.
@@ -5454,23 +5570,23 @@ The format of a library is in [libraries.md](libraries.md).
 
 ## Import and export
 
-Mitcad reads and writes many CAD formats. This chapter lists the
+MitCad reads and writes many CAD formats. This chapter lists the
 formats, tells how you import and export files, and describes each
 design import. A design import reads a file's history and replays it as
-Mitcad features.
+MitCad features.
 
 ### File formats
 
-The table that follows lists the formats that Mitcad reads and writes.
+The table that follows lists the formats that MitCad reads and writes.
 The column **Design history** tells what each import keeps of the
 file's history.
 
 | Format | Import | Export | Design history |
 |---|---|---|---|
-| Mitcad design (`.mitcad`) | Open, Insert Component | Save | Yes |
+| MitCad design (`.mitcad`) | Open, Insert Component | Save | Yes |
 | FreeCAD (`.FCStd`) | Open, Import | None | Features, sketches and parameters |
 | `.f3d`, `.f3z` | Open, Import | None | Features, sketches and parameters |
-| `.ipt` (parts) | Open, Import | None | Features, sketches and parameters. A feature that Mitcad cannot replay is imported as the bodies that the file stored after it |
+| `.ipt` (parts) | Open, Import | None | Features, sketches and parameters. A feature that MitCad cannot replay is imported as the bodies that the file stored after it |
 | `.iam` (assemblies) | Open, Import. Parts become components with their history or with their bodies. Sub-assemblies become components | None | The parts' features, or their bodies |
 | IFC (`.ifc`, `.ifczip`) | Open, Import. Storeys become components, elements become features, bodies and meshes | None | Swept solids and their cuts as features |
 | `.rvt` (projects) | Open. Levels become components, elements become bodies and meshes | None | Walls, floors, roofs, ceilings, columns, beams and stair runs as features |
@@ -5496,7 +5612,7 @@ If a file does not import correctly, please
 **File › Import** brings a file into the open design. The Insert
 group has the same commands. The file dialogs list the CAD formats
 under one *CAD files* filter. The table in [File formats](#file-formats)
-tells which formats Mitcad reads and writes, and which keep their design
+tells which formats MitCad reads and writes, and which keep their design
 history.
 
 Each format is imported in its own way:
@@ -5506,11 +5622,11 @@ Each format is imported in its own way:
 - STL and OBJ are imported as mesh bodies. Insert Mesh asks for the
   unit.
 - DXF is imported into a new sketch on a plane that you select (Insert
-  DXF). In sketch mode, Mitcad imports it into the sketch that you
+  DXF). In sketch mode, MitCad imports it into the sketch that you
   edit.
 - SVG is imported into a sketch in the same way (Insert SVG). Refer to
   the paragraph that follows.
-- Another Mitcad design is imported as a component, linked or as a
+- Another MitCad design is imported as a component, linked or as a
   copy (Insert Component).
 
 Insert SVG asks for these values:
@@ -5564,6 +5680,68 @@ If a remembered folder no longer exists, the dialog starts in the
 design's folder, the project or Documents. Save Copy As of a version
 starts in the design's own folder.
 
+### Image references
+
+An image reference is a picture in the design that you model from: a
+photo of a part, a scanned drawing or a plan. It lies on a plane or a
+planar face, and it changes no geometry.
+
+1. Choose **Insert > Image Reference**.
+2. Click **Choose Image…**, or type the image file's path in **Image**.
+   MitCad reads PNG, JPEG, BMP and WebP files.
+3. Pick an origin plane, a construction plane or a planar face.
+4. Set the other values if you need to, then click **OK**.
+
+The image is centred on the plane or face you picked. Its size comes
+from the file's resolution; when the file does not have one, MitCad uses
+96 pixels to the inch. The panel shows the image's outline while it is
+open. These are the panel's values:
+
+- **X** and **Y** move the image's centre on its plane. They start at
+  the middle of the plane or face you picked.
+- **Angle** turns the image about the plane's normal.
+- **Flip** mirrors the image from left to right.
+- **Width** sets the image's width. Leave it empty to use the size from
+  the file, or, when you change an image, to keep its size.
+- **Opacity %** sets how much you can see through the image: 100 is
+  solid and 0 is invisible. A new image is 50 % opaque.
+- **Through Bodies** shows the image on top of the bodies. When it is
+  off, bodies in front of the image hide it. Sketches are always drawn
+  on top of the image, so you can trace it.
+
+MitCad keeps a copy of the image in the design file, so the design does
+not need the original file. The image stays on its face when the model
+changes.
+
+The image references are in the browser's **Images** folder. Each one
+has a light bulb that shows or hides it. Double-click an image's row to
+change its values in the same panel. You can also rename or delete an
+image from its row's context menu.
+
+If its face is gone, the image is not drawn and its row turns red (the
+tooltip says why). This happens, for example, when a later feature
+removes the face, or when you move the timeline marker back before the
+feature that made it. Double-click the row and pick another plane.
+
+You cannot select an image in the view, so it never gets in the way of
+clicks on the geometry.
+
+**Calibrate an image.** To set the image to its real size, measure
+between two points on it:
+
+1. Choose **Calibrate Image Reference** from the ribbon, or from the
+   image row's context menu.
+2. Click two points on the image whose distance you know, for example
+   the two ends of a dimension line on a scanned drawing. After the first
+   click, a line follows the pointer from the first point.
+3. The dialog shows the distance between the points at the image's
+   current size. Type the real distance over it. A number without a unit
+   is in the design's length unit.
+
+The image changes size about the first point, so that point stays where
+it is. The image must be shown. Press Esc to stop before the second
+click.
+
 ### Export
 
 **File › Export** writes the bodies or the design to a file. These are
@@ -5578,7 +5756,7 @@ the exports:
 - The design as a web page that opens in any browser ([Web
   viewer](#web-viewer)).
 
-Mitcad writes the bodies where the design shows them, also the bodies
+MitCad writes the bodies where the design shows them, also the bodies
 of moved components. A STEP file is then an assembly, with the parts
 placed as the components are. In a design with components, the
 Coordinates row writes each body in its own component's coordinates
@@ -5653,21 +5831,21 @@ mesh bodies.
 An `.f3d` design file opens with its history. An `.f3z` package of
 `.f3d` files opens in the same way. Use **File › Open** or Import, or
 `mitcad-cli import-f3d`. The import replays the design's timeline as
-Mitcad features. You can undo the whole import as one step. Save the
+MitCad features. You can undo the whole import as one step. Save the
 result as a `.mitcad` design.
 
-These items are replayed as Mitcad features: parameters, sketches with
+These items are replayed as MitCad features: parameters, sketches with
 constraints and dimensions, and construction planes. Also extrudes,
 revolves, sweeps, lofts, pipes, fillets, chamfers, holes, threads,
-patterns, mirrors, splits and Combine. After every feature, Mitcad
-compares the bodies with the file's bodies. A feature that Mitcad
+patterns, mirrors, splits and Combine. After every feature, MitCad
+compares the bodies with the file's bodies. A feature that MitCad
 cannot replay is imported as a base feature of the file's bodies at its
 place. The timeline continues on those bodies. Thus the result always
 has the file's geometry. Ribs and webs are always imported in this way.
 
 Components and occurrences are imported at the file's placements.
 Joints, as-built joints, joint origins, rigid groups, grounded
-occurrences and captured positions are imported as Mitcad's own. This
+occurrences and captured positions are imported as MitCad's own. This
 occurs where they hold at the positions in which the file puts the
 parts. A joint that does not hold there is imported as an as-built
 joint. Thus nothing moves. Components inserted from other designs, for
@@ -5677,17 +5855,17 @@ file, but its joints and positions are.
 
 Bodies and faces keep the file's appearances. Each appearance that the
 design uses becomes an appearance of the design. It keeps the file's
-name, colour, roughness, metal and transparency. Mitcad gives it to the
+name, colour, roughness, metal and transparency. MitCad gives it to the
 bodies, and to the faces that the file painted on their own. An
 occurrence's appearance goes to its bodies where its component is
-placed once. A body's material becomes Mitcad's material where Mitcad
+placed once. A body's material becomes MitCad's material where MitCad
 has the same one (steel, aluminium and others). The report lists every
 material with its density. Texture images are not in the file. Thus an
 appearance with a texture is imported with its stored colour.
 
-A progress dialog shows which item Mitcad replays. In the application
+A progress dialog shows which item MitCad replays. In the application
 the import has no time limit. It runs to the end, however long it
-takes. A crash of the geometry kernel does not close the window. Mitcad
+takes. A crash of the geometry kernel does not close the window. MitCad
 stops a geometry kernel operation that does not return in 90 seconds.
 That item is imported as the file's bodies, and the report warns. The
 dialog can end the import early:
@@ -5697,7 +5875,7 @@ dialog can end the import early:
   base features. Sketches and construction geometry are still imported
   as such. The design is complete, but less of it is parametric. The
   stop takes a moment.
-- **Cancel Import** (or Esc): Mitcad discards the import.
+- **Cancel Import** (or Esc): MitCad discards the import.
 
 When a feature does not build on the imported bodies, the import tries
 it again on the bodies stored in the file. This second try can replace
@@ -5716,7 +5894,7 @@ and the bodies replaced.
 
 The *Import tolerance* setting (Preferences › General) is the distance
 that replayed geometry can be from the file's geometry where it is not
-exact. Mitcad finds the edges and faces that the file names in this
+exact. MitCad finds the edges and faces that the file names in this
 tolerance. A feature's new faces must lie on the file's faces in this
 tolerance.
 
@@ -5735,11 +5913,11 @@ how far the feature deviates at that place:
 
 A fillet that does not build with all its edges can be listed as built
 without some of them. The row says how many edges. Its tooltip says
-which edges. When you select a row, Mitcad selects the faces where the
+which edges. When you select a row, MitCad selects the faces where the
 feature deviates. Thus the view shows where. For each row, select one
 of these:
 
-- **Use stored** (the default): Mitcad uses the file's geometry in the
+- **Use stored** (the default): MitCad uses the file's geometry in the
   feature's place, as imported.
 - **Keep parametric** (check the row, or Space): the feature stays
   parametric with its own result. The features after it are built on
@@ -5765,7 +5943,7 @@ After the import, a report shows how each item was imported:
 - Not at all, for example assembly relationships
 
 A sketch whose constraints and dimensions do not solve to the file's
-geometry keeps them. Mitcad finds the constraints and dimensions that
+geometry keeps them. MitCad finds the constraints and dimensions that
 the file does not meet and makes only those inactive (refer to
 [Constraints](#constraints)). All the others stay active, and the
 dimensions keep their parameters. The report names each inactive one,
@@ -5813,7 +5991,7 @@ it and open it again. These are the marks:
   history"). The timeline marker is before it, as in the file. Move the
   marker past it to build it. Where its definition was not imported, it
   is a placeholder that says why.
-- **Red:** a feature that failed in Mitcad, as anywhere else. Only
+- **Red:** a feature that failed in MitCad, as anywhere else. Only
   these count in "n failed". The yellow "n warnings" beside it lists
   the others. A click on it goes to them.
 
@@ -5837,7 +6015,7 @@ import-fcstd`. The import does this:
   for the document's parts (App::Part, Assembly) at their placements.
   Links (App::Link, also arrays and links to other documents next to
   it) are occurrences. Hidden objects stay hidden.
-- Features are imported as Mitcad features. Each one is compared with
+- Features are imported as MitCad features. Each one is compared with
   FreeCAD's stored result. These features are imported: pads and
   pockets, revolutions and grooves, fillets, chamfers, holes, mirrors,
   linear and polar patterns, and PartDesign booleans. Also drafts,
@@ -5846,24 +6024,34 @@ import-fcstd`. The import does this:
   extrusions of sketches (also into faces), of faces and of edges (for
   example a circle or a polygon: its edges are fixed curves in a sketch),
   faces of sketches, revolutions of sketches, cuts, unions, commons, fillets,
-  chamfers and mirrorings. A feature that Mitcad cannot rebuild, or
+  chamfers and mirrorings. A feature that MitCad cannot rebuild, or
   whose result differs, is imported as FreeCAD's result. That is a base
   feature, `fallback` in the report. Later features continue on it. The
-  report gives the reason and the kind of fallback: missing in Mitcad,
+  report gives the reason and the kind of fallback: missing in MitCad,
   no parametric counterpart (a scripted object, for example a Draft
   shape), or other. If a Body's tip is before its last feature, the
   features after the tip are suppressed.
 - Sketches are editable, with their constraints and dimensions, on the
   plane or face to which they were attached. A sketch can have a
-  constraint that Mitcad cannot express, for example a tangency to an
+  constraint that MitCad cannot express, for example a tangency to an
   ellipse, Snell's law, or a distance to a circle. Such a sketch is
   imported without that constraint and is marked partial. Constraints
   and dimensions that FreeCAD's solution does not meet are imported
   inactive, as in the .f3d import (refer to [.f3d import](#f3d-import)).
 - Shapes without a history (plain shapes, Draft objects, bodies of
-  other documents) are base features with FreeCAD's colours.
+  other documents) are base features.
+- FreeCAD's colours come in as appearances of the design, on rebuilt
+  bodies too: each body gets its colour, and faces of another colour get
+  theirs. Each colour is one appearance, named `FreeCAD colour` and its
+  red, green and blue values, so you can change all the bodies and faces
+  of one colour in one place. Bodies in FreeCAD's default grey keep
+  MitCad's look. Materials are not imported.
+- A fillet or chamfer that rounds all edges in FreeCAD rounds all edges
+  of the body in MitCad too, also edges that you add later by editing a
+  sketch. Fillets on edges that FreeCAD merged follow the faces along the
+  edge, so they stay on that edge when you change a sketch dimension.
 - Spreadsheet cells, VarSets and named constraints become parameters.
-  Expressions that drive imported values become Mitcad expressions.
+  Expressions that drive imported values become MitCad expressions.
   Assembly joints are not imported.
 
 The import report says:
@@ -5888,16 +6076,16 @@ An `.ipt` part file opens as a new design with its history. Use File
 - The sketches with their constraints and dimensions
 - Offset work planes
 - The extrusions, revolutions, holes, fillets, chamfers, patterns and
-  mirrors, as Mitcad features
+  mirrors, as MitCad features
 
 Each feature is compared with the bodies that the file stored after it.
 Some features cannot be replayed: a face draft, a shell, sheet metal,
-or a mirror that Mitcad does not reproduce. Such a feature is imported
+or a mirror that MitCad does not reproduce. Such a feature is imported
 as the bodies that the file stored after it, a base feature. Thus the
 final bodies are always the file's.
 
 The design takes the part's length unit. The bodies take the part's
-material when Mitcad's material library has a material of the same
+material when MitCad's material library has a material of the same
 name. The part's properties (part number, material, title, author, the
 user's own) become the design's properties ([Properties](#properties)).
 
@@ -5922,7 +6110,7 @@ An `.iam` assembly file opens as a new design. Use File › Open or
 Import, or `mitcad-cli import-iam`. Each part file that the assembly
 places becomes a component. Each placement of that part file becomes an
 occurrence of the component, where the file places it. Sub-assemblies
-become components of their own. Mitcad finds the referenced files where
+become components of their own. MitCad finds the referenced files where
 the assembly saved them, relative to the assembly. Or it finds them by
 name in the assembly's folder tree. A missing file leaves an empty
 component. Its occurrences are placed.
@@ -5930,15 +6118,15 @@ component. Its occurrences are placed.
 Before the import starts, the **Import Assembly** dialog asks how the
 parts come in. **Components with their design history** is on by default.
 With the option on, each part is imported as the [.ipt
-import](#ipt-import) imports a part. Mitcad replays its parameters,
+import](#ipt-import) imports a part. MitCad replays its parameters,
 sketches and features into its component. Thus the part's timeline and
 parameters are there when you activate the component or open it for
 edit. With the option off, each part is imported as the bodies that its
 file stores, one base feature per part. This is much faster for large
-assemblies. Mitcad remembers the selection for the next assembly.
+assemblies. MitCad remembers the selection for the next assembly.
 `--open` and the other ways that do not ask use the last selection.
 
-With the history, the progress dialog shows the part that Mitcad
+With the history, the progress dialog shows the part that MitCad
 imports (component 3 of 7) and the timeline item that it replays. The replay
 of a part can fail. It can also hang in the geometry kernel each time
 that the import tries it again. Such a part is imported as its stored
@@ -5946,7 +6134,7 @@ bodies. A part without a design history is imported as its stored
 bodies too. If a single feature hangs, the replay of the part takes the
 file's bodies for that feature.
 
-The import report lists every file and how Mitcad found it. For each
+The import report lists every file and how MitCad found it. For each
 part, the report tells if the part was replayed or if it was imported
 as its stored bodies, and why. For a replayed part, it lists the items,
 how they came in, how many of them were checked against the file's
@@ -5957,7 +6145,7 @@ against the range box that the file stores.
 ### IFC import
 
 An IFC file (`.ifc` or `.ifczip`) opens as a new design. IFC is the
-open exchange format of building models. Mitcad reads IFC2X3, IFC4 and
+open exchange format of building models. MitCad reads IFC2X3, IFC4 and
 IFC4X3. Use File › Open or Import, or `mitcad-cli import-ifc`. The
 import runs in a process of its own. Cancel Import ends it.
 
@@ -6038,11 +6226,11 @@ parameters as properties ([Properties](#properties)).
 ### SolidCraft import
 
 A SolidCraft design (`.solidcraft`) opens as a new design with its
-history. The file is plain JSON or SolidCraft's container. Mitcad reads
+history. The file is plain JSON or SolidCraft's container. MitCad reads
 designs of every file format version. Older designs are upgraded as
 SolidCraft upgrades them. Use File › Open or Import, `mitcad-cli
 import-solidcraft`, or the MCP server's `document_open`. The file keeps
-the design's definitions, not its bodies. Thus Mitcad builds every
+the design's definitions, not its bodies. Thus MitCad builds every
 feature itself.
 
 The import does this:
@@ -6054,10 +6242,10 @@ The import does this:
 - Sketches are editable, with their constraints and dimensions, on the
   plane or face on which the design put them. Curves projected from
   bodies are imported fixed where they are. A few constraints have no
-  Mitcad counterpart: a line's angle to the sketch's axis, an arc's
+  MitCad counterpart: a line's angle to the sketch's axis, an arc's
   sweep, a slot's overall length. These are not imported, and the
   sketch is marked partial.
-- These items are imported as Mitcad features: extrusions,
+- These items are imported as MitCad features: extrusions,
   revolutions, fillets, chamfers, holes, threads, patterns, mirrors,
   shells, drafts, lofts, sweeps, pipes and coils. Also ribs, embosses,
   primitives, combines, boundary fills ([Boundary
@@ -6066,42 +6254,42 @@ The import does this:
   and points, imported STEP bodies and meshes. Conversions of meshes are
   imported as [Convert Mesh](#convert-mesh). Faces and edges are found
   by the names that the design gave them and the points at which they
-  were picked (clicked). After that, Mitcad's own names identify them.
+  were picked (clicked). After that, MitCad's own names identify them.
   Bodies keep the design's names.
 - Components and their occurrences are imported at their placements.
-  Joints are imported as Mitcad joints where they hold at the positions
+  Joints are imported as MitCad joints where they hold at the positions
   in which the design puts the parts. Other joints are imported as
   as-built joints.
 - Sheet metal rules, base flanges, contour flanges, edge flanges, hems,
   folds, unfolds, refolds, conversions to sheet metal and perforations
-  are imported as Mitcad's sheet metal features. A conversion's
+  are imported as MitCad's sheet metal features. A conversion's
   thickness is the one that the design takes from the body.
-- Bounding solids are imported as Mitcad's own ([Bounding
+- Bounding solids are imported as MitCad's own ([Bounding
   Solid](#bounding-solid)), around the same bodies by the same margin,
   with the names that the design gives their boxes.
-- Bosses, lips, grooves, snap fits and rests are imported as Mitcad's
+- Bosses, lips, grooves, snap fits and rests are imported as MitCad's
   [plastic part features](#plastic-part-features). The plastic rule
   that applies to their body is imported as a plastic rule, from which
   they take their draft and clearance. That rule is the one assigned to
   the body, else the design's active rule.
-- Features with no Mitcad counterpart (surface modelling) keep their
+- Features with no MitCad counterpart (surface modelling) keep their
   place on the timeline as suppressed placeholders with a note. The
   timeline continues after them.
-- Contact sets and motion studies are imported as Mitcad's own ([Motion
+- Contact sets and motion studies are imported as MitCad's own ([Motion
   studies and contact sets](#motion-studies-and-contact-sets)). If
   contact is off in the design, its sets are imported suppressed. "All
   contact" becomes a set of every component. A study's keys of a joint
   that was imported as an as-built joint, or not at all, are not
   imported, with a note. Exploded views are not imported.
 - Motion links (gears, racks and pinions, screws, cams) are imported as
-  Mitcad's own ([Motion links](#motion-links)). Sizes picked on round
+  MitCad's own ([Motion links](#motion-links)). Sizes picked on round
   faces stay picked. The links keep the parts where the design puts
   them. A link whose joints were not imported is not imported, with a
   note.
 
 The import report lists every feature, joint and motion link with how
 it was imported. The ways are: parametric, partial with what was not
-imported, without a Mitcad counterpart, or failed with the reason. The
+imported, without a MitCad counterpart, or failed with the reason. The
 report also lists the kinds without a counterpart, the sketches'
 constraint counts, and the bodies' volumes and boxes ([Reading an
 imported timeline](#reading-an-imported-timeline)).
@@ -6149,9 +6337,9 @@ The import report:
 
 ## Outputs
 
-This chapter tells how to get a design out of Mitcad for other uses.
+This chapter tells how to get a design out of MitCad for other uses.
 The outputs are files for a slicer, a USDZ package for AR and 3D
-viewers, a drawing on a sheet, and web pages for people without Mitcad.
+viewers, a drawing on a sheet, and web pages for people without MitCad.
 
 ### 3D printing
 
@@ -6188,22 +6376,22 @@ The panel starts with the selected bodies in **Bodies**. A selected
 face, edge or vertex stands for its body. A component's occurrence
 selected in the browser stands for the bodies shown in it. If nothing
 is selected, the panel starts with every visible solid body and mesh
-body. Mitcad highlights the bodies that it will send. While the panel
+body. MitCad highlights the bodies that it will send. While the panel
 is open, click a body in the view to add it or to remove it. A window
 selection adds several bodies.
 
-Mitcad cannot print surface bodies or empty bodies, and you cannot
-select them. If such bodies were selected, Mitcad leaves them out.
+MitCad cannot print surface bodies or empty bodies, and you cannot
+select them. If such bodies were selected, MitCad leaves them out.
 
 The panel also has these options:
 
-- **Format:** *3MF* (the first time) or *STL*; Mitcad remembers your
+- **Format:** *3MF* (the first time) or *STL*; MitCad remembers your
   choice.
-  - With *STL*, Mitcad writes one file for each
+  - With *STL*, MitCad writes one file for each
     body. A body can be shown more than once, in a component placed
     several times. Then each occurrence that you selected gets a file
     of its own, for example `Pin (Arm_2).stl`.
-  - With *3MF*, Mitcad writes one file. In the
+  - With *3MF*, MitCad writes one file. In the
     file, the bodies are the parts of one object, with their names and
     their appearance colours.
 
@@ -6220,21 +6408,21 @@ The panel also has these options:
 - **Refinement:** Low, Medium, High (the default) or Custom. The
   refinement sets how far the triangles can lie from the surface (mm)
   and the angle between neighbouring triangles.
-- **Open in:** *Folder only* (Mitcad opens the folder of the files), or
-  the slicer of Preferences (3D Print, **Open in**). Mitcad finds it
+- **Open in:** *Folder only* (MitCad opens the folder of the files), or
+  the slicer of Preferences (3D Print, **Open in**). MitCad finds it
   automatically where possible. You can also select another program,
   for example an AppImage or, on macOS, an application in the
   Applications folder.
 
 **Send** (Enter) writes the files into `mitcad-print/<design>` in the
-temporary folder. Mitcad empties that folder before each send. Then
-Mitcad gives the files to the slicer. If there is no slicer, or if the
-slicer does not start, Mitcad opens the folder instead. Mitcad
+temporary folder. MitCad empties that folder before each send. Then
+MitCad gives the files to the slicer. If there is no slicer, or if the
+slicer does not start, MitCad opens the folder instead. MitCad
 remembers your choices.
 
-Mitcad finds slicers in these places:
+MitCad finds slicers in these places:
 
-| Platform | Where Mitcad finds slicers                                 |
+| Platform | Where MitCad finds slicers                                 |
 |----------|-----------------------------------------------------------|
 | Windows  | The usual install folders and the list of installed programs |
 | macOS    | The Applications folders. An application gets the files through `open -a`. |
@@ -6258,30 +6446,30 @@ The tooltip of the body in the browser names the face, for example
 **3D Print** uses the print bed face. The design itself does not move:
 
 - A body sent alone, or bodies of which only one has a print bed face:
-  Mitcad turns them so that the face lies on the bed, puts the lowest
+  MitCad turns them so that the face lies on the bed, puts the lowest
   point on the bed, and centres them on the plate. The plate is the bed
   of the design's printer (see [Print settings](#print-settings)), else
   a 256 × 256 mm plate. A component that is placed several times, only
   moved, turns the same way in every place.
 - Several bodies that each have a print bed face, for example the parts
-  of a component: Mitcad sends them as they are assembled. So does a
+  of a component: MitCad sends them as they are assembled. So does a
   component that is placed several times and turned differently in each
   place, as no single turn lays the face on the bed in every place.
 - With STL, each file is turned onto the print bed face of its body.
 
 If the print bed face is gone after an edit, or is no longer planar,
-Mitcad sends the body as the design has it, with -Z down. The status
+MitCad sends the body as the design has it, with -Z down. The status
 line tells which body, for example `Body1: the print bed face is gone;
 printed as in the design`. The tooltip in the browser says *gone* or
 *not planar*, or another reason, for example when the face was renamed
-by an edit and Mitcad cannot find its plane. Then **Clear Print Bed
+by an edit and MitCad cannot find its plane. Then **Clear Print Bed
 Face** is in the context menu of every face of the body, or choose a new
 print bed face.
 
-Surface bodies have no print bed face. Mitcad does not print them:
+Surface bodies have no print bed face. MitCad does not print them:
 **3D Print** leaves them out. If a body with a print bed face becomes a
 surface body, for example after **Unstitch**, the body keeps the face,
-but Mitcad does not use it. The tooltip in the browser says *not used, a
+but MitCad does not use it. The tooltip in the browser says *not used, a
 surface body is not printed*. The context menu of a face of the surface
 body then offers only **Clear Print Bed Face**.
 
@@ -6307,7 +6495,7 @@ body and mesh body. These are the options:
 - **Estimate:** the material (the material of the bodies, else PLA), the
   line width, the walls, the layer height, the top and bottom layers,
   the infill, the filament diameter and the price per kg. If the price
-  is empty, Mitcad shows no cost.
+  is empty, MitCad shows no cost.
 
 The panel shows the overhang area for each body, and its share of the
 area. It shows the thinnest wall and the number of thin regions. Click
@@ -6321,7 +6509,7 @@ face. A marker shows the thinnest point. A legend in
 the lower left corner shows the colours, the angle and the minimum wall.
 
 **OK** keeps the analysis in the **Analysis** folder of the browser as
-`Print1`. Mitcad remembers the numbers for the next analysis. Use the
+`Print1`. MitCad remembers the numbers for the next analysis. Use the
 light bulb to show or hide the analysis. Double-click it to edit it. You
 can rename and delete it like a section analysis. If a body or the bed
 face is gone, the analysis is red and its tooltip tells why.
@@ -6334,29 +6522,29 @@ selects the same type. The package is one file. AR viewers on phones
 and tablets, web viewers, renderers and other 3D programs open it with
 the design's look.
 
-**What goes in.** Mitcad writes the visible bodies, where the view
-shows them. With *Selected bodies*, Mitcad writes the selected bodies.
-Mitcad leaves out hidden bodies and hidden component occurrences.
+**What goes in.** MitCad writes the visible bodies, where the view
+shows them. With *Selected bodies*, MitCad writes the selected bodies.
+MitCad leaves out hidden bodies and hidden component occurrences.
 Components stay a hierarchy. Each occurrence is a group with its
 placement, and the group holds its bodies. Thus a viewer can move the
 components apart. If Coordinates is set to the components'
-coordinates, Mitcad writes each body once, as its component has it.
+coordinates, MitCad writes each body once, as its component has it.
 
 **How it looks.** Each body's appearance becomes a material. The
 material has the colour, metal or not, roughness, clear coat, emission
 and see-through for glass. A body without an appearance keeps its
 colour or the default grey. Faces with appearances of their own keep
 them. A texture's image goes into the file with the projection that
-the rendered view uses. If Mitcad cannot find an image, it writes the
+the rendered view uses. If MitCad cannot find an image, it writes the
 base colour, and the log says so. Curved faces are smooth and edges
-are sharp. Refinement sets how finely Mitcad divides the faces into
+are sharp. Refinement sets how finely MitCad divides the faces into
 triangles.
 
 **Size and orientation.** The file is in millimetres and says so. The
 file stands Y up, as viewers expect. Thus the design shows in AR at
 its real size and upright.
 
-Mitcad writes the file with its own code. It is not necessary to
+MitCad writes the file with its own code. It is not necessary to
 install anything else. The command line writes the same file:
 
 ```
@@ -6367,7 +6555,7 @@ mitcad-cli export design.mitcad design.usdz
 
 A drawing shows the design on sheets of paper: views of it from the
 front, the top, the side or a corner, sections and details. A
-workshop, a supplier or a printed order needs such sheets. Mitcad
+workshop, a supplier or a printed order needs such sheets. MitCad
 keeps each drawing in the design itself, not in a file of its own.
 
 #### Drawings in the design
@@ -6390,7 +6578,7 @@ A dialog asks for the first sheet's **Template** (refer to
 [Templates and revisions](#templates-and-revisions)), its size, its
 orientation and the projection method. A template brings its sheet size
 and its projection method: ISO starts on A3 in first-angle projection,
-ANSI on ANSI B in third-angle projection. Mitcad names the drawing
+ANSI on ANSI B in third-angle projection. MitCad names the drawing
 Drawing1, Drawing2 and so on, opens it and starts **Base View**: click
 where the first view goes.
 
@@ -6408,7 +6596,7 @@ While a drawing is open, Delete deletes the selected views and
 annotations of the drawing. It never deletes the bodies or features
 selected in the model behind it.
 
-The drawing stores only how its views are set up. Mitcad draws the
+The drawing stores only how its views are set up. MitCad draws the
 lines from the model each time. When you change the model, the views
 change with it. Undo and redo work for drawings too.
 
@@ -6523,7 +6711,7 @@ tools, as icons:
 | Centerline | A centreline through two circles, or between two edges. |
 | Line | A line drawn by hand, outside the model. Click its two ends. *Drawn: In the View Clicked* keeps it in the view under the first click, so that it moves, scales and turns with the view; *On the Sheet* keeps it on the paper. *Line* chooses thin, thick, dashed or a centre line. |
 | Arc | An arc drawn by hand: click its centre, its start, then its end, counter-clockwise. In a view or on the sheet, as a line. |
-| Center Pattern | Centre marks on every hole of a pattern in one step. Click one hole seen end on: Mitcad finds the holes of the same size of that body the view shows. On a bolt circle it draws the circle through their centres (an arc when they stand on a part of it) and a line through each; in a row, the line through them; else a centre mark on each. |
+| Center Pattern | Centre marks on every hole of a pattern in one step. Click one hole seen end on: MitCad finds the holes of the same size of that body the view shows. On a bolt circle it draws the circle through their centres (an arc when they stand on a part of it) and a line through each; in a row, the line through them; else a centre mark on each. |
 | Edge Extension | Thin lines that run straight edges on: two edges to where their lines meet (a corner rounded or chamfered away), or one edge beyond both its ends (*Edges: One, Both Ways*; how far, in millimetres of paper, is its *Length* in the panel: 10 unless set). |
 | Text | Text on the sheet, or in the view clicked (*Drawn*). Click where it goes. |
 | Note | Text on a leader. Click the edge or point it points at, then where the text goes. |
@@ -6550,7 +6738,7 @@ visible line wins, then the one nearer to you. An arc is picked where
 it is, not on the rest of its circle.
 
 On an isometric view, lengths along the paper's x and y and angles
-would come out shorter than they are: Mitcad refuses horizontal,
+would come out shorter than they are: MitCad refuses horizontal,
 vertical and ordinate dimensions and angles there. A dimension on such
 a view is aligned and shows the true distance between its two points.
 
@@ -6688,12 +6876,12 @@ drawing has one of these formats:
 | DXF    | For other drawing programs  |
 | DWG    | For other drawing programs: version R2000, with what the DXF file holds |
 
-**Bodies.** Mitcad draws the selected bodies or every visible body,
+**Bodies.** MitCad draws the selected bodies or every visible body,
 where the design shows them. A selected face, edge or vertex stands
 for its body.
 
 **Views.** The drawing has a front view, a top view and a right view.
-Mitcad removes the edges behind faces. An isometric view and a section
+MitCad removes the edges behind faces. An isometric view and a section
 view are available on request. Third-angle projection puts the top
 view above the front view and the right view to its right. First-angle
 projection puts them the other way round. *Hidden Edges* draws
@@ -6701,13 +6889,13 @@ the edges behind faces as dashed lines. *Tangent Edges* draws the
 edges where faces meet smoothly as thin lines.
 
 A section view cuts where a Section Analysis of the design cuts.
-Select the Section Analysis under *Section view*. Mitcad hatches the
+Select the Section Analysis under *Section view*. MitCad hatches the
 cut faces. The view that sees the cutting plane edge on shows the
 plane with its arrows and letters (SECTION A-A).
 
-**Dimensions.** Mitcad gives the width and the height of each view.
-Mitcad gives the diameter of each size of round hole once, with the
-count of such holes (`4x Ø6.6 THRU`). Mitcad also gives the
+**Dimensions.** MitCad gives the width and the height of each view.
+MitCad gives the diameter of each size of round hole once, with the
+count of such holes (`4x Ø6.6 THRU`). MitCad also gives the
 counterbore or countersink, and a tapped hole's thread. *Sketch
 dimensions* adds the dimensions of the sketches that a view sees
 square on. Values are in the design's unit.
@@ -6728,10 +6916,10 @@ standard scale at which the views fit. The standard scales are 1:1,
 for example 1:3.
 
 *One sheet per body* draws each body on a sheet of its own. For a PDF,
-the sheets are the pages of one file. For SVG and DXF, Mitcad writes
+the sheets are the pages of one file. For SVG and DXF, MitCad writes
 numbered files.
 
-The dialog remembers its choices for the next drawing. Mitcad keeps
+The dialog remembers its choices for the next drawing. MitCad keeps
 the drawing it lays out in the root's Drawings folder. Open it to
 change it, and export it again with Export… after a change of the
 model. *Drawing* says which drawing the dialog writes: the one it laid
@@ -6742,7 +6930,7 @@ views, more sheets, its template) stays. The dialog's view, sheet and
 scale settings are for a new drawing only and are off while a drawing
 of the design is chosen; change that drawing in its own workspace. So
 exporting again does not add a new drawing each time. When the design cannot change at the moment (it is read-only,
-or a command's panel is open), Mitcad writes the file without keeping
+or a command's panel is open), MitCad writes the file without keeping
 a drawing. When the file cannot be written, the drawing is not kept
 either. The command line writes the same file without keeping a
 drawing:
@@ -6753,8 +6941,8 @@ mitcad-cli export-drawing design.mitcad design.pdf --sheet A3
 
 ### Web viewer
 
-Mitcad's web viewer shows a design in any web browser. It does not
-need Mitcad, a server or the internet. Each page is one HTML file. The
+MitCad's web viewer shows a design in any web browser. It does not
+need MitCad, a server or the internet. Each page is one HTML file. The
 file holds the viewer, its libraries and the design. Open the page
 with a double click (`file://`) or from any static web host. The page
 works on a computer, a tablet or a phone.
@@ -6767,7 +6955,7 @@ is a single file that holds the viewer and the design together. You
 can send the file, put it on a USB stick or put it on any web server.
 A double click opens it in the browser.
 
-**What goes in.** Mitcad writes every visible body, where the design
+**What goes in.** MitCad writes every visible body, where the design
 shows it, with its appearance. The appearance includes colours, metal,
 roughness, see-through glass and textures. Faces with appearances of
 their own keep them. The components go in as a tree. In the viewer,
@@ -6778,13 +6966,13 @@ The design's units go in too. Thus distances that you measure in the
 viewer are in the design's units. A person who walks through a
 building model has their real size.
 
-**Refinement** (Low, Medium, High) sets how finely Mitcad divides
+**Refinement** (Low, Medium, High) sets how finely MitCad divides
 curved faces into triangles, as for STL and OBJ. Low makes the
 smallest file. The smallest file loads fastest on a phone.
 
-**Size.** When Mitcad has written the page, the status bar shows the
-size of the file. Textures go into the file too. Mitcad scales large
-images down to 2048 pixels a side. If Mitcad cannot find a texture's
+**Size.** When MitCad has written the page, the status bar shows the
+size of the file. Textures go into the file too. MitCad scales large
+images down to 2048 pixels a side. If MitCad cannot find a texture's
 image, the texture keeps its colour, and the log says so.
 
 The page works offline. Everything it needs is inside it. The page
@@ -6861,9 +7049,9 @@ looks around. Hold Through walls to pass through walls and floors.
 
 #### A project's viewer
 
-People without Mitcad can look at a project's designs in a web
+People without MitCad can look at a project's designs in a web
 browser. **File › Project › Web Viewer** enables the project's web
-viewer. Mitcad then writes a folder `web` into the project. The folder
+viewer. MitCad then writes a folder `web` into the project. The folder
 holds:
 
 - `web/index.html`: the project's name and a card for each design.
@@ -6876,7 +7064,7 @@ holds:
   in the viewer. The page is one file that also opens on its own.
 - The design's thumbnail. This is the preview of the version that
   Version History shows. A design not yet saved, opened or restored in
-  Mitcad has no thumbnail until its next Save.
+  MitCad has no thumbnail until its next Save.
 - `web/designs.json`: the same list for other programs.
 
 The folder is part of the project's versions. Web Viewer records the
@@ -6892,8 +7080,8 @@ the index when you want. Update Web Viewer also removes the pages of
 designs that were deleted or renamed. Both commands work in projects
 that keep versions.
 
-When Mitcad writes every page, it computes each design. A progress
-dialog shows this. Its Cancel stops between designs. Then Mitcad
+When MitCad writes every page, it computes each design. A progress
+dialog shows this. Its Cancel stops between designs. Then MitCad
 records nothing.
 
 If two people save different designs at the same time, both change
@@ -6904,7 +7092,7 @@ Web Viewer writes the index again from all designs.
 
 ### Preferences
 
-**Tools › Preferences** holds the settings of Mitcad. It has one page
+**Tools › Preferences** holds the settings of MitCad. It has one page
 for each kind of setting: General, Navigation, Display, Cache, Cloud,
 Updates, 3D Print, Diagnostics, Textures, AI Assistants and Fonts.
 Command search finds each page by its name or by what it sets, for example "autosave",
@@ -6912,7 +7100,7 @@ Command search finds each page by its name or by what it sets, for example "auto
 The window opens no larger than the screen, and you can resize it.
 
 On macOS, the same pages are the panes of the **Settings** window
-(Mitcad › Settings, Cmd+,). Changes apply at once. There is no OK. The
+(MitCad › Settings, Cmd+,). Changes apply at once. There is no OK. The
 background can follow the system's appearance.
 
 The table that follows lists the pages. Each page has a chapter in this
@@ -6940,11 +7128,11 @@ Floating is the default. On Windows and Linux, only the menu bar stays
 above the view. The title row floats over the view, and the toolbar's
 groups float as cards. Refer to [Layouts](#layouts).
 
-The layout takes effect when Mitcad starts. After a change, Mitcad asks
+The layout takes effect when MitCad starts. After a change, MitCad asks
 if it must restart now. **Restart Now** closes the window as a quit
-does. Then it starts Mitcad again with the design open. Before the
-window closes, Mitcad saves a design with unsaved changes, or asks
-about it. Cancel keeps Mitcad open. **Later** keeps the selection for
+does. Then it starts MitCad again with the design open. Before the
+window closes, MitCad saves a design with unsaved changes, or asks
+about it. Cancel keeps MitCad open. **Later** keeps the selection for
 the next start. `--chrome=docked|floating` on the command line replaces
 the setting for one run.
 
@@ -6955,7 +7143,7 @@ them can be set to off. Refer to [Components](#components).
 **Cloud.** The Cloud page of Tools › Preferences sets:
 
 - The git program that sends and gets the versions of Cloud projects.
-  Mitcad finds it on `PATH`, on Windows also where Git for Windows
+  MitCad finds it on `PATH`, on Windows also where Git for Windows
   installs itself. You can also select it. Git does its own sign-in.
   Local projects do not need git. The line under the field shows the
   version found, or why git was not found. A long message wraps, and
@@ -6976,12 +7164,12 @@ Refer to [Sharing a project](#sharing-a-project) and
 
 **Textures.** The *Local Folders* of the texture sources are the
 **Texture folders** that you add on the Textures page with **Add…**
-(**Remove** takes the selected ones off the list). Mitcad also searches
+(**Remove** takes the selected ones off the list). MitCad also searches
 the subfolders for PNG and JPEG images named by their maps, such as
 `oak_diff.png` and `oak_nor_gl.png`, and embeds a texture that a design
-uses in the design. Mitcad uses the
+uses in the design. MitCad uses the
 internet only when you permit it. The first time you select an online
-source, Mitcad asks. If you answer No, Mitcad asks for nothing from the
+source, MitCad asks. If you answer No, MitCad asks for nothing from the
 internet. *Allow texture sources on the internet* on the Textures page
 changes the answer later. Refer to [Textures](#textures).
 
@@ -6994,7 +7182,7 @@ font has a preview. **File...** beside the chooser selects any font file
 file's outlines in the design, so the design looks the same on a
 computer without the file. Refer to [Text, fonts and QR codes](#text-fonts-and-qr-codes).
 
-**3D Print.** The 3D Print page sets the slicer. Mitcad finds it
+**3D Print.** The 3D Print page sets the slicer. MitCad finds it
 automatically where possible. You can also select another program, for
 example an AppImage or, on macOS, an application in the Applications
 folder. Refer to [3D printing](#3d-printing).
@@ -7008,10 +7196,10 @@ Assistant adds its folder too. Refer to [mcp.md](mcp.md).
 
 ### Cache of computed results
 
-Mitcad keeps the results of costly features on disk in your user cache
-folder. Thus, when you open a design again, Mitcad computes only what
+MitCad keeps the results of costly features on disk in your user cache
+folder. Thus, when you open a design again, MitCad computes only what
 changed. The same applies to a copy of the design and to an older
-version of it. A new version of Mitcad does not reuse the results of an
+version of it. A new version of MitCad does not reuse the results of an
 older one.
 
 The Cache page of Tools › Preferences sets:
@@ -7038,31 +7226,31 @@ report is JSON, or text when you give it a `.txt` name.
 
 ### Updates
 
-Once a day at start-up, Mitcad asks its release page if a newer version
-is out. **Help › Check for Updates** asks at once. Mitcad sends only its
+Once a day at start-up, MitCad asks its release page if a newer version
+is out. **Help › Check for Updates** asks at once. MitCad sends only its
 version, the platform and the channel.
 
 When a newer version is out, a bar shows under the toolbar. It has
 **Release Notes**, **Install**, **Skip This Version** and **Later**.
 Install downloads the update and verifies its signature. Then it closes
-Mitcad, installs the update and starts Mitcad again. Before Mitcad
+MitCad, installs the update and starts MitCad again. Before MitCad
 closes, it asks to save changes.
 
 Install works for the Windows installation and for a Linux AppImage in
 a folder of your own. Windows can ask to permit the installer. The
 portable `.zip`, other Linux installations and builds of your own get
 the release page instead. If a download's signature does not match,
-Mitcad deletes the download. Mitcad never runs it. On Windows, the
+MitCad deletes the download. MitCad never runs it. On Windows, the
 download goes to a private folder, and the updater checks the installer
 again right before it runs it.
 
 The Updates page of Tools › Preferences sets the automatic check on or
-off, and if pre-releases are offered. With the setting off, Mitcad
+off, and if pre-releases are offered. With the setting off, MitCad
 makes no request at start-up. *Check for Updates* still asks when you
 select it.
 
 An administrator sets update checks to off for every user, for offline
-or managed installations. Then Mitcad makes no request at all, and
+or managed installations. Then MitCad makes no request at all, and
 *Check for Updates* makes none. Preferences shows the switch off and
 why. The switches are:
 
@@ -7083,25 +7271,25 @@ User-Agent `Mitcad/<version> (<platform>; <channel>)`, for example
 `Mitcad/0.2.0 (windows-x64; stable)`. They carry nothing that
 identifies the user or the machine:
 
-- No cookies. Mitcad keeps none and sends none.
+- No cookies. MitCad keeps none and sends none.
 - No cache
 - `Accept-Language: *` instead of the user's languages
 - No telemetry
 
-Mitcad uses HTTPS only. It obeys a redirect only from HTTPS to HTTPS,
+MitCad uses HTTPS only. It obeys a redirect only from HTTPS to HTTPS,
 at most five. GitHub's downloads redirect to its CDN. More:
 [updates.md](updates.md).
 
 ### Feedback and error reports
 
 **Help › Send Feedback** reports a problem or a wish. You do not leave
-Mitcad. The report has:
+MitCad. The report has:
 
 - The kind: bug report, wish or other
 - A summary
 - A description
 - A contact address, if you want one. The issue tracker is public.
-- The diagnostics: Mitcad's version, the system, Qt and Open CASCADE,
+- The diagnostics: MitCad's version, the system, Qt and Open CASCADE,
   the graphics renderer and driver, and the window's layout. They are on
   by default.
 - A screenshot of the window, if you tick it. To crop it, drag over the
@@ -7109,23 +7297,23 @@ Mitcad. The report has:
 
 **Preview** shows everything that the report contains, section by
 section. There you can edit any part, untick what must not be sent,
-change the title, or Cancel. Mitcad masks folders and file paths, your
+change the title, or Cancel. MitCad masks folders and file paths, your
 user name and the computer's name before you see the preview
 (`<path>/<file>.f3d`, `<user>`, `<host>`). The names of program and
 source files stay, so that a stack stays readable. Your design and its
 files are never attached.
 
-**Send** opens Mitcad's issue form in your web browser, with the title
+**Send** opens MitCad's issue form in your web browser, with the title
 and the report filled in. Nothing is sent until you submit the form
-there. Mitcad holds no account or token. If the report is too long for
+there. MitCad holds no account or token. If the report is too long for
 the form's link, the report is on the clipboard. Paste it over the
-shortened text. Mitcad saves a screenshot in the `reports` folder of
+shortened text. MitCad saves a screenshot in the `reports` folder of
 its data folder, and the message says where. Drag it into the form.
 
-**Error reports.** When Mitcad crashes, it writes a crash report. The
+**Error reports.** When MitCad crashes, it writes a crash report. The
 report holds the version, the platform, the signal or exception, the
 stack of the crashed thread and the last commands you used. It never
-holds design content. Mitcad offers the report the next time it starts.
+holds design content. MitCad offers the report the next time it starts.
 A crash of the import process or of the render process is offered at
 once. An internal error is also offered at once.
 
@@ -7142,7 +7330,7 @@ error gives the same key. Thus a search for the key finds the earlier
 reports of the error.
 
 **Do not offer error reports again** in the offer sets the offers to
-off (setting `reports/offerErrors`). Help › Send Feedback stays. Mitcad
+off (setting `reports/offerErrors`). Help › Send Feedback stays. MitCad
 keeps the newest 20 crash reports in the `crashes` folder of its data
 folder.
 
@@ -7154,7 +7342,7 @@ template with `{title}` and `{body}`.
 ### Debug log
 
 When something odd occurs in normal use, a debug log shows afterwards
-what Mitcad did. Examples are a cursor that stays busy, or a command
+what MitCad did. Examples are a cursor that stays busy, or a command
 that does nothing. **Preferences › Diagnostics › Write a debug log**
 sets the log on at once, without a restart. It stays on, also at the
 next start, until you set it off. Set it off there, or in the project
@@ -7162,34 +7350,34 @@ indicator's menu (**Turn Off Debug Log**). While the log runs, the
 project indicator says **Debug log on**.
 
 The project indicator is in the status bar. In the Mac layout, it is
-beside the design's name. For one run only, start Mitcad with
+beside the design's name. For one run only, start MitCad with
 `--debug-log` or `--debug-log trace.log`, or with the variable
 `MITCAD_DEBUG_LOG=1` (or a file's path).
 
-**The log files.** Mitcad writes the log to its log folder. **Help ›
-Open Log Folder** opens it. The folder is `logs` in Mitcad's local data
-folder. Mitcad writes one file per start, named
+**The log files.** MitCad writes the log to its log folder. **Help ›
+Open Log Folder** opens it. The folder is `logs` in MitCad's local data
+folder. MitCad writes one file per start, named
 `mitcad-YYYYMMDD-HHMMSS-<process>.log`. At 20 MB, a file continues in a
 new one. The folder keeps the newest 10 files, at most 200 MB.
 
 Each file begins with:
 
-- Mitcad's version and build
+- MitCad's version and build
 - The system
 - The graphics card and its OpenGL renderer
 - The command line
 - The open design's path
 - The switches in use
 
-When the log starts with Mitcad, Mitcad writes the file when the 3D
+When the log starts with MitCad, MitCad writes the file when the 3D
 view knows its graphics card. This takes at most a few seconds. If
-something goes wrong first, Mitcad writes the file at once. When you
-set the log on, the lines that Mitcad kept in memory from before come
+something goes wrong first, MitCad writes the file at once. When you
+set the log on, the lines that MitCad kept in memory from before come
 first (the newest 5000).
 
 Each line has the time in milliseconds, the level (debug, info,
 warning, critical), the thread when it is not the main one, and the
-text. Mitcad writes the log at least once a second and at every
+text. MitCad writes the log at least once a second and at every
 warning. Thus a crash loses at most a second.
 
 **What a log contains.** Commands, sketch operations, computations,
@@ -7251,7 +7439,7 @@ lists all commands and options. Each command below runs as
   JSON commands and expectations, for example `{"expect": {"body":
   "Body1", "volume": 48000}}`. A failed expectation gives exit code 1.
   Examples: [tools/cli/tests](../tools/cli/tests). Commands:
-  [commands.md](../core/model/src/api/commands.md).
+  [commands.md](../core/model-api/src/commands.md).
 - `import part.step [--unit-mm N] [--save result.mitcad]`: imports
   STEP, IGES, BRep, STL or OBJ as a base feature.
 - `import-f3d part.f3d --save part.mitcad [--report report.json]`:
@@ -7354,7 +7542,7 @@ lists all commands and options. Each command below runs as
     `=copy`, and run sync again. `=copy` takes theirs and keeps yours as
     `part (conflict copy <you> <date>).mitcad`. `--dry-run` tells what a
     sync would do. Record your changes as versions first: unrecorded
-    changes in a file that the sync would change stop it. Mitcad keeps
+    changes in a file that the sync would change stop it. MitCad keeps
     your history from before the sync in a backup for 30 days, the
     latest five always.
 - Local and Cloud projects:
@@ -7375,17 +7563,17 @@ lists all commands and options. Each command below runs as
   - `clone <url> new-folder --adopt` makes a repository with files a
     project
   - `host-keys <server> [--trust]` shows the server's SSH key
-    fingerprints. Mitcad checks them against the fingerprints that
+    fingerprints. MitCad checks them against the fingerprints that
     GitHub, GitLab and Codeberg publish. With `--trust`, it adds them to
     `~/.ssh/known_hosts`.
 - Edit locks ([Edit locks](#edit-locks)). When you set edit locks to
-  off, Mitcad releases your locks. The locks of others stay.
+  off, MitCad releases your locks. The locks of others stay.
   - `lock status` lists them
   - `lock release --force` removes them
 
 ## Terms
 
-Each of these words has one meaning in Mitcad, its menus and this guide:
+Each of these words has one meaning in MitCad, its menus and this guide:
 
 | Term | Meaning |
 |---|---|

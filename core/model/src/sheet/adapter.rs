@@ -4,8 +4,20 @@
 use super::*;
 use crate::sketch::geometry::{Curve2, Nurbs, angle_after, dist};
 
-impl BoundedCurve2 {
-    pub fn from_geometry(geometry: SegmentGeometry) -> Result<Self, String> {
+/// The adapter's methods of [`BoundedCurve2`], which lives below the model
+/// with the kernel's sheet types (mitcad#777) while these need the
+/// sketch's curves.
+pub(crate) trait BoundedCurve2Ext: Sized {
+    fn from_geometry(geometry: SegmentGeometry) -> Result<Self, String>;
+    fn support(&self) -> Result<Curve2, String>;
+    fn point(&self, parameter: f64) -> Result<[f64; 2], String>;
+    fn ends(&self) -> Result<([f64; 2], [f64; 2]), String>;
+    fn geometry_piece(&self) -> Result<SegmentGeometry, String>;
+    fn orientation_samples(&self) -> Result<Vec<[f64; 2]>, String>;
+}
+
+impl BoundedCurve2Ext for BoundedCurve2 {
+    fn from_geometry(geometry: SegmentGeometry) -> Result<Self, String> {
         let (first, last) = match &geometry {
             SegmentGeometry::Line { .. } => (0.0, 1.0),
             SegmentGeometry::Circle { .. } | SegmentGeometry::Ellipse { .. } => {
@@ -35,7 +47,7 @@ impl BoundedCurve2 {
         })
     }
 
-    pub(crate) fn support(&self) -> Result<Curve2, String> {
+    fn support(&self) -> Result<Curve2, String> {
         Ok(match &self.geometry {
             SegmentGeometry::Line { start, end } => Curve2::Line { a: *start, b: *end },
             SegmentGeometry::Circle { center, radius, .. }
@@ -94,15 +106,15 @@ impl BoundedCurve2 {
         })
     }
 
-    pub fn point(&self, parameter: f64) -> Result<[f64; 2], String> {
+    fn point(&self, parameter: f64) -> Result<[f64; 2], String> {
         Ok(self.support()?.point(parameter))
     }
 
-    pub fn ends(&self) -> Result<([f64; 2], [f64; 2]), String> {
+    fn ends(&self) -> Result<([f64; 2], [f64; 2]), String> {
         Ok((self.point(self.range.first)?, self.point(self.range.last)?))
     }
 
-    pub fn geometry_piece(&self) -> Result<SegmentGeometry, String> {
+    fn geometry_piece(&self) -> Result<SegmentGeometry, String> {
         if let SegmentGeometry::BSpline {
             periodic: true,
             knots,
@@ -160,8 +172,14 @@ impl BoundedCurve2 {
     }
 }
 
-impl MaterialRegion {
-    pub fn from_legacy(region: &SheetRegion) -> Result<Self, String> {
+/// The adapter's constructor of [`MaterialRegion`] (mitcad#777, as
+/// [`BoundedCurve2Ext`]).
+pub(crate) trait MaterialRegionExt: Sized {
+    fn from_legacy(region: &SheetRegion) -> Result<Self, String>;
+}
+
+impl MaterialRegionExt for MaterialRegion {
+    fn from_legacy(region: &SheetRegion) -> Result<Self, String> {
         let mut loops = Vec::new();
         for (loop_index, old) in region.loops.iter().enumerate() {
             let edges: Vec<_> = old
@@ -239,8 +257,18 @@ impl MaterialRegion {
     }
 }
 
-impl SheetPatch {
-    pub fn from_legacy(
+/// The adapter's constructor of [`SheetPatch`] (mitcad#777, as
+/// [`BoundedCurve2Ext`]).
+pub(crate) trait SheetPatchExt: Sized {
+    fn from_legacy(
+        panel: &SheetPlanarPatch,
+        thickness: f64,
+        reference_side: SheetReferenceSide,
+    ) -> Result<Self, String>;
+}
+
+impl SheetPatchExt for SheetPatch {
+    fn from_legacy(
         panel: &SheetPlanarPatch,
         thickness: f64,
         reference_side: SheetReferenceSide,
@@ -266,7 +294,7 @@ impl SheetPatch {
 /// Exact full-side adjacency within one native Face. These semantic seams
 /// survive the union of coplanar caps and are available to subsequent bends.
 pub(crate) fn planar_joins(patches: &[SheetPatch]) -> Result<Vec<ShapePort>, String> {
-    use crate::profile::dot;
+    use mitcad_vec3::dot;
     let mut joins = Vec::new();
     for (i, a) in patches.iter().enumerate() {
         for b in &patches[i + 1..] {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! The edit locks' JSON commands (`core/model/src/api/commands.md`, "Edit
+//! The edit locks' JSON commands (`core/model-api/src/commands.md`, "Edit
 //! locks"), for the application's lock controller and `mitcad-cli lock`.
 //! Like the remote commands every answer has `error` and `log`: a failure
 //! of git or the network is an answer, not a failed command.

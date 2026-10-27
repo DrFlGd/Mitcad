@@ -81,7 +81,7 @@ Stack samples of every thread (gdb, every one or two seconds) and flat
   shell's orientation check lists each large face's edge orientations once):
   the checker on the 23 430-face body 14.4 s → 2.1 s, statuses unchanged
   (`geometry/tests/test_large_bodies.cpp`, and the
-  [port README](../third_party/vcpkg-ports/README.md)).
+  [port's notes on 0120 and 0121](../third_party/vcpkg-ports/docs/repeated-work.md#0120-and-0121-the-checker-on-bodies-with-thousands-of-holes)).
 - A shape keeps its edges' middles and curves and a box per face
   (`Kernel::face_boxes`); lookups through a point pass over faces whose box
   lies farther than the tolerance.
@@ -89,10 +89,10 @@ Stack samples of every thread (gdb, every one or two seconds) and flat
   of 16 bodies.
 - Sketch snaps and the projection rule's sources project only edges whose
   projected reach comes near a linked curve, each once
-  (`core/import/src/snap.rs`, `Projector`).
+  (`core/import-replay/src/snap.rs`, `Projector`).
 - A body's face count comes from the shape's own face map.
 - The `.f3d` reader keys views, seen sets and entity maps with a quick
-  integer hash (`core/f3d/src/ids.rs`), finds a record's base type once, and
+  integer hash (`core/asm/src/ids.rs`), finds a record's base type once, and
   works out circle seams for several extrusions at a time with threads.
 
 ## The ticket's ideas
@@ -211,7 +211,7 @@ it), and the circle seams named each extrusion's state again after the
 items. A state is a function of the blob and the position alone, so a
 naming can be shared without changing what is found: `NamedState` owns
 its view, and the inputs keep the states last used within a size budget
-(`KEPT_STATES` in `core/f3d/src/design/inputs.rs`), the circle seams take
+(`KEPT_STATES` in `core/f3d-design/src/inputs.rs`), the circle seams take
 the whole circles when the items name the state, and a fillet's face
 selections name the earlier states one at a time instead of all 24 at
 once.
@@ -263,7 +263,7 @@ holes of 4 mm and a 20 x 10 mm boss joined on top (94 faces), built by
 `test_preview_meshing` through the model's commands; each sample previews a
 new distance and meshes it as the preview job does. Linux workstation
 (16-core desktop CPU, 32 threads), the `dev` build (OCCT's release
-libraries, Mitcad's own code unoptimised), not the ticket's macOS baseline.
+libraries, MitCad's own code unoptimised), not the ticket's macOS baseline.
 
 `MITCAD_MESH_TRACE=1` before the change: all 99 faces of the result and
 the tool meshed every time (the boolean's result is a copy of its operands
@@ -301,7 +301,7 @@ distance's arrow through the X server of a hidden Xvfb display (xdotool:
 exact previews take and once with each preview held back 500 ms
 (`MITCAD_TEST_RECOMPUTE_DELAY_MS=0,preview=500`, about 1 s a preview).
 Linux workstation (16-core desktop CPU, 32 threads), the `dev` build
-(Mitcad's own code unoptimised, OCCT's release libraries), OpenGL by
+(MitCad's own code unoptimised, OCCT's release libraries), OpenGL by
 Mesa's software renderer (Xvfb), 4x MSAA, scale 1; a load average of 12
 to 35 from other jobs, so the counts below vary from run to run. Each
 drag's line counts apart what the app got and did while the button was

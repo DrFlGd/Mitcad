@@ -12,8 +12,8 @@
 //! - [`rse`]: the segment database: segments of meta and data streams,
 //!   their record tables and records.
 //! - The B-rep record of the B-rep segment holds an ASM binary file, which
-//!   the `.f3d` reader's ASM code parses and converts (`mitcad_f3d::asm`,
-//!   `mitcad_f3d::convert`).
+//!   the `.f3d` reader's ASM code parses and converts (`mitcad_asm::asm`,
+//!   `mitcad_asm::convert`).
 //!
 //! The format knowledge comes from Microsoft's specifications for the
 //! container and the property sets, and from inspecting files for the rest.
@@ -49,7 +49,7 @@ pub mod text;
 use std::fmt;
 
 use cfb::{CompoundFile, guid_text};
-use mitcad_f3d::convert;
+use mitcad_asm::convert;
 
 /// The class id of a part file's root storage.
 pub const PART_CLSID: &str = "4d29b490-49b2-11d0-93c3-7e0706000000";
@@ -126,7 +126,7 @@ pub const PID_LENGTH_UNIT: u32 = 8;
 /// The ASM magic of the B-rep record's data.
 const ASM_MAGIC: &[u8] = b"ASM BinaryFile";
 /// The magic of the same format in files of releases before 2013.
-const OLDER_ASM_MAGIC: &[u8] = mitcad_f3d::asm::file::OLDER_MAGIC;
+const OLDER_ASM_MAGIC: &[u8] = mitcad_asm::asm::file::OLDER_MAGIC;
 
 /// The data starts with an ASM binary file.
 fn is_asm(data: &[u8]) -> bool {
@@ -513,12 +513,12 @@ pub fn convert_options() -> convert::Options {
 }
 
 /// Parses and converts the bodies of each B-rep record.
-pub fn read_bodies(records: &[BrepRecord]) -> Vec<Result<mitcad_f3d::BlobBodies, String>> {
+pub fn read_bodies(records: &[BrepRecord]) -> Vec<Result<mitcad_asm::BlobBodies, String>> {
     let options = convert_options();
     records
         .iter()
         .map(|r| {
-            mitcad_f3d::read_blob(&r.place(), &r.asm, &options)
+            mitcad_asm::read_blob(&r.place(), &r.asm, &options)
                 .map_err(|e| format!("{}: {e}", r.place()))
         })
         .collect()
@@ -527,8 +527,8 @@ pub fn read_bodies(records: &[BrepRecord]) -> Vec<Result<mitcad_f3d::BlobBodies,
 /// The number of states of the ASM history the B-rep record carries (the
 /// states kept for rolling the part back), when it has one.
 pub fn history_states(asm: &[u8]) -> Option<usize> {
-    let file = mitcad_f3d::asm::AsmFile::parse(asm).ok()?;
-    mitcad_f3d::asm::history::History::parse(&file)
+    let file = mitcad_asm::asm::AsmFile::parse(asm).ok()?;
+    mitcad_asm::asm::history::History::parse(&file)
         .ok()
         .flatten()
         .map(|h| h.states.len())
@@ -540,8 +540,8 @@ pub fn history_states(asm: &[u8]) -> Option<usize> {
 /// body exists (unless an older state created it) with the copy as its
 /// entity.
 pub fn deleted_bodies(
-    history: &mitcad_f3d::asm::history::History,
-    file: &mitcad_f3d::asm::AsmFile,
+    history: &mitcad_asm::asm::history::History,
+    file: &mitcad_asm::asm::AsmFile,
 ) -> Vec<(usize, usize)> {
     let mut out: Vec<(usize, usize)> = Vec::new();
     for (j, state) in history.states.iter().enumerate() {
@@ -585,7 +585,7 @@ mod tests {
         );
         let file = testdata::part_file_with_streams(
             &testdata::TestPart {
-                bodies: vec![mitcad_f3d::testdata::cube_blob()],
+                bodies: vec![mitcad_asm::testdata::cube_blob()],
                 part_number: "P-7",
                 material: "Steel",
                 length_unit: 11269,
@@ -681,7 +681,7 @@ mod tests {
     fn scans_a_segment_whose_records_do_not_split() {
         // The B-rep segment's block table says 1 byte for the first record:
         // the records cannot be split, so the data is scanned for ASM files.
-        let asm = mitcad_f3d::testdata::cube_blob();
+        let asm = mitcad_asm::testdata::cube_blob();
         let types = [BREP_RECORD_TYPE];
         let (m, b) = rse::write_segment(
             "PmBRepSegment",

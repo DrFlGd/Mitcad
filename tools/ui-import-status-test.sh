@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/files core/import/src/timeline_notes.rs core/import/src/freecad
+# check-all sources: app/browser app/files core/import-replay/src/timeline_notes.rs core/import-fcstd core/import-base/src/notes.rs
 # The import's outcomes on the timeline (mitcad#170), on a FreeCAD document
 # made here and opened with --open (the import process):
 #   - a PartDesign Body whose sketch is padded (replayed), then a feature

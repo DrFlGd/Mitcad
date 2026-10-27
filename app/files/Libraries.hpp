@@ -4,7 +4,7 @@
 // Component libraries in the application (mitcad#64, mitcad#63): the
 // settings (the sources the user chose: libraries and community indexes by
 // URL or folder, each on or off), where fetched libraries are kept, and
-// the library commands (core/model/src/api/commands.md, "Component
+// the library commands (core/model-api/src/commands.md, "Component
 // libraries"). Local commands (list, show, search, preview, diff) run at
 // once; fetches run on a thread of their own with progress and Cancel, and
 // when the user asks, or at start-up for the sources with Auto-update on

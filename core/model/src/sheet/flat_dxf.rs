@@ -14,8 +14,8 @@ use std::f64::consts::TAU;
 
 use mitcad_vec3::vec2::distance as dist;
 
-use super::MaterialRegion;
 use super::flat::FlatBend;
+use super::{BoundedCurve2Ext, MaterialRegion};
 use crate::exchange::LengthUnit;
 use crate::profile::SegmentGeometry;
 

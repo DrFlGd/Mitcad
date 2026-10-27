@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/framework app/MainWindow.cpp app/commands/SketchCommands.cpp app/sketch tools/cli
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs
+# check-all sources: core/sketch core/model-api/src/sketch.rs
 # What the sketch tools make and keep (mitcad#352, #353, #354, #355, #356),
 # through the real UI, on a design mitcad-cli makes: Sketch1 (F1) empty, and
 # Sketch2 (F2) on XY with a line c1 from (0, 40) to (40, 40), the points p4 at

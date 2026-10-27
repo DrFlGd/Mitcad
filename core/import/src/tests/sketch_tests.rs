@@ -2,6 +2,7 @@
 //! Sketch contents: texts, polygons, sketch patterns, offsets and curve flags.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 #[test]
 fn sketch_texts_keep_style_frame_and_path() {

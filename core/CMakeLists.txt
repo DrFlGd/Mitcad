@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: MIT
-# The bridge, and the release tool mitcad-release of the automatic updates
-# (mitcad#9, docs/updates.md).
-corrosion_import_crate(MANIFEST_PATH Cargo.toml CRATES mitcad-ffi mitcad-update)
+# The bridge, the release tool mitcad-release of the automatic updates
+# (mitcad#9, docs/updates.md) and the test runner mitcad-testrun
+# (tools/testrun, mitcad#790; with the build's programs: build\dev\ on
+# Windows, build/dev/core/ on Linux and macOS).
+corrosion_import_crate(MANIFEST_PATH Cargo.toml CRATES mitcad-ffi mitcad-update mitcad-testrun)
 if(MITCAD_RUST_CACHE_ENVIRONMENT)
   corrosion_set_env_vars(mitcad_ffi ${MITCAD_RUST_CACHE_ENVIRONMENT})
   corrosion_set_env_vars(mitcad-release ${MITCAD_RUST_CACHE_ENVIRONMENT})
+  corrosion_set_env_vars(mitcad-testrun ${MITCAD_RUST_CACHE_ENVIRONMENT})
 endif()
 # Live updates (mitcad#89): TLS in the bridge (rustls with ring) takes
 # random numbers from the system (bcrypt on Windows) and reads the system's
@@ -19,7 +22,16 @@ endif()
 # C++ side of the bridges: the generated mitcad_bridge/*.h and the adapters
 # in cpp/bridge/, one per kernel family. Rust calls the geometry library
 # through them, so the target links mitcad_geometry.
-corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi FILES
+# The bridges are the rlib mitcad-ffi-bridges in ffi/, linked into the
+# static library mitcad_ffi (ffi-staticlib/, mitcad#792). Corrosion reads
+# the FILES from the src/ folder of the manifest that the CRATE target
+# names, and imports only the static library, so this target names the
+# rlib's manifest; the links below are the ones Corrosion makes for an
+# imported CRATE.
+add_library(mitcad_ffi_bridges_sources INTERFACE)
+set_target_properties(mitcad_ffi_bridges_sources PROPERTIES
+  INTERFACE_COR_PACKAGE_MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/ffi/Cargo.toml")
+corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi_bridges_sources FILES
   lib.rs
   kernel/boolean.rs
   kernel/dressup.rs
@@ -241,6 +253,10 @@ target_sources(mitcad_bridge PRIVATE
   cpp/bridge/face_revolve.cpp
   cpp/bridge/face_revolve.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
+# What corrosion_add_cxxbridge links for a CRATE that Corrosion imported
+# (mitcad#792): the bridge with the Rust library, both ways.
+target_link_libraries(mitcad_bridge PRIVATE mitcad_ffi-static)
+target_link_libraries(mitcad_ffi-static INTERFACE mitcad_bridge)
 target_link_libraries(mitcad_bridge PUBLIC mitcad_geometry)
 # The bridge and the Rust library call each other, and a single-pass
 # linker takes from each archive only what the archives before it asked
@@ -325,8 +341,18 @@ if(BUILD_TESTING)
   if(Rust_TOOLCHAIN)
     list(APPEND cargo_test_environment "RUSTUP_TOOLCHAIN=${Rust_TOOLCHAIN}")
   endif()
-  set(cargo_build_environment "CARGO_TARGET_DIR=${CMAKE_CURRENT_BINARY_DIR}/cargo-test"
-    ${cargo_test_environment} ${MITCAD_RUST_CACHE_ENVIRONMENT})
+  # Incremental compilation of the debug test builds (below).
+  option(MITCAD_CARGO_TEST_INCREMENTAL "Compile the crates' debug test builds incrementally" ON)
+  # cargo's folder of each profile's test builds: cargo-test in the build
+  # folder, or the profile's own under MITCAD_CARGO_TARGET_DIR (the
+  # top-level CMakeLists.txt). The lists of test binaries stay in cargo-test.
+  foreach(profile debug release)
+    if(MITCAD_CARGO_TARGET_ROOT)
+      set(cargo_target_${profile} "${MITCAD_CARGO_TARGET_ROOT}/test-${profile}")
+    else()
+      set(cargo_target_${profile} "${CMAKE_CURRENT_BINARY_DIR}/cargo-test")
+    endif()
+  endforeach()
 
   # The crates' tests (mitcad#101). A fixture per profile builds the test
   # binaries of every crate in one cargo run, core.cargo_build (debug) and
@@ -373,26 +399,93 @@ if(BUILD_TESTING)
   endfunction()
 
   mitcad_cargo_test(core.model mitcad-model)
+  # The general sketch below the model's core (mitcad#780).
+  mitcad_cargo_test(core.sketch mitcad-sketch)
+  # The Kernel trait and the base data below the model, and the mock
+  # kernel's crate (mitcad#777).
+  mitcad_cargo_test(core.model_base mitcad-model-base)
+  mitcad_cargo_test(core.model_testkit mitcad-model-testkit)
+  # The JSON api above the model (mitcad#777).
+  mitcad_cargo_test(core.model_api mitcad-model-api)
+  # The drawing layout and writers above the model (mitcad#777).
+  mitcad_cargo_test(core.model_drawing mitcad-model-drawing)
+  # BUILD planning above the model, below the api (mitcad#777).
+  mitcad_cargo_test(core.model_build mitcad-model-build)
+  # Comparison of two designs above the model (mitcad#777).
+  mitcad_cargo_test(core.model_diff mitcad-model-diff)
+  # The model's tests through the JSON api, a small crate per area
+  # (mitcad#777, core/model-tests/README.md).
+  mitcad_cargo_test(core.model.api mitcad-model-tests-api)
+  mitcad_cargo_test(core.model.appearance mitcad-model-tests-appearance)
+  mitcad_cargo_test(core.model.analysis mitcad-model-tests-analysis)
+  mitcad_cargo_test(core.model.sketch mitcad-model-tests-sketch)
+  mitcad_cargo_test(core.model.sketch-refs mitcad-model-tests-sketch-refs)
+  mitcad_cargo_test(core.model.features-profile mitcad-model-tests-features-profile)
+  mitcad_cargo_test(core.model.features-solid mitcad-model-tests-features-solid)
+  mitcad_cargo_test(core.model.parts mitcad-model-tests-parts)
+  mitcad_cargo_test(core.model.sheet mitcad-model-tests-sheet)
+  mitcad_cargo_test(core.model.assembly mitcad-model-tests-assembly)
+  mitcad_cargo_test(core.model.joints mitcad-model-tests-joints)
+  mitcad_cargo_test(core.model.links mitcad-model-tests-links)
+  mitcad_cargo_test(core.model.drawing mitcad-model-tests-drawing)
+  mitcad_cargo_test(core.model.drawing-views mitcad-model-tests-drawing-views)
+  mitcad_cargo_test(core.model.print mitcad-model-tests-print)
+  mitcad_cargo_test(core.model.files mitcad-model-tests-files)
+  mitcad_cargo_test(core.model.build-frames mitcad-model-tests-build-frames)
+  mitcad_cargo_test(core.model.build-timber mitcad-model-tests-build-timber)
+  # Parameter expressions and the print settings' key map, crates below
+  # the model (mitcad#777).
+  mitcad_cargo_test(core.expr mitcad-expr)
+  mitcad_cargo_test(core.print-keys mitcad-print-keys)
   # Slicers' print settings in real 3MF projects under MITCAD_3MF_CORPUS
-  # (mitcad#640; core/model/src/print_files/corpus.rs, an ignored test that
-  # core.model leaves out): each project an index.tsv lists imported as the
-  # application imports it, checked against its row, exported in the same
-  # dialect and read back; skipped without the corpus.
+  # (mitcad#640; core/model-tests/print/src/print_files_corpus.rs, an ignored
+  # test that core.model.print leaves out): each project an index.tsv lists
+  # imported as the application imports it, checked against its row,
+  # exported in the same dialect and read back; skipped without the corpus.
   add_test(NAME 3mf.corpus
     COMMAND "${CMAKE_COMMAND}" "-DLIST=${CMAKE_CURRENT_BINARY_DIR}/cargo-test/tests-debug.tsv"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cargo-tests.cmake" -- run mitcad-model print_files::corpus:: --ignored
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cargo-tests.cmake" -- run mitcad-model-tests-print print_files_corpus:: --ignored
             --nocapture)
   set_tests_properties(3mf.corpus PROPERTIES FIXTURES_REQUIRED cargo_tests_debug
     SKIP_REGULAR_EXPRESSION "3mf corpus: skipped")
 
   # The .f3d import on synthetic dumps with the mock kernel (T1).
   mitcad_cargo_test(core.import mitcad-import)
+  # The crates split from the replay (mitcad#785): the .solidcraft import
+  # on the reader's test designs with the mock kernel; the replay's core
+  # (its unit tests; the replay's own tests are core.import's) and its
+  # families: joints, sheet metal, primitives (their unit tests, if any).
+  mitcad_cargo_test(core.import-solidcraft mitcad-import-solidcraft)
+  mitcad_cargo_test(core.import-replay mitcad-import-replay)
+  mitcad_cargo_test(core.import-joints mitcad-import-joints)
+  mitcad_cargo_test(core.import-sheet mitcad-import-sheet)
+  mitcad_cargo_test(core.import-primitives mitcad-import-primitives)
+  # The appearances family (mitcad#791).
+  mitcad_cargo_test(core.import-appearances mitcad-import-appearances)
+  # The imports' crates split from mitcad-import (mitcad#775): what they
+  # share, IFC, .rvt (its corpus tests read MITCAD_RVT_CORPUS and skip
+  # without it) and FreeCAD documents, with the mock kernel.
+  mitcad_cargo_test(core.import-base mitcad-import-base)
+  mitcad_cargo_test(core.import-ifc mitcad-import-ifc)
+  mitcad_cargo_test(core.import-rvt mitcad-import-rvt)
+  mitcad_cargo_test(core.import-fcstd mitcad-import-fcstd)
 
   mitcad_cargo_test(core.solver mitcad-solver)
 
   # The .f3d reader; its corpus test reads MITCAD_F3D_CORPUS (default
   # ~/f3d-corpus) and skips when the corpus is missing.
   mitcad_cargo_test(core.f3d mitcad-f3d RELEASE)
+  # The crates split off the .f3d reader (mitcad#776). The dump IR.
+  mitcad_cargo_test(core.dump mitcad-dump RELEASE)
+  # The ASM part.
+  mitcad_cargo_test(core.asm mitcad-asm RELEASE)
+  # The names of B-rep entities.
+  mitcad_cargo_test(core.f3d-names mitcad-f3d-names RELEASE)
+  # The document of the file, and the design segment.
+  mitcad_cargo_test(core.f3d-file mitcad-f3d-file RELEASE)
+  mitcad_cargo_test(core.f3d-design mitcad-f3d-design RELEASE)
+  # The streams, records and sketches of the design segment (mitcad#779).
+  mitcad_cargo_test(core.f3d-decode mitcad-f3d-decode RELEASE)
 
   mitcad_cargo_test(core.dxf mitcad-dxf)
 
@@ -460,6 +553,9 @@ if(BUILD_TESTING)
   # The vector helpers on [f64; 3] that the model, the solver and the
   # readers share (mitcad#582; no OCCT).
   mitcad_cargo_test(core.vec3 mitcad-vec3)
+  # The test runner's scheduling, profiles and parsers (tools/testrun,
+  # mitcad#790); no ctest needed.
+  mitcad_cargo_test(tools.testrun mitcad-testrun)
 
   # The fixtures that build the test binaries, and the documentation tests
   # (cargo with the fixture's packages, so that it builds nothing again).
@@ -474,6 +570,22 @@ if(BUILD_TESTING)
       set(suffix _release)
       set(release --release)
     endif()
+    # Incremental compilation is part of the hash in the names of the files
+    # cargo builds for Mitcad's crates: a CARGO_INCREMENTAL inherited from
+    # the shell (0 for one run, unset for the next) built every crate and
+    # test binary again beside the earlier ones (mitcad#796). The test
+    # builds pin it to the profile's default (on in debug, off in release),
+    # off in debug too with MITCAD_CARGO_TEST_INCREMENTAL=OFF, and leave it
+    # to the compiler cache's environment, which turns it off.
+    set(incremental 0)
+    if(profile STREQUAL "debug" AND MITCAD_CARGO_TEST_INCREMENTAL)
+      set(incremental 1)
+    endif()
+    set(cargo_build_environment "CARGO_TARGET_DIR=${cargo_target_${profile}}" ${cargo_test_environment})
+    if(NOT MITCAD_RUST_CACHE_ENVIRONMENT MATCHES "CARGO_INCREMENTAL=")
+      list(APPEND cargo_build_environment "CARGO_INCREMENTAL=${incremental}")
+    endif()
+    list(APPEND cargo_build_environment ${MITCAD_RUST_CACHE_ENVIRONMENT})
     set(selected)
     foreach(package IN LISTS packages)
       list(APPEND selected -p ${package})
@@ -487,8 +599,19 @@ if(BUILD_TESTING)
     # beside the release profile's crate tests, the geometry tests and the
     # .rvt corpus ran the Linux release check of 0.10.0 out of its memory
     # limit (18.10.2026).
+    # On Linux the test runner (mitcad-testrun, mitcad#790) schedules by a
+    # memory budget and each test's measured peak, and the build uses only
+    # check-all's 8 cargo jobs of the machine's cores, so there the build
+    # runs beside the tests that do not need it (C++, geometry, CLI, UI),
+    # one cargo build at a time (RESOURCE_LOCK), instead of alone for its
+    # ten minutes.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      set(cargo_build_alone RESOURCE_LOCK cargo_build)
+    else()
+      set(cargo_build_alone RUN_SERIAL TRUE)
+    endif()
     set_tests_properties(core.cargo_build${suffix} PROPERTIES FIXTURES_SETUP cargo_tests_${profile}
-      ENVIRONMENT "${cargo_build_environment}" TIMEOUT 3600 RUN_SERIAL TRUE)
+      ENVIRONMENT "${cargo_build_environment}" TIMEOUT 3600 ${cargo_build_alone})
     add_test(NAME core.doctests${suffix}
       COMMAND "${Rust_CARGO_CACHED}" test --doc --manifest-path "${CMAKE_CURRENT_SOURCE_DIR}/Cargo.toml"
               --quiet ${release} ${selected})

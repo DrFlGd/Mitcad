@@ -186,7 +186,8 @@ bool SketchModel::load(const QJsonObject& sketch) {
         c.points << id.toString();
       }
     }
-    if (c.isSpline() && c.start.isEmpty() && !c.points.isEmpty()) {
+    c.closed = flag(e, "closed");
+    if (c.isSpline() && !c.closed && c.start.isEmpty() && !c.points.isEmpty()) {
       c.start = c.points.first();
       c.end = c.points.last();
     }

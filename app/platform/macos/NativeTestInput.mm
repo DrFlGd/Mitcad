@@ -2,6 +2,7 @@
 #include "platform/NativeTestInput.hpp"
 
 #import <AppKit/AppKit.h>
+#import <QuartzCore/QuartzCore.h>
 
 #include <QApplication>
 #include <QComboBox>
@@ -48,6 +49,7 @@
 #include "platform/NativeForms.hpp"
 #include "platform/NativeMacWindow.hpp"
 #include "browser/DocumentSnapshot.hpp"
+#include "browser/TimelinePresentation.hpp"
 #include "framework/CachePreferences.hpp"
 #include "framework/CommandSession.hpp"
 #include "framework/CommandRegistry.hpp"
@@ -189,12 +191,12 @@ bool sameCommandMenu(NSMenu* native, QMenu* retained, bool caption, const QStrin
   [native update]; // Validate the same current states that opening it presents.
   QList<QAction*> expected;
   for (QAction* action : retained->actions()) {
-    if (action->isVisible() && !action->isSeparator()) expected.append(action);
+    if (action->isVisible()) expected.append(action);
   }
   NSMutableArray<NSMenuItem*>* actual = [NSMutableArray array];
   for (NSUInteger index = caption ? 1 : 0; index < native.itemArray.count; ++index) {
     NSMenuItem* item = native.itemArray[index];
-    if (![item isSeparatorItem]) [actual addObject:item];
+    [actual addObject:item];
   }
   if (actual.count != NSUInteger(expected.size())) {
     error = QStringLiteral("native menu '%1' has %2 commands; the retained CAD menu has %3")
@@ -204,6 +206,13 @@ bool sameCommandMenu(NSMenu* native, QMenu* retained, bool caption, const QStrin
   for (int index = 0; index < expected.size(); ++index) {
     QAction* action = expected[index];
     NSMenuItem* item = actual[NSUInteger(index)];
+    if (action->isSeparator() || [item isSeparatorItem]) {
+      if (action->isSeparator() == bool([item isSeparatorItem])) continue;
+      error = QStringLiteral("native menu '%1' section boundary at %2: Qt '%3' separator=%4, AppKit '%5' separator=%6")
+                  .arg(path).arg(index).arg(action->text()).arg(action->isSeparator()).arg(qt(item.title))
+                  .arg(bool([item isSeparatorItem]));
+      return false;
+    }
     QString title = action->text();
     title.remove(QLatin1Char('&'));
     const QString identifier = commandIdentifier(action);
@@ -223,9 +232,10 @@ bool sameCommandMenu(NSMenu* native, QMenu* retained, bool caption, const QStrin
 }
 
 bool nativeMenuPlacement(QString& error) {
-  NSMenu* appMenu = nil;
+  NSMenu* appMenu = NSApp.mainMenu.itemArray.firstObject.submenu;
+  QStringList titles;
   for (NSMenuItem* top in NSApp.mainMenu.itemArray) {
-    if ([top.title isEqualToString:@"Mitcad"]) appMenu = top.submenu;
+    titles.append(qt(top.title));
     if (![top.title isEqualToString:@"Create"] && ![top.title isEqualToString:@"Sketch"]) continue;
     for (NSMenuItem* item in top.submenu.itemArray) {
       const QString id = qt([item.representedObject isKindOfClass:NSString.class] ? item.representedObject : nil);
@@ -236,8 +246,15 @@ bool nativeMenuPlacement(QString& error) {
       }
     }
   }
+  const QStringList expected = {titles.value(0), QStringLiteral("File"), QStringLiteral("Edit"),
+                                QStringLiteral("View"), QStringLiteral("Tools"), QStringLiteral("Window"), QStringLiteral("Help")};
+  if (titles != expected) {
+    error = QStringLiteral("native menu bar differs from the shared File/Edit/View/Tools/Window/Help order: %1")
+                .arg(titles.join(QLatin1Char('/')));
+    return false;
+  }
   if (!appMenu || !findAction(appMenu, QStringLiteral("tools.preferences"))) {
-    error = QStringLiteral("native Settings is missing from the Mitcad application menu");
+    error = QStringLiteral("native Settings is missing from the MitCad application menu");
     return false;
   }
   if (findAction(NSApp.mainMenu, QStringLiteral("tools.preferences.cache"))) {
@@ -262,15 +279,17 @@ bool ribbonAppearance(NSView* ribbon, QString& error) {
   std::vector<NSView*> separators;
   for (NSView* child in document.subviews) {
     if (child.hidden) continue;
-    if ([child isKindOfClass:NSPopUpButton.class]) captions.push_back(child);
+    if ([child isKindOfClass:NSPopUpButton.class] &&
+        qt(child.accessibilityIdentifier).startsWith(QStringLiteral("native.ribbon.group."))) captions.push_back(child);
     else if ([child isKindOfClass:NSButton.class]) buttons.push_back(child);
     else if ([child isKindOfClass:NSBox.class] && ((NSBox*)child).boxType == NSBoxSeparator) separators.push_back(child);
   }
   const auto leftToRight = [](NSView* a, NSView* b) { return NSMinX(a.frame) < NSMinX(b.frame); };
   std::sort(buttons.begin(), buttons.end(), leftToRight);
   std::sort(captions.begin(), captions.end(), leftToRight);
-  const QString workspace = identifiedView(ribbon, QStringLiteral("native.ribbon.sketch.finish"))
-      ? QStringLiteral("SKETCH") : QStringLiteral("SOLID");
+  NSView* frame = documentWindow().contentView.superview;
+  NSSegmentedControl* tabs = (NSSegmentedControl*)identifiedView(frame, QStringLiteral("native.workspaces"));
+  const QString workspace = tabs ? qt([tabs labelForSegment:tabs.selectedSegment]).toUpper() : QStringLiteral("SOLID");
   for (NSView* group : captions) {
     const QString name = qt(group.accessibilityIdentifier).mid(QStringLiteral("native.ribbon.group.").size()).toUpper();
     QMenu* retained = retainedRibbonMenu(workspace, name);
@@ -282,8 +301,8 @@ bool ribbonAppearance(NSView* ribbon, QString& error) {
   }
   if (!nativeMenuPlacement(error)) return false;
   for (size_t i = 1; i < buttons.size(); ++i) {
-    if (NSMinX(buttons[i].frame) - NSMaxX(buttons[i - 1].frame) < 7.9) {
-      error = QStringLiteral("native ribbon buttons '%1' and '%2' lack their 8-point gap")
+    if (NSMinX(buttons[i].frame) - NSMaxX(buttons[i - 1].frame) < -0.1) {
+      error = QStringLiteral("native ribbon buttons '%1' and '%2' overlap")
           .arg(qt(buttons[i - 1].accessibilityIdentifier), qt(buttons[i].accessibilityIdentifier));
       return false;
     }
@@ -416,15 +435,16 @@ NSView* findControl(const QString& identifier, NSTableView** rowTable = nullptr,
     return qt(view.accessibilityIdentifier) == identifier || qt(view.identifier) == identifier;
   };
   const auto inWindow = [&](NSWindow* window) -> NSView* {
-    if (NSView* found = findControlView(window.contentView.superview != nil ? window.contentView.superview : window.contentView,
-                                       match, rowTable, rowIndex)) return found;
     // AppKit can host toolbar custom views outside the content/titlebar
-    // hierarchy, or detach them into overflow. Read the actual inserted
-    // items through the public API; palette samples are not in this list.
+    // hierarchy, or copy their identifiers onto a non-control wrapper.
+    // Prefer actual inserted views through the public API; palette samples
+    // are not in this list and must never receive test input or updates.
     for (NSToolbarItem* item in window.toolbar.items) {
       if (qt(item.itemIdentifier) == identifier && item.view) return item.view;
       if (NSView* found = identifiedView(item.view, identifier)) return found;
     }
+    if (NSView* found = findControlView(window.contentView.superview != nil ? window.contentView.superview : window.contentView,
+                                       match, rowTable, rowIndex)) return found;
     return nil;
   };
   if (NSView* found = inWindow(target)) return found;
@@ -609,7 +629,13 @@ bool applicationDelegate(QString& error) {
   return true;
 }
 
-bool controlExists(const QString& identifier) { return active() && findControl(identifier) != nil; }
+bool controlExists(const QString& identifier) {
+  if (!active()) return false;
+  for (NSToolbarItem* item in documentWindow().toolbar.items) {
+    if (qt(item.itemIdentifier) == identifier) return true;
+  }
+  return findControl(identifier) != nil;
+}
 
 bool textOf(const QString& identifier, QString& value) {
   if (identifier == QStringLiteral("native.window.origin") || identifier == QStringLiteral("native.window.size")) {
@@ -724,16 +750,14 @@ bool configureToolbarItem(const QString& identifier, const QString& operation, Q
     error = QStringLiteral("native-toolbar-item expects insert, remove or palette");
     return false;
   }
-  NSMutableDictionary* configuration = [toolbar.configurationDictionary mutableCopy];
-  NSMutableArray* identifiers = [configuration[@"TB Item Identifiers"] mutableCopy];
-  if (!identifiers) {
-    error = QStringLiteral("native toolbar configuration has no item identifiers");
-    return false;
+  // Use the same public mutations as the customization UI. Restoring a
+  // dictionary configures one toolbar but need not autosave that change.
+  for (NSInteger index = NSInteger(toolbar.items.count) - 1; index >= 0; --index) {
+    if ([toolbar.items[NSUInteger(index)].itemIdentifier isEqualToString:itemID]) [toolbar removeItemAtIndex:index];
   }
-  [identifiers removeObject:itemID];
-  if (operation == QStringLiteral("insert")) [identifiers insertObject:itemID atIndex:std::min(NSUInteger(3), identifiers.count)];
-  configuration[@"TB Item Identifiers"] = identifiers;
-  [toolbar setConfigurationFromDictionary:configuration];
+  if (operation == QStringLiteral("insert")) {
+    [toolbar insertItemWithItemIdentifier:itemID atIndex:std::min(NSUInteger(3), toolbar.items.count)];
+  }
   [NSUserDefaults.standardUserDefaults synchronize];
   if (!toolbarItemPresent(identifier, operation == QStringLiteral("insert"))) {
     error = QStringLiteral("native toolbar configuration did not %1 '%2'").arg(operation, identifier);
@@ -862,7 +886,7 @@ bool floatingLayout(QString& error) {
     error = QStringLiteral("the native browser draws an opaque inset background over its card");
     return false;
   }
-  for (NSString* identifier in @[@"native.sidebar", @"native.inspectorCard", @"native.historyCard", @"native.ribbon"]) {
+  for (NSString* identifier in @[@"native.projectsCard", @"native.sidebar", @"native.inspectorCard", @"native.historyCard", @"native.ribbon"]) {
     NSView* card = identifiedView(content, qt(identifier));
     if (!card || !viewVisible(card)) continue;
     const NSRect rect = [card convertRect:card.bounds toView:content];
@@ -883,6 +907,113 @@ bool floatingLayout(QString& error) {
     const NSRect right = [inspector convertRect:inspector.bounds toView:content];
     if (NSMinX(left) <= NSMinX(bounds) || NSMaxX(right) >= NSMaxX(bounds) || NSIntersectsRect(left, right)) {
       error = QStringLiteral("native side cards lack their floating edge insets or overlap each other");
+      return false;
+    }
+  }
+  NSView* projects = identifiedView(content, QStringLiteral("native.projectsCard"));
+  if (viewVisible(projects)) {
+    if (viewVisible(sidebar) && NSIntersectsRect(projects.frame, sidebar.frame)) {
+      error = QStringLiteral("native Projects overlaps Browser");
+      return false;
+    }
+    NSView* toolbar = identifiedView(projects, QStringLiteral("projectsToolbar"));
+    NSView* projectTree = identifiedView(projects, QStringLiteral("projectsTree"));
+    const bool expanded = viewVisible(toolbar);
+    if (!expanded) {
+      if (viewVisible(projectTree) || std::abs(projects.bounds.size.height - 30) > 1) {
+        error = QStringLiteral("collapsed native Projects must retain only its header");
+        return false;
+      }
+    } else {
+      if (![toolbar isKindOfClass:NSStackView.class]) {
+        error = QStringLiteral("the native Projects toolbar is missing");
+        return false;
+      }
+      for (NSView* button in ((NSStackView*)toolbar).arrangedSubviews) {
+        if (button.hidden) continue;
+        const NSRect rect = [button convertRect:button.bounds toView:projects];
+        if (NSIsEmptyRect(rect) || !NSContainsRect(projects.bounds, rect)) {
+          error = QStringLiteral("a native Projects toolbar control is clipped");
+          return false;
+        }
+      }
+      if (![projectTree isKindOfClass:NSScrollView.class] || !viewVisible(projectTree)) {
+        error = QStringLiteral("native Projects has no bounded source-list viewport");
+        return false;
+      }
+      NSScrollView* scroll = (NSScrollView*)projectTree;
+      NSOutlineView* outline = (NSOutlineView*)scroll.documentView;
+      const NSRect viewport = [scroll convertRect:scroll.bounds toView:projects];
+      const NSRect buttons = [toolbar convertRect:toolbar.bounds toView:projects];
+      const NSRect first = outline.numberOfRows > 0 ? [outline rectOfRow:0] : NSZeroRect;
+      const CGFloat stride = outline.numberOfRows > 1 ? [outline rectOfRow:1].origin.y - first.origin.y
+                                                     : outline.rowHeight;
+      const CGFloat rows = (scroll.contentView.bounds.size.height - first.origin.y) / stride;
+      if (!NSContainsRect(projects.bounds, viewport) || NSIntersectsRect(viewport, buttons) ||
+          std::abs(rows - std::round(rows)) > 0.02 || rows < 1) {
+        error = QStringLiteral("native Projects clips its rows or toolbar (viewport height %1, row height %2)")
+                    .arg(scroll.contentView.bounds.size.height).arg(outline.rowHeight);
+        return false;
+      }
+      const NSRange visible = [outline rowsInRect:outline.visibleRect];
+      if (visible.length > 0) {
+        for (NSUInteger row : {visible.location, NSMaxRange(visible) - 1}) {
+          const NSRect rect = [outline rectOfRow:NSInteger(row)];
+          if (NSIsEmptyRect(NSIntersectionRect(outline.visibleRect, rect))) continue;
+          if (outline.visibleRect.origin.y < 1 && !NSContainsRect(NSInsetRect(outline.visibleRect, -1, -1), rect)) {
+            error = QStringLiteral("native Projects clips row %1 (%2,%3 %4x%5; viewport %6,%7 %8x%9)")
+                        .arg(row).arg(rect.origin.x).arg(rect.origin.y).arg(rect.size.width).arg(rect.size.height)
+                        .arg(outline.visibleRect.origin.x).arg(outline.visibleRect.origin.y)
+                        .arg(outline.visibleRect.size.width).arg(outline.visibleRect.size.height);
+            return false;
+          }
+          const NSRect exposed = NSIntersectionRect(outline.visibleRect, rect);
+          const NSPoint point = [outline convertPoint:NSMakePoint(NSMidX(exposed), NSMidY(exposed))
+                                               toView:content.superview];
+          NSView* hit = [content hitTest:point];
+          if (hit != outline && ![hit isDescendantOf:outline]) {
+            error = QStringLiteral("native Projects rows fall below another overlay");
+            return false;
+          }
+        }
+      }
+      if (outline.selectedRow >= 0) {
+        const NSRect selected = [outline rectOfRow:outline.selectedRow];
+        if (!NSContainsRect(NSInsetRect(outline.visibleRect, -1, -1), selected)) {
+          error = QStringLiteral("native Projects clips the selected design row");
+          return false;
+        }
+      }
+    }
+  }
+  // Retained Qt badges must not leak into the canvas beneath Browser.
+  for (const auto& entry : {qMakePair(QStringLiteral("failuresBadge"), QStringLiteral("native.browser.failures")),
+                            qMakePair(QStringLiteral("warningsBadge"), QStringLiteral("native.browser.warnings"))}) {
+    QToolButton* presenter = nullptr;
+    for (QWidget* widget : QApplication::allWidgets()) {
+      if (widget->objectName() == entry.first) presenter = qobject_cast<QToolButton*>(widget);
+    }
+    if (!presenter) continue;
+    if (presenter->isVisible()) {
+      error = QStringLiteral("a retained Qt issue badge is painting below the native Browser");
+      return false;
+    }
+    NSView* issue = identifiedView(sidebar, entry.second);
+    const bool expected = !presenter->isHidden() && viewVisible(sidebar);
+    if (viewVisible(issue) != expected) {
+      error = QStringLiteral("native Browser issue '%1' has the wrong visibility").arg(entry.second);
+      return false;
+    }
+    if (!expected) continue;
+    const NSRect rect = [issue convertRect:issue.bounds toView:sidebar];
+    const NSRect outline = [model.enclosingScrollView convertRect:model.enclosingScrollView.bounds toView:sidebar];
+    if (!NSContainsRect(sidebar.bounds, rect) || (!model.enclosingScrollView.hidden && NSIntersectsRect(rect, outline))) {
+      error = QStringLiteral("native Browser issue '%1' is clipped or covered by the outline").arg(entry.second);
+      return false;
+    }
+    NSView* hit = [content hitTest:[issue convertPoint:NSMakePoint(NSMidX(issue.bounds), NSMidY(issue.bounds)) toView:content.superview]];
+    if (hit != issue || qt(((NSButton*)issue).title) != presenter->text() || qt(issue.toolTip) != presenter->toolTip()) {
+      error = QStringLiteral("native Browser issue '%1' lost its shared message or input target").arg(entry.second);
       return false;
     }
   }
@@ -946,7 +1077,7 @@ bool historyLayout(const QJsonObject& timeline, const QSet<QString>& filtered, c
     error = QStringLiteral("the native history is missing its horizontal feature strip or in-row marker");
     return false;
   }
-  if (card.bounds.size.height > 84 || strip.bounds.size.height > 60 ||
+  if (card.bounds.size.height > timeline::cardHeight || strip.bounds.size.height > timeline::height ||
       scroll.drawsBackground || scroll.contentView.drawsBackground || strip.opaque ||
       scroll.borderType != NSNoBorder) {
     error = QStringLiteral("native history is oversized or draws an opaque inset surface");
@@ -983,6 +1114,13 @@ bool historyLayout(const QJsonObject& timeline, const QSet<QString>& filtered, c
       return false;
     }
     NSButton* button = (NSButton*)view;
+    const QString status = feature.value(QStringLiteral("status")).toString();
+    if ((status == QStringLiteral("error") || status == QStringLiteral("warning")) &&
+        (!button.layer || button.layer.borderWidth < 1 || !button.layer.backgroundColor ||
+         CGColorGetAlpha(button.layer.backgroundColor) < 0.15)) {
+      error = QStringLiteral("history issue '%1' lacks a visible cell fill and outline").arg(uid);
+      return false;
+    }
     if (filtered.contains(uid)) {
       if (!button.hidden || button.enabled || button.state == NSControlStateValueOn) {
         error = QStringLiteral("filtered history feature '%1' remains visible, enabled or selected").arg(uid);
@@ -1015,7 +1153,8 @@ bool historyLayout(const QJsonObject& timeline, const QSet<QString>& filtered, c
       return false;
     }
     const NSRect frame = [button convertRect:button.bounds toView:strip];
-    if (frame.size.width <= 0 || frame.size.height <= 0 || !NSContainsRect(strip.bounds, frame) ||
+    if (std::abs(frame.size.width - timeline::cell) > 1 || std::abs(frame.size.height - timeline::cell) > 1 ||
+        button.bordered || !NSContainsRect(strip.bounds, frame) ||
         (!cells.empty() && (NSMaxX(cells.back().frame) >= NSMinX(frame) ||
                             std::abs(NSMidY(cells.back().frame) - NSMidY(frame)) > 1))) {
       error = QStringLiteral("native history feature '%1' is clipped, overlapping or outside the horizontal row").arg(uid);
@@ -1138,6 +1277,11 @@ bool clickImmediately(const QString& identifier, QString& error) {
 }
 
 bool click(const QString& identifier, QString& error) {
+  for (NSToolbarItem* item in documentWindow().toolbar.items) {
+    if (qt(item.itemIdentifier) != identifier || !item.action) continue;
+    if (!item.enabled) { error = QStringLiteral("native toolbar item '%1' is disabled").arg(identifier); return false; }
+    return [NSApp sendAction:item.action to:item.target from:item];
+  }
   NSView* view = findControl(identifier);
   if (!view) { error = QStringLiteral("no native control '%1'").arg(identifier); return false; }
   if ([view isKindOfClass:NSTableCellView.class] && ((NSTableCellView*)view).textField) {
@@ -1208,12 +1352,28 @@ bool replaceText(const QString& identifier, const QString& text, QString& error)
 
 bool choose(const QString& identifier, const QString& title, QString& error) {
   NSView* view = findControl(identifier);
+  if ([view isKindOfClass:NSSegmentedControl.class]) {
+    NSSegmentedControl* segments = (NSSegmentedControl*)view;
+    for (NSInteger i = 0; segments.enabled && i < segments.segmentCount; ++i) {
+      if (qt([segments labelForSegment:i]).compare(title, Qt::CaseInsensitive) == 0) {
+        segments.selectedSegment = i;
+        [segments sendAction:segments.action to:segments.target];
+        return true;
+      }
+    }
+    error = QStringLiteral("native workspace '%1' has no '%2' segment").arg(identifier, title);
+    return false;
+  }
   if (![view isKindOfClass:NSPopUpButton.class] || !((NSPopUpButton*)view).enabled) {
     error = QStringLiteral("no native choice '%1'").arg(identifier); return false;
   }
   NSPopUpButton* popup = (NSPopUpButton*)view;
   const NSInteger index = [popup indexOfItemWithTitle:title.toNSString()];
   if (index < 0) { error = QStringLiteral("native choice '%1' has no '%2' item").arg(identifier, title); return false; }
+  if (popup.pullsDown) {
+    [popup.menu performActionForItemAtIndex:index];
+    return true;
+  }
   [popup selectItemAtIndex:index];
   [popup sendAction:popup.action to:popup.target];
   return true;
@@ -1887,6 +2047,12 @@ bool duplicateChoices(CommandHost& host, QString& error) {
 
 bool triggerAction(const QString& identifier, QString& error) {
   NSMenuItem* item = findAction(NSApp.mainMenu, identifier);
+  if (!item) {
+    findView(documentWindow().contentView, [&](NSView* view) {
+      if ([view isKindOfClass:NSPopUpButton.class]) item = findAction(((NSPopUpButton*)view).menu, identifier);
+      return item != nil;
+    });
+  }
   if (!item) { error = QStringLiteral("no native menu action '%1'").arg(identifier); return false; }
   if ([item.target respondsToSelector:@selector(validateMenuItem:)] &&
       ![(id<NSMenuItemValidation>)item.target validateMenuItem:item]) {
@@ -2118,6 +2284,7 @@ bool select(const QString& identifier, QString& error, Qt::KeyboardModifiers mod
 }
 bool expand(const QString& identifier, QString& error) {
   NSView* view = findControl(identifier);
+  if ([view isKindOfClass:NSScrollView.class]) view = ((NSScrollView*)view).documentView;
   if (![view isKindOfClass:NSOutlineView.class]) {
     error = QStringLiteral("native view '%1' is not an outline").arg(identifier); return false;
   }
@@ -2350,7 +2517,7 @@ bool screenshot(const QString& path, QOpenGLWidget* viewport) {
     // OpenGL framebuffer; separate-window exclusion alone is insufficient.
     const CGFloat scaleX = viewport->width() / host.bounds.size.width;
     const CGFloat scaleY = viewport->height() / host.bounds.size.height;
-    for (NSString* identifier in @[@"native.sidebar", @"native.inspectorCard", @"native.historyCard", @"native.ribbon", @"native.statusCard"]) {
+    for (NSString* identifier in @[@"native.projectsCard", @"native.sidebar", @"native.inspectorCard", @"native.historyCard", @"native.ribbon", @"native.statusCard"]) {
       NSView* overlay = identifiedView(content, qt(identifier));
       if (!viewVisible(overlay)) continue;
       NSRect rect = [overlay convertRect:overlay.bounds toView:host];

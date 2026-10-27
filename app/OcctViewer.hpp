@@ -14,6 +14,7 @@
 
 #include <QColor>
 #include <QElapsedTimer>
+#include <QHash>
 #include <QImage>
 #include <QMargins>
 #include <QMetaObject>
@@ -52,6 +53,7 @@
 #include "framework/SelectionScope.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "view/FirstBodiesFit.hpp"
+#include "view/ImageReferences.hpp"
 #include "view/MeasurementDrawing.hpp"
 #include "view/ViewMatch.hpp"
 #include "view/ViewNavigation.hpp"
@@ -136,6 +138,9 @@ struct BodyDisplay {
   std::vector<FaceLook> faceLooks = {};
   // Owning component, shared by all its bodies and occurrences.
   std::string component;
+  // Cut by a section's plane (Section Analysis, Hide Above Sketch): its
+  // faces are drawn behind the section caps on its cut faces (mitcad#784).
+  bool sectioned = false;
 };
 
 // A sketch curve or point in model space.
@@ -301,6 +306,12 @@ public:
   // printer's bed and printable height as lines, and the boxes of the bodies
   // that do not fit in `warning`; not pickable. Null shapes clear them.
   void setBuildVolume(const TopoDS_Shape& frame, const TopoDS_Shape& outside, const QColor& warning);
+  // Image references (mitcad#782, view/ImageReferenceView.cpp): each image
+  // of `shown` drawn on its plane by its corners, see-through by its
+  // opacity, hidden behind the bodies or, `through`, over them; never
+  // picked. The pictures come by their digest from `images` (one missing
+  // is not drawn). Logs "Image references drawn: …" when it changes.
+  void setImageReferences(const std::vector<ImageReferenceShown>& shown, const QHash<QString, QImage>& images);
   // Annotations (mitcad#649, mitcad#702; view/MeasurementOverlay.cpp): the
   // shown ones drawn in their planes (MeasurementOverlay), in their colours
   // over the halo tone; logs "Annotations drawn: …" when that changes and
@@ -782,6 +793,8 @@ private:
     // Outside the active component (setActiveScope): a normal body is drawn
     // as a ghost that stays pickable (`style` stays Normal).
     bool inactive = false;
+    // BodyDisplay::sectioned.
+    bool sectioned = false;
     // The hidden-edge styles' edges: dashed through faces, solid in sight.
     occ::handle<AIS_Shape> hiddenEdges;
     occ::handle<AIS_Shape> visibleEdges;
@@ -1091,6 +1104,9 @@ private:
   Graphic3d_ZLayerId m_edgeLayer = Graphic3d_ZLayerId_UNKNOWN;
   // Sketch entities' halos, just before the top layer (mitcad#302).
   Graphic3d_ZLayerId m_sketchHaloLayer = Graphic3d_ZLayerId_UNKNOWN;
+  // Image references drawn through the bodies, just before the halos
+  // (mitcad#782).
+  Graphic3d_ZLayerId m_imageLayer = Graphic3d_ZLayerId_UNKNOWN;
   std::vector<occ::handle<AIS_Shape>> m_sectionCaps;
   std::vector<occ::handle<AIS_Shape>> m_sectionHatches;
   QStringList m_sectionLook;      // per cap group: colour, hatch colour, direction, lines
@@ -1188,6 +1204,12 @@ private:
   // (setHoverChain, mitcad#290).
   QColor m_hoverColor = QColor(0x2f, 0x9b, 0xff);
   occ::handle<AIS_Shape> m_hoverChain;
+  // The image references drawn and their textures, by digest and opacity
+  // (setImageReferences, mitcad#782).
+  std::vector<occ::handle<AIS_InteractiveObject>> m_imageReferences;
+  QHash<QString, occ::handle<Graphic3d_Texture2D>> m_imageTextures;
+  QString m_loggedImageReferences = QStringLiteral("Image references drawn: none");
+  bool m_loggedImageLayer = false;
 };
 
 } // namespace mitcad

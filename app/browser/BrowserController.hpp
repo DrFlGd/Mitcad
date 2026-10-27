@@ -52,6 +52,8 @@ public:
   // partial items and placeholders among them (mitcad#170); a click goes
   // to them.
   QToolButton* warnings() const { return m_warnings; }
+  // Shared issue navigation, anchored by either frontend's actual badge.
+  void showIssues(bool warnings, const QPoint& globalPosition);
 
   // After the model or the origin's visibility changed.
   void refresh(const DocumentSnapshot& snapshot);

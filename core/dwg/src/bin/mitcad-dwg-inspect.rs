@@ -135,7 +135,7 @@ fn main() {
     for w in &plan.warnings {
         println!("plan: {w}");
     }
-    let options = mitcad_f3d::convert::Options {
+    let options = mitcad_asm::convert::Options {
         scale: scene.unit_mm,
         ..Default::default()
     };
@@ -159,7 +159,7 @@ fn main() {
                 }
                 match solid::parse(*form, bytes) {
                     Ok(asm) => {
-                        let bodies = mitcad_f3d::convert::convert_file(&asm, &options);
+                        let bodies = mitcad_asm::convert::convert_file(&asm, &options);
                         println!(
                             "{entity} {:X} in {}: {} form, {} ({}), {} records, {} bodies, {} faces, {} issues",
                             item.handle,

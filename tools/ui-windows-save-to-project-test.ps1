@@ -124,7 +124,7 @@ Ui-FocusMain
 Ui-ExpectNew "Saved $projectLogged/valve.mitcad" 'saved in the project' 30
 Ui-ExpectNew "Save to Project: $projectLogged/valve.mitcad saved in $projectLogged" 'logged as Save to Project' 30
 Ui-ExpectNew "Project: local showroom at $projectLogged" "the window's project is the new file's"
-Expect-Title 'valve.mitcad - Mitcad'
+Expect-Title 'valve.mitcad - MitCad'
 Expect-Exists (Join-Path $project 'valve.mitcad') 'the design is in the project'
 Expect-Exists $gear 'the file it came from is still there'
 if ($git) {
@@ -147,7 +147,7 @@ Ui-ExpectNew 'Project picker target showroom/nut.mitcad: free' "its own name off
 Ui-Step 'save (Enter)'                   { Ui-Key 'Return' }
 Ui-FocusMain
 Ui-ExpectNew "Save to Project: $projectLogged/nut.mitcad saved in $projectLogged" 'saved in the project' 30
-Expect-Title 'nut.mitcad - Mitcad'
+Expect-Title 'nut.mitcad - MitCad'
 Expect-Exists (Join-Path $project 'nut.mitcad') 'the design is in the project'
 Expect-Exists $nut 'the file it came from is still there'
 

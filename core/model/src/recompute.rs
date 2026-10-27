@@ -44,7 +44,7 @@ use crate::transform::Transform;
 pub(crate) type Version = u128;
 
 #[derive(Debug, Clone)]
-pub(crate) struct Versioned<T> {
+pub struct Versioned<T> {
     pub version: Version,
     pub value: T,
 }
@@ -87,7 +87,7 @@ impl FeatureStatus {
 }
 
 #[derive(Debug)]
-pub(crate) enum Change<S> {
+pub enum Change<S> {
     Set(BodyUid, Versioned<S>),
     Remove(BodyUid),
 }
@@ -95,7 +95,7 @@ pub(crate) enum Change<S> {
 /// A mark a shared result can take later (atomic, so that results stay
 /// `Sync` like the rest of the document).
 #[derive(Debug, Default)]
-pub(crate) struct Flag(AtomicBool);
+pub struct Flag(AtomicBool);
 
 impl Flag {
     pub fn new(value: bool) -> Self {
@@ -113,7 +113,7 @@ impl Flag {
 
 /// What a feature evaluation produced, as stored in the cache.
 #[derive(Debug)]
-pub(crate) struct Output<S> {
+pub struct Output<S> {
     pub sheet_rules: Option<Versioned<crate::features::SheetRulesDef<f64>>>,
     pub sheets: BTreeMap<BodyUid, crate::sheet::SheetChange>,
     pub sheet_footprint: Vec<BodyUid>,
@@ -134,6 +134,8 @@ pub(crate) struct Output<S> {
     /// A pattern's elements by number, suppressed ones too (P9).
     pub elements: Vec<Transform>,
     pub pattern_anchor: Option<crate::features::point_pattern::PatternAnchor>,
+    /// Where a sweep's profile lies on its path (mitcad#795).
+    pub sweep_place: Option<crate::features::sweep::SweepPlace>,
     pub sketch: Option<Versioned<Arc<SketchOutput>>>,
     pub changes: Vec<Change<S>>,
     pub owners: BTreeMap<BodyUid, ComponentUid>,
@@ -156,7 +158,7 @@ pub(crate) struct Output<S> {
     pub threaded_walls: Vec<crate::features::hole::ThreadedWall>,
 }
 
-pub(crate) struct FeatureResult<S> {
+pub struct FeatureResult<S> {
     pub uid: FeatureUid,
     pub status: FeatureStatus,
     /// None for suppressed and rolled back features.
@@ -193,7 +195,7 @@ impl<S> FeatureResult<S> {
 
 /// A recorded input of an evaluation.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Read {
+pub enum Read {
     SheetRules(FeatureUid, Option<Version>),
     Sheet(BodyUid, Option<Version>),
     /// A parameter value (as bits; a text parameter's text as its hash,
@@ -432,7 +434,7 @@ struct CacheEntry<S> {
 
 /// What the cache did, for diagnostics (P7d).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct CacheStats {
+pub struct CacheStats {
     /// Features looked up (neither suppressed nor rolled back), and how
     /// many were in the cache.
     pub lookups: u64,
@@ -447,7 +449,7 @@ pub(crate) struct CacheStats {
 
 /// What one feature's results take in the cache.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CacheUsage {
+pub struct CacheUsage {
     pub uid: FeatureUid,
     pub type_name: &'static str,
     pub results: usize,
@@ -459,7 +461,7 @@ pub(crate) struct CacheUsage {
 /// the cache takes more memory than it (estimated): not those a result of
 /// the document holds, which take their memory anyway. They can still come
 /// from the store.
-pub(crate) struct Cache<S> {
+pub struct Cache<S> {
     entries: HashMap<FeatureUid, VecDeque<CacheEntry<S>>>,
     pub store: Option<ResultStore>,
     budget: Option<u64>,
@@ -794,7 +796,7 @@ impl<S> Cache<S> {
 }
 
 /// The evaluated timeline.
-pub(crate) struct Recomputed<S> {
+pub struct Recomputed<S> {
     pub sheets: crate::sheet::SheetStates,
     pub sheet_rules: crate::sheet::SheetRules,
     /// One per timeline feature, in timeline order.
@@ -1283,6 +1285,7 @@ fn evaluate<K: Kernel>(
             warnings: with_turns(warnings, &turns),
             elements,
             pattern_anchor: ctx.pattern_anchor,
+            sweep_place: ctx.sweep_place,
             owners: produced.owners,
             cut_targets: ctx.cut_targets,
             sketch: produced.sketch.map(|sketch| Versioned {
@@ -1329,6 +1332,9 @@ fn evaluate<K: Kernel>(
             warnings: Vec::new(),
             elements: Vec::new(),
             pattern_anchor: None,
+            // Known also when the sweep failed (mitcad#795): the panel
+            // shows its distances for a path the extent does not fit.
+            sweep_place: ctx.sweep_place,
             owners: BTreeMap::new(),
             cut_targets: ctx.cut_targets,
             sketch: None,
@@ -1357,7 +1363,7 @@ fn turn_warnings(entry: &FeatureEntry, params: &Parameters) -> Vec<String> {
     let feature = entry.def.type_name();
     let mut found = Vec::new();
     let _ = entry.def.map_params(&mut |slot, id: &ParamId| {
-        if crate::parameters::one_turn_slot(feature, slot)
+        if mitcad_model_base::internal::parameters::one_turn_slot(feature, slot)
             && let Some(value) = params.value(*id)
             && value.abs() > std::f64::consts::TAU * (1.0 + 1e-9)
         {

@@ -224,6 +224,7 @@ const StepSpec kSpecs[] = {
     {"expect-widget-property", 3, 3, kIdle},
     {"expect-projects-layout", 1, 1, kIdle},
     {"expect-sketch-finish-layout", 0, 0, kIdle},
+    {"expect-ribbon-labels", 1, -1, kIdle},
     {"expect-tree-rename", 1, 1, kIdle},
     {"collapse-card", 2, 2, kInputOfMain},
     {"expect-setting", 2, 2, kIdle},
@@ -3094,6 +3095,8 @@ void TestDriver::run(const Step& step) {
     testMacToolButtons();
   } else if (name == QLatin1String("expect-sketch-finish-layout")) {
     testSketchFinishLayout();
+  } else if (name == QLatin1String("expect-ribbon-labels")) {
+    testRibbonLabels(a);
   } else if (name == QLatin1String("test-dialog-controls")) {
     testDialogControls(a.at(0));
   } else if (name == QLatin1String("expect-dialog-appearance")) {

@@ -60,6 +60,8 @@ public:
   void logLayoutIfChanged() const;
 
   static const QStringList& groups(const QString& tab);
+  // The same full/collapsed group geometry for other native presentations.
+  std::pair<int, int> groupWidths(const QString& tab, const QString& group) const;
 
   Presentation presentation() const { return m_presentation; }
   // The workspace tabs. In the Mac presentation the bar is not part of the
@@ -187,7 +189,7 @@ private:
   bool m_cardMaterial = false;
 };
 
-// "CREATE" -> "Create", "FINISH SKETCH" -> "Finish Sketch": the names the Mac
+// "CREATE" -> "Create", "FINISH SKETCH" -> "Finish Sketch": the names every
 // presentation shows. The internal names stay in capitals.
 QString displayName(const QString& name);
 

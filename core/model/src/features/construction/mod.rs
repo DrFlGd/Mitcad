@@ -14,9 +14,6 @@ pub mod axis;
 pub mod plane;
 pub mod point;
 
-#[cfg(test)]
-mod tests;
-
 pub use axis::{AxisDefinition, ConstructionAxisDef};
 pub use plane::{ConstructionPlaneDef, PlaneDefinition};
 pub use point::{ConstructionPointDef, PointDefinition};

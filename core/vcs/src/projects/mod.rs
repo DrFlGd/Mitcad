@@ -27,7 +27,7 @@
 //! application gets typed, checked values.
 //!
 //! The JSON commands without a project are [`run`] (bridge:
-//! `projects_command`; `core/model/src/api/commands.md`, "Projects").
+//! `projects_command`; `core/model-api/src/commands.md`, "Projects").
 
 mod check;
 mod create;
@@ -310,7 +310,7 @@ fn create_options(command: &Value) -> Result<CreateOptions, VcsError> {
     })
 }
 
-/// Runs a command without a project (`core/model/src/api/commands.md`,
+/// Runs a command without a project (`core/model-api/src/commands.md`,
 /// "Projects"): its name, its answer and the failure the answer reports.
 /// Every answer has `error` (null, or `class`, `message` and `detail`) and
 /// `log` (the programs run, credentials hidden); other failures (a command

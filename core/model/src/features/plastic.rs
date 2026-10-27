@@ -68,11 +68,10 @@ use crate::kernel::{
     Kernel, RimBandSpec, SideEnd,
 };
 use crate::parameters::ParamId;
-use crate::profile::{
-    ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchFrame, cross, dot,
-};
+use crate::profile::{ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchFrame};
 use crate::recompute::{FeatureStatus, Read};
 use crate::topo::{EdgeName, FaceName, RegionKey, SegmentKey};
+use mitcad_vec3::{cross, dot};
 
 /// The steepest draft a feature takes, as tapered extrusions do.
 const MAX_DRAFT: f64 = 85.0 * std::f64::consts::PI / 180.0;
@@ -647,7 +646,7 @@ impl BossSizes {
                 // A whole number: counts are not rounded (mitcad#662).
                 let n = value(id);
                 if !(0.0..=64.0).contains(&n) || (n - n.round()).abs() > 1e-9 {
-                    return Err(crate::parameters::count_error(
+                    return Err(mitcad_model_base::internal::parameters::count_error(
                         format!("a boss has a whole number of ribs from 0 to 64, got {n}"),
                         n,
                     ));

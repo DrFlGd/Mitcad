@@ -5,7 +5,10 @@
 //! come in.
 
 use super::*;
-use crate::suppressed::{ROLLED_BACK_UNCHECKED, SUPPRESSED_UNCHECKED, SuppressedReport};
+use mitcad_import_replay::internal::suppressed::{
+    ROLLED_BACK_UNCHECKED, SUPPRESSED_UNCHECKED, SuppressedReport,
+};
+use mitcad_model_api::DocumentApi;
 
 /// The timeline query's entry of a feature.
 fn timeline_item(doc: &Document<TestKernel>, name: &str) -> Value {

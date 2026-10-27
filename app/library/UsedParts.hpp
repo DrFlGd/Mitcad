@@ -3,7 +3,7 @@
 
 // The library parts a design uses (mitcad#418): the part picker's "In this
 // design" group. The model answers with the `library_usage` query
-// (core/model/src/api/commands.md, "The library parts a design uses").
+// (core/model-api/src/commands.md, "The library parts a design uses").
 
 #include <QHash>
 #include <QList>

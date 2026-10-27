@@ -57,7 +57,7 @@ impl SourceDesign {
     }
 
     /// The design's definition state, read once.
-    pub(crate) fn state(&self) -> Result<Arc<DocState>, String> {
+    pub fn state(&self) -> Result<Arc<DocState>, String> {
         let Some(text) = &self.text else {
             return Err(format!(
                 "its design {} is missing from the project store",
@@ -122,7 +122,7 @@ impl LibrarySourceDef {
     /// The source as BUILD reads it from a library (the class `remote`
     /// commands): a design whose B-rep data is in the library's store is
     /// written again as a single file, so the text holds everything.
-    pub(crate) fn from_library(id: SourceId, source: &LibrarySource) -> Result<Self, String> {
+    pub fn from_library(id: SourceId, source: &LibrarySource) -> Result<Self, String> {
         let text = if source.store.is_empty() {
             source.text.clone()
         } else {
@@ -191,18 +191,18 @@ impl LibrarySources {
         self.0.iter().find(|s| s.id == id)
     }
 
-    pub(crate) fn get_mut(&mut self, id: SourceId) -> Option<&mut LibrarySourceDef> {
+    pub fn get_mut(&mut self, id: SourceId) -> Option<&mut LibrarySourceDef> {
         self.0.iter_mut().find(|s| s.id == id)
     }
 
     /// The id the next source takes.
-    pub(crate) fn next_id(&self) -> SourceId {
+    pub fn next_id(&self) -> SourceId {
         SourceId(self.0.iter().map(|s| s.id.0).max().unwrap_or(0) + 1)
     }
 
     /// The source of a library's component at a commit, if the design has
     /// it.
-    pub(crate) fn find(&self, library: &str, component: &str, rev: &str) -> Option<SourceId> {
+    pub fn find(&self, library: &str, component: &str, rev: &str) -> Option<SourceId> {
         self.0
             .iter()
             .find(|s| {

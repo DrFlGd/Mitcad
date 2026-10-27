@@ -2221,12 +2221,29 @@ public:
   }
 
   void start() override {
-    m_c.hint(QObject::tr("%1: click points; double-click or Enter finishes.").arg(name()));
+    if (m_control) {
+      m_c.hint(QObject::tr("%1: click points; double-click or Enter finishes.").arg(name()));
+    } else {
+      m_c.hint(QObject::tr("%1: click points; double-click or Enter finishes; click the first point to close.")
+                   .arg(name()));
+    }
   }
 
-  void move(const Snap& snap) override { m_snap = snap; }
+  void move(const Snap& snap) override {
+    m_snap = snap;
+    // For the UI tests: when a click would close it (mitcad#783).
+    const bool closing = closes(snap);
+    if (closing && !m_closing) {
+      qDebug().noquote() << QStringLiteral("%1: a click here closes it").arg(name());
+    }
+    m_closing = closing;
+  }
 
   void press(const Snap& snap) override {
+    if (closes(snap)) {
+      finish(true);
+      return;
+    }
     if (!m_points.empty() && dist(m_points.back().at, snap.at) <= 1e-9) {
       return;
     }
@@ -2235,14 +2252,14 @@ public:
 
   void doubleClick(const Snap& snap) override {
     Q_UNUSED(snap);
-    finish();
+    finish(false);
   }
 
   bool confirm() override {
     if (m_points.empty()) {
       return false;
     }
-    finish();
+    finish(false);
     return true;
   }
 
@@ -2262,14 +2279,22 @@ public:
     if (points.empty()) {
       return;
     }
-    if (dist(points.back(), m_snap.at) > 0.0) {
-      points.push_back(m_snap.at);
-    }
-    if (m_control) {
-      preview.add(points, Style::Guide);
-      preview.add(controlSplinePreview(points, 3));
+    if (closes(m_snap)) {
+      // The closed spline a click there makes (mitcad#783), and a ring on
+      // the first point: the click closes it.
+      preview.add(closedFitSplinePreview(points));
+      const double r = 6.0 * m_c.pixel();
+      preview.curve(Curve2::circle(points.front(), r), r / 4.0, Style::Highlight);
     } else {
-      preview.add(fitSplinePreview(points));
+      if (dist(points.back(), m_snap.at) > 0.0) {
+        points.push_back(m_snap.at);
+      }
+      if (m_control) {
+        preview.add(points, Style::Guide);
+        preview.add(controlSplinePreview(points, 3));
+      } else {
+        preview.add(fitSplinePreview(points));
+      }
     }
     for (const Snap& s : m_points) {
       preview.points.push_back(s.at);
@@ -2277,7 +2302,17 @@ public:
   }
 
 private:
-  void finish() {
+  // Whether a click at `snap` closes a fit point spline (mitcad#783): on
+  // its first point, after at least three points.
+  bool closes(const Snap& snap) const {
+    if (m_control || m_points.size() < 3) {
+      return false;
+    }
+    const Snap& first = m_points.front();
+    return (!first.point.isEmpty() && snap.point == first.point) || dist(snap.at, first.at) <= 6.0 * m_c.pixel();
+  }
+
+  void finish(bool closed) {
     if (m_points.size() < 2) {
       m_points.clear();
       return;
@@ -2291,6 +2326,9 @@ private:
     cmd.insert(QStringLiteral("points"), points);
     if (m_control) {
       cmd.insert(QStringLiteral("degree"), std::min(3, static_cast<int>(m_points.size()) - 1));
+    }
+    if (closed) {
+      cmd.insert(QStringLiteral("closed"), true);
     }
     cmd.insert(QStringLiteral("construction"), m_c.construction());
     QJsonObject result;
@@ -2307,12 +2345,15 @@ private:
       holdPoint(op, result, s.at, s, true);
     }
     op.commit();
-    qDebug().noquote() << QStringLiteral("Added spline %1 through %2 points").arg(made(result).value(0)).arg(count);
+    qDebug().noquote() << QStringLiteral("Added %1spline %2 through %3 points")
+                              .arg(closed ? QStringLiteral("closed ") : QString(), made(result).value(0))
+                              .arg(count);
   }
 
   bool m_control;
   std::vector<Snap> m_points;
   Snap m_snap;
+  bool m_closing = false;
 };
 
 // ---------------------------------------------------------------------------

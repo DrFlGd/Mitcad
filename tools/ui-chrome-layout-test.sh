@@ -13,7 +13,7 @@
 #      cards float over its top, every other card starts below them; with
 #      the plate zoomed in to fill the view, a click between two group cards
 #      selects its face and a click on the title's box selects nothing.
-#      Preferences > Display > Layout Docked asks Restart Mitcad, Later
+#      Preferences > Display > Layout Docked asks Restart MitCad, Later
 #      keeps it in the settings for the next start.
 #   2. Floating again is the window's layout: saved, no question.
 #   3. Docked, Restart Now with unsaved changes: the window asks about them
@@ -234,7 +234,7 @@ ui_start_app --no-native-dialogs
 ui_expect_log "Chrome: floating (the platform's default)" "Floating without a choice"
 choose_layout Home
 ui_expect_new "Layout preference: docked (restart asked)" "Docked chosen, a restart asked"
-ui_focus_dialog '^Restart Mitcad$'
+ui_focus_dialog '^Restart MitCad$'
 ui_step "later (Escape)"                  ui_key Escape
 ui_focus_main
 ui_expect_new "Layout restart: later (docked at the next start)" "kept for the next start"
@@ -266,11 +266,11 @@ ui_step "finish it from the palette"     ui_click_logged "Palette Finish Sketch"
 ui_expect_new "Sketch finished" "the palette still finishes a sketch"
 choose_layout Home
 ui_expect_new "Layout preference: docked (restart asked)" "a restart asked"
-ui_focus_dialog '^Restart Mitcad$'
+ui_focus_dialog '^Restart MitCad$'
 ui_step "restart now (Enter)"             ui_key Return
 ui_expect_new "Layout restart: now" "Restart Now"
 ui_expect_new "Restart: closing the window" "the window closes first"
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_step "cancel (Escape)"                 ui_key Escape
 ui_expect_new "Restart cancelled: Mitcad stayed open" "cancelled as quitting would be"
 ui_crashed && ui_fail "Mitcad ended although the close was cancelled"
@@ -287,7 +287,7 @@ choose_layout End
 ui_expect_new "Layout preference: floating (in use)" "Floating again"
 choose_layout Home
 ui_expect_new "Layout preference: docked (restart asked)" "a restart asked"
-ui_focus_dialog '^Restart Mitcad$'
+ui_focus_dialog '^Restart MitCad$'
 ui_key Return
 ui_expect_new "Restart (test, not started): " "the restart's command" 20
 COMMAND=$(sed -n 's/^Restart (test, not started): //p' "$UI_LOG" | tail -1)
@@ -325,7 +325,7 @@ ui_expect_new "Sketch finished" "Docked ribbon still finishes a sketch"
 choose_layout End Home
 ui_expect_new "Preferences: browser background card" "the Card background chosen while Docked"
 ui_expect_new "Layout preference: floating (restart asked)" "Floating chosen, a restart asked"
-ui_focus_dialog '^Restart Mitcad$'
+ui_focus_dialog '^Restart MitCad$'
 ui_step "later (Escape)"                  ui_key Escape
 ui_focus_main
 ui_expect_new "Layout restart: later (floating at the next start)" "kept for the next start"

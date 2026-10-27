@@ -279,8 +279,8 @@ mod tests {
 
     #[test]
     fn records_round_trip() {
-        let asm = mitcad_f3d::testdata::cube_blob();
-        let mut older = mitcad_f3d::asm::file::OLDER_MAGIC.to_vec();
+        let asm = mitcad_asm::testdata::cube_blob();
+        let mut older = mitcad_asm::asm::file::OLDER_MAGIC.to_vec();
         older.extend_from_slice(&asm[15..]);
         let records = vec![
             (0x2a, asm.clone()),

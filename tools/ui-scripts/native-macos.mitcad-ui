@@ -20,15 +20,16 @@ expect-log 'Native Settings red close: pending cache budget committed and dialog
 # The canvas keeps the entire window width behind floating native cards.
 # Check geometry and AppKit pointer routing with each card shown/hidden,
 # then resize to a compact window and return to the normal working size.
+native-toolbar-item mitcad.inspector insert
 native-resize 1280 820
 expect-native-visible native.sidebar true
 expect-native-visible native.inspectorCard false
 expect-native-layout
-menu 'View/Hide Sidebar'
+menu 'View/Browser'
 expect-native-visible native.sidebar false
 expect-native-layout
-menu 'View/Show Sidebar'
-menu 'View/Show Inspector'
+menu 'View/Browser'
+native-click mitcad.inspector
 expect-native-visible native.sidebar true
 expect-native-visible native.inspectorCard true
 expect-native-layout
@@ -37,7 +38,7 @@ expect-native-layout
 screenshot '${MITCAD_TEST_WORK}/native-macos-compact.png'
 native-resize 1280 820
 expect-native-layout
-menu 'View/Hide Inspector'
+native-click mitcad.inspector
 expect-native-visible native.inspectorCard false
 expect-native-layout
 
@@ -82,10 +83,10 @@ native-type input_height 'bad_expression'
 expect-native-enabled commandOk false
 # Hiding a form while its field editor owns focus returns focus to the
 # canvas. Showing it again preserves the invalid expression and validation.
-menu 'View/Hide Inspector'
+native-click mitcad.inspector
 expect-native-visible native.inspectorCard false
 expect-native-layout
-menu 'View/Show Inspector'
+native-click mitcad.inspector
 expect-native-visible native.inspectorCard true
 expect-native-layout
 expect-native-text input_height '^bad_expression$'
@@ -106,7 +107,7 @@ screenshot '${MITCAD_TEST_WORK}/native-macos-box.png'
 
 # Edit through native feature history. Both the native field and the model
 # must reflect the change after committing.
-menu 'View/Show History'
+expect-native-visible native.historyCard true
 expect-native-visible native.historyCard true
 expect-native-layout
 mark

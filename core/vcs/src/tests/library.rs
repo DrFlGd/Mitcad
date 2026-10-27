@@ -15,6 +15,7 @@ use super::remote::{error_class, slashes, system_git, tip};
 use super::*;
 use crate::library::{LibraryCache, LibraryRepo, LibraryResolver, api};
 use mitcad_model::{InsertOptions, LibraryChange, LibraryPart};
+use mitcad_model_api::DocumentApi;
 
 /// A PNG file's signature and a little more: enough to be taken for one.
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n preview";

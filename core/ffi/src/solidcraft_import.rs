@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use mitcad_import::solidcraft::{SolidcraftOptions, SolidcraftReport, import_solidcraft};
-use mitcad_model::api::ApiError;
+use mitcad_model_api::ApiError;
 
 use crate::Document;
 

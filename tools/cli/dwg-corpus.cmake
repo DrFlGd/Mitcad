@@ -28,6 +28,11 @@
 #
 #   cmake -DCLI=<mitcad-cli> -DWORK=<dir> -P dwg-corpus.cmake
 
+# The policies of a current CMake: without them an older one (Ubuntu
+# 24.04's 3.28, the Linux release's build root) drops a row's empty fields
+# (CMP0007), and every value after one is read from the wrong column.
+cmake_minimum_required(VERSION 3.24)
+
 if(NOT DEFINED ENV{MITCAD_DWG_CORPUS} OR NOT IS_DIRECTORY "$ENV{MITCAD_DWG_CORPUS}")
   message("dwg corpus: skipped (MITCAD_DWG_CORPUS not set)")
   return()

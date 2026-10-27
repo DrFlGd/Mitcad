@@ -2,6 +2,7 @@
 //! Threads and tapped holes: the faces the decoder found, handedness, diameters and groove middles.
 
 use super::*;
+use mitcad_model_api::DocumentApi;
 
 /// Threads (mitcad#35) on the faces the decoder found in the history: the
 /// size as Mitcad lists it, a partial thread from the end the file's axis
@@ -680,7 +681,7 @@ fn a_tapped_hole_on_a_plane_threads_its_wall_in_its_components_body() {
 /// groove runs across the segment's ends; none for two grooves.
 #[test]
 fn a_thread_groove_middle_comes_from_the_crossings() {
-    use crate::ops::groove_middle;
+    use mitcad_import_replay::internal::ops::groove_middle;
     // Out at 0.2, in at 0.7: the groove's middle is at 0.45.
     let middle = groove_middle(&[(0.2, false), (0.7, true)]).unwrap();
     assert!((middle - 0.45).abs() < 1e-12, "{middle}");

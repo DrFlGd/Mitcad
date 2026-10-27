@@ -1280,7 +1280,7 @@ void RemoteController::openInBrowser() {
   const QString page = addressWebPage(m_state.url);
   if (page.isEmpty()) {
     m_host.status(m_state.name.isEmpty() ? tr("The project is not a Cloud project: it has no repository to show.")
-                                         : tr("%1 has no web page Mitcad knows of.").arg(m_state.url),
+                                         : tr("%1 has no web page MitCad knows of.").arg(m_state.url),
                   true);
     return;
   }

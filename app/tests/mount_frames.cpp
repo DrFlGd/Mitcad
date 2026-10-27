@@ -2,7 +2,7 @@
 // The mount frames of library parts as the app reads them (mitcad#525):
 // a manifest's `mounts` block (each name once, the kind and joint
 // defaults), their labels and the cells of a grid placement's answer
-// (core/model/src/mount_tests.rs checks the model's side).
+// (core/model-tests/joints/src/mount_tests.rs checks the model's side).
 #include "library/MountFrames.hpp"
 
 #include <cstdio>

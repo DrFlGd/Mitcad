@@ -72,8 +72,8 @@ fn normal(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> [f64; 3] {
 }
 
 /// The triangles of an STL file (binary or text), for tests.
-#[cfg(test)]
-pub(super) fn read(data: &[u8]) -> Vec<[[f64; 3]; 3]> {
+#[cfg(any(test, feature = "testing"))]
+pub fn read(data: &[u8]) -> Vec<[[f64; 3]; 3]> {
     if data.starts_with(b"solid ") {
         let text = std::str::from_utf8(data).unwrap();
         let points: Vec<[f64; 3]> = text

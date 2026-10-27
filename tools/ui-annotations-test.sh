@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands app/framework app/browser app/view core/model/src/api core/model/src/document tools/cli
-# check-all sources: app/MainWindowMeasurements.cpp app/MainWindowMeasureHistory.cpp app/MainWindowAnnotations.cpp core/model/src/iso286.rs app/MainWindowVisibility.cpp
+# check-all sources: app/commands app/framework app/browser app/view core/model-api/src core/model/src/document tools/cli
+# check-all sources: app/MainWindowMeasurements.cpp app/MainWindowMeasureHistory.cpp app/MainWindowAnnotations.cpp core/model-base/src/iso286.rs app/MainWindowVisibility.cpp
 # Annotations (mitcad#702) through the real UI, in the Docked layout, on
 # two cylinders of radius 5, 20 high (Body1 about Z through the origin,
 # Body2 through (30, 40)), with an offset Gone of a block that is deleted

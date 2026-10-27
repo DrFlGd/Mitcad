@@ -66,6 +66,9 @@
 # check-all sources: core/ifc core/ffi/src/ifc_import.rs
 # check-all sources: core/solidcraft core/ffi/src/solidcraft_import.rs
 # check-all sources: core/dwg core/ffi/src/dwg_import.rs
+# check-all sources: core/dump core/asm core/f3d-names core/f3d-file core/f3d-design core/f3d-decode
+# check-all sources: core/import-base core/import-ifc core/import-fcstd
+# check-all sources: core/import-solidcraft core/import-replay core/import-joints core/import-sheet core/import-primitives core/import-appearances
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
@@ -234,7 +237,7 @@ ui_stop_app
 echo "--- --open of other files, Open Recent"
 ui_start_app --open "$WORK/block.step" --no-native-dialogs
 ui_expect_log "Imported block.step as" "a STEP opened as a new document"
-expect_title "block* - Mitcad"
+expect_title "block* - MitCad"
 ui_stop_app
 ui_start_app --open "$WORK/sketch.dxf" --no-native-dialogs
 ui_expect_log "Inserted sketch.dxf into Sketch1: 4 curves" "a DXF opened as a sketch of a new document"
@@ -242,7 +245,7 @@ ui_mark
 ui_step "File > Open Recent"               file_menu r
 ui_expect_new "Recent files: sketch.dxf | block.step | block.mitcad" "the files opened and saved last"
 ui_step "the second (Down, Enter)"         ui_key Down Return
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_step "don't save (D)"                   ui_key d
 ui_focus_main
 ui_expect_new "Imported block.step as" "block.step opened again"
@@ -286,7 +289,7 @@ EOF
 # open_fcstd file: File > Open of a FreeCAD document, the changes not saved.
 open_fcstd() {
   ui_key ctrl+o
-  ui_focus_dialog '^Mitcad$'
+  ui_focus_dialog '^MitCad$'
   ui_key d
   type_into_dialog 'Open' "$1"
 }
@@ -301,7 +304,7 @@ ui_focus_dialog '^Import Report$'
 ui_step "close the report (Enter)"         ui_key Return
 ui_focus_main
 ui_expect_new "Imported block.FCStd: 1 bodies" "a new document with the body"
-expect_title "block* - Mitcad"
+expect_title "block* - MitCad"
 
 # The history (mitcad#22): a PartDesign Body (Plate) whose sketch of a 30 x
 # 20 rectangle is padded 10 mm, then a helix without a profile, which
@@ -381,7 +384,7 @@ ui_mark
 ui_step "open the history (Ctrl+O)"        open_fcstd "$WORK/history.FCStd"
 ui_expect_new "Import report: history.FCStd: 5 items (1 body, 0 component, 0 occurrence, 2 parametric, 0 partial, 1 fallback, 0 included, 1 skipped), 1 bodies" \
   "the Body, its sketch and pad parametric, the helix a fallback, the spreadsheet no body" 120
-ui_expect_new "Import report summary: history.FCStd (FreeCAD 1.0R39319 (Git)) 5 objects: 1 body, 0 component, 0 occurrence, 2 parametric, 0 partial, 1 fallback, 0 included, 1 skipped. 1 bodies; of the history's 2 features, 1 were replayed as Mitcad features (checked against the shapes FreeCAD stored), 1 came in as their stored shapes (fallback) and 0 were skipped. 2 parameters (1 of FreeCAD's expressions, 1 of its values); of the document's 2 expressions, 1 were translated, 1 kept FreeCAD's value and 0 drive nothing the import carries over." \
+ui_expect_new "Import report summary: history.FCStd (FreeCAD 1.0R39319 (Git)) 5 objects: 1 body, 0 component, 0 occurrence, 2 parametric, 0 partial, 1 fallback, 0 included, 1 skipped. 1 bodies; of the history's 2 features, 1 were replayed as MitCad features (checked against the shapes FreeCAD stored), 1 came in as their stored shapes (fallback) and 0 were skipped. 2 parameters (1 of FreeCAD's expressions, 1 of its values); of the document's 2 expressions, 1 were translated, 1 kept FreeCAD's value and 0 drive nothing the import carries over." \
   "the report: the history replayed, one fallback; the parameters and expressions"
 ui_expect_new "Import report kept: Helix.Height = Params.Length * Params.Ratio: Helix was not replayed" \
   "the expression kept as FreeCAD's value, with the reason"
@@ -389,7 +392,7 @@ ui_focus_dialog '^Import Report$'
 ui_step "close the report (Enter)"         ui_key Return
 ui_focus_main
 ui_expect_new "Imported history.FCStd: 1 bodies" "a new document with the Body's body"
-expect_title "history* - Mitcad"
+expect_title "history* - MitCad"
 
 echo "--- .ipt part (mitcad#60)"
 "$TEST_EXCHANGE" --write-ipt "$WORK/part.ipt" || ui_fail "cannot write the test part"
@@ -398,13 +401,13 @@ ui_step "open the part (Ctrl+O)"           open_fcstd "$WORK/part.ipt"
 ui_expect_new "Import of part.ipt started" "the import runs in its own process"
 ui_expect_new "Import report: part.ipt: 2 bodies (2 solids, 2 valid, 0 sheets, 0 not built)" \
   "the cube and the cylinder came in as solids" 120
-ui_expect_new "Import report summary: part.ipt (part number MITCAD-TEST-1) 2 bodies stored in the file, each a base feature: 2 solids, 2 valid, 0 sheets, 0 not built. Material: Aluminum (Mitcad's aluminum). Units: in. Saved by release Mitcad test writer." \
+ui_expect_new "Import report summary: part.ipt (part number MITCAD-TEST-1) 2 bodies stored in the file, each a base feature: 2 solids, 2 valid, 0 sheets, 0 not built. Material: Aluminum (MitCad's aluminum). Units: in. Saved by release Mitcad test writer." \
   "the report: the bodies, the part's material and units"
 ui_focus_dialog '^Import Report$'
 ui_step "close the report (Enter)"         ui_key Return
 ui_focus_main
 ui_expect_new "Imported part.ipt: 2 bodies" "a new document with the part's bodies"
-expect_title "part* - Mitcad"
+expect_title "part* - MitCad"
 if [ -n "${MITCAD_IPT_CORPUS:-}" ]; then
   REAL_IPT=$(IFS=:; find $MITCAD_IPT_CORPUS -iname '*.ipt' -printf '%s %p\n' 2> /dev/null | sort -n | head -1 | cut -d' ' -f2-)
 fi
@@ -447,7 +450,7 @@ ui_focus_dialog '^Import Report$'
 ui_step "close the report (Enter)"         ui_key Return
 ui_focus_main
 ui_expect_new "Imported top.iam: 5 bodies" "a new document with the parts' bodies in their components"
-expect_title "top* - Mitcad"
+expect_title "top* - MitCad"
 
 echo "--- SolidCraft design (mitcad#450)"
 cp "$(dirname "$0")/../core/solidcraft/tests/designs/box-fillet-hole.solidcraft.json" "$WORK/box-fillet-hole.solidcraft" ||
@@ -463,7 +466,7 @@ ui_focus_dialog '^Import Report$'
 ui_step "close the report (Enter)"         ui_key Return
 ui_focus_main
 ui_expect_new "Imported box-fillet-hole.solidcraft: 1 bodies" "a new document with the block"
-expect_title "box-fillet-hole* - Mitcad"
+expect_title "box-fillet-hole* - MitCad"
 
 echo "--- IFC building model (mitcad#273)"
 "$CLI" import-ifc --write-test "$WORK/building.ifc" || ui_fail "cannot write the test building"
@@ -478,7 +481,7 @@ ui_focus_dialog '^Import Report$'
 ui_step "close the report (Enter)"         ui_key Return
 ui_focus_main
 ui_expect_new "Imported building.ifc: 7 bodies" "a new document with the storeys' bodies"
-expect_title "building* - Mitcad"
+expect_title "building* - MitCad"
 # The MIT-licensed project's IFC4 export (content id bfdf36ff) from
 # MITCAD_IFC_CORPUS (never committed): every product accounted for, none
 # failed.
@@ -517,7 +520,7 @@ ui_step "close the report (Enter)"         ui_key Return
 ui_focus_main
 ui_expect_new "Imported truss.dwg: 6 bodies" "a new document with the drawing's bodies"
 ui_expect_new "Imported truss.dwg: components " "the blocks as components"
-expect_title "truss* - Mitcad"
+expect_title "truss* - MitCad"
 
 if [ -n "${MITCAD_F3D_CORPUS:-}" ] && [ -d "${MITCAD_F3D_CORPUS:-}" ]; then
   echo "--- .f3d import ($MITCAD_F3D_CORPUS)"
@@ -530,7 +533,7 @@ if [ -n "${MITCAD_F3D_CORPUS:-}" ] && [ -d "${MITCAD_F3D_CORPUS:-}" ]; then
   # open_f3d: File > Open of the part, its changes not saved.
   open_f3d() {
     ui_key ctrl+o
-    ui_focus_dialog '^Mitcad$'
+    ui_focus_dialog '^MitCad$'
     ui_key d
     type_into_dialog 'Open' "$SMALL"
   }
@@ -555,7 +558,7 @@ if [ -n "${MITCAD_F3D_CORPUS:-}" ] && [ -d "${MITCAD_F3D_CORPUS:-}" ]; then
   ui_focus_dialog '^Import Report$'
   ui_step "close the report (Enter)"       ui_key Return
   ui_focus_main
-  expect_title "${NAME%.f3d}* - Mitcad"
+  expect_title "${NAME%.f3d}* - MitCad"
   grep -q "Bodies shown: none" <(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "Bodies shown" | tail -1) &&
     ui_fail "the imported bodies are not shown"
   # The light bulbs (mitcad#6, #7): the sketches the view shows (logged
@@ -612,7 +615,7 @@ print(",".join(shown) or "none", sum(1 for f in sketches if not f["visible"]))' 
   ui_focus_dialog '^Import Report$'
   ui_step "close the report (Enter)"       ui_key Return
   ui_focus_main
-  expect_title "${NAME%.f3d}* - Mitcad"
+  expect_title "${NAME%.f3d}* - MitCad"
   ui_mark
   ui_step "open the part once more (Ctrl+O)" open_f3d
   ui_expect_new "Import of $NAME started" "the import started again"
@@ -624,7 +627,7 @@ print(",".join(shown) or "none", sum(1 for f in sketches if not f["visible"]))' 
   sleep 1
   tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Imported $NAME|Import report|New document" &&
     ui_fail "the cancelled import changed the document"
-  expect_title "${NAME%.f3d}* - Mitcad"
+  expect_title "${NAME%.f3d}* - MitCad"
   echo "ok   the open document stays as it was"
 else
   echo "skip .f3d import: MITCAD_F3D_CORPUS is not set"
@@ -705,7 +708,7 @@ ui_start_app --open "$WORK/project/block.mitcad" --no-native-dialogs
 ui_expect_log "Opened $WORK/project/block.mitcad" "opened from the project"
 ui_expect_log "Bodies shown: F1.b0" "the base feature's body, its data from the store"
 grep -q "missing from the project store" "$UI_LOG" && ui_fail "the B-rep data was not found"
-expect_title "block.mitcad - Mitcad"
+expect_title "block.mitcad - MitCad"
 
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_finish "UI import test"

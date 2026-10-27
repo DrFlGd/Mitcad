@@ -23,8 +23,8 @@ Entry points:
 
 | Module | |
 |---|---|
-| `params.rs` | User and model parameters with the file's names and expressions, in dependency order. Expressions that do not evaluate become values; names Mitcad reserves get `_1`. A model parameter is adopted by the feature or sketch that made it (`Document::adopt_parameters`). |
-| `sketch.rs` | Points, lines, circles, arcs (counter-clockwise), ellipses, splines (control points, weights, full knots), texts (style, flips, multi-line frame and alignment, text along or fitted to a path), constraints and dimensions by type. Ids are renumbered into Mitcad's one id space (points first). Positions are the file's stored solution; the sketch is accepted when Mitcad's solve keeps them (1e-4 mm), or keeps them within the import's geometric tolerance with the sketch's regions the file's ([*A sketch solved within the geometric tolerance*](f3d-rounds-4.md#a-sketch-solved-within-the-geometric-tolerance-mitcad396) below), else retried with the fewest constraints and dimensions that keep it off the file's geometry inactive, then with all of them inactive (`partial`; [*Inactive constraints and dimensions*](#inactive-constraints-and-dimensions-mitcad721) below). `sketch/groups.rs`: polygons, sketch patterns, offsets and concentric circle dimensions ([*Sketch patterns, offsets and polygons*](f3d-history.md#sketch-patterns-offsets-and-polygons) below). |
+| `params.rs` | User and model parameters with the file's names and expressions, in dependency order. Expressions that do not evaluate become values; names MitCad reserves get `_1`. A model parameter is adopted by the feature or sketch that made it (`Document::adopt_parameters`). |
+| `sketch.rs` | Points, lines, circles, arcs (counter-clockwise), ellipses, splines (control points, weights, full knots), texts (style, flips, multi-line frame and alignment, text along or fitted to a path), constraints and dimensions by type. Ids are renumbered into MitCad's one id space (points first). Positions are the file's stored solution; the sketch is accepted when MitCad's solve keeps them (1e-4 mm), or keeps them within the import's geometric tolerance with the sketch's regions the file's ([*A sketch solved within the geometric tolerance*](f3d-rounds-4.md#a-sketch-solved-within-the-geometric-tolerance-mitcad396) below), else retried with the fewest constraints and dimensions that keep it off the file's geometry inactive, then with all of them inactive (`partial`; [*Inactive constraints and dimensions*](#inactive-constraints-and-dimensions-mitcad721) below). `sketch/groups.rs`: polygons, sketch patterns, offsets and concentric circle dimensions ([*Sketch patterns, offsets and polygons*](f3d-history.md#sketch-patterns-offsets-and-polygons) below). |
 | `features.rs` | Sketch planes (origin planes; imported construction planes with the exact frame as `frame`; planar faces found geometrically; else a fixed construction plane), construction planes (from the entities the decoder reads, mitcad#178: offset, angle, tangent, mid plane, two edges, along a path; through three points, tangent at a point, offset through a point, mitcad#186; else offset from an origin plane or a face found by distance; each checked against the file's plane; else fixed), construction points (at a vertex, at the centre of a circle, where three planes meet) and axes (through two points, along an edge or sketch line, through a round face, where two planes meet) checked against where the file has them (mitcad#186; else fixed), extrude, revolve, fillet, chamfer. |
 | `ops.rs` | Combine, mirror, circular and rectangular patterns, shell, offset faces, move, split body, hole, thread, replace face — from external dumps (SCHEMA.md §2), or from the history when the stream decoder gives no inputs (see below). |
 | `sweeps.rs` | Sweeps, pipes and lofts ([*Sweeps, pipes and lofts*](f3d-history.md#sweeps-pipes-and-lofts) below). |
@@ -93,7 +93,7 @@ memory cannot be caught: a fillet with a strip 1e-4 wide did, hence the
   once (*Across components*).
 - Joints ([*Joints*](f3d-components.md#joints)): a joint comes in as a joint only where it holds
   where the file places the occurrences (*Occurrence placements*);
-  occurrence moves are not replayed as Mitcad's `move_occurrence`.
+  occurrence moves are not replayed as MitCad's `move_occurrence`.
   Components of other documents are empty (their bodies, joint origins
   and own occurrences are not in the file): joints of occurrences inside
   them are left out, and a side on one stands on its origin (the corpus'
@@ -111,7 +111,7 @@ memory cannot be caught: a fillet with a strip 1e-4 wide did, hence the
   history state of their own to find them in).
 - Fillets with G2 continuity or mid radii, asymmetric fillets, setback
   corners, and chamfers with miter or blend corners are translated, but
-  Mitcad builds them by its own rules (`commands.md`, `fillet`,
+  MitCad builds them by its own rules (`commands.md`, `fillet`,
   `chamfer`), so they match the history within the looser conventions
   tolerance (a match is kept with a warning). Which face takes which
   offset of an asymmetric fillet is the set's flip (decoded from the
@@ -157,12 +157,12 @@ memory cannot be caught: a fillet with a strip 1e-4 wide did, hence the
   ([*Threads, tapped holes and sheets*](f3d-history.md#threads-tapped-holes-and-sheets)).
 - Sketch patterns, offsets and polygons (*Sketch patterns, offsets and
   polygons*) are left out, and their copies and offset curves come in as
-  plain curves, where Mitcad has no counterpart: patterns with instances
+  plain curves, where MitCad has no counterpart: patterns with instances
   on both sides of the originals (symmetric), offsets of splines and
-  ellipses (Mitcad computes those curves itself, so the file's cannot be
+  ellipses (MitCad computes those curves itself, so the file's cannot be
   kept), offset curves without a source curve at the distance (e.g. extra
   corner arcs), and copies that are not where the pattern puts them
-  (suppressed or moved instances). Mitcad's pattern counts are numbers and
+  (suppressed or moved instances). MitCad's pattern counts are numbers and
   its directions vectors: the file's quantity parameters stay unused, and
   a direction along a sketch line keeps its imported direction. External
   dumps do not record these constraints' entities, so from them they are

@@ -4,7 +4,7 @@
 // Sweeps along paths (F3): sketch profiles swept along a path (sweep),
 // pipes and coils, as solids with named faces. Lofts are in
 // loft.hpp, ribs and webs in rib.hpp. Lengths are millimetres, angles
-// radians; the Rust side documents the semantics (core/model/src/sweeps.rs).
+// radians; the Rust side documents the semantics (core/model-base/src/sweeps.rs).
 
 #include <optional>
 #include <string>

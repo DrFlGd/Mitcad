@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-//! Comparison of two documents for C++ (P12c, `mitcad_model::diff`): two
+//! Comparison of two documents for C++ (P12c, `mitcad_model_diff`): two
 //! design files, two versions, or a version and the open document.
 
-use mitcad_model::api::ApiError;
+use mitcad_model_api::ApiError;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -35,7 +35,7 @@ pub fn diff_documents(from: &Document, to: &Document, json: &str) -> Result<Stri
     } else {
         serde_json::from_str(json).map_err(|e| ApiError(format!("invalid diff options: {e}")))?
     };
-    let mut diff = mitcad_model::diff::diff_documents(&from.0, &to.0);
+    let mut diff = mitcad_model_diff::diff_documents(&from.0, &to.0);
     if options.geometry {
         diff.add_geometry(&from.0, &to.0);
     }

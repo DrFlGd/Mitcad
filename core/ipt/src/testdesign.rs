@@ -1185,7 +1185,7 @@ pub fn square_sheet() -> Vec<u8> {
 
 /// The square sheet of [`square_sheet`] at the height `z` (cm).
 pub fn square_sheet_at(z: f64) -> Vec<u8> {
-    use mitcad_f3d::asm::writer::Writer;
+    use mitcad_asm::asm::writer::Writer;
     let corners = [[0.0, 0.0, z], [1.0, 0.0, z], [1.0, 1.0, z], [0.0, 1.0, z]];
     let mut w = Writer::new(2, 2);
     w.record("asmheader")

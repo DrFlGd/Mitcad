@@ -6,9 +6,9 @@
 
 use serde_json::json;
 
-use crate::document_tests::{block, def, extrude, num};
 use crate::features::{EmbossDef, EmbossMode, FeatureDef, SketchPlane};
 use crate::ids::{BodyUid, FeatureUid};
+use crate::test_support::{block, def, extrude, num};
 use crate::testing::MockKernel;
 use crate::topo::RegionKey;
 use crate::{Document, FeatureStatus};
@@ -330,7 +330,7 @@ fn refusals() {
     );
     // A side face of the block is neither planar nor cylindrical to the
     // mock.
-    let side = crate::document_tests::side(b.extrude, 1, 0).to_string();
+    let side = crate::test_support::side(b.extrude, 1, 0).to_string();
     let uid = b
         .doc
         .add_feature(

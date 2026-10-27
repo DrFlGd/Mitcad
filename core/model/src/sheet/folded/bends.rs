@@ -6,9 +6,9 @@ use mitcad_vec3::{add, distance, scale, sub};
 use super::*;
 use crate::features::sheet::{Allowance, Relief, ReliefKind};
 use crate::features::sheet_folded::*;
-use crate::profile::dot;
 use crate::sketch::geometry as g2;
 use crate::transform::Transform;
+use mitcad_vec3::dot;
 
 pub(super) struct BendMetrics {
     pub(super) angle: f64,

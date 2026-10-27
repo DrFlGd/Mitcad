@@ -421,12 +421,23 @@ impl System {
     /// Adds a cubic spline through the fit points (at least two). Its
     /// control points are internal unknowns that follow the fit points; the
     /// parameters of the fit points (chord length) are fixed when the
-    /// spline is added.
+    /// spline is added. With [`SplineEnd::Periodic`] at both ends it is
+    /// closed (mitcad#783): it runs on from the last fit point back to the
+    /// first (listed once, at least three) and starts and ends there.
     pub fn add_fitted_spline(
         &mut self,
         fit_points: &[PointId],
         ends: [SplineEnd; 2],
     ) -> Result<EntityId, Error> {
+        let closed = match ends {
+            [SplineEnd::Periodic, SplineEnd::Periodic] => true,
+            [SplineEnd::Periodic, _] | [_, SplineEnd::Periodic] => {
+                return Err(Error::InvalidValue(
+                    "a closed spline is periodic at both ends",
+                ));
+            }
+            _ => false,
+        };
         let fit = fit_points
             .iter()
             .map(|&p| self.pidx(p))
@@ -438,14 +449,19 @@ impl System {
                 [v.x, v.y]
             })
             .collect();
-        let it = interpolate(&coords).ok_or(Error::InvalidValue(
-            "fit points: at least two, consecutive points distinct",
-        ))?;
+        let what = if closed {
+            "fit points of a closed spline: at least three, consecutive points distinct"
+        } else {
+            "fit points: at least two, consecutive points distinct"
+        };
+        let Some(it) = interpolate(&coords, closed) else {
+            return Err(Error::InvalidValue(what));
+        };
         let mut ctrl = vec![fit[0]];
         for c in &it.ctrl[1..it.ctrl.len() - 1] {
             ctrl.push(self.new_point(c[0], c[1], true));
         }
-        ctrl.push(fit[fit.len() - 1]);
+        ctrl.push(if closed { fit[0] } else { fit[fit.len() - 1] });
         Ok(self.add_entity(EntityData::Fitted {
             basis: Arc::new(it.basis),
             fit,
@@ -821,7 +837,9 @@ pub(crate) fn constraint_entities(c: &Constraint) -> Vec<EntityId> {
         }
         | RadiusGap { a, b, .. }
         | Angle { a, b, .. }
-        | EqualSize(a, b) => vec![a, b],
+        | EqualSize(a, b)
+        | TangentAt { a, b, .. }
+        | SmoothAt { a, b, .. } => vec![a, b],
         SymmetricEntities { a, b, axis } => vec![a, b, axis],
         EqualSpacing {
             mode: SpacingMode::Along(e),
@@ -847,9 +865,12 @@ pub(crate) fn constraint_points(c: &Constraint) -> Vec<PointId> {
         | HorizontalDistance { a, b, .. }
         | VerticalDistance { a, b, .. }
         | Translated { a, b, .. } => vec![a, b],
-        PointOnCurve(p, _) | FixPoint(p) | Midpoint(p, _) | PointLineDistance { point: p, .. } => {
-            vec![p]
-        }
+        PointOnCurve(p, _)
+        | FixPoint(p)
+        | Midpoint(p, _)
+        | PointLineDistance { point: p, .. }
+        | TangentAt { at: p, .. }
+        | SmoothAt { at: p, .. } => vec![p],
         Rotated { center, a, b, .. } => vec![center, a, b],
         TurnedDirection {
             a_center,
@@ -999,6 +1020,8 @@ impl System {
             }
             Tangent(a, b) => self.setup_tangent(rec, a, b)?,
             Smooth(a, b) => self.setup_smooth(a, b)?,
+            TangentAt { a, b, .. } => self.setup_tangent(rec, a, b)?,
+            SmoothAt { a, b, .. } => self.setup_smooth(a, b)?,
             Equal(a, b) => {
                 let la = matches!(self.ent(a)?, EntityData::Line { .. });
                 let lb = matches!(self.ent(b)?, EntityData::Line { .. });
@@ -1159,6 +1182,9 @@ impl System {
         a: EntityId,
         b: EntityId,
     ) -> Result<(), Error> {
+        if a == b {
+            return self.setup_self_join(a);
+        }
         let (da, db) = (self.ent(a)?.clone(), self.ent(b)?.clone());
         let kind = |d: &EntityData| match d {
             EntityData::Line { .. } => 0,
@@ -1246,8 +1272,42 @@ impl System {
         Ok(())
     }
 
+    /// A spline tangent or smooth to itself (mitcad#783): an open spline
+    /// (clamped knots) whose two ends are at one point, joined there.
+    fn setup_self_join(&self, e: EntityId) -> Result<(), Error> {
+        let d = self.ent(e)?;
+        let Some((basis, _)) = d.spline() else {
+            return Err(Error::Unsupported(
+                "a curve is tangent to itself only where a spline's two ends meet",
+            ));
+        };
+        if let EntityData::Fitted { ends, .. } = d
+            && ends[0] == SplineEnd::Periodic
+        {
+            return Err(Error::Unsupported(
+                "a closed spline is smooth through its first point already",
+            ));
+        }
+        let ends = d.ends().expect("spline ends");
+        let classes = self.point_classes();
+        if classes[ends[0]] != classes[ends[1]] {
+            return Err(Error::Unsupported(
+                "a spline is tangent to itself only where its two ends meet",
+            ));
+        }
+        if !basis.is_clamped() {
+            return Err(Error::Unsupported(
+                "spline end tangency needs clamped knots",
+            ));
+        }
+        Ok(())
+    }
+
     /// A spline joined at an end point to a line, arc or spline.
     fn setup_smooth(&self, a: EntityId, b: EntityId) -> Result<(), Error> {
+        if a == b {
+            return self.setup_self_join(a);
+        }
         let (da, db) = (self.ent(a)?, self.ent(b)?);
         let spline = |d: &EntityData| d.spline().map(|(basis, _)| basis.is_clamped());
         let ok_other =

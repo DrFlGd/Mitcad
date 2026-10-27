@@ -10,6 +10,10 @@
 #   - Fillet options (P6): the radius handle dragged, an asymmetric set
 #     edited into G2, a variable radius through a mid radius, Press Pull on
 #     the fillet's face opening the fillet; Chamfer with miter corners.
+#   - Fillet and Chamfer of All Edges (mitcad#793): the body picked in
+#     place of edges, the whole block rounded; edited from the timeline it
+#     comes back as All Edges with its body (no list of edges) and is
+#     saved so again.
 #   - Shell (shell_inside_open_top), Draft (draft_face).
 #   - Replace Face up to a plane, Press Pull of an edge (a fillet) and of a
 #     face (an offset), Delete of the fillet's face, Split Face; Replace
@@ -220,6 +224,113 @@ ui_expect_new "Preview Chamfer: ok" "previewed"
 ui_step "OK (Enter)"                       ui_key Return
 # The bevels meet in a point: 48000 - (240 - 3 * 8/3 + 2).
 ui_expect_volume "Body Body1 (F2.b0): volume 48000.000 -> \([0-9.]*\) mm3" 47766 "miter corner"
+ui_stop_app
+
+echo "=== Fillet and Chamfer of All Edges (mitcad#793)"
+# rounded_box r: the 60 x 40 x 20 block with every edge rounded at r (the
+# inner block grown by a ball of radius r).
+rounded_box() {
+  awk -v r="$1" 'BEGIN { pi = atan2(0, -1); a = 60 - 2 * r; b = 40 - 2 * r; c = 20 - 2 * r
+    printf "%.6f", a * b * c + 2 * r * (a * b + b * c + a * c) + pi * r * r * (a + b + c) + 4 / 3 * pi * r ^ 3 }'
+}
+# block_volume low high description: the block's newest volume logged
+# since the mark lies between low and high (an edit's roll-back may log
+# one on the way: waited for).
+block_volume() {
+  local volume=""
+  for _ in $(seq 1 150); do
+    volume=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" |
+      sed -n 's/.*Body Body1 (F2\.b0): volume [0-9.]* -> \([0-9.]*\) mm3.*/\1/p' | tail -1)
+    if [ -n "$volume" ] && awk -v v="$volume" -v l="$1" -v h="$2" 'BEGIN { exit !(v > l && v < h) }'; then
+      echo "ok   $3: $volume mm3"
+      return
+    fi
+    sleep 0.2
+  done
+  ui_fail "$3: volume ${volume:-not logged} mm3, expected between $1 and $2"
+}
+# near expected: the bounds 1e-5 of it either side.
+near() { awk -v e="$1" 'BEGIN { printf "%.6f %.6f", e * (1 - 1e-5), e * (1 + 1e-5) }'; }
+# body_shown command: the set's Body input is shown, the Edges input not.
+body_shown() {
+  grep -F "Panel $1 input sets.0.body at" "$UI_LOG" | tail -1 | grep -q hidden &&
+    ui_fail "$1: the Body input is hidden"
+  grep -F "Panel $1 input sets.0.edges at" "$UI_LOG" | tail -1 | grep -q hidden ||
+    ui_fail "$1: the Edges input is shown with All Edges on"
+  echo "ok   $1: Body shown in place of Edges"
+}
+ui_start_app --demo
+ui_step "fit (F6)"                         ui_key F6
+ui_step "fillet (F)"                       ui_key f
+ui_mark
+ui_step "All Edges"                        ui_click_logged "Panel Fillet input sets.0.all_edges"
+ui_expect_new "Fillet: All Edges = on" "All Edges on"
+ui_expect_new "Panel Fillet input sets.0.body at" "the Body input laid out"
+body_shown Fillet
+ui_step "the Body input"                   ui_click_logged "Panel Fillet input sets.0.body"
+ui_mark
+ui_step "pick Body1"                       ui_click_logged "Browser Root/Bodies/Body1"
+ui_expect_new "Fillet Body: 1 body [body F2.b0]" "the block picked"
+ui_step "radius 2"                         ui_type_in "Panel Fillet input sets.0.radius" "2"
+ui_expect_new "Preview Fillet: ok" "previewed"
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added fillet on all edges" "a fillet of all edges added"
+# shellcheck disable=SC2046 # two numbers
+block_volume $(near "$(rounded_box 2)") "every edge rounded at 2 mm"
+
+ui_mark
+ui_step "double-click Fillet1"             ui_double_click_logged "Timeline Fillet1"
+ui_expect_new " with Fillet" "editing Fillet1"
+ui_expect_new "Fillet Body: 1 body [body F2.b0]" "All Edges came back with its body"
+ui_expect_new "Panel Fillet input sets.0.body at" "the Body input laid out"
+body_shown Fillet
+ui_expect_new "Fillet Edges: nothing" "the hidden Edges input empty"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -E "Fillet Edges: [0-9]+ (edge|face)" &&
+  ui_fail "the edit loaded a list of edges"
+echo "ok   no list of edges loaded"
+ui_step "radius 1"                         ui_type_in "Panel Fillet input sets.0.radius" "1"
+ui_expect_new "Preview Fillet: ok" "previewed"
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Edited F" "Fillet1 edited"
+# shellcheck disable=SC2046 # two numbers
+block_volume $(near "$(rounded_box 1)") "every edge still rounded, at 1 mm"
+ui_mark
+ui_step "double-click Fillet1 again"       ui_double_click_logged "Timeline Fillet1"
+ui_expect_new "Fillet Body: 1 body [body F2.b0]" "saved as All Edges again"
+ui_step "cancel (Esc)"                     ui_key Escape
+ui_step "undo the edit (Ctrl+Z)"           ui_key ctrl+z
+ui_step "undo the fillet (Ctrl+Z)"         ui_key ctrl+z
+ui_expect_log "Undo: Add Fillet1" "back to the block"
+
+ui_step "chamfer (search)"                 ui_command "Chamfer"
+ui_mark
+ui_step "All Edges"                        ui_click_logged "Panel Chamfer input sets.0.all_edges"
+ui_expect_new "Chamfer: All Edges = on" "All Edges on"
+ui_expect_new "Panel Chamfer input sets.0.body at" "the Body input laid out"
+body_shown Chamfer
+ui_step "the Body input"                   ui_click_logged "Panel Chamfer input sets.0.body"
+ui_step "pick Body1"                       ui_click_logged "Browser Root/Bodies/Body1"
+ui_expect_new "Chamfer Body: 1 body [body F2.b0]" "the block picked"
+ui_step "distance 1"                       ui_type_in "Panel Chamfer input sets.0.distance" "1"
+ui_expect_new "Preview Chamfer: ok" "previewed"
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added chamfer (Equal Distance) on all edges" "a chamfer of all edges added"
+# 48000 - 1/2 (4 * 60 + 4 * 40 + 4 * 20) with the corners a few mm3 apart.
+block_volume 47740 47780 "every edge bevelled 1 mm"
+ui_mark
+ui_step "double-click Chamfer1"            ui_double_click_logged "Timeline Chamfer1"
+ui_expect_new " with Chamfer" "editing Chamfer1"
+ui_expect_new "Chamfer Body: 1 body [body F2.b0]" "All Edges came back with its body"
+body_shown Chamfer
+ui_expect_new "Chamfer Edges: nothing" "the hidden Edges input empty"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -E "Chamfer Edges: [0-9]+ (edge|face)" &&
+  ui_fail "the edit loaded a list of edges"
+echo "ok   no list of edges loaded"
+ui_step "cancel (Esc)"                     ui_key Escape
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_stop_app
 
 echo "=== Shell"

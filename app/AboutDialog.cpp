@@ -15,7 +15,9 @@
 namespace mitcad {
 
 void showAboutDialog(QWidget* parent) {
-  const QString name = QApplication::applicationName();
+  // The program's name as people read it; the application name stays
+  // "Mitcad", as the settings and data folders are keyed on it (mitcad#822).
+  const QString name = QStringLiteral("MitCad");
   // OCCT's version is the one the program was built against, Qt's the one
   // it runs with.
   const QString occt = QString::fromLatin1(OCC_VERSION_COMPLETE);
@@ -25,7 +27,7 @@ void showAboutDialog(QWidget* parent) {
       QStringLiteral("<p>%1</p>")
           .arg(QObject::tr("A parametric desktop CAD application with a history-based modelling workflow.")) +
       QStringLiteral("<p>%1</p>")
-          .arg(QObject::tr("Licensed under the MIT licence. Copyright (c) 2026 Mitcad contributors.")) +
+          .arg(QObject::tr("Licensed under the MIT licence. Copyright (c) 2026 MitCad contributors.")) +
       QStringLiteral("<p>%1</p><ul>").arg(QObject::tr("Built with:")) +
       QStringLiteral("<li>%1</li>")
           .arg(QObject::tr("Open CASCADE Technology %1 (LGPL-2.1 with the Open CASCADE exception)")

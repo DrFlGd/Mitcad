@@ -37,7 +37,7 @@
 //!   reconnect and when unacknowledged; retained messages; keep-alive
 //!   [`KEEP_ALIVE`]; reconnect with an exponential back-off.
 //!
-//! The JSON commands and events are in `core/model/src/api/commands.md`,
+//! The JSON commands and events are in `core/model-api/src/commands.md`,
 //! "Live updates".
 
 pub mod check;

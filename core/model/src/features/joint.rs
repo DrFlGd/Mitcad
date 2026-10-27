@@ -21,10 +21,9 @@
 //! the component its path ends in.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::marker::PhantomData;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use super::construction::datum_kind;
 use super::geom_ref::{GeomRef, Want};
@@ -40,47 +39,7 @@ use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::transform::Transform;
 
-/// Occurrences from a component down, `"O1/O4"` in files and commands;
-/// empty (`""`) for the component itself.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct OccurrencePath(pub Vec<OccurrenceUid>);
-
-impl OccurrencePath {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl fmt::Display for OccurrencePath {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let parts: Vec<String> = self.0.iter().map(ToString::to_string).collect();
-        f.write_str(&parts.join("/"))
-    }
-}
-
-impl Serialize for OccurrencePath {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for OccurrencePath {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(d)?;
-        if text.trim().is_empty() {
-            return Ok(Self::default());
-        }
-        text.split('/')
-            .map(|part| part.trim().parse::<OccurrenceUid>())
-            .collect::<Result<Vec<_>, _>>()
-            .map(Self)
-            .map_err(|_| {
-                serde::de::Error::custom(format!(
-                    "invalid occurrence path '{text}': occurrence ids like \"O1/O4\""
-                ))
-            })
-    }
-}
+pub use mitcad_model_base::occurrence::OccurrencePath;
 
 /// Parts of a joint origin's frame given instead of the resolved ones, in
 /// the component's coordinates (mm, directions); `shift` then moves the
@@ -110,10 +69,10 @@ impl FrameOverride {
         if !numbers.iter().all(|v| v.is_finite()) {
             return Err("the frame override's numbers must be finite".to_owned());
         }
-        if self.z_axis.is_some_and(|z| crate::datum::unit(z).is_none()) {
+        if self.z_axis.is_some_and(|z| mitcad_vec3::unit(z).is_none()) {
             return Err("the frame override's z axis is zero".to_owned());
         }
-        if self.x_axis.is_some_and(|x| crate::datum::unit(x).is_none()) {
+        if self.x_axis.is_some_and(|x| mitcad_vec3::unit(x).is_none()) {
             return Err("the frame override's x axis is zero".to_owned());
         }
         Ok(())

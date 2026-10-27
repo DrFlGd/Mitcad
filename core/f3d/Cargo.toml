@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "mitcad-f3d"
-description = "Reader for .f3d files: container, ASM B-rep geometry and its neutral B-rep model; the design streams as the dump IR"
+description = "Reader for .f3d files: the facade over the container, ASM B-rep, names and design crates, with the inspection tool and the corpus tests"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -18,14 +18,18 @@ name = "mitcad-f3d-inspect"
 path = "src/bin/mitcad-f3d-inspect.rs"
 
 [dependencies]
+# The crates of the .f3d reader (mitcad#776), re-exported under the paths
+# of the single crate it was: the ASM B-rep reader, the entity names, the
+# document of the file and the design segment.
+mitcad-asm = { path = "../asm" }
+mitcad-f3d-names = { path = "../f3d-names" }
+mitcad-f3d-file = { path = "../f3d-file" }
+mitcad-f3d-design = { path = "../f3d-design" }
 # The zip container (shared with the .FCStd reader).
 mitcad-zip = { path = "../zip" }
-# Vector helpers on [f64; 3].
-mitcad-vec3 = { path = "../vec3" }
-# The design dump IR (core/import/SCHEMA.md) is JSON.
-serde.workspace = true
+# mitcad-f3d-inspect writes JSON.
 serde_json.workspace = true
 
 [dev-dependencies]
 # Corpus test: parameter expressions evaluated against the stored values.
-mitcad-model.workspace = true
+mitcad-expr = { path = "../expr" }

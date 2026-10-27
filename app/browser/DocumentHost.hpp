@@ -176,6 +176,11 @@ public:
   // Annotations (mitcad#702): opens the Annotations window (the browser's
   // Annotations folder, View > Annotations).
   virtual void openAnnotations() {}
+
+  // Image references (mitcad#782): one opened in the Image Reference panel,
+  // and one calibrated by two points clicked on it and a typed distance.
+  virtual void editImageReference(const QString& /*name*/) {}
+  virtual void calibrateImageReference(const QString& /*name*/) {}
 };
 
 } // namespace mitcad

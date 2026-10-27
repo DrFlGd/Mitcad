@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp tools/cli core/model/src/build core/model/src/api/build.rs
+# check-all sources: app/build app/commands/BuildCommands.cpp app/framework app/library app/OcctViewer.cpp tools/cli core/model/src/build core/model-build core/model-api/src/build.rs
 # check-all sources: app/MainWindowContextMenu.cpp
 # Input-driven Windows UI test of the BUILD tab's TIMBER group: Timber
 # (mitcad#478, mitcad#485), Wall and Floor / Roof (mitcad#520), each section

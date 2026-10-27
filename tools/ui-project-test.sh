@@ -400,7 +400,7 @@ ui_step "type the folder"                type_text "$PLATE"
 ui_step "cloud (Alt+O)"                  ui_key alt+o
 ui_step "the address (Alt+E)"            ui_key alt+e
 ui_step "type the repository's folder"   type_text "$README_REMOTE"
-ui_expect_new "Mitcad adds the project beside the repository's files (README.md)." "the README stays" 20
+ui_expect_new "MitCad adds the project beside the repository's files (README.md)." "the README stays" 20
 ui_step "create (Enter)"                 ui_key Return
 ui_expect_new "New Project: created $PLATE: version " "made beside the README" 30
 ui_expect_new "Open Project: no designs in $PLATE" "no designs beside the README" 20
@@ -436,7 +436,7 @@ ui_step "type the folder"                type_text "$OPENED"
 ui_step "cloud (Alt+O)"                  ui_key alt+o
 ui_step "the address (Alt+E)"            ui_key alt+e
 ui_step "a repository with a project"    type_text "$EMPTY"
-ui_expect_new "This repository holds a Mitcad project: Open It Instead opens it into the folder." "it holds a project" 20
+ui_expect_new "This repository holds a MitCad project: Open It Instead opens it into the folder." "it holds a project" 20
 ui_step "open it instead (Alt+I)"        ui_key alt+i
 ui_expect_new "New Project: Open It Instead $EMPTY into $OPENED" "Open It Instead"
 ui_expect_new "Open from Cloud dialog: " "Open from Cloud with the same address and folder"
@@ -679,7 +679,7 @@ ui_expect_new "Saved $GEAR/parts/bolt.mitcad" "saved as Save As saves" 20
 ui_expect_new "Save to Project: $GEAR/parts/bolt.mitcad saved in $GEAR" "saved in the project" 20
 ui_focus_main
 # The window shows the project's file; the one it came from stays.
-expect_title "bolt.mitcad - Mitcad"
+expect_title "bolt.mitcad - MitCad"
 [ -f "$GEAR/parts/bolt.mitcad" ] || ui_fail "the design is not in the project"
 [ -f "$STRAY/bolt.mitcad" ] || ui_fail "the file it came from is gone"
 echo "ok   the file it came from stays"
@@ -795,7 +795,7 @@ ui_step "linked (Enter)"                 ui_key Return
 ui_focus_main
 ui_expect_new "(linked) from block.mitcad" "inserted from the file dialog"
 ui_key ctrl+q
-ui_focus_dialog '^Mitcad$'
+ui_focus_dialog '^MitCad$'
 ui_step "don't save (D)"                 ui_key d
 expect_exit "exited"
 

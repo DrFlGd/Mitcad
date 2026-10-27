@@ -3,19 +3,18 @@
 
 use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::profile::{SegmentGeometry, SketchFrame};
-use crate::topo::SegmentKey;
 use crate::transform::Transform;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::fmt;
 
 mod adapter;
-mod charts;
 // The sheet-domain adapter of ordinary features (mitcad#242).
 mod rederive;
 // Patterns and mirrors of sheet features (mitcad#242).
 pub(crate) mod replay;
 pub(crate) use adapter::planar_joins;
+// Methods of the kernel's sheet types that need the model (mitcad#777).
+pub(crate) use adapter::{BoundedCurve2Ext, MaterialRegionExt, SheetPatchExt};
 pub(crate) use rederive::adapt;
 pub(crate) mod folded;
 // The derived whole-body Flat Pattern (mitcad#208).
@@ -23,44 +22,12 @@ pub mod flat;
 // Its DXF drawing and picks resolved to semantic references (mitcad#210).
 pub mod flat_dxf;
 pub mod pick;
-pub use charts::*;
+// The material charts the kernel's sheet operations take and give, below
+// the model (mitcad#777).
+pub use mitcad_model_base::sheet_charts::*;
 
 pub const TOLERANCE: f64 = 1.0e-7;
 pub const ALGORITHM_VERSION: u32 = 2;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct SheetDomainId {
-    pub feature: FeatureUid,
-    pub slot: u32,
-}
-
-impl fmt::Display for SheetDomainId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.p{}", self.feature, self.slot)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SheetCurveId {
-    Sketch {
-        sketch: FeatureUid,
-        segment: SegmentKey,
-    },
-    Generated {
-        feature: FeatureUid,
-        slot: u32,
-    },
-}
-
-impl fmt::Display for SheetCurveId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Sketch { sketch, segment } => write!(f, "{sketch}/{segment}"),
-            Self::Generated { feature, slot } => write!(f, "{feature}/g{slot}"),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SheetSegment {

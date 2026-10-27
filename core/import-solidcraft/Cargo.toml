@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-import-solidcraft"
+description = "The .solidcraft import: designs with their history built again as Mitcad features"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_import_solidcraft"
+
+[dependencies]
+mitcad-model.workspace = true
+# The .solidcraft reader (mitcad#450).
+mitcad-solidcraft = { path = "../solidcraft" }
+# What the imports share: vector helpers and the timeline notes' finish.
+mitcad-import-base = { path = "../import-base" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The mock geometry kernel of the model tests.
+mitcad-model = { workspace = true, features = ["testing"] }
+# The JSON api: the tests' queries.
+mitcad-model-api = { path = "../model-api" }

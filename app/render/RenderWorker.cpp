@@ -406,7 +406,7 @@ render::ViewData viewOf(const QJsonObject& command) {
 }
 
 // The "environment" command (and --environment): the document's render
-// settings as the model has them (core/model/src/api/commands.md, "Render
+// settings as the model has them (core/model-api/src/commands.md, "Render
 // settings"), the image's path made absolute by the application.
 render::EnvironmentData environmentOf(const QJsonObject& command) {
   using Preset = render::EnvironmentData::Preset;

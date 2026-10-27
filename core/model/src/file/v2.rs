@@ -17,8 +17,8 @@ use crate::assembly::{
 };
 use crate::configurations::Configurations;
 use crate::document::{
-    Analysis, Annotation, BodyAttributes, DisplayState, DocState, NamedView, TimelineGroup,
-    check_components,
+    Analysis, Annotation, BodyAttributes, DisplayState, DocState, ImageReference, NamedView,
+    TimelineGroup, check_components,
 };
 use crate::expr::ParamLimits;
 use crate::expr::{
@@ -31,8 +31,9 @@ use crate::motion::{ContactSet, MotionStudy};
 use crate::parameters::{Parameters, default_context, describe, slot_unit};
 use crate::policy::Policy;
 use crate::render_settings::RenderSettings;
-use crate::sketch::legacy::{LegacyShape, convert, settle};
+use crate::sketch::legacy::{LegacyShape, convert};
 use crate::transform::Transform;
+use mitcad_sketch::internal::settle;
 
 // Writing: field order is the order in the file.
 
@@ -130,6 +131,9 @@ struct FileOut<'a> {
     // any.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     drawings: Vec<&'a crate::drawing::def::Drawing>,
+    // Image references with their images (mitcad#782), when there are any.
+    #[serde(skip_serializing_if = "<[ImageReference]>::is_empty")]
+    image_references: &'a [ImageReference],
 }
 
 /// A component's default material (mitcad#640).
@@ -440,6 +444,7 @@ pub(super) fn save(state: &DocState) -> String {
             .iter()
             .filter(|d| assembly.exists(d.component))
             .collect(),
+        image_references: &state.image_references,
     };
     let mut json =
         serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
@@ -679,7 +684,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 35] = [
+const TOP_FIELDS: [&str; 36] = [
     "format",
     "version",
     "units",
@@ -730,6 +735,8 @@ const TOP_FIELDS: [&str; 35] = [
     "purge_volumes",
     // Drawings of the root and the components (mitcad#707).
     "drawings",
+    // Image references (mitcad#782).
+    "image_references",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -1217,6 +1224,28 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
             )));
         }
     }
+    // Image references (mitcad#782): their planes are resolved when they
+    // are asked for, so one whose plane is gone loads and says why.
+    let image_references = array(&mut top, "image_references", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let image = serde_json::from_value::<ImageReference>(value)
+                .map_err(|e| schema(format!("image_references[{i}]: {e}")))?;
+            image
+                .check_image()
+                .map_err(|e| invalid(format!("image_references[{i}]: {e}")))?;
+            Ok(image)
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
+    for (i, image) in image_references.iter().enumerate() {
+        if image_references[..i].iter().any(|o| o.name == image.name) {
+            return Err(invalid(format!(
+                "image_references[{i}]: image reference '{}' is listed more than once",
+                image.name
+            )));
+        }
+    }
     let marker = match top.remove("marker") {
         None => None,
         Some(value) => Some(
@@ -1554,6 +1583,7 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         }
     }
     state.drawings = drawings;
+    state.image_references = image_references;
     state.render = render;
     // The configuration table (mitcad#64): rows of the file's parameters,
     // under the names they were loaded with.

@@ -56,6 +56,7 @@
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
 #include <gp_Pnt2d.hxx>
@@ -316,6 +317,7 @@ ShapePtr healed(const Shape& result, const Shape& body) {
     }
     detail::FaceNamer namer(fixed);
     namer.carry(*fix.Context()->History(), named);
+    namer.carry_by_surface(named, "healed dressup");
     namer.finish();
     namer.set_valid(true); // checked above
     return namer.shape();
@@ -604,6 +606,7 @@ ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& fea
     }
   }
   name_consumed_faces(maker, body, namer);
+  namer.carry_by_surface(body, role);
   namer.finish();
   // Vertex tolerances OCCT inflated far beyond what the vertices' edges need
   // (detail::inflated_vertices, mitcad#235) are cut down to it: a result
@@ -678,6 +681,7 @@ ShapePtr join_at_turn_stops(const ShapePtr& rounded,
   }
   detail::FaceNamer namer(unify.Shape());
   namer.carry(*unify.History(), *rounded);
+  namer.carry_by_surface(*rounded, "dressup joined at turn stops");
   namer.finish();
   if (const std::optional<bool> valid = rounded->checked_valid()) {
     namer.set_valid(*valid);

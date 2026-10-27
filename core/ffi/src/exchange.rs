@@ -6,9 +6,9 @@
 //! [`crate::kernel::exchange::ffi::f3d_bodies`] directly.
 
 use cxx::SharedPtr;
-use mitcad_model::api::ApiError;
 use mitcad_model::features::Operation;
 use mitcad_model::{BaseInput, BodyUid, ImportBody, Imported};
+use mitcad_model_api::ApiError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

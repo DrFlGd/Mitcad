@@ -43,6 +43,10 @@ pub(crate) enum SplineEq {
     OnCircle { c: P, r: Rad },
     /// `C'(t)` perpendicular to the radius at `C(t)`.
     TanCircle { c: P },
+    /// `(C^(order)(lo) - C^(order)(hi))[axis]` over the parameter range
+    /// `[lo, hi]` (`t` unused): a closed spline's periodic end condition
+    /// (mitcad#783). Its control points are all of the spline's.
+    Periodic { order: usize, axis: usize },
 }
 
 /// Signed curvature of a curve at one of its end points, for the
@@ -448,6 +452,7 @@ impl EqKind {
                     | SplineEq::OnCircle { .. } => 0,
                     SplineEq::TanLine { .. } | SplineEq::TanCircle { .. } => 1,
                     SplineEq::Second { .. } => 2,
+                    SplineEq::Periodic { order, .. } => *order,
                 };
                 let ev = basis.eval(&cp, tv, ders);
                 match what {
@@ -461,6 +466,14 @@ impl EqKind {
                     SplineEq::OnCircle { c, r } => ev.p.sub(pt(x, *c)).norm() - rad(x, r),
                     SplineEq::TanCircle { c } => {
                         ev.p.sub(pt(x, *c)).unit().dot(ev.d1.unit()).mulf(scale)
+                    }
+                    SplineEq::Periodic { order, axis } => {
+                        let end = basis.eval(&cp, T::cst(basis.domain().1), *order);
+                        if *order == 1 {
+                            ev.d1.sub(end.d1).get(*axis)
+                        } else {
+                            ev.d2.sub(end.d2).get(*axis)
+                        }
                     }
                 }
             }
@@ -691,6 +704,20 @@ mod tests {
                 ctrl: vec![[0, 1], [2, 3], [4, 5], [6, 7], [10, 11]],
                 t: TParam::Const(0.3),
                 what: SplineEq::Second { axis: 0 },
+            },
+            EqKind::Spline {
+                basis: basis.clone(),
+                first: 0,
+                ctrl: vec![[0, 1], [2, 3], [4, 5], [6, 7], [10, 11]],
+                t: TParam::Const(0.0),
+                what: SplineEq::Periodic { order: 1, axis: 0 },
+            },
+            EqKind::Spline {
+                basis: basis.clone(),
+                first: 0,
+                ctrl: vec![[0, 1], [2, 3], [4, 5], [6, 7], [10, 11]],
+                t: TParam::Const(0.0),
+                what: SplineEq::Periodic { order: 2, axis: 1 },
             },
             EqKind::Curvature {
                 a: CurvTerm::Arc {

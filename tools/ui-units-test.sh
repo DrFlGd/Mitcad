@@ -12,7 +12,7 @@
 #     metric first, Unified sizes only when chosen.
 #   - A new user parameter is in mm, the grid's fixed spacing in mm, and
 #     Physical Properties weighs steel (7.85 g/cm3) in kg.
-# The model's defaults: core/model/src/api/metric_defaults_tests.rs.
+# The model's defaults: core/model-tests/api/src/metric_defaults_tests.rs.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-units-test.sh

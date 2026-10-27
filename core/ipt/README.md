@@ -3,15 +3,15 @@
 `core/ipt` reads `.ipt` part files: the bodies stored in the file, the
 document properties, and the part's design: its parameters with their
 expressions, sketches, work planes and features, as the import's dump IR
-(`mitcad_f3d::design::ir::Dump`, [SCHEMA.md](../import/SCHEMA.md)). The
+(`mitcad_dump::Dump`, [SCHEMA.md](../import/SCHEMA.md)). The
 `.ipt` import (mitcad#60) replays that design with `mitcad-import` against
 the ASM history of the B-rep record, as the `.f3d` import does, or builds
 the stored bodies as base features (`core/ffi/src/ipt_import.rs`,
 `core/ffi/src/ipt_history.rs`, the `import_ipt` command in
-[commands.md](../model/src/api/commands.md#ipt-import), `mitcad-cli
+[commands.md](../model-api/src/commands.md#ipt-import), `mitcad-cli
 import-ipt`, File › Open). It also reads `.iam` assemblies: the files they
 refer to and the occurrences that place them ([Assemblies](#assemblies)),
-which the `.iam` import makes Mitcad's components and occurrences.
+which the `.iam` import makes MitCad's components and occurrences.
 
 The container and the property sets follow Microsoft's published
 specifications (MS-CFB, MS-OLEPS). Everything else here comes from
@@ -35,7 +35,7 @@ but not understood further.
 | `lib.rs` | `IptFile`: segments, property sets, document properties, B-rep records, the definitions segment; `read_bodies` converts the bodies with the `.f3d` reader's ASM code. |
 | `mesh` | The meshes of mesh features in the graphics segment. A writer for tests. |
 | `dc` | The definitions segment (`PmDCSegment`): records by type, the common header, references, lists, texts, labels. |
-| `params` | Parameters: units, expression trees, their translation into Mitcad's expression language and their evaluation. |
+| `params` | Parameters: units, expression trees, their translation into MitCad's expression language and their evaluation. |
 | `sketch` | Planar sketches: transform, points, lines, circles and arcs, constraints, dimensions. |
 | `groups` | Polygons and circular and rectangular patterns of sketch entities. |
 | `text` | Sketch texts: the text and frame records, the glyph contours the file keeps, the application segment's font table (mitcad#414). |
@@ -47,7 +47,7 @@ but not understood further.
 | `assembly` | Assemblies (`.iam`): the referenced files, the occurrences with their keys, flags, labels, documents, placements, range boxes and display transforms (*Assemblies* below). |
 | `sheet` | Sheet metal (mitcad#211): the sheet-metal style's K-factor, faces, flanges, cuts, corners, bends and folds as the dump's sheet items (*Sheet metal* below). |
 | `naming` | Topological names (mitcad#242): the items features name edges and faces by, the naming table's names, the naming attributes of the ASM entities at a history state, and the edge a name names there (*Topological names* below). |
-| `testdata`, `testdesign` | Small parts made by these writers: two bodies of Mitcad's own ASM writer (a cube and a cylinder), part number, material, inches; the cube with the records of a parameter, a sketch and an extrusion that make it; a part of a mesh feature's tetrahedron; an empty part; the cube and the cylinder with a result list that keeps the cylinder hidden. |
+| `testdata`, `testdesign` | Small parts made by these writers: two bodies of MitCad's own ASM writer (a cube and a cylinder), part number, material, inches; the cube with the records of a parameter, a sketch and an extrusion that make it; a part of a mesh feature's tetrahedron; an empty part; the cube and the cylinder with a result list that keeps the cylinder hidden. |
 | `testassembly` | Small assemblies made by these writers and a test project of them (a top assembly as saved on another machine, a sub-assembly, parts found relative to it and by name, a missing one; hidden, grounded and suppressed occurrences). |
 | `bin/mitcad-ipt-inspect` | `list`, `properties`, `segments`, `records`, `record [--raw]`, `data`, `dump`, `labels`, `stream [--raw]`, `asm`, `bodies [-v|-f]`, `result`, `history`, `parameters`, `typed`, `show`, `constraints`, `prefix`, `flags`, `design [--json]`, `profile [-v]`, `slots` (a sheet-metal group's parts too), `tree`, `find`, `assembly`, `write-test`; for the names (mitcad#242) `words` (a segment's records as u32 words), `nodes`, `names` (each feature's items with their names), `entry`, `brepnames <state>` (the faces and edges of a history state with their naming attributes), `study` (every item resolved in the state before its feature, checked against the file's own `matched` marks); `texts` (the sketch texts, their fonts and glyph contours, mitcad#414). |
 
@@ -351,7 +351,7 @@ evaluates to its stored value *(verified)*.
   ln, log, pow 24; 25, a random number, is not translated): an expression
   whose code was guessed wrong does not give its stored value, and the
   stored value is used. The test files use numbers,
-  parameters, products and negation. The expression is written in Mitcad's
+  parameters, products and negation. The expression is written in MitCad's
   language with each number in its display unit (at most 12 significant
   digits: `6 mm`, not `6.000000000000001 mm`), evaluated here against the
   stored value, and given to the import, which evaluates it again; an
@@ -460,7 +460,7 @@ as the items whose definitions gave no state do.
   segment (`46737b31…`): the list of its two points and no geometry, a
   straight line between them (one from a point to itself is nothing)
   *(seen)*. A centre
-  line bounds no profile (Mitcad's do): it comes in as construction
+  line bounds no profile (MitCad's do): it comes in as construction
   geometry. The flag 0x40 is not construction alone: of the lines with
   it, 190 lie off and 9 on the profiles the features of the test files
   selected, but in the older corpus 1,639 lie on them (whole sketches of
@@ -473,7 +473,7 @@ as the items whose definitions gave no state do.
   profiles that one feature selects together (a line through a circle
   whose halves one cut takes: kept, it would split the feature's faces)
   and bounds no other feature's profile (then the first feature's
-  profiles are a union of Mitcad's regions, which the import matches by
+  profiles are a union of MitCad's regions, which the import matches by
   area and centroid); the others as construction geometry *(seen)*. A curve drawn twice (the same ends, centre, radius or
   angles) bounds profiles once: the later copy comes in as construction
   geometry *(seen)*. A line flagged 0x40 along an edge of a profile's
@@ -502,7 +502,7 @@ as the items whose definitions gave no state do.
   length `e0c281c6…`, equal radius `d07d2c44…`, symmetric `107cdd0d…`,
   midpoint `bf70e821…`, two points on a horizontal line `c0a3558f…` and
   on a vertical line `5052da64…` (by their geometry *(verified)*); a
-  circle's centre `008c10e1…` (implicit in Mitcad); a fixed point or
+  circle's centre `008c10e1…` (implicit in MitCad); a fixed point or
   curve `b07b170f…` (one entity, *(seen)*); a rectangle `0ead987a…`
   (after the parameter its four sides in order, then its corners: its
   sides at right angles, three perpendicular constraints; its frame
@@ -515,15 +515,15 @@ as the items whose definitions gave no state do.
   `e096df74…`, radius `00b71b67…`, angle `100a0d59…`; a dimension whose
   parameter is in the part's table drives it. A distance between
   concentric circles or arcs is the difference of their radii *(verified:
-  141 of the 152 distances to circles of the older parts)*, Mitcad's
+  141 of the 152 distances to circles of the older parts)*, MitCad's
   concentric circle dimension; another distance to a circle or arc (to
-  its edge *(seen)*) has no counterpart in Mitcad and is left out. A
+  its edge *(seen)*) has no counterpart in MitCad and is left out. A
   distance from a point or line to a centre line whose value is twice the
-  geometry's is a diameter about it (a revolution's profile), Mitcad's
+  geometry's is a diameter about it (a revolution's profile), MitCad's
   linear diameter *(seen)*.
 - What holds nothing *(seen)*: a constraint between geometry projected
   from the model (flag 0x40000) and the end and centre points of
-  projected curves (Mitcad keeps them fixed, and would take the
+  projected curves (MitCad keeps them fixed, and would take the
   constraint for a contradiction), a coincidence of a curve and its own
   end point, and a line whose two ends are one point, with what
   constrains it: all left out; a dimension between projected geometry is
@@ -583,7 +583,7 @@ as the items whose definitions gave no state do.
   (model coordinates, cm): the font's outlines exactly, as quadratic
   B-splines and lines, each contour closed.
   A text in a frame in one font of the font's own width comes in as
-  Mitcad's sketch text: the string, the family, bold from weight 600,
+  MitCad's sketch text: the string, the family, bold from weight 600,
   italic, the size as the capitals' height (`cap_height`), the frame
   (`frame`, from the rectangle's four construction lines), the alignment,
   `pen_align` and `ink_top`, and the lines' spacing (`line_spacing`)
@@ -599,8 +599,8 @@ as the items whose definitions gave no state do.
   point (an 8's top 1.534 mm above the baseline, an S's 3.154 mm), not the
   capitals' top; the second line lies 2.46971 mm (1.6465 capital heights)
   below the first, which is not the font's ascender plus descender over
-  its capitals' height as Mitcad lays out the `.f3d` files' texts, hence
-  the measured spacing. Mitcad lays the text out from the installed font
+  its capitals' height as MitCad lays out the `.f3d` files' texts, hence
+  the measured spacing. MitCad lays the text out from the installed font
   (the scale from the top of its A); the file's glyph contours stay in the
   dump (`_ipt.glyphs`, sketch coordinates). For a computer without the font
   (mitcad#416; Tahoma is not installed on the Linux test machine) the text
@@ -620,7 +620,7 @@ as the items whose definitions gave no state do.
   frame, height or alignment re-lays the stored outlines, a new string or
   font drops them (commands.md, sketch `texts`). Left out with their reason: a text
   in several fonts (`f5e9d2d7`: lines of 1.5 and 3 mm in one text, and no
-  glyph contours), a font with a width factor (`11f1b478`: 0.77; Mitcad's
+  glyph contours), a font with a width factor (`11f1b478`: 0.77; MitCad's
   texts keep the font's widths), a text without a frame (not seen); the
   outlines below then come in for it.
 - Not decoded (the sketch comes in partial, these left out): sketch block
@@ -652,11 +652,11 @@ as the items whose definitions gave no state do.
   f64 each, cm). The reader finds the data by that form and checks it (knots
   that do not decrease, as many as the control points and the degree and
   one, the first and last control points on the end points); the spline
-  comes in as a fixed spline (Mitcad's splines of stored geometry). A
+  comes in as a fixed spline (MitCad's splines of stored geometry). A
   spline's **control polygon** (`9d858c5d…`, in the sketch's list as a
   constraint: after the parameter the spline, its control points and the
   lines between them) *(seen: 22 records in 6 parts, each point on one of
-  the spline's poles)*: a spline drawn so comes in as Mitcad's spline of
+  the spline's poles)*: a spline drawn so comes in as MitCad's spline of
   those points (its poles matched to them by where they lie), and the
   polygon holds nothing more; a projected spline's polygon, all of
   projected geometry, holds nothing.
@@ -672,10 +672,10 @@ value), booleans (`284d8790…`: the value is the last byte), directions
 
 | Kind | Slots and records | Decoded |
 |---|---|---|
-| Extrusion | 0 operation, 1 profiles (`91739422…`), 2 direction, 3 reversed, 4 distance, 5 taper, 6 extent (1 distance, 2 symmetric, 5 through all, 7 up to a face or plane, 4 up to the next face), 7 symmetric (set in every symmetric extent, and in 9 of 279 through all: through all both ways); up to the next face, 24 the body it reaches (a list `83aadad5…`: all 48 such extrusions of the older parts); up to a face, 18 the face's surface (`f0801215…`: after the prefix 16 zero bytes, a byte 1 and a u32 kind; `0x19` a plane: a u32, its origin (cm) and x and y axes, both across the extrusion in all 130 such records; `0x49` a cone: two u32, the cosine and sine of its half angle, a point on its axis (cm), its two radii, its axis and a reference direction: 8 cylinders) and 13 a boolean (`fd24893d…`, not decoded), or 11 a work plane (4), or 25 a work point (2, not decoded: both suppressed in their files); two sides, 27 the second side's distance, 28 its taper and 29 its extent (1 a distance: both such extrusions) *(seen)* | all; two sides as Mitcad's two-sided extent; the next face as the first face of that body reached, the face as its plane or a cylindrical face on that cylinder, which the import looks for |
+| Extrusion | 0 operation, 1 profiles (`91739422…`), 2 direction, 3 reversed, 4 distance, 5 taper, 6 extent (1 distance, 2 symmetric, 5 through all, 7 up to a face or plane, 4 up to the next face), 7 symmetric (set in every symmetric extent, and in 9 of 279 through all: through all both ways); up to the next face, 24 the body it reaches (a list `83aadad5…`: all 48 such extrusions of the older parts); up to a face, 18 the face's surface (`f0801215…`: after the prefix 16 zero bytes, a byte 1 and a u32 kind; `0x19` a plane: a u32, its origin (cm) and x and y axes, both across the extrusion in all 130 such records; `0x49` a cone: two u32, the cosine and sine of its half angle, a point on its axis (cm), its two radii, its axis and a reference direction: 8 cylinders) and 13 a boolean (`fd24893d…`, not decoded), or 11 a work plane (4), or 25 a work point (2, not decoded: both suppressed in their files); two sides, 27 the second side's distance, 28 its taper and 29 its extent (1 a distance: both such extrusions) *(seen)* | all; two sides as MitCad's two-sided extent; the next face as the first face of that body reached, the face as its plane or a cylindrical face on that cylinder, which the import looks for |
 | Revolution | 0 operation, 1 profiles, 2 axis (a work axis `896cf08e…`: a point and a direction before its last byte), 3 extent (1 an angle, 3 a full turn *(verified)*: its angle parameter keeps a value it does not use, 0 or the angle it was made with), 4 angle, 5 direction (an enumeration `c26aa0c7…`, not decoded) | the axis as a sketch line on it or an origin axis, else the work axis fixed where it is |
 | Thread | 0 its faces (named by the file's topological naming, not decoded), 1 full length (a boolean), 3 length and 4 offset of one that is not, 6 modelled (a boolean), 10 its ends (`9984474c…`: after the prefix two points, cm, on its cylinder's surface or axis, where it starts and ends); its size in a record of its own (`1f7e08a4…`, its header's context the thread: after the header a reference, then texts: the nominal size, the designation `M3x0.5`, the thread type, an empty text, a u32, four empty texts, the class `6g`, then its diameters' limits and pitch as texts in the saving machine's number format) *(seen)* | all; the face as the cylinder through both ends, which the import looks for |
-| Coil | 0 operation, 1 profiles, 2 axis (a work axis), 3 against the axis (a boolean: the coil runs against the work axis' stored direction), 5 its type (`b80cb14f…`: the prefix, u16 kind, u16 value: 0 pitch and turns, 1 turns and height, 2 pitch and height; 3, a spiral, not seen), 6 pitch, 7 height, 8 turns, 9 taper, 10 to 15 its ends (a boolean: flat, else natural; the transition angle; the flat angle; for the start, then the end: the one coil of the older parts with a flat end gives its history state so), 19 its bodies (`ae70680e…`, as an extrusion's) *(seen)*; the parameters its type does not use keep values, as do a natural end's angles | all but its hand (the import tries both, the direction slot 3 gives first), as Mitcad's helix; the axis a line of its sketch on the work axis, an origin axis, else the work axis fixed where it is (a cylinder's axis: 46 of the 85 coils of the older parts, all of which fell back before); a taper as the growth `pitch * tan(taper)` outwards (the one tapered coil of the older parts gives its state so; inwards is tried next), flat ends as the helix's ends, beyond the turns at the full pitch (mitcad#235) |
+| Coil | 0 operation, 1 profiles, 2 axis (a work axis), 3 against the axis (a boolean: the coil runs against the work axis' stored direction), 5 its type (`b80cb14f…`: the prefix, u16 kind, u16 value: 0 pitch and turns, 1 turns and height, 2 pitch and height; 3, a spiral, not seen), 6 pitch, 7 height, 8 turns, 9 taper, 10 to 15 its ends (a boolean: flat, else natural; the transition angle; the flat angle; for the start, then the end: the one coil of the older parts with a flat end gives its history state so), 19 its bodies (`ae70680e…`, as an extrusion's) *(seen)*; the parameters its type does not use keep values, as do a natural end's angles | all but its hand (the import tries both, the direction slot 3 gives first), as MitCad's helix; the axis a line of its sketch on the work axis, an origin axis, else the work axis fixed where it is (a cylinder's axis: 46 of the 85 coils of the older parts, all of which fell back before); a taper as the growth `pitch * tan(taper)` outwards (the one tapered coil of the older parts gives its state so; inwards is tried next), flat ends as the helix's ends, beyond the turns at the full pitch (mitcad#235) |
 | Hole | 0 form (`117ccd43…`: 0 drilled, 1 countersink, 2 and 3 counterbore), 1 diameter, 2 depth, 3 counterbore or countersink diameter, 4 counterbore depth, 5 countersink angle, 6 drill point angle (0: flat), 7 its sketch points (`b1226593…`), 8 placement (a transform), 9 extent (1, 5, 7), 16 direction | position: the sketch points in the sketch (label child) the feature is on, else the placement's origin; up to a face as through all |
 | Fillet | 0 edge sets (`dae9481b…` of `1641d6aa…`: edges, radius, selection, a boolean), 11 form (`2788f278…`, 0 edge fillet) | radii; the edges are named by the file's topological naming, not decoded: the import finds them from the history state. The boolean (not a boolean record in the parts of `ipt.corpus`) is false in every fillet of the older parts below, while their history states show whole tangent chains rounded from an edge inside them, so it is not the tangent chain option: the sets follow tangent chains |
 | Chamfer | 0 edges, 2 distance, 3 second distance, 4 form (`3200aa7d…`: 0 equal, 1 distance and angle, 2 two distances), 10 angle | sizes; edges as for fillets; the face a distance and angle (or the first of two distances) lies on is not read: each definition is tried with the other face next to it, and the history state chooses (mitcad#235) |
@@ -703,7 +703,7 @@ direction with the history. The elements the pattern leaves out are a
 record `bef06e8d…` among its properties: after the prefix a list of kind 4
 (u32 `0x30000004`, the count, 8 bytes when not empty), then per element
 two u32, its place along the second direction and along the first (both
-from 1); the import makes them Mitcad's `suppressed_elements` (`k1 + n1
+from 1); the import makes them MitCad's `suppressed_elements` (`k1 + n1
 k2` from 0) *(verified: the three such patterns of the sheet-metal parts,
 two with two directions 60 degrees apart and 101 and 122 elements left
 out (`fdcb8c30`, the copies that would reach the flanges' bends), one
@@ -740,7 +740,7 @@ sampled, measured in the sketch
 (area and centroid) and given to the import, which picks the sketch's
 regions of the same area and centroid (each of several alike tried, and
 else a union of regions that has them: a line that bounds another
-feature's profile splits this one in Mitcad's sketch). Selections inside
+feature's profile splits this one in MitCad's sketch). Selections inside
 one another make up their regions by the even-odd rule
 (`profile::even_odd`): a region is taken when an odd number of the
 selections cover it. Each selection is mostly a single loop, and a ring is
@@ -837,7 +837,7 @@ state table names those parts, and the group takes its last part's state
 cuts (`CutFeature`), corner rounds and chamfers, bends and folds are
 feature records of their own. The import makes them the dump's sheet
 items (`core/import/SCHEMA.md`, *Sheet metal*), which it replays as
-Mitcad's native sheet features.
+MitCad's native sheet features.
 
 - **The style** (the application segment `PmAppSegment`): the style
   record (`6bc0d610…`: its name, `1:Default`, then its values as
@@ -922,7 +922,7 @@ Mitcad's native sheet features.
   flanges, all of type 4)*. Type 4: each offset measured from its work
   point, an end of the edge (on either surface); the import makes them the
   flange's offsets. Two of the extents reach 0.5 mm beyond both ends
-  (offsets -0.5 mm): the import gives them as Mitcad's width from the
+  (offsets -0.5 mm): the import gives them as MitCad's width from the
   boundary's middle (half the boundary less each offset), the overhangs
   starting at the bend's moving tangent line (`root` 0) as in the history
   state *(verified: the flange and the later flanges on its overhanging
@@ -934,7 +934,7 @@ Mitcad's native sheet features.
   settings), 4 an enumeration (`e0a8d8af…`, kind 8: 3), 5 an enumeration
   (`720c3e2b…`: 303), 6 `JacobiRadiusSize`, 7 none, 8 a boolean (true)
   *(seen: all 35 flanges)*. With the style's settings, the corners of
-  flanges on adjacent edges are Mitcad's trim across the earlier bend
+  flanges on adjacent edges are MitCad's trim across the earlier bend
   *(verified: the four-edge flange and the flanges on the sides of earlier
   ones give their states)*. One three-edge flange has its own settings,
   relief shape 5: its walls stop t + g/√2 from the outer corner (2.561 mm)
@@ -1020,7 +1020,7 @@ Mitcad's native sheet features.
 `ipt.corpus` (dev build, 2026-10-08; the outcomes below with the sketch
 groups and points on lines, release build, 2026-10-09): 16 parts, 2,785 parameters (2,755
 model, 30 user) imported with their expressions, every one agreeing with
-its stored value, in the file and in Mitcad (1,943 parameter records of
+its stored value, in the file and in MitCad (1,943 parameter records of
 annotations and features' own tables, and the internal variables, are not
 the part's). 196 sketches, 344 features with their history states. Every
 part's final bodies are the stored ones (22 bodies, all valid); the
@@ -1106,16 +1106,16 @@ partial, 2,257 fallback and 392 skipped (7,183, 94, 2,294 and 392
 before): extrusions 2,220 parametric and 111 fallbacks (2,184 and 147;
 those whose result was not in the history 20, from 47). The extrusions
 up to the next face left fell back where their profile starts inside
-the body they reach (Mitcad's extent up to a body did not take that
+the body they reach (MitCad's extent up to a body did not take that
 case).
 
-With Mitcad's extent up to a body or a curved face taking a profile that
+With MitCad's extent up to a body or a curved face taking a profile that
 starts inside the body or on its faces (each part of the profile up to
 the first face beyond it) (release build, 2026-10-10, mitcad#60), three
 more extrusions (up to the next face and up to a cylinder) come in
 parametric.
 
-With Mitcad's helix built of faces of at most a third of a turn where a
+With MitCad's helix built of faces of at most a third of a turn where a
 side of its profile lies on a cylinder of the bodies it is cut from or
 joined to (OCCT's booleans failed on faces winding several turns round
 the axis against such a cylinder), and a side as long as the pitch moved
@@ -1214,7 +1214,7 @@ A thread running out past a blind bore's bottom (dev build, 2026-10-16,
 mitcad#235, the part run alone): `d9aec91e` Coil1 cuts an internal
 thread whose base is as long as the pitch into a 38.25 mm bore 10 mm
 deep, from 2.1 mm below the part to 2.6 mm past the bore's bottom, and
-Extrusion5 joins a ring over the thread's end. Mitcad's helix moves such
+Extrusion5 joins a ring over the thread's end. MitCad's helix moves such
 a base 0.1 µm off the bore's cylinder into the bore's void so that its
 turns do not touch (the helix section of the model's `commands.md`);
 past the bottom that sliver lay in the material inside the cylinder and
@@ -1226,7 +1226,7 @@ the bodies' faces on it; Extrusion5 is verified (39 → 40 of 46). The
 root of the thread keeps the 1 µm ridge the turns are kept apart by
 (the file's turns meet in a sharp edge): a helix whose turns overlap in
 the void instead gives the file's edge but takes over 20 s a coil and
-did not bring Fillet1 in (on the file's own state before it, Mitcad's
+did not bring Fillet1 in (on the file's own state before it, MitCad's
 0.2 mm rounding of the thread's crest removes 20.66 mm³, the rolling
 ball's value for its 53° crest over 573 mm, against the file's 25.23).
 
@@ -1239,7 +1239,7 @@ the analytic values for the 53.13° crest at 19.125); and the area the
 state changes, -203.97 mm², is the 0.2 mm ball's (-204; a 0.222 mm ball
 would change it by -227). The 25.23 mm³ is not the rounding's: the
 stored blend's edges lie up to 1.9 µm off its faces, and a boundary not
-closed by that much has no exact volume (Mitcad's rounding of the file's
+closed by that much has no exact volume (MitCad's rounding of the file's
 own state before it, by face: flanks 1186.31 mm² against the state's
 1187.12, the rounding 257.25 against 256.61, all other faces equal; the
 replay of Fillet2 on the root shows the same, 51.19 against 56.16). The
@@ -1247,7 +1247,7 @@ import's change check now lets the faces judge a change that the changed
 faces' edge slack brings within its limit instead of rejecting it by the
 volumes alone (`d9aec91e` Fillet10, 0.14 mm³ against the file's 0.11, its
 faces' slack 100 mm³: parametric and verified). Fillet1 itself still
-fails earlier: on Mitcad's thread the crest is not an edge but the strip
+fails earlier: on MitCad's thread the crest is not an edge but the strip
 of the bore's cylinder 0.2 µm wide that keeps the turns apart (with the
 0.03 mm faces the moved base's corners leave beside it), and no ball of
 0.2 mm touches both sides of it. A sharp crest needs the turns to touch
@@ -1256,7 +1256,7 @@ bore's void the cut gives it (4 s for 6 turns), but rounding it then
 fails at the pieces' joints and the part's bottom face; a construction
 whose turns meet in one edge is what is left to do. The same strips
 stop `01fb13c9` Combine2: the join of the file's bodies before it is
-valid, with Mitcad's thread insert (487 faces, the file's 10) the union
+valid, with MitCad's thread insert (487 faces, the file's 10) the union
 is invalid (a self-intersecting wire), the insert's helical slot lying
 on the hole's wall.
 
@@ -1281,7 +1281,7 @@ gives such a wire up).
 no side as long as the pitch. Swept in pieces, its run-out past the
 insert's end face left faces there of 1e-4 mm² and less, and the union
 with the part failed on one of them (a self-intersecting wire; so with the
-file's own main body too, while the file's insert unites with Mitcad's
+file's own main body too, while the file's insert unites with MitCad's
 main body). Built as a B-rep the groove unites, but the booleans on its
 25-turn faces took 10 to 35 s each, over the item's time share. Where the
 time went (sampled stacks): the edge-face intersections built a polyhedron
@@ -1348,7 +1348,7 @@ no result in the file). `517c1204` Chamfer2: patch 0671 cuts the chamfer
 across its whole width at both ends by the groove's tip rounding and
 flanks grown on past the flat end face, the chamfer ending in a point
 where they meet its contact on the bore (one end on the next turn's crest,
-the other on the crest's prolongation past the edge's end); Mitcad's
+the other on the crest's prolongation past the edge's end); MitCad's
 chamfer joins the contacts' pieces at the vertices they leave, as the file
 keeps one edge there (Fillet7 rounds the crests beside it and failed at
 those vertices). Chamfer2 and Fillet7 verify, 22 → 23 of 24 (Fillet3
@@ -1362,7 +1362,7 @@ step 0.5 mm high in a bore with 0.3 mm, one convex and one concave: their
 contacts overlap on the step's face, and OCCT runs overlapping roundings
 over the face as one only when both have the same kind. The file's state
 has an S-shaped section whose convex arc is the plain rounding and whose
-concave ball touches it; Mitcad's fillet now builds the convex roundings
+concave ball touches it; MitCad's fillet now builds the convex roundings
 first and the concave ones on that result when OCCT fails so
 (`concave_after_convex` in `geometry/src/dressup.cpp`), the file's state
 to 1e-6 mm³. `d9aec91e` Fillet13 rounds a bar's top edges where the bar
@@ -1382,7 +1382,7 @@ Fillet10 (0.3 mm on a ring at the top of Revolution1's cut) fails its walk
 on the replay, whose Coil2 thread meets that ring's wall 90° from where
 the file's does (the replay is 0.016 mm off the file's state before
 Fillet7), and Fillet13 finds the bore's wall in three faces of one
-cylinder round the corner (Mitcad's cuts keep faces of different names
+cylinder round the corner (MitCad's cuts keep faces of different names
 apart), which OCCT's corner does not join (a face at the end split round
 the vertex). The other named parts are unchanged (`01fb13c9` 30/31,
 `033448e3` 12/12, `2ac732ee` 14/14, `9452d970` 35/40, `c2ed6f98` 29/31,
@@ -1465,7 +1465,7 @@ of mitcad#415's list, each run alone (`5ef2dbd5` 81 of 98, `a9e82a9a` and
 
 Sketch texts (dev build, 2026-10-18, mitcad#414, each part run alone on
 the Linux machine, which has no Tahoma): `c2ed6f98` Sketch12 (a text in
-its frame, *Texts* above) comes in parametric as Mitcad's text, where it
+its frame, *Texts* above) comes in parametric as MitCad's text, where it
 was partial with the outlines of the regions its cut selected. Its text
 is laid out in Droid Sans here, so Extrusion8 (the text cut 0.1 mm deep)
 removes 0.587 mm³ against the file's 0.835 and falls back: 29 of 31
@@ -1506,21 +1506,21 @@ of their history state:
   points off its faces) and face splits (the faces of the body the next
   state changed that it no longer has whole, no face there of the same
   surface and area); drafts need their faces, so they fall back.
-- **Face splits along open sketch curves**: Mitcad's split takes the
+- **Face splits along open sketch curves**: MitCad's split takes the
   curves around a sketch's regions; a split whose curves bound no region
-  of Mitcad's sketch falls back.
+  of MitCad's sketch falls back.
 - **Sheet metal** (mitcad#211, mitcad#242, *Sheet metal* above):
   new-body faces, flanges (their edges read by their names), cuts through
-  the sheet and corner rounds and chamfers come in as Mitcad's sheet
+  the sheet and corner rounds and chamfers come in as MitCad's sheet
   features, and so do joined faces apart from the sheet, double bends,
   cuts across the bends and the one decoded case of a fold (mitcad#280);
   faces bent onto the sheet (their bend part's items not decoded), flanges
   with corner settings of their own whose dimensions the files do not tell
   apart, cuts with the slot-33 option, other bend kinds and fold options,
   and folds across holes come in as the bodies of their history states.
-- **Mirrors of fillets and of patterns**: the copies Mitcad makes do not
+- **Mirrors of fillets and of patterns**: the copies MitCad makes do not
   give the history state in 6 of the test files' 25 mirrors that are not
-  skipped (Mitcad's mirror of features, not the decoding: the inputs and
+  skipped (MitCad's mirror of features, not the decoding: the inputs and
   planes are decoded).
 - **Ribs, boundary patches, thickens**: record layouts
   not studied (few in the test files); lofts' rails and conditions.
@@ -1537,8 +1537,8 @@ of their history state:
 `assembly` reads `.iam` assembly files: the documents an assembly refers
 to and the occurrences that place them; the `.iam` import
 (`core/ffi/src/iam_import.rs`, the `import_iam` command in
-[commands.md](../model/src/api/commands.md#iam-import), `mitcad-cli
-import-iam`, File › Open) makes them Mitcad's components and occurrences
+[commands.md](../model-api/src/commands.md#iam-import), `mitcad-cli
+import-iam`, File › Open) makes them MitCad's components and occurrences
 and imports each part with the `.ipt` import. Claims are marked as above;
 the test corpus here is 166 assemblies of a private project tree (saved by
 releases from 2016 to 2023, 1 to 459 occurrences each, sub-assemblies
@@ -1598,7 +1598,7 @@ the corpus is a rotation and a translation *(verified)*.
 older releases: a 15-byte head, the transform with masks and the key
 tagged `GRx` (as `DCx` above). Where an occurrence has one, it is its
 placement within rounding *(verified)*: the import checks every
-occurrence's placement in Mitcad against it.
+occurrence's placement in MitCad against it.
 
 **Referenced files** (the `UFRxDoc` stream, not a property set): the
 document's own path as saved (the first path in the stream), its model

@@ -209,7 +209,7 @@ std::optional<bool> MainWindow::readOnlySave(bool closing) {
     return true;
   }
   const QString name = documentName();
-  QMessageBox box(QMessageBox::Warning, tr("Mitcad"),
+  QMessageBox box(QMessageBox::Warning, tr("MitCad"),
                   closing ? tr("Keep your changes to %1?").arg(name)
                           : tr("%1 is read-only: someone else holds its edit lock.").arg(name),
                   QMessageBox::Cancel, this);

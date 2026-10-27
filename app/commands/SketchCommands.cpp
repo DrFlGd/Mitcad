@@ -1200,7 +1200,8 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
        QObject::tr("A curved slot along an arc around a centre")});
   add({"sketch.spline", QObject::tr("Fit Point Spline"), "spline-fit", "CREATE/Other Geometry",
        [&c] { c.startTool(sketch::splineTool(c, false)); }, none, false,
-       QObject::tr("A smooth curve through points; Enter or a double-click ends it")});
+       QObject::tr("A smooth curve through points; Enter or a double-click ends it, a click on its first "
+                   "point closes it")});
   add({"sketch.spline_control", QObject::tr("Control Point Spline"), "spline-control", "CREATE/Other Geometry",
        [&c] { c.startTool(sketch::splineTool(c, true)); }, none, false,
        QObject::tr("A smooth curve shaped by control points; Enter or a double-click ends it")});
@@ -1264,6 +1265,21 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
       {}
 #endif
   );
+  // Copy, Cut and Paste of sketch geometry (mitcad#788, sketch/SketchClipboard.cpp):
+  // the reserved keys, which are a text field's outside sketches.
+  add({"sketch.cut", QObject::tr("Cut"), "cut", "MODIFY", [&c] { c.cutSelection(); },
+       QKeySequence(QKeySequence::Cut), false,
+       QObject::tr("Copies the selected sketch geometry and its constraints, then deletes it")},
+      CommandDef::Kind::Action);
+  add({"sketch.copy", QObject::tr("Copy"), "copy", "MODIFY", [&c] { c.copySelection(); },
+       QKeySequence(QKeySequence::Copy), false,
+       QObject::tr("Copies the selected sketch geometry with the constraints among it")},
+      CommandDef::Kind::Action);
+  add({"sketch.paste", QObject::tr("Paste"), "paste", "MODIFY", [&c] { c.paste(); },
+       QKeySequence(QKeySequence::Paste), false,
+       QObject::tr("Places copied sketch geometry where you click, in this or another sketch")},
+      CommandDef::Kind::Action);
+  c.setToolIcon(QObject::tr("Paste"), QStringLiteral("paste")); // the Paste tool's cursor
 
   // --- CONSTRAINTS
   const QStringList pinned = {QStringLiteral("horizontal_vertical"), QStringLiteral("coincident"),
@@ -1293,6 +1309,9 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
       def.tooltip = QObject::tr("A line horizontal or vertical (as it is nearer to), or two points level");
     } else if (type == QStringLiteral("coincident")) {
       def.tooltip = QObject::tr("A point on a curve or at another point; two curve ends become one point");
+    } else if (type == QStringLiteral("tangent") || type == QStringLiteral("smooth")) {
+      // The end it applies at (mitcad#783).
+      def.tooltip = QObject::tr("Two curves joined smoothly; pick each near the end where it should be tangent");
     } else if (type == QStringLiteral("fix")) {
       def.tooltip = QObject::tr("Fixes geometry in place, or frees it");
     }

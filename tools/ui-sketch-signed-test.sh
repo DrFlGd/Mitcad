@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/browser tools/cli
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs core/solver
+# check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
 # Signed horizontal and vertical distances from the Sketch Dimension tool
 # (mitcad#409), on a design mitcad-cli makes: the user parameters r = 30 mm
 # and a = 30 deg; Sketch1 (F1) on XY with a fixed centre p1 at (20, 10) and

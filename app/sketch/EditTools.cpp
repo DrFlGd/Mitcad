@@ -51,21 +51,27 @@ std::vector<V2> trimPiece(const SketchModel& model, const CurveData& c, const V2
     }
   }
   for (const PointData& p : model.points) {
-    if (p.id != c.start && p.id != c.end && p.id != c.center && c.curve.distanceTo(p.at) < 1e-6) {
+    // Not its own points: a spline's fit points are on it (mitcad#783).
+    if (!c.points.contains(p.id) && p.id != c.center && c.curve.distanceTo(p.at) < 1e-6) {
       cuts.push_back(c.curve.parameterOf(p.at));
     }
   }
   const double t = c.curve.parameterOf(at);
   double lo = c.curve.t0();
   double hi = c.curve.t1();
-  if (c.curve.isClosed()) {
+  // A closed spline (mitcad#783) wraps around over its parameter range as
+  // a circle does over a turn.
+  const bool closedSpline = c.curve.type == Curve2::Type::Spline &&
+                            dist(c.curve.startPoint(), c.curve.endPoint()) <= 1e-9;
+  const double period = closedSpline ? c.curve.t1() - c.curve.t0() : kTwoPi;
+  if (c.curve.isClosed() || closedSpline) {
     std::sort(cuts.begin(), cuts.end());
     cuts.erase(std::unique(cuts.begin(), cuts.end(), [](double a, double b) { return std::abs(a - b) < 1e-9; }),
                cuts.end());
     if (cuts.size() >= 2) {
       const auto above = std::upper_bound(cuts.begin(), cuts.end(), t);
-      hi = above == cuts.end() ? cuts.front() + kTwoPi : *above;
-      lo = above == cuts.begin() ? cuts.back() - kTwoPi : *(above - 1);
+      hi = above == cuts.end() ? cuts.front() + period : *above;
+      lo = above == cuts.begin() ? cuts.back() - period : *(above - 1);
     }
   } else {
     for (const double cut : cuts) {
@@ -86,7 +92,11 @@ std::vector<V2> trimPiece(const SketchModel& model, const CurveData& c, const V2
                         ? 1
                         : std::clamp(static_cast<int>(std::abs(length) / std::max(step, 1e-6)), 8, 400);
   for (int i = 0; i <= count; ++i) {
-    piece.push_back(c.curve.at(lo + (hi - lo) * i / count));
+    double u = lo + (hi - lo) * i / count;
+    if (closedSpline) {
+      u = u < c.curve.t0() ? u + period : u > c.curve.t1() ? u - period : u;
+    }
+    piece.push_back(c.curve.at(u));
   }
   return piece;
 }
@@ -707,10 +717,89 @@ int needed(const QString& type, const QStringList& picks, const SketchModel& mod
   return 2;
 }
 
+// The ends of an open curve (none for a closed one), each once.
+QStringList curveEnds(const CurveData& c) {
+  QStringList ends;
+  for (const QString& p : {c.start, c.end}) {
+    if (!p.isEmpty() && !ends.contains(p)) {
+      ends << p;
+    }
+  }
+  return ends;
+}
+
+// An open spline whose two ends are one point (mitcad#783): Tangent or
+// Curvature takes it twice, to make it smooth there.
+bool endsMeet(const SketchModel& model, const QString& id) {
+  const CurveData* c = model.curve(id);
+  return c != nullptr && c->isSpline() && !c->closed && !c->start.isEmpty() && c->start == c->end;
+}
+
+// The one of `ends` (points) nearest to the positions `to` (the least sum of
+// distances).
+QString nearestEnd(const SketchModel& model, const QStringList& ends, const std::vector<V2>& to) {
+  QString best;
+  double bestDistance = std::numeric_limits<double>::infinity();
+  for (const QString& p : ends) {
+    const auto at = model.pointAt(p);
+    if (!at) {
+      continue;
+    }
+    double d = 0.0;
+    for (const V2& q : to) {
+      d += dist(*at, q);
+    }
+    if (d < bestDistance) {
+      bestDistance = d;
+      best = p;
+    }
+  }
+  return best;
+}
+
+// Where a tangent or curvature constraint applies (mitcad#783): the end the
+// two curves share nearest the clicks on them, else a spline's end nearest
+// its click; empty when neither says (older designs' meaning: where the
+// curves meet). Without clicks only a spline joined to itself has one.
+QString tangentPoint(const SketchModel& model, const QStringList& picks, const std::vector<V2>& clicks) {
+  const CurveData* a = model.curve(picks[0]);
+  const CurveData* b = model.curve(picks[1]);
+  if (a == nullptr || b == nullptr) {
+    return {};
+  }
+  if (picks[0] == picks[1]) {
+    return endsMeet(model, picks[0]) ? a->start : QString();
+  }
+  if (clicks.size() < 2) {
+    return {};
+  }
+  const auto nearest = [&model](const QStringList& ends, const std::vector<V2>& to) {
+    return nearestEnd(model, ends, to);
+  };
+  QStringList shared;
+  for (const QString& p : curveEnds(*a)) {
+    if (curveEnds(*b).contains(p)) {
+      shared << p;
+    }
+  }
+  if (!shared.isEmpty()) {
+    return nearest(shared, clicks);
+  }
+  if (a->isSpline() && !curveEnds(*a).isEmpty()) {
+    return nearest(curveEnds(*a), {clicks[0]});
+  }
+  if (b->isSpline() && !curveEnds(*b).isEmpty()) {
+    return nearest(curveEnds(*b), {clicks[1]});
+  }
+  return {};
+}
+
 // Whether `entity` can be the next pick.
 bool acceptable(const QString& type, const QStringList& picks, const QString& entity,
                 const SketchModel& model) {
-  if (entity.isEmpty() || picks.contains(entity)) {
+  const bool twice = (type == QStringLiteral("tangent") || type == QStringLiteral("smooth")) &&
+                     picks.size() == 1 && endsMeet(model, entity);
+  if (entity.isEmpty() || (picks.contains(entity) && !twice)) {
     return false;
   }
   const bool point = isPoint(model, entity);
@@ -780,8 +869,10 @@ bool acceptable(const QString& type, const QStringList& picks, const QString& en
   return false;
 }
 
-// The constraint of complete picks.
-QJsonObject build(const QString& type, const QStringList& picks, const SketchModel& model) {
+// The constraint of complete picks, clicked at `clicks` (none for a
+// selection).
+QJsonObject build(const QString& type, const QStringList& picks, const SketchModel& model,
+                  const std::vector<V2>& clicks) {
   const auto obj = [](const QString& t, std::initializer_list<std::pair<const char*, QString>> fields) {
     QJsonObject k{{QStringLiteral("type"), t}};
     for (const auto& [key, value] : fields) {
@@ -812,13 +903,21 @@ QJsonObject build(const QString& type, const QStringList& picks, const SketchMod
   if (type == QStringLiteral("symmetric")) {
     return obj(type, {{"a", picks[0]}, {"b", picks[1]}, {"axis", picks[2]}});
   }
+  if (type == QStringLiteral("tangent") || type == QStringLiteral("smooth")) {
+    // At the end where it was picked (mitcad#783).
+    const QString at = tangentPoint(model, picks, clicks);
+    if (!at.isEmpty()) {
+      return obj(type, {{"a", picks[0]}, {"b", picks[1]}, {"at", at}});
+    }
+  }
   return obj(type, {{"a", picks[0]}, {"b", picks[1]}});
 }
 
 // Adds a constraint for each set of complete picks, as one undo step. A
 // refused one is left out, so entities already constrained do not stop
 // the others; when all are refused nothing changes.
-bool applyEach(SketchController& c, const QString& type, const QVector<QStringList>& sets) {
+bool applyEach(SketchController& c, const QString& type, const QVector<QStringList>& sets,
+               const std::vector<V2>& clicks = {}) {
   SketchOp op(c);
   int added = 0;
   QString reason;
@@ -840,7 +939,7 @@ bool applyEach(SketchController& c, const QString& type, const QVector<QStringLi
       reason = op.error();
       continue;
     }
-    const QJsonObject constraint = build(type, picks, op.model());
+    const QJsonObject constraint = build(type, picks, op.model(), clicks);
     QJsonObject cmd = op.command(QStringLiteral("sketch.add_constraint"));
     cmd.insert(QStringLiteral("constraint"), constraint);
     QJsonObject result;
@@ -862,10 +961,13 @@ bool applyEach(SketchController& c, const QString& type, const QVector<QStringLi
       continue;
     }
     const QJsonArray made = result.value(QStringLiteral("constraints")).toArray();
-    qDebug().noquote() << QStringLiteral("Added constraint %1 %2 on %3")
+    // A tangent's point (mitcad#783).
+    const QString at = constraint.value(QStringLiteral("at")).toString();
+    qDebug().noquote() << QStringLiteral("Added constraint %1 %2 on %3%4")
                               .arg(constraint.value(QStringLiteral("type")).toString(),
                                    made.isEmpty() ? QString() : made.first().toString(),
-                                   picks.join(QStringLiteral(", ")));
+                                   picks.join(QStringLiteral(", ")),
+                                   at.isEmpty() ? QString() : QStringLiteral(" at ") + at);
   }
   if (added == 0) {
     op.rollback();
@@ -899,7 +1001,8 @@ bool applyEach(SketchController& c, const QString& type, const QVector<QStringLi
   return true;
 }
 
-bool apply(SketchController& c, const QString& type, const QStringList& picks) {
+bool apply(SketchController& c, const QString& type, const QStringList& picks,
+           const std::vector<V2>& clicks = {}) {
   if (type == QStringLiteral("fix")) {
     SketchOp op(c);
     bool fixed = true;
@@ -922,7 +1025,7 @@ bool apply(SketchController& c, const QString& type, const QStringList& picks) {
                                                       picks.join(QStringLiteral(", ")));
     return true;
   }
-  return applyEach(c, type, {picks});
+  return applyEach(c, type, {picks}, clicks);
 }
 
 // Constraints that a selection of more than they take applies to the
@@ -984,7 +1087,9 @@ public:
 
   void move(const Snap& snap) override {
     const QString entity = entityAt(snap.screen);
-    m_c.setHover(acceptable(m_type, m_picks, entity, view()) ? entity : QString());
+    const bool fits = acceptable(m_type, m_picks, entity, view());
+    m_c.setHover(fits ? entity : QString());
+    showEnd(fits ? entity : QString(), snap.at);
   }
 
   void press(const Snap& snap) override {
@@ -993,13 +1098,28 @@ public:
       return;
     }
     m_picks << entity;
+    m_clicks.push_back(snap.at);
     if (static_cast<int>(m_picks.size()) >= needed(m_type, m_picks, view())) {
-      apply(m_c, m_type, m_picks);
+      apply(m_c, m_type, m_picks, m_clicks);
       m_picks.clear();
+      m_clicks.clear();
     }
     m_c.setPicked(m_picks);
     m_c.setHover(QString());
+    showEnd(QString(), snap.at);
     prompt();
+  }
+
+  // Tangent and Curvature: the constraint's glyph at the end it would use
+  // (mitcad#783).
+  void paint(ToolPreview& preview) const override {
+    if (m_end.isEmpty()) {
+      return;
+    }
+    if (const auto at = view().pointAt(m_end)) {
+      preview.glyph = m_type;
+      preview.glyphAt = *at;
+    }
   }
 
   bool cancel() override {
@@ -1007,12 +1127,35 @@ public:
       return false;
     }
     m_picks.clear();
+    m_clicks.clear();
+    m_end.clear();
     m_c.setPicked({});
     prompt();
     return true;
   }
 
 private:
+  // The end a tangent or curvature would use with `hover` (a fitting pick, or
+  // none) as the next pick at `cursor` (mitcad#783): as the constraint is
+  // built; with only a spline picked, its end nearest the click. Logged when
+  // it changes, for the UI tests.
+  void showEnd(const QString& hover, const V2& cursor) {
+    QString end;
+    if ((m_type == QStringLiteral("tangent") || m_type == QStringLiteral("smooth")) && m_picks.size() == 1) {
+      if (!hover.isEmpty()) {
+        end = tangentPoint(view(), {m_picks[0], hover}, {m_clicks[0], cursor});
+      } else if (const CurveData* c = view().curve(m_picks[0]); c != nullptr && c->isSpline()) {
+        end = nearestEnd(view(), curveEnds(*c), {m_clicks[0]});
+      }
+    }
+    if (end != m_end) {
+      m_end = end;
+      if (!end.isEmpty()) {
+        qDebug().noquote() << QStringLiteral("%1 would apply at %2").arg(name(), end);
+      }
+    }
+  }
+
   // The point or curve under the cursor, or the sketch's origin or an axis
   // (mitcad#500); Fix/Unfix takes only the sketch's entities.
   QString entityAt(const QPointF& screen) const {
@@ -1041,13 +1184,17 @@ private:
                          : m_type == QStringLiteral("equal")        ? QObject::tr("two lines, or two circles or arcs")
                          : m_type == QStringLiteral("concentric")   ? QObject::tr("two circles or arcs")
                          : m_type == QStringLiteral("tangent") || m_type == QStringLiteral("smooth")
-                             ? QObject::tr("two curves")
+                             ? QObject::tr("two curves; pick each near the end where it should be tangent")
                              : QObject::tr("two lines");
     m_c.hint(QObject::tr("%1: pick %2 (%3 picked).").arg(name(), what).arg(m_picks.size()));
   }
 
   QString m_type;
   QStringList m_picks;
+  // Where each pick was clicked: a tangent's end (mitcad#783).
+  std::vector<V2> m_clicks;
+  // The end the constraint would use, shown while picking (mitcad#783).
+  QString m_end;
   mutable SketchModel m_view;
   mutable int m_viewRevision = -1;
 };

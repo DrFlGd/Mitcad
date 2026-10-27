@@ -141,7 +141,7 @@ rm -f "$dmg"
 echo "== Creating $dmg"
 ditto "$app" "$dmg_root/Mitcad.app"
 ln -s /Applications "$dmg_root/Applications"
-hdiutil create -volname "Mitcad $version" -srcfolder "$dmg_root" -ov -format UDZO "$dmg" >/dev/null
+hdiutil create -volname "MitCad $version" -srcfolder "$dmg_root" -ov -format UDZO "$dmg" >/dev/null
 rm -rf "$dmg_root"
 
 # --- Developer ID and notarisation (off unless the variables are set) --------------

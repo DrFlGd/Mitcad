@@ -202,7 +202,7 @@ ui_expect_new "Command Extrude cancelled" "the edit cancelled"
 
 echo "--- A normal end removes the session's files"
 ui_step "exit (Ctrl+Q)"                  ui_key ctrl+q
-focus_dialog '^Mitcad$'
+focus_dialog '^MitCad$'
 ui_key d # Don't Save: the app ends
 expect_exit "exited without saving"
 grep -qF "Autosave removed for Untitled" "$UI_LOG" || ui_fail "the files were not removed"
@@ -266,7 +266,7 @@ expect_pair "$FOLDER" "$second" "$(d3_of)" "[25.0]" "with its change"
   ui_fail "the first session's files changed"
 echo "ok   the first session's files are as they were"
 ui_step "exit (Ctrl+Q)"                  ui_key ctrl+q
-focus_dialog '^Mitcad$'
+focus_dialog '^MitCad$'
 ui_key d # Don't Save: the app ends
 expect_exit "the second session ended"
 expect_files "$FOLDER" "only the killed session's files are left" "$first.lock" "$first.json" "$first_snapshot"
@@ -283,7 +283,7 @@ ui_mark
 ui_step "later (Esc)"                    ui_key Escape
 ui_focus_main
 ui_expect_new "Recovery: later, 1 document(s) kept" "Later keeps it"
-expect_title "Untitled - Mitcad"
+expect_title "Untitled - MitCad"
 expect_files "$FOLDER" "its files stay, unlocked" "$first.json" "$first_snapshot"
 
 echo "--- File > Recover Designs: the file changed since; Restore"
@@ -300,7 +300,7 @@ focus_dialog '^Recover Unsaved Work$'
 ui_step "restore (Enter)"                ui_key Return
 ui_focus_main
 ui_expect_new "Recovered block.mitcad from autosave of " "restored"
-expect_title "block.mitcad* - Mitcad"
+expect_title "block.mitcad* - MitCad"
 ui_expect_new "Autosaved block.mitcad: " "this session wrote it"
 ui_expect_new "Recovered session $first removed" "and removed the killed session's files"
 third=$(pair_value "$FOLDER" - 'meta["session"]') || ui_fail "no session: $third"
@@ -312,7 +312,7 @@ expect_pair "$FOLDER" "$third" "$(d3_of)" "[20.0]" "with the recovered change"
 echo "--- Save over the changed file asks"
 ui_mark
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
-focus_dialog '^Mitcad$'
+focus_dialog '^MitCad$'
 ui_expect_new "Save conflict: $FILE changed since it was opened" "Save tells that the file changed"
 ui_step "cancel (Esc)"                   ui_key Escape
 ui_focus_main
@@ -321,13 +321,13 @@ ui_expect_new "Save conflict: cancelled" "cancelled"
 echo "ok   the file is as the other program left it"
 ui_mark
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
-focus_dialog '^Mitcad$'
+focus_dialog '^MitCad$'
 ui_step "overwrite (O)"                  ui_key o
 ui_focus_main
 ui_expect_new "Save conflict: overwrite" "overwrite"
 ui_expect_new "Saved $FILE" "saved over it"
 ui_expect_new "Autosave removed for block.mitcad" "saving removed this session's files"
-expect_title "block.mitcad - Mitcad"
+expect_title "block.mitcad - MitCad"
 [ "$(file_d3 "$FILE")" = "[20.0]" ] || ui_fail "the file has d3 $(file_d3 "$FILE")"
 echo "ok   the file has the recovered change"
 expect_files "$FOLDER" "only this session's lock is left" "$third.lock"
@@ -377,13 +377,13 @@ focus_dialog '^Recover Unsaved Work$'
 ui_step "restore the untitled one (Enter)" ui_key Return
 ui_focus_main
 ui_expect_new "Recovered Untitled from autosave of " "the untitled one restored"
-expect_title "Untitled* - Mitcad"
+expect_title "Untitled* - MitCad"
 ui_expect_new "Recovered session $fourth removed" "this session took it over"
 expect_pair "$FOLDER" - 'meta["document"], meta["path"], meta["session"] != "'"$fourth"'"' \
   "('Untitled', '', True)" "untitled, in this session"
 expect_pair "$FOLDER" - "$(d3_of)" "[33.0]" "with its change"
 ui_step "exit (Ctrl+Q)"                  ui_key ctrl+q
-focus_dialog '^Mitcad$'
+focus_dialog '^MitCad$'
 ui_key d # Don't Save: the app ends
 expect_exit "exited without saving"
 expect_files "$FOLDER" "nothing is left in the folder"
@@ -420,7 +420,7 @@ ui_expect_new "Autosave off" "the timer stopped"
 grep -q '^enabled=false' "$XDG_CONFIG_HOME/Mitcad/Mitcad.conf" || ui_fail "autosave is not saved off"
 echo "ok   saved off"
 ui_step "exit (Ctrl+Q)"                  ui_key ctrl+q
-focus_dialog '^Mitcad$'
+focus_dialog '^MitCad$'
 ui_key d # Don't Save: the app ends
 expect_exit "exited without saving"
 expect_files "$FOLDER" "nothing is left in the folder"

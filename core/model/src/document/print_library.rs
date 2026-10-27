@@ -519,7 +519,7 @@ impl<K: Kernel> Document<K> {
     /// the design's copies of it, `item`: its fields), the design's copies
     /// whose library item was changed elsewhere (`updates`), the folders and
     /// what could not be read.
-    pub(crate) fn print_library_json(&self, libraries: &Libraries) -> Value {
+    pub fn print_library_json(&self, libraries: &Libraries) -> Value {
         let copies = |item: &LibraryItem| -> Vec<String> {
             let library = item.library.id();
             let id = item.data.id();

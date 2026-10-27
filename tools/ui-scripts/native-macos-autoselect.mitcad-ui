@@ -121,7 +121,7 @@ expect-selection 3 3
 
 # Moving before the sketch invalidates its exact region selection. Moving
 # back to the end offers current groups without resurrecting old picks.
-menu 'View/Show History'
+expect-native-visible native.historyCard true
 native-click native.history.back
 expect-native-visible autoselectPanel false
 expect-selection 0 0

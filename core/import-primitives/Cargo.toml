@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-import-primitives"
+description = "The primitives family of the design import's replay: boxes, cylinders, spheres, tori and coils placed on a plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_import_primitives"
+
+[dependencies]
+mitcad-model.workspace = true
+# The dump IR the replay reads.
+mitcad-dump = { path = "../dump" }
+# The replay's core this family extends (mitcad#785).
+mitcad-import-replay = { path = "../import-replay" }
+serde_json.workspace = true

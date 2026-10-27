@@ -33,14 +33,16 @@ use serde::{Deserialize, Serialize};
 
 use super::geom_ref::{GeomRef, Resolver, Want};
 use super::{CheckContext, EvalContext, FeatureDef, References, is_false};
-use crate::datum::{DatumPlane, Vec3, add, norm, scale, sub, unit};
+use crate::datum::{DatumPlane, Vec3};
 use crate::document::Document;
 use crate::ids::{BodyUid, ComponentUid};
 use crate::kernel::Kernel;
-use crate::links::OccurrenceLink;
+use crate::links::{OccurrenceLink, OccurrenceLinkExt};
 use crate::parameters::ParamId;
-use crate::profile::{SketchFrame, dot};
+use crate::profile::SketchFrame;
 use crate::transform::Transform;
+use mitcad_vec3::dot;
+use mitcad_vec3::{add, norm, scale, sub, unit};
 
 fn none<P>() -> Option<P> {
     None

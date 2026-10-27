@@ -39,7 +39,7 @@ other readers was used. *(verified)*: holds for the whole corpus;
 - **Units** *(verified for `.smb`)*: millimetres per model unit. Every
   `.smb` has 10 (model unit centimetre). `.smbh` blobs hold 0, 10, 20, ...
   70 although their geometry is also in centimetres; the meaning is open.
-  Mitcad always scales by 10.
+  MitCad always scales by 10.
 
 ## Tokens
 
@@ -123,7 +123,7 @@ last is the first). No `subshell` or `wire` records occur in the corpus.
 **Degenerate edges**: an edge without a curve (pointer -1) occurs at cone
 apexes (presumably also at sphere poles) and starts and ends at the same
 vertex. When it is the only coedge of its loop (the side face of a pointed
-cone has the base circle loop and an apex loop), Mitcad keeps the loop as a
+cone has the base circle loop and an apex loop), MitCad keeps the loop as a
 point loop of the face and the builder bounds the face there with a
 degenerated edge. In a loop with other edges it is left out (OCCT's healing
 adds the degenerated edge).
@@ -175,7 +175,7 @@ with positive volume)*:
   inward normals.
 - Torus: `center + (R + r cos v)(cos u X + sin u Y) + r sin v Z` with
   `X` = u direction. A negative major radius `R` (|R| < r) is a lemon
-  torus with the same formula; Mitcad builds it as the surface of
+  torus with the same formula; MitCad builds it as the surface of
   revolution of that meridian circle.
 - Cone with ratio not 1 and `sin = 0` is an elliptic cylinder, built as the
   extrusion of the base ellipse along the axis. Elliptic cones with an
@@ -200,7 +200,7 @@ a keyword followed by the record's fields (without the header): `plane`,
   multiplicity = degree, so there are `sum(mult) - degree + 1` control
   points; OCCT needs `degree + 1` at the ends. `nullbs` = no curve.
   Periodic curves are also stored clamped (first and last pole coincide);
-  Mitcad makes them periodic in OCCT (`SetPeriodic`) so that edges can
+  MitCad makes them periodic in OCCT (`SetPeriodic`) so that edges can
   cross the seam.
 - **bs2 curve** (parameter space): the same with u v (+ w) points.
 - **bs3 surface**: `nubs` or `nurbs` + rational kind (`both`, `u`, `v`),
@@ -308,7 +308,7 @@ line vector `L`. With `r(v) = major cos v + minor sin v`:
 radius 0.12645 cm); `v` is the helix angle. `L.y` is always 0 (presumably
 tangential). The surface record's u and v ranges bound the face. Since
 motion along a helix is rigid, `S` is the ruled surface between the helices
-of the line's two ends: Mitcad samples both at the same angles (48 points
+of the line's two ends: MitCad samples both at the same angles (48 points
 per turn) and OCCT interpolates a ruled B-spline surface. The faces' edges
 (`helix_int_cur` of the same helices) lie on the built surfaces within the
 edge tolerance.
@@ -321,7 +321,7 @@ unit axis `a`, two `null_surface`, two `nullbs`, the arc's radius `rho`.
 With `r(v)` as above, `R = |major|` and `w = u + p`:
 `S(u, v) = center + (1 + taper v / 2pi) r(v) + pitch v / 2pi + rho (-cos w r(v) / R + sin w a)`
 *(verified on two surfaces of a part file, phases 180 and -120 degrees:
-the faces' edges are the helices at the ends of their u ranges)*. Mitcad
+the faces' edges are the helices at the ends of their u ranges)*. MitCad
 samples the helices of the arcs' control points at the same angles (48
 points per turn) and builds rational quadratic arcs through them (one per
 quarter turn of the arc at most), so that each sampled arc is exact.

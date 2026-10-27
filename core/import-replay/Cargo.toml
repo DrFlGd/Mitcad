@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-import-replay"
+description = "The core of the design import's replay: the dump IR of an .f3d file (also of an .ipt file) replayed as Mitcad features, without the families above it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_import_replay"
+
+[dependencies]
+mitcad-model.workspace = true
+# The .f3d reader's crates (mitcad#781): the dump IR the import replays,
+# the design segment's decoder and the document of the file.
+mitcad-dump = { path = "../dump" }
+mitcad-f3d-design = { path = "../f3d-design" }
+mitcad-f3d-file = { path = "../f3d-file" }
+# What the imports share: the progress, vector helpers, planar faces, ...
+mitcad-import-base = { path = "../import-base" }
+# Vector helpers on [f64; 3].
+mitcad-vec3 = { path = "../vec3" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# The mock geometry kernel of the model tests.
+mitcad-model = { workspace = true, features = ["testing"] }
+# The test assembly with its reference folder (`mitcad_f3d::testreferences`).
+mitcad-f3d = { path = "../f3d" }

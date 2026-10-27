@@ -262,7 +262,7 @@ ui_start_app() {
     options+=(--chrome=docked)
   fi
   # The windows of other instances (ui_instance) are not this one's.
-  before=" $(xdotool search --onlyvisible --name ' - Mitcad$' 2> /dev/null | tr '\n' ' ')"
+  before=" $(xdotool search --onlyvisible --name ' - MitCad$' 2> /dev/null | tr '\n' ' ')"
   if [ "${UI_GDB:-0}" = 1 ] && command -v gdb > /dev/null; then
     gdb -q -batch -ex "set debuginfod enabled off" -ex run -ex bt --args "$UI_APP" "${options[@]}" "$@" \
       > "$UI_LOG" 2>&1 &
@@ -270,10 +270,10 @@ ui_start_app() {
     "$UI_APP" "${options[@]}" "$@" > "$UI_LOG" 2>&1 &
   fi
   UI_RUNNER=$!
-  # The main window is titled "<document> - Mitcad", "*" marking changes.
+  # The main window is titled "<document> - MitCad", "*" marking changes.
   UI_WINDOW=""
   for _ in $(seq 1 $((${UI_WINDOW_WAIT:-20} * 5))); do
-    for window in $(xdotool search --onlyvisible --name ' - Mitcad$' 2> /dev/null); do
+    for window in $(xdotool search --onlyvisible --name ' - MitCad$' 2> /dev/null); do
       case "$before " in
       *" $window "*) ;;
       *)

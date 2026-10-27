@@ -2,14 +2,14 @@
 //! C++ bridge for importing the bodies of .f3d files: Rust reads the file and
 //! converts each body to the neutral B-rep model; C++ builds it with OCCT
 //! (`geometry/include/mitcad/geometry/brep_import.hpp`, same flat layout as
-//! `mitcad_f3d::flat`). The display meshes saved with a document are
+//! `mitcad_asm::flat`). The display meshes saved with a document are
 //! offered too, for checking the built bodies.
 
-use mitcad_f3d::F3dFile;
-use mitcad_f3d::asm::AsmFile;
-use mitcad_f3d::asm::history::History;
-use mitcad_f3d::convert::{self, ConvertedBody, Options};
-use mitcad_f3d::flat::FlatBody;
+use mitcad_asm::asm::AsmFile;
+use mitcad_asm::asm::history::History;
+use mitcad_asm::convert::{self, ConvertedBody, Options};
+use mitcad_asm::flat::FlatBody;
+use mitcad_f3d_file::F3dFile;
 
 #[cxx::bridge(namespace = "mitcad::f3d")]
 pub(crate) mod ffi {
@@ -147,7 +147,7 @@ pub(crate) struct Source<'a> {
 
 pub(crate) fn to_ffi(source: &Source, body: &ConvertedBody) -> ffi::BrepBodyData {
     let f = FlatBody::from_body(&body.body);
-    let geometry = |g: &mitcad_f3d::flat::FlatGeometry| ffi::BrepGeometryData {
+    let geometry = |g: &mitcad_asm::flat::FlatGeometry| ffi::BrepGeometryData {
         kind: g.kind,
         int_offset: g.int_offset,
         int_count: g.int_count,
@@ -237,7 +237,7 @@ fn document_bodies(
         let data = doc
             .read(&blob.entry)
             .map_err(|e| format!("{}: {e}", blob.entry))?;
-        let bodies = mitcad_f3d::read_blob(&blob.entry, &data, &options)
+        let bodies = mitcad_asm::read_blob(&blob.entry, &data, &options)
             .map_err(|e| format!("{}: {e}", blob.entry))?;
         let source = Source {
             document: name,
@@ -344,7 +344,7 @@ fn f3d_read_display_meshes(path: &str) -> Result<Vec<ffi::DisplayMeshData>, Stri
     let mut out = Vec::new();
     for (name, doc) in &docs {
         let Some(scene) =
-            mitcad_f3d::ogs::display_scene(doc).map_err(|e| format!("{path}: {e}"))?
+            mitcad_f3d_file::ogs::display_scene(doc).map_err(|e| format!("{path}: {e}"))?
         else {
             continue;
         };
@@ -370,11 +370,11 @@ fn f3d_test_bodies() -> Vec<ffi::BrepBodyData> {
     let options = Options::default();
     let mut out = Vec::new();
     for (name, data) in [
-        ("cube.smb", mitcad_f3d::testdata::cube_blob()),
-        ("cylinder.smb", mitcad_f3d::testdata::cylinder_blob()),
-        ("cone.smb", mitcad_f3d::testdata::cone_blob()),
+        ("cube.smb", mitcad_asm::testdata::cube_blob()),
+        ("cylinder.smb", mitcad_asm::testdata::cylinder_blob()),
+        ("cone.smb", mitcad_asm::testdata::cone_blob()),
     ] {
-        let bodies = mitcad_f3d::read_blob(name, &data, &options).expect("test blobs parse");
+        let bodies = mitcad_asm::read_blob(name, &data, &options).expect("test blobs parse");
         let source = Source {
             document: "",
             blob: name,

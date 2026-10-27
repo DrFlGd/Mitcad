@@ -5,60 +5,56 @@
 //!
 //! The model does not depend on any geometry kernel. Solid operations go
 //! through the [`Kernel`] trait, so the timeline and recompute logic is
-//! tested without OCCT (see the mock kernel in `testing.rs`).
+//! tested without OCCT (see the mock kernel, the crate
+//! `mitcad-model-testkit`).
 
-pub mod analysis;
-pub mod api;
+pub use mitcad_model_base::analysis;
 // Appearances: physically based looks of bodies (mitcad#46).
-pub mod appearance;
+pub use mitcad_model_base::appearance;
 pub mod assembly;
-mod base64;
-pub mod datum;
+// Base64, fingerprints and SHA-256 of the model base, at the paths the
+// model names them by; other Mitcad crates reach them through `internal`.
+pub use mitcad_model_base::datum;
+use mitcad_model_base::internal::base64;
 mod document;
 pub mod exchange;
-pub mod expr;
+// Parameter expressions with units: the crate mitcad-expr (mitcad#777).
+pub use mitcad_expr as expr;
 pub mod features;
 pub mod file;
-mod ids;
-mod kernel;
+pub use mitcad_model_base::ids;
+// Items other Mitcad crates use; not part of this crate's API (mitcad#811).
+pub mod internal;
+pub use mitcad_model_base::kernel;
 // Materials as objects: density, appearance and filament (mitcad#640).
 pub mod material;
-mod parameters;
+pub use mitcad_model_base::parameters;
 mod print_fits;
 // The print settings' key map: printer, process and filament keys and
-// their slicer dialects (mitcad#640).
-pub mod print_keys;
-mod profile;
+// their slicer dialects (mitcad#640); the crate mitcad-print-keys
+// (mitcad#777).
+pub use mitcad_model_base::profile;
+pub use mitcad_print_keys as print_keys;
 mod recompute;
 pub mod sheet;
-#[cfg(test)]
-mod sheet_tests;
-// Sheet-metal Unfold, Refold and Flat Patterns (mitcad#208).
-#[cfg(test)]
-mod sheet_flat_tests;
-// What the sheet-metal command UI asks of the model (mitcad#210).
-#[cfg(test)]
-mod sheet_ui_tests;
-pub mod sketch;
-pub mod topo;
-mod transform;
+// The general sketch, a crate below the core (mitcad#780).
+pub use mitcad_model_base::topo;
+pub use mitcad_model_base::transform;
+pub use mitcad_sketch as sketch;
 
 // Components and occurrences (F6).
 #[cfg(test)]
-mod component_tests;
-#[cfg(test)]
 mod document_tests;
-#[cfg(test)]
-mod point_pattern_tests;
-/// The mock kernel of the model tests; other crates' tests use it through
-/// the `testing` feature (the .f3d importer, T1).
+/// Fixtures the model's tests share (the block document, feature
+/// definitions, face and edge names); test crates use them through the
+/// `testing` feature (mitcad#777).
 #[cfg(any(test, feature = "testing"))]
-pub mod testing;
-// Profile features (F1).
-#[cfg(test)]
-mod extrude_scope_tests;
-#[cfg(test)]
-mod profile_feature_tests;
+pub mod test_support;
+/// The mock kernel of the model tests; other crates' tests use it through
+/// the `testing` feature (the .f3d importer, T1). The crate
+/// mitcad-model-testkit (mitcad#777).
+#[cfg(any(test, feature = "testing"))]
+pub use mitcad_model_testkit as testing;
 
 pub use document::{
     Added, BodyView, ComponentCopy, DocState, Document, FeatureError, ModelError, PreviewReport,
@@ -98,7 +94,7 @@ pub use datum::{Datum, DatumAxis, DatumKind, DatumPlane, DatumPoint, OriginDatum
 pub use document::{BodyAttributes, DatumView, DeletedAppearance, FaceAppearance};
 pub use features::geom_ref::{GeomRef, PathRef};
 // Sweeps, lofts, pipes, coils, ribs and webs (F3).
-pub mod sweeps;
+pub use mitcad_model_base::sweeps;
 pub use sweeps::{
     CoilPosition, CoilSection, CoilSpec, LoftEnd, LoftEndKind, LoftSection, LoftSpec, PathCurve,
     PipeSection, PipeSpec, ProfileScaling, RibSpec, SweepGuide, SweepOrientation, SweepSpec,
@@ -121,97 +117,60 @@ pub use topo::CurveId;
 // Sweeps along guide surfaces (mitcad#157).
 pub use sweeps::GuideSurface;
 // Progress and cancellation of recomputes (P7).
-pub mod monitor;
+pub use mitcad_model_base::monitor;
 pub use monitor::{Cancelled, Progress, RecomputeMonitor};
-#[cfg(test)]
-mod monitor_tests;
 // Deterministic result versions and the result store (P7d).
-mod fingerprint;
+use mitcad_model_base::internal::fingerprint;
 pub mod store;
 pub use store::{GcReport, PersistReport, ResultStore, StoreStats};
 #[cfg(test)]
-mod cache_tests;
-#[cfg(test)]
-mod store_tests;
-#[cfg(test)]
 mod version_tests;
 // Design files of version 3 and their projects' B-rep store (P12a).
-mod sha256;
 pub use file::{BlobStore, DesignError, FileFormat, FsStore, MemoryStore, Project, Sha256};
-// Comparison of two designs or versions (P12c).
-pub mod diff;
-pub use diff::DesignDiff;
+use mitcad_model_base::internal::sha256;
 // Render settings of the document (mitcad#47).
-pub mod render_settings;
+pub use mitcad_model_base::render_settings;
 pub use render_settings::RenderSettings;
 // Joints between occurrences (mitcad#55).
-#[cfg(test)]
-mod joint_solver_tests;
-#[cfg(test)]
-mod joint_tests;
 pub mod joints;
 
 // Configuration tables and library components (mitcad#64, mitcad#63).
-pub mod configurations;
+pub use mitcad_model_base::configurations;
 pub mod library;
 pub use configurations::{ConfigurationRow, Configurations};
 pub use document::{LibraryChange, LibraryPart, PartsListRow};
 pub use library::{LibraryRef, LibraryRequest, LibrarySource, LinkResolver, set_link_resolver};
-#[cfg(test)]
-mod library_tests;
 
 // Geometry of other components in sketches (mitcad#100).
 pub mod links;
 pub use links::OccurrenceLink;
-#[cfg(test)]
-mod link_tests;
 
 // An operation's new faces (the .f3d import's geometric check, mitcad#138).
 pub use kernel::NewFace;
 
 // Assembly constraints (mitcad#148).
-#[cfg(test)]
-mod constraint_tests;
 pub mod constraints;
 
 // Move Features into a Component (mitcad#171).
 pub use document::AutoselectProfiles;
 pub use document::{MoveConflict, MoveGroup, MovePlan, MovedGroup, PlannedGroup};
-#[cfg(test)]
-mod move_features_tests;
-
-// Selected profile areas: toggled regions, sets of references (mitcad#199).
-#[cfg(test)]
-mod profile_selection_tests;
 
 // Design policy: per-component creation and link permissions (mitcad#220).
 pub mod policy;
 pub use document::{PolicyItem, PolicyReport};
 pub use policy::{Policy, Setting};
-#[cfg(test)]
-mod policy_tests;
-// Moving an occurrence to another parent (mitcad#219).
-#[cfg(test)]
-mod reparent_tests;
-// A preview's bodies in placed, hidden and linked components (mitcad#266).
-#[cfg(test)]
-mod preview_placement_tests;
 // Bodies from their boundaries and from triangles (the IFC import,
 // mitcad#273).
-pub mod boundary;
 pub use document::FeatureBatch;
+pub use mitcad_model_base::boundary;
 // Extrude's automatic operation: the contacts of its tool (mitcad#289).
 pub use document::AutoOperation;
 pub use kernel::ToolContact;
-#[cfg(test)]
-mod auto_operation_tests;
 // The BUILD tab: library sources, derived parts, bound lengths and the
 // placement rules of slot-profile assemblies (mitcad#375).
 pub mod build;
 // Section curves of sketches (mitcad#389).
 pub use kernel::SectionCurve;
-#[cfg(test)]
-mod section_curve_tests;
 // Body ids of a split's pieces after upstream edits (mitcad#408).
 #[cfg(test)]
 mod piece_ids_tests;
@@ -222,16 +181,9 @@ pub use contact::{ContactBody, ContactHit};
 pub use document::{Driven, JointValues, MotionOutcome};
 pub use kernel::PlacedPair;
 pub use motion::{ContactSet, MotionStudy, StudyKey};
-#[cfg(test)]
-mod motion_tests;
-// Contour Flange, Convert to Sheet Metal and Perforate (mitcad#461).
-#[cfg(test)]
-mod sheet_more_tests;
 // Motion links between joints: gears, racks, screws and cams (mitcad#466).
 pub mod motion_links;
 pub use motion_links::LinkResult;
-#[cfg(test)]
-mod motion_link_tests;
 // Emboss: profiles raised or sunk on faces, wrapped on cylinders (mitcad#458).
 #[cfg(test)]
 mod emboss_tests;
@@ -242,15 +194,13 @@ pub use kernel::BoundaryCell;
 mod boundary_fill_tests;
 // Patch, Stitch and Thicken: surface bodies filled, sewn and made solid
 // (mitcad#456).
-pub mod surfaces;
+pub use mitcad_model_base::surfaces;
 pub use surfaces::{OpenBoundary, PatchBoundary, PatchContinuity, PatchLoopSpec};
 #[cfg(test)]
 mod surface_tests;
 // Surface modelling: surface bodies and their features (mitcad#455).
-pub mod surface_modelling;
-#[cfg(test)]
-mod surface_modelling_tests;
 pub use kernel::Unstitched;
+pub use mitcad_model_base::surface_modelling;
 pub use surface_modelling::{
     BlendEnd, BlendSpec, BodyEdges, BoundaryCurve, BoundaryCurves, BoundarySpec, ExtendMode,
     Fairing, OpeningEdges, RuledCorners, RuledMode, RuledSpec, TrimSpec, TrimTool,
@@ -260,34 +210,24 @@ pub use features::plastic::PlasticValues;
 pub use kernel::RimBandSpec;
 // Bodies moved into another component on the timeline (mitcad#465).
 pub use document::TransferDestination;
-#[cfg(test)]
-mod body_transfer_tests;
 // Drawings: views with dimensions and a hole table as PDF, SVG or DXF
 // (mitcad#471).
 pub mod drawing;
 // Gears: spur, helical, herringbone, ring, rack and bevel (mitcad#472).
 pub use kernel::{GearConeSpec, GearStep, GearSweepSpec};
 // Typed property sets on components, occurrences and bodies (mitcad#496).
-pub mod properties;
 pub use document::PropertyTypeChange;
-#[cfg(test)]
-mod properties_tests;
+pub use mitcad_model_base::properties;
 // Reorient Design: the whole design turned by quarter turns (mitcad#502).
 pub mod reorient;
 pub use document::ReorientReport;
-#[cfg(test)]
-mod reorient_tests;
 // Mount frames of any part and placing a part by one (mitcad#525).
 pub use document::{
     GridPlace, Inserted, MountAt, MountFrame, MountInput, MountPlan, MountPreview, MountSource,
 };
 pub use features::joint::{MountKind, MountSpec};
-#[cfg(test)]
-mod mount_tests;
 // Extrude: a planar body face as the profile (mitcad#535).
 pub use kernel::FaceExtrudeSpec;
-#[cfg(test)]
-mod face_extrude_tests;
 // Revolve: a planar body face as the profile (mitcad#539).
 pub use kernel::FaceRevolveSpec;
 #[cfg(test)]
@@ -303,20 +243,14 @@ pub use document::{EstimateCheck, OverhangCheck, PrintAnalysis, ThinWallCheck};
 mod print_analysis_tests;
 // Materials as objects and components' default materials (mitcad#640).
 pub use document::{AppearanceChoice, DeletedMaterial, MaterialSource};
-#[cfg(test)]
-mod material_tests;
 // Printer and process profiles and what a body prints with (mitcad#640,
 // part 3).
 pub mod print_profile;
 pub use document::{EffectivePrint, PrintFrom, PrintTarget};
-#[cfg(test)]
-mod print_profile_tests;
 // Libraries of materials and print profiles: base, user and project
 // (mitcad#640, part 4).
 pub mod print_library;
 pub use document::LibraryUpdate;
-#[cfg(test)]
-mod print_library_tests;
 // Slicers' settings files: import and export by dialect (mitcad#640, part
 // 5).
 pub mod print_files;
@@ -331,11 +265,7 @@ pub use document::{
     GeometricTolerance, MAX_DECIMALS, MEASUREMENT_COLORS, MaterialCondition, MeasureKind,
     MeasurePick, Measurement, NewMeasurement, Tolerance, datum_letter,
 };
-#[cfg(test)]
-mod annotation_tests;
-pub mod iso286;
-#[cfg(test)]
-mod measurement_tests;
+pub use mitcad_model_base::iso286;
 // The parameters as CSV: Mitcad's table and the `.f3d` application's
 // parameter table (mitcad#666).
 pub mod parameters_csv;
@@ -345,3 +275,11 @@ mod parameters_csv_tests;
 // A body's print bed face, which the 3D print export turns down onto the
 // plate (mitcad#731).
 pub use document::PrintBedFace;
+// Types of the document's methods that other crates name (mitcad#811).
+pub use document::{Isolated, PlaneShape, PurgeChange, SketchPlaneChange};
+// Image references: images placed on planes and faces (mitcad#782), and
+// the sizes of image files from their headers.
+pub use document::{
+    CalibrationPoint, EmbeddedImage, ImageEdit, ImageReference, ImageSize, ImageSource, ImageTarget,
+};
+pub use mitcad_model_base::image_header;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/sketch app/commands app/MainWindow.cpp app/framework core/model/src/sketch core/model/src/api core/solver tools/cli
+# check-all sources: app/sketch app/commands app/MainWindow.cpp app/framework core/sketch core/model-api/src core/solver tools/cli
 # Equal spacing in sketches (mitcad#221) through the real UI, on a sketch
 # mitcad-cli makes: a fixed point p1 at (-20, 0), a circle c2 (centre
 # (45, 30), radius 10), a line c4 from (100, -10) to (120, 10) (its

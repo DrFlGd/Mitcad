@@ -796,7 +796,7 @@ void startPicker(Shared& shared, const QString& role, CommandState& state, const
 // Why the picker is empty.
 QString noPartsText(const Shared& shared, const QString& role) {
   const QString problem = shared.catalog.problem(role);
-  QString text = QObject::tr("No %1 parts: add Mitcad's parts library in Tools › Libraries and fetch it "
+  QString text = QObject::tr("No %1 parts: add MitCad's parts library in Tools › Libraries and fetch it "
                              "(or Update in Insert from Library).")
                      .arg(role);
   if (!problem.isEmpty()) {

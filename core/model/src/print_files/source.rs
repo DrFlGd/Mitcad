@@ -391,7 +391,7 @@ pub(crate) const FILAMENT_SIZED: &[&str] =
 /// key of the map, a key the import keeps in the filament layer by its name
 /// (but the presets a filament is compatible with), or one of
 /// [`FILAMENT_SIZED`].
-pub(crate) fn per_filament_keys(dialect: Dialect) -> impl Fn(&str) -> bool {
+pub fn per_filament_keys(dialect: Dialect) -> impl Fn(&str) -> bool {
     let mapped = mapped_keys(dialect);
     let filament = layer_keys(dialect, PrintSet::Filament);
     move |key: &str| {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/framework/Command.cpp app/framework/CommandSession.cpp app/OcctViewer.cpp app/browser app/commands core/model/src/features/surface_bodies.rs core/model/src/api/mod.rs tools/cli
+# check-all sources: app/framework/Command.cpp app/framework/CommandSession.cpp app/OcctViewer.cpp app/browser app/commands core/model/src/features/surface_bodies.rs core/model-api/src/lib.rs tools/cli
 # Mesh bodies in the inputs of surface operations (mitcad#399). A mesh body
 # (triangles without surfaces: STL, OBJ, the meshes of imported models)
 # cannot go to the booleans, fillets and face operations; OCCT's boolean

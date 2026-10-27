@@ -502,7 +502,7 @@ void CloudSection::startCheck() {
   }
   if (addressHasPassword(address)) {
     finishCheck(address, problem(QStringLiteral("invalid_url"),
-                                 tr("The address holds a password or a token. Mitcad never gives them to git: use "
+                                 tr("The address holds a password or a token. MitCad never gives them to git: use "
                                     "the address without it, and sign in with an SSH key or a credential helper.")));
     return;
   }
@@ -542,7 +542,7 @@ void CloudSection::startCheck() {
     }
     if (!isRepositoryFolder(dir)) {
       finishCheck(address, problem(QStringLiteral("not_empty"),
-                                   tr("%1 has files but no git repository: choose an empty folder, which Mitcad "
+                                   tr("%1 has files but no git repository: choose an empty folder, which MitCad "
                                       "makes a repository, or a folder with one.")
                                        .arg(QDir::toNativeSeparators(address))));
       return;
@@ -581,7 +581,7 @@ void CloudSection::finishCheck(const QString& address, const QJsonObject& answer
       text = tr("No repository at %1. Make one (Create Repository in Browser), then come back.").arg(address);
     } else if (cls == QLatin1String("git_missing")) {
       text = tr("Cloud projects need the git program, which was not found: install git "
-                "(https://git-scm.com/downloads) and start Mitcad again.");
+                "(https://git-scm.com/downloads) and start MitCad again.");
     }
   } else if (m_describe) {
     text = m_describe(answer, ok);
@@ -604,16 +604,16 @@ void CloudSection::showFixes(const QString& cls) {
     if (isSshAddress(address)) {
       const QJsonObject key = projectsCommand({{QStringLiteral("cmd"), QStringLiteral("ssh_public_key")}});
       const bool hasKey = !key.value(QStringLiteral("text")).toString().isEmpty();
-      text = hasKey ? tr("Mitcad signs in with your SSH key: add its public key to your own user account on the "
+      text = hasKey ? tr("MitCad signs in with your SSH key: add its public key to your own user account on the "
                          "service (also for an organisation's repository), then come back.")
-                    : tr("Mitcad signs in with an SSH key, and this computer has none: make one (ssh-keygen -t "
+                    : tr("MitCad signs in with an SSH key, and this computer has none: make one (ssh-keygen -t "
                          "ed25519), add its public key to your own user account on the service (also for an "
                          "organisation's repository), then come back.");
       m_copyKey->setVisible(hasKey);
       m_keysPage->show();
     } else {
       text = tr("For https:// addresses git signs in with a credential helper: Git Credential Manager comes with "
-                "Git for Windows; elsewhere set git's credential.helper. Mitcad never asks for a password or a "
+                "Git for Windows; elsewhere set git's credential.helper. MitCad never asks for a password or a "
                 "token.");
     }
   } else if (cls == QLatin1String("host_key_unknown")) {
@@ -720,7 +720,7 @@ bool askTrustServer(QWidget* parent, const QString& host, int port) {
     } else if (published == QLatin1String("mismatch")) {
       shown = QCoreApplication::translate("CloudSection",
                                           "Warning: these are not the keys %1 publishes. Someone may be between "
-                                          "you and the server; Mitcad does not trust it.")
+                                          "you and the server; MitCad does not trust it.")
                   .arg(service);
       setErrorStyleSheet(verdict);
       can = false;

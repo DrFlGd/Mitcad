@@ -31,8 +31,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::annotate::{SheetNote, SketchItem, ViewAnnotation};
-use super::template::{Revision, SheetTemplate};
+use super::annotate_def::{SheetNote, SketchItem, ViewAnnotation};
+use super::template_def::{Revision, SheetTemplate};
 use super::{Orientation, P2, Projection, SheetSize, ViewSpec, cross, dot, section_axes, unit};
 use crate::datum::Vec3;
 use crate::features::OccurrencePath;
@@ -140,7 +140,7 @@ impl DrawingDefaults {
     /// The letters' height of an item whose own is `own`.
     pub fn text(&self, own: Option<f64>) -> f64 {
         own.or(self.text_height)
-            .unwrap_or(super::compose::DIMENSION_TEXT)
+            .unwrap_or(super::annotate_def::DIMENSION_TEXT)
     }
 
     fn check(&self) -> Result<(), String> {
@@ -153,7 +153,7 @@ impl DrawingDefaults {
             ));
         }
         if let Some(height) = self.text_height {
-            super::annotate::check_height(height)?;
+            super::annotate_def::check_height(height)?;
         }
         Ok(())
     }

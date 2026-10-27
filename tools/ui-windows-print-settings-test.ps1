@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/print app/framework/NoteRow.cpp app/framework/CommandPanel.cpp app/browser/BrowserController.cpp
-# check-all sources: app/files/MainWindowPrint.cpp core/model/src/print_keys core/model/src/print_files tools/cli
+# check-all sources: app/files/MainWindowPrint.cpp core/print-keys core/model/src/print_files tools/cli
 # Input-driven Windows UI test of 3D Print's Import from slicer... and its
 # Details... (mitcad#654, mitcad#655) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted), as the last part

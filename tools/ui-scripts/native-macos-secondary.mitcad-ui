@@ -147,7 +147,7 @@ mark
 native-action solid.parameters
 expect-log 'Parameters dialog opened'
 focus-dialog '^Parameters$'
-button '^User Parameter$'
+native-click parametersAdd
 expect-log 'Add User Parameter dialog opened'
 focus-dialog '^Add User Parameter$'
 type 'nativeWidth'

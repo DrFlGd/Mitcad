@@ -867,6 +867,72 @@ fn an_extrusion_goes_up_to_objects_of_another_component_by_their_link() {
     assert!(error.contains("linked but not an object's"), "{error}");
 }
 
+/// A revolution of B up to a face or the body of A's block (mitcad#762, as
+/// an extrusion's): the object is read in its component and moved by its
+/// link; without the link the revolution fails, and a link for a body that
+/// is no object's is refused.
+#[test]
+fn a_revolution_turns_up_to_objects_of_another_component_by_their_link() {
+    let (mut doc, body, face, b) = siblings();
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(sketch, [5.0, 0.0], &num(2.0), &num(2.0))
+        .unwrap()
+        .region;
+    let revolution = |extent: Value, links: Value| {
+        json!({"cmd": "add_feature", "def": {"type": "revolve",
+               "profiles": [{"sketch": sketch, "region": region}],
+               "axis": "y", "extent": extent,
+               "object_links": links, "operation": "new_body"}})
+    };
+    let to_face = json!({"type": "to_object",
+                         "object": {"type": "face", "body": body, "face": face}});
+    let unlinked = command(&mut doc, revolution(to_face.clone(), json!({})))["uid"].clone();
+    let status = doc
+        .status(unlinked.as_str().unwrap().parse().unwrap())
+        .unwrap()
+        .clone();
+    assert!(
+        status.error().is_some_and(|e| e.contains("belongs to A")),
+        "{status:?}"
+    );
+    doc.undo();
+
+    let link = json!({body.to_string(): {"source": "O1"}});
+    let uid: FeatureUid = command(&mut doc, revolution(to_face, link.clone()))["uid"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    assert_eq!(doc.feature(uid).unwrap().component, b);
+    let spec = doc
+        .kernel()
+        .specs
+        .borrow()
+        .iter()
+        .rev()
+        .find(|s| s.starts_with("revolve"))
+        .cloned()
+        .unwrap_or_default();
+    assert!(spec.ends_with("target true"), "{spec}");
+    let def = query(&doc, json!({"query": "feature", "uid": uid.to_string()}));
+    assert_eq!(def["def"]["object_links"], link, "{def}");
+
+    // The body itself, through the same kind of link.
+    let to_body = json!({"type": "to_object",
+                         "object": {"type": "body", "body": body, "through": true}});
+    let uid: FeatureUid = command(&mut doc, revolution(to_body, link.clone()))["uid"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+
+    let error = rejected(&mut doc, revolution(json!({"type": "full"}), link));
+    assert!(error.contains("linked but not an object's"), "{error}");
+}
+
 #[test]
 fn a_derive_copies_bodies_of_another_component_and_follows_them() {
     // A:1 (O1) at (100, 0, 10) holds a block; B:1 (O2) at (0, 50, -3)

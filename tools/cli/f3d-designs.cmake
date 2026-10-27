@@ -110,11 +110,16 @@ set(designs
     # pattern of faces (#24) takes the rounding added after its faces were
     # selected (inferred inputs), and
     # patterns about arcs and edges go the stored axis' way round. The
-    # pattern of the shaft's tapered pipe-threaded holes falls back (no
-    # tapered pipe threads; its row pattern is skipped with them).
+    # shaft's and the lid's holes tapped with taper pipe threads (NPT, ISO
+    # 7-1 Rc) come in with their tapered bores, and the patterns of the
+    # shaft's are parametric: the row pattern (#32) copies plain bores, as
+    # the file does, the holes' threads left out (inferred), the circular
+    # pattern (C-Pattern8) tapered copies (mitcad#733). The modelled
+    # threads take the angles their states show, and the patterns' copies
+    # turn with them. Nothing falls back.
     # The holes whose inputs are not all read (unknown) are named with the
     # inferred ones; the items the user named are given by their places.
-    "3282222f|Extrude1,Extrude2,Extrude3,Extrude4,Extrude5,Extrude9,Extrude10,Hole1,Hole2,Hole3,Hole5,Hole6,Hole7,Hole8,C-Pattern2,C-Pattern6,#24,#38,#39,#41,#42,#43,#44,#46,#48,#49,#50,#51,#53,#54,#55,#56,#57|C-Pattern8|Plane2,Plane3,Hole2,Hole3,Hole5,Hole6,Hole7,Hole8,#24,#41,#43,#49")
+    "3282222f|Extrude1,Extrude2,Extrude3,Extrude4,Extrude5,Extrude9,Extrude10,Hole1,Hole2,Hole3,Hole5,Hole6,Hole7,Hole8,C-Pattern2,C-Pattern6,#24,#32,C-Pattern8,#38,#39,#41,#42,#43,#44,#46,#48,#49,#50,#51,#53,#54,#55,#56,#57||Plane2,Plane3,Hole2,Hole3,Hole5,Hole6,Hole7,Hole8,#24,#32,#41,#43,#49")
 
 # Seconds as the trace gives them (two decimals) in hundredths.
 function(hundredths seconds out)

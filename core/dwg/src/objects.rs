@@ -289,6 +289,38 @@ pub enum EntityData {
         indices: [i16; 4],
     },
     Insert(Insert),
+    /// A line (`LINE`).
+    Line {
+        start: [f64; 3],
+        end: [f64; 3],
+    },
+    /// A circle (`CIRCLE`), or an arc (`ARC`) with its start and end
+    /// angles in radians.
+    Circle {
+        center: [f64; 3],
+        radius: f64,
+        angles: Option<(f64, f64)>,
+    },
+    /// A point (`POINT`).
+    Point([f64; 3]),
+    /// An ellipse or elliptical arc (`ELLIPSE`): its centre, the end of its
+    /// major axis from the centre, the minor to major ratio, the start and
+    /// end parameters.
+    Ellipse {
+        center: [f64; 3],
+        major: [f64; 3],
+        ratio: f64,
+        start: f64,
+        end: f64,
+    },
+    /// A single-line text (`TEXT`) at its insertion point, as stored (in
+    /// the code page before R2007, see [`crate::write::decode`]).
+    Text {
+        position: [f64; 3],
+        height: f64,
+        rotation: f64,
+        value: String,
+    },
     /// A subdivision mesh: its control cage, the mesh at level 0.
     Mesh {
         vertices: Vec<[f64; 3]>,
@@ -515,6 +547,10 @@ pub fn read(
             Err(e) if is_brep(type_code, &type_name) => {
                 EntityData::Brep(BrepData::Unreadable(e.to_string()))
             }
+            // The 2D entities the drawing export writes are read back
+            // (mitcad#728); the import leaves them out either way, so one
+            // that does not read is only not decoded.
+            Err(_) if is_flat(type_code) => EntityData::Other,
             Err(e) => {
                 return Err(DwgError::Corrupt(format!("{type_name} {handle:X}: {e}")));
             }
@@ -943,9 +979,112 @@ fn entity_data(r: &mut Reader, code: u16, name: &str) -> Result<EntityData, DwgE
         }
         INSERT => EntityData::Insert(insert(r, false)?),
         MINSERT => EntityData::Insert(insert(r, true)?),
+        _ if is_flat(code) => flat(r, code)?,
         _ if SURFACE_CLASSES.contains(&name) => EntityData::Brep(brep_data(r)?),
         _ if name == "MESH" => mesh(r)?,
         _ => EntityData::Other,
+    })
+}
+
+/// The 2D entities [`flat`] reads.
+fn is_flat(code: u16) -> bool {
+    use types::*;
+    matches!(code, LINE | ARC | CIRCLE | POINT | ELLIPSE | TEXT)
+}
+
+/// A line, arc, circle, point, ellipse or text (the specification's
+/// 20.4.3, 18, 20, 21, 31 and 39).
+fn flat(r: &mut Reader, code: u16) -> Result<EntityData, DwgError> {
+    use types::*;
+    let v = r.v;
+    let d = &mut r.data;
+    Ok(match code {
+        LINE => {
+            let (start, end) = if v < Version::R2000 {
+                (d.bd3()?, d.bd3()?)
+            } else {
+                let z_zero = d.bit()?;
+                let x1 = d.rd()?;
+                let x2 = d.dd(x1)?;
+                let y1 = d.rd()?;
+                let y2 = d.dd(y1)?;
+                let (z1, z2) = if z_zero {
+                    (0.0, 0.0)
+                } else {
+                    let z1 = d.rd()?;
+                    (z1, d.dd(z1)?)
+                };
+                ([x1, y1, z1], [x2, y2, z2])
+            };
+            EntityData::Line { start, end }
+        }
+        ARC | CIRCLE => {
+            let center = d.bd3()?;
+            let radius = d.bd()?;
+            d.bt()?;
+            d.be()?;
+            let angles = if code == ARC {
+                Some((d.bd()?, d.bd()?))
+            } else {
+                None
+            };
+            EntityData::Circle {
+                center,
+                radius,
+                angles,
+            }
+        }
+        POINT => EntityData::Point(d.bd3()?),
+        ELLIPSE => EntityData::Ellipse {
+            center: d.bd3()?,
+            major: d.bd3()?,
+            ratio: {
+                d.bd3()?;
+                d.bd()?
+            },
+            start: d.bd()?,
+            end: d.bd()?,
+        },
+        _ => {
+            let (position, height, rotation) = if v < Version::R2000 {
+                let elevation = d.bd()?;
+                let [x, y] = d.rd2()?;
+                d.rd2()?;
+                d.bd3()?;
+                d.bd()?;
+                d.bd()?;
+                let rotation = d.bd()?;
+                let height = d.bd()?;
+                d.bd()?;
+                ([x, y, elevation], height, rotation)
+            } else {
+                let flags = d.rc()?;
+                let elevation = if flags & 0x01 == 0 { d.rd()? } else { 0.0 };
+                let [x, y] = d.rd2()?;
+                if flags & 0x02 == 0 {
+                    d.dd(x)?;
+                    d.dd(y)?;
+                }
+                d.be()?;
+                d.bt()?;
+                if flags & 0x04 == 0 {
+                    d.rd()?;
+                }
+                let rotation = if flags & 0x08 == 0 { d.rd()? } else { 0.0 };
+                let height = d.rd()?;
+                if flags & 0x10 == 0 {
+                    d.rd()?;
+                }
+                ([x, y, elevation], height, rotation)
+            };
+            let value = r.text()?;
+            EntityData::Text {
+                position,
+                height,
+                rotation,
+                value,
+            }
+        }
     })
 }
 

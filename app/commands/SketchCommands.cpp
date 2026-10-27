@@ -7,6 +7,7 @@
 // (CommandDef::sketchCommand).
 #include "Commands.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -81,17 +82,75 @@ QJsonObject base(SketchController& c, const char* command) {
   return {{QStringLiteral("cmd"), QString::fromLatin1(command)}, {QStringLiteral("sketch"), c.uid()}};
 }
 
+// Lines, arcs, elliptical arcs and open splines chain; a closed curve is
+// offset on its own.
+bool joinable(const sketch::CurveData& c) {
+  return c.isLine() || c.isArc() || c.type == QStringLiteral("elliptical_arc") ||
+         (c.isSpline() && c.start != c.end);
+}
+
+// Whether two open curves lie on each other (an edge projected twice,
+// mitcad#741): of one kind, through the same places, a line or a spline
+// either way round.
+bool sameCurve(const sketch::CurveData& a, const sketch::CurveData& b) {
+  if (a.id == b.id || a.type != b.type || a.curve.isClosed() || b.curve.isClosed()) {
+    return false;
+  }
+  const sketch::Curve2& p = a.curve;
+  const sketch::Curve2& q = b.curve;
+  const double size = std::max({1.0, sketch::norm(p.startPoint()), sketch::norm(p.endPoint())});
+  const double tolerance = 1e-7 * size;
+  const auto along = [](const sketch::Curve2& c, double f) { return c.at(c.t0() + f * (c.t1() - c.t0())); };
+  const std::array<double, 5> fractions = {0.0, 0.25, 0.5, 0.75, 1.0};
+  bool ahead = true;
+  bool back = a.isLine() || a.isSpline();
+  for (const double f : fractions) {
+    ahead = ahead && sketch::dist(along(p, f), along(q, f)) <= tolerance;
+    back = back && sketch::dist(along(p, f), along(q, 1.0 - f)) <= tolerance;
+  }
+  return ahead || back;
+}
+
+// Whether a curve shares an end point with another curve a chain selection
+// would join to it.
+bool joinsOthers(const sketch::SketchModel& model, const sketch::CurveData& c) {
+  for (const sketch::CurveData& other : model.curves) {
+    if (other.id != c.id && joinable(other) && other.construction == c.construction &&
+        (other.start == c.start || other.end == c.start || other.start == c.end || other.end == c.end)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// A picked curve, or the curve it lies on when it joins nothing and that
+// one does (mitcad#741: a face projected and one of its edges again, the
+// edge with points of its own): the chain grows through the face's curve.
+QString chainStart(const sketch::SketchModel& model, const QString& picked) {
+  const sketch::CurveData* c = model.curve(picked);
+  if (c == nullptr || !joinable(*c) || joinsOthers(model, *c)) {
+    return picked;
+  }
+  for (const sketch::CurveData& other : model.curves) {
+    if (joinable(other) && other.construction == c->construction && sameCurve(*c, other) &&
+        joinsOthers(model, other)) {
+      return other.id;
+    }
+  }
+  return picked;
+}
+
 // The curves joined to the picked ones end to end, as a chain
 // selection takes them: through points where exactly two such curves meet.
 QStringList chainOf(const sketch::SketchModel& model, const QStringList& picked) {
-  QStringList chain = picked;
-  QSet<QString> in(picked.begin(), picked.end());
-  // Lines, arcs, elliptical arcs and open splines chain; a closed curve is
-  // offset on its own.
-  const auto joinable = [](const sketch::CurveData& c) {
-    return c.isLine() || c.isArc() || c.type == QStringLiteral("elliptical_arc") ||
-           (c.isSpline() && c.start != c.end);
-  };
+  QStringList chain;
+  for (const QString& id : picked) {
+    const QString start = chainStart(model, id);
+    if (!chain.contains(start)) {
+      chain << start;
+    }
+  }
+  QSet<QString> in(chain.begin(), chain.end());
   bool grew = true;
   while (grew) {
     grew = false;
@@ -379,6 +438,47 @@ void addProject(CommandRegistry& registry, SketchController& c) {
   };
   def.describe = [](const CommandState& s, const CommandContext&) {
     return QStringLiteral("Projected %1 item(s)").arg(s.items(QStringLiteral("geometry")).size());
+  };
+  registry.add(def);
+}
+
+// Intersect (mitcad#736): where the sketch's plane cuts the picked faces and
+// whole bodies (section curves), and the points where it crosses the picked
+// edges: `sketch.project` with `section`, a body without a `source`. Linked
+// by default, as Project; another component's geometry through its
+// occurrence. A pick the plane does not reach fails the preview with the
+// model's reason in the panel.
+void addIntersect(CommandRegistry& registry, SketchController& c) {
+  CommandDef def = sketchCommand("sketch.intersect", QObject::tr("Intersect"), "sketch-intersect",
+                                 "CREATE/References", CommandDef::Kind::Feature);
+  def.sketchCommand = true;
+  def.tooltip = QObject::tr("Curves and points where the sketch plane cuts bodies, faces and edges");
+  def.keywords = {QStringLiteral("section"), QStringLiteral("cut"), QStringLiteral("reference"),
+                  QStringLiteral("project")};
+  def.inputs = {
+      selectionInput(QStringLiteral("geometry"), QObject::tr("Geometry"),
+                     SelectKind::Body | SelectKind::Face | SelectKind::Edge, 1, 0),
+      checkInput(QStringLiteral("linked"), QObject::tr("Projection Link"), true)
+          .withTooltip(QObject::tr("The curves follow the model when the design changes")),
+  };
+  def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
+    QJsonArray commands;
+    for (const SelectionItem& item : s.items(QStringLiteral("geometry"))) {
+      QJsonObject cmd = base(c, "sketch.project");
+      // A whole body: every face the plane cuts.
+      if (item.kind != SelectKind::Body) {
+        cmd.insert(QStringLiteral("source"), item.name);
+      }
+      cmd.insert(QStringLiteral("body"), item.owner);
+      cmd.insert(QStringLiteral("linked"), s.checked(QStringLiteral("linked")));
+      cmd.insert(QStringLiteral("section"), true);
+      cmd.insert(QStringLiteral("occurrence"), item.occurrence);
+      commands.append(cmd);
+    }
+    return Built::of(QJsonObject{{QStringLiteral("commands"), commands}});
+  };
+  def.describe = [](const CommandState& s, const CommandContext&) {
+    return QStringLiteral("Intersected %1 item(s)").arg(s.items(QStringLiteral("geometry")).size());
   };
   registry.add(def);
 }
@@ -1112,6 +1212,7 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
   addCircularPattern(registry, c);
   addMirror(registry, c);
   addProject(registry, c);
+  addIntersect(registry, c);
   addCleanUpProjections(registry, c);
   addCleanUpStaleProjections(registry, c);
   add({"sketch.dimension", QObject::tr("Sketch Dimension"), "dimension", "CREATE",

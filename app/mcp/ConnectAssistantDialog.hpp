@@ -13,7 +13,10 @@
 class QButtonGroup;
 class QLabel;
 class QLineEdit;
+class QMoveEvent;
 class QPlainTextEdit;
+class QResizeEvent;
+class QShowEvent;
 class QProcess;
 class QPushButton;
 class QToolButton;
@@ -26,8 +29,9 @@ namespace mitcad::mcp {
 // manual configuration and command under Advanced. The primary button's
 // action follows the state: an installation page, Connect, Try again,
 // Disconnect (the chosen assistant's clients only), Open in Claude Desktop
-// again, or Copy configuration for another assistant; a waiting state has
-// none. Connect (and Copy configuration, Connect anyway) is the consent that
+// again, Show in Explorer (the extension saved for a Claude Desktop that
+// takes it from its own settings, mitcad#763), or Copy configuration for
+// another assistant; a waiting state has none. Connect (and Copy configuration, Connect anyway) is the consent that
 // allows the folder shown. Connected clients are named by the assistant
 // their label matches (Claude Code), else by their own label.
 class ConnectAssistantDialog : public QDialog {
@@ -53,6 +57,9 @@ public:
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
   void changeEvent(QEvent* event) override;
+  void showEvent(QShowEvent* event) override;
+  void moveEvent(QMoveEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
 
 private:
   // A client's settings file as last read: read again only when its size
@@ -67,7 +74,8 @@ private:
   AssistantClient client() const;
   bool installed(AssistantClient which) const;
   bool configured(AssistantClient which) const;
-  bool cachedCheck(SettingsRead& cache, const QString& path, const std::function<bool(const QString&)>& check) const;
+  bool cachedCheck(SettingsRead& cache, const QString& path, const std::function<bool(const QString&)>& check,
+                   qint64 limit = kAssistantConfigurationLimit) const;
   QStringList chosenClientIds() const;
   QString configPath() const;
   void applyStyles();
@@ -83,6 +91,8 @@ private:
   void setupCodex();
   void setupClaudeCode();
   void setupBundle();
+  void bundleNotOpened(const QString& path);
+  void openClaudeDesktop();
   bool grantFolder();
   void message(const QString& text, bool error = false, const QString& detail = {});
   void clearMessage();
@@ -90,13 +100,19 @@ private:
                        std::function<void()> success);
   QString manualConfiguration() const;
   QString manualCommand() const;
+  // The choices' places in the main window's coordinates, once laid out
+  // (UI tests, mitcad#760); logged again only when they change.
+  void logPlaces();
 
   Host m_host;
   QString m_bridge;
   QString m_folderPath;
   QString m_ownInstance;
+  QString m_bundleSaved; // the extension saved for a Claude Desktop that no application opened it in
   QString m_shownState;  // the state whose look is applied (the error colour)
   QString m_shownLayout; // which rows were shown at the last fit
+  QString m_loggedState;  // the choice and state line logged last
+  QString m_loggedPlaces; // the choices' places logged last
   QButtonGroup* m_clients = nullptr;
   QLineEdit* m_config = nullptr;
   QWidget* m_configRow = nullptr;
@@ -110,6 +126,7 @@ private:
   QWidget* m_commandBox = nullptr;
   QPushButton* m_setup = nullptr;
   QPushButton* m_connectAnyway = nullptr;
+  QPushButton* m_openDesktop = nullptr;
   QPushButton* m_copyConfiguration = nullptr;
   QPushButton* m_copyCommand = nullptr;
   QToolButton* m_advancedToggle = nullptr;

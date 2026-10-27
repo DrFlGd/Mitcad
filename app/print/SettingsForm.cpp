@@ -125,6 +125,7 @@ void SettingsForm::setKeys(const PrintKeyTable& table, const QString& set, const
         // [unit | %] only where the design's slicer takes a percentage
         // (mitcad#655).
         row.field = new SettingField(*key, nullptr, key->kind != PrintKey::Kind::NumberOrPercent || key->takesPercent(dialect));
+        row.field->setDialect(dialect); // its range (mitcad#746)
         row.field->setReadOnly(m_readOnly);
         connect(row.field, &SettingField::committed, this, &SettingsForm::valueChanged);
         connect(row.field, &SettingField::refused, this, &SettingsForm::refused);

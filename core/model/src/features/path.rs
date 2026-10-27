@@ -155,6 +155,31 @@ impl SketchCurves {
                 .collect();
             ids.extend(joined(&ids, solved, &candidates));
         }
+        // A curve the same as an earlier one (an edge projected twice,
+        // mitcad#741) is one piece: two would branch at its ends.
+        let mut size: f64 = 1.0;
+        for id in &ids {
+            if let Some((a, b)) = solved.curves[id].ends() {
+                size = size
+                    .max(a[0].abs())
+                    .max(a[1].abs())
+                    .max(b[0].abs())
+                    .max(b[1].abs());
+            }
+        }
+        let mut distinct: Vec<EntityUid> = Vec::new();
+        for id in ids {
+            if !distinct.iter().any(|k| {
+                crate::sketch::project::same_curve(
+                    &solved.curves[k],
+                    &solved.curves[&id],
+                    1e-6 * size,
+                )
+            }) {
+                distinct.push(id);
+            }
+        }
+        let ids = distinct;
         let pieces = ids
             .iter()
             .map(|id| PathCurve {

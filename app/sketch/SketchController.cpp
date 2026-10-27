@@ -771,6 +771,9 @@ void SketchController::logView() {
   logGlyphs();
   m_overlay->logDimensionHalos();
   m_overlay->logInactive();
+  // The origin and axes the overlay draws (mitcad#739), also where the
+  // view never paints (Windows session 0).
+  m_overlay->logAxes();
 }
 
 void SketchController::logGlyphs() {
@@ -778,12 +781,15 @@ void SketchController::logGlyphs() {
     return;
   }
   // Where each inactive constraint's symbol is (mitcad#721), to right-click
-  // it: when the view or the sketch changes it (mitcad#723).
+  // it: when the view or the sketch changes it (mitcad#723). With
+  // MITCAD_LOG_PICKS (the UI tests) every constraint's, to click an active
+  // one too (mitcad#773).
+  static const bool everyGlyph = qEnvironmentVariableIsSet("MITCAD_LOG_PICKS");
   const QPoint window = m_viewer.mapTo(m_viewer.window(), QPoint(0, 0));
   QStringList lines;
   for (const auto& [id, rect] : m_overlay->constraintGlyphRects()) {
     const ConstraintData* k = m_model.constraint(id);
-    if (k == nullptr || k->active) {
+    if (k == nullptr || (k->active && !everyGlyph)) {
       continue;
     }
     lines << QStringLiteral("Constraint %1 glyph at %2,%3")

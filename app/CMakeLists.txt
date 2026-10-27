@@ -261,6 +261,10 @@ qt_add_executable(mitcad
   files/MainWindowPrint.cpp
   files/Print3d.cpp
   files/Print3d.hpp
+  # Save As Mesh: a body's or a component's bodies to mesh files (mitcad#734).
+  files/MainWindowSaveAsMesh.cpp
+  files/SaveAsMesh.cpp
+  files/SaveAsMesh.hpp
   # Remote repositories: connect, open from a remote, sync (P12 remote).
   files/RemoteController.cpp
   files/RemoteController.hpp
@@ -620,6 +624,8 @@ if(BUILD_TESTING)
   qt_add_resources(test_app test_icons PREFIX / FILES ${MITCAD_ICONS})
   # 3D Print's slicers and file names (mitcad#13).
   target_sources(test_app PRIVATE files/Print3d.cpp files/Print3d.hpp)
+  # Save As Mesh's bodies and file names (mitcad#734).
+  target_sources(test_app PRIVATE tests/save_as_mesh.cpp files/SaveAsMesh.cpp files/SaveAsMesh.hpp)
   target_sources(test_app PRIVATE framework/Dialogs.cpp framework/Dialogs.hpp)
   # The AppImage's desktop file and icons in the user's data folder.
   target_sources(test_app PRIVATE framework/DesktopEntry.cpp framework/DesktopEntry.hpp)
@@ -1244,6 +1250,11 @@ if(BUILD_TESTING)
   # The tools' definitions and the commands they make: plain Qt Core.
   target_sources(test_app PRIVATE tests/drawing_tools.cpp drawings/DrawingTools.cpp drawings/DrawingTools.hpp
                                   drawings/DrawingTemplates.cpp drawings/DrawingTemplates.hpp)
+  # The sheet's zoom kept through the model's answers (mitcad#751) and its
+  # picture kept while the pointer moves (mitcad#759): plain Qt Widgets on
+  # the offscreen platform.
+  target_sources(test_app PRIVATE tests/drawing_sheet_view.cpp drawings/DrawingSheetView.cpp
+                                  drawings/DrawingSheetView.hpp)
 endif()
 if(BUILD_TESTING)
   # The view's context menu (mitcad#494): which commands a selection

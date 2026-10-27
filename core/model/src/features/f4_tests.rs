@@ -953,6 +953,38 @@ fn patterns_and_mirrors_repeat_threads_on_the_copies() {
         "{made:?}"
     );
     assert!(made[0].contains("right false"), "{made:?}");
+    b.doc.undo();
+
+    // A cosmetic thread (here with its end chamfers, its only geometry)
+    // keeps its hand and designation in a mirror (mitcad#733).
+    b.doc
+        .edit_feature(
+            thread,
+            &def(
+                json!({"type": "thread", "faces": [{"body": "F2.b0", "face": side}],
+                        "thread": {"designation": "M10x1.5"}, "chamfer": "both"}),
+            ),
+        )
+        .unwrap();
+    assert_eq!(status(&b.doc, thread), FeatureStatus::Ok);
+    let before = threads(&b.doc).len();
+    let mirror = add(
+        &mut b.doc,
+        json!({"type": "mirror", "objects": {"type": "features", "features": [cut, thread]},
+               "plane": {"origin": [30, 0, 0], "normal": [1, 0, 0]}}),
+    );
+    assert_eq!(status(&b.doc, mirror), FeatureStatus::Ok);
+    let made = threads(&b.doc)[before..].to_vec();
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert!(
+        made[0].contains(&format!("{mirror}:inst1({side})")),
+        "{made:?}"
+    );
+    assert!(
+        made[0].contains("right true") && made[0].contains("pitch 1.5"),
+        "{made:?}"
+    );
+    assert!(made[0].contains("cosmetic chamfer"), "{made:?}");
 }
 
 /// The hole (Extrude2, F4) with a chamfer on its rim (Chamfer1, F5) and a

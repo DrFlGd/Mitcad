@@ -39,6 +39,9 @@
 #     shows no pick or plane row, and Placed set to On its leader shows
 #     Pick Again…; OK asks for the pick first, and the pick sends `on:
 #     null` with it in one edit; saved on its leader.
+#   - 40 annotations on a block (mitcad#759): the Annotations window
+#     scrolled to its last row, a light bulb there clicked off; the list
+#     stays where it was after the refresh.
 # tools/ui-windows-annotations-test.ps1 does the editor (Diameter1's
 # without a Plane row too), the drag, the window's changes, the datum
 # label and both frames in the Windows VM (not the picks again: its input
@@ -621,6 +624,67 @@ ui_step "save (Ctrl+S)"                    ui_key ctrl+s
 ui_expect_new "Saved $WORK/rows.mitcad" "saved"
 grep -qF '"on": "Rise"' "$WORK/rows.mitcad" && ui_fail "Flat still under Rise in the design file"
 echo "ok   Flat on its leader in the design file"
+
+echo "--- A light bulb far down the list: the list stays where it is (mitcad#759)"
+# A 20 mm block with 40 distances from the origin to its top face: more
+# rows than the window shows.
+{
+  printf '[\n  {"cmd": "sketch.create"},\n'
+  printf '  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 20, "height": 20},\n'
+  printf '  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "%s"}],\n' "$R"
+  printf '    "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}'
+  for i in $(seq -w 1 40); do
+    printf ',\n  {"cmd": "add_annotation", "name": "Row%s", "a": {"datum": "origin"}, "b": {"body": "F2.b0", "face": "F2:end(%s)"}}' \
+      "$i" "$R"
+  done
+  printf '\n]\n'
+} > "$WORK/many.json"
+"$CLI" run "$WORK/many.json" --save "$WORK/many.mitcad" > "$WORK/cli.log" 2>&1 ||
+  { cat "$WORK/cli.log"; ui_fail "mitcad-cli (40 annotations)"; }
+ui_stop_app
+ui_start_app --open "$WORK/many.mitcad"
+ui_expect_log "many.mitcad" "the design opened"
+ui_mark
+ui_step "Annotations (search)"             ui_command "Annotations"
+ui_expect_new "Annotations window opened: 40 annotation(s)" "the window lists the 40"
+ui_expect_new "Annotations row Row01 at" "the first rows in sight"
+ui_mark
+focus_window
+# Ctrl+End moves the current row without selecting (the table's extended
+# selection); the first one only makes Row01 current when no row is.
+# Home then goes to its first column and selects the row (Space would
+# toggle the last column's light bulb).
+ui_step "the last row (Ctrl+End, Home)"    ui_key ctrl+End ctrl+End Home
+ui_expect_new "Annotations selected: Row40" "the last row selected"
+ui_expect_new "Annotations row Row40 at" "the list scrolled down to it"
+# The places after the scroll, settled: the last logged stays over a sync.
+for _ in $(seq 1 20); do
+  before=$(grep -F "Annotations shown Row38 at " "$UI_LOG" | tail -1)
+  ui_sync
+  sleep 0.3
+  after=$(grep -F "Annotations shown Row38 at " "$UI_LOG" | tail -1)
+  [ -n "$after" ] && [ "$before" = "$after" ] && break
+done
+read -r bx by <<< "$(logged_place "Annotations shown Row38")"
+[ -n "$bx" ] || ui_fail "Row38's light bulb is not in sight after the scroll"
+ui_mark
+ui_step "Row38's light bulb off"           ui_click_logged "Annotations shown Row38"
+for _ in $(seq 1 30); do
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "^Annotations row Row38: .*, hidden$" && break
+  sleep 0.2
+done
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "^Annotations row Row38: .*, hidden$" ||
+  ui_fail "Row38 was not hidden by its light bulb"
+echo "ok   Row38 hidden"
+ui_sync
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "Annotations row Row01 at " &&
+  ui_fail "the list jumped back to its top after the refresh"
+read -r ax ay <<< "$(logged_place "Annotations shown Row38")"
+[ "$ax,$ay" = "$bx,$by" ] || ui_fail "Row38's row moved from $bx,$by to $ax,$ay"
+echo "ok   the list kept its place: Row38's light bulb still at $ax,$ay"
+focus_window
+ui_step "close the window (Escape)"        ui_key Escape
+ui_focus_main
 
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_finish "UI annotations test"

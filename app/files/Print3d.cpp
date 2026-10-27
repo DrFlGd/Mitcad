@@ -4,6 +4,7 @@
 #include "Print3d.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 #include <QComboBox>
@@ -417,6 +418,49 @@ QVector<PrintPiece> printPieces(const QStringList& bodies, const QStringList& na
     }
   }
   return pieces;
+}
+
+namespace {
+
+// A number of the bed's log line: three decimals, no "-0.000".
+QString bedNumber(double value) {
+  return QString::number(std::abs(value) < 0.0005 ? 0.0 : value, 'f', 3);
+}
+
+} // namespace
+
+QString printBedLog(const QJsonObject& bed) {
+  const QJsonArray plate = bed.value(QStringLiteral("plate")).toArray();
+  const QString centre = QStringLiteral("%1,%2").arg(bedNumber(plate.at(0).toDouble()),
+                                                     bedNumber(plate.at(1).toDouble()));
+  QString line;
+  if (bed.value(QStringLiteral("body")).isString()) {
+    QStringList rows;
+    for (const QJsonValue& row : bed.value(QStringLiteral("transform")).toArray()) {
+      QStringList numbers;
+      for (const QJsonValue& number : row.toArray()) {
+        numbers << bedNumber(number.toDouble());
+      }
+      rows << numbers.join(QLatin1Char(' '));
+    }
+    line = QStringLiteral("%1 on %2, plate %3, transform %4")
+               .arg(bed.value(QStringLiteral("name")).toString(), bed.value(QStringLiteral("face")).toString(),
+                    centre, rows.join(QStringLiteral(" | ")));
+  } else if (!bed.value(QStringLiteral("kept")).toArray().isEmpty()) {
+    QStringList kept;
+    for (const QJsonValue& uid : bed.value(QStringLiteral("kept")).toArray()) {
+      kept << uid.toString();
+    }
+    line = QStringLiteral("kept as assembled: %1").arg(kept.join(QStringLiteral(", ")));
+  } else {
+    line = QStringLiteral("as in the design");
+  }
+  for (const QJsonValue& value : bed.value(QStringLiteral("problems")).toArray()) {
+    const QJsonObject problem = value.toObject();
+    line += QStringLiteral("; %1: %2").arg(problem.value(QStringLiteral("name")).toString(),
+                                           problem.value(QStringLiteral("reason")).toString());
+  }
+  return line;
 }
 
 QString preparePrintFolder(const QString& root, const QString& design, QString* error) {

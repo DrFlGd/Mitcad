@@ -14,6 +14,7 @@
 
 class QAction;
 class QEvent;
+class QFocusEvent;
 class QLabel;
 class QLineEdit;
 class QPoint;
@@ -48,6 +49,14 @@ void setParameterSource(QWidget* window, ParameterSource source);
 // The source of the window the widget is in, or of the window that window
 // belongs to; null when none has one.
 const ParameterSource* parameterSourceOf(const QWidget* widget);
+
+// A command panel's value field losing the keyboard: a long expression
+// shows from its start again (mitcad#656), and the caret it had is
+// returned, for a name picked from the view to go there. Not when the
+// field's own context menu or a drop-down's popup takes the keyboard
+// (Qt::PopupFocusReason): the field keeps its caret and selection, which
+// the menu's Copy and Insert Parameter… act on (mitcad#756); -1 then.
+int leaveValueField(QLineEdit* edit, const QFocusEvent& event);
 
 // What a field is, for its suggestions.
 struct ParameterFieldOptions {

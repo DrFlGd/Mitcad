@@ -19,7 +19,8 @@
 #      follows: 35); the drawing
 #      opened again from the browser: the front view has grown upward.
 #   4. Saved and opened again: the drawing with its four views.
-#   5. Export... PDF: a PDF of the two sheets; Add Revision: the revision
+#   5. Export... PDF: a PDF of the two sheets; Export... DWG: an R2000
+#      DWG file per sheet (mitcad#728); Add Revision: the revision
 #      table and the title block show it (phase 4).
 #   6. An assembly mitcad-cli makes (Component1 placed twice, Component2
 #      once): a front view, a parts list of it placed by a click and a
@@ -212,6 +213,20 @@ if (-not (Test-Path $pdf)) { Ui-Fail 'no PDF file' }
 $head = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($pdf)[0..4])
 if ($head -ne '%PDF-') { Ui-Fail "$pdf is no PDF" }
 Write-Host "ok   $pdf is a PDF"
+Write-Host '--- 5b. Export a DWG (mitcad#728)'
+$dwg = Join-Path $work 'drawing.dwg'
+Ui-Mark
+Ui-Step 'Export...'                         { Ui-ClickLogged 'Drawing Export' }
+Ui-Step 'DWG... (Down x4, Enter)'           { Ui-Key 'Down'; Ui-Key 'Down'; Ui-Key 'Down'; Ui-Key 'Down'; Ui-Key 'Return' }
+Ui-FocusDialog '^Export Drawing$'
+Ui-Step 'the path'                        { Ui-Key 'ctrl+a'; Ui-Type $dwg; Ui-Key 'Return' }
+Ui-FocusMain
+Ui-ExpectNew ': drawing Drawing1, 2 sheets' 'the DWG written, a file per sheet' 30
+if (-not (Test-Path $dwg)) { Ui-Fail 'no DWG file' }
+$head = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dwg)[0..5])
+if ($head -ne 'AC1015') { Ui-Fail "$dwg is no R2000 DWG" }
+if (-not (Test-Path (Join-Path $work 'drawing-2.dwg'))) { Ui-Fail 'no DWG file of the second sheet' }
+Write-Host "ok   $dwg is an R2000 DWG, a file per sheet"
 Ui-Mark
 Ui-Step 'Add Revision'                    { Ui-ClickLogged 'Drawing Add Revision' }
 Ui-ExpectNew 'Drawing revision dialog opened: Add Revision' 'its dialog'

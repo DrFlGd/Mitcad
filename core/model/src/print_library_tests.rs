@@ -811,6 +811,103 @@ fn library_edits_undo_with_their_file_and_a_kept_change_is_asked_once() {
     assert_eq!(layer(&doc), 0.12);
 }
 
+#[test]
+fn an_edit_to_the_library_s_newer_value_reaches_a_copy_that_kept_its_own() {
+    // mitcad#758: another design changed the library's item, this design
+    // kept its values, and then types the library's value: the library's
+    // file stays as it is, the copy takes the value.
+    let (mut doc, project) = setup("print-same-value");
+    let folder = project_library(&project);
+    let path = project.to_string_lossy().to_string();
+
+    // A material.
+    write_item(&folder, &petg(1));
+    command(
+        &mut doc,
+        json!({"cmd": "set_component_material", "component": "C0",
+               "material": "acme/petg", "library": "project", "project": path}),
+    );
+    let mut newer = petg(2);
+    if let ItemData::Material { material, .. } = &mut newer {
+        material
+            .filament
+            .insert("temperature".to_owned(), json!(245));
+    }
+    write_item(&folder, &newer);
+    let answer = command(
+        &mut doc,
+        json!({"cmd": "decline_print_library_update", "kind": "material", "id": "acme/petg",
+               "project": path}),
+    );
+    assert_eq!(answer["version"], 2);
+    let temperature = |doc: &Document<MockKernel>| {
+        doc.material("acme/petg").unwrap().filament["temperature"].clone()
+    };
+    assert_eq!(temperature(&doc), 240);
+    let file = folder.join(item_path(ItemKind::Material, "acme/petg"));
+    let before = std::fs::read_to_string(&file).unwrap();
+    let depth = doc.undo_depth();
+    let answer = command(
+        &mut doc,
+        json!({"cmd": "edit_material", "id": "acme/petg", "library": "project",
+               "project": path, "filament": {"temperature": 245}}),
+    );
+    assert_eq!(answer["version"], 2);
+    assert_eq!(temperature(&doc), 245);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    assert_eq!(doc.undo_depth(), depth + 1);
+    assert_eq!(
+        query(&doc, json!({"query": "document"}))["undo"],
+        "Edit Material Acme PETG"
+    );
+    // The same again changes nothing: no step.
+    command(
+        &mut doc,
+        json!({"cmd": "edit_material", "id": "acme/petg", "library": "project",
+               "project": path, "filament": {"temperature": 245}}),
+    );
+    assert_eq!(doc.undo_depth(), depth + 1);
+    // Undone: the copy's own value is back, the file as it was.
+    command(&mut doc, json!({"cmd": "undo"}));
+    assert_eq!(temperature(&doc), 240);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+
+    // A process profile.
+    write_item(&folder, &draft(2, 0.25));
+    command(
+        &mut doc,
+        json!({"cmd": "set_property", "owner": "C0", "set": "Print Process",
+               "key": "profile", "value": "draft", "library": "project",
+               "project": path}),
+    );
+    write_item(&folder, &draft(3, 0.2));
+    let answer = command(
+        &mut doc,
+        json!({"cmd": "decline_print_library_update", "kind": "process", "id": "draft",
+               "project": path}),
+    );
+    assert_eq!(answer["version"], 3);
+    let layer = |doc: &Document<MockKernel>| {
+        doc.print_profile("draft").unwrap().values["layer_height"].clone()
+    };
+    assert_eq!(layer(&doc), 0.25);
+    let file = folder.join(item_path(ItemKind::Process, "draft"));
+    let before = std::fs::read_to_string(&file).unwrap();
+    let answer = command(
+        &mut doc,
+        json!({"cmd": "edit_print_profile", "id": "draft", "library": "project",
+               "project": path, "values": {"layer_height": 0.2}}),
+    );
+    assert_eq!(answer["version"], 3);
+    assert_eq!(layer(&doc), 0.2);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    assert_eq!(
+        query(&doc, json!({"query": "document"}))["undo"],
+        "Edit Process Draft"
+    );
+    assert_eq!(draft_changed(&doc, &project), false);
+}
+
 /// My Library (mitcad#704): a built-in material duplicated into a library
 /// by its id, renamed, its density changed and deleted, and a library's
 /// printer duplicated, on an empty design of its own that keeps none of

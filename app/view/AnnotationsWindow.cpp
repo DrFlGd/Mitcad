@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -290,6 +291,10 @@ void AnnotationsWindow::fill() {
   const QString search = m_search->text().trimmed();
   const QString kind = m_kind->currentData().toString();
   const QString group = m_group->currentData().toString();
+  // Where the list is scrolled, kept through the rebuild (mitcad#759: a
+  // light bulb clicked far down did not jump the list to its top).
+  const int scrolledDown = m_table->verticalScrollBar()->value();
+  const int scrolledRight = m_table->horizontalScrollBar()->value();
   m_filling = true;
   const int sortColumn = m_table->horizontalHeader()->sortIndicatorSection();
   const Qt::SortOrder sortOrder = m_table->horizontalHeader()->sortIndicatorOrder();
@@ -374,6 +379,10 @@ void AnnotationsWindow::fill() {
   // The selection kept, whole (one row selected after another would
   // keep only the last).
   selectRows(selected, false);
+  // The scroll bars' ranges for the new rows first, then where they were.
+  m_table->doItemsLayout();
+  m_table->verticalScrollBar()->setValue(scrolledDown);
+  m_table->horizontalScrollBar()->setValue(scrolledRight);
   m_filling = false;
   const QString rows = logged.isEmpty() ? QStringLiteral("Annotations rows: none") : logged.join(QLatin1Char('\n'));
   if (rows != m_loggedRows) {

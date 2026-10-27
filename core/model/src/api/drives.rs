@@ -17,11 +17,44 @@ use crate::features::drives::{self, BeltDriveOptions, Catalogue, Fit, GearPairOp
 use crate::features::gear::{GearDef, GearKind, MeshWith};
 use crate::features::pulley::{self, PulleyDef};
 use crate::features::pulley_profile::BeltProfile;
-use crate::features::{FeatureDef, PlaceAt, Placed, ValueInput};
+use crate::features::{FeatureDef, PlaceAt, Placed, Seat, ValueInput};
 use crate::ids::FeatureUid;
 use crate::kernel::Kernel;
 use crate::parameters::{slot_unit, unit_for};
-use crate::profile::{cross, dot};
+use crate::profile::{SketchFrame, cross, dot};
+
+/// Where one part of a pair goes (mitcad#754): a placement as a feature's
+/// `at` takes it, or `{"seat": …}`, a seat as a feature's `seat` takes it,
+/// for a shaft in another component's occurrence (with its `link`).
+#[derive(Debug)]
+pub(super) enum PairPlace {
+    At(Box<PlaceAt<ValueInput>>),
+    Seat(Box<Seat<ValueInput>>),
+}
+
+/// The seat form of a [`PairPlace`].
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeatPlace {
+    seat: Seat<ValueInput>,
+}
+
+impl<'de> Deserialize<'de> for PairPlace {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        // By its `seat` key, so that each form reports its own errors.
+        let value = Value::deserialize(deserializer)?;
+        if value.get("seat").is_some() {
+            SeatPlace::deserialize(value)
+                .map(|place| PairPlace::Seat(Box::new(place.seat)))
+                .map_err(D::Error::custom)
+        } else {
+            PlaceAt::<ValueInput>::deserialize(value)
+                .map(|at| PairPlace::At(Box::new(at)))
+                .map_err(D::Error::custom)
+        }
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,8 +66,8 @@ pub(super) struct PlaceFrameQuery {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GearPairQuery {
-    first: PlaceAt<ValueInput>,
-    second: PlaceAt<ValueInput>,
+    first: PairPlace,
+    second: PairPlace,
     /// z2 / z1.
     ratio: f64,
     #[serde(default)]
@@ -62,8 +95,8 @@ pub(super) struct GearPairQuery {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BeltDriveQuery {
-    first: PlaceAt<ValueInput>,
-    second: PlaceAt<ValueInput>,
+    first: PairPlace,
+    second: PairPlace,
     /// z2 / z1.
     ratio: f64,
     profile: BeltProfile,
@@ -155,15 +188,29 @@ impl<K: Kernel> Document<K> {
             .map_err(|e| ApiError(format!("{what}: {e}")))
     }
 
-    /// The distance of two placements' parallel axes and the second's
-    /// origin along the first's axis.
-    fn axes_apart(
-        &self,
-        first: &PlaceAt<ValueInput>,
-        second: &PlaceAt<ValueInput>,
-    ) -> Result<(f64, f64), ApiError> {
-        let a = self.placed(first, "first")?;
-        let b = self.placed(second, "second")?;
+    /// Where one part of a pair goes, at the timeline marker in the active
+    /// component's coordinates: a placement's frame, or a seat's on a
+    /// shaft of another component's occurrence (mitcad#754).
+    fn pair_frame(&self, place: &PairPlace, what: &str) -> Result<SketchFrame, ApiError> {
+        match place {
+            PairPlace::At(at) => Ok(self.placed(at, what)?.frame),
+            PairPlace::Seat(seat) => {
+                let seat = self
+                    .seat_values(seat)
+                    .map_err(|e| ApiError(format!("{what}: {}", e.0)))?;
+                seat.check_values()
+                    .map_err(|e| ApiError(format!("{what}: {e}")))?;
+                self.seat_frame(&seat, self.active_component())
+                    .map(|frame| frame.sketch_frame())
+                    .map_err(|e| ApiError(format!("{what}: seat: {e}")))
+            }
+        }
+    }
+
+    /// How two places' parallel axes lie (see [`Apart`]).
+    fn axes_apart(&self, first: &PairPlace, second: &PairPlace) -> Result<Apart, ApiError> {
+        let a = self.pair_frame(first, "first")?;
+        let b = self.pair_frame(second, "second")?;
         axes_distance(&a, &b)
     }
 
@@ -172,7 +219,8 @@ impl<K: Kernel> Document<K> {
     }
 
     pub(super) fn gear_pair_json(&self, query: &GearPairQuery) -> Result<Value, ApiError> {
-        let (distance, axial) = self.axes_apart(&query.first, &query.second)?;
+        let apart = self.axes_apart(&query.first, &query.second)?;
+        let distance = apart.distance;
         let defaults = GearPairOptions::default();
         let (spur, helical) = match query.kind {
             None => (true, true),
@@ -251,23 +299,33 @@ impl<K: Kernel> Document<K> {
             .collect();
         let mut result = json!({
             "center_distance": distance,
-            "axial_offset": axial,
+            "axial_offset": apart.axial,
             "candidates": candidates,
         });
-        if let Some(warning) = axial_warning(axial, "gears", "mesh across their face width") {
+        if let Some(warning) = pair_warning(&apart, "gears", "mesh across their face width") {
             result["warning"] = json!(warning);
         }
         Ok(result)
     }
 
     pub(super) fn belt_drive_json(&self, query: &BeltDriveQuery) -> Result<Value, ApiError> {
-        let (distance, axial) = self.axes_apart(&query.first, &query.second)?;
         let defaults = BeltDriveOptions::new(query.ratio, query.profile);
+        // An absurd bound is refused rather than searched up to
+        // (mitcad#748).
+        let max_teeth = or(query.max_teeth, defaults.max_teeth);
+        if !(max_teeth.is_finite() && max_teeth <= drives::MAX_TEETH) {
+            return Err(ApiError(format!(
+                "max_teeth must be at most {} teeth, got {max_teeth}",
+                drives::MAX_TEETH
+            )));
+        }
+        let apart = self.axes_apart(&query.first, &query.second)?;
+        let distance = apart.distance;
         let options = BeltDriveOptions {
             catalogue: query.belt_lengths.clone(),
             whole_teeth: query.whole_teeth,
             min_teeth: query.min_teeth,
-            max_teeth: or(query.max_teeth, defaults.max_teeth),
+            max_teeth,
             min_teeth_in_mesh: or(query.min_teeth_in_mesh, defaults.min_teeth_in_mesh),
             ratio_tolerance: or(query.ratio_tolerance, defaults.ratio_tolerance),
             belts: query.belts.unwrap_or(defaults.belts),
@@ -298,11 +356,11 @@ impl<K: Kernel> Document<K> {
             .collect();
         let mut result = json!({
             "center_distance": distance,
-            "axial_offset": axial,
+            "axial_offset": apart.axial,
             "catalogue": options.catalogue().name(),
             "candidates": candidates,
         });
-        if let Some(warning) = axial_warning(axial, "pulleys", "run in one belt's plane") {
+        if let Some(warning) = pair_warning(&apart, "pulleys", "run in one belt's plane") {
             result["warning"] = json!(warning);
         }
         Ok(result)
@@ -402,7 +460,12 @@ impl<K: Kernel> Document<K> {
         if let Some(teeth) = drive.teeth_in_mesh {
             result["teeth_in_mesh"] = json!(teeth);
         }
-        if let Some(warning) = axial_warning(along, "pulleys", "run in one belt's plane") {
+        let apart = Apart {
+            distance,
+            axial: along,
+            opposite: dot(na, nb) < 0.0,
+        };
+        if let Some(warning) = pair_warning(&apart, "pulleys", "run in one belt's plane") {
             result["warning"] = json!(warning);
         }
         Ok(result)
@@ -458,7 +521,8 @@ impl<K: Kernel> Document<K> {
     }
 
     /// Adds two features in one undo step named `label`; the second's
-    /// definition may name the first.
+    /// definition may name the first. A refused one leaves nothing of the
+    /// pair and the undo and redo steps as they were (mitcad#758).
     fn add_pair(
         &mut self,
         label: &str,
@@ -475,37 +539,57 @@ impl<K: Kernel> Document<K> {
             Some([a, b]) => (Some(a.as_str()), Some(b.as_str())),
             None => (None, None),
         };
-        let depth = self.undo_depth();
-        let a = self.add_feature_to(&first, first_name, component)?;
-        let b = match self.add_feature_to(&second(a.uid), second_name, component) {
-            Ok(b) => b,
-            Err(error) => {
-                // Nothing of the pair stays.
-                let _ = self.undo();
-                return Err(error.into());
-            }
-        };
-        self.merge_undo(depth, label);
+        let (a, b) =
+            self.add_feature_pair(label, &first, second, [first_name, second_name], component)?;
         Ok(json!({"uids": [a.uid, b.uid], "names": [a.name, b.name]}))
     }
 }
 
-/// The distance of two placements' axes (parallel) and the second's origin
-/// along the first's axis.
-fn axes_distance(a: &Placed, b: &Placed) -> Result<(f64, f64), ApiError> {
-    let n = a.frame.normal();
-    if norm(cross(n, b.frame.normal())) > 1.0e-6 {
+/// How two parts' parallel axes lie.
+struct Apart {
+    /// Between the axes.
+    distance: f64,
+    /// The second's origin along the first's axis.
+    axial: f64,
+    /// The second axis points the opposite way from the first
+    /// (mitcad#749).
+    opposite: bool,
+}
+
+/// How two frames' axes (parallel) lie.
+fn axes_distance(a: &SketchFrame, b: &SketchFrame) -> Result<Apart, ApiError> {
+    let n = a.normal();
+    let m = b.normal();
+    if norm(cross(n, m)) > 1.0e-6 {
         return Err(ApiError(
             "the axes are not parallel: a gear pair or a belt drive needs parallel axes".to_owned(),
         ));
     }
-    let d = sub(b.frame.origin, a.frame.origin);
+    let d = sub(b.origin, a.origin);
     let along = dot(d, n);
     let distance = norm(sub(d, scale(n, along)));
     if distance < 1.0e-9 {
         return Err(ApiError("the axes meet: pick two axes apart".to_owned()));
     }
-    Ok((distance, along))
+    Ok(Apart {
+        distance,
+        axial: along,
+        opposite: dot(n, m) < 0.0,
+    })
+}
+
+/// The warning of a pair: the second axis pointing the opposite way
+/// (mitcad#749: each part is built from its placement along its own axis,
+/// so the offset along the axes would be measured from the wrong end and
+/// parts growing apart would pass), else the second placement out of the
+/// first's plane.
+fn pair_warning(apart: &Apart, parts: &str, so_that: &str) -> Option<String> {
+    if apart.opposite {
+        return Some(format!(
+            "the second axis points the opposite way from the first: the {parts} would be built from their placements in opposite directions; flip one, or pick its shaft nearer its other end, so that both point the same way"
+        ));
+    }
+    axial_warning(apart.axial, parts, so_that)
 }
 
 /// A warning when the second placement is not in the first's plane
@@ -685,6 +769,31 @@ mod tests {
         assert_eq!(
             result["candidates"][0]["teeth"],
             json!([16.0, 32.0]),
+            "{result}"
+        );
+    }
+
+    /// An absurd `max_teeth` is refused with the bound (mitcad#748); a
+    /// large one within it is searched only as far as the pulleys fit.
+    #[test]
+    fn a_belt_drive_refuses_an_absurd_max_teeth() {
+        let doc = Document::new(MockKernel::default());
+        let drive = |max_teeth: f64| {
+            query(
+                &doc,
+                json!({"query": "belt_drive", "ratio": 2, "profile": "gt2_2mm",
+                       "max_teeth": max_teeth,
+                       "first": {"face": "xy", "offset1": 0, "offset2": 0},
+                       "second": {"face": "xy", "offset1": 0, "offset2": 100}}),
+            )
+        };
+        for absurd in [1.0e9, 1.0e16] {
+            let error = drive(absurd).unwrap_err();
+            assert!(error.contains("max_teeth must be at most 1000"), "{error}");
+        }
+        let result = drive(1000.0).unwrap();
+        assert!(
+            !result["candidates"].as_array().unwrap().is_empty(),
             "{result}"
         );
     }

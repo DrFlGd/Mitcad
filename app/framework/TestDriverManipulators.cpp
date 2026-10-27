@@ -190,8 +190,8 @@ void TestDriver::testManipulatorFeedback() {
     send(QEvent::MouseButtonRelease, point + QPointF(0, -10));
   });
   queue([state, send] {
-    // An arrow's minimum (mitcad#693: a Two Sides distance stops at the
-    // start): dragged as far past its origin, the value stops there.
+    // An arrow's minimum (mitcad#693): dragged as far past its origin,
+    // the value stops there.
     state->changes = state->releases = 0;
     state->handle = {QStringLiteral("value"), QStringLiteral("Value"), {}, 5.0};
     state->handle.manipulator.kind = Manipulator::Kind::Arrow;

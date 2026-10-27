@@ -379,7 +379,7 @@ pub(super) struct MeasuredPicks {
     pub(super) elements: [Option<Element>; 2],
 }
 
-/// How many measured picks [`MeasureCache`] keeps.
+/// How many measured picks [`MeasureCache`] keeps at least.
 const CACHED_MEASURES: usize = 256;
 
 /// Picks measured before (mitcad#716), by the fingerprint of what they
@@ -389,13 +389,24 @@ const CACHED_MEASURES: usize = 256;
 /// large faces can take long, so only picks whose bodies, placements or
 /// datums changed are measured again. Separate from modelling results:
 /// measuring changes no state. Failures are not kept. The least recently
-/// used go first.
+/// used go first, beyond [`CACHED_MEASURES`] or as many as the current
+/// annotations use ([`MeasureCache::hold`]), whichever is more.
 #[derive(Default)]
 pub(crate) struct MeasureCache {
     entries: std::sync::Mutex<VecDeque<(u128, MeasuredPicks)>>,
+    /// How many keys the current annotations use at most.
+    held: std::sync::atomic::AtomicUsize,
 }
 
 impl MeasureCache {
+    /// Keeps at least `keys` measured picks (mitcad#758): the annotations
+    /// ask for theirs in the same order after every command, so a cache
+    /// smaller than that would drop each key before it is asked for again
+    /// and measure every annotation each time.
+    pub(super) fn hold(&self, keys: usize) {
+        self.held.store(keys, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn found(&self, key: u128) -> Option<MeasuredPicks> {
         // A hit moves to the back.
         let mut entries = self.entries.lock().ok()?;
@@ -410,7 +421,8 @@ impl MeasureCache {
         if let Ok(mut entries) = self.entries.lock() {
             entries.retain(|(k, _)| *k != key);
             entries.push_back((key, picks));
-            while entries.len() > CACHED_MEASURES {
+            let most = CACHED_MEASURES.max(self.held.load(std::sync::atomic::Ordering::Relaxed));
+            while entries.len() > most {
                 entries.pop_front();
             }
         }

@@ -1156,6 +1156,12 @@ impl<K: Kernel> Document<K> {
                 annotation.check().map_err(invalid)?;
             }
         }
+        // The drawings' frames follow a datum's new letter as well, in the
+        // same step (mitcad#745: the model's and the drawings' letters are
+        // one set).
+        let renamed_letters: std::collections::BTreeMap<String, String> =
+            relettered.iter().cloned().collect();
+        let drawings = self.state.drawings_relettered(&renamed_letters, None)?;
         if changed == self.state.annotations {
             return Ok(false);
         }
@@ -1165,6 +1171,9 @@ impl<K: Kernel> Document<K> {
         });
         self.apply_with(|state| {
             state.annotations = changed;
+            for (i, drawing) in drawings {
+                state.drawings[i] = drawing;
+            }
             Ok((label, (), false))
         })?;
         Ok(true)

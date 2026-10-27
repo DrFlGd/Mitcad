@@ -23,6 +23,20 @@ QString text(const QJsonObject& object, const char* field) {
   return object.value(QLatin1String(field)).toString();
 }
 
+// A range from `min` and `max` (mitcad#746); a missing bound is none.
+PrintRange rangeOf(const QJsonObject& object) {
+  PrintRange range;
+  const QJsonValue low = object.value(QStringLiteral("min"));
+  const QJsonValue high = object.value(QStringLiteral("max"));
+  if (low.isDouble()) {
+    range.low = low.toDouble();
+  }
+  if (high.isDouble()) {
+    range.high = high.toDouble();
+  }
+  return range;
+}
+
 // The first of the fields that is a string, else the value itself when it
 // is one (an entry given as a plain string).
 QString firstText(const QJsonValue& value, std::initializer_list<const char*> fields) {
@@ -187,7 +201,13 @@ PrintKeyTable::PrintKeyTable(const QJsonObject& answer) {
     key.category = firstText(object.value(QStringLiteral("category")), {"id", "name"});
     key.group = firstText(object.value(QStringLiteral("group")), {"id", "name"});
     key.advanced = object.value(QStringLiteral("advanced")).toBool();
+    key.range = rangeOf(object);
     for (const QJsonValue& dialect : object.value(QStringLiteral("dialects")).toArray()) {
+      // A slicer that takes less than the key (mitcad#746).
+      const QJsonObject entry = dialect.toObject();
+      if (entry.contains(QStringLiteral("min")) || entry.contains(QStringLiteral("max"))) {
+        key.dialectRanges.insert(text(entry, "dialect"), rangeOf(entry));
+      }
       // Cura's bed is several keys: "machine_width, machine_depth, ...".
       for (const QString& part : text(dialect.toObject(), "key").split(QLatin1Char(','), Qt::SkipEmptyParts)) {
         key.dialectKeys << part.trimmed();
@@ -417,40 +437,37 @@ QString printValueText(const PrintKey& key, const QJsonValue& value) {
   return value.isDouble() ? printNumberText(value.toDouble()) : value.toVariant().toString();
 }
 
-PrintRange printRange(const PrintKey& key) {
-  const double none = std::numeric_limits<double>::infinity();
-  const QString id = key.key;
-  const auto has = [&id](const char* word) { return id.contains(QLatin1String(word)); };
-  const bool percent = key.kind == PrintKey::Kind::Percent || key.unit == QStringLiteral("%");
-  if (percent) {
-    const bool more = has("flow") || has("ratio") || has("speed") || has("overlap") || has("multiplier");
-    return {0.0, more ? 1000.0 : 100.0};
+PrintRange printRange(const PrintKey& key, const QString& dialect) {
+  // The model's range (mitcad#746), narrowed to the design's slicer's.
+  PrintRange range = key.range;
+  const auto own = key.dialectRanges.constFind(dialect);
+  if (!dialect.isEmpty() && own != key.dialectRanges.constEnd()) {
+    range.low = std::max(range.low, own->low);
+    range.high = std::min(range.high, own->high);
   }
-  // Angles turn either way; a compensation, an offset or a shift may be
-  // negative.
-  if (key.unit == QStringLiteral("°") || has("compensation") || has("offset") || has("shift")) {
-    return {-none, none};
-  }
-  return {0.0, none};
+  return range;
 }
 
 namespace {
 
-// Why a number is out of the key's range; empty when it is in it.
-QString outOfRange(const PrintKey& key, double value) {
-  const PrintRange range = printRange(key);
+// Why a number is out of a range; empty when it is in it.
+QString outOfRange(const PrintRange& range, double value) {
   if (value >= range.low && value <= range.high) {
     return QString();
   }
   if (std::isinf(range.high)) {
     return QObject::tr("Use a value of %1 or more").arg(printNumberText(range.low));
   }
+  if (std::isinf(range.low)) {
+    return QObject::tr("Use a value of %1 or less").arg(printNumberText(range.high));
+  }
   return QObject::tr("Use a value from %1 to %2").arg(printNumberText(range.low), printNumberText(range.high));
 }
 
 } // namespace
 
-QJsonValue printValueOf(const PrintKey& key, const QString& typed, QString* error) {
+QJsonValue printValueOf(const PrintKey& key, const QString& typed, QString* error, const QString& dialect) {
+  const PrintRange range = printRange(key, dialect);
   const QString text = typed.trimmed();
   const auto fail = [error](const QString& message) {
     if (error != nullptr) {
@@ -478,7 +495,7 @@ QJsonValue printValueOf(const PrintKey& key, const QString& typed, QString* erro
     if (!number || std::abs(*number - std::round(*number)) > 1e-9) {
       return fail(QObject::tr("Use a whole number"));
     }
-    if (const QString why = outOfRange(key, std::round(*number)); !why.isEmpty()) {
+    if (const QString why = outOfRange(range, std::round(*number)); !why.isEmpty()) {
       return fail(why);
     }
     return std::round(*number);
@@ -493,7 +510,7 @@ QJsonValue printValueOf(const PrintKey& key, const QString& typed, QString* erro
     if (!value) {
       return fail(QObject::tr("Use a number"));
     }
-    if (const QString why = outOfRange(key, *value); !why.isEmpty()) {
+    if (const QString why = outOfRange(range, *value); !why.isEmpty()) {
       return fail(why);
     }
     return *value;
@@ -509,7 +526,13 @@ QJsonValue printValueOf(const PrintKey& key, const QString& typed, QString* erro
     if (!value) {
       return fail(QObject::tr("Use a number or a percentage"));
     }
-    if (*value < 0.0 && printRange(key).low >= 0.0) {
+    // The range is the numbers'; a percentage is only not negative where
+    // the numbers are not.
+    if (!percent) {
+      if (const QString why = outOfRange(range, *value); !why.isEmpty()) {
+        return fail(why);
+      }
+    } else if (*value < 0.0 && range.low >= 0.0) {
       return fail(QObject::tr("Use a value of 0 or more"));
     }
     return percent ? QJsonValue(printNumberText(*value) + QLatin1Char('%')) : QJsonValue(*value);

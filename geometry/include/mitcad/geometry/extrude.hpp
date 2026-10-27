@@ -52,7 +52,11 @@ struct ThinWall {
 // One side of an extrusion: a distance from the start, or up to a target.
 struct ExtrudeSide {
   std::optional<Target> target;
-  double distance = 0.0; // without a target; > 0
+  // Without a target; > 0. One side of two may be negative (mitcad#765):
+  // it ends on the other side's side, the solid is the other side's from
+  // there on (tapered from the start as without it), and its cap there is
+  // named as this side's far cap. Two distances add up to more than zero.
+  double distance = 0.0;
   // Radians. A positive taper widens the profile away from the start: every
   // loop moves outwards from the material by t tan(taper) at distance t, so
   // the outer boundary grows and holes shrink.

@@ -405,6 +405,9 @@ QVector<InputDef> objectInputs(const QString& suffix, std::function<bool(const C
       selectionInput(object, QObject::tr("Object"),
                      SelectKind::Plane | SelectKind::Face | SelectKind::Body, 1, 1)
           .withoutMeshes()
+          // A face of another component in front of an origin plane is
+          // the pick while a component is active (mitcad#762).
+          .withPlanesByDepth()
           .withTooltip(QObject::tr("A plane, a face or a body the extent ends at"))
           .withVisible(shown),
       choiceInput(object + QStringLiteral("_extend"), QObject::tr("Extend"),
@@ -477,6 +480,160 @@ bool loadObject(const QJsonObject& object, CommandState& state, const QString& s
 bool objectShowable(const QJsonObject& object, const CommandContext& context) {
   return str(object, "type") != QStringLiteral("plane") ||
          isShowable(object.value(QStringLiteral("plane")), context);
+}
+
+// Objects of other components (mitcad#762).
+
+bool addObjectLink(QJsonObject& links, const SelectionItem& item, const QString& here) {
+  if ((item.kind != SelectKind::Face && item.kind != SelectKind::Body) || item.occurrence == here) {
+    return true;
+  }
+  // Empty paths (the root) are left out, as the model saves them.
+  QJsonObject link;
+  if (!item.occurrence.isEmpty()) {
+    link.insert(QStringLiteral("source"), item.occurrence);
+  }
+  if (!here.isEmpty()) {
+    link.insert(QStringLiteral("target"), here);
+  }
+  if (links.contains(item.owner) && links.value(item.owner).toObject() != link) {
+    return false;
+  }
+  links.insert(item.owner, link);
+  return true;
+}
+
+void linkObject(SelectionItem& item, const QJsonObject& links) {
+  if ((item.kind == SelectKind::Face || item.kind == SelectKind::Body) && links.contains(item.owner)) {
+    item.occurrence = str(links.value(item.owner).toObject(), "source");
+  }
+}
+
+namespace {
+
+// The component of the profiles' sketch (a feature of the model): "C0" for
+// the root's; empty when the query fails.
+QString sketchComponentOf(const Selection& profiles, const CommandContext& context) {
+  if (profiles.isEmpty()) {
+    return QString();
+  }
+  try {
+    return context
+        .queryObject({{QStringLiteral("query"), QStringLiteral("feature")},
+                      {QStringLiteral("uid"), profiles.first().owner}})
+        .value(QStringLiteral("component"))
+        .toString(QStringLiteral("C0"));
+  } catch (const std::exception&) {
+    return QString();
+  }
+}
+
+// An edited feature's links' target, kept by keepLinksTarget().
+const QString kLinksTarget = QStringLiteral("object_links_target");
+
+} // namespace
+
+QString profilesOccurrence(const Selection& profiles, const CommandContext& context) {
+  if (profiles.isEmpty()) {
+    return QString();
+  }
+  const SelectionItem& first = profiles.first();
+  if (!first.occurrence.isEmpty()) {
+    return first.occurrence;
+  }
+  // A profile the command took itself (the newest one) or loaded: where
+  // its sketch's component is seen first.
+  const QString component = sketchComponentOf(profiles, context);
+  if (component.isEmpty() || component == QStringLiteral("C0")) {
+    return QString();
+  }
+  QString path;
+  bool found = false;
+  eachOccurrence(context, [&component, &path, &found](const QJsonObject& node, const QString& at) {
+    if (!found && str(node, "component") == component) {
+      path = at;
+      found = true;
+    }
+  });
+  return path;
+}
+
+void keepLinksTarget(CommandState& state, const QJsonObject& links) {
+  QJsonObject kept;
+  if (!links.isEmpty()) {
+    kept.insert(QStringLiteral("target"), str(links.constBegin().value().toObject(), "target"));
+  }
+  state.setObject(kLinksTarget, kept);
+}
+
+QString linksOccurrence(const Selection& profiles, const CommandState& state, const CommandContext& context) {
+  // The session sets a profile's occurrence to the first one of its
+  // sketch's component (canonical picks): an edit keeps the target its
+  // links had, while that occurrence still places the sketch's component.
+  const QJsonObject kept = state.object(kLinksTarget);
+  if (kept.contains(QStringLiteral("target"))) {
+    const QString target = str(kept, "target");
+    const QString component = sketchComponentOf(profiles, context);
+    if (!component.isEmpty() && component == occurrenceComponent(target, context)) {
+      return target;
+    }
+  }
+  return profilesOccurrence(profiles, context);
+}
+
+QString occurrenceComponent(const QString& path, const CommandContext& context) {
+  if (path.isEmpty()) {
+    return QStringLiteral("C0");
+  }
+  QString component;
+  eachOccurrence(context, [&path, &component](const QJsonObject& node, const QString& at) {
+    if (at == path) {
+      component = str(node, "component");
+    }
+  });
+  return component;
+}
+
+// Construction planes of other components (mitcad#772).
+
+QString planeComponent(const SelectionItem& item, const CommandContext& context) {
+  const QString& owner = item.owner;
+  if (item.kind != SelectKind::Plane || owner == QStringLiteral("xy") || owner == QStringLiteral("xz") ||
+      owner == QStringLiteral("yz")) {
+    return QString(); // an origin plane is every component's own
+  }
+  try {
+    return context
+        .queryObject({{QStringLiteral("query"), QStringLiteral("feature")}, {QStringLiteral("uid"), owner}})
+        .value(QStringLiteral("component"))
+        .toString(QStringLiteral("C0"));
+  } catch (const std::exception&) {
+    return QString();
+  }
+}
+
+QString foreignPlane(const SelectionItem& item, const Selection& profiles, const CommandContext& context) {
+  const QString at = planeComponent(item, context);
+  if (at.isEmpty()) {
+    return QString();
+  }
+  // The feature is in its profiles' sketch's component (a face profile's
+  // component is not known here: left to the model).
+  const QString own = sketchComponentOf(profiles, context);
+  if (own.isEmpty() || own == at) {
+    return QString();
+  }
+  QString name = item.owner;
+  try {
+    name = context
+               .queryObject({{QStringLiteral("query"), QStringLiteral("feature")}, {QStringLiteral("uid"), item.owner}})
+               .value(QStringLiteral("name"))
+               .toString(item.owner);
+  } catch (const std::exception&) {
+    // Its uid then.
+  }
+  return QObject::tr("%1 is in %2: pick a plane of %3, or a face of %2.")
+      .arg(name, componentName(at, context), componentName(own, context));
 }
 
 // ---------------------------------------------------------------------------

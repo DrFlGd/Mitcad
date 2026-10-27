@@ -36,6 +36,17 @@ impl DocState {
     pub(crate) fn set_purge_override(&mut self, from: &str, to: &str, volume: Option<f64>) {
         set_override(&mut self.purge_volumes, from, to, volume);
     }
+
+    /// Takes away the pairs of a material the design no longer has
+    /// (mitcad#758), so that a new material that reuses its id (the first
+    /// free `custom{n}`) starts computed; undo brings them back with the
+    /// material. A built-in material of that id is still there and keeps
+    /// them, as the bodies that named the deleted one take it.
+    pub(crate) fn drop_purge_overrides_of(&mut self, id: &str) {
+        if crate::material::built_in_material(id).is_none() {
+            self.purge_volumes.retain(|p| p.from != id && p.to != id);
+        }
+    }
 }
 
 /// Sets a pair's volume in a list of pairs, or takes it away (None).

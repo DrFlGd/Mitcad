@@ -32,7 +32,8 @@
 // browser (tools/ui-test-lib.sh sets it); MITCAD_TEST_CRASH=app or
 // model-worker crashes the application once it shows (on the UI thread or
 // on the model's worker thread), import-worker or render-worker that
-// worker when it starts (main.cpp, RenderWorker.cpp).
+// worker when it starts (main.cpp, RenderWorker.cpp); app-exception
+// throws an exception nothing catches out of a slot (mitcad#773).
 
 #include <functional>
 

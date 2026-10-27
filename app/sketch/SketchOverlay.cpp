@@ -1255,6 +1255,7 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
   const SketchModel& model = m_c.model();
 
   paintAxes(painter);
+  logAxes();
 
   // Texts the view shows as their glyph outlines; a text without them (no
   // fonts, a sketch that did not evaluate) as plain text at its anchor.
@@ -1438,33 +1439,72 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
   }
 }
 
+SketchOverlay::AxesShape SketchOverlay::axesShape() const {
+  AxesShape shape;
+  shape.origin = m_c.toScreen(V2{});
+  const QRectF area = rect();
+  // Each axis's direction in the view from a point about 100 pixels along it.
+  const double step = 100.0 * m_c.pixel();
+  const QPointF alongX = m_c.toScreen(V2{step, 0.0}) - shape.origin;
+  const QPointF alongY = m_c.toScreen(V2{0.0, step}) - shape.origin;
+  // None for the sketch plane seen edge on.
+  if (std::hypot(alongX.x(), alongX.y()) >= 1.0) {
+    shape.x = lineAcross(shape.origin, alongX, area);
+  }
+  if (std::hypot(alongY.x(), alongY.y()) >= 1.0) {
+    shape.y = lineAcross(shape.origin, alongY, area);
+  }
+  return shape;
+}
+
+void SketchOverlay::logAxes() {
+  if (!m_c.isActive() || rect().isEmpty()) {
+    return;
+  }
+  const AxesShape shape = axesShape();
+  const QPoint offset = mapTo(window(), QPoint(0, 0));
+  const auto windowPlace = [&offset](const QPointF& p) {
+    return QStringLiteral("%1,%2").arg(qRound(p.x() + offset.x())).arg(qRound(p.y() + offset.y()));
+  };
+  const auto axisText = [&windowPlace](const std::optional<QLineF>& drawn) {
+    return drawn ? QStringLiteral("%1 to %2").arg(windowPlace(drawn->p1()), windowPlace(drawn->p2()))
+                 : QStringLiteral("none");
+  };
+  const bool inView = QRectF(rect()).contains(shape.origin);
+  const QString text = QStringLiteral("origin at %1 %2; x axis %3; y axis %4")
+                           .arg(windowPlace(shape.origin),
+                                inView ? QStringLiteral("in the view") : QStringLiteral("outside the view"),
+                                axisText(shape.x), axisText(shape.y));
+  if (text != m_loggedAxes) {
+    m_loggedAxes = text;
+    qDebug().noquote() << QStringLiteral("Sketch axes drawn: %1").arg(text);
+  }
+}
+
 void SketchOverlay::paintAxes(QPainter& painter) const {
   const SketchModel& model = m_c.model();
   const QRectF area = rect();
-  const QPointF origin = m_c.toScreen(V2{});
+  // Drawn whatever the Origin folder's light bulb says (mitcad#739): the
+  // sketch's own reference, which the tools snap to and pick.
+  const AxesShape shape = axesShape();
+  const QPointF origin = shape.origin;
   painter.save();
   painter.setBrush(Qt::NoBrush);
 
-  // The axes across the view, each named at its positive end. Their
-  // directions in the view from points about 100 pixels along them.
-  const double step = 100.0 * m_c.pixel();
+  // The axes across the view, each named at its positive end.
   QFont bold = painter.font();
   bold.setBold(true);
-  const std::pair<V2, QString> axes[] = {{V2{step, 0.0}, QStringLiteral("X")},
-                                         {V2{0.0, step}, QStringLiteral("Y")}};
-  for (const auto& [direction, name] : axes) {
-    const QPointF along = m_c.toScreen(direction) - origin;
-    if (std::hypot(along.x(), along.y()) < 1.0) {
-      continue; // the sketch plane seen edge on
-    }
-    const std::optional<QLineF> line = lineAcross(origin, along, area);
-    if (!line) {
+  const std::pair<const std::optional<QLineF>*, QString> axes[] = {{&shape.x, QStringLiteral("X")},
+                                                                   {&shape.y, QStringLiteral("Y")}};
+  for (const auto& [drawn, name] : axes) {
+    if (!*drawn) {
       continue;
     }
+    const QLineF& line = **drawn;
     painter.setPen(QPen(kAxisLineColor, 1.0));
-    painter.drawLine(*line);
-    const QPointF u = unitOf(along);
-    const QPointF at = line->p2() - u * 14.0 + QPointF(-u.y(), u.x()) * 10.0;
+    painter.drawLine(line);
+    const QPointF u = unitOf(line.p2() - line.p1());
+    const QPointF at = line.p2() - u * 14.0 + QPointF(-u.y(), u.x()) * 10.0;
     painter.setFont(bold);
     painter.setPen(kAxisColor);
     painter.drawText(QRectF(at.x() - 8.0, at.y() - 8.0, 16.0, 16.0), Qt::AlignCenter, name);
@@ -1504,6 +1544,7 @@ void SketchOverlay::paintAxes(QPainter& painter) const {
 
 void SketchOverlay::hideEvent(QHideEvent* event) {
   QWidget::hideEvent(event);
+  m_loggedAxes.clear(); // the next sketch edit logs its axes again
   if (auto* viewer = qobject_cast<OcctViewer*>(parentWidget())) {
     viewer->setBadgeWidth(0); // no badge: the status pill may use the corner
   }

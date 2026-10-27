@@ -3,7 +3,7 @@
 # check-all sources: app/commands/GearCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/gear.rs core/model/src/features/gear_profile.rs geometry/src/gear.cpp
 # check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
-# check-all sources: core/model/src/print_fits.rs core/model/src/api/gears.rs
+# check-all sources: core/model/src/print_fits.rs core/model/src/api/gears.rs app/commands/DriveCommands.cpp core/model/src/api/drives.rs
 # Gear (mitcad#472) through the real UI; the Windows counterpart is
 # tools/ui-windows-gear-test.ps1 (ctest app.ui-windows-gear). The Backlash
 # and the Bore Clearance start as the printed-fit parameters gear_backlash
@@ -31,7 +31,16 @@
 #      against undercut with the fewest teeth first (2 mm, 20 and 40
 #      teeth: 2 x 60 / 2 = 60; 2.5 mm with 16 teeth, corrected, after
 #      them); the second row (module 1.25, 32 and 64 teeth) previewed, as
-#      new bodies; OK makes both gears.
+#      new bodies; a Second Offset of 5 mm keeps the second row chosen
+#      (mitcad#761); OK makes both gears.
+#   5. Gear Pair with a shaft in another component's occurrence
+#      (mitcad#754), in a design with an 8 mm shaft in Motor:1 (F1.b0, the
+#      occurrence 60 mm along X) and one in the root at the origin
+#      (F2.b0): the root's shaft first and the motor's second is refused
+#      with the reason (the second gear meshes, so it goes on a shaft of
+#      the active component); the motor's shaft first, as a seat with its
+#      occurrence link, and the root's second list the gears for the axes
+#      60 mm apart, and OK makes both gears there.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-gear-test.sh [screenshot.png]
@@ -58,6 +67,17 @@ cat > "$WORK/shafts.json" << 'JSON'
     "diameter": 8, "height": 30, "operation": "new_body"}}
 ]
 JSON
+cat > "$WORK/motor.json" << 'JSON'
+[
+  {"cmd": "create_component", "name": "Motor", "transform": {"translation": [60, 0, 0]}},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}}
+]
+JSON
+"$CLI" run "$WORK/motor.json" --save "$WORK/motor.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 "$CLI" run "$WORK/shafts.json" --save "$WORK/shafts.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
 ui_start_display
@@ -154,10 +174,60 @@ ui_mark
 ui_step "the second row"                   ui_click_logged "Panel Gear Pair input candidate=1"
 ui_expect_new "Gear Pair: Gears = 1.25 mm" "module 1.25 chosen"
 ui_expect_new "Preview Gear Pair: ok" "module 1.25 previewed" 30
+# An Offset asks for the candidates again: the second row stays chosen
+# (mitcad#761).
+ui_mark
+ui_step "More"                             ui_click_logged "Panel Gear Pair input drive_more"
+ui_expect_new "Panel Gear Pair input second_offset at" "the Second Offset shown"
+ui_sync
+ui_mark
+ui_step "Second Offset 5"                  ui_type_in "Panel Gear Pair input second_offset" "5"
+ui_expect_new "Gear Pair candidates: " "the candidates again for the offset" 30
+ui_expect_new "Gear Pair candidate kept: row 2" "the second row still chosen"
+ui_expect_new "Preview Gear Pair: ok" "the offset previewed" 30
 [ -n "$SHOT" ] && ui_capture "${SHOT%.png}-pair.png"
 ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added gear pair, module 1.25, 32 and 64 teeth (exact)" "both gears added" 30
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- 5. Gear Pair with a shaft in another component's occurrence (mitcad#754)"
+ui_stop_app
+ui_start_app --open "$WORK/motor.mitcad"
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Body F1.b0 in O1 at " "the motor's shaft shown in its occurrence"
+ui_mark
+ui_step "Gear Pair"                        ui_command "Gear Pair"
+ui_expect_new "Command Gear Pair started" "the panel opened" 30
+ui_expect_new "Pick edge F2.b0/E{F2:side0|F2:top} at" "the root's shaft top edge can be picked"
+ui_mark
+ui_step "the root's shaft first"           ui_click_pick "edge F2.b0/E{F2:side0|F2:top} at"
+ui_expect_new "Gear Pair First Axis: 1 edge" "the first axis picked"
+ui_expect_new "Pick edge F1.b0/E{F1:side0|F1:top} at" "the motor's shaft top edge can be picked"
+ui_mark
+ui_step "the motor's shaft second"         ui_click_pick "edge F1.b0/E{F1:side0|F1:top} at"
+ui_expect_new "Gear Pair candidates: none: The second gear meshes with the first" \
+  "a meshing gear on another component's shaft refused with the reason" 30
+ui_step "Cancel (Escape)"                  ui_key Escape
+ui_sync
+ui_mark
+ui_step "Gear Pair"                        ui_command "Gear Pair"
+ui_expect_new "Command Gear Pair started" "the panel opened again" 30
+ui_expect_new "Pick edge F1.b0/E{F1:side0|F1:top} at" "the motor's shaft top edge can be picked"
+ui_mark
+ui_step "the motor's shaft first"          ui_click_pick "edge F1.b0/E{F1:side0|F1:top} at"
+ui_expect_new "Gear Pair First Axis: 1 edge" "the first axis picked"
+ui_expect_new "Pick edge F2.b0/E{F2:side0|F2:top} at" "the root's shaft top edge can be picked"
+ui_mark
+ui_step "the root's shaft second"          ui_click_pick "edge F2.b0/E{F2:side0|F2:top} at"
+ui_expect_new "Gear Pair candidates: " "the model's candidates" 30
+ui_expect_new "centre distance 60 mm" "the axes 60 mm apart, where the occurrence puts the shaft"
+ui_mark
+ui_step "operation: New Body"              ui_choose "Panel Gear Pair input operation" 1
+ui_expect_new "Preview Gear Pair: ok" "the pair previewed" 30
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added gear pair, module " "both gears added" 30
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 
 ui_finish "UI gear test"

@@ -686,6 +686,13 @@ fn live_catalog_has_only_supported_tools_and_live_handles() {
             .unwrap()
             .contains("allows agents")
     );
+    // Refused while an edited sketch rolls later features back (mitcad#750).
+    assert!(
+        export["description"]
+            .as_str()
+            .unwrap()
+            .contains("sketch in the middle of the timeline is edited")
+    );
     assert!(
         export["inputSchema"]["properties"]["path"]["description"]
             .as_str()

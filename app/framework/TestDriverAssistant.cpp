@@ -204,6 +204,118 @@ void TestDriver::testAssistantSetup(const QString& mode) {
         actionOf(setup) != QStringLiteral("reopen") || setup->text() != QStringLiteral("Open in Claude Desktop again")) {
       fail(m_line, QStringLiteral("native MCP Bundle was not prepared for the isolated installer"));
     }
+  } else if (mode == QStringLiteral("packaged-claude")) {
+#ifdef Q_OS_WIN
+    // Claude Desktop from the Microsoft Store (mitcad#763): no application
+    // takes the extension (MITCAD_TEST_ASSISTANT_BUNDLE_OPEN=none, not the
+    // registry), and its package is a folder in the isolated LOCALAPPDATA,
+    // its settings folder one in the isolated APPDATA.
+    const bool bundleOpenSet = qEnvironmentVariableIsSet("MITCAD_TEST_ASSISTANT_BUNDLE_OPEN");
+    const QByteArray bundleOpen = qgetenv("MITCAD_TEST_ASSISTANT_BUNDLE_OPEN");
+    qputenv("MITCAD_TEST_ASSISTANT_BUNDLE_OPEN", "none");
+    const QString localAppData = QDir(work).filePath(QStringLiteral("local-app-data"));
+    const QString roamingAppData = QDir(work).filePath(QStringLiteral("roaming-app-data"));
+    const QString package = QDir(localAppData).filePath(QStringLiteral("Packages/") + QLatin1String(mcp::kClaudeDesktopPackageFamily));
+    const QString bundle = QDir(work).filePath(QStringLiteral("assistant-setup/mitcad-desktop.mcpb"));
+    auto* anyway = dialog->findChild<QPushButton*>(QStringLiteral("assistantConnectAnyway"));
+    auto* openDesktop = dialog->findChild<QPushButton*>(QStringLiteral("assistantOpenDesktop"));
+    const auto installFirst = [status, setup, openDesktop, dialog] {
+      return stateOf(status) == QStringLiteral("failed") && status->text() == QStringLiteral("Install Claude Desktop first") &&
+          actionOf(setup) == QStringLiteral("install") && setup->text() == QStringLiteral("Get Claude Desktop") &&
+          !openDesktop->isVisibleTo(dialog);
+    };
+    QString problem;
+    if (!anyway || !openDesktop) {
+      problem = QStringLiteral("Connect anyway or Open Claude Desktop missing");
+    }
+    // No Claude Desktop at all: Install Claude Desktop first, as before.
+    if (problem.isEmpty()) {
+      chooseAssistant(dialog, mcp::AssistantClient::ClaudeDesktop);
+      if (stateOf(status) != QStringLiteral("not-installed") || !anyway->isVisibleTo(dialog)) {
+        problem = QStringLiteral("missing Claude Desktop did not offer Connect anyway");
+      }
+    }
+    if (problem.isEmpty()) {
+      anyway->click();
+      if (!installFirst()) {
+        problem = QStringLiteral("no Claude Desktop and no extension handler did not say Install Claude Desktop first: ") +
+                  status->text();
+      }
+    }
+    // What an uninstalled Claude Desktop leaves behind, its settings folder
+    // and a package folder of another family: found enough to offer Connect,
+    // but no application, so Install Claude Desktop first.
+    if (problem.isEmpty() && (!QDir().mkpath(QDir(roamingAppData).filePath(QStringLiteral("Claude"))) ||
+                              !QDir().mkpath(QDir(localAppData).filePath(QStringLiteral("Packages/Claude_other123"))))) {
+      problem = QStringLiteral("isolated Claude Desktop settings folder could not be prepared");
+    }
+    if (problem.isEmpty()) {
+      chooseAssistant(dialog, mcp::AssistantClient::ClaudeDesktop);
+      if (stateOf(status) != QStringLiteral("ready") || actionOf(setup) != QStringLiteral("connect")) {
+        problem = QStringLiteral("Claude Desktop's settings folder did not offer Connect");
+      }
+    }
+    if (problem.isEmpty()) {
+      setup->click();
+      if (!installFirst()) {
+        problem = QStringLiteral("Claude Desktop's settings folder alone did not say Install Claude Desktop first: ") +
+                  status->text();
+      }
+    }
+    // The package there: Connect, then the extension's installation in
+    // Claude Desktop with the saved file shown, never Install Claude Desktop.
+    if (problem.isEmpty() && !QDir().mkpath(package)) {
+      problem = QStringLiteral("isolated Claude Desktop package could not be prepared");
+    }
+    if (problem.isEmpty()) {
+      chooseAssistant(dialog, mcp::AssistantClient::ClaudeDesktop);
+      if (stateOf(status) != QStringLiteral("ready") || actionOf(setup) != QStringLiteral("connect") || anyway->isVisibleTo(dialog)) {
+        problem = QStringLiteral("packaged Claude Desktop did not offer Connect");
+      }
+    }
+    if (problem.isEmpty()) {
+      setup->click();
+      if (stateOf(status) != QStringLiteral("install-extension") || actionOf(setup) != QStringLiteral("reveal") ||
+          status->text() != QStringLiteral("Install the extension in Claude Desktop") ||
+          setup->text() != QStringLiteral("Show in Explorer") || !openDesktop->isVisibleTo(dialog) ||
+          openDesktop->text() != QStringLiteral("Open Claude Desktop") || !result->isVisibleTo(dialog) ||
+          !result->text().startsWith(QStringLiteral("In Claude Desktop: Settings ")) ||
+          !result->text().contains(QStringLiteral("Advanced settings")) || !result->text().contains(QStringLiteral("Install Extension")) ||
+          !result->text().contains(QDir::toNativeSeparators(bundle)) || !QFileInfo(bundle).isFile()) {
+        problem = QStringLiteral("packaged Claude Desktop without an extension handler did not offer the extension's "
+                                 "installation: ") + status->text() + QStringLiteral(" / ") + result->text();
+      }
+    }
+    if (problem.isEmpty()) {
+      setup->click();
+      openDesktop->click();
+      if (QDir::cleanPath(dialog->property("assistantShownPath").toString()) != QDir::cleanPath(bundle) ||
+          !dialog->property("assistantOpenedDesktop").toBool()) {
+        problem = QStringLiteral("Show in Explorer or Open Claude Desktop did not point at the saved extension");
+      }
+    }
+    // Claude Desktop uninstalled meanwhile: Open Claude Desktop does not do
+    // nothing, the state becomes Install Claude Desktop first.
+    if (problem.isEmpty()) {
+      dialog->setProperty("assistantOpenedDesktop", false);
+      QDir(package).removeRecursively();
+      openDesktop->click();
+      if (!installFirst() || dialog->property("assistantOpenedDesktop").toBool() || result->isVisibleTo(dialog)) {
+        problem = QStringLiteral("Open Claude Desktop without Claude Desktop did not say Install Claude Desktop first: ") +
+                  status->text();
+      }
+    }
+    // Back to the other modes' environment: no Claude Desktop folders, the
+    // captured installer.
+    if (bundleOpenSet) qputenv("MITCAD_TEST_ASSISTANT_BUNDLE_OPEN", bundleOpen);
+    else qunsetenv("MITCAD_TEST_ASSISTANT_BUNDLE_OPEN");
+    QDir(localAppData).removeRecursively();
+    QDir(roamingAppData).removeRecursively();
+    chooseAssistant(dialog, mcp::AssistantClient::ClaudeDesktop);
+    if (!problem.isEmpty()) { fail(m_line, problem); return; }
+#else
+    fail(m_line, QStringLiteral("packaged-claude runs on Windows only")); return;
+#endif
   } else if (mode == QStringLiteral("blocked")) {
     chooseAssistant(dialog, mcp::AssistantClient::Codex);
     config->setText(QDir(work).filePath(QStringLiteral("managed/config.toml")));

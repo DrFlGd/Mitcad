@@ -12,7 +12,9 @@
 #      (mitcad#272): opened, the timeline and the warnings badge show the
 #      fillet's warning that it found them under their new names.
 #   5. MITCAD_TEST_CRASH=app and model-worker: the crash report's stack
-#      starts at the crashing function, named from the PDB file (mitcad#76).
+#      starts at the crashing function, named from the PDB file (mitcad#76);
+#      MITCAD_TEST_CRASH=app-exception: the report's message names the
+#      exception's type and message (mitcad#773).
 #   6. View > Rendered, with the render worker: its frames refine and show
 #      the block (mitcad#51); an orbit sends the worker no view while the
 #      button is held and one after the release, a burst of wheel steps one
@@ -22,6 +24,15 @@
 #      view (mitcad#216).
 #   7. The app ends with Render Image and Render Environment open: no crash
 #      at the close (mitcad#226).
+#   8. The orientation cube's projection (mitcad#766, mitcad#774), each
+#      choice from the settings: following the view, drawn in the
+#      perspective view's perspective; orthographic and in its own
+#      perspective, its outline and the extent of its picks the same in
+#      either view, the perspective cube face on as large as the
+#      orthographic one and from the isometric view drawn otherwise; in
+#      each its picks inside its outline, and a click on its top face turns
+#      the perspective and the orthographic view to the top. Perspective
+#      chosen in Preferences is applied and saved.
 # The app renders into an offscreen framebuffer and --screenshot reads it
 # back, so this works over SSH, in session 0 without a desktop.
 #
@@ -322,6 +333,164 @@ if (Test-Path $coloredPath) {
 } else { Fail 'Component colors: no screenshot' }
 $null = Check-Shot 'component-restored'
 
+Write-Host '--- The orientation cube''s projection (mitcad#766, mitcad#774)'
+# Each choice of Preferences > Display > Orientation cube, read from settings
+# of the run's own: the front view orthographic, then perspective; a click
+# on the cube's top face from the isometric view in the perspective view,
+# then in the orthographic one. The Perspective cube in the Floating
+# layout, the others in the Docked one.
+$cubeScript = Join-Path $Out 'cube-projection.script'
+@'
+command view.front
+wait-log 'Camera direction 0 1 0 up 0 0 1 \(orthographic\)'
+command view.perspective
+wait-log 'Camera direction 0 1 0 up 0 0 1 \(perspective\)'
+command view.iso
+wait-log 'Camera direction -0\.577 0\.577 -0\.577 .*\(perspective\)'
+mark
+click-logged 'Orientation cube top at'
+wait-log 'Camera direction 0 0 -1 up 0 1 0 \(perspective\)'
+command view.orthographic
+wait-log 'Camera direction 0 0 -1 up 0 1 0 \(orthographic\)'
+mark
+command view.iso
+wait-log 'Camera direction -0\.577 0\.577 -0\.577 .*\(orthographic\)'
+click-logged 'Orientation cube top at'
+wait-log 'Camera direction 0 0 -1 up 0 1 0 \(orthographic\)'
+'@ | Set-Content -Encoding ascii $cubeScript
+# Cube-Settings name [lines]: a settings directory of its own with these
+# lines in its Mitcad.ini.
+function Cube-Settings([string]$Name, [string[]]$Lines = @()) {
+  $dir = Join-Path $Out "$Name-settings"
+  Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+  New-Item -ItemType Directory -Force (Join-Path $dir 'Mitcad') | Out-Null
+  if ($Lines.Count -gt 0) { Set-Content -Encoding ascii (Join-Path $dir 'Mitcad\Mitcad.ini') $Lines }
+  return $dir
+}
+# Cube-Outline log view cube [looking]: the cube's outline and the extent of
+# its picks logged last with the view's and the cube's projection, looking
+# from the front unless said otherwise; $null when none.
+function Cube-Outline([string]$Log, [string]$View, [string]$Cube, [string]$Looking = '0 1 0') {
+  $found = [regex]::Matches($Log, 'Orientation cube outline (-?\d+),(-?\d+) to (-?\d+),(-?\d+), ' +
+    'picks (-?\d+),(-?\d+) to (-?\d+),(-?\d+), looking ' + [regex]::Escape($Looking) + ' \(' + $View +
+    '\), cube ' + $Cube)
+  if ($found.Count -eq 0) { return $null }
+  $groups = $found[$found.Count - 1].Groups
+  return @(1..8 | ForEach-Object { [int]$groups[$_].Value })
+}
+# Cube-Apart a b count: how many of the first numbers of two outlines are
+# more than 2 pixels apart.
+function Cube-Apart($A, $B, [int]$Count) {
+  return @(0..($Count - 1) | Where-Object { [Math]::Abs($A[$_] - $B[$_]) -gt 2 }).Count
+}
+# Cube-Check outline what: logged, and picked only where it is drawn (its
+# picks inside the outline, give or take how far a pick reaches beyond a
+# part). $CubeReach: a pick finds a part of the cube within half its pick
+# width, AIS_ViewCube's sensitivity of the part (8 pixels for a corner, 4
+# for an edge) plus kPickTolerance (4, app/PickContext.hpp): up to 6 pixels
+# beyond a corner. Face on, the edges' bevels reach the outline, so the
+# picks can lie that far outside it, plus 2 for the outline rounded to whole
+# pixels and the pick's pixel row against the drawn one (seen: 4 to 7
+# pixels for the orthographic cube, the same without OrthoPers, so not its
+# transform).
+$CubeReach = 8
+function Cube-Check($Outline, [string]$What) {
+  if ($null -eq $Outline) { Fail "${What}: the cube's outline was not logged"; return $false }
+  Write-Host ("     {0}: outline {1}, picks {2}" -f $What, ($Outline[0..3] -join ' '), ($Outline[4..7] -join ' '))
+  if ($Outline[4] -ge $Outline[0] - $CubeReach -and $Outline[5] -ge $Outline[1] - $CubeReach -and
+      $Outline[6] -le $Outline[2] + $CubeReach -and $Outline[7] -le $Outline[3] + $CubeReach) {
+    Pass "${What}: picked where it is drawn"
+  } else { Fail "${What}: its picks reach outside its outline" }
+  return $true
+}
+# Cube-Run choice [chrome]: the script with view/cubeProjection = choice;
+# returns the log.
+function Cube-Run([string]$Choice, [string]$Chrome = 'docked') {
+  $settings = Cube-Settings "cube-$Choice" @('[view]', "cubeProjection=$Choice")
+  $runLog = Invoke-Mitcad "cube-$Choice" @("--chrome=$Chrome", '--no-recovery', '--demo') @{
+    'MITCAD_TEST_INPUT' = $cubeScript; 'MITCAD_LOG_ORIENTATION_CUBE' = '1'; 'MITCAD_SETTINGS_DIR' = $settings }
+  Expect-Log $runLog 'TestDriver: done' ("Orientation cube ${Choice}: the script ran, the clicks on the top " +
+    'face turned the perspective and the orthographic view there')
+  if ($Choice -ne 'follow-view') {
+    # The default is no change.
+    Expect-Log $runLog "Orientation cube projection $Choice" "Orientation cube ${Choice}: read from the settings"
+  }
+  return $runLog
+}
+
+$followLog = Cube-Run 'follow-view'
+$followOrtho = Cube-Outline $followLog 'orthographic' 'follow-view'
+$followPersp = Cube-Outline $followLog 'perspective' 'follow-view'
+if ((Cube-Check $followOrtho 'Following the orthographic view') -and
+    (Cube-Check $followPersp 'Following the perspective view')) {
+  if ((Cube-Apart $followOrtho $followPersp 4) -gt 0) {
+    Pass 'Following the perspective view: the cube drawn in its perspective'
+  } else { Fail 'Following the perspective view: the cube drawn as in the orthographic view' }
+}
+
+$orthoLog = Cube-Run 'orthographic'
+$orthoOrtho = Cube-Outline $orthoLog 'orthographic' 'orthographic'
+$orthoPersp = Cube-Outline $orthoLog 'perspective' 'orthographic'
+$orthoIso = Cube-Outline $orthoLog 'orthographic' 'orthographic' '-0.577 0.577 -0.577'
+if ((Cube-Check $orthoOrtho 'Orthographic cube, orthographic view') -and
+    (Cube-Check $orthoPersp 'Orthographic cube, perspective view')) {
+  if ((Cube-Apart $orthoOrtho $orthoPersp 8) -eq 0) {
+    Pass 'Orthographic cube: drawn and picked the same in the perspective view as in the orthographic one'
+  } else { Fail 'Orthographic cube: its outline or picks moved more than 2 pixels in the perspective view' }
+  if ($null -ne $followOrtho -and (Cube-Apart $orthoOrtho $followOrtho 8) -eq 0) {
+    Pass 'Orthographic cube: in the orthographic view as the cube following the view'
+  } else { Fail 'Orthographic cube: in the orthographic view not as the cube following the view' }
+}
+
+$perspLog = Cube-Run 'perspective' 'floating'
+$perspOrtho = Cube-Outline $perspLog 'orthographic' 'perspective'
+$perspPersp = Cube-Outline $perspLog 'perspective' 'perspective'
+$perspIso = Cube-Outline $perspLog 'orthographic' 'perspective' '-0.577 0.577 -0.577'
+if ((Cube-Check $perspOrtho 'Perspective cube, orthographic view') -and
+    (Cube-Check $perspPersp 'Perspective cube, perspective view')) {
+  if ((Cube-Apart $perspOrtho $perspPersp 8) -eq 0) {
+    Pass 'Perspective cube: drawn and picked the same in the perspective view as in the orthographic one'
+  } else { Fail 'Perspective cube: its outline or picks moved more than 2 pixels in the perspective view' }
+  # Face on as large as the orthographic cube (another layout: its size, not
+  # its place).
+  if ($null -ne $orthoOrtho -and
+      [Math]::Abs(($perspOrtho[2] - $perspOrtho[0]) - ($orthoOrtho[2] - $orthoOrtho[0])) -le 2 -and
+      [Math]::Abs(($perspOrtho[3] - $perspOrtho[1]) - ($orthoOrtho[3] - $orthoOrtho[1])) -le 2) {
+    Pass 'Perspective cube: face on as large as the orthographic cube'
+  } else { Fail 'Perspective cube: face on not as large as the orthographic cube' }
+}
+if ((Cube-Check $perspIso 'Perspective cube, isometric view') -and $null -ne $orthoIso) {
+  $sizes = @(($perspIso[2] - $perspIso[0]), ($perspIso[3] - $perspIso[1]), ($orthoIso[2] - $orthoIso[0]),
+    ($orthoIso[3] - $orthoIso[1]))
+  if ([Math]::Abs($sizes[0] - $sizes[2]) -gt 2 -or [Math]::Abs($sizes[1] - $sizes[3]) -gt 2) {
+    Pass ("Perspective cube: from the isometric view drawn in its perspective ({0} x {1}, orthographic {2} x {3})" -f
+      $sizes[0], $sizes[1], $sizes[2], $sizes[3])
+  } else { Fail 'Perspective cube: from the isometric view as large as the orthographic cube' }
+}
+
+# The preference saved: Preferences > Display, Orientation cube two entries
+# down from Follow the View, OK.
+$preferenceSettings = Cube-Settings 'cube-preference'
+$preferenceScript = Join-Path $Out 'cube-preference.script'
+@'
+command tools.preferences.display
+focus-dialog '^Preferences$'
+focus-widget preferencesCubeProjection
+key Down Down
+key Return
+focus-main
+wait-log 'Preferences: orientation cube perspective'
+wait-log 'Orientation cube projection perspective'
+expect-setting view/cubeProjection perspective
+'@ | Set-Content -Encoding ascii $preferenceScript
+$log = Invoke-Mitcad 'cube-preference' @('--no-recovery', '--demo') @{
+  'MITCAD_TEST_INPUT' = $preferenceScript; 'MITCAD_SETTINGS_DIR' = $preferenceSettings }
+Expect-Log $log 'TestDriver: done' 'Orientation cube: Perspective chosen in Preferences and applied'
+$saved = Join-Path $preferenceSettings 'Mitcad\Mitcad.ini'
+if ((Test-Path $saved) -and (Select-String -Quiet -Path $saved -Pattern '^cubeProjection=perspective$')) {
+  Pass 'Orientation cube: the choice saved in the settings'
+} else { Fail 'Orientation cube: view/cubeProjection=perspective not in the settings' }
+
 Write-Host '--- Open a project file, then change a parameter'
 $file = Join-Path $Out 'block.mitcad'
 @'
@@ -458,6 +627,25 @@ foreach ($where in @('app', 'model-worker')) {
   elseif ($stack[0] -match '\\mitcad\.exe!mitcad::crash::crashNow\+0x[0-9a-f]+$') {
     Pass "${where}: the report's stack starts at the crashing function, named"
   } else { Fail "${where}: the report's stack starts at $($stack[0]), not at mitcad::crash::crashNow" }
+}
+
+# An exception out of a slot that nothing catches (mitcad#773): the
+# unhandled exception filter reads the thrown object before anything
+# unwinds, so the report names its type and message.
+$crashes = Join-Path $Out 'crashes-app-exception'
+Remove-Item -Recurse -Force $crashes -ErrorAction SilentlyContinue
+$log = Invoke-Mitcad 'crash-app-exception' @('--no-recovery', '--demo') @{
+  'MITCAD_TEST_CRASH' = 'app-exception'; 'MITCAD_CRASH_DIR' = $crashes } -Crash
+Expect-Log $log 'MITCAD_TEST_CRASH=app-exception\)' 'app-exception: thrown out of a slot for the test'
+$report = Get-ChildItem -Path $crashes -Filter 'crash-*.crash' -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $report) {
+  Fail 'app-exception: no crash report written'
+} else {
+  $lines = Get-Content $report.FullName
+  $message = $lines | Where-Object { $_.StartsWith('message: ') } | Select-Object -First 1
+  if ($message -match 'std::range_error: thrown for a test \(MITCAD_TEST_CRASH=app-exception\)$') {
+    Pass "app-exception: the report names the exception ($message)"
+  } else { Fail "app-exception: the report's message is '$message', not the exception's type and message" }
 }
 
 # View > Rendered (mitcad#51): the app starts mitcad-render.exe next to it

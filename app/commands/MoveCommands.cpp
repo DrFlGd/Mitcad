@@ -324,9 +324,14 @@ freeHandle(int axis, bool turn) {
     }
     const gp_Dir direction(axis == 0 ? 1 : 0, axis == 1 ? 1 : 0, axis == 2 ? 1 : 0);
     if (turn) {
-      // About the moved middle.
-      pivot->Translate(gp_Vec(state.value(QStringLiteral("tx")), state.value(QStringLiteral("ty")),
-                              state.value(QStringLiteral("tz"))));
+      // About the moved middle; none while a move is no number yet (a
+      // minus sign typed alone).
+      const gp_XYZ moved(state.value(QStringLiteral("tx")), state.value(QStringLiteral("ty")),
+                         state.value(QStringLiteral("tz")));
+      if (!std::isfinite(moved.X()) || !std::isfinite(moved.Y()) || !std::isfinite(moved.Z())) {
+        return std::nullopt;
+      }
+      pivot->Translate(gp_Vec(moved));
       return ring(*pivot, direction);
     }
     return arrow(*pivot, direction);
@@ -646,13 +651,9 @@ CommandDef moveCommand(const CommandContext& context) {
   def.featureType = QStringLiteral("move");
   def.editsAlso = {QStringLiteral("move_occurrence")};
   const auto bodies = choiceIs(QStringLiteral("move_type"), QStringLiteral("bodies"));
-  def.inputs = {
-      choiceInput(QStringLiteral("move_type"), QObject::tr("Move Object"),
-                  {{QStringLiteral("bodies"), QStringLiteral("Bodies")},
-                   {QStringLiteral("components"), QStringLiteral("Components")}},
-                  QStringLiteral("bodies")),
-      selectionInput(QStringLiteral("bodies"), QObject::tr("Objects"), SelectKind::Body, 1, 0)
-          .withVisible(bodies),
+  const InputDef bodyObjects =
+      selectionInput(QStringLiteral("bodies"), QObject::tr("Objects"), SelectKind::Body, 1, 0).withVisible(bodies);
+  const InputDef componentObjects =
       selectionInput(QStringLiteral("components"), QObject::tr("Objects"), SelectKind::Component | SelectKind::Body, 1, 0)
           .withTooltip(QObject::tr("Components in the browser, or a body a component's occurrence places"))
           .withAccepts([](const SelectionItem& item) { return !item.occurrence.isEmpty(); })
@@ -664,8 +665,19 @@ CommandDef moveCommand(const CommandContext& context) {
             }
             return occurrence;
           })
-          .withVisible(choiceIs(QStringLiteral("move_type"), QStringLiteral("components"))),
+          .withVisible(choiceIs(QStringLiteral("move_type"), QStringLiteral("components")));
+  def.inputs = {
+      choiceInput(QStringLiteral("move_type"), QObject::tr("Move Object"),
+                  {{QStringLiteral("bodies"), QStringLiteral("Bodies")},
+                   {QStringLiteral("components"), QStringLiteral("Components")}},
+                  QStringLiteral("bodies")),
+      bodyObjects,
+      componentObjects,
   };
+  // At the top of the view's context menu and on the browser's rows
+  // (mitcad#735): for bodies, or for placed components (occurrences), which
+  // it starts with; not for a mix, which it would move as bodies only.
+  def.offeredAtTop = takenWholeByOneOf({bodyObjects, componentObjects});
   // The motion, as Move Face's (mitcad#531).
   def.inputs << motionInputs(kMoveTypes, false);
   def.inputs << checkInput(QStringLiteral("copy"), QObject::tr("Create Copy"), false)

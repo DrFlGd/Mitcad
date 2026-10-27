@@ -7,7 +7,9 @@
 //! nearest component up the occurrence path that places it, then the
 //! root's, then the built-in default, steel. Without a path (a body's mass
 //! in the `properties` query) only the body's own component and the root
-//! count.
+//! count. A component's drawing puts the component's first path from the
+//! root before the body's path from the component (`body_material_under`,
+//! mitcad#758).
 //!
 //! Setting a body's material also sets its appearance to the material's
 //! (`appearance: "replace"`), keeps the body's (`"keep"`), or, when left
@@ -164,27 +166,73 @@ impl<K: Kernel> Document<K> {
         uid: BodyUid,
         path: Option<&[OccurrenceUid]>,
     ) -> (&Material, MaterialSource) {
-        if let Some(found) = self
-            .state
-            .body_attributes
-            .get(&uid)
-            .and_then(|a| a.material.as_deref())
-            .and_then(|id| self.material(id))
-        {
+        if let Some(found) = self.own_material(uid) {
             return (found, MaterialSource::Body);
         }
-        let mut chain: Vec<ComponentUid> = match path {
-            Some(path) => path
-                .iter()
-                .rev()
-                .filter_map(|o| self.state.assembly.occurrence(*o).map(|o| o.component))
-                .collect(),
+        let chain: Vec<ComponentUid> = match path {
+            Some(path) => self.path_components_up(path),
             None => self
                 .body_component(uid)
                 .or_else(|| self.feature_component(uid.feature))
                 .into_iter()
                 .collect(),
         };
+        self.material_up(chain)
+    }
+
+    /// The material a body is made of as a drawing of `component` shows
+    /// it, `path` leading from `component` to the body's component (empty
+    /// for its own bodies): its own, else the nearest component's default
+    /// up `path`, then `component`'s and the components' above it where the
+    /// application shows it (its first path from the root), then the
+    /// root's, else steel. A component placed nowhere has only its own
+    /// default above `path`.
+    pub fn body_material_under(
+        &self,
+        uid: BodyUid,
+        component: ComponentUid,
+        path: &[OccurrenceUid],
+    ) -> (&Material, MaterialSource) {
+        if component.is_root() {
+            return self.body_material(uid, (!path.is_empty()).then_some(path));
+        }
+        match crate::links::first_path(&self.state.assembly, component, None) {
+            Ok(mut full) => {
+                full.extend_from_slice(path);
+                self.body_material(uid, Some(&full))
+            }
+            Err(_) => {
+                if let Some(found) = self.own_material(uid) {
+                    return (found, MaterialSource::Body);
+                }
+                let mut chain = self.path_components_up(path);
+                chain.push(component);
+                self.material_up(chain)
+            }
+        }
+    }
+
+    /// The material a body names as its own, when it exists.
+    fn own_material(&self, uid: BodyUid) -> Option<&Material> {
+        self.state
+            .body_attributes
+            .get(&uid)
+            .and_then(|a| a.material.as_deref())
+            .and_then(|id| self.material(id))
+    }
+
+    /// The components the occurrences of `path` place, nearest the body
+    /// first.
+    fn path_components_up(&self, path: &[OccurrenceUid]) -> Vec<ComponentUid> {
+        path.iter()
+            .rev()
+            .filter_map(|o| self.state.assembly.occurrence(*o).map(|o| o.component))
+            .collect()
+    }
+
+    /// The first default material along `chain`, then the root's, else
+    /// steel (for a body without a material of its own).
+    fn material_up(&self, mut chain: Vec<ComponentUid>) -> (&Material, MaterialSource) {
         chain.push(ComponentUid::ROOT);
         for component in chain {
             if let Some(found) = self
@@ -621,6 +669,8 @@ impl<K: Kernel> Document<K> {
                 }
                 state.body_attributes.retain(|_, a| !a.is_default());
                 state.component_materials.retain(|_, m| m != id);
+                // Its purge volumes set by hand (mitcad#758).
+                state.drop_purge_overrides_of(id);
             }
             Ok((label, (), false))
         })?;

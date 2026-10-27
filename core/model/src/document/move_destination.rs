@@ -249,7 +249,7 @@ impl<K: Kernel> Document<K> {
                     matches!(extrude.start, Start::ProfilePlane | Start::Offset { .. })
                         && match &extrude.extent {
                             Extent::Distance { .. } | Extent::Symmetric { .. } => true,
-                            Extent::TwoSides { side1, side2 } => {
+                            Extent::TwoSides { side1, side2, .. } => {
                                 matches!(side1, Side::Distance { .. })
                                     && matches!(side2, Side::Distance { .. })
                             }
@@ -473,6 +473,11 @@ fn relocate_links(
             }
             FeatureDef::Extrude(extrude) => {
                 for (body, link) in &mut extrude.object_links {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
+            }
+            FeatureDef::Revolve(revolve) => {
+                for (body, link) in &mut revolve.object_links {
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
             }

@@ -113,10 +113,12 @@ fn model_xml(model: &Model) -> String {
     for (prefix, uri) in &model.namespaces {
         let _ = write!(namespaces, " xmlns:{}=\"{}\"", escape(prefix), escape(uri));
     }
+    let unit = model.unit.as_str();
+    let decimals = model.unit.decimals();
     let _ = write!(
         xml,
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"{CORE_NAMESPACE}\"{namespaces}>\n"
+         <model unit=\"{unit}\" xml:lang=\"en-US\" xmlns=\"{CORE_NAMESPACE}\"{namespaces}>\n"
     );
     if !model.application.is_empty() {
         let _ = writeln!(
@@ -191,9 +193,9 @@ fn model_xml(model: &Model) -> String {
             let _ = writeln!(
                 xml,
                 "     <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
-                number(v[0]),
-                number(v[1]),
-                number(v[2])
+                number(v[0], decimals),
+                number(v[1], decimals),
+                number(v[2], decimals)
             );
         }
         xml.push_str("    </vertices>\n    <triangles>\n");
@@ -216,7 +218,11 @@ fn model_xml(model: &Model) -> String {
         for placement in &part.placements {
             let _ = write!(xml, "    <component objectid=\"{}\"", i + 2);
             if *placement != Placement::IDENTITY {
-                let numbers: Vec<String> = placement.to_3mf().iter().map(|&m| number(m)).collect();
+                let numbers: Vec<String> = placement
+                    .to_3mf()
+                    .iter()
+                    .map(|&m| number(m, decimals))
+                    .collect();
                 let _ = write!(xml, " transform=\"{}\"", numbers.join(" "));
             }
             xml.push_str("/>\n");
@@ -233,14 +239,16 @@ fn channel(c: f64) -> u8 {
     (c.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// A number with at most 6 decimals (a nanometre in millimetres), without
-/// trailing zeros or an exponent: `12.5`, `-0.000125`, `0`.
-fn number(value: f64) -> String {
-    let rounded = (value * 1e6).round() / 1e6;
+/// A number with at most `decimals` decimals (6: a nanometre in
+/// millimetres), without trailing zeros or an exponent: `12.5`,
+/// `-0.000125`, `0`.
+fn number(value: f64, decimals: usize) -> String {
+    let scale = 10f64.powi(decimals as i32);
+    let rounded = (value * scale).round() / scale;
     if rounded == 0.0 || !rounded.is_finite() {
         return "0".to_owned();
     }
-    let mut text = format!("{rounded:.6}");
+    let mut text = format!("{rounded:.decimals$}");
     while text.ends_with('0') {
         text.pop();
     }
@@ -269,6 +277,6 @@ fn escape(text: &str) -> String {
 }
 
 #[cfg(test)]
-pub(crate) fn number_for_tests(value: f64) -> String {
-    number(value)
+pub(crate) fn number_for_tests(value: f64, decimals: usize) -> String {
+    number(value, decimals)
 }

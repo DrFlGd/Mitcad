@@ -306,14 +306,14 @@ const char* const kUsage = R"(usage:
       in millimetres unless --unit says otherwise. An invalid pattern is
       refused with its reasons.
 )"
-                          R"(  mitcad-cli export-drawing <file.mitcad> <out.pdf|out.svg|out.dxf> [--bodies <b>,...]
+                          R"(  mitcad-cli export-drawing <file.mitcad> <out.pdf|out.svg|out.dxf|out.dwg> [--bodies <b>,...]
                     [--sheet A4|A3|A2|A1|A0|ANSI_A..ANSI_E] [--portrait] [--scale fit|1:2|2:1]
                     [--first-angle] [--views front,top,right,iso] [--hidden] [--tangent-edges]
                     [--section x,y,z --normal x,y,z | --section-analysis <name>]
                     [--no-dimensions] [--sketch-dimensions] [--no-hole-table]
                     [--unit mm|cm|m|in|ft] [--title <text>] [--date YYYY-MM-DD]
                     [--per-body] [--polygonal] [--json]
-  mitcad-cli export-drawing <file.mitcad> <out.pdf|out.svg|out.dxf> --drawing <d>
+  mitcad-cli export-drawing <file.mitcad> <out.pdf|out.svg|out.dxf|out.dwg> --drawing <d>
                     [--sheet N] [--title <text>] [--json]
       Writes a drawing of the shown bodies (or the listed uids or names):
       the front, top and right views (third angle; --first-angle) with
@@ -323,8 +323,8 @@ const char* const kUsage = R"(usage:
       title block with the design's name (the file's, or --title), the
       bodies, the scale, the date and the unit (the design's, or --unit).
       The sheet is A4 landscape and the scale fits it unless given. A PDF
-      has a page per sheet; --per-body makes a sheet per body, and an SVG
-      or DXF file per sheet (<out>-2.svg, ...). --drawing <id or name>
+      has a page per sheet; --per-body makes a sheet per body, and an SVG,
+      DXF or DWG file per sheet (<out>-2.svg, ...). --drawing <id or name>
       writes a drawing kept in the design as it is (its sheets, views and
       title block; --title only where it has no title; --sheet N only its
       Nth sheet, from 1); the options that lay out a new drawing are

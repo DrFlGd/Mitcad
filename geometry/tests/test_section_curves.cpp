@@ -96,11 +96,38 @@ void test_spline_pieces_end_to_end_are_one_curve() {
   CHECK(splines == 1);
 }
 
+// Intersect's crossing points (mitcad#736): a plane through an edge gives
+// the point where it passes, an edge in the plane its ends, a plane that
+// misses it nothing.
+void test_edges_crossing_points() {
+  const ShapePtr block = extrude("F2", {rectangle(1, 0, 0, 60, 40)}, 0, 20);
+  // Line 0 runs along y = 0 and line 1 along x = 60: their side faces
+  // meet in the vertical edge at (60, 0).
+  const std::string corner = edge(side("F2", 1, 0), side("F2", 1, 1));
+  const std::vector<gp_Pnt> across =
+      mitcad::geometry::section_points(*block, corner, gp_Pnt(0.0, 0.0, 5.0), gp_Dir(0.0, 0.0, 1.0));
+  CHECK(across.size() == 1);
+  if (across.size() == 1) {
+    CHECK(across[0].Distance(gp_Pnt(60.0, 0.0, 5.0)) < 1e-6);
+  }
+  // The top front edge lies in the plane y = 0: its ends.
+  const std::string top_front = edge(end_cap("F2", 1), side("F2", 1, 0));
+  const std::vector<gp_Pnt> lying =
+      mitcad::geometry::section_points(*block, top_front, gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 1.0, 0.0));
+  CHECK(lying.size() == 2);
+  for (const gp_Pnt& p : lying) {
+    CHECK(p.Distance(gp_Pnt(0.0, 0.0, 20.0)) < 1e-6 || p.Distance(gp_Pnt(60.0, 0.0, 20.0)) < 1e-6);
+  }
+  // Above the block the plane misses the edge.
+  CHECK(mitcad::geometry::section_points(*block, corner, gp_Pnt(0.0, 0.0, 30.0), gp_Dir(0.0, 0.0, 1.0)).empty());
+}
+
 } // namespace
 
 void section_curve_tests() {
   test_a_box_cut_through_its_middle();
   test_spline_pieces_end_to_end_are_one_curve();
+  test_edges_crossing_points();
 }
 
 } // namespace test

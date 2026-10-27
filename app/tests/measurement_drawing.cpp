@@ -6,8 +6,10 @@
 // picture's scale, and the projection of a final render's camera.
 #include "view/MeasurementDrawing.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <optional>
 #include <vector>
 
@@ -296,6 +298,34 @@ int measurementDrawingTests() {
   const MeasurementShape movedLine = draggedMeasurement(face, true, QPointF(30.0, -20.0));
   CHECK(near(movedLine.grips.front().first().y(), face.grips.front().first().y() - 20.0, 1e-6));
   CHECK(near(movedLine.grips.front().first().x(), face.grips.front().first().x(), 1e-6));
+  // Seen obliquely, the plane's axes are not at right angles on the
+  // picture: the line's preview shifts as the drag is committed (its part
+  // along y of the drag split into the axes), not by the drag's
+  // perpendicular projection on y (mitcad#759).
+  const auto oblique = [](const gp_Pnt& p) -> std::optional<QPointF> {
+    return QPointF(100.0 + 10.0 * p.X() + 6.0 * p.Y(), 100.0 - 4.0 * p.Y() - 10.0 * p.Z());
+  };
+  const MeasurementShape skewed = layoutMeasurement(drawn[0], oblique);
+  CHECK(skewed.valid && skewed.planar && !skewed.grips.empty());
+  if (skewed.valid && !skewed.grips.empty()) {
+    for (const QPointF& drag : {QPointF(0.0, -10.0), QPointF(10.0, 0.0), QPointF(7.0, -3.0)}) {
+      const std::optional<std::array<double, 2>> committed = measurementDragMillimetres(skewed, drag);
+      CHECK(committed.has_value());
+      if (!committed) {
+        continue;
+      }
+      const QPointF expected = skewed.yPerMillimetre * (*committed)[1];
+      const MeasurementShape shifted = draggedMeasurement(skewed, true, drag);
+      const QPointF moved = shifted.grips.front().first() - skewed.grips.front().first();
+      CHECK(near(moved.x(), expected.x(), 1e-6) && near(moved.y(), expected.y(), 1e-6));
+      CHECK(near(shifted.labelAt.x() - skewed.labelAt.x(), expected.x(), 1e-6) &&
+            near(shifted.labelAt.y() - skewed.labelAt.y(), expected.y(), 1e-6));
+    }
+    // A drag along the line (its x axis) commits no shift, and shows none.
+    const MeasurementShape alongLine = draggedMeasurement(skewed, true, skewed.xPerMillimetre * 2.0);
+    CHECK(near(alongLine.grips.front().first().x(), skewed.grips.front().first().x(), 1e-6) &&
+          near(alongLine.grips.front().first().y(), skewed.grips.front().first().y(), 1e-6));
+  }
 
   // Seen from below (the picture mirrored) and from behind (right to
   // left): the text still reads left to right, upright.

@@ -271,8 +271,11 @@ impl<K: Kernel> Document<K> {
         };
         let mut names: Vec<String> = Vec::new();
         for s in &shown {
-            let path = (drawing.component.is_root() && !s.path.is_empty()).then_some(&s.path[..]);
-            let name = self.body_material(s.body, path).0.name.clone();
+            let name = self
+                .body_material_under(s.body, drawing.component, &s.path)
+                .0
+                .name
+                .clone();
             if !names.contains(&name) {
                 names.push(name);
             }
@@ -307,8 +310,11 @@ impl<K: Kernel> Document<K> {
                     mass.volume
                 }
             };
-            let path = (drawing.component.is_root() && !s.path.is_empty()).then_some(&s.path[..]);
-            kg += volume * self.body_material(s.body, path).0.density * 1e-6;
+            let density = self
+                .body_material_under(s.body, drawing.component, &s.path)
+                .0
+                .density;
+            kg += volume * density * 1e-6;
             measured += 1;
         }
         if measured == 0 {

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <exception>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 #include <QEventLoop>
@@ -172,7 +173,14 @@ bool DocumentSession::runJob(const QString& label, const QString& stage, const J
       error = std::current_exception();
     }
   } else {
-    m_worker->post([&job, &state] { job(state); });
+    // For tests, a job made longer after its work (MITCAD_TEST_JOB_SLEEP_MS).
+    const int extraMs = testJobSleep(label);
+    m_worker->post([&job, &state, extraMs] {
+      job(state);
+      if (extraMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(extraMs));
+      }
+    });
     try {
       if (!m_worker->waitFor(kBlockFor)) {
         if (m_waitHandler) {

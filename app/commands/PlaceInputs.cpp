@@ -67,6 +67,11 @@ const QString kAlignAuto = QStringLiteral("at_align_auto");
 // line's direction kept as it is, so that it opens and saves unchanged;
 // a new Place On or Align pick drops it (mitcad#656).
 const QString kNoAlignSide = QStringLiteral("at_no_align_side");
+// A face placement loaded without `align` (`align` is optional in `at`):
+// saved without one, not with Reference 1's line, so that an unchanged OK
+// leaves the part as it was; a new Place On, Reference or Align pick drops
+// it (mitcad#761).
+const QString kNoAlign = QStringLiteral("at_no_align");
 // The references' colours whatever comes before them (mitcad#656).
 const QColor kReference1Color(0x2c, 0xa0, 0x2c);
 const QColor kReference2Color(0x9b, 0x30, 0xff);
@@ -725,6 +730,7 @@ void placeItem(CommandState& state, const CommandContext& context, const Selecti
   state.setObject(kForm, {{QStringLiteral("form"), formName(form)}});
   state.setObject(kPick, QJsonObject());
   state.setObject(kNoAlignSide, QJsonObject()); // a new pick grows into its face
+  state.setObject(kNoAlign, QJsonObject());
   state.setObject(kSides, QJsonObject());
   state.setObject(kPlane, QJsonObject());
   state.setObject(kPoint, QJsonObject());
@@ -881,6 +887,7 @@ void picked(const SelectionItem& item, CommandState& state, const CommandContext
     const SelectionItem face = itemFromJson(state.object(kItem));
     state.setItems(kAt, {face});
     if (rereference(state, context, item, -1)) {
+      state.setObject(kNoAlign, QJsonObject()); // a new reference: Align is Reference 1 again
       qDebug().noquote() << QStringLiteral("Place %1: %2 is a reference now").arg(panel.command, item.describe());
       logPlace(state, panel, context);
       return;
@@ -920,9 +927,33 @@ void pointMoved(CommandState& state, const CommandContext& context) {
   }
 }
 
-// The frame the model gives the inputs' `at` without the fields named.
+// The frame the model gives the inputs' `at` without the fields named; for
+// a shaft of another component its seat's (mitcad#754), the seat's own
+// fields left out likewise and the x axis a plane's without one.
 std::optional<QJsonObject> frameWithout(const CommandState& state, const CommandContext& context,
                                         const PlacePanel& panel, const QStringList& without) {
+  if (placeForm(state, panel) == PlaceForm::Axis && !linkOf(state, context, placedItem(state)).isEmpty()) {
+    QJsonObject def;
+    Built ignored;
+    if (!addPlace(def, state, context, panel, ignored) || !def.value(QStringLiteral("seat")).isObject()) {
+      return std::nullopt;
+    }
+    QJsonObject seat = def.value(QStringLiteral("seat")).toObject();
+    for (const QString& key : without) {
+      seat.remove(key);
+    }
+    QJsonObject frame;
+    try {
+      frame = context.queryObject({{QStringLiteral("query"), QStringLiteral("seat_frame")}, {QStringLiteral("seat"), seat}});
+    } catch (...) {
+      return std::nullopt;
+    }
+    const auto axis = dirOf(frame.value(QStringLiteral("axis")));
+    if (axis && !frame.contains(QStringLiteral("x_axis"))) {
+      frame.insert(QStringLiteral("x_axis"), json(defaultX(*axis)));
+    }
+    return frame;
+  }
   QJsonObject at = atOf(state, context, panel, true);
   if (at.isEmpty()) {
     return std::nullopt;
@@ -1005,6 +1036,7 @@ QVector<InputDef> placeInputs(const PlacePanel& panel) {
   InputDef first = selectionInput(kEdge1, QObject::tr("Reference 1"), kLineKinds, 0, 1)
                        .withAccepts(isLineItem)
                        .withOnChange([panel](CommandState& state, const CommandContext& context) {
+                         state.setObject(kNoAlign, QJsonObject()); // picked by the user
                          const Selection& line = state.items(kEdge1);
                          if (!line.isEmpty() && rereference(state, context, line.first(), 0)) {
                            logPlace(state, panel, context);
@@ -1018,6 +1050,7 @@ QVector<InputDef> placeInputs(const PlacePanel& panel) {
   InputDef second = selectionInput(kEdge2, QObject::tr("Reference 2"), kLineKinds, 0, 1)
                         .withAccepts(isLineItem)
                         .withOnChange([panel](CommandState& state, const CommandContext& context) {
+                          state.setObject(kNoAlign, QJsonObject()); // picked by the user
                           const Selection& line = state.items(kEdge2);
                           if (!line.isEmpty() && rereference(state, context, line.first(), 1)) {
                             logPlace(state, panel, context);
@@ -1128,6 +1161,7 @@ QVector<InputDef> placeInputs(const PlacePanel& panel) {
                            // and a new line grows into the face.
                            state.setObject(kAlignAuto, QJsonObject());
                            state.setObject(kNoAlignSide, QJsonObject());
+                           state.setObject(kNoAlign, QJsonObject());
                          })
                          .withVisible(alignShown);
     // Empty on a face it is Reference 1 (mitcad#656: never a hidden axis),
@@ -1228,7 +1262,7 @@ void clearPlace(CommandState& state) {
   state.setItems(kEdge1, {});
   state.setItems(kOnPlane, {});
   state.setItems(kEdge2, {});
-  for (const QString& key : {kItem, kForm, kPick, kSides, kPoint, kPlane, kLegacy, kNoAlignSide}) {
+  for (const QString& key : {kItem, kForm, kPick, kSides, kPoint, kPlane, kLegacy, kNoAlignSide, kNoAlign}) {
     state.setObject(key, QJsonObject());
   }
 }
@@ -1238,11 +1272,16 @@ QJsonObject atOf(const CommandState& state, const CommandContext& context, const
   if (form == PlaceForm::None) {
     return QJsonObject();
   }
-  Q_UNUSED(context);
   const auto valueOf = [&state, numbers](const QString& key) {
     return numbers ? QJsonValue(state.value(key)) : QJsonValue(state.expression(key));
   };
   const SelectionItem item = placedItem(state);
+  // A shaft of another component is no `at` (mitcad#754): resolved in the
+  // feature's component it would be in the wrong place. addPlace makes it
+  // a seat with its link; placeFrame and shaftSeat ask `seat_frame`.
+  if (form == PlaceForm::Axis && !linkOf(state, context, item).isEmpty()) {
+    return QJsonObject();
+  }
   QJsonObject at;
   const auto nearPick = state.object(kPick).value(QStringLiteral("near"));
   switch (form) {
@@ -1294,8 +1333,9 @@ QJsonObject atOf(const CommandState& state, const CommandContext& context, const
   }
   const auto sides = sidesOf(state);
   if (state.items(kAlign).isEmpty() && form == PlaceForm::Face && !state.items(kEdge1).isEmpty() &&
-      !(sides && sides->implicit)) {
-    // An empty Align on a body face is Reference 1 (mitcad#656).
+      !(sides && sides->implicit) && !state.object(kNoAlign).value(QStringLiteral("on")).toBool()) {
+    // An empty Align on a body face is Reference 1 (mitcad#656); not on a
+    // definition loaded without `align` (mitcad#761).
     at.insert(QStringLiteral("align"), state.items(kEdge1).first().reference());
   } else if (!state.items(kAlign).isEmpty()) {
     at.insert(QStringLiteral("align"), state.items(kAlign).first().reference());
@@ -1472,6 +1512,10 @@ bool loadPlace(const QJsonObject& feature, CommandState& state, const CommandCon
       // turned from the plane's x, kept so as Align (mitcad#656).
       if (!implicit && info && info->origin && !at.contains(QStringLiteral("align")) && panel.turns) {
         state.setItems(kAlign, {originAxis(axisAlong(info->frame.x), context)});
+      } else if (!implicit && !at.contains(QStringLiteral("align"))) {
+        // Written without `align` (through the model's commands): saved
+        // so again, not turned to Reference 1 (mitcad#761).
+        state.setObject(kNoAlign, {{QStringLiteral("on"), true}});
       }
     }
     const auto keep = [&](const char* key, bool shown, const QString& input) {
@@ -1731,6 +1775,33 @@ QJsonObject shaftSeat(const CommandState& state, const CommandContext& context, 
   } catch (...) {
     return QJsonObject();
   }
+}
+
+QJsonObject occurrenceLinkOf(const CommandContext& context, const SelectionItem& item) {
+  if (item.kind != SelectKind::Face && item.kind != SelectKind::Edge) {
+    return QJsonObject();
+  }
+  QJsonObject components;
+  try {
+    components = context.queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
+  } catch (...) {
+    return QJsonObject();
+  }
+  // As linkOf for a panel seen where the active component is (initPlace).
+  const QString active = components.value(QStringLiteral("active")).toString(QStringLiteral("C0"));
+  const QJsonArray occurrences = components.value(QStringLiteral("occurrences")).toArray();
+  const QString component = componentAt(occurrences, item.occurrence);
+  if (component.isEmpty() || component == active) {
+    return QJsonObject();
+  }
+  QJsonObject link{{QStringLiteral("source"), item.occurrence}};
+  if (active != QStringLiteral("C0")) {
+    const QString target = pathTo(occurrences, QString(), active);
+    if (!target.isEmpty()) {
+      link.insert(QStringLiteral("target"), target);
+    }
+  }
+  return link;
 }
 
 // ---------------------------------------------------------------------------

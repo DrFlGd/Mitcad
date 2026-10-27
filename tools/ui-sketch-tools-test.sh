@@ -99,13 +99,19 @@ last_line() {
   sed 's/.* from (\([^,]*\), \([^)]*\)) to (\([^,]*\), \([^)]*\))/\1 \2 \3 \4/' <<< "$last"
 }
 
-# expect_line_end x y description: the line added last ends within 6 mm of
-# (x, y) (a snap to the grid or an inference may move it a little).
+# expect_line_end x y description: the line added last ends near (x, y):
+# within 6 mm (an inference may move it a little), or on the grid point the
+# snap to the grid rounds (x, y) to, up to half a grid step off in x and in
+# y (the step of the layout grid the app logged last; 0.5 mm more for the
+# pixel the click lands on). A 10 mm grid moves a point up to 7.1 mm.
 expect_line_end() {
-  local sx sy ex ey
+  local sx sy ex ey step
   read -r sx sy ex ey <<< "$(last_line)"
-  awk -v ex="$ex" -v ey="$ey" -v x="$1" -v y="$2" 'BEGIN { exit !((ex - x) ^ 2 + (ey - y) ^ 2 <= 36) }' ||
-    ui_fail "$3: the line ends at ($ex, $ey), expected near ($1, $2)"
+  step=$(grep -o "Layout grid [0-9.]* mm" "$UI_LOG" | tail -1 | awk '{ print $3 }')
+  awk -v ex="$ex" -v ey="$ey" -v x="$1" -v y="$2" -v g="${step:-0}" 'BEGIN {
+    dx = ex - x; dy = ey - y; if (dx < 0) dx = -dx; if (dy < 0) dy = -dy
+    exit !(dx * dx + dy * dy <= 36 || (g > 0 && dx <= g / 2 + 0.5 && dy <= g / 2 + 0.5)) }' ||
+    ui_fail "$3: the line ends at ($ex, $ey), expected near ($1, $2) (grid ${step:-unknown} mm)"
   echo "ok   $3"
 }
 

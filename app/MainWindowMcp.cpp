@@ -340,6 +340,12 @@ QJsonObject MainWindow::mcpExport(const QJsonObject& arguments) {
   if (m_session || m_mode == Mode::Command) {
     refuse(tr("Finish the current command before exporting."));
   }
+  if (autosaveMarker() >= 0) {
+    // Editing a sketch in the middle of the timeline rolls the later
+    // features back until it ends (mitcad#750): the bodies at the marker
+    // are not the design's.
+    refuse(tr("Finish the sketch before exporting: editing it rolls the later features back."));
+  }
   if (m_closePending || QApplication::activeModalWidget() != nullptr) {
     refuse(tr("The document is closing or waiting for a dialog."));
   }

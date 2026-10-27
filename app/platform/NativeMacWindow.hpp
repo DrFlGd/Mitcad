@@ -155,7 +155,6 @@ public:
   void setHistoryFilter(const QString& label, bool active);
   void setProjectStatus(const QString& text, const QString& tooltip);
   void setAgentStatus(const QString& text, const QString& tooltip, bool connected, bool available);
-  void setAgentStatus(const QString& text, const QString& tooltip, bool connected, bool available);
   void setDocument(const QString& title, const QString& path, bool edited);
   void setSketchMode(bool sketching);
   void setStatus(const QString& message, bool error = false);

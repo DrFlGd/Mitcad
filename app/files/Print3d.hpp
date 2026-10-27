@@ -9,6 +9,7 @@
 
 #include <QGroupBox>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <QPair>
 #include <QString>
 #include <QStringList>
@@ -119,6 +120,13 @@ struct PrintPiece {
 // of its placements is.
 QVector<PrintPiece> printPieces(const QStringList& bodies, const QStringList& names, const QJsonArray& instances,
                                 const Selection& chosen = {});
+
+// How an export put the bodies on the print bed (mitcad#731), for the log:
+// the body and face on the bed, the plate's centre and the transform after
+// the design's placements (rows "a b c t", three decimals); the bodies kept
+// as assembled; or as in the design; then each bed face that cannot be
+// used. `bed` is the `export` result's `bed`.
+QString printBedLog(const QJsonObject& bed);
 
 // The folder the files go into, <root>/mitcad-print/<design>: made when
 // missing, and emptied, so that no file of an earlier send reaches the

@@ -108,6 +108,15 @@ pub mod ffi {
         chamfer_angle: f64,
         chamfer_diameter: f64,
         chamfer_ends: Vec<u8>,
+        /// A taper pipe thread (mitcad#733; `ThreadSpec` in thread.hpp):
+        /// the diameters' change per length (0: a straight thread) and,
+        /// over a whole face, the end it starts from where both or neither
+        /// is free.
+        taper: f64,
+        taper_high_end: bool,
+        /// Per face, the angle it is turned by instead of `angle`; empty:
+        /// `angle` for every face (mitcad#733).
+        angles: Vec<f64>,
     }
 
     struct PlaneOutput {
@@ -403,6 +412,9 @@ pub fn thread_input(spec: &ThreadSpec<'_>) -> ffi::ThreadInput {
                 .map(|&(low, high)| u8::from(low) | (u8::from(high) << 1))
                 .collect()
         }),
+        taper: spec.taper.map_or(0.0, |t| t.per_length),
+        taper_high_end: spec.taper.is_some_and(|t| t.high_end),
+        angles: spec.face_angles.to_vec(),
     }
 }
 

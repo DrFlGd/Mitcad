@@ -25,6 +25,10 @@
 #      reference; the distances typed 10 and 12; More opened, Angle 10 in
 #      the panel shows its value box in the view (hidden at 0), where it is
 #      turned to 30 degrees. OK makes a 30 x 20 x 10 box (6000 mm3).
+#   5. A box mitcad-cli places on the block's top face by two edges and no
+#      `align` (optional in `at`): edited, 15 high, OK and saved: still no
+#      `align` and the same face and edges (it was turned to Reference 1,
+#      mitcad#761).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-place-test.sh [screenshot.png]
@@ -149,6 +153,49 @@ ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added box (New Body)" "the box added" 30
 ui_expect_volume "New body [^ ]* ([A-Z0-9]*\.b0): volume \([0-9.]*\) mm3" 6000 "30 x 20 x 10"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- 5. A box written on a face without align (mitcad#761)"
+NOALIGN=$WORK/noalign.mitcad
+cat > "$WORK/noalign.json" << EOF
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "$RECT"}],
+    "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "length": 30, "width": 20, "height": 10, "operation": "new_body",
+    "at": {"face": {"body": "F2.b0", "face": "F2:end($RECT)"},
+           "edge1": {"body": "F2.b0", "edge": "E{F2:end($RECT)|F2:side(c1[c4,c2])}"}, "offset1": 12,
+           "edge2": {"body": "F2.b0", "edge": "E{F2:end($RECT)|F2:side(c4[c3,c1])}"}, "offset2": 8}}}
+]
+EOF
+"$CLI" run "$WORK/noalign.json" --save "$NOALIGN" > "$WORK/cli-noalign.log" 2>&1 ||
+  { cat "$WORK/cli-noalign.log"; ui_fail "mitcad-cli"; }
+before=$(jq -S -c '.features[] | select(.type == "box") | .at | {face, edge1, edge2}' "$NOALIGN")
+[ -n "$before" ] || ui_fail "no box in $NOALIGN"
+ui_stop_app
+ui_start_app --open "$NOALIGN"
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Bodies shown: F2.b0, F3.b0" "the block and the box shown"
+ui_mark
+ui_step "double-click Box1"                ui_double_click_logged "Timeline Box1"
+ui_expect_new "Editing F3 with Box" "Box1 opens for editing" 30
+ui_expect_new "Place Box: face face F2:end(" "on the block's top face"
+ui_mark
+ui_step "height 15"                        ui_type_in "Panel Box input height" "15"
+ui_expect_new "Preview Box: ok" "15 high previewed" 30
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Edited F3" "Box1 edited" 30
+ui_focus_main
+ui_mark
+ui_key ctrl+s
+ui_expect_new "Saved $NOALIGN" "saved"
+after=$(jq -S -c '.features[] | select(.type == "box") | .at | {face, edge1, edge2}' "$NOALIGN")
+[ "$after" = "$before" ] || ui_fail "the box's references changed: $after, was $before"
+jq -e '.features[] | select(.type == "box") | .at | has("align") | not' "$NOALIGN" > /dev/null ||
+  ui_fail "the box got an align: $(jq -c '.features[] | select(.type == "box") | .at' "$NOALIGN")"
+echo "ok   saved without align, its references as written"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 
 ui_finish "UI place test"

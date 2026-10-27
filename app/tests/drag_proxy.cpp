@@ -317,6 +317,9 @@ void testExtrudeRules() {
   CHECK(r && r->kind == Kind::StretchSide && near(r->length, 8) && near(r->reach, 5));
   r = extrudeDragProxy(two, two, QStringLiteral("distance2"), 6.0);
   CHECK(r && r->kind == Kind::StretchSide && near(r->length, 8) && near(r->reach, 3) && near(r->from, 3));
+  // Across the profile plane (a negative side, mitcad#765): the exact
+  // preview only.
+  CHECK(!extrudeDragProxy(two, two, QStringLiteral("distance2"), -2.0));
   CommandState twoObject = two;
   twoObject.setChoice(QStringLiteral("extent2"), QStringLiteral("to_object"));
   CHECK(!extrudeDragProxy(twoObject, twoObject, distance, 9.0));

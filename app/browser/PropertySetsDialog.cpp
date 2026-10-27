@@ -156,7 +156,10 @@ public:
   }
   bool editorEvent(QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option,
                    const QModelIndex& index) override {
-    if (event->type() == QEvent::MouseButtonRelease) {
+    // The left button's only: the view's itemClicked, which takes back the
+    // click flag a glyph sets, is the left button's (mitcad#761).
+    if (event->type() == QEvent::MouseButtonRelease &&
+        static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
       const QStringList glyphs = index.sibling(index.row(), 0).data(kGlyphsRole).toStringList();
       if (!glyphs.isEmpty()) {
         QFont font = option.font;
@@ -524,9 +527,10 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
             }
             const QVariantMap cellProperty = first.data(kPropertyRole).toMap();
             // [unit | %] only where the design's slicer takes it (mitcad#655).
-            const bool percent = key->kind != PrintKey::Kind::NumberOrPercent ||
-                                 key->takesPercent(designDialectOf(m_host.model()));
+            const QString slicer = designDialectOf(m_host.model());
+            const bool percent = key->kind != PrintKey::Kind::NumberOrPercent || key->takesPercent(slicer);
             auto* field = new SettingField(*key, parent, percent);
+            field->setDialect(slicer); // its range (mitcad#746)
             field->setProperty("printField", true);
             field->setAutoFillBackground(true);
             field->setClearable(false); // ↺ is the row's

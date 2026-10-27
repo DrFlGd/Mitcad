@@ -143,6 +143,12 @@ QString shaftNote(const QJsonObject& values, const CommandContext& context);
 // `seat`, or `seat_frame` for a linked seat): `diameter`, `hole`, ...;
 // empty when not on a shaft.
 QJsonObject shaftSeat(const CommandState& state, const CommandContext& context, const PlacePanel& panel = {});
+// The occurrence link of a body's face or edge picked in another
+// component's occurrence than the active component's (`source`, and
+// `target` when the active component is not the root), as a seat takes
+// it; empty for the active component's own geometry and for axes, points
+// and sketch curves (Gear Pair and Belt Drive, mitcad#754).
+QJsonObject occurrenceLinkOf(const CommandContext& context, const SelectionItem& item);
 
 // --- Where earlier definitions put their part (mitcad#656: belt_with and
 // mesh_with.angle opened again, a placement for the Belt Drive query)

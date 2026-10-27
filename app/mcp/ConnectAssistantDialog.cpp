@@ -25,13 +25,16 @@
 #include <QLabel>
 #include <QLayout>
 #include <QLineEdit>
+#include <QMoveEvent>
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QSaveFile>
 #include <QScrollBar>
 #include <QSettings>
+#include <QShowEvent>
 #include <QStandardPaths>
 #include <QTextDocument>
 #include <QTimer>
@@ -42,6 +45,7 @@
 
 #ifdef Q_OS_WIN
 #include <windows.h>
+#include <appmodel.h>
 #include <shlwapi.h>
 #endif
 
@@ -144,41 +148,81 @@ QString claudeUserConfiguration() {
   return QDir::home().filePath(QStringLiteral(".claude.json"));
 }
 
-// Whether Claude Desktop is on this computer: its application or the
-// settings folder it makes on its first start. A test run looks only for a
-// `claude-desktop` file among its isolated client executables.
-bool claudeDesktopInstalled() {
+// A test run with its isolated work folder (MITCAD_ASSISTANT_TEST_WORK): the
+// dialog opens no other application, it records what it would open.
+QString isolatedTestWork() {
+  return qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT") ? QString() : qEnvironmentVariable("MITCAD_ASSISTANT_TEST_WORK");
+}
+
+#ifdef Q_OS_WIN
+// Whether Claude Desktop's Microsoft Store package is installed for this
+// user, by the package manager: its data folder can outlive it.
+bool claudeDesktopPackageInstalled() {
+  const std::wstring family = QString::fromLatin1(kClaudeDesktopPackageFamily).toStdWString();
+  UINT32 count = 0;
+  UINT32 length = 0;
+  const LONG status = GetPackagesByPackageFamily(family.c_str(), &count, nullptr, &length, nullptr);
+  return (status == ERROR_SUCCESS || status == ERROR_INSUFFICIENT_BUFFER) && count > 0;
+}
+#endif
+
+// Whether Claude Desktop is on this computer (mitcad#763): with
+// `application` its application or its Microsoft Store package only;
+// without, also the settings folder it makes on its first start, which stays
+// when it is uninstalled. A test run looks only for a `claude-desktop` file
+// among its isolated client executables and, on Windows, in the work
+// folder's `local-app-data` and `roaming-app-data` (its LOCALAPPDATA and
+// APPDATA), where the package's folder stands for the package.
+bool claudeDesktopFound(bool application) {
   if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT")) {
     const QString folder = qEnvironmentVariable("MITCAD_TEST_ASSISTANT_EXECUTABLES");
     if (!folder.isEmpty()) {
-      return folder != QStringLiteral("none") && QFileInfo::exists(QDir(folder).filePath(QStringLiteral("claude-desktop")));
+      if (folder == QStringLiteral("none")) return false;
+      if (QFileInfo::exists(QDir(folder).filePath(QStringLiteral("claude-desktop")))) return true;
+#ifdef Q_OS_WIN
+      const QString work = isolatedTestWork();
+      if (work.isEmpty()) return false;
+      const QString local = QDir(work).filePath(QStringLiteral("local-app-data"));
+      return application ? claudeDesktopApplicationInWindowsFolders(local)
+                         : claudeDesktopInWindowsFolders(local, QDir(work).filePath(QStringLiteral("roaming-app-data")));
+#else
+      return false;
+#endif
     }
   }
 #if defined(Q_OS_MACOS)
-  for (const QString& path : {QStringLiteral("/Applications/Claude.app"), QDir::home().filePath(QStringLiteral("Applications/Claude.app")),
-                              QDir::home().filePath(QStringLiteral("Library/Application Support/Claude"))}) {
+  QStringList paths{QStringLiteral("/Applications/Claude.app"), QDir::home().filePath(QStringLiteral("Applications/Claude.app"))};
+  if (!application) paths << QDir::home().filePath(QStringLiteral("Library/Application Support/Claude"));
+  for (const QString& path : paths) {
     if (QFileInfo(path).isDir()) return true;
   }
+  return false;
 #elif defined(Q_OS_WIN)
   const QString local = qEnvironmentVariable("LOCALAPPDATA");
-  const QString roaming = qEnvironmentVariable("APPDATA");
-  if (!local.isEmpty() && (QFileInfo(QDir(local).filePath(QStringLiteral("AnthropicClaude"))).isDir() ||
-      !QDir(QDir(local).filePath(QStringLiteral("Packages"))).entryList({QStringLiteral("Claude_*"), QStringLiteral("*.Claude_*")},
-                                                                       QDir::Dirs).isEmpty())) {
-    return true;
-  }
-  if (!roaming.isEmpty() && QFileInfo(QDir(roaming).filePath(QStringLiteral("Claude"))).isDir()) return true;
-#endif
+  if (!local.isEmpty() && QFileInfo(QDir(local).filePath(QStringLiteral("AnthropicClaude"))).isDir()) return true;
+  if (claudeDesktopPackageInstalled()) return true;
+  return !application && claudeDesktopInWindowsFolders(QString(), qEnvironmentVariable("APPDATA"));
+#else
+  Q_UNUSED(application);
   return false;
+#endif
 }
+
+bool claudeDesktopInstalled() { return claudeDesktopFound(false); }
+bool claudeDesktopApplicationFound() { return claudeDesktopFound(true); }
 
 // Whether an application takes Claude Desktop's extension files. Windows
 // offers "Open with" for a file no application takes, so that opening one
 // succeeds says nothing there; the association does. Without
 // ASSOCF_INIT_IGNOREUNKNOWN the query answers with the "Unknown" type's
 // handler, Open With itself, so that is no handler either. Elsewhere
-// opening is the test.
+// opening is the test. In an isolated test run,
+// MITCAD_TEST_ASSISTANT_BUNDLE_OPEN=none stands for no application, without
+// the registry.
 bool bundleHandlerRegistered() {
+  if (!isolatedTestWork().isEmpty() && qEnvironmentVariableIsSet("MITCAD_TEST_ASSISTANT_BUNDLE_OPEN")) {
+    return qEnvironmentVariable("MITCAD_TEST_ASSISTANT_BUNDLE_OPEN") != QStringLiteral("none");
+  }
 #ifdef Q_OS_WIN
   DWORD size = 0;
   if (AssocQueryStringW(ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE, L".mcpb", nullptr, nullptr, &size) != S_FALSE ||
@@ -195,6 +239,32 @@ bool bundleHandlerRegistered() {
 #else
   return true;
 #endif
+}
+
+// The button that shows a file in the platform's file manager.
+QString showFileText() {
+#if defined(Q_OS_WIN)
+  return QObject::tr("Show in Explorer");
+#elif defined(Q_OS_MACOS)
+  return QObject::tr("Show in Finder");
+#else
+  return QObject::tr("Show in Folder");
+#endif
+}
+
+// Shows the file in the file manager, selected where it can be; else its
+// folder.
+void showFile(const QString& path) {
+#if defined(Q_OS_WIN)
+  QProcess explorer;
+  explorer.setProgram(QStringLiteral("explorer.exe"));
+  // Explorer reads `/select,"path"` its own way, not as quoted arguments.
+  explorer.setNativeArguments(QStringLiteral("/select,\"%1\"").arg(QDir::toNativeSeparators(path)));
+  if (explorer.startDetached()) return;
+#elif defined(Q_OS_MACOS)
+  if (QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-R"), path})) return;
+#endif
+  QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
 }
 
 QString installPage(AssistantClient client) {
@@ -317,6 +387,14 @@ ConnectAssistantDialog::ConnectAssistantDialog(Host host, QWidget* parent)
   m_connectAnyway->setFlat(true);
   m_connectAnyway->setCursor(Qt::PointingHandCursor);
   anywayRow->addWidget(m_connectAnyway);
+  // The extension saved but not opened: Claude Desktop itself, quietly.
+  m_openDesktop = new QPushButton(tr("Open Claude Desktop"));
+  m_openDesktop->setObjectName(QStringLiteral("assistantOpenDesktop"));
+  m_openDesktop->setAutoDefault(false);
+  m_openDesktop->setFlat(true);
+  m_openDesktop->setCursor(Qt::PointingHandCursor);
+  m_openDesktop->hide();
+  anywayRow->addWidget(m_openDesktop);
   layout->addLayout(anywayRow);
   m_result = new QLabel;
   m_result->setTextFormat(Qt::PlainText);
@@ -421,6 +499,7 @@ ConnectAssistantDialog::ConnectAssistantDialog(Host host, QWidget* parent)
   connect(m_config, &QLineEdit::editingFinished, this, [this] { updateClient(); });
   connect(m_setup, &QPushButton::clicked, this, [this] { primaryAction(); });
   connect(m_connectAnyway, &QPushButton::clicked, this, [this] { connectAssistant(); });
+  connect(m_openDesktop, &QPushButton::clicked, this, [this] { openClaudeDesktop(); });
   connect(changeFolder, &QPushButton::clicked, this, [this] {
     const QString chosen = dialogDirectory(this, tr("Folder for Designs"), m_folderPath);
     if (!chosen.isEmpty()) setFolder(chosen);
@@ -507,9 +586,11 @@ void ConnectAssistantDialog::applyStyles() {
   for (QAbstractButton* button : m_clients->buttons()) button->setStyleSheet(tile);
   m_advancedToggle->setStyleSheet(QStringLiteral(
       "QToolButton { border: none; background: transparent; padding: 2px 0; }"));
-  m_connectAnyway->setStyleSheet(QStringLiteral(
-      "QPushButton { border: none; background: transparent; color: palette(link); padding: 0 2px; }"
-      "QPushButton:hover { text-decoration: underline; }"));
+  for (QPushButton* quiet : {m_connectAnyway, m_openDesktop}) {
+    quiet->setStyleSheet(QStringLiteral(
+        "QPushButton { border: none; background: transparent; color: palette(link); padding: 0 2px; }"
+        "QPushButton:hover { text-decoration: underline; }"));
+  }
 #ifndef Q_OS_MACOS
   const QColor text = palette().color(QPalette::HighlightedText);
   m_setup->setStyleSheet(QStringLiteral(
@@ -530,6 +611,41 @@ bool ConnectAssistantDialog::eventFilter(QObject* watched, QEvent* event) {
 void ConnectAssistantDialog::changeEvent(QEvent* event) {
   QDialog::changeEvent(event);
   if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange) applyStyles();
+}
+
+void ConnectAssistantDialog::showEvent(QShowEvent* event) {
+  QDialog::showEvent(event);
+  // Each time it is shown, also where it was before.
+  m_loggedPlaces.clear();
+  QTimer::singleShot(0, this, [this] { logPlaces(); });
+}
+
+void ConnectAssistantDialog::moveEvent(QMoveEvent* event) {
+  QDialog::moveEvent(event);
+  QTimer::singleShot(0, this, [this] { logPlaces(); });
+}
+
+void ConnectAssistantDialog::resizeEvent(QResizeEvent* event) {
+  QDialog::resizeEvent(event);
+  QTimer::singleShot(0, this, [this] { logPlaces(); });
+}
+
+void ConnectAssistantDialog::logPlaces() {
+  if (!isVisible()) return;
+  // The main window: the dialog's parent, or the window above Preferences
+  // when the dialog was opened from there.
+  QWidget* main = parentWidget() != nullptr ? parentWidget()->window() : nullptr;
+  while (main != nullptr && main->parentWidget() != nullptr) main = main->parentWidget()->window();
+  if (main == nullptr) return;
+  QStringList lines;
+  for (QAbstractButton* button : m_clients->buttons()) {
+    const QPoint at = button->mapToGlobal(button->rect().center()) - main->mapToGlobal(QPoint(0, 0));
+    lines << QStringLiteral("Connect AI Assistant choice %1 at %2,%3").arg(button->text()).arg(at.x()).arg(at.y());
+  }
+  const QString places = lines.join(QLatin1Char('\n'));
+  if (places == m_loggedPlaces) return;
+  m_loggedPlaces = places;
+  for (const QString& line : lines) qDebug().noquote() << line;
 }
 
 void ConnectAssistantDialog::setFolder(const QString& path) {
@@ -574,6 +690,7 @@ void ConnectAssistantDialog::updateClient() {
   clearMessage();
   m_copied = false;
   m_desktopNotFound = false;
+  m_bundleSaved.clear();
   const auto selected = client();
   QSettings().setValue(kClientSetting, int(selected));
   m_configRow->setVisible(selected == AssistantClient::Codex);
@@ -631,7 +748,7 @@ QString ConnectAssistantDialog::manualCommand() const {
 }
 
 bool ConnectAssistantDialog::cachedCheck(SettingsRead& cache, const QString& path,
-                                         const std::function<bool(const QString&)>& check) const {
+                                         const std::function<bool(const QString&)>& check, qint64 limit) const {
   const QFileInfo info(path);
   const qint64 bytes = info.exists() ? info.size() : -1;
   const QDateTime written = info.exists() ? info.lastModified() : QDateTime();
@@ -640,7 +757,7 @@ bool ConnectAssistantDialog::cachedCheck(SettingsRead& cache, const QString& pat
     cache.path = path;
     cache.size = bytes;
     cache.modified = written;
-    cache.configured = readAssistantConfiguration(path, text, error) && check(text);
+    cache.configured = readAssistantConfiguration(path, text, error, limit) && check(text);
   }
   return cache.configured;
 }
@@ -680,7 +797,7 @@ bool ConnectAssistantDialog::configured(AssistantClient which) const {
     const auto entry = QJsonDocument::fromJson(text.toUtf8()).object().value(QStringLiteral("mcpServers")).toObject()
         .value(QStringLiteral("mitcad")).toObject();
     return claudeEntryStarts(entry, m_bridge);
-  });
+  }, kClaudeConfigurationLimit);
 }
 
 // The connections of the chosen assistant: what Disconnect ends.
@@ -709,6 +826,11 @@ void ConnectAssistantDialog::refreshConnection() {
   }
   // Claude Desktop installed since its extension found no application.
   if (m_desktopNotFound && windows && bundleHandlerRegistered()) m_desktopNotFound = false;
+  // The extension installed by hand and connected: its file's line is done.
+  if (!mine.isEmpty() && !m_bundleSaved.isEmpty()) {
+    m_bundleSaved.clear();
+    clearMessage();
+  }
   const bool busy = m_process != nullptr;
   for (QAbstractButton* button : m_clients->buttons()) button->setEnabled(!busy);
   m_config->setEnabled(!busy);
@@ -728,6 +850,13 @@ void ConnectAssistantDialog::refreshConnection() {
     state = QStringLiteral("failed");
     text = tr("Install Claude Desktop first");
     action = QStringLiteral("install");
+  } else if (selected == AssistantClient::ClaudeDesktop && !m_bundleSaved.isEmpty() && mine.isEmpty()) {
+    // Claude Desktop is here, but no application opens its extension (a
+    // Microsoft Store install, mitcad#763): it is installed from Claude
+    // Desktop's settings, from the file shown.
+    state = QStringLiteral("install-extension");
+    text = tr("Install the extension in Claude Desktop");
+    action = QStringLiteral("reveal");
   } else if (m_result->property("setupError").toBool()) {
     state = QStringLiteral("failed");
     text = m_result->text();
@@ -768,6 +897,13 @@ void ConnectAssistantDialog::refreshConnection() {
   m_state->setText(text);
   m_state->setToolTip(failed ? m_result->toolTip() : QString());
   m_state->setProperty("assistantState", state);
+  // The choice and its state once each time they change (UI tests,
+  // mitcad#760).
+  const QString logged = QStringLiteral("Connect AI Assistant: %1, %2: %3").arg(assistantName(selected), state, text);
+  if (logged != m_loggedState) {
+    m_loggedState = logged;
+    qInfo().noquote() << logged;
+  }
   if (state != m_shownState) {
     // A failure's line is in the error colour.
     if (failed) setErrorStyleSheet(m_state);
@@ -791,9 +927,14 @@ void ConnectAssistantDialog::refreshConnection() {
       : action == QStringLiteral("retry") ? tr("Try again")
       : action == QStringLiteral("copy") ? tr("Copy configuration")
       : action == QStringLiteral("reopen") ? tr("Open in Claude Desktop again")
+      : action == QStringLiteral("reveal") ? showFileText()
       : tr("Connect"));
+  // The extension's file in the tooltip as well (also shown below the line).
+  m_setup->setToolTip(action == QStringLiteral("reveal") ? QDir::toNativeSeparators(m_bundleSaved) : QString());
   m_connectAnyway->setVisible(anyway);
   m_connectAnyway->setEnabled(!busy);
+  const bool openDesktop = action == QStringLiteral("reveal");
+  m_openDesktop->setVisible(openDesktop);
   // The folder line goes with the actions that allow it.
   const bool folderLine = anyway || action == QStringLiteral("connect") || action == QStringLiteral("copy") ||
                           action == QStringLiteral("retry") || action == QStringLiteral("reopen");
@@ -802,6 +943,7 @@ void ConnectAssistantDialog::refreshConnection() {
   // window fits its contents again.
   const QString shown = state + text + m_setup->text() + others.join(QLatin1Char(',')) +
       QString::number(int(m_result->isVisibleTo(this))) + QString::number(int(folderLine)) + QString::number(int(anyway)) +
+      QString::number(int(openDesktop)) +
       QString::number(int(m_advanced->isVisibleTo(this))) + QString::number(int(m_configRow->isVisibleTo(this))) +
       QString::number(int(m_commandBox->isVisibleTo(this))) + QString::number(int(m_windowsRow->isVisibleTo(this))) +
       QString::number(m_configuration->maximumHeight());
@@ -853,9 +995,33 @@ void ConnectAssistantDialog::primaryAction() {
   } else if (action == QStringLiteral("disconnect")) {
     if (m_host.disconnect) m_host.disconnect(chosenClientIds());
     refreshConnection();
+  } else if (action == QStringLiteral("reveal")) {
+    // An isolated test run records the file instead of opening a window.
+    if (!isolatedTestWork().isEmpty()) setProperty("assistantShownPath", m_bundleSaved);
+    else showFile(m_bundleSaved);
+    qInfo().noquote() << QStringLiteral("Assistant setup: extension shown");
   } else if (!action.isEmpty()) {
     connectAssistant(); // connect, copy, retry, reopen
   }
+}
+
+// Claude Desktop through the `claude://` link its installations register
+// (the Microsoft Store package declares only that one). Without its
+// application (Windows may offer to find an app for the link and report
+// success), or when the link does not open, the state becomes Install
+// Claude Desktop first. An isolated test run opens nothing: the link opens
+// there while its stand-in application is found.
+void ConnectAssistantDialog::openClaudeDesktop() {
+  const bool test = !isolatedTestWork().isEmpty();
+  if (!claudeDesktopApplicationFound() || (!test && !QDesktopServices::openUrl(QUrl(QStringLiteral("claude://"))))) {
+    qInfo().noquote() << QStringLiteral("Assistant setup: Claude Desktop could not be opened");
+    m_desktopNotFound = true;
+    m_bundleSaved.clear();
+    message(QString());
+    return;
+  }
+  if (test) setProperty("assistantOpenedDesktop", true);
+  qInfo().noquote() << QStringLiteral("Assistant setup: Claude Desktop opened");
 }
 
 void ConnectAssistantDialog::connectAssistant() {
@@ -960,7 +1126,7 @@ void ConnectAssistantDialog::setupClaudeCode() {
   if (cli.isEmpty()) { message(tr("Claude Code was not found on this computer"), true); return; }
   const QString path = claudeUserConfiguration();
   QString current, error;
-  if (!readAssistantConfiguration(path, current, error)) { message(error, true); return; }
+  if (!readAssistantConfiguration(path, current, error, kClaudeConfigurationLimit)) { message(error, true); return; }
   QJsonParseError parse;
   const auto document = QJsonDocument::fromJson(current.toUtf8(), &parse);
   if (!current.isEmpty() && (parse.error != QJsonParseError::NoError || !document.isObject())) {
@@ -1000,7 +1166,8 @@ void ConnectAssistantDialog::setupClaudeCode() {
   m_process = process;
   runRegistration(cli, assistantRegistration(AssistantClient::ClaudeCode, m_bridge), [this, path, current, seed, staged] {
     QString written, error;
-    if (!readAssistantConfiguration(QDir(staged->path()).filePath(QStringLiteral(".claude.json")), written, error)) {
+    if (!readAssistantConfiguration(QDir(staged->path()).filePath(QStringLiteral(".claude.json")), written, error,
+                                    kClaudeConfigurationLimit)) {
       message(error, true); return;
     }
     QJsonParseError parse;
@@ -1016,7 +1183,9 @@ void ConnectAssistantDialog::setupClaudeCode() {
       message(tr("Claude Code's registration could not be verified; nothing was changed. Try again."), true); return;
     }
     QString backup;
-    if (!writeAssistantConfiguration(path, current, written, backup, error)) { message(error, true); return; }
+    if (!writeAssistantConfiguration(path, current, written, backup, error, kClaudeConfigurationLimit)) {
+      message(error, true); return;
+    }
     message(backup.isEmpty() ? QString() : tr("Previous settings saved as %1").arg(QDir::toNativeSeparators(backup)));
   });
 }
@@ -1047,6 +1216,8 @@ void ConnectAssistantDialog::runRegistration(const QString& program, const QStri
 }
 
 void ConnectAssistantDialog::setupBundle() {
+  m_bundleSaved.clear();
+  m_desktopNotFound = false;
   const QString suffix = windows ? QStringLiteral(".exe") : QString();
   const QString launcher = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("mitcad-mcp-launcher") + suffix);
   if (!QFileInfo(launcher).isExecutable()) { message(tr("Part of Mitcad is missing. Repair or reinstall Mitcad."), true, launcher); return; }
@@ -1069,19 +1240,15 @@ void ConnectAssistantDialog::setupBundle() {
       m_bundleOpened = true;
       message(tr("Bundle prepared for the isolated installer test.")); return;
     }
-    // No application takes the extension: Claude Desktop is not there
-    // (Windows would offer "Open with" and report success).
-    if (!bundleHandlerRegistered()) {
-      m_desktopNotFound = true;
-      message(QString()); return;
-    }
+    // No application takes the extension (Windows would offer "Open with"
+    // and report success).
+    if (!bundleHandlerRegistered()) { bundleNotOpened(path); return; }
     if (!QDesktopServices::openUrl(QUrl::fromLocalFile(path))) {
 #ifdef Q_OS_WIN
       // The extension has an application (above), which did not open it.
       message(tr("Claude Desktop did not open the extension. Try again."), true, path); return;
 #else
-      m_desktopNotFound = true;
-      message(QString()); return;
+      bundleNotOpened(path); return;
 #endif
     }
     // Whether it was installed is known only once Claude Desktop connects.
@@ -1089,6 +1256,22 @@ void ConnectAssistantDialog::setupBundle() {
     message(QString());
   } catch (const std::exception& failure) {
     message(tr("The Claude Desktop extension could not be made. Try again."), true, errorText(failure));
+  }
+}
+
+// No application opened the saved extension: Claude Desktop is not there,
+// or, its application found here (not just its settings folder), it takes
+// the extension from its own settings only (a Microsoft Store install
+// registers no `.mcpb` association, mitcad#763); the line below the state
+// then says where in Claude Desktop and which file.
+void ConnectAssistantDialog::bundleNotOpened(const QString& path) {
+  if (claudeDesktopApplicationFound()) {
+    m_bundleSaved = path;
+    message(tr("In Claude Desktop: Settings › Extensions › Advanced settings › Install Extension…, then choose %1")
+                .arg(QDir::toNativeSeparators(path)));
+  } else {
+    m_desktopNotFound = true;
+    message(QString());
   }
 }
 

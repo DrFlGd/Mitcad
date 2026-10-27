@@ -206,28 +206,33 @@ impl DocState {
                 renamed.insert(letter, new);
             }
         }
+        copy.reletter(&renamed, true);
+    }
+
+    /// The drawings (but `except`) whose frames refer to a relettered
+    /// datum (`renamed`: old letter to new), with those frames turned to
+    /// the new letters and checked again (mitcad#745): each drawing's
+    /// index and its new definition.
+    pub(crate) fn drawings_relettered(
+        &self,
+        renamed: &BTreeMap<String, String>,
+        except: Option<DrawingUid>,
+    ) -> Result<Vec<(usize, Drawing)>, ModelError> {
+        let mut out = Vec::new();
         if renamed.is_empty() {
-            return;
+            return Ok(out);
         }
-        let annotations = copy
-            .sheets
-            .iter_mut()
-            .flat_map(|s| s.views.iter_mut())
-            .flat_map(|v| v.annotations.iter_mut());
-        for annotation in annotations {
-            if let Some(letter) = &mut annotation.letter
-                && let Some(new) = renamed.get(letter.as_str())
-            {
-                letter.clone_from(new);
+        for (i, drawing) in self.drawings.iter().enumerate() {
+            if Some(drawing.uid) == except {
+                continue;
             }
-            if let Some(frame) = &mut annotation.frame {
-                for datum in &mut frame.datums {
-                    if let Some(new) = renamed.get(datum.as_str()) {
-                        datum.clone_from(new);
-                    }
-                }
+            let mut changed = drawing.clone();
+            if changed.reletter(renamed, false) {
+                changed.check().map_err(invalid)?;
+                out.push((i, changed));
             }
         }
+        Ok(out)
     }
 }
 
@@ -336,6 +341,55 @@ impl<K: Kernel> Document<K> {
         changed.check().map_err(invalid)?;
         self.apply_with(|state| {
             state.drawings[i] = changed;
+            Ok((label, (), false))
+        })
+    }
+
+    /// Replaces a drawing with a changed one whose datum labels took new
+    /// letters (`renamed`: old letter to new), as one undo step under
+    /// `label`: the frames that refer to the old letters follow them, the
+    /// drawing's own, the other drawings' and the model's (mitcad#745).
+    pub fn set_drawing_relettered(
+        &mut self,
+        uid: DrawingUid,
+        label: String,
+        mut changed: Drawing,
+        renamed: &BTreeMap<String, String>,
+    ) -> Result<(), ModelError> {
+        if renamed.is_empty() {
+            return self.set_drawing(uid, label, changed);
+        }
+        let i = self.drawing_index(uid)?;
+        let old = &self.state.drawings[i];
+        self.state.editable(old.component)?;
+        changed.uid = uid;
+        changed.component = old.component;
+        changed.name = changed.name.trim().to_owned();
+        changed.reletter(renamed, false);
+        self.check_drawing_name(&changed, Some(uid))?;
+        changed.check().map_err(invalid)?;
+        let others = self.state.drawings_relettered(renamed, Some(uid))?;
+        let mut annotations = self.state.annotations.clone();
+        for annotation in &mut annotations {
+            if let Some(frame) = &mut annotation.frame {
+                for datum in &mut frame.datums {
+                    if let Some(new) = renamed.get(datum.as_str()) {
+                        datum.clone_from(new);
+                    }
+                }
+            }
+        }
+        for (j, annotation) in annotations.iter().enumerate() {
+            if *annotation != self.state.annotations[j] {
+                annotation.check().map_err(invalid)?;
+            }
+        }
+        self.apply_with(|state| {
+            state.drawings[i] = changed;
+            for (j, drawing) in others {
+                state.drawings[j] = drawing;
+            }
+            state.annotations = annotations;
             Ok((label, (), false))
         })
     }

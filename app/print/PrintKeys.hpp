@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <limits>
+
 #include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -10,6 +12,12 @@
 #include <QVector>
 
 namespace mitcad {
+
+// The numbers a key takes, in its unit; infinite where there is no bound.
+struct PrintRange {
+  double low = -std::numeric_limits<double>::infinity();
+  double high = std::numeric_limits<double>::infinity();
+};
 
 // One key of the print key map (mitcad#640, mitcad#655: the `print_keys`
 // query): its plain name, its kind of value and unit, its choices with
@@ -34,6 +42,12 @@ struct PrintKey {
   // (`dialects`' `percent`, mitcad#655); the editors offer [mm | %] for
   // the design's slicer only (takesPercent).
   QStringList percentDialects;
+  // A number's range as its slicers take it (`min` and `max`, mitcad#746:
+  // the widest of them; unbounded where the query gives no bound), and a
+  // slicer's own where it takes less (its `dialects` entry's `min` and
+  // `max`: Bambu Studio's -1 for "automatic" is not OrcaSlicer's).
+  PrintRange range;
+  QHash<QString, PrintRange> dialectRanges;
   bool takesPercent(const QString& dialect) const {
     return kind == Kind::NumberOrPercent && (dialect.isEmpty() || percentDialects.contains(dialect));
   }
@@ -97,20 +111,18 @@ QString outlineText(const QJsonValue& points);
 // A value as shown, in the key's own unit: "0.2 mm", "15 %", "Aligned",
 // "yes", "256 × 256 mm", "Bambu Studio: Bench X; PrusaSlicer: Bench".
 QString printValueText(const PrintKey& key, const QJsonValue& value);
-// The values a key takes (mitcad#655): lengths, speeds, counts, times and
-// temperatures are not negative (a compensation or an offset may be); a
-// percentage is 0 to 100 unless it is a flow, a ratio, a speed or an
-// overlap, which may be more. Angles are not limited.
-struct PrintRange {
-  double low;
-  double high;
-};
-PrintRange printRange(const PrintKey& key);
+// The values a key takes (mitcad#655, mitcad#746): the model's range of
+// the key (`print_keys`' `min` and `max`, what its slicers take), within
+// the range of `dialect` (the design's slicer, designDialectOf) where that
+// slicer takes less; the key's own range for no slicer.
+PrintRange printRange(const PrintKey& key, const QString& dialect = QString());
 
 // Typed text as the model takes the key's value: a number, "110%" (a
 // number or percent typed with %), a choice by its value or plain name, a
 // boolean from yes/no; null for empty text. Sets `error` (and returns
-// null) when the text is not of the key's kind or out of its range.
-QJsonValue printValueOf(const PrintKey& key, const QString& text, QString* error = nullptr);
+// null) when the text is not of the key's kind or out of its range for
+// `dialect` (printRange).
+QJsonValue printValueOf(const PrintKey& key, const QString& text, QString* error = nullptr,
+                        const QString& dialect = QString());
 
 } // namespace mitcad

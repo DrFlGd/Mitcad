@@ -12,6 +12,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
+#include <QFocusEvent>
 #include <QFont>
 #include <QFontMetrics>
 #include <QFormLayout>
@@ -284,6 +285,15 @@ const ParameterSource* parameterSourceOf(const QWidget* widget) {
     }
   }
   return nullptr;
+}
+
+int leaveValueField(QLineEdit* edit, const QFocusEvent& event) {
+  if (edit == nullptr || event.reason() == Qt::PopupFocusReason) {
+    return -1;
+  }
+  const int caret = edit->cursorPosition();
+  edit->home(false);
+  return caret;
 }
 
 ParameterField* ParameterField::attach(QLineEdit* edit, ParameterFieldOptions options) {
@@ -1040,8 +1050,9 @@ void ParameterField::openFormulaEditor() {
   const QPointer<ParameterField> alive(this);
   const QString original=edit->text();
   const QString value=expressionPart(original);
-  const int start=original.indexOf(value);
-  const QString prefix=start>0 ? original.left(start) : QString();
+  // The `name =` before the expression, where the match found it: the
+  // expression's text may also occur in the name ("t2 = 2", mitcad#755).
+  const QString prefix=original.left(expressionStart(original));
   FormulaEditor dialog(*source,m_options,value,edit->window());
   while (execDialog(&dialog)==QDialog::Accepted) {
     if (!alive || !edit) return;
@@ -1068,7 +1079,7 @@ void ParameterField::updateAssistance() {
   if (!source || !source->query) return;
   try {
     const QString text=expressionPart(m_edit->text());
-    const int offset=std::max(0,int(m_edit->text().indexOf(text)));
+    const int offset=expressionStart(m_edit->text());
     const int start=m_edit->hasSelectedText() ? m_edit->selectionStart() : m_edit->cursorPosition();
     QJsonObject query{{QStringLiteral("query"),QStringLiteral("formula_help")},
                       {QStringLiteral("expression"),text}, {QStringLiteral("kind"),formulaKindName(m_options.kind)},
@@ -1116,9 +1127,14 @@ bool ParameterField::eventFilter(QObject* watched, QEvent* event) {
           {QStringLiteral("cursor"),int(m_edit->text().left(cursor).toUtf8().size())}});
       const QJsonObject part=result.value(QStringLiteral("selection")).toObject();
       const QString shown=part.value(QStringLiteral("error")).toString(part.value(QStringLiteral("text")).toString());
-      if (!shown.isEmpty()) QToolTip::showText(help->globalPos(),shown,m_edit);
+      if (!shown.isEmpty()) {
+        QToolTip::showText(help->globalPos(),shown,m_edit);
+        return true;
+      }
     } catch (const std::exception&) {}
-    return true;
+    // Nothing to show at that place: the field's own tooltip (the
+    // parameter's name, expression and comment, mitcad#250; mitcad#761).
+    break;
   }
   case QEvent::ShortcutOverride: {
     // The list's keys are the list's while it is open: Enter does not

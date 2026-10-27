@@ -3,6 +3,8 @@
 //! turned about an axis into a tool body, with the operations of an
 //! extrusion.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::extrude::{
@@ -18,6 +20,7 @@ use super::{
 };
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{Axis, FaceRevolveSpec, Kernel, RevolveSpec, Target};
+use crate::links::OccurrenceLink;
 use crate::parameters::ParamId;
 use crate::profile::{ProfileRegion, SketchFrame};
 
@@ -63,6 +66,12 @@ pub struct RevolveDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// The body of another component that the `to_object` object is or is
+    /// a face of (mitcad#762, as an extrusion's `object_links`): read in its
+    /// component and moved into the revolution's coordinates by the
+    /// placements at its point of the timeline.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub object_links: BTreeMap<BodyUid, OccurrenceLink>,
     /// A surface revolution (mitcad#455, `surface_sweeps.rs`): walls
     /// without caps, a new surface body.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -112,6 +121,7 @@ impl<P> RevolveDef<P> {
             extent,
             operation: self.operation,
             participants: self.participants.clone(),
+            object_links: self.object_links.clone(),
             surface: self.surface,
             curves: self.curves.clone(),
             profile_face: self.profile_face.clone(),
@@ -150,6 +160,14 @@ impl FeatureInfo for RevolveDef {
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+        // Links only for the object's body (mitcad#762, as an extrusion's).
+        let object_body = match &self.extent {
+            RevolveExtent::ToObject { object } => object.body(),
+            _ => None,
+        };
+        if let Some(body) = self.object_links.keys().find(|b| Some(**b) != object_body) {
+            return Err(format!("body {body} is linked but not an object's"));
+        }
         if let Some(face) = &self.profile_face {
             check_face_profile(self, ctx, face)?;
             check_participants(ctx, self.operation, &self.participants)?;
@@ -293,7 +311,9 @@ impl<K: Kernel> Evaluate<K> for RevolveDef {
                     angle2 = None;
                 }
             }
-            RevolveExtent::ToObject { object } => target = Some(object.resolve(ctx)?),
+            RevolveExtent::ToObject { object } => {
+                target = Some(object.resolve_linked(ctx, &self.object_links)?);
+            }
         }
         if self.surface {
             return self.surface_output(ctx, sketch.frame, &regions, axis, angle1, angle2, target);

@@ -2,6 +2,7 @@
 #include "DrawingDialog.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <utility>
 
 #include <QCheckBox>
@@ -36,10 +37,12 @@ struct Format {
 
 const Format kFormats[] = {{"pdf", QT_TRANSLATE_NOOP("Drawing", "PDF (*.pdf)")},
                            {"svg", QT_TRANSLATE_NOOP("Drawing", "SVG (*.svg)")},
-                           {"dxf", QT_TRANSLATE_NOOP("Drawing", "DXF (*.dxf)")}};
+                           {"dxf", QT_TRANSLATE_NOOP("Drawing", "DXF (*.dxf)")},
+                           // R2000, the DXF file's content (mitcad#728).
+                           {"dwg", QT_TRANSLATE_NOOP("Drawing", "DWG (*.dwg)")}};
 
 int formatOfSuffix(const QString& suffix) {
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < static_cast<int>(std::size(kFormats)); ++i) {
     if (suffix.compare(QLatin1String(kFormats[i].value), Qt::CaseInsensitive) == 0) {
       return i;
     }
@@ -177,7 +180,7 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
   notes->addStretch(1);
   form->addRow(QObject::tr("Annotations:"), notes);
   auto* perBody = check(QObject::tr("One sheet per body"), s.perBody,
-                        QObject::tr("A PDF gets a page per body; SVG and DXF a file per body"));
+                        QObject::tr("A PDF gets a page per body; SVG, DXF and DWG a file per body"));
   form->addRow(QString(), perBody);
   // The layout's settings are a new drawing's only (mitcad#725): with a
   // drawing of the design chosen they are off, and the hint says why.
@@ -226,7 +229,7 @@ std::optional<DrawingChoice> askDrawing(QWidget* parent, const QString& path, in
   });
   QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, file] {
     const QString chosen = dialogSaveFileName(&dialog, QObject::tr("Export Drawing"), file->text(),
-                                              QObject::tr("Drawings (*.pdf *.svg *.dxf)"));
+                                              QObject::tr("Drawings (*.pdf *.svg *.dxf *.dwg)"));
     if (!chosen.isEmpty()) {
       file->setText(chosen);
     }

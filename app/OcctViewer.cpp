@@ -36,11 +36,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <tuple>
+#include <typeinfo>
 #include <utility>
 
 #include <QGuiApplication>
@@ -197,13 +200,71 @@ constexpr int kRestMilliseconds = 250;
 constexpr int kReleaseFrameMilliseconds = 100;
 
 // The cube's place in the upper right corner: its centre's distance from the
-// corner in device pixels (the overlay insets move the corner).
-occ::handle<Graphic3d_TransformPers> cubePersistence(qreal ratio, const QMargins& insets = QMargins()) {
-  return new Graphic3d_TransformPers(
-      Graphic3d_TMF_TriedronPers, Aspect_TOTP_RIGHT_UPPER,
-      NCollection_Vec2<int>(qRound((kCubeOffset + insets.right()) * ratio),
-                            qRound((kCubeOffset + insets.top()) * ratio)));
+// corner in device pixels (the overlay insets move the corner). As the view
+// projects it, or drawn and picked orthographic also in a perspective view
+// (mitcad#766; mitcad#774: the cube's own perspective is made on its
+// geometry, which is then drawn orthographic).
+occ::handle<Graphic3d_TransformPers> cubePersistence(qreal ratio, const QMargins& insets, bool orthographic) {
+  const NCollection_Vec2<int> offset(qRound((kCubeOffset + insets.right()) * ratio),
+                                     qRound((kCubeOffset + insets.top()) * ratio));
+  if (orthographic) {
+    return new Graphic3d_TransformPers(Graphic3d_TMF_TriedronPers | Graphic3d_TMF_OrthoPers,
+                                       Aspect_TOTP_RIGHT_UPPER, offset);
+  }
+  return new Graphic3d_TransformPers(Graphic3d_TMF_TriedronPers, Aspect_TOTP_RIGHT_UPPER, offset);
 }
+
+// The camera math of the buttons that turn the view (mitcad#773). OCCT's
+// gp_Dir constructors and gp_Dir::Crossed throw Standard_ConstructionError
+// for a null result: inline in this code, while OCCT's own libraries are
+// built without those checks and go on with a direction that is no number.
+// An exception out of a button's slot ended the application, so these never
+// throw: a cross of parallel directions is nothing, a direction across
+// another is made from the model's axes when the wanted one lies along it.
+bool isFinite(const gp_XYZ& v) { return std::isfinite(v.X()) && std::isfinite(v.Y()) && std::isfinite(v.Z()); }
+
+std::optional<gp_Dir> crossedDir(const gp_Dir& a, const gp_Dir& b) {
+  const gp_XYZ cross = a.XYZ().Crossed(b.XYZ());
+  const double length = cross.Modulus();
+  if (!std::isfinite(length) || length <= 1e-9) {
+    return std::nullopt;
+  }
+  return gp_Dir(cross.X() / length, cross.Y() / length, cross.Z() / length);
+}
+
+// The model axis nearest a direction: its largest component's (Z for a
+// direction that is no number).
+gp_Dir nearestAxis(const gp_XYZ& d) {
+  const double x = std::abs(d.X());
+  const double y = std::abs(d.Y());
+  const double z = std::abs(d.Z());
+  if (x >= y && x >= z) {
+    return gp_Dir(d.X() < 0.0 ? -1.0 : 1.0, 0.0, 0.0);
+  }
+  if (y >= z) {
+    return gp_Dir(0.0, d.Y() < 0.0 ? -1.0 : 1.0, 0.0);
+  }
+  return gp_Dir(0.0, 0.0, d.Z() < 0.0 ? -1.0 : 1.0);
+}
+
+// `wanted` made square to the unit `direction`; where it lies along the
+// direction (or is no number), the model's Z made so, or Y when the
+// direction lies along Z.
+gp_Dir upAcross(const gp_Dir& direction, const gp_XYZ& wanted) {
+  const gp_XYZ d = direction.XYZ();
+  gp_XYZ across = wanted - d * wanted.Dot(d);
+  double length = across.Modulus();
+  if (!std::isfinite(length) || length <= 1e-9) {
+    const gp_XYZ fallback = std::abs(d.Z()) < 0.9 ? gp_XYZ(0.0, 0.0, 1.0) : gp_XYZ(0.0, 1.0, 0.0);
+    across = fallback - d * fallback.Dot(d);
+    length = across.Modulus();
+  }
+  return gp_Dir(across.X() / length, across.Y() / length, across.Z() / length);
+}
+
+// How far the eye goes from the centre for a turn whose camera has no
+// usable distance (mm; a fit follows).
+constexpr double kTurnDistance = 1000.0;
 
 // The icon of a cube arrow by its id.
 QString arrowIconName(const QString& id) {
@@ -1078,6 +1139,15 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
     if (!m_activePickPriority || !m_activeScope.on || owner.IsNull()) {
       return true; // no preference: the order by depth
     }
+    // Planes by their depth (setPlanesByDepth): the origin's planes count
+    // as the active component's, but a face of another component in front
+    // of them is the pick (mitcad#762).
+    if (m_planesByDepth) {
+      const auto item = itemFor(owner);
+      if (item && item->kind == SelectKind::Plane) {
+        return false;
+      }
+    }
     // What is not the model's (the orientation cube) keeps its place.
     const auto info = m_pickInfo.find(dynamic_cast<const AIS_InteractiveObject*>(owner->Selectable().get()));
     return info == m_pickInfo.end() || !outsideActive(info->second.item);
@@ -1142,7 +1212,7 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   m_orientationCube->SetFixedAnimationLoop(false);
   m_orientationCube->SetAutoStartAnimation(true);
   // In the upper right corner, with its labels in capitals.
-  m_orientationCube->SetTransformPersistence(cubePersistence(1.0));
+  m_orientationCube->SetTransformPersistence(cubePersistence(1.0, QMargins(), false));
   m_cubeBaseSize = m_orientationCube->Size();
   m_cubeBaseFont = m_orientationCube->FontHeight();
   for (const auto& [side, label] :
@@ -1177,7 +1247,7 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   m_homeButton->setToolTip(tr("Home: the home view of the whole design"));
   connect(m_homeButton, &QToolButton::clicked, this, [this] {
     qDebug() << "View home";
-    goHome();
+    runViewOperation(QStringLiteral("home"), [this] { goHome(); });
   });
   // The cube's arrows (P9): triangles to the faces beside the one in
   // sight, curved arrows that roll the view; drawn as icons (see
@@ -1200,7 +1270,9 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
     arrow->setAutoRaise(true);
     arrow->setFocusPolicy(Qt::NoFocus);
     arrow->hide();
-    connect(arrow, &QToolButton::clicked, this, [this, name] { turnCube(name); });
+    connect(arrow, &QToolButton::clicked, this, [this, name] {
+      runViewOperation(QStringLiteral("cube arrow ") + name, [this, name] { turnCube(name); });
+    });
     m_cubeArrows.emplace_back(name, arrow);
   }
   applyDevicePixelRatio(); // the ratio of the screen the view starts on
@@ -2567,6 +2639,17 @@ void OcctViewer::setShiftHeld(bool held, bool hover) {
 
 bool OcctViewer::eventFilter(QObject* watched, QEvent* event) {
   const QEvent::Type type = event->type();
+  if (type == QEvent::Paint && m_navigationState.active() && watched != this && watched->isWidgetType() &&
+      isAncestorOf(static_cast<QWidget*>(watched))) {
+    // A widget over the view painted while it is navigated (mitcad#768).
+    ++m_navigationRepaints;
+    const QString name = watched->objectName().isEmpty()
+                             ? QString::fromLatin1(watched->metaObject()->className())
+                             : watched->objectName();
+    if (!m_navigationRepainted.contains(name)) {
+      m_navigationRepainted << name;
+    }
+  }
   if (m_scoped && (type == QEvent::KeyPress || type == QEvent::KeyRelease)) {
     const auto* key = static_cast<const QKeyEvent*>(event);
     if (key->key() == Qt::Key_Shift && !key->isAutoRepeat() && window() != nullptr &&
@@ -3294,15 +3377,100 @@ void OcctViewer::windowSelectionApplied() {
 // ---------------------------------------------------------------------------
 // Camera
 
-void OcctViewer::lookAtSketchPlane(bool saveCamera) {
+void OcctViewer::lookAtSketchPlane(bool saveCamera, const TopoDS_Shape& face) {
+  // Where the view is going: an animation ended at its end, a pending fit
+  // made (a new design's), so that neither moves the camera afterwards.
+  settleCamera();
   if (saveCamera || m_savedCamera.IsNull()) {
     m_savedCamera = new Graphic3d_Camera();
     m_savedCamera->Copy(m_view->Camera());
   }
+  // A fit moves the camera's centre off what the middle of the free area
+  // shows (fitToFreeArea), and a turn about that centre took the sketch's
+  // origin off the middle in a direction of each plane's own (mitcad#738).
+  // The view turns about the point to show in the middle instead. Entering
+  // a sketch (`saveCamera`) shows its origin there while the view shows
+  // nothing (no bodies, no sketches), or shows only sketches and the origin
+  // is in the free area. Otherwise, and always for Look At, the view keeps
+  // its middle: what the middle of the free area shows, on the sketch plane
+  // (a pan to a far part of a sketch stays; a sketch on a face keeps that
+  // face in view, also when its origin is a corner of the face).
+  const occ::handle<Graphic3d_Camera>& camera = m_view->Camera();
+  const gp_Pnt origin = m_sketchPlane.Location();
   const gp_Dir& normal = m_sketchPlane.Direction();
-  const gp_Dir& up = m_sketchPlane.YDirection();
-  m_view->SetProj(normal.X(), normal.Y(), normal.Z());
-  m_view->SetUp(up.X(), up.Y(), up.Z());
+  bool onOrigin = false;
+  if (saveCamera && bodiesBox().IsVoid()) {
+    const bool sketchesShown =
+        std::any_of(m_sketchEntities.begin(), m_sketchEntities.end(), [this](const occ::handle<AIS_Shape>& object) {
+          return !object.IsNull() && m_context->IsDisplayed(object);
+        });
+    const bool inFront =
+        camera->IsOrthographic() || gp_Vec(camera->Eye(), origin).Dot(gp_Vec(camera->Direction())) > 0.0;
+    onOrigin = !sketchesShown || (inFront && freeArea().contains(toWidgetF(origin)));
+  }
+  gp_Pnt centre = origin;
+  bool onFace = false;
+  if (!onOrigin) {
+    const gp_Pnt middle = camera->Center().Translated(freeAreaShift(camera).Reversed());
+    const gp_Vec along(normal);
+    centre = middle.Translated(along * -gp_Vec(origin, middle).Dot(along));
+    // A face seen at a steep angle (mitcad#772): the middle, at the
+    // camera's depth, projected along the normal can lie far from the face
+    // in its plane, and the face would leave the view after the turn.
+    // Entering a sketch on it then shows the middle of the face's box.
+    if (saveCamera && !face.IsNull()) {
+      bool onIt = false;
+      Bnd_Box box;
+      for (TopExp_Explorer faces(face, TopAbs_FACE); faces.More() && !onIt; faces.Next()) {
+        const TopoDS_Face& one = TopoDS::Face(faces.Current());
+        BRepBndLib::Add(one, box);
+        try {
+          const double tolerance = std::max(BRep_Tool::Tolerance(one), Precision::Confusion());
+          const TopAbs_State state = BRepClass_FaceClassifier(one, centre, tolerance).State();
+          onIt = state == TopAbs_IN || state == TopAbs_ON;
+        } catch (const Standard_Failure&) {
+          // A face without a surface to classify on: its box counts.
+        }
+      }
+      if (!onIt && !box.IsVoid()) {
+        double x0 = 0.0;
+        double y0 = 0.0;
+        double z0 = 0.0;
+        double x1 = 0.0;
+        double y1 = 0.0;
+        double z1 = 0.0;
+        box.Get(x0, y0, z0, x1, y1, z1);
+        const gp_Pnt boxMiddle((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0);
+        centre = boxMiddle.Translated(along * -gp_Vec(origin, boxMiddle).Dot(along));
+        onFace = true;
+      }
+    }
+  }
+  // Turned to the plane about that point (the view looks against the
+  // normal, the sketch's y up), at the same distance; then that point is
+  // moved to the middle of the free area as a fit moves it there, without
+  // the fit's zoom. Never an exception out of the Sketch Palette's Look At
+  // button's slot (mitcad#773).
+  runViewOperation(QStringLiteral("look at the sketch"), [this, &camera, &centre, &normal] {
+    camera->SetEyeAndCenter(centre.Translated(gp_Vec(normal) * camera->Distance()), centre);
+    camera->SetUp(m_sketchPlane.YDirection());
+    camera->OrthogonalizeUp();
+    const gp_Vec move = freeAreaShift(camera);
+    camera->SetEyeAndCenter(camera->Eye().Translated(move), camera->Center().Translated(move));
+  });
+  // For UI tests: the sketch's origin and the free area's middle in the
+  // window (the same place when the view centred on the origin).
+  const QPointF offset(mapTo(window(), QPoint(0, 0)));
+  const QPointF at = toWidgetF(origin) + offset;
+  const QPointF free = freeArea().center() + offset;
+  qDebug().noquote() << QStringLiteral("Sketch plane centred on %1: origin at %2,%3; free area centre at %4,%5")
+                            .arg(onOrigin ? QStringLiteral("the origin")
+                                 : onFace ? QStringLiteral("the sketch's face")
+                                          : QStringLiteral("the view's middle"))
+                            .arg(at.x(), 0, 'f', 2)
+                            .arg(at.y(), 0, 'f', 2)
+                            .arg(free.x(), 0, 'f', 2)
+                            .arg(free.y(), 0, 'f', 2);
   sceneChanged();
 }
 
@@ -3389,8 +3557,11 @@ bool OcctViewer::bringClearOfPanels(const Bnd_Box& box, bool fit) {
   moved->Copy(m_view->Camera());
   const gp_XYZ extent = moved->ViewDimensions(moved->Distance());
   const double perPixel = extent.Y() / height();
-  const gp_Dir right = moved->Direction().Crossed(moved->Up());
-  const gp_Vec move = (gp_Vec(right) * shift.x() - gp_Vec(moved->Up()) * shift.y()) * -perPixel;
+  const std::optional<gp_Dir> right = crossedDir(moved->Direction(), moved->Up());
+  if (!right) {
+    return false; // no screen axes to move along (mitcad#773)
+  }
+  const gp_Vec move = (gp_Vec(*right) * shift.x() - gp_Vec(moved->Up()) * shift.y()) * -perPixel;
   moved->SetEyeAndCenter(moved->Eye().Translated(move), moved->Center().Translated(move));
   qDebug().noquote() << QStringLiteral("View moved %1,%2 px: the part clear of the panels")
                             .arg(qRound(shift.x()))
@@ -3449,11 +3620,29 @@ void OcctViewer::lookHome() { goHome(); }
 
 void OcctViewer::fitCamera(const occ::handle<Graphic3d_Camera>& fitted) const {
   // What FitAll fits: the shown objects, without the orientation cube.
+  m_viewStep = "the shown objects' box";
   const Bnd_Box box = m_view->View()->MinMaxValues();
-  if (!box.IsVoid()) {
-    m_view->FitMinMax(fitted, box, 0.15, 10.0 * Precision::Confusion());
-    fitToFreeArea(fitted);
+  if (box.IsVoid() || box.IsWhole()) {
+    return;
   }
+  // OCCT leaves out boxes beyond float range, not those that are no number
+  // (an object at a place that is none): the camera would become none too
+  // (mitcad#773), so the turn keeps the camera's size and place then.
+  double x0 = 0.0;
+  double y0 = 0.0;
+  double z0 = 0.0;
+  double x1 = 0.0;
+  double y1 = 0.0;
+  double z1 = 0.0;
+  box.Get(x0, y0, z0, x1, y1, z1);
+  if (!isFinite(gp_XYZ(x0, y0, z0)) || !isFinite(gp_XYZ(x1, y1, z1))) {
+    qWarning().noquote() << "View fit left out: the shown objects' box is not finite";
+    return;
+  }
+  m_viewStep = "the fit";
+  m_view->FitMinMax(fitted, box, 0.15, 10.0 * Precision::Confusion());
+  m_viewStep = "the fit to the free area";
+  fitToFreeArea(fitted);
 }
 
 QRectF OcctViewer::freeArea() const {
@@ -3494,15 +3683,25 @@ void OcctViewer::fitToFreeArea(const occ::handle<Graphic3d_Camera>& camera) cons
   } else {
     camera->SetDistance(camera->Distance() * zoomOut);
   }
+  const gp_Vec move = freeAreaShift(camera);
+  camera->SetEyeAndCenter(camera->Eye().Translated(move), camera->Center().Translated(move));
+}
+
+gp_Vec OcctViewer::freeAreaShift(const occ::handle<Graphic3d_Camera>& camera) const {
+  if (width() <= 0 || height() <= 0) {
+    return gp_Vec(0.0, 0.0, 0.0);
+  }
   // The model sits in the middle of the view; the middle of the free area
   // is dx, dy pixels from there. Moving the camera the other way moves the
   // model there.
-  const QPointF shift = free.center() - QPointF(width() / 2.0, height() / 2.0);
+  const QPointF shift = freeArea().center() - QPointF(width() / 2.0, height() / 2.0);
   const gp_XYZ extent = camera->ViewDimensions(camera->Distance());
   const double perPixel = extent.Y() / height();
-  const gp_Dir right = camera->Direction().Crossed(camera->Up());
-  const gp_Vec move = (gp_Vec(right) * shift.x() - gp_Vec(camera->Up()) * shift.y()) * -perPixel;
-  camera->SetEyeAndCenter(camera->Eye().Translated(move), camera->Center().Translated(move));
+  const std::optional<gp_Dir> right = crossedDir(camera->Direction(), camera->Up());
+  if (!right) {
+    return gp_Vec(0.0, 0.0, 0.0); // no screen axes to pan along (mitcad#773)
+  }
+  return (gp_Vec(*right) * shift.x() - gp_Vec(camera->Up()) * shift.y()) * -perPixel;
 }
 
 void OcctViewer::moveCamera(const occ::handle<Graphic3d_Camera>& end) {
@@ -3526,13 +3725,35 @@ void OcctViewer::moveCamera(const occ::handle<Graphic3d_Camera>& end) {
 }
 
 void OcctViewer::turnTo(const gp_Dir& direction, const gp_Dir& up) {
+  runViewOperation(QStringLiteral("turn"), [this, &direction, &up] { turnCameraTo(direction, up); });
+}
+
+void OcctViewer::turnCameraTo(const gp_Dir& direction, const gp_Dir& up) {
+  if (!isFinite(direction.XYZ())) {
+    qWarning().noquote() << "View turn left out: the direction is not finite";
+    return;
+  }
+  m_viewStep = "the turned camera";
   occ::handle<Graphic3d_Camera> end = new Graphic3d_Camera();
   end->Copy(m_view->Camera());
-  const gp_Pnt center = end->Center();
-  end->SetEyeAndCenter(center.Translated(gp_Vec(direction) * -end->Distance()), center);
-  end->SetUp(up);
+  // OCCT turns the camera only for an eye away from the centre: a camera
+  // whose centre or distance is no number, or whose eye reached its centre,
+  // would keep its old direction, and an up along that direction makes no
+  // view (mitcad#773). Such a camera turns about the origin from a distance
+  // of its own, and the up direction is made square to the new direction.
+  gp_Pnt center = end->Center();
+  if (!isFinite(center.XYZ())) {
+    center = gp_Pnt(0.0, 0.0, 0.0);
+  }
+  double distance = end->Distance();
+  if (!std::isfinite(distance) || distance <= Precision::Confusion()) {
+    distance = kTurnDistance;
+  }
+  end->SetEyeAndCenter(center.Translated(gp_Vec(direction) * -distance), center);
+  end->SetUp(upAcross(direction, up.XYZ()));
   end->OrthogonalizeUp();
   fitCamera(end);
+  m_viewStep = "the camera's move";
   moveCamera(end);
 }
 
@@ -3543,6 +3764,40 @@ void OcctViewer::goHome() {
   }
   // Isometric from the front right, Z up (V3d_TypeOfOrientation_Zup_AxoRight).
   turnTo(gp_Dir(-1, 1, -1), gp::DZ());
+}
+
+void OcctViewer::runViewOperation(const QString& operation, const std::function<void()>& run) {
+  occ::handle<Graphic3d_Camera> before = new Graphic3d_Camera();
+  before->Copy(m_view->Camera());
+  const char* outerStep = m_viewStep;
+  m_viewStep = nullptr;
+  QString failure;
+  try {
+    run();
+  } catch (const Standard_Failure& error) {
+    failure = QStringLiteral("%1: %2").arg(QString::fromLatin1(typeid(error).name()),
+                                           QString::fromUtf8(error.what()));
+  } catch (const std::exception& error) {
+    failure = QStringLiteral("%1: %2").arg(QString::fromLatin1(typeid(error).name()), QString::fromUtf8(error.what()));
+  } catch (...) {
+    failure = QStringLiteral("an exception of an unknown type");
+  }
+  const char* step = m_viewStep;
+  m_viewStep = outerStep;
+  if (failure.isEmpty()) {
+    return;
+  }
+  // "View operation failed: turn (the fit to the free area):
+  // Standard_ConstructionError: …", for UI tests and reports (mitcad#773).
+  qWarning().noquote() << QStringLiteral("View operation failed: %1%2: %3")
+                              .arg(operation,
+                                   step != nullptr ? QStringLiteral(" (%1)").arg(QString::fromLatin1(step)) : QString(),
+                                   failure);
+  AbortViewAnimation();
+  m_view->Camera()->Copy(before);
+  m_view->Invalidate();
+  cameraMoved();
+  requestFrame();
 }
 
 // ---------------------------------------------------------------------------
@@ -3582,7 +3837,8 @@ void OcctViewer::applyCubePlacement() {
   m_orientationCube->SetSize(m_cubeBaseSize * m_cubeRatio);
   m_orientationCube->SetFontHeight(m_cubeBaseFont * m_cubeRatio);
   scaleViewCube(*m_orientationCube);
-  m_orientationCube->SetTransformPersistence(cubePersistence(m_cubeRatio, m_overlayInsets));
+  m_orientationCube->SetTransformPersistence(
+      cubePersistence(m_cubeRatio, m_overlayInsets, m_cubeProjection != CubeProjection::FollowView));
   if (displayed) {
     m_context->Display(m_orientationCube, 0, 0, false);
   }
@@ -3719,17 +3975,20 @@ void OcctViewer::setNativeControls(bool native) {
 
 void OcctViewer::turnCube(const QString& arrow) {
   // The axes of the view (from the eye to the model, up, right), snapped
-  // to the model's axes: the arrows show only while they are face on.
+  // to the model's axes: the arrows show only while they are face on. The
+  // up direction is snapped across the snapped direction, so that the three
+  // stay square whatever the camera holds: snapped on their own, an up that
+  // leaned towards the direction would become it, and their cross would
+  // throw (mitcad#773).
   const occ::handle<Graphic3d_Camera>& camera = m_view->Camera();
-  const auto snap = [](const gp_Dir& d) {
-    const auto round = [](double v) { return std::abs(v) < 0.5 ? 0.0 : (v > 0.0 ? 1.0 : -1.0); };
-    const gp_XYZ snapped(round(d.X()), round(d.Y()), round(d.Z()));
-    return snapped.Modulus() > 0.5 ? gp_Dir(snapped) : d;
-  };
-  const gp_Dir direction = snap(camera->Direction());
-  const gp_Dir up = snap(camera->Up());
-  const gp_Dir right = direction.Crossed(up);
+  const gp_Dir direction = nearestAxis(camera->Direction().XYZ());
+  const gp_Dir up = nearestAxis(upAcross(direction, camera->Up().XYZ()).XYZ());
   qDebug().noquote() << QStringLiteral("Orientation cube arrow %1").arg(arrow);
+  const std::optional<gp_Dir> across = crossedDir(direction, up);
+  if (!across) {
+    return; // not expected: the two are square
+  }
+  const gp_Dir right = *across;
   if (arrow == QStringLiteral("up")) {
     turnTo(up.Reversed(), direction);
   } else if (arrow == QStringLiteral("down")) {
@@ -3749,6 +4008,7 @@ bool OcctViewer::isOnOrientationCube(const QPointF& position) {
   if (m_view->Window().IsNull() || !cubeArea().contains(position)) {
     return false;
   }
+  updateCubeEye(); // picked as the camera looks now (mitcad#774)
   const NCollection_Vec2<int> pixel = toDevicePixels(position);
   m_context->MoveTo(pixel.x(), pixel.y(), m_view, false);
   return !occ::handle<AIS_ViewCubeOwner>::DownCast(m_context->DetectedOwner()).IsNull();
@@ -3812,7 +4072,9 @@ void OcctViewer::logCamera() {
 void OcctViewer::logOrientationCube() {
   // Where a click hits each face, edge and corner of the cube in sight: of
   // the places on a grid that pick it, the one nearest their middle whose
-  // neighbours pick it too.
+  // neighbours pick it too. The cube's own perspective as the camera looks
+  // now, as the next frame draws it.
+  updateCubeEye();
   constexpr int kStep = 2;
   const QRect area = cubeArea().toRect();
   const int columns = area.width() / kStep;
@@ -3820,6 +4082,11 @@ void OcctViewer::logOrientationCube() {
   std::vector<int> grid(static_cast<std::size_t>(columns * rows), -1);
   const auto at = [&](int i, int j) { return grid[static_cast<std::size_t>(j * columns + i)]; };
   std::map<int, std::vector<std::pair<int, int>>> places;
+  // The extent of the places that pick the cube (grid cells).
+  int pickLeft = columns;
+  int pickTop = rows;
+  int pickRight = -1;
+  int pickBottom = -1;
   for (int j = 0; j < rows; ++j) {
     for (int i = 0; i < columns; ++i) {
       const NCollection_Vec2<int> pixel =
@@ -3829,6 +4096,10 @@ void OcctViewer::logOrientationCube() {
       if (!owner.IsNull()) {
         grid[static_cast<std::size_t>(j * columns + i)] = owner->MainOrientation();
         places[owner->MainOrientation()].emplace_back(i, j);
+        pickLeft = std::min(pickLeft, i);
+        pickTop = std::min(pickTop, j);
+        pickRight = std::max(pickRight, i);
+        pickBottom = std::max(pickBottom, j);
       }
     }
   }
@@ -3864,7 +4135,76 @@ void OcctViewer::logOrientationCube() {
                               .arg(corner.x() + best->first * kStep)
                               .arg(corner.y() + best->second * kStep);
   }
+  // The cube's outline as drawn and the extent of its picks, in window
+  // pixels, with the camera's direction and projection and the cube's
+  // (mitcad#766, mitcad#774: an orthographic or perspective cube is the same
+  // in either view projection; UI tests compare them).
+  const QRectF outline = cubeOutline();
+  if (!outline.isEmpty() && pickRight >= 0) {
+    const QPoint from = mapTo(window(), QPoint(qRound(outline.left()), qRound(outline.top())));
+    const QPoint to = mapTo(window(), QPoint(qRound(outline.right()), qRound(outline.bottom())));
+    const occ::handle<Graphic3d_Camera>& camera = m_view->Camera();
+    qDebug().noquote() << QStringLiteral("Orientation cube outline %1,%2 to %3,%4, picks %5,%6 to %7,%8, "
+                                         "looking %9 (%10), cube %11")
+                              .arg(from.x())
+                              .arg(from.y())
+                              .arg(to.x())
+                              .arg(to.y())
+                              .arg(corner.x() + pickLeft * kStep)
+                              .arg(corner.y() + pickTop * kStep)
+                              .arg(corner.x() + pickRight * kStep)
+                              .arg(corner.y() + pickBottom * kStep)
+                              .arg(vectorText(camera->Direction().XYZ()),
+                                   isPerspective() ? QStringLiteral("perspective") : QStringLiteral("orthographic"),
+                                   cubeProjectionId(m_cubeProjection));
+  }
   requestFrame();
+}
+
+QRectF OcctViewer::cubeOutline() const {
+  if (m_view->Window().IsNull() || m_orientationCube->TransformPersistence().IsNull()) {
+    return {};
+  }
+  int width = 0;
+  int height = 0;
+  m_view->Window()->Size(width, height);
+  if (width <= 0 || height <= 0) {
+    return {};
+  }
+  // As OpenGl_Structure draws it: the view's projection after the world-view
+  // matrix the persistence makes (for an orthographic cube in a perspective
+  // view it undoes the perspective projection).
+  const occ::handle<Graphic3d_Camera>& camera = m_view->Camera();
+  const NCollection_Mat4<double>& projection = camera->ProjectionMatrix();
+  NCollection_Mat4<double> worldView = camera->OrientationMatrix();
+  m_orientationCube->TransformPersistence()->Apply(camera, projection, worldView, width, height);
+  const NCollection_Mat4<double> toClip = projection * worldView;
+  // The box: the faces lie this far from its middle (ViewCube.cpp).
+  const double half = m_orientationCube->Size() * 0.5 + m_orientationCube->BoxFacetExtension();
+  double left = std::numeric_limits<double>::max();
+  double top = std::numeric_limits<double>::max();
+  double right = std::numeric_limits<double>::lowest();
+  double bottom = std::numeric_limits<double>::lowest();
+  for (int i = 0; i < 8; ++i) {
+    // Where the cube's own perspective (mitcad#774) puts the corner.
+    const gp_XYZ at = viewCubePoint(*m_orientationCube, gp_XYZ((i & 1) != 0 ? half : -half,
+                                                               (i & 2) != 0 ? half : -half,
+                                                               (i & 4) != 0 ? half : -half));
+    const NCollection_Vec4<double> boxCorner(at.X(), at.Y(), at.Z(), 1.0);
+    const NCollection_Vec4<double> clip = toClip * boxCorner;
+    if (clip.w() <= 0.0) {
+      return {};
+    }
+    // Normalised device coordinates to device pixels, y down.
+    const double x = (clip.x() / clip.w() + 1.0) * 0.5 * width;
+    const double y = (1.0 - clip.y() / clip.w()) * 0.5 * height;
+    left = std::min(left, x);
+    top = std::min(top, y);
+    right = std::max(right, x);
+    bottom = std::max(bottom, y);
+  }
+  const qreal ratio = devicePixelRatioF();
+  return QRectF(QPointF(left / ratio, top / ratio), QPointF(right / ratio, bottom / ratio));
 }
 
 CameraState OcctViewer::camera() const {
@@ -3894,18 +4234,25 @@ CameraState OcctViewer::pendingCamera() const {
 }
 
 void OcctViewer::setCamera(const CameraState& state) {
-  if (state.eye.Distance(state.target) <= Precision::Confusion() || !(state.height > 0.0)) {
+  // Not a number (a stored view that is broken) fails these too.
+  if (!(state.eye.Distance(state.target) > Precision::Confusion()) || !(state.height > 0.0) ||
+      !std::isfinite(state.height)) {
     return;
   }
-  occ::handle<Graphic3d_Camera> end = new Graphic3d_Camera();
-  end->Copy(m_view->Camera());
-  end->SetProjectionType(state.perspective ? Graphic3d_Camera::Projection_Perspective
-                                           : Graphic3d_Camera::Projection_Orthographic);
-  end->SetEyeAndCenter(state.eye, state.target);
-  end->SetUp(state.up);
-  end->OrthogonalizeUp();
-  end->SetScale(state.height);
-  moveCamera(end);
+  runViewOperation(QStringLiteral("camera"), [this, &state] {
+    m_viewStep = "the camera";
+    occ::handle<Graphic3d_Camera> end = new Graphic3d_Camera();
+    end->Copy(m_view->Camera());
+    end->SetProjectionType(state.perspective ? Graphic3d_Camera::Projection_Perspective
+                                             : Graphic3d_Camera::Projection_Orthographic);
+    end->SetEyeAndCenter(state.eye, state.target);
+    // Square to the direction (mitcad#773): an up along it makes no view.
+    end->SetUp(upAcross(end->Direction(), state.up.XYZ()));
+    end->OrthogonalizeUp();
+    end->SetScale(state.height);
+    m_viewStep = "the camera's move";
+    moveCamera(end);
+  });
 }
 
 void OcctViewer::setPerspective(bool perspective) {
@@ -3918,6 +4265,48 @@ void OcctViewer::setPerspective(bool perspective) {
 
 bool OcctViewer::isPerspective() const {
   return m_view->Camera()->ProjectionType() == Graphic3d_Camera::Projection_Perspective;
+}
+
+QString cubeProjectionId(CubeProjection projection) {
+  switch (projection) {
+  case CubeProjection::Orthographic:
+    return QStringLiteral("orthographic");
+  case CubeProjection::Perspective:
+    return QStringLiteral("perspective");
+  case CubeProjection::FollowView:
+    break;
+  }
+  return QStringLiteral("follow-view");
+}
+
+void OcctViewer::setCubeProjection(CubeProjection projection) {
+  if (projection == m_cubeProjection) {
+    return;
+  }
+  m_cubeProjection = projection;
+  setViewCubePerspective(*m_orientationCube, projection == CubeProjection::Perspective);
+  setViewCubeEye(*m_orientationCube, m_view->Camera()->Direction().Reversed());
+  applyCubePlacement();
+  if (m_context->IsDisplayed(m_orientationCube)) {
+    m_context->RecomputeSelectionOnly(m_orientationCube); // picked as drawn
+  }
+  qDebug().noquote() << QStringLiteral("Orientation cube projection %1").arg(cubeProjectionId(projection));
+  // Its places and outline logged again when the camera rests (UI tests),
+  // also where the camera did not move.
+  m_loggedCamera.clear();
+  cameraMoved();
+  requestFrame();
+}
+
+void OcctViewer::updateCubeEye() {
+  if (m_cubeProjection != CubeProjection::Perspective ||
+      !setViewCubeEye(*m_orientationCube, m_view->Camera()->Direction().Reversed())) {
+    return;
+  }
+  if (m_context->IsDisplayed(m_orientationCube)) {
+    m_context->Redisplay(m_orientationCube, false);
+    m_context->RecomputeSelectionOnly(m_orientationCube);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -4589,6 +4978,9 @@ void OcctViewer::paintGL() {
     FlushViewEvents(m_context, m_view, true);
   } catch (const Standard_Failure& failure) {
     qWarning() << "OCCT view event failed:" << failure.what();
+  } catch (const std::exception& failure) {
+    // A click on the cube turns the view here (mitcad#773).
+    qWarning() << "OCCT view event failed:" << failure.what();
   }
   if (m_context->DetectedOwner() != m_hoveredOwner) {
     m_hoveredOwner = m_context->DetectedOwner();
@@ -4641,7 +5033,25 @@ void OcctViewer::updateNavigation() {
   if (left > 0) {
     m_navigationTimer->start(left);
   }
+  if (change == ViewNavigation::Change::Started) {
+    m_navigationFirstFrame = m_framesDrawn;
+    m_navigationRepaints = 0;
+    m_navigationRepainted.clear();
+    m_navigationPrintOverlays = 0;
+  }
   if (change == ViewNavigation::Change::Ended) {
+    // For UI tests (app/COMMANDS.md, "Logs that UI tests read"): what the
+    // navigation cost besides the view's own frames (mitcad#768).
+    QString line = QStringLiteral("View navigation: %1 frame(s), %2 repaint(s) of widgets over the view")
+                       .arg(m_framesDrawn - m_navigationFirstFrame)
+                       .arg(m_navigationRepaints);
+    if (!m_navigationRepainted.isEmpty()) {
+      line += QStringLiteral(" (%1)").arg(m_navigationRepainted.join(QStringLiteral(", ")));
+    }
+    if (!m_loggedPrintOverlay.isEmpty() && m_loggedPrintOverlay != QStringLiteral("Print overlay: none")) {
+      line += QStringLiteral(", Print Analysis overlay set %1 time(s)").arg(m_navigationPrintOverlays);
+    }
+    qDebug().noquote() << line;
     emit navigationFinished();
   }
 }
@@ -5234,9 +5644,18 @@ void OcctViewer::handleViewRedraw(const occ::handle<AIS_InteractiveContext>& con
       setRenderedImage(QImage());
     }
   }
-  // The camera has moved for this frame: the grid follows the zoom at once.
+  // The camera has moved for this frame: the grid follows the zoom at once,
+  // the cube's own perspective the direction (mitcad#774).
   updateGrid();
+  updateCubeEye();
+  const gp_Dir drawnFrom = m_view->Camera()->Direction();
   AIS_ViewController::handleViewRedraw(context, view);
+  // A camera animation moved the camera as the frame was drawn: the cube's
+  // perspective follows in the next one.
+  if (m_cubeProjection == CubeProjection::Perspective && !m_view->Camera()->Direction().IsEqual(drawnFrom, 1e-9)) {
+    updateCubeEye();
+    requestFrame();
+  }
   if (toAskNextFrame()) {
     requestFrame(); // keep animations such as the orientation cube running
   }

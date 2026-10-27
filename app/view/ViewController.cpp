@@ -211,7 +211,7 @@ const PreferencePage kPreferencePages[] = {
     {"general", QT_TRANSLATE_NOOP("View", "General"), "autosave recovery"},
     {"navigation", QT_TRANSLATE_NOOP("View", "Navigation"), "mouse orbit pan zoom scheme"},
     {"display", QT_TRANSLATE_NOOP("View", "Display"),
-     "camera perspective orthographic background environment render device gpu cuda ghost inactive components pick priority layout docked floating browser background rows card"},
+     "camera perspective orthographic orientation view cube projection follow background environment render device gpu cuda ghost inactive components pick priority layout docked floating browser background rows card"},
     {"cache", QT_TRANSLATE_NOOP("View", "Cache"), "results memory disk diagnostics"},
     {"cloud", QT_TRANSLATE_NOOP("View", "Cloud"),
      "git remote sync push fetch version control author email name mqtt live broker"},
@@ -358,6 +358,13 @@ ViewSettings ViewSettings::load() {
   loadNavigationDetails(store, s.navigation);
   s.ghostInactive = flag("ghostInactive", s.ghostInactive);
   s.activePickPriority = flag("activePickPriority", s.activePickPriority);
+  const QString cube = store.value(kGroup + QStringLiteral("cubeProjection")).toString();
+  for (const CubeProjection projection :
+       {CubeProjection::FollowView, CubeProjection::Orthographic, CubeProjection::Perspective}) {
+    if (cube == cubeProjectionId(projection)) {
+      s.cubeProjection = projection;
+    }
+  }
   return s;
 }
 
@@ -381,6 +388,7 @@ void ViewSettings::save() const {
   saveNavigationDetails(store, navigation);
   store.setValue(kGroup + QStringLiteral("ghostInactive"), ghostInactive);
   store.setValue(kGroup + QStringLiteral("activePickPriority"), activePickPriority);
+  store.setValue(kGroup + QStringLiteral("cubeProjection"), cubeProjectionId(cubeProjection));
 }
 
 void ViewSettings::colors(QColor& upper, QColor& lower, bool& gradient) const {
@@ -690,6 +698,7 @@ void ViewController::apply() {
   m_viewer.setComponentColors(m_settings.componentColors);
   m_viewer.setNavigation(m_settings.navigation);
   m_viewer.setPerspective(m_settings.perspective);
+  m_viewer.setCubeProjection(m_settings.cubeProjection); // mitcad#774
   QColor top;
   QColor bottom;
   bool gradient = true;
@@ -903,13 +912,30 @@ void ViewController::showOrientationCubeMenu(const QPoint& globalPosition) {
     menu.addAction(action);
     entries << action->text().remove(QLatin1Char('&'));
   };
-  for (const char* id : {"view.home", "view.orthographic", "view.perspective", "view.set_home",
-                         "view.reset_home", "view.fit"}) {
+  const auto addId = [this, &add](const char* id) {
     if (QAction* a = m_registry.action(QString::fromLatin1(id))) {
       add(a);
     }
+  };
+  addId("view.home");
+  // The camera's projection in a submenu of its own, as View > Camera has
+  // it: the shared checkable actions show the current choice, and the
+  // title keeps it apart from Preferences' "Orientation cube" projection
+  // (mitcad#774).
+  QMenu* camera = menu.addMenu(themeIcon(QStringLiteral("perspective")), tr("Camera"));
+  entries << camera->title();
+  QStringList cameraEntries;
+  for (const char* id : {"view.orthographic", "view.perspective"}) {
+    if (QAction* a = m_registry.action(QString::fromLatin1(id))) {
+      camera->addAction(a);
+      cameraEntries << a->text().remove(QLatin1Char('&'));
+    }
+  }
+  for (const char* id : {"view.set_home", "view.reset_home", "view.fit"}) {
+    addId(id);
   }
   qDebug().noquote() << QStringLiteral("Context menu: %1").arg(entries.join(QStringLiteral(" | ")));
+  qDebug().noquote() << QStringLiteral("Context menu Camera: %1").arg(cameraEntries.join(QStringLiteral(" | ")));
   execMenu(&menu, globalPosition);
 }
 
@@ -1175,7 +1201,14 @@ void ViewController::showPreferences(const QString& page) {
   camera->setObjectName(QStringLiteral("preferencesCamera"));
   camera->addItems({tr("Orthographic"), tr("Perspective")});
   camera->setCurrentIndex(m_settings.perspective ? 1 : 0);
-  display->addRow(tr("Camera:"), camera);
+  display->addRow(tr("C&amera:"), camera);
+  // The orientation cube's projection (mitcad#774), in CubeProjection's
+  // order.
+  auto* cubeProjection = new QComboBox;
+  cubeProjection->setObjectName(QStringLiteral("preferencesCubeProjection"));
+  cubeProjection->addItems({tr("Follow the View"), tr("Orthographic"), tr("Perspective")});
+  cubeProjection->setCurrentIndex(int(m_settings.cubeProjection));
+  display->addRow(tr("&Orientation cube:"), cubeProjection);
   auto* background = new QComboBox;
   background->setObjectName(QStringLiteral("preferencesBackground"));
   for (const BackgroundEntry& entry : kBackgrounds) {
@@ -1367,7 +1400,7 @@ void ViewController::showPreferences(const QString& page) {
   }
   groups.insert(QStringLiteral("display"), displayBox);
 
-  *commit = [this, general, top, bottom, navigation, camera, background,
+  *commit = [this, general, top, bottom, navigation, camera, cubeProjection, background,
              autosave, minutes, importTolerance, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice, debugLog,
              debugLogApplied, texturesBox, agentsBox, fontsBox, layoutChoice, layoutApplied] {
     // Font folders for sketch text (mitcad#473).
@@ -1410,6 +1443,12 @@ void ViewController::showPreferences(const QString& page) {
     }
     m_settings.navigation = navigation->chosen();
     m_settings.perspective = camera->currentIndex() == 1;
+    // The orientation cube's projection (mitcad#774): applied below.
+    const auto cube = static_cast<CubeProjection>(cubeProjection->currentIndex());
+    if (cube != m_settings.cubeProjection) {
+      m_settings.cubeProjection = cube;
+      qDebug().noquote() << QStringLiteral("Preferences: orientation cube %1").arg(cubeProjectionId(cube));
+    }
     m_settings.background = static_cast<ViewSettings::Background>(background->currentIndex());
     m_settings.top = *top;
     m_settings.bottom = *bottom;
@@ -1552,6 +1591,7 @@ void ViewController::showPreferences(const QString& page) {
     // No OK: a change is made when it is made. The text boxes when they are
     // left, and what is typed in one when the window closes.
     connect(camera, &QComboBox::currentIndexChanged, host, changed);
+    connect(cubeProjection, &QComboBox::currentIndexChanged, host, changed);
     connect(background, &QComboBox::currentIndexChanged, host, changed);
     if (renderDevice != nullptr) {
       connect(renderDevice, &QComboBox::currentIndexChanged, host, changed);

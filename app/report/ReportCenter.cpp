@@ -159,6 +159,13 @@ void ReportCenter::startUp() {
       qInfo().noquote() << QStringLiteral("Crashing for a test (MITCAD_TEST_CRASH=app)");
       crash::crashNow();
     });
+  } else if (crash::testCrashRequested("app-exception")) {
+    // An exception out of a slot (mitcad#773): the report names its type
+    // and message.
+    QTimer::singleShot(500, this, [] {
+      qInfo().noquote() << QStringLiteral("Throwing for a test (MITCAD_TEST_CRASH=app-exception)");
+      crash::throwNow();
+    });
   } else if (crash::testCrashRequested("model-worker")) {
     QTimer::singleShot(500, this, [this] {
       qInfo().noquote() << QStringLiteral("Crashing the model's worker thread for a test (MITCAD_TEST_CRASH=model-worker)");

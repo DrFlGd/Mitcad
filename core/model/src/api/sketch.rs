@@ -445,7 +445,9 @@ named_enum! {
         },
         "sketch.project" => Project {
             sketch: FeatureUid,
-            source: TopoName,
+            /// Left out for the section of a whole `body` (mitcad#736).
+            #[serde(default)]
+            source: Option<TopoName>,
             #[serde(default)]
             body: Option<BodyUid>,
             #[serde(default)]
@@ -456,7 +458,9 @@ named_enum! {
             #[serde(default)]
             context: Option<OccurrencePath>,
             /// Section curves (mitcad#389): where the sketch's plane cuts the
-            /// source face instead of its projection.
+            /// source face instead of its projection; of an edge, the points
+            /// where the plane crosses it, of a whole body every face's
+            /// section (Intersect, mitcad#736).
             #[serde(default)]
             section: bool,
         },
@@ -829,6 +833,9 @@ pub(super) fn report_json(report: &EditReport, def: Option<&SketchDef>) -> Value
     if !report.removed.is_empty() {
         value["removed"] = json!(report.removed);
     }
+    if !report.warnings.is_empty() {
+        value["warnings"] = json!(report.warnings);
+    }
     if let Some(def) = def {
         value["status"] = status_json(&report.status, def);
     }
@@ -937,15 +944,23 @@ impl<K: Kernel> Document<K> {
                 let occurrence = occurrence.as_ref().map(|o| &o.0[..]);
                 let context = context.as_ref().map(|c| &c.0[..]);
                 let report = match (&source, section) {
-                    (TopoName::Face(face), true) => {
-                        self.section_from(sketch, face, body, linked, occurrence, context)?
+                    (_, true) => self.section_from(
+                        sketch,
+                        source.as_ref(),
+                        body,
+                        linked,
+                        occurrence,
+                        context,
+                    )?,
+                    (Some(source), false) => {
+                        self.project_from(sketch, source, body, linked, occurrence, context)?
                     }
-                    (_, true) => {
-                        return Err(ApiError(format!(
-                            "section of {source}: a section's source is a face"
-                        )));
+                    (None, false) => {
+                        return Err(ApiError(
+                            "sketch.project needs a source (only a section takes a whole body)"
+                                .to_owned(),
+                        ));
                     }
-                    _ => self.project_from(sketch, &source, body, linked, occurrence, context)?,
                 };
                 report_json(&report, self.sketch_def(sketch))
             }

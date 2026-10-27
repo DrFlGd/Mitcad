@@ -21,6 +21,10 @@ pub struct HeaderVars {
     pub handseed: Option<u64>,
 }
 
+/// The maintenance release the test files claim (the writers of the
+/// header variables and classes lay out R2010 and R2013 by it).
+pub const MAINTENANCE: u8 = 6;
+
 /// The first value of the header variables, the same in every file.
 pub const FIRST_VALUE: f64 = 412_148_564_080.0;
 
@@ -605,7 +609,7 @@ pub fn write(version: Version, vars: &HeaderVars) -> Vec<u8> {
     w.align();
     let mut out = HEADER_SENTINEL.to_vec();
     out.extend_from_slice(&(w.data.len() as u32).to_le_bytes());
-    if (matches!(v, R2010 | R2013) && crate::testfile::MAINTENANCE > 3) || v >= R2018 {
+    if (matches!(v, R2010 | R2013) && crate::header::MAINTENANCE > 3) || v >= R2018 {
         out.extend_from_slice(&0u32.to_le_bytes());
     }
     out.extend_from_slice(&w.data);

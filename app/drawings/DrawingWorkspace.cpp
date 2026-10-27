@@ -300,10 +300,11 @@ DrawingWorkspace::DrawingWorkspace(OcctViewer* viewer, DocumentHost& host, std::
     }
     group(toolGroupName(g), buttons, m_groupCaptions);
   }
-  m_export = button(QStringLiteral("export"), tr("Export…"), tr("The drawing as PDF, SVG or DXF"));
+  m_export = button(QStringLiteral("export"), tr("Export…"), tr("The drawing as PDF, SVG, DXF or DWG"));
   m_export->setPopupMode(QToolButton::InstantPopup);
   auto* formats = new QMenu(m_export);
-  for (const auto& [format, label] : {std::pair{"pdf", "PDF…"}, std::pair{"svg", "SVG…"}, std::pair{"dxf", "DXF…"}}) {
+  for (const auto& [format, label] : {std::pair{"pdf", "PDF…"}, std::pair{"svg", "SVG…"}, std::pair{"dxf", "DXF…"},
+                                      std::pair{"dwg", "DWG…"}}) {
     const QString name = QString::fromLatin1(format);
     formats->addAction(tr(label), this, [this, name] { exportDrawing(name); });
   }
@@ -399,6 +400,11 @@ bool DrawingWorkspace::open(const QString& uid) {
   if (!isOpen()) {
     return false;
   }
+  // Another drawing, or one opened again, shows its whole sheet; the model's
+  // later answers keep a zoom or a pan (mitcad#751).
+  if (uid != previous) {
+    m_sheetView->fit();
+  }
   // Opened with nothing selected and no tool.
   m_sheetView->clearSelection();
   setTool(nullptr);
@@ -444,6 +450,7 @@ void DrawingWorkspace::refresh() {
     // gone: back to the model.
     if (m_sheet > 0) {
       m_sheet = 0;
+      dropPicks();
       refresh();
       return;
     }
@@ -607,6 +614,50 @@ void DrawingWorkspace::fillPanel() {
     m_form->addRow(tr("Template"), new QLabel(sheetTemplate.isEmpty()
                                                   ? tr("Simple Title Block")
                                                   : sheetTemplate.value(QStringLiteral("name")).toString()));
+    // The drawing's decimals and letters' height (mitcad#729): every
+    // dimension's and annotation's of its sheets without their own.
+    const QJsonValue ownDecimals = m_answer.value(QStringLiteral("decimals"));
+    QList<QPair<QString, QString>> decimalChoices = {{QStringLiteral("auto"), tr("Automatic")}};
+    for (int d = 0; d <= 6; ++d) {
+      decimalChoices.append({QString::number(d), QString::number(d)});
+    }
+    QComboBox* decimals =
+        comboOf(decimalChoices, ownDecimals.isDouble() ? QString::number(ownDecimals.toInt()) : QStringLiteral("auto"));
+    decimals->setObjectName(QStringLiteral("drawingDefaultDecimals"));
+    connect(decimals, &QComboBox::currentIndexChanged, this, [this, decimals] {
+      const QJsonObject command =
+          drawingDefaultsEdit(m_drawing, QStringLiteral("decimals"), decimals->currentData().toString());
+      if (!command.isEmpty()) {
+        QTimer::singleShot(0, this, [this, command] { run(command); });
+      }
+    });
+    m_form->addRow(tr("Decimals"), decimals);
+    const QJsonValue ownHeight = m_answer.value(QStringLiteral("text_height"));
+    const QString shownHeight = ownHeight.isDouble() ? QString::number(ownHeight.toDouble(), 'g', 6) : QString();
+    auto* textHeight = new QLineEdit(shownHeight);
+    textHeight->setObjectName(QStringLiteral("drawingDefaultTextHeight"));
+    textHeight->setPlaceholderText(QStringLiteral("3.5"));
+    textHeight->setToolTip(tr("The letters' height of the drawing's dimensions and annotations without their own, mm"));
+    connect(textHeight, &QLineEdit::editingFinished, this, [this, textHeight, shownHeight] {
+      const QString text = textHeight->text().trimmed();
+      if (text == shownHeight) {
+        return;
+      }
+      QString number;
+      if (!text.isEmpty() && !parsePlainNumber(text, &number)) {
+        setStatus(tr("A text height is a size in millimetres, not %1.").arg(text), true);
+        textHeight->setText(shownHeight);
+        return;
+      }
+      const QJsonObject command = drawingDefaultsEdit(m_drawing, QStringLiteral("text_height"), number);
+      if (command.isEmpty()) {
+        setStatus(tr("A text height is more than 0 and at most 100 mm."), true);
+        textHeight->setText(shownHeight);
+        return;
+      }
+      QTimer::singleShot(0, this, [this, command] { run(command); });
+    });
+    m_form->addRow(tr("Text Height (mm)"), textHeight);
     // The revision table (mitcad#707 phase 4): a row per revision, the
     // latest last; a click edits or deletes it.
     for (const QJsonValue& value : m_answer.value(QStringLiteral("revisions")).toArray()) {
@@ -862,6 +913,27 @@ void DrawingWorkspace::fillViewPanel(int id) {
   connect(scales, &QComboBox::currentIndexChanged, this,
           [edit, scales] { edit(QStringLiteral("scale"), scales->currentData().toString()); });
   m_form->addRow(tr("Scale"), named(scales, "drawingViewScale"));
+  // Turned on the sheet (mitcad#729), the views from it and its
+  // annotations with it; a detail turns with its parent.
+  if (type != QStringLiteral("detail")) {
+    const QString shownTurn = QString::number(json.value(QStringLiteral("rotation")).toDouble(), 'g', 6);
+    auto* rotation = new QLineEdit(shownTurn);
+    rotation->setToolTip(tr("How far the view is turned on the sheet, degrees counter-clockwise"));
+    connect(rotation, &QLineEdit::editingFinished, this, [this, edit, rotation, shownTurn] {
+      const QString text = rotation->text().trimmed();
+      if (text == shownTurn) {
+        return;
+      }
+      QString number;
+      if (!parsePlainNumber(text, &number)) {
+        setStatus(tr("A rotation is a number of degrees, not %1.").arg(text), true);
+        rotation->setText(shownTurn);
+        return;
+      }
+      edit(QStringLiteral("rotation"), number);
+    });
+    m_form->addRow(tr("Rotation (°)"), named(rotation, "drawingViewRotation"));
+  }
   for (const auto& [field, label] : {std::pair{"hidden_lines", "Hidden Edges"}, std::pair{"tangent_edges", "Tangent Edges"},
                                      std::pair{"shaded", "Shaded"}}) {
     const QString name = QString::fromLatin1(field);
@@ -970,8 +1042,10 @@ void DrawingWorkspace::picked(ToolPicks picks) {
     }
   }
   // An annotation's tool: the model's picks the workspace found, on their
-  // view; a dialog for what its options leave out.
-  const bool annotating = m_tool->pick == SheetPick::Picks || m_tool->id == QStringLiteral("drawing.text");
+  // view; a dialog for what its options leave out. A line or an arc drawn
+  // outside the model (mitcad#729) keeps its tool for the next one too.
+  const bool annotating = m_tool->pick == SheetPick::Picks || m_tool->pick == SheetPick::Segment ||
+                          m_tool->pick == SheetPick::ArcPoints || m_tool->id == QStringLiteral("drawing.text");
   if (m_tool->pick == SheetPick::Picks) {
     picks.view = m_pickView;
     picks.picks = m_toolPicks;
@@ -1065,6 +1139,19 @@ void DrawingWorkspace::hoverPick() {
   // Nothing while what was picked is placed (mitcad#725).
   if (m_hoverView >= 0 && on > 0 && m_tool != nullptr && m_tool->pick == SheetPick::Picks && isOpen() &&
       !m_sheetView->isPlacing()) {
+    if (m_host.modelBusy()) {
+      // A job computes the model (its timers still fire while it is
+      // waited for): asked once it is done (mitcad#753), the marks kept
+      // meanwhile.
+      if (!m_hoverWaits) {
+        m_hoverWaits = true;
+        m_host.whenIdle(this, [this] {
+          m_hoverWaits = false;
+          hoverPick();
+        });
+      }
+      return;
+    }
     QJsonObject query{{QStringLiteral("query"), QStringLiteral("drawing_pick")},
                       {QStringLiteral("drawing"), m_drawing},
                       {QStringLiteral("sheet"), m_sheet},
@@ -1359,6 +1446,43 @@ void DrawingWorkspace::fillAnnotationPanel(int id) {
   if (type == QStringLiteral("hole_table") || type == QStringLiteral("parts_list")) {
     fillTablePanel(id, json);
   }
+  // A line's or an arc's pen (mitcad#729).
+  if (type == QStringLiteral("line") || type == QStringLiteral("arc")) {
+    QComboBox* pen = comboOf(penChoices(), json.value(QStringLiteral("pen")).toString(QStringLiteral("thin")));
+    connect(pen, &QComboBox::currentIndexChanged, this,
+            [field, pen] { field(QStringLiteral("pen"), pen->currentData().toString(), QJsonObject()); });
+    m_form->addRow(tr("Line"), named(pen, "drawingAnnotationPen"));
+  }
+  // An edge extension of one edge: how far it runs on (mitcad#729).
+  if (type == QStringLiteral("edge_extension") && json.value(QStringLiteral("picks")).toArray().size() == 1) {
+    const QJsonValue reach = json.value(QStringLiteral("line_offset"));
+    line(QStringLiteral("length"), reach.isDouble() ? QString::number(reach.toDouble(), 'g', 6) : QString(),
+         tr("Length (mm)"), "drawingAnnotationLength");
+  }
+  // Its own letters' height over the drawing's (mitcad#729): what writes.
+  const bool writes = type != QStringLiteral("line") && type != QStringLiteral("arc") &&
+                      type != QStringLiteral("center_mark") && type != QStringLiteral("centerline") &&
+                      type != QStringLiteral("center_pattern") && type != QStringLiteral("edge_extension");
+  if (writes) {
+    const QJsonValue own = json.value(QStringLiteral("height"));
+    const QString shownHeight = own.isDouble() ? QString::number(own.toDouble(), 'g', 6) : QString();
+    auto* height = new QLineEdit(shownHeight);
+    height->setPlaceholderText(tr("The drawing's"));
+    connect(height, &QLineEdit::editingFinished, this, [this, field, height, shownHeight] {
+      const QString text = height->text().trimmed();
+      if (text == shownHeight) {
+        return;
+      }
+      QString number;
+      if (!text.isEmpty() && !parsePlainNumber(text, &number)) {
+        setStatus(tr("A text height is a size in millimetres, not %1.").arg(text), true);
+        height->setText(shownHeight);
+        return;
+      }
+      field(QStringLiteral("height"), number, QJsonObject());
+    });
+    m_form->addRow(tr("Text Height (mm)"), named(height, "drawingAnnotationHeight"));
+  }
   auto* remove = new QPushButton(tr("Delete"));
   connect(remove, &QPushButton::clicked, this,
           [this, id] { QTimer::singleShot(0, this, [this, id] { deleteAnnotation(id); }); });
@@ -1534,6 +1658,9 @@ void DrawingWorkspace::switchSheet(int index) {
     return;
   }
   m_sheet = index;
+  // An annotation tool's picks, a half-drawn line or circle and a placing
+  // click awaited were on the sheet left (mitcad#759); the tool stays.
+  dropPicks();
   qDebug().noquote() << QStringLiteral("Drawing sheet %1 shown").arg(index + 1);
   refresh();
 }
@@ -1645,7 +1772,11 @@ void DrawingWorkspace::selectionMoved(QPointF delta) {
   }
   for (const int note : m_sheetView->selectedAnnotations()) {
     const SheetAnnotation* a = m_sheetView->annotation(note);
-    if (a != nullptr && a->view != 0 && movedAlong(a->view)) {
+    // A dimension, a leader or a symbol is placed from its picks and goes
+    // with its view; a hole table or a parts list stands on the sheet
+    // whatever its view's place, and is moved itself (mitcad#752).
+    const bool table = a != nullptr && (a->type == QStringLiteral("hole_table") || a->type == QStringLiteral("parts_list"));
+    if (a != nullptr && !table && a->view != 0 && movedAlong(a->view)) {
       continue;
     }
     commands.append(QJsonObject{{QStringLiteral("cmd"), QStringLiteral("edit_drawing_annotation")},
@@ -1717,6 +1848,15 @@ void DrawingWorkspace::contextMenu(QPointF at, const QPoint& global) {
     add(tr("Section View"), later([this] { setTool(drawingTool(QStringLiteral("drawing.section_view"))); }));
     add(tr("Detail View"), later([this] { setTool(drawingTool(QStringLiteral("drawing.detail_view"))); }));
     add(tr("Break"), later([this] { setTool(drawingTool(QStringLiteral("drawing.break"))); }));
+    // A quarter turn either way (mitcad#729); a detail turns with its
+    // parent.
+    if (shown != nullptr && shown->type != QStringLiteral("detail")) {
+      const double turned = shown->json.value(QStringLiteral("rotation")).toDouble();
+      for (const auto& [text, by] : {std::pair{"Rotate 90° Left", 90.0}, std::pair{"Rotate 90° Right", -90.0}}) {
+        const QString degrees = QString::number(turned + by, 'g', 10);
+        add(tr(text), later([this, viewId, degrees] { editView(viewId, QStringLiteral("rotation"), degrees); }));
+      }
+    }
     menu.addSeparator();
     // The panel's check boxes, as checkable entries.
     const QJsonObject json = shown != nullptr ? shown->json : QJsonObject();
@@ -1801,61 +1941,22 @@ void DrawingWorkspace::editSheet() {
   projection->setObjectName(QStringLiteral("drawingSheetProjection"));
   form->addRow(tr("Projection"), projection);
   // Another template brings its size and projection method, as in Create
-  // Drawing (mitcad#725); its projection only when the sheet can take
-  // it: the model turns no projected view that has sections or details
-  // drawn on it (or on a view from it), so the sheet keeps its own then
-  // and a line says why.
-  bool fixedProjection = false;
-  const QJsonArray sheetViews = sheet.value(QStringLiteral("views")).toArray();
-  const auto viewOf = [&sheetViews](int id) {
-    for (const QJsonValue& value : sheetViews) {
-      if (value.toObject().value(QStringLiteral("id")).toInt() == id) {
-        return value.toObject();
-      }
+  // Drawing (mitcad#725); the projected views turn with the method, the
+  // sections and details drawn on them following (mitcad#729).
+  connect(templateBox, &QComboBox::currentIndexChanged, &dialog, [templateBox, sizes, projection, &choices] {
+    const int at = templateIndex(choices, templateBox->currentData().toString());
+    if (at < 0) {
+      return;
     }
-    return QJsonObject();
-  };
-  for (const QJsonValue& value : sheetViews) {
-    const QJsonObject marked = value.toObject();
-    const QString type = marked.value(QStringLiteral("type")).toString();
-    if (type != QStringLiteral("section") && type != QStringLiteral("detail")) {
-      continue;
+    const int size = sizes->findData(choices.at(at).size);
+    if (size >= 0) {
+      sizes->setCurrentIndex(size);
     }
-    // Up its parents: a projected view among them keeps its side.
-    int parentId = marked.value(QStringLiteral("parent")).toInt();
-    for (int guard = 0; parentId != 0 && guard < sheetViews.size(); ++guard) {
-      const QJsonObject up = viewOf(parentId);
-      if (up.value(QStringLiteral("type")).toString() == QStringLiteral("projected")) {
-        fixedProjection = true;
-      }
-      parentId = up.value(QStringLiteral("parent")).toInt();
+    const int method = projection->findData(choices.at(at).projection);
+    if (method >= 0) {
+      projection->setCurrentIndex(method);
     }
-  }
-  auto* projectionNote = new QLabel(tr("The projection stays: its sections or details are drawn on projected views."));
-  projectionNote->setWordWrap(true);
-  projectionNote->setObjectName(QStringLiteral("drawingSheetProjectionNote"));
-  projectionNote->hide();
-  form->addRow(QString(), projectionNote);
-  connect(templateBox, &QComboBox::currentIndexChanged, &dialog,
-          [templateBox, sizes, projection, projectionNote, fixedProjection, &choices] {
-            const int at = templateIndex(choices, templateBox->currentData().toString());
-            if (at < 0) {
-              return;
-            }
-            const int size = sizes->findData(choices.at(at).size);
-            if (size >= 0) {
-              sizes->setCurrentIndex(size);
-            }
-            const int method = projection->findData(choices.at(at).projection);
-            const bool other = method >= 0 && method != projection->currentIndex();
-            if (other && !fixedProjection) {
-              projection->setCurrentIndex(method);
-            }
-            projectionNote->setVisible(other && fixedProjection);
-            if (other && fixedProjection) {
-              qDebug().noquote() << QStringLiteral("Drawing sheet dialog: the projection stays");
-            }
-          });
+  });
   // The units of its dimensions and tables (mitcad#725): the design's, or
   // a length unit of its own.
   const QString sheetUnits = sheet.value(QStringLiteral("units")).toString();
@@ -1913,7 +2014,50 @@ void DrawingWorkspace::addSheet() {
   if (run({{QStringLiteral("cmd"), QStringLiteral("add_drawing_sheet")}, {QStringLiteral("drawing"), m_drawing}},
           &result)) {
     m_sheet = result.value(QStringLiteral("sheet")).toInt();
+    // The tool's picks were on the sheet left (mitcad#759).
+    dropPicks();
     refresh();
+  }
+}
+
+void DrawingWorkspace::deleteSheet(int index) {
+  // The sheet shown stays shown (mitcad#759): the sheets after the one
+  // deleted move up a place; the shown one deleted, the next one shows
+  // (the one before when it was the last).
+  const int shown = m_sheet;
+  const int count = static_cast<int>(m_tabs->count());
+  int after = shown;
+  if (index < shown) {
+    after = shown - 1;
+  } else if (index == shown) {
+    after = std::min(shown, count - 2);
+  }
+  // Before the command: the refresh after it asks for this sheet.
+  m_sheet = std::max(0, after);
+  if (!run({{QStringLiteral("cmd"), QStringLiteral("delete_drawing_sheet")},
+            {QStringLiteral("drawing"), m_drawing},
+            {QStringLiteral("sheet"), index}})) {
+    m_sheet = shown;
+    refresh();
+    return;
+  }
+  if (index == shown) {
+    // The tool's picks were on the sheet deleted.
+    dropPicks();
+  }
+  if (index <= shown) {
+    qDebug().noquote() << QStringLiteral("Drawing sheet %1 shown").arg(m_sheet + 1);
+  }
+}
+
+void DrawingWorkspace::dropPicks() {
+  m_hoverTimer->stop();
+  m_hoverView = -1;
+  m_sheetView->setHoverMarks(QJsonArray());
+  const bool sheetPicks = m_sheetView->cancelPicks();
+  const bool toolPicks = clearToolPicks();
+  if (sheetPicks || toolPicks) {
+    showHint(); // the tool's own hint again, not the placing one
   }
 }
 
@@ -1932,11 +2076,7 @@ void DrawingWorkspace::sheetMenu(int index, const QPoint& at) {
            {QStringLiteral("name"), name.trimmed()}});
     }
   });
-  QAction* remove = menu.addAction(tr("Delete Sheet"), this, [this, index] {
-    run({{QStringLiteral("cmd"), QStringLiteral("delete_drawing_sheet")},
-         {QStringLiteral("drawing"), m_drawing},
-         {QStringLiteral("sheet"), index}});
-  });
+  QAction* remove = menu.addAction(tr("Delete Sheet"), this, [this, index] { deleteSheet(index); });
   remove->setEnabled(m_tabs->count() > 1);
   QAction* save = menu.addAction(tr("Save as Template…"), this, [this, index] { saveTemplate(index); });
   save->setEnabled(m_answer.value(QStringLiteral("sheets"))
@@ -2075,6 +2215,7 @@ void DrawingWorkspace::exportDrawing(const QString& format) {
       QDir(dialogStartFolder(DialogGroup::Export, QDir::homePath())).filePath(m_name + QLatin1Char('.') + format);
   const QString filter = format == QStringLiteral("pdf")   ? tr("PDF (*.pdf)")
                          : format == QStringLiteral("svg") ? tr("SVG (*.svg)")
+                         : format == QStringLiteral("dwg") ? tr("DWG (*.dwg)")
                                                            : tr("DXF (*.dxf)");
   const QString path = dialogSaveFileName(this, tr("Export Drawing"), suggested, filter);
   if (path.isEmpty()) {

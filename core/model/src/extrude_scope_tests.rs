@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::document_tests::{def, num};
 use crate::features::{FeatureDef, SketchPlane, ValueInput};
-use crate::ids::{BodyUid, ComponentUid, OccurrenceUid};
+use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::testing::MockKernel;
 use crate::{Document, FeatureStatus, ModelError, Transform};
 
@@ -683,4 +683,246 @@ fn dormant_cut_choices_follow_reparent_without_active_geometry_references() {
     assert!(!is_cut(&reopened, excluded_body));
     assert!(!is_cut(&reopened, f.bodies[1]));
     assert!(!is_cut(&reopened, f.bodies[2]));
+}
+
+/// mitcad#769: Ring (C1) placed twice (O1 shown, O3 at x 100 hidden) with
+/// its own block; Other (C2) placed twice (O2 20 up over Ring:1, O4 far
+/// away) with a block. The sketch is Ring's own, a square inside its block.
+struct SharedFixture {
+    doc: Document<MockKernel>,
+    ring: BodyUid,
+    other: BodyUid,
+    sketch: FeatureUid,
+    region: Value,
+}
+
+fn shared_fixture() -> SharedFixture {
+    let mut doc = Document::new(MockKernel::default());
+    doc.create_component(Some("Ring"), Transform::IDENTITY, true)
+        .unwrap();
+    let ring = box_body(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    doc.create_component(
+        Some("Other"),
+        Transform::translation([0.0, 0.0, 20.0]),
+        true,
+    )
+    .unwrap();
+    let other = box_body(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let ring_copy = doc
+        .copy_occurrence(
+            OccurrenceUid(1),
+            Some(Transform::translation([100.0, 0.0, 0.0])),
+        )
+        .unwrap();
+    assert_eq!(ring_copy, OccurrenceUid(3));
+    doc.set_occurrence_visible(ring_copy, false).unwrap();
+    let other_copy = doc
+        .copy_occurrence(
+            OccurrenceUid(2),
+            Some(Transform::translation([200.0, 0.0, 20.0])),
+        )
+        .unwrap();
+    assert_eq!(other_copy, OccurrenceUid(4));
+    doc.activate_component(ComponentUid(1)).unwrap();
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(sketch, [2.0, 2.0], &num(4.0), &num(4.0))
+        .unwrap()
+        .region;
+    let region = serde_json::to_value(region).unwrap();
+    SharedFixture {
+        doc,
+        ring,
+        other,
+        sketch,
+        region,
+    }
+}
+
+impl SharedFixture {
+    fn cut(&self, context: Value, targets: Value) -> Value {
+        json!({"type":"extrude",
+            "profiles":[{"sketch":self.sketch,"region":self.region}],
+            "extent":{"type":"distance","distance":60}, "operation":"cut",
+            "cut_scope":{"context":context, "targets":targets}})
+    }
+}
+
+#[test]
+fn cut_inside_a_component_with_several_occurrences_cuts_its_own_definition() {
+    let mut f = shared_fixture();
+    assert_eq!(f.doc.assembly().paths_to(ComponentUid(1)).len(), 2);
+    let cut = f.cut(
+        json!({"component":"C1","occurrence":"O1"}),
+        json!({"type":"automatic","excluded":[]}),
+    );
+    let report = f.doc.preview_add(&cut_definition(&cut), None).unwrap();
+    assert_eq!(report.status, FeatureStatus::Ok);
+    let targets = report.cut_targets.unwrap();
+    assert!(targets.can_commit);
+    assert_eq!(
+        (targets.selected_components, targets.selected_bodies),
+        (1, 1)
+    );
+    // Ring is one row, at the context occurrence: eligible, checked and
+    // saying that every occurrence changes. Its hidden second occurrence
+    // is no row of its own.
+    let ring = targets
+        .rows
+        .iter()
+        .find(|r| r.component == ComponentUid(1))
+        .unwrap();
+    assert_eq!(ring.occurrence.to_string(), "O1");
+    assert!(ring.eligible && ring.checked && ring.intersects);
+    assert!(ring.reason.is_none());
+    assert!(
+        ring.note.as_deref().unwrap().contains("all 2 occurrences"),
+        "{:?}",
+        ring.note
+    );
+    assert_eq!(
+        targets
+            .rows
+            .iter()
+            .filter(|r| r.component == ComponentUid(1))
+            .count(),
+        1
+    );
+    // Other's shared definition, reached from outside it, stays refused.
+    let other = targets
+        .rows
+        .iter()
+        .find(|r| r.component == ComponentUid(2))
+        .unwrap();
+    assert_eq!(other.occurrence.to_string(), "O2");
+    assert!(!other.eligible && !other.checked && other.note.is_none());
+    assert!(
+        other
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("multiple occurrences")
+    );
+    assert!(!is_cut(&f.doc, f.ring), "preview cannot mutate bodies");
+
+    // Over the JSON command, as the panel commits it.
+    f.doc
+        .command(&json!({"cmd":"add_feature","def":cut}).to_string())
+        .unwrap();
+    let uid = f
+        .doc
+        .features()
+        .find(|feature| feature.def.type_name() == "extrude")
+        .unwrap()
+        .uid;
+    assert_eq!(f.doc.status(uid), Some(&FeatureStatus::Ok));
+    // The definition's body has the groove; both occurrences place that one
+    // body, so both show it. Other is unchanged.
+    assert!(is_cut(&f.doc, f.ring));
+    assert_eq!(f.doc.body_component(f.ring), Some(ComponentUid(1)));
+    assert_eq!(f.doc.component_bodies(ComponentUid(1)), vec![f.ring]);
+    assert_eq!(f.doc.assembly().occurrences_of(ComponentUid(1)).count(), 2);
+    assert!(!is_cut(&f.doc, f.other));
+
+    let saved = f.doc.to_json();
+    let mut reopened = Document::from_json(&saved, MockKernel::default()).unwrap();
+    reopened.recompute();
+    assert_eq!(reopened.status(uid), Some(&FeatureStatus::Ok));
+    assert!(is_cut(&reopened, f.ring));
+    assert!(!is_cut(&reopened, f.other));
+    f.doc.undo();
+    assert!(!is_cut(&f.doc, f.ring));
+}
+
+#[test]
+fn own_component_with_one_occurrence_has_no_note() {
+    let mut f = shared_fixture();
+    f.doc.activate_component(ComponentUid::ROOT).unwrap();
+    f.doc.delete_occurrence(OccurrenceUid(3)).unwrap();
+    f.doc.activate_component(ComponentUid(1)).unwrap();
+    let cut = f.cut(
+        json!({"component":"C1","occurrence":"O1"}),
+        json!({"type":"automatic","excluded":[]}),
+    );
+    let report = f.doc.preview_add(&cut_definition(&cut), None).unwrap();
+    assert_eq!(report.status, FeatureStatus::Ok);
+    let targets = report.cut_targets.unwrap();
+    let ring = targets
+        .rows
+        .iter()
+        .find(|r| r.component == ComponentUid(1))
+        .unwrap();
+    assert!(ring.eligible && ring.checked && ring.note.is_none());
+}
+
+#[test]
+fn own_component_included_at_another_occurrence_fails() {
+    let mut f = shared_fixture();
+    // The own definition is one target, at the context occurrence; naming
+    // its other occurrence would be an occurrence-specific cut.
+    let cut = f.cut(
+        json!({"component":"C1","occurrence":"O1"}),
+        json!({"type":"explicit","included":[{"component":"C1","occurrence":"O3"}]}),
+    );
+    let report = f.doc.preview_add(&cut_definition(&cut), None).unwrap();
+    assert!(
+        matches!(report.status, FeatureStatus::Failed(ref message) if message.contains("own definition")),
+        "{:?}",
+        report.status
+    );
+    assert!(!report.cut_targets.unwrap().can_commit);
+    let cut = f.cut(
+        json!({"component":"C1","occurrence":"O1"}),
+        json!({"type":"explicit","included":[{"component":"C1","occurrence":"O1"}]}),
+    );
+    let report = f.doc.preview_add(&cut_definition(&cut), None).unwrap();
+    assert_eq!(report.status, FeatureStatus::Ok);
+    assert_eq!(report.cut_targets.unwrap().selected_bodies, 1);
+}
+
+#[test]
+fn cut_from_outside_still_refuses_one_occurrence_of_a_shared_component() {
+    let mut f = shared_fixture();
+    // The same square, sketched in the root: it reaches Ring:1 only, and a
+    // change of Ring's definition would change its hidden Ring:2 as well.
+    f.doc.activate_component(ComponentUid::ROOT).unwrap();
+    let sketch = f.doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = f
+        .doc
+        .add_rectangle(sketch, [2.0, 2.0], &num(4.0), &num(4.0))
+        .unwrap()
+        .region;
+    f.sketch = sketch;
+    f.region = serde_json::to_value(region).unwrap();
+    let cut = f.cut(
+        json!({"component":"C0","occurrence":""}),
+        json!({"type":"automatic","excluded":[]}),
+    );
+    let report = f.doc.preview_add(&cut_definition(&cut), None).unwrap();
+    assert!(
+        matches!(report.status, FeatureStatus::Failed(ref message) if message.contains("No eligible components")),
+        "{:?}",
+        report.status
+    );
+    let targets = report.cut_targets.unwrap();
+    assert!(!targets.can_commit);
+    for component in [ComponentUid(1), ComponentUid(2)] {
+        let row = targets
+            .rows
+            .iter()
+            .find(|r| r.component == component)
+            .unwrap();
+        assert!(!row.eligible && !row.checked && row.note.is_none());
+        assert!(
+            row.reason
+                .as_deref()
+                .unwrap()
+                .contains("multiple occurrences")
+        );
+    }
+    f.doc.add_feature(&cut_definition(&cut), None).unwrap();
+    assert!(!is_cut(&f.doc, f.ring));
+    assert!(!is_cut(&f.doc, f.other));
 }

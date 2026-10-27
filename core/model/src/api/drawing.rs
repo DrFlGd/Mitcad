@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! The `export_drawing` command (mitcad#471, commands.md): a drawing on
-//! sheets written as PDF, SVG or DXF. With `drawing` it writes a drawing
+//! sheets written as PDF, SVG, DXF or DWG. With `drawing` it writes a drawing
 //! kept in the design (mitcad#707); without, it lays out a temporary one
 //! from its options as File › Export Drawing's dialog gives them (the
 //! bodies at the marker in a grid of views at a scale that fits) and
@@ -123,6 +123,8 @@ enum Format {
     Pdf,
     Svg,
     Dxf,
+    /// R2000 `.dwg` (mitcad#728), the DXF export's content.
+    Dwg,
 }
 
 impl Format {
@@ -131,6 +133,7 @@ impl Format {
             "pdf" => Some(Self::Pdf),
             "svg" => Some(Self::Svg),
             "dxf" => Some(Self::Dxf),
+            "dwg" => Some(Self::Dwg),
             _ => None,
         }
     }
@@ -139,6 +142,7 @@ impl Format {
             Self::Pdf => "pdf",
             Self::Svg => "svg",
             Self::Dxf => "dxf",
+            Self::Dwg => "dwg",
         }
     }
 }
@@ -431,6 +435,8 @@ impl<K: Kernel> Document<K> {
                     center_marks: false,
                     retrieved_dimensions: false,
                     annotations: Vec::new(),
+                    rotation: 0.0,
+                    sketch: Vec::new(),
                 };
                 sheet.views.push(view.clone());
                 let spec = sheet.spec(view.id).map_err(ApiError)?;
@@ -498,6 +504,7 @@ impl<K: Kernel> Document<K> {
             sheets,
             revisions: Vec::new(),
             exported: 0,
+            defaults: Default::default(),
         };
         Ok(AutoDrawing {
             drawing,
@@ -518,18 +525,18 @@ impl<K: Kernel> Document<K> {
         let format = match (&command.format, &extension) {
             (Some(name), _) => Format::of(name).ok_or_else(|| {
                 ApiError(format!(
-                    "unknown drawing format '{name}' (expected pdf, svg or dxf)"
+                    "unknown drawing format '{name}' (expected pdf, svg, dxf or dwg)"
                 ))
             })?,
             (None, Some(ext)) => Format::of(ext).ok_or_else(|| {
                 ApiError(format!(
-                    "{}: drawings are written to .pdf, .svg or .dxf files",
+                    "{}: drawings are written to .pdf, .svg, .dxf or .dwg files",
                     command.path
                 ))
             })?,
             (None, None) => {
                 return Err(ApiError(format!(
-                    "{}: give a .pdf, .svg or .dxf file or \"format\"",
+                    "{}: give a .pdf, .svg, .dxf or .dwg file or \"format\"",
                     command.path
                 )));
             }
@@ -592,11 +599,14 @@ impl<K: Kernel> Document<K> {
                 write(&command.path, &pdf::write(&pages, &document_title))?;
                 files.push(command.path.clone());
             }
-            Format::Svg | Format::Dxf => {
+            Format::Svg | Format::Dxf | Format::Dwg => {
                 for (i, c) in composed.iter().enumerate() {
                     let path = paths[i].clone();
                     let bytes = if format == Format::Svg {
                         svg::write(&c.sheet).into_bytes()
+                    } else if format == Format::Dwg {
+                        crate::drawing::dwg::write(&c.sheet)
+                            .map_err(|e| ApiError(format!("cannot write {path}: {e}")))?
                     } else {
                         let options = mitcad_dxf::WriteOptions::default();
                         mitcad_dxf::write_string(&crate::drawing::dxf::drawing(&c.sheet), &options)
@@ -814,9 +824,10 @@ impl<K: Kernel> Document<K> {
         out
     }
 
-    /// The dimensions of the sketches at the marker, in the design's
-    /// coordinates: distances, lengths, radii and diameters, each with its
-    /// sketch.
+    /// The dimensions of the sketches at the marker, each in its sketch's
+    /// component's coordinates (a drawing places them through the
+    /// occurrences, `sketch_placements`): distances, lengths, radii and
+    /// diameters, each with its sketch.
     pub(super) fn sketch_dimensions(&self) -> Vec<(FeatureUid, SketchDimension)> {
         let mut out = Vec::new();
         for entry in self.features() {

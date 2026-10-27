@@ -28,6 +28,9 @@ pub struct EditReport {
     /// Removed entities, constraints and dimensions.
     pub removed: Vec<String>,
     pub status: SketchStatus,
+    /// What the user is to know about the edit (mitcad#741: a curve left
+    /// out of an offset or a projection as the same as another).
+    pub warnings: Vec<String>,
 }
 
 /// A point of a command: an existing point or a new one at a position.

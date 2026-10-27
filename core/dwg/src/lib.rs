@@ -17,6 +17,9 @@
 //! - [`scene`]: the drawing's 3D content as blocks of bodies and meshes
 //!   with their inserts, and the plan of components the import builds.
 //!
+//! The writer ([`write`], mitcad#728): a 2D drawing (the drawing export's
+//! sheets) as an R2000 file; [`flat`] reads such content back.
+//!
 //! The format knowledge comes from the Open Design Specification for .dwg
 //! files (Open Design Alliance), a published description of the format.
 
@@ -30,10 +33,17 @@ pub mod lz;
 pub mod objects;
 pub mod objmap;
 pub mod r2007;
+// The 3D content needs the `.f3d` reader's ASM code (feature `solids`,
+// on by default; mitcad-model's drawing export goes without, mitcad#728).
+#[cfg(feature = "solids")]
 pub mod scene;
 pub mod solid;
+#[cfg(feature = "solids")]
 #[doc(hidden)]
 pub mod testfile;
+// The 2D drawing writer (mitcad#728) and its read-back.
+pub mod flat;
+pub mod write;
 
 use std::collections::BTreeMap;
 use std::fmt;

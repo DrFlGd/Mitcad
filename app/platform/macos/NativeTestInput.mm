@@ -1962,6 +1962,12 @@ bool trackContextMenu(const QString& choice, const std::function<void()>& open, 
   __block QStringList available;
   const bool cancel = choice == QStringLiteral("cancel");
   NSString* title = choice.toNSString();
+  // "Camera/Perspective" chooses a leaf of a submenu; a top-level title that
+  // itself contains the slash still matches first.
+  QStringList path;
+  for (QString part : choice.split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
+    path << part.remove(QLatin1Char('&')).trimmed();
+  }
   NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
   id beginObserver = [center addObserverForName:NSMenuDidBeginTrackingNotification object:nil queue:nil
       usingBlock:^(NSNotification* notice) {
@@ -1974,17 +1980,38 @@ bool trackContextMenu(const QString& choice, const std::function<void()>& open, 
     response = [NSTimer timerWithTimeInterval:0.05 repeats:NO block:^(NSTimer* timer) {
       (void)timer;
       if (!cancel) {
-        [tracked update];
-        for (NSInteger index = 0; index < tracked.numberOfItems; ++index) {
-          NSMenuItem* item = [tracked itemAtIndex:index];
-          available.append(QStringLiteral("%1 (enabled=%2, action=%3, target=%4, submenu=%5)")
-              .arg(qt(item.title)).arg(bool(item.enabled)).arg(qt(NSStringFromSelector(item.action)))
-              .arg(qt(NSStringFromClass([item.target class]))).arg(bool(item.submenu)));
-          if (qt(item.title).remove(QLatin1Char('&')).trimmed() == qt(title).remove(QLatin1Char('&')).trimmed() &&
-              item.enabled && item.action && !item.submenu) {
-            selected = true;
-            [tracked performActionForItemAtIndex:index];
-            break;
+        const auto label = [](NSString* text) { return qt(text).remove(QLatin1Char('&')).trimmed(); };
+        // Performs the enabled leaf titled `wanted` in `menu`, listing what
+        // it saw for the error message.
+        const auto leaf = [&label](NSMenu* menu, const QString& wanted, QStringList& seen) {
+          [menu update];
+          for (NSInteger index = 0; index < menu.numberOfItems; ++index) {
+            NSMenuItem* item = [menu itemAtIndex:index];
+            seen.append(QStringLiteral("%1 (enabled=%2, action=%3, target=%4, submenu=%5)")
+                .arg(qt(item.title)).arg(bool(item.enabled)).arg(qt(NSStringFromSelector(item.action)))
+                .arg(qt(NSStringFromClass([item.target class]))).arg(bool(item.submenu)));
+            if (label(item.title) == wanted && item.enabled && item.action && !item.submenu) {
+              [menu performActionForItemAtIndex:index];
+              return true;
+            }
+          }
+          return false;
+        };
+        selected = leaf(tracked, label(title), available);
+        if (!selected && path.size() > 1) {
+          NSMenu* menu = tracked;
+          for (int depth = 0; menu != nil && depth + 1 < path.size(); ++depth) {
+            NSMenu* next = nil;
+            for (NSMenuItem* item in menu.itemArray) {
+              if (item.submenu != nil && label(item.title) == path.at(depth)) {
+                next = item.submenu;
+                break;
+              }
+            }
+            menu = next;
+          }
+          if (menu != nil) {
+            selected = leaf(menu, path.last(), available);
           }
         }
       }

@@ -49,6 +49,11 @@ not a level of its own, and Mitcad has no separate assembly file.
   says *design*.
 - **Model** is not a level of the hierarchy. `core/model` is the name of
   the crate.
+- **Move** in space is **Move/Copy** (a timeline feature). A move in the
+  structure, to another component, is **Move to Component…** (of bodies
+  and sketches, and of an occurrence to another parent) or **Move
+  Features into a Component**; a menu does not name a structure move
+  "Move to…" alone (mitcad#735).
 - Importers keep the vocabulary of their source format (an `.ipt`
   part, a 3MF `Part`, a SolidCraft `Occurrence`) inside their own
   crate and map it to these terms where the design is built. Import

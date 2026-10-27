@@ -2,6 +2,9 @@
 //! Explicit assembly target scope for Extrude Cut (mitcad#200). Targets
 //! retain their component-local shapes and ownership; instances are never
 //! silently converted to independent geometry or shared-definition edits.
+//! The extrusion's own component is the exception (mitcad#769): it is cut
+//! in its own definition, as its other features are, and every occurrence
+//! shows the result.
 
 use serde::{Deserialize, Serialize};
 
@@ -85,6 +88,10 @@ pub struct CutTargetRow {
     pub checked: bool,
     pub partial: bool,
     pub reason: Option<String>,
+    /// What an eligible row changes beyond the occurrence shown: the
+    /// extrusion's own component with several occurrences (mitcad#769).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     pub bodies: Vec<CutBody>,
 }
 
@@ -378,6 +385,7 @@ fn row(assembly: &Assembly, target: &ComponentTarget, reason: Option<String>) ->
         checked: false,
         partial: false,
         reason,
+        note: None,
         bodies: Vec::new(),
     }
 }
@@ -408,7 +416,19 @@ impl CutScope {
         let mut candidates = Vec::new();
         for component in components {
             let shapes = ctx.bodies_in(component);
-            let paths = effective.paths_to(component);
+            let all_paths = effective.paths_to(component);
+            let occurrences = all_paths.len();
+            // The extrusion's own component is cut in its own definition
+            // (mitcad#769), as any of its features is: its bodies are one
+            // candidate, in the context's frame, however many occurrences
+            // place it, and the result shows in all of them. Only another
+            // component's shared definition stays refused below.
+            let own = component == self.context.component;
+            let paths = if own {
+                vec![self.context.occurrence.0.clone()]
+            } else {
+                all_paths
+            };
             for path in &paths {
                 let target = ComponentTarget {
                     component,
@@ -436,8 +456,14 @@ impl CutScope {
                     None
                 };
                 let world = resolve(ctx, &target)?;
+                let mut target_row = row(&effective, &target, reason);
+                if own && occurrences > 1 {
+                    target_row.note = Some(format!(
+                        "Component being edited; the cut changes all {occurrences} occurrences."
+                    ));
+                }
                 candidates.push(Candidate {
-                    row: row(&effective, &target, reason),
+                    row: target_row,
                     target,
                     world,
                     shapes: shapes.clone(),
@@ -465,6 +491,23 @@ impl CutScope {
                         .push(row(ctx.env.assembly, &target, Some(message)));
                 }
             }
+        }
+        // The own component is one target, at the context occurrence
+        // (mitcad#769); including it at another occurrence is no
+        // occurrence-specific cut either.
+        if let TargetScope::Explicit { included, .. } = &self.targets
+            && let Some(target) = included
+                .iter()
+                .find(|t| t.component == self.context.component && **t != self.context)
+        {
+            let message = format!(
+                "component {} is cut in its own definition; include it at the context occurrence {}",
+                target.component, self.context.occurrence
+            );
+            error.get_or_insert(message.clone());
+            report
+                .rows
+                .push(row(ctx.env.assembly, target, Some(message)));
         }
         for body in self.excluded_bodies() {
             if ctx.env.owners.get(&body.body) != Some(&body.component) {

@@ -35,7 +35,9 @@
 //!
 //! Threads among the objects (mitcad#719: a tapped hole's modelled thread
 //! is a thread feature on the hole's wall) are repeated alike, on the
-//! copies of the faces they thread; a mirror's image turns the other way.
+//! copies of the faces they thread; a mirror's image of a modelled one turns
+//! the other way, and a modelled copy is turned as its original moved there
+//! (mitcad#733).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -392,23 +394,94 @@ fn merged(copies: &[(u32, FeatureDef)]) -> FeatureDef {
     all
 }
 
+/// A thread's copy on the faces where its faces lie moved by `transform`
+/// (mitcad#733): on the bodies in order, a cylindrical face of the same
+/// radius on the moved axis with the moved ends (within [`PLACE`]); the
+/// original faces themselves are not their copies. None when a face has
+/// no copy there.
+fn threads_by_place<K: Kernel>(
+    ctx: &EvalContext<'_, K>,
+    set: &BodySet<K::Shape>,
+    uid: FeatureUid,
+    home: BodyUid,
+    thread: &super::ThreadDef,
+    transform: &Transform,
+    bodies: &[BodyUid],
+) -> Option<FeatureDef> {
+    let original = input_shape(ctx, uid, home)?;
+    let ends = |c: &crate::kernel::Cylinder| -> [[f64; 3]; 2] {
+        [
+            c.axis.origin,
+            std::array::from_fn(|i| c.axis.origin[i] + c.length * c.axis.direction[i]),
+        ]
+    };
+    let near = |a: [f64; 3], b: [f64; 3]| mitcad_vec3::distance(a, b) <= PLACE;
+    let mut faces = Vec::new();
+    for face in &thread.faces {
+        let c = ctx.kernel.face_cylinder(&original, &face.face).ok()?;
+        let [a, b] = ends(&c).map(|p| transform.apply_point(p));
+        let found = bodies.iter().find_map(|body| {
+            let shape = set.get(*body)?;
+            let listed = ctx.kernel.faces(shape).ok()?;
+            listed
+                .into_iter()
+                .filter_map(|f| f.names.first()?.parse::<FaceName>().ok())
+                .filter(|name| {
+                    !thread
+                        .faces
+                        .iter()
+                        .any(|t| t.body == *body && t.face == *name)
+                })
+                .find(|name| {
+                    ctx.kernel.face_cylinder(shape, name).is_ok_and(|other| {
+                        let [p, q] = ends(&other);
+                        (other.radius - c.radius).abs() <= PLACE
+                            && ((near(p, a) && near(q, b)) || (near(p, b) && near(q, a)))
+                    })
+                })
+                .map(|name| FaceRef {
+                    body: *body,
+                    face: name,
+                })
+        })?;
+        faces.push(found);
+    }
+    let mut copy = thread.clone();
+    copy.faces = faces;
+    Some(FeatureDef::Thread(copy))
+}
+
 /// The most copies of a fillet or chamfer applied in one operation.
 const DRESSED_AT_ONCE: usize = 128;
 
-/// Rounds, bevels or threads `shape` (of `body`) by a copy's definition,
-/// its new faces named after `pattern`.
+/// Rounds, bevels or threads `shape` (of `body`) by the copies' definitions
+/// of the elements in `group` (one operation), their new faces named after
+/// `pattern`. A modelled thread's copies are turned as the original moved
+/// to each (`moves`: the elements' transforms, mitcad#733).
 fn dress<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
     pattern: FeatureUid,
-    def: &FeatureDef,
+    group: &[(u32, FeatureDef)],
+    moves: &HashMap<u32, Transform>,
     body: BodyUid,
     shape: &K::Shape,
 ) -> Result<K::Shape, String> {
-    match def {
+    match merged(group) {
         FeatureDef::Fillet(fillet) => fillet.round(ctx, pattern, shape),
         FeatureDef::Chamfer(chamfer) => chamfer.bevel(ctx, pattern, shape),
         FeatureDef::Thread(thread) => {
-            let faces: Vec<FaceName> = thread.faces.iter().map(|f| f.face.clone()).collect();
+            let faces: Vec<(FaceName, Option<Transform>)> = group
+                .iter()
+                .flat_map(|(index, copy)| {
+                    let faces = match copy {
+                        FeatureDef::Thread(copy) => copy.faces.clone(),
+                        _ => Vec::new(),
+                    };
+                    faces
+                        .into_iter()
+                        .map(move |f| (f.face, moves.get(index).copied()))
+                })
+                .collect();
             thread.thread_on(ctx, pattern, body, shape, &faces)
         }
         _ => Err("only fillets, chamfers and threads are repeated on copies".to_owned()),
@@ -470,6 +543,8 @@ pub(crate) fn repeat_dressup<K: Kernel>(
         .iter()
         .fold(Transform::IDENTITY, |done, (t, _)| t.after(&done));
     let mut work: Vec<(BodyUid, Vec<(u32, FeatureDef)>)> = Vec::new();
+    // The elements' transforms, for the copies of modelled threads.
+    let mut moves: HashMap<u32, Transform> = HashMap::new();
     let mut missing = Vec::new();
     // Where the last copy's edge was found by its name: the copies of one
     // element after another lie on bodies in that order (a pattern's new
@@ -542,16 +617,31 @@ pub(crate) fn repeat_dressup<K: Kernel>(
                 names.placed.insert(edge.clone(), placed);
             }
         }
-        let Some(mut copy) = names.definition(&entry.def) else {
+        // A thread whose faces no copied feature made (a pattern of the
+        // thread alone, mitcad#733) goes on the faces at their copies'
+        // places.
+        let by_name = names.definition(&entry.def);
+        let by_place = match (&by_name, &entry.def) {
+            (None, FeatureDef::Thread(thread)) => {
+                threads_by_place(ctx, set, uid, home, thread, &transform, &bodies)
+            }
+            _ => None,
+        };
+        let Some(mut copy) = by_name.or(by_place) else {
             missing.push(element.index);
             continue;
         };
-        // A mirror's image of a thread turns the other way.
+        // A mirror's image of a modelled thread turns the other way. A
+        // cosmetic thread keeps its designation (mitcad#733): it is the
+        // tapped size, and no stored design shows a mirrored one
+        // left-handed.
         if let FeatureDef::Thread(thread) = &mut copy
+            && thread.modeled
             && transform.determinant() < 0.0
         {
             thread.thread.right_handed = !thread.thread.right_handed;
         }
+        moves.insert(element.index, transform);
         // The body its edges were found on by name first, where it has the
         // whole copy; else the bodies in order.
         let on = |body: BodyUid| {
@@ -592,7 +682,7 @@ pub(crate) fn repeat_dressup<K: Kernel>(
         // every pair of the roundings of one operation (a thousand copies of
         // a rounding took a minute in that alone).
         for group in copies.chunks(DRESSED_AT_ONCE) {
-            dressed = match dress(ctx, pattern, &merged(group), body, &dressed) {
+            dressed = match dress(ctx, pattern, group, &moves, body, &dressed) {
                 Ok(dressed) => dressed,
                 Err(e) if group.len() == 1 => {
                     return Err(format!("{} at element {}: {e}", entry.name, group[0].0));
@@ -601,9 +691,16 @@ pub(crate) fn repeat_dressup<K: Kernel>(
                 // in each other's way at once.
                 Err(_) => {
                     let mut dressed = dressed;
-                    for (index, copy) in group {
-                        dressed = dress(ctx, pattern, copy, body, &dressed)
-                            .map_err(|e| format!("{} at element {index}: {e}", entry.name))?;
+                    for one in group {
+                        dressed = dress(
+                            ctx,
+                            pattern,
+                            std::slice::from_ref(one),
+                            &moves,
+                            body,
+                            &dressed,
+                        )
+                        .map_err(|e| format!("{} at element {}: {e}", entry.name, one.0))?;
                     }
                     dressed
                 }

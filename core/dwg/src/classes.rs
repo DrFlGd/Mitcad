@@ -224,7 +224,7 @@ pub fn write(classes: &[Class], v: Version) -> Vec<u8> {
     body.align();
     let mut out = CLASSES_SENTINEL.to_vec();
     out.extend_from_slice(&(body.data.len() as u32).to_le_bytes());
-    if (matches!(v, Version::R2010 | Version::R2013) && crate::testfile::MAINTENANCE > 3)
+    if (matches!(v, Version::R2010 | Version::R2013) && crate::header::MAINTENANCE > 3)
         || v >= Version::R2018
     {
         out.extend_from_slice(&0u32.to_le_bytes());

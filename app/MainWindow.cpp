@@ -1930,6 +1930,12 @@ void MainWindow::startCommand(const QString& id, const Selection& preselection,
   }
 }
 
+bool MainWindow::offersCommand(const QString& id, const Selection& items) const {
+  const CommandDef* def = m_registry->find(id);
+  return def != nullptr && def->kind == CommandDef::Kind::Feature && def->offeredAtTop && m_mode == Mode::Idle &&
+         isAvailable(*def) && def->offeredAtTop(items);
+}
+
 bool MainWindow::chooseInCommand(const QString& command, const QString& input, const QString& value) {
   if (m_mode != Mode::Command || !m_session || m_session->def().id != command) {
     return false;
@@ -3328,6 +3334,25 @@ QString MainWindow::sketchEditOccurrence(const QString& uid, const QString& pick
   return first;
 }
 
+TopoDS_Shape MainWindow::sketchFace(const QString& uid) const {
+  try {
+    const QJsonObject sketch = queryObject({{QStringLiteral("query"), QStringLiteral("sketch")},
+                                            {QStringLiteral("uid"), uid}});
+    const QJsonObject plane = sketch.value(QStringLiteral("plane")).toObject();
+    SelectionItem face{SelectKind::Face, plane.value(QStringLiteral("body")).toString(),
+                       plane.value(QStringLiteral("face")).toString(), QString()};
+    if (face.owner.isEmpty() || face.name.isEmpty()) {
+      return TopoDS_Shape(); // a plane, or a face of any body
+    }
+    const QJsonValue link = sketch.value(QStringLiteral("plane_link"));
+    face.occurrence =
+        link.isObject() ? link.toObject().value(QStringLiteral("source")).toString() : m_sketchOccurrence;
+    return itemShape(face);
+  } catch (const std::exception&) {
+    return TopoDS_Shape();
+  }
+}
+
 gp_Trsf MainWindow::sketchPlacement(const QString& uid) const {
   return placementOf(placingOccurrence(uid)).Transformation();
 }
@@ -3453,6 +3478,16 @@ void MainWindow::showDatums() {
     }
   }
   m_viewer->setDatums(datums);
+  // For UI tests (mitcad#739): whether the view shows the design's origin,
+  // and the Origin folder's light bulb, when either changes. A sketch draws
+  // its own origin and axes whatever these say.
+  const QString originState = QStringLiteral("Design origin %1 in the view; the Origin folder's light bulb %2")
+                                  .arg(origin && !m_constructionHidden ? QStringLiteral("shown") : QStringLiteral("hidden"),
+                                       m_originShown ? QStringLiteral("on") : QStringLiteral("off"));
+  if (originState != m_loggedOriginState) {
+    m_loggedOriginState = originState;
+    qDebug().noquote() << originState;
+  }
   m_loggedDatums = logged;
   m_loggedDatumPlaces.clear();
   logDatumPlaces();
@@ -4494,13 +4529,20 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
         addFitting();
         menu.addSeparator();
       } else if (!m_selection.isEmpty()) {
-        // The model's faces, edges and vertices go into the sketch.
-        const CommandDef* project = m_registry->find(QStringLiteral("sketch.project"));
-        const InputDef* input = project != nullptr ? project->primarySelection() : nullptr;
-        if (input != nullptr && isAvailable(*project) &&
-            std::all_of(m_selection.begin(), m_selection.end(),
-                        [input](const SelectionItem& s) { return input->accepts(s); })) {
-          add(m_registry->action(project->id));
+        // The model's faces, edges and vertices go into the sketch: Project,
+        // and Intersect (mitcad#736) for faces, edges and bodies.
+        bool offered = false;
+        for (const char* id : {"sketch.project", "sketch.intersect"}) {
+          const CommandDef* reference = m_registry->find(QString::fromLatin1(id));
+          const InputDef* input = reference != nullptr ? reference->primarySelection() : nullptr;
+          if (input != nullptr && isAvailable(*reference) &&
+              std::all_of(m_selection.begin(), m_selection.end(),
+                          [input](const SelectionItem& s) { return input->accepts(s); })) {
+            add(m_registry->action(reference->id));
+            offered = true;
+          }
+        }
+        if (offered) {
           menu.addSeparator();
         }
       }
@@ -4512,7 +4554,23 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
     add(m_registry->action(QStringLiteral("sketch.finish")));
     add(m_registry->action(QStringLiteral("edit.undo")));
   } else {
-    if (item.isValid() && !m_selection.contains(item)) {
+    // A face, an edge or a vertex of a body or an occurrence selected whole
+    // keeps that selection (mitcad#735): the menu is the body's or the
+    // component's, with Move/Copy at its top.
+    const auto inSelected = [this](const SelectionItem& picked) {
+      if (picked.kind != SelectKind::Face && picked.kind != SelectKind::Edge && picked.kind != SelectKind::Vertex) {
+        return false;
+      }
+      return std::any_of(m_selection.begin(), m_selection.end(), [&picked](const SelectionItem& whole) {
+        if (whole.kind == SelectKind::Body) {
+          return whole.owner == picked.owner && whole.occurrence == picked.occurrence;
+        }
+        return whole.kind == SelectKind::Component && !whole.occurrence.isEmpty() &&
+               (picked.occurrence == whole.occurrence ||
+                picked.occurrence.startsWith(whole.occurrence + QLatin1Char('/')));
+      });
+    };
+    if (item.isValid() && !m_selection.contains(item) && !inSelected(item)) {
       // A right click on something not selected selects it.
       setSelection({item});
     }
@@ -4711,8 +4769,18 @@ void MainWindow::enterSketch(const QString& uid, bool existing, const QString& p
   m_sketchScope.reset();
   selectionScopeChanged(QStringLiteral("defaults"));
   m_sketchEnterDepth = undoDepth();
-  m_viewer->lookAtSketchPlane();
   m_viewer->setGridPlane(toAx3(m_sketch->model().frame)); // the grid on the sketch plane
+  m_ribbon->setSketchMode(true);
+  m_commandPages->setCurrentWidget(m_palettePage);
+  // The view turns once the cards over it are where sketch mode puts them
+  // (the Floating layout's command card shows the palette): the sketch's
+  // origin is centred in the free area they leave (mitcad#738), and the
+  // view does not move again under the user afterwards. A sketch on a face
+  // keeps the face in view (mitcad#772).
+  if (m_floating != nullptr) {
+    m_floating->layoutNow();
+  }
+  m_viewer->lookAtSketchPlane(true, sketchFace(uid));
   {
     // For UI tests: the sketch's frame in the design and the direction the
     // view looks along (against the frame's normal).
@@ -4732,8 +4800,6 @@ void MainWindow::enterSketch(const QString& uid, bool existing, const QString& p
                                    xyz(frame.x_axis.X(), frame.x_axis.Y(), frame.x_axis.Z()));
     qDebug().noquote() << QStringLiteral("Sketch view along %1").arg(xyz(along.X(), along.Y(), along.Z()));
   }
-  m_ribbon->setSketchMode(true);
-  m_commandPages->setCurrentWidget(m_palettePage);
   refreshScene();
   showHint(tr("Sketch: %1, %2, %3, %4; %5.")
                .arg(m_registry->shortcutHint(QStringLiteral("sketch.line")),

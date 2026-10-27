@@ -31,6 +31,10 @@ roxmltree = "0.20.0"
 svgtypes = "0.16.1"
 # QR codes in sketches (mitcad#473).
 qrcode = { version = "0.14.1", default-features = false }
+# Drawings written as .dwg files (mitcad#728): Mitcad's own writer beside
+# its reader, without the 3D content (the feature `solids` needs the .f3d
+# reader, whose tests use this crate).
+mitcad-dwg = { path = "../dwg", default-features = false }
 
 [dev-dependencies]
 # QR codes read back in the tests (mitcad#473).

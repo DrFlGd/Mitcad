@@ -211,7 +211,8 @@
 //   native-popup <id> cancel|item click a native popup button and choose its
 //                           actual tracked AppKit menu leaf
 //   view-context-menu <x%> <y%> cancel|item right click the actual viewport
-//                           or orientation cube, including native menu tracking
+//                           or orientation cube, including native menu tracking;
+//                           "Sub/Item" chooses an item of a submenu
 //   view-context-menu-logged <regex> cancel|item right click a logged position
 //   view-pointer press|move|release <x%> <y%> none|left|right|middle [mods]
 //                           separate events can simulate a release lost to menus

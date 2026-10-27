@@ -53,6 +53,10 @@ public:
   explicit SettingField(const PrintKey& key, QWidget* parent = nullptr, bool takesPercent = true);
 
   const PrintKey& key() const { return m_key; }
+  // The design's slicer (designDialectOf; empty: none): typed numbers are
+  // checked against its range of the key where it takes less than the
+  // key's own (mitcad#746: Bambu Studio's -1 for "automatic").
+  void setDialect(const QString& dialect) { m_dialect = dialect; }
   // The value shown (null or undefined: unset). Ignored while the user has
   // typed into the field without committing.
   void setValue(const QJsonValue& value);
@@ -111,6 +115,7 @@ private:
   QString typedText() const;
 
   PrintKey m_key;
+  QString m_dialect; // the design's slicer, for the range
   QJsonValue m_value;
   QJsonValue m_placeholder; // what an unset value stands for
   QString m_placeholderText; // its words, when they name it

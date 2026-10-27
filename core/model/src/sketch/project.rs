@@ -19,9 +19,11 @@
 //! source whose curves come back as they were listed, as there. A
 //! projection with a [`Projection::chain`] is one curve, its edges joined
 //! ([`join_curves`]); one with [`Projection::section`] is where the
-//! sketch's plane cuts its face ([`crate::Kernel::section_curves`]).
+//! sketch's plane cuts its face ([`crate::Kernel::section_curves`]), or the
+//! points where the plane crosses its edge ([`crate::Kernel::section_points`],
+//! mitcad#736).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mitcad_vec3::distance;
 
@@ -32,7 +34,7 @@ use super::{Entity, EntityKind, Projection, Ref};
 use crate::datum::DatumPlane;
 use crate::features::EvalContext;
 use crate::features::sketch::SketchDef;
-use crate::ids::EntityUid;
+use crate::ids::{BodyUid, EntityUid};
 use crate::kernel::{Curve3, Kernel};
 use crate::parameters::ParamId;
 use crate::profile::{SketchFrame, cross, dot};
@@ -393,6 +395,318 @@ pub fn entities(projected: &[Projected], next: &mut dyn FnMut() -> EntityUid) ->
     out
 }
 
+/// The ids a new projection's entities take until [`join_existing`] has
+/// decided which of them are added ([`renumber`] gives them their own):
+/// above any a sketch gives out, so that renumbering never meets an id in
+/// use.
+pub const FRESH: u32 = 1 << 30;
+
+/// A new projection's entities joined to the projected geometry already in
+/// the sketch ([`join_existing`]).
+#[derive(Debug, Default)]
+pub struct Joined {
+    /// The entities to add, with the ids [`entities`] gave them.
+    pub entities: Vec<Entity>,
+    /// The new curves left out as the same as one in the sketch, with that
+    /// curve: (left out, in the sketch).
+    pub same: Vec<(EntityUid, EntityUid)>,
+}
+
+/// The entities of the sketch a new projection may join
+/// ([`join_existing`]): for a linked one (`linked` with its body and link)
+/// those of the linked projections of the same body and link, with the
+/// points their curves end on; for an unlinked one the projected entities
+/// in no projection. A static curve never shares a point a linked one
+/// moves, and a linked one only points that follow the same body.
+pub fn joinable(
+    def: &SketchDef,
+    linked: Option<(Option<BodyUid>, Option<&crate::links::OccurrenceLink>)>,
+) -> BTreeSet<EntityUid> {
+    let in_any: BTreeSet<EntityUid> = def
+        .projections
+        .iter()
+        .flat_map(|p| p.entities.iter().map(|r| r.uid()))
+        .collect();
+    let mut out: BTreeSet<EntityUid> = match linked {
+        Some((body, link)) => def
+            .projections
+            .iter()
+            .filter(|p| p.body == body && p.link.as_ref() == link)
+            .flat_map(|p| p.entities.iter().map(|r| r.uid()))
+            .collect(),
+        None => def
+            .entities
+            .iter()
+            .filter(|e| e.reference && e.fixed && e.axis.is_none() && !in_any.contains(&e.id))
+            .map(|e| e.id)
+            .collect(),
+    };
+    // The points their curves use (a clean-up may have put a curve's end on
+    // another projection's point).
+    let points: Vec<EntityUid> = def
+        .entities
+        .iter()
+        .filter(|e| out.contains(&e.id))
+        .flat_map(|e| e.kind.points())
+        .filter(|p| linked.is_some() || !in_any.contains(p))
+        .collect();
+    out.extend(points);
+    out
+}
+
+/// A new projection's entities (`fresh`, made by [`entities`] with ids
+/// above [`FRESH`]) joined to the sketch's projected geometry (mitcad#741):
+///
+/// 1. Ends and loose points of its own closer than the tolerance share a
+///    point (a model's edges meet within its tolerance).
+/// 2. A curve the same as one of `joinable` (the same edge projected
+///    again, a face projected after one of its edges) is left out, and the
+///    new curves that end on it end on that curve's points.
+/// 3. An end or a loose point where an end or a loose point of `joinable`
+///    is, is that point.
+///
+/// A join that would make three curves of the outline's kind end at one
+/// point is not made (a face beside a face projected before keeps its own
+/// line on the edge they share, so that each outline stays a chain for
+/// Chain Selection). For a linked projection (`linked`), whose points
+/// another projection may move elsewhere when the model changes, a point
+/// of an arc is never shared with another projection: a line takes either
+/// place and stays a line, an arc would no longer fit its centre. Centres
+/// and inner control points stay the curve's own. The tolerance is half of
+/// what following the projection allows ([`SAME`] of the size of its
+/// geometry), so that a joined point never tears it.
+pub fn join_existing(
+    def: &SketchDef,
+    joinable: &BTreeSet<EntityUid>,
+    fresh: Vec<Entity>,
+    linked: bool,
+) -> Joined {
+    let index = super::EntityIndex::new(&def.entities);
+    let fresh_points: BTreeMap<EntityUid, P2> = fresh
+        .iter()
+        .filter_map(|e| match e.kind {
+            EntityKind::Point { at } => Some((e.id, at)),
+            _ => None,
+        })
+        .collect();
+    let mut size = 1.0_f64;
+    for p in fresh_points.values() {
+        size = size.max(norm(*p));
+    }
+    let tol = 0.5 * SAME * size;
+    let ends_of = |e: &Entity| -> Vec<EntityUid> {
+        e.kind.ends().map(|(s, t)| vec![s, t]).unwrap_or_default()
+    };
+    let bound = |e: &Entity| {
+        matches!(
+            e.kind,
+            EntityKind::Arc { .. } | EntityKind::EllipticalArc { .. }
+        )
+    };
+    let fresh_used: BTreeSet<EntityUid> = fresh.iter().flat_map(|e| e.kind.points()).collect();
+    let fresh_ends: BTreeSet<EntityUid> = fresh.iter().flat_map(ends_of).collect();
+    let fresh_bound: BTreeSet<EntityUid> = fresh
+        .iter()
+        .filter(|e| bound(e))
+        .flat_map(|e| e.kind.points())
+        .collect();
+    let old_used: BTreeSet<EntityUid> = def.entities.iter().flat_map(|e| e.kind.points()).collect();
+    let old_bound: BTreeSet<EntityUid> = def
+        .entities
+        .iter()
+        .filter(|e| bound(e))
+        .flat_map(|e| e.kind.points())
+        .collect();
+    let old_ends: BTreeSet<EntityUid> = def
+        .entities
+        .iter()
+        .filter(|e| joinable.contains(&e.id))
+        .flat_map(ends_of)
+        .collect();
+    // How many of the sketch's curves of the outline's kind end at a point.
+    let old_degree = |p: EntityUid| {
+        def.entities
+            .iter()
+            .filter(|e| !e.is_point() && !e.construction && ends_of(e).contains(&p))
+            .count()
+    };
+    // Whether a new point may be the sketch's point `old`.
+    let shareable = |new: EntityUid, old: EntityUid| {
+        !linked || !(fresh_bound.contains(&new) || old_bound.contains(&old))
+    };
+    // The other end of each new curve: never the same point.
+    let mut partners: BTreeMap<EntityUid, Vec<EntityUid>> = BTreeMap::new();
+    for e in &fresh {
+        if let Some((s, t)) = e.kind.ends() {
+            partners.entry(s).or_default().push(t);
+            partners.entry(t).or_default().push(s);
+        }
+    }
+    let joins = |e: &Entity| fresh_ends.contains(&e.id) || !fresh_used.contains(&e.id);
+    // 1. Its own ends that meet.
+    let mut map: BTreeMap<EntityUid, EntityUid> = BTreeMap::new();
+    let mut anchors: Vec<(EntityUid, P2)> = Vec::new();
+    for e in &fresh {
+        let EntityKind::Point { at } = e.kind else {
+            continue;
+        };
+        if !joins(e) {
+            continue;
+        }
+        let others = partners.get(&e.id).cloned().unwrap_or_default();
+        let found = anchors
+            .iter()
+            .find(|(id, p)| {
+                dist(*p, at) <= tol
+                    && !others
+                        .iter()
+                        .any(|q| q == id || map.get(q).is_some_and(|m| m == id))
+            })
+            .map(|(id, _)| *id);
+        match found {
+            Some(id) => {
+                map.insert(e.id, id);
+            }
+            None => anchors.push((e.id, at)),
+        }
+    }
+    // The new curves (not left out) that end at a point, as joined so far.
+    let ending =
+        |p: EntityUid, map: &BTreeMap<EntityUid, EntityUid>, dropped: &BTreeSet<EntityUid>| {
+            let target = resolve(map, p);
+            fresh
+                .iter()
+                .filter(|c| {
+                    !c.is_point()
+                        && !dropped.contains(&c.id)
+                        && ends_of(c).iter().any(|q| resolve(map, *q) == target)
+                })
+                .collect::<Vec<&Entity>>()
+        };
+    // 2. Curves the same as one in the sketch.
+    let fresh_at = |id: EntityUid| fresh_points.get(&id).copied();
+    let old_at = |id: EntityUid| index.point(id);
+    let mut out = Joined::default();
+    let mut dropped: BTreeSet<EntityUid> = BTreeSet::new();
+    for e in fresh.iter().filter(|e| !e.is_point()) {
+        let twin = def
+            .entities
+            .iter()
+            .filter(|x| !x.is_point() && !x.construction && joinable.contains(&x.id))
+            .filter_map(|x| {
+                unlikeness(&e.kind, &fresh_at, &x.kind, &old_at).map(|(c, back)| (x, c, back))
+            })
+            .filter(|(_, c, _)| *c <= 2.0 * tol)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        let Some((x, _, back)) = twin else {
+            continue;
+        };
+        let (fp, xp) = (e.kind.points(), x.kind.points());
+        let n = fp.len();
+        let pairs: Vec<(EntityUid, EntityUid)> = fp
+            .iter()
+            .enumerate()
+            .map(|(k, p)| (*p, if back { xp[n - 1 - k] } else { xp[k] }))
+            .collect();
+        // The other new curves would end on the sketch's points instead.
+        let mut gone = dropped.clone();
+        gone.insert(e.id);
+        let fits = pairs.iter().all(|(p, o)| {
+            let on = ending(*p, &map, &gone);
+            on.is_empty()
+                || (old_degree(*o) + on.len() <= 2
+                    && (!linked || (!old_bound.contains(o) && !on.iter().any(|c| bound(c)))))
+        });
+        if !fits {
+            continue;
+        }
+        for (p, o) in pairs {
+            map.insert(p, o);
+        }
+        dropped.insert(e.id);
+        out.same.push((e.id, x.id));
+    }
+    // 3. Ends and loose points on the sketch's.
+    let old_anchors: Vec<(EntityUid, P2)> = def
+        .entities
+        .iter()
+        .filter(|e| {
+            joinable.contains(&e.id) && (old_ends.contains(&e.id) || !old_used.contains(&e.id))
+        })
+        .filter_map(|e| match e.kind {
+            EntityKind::Point { at } => Some((e.id, at)),
+            _ => None,
+        })
+        .collect();
+    for e in &fresh {
+        let EntityKind::Point { at } = e.kind else {
+            continue;
+        };
+        if !joins(e) || map.contains_key(&e.id) {
+            continue;
+        }
+        let degree = ending(e.id, &map, &dropped).len();
+        let others = partners.get(&e.id).cloned().unwrap_or_default();
+        let found = old_anchors
+            .iter()
+            .find(|(id, p)| {
+                dist(*p, at) <= tol
+                    && shareable(e.id, *id)
+                    && old_degree(*id) + degree <= 2
+                    && !others.iter().any(|q| resolve(&map, *q) == *id)
+            })
+            .map(|(id, _)| *id);
+        if let Some(id) = found {
+            map.insert(e.id, id);
+        }
+    }
+    for mut e in fresh {
+        if dropped.contains(&e.id) || map.contains_key(&e.id) {
+            continue;
+        }
+        for p in e.kind.points() {
+            let to = resolve(&map, p);
+            if to != p {
+                e.kind.replace_point(p, to);
+            }
+        }
+        out.entities.push(e);
+    }
+    // Points only left-out curves used.
+    let used: BTreeSet<EntityUid> = out.entities.iter().flat_map(|e| e.kind.points()).collect();
+    out.entities
+        .retain(|e| !e.is_point() || used.contains(&e.id) || !fresh_used.contains(&e.id));
+    out
+}
+
+/// A point joined to a point that joined another in turn: the last one.
+fn resolve(map: &BTreeMap<EntityUid, EntityUid>, id: EntityUid) -> EntityUid {
+    let mut id = id;
+    while let Some(next) = map.get(&id) {
+        id = *next;
+    }
+    id
+}
+
+/// Gives entities [`join_existing`] kept (with ids above [`FRESH`]) the
+/// ids `ids`, in the order their ids were given out, so that they are
+/// numbered as [`entities`] numbers them.
+pub fn renumber(entities: &mut [Entity], ids: &[EntityUid]) {
+    let mut order: Vec<EntityUid> = entities.iter().map(|e| e.id).collect();
+    order.sort_unstable();
+    let map: BTreeMap<EntityUid, EntityUid> = order.into_iter().zip(ids.iter().copied()).collect();
+    for e in entities.iter_mut() {
+        if let Some(id) = map.get(&e.id) {
+            e.id = *id;
+        }
+        for p in e.kind.points() {
+            if let Some(to) = map.get(&p) {
+                e.kind.replace_point(p, *to);
+            }
+        }
+    }
+}
+
 /// The kind of each entity, to tell whether new geometry fits old ids.
 fn shape_of(entities: &[Entity]) -> Vec<(&'static str, Vec<usize>)> {
     let position: BTreeMap<EntityUid, usize> = entities
@@ -461,7 +775,14 @@ fn source_curves<K: Kernel>(
                 .section_curves(shape, Some(face), plane)
                 .map(|found| found.into_iter().map(|c| c.curve).collect())
                 .map_err(|e| format!("{what} {source}: {e}")),
-            _ => Err(format!("{what} {source}: a section's source is a face")),
+            // Where the plane crosses an edge: points (mitcad#736).
+            TopoName::Edge(edge) => kernel
+                .section_points(shape, edge, plane)
+                .map(|found| found.into_iter().map(Curve3::Point).collect())
+                .map_err(|e| format!("{what} {source}: {e}")),
+            TopoName::Vertex(_) => Err(format!(
+                "{what} {source}: a section's source is a face or an edge"
+            )),
         },
         None => kernel
             .curves_of(shape, name)
@@ -502,6 +823,47 @@ fn source_curves<K: Kernel>(
         }
     }
     Ok(Vec::new())
+}
+
+/// The curves one linked projection follows (mitcad#736): its source and
+/// the faces its curve continues into, or none for curves that come in
+/// unlinked (a section's pieces on faces without names).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceCurves {
+    pub source: Option<TopoName>,
+    pub chain: Vec<TopoName>,
+    pub curves: Vec<Curve3>,
+}
+
+/// A whole body's section (Intersect of a body, mitcad#736) as the
+/// sections of its faces: the pieces on one face are one projection of
+/// that face's section, a B-spline joined across faces one of the first
+/// face's section with the others as its chain (as a face's own section
+/// joins it, [`join_curves`]), and pieces on faces without names one
+/// group without a source. In the order the kernel lists the pieces.
+pub fn section_groups(found: Vec<crate::kernel::SectionCurve>) -> Vec<SourceCurves> {
+    let mut groups: Vec<SourceCurves> = Vec::new();
+    for piece in found {
+        let faces: Vec<TopoName> = piece.faces.into_iter().map(TopoName::Face).collect();
+        let joined = matches!(piece.curve, Curve3::BSpline { .. }) && faces.len() > 1;
+        let (source, chain) = match faces.split_first() {
+            Some((first, rest)) if joined => (Some(first.clone()), rest.to_vec()),
+            Some((first, _)) => (Some(first.clone()), Vec::new()),
+            None => (None, Vec::new()),
+        };
+        match groups
+            .iter_mut()
+            .find(|g| !joined && g.chain.is_empty() && g.source == source)
+        {
+            Some(group) => group.curves.push(piece.curve),
+            None => groups.push(SourceCurves {
+                source,
+                chain,
+                curves: vec![piece.curve],
+            }),
+        }
+    }
+    groups
 }
 
 /// How far apart (mm) the ends of two pieces of a chain may be and still
@@ -956,6 +1318,17 @@ pub fn distinct(projected: Vec<Projected>) -> Vec<Projected> {
 }
 
 fn same_projected(a: &Projected, b: &Projected, tol: f64) -> bool {
+    match (a, b) {
+        (Projected::Point(p), Projected::Point(q)) => dist(*p, *q) <= tol,
+        (Projected::Curve(a), Projected::Curve(b)) => same_curve(a, b, tol),
+        _ => false,
+    }
+}
+
+/// Whether two curves are the same within `tol`: of one kind, on the same
+/// place, a line or a spline either way round (a curve projected twice,
+/// mitcad#232 and mitcad#741).
+pub(crate) fn same_curve(a: &Curve2, b: &Curve2, tol: f64) -> bool {
     let near = |p: P2, q: P2| dist(p, q) <= tol;
     let close = |x: f64, y: f64| (x - y).abs() <= tol;
     let ends = |a: &Curve2, b: &Curve2| {
@@ -966,11 +1339,6 @@ fn same_projected(a: &Projected, b: &Projected, tol: f64) -> bool {
     let middle = |c: &Curve2| {
         let (t0, t1) = c.domain();
         c.point((t0 + t1) / 2.0)
-    };
-    let (a, b) = match (a, b) {
-        (Projected::Point(p), Projected::Point(q)) => return near(*p, *q),
-        (Projected::Curve(a), Projected::Curve(b)) => (a, b),
-        _ => return false,
     };
     match (a, b) {
         (Curve2::Line { a: a0, b: a1 }, Curve2::Line { a: b0, b: b1 }) => {

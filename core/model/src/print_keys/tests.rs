@@ -807,3 +807,77 @@ fn the_layout_follows_the_enums() {
     assert_eq!(Group::TravelSpeed.title(), "Travel");
     assert_eq!(Category::SettingOverrides.title(), "Retraction");
 }
+
+/// mitcad#746: every numeric key has the range its slicers take, the
+/// widest of them; a dialect's narrower range is its own. Every percentage
+/// and every angle is listed in the limits, none falls back to the default.
+#[test]
+fn limits_cover_every_percentage_and_angle() {
+    let listed: HashSet<&str> = limits::LIMITS.iter().map(|(k, _, _)| *k).collect();
+    assert_eq!(listed.len(), limits::LIMITS.len(), "a key listed twice");
+    for (name, min, max) in limits::LIMITS {
+        let key = def(name);
+        assert!(key.limits().is_some(), "{name} is not a number");
+        assert!(min <= max, "{name}: {min} > {max}");
+    }
+    for key in keys() {
+        let Some((min, max)) = key.limits() else {
+            assert!(!listed.contains(key.key), "{}", key.key);
+            continue;
+        };
+        let unit = key.unit();
+        if matches!(key.kind, Kind::Percent) || unit == Unit::Percent || unit == Unit::Degree {
+            assert!(
+                listed.contains(key.key),
+                "{} has no limits of its own",
+                key.key
+            );
+        }
+        // A dialect takes no more than the key.
+        for dialect in Dialect::ALL {
+            if let Some((low, high)) = key.dialect_limits(dialect) {
+                assert!(low >= min && high <= max, "{} in {dialect}", key.key);
+            }
+        }
+    }
+}
+
+#[test]
+fn limits_keep_what_a_slicer_takes() {
+    let inf = f64::INFINITY;
+    // Not above 100 %, not negative.
+    assert_eq!(def("fill_density").limits(), Some((0.0, 100.0)));
+    assert_eq!(def("layer_height").limits(), Some((0.0, inf)));
+    assert_eq!(def("perimeters").limits(), Some((0.0, inf)));
+    // Purge line spacing and the tower's infill gap go above 100 %.
+    let (low, high) = def("wipe_tower_extra_spacing").limits().unwrap();
+    assert!(low <= 150.0 && 150.0 <= high);
+    let (low, high) = def("prime_tower_infill_gap").limits().unwrap();
+    assert!(low <= 150.0 && 150.0 <= high);
+    // Bambu Studio's -1 (automatic) is in the key's range, not in
+    // OrcaSlicer's or PrusaSlicer's.
+    for name in [
+        "tree_support_wall_count",
+        "raft_first_layer_expansion",
+        "wipe_tower_brim_width",
+    ] {
+        assert_eq!(def(name).limits().unwrap().0, -1.0, "{name}");
+        assert_eq!(def(name).dialect_limits(BambuStudio), None, "{name}");
+    }
+    assert_eq!(
+        def("tree_support_wall_count").dialect_limits(OrcaSlicer),
+        Some((0.0, 2.0))
+    );
+    assert_eq!(
+        def("raft_first_layer_expansion").dialect_limits(PrusaSlicer),
+        Some((0.0, inf))
+    );
+    // A compensation takes either sign, an angle of a direction too.
+    assert_eq!(def("xy_size_compensation").limits(), Some((-inf, inf)));
+    assert_eq!(def("fill_angle").limits(), Some((-inf, inf)));
+    // Fans run up to 100 %.
+    assert_eq!(def("max_fan_speed").limits(), Some((0.0, 100.0)));
+    // Not a number: no range.
+    assert_eq!(def("seam_position").limits(), None);
+    assert_eq!(def("bed_shape").limits(), None);
+}

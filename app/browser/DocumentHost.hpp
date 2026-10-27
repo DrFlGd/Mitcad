@@ -92,6 +92,10 @@ public:
   // committed, also when it could not start (false).
   virtual void startCommand(const QString& id, const Selection& preselection,
                             std::function<void(bool committed)> finished) = 0;
+  // Whether a context menu offers the feature command for the items
+  // (mitcad#735: the browser's Move/Copy): it can start now and its
+  // definition's offeredAtTop holds for them.
+  virtual bool offersCommand(const QString& id, const Selection& items) const = 0;
   // Create Sketch on a plane or a planar face.
   virtual void createSketchOn(const SelectionItem& plane) = 0;
   // Items picked in the browser or the timeline: the selection outside
@@ -143,6 +147,13 @@ public:
   // Sheet metal (mitcad#210): the Flat Pattern of a sheet-metal body to a
   // DXF file the user chooses.
   virtual void exportFlatPattern(const QString& body) = 0;
+
+  // Save As Mesh (mitcad#734): the bodies of the items (bodies, components
+  // where an occurrence places them; the root component is the whole
+  // design) to mesh files the user chooses; why it cannot (no solid or mesh
+  // body among them), empty when it can.
+  virtual void saveAsMesh(const Selection& /*items*/) {}
+  virtual QString saveAsMeshBlocked(const Selection& /*items*/) const { return {}; }
 
   // Drawings kept in the design (mitcad#707): a drawing (`D1`) opened in
   // its own view over the 3D view; a new one in a component's Drawings

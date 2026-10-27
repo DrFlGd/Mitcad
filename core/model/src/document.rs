@@ -2303,6 +2303,32 @@ impl<K: Kernel> Document<K> {
         })
     }
 
+    /// Adds two features to a component (the active one when None) in one
+    /// undo step named `label`, computed once; the second's definition may
+    /// name the first. When either is refused nothing of the pair stays and
+    /// the undo and redo steps stay as they were (mitcad#758). Made for
+    /// gear pairs and belt drives: only the first's profiles are checked.
+    pub fn add_feature_pair(
+        &mut self,
+        label: &str,
+        first: &FeatureDef<ValueInput>,
+        second: impl FnOnce(FeatureUid) -> FeatureDef<ValueInput>,
+        names: [Option<&str>; 2],
+        component: Option<ComponentUid>,
+    ) -> Result<(Added, Added), ModelError> {
+        let component = component.unwrap_or(self.state.assembly.active);
+        self.state.editable(component)?;
+        self.check_profiles(first)?;
+        let beside = self.component_parent_beside(component);
+        self.apply(|state| {
+            let a = state.add_feature_in(first, names[0], component)?;
+            state.place_made_beside(a.uid, None, beside);
+            let b = state.add_feature_in(&second(a.uid), names[1], component)?;
+            state.place_made_beside(b.uid, None, beside);
+            Ok((label.to_owned(), (a, b)))
+        })
+    }
+
     /// Replaces a feature's definition; the features after it recompute.
     /// Returns the parameters it created.
     pub fn edit_feature(
@@ -2520,6 +2546,18 @@ impl<K: Kernel> Document<K> {
     /// its unit; the features that use it recompute. An unchanged value is
     /// no command at all.
     pub fn set_parameter(&mut self, name: &str, value: f64) -> Result<(), ModelError> {
+        self.set_parameter_value(name, value)?;
+        Ok(())
+    }
+
+    /// Like [`Document::set_parameter`]; returns the parameters whose
+    /// values changed, taken from the table's change set so that the text
+    /// parameters that use it are among them (mitcad#758).
+    pub fn set_parameter_value(
+        &mut self,
+        name: &str,
+        value: f64,
+    ) -> Result<Vec<String>, ModelError> {
         let id = self.param_id(name)?;
         // A limited value is the same only when its result was too.
         let unchanged = self
@@ -2528,11 +2566,15 @@ impl<K: Kernel> Document<K> {
             .get(id)
             .is_some_and(|p| p.value() == value && p.unclamped() == value);
         if unchanged {
-            return Ok(());
+            return Ok(Vec::new());
         }
         self.apply(|state| {
-            state.parameters.set_value(id, value)?;
-            Ok((format!("Change {name}"), ()))
+            let changed = state.parameters.set_value(id, value)?;
+            let names = changed
+                .iter()
+                .map(|id| state.parameters.name(*id))
+                .collect::<Vec<_>>();
+            Ok((format!("Change {name}"), names))
         })
     }
 
@@ -2849,38 +2891,61 @@ impl<K: Kernel> Document<K> {
         occurrence: Option<&[OccurrenceUid]>,
         context: Option<&[OccurrenceUid]>,
     ) -> Result<EditReport, ModelError> {
-        self.project_or_section(sketch, source, body, linked, occurrence, context, false)
+        self.project_or_section(
+            sketch,
+            Some(source),
+            body,
+            linked,
+            occurrence,
+            context,
+            false,
+        )
     }
 
     /// Section curves (mitcad#389): where the sketch's plane cuts a face
     /// (every face of a name without `#k`), as [`Document::project_from`]
     /// adds a projection; a linked section is recomputed from the body
     /// when the model changes ([`crate::sketch::Projection::section`]).
+    /// Intersect (mitcad#736) also takes an edge, whose crossing points
+    /// with the plane come in as points, and a whole body (`source` None,
+    /// `body` given): the section of each face the plane cuts is a
+    /// projection of its own, all in one edit.
     pub fn section_from(
         &mut self,
         sketch: FeatureUid,
-        face: &crate::topo::FaceName,
+        source: Option<&crate::topo::TopoName>,
         body: Option<BodyUid>,
         linked: bool,
         occurrence: Option<&[OccurrenceUid]>,
         context: Option<&[OccurrenceUid]>,
     ) -> Result<EditReport, ModelError> {
-        let source = crate::topo::TopoName::Face(face.clone());
-        self.project_or_section(sketch, &source, body, linked, occurrence, context, true)
+        self.project_or_section(sketch, source, body, linked, occurrence, context, true)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn project_or_section(
         &mut self,
         sketch: FeatureUid,
-        source: &crate::topo::TopoName,
+        source: Option<&crate::topo::TopoName>,
         body: Option<BodyUid>,
         linked: bool,
         occurrence: Option<&[OccurrenceUid]>,
         context: Option<&[OccurrenceUid]>,
         section: bool,
     ) -> Result<EditReport, ModelError> {
+        use crate::sketch::project::SourceCurves;
+        use crate::topo::TopoName;
         let what = if section { "section" } else { "projection" };
+        // What the messages call the source: a whole body by its uid.
+        let source_name = match (source, body) {
+            (Some(source), _) => source.to_string(),
+            (None, Some(body)) if section => body.to_string(),
+            _ => {
+                return Err(invalid(
+                    "a projection needs a source; a section needs a source or a body",
+                ));
+            }
+        };
         let position = self.state.require(sketch)?;
         let frame = match (
             self.sketch_output(sketch),
@@ -2901,7 +2966,7 @@ impl<K: Kernel> Document<K> {
         let assembly = &self.state.assembly;
         let link = match occurrence {
             Some(path) => crate::links::link_for(assembly, component, path, context)
-                .map_err(|e| invalid(format!("{what} of {source}: {e}")))?,
+                .map_err(|e| invalid(format!("{what} of {source_name}: {e}")))?,
             None => None,
         };
         let (from, to_sketch) = match &link {
@@ -2916,7 +2981,7 @@ impl<K: Kernel> Document<K> {
                 };
                 let from = link.source_component(assembly);
                 let to_sketch = link.transform(assembly, component, &mut placement);
-                let error = |e: String| invalid(format!("{what} of {source}: {e}"));
+                let error = |e: String| invalid(format!("{what} of {source_name}: {e}"));
                 (from.map_err(error)?, Some(to_sketch.map_err(error)?))
             }
             None => (component, None),
@@ -2926,7 +2991,7 @@ impl<K: Kernel> Document<K> {
             && owner != from
         {
             return Err(invalid(format!(
-                "{what} of {source}: {b} is a body of {}, not of {}; pick it where an \
+                "{what} of {source_name}: {b} is a body of {}, not of {}; pick it where an \
                  occurrence of {} shows it",
                 assembly.name(owner),
                 assembly.name(from),
@@ -2937,7 +3002,7 @@ impl<K: Kernel> Document<K> {
         // by the link.
         let plane = match (section, source) {
             (false, _) => None,
-            (true, crate::topo::TopoName::Face(_)) => {
+            (true, None | Some(TopoName::Face(_) | TopoName::Edge(_))) => {
                 let plane = crate::datum::DatumPlane {
                     origin: frame.origin,
                     x_axis: frame.x_axis,
@@ -2950,76 +3015,131 @@ impl<K: Kernel> Document<K> {
                     None => plane,
                 })
             }
-            (true, _) => {
+            (true, Some(_)) => {
                 return Err(invalid(format!(
-                    "section of {source}: a section's source is a face"
+                    "section of {source_name}: a section's source is a face, an edge or a body"
                 )));
             }
         };
-        let mut curves = Vec::new();
+        let one = |curves: Vec<crate::kernel::Curve3>| {
+            vec![SourceCurves {
+                source: source.cloned(),
+                chain: Vec::new(),
+                curves,
+            }]
+        };
+        let error =
+            |e: crate::kernel::KernelError| invalid(format!("{what} of {source_name}: {e}"));
+        let mut groups: Vec<SourceCurves> = Vec::new();
         for (uid, shape) in &bodies {
             if body.is_some_and(|b| b != *uid)
                 || self.body_component(*uid).is_some_and(|c| c != from)
             {
                 continue;
             }
-            curves = match (&plane, source) {
-                (Some(plane), crate::topo::TopoName::Face(face)) => self
+            groups = match (&plane, source) {
+                // A whole body: each face's section (mitcad#736).
+                (Some(plane), None) => crate::sketch::project::section_groups(
+                    self.kernel
+                        .section_curves(shape, None, plane)
+                        .map_err(error)?,
+                ),
+                (Some(plane), Some(TopoName::Face(face))) => one(self
                     .kernel
                     .section_curves(shape, Some(face), plane)
-                    .map_err(|e| invalid(format!("{what} of {source}: {e}")))?
+                    .map_err(error)?
                     .into_iter()
                     .map(|c| c.curve)
-                    .collect(),
-                _ => self
+                    .collect()),
+                // Where the plane crosses an edge: points (mitcad#736).
+                (Some(plane), Some(TopoName::Edge(edge))) => one(self
                     .kernel
-                    .curves_of(shape, source)
-                    .map_err(|e| invalid(format!("{what} of {source}: {e}")))?,
+                    .section_points(shape, edge, plane)
+                    .map_err(error)?
+                    .into_iter()
+                    .map(crate::kernel::Curve3::Point)
+                    .collect()),
+                (_, Some(source)) => one(self.kernel.curves_of(shape, source).map_err(error)?),
+                (None, None) => Vec::new(),
             };
-            if !curves.is_empty() {
+            groups.retain(|g| !g.curves.is_empty());
+            if !groups.is_empty() {
                 break;
             }
         }
-        if curves.is_empty() {
-            return Err(invalid(if section {
-                format!(
-                    "section of {source}: nothing named so before the sketch, or the sketch's \
-                     plane does not cut it"
-                )
-            } else {
-                format!("nothing named {source} exists before the sketch")
+        if groups.is_empty() {
+            return Err(invalid(match (section, source) {
+                (true, None) => {
+                    format!("section of {source_name}: the sketch's plane does not cut the body")
+                }
+                (true, Some(_)) => format!(
+                    "section of {source_name}: the sketch's plane does not cut it (or nothing \
+                     named so is before the sketch)"
+                ),
+                (false, _) => format!("nothing named {source_name} exists before the sketch"),
             }));
         }
-        if let Some(t) = &to_sketch {
-            curves = curves
-                .iter()
-                .map(|c| crate::sketch::project::transform_curve(t, c))
-                .collect();
-        }
-        let projected =
-            crate::sketch::project::distinct(crate::sketch::project::project(&curves, &frame));
-        let source = source.clone();
+        let projected: Vec<_> = groups
+            .iter()
+            .map(|group| {
+                let curves: Vec<crate::kernel::Curve3> = match &to_sketch {
+                    Some(t) => group
+                        .curves
+                        .iter()
+                        .map(|c| crate::sketch::project::transform_curve(t, c))
+                        .collect(),
+                    None => group.curves.clone(),
+                };
+                crate::sketch::project::distinct(crate::sketch::project::project(&curves, &frame))
+            })
+            .collect();
         let label = if section {
             "Section Curves to {sketch}"
         } else {
             "Project to {sketch}"
         };
         let ((), report) = self.edit_sketch(sketch, label, |edit| {
-            let entities = crate::sketch::project::entities(&projected, &mut || edit.id());
-            let refs = crate::sketch::project::refs(&entities);
-            for entity in entities {
-                edit.push(entity);
-            }
-            if linked {
-                edit.def.projections.push(crate::sketch::Projection {
-                    source,
-                    body,
-                    entities: refs,
-                    link,
-                    by_geometry: true,
-                    section,
-                    chain: Vec::new(),
+            use crate::sketch::project;
+            for (group, projected) in groups.into_iter().zip(&projected) {
+                // Joined to the projected geometry already there (mitcad#741):
+                // an edge projected again, or a face after one of its edges,
+                // adds no second curve, and ends that meet share a point.
+                let joinable =
+                    project::joinable(&edit.def, linked.then_some((body, link.as_ref())));
+                let mut next = project::FRESH;
+                let fresh = project::entities(projected, &mut || {
+                    next += 1;
+                    EntityUid(next)
                 });
+                let joined = project::join_existing(&edit.def, &joinable, fresh, linked);
+                let mut entities = joined.entities;
+                let ids = edit.ids(entities.len());
+                project::renumber(&mut entities, &ids);
+                for (_, kept) in &joined.same {
+                    edit.report.warnings.push(format!(
+                        "c{} is in the sketch already: not projected again",
+                        kept.0
+                    ));
+                }
+                let refs = project::refs(&entities);
+                for entity in entities {
+                    edit.push(entity);
+                }
+                // Pieces on faces without names come in unlinked (mitcad#736).
+                if linked
+                    && !refs.is_empty()
+                    && let Some(source) = group.source
+                {
+                    edit.def.projections.push(crate::sketch::Projection {
+                        source,
+                        body,
+                        entities: refs,
+                        link: link.clone(),
+                        by_geometry: true,
+                        section,
+                        chain: group.chain,
+                    });
+                }
             }
             Ok(())
         })?;

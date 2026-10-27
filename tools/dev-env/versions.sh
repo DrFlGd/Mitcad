@@ -28,6 +28,9 @@ CCACHE_MACOS_VERSION=4.14.2
 CCACHE_MACOS_SHA256=cf240009630b605b775c7c5c7b7105a3b196c79f31af322c1557969aa28003fc
 SCCACHE_MACOS_VERSION=0.18.0
 SCCACHE_MACOS_ARM64_SHA256=308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e
+# Linux x86_64, the same release (setup-user.sh; musl, a static binary):
+SCCACHE_LINUX_VERSION=0.18.0
+SCCACHE_LINUX_X86_64_SHA256=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
 # A standalone CPython for aqtinstall (python-build-standalone), since the
 # Command Line Tools' python3 is too old; the digest is GitHub's for the asset.
 PYTHON_VERSION=3.12.15

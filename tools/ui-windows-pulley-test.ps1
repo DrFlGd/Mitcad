@@ -2,7 +2,7 @@
 # check-all sources: app/commands/PulleyCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/pulley.rs core/model/src/features/pulley_profile.rs core/model/src/api/pulleys.rs
 # check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
-# check-all sources: core/model/src/features/place_at.rs core/model/src/features/drives.rs
+# check-all sources: core/model/src/features/place_at.rs core/model/src/features/drives.rs core/model/src/api/drives.rs
 # check-all sources: app/framework/ManipulatorOverlay.cpp
 # Input-driven Windows UI test of Pulley (mitcad#562) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted); the Linux
@@ -29,6 +29,13 @@
 #      shows the bore the shaft gives as 8.2 mm; an offset of 2 mm and a
 #      typed bore clearance of 0.3 mm make it 8.3 mm; OK makes the pulley
 #      on the shaft (F2.b0).
+#   5. Check Belt with a shaft in another component's occurrence
+#      (mitcad#754), in a design with an 8 mm shaft 30 high in Motor:1
+#      (F1.b0, the occurrence 80 mm along X) and a 20-tooth pulley in the
+#      root at the origin, 30 mm up and facing down (F2.b0): Pulley on the
+#      shaft's top edge where the occurrence shows it; its Offset handle
+#      sits on that shaft; Check Belt with the root's pulley gives the belt
+#      for the pulleys 80 mm apart (200 mm); OK makes the pulley there.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-pulley-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -56,6 +63,22 @@ Set-Content -Encoding ascii $shaftJson @'
 '@
 $shaft = Join-Path $work 'shaft.mitcad'
 $output = & $cli run $shaftJson --save $shaft 2>&1
+if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
+# Part 5's motor shaft in an occurrence and the root's pulley.
+$motorJson = Join-Path $work 'motor.json'
+Set-Content -Encoding ascii $motorJson @'
+[
+  {"cmd": "create_component", "name": "Motor", "transform": {"translation": [80, 0, 0]}},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "add_feature", "def": {"type": "pulley", "kind": "toothed", "profile": "gt2_2mm",
+    "teeth": 20, "belt_width": 6, "operation": "new_body",
+    "at": {"point": {"point": [0, 0, 30]}, "plane": "xy", "flip": true}}}
+]
+'@
+$motor = Join-Path $work 'motor.mitcad'
+$output = & $cli run $motorJson --save $motor 2>&1
 if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
 
 Ui-StartApp 'pulley'
@@ -159,5 +182,51 @@ Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Added pulley (Toothed), GT2 2 mm, 20 teeth' 'the pulley on the shaft added' 30
 Ui-ExpectNew '(F2.b0): volume ' 'its body made' 30
+
+Write-Host "--- Check Belt with a shaft in another component's occurrence (mitcad#754)"
+Ui-StartApp 'pulley-motor' @('--open', $motor)
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-ExpectLog 'Body F1.b0 in O1 at ' "the motor's shaft shown in its occurrence"
+Ui-Mark
+Ui-Step 'pulley (F7)'                    { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Pulley started' 'the panel opened, waiting for a pick' 30
+Ui-Step 'teeth 20'                       { Ui-TypeIn 'Panel Pulley input teeth' '20' }
+Ui-Mark
+Ui-Step 'Place On'                       { Ui-ClickLogged 'Panel Pulley input at' }
+Ui-ExpectNew 'Pick places:' 'the picks are logged'
+Ui-ExpectNew 'Pick edge F1.b0/E{F1:side0|F1:top} at' "the motor's shaft top edge can be picked"
+Ui-ExpectNew 'Pick face F2.b0/' "the root's pulley can be picked"
+# Where the shaft (80 mm along X) and the root's pulley (at the origin)
+# are in the window.
+$shaftX = (Ui-PickAt 'edge F1.b0/E{F1:side0|F1:top} at')[0]
+$rootX = (Ui-PickAt 'face F2.b0/')[0]
+Ui-Mark
+Ui-Step "click the shaft's top edge"     { Ui-ClickPick 'edge F1.b0/E{F1:side0|F1:top} at' }
+Ui-ExpectNew 'Place Pulley: axis edge E{F1:side0|F1:top} of F1.b0' "placed on the motor's shaft"
+# The handle shows with the placement (logged since the click: the overlay
+# logs its places only when they change, so More logs nothing new); More
+# shows the rows Check Belt is in.
+Ui-ExpectNew 'Manipulator Pulley at_offset at ' 'the Offset handle shown' 30
+Ui-Step 'More'                           { Ui-ClickLogged 'Panel Pulley input at_more' }
+$handleX = (Ui-LoggedAt 'Manipulator Pulley at_offset')[0]
+# On the shaft where its occurrence puts it, not where the shaft lies in
+# Motor's own coordinates (the root's origin).
+if ([math]::Abs($handleX - $shaftX) -ge [math]::Abs($handleX - $rootX)) {
+  Ui-Fail "the Offset handle at x $handleX is not on the shaft (x $shaftX) but nearer the origin (x $rootX)"
+}
+Write-Host "ok   the Offset handle on the motor's shaft (x $handleX, the shaft $shaftX, the origin $rootX)"
+Ui-Mark
+Ui-Step 'Check Belt'                     { Ui-ClickLogged 'Panel Pulley input check_belt' }
+Ui-ExpectNew 'Pick places:' 'the picks are logged'
+Ui-ExpectNew 'Pick face F2.b0/F2:' "a face of the root's pulley can be picked"
+$face = Ui-LastMatch 'Pick face F2\.b0/(F2:\S+) at'
+Ui-Mark
+Ui-Step "click $face"                    { Ui-ClickPick "face F2.b0/$face at" }
+Ui-ExpectNew 'Pulley belt check with F2: Belt length 200 mm (100 teeth)' 'the belt for the pulleys 80 mm apart' 30
+$note = Ui-LastMatch '(Pulley belt check with .*)'
+Write-Host "     $note"
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Added pulley (Toothed), GT2 2 mm, 20 teeth' "the pulley on the motor's shaft added" 30
 
 Ui-Finish 'UI Windows pulley test'

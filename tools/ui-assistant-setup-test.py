@@ -58,6 +58,9 @@ def main():
                     "expect-assistant-setup other", "expect-assistant-setup disconnect-other",
                     "expect-assistant-setup folder",
                     "expect-assistant-setup missing-claude", "expect-assistant-setup claude"]
+                if sys.platform == "win32":
+                    # A Microsoft Store Claude Desktop without a .mcpb handler (mitcad#763).
+                    script.append("expect-assistant-setup packaged-claude")
                 if sys.platform in ("darwin", "win32"):
                     script.append("expect-assistant-setup bundle")
                 script.extend(["expect-assistant-setup blocked",

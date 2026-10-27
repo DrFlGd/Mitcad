@@ -43,6 +43,26 @@ if ! cargo deny --version 2> /dev/null | grep -q "$CARGO_DENY_VERSION"; then
   cargo "+$RUST_TOOLCHAIN" install cargo-deny --version "$CARGO_DENY_VERSION" --locked
 fi
 
+# The Rust compiler cache, installed but off on Linux: in a new worktree it
+# hits only the dependencies (the project's own crates have another path in
+# each worktree), and it turns incremental compilation off, which slows the
+# rebuilds of one worktree (measured on a Linux workstation, 27.10.2026).
+# To use it: -DMITCAD_RUST_COMPILER_CACHE=ON -DMITCAD_SCCACHE=$HOME/.local/bin/sccache
+# and MITCAD_SCCACHE_DIR on a large build disk rather than a small home.
+echo "== sccache $SCCACHE_LINUX_VERSION"
+if [ "$("$HOME/.local/bin/sccache" --version 2> /dev/null || true)" != "sccache $SCCACHE_LINUX_VERSION" ]; then
+  name=sccache-v$SCCACHE_LINUX_VERSION-x86_64-unknown-linux-musl
+  work=$(mktemp -d)
+  curl -sSfL -o "$work/$name.tar.gz" \
+    "https://github.com/mozilla/sccache/releases/download/v$SCCACHE_LINUX_VERSION/$name.tar.gz"
+  echo "$SCCACHE_LINUX_X86_64_SHA256  $work/$name.tar.gz" | sha256sum -c --quiet
+  tar -xzf "$work/$name.tar.gz" -C "$work"
+  mkdir -p "$HOME/.local/bin"
+  install -m 755 "$work/$name/sccache" "$HOME/.local/bin/sccache"
+  rm -rf -- "${work:?}"
+fi
+"$HOME/.local/bin/sccache" --version
+
 echo "== vcpkg at $VCPKG_COMMIT"
 if [ ! -d "$HOME/vcpkg/.git" ]; then
   git clone --quiet https://github.com/microsoft/vcpkg "$HOME/vcpkg"

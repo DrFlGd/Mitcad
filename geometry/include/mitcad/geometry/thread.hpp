@@ -51,6 +51,9 @@ struct ThreadSpec {
   double pitch_diameter = 0.0;
   bool right_handed = true;
   double angle = 0.0;
+  // Per face (in the order of `faces`), the angle it is turned by instead
+  // of `angle` (a pattern's copies, mitcad#733); empty: `angle` for all.
+  std::vector<double> angles;
   // Over the whole face; otherwise `length` from `offset` measured from
   // the end the cylinder's axis points to (`high_end`) or from the other
   // end.
@@ -94,6 +97,23 @@ struct ThreadSpec {
   double chamfer_angle = 0.0;
   double chamfer_diameter = 0.0;
   std::vector<ChamferEnds> chamfer_ends;
+  // A taper pipe thread (NPT, ISO 7-1; mitcad#733): `taper` above 0 is
+  // how much every diameter changes per length along the axis (1/16), and
+  // `major`, `minor` and `pitch_diameter` are the profile's where the
+  // thread starts: the end of its part it is measured from, or over the
+  // whole face the face's free end (nothing of the body beyond it) where
+  // only one end is free, else the high end with `taper_high_end` and the
+  // low end without. From there the diameters shrink into an internal
+  // thread and grow along an external one. A cosmetic thread (`groove`
+  // false) cuts the cone of an internal thread's minor diameter out of its
+  // bore, or what lies outside the cone of an external thread's major
+  // diameter off its shaft, over its part; the cone's faces are named
+  // <feature>:thread_taper(<face reference>). A modelled one sweeps the
+  // profile, its flanks square to the axis, along the tapered helix of the
+  // pitch diameter, its angle placed as a straight thread's (the groove's
+  // middle at the face's low end turned by `angle`). No end chamfers.
+  double taper = 0.0;
+  bool taper_high_end = true;
 };
 
 // The body with the threads. The thread's new faces (flanks, crests and

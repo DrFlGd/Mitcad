@@ -42,6 +42,7 @@
 #include <Prs3d_ToolSphere.hxx>
 #include <PrsMgr_PresentationManager.hxx>
 #include <Quantity_ColorRGBA.hxx>
+#include <SelectMgr_Selection.hxx>
 #include <TCollection_ExtendedString.hxx>
 #include <V3d.hxx>
 #include <gp_Ax1.hxx>
@@ -61,6 +62,12 @@ const QColor kAccent(0x2f, 0x9b, 0xff);
 constexpr double kBaseSize = 70.0;
 // The faces' textures: about four texels to a pixel of a face at 2x.
 constexpr int kTexture = 512;
+// The cube's own perspective (mitcad#774): the tangent of half its field of
+// view (45 degrees, the view's default: tan 22.5 degrees = sqrt 2 - 1), and
+// the cells of a face's grid, which keep its name straight (a texture is
+// interpolated linearly across each triangle as drawn).
+constexpr double kTanHalfFieldOfView = 0.41421356237309503;
+constexpr int kPerspectiveCells = 8;
 
 Quantity_Color occtColor(const QColor& color) {
   return Quantity_Color(color.redF(), color.greenF(), color.blueF(), Quantity_TOC_sRGB);
@@ -278,6 +285,68 @@ public:
     }
   }
 
+  // The cube's own perspective (mitcad#774), on or off.
+  void setPerspective(bool perspective) {
+    if (perspective != m_perspective) {
+      m_perspective = perspective;
+      SetToUpdate();
+    }
+  }
+
+  // The direction towards the eye; true when the perspective changed.
+  bool setEye(const gp_Dir& toEye) {
+    if (toEye.IsEqual(m_toEye, 1e-9)) {
+      return false;
+    }
+    m_toEye = toEye;
+    if (!m_perspective) {
+      return false;
+    }
+    SetToUpdate();
+    return true;
+  }
+
+  // Where the cube's own perspective draws a point of its coordinates: the
+  // eye on the line through the middle towards m_toEye, as far as the field
+  // of view takes to show twice the box, and the plane of the front face
+  // (face on) kept at its size. The perspective is a projective map, so
+  // lines and planes stay straight; drawn orthographic, the points are where
+  // a perspective camera would show them.
+  gp_XYZ warped(const gp_XYZ& point) const {
+    if (!m_perspective) {
+      return point;
+    }
+    const double half = mySize * 0.5 + myBoxFacetExtension;
+    const double eye = 2.0 * half / kTanHalfFieldOfView;
+    const double depth = point.Dot(m_toEye.XYZ());
+    return point * ((eye - half) / std::max(eye - depth, 0.1 * eye));
+  }
+
+  // AIS_ViewCube's picking, in the cube's own perspective on the parts as
+  // they are drawn.
+  void ComputeSelection(const occ::handle<SelectMgr_Selection>& selection, const int mode) override {
+    if (!m_perspective) {
+      AIS_ViewCube::ComputeSelection(selection, mode);
+      return;
+    }
+    if (mode != 0) {
+      return;
+    }
+    const occ::handle<AIS_ViewCube> self(this);
+    for (int part = V3d_Xpos; part <= int(V3d_XnegYnegZneg); ++part) {
+      const auto orientation = static_cast<V3d_TypeOfOrientation>(part);
+      const occ::handle<Graphic3d_ArrayOfTriangles> triangles = partTriangles(orientation);
+      if (triangles.IsNull()) {
+        continue;
+      }
+      const occ::handle<AIS_ViewCubeOwner> owner = new AIS_ViewCubeOwner(self, orientation);
+      const occ::handle<AIS_ViewCubeSensitive> sensitive = new AIS_ViewCubeSensitive(owner, triangles);
+      // As AIS_ViewCube: the corners and edges easier to hit than the faces.
+      sensitive->SetSensitivityFactor(IsBoxCorner(orientation) ? 8 : (IsBoxEdge(orientation) ? 4 : 2));
+      selection->Add(sensitive);
+    }
+  }
+
   void Compute(const occ::handle<PrsMgr_PresentationManager>& /*manager*/,
                const occ::handle<Prs3d_Presentation>& prs, const int mode) override {
     prs->SetInfiniteState(true);
@@ -301,12 +370,12 @@ public:
   }
 
   // A face's hover a little above the face, AIS_ViewCube's (the part's
-  // triangles) for the bevels.
+  // triangles) for the bevels, both in the cube's own perspective if any.
   void HilightOwnerWithColor(const occ::handle<PrsMgr_PresentationManager>& manager,
                              const occ::handle<Prs3d_Drawer>& style,
                              const occ::handle<SelectMgr_EntityOwner>& owner) override {
     const auto* cubeOwner = dynamic_cast<const AIS_ViewCubeOwner*>(owner.get());
-    if (cubeOwner == nullptr || !IsBoxSide(cubeOwner->MainOrientation())) {
+    if (cubeOwner == nullptr || (!IsBoxSide(cubeOwner->MainOrientation()) && !m_perspective)) {
       AIS_ViewCube::HilightOwnerWithColor(manager, style, owner);
       return;
     }
@@ -322,7 +391,12 @@ public:
     prs->SetZLayer(layer);
     occ::handle<Graphic3d_Group> group = prs->NewGroup();
     group->SetGroupPrimitivesAspect(style->ShadingAspect()->Aspect());
-    group->AddPrimitiveArray(face(cubeOwner->MainOrientation(), 0.6, false));
+    const V3d_TypeOfOrientation part = cubeOwner->MainOrientation();
+    const occ::handle<Graphic3d_ArrayOfTriangles> triangles =
+        IsBoxSide(part) ? face(part, 0.6, false) : partTriangles(part);
+    if (!triangles.IsNull()) {
+      group->AddPrimitiveArray(triangles);
+    }
     manager->AddToImmediateList(prs);
   }
 
@@ -334,31 +408,69 @@ private:
 
   // A face as AIS_ViewCube places it (its picking's triangles), `lift`
   // outside, with the texture's coordinates (the name upright as
-  // AIS_ViewCube writes it).
+  // AIS_ViewCube writes it); a grid of cells in the cube's own perspective.
   occ::handle<Graphic3d_ArrayOfTriangles> face(V3d_TypeOfOrientation side, double lift, bool texels) const {
     const double h = mySize * 0.5;
     const gp_Dir direction = V3d::GetProjAxis(side);
     const gp_Dir up = sideUp(side);
     const gp_Dir right = up.Crossed(direction); // right, up and outwards turn as x, y, z
     const gp_XYZ centre = direction.XYZ() * (h + myBoxFacetExtension + lift);
+    const int cells = texels && m_perspective ? kPerspectiveCells : 1;
+    const int row = cells + 1;
     occ::handle<Graphic3d_ArrayOfTriangles> out = new Graphic3d_ArrayOfTriangles(
-        4, 6,
+        row * row, 6 * cells * cells,
         texels ? Graphic3d_ArrayFlags_VertexNormal | Graphic3d_ArrayFlags_VertexTexel
                : Graphic3d_ArrayFlags_VertexNormal);
-    // Counter-clockwise seen from outside: the side OCCT does not cull.
-    const double us[4] = {-1.0, 1.0, 1.0, -1.0};
-    const double vs[4] = {-1.0, -1.0, 1.0, 1.0};
-    for (int i = 0; i < 4; ++i) {
-      const gp_Pnt at(centre + right.XYZ() * (us[i] * h) + up.XYZ() * (vs[i] * h));
-      if (texels) {
-        out->AddVertex(at, direction, gp_Pnt2d((us[i] + 1.0) / 2.0, (vs[i] + 1.0) / 2.0));
-      } else {
-        out->AddVertex(at, direction);
+    for (int j = 0; j <= cells; ++j) {
+      for (int i = 0; i <= cells; ++i) {
+        const double u = -1.0 + 2.0 * i / cells;
+        const double v = -1.0 + 2.0 * j / cells;
+        const gp_Pnt at(warped(centre + right.XYZ() * (u * h) + up.XYZ() * (v * h)));
+        if (texels) {
+          out->AddVertex(at, direction, gp_Pnt2d((u + 1.0) / 2.0, (v + 1.0) / 2.0));
+        } else {
+          out->AddVertex(at, direction);
+        }
       }
     }
-    out->AddEdges(1, 2, 3);
-    out->AddEdges(1, 3, 4);
+    // Counter-clockwise seen from outside: the side OCCT does not cull.
+    for (int j = 0; j < cells; ++j) {
+      for (int i = 0; i < cells; ++i) {
+        const int corner = j * row + i + 1;
+        out->AddEdges(corner, corner + 1, corner + row + 1);
+        out->AddEdges(corner, corner + row + 1, corner + row);
+      }
+    }
     return out;
+  }
+
+  // A part's triangles as AIS_ViewCube makes them for its picking and hover,
+  // in the cube's own perspective if any; null for none.
+  occ::handle<Graphic3d_ArrayOfTriangles> partTriangles(V3d_TypeOfOrientation part) const {
+    int nodes = 0;
+    int triangles = 0;
+    createBoxPartTriangles(occ::handle<Graphic3d_ArrayOfTriangles>(), nodes, triangles, part);
+    if (nodes <= 0) {
+      return occ::handle<Graphic3d_ArrayOfTriangles>();
+    }
+    occ::handle<Graphic3d_ArrayOfTriangles> out =
+        new Graphic3d_ArrayOfTriangles(nodes, triangles * 3, Graphic3d_ArrayFlags_None);
+    nodes = 0;
+    triangles = 0;
+    createBoxPartTriangles(out, nodes, triangles, part);
+    warp(*out);
+    return out;
+  }
+
+  // The array's vertices moved through the cube's own perspective (its
+  // normals stay: the cube is lit as it is).
+  void warp(Graphic3d_ArrayOfPrimitives& array) const {
+    if (!m_perspective) {
+      return;
+    }
+    for (int i = 1; i <= array.VertexNumber(); ++i) {
+      array.SetVertice(i, gp_Pnt(warped(array.Vertice(i).XYZ())));
+    }
   }
 
   // AIS_ViewCube's flat bevels of the edges and corners, as it picks them.
@@ -376,6 +488,7 @@ private:
     for (int part = V3d_XposYpos; part <= int(V3d_XnegYnegZneg); ++part) {
       createBoxPartTriangles(out, nodes, triangles, static_cast<V3d_TypeOfOrientation>(part));
     }
+    warp(*out);
     return out;
   }
 
@@ -412,11 +525,14 @@ private:
       group->SetClosed(true);
       group->SetGroupPrimitivesAspect(datum->ShadingAspect(part)->Aspect());
       const double arrow = 0.2 * length;
-      group->AddPrimitiveArray(Prs3d_Arrow::DrawShaded(axis, myAxesRadius, length, myAxesConeRadius, arrow, 20));
+      const occ::handle<Graphic3d_ArrayOfTriangles> shaft =
+          Prs3d_Arrow::DrawShaded(axis, myAxesRadius, length, myAxesConeRadius, arrow, 20);
+      warp(*shaft);
+      group->AddPrimitiveArray(shaft);
       const TCollection_AsciiString label = AxisLabel(part);
       if (datum->ToDrawLabels() && !label.IsEmpty()) {
         occ::handle<Graphic3d_Group> labelGroup = prs->NewGroup();
-        const gp_Pnt origin = location.Translated(gp_Vec(direction) * (length + arrow));
+        const gp_Pnt origin(warped(location.Translated(gp_Vec(direction) * (length + arrow)).XYZ()));
         Prs3d_Text::Draw(labelGroup, datum->TextAspect(part), TCollection_ExtendedString(label), origin);
       }
     }
@@ -430,10 +546,15 @@ private:
     at.SetTranslation(gp_Vec(gp::Origin(), location));
     occ::handle<Graphic3d_ArrayOfTriangles> triangles;
     sphere.FillArray(triangles, at);
+    if (!triangles.IsNull()) {
+      warp(*triangles);
+    }
     group->AddPrimitiveArray(triangles);
   }
 
   bool m_dark = false; // OcctViewer starts with a light background
+  bool m_perspective = false; // in a perspective of its own (mitcad#774)
+  gp_Dir m_toEye = gp::DZ();  // from the cube towards the eye
   occ::handle<Graphic3d_AspectFillArea3d> m_bevelAspect;
   std::map<std::string, occ::handle<Graphic3d_Texture2D>> m_textures; // by glass and name
 };
@@ -481,6 +602,22 @@ void setViewCubeBackdrop(AIS_ViewCube& cube, bool dark) {
   if (auto* glass = dynamic_cast<GlassViewCube*>(&cube)) {
     glass->setDark(dark);
   }
+}
+
+void setViewCubePerspective(AIS_ViewCube& cube, bool perspective) {
+  if (auto* glass = dynamic_cast<GlassViewCube*>(&cube)) {
+    glass->setPerspective(perspective);
+  }
+}
+
+bool setViewCubeEye(AIS_ViewCube& cube, const gp_Dir& toEye) {
+  auto* glass = dynamic_cast<GlassViewCube*>(&cube);
+  return glass != nullptr && glass->setEye(toEye);
+}
+
+gp_XYZ viewCubePoint(const AIS_ViewCube& cube, const gp_XYZ& point) {
+  const auto* glass = dynamic_cast<const GlassViewCube*>(&cube);
+  return glass != nullptr ? glass->warped(point) : point;
 }
 
 // ---------------------------------------------------------------------------

@@ -92,6 +92,7 @@ const AS_STORED: MeshTolerance = MeshTolerance {
     deviation: 0.01,
     angle: 0.1,
     face_triangles: 0,
+    max_edge: 0.0,
 };
 
 impl<K: Kernel> Evaluate<K> for MeshConvertDef {

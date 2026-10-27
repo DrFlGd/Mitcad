@@ -17,8 +17,10 @@ namespace mitcad::geometry {
 // along its outward normal (against it when `reversed`): its bounded area
 // with its holes, from the face moved `start_offset` along the outward
 // normal, `distance1` along the sweep and, with `distance2`, that much
-// against it (both > 0). The body is left as it is: the prism shares none
-// of its sub-shapes.
+// against it (both > 0, or one of the two negative, as an extrusion's two
+// sides may be, mitcad#765: the solid then lies between the two ends only;
+// `distance1 + distance2 > 0`). The body is left as it is: the prism shares
+// none of its sub-shapes.
 //
 // mitcad#541: with `direction` the sweep goes along it (against it when
 // `reversed`) instead of the normal, the distances measured along it; it

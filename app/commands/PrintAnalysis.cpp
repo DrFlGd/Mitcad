@@ -460,11 +460,23 @@ QString printOverlayLog(const PrintOverlay& overlay) {
   for (const auto& [color, words] : overlay.legend) {
     legend << QStringLiteral("%1 %2").arg(color.name(), words);
   }
-  return QStringLiteral("Print overlay: %1 overhang triangle(s) %2, %3 thin triangle(s) %4, %5; legend %6: %7")
+  // The area drawn thin (mitcad#767: only where the walls are thin).
+  double thinArea = 0.0;
+  for (std::size_t t = 0; t + 9 <= overlay.thin.size(); t += 9) {
+    const float* p = overlay.thin.data() + t;
+    const double u[3] = {double(p[3]) - p[0], double(p[4]) - p[1], double(p[5]) - p[2]};
+    const double v[3] = {double(p[6]) - p[0], double(p[7]) - p[1], double(p[8]) - p[2]};
+    const double nx = u[1] * v[2] - u[2] * v[1];
+    const double ny = u[2] * v[0] - u[0] * v[2];
+    const double nz = u[0] * v[1] - u[1] * v[0];
+    thinArea += std::sqrt(nx * nx + ny * ny + nz * nz) / 2.0;
+  }
+  return QStringLiteral(
+             "Print overlay: %1 overhang triangle(s) %2, %3 thin triangle(s) %4 (%5 mm^2), %6; legend %7: %8")
       .arg(static_cast<qulonglong>(overlay.overhangs.size() / 9))
       .arg(overlay.overhangColor.name())
       .arg(static_cast<qulonglong>(overlay.thin.size() / 9))
-      .arg(overlay.thinColor.name(), marker, overlay.title, legend.join(QStringLiteral(" | ")));
+      .arg(overlay.thinColor.name(), fixed(thinArea, 1), marker, overlay.title, legend.join(QStringLiteral(" | ")));
 }
 
 std::optional<std::array<double, 3>> printLinkPoint(const QString& link) {

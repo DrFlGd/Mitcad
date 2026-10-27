@@ -13,11 +13,14 @@ namespace mitcad::io {
 
 struct ObjWriteOptions {
   MeshOptions mesh = MeshOptions::from(Refinement::Medium);
+  // The unit of the file's coordinates (mitcad#734): the bodies keep their
+  // size, millimetres written as such.
+  LengthUnit unit = LengthUnit::Millimeter;
 };
 
 // Writes the bodies, triangulated with `options.mesh`, as named OBJ
-// objects, a moved copy per placement (see Body); colours go to a
-// material file next to it (`<name>.mtl`).
+// objects, a moved copy per placement (see Body), in `options.unit`;
+// colours go to a material file next to it (`<name>.mtl`).
 void write_obj(const std::string& path, const std::vector<Body>& bodies,
                const ObjWriteOptions& options = {});
 

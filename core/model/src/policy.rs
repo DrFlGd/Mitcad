@@ -291,6 +291,7 @@ fn links(def: &FeatureDef) -> Vec<(LinkKind, &OccurrenceLink)> {
         FeatureDef::Sweep(s) => s.body_links.values().collect(),
         FeatureDef::SplitBody(s) => s.tool_links.values().collect(),
         FeatureDef::Extrude(x) => x.object_links.values().collect(),
+        FeatureDef::Revolve(r) => r.object_links.values().collect(),
         FeatureDef::ConstructionPlane(p) => p.links.values().collect(),
         FeatureDef::Derive(d) => d.links.values().collect(),
         FeatureDef::BodyTransfer(t) => vec![&t.link],

@@ -644,3 +644,139 @@ fn a_thin_fin_next_to_an_edge_is_still_found() {
         );
     }
 }
+
+/// The area of a triangle given by its corners, mm².
+fn triangle_area(p: &[[f64; 3]; 3]) -> f64 {
+    let u: [f64; 3] = std::array::from_fn(|i| p[1][i] - p[0][i]);
+    let v: [f64; 3] = std::array::from_fn(|i| p[2][i] - p[0][i]);
+    let n = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0
+}
+
+/// The thin pieces that lie in the plane z = `z`.
+fn pieces_at(found: &print_analysis::Thickness, z: f64) -> Vec<[[f64; 3]; 3]> {
+    found
+        .pieces
+        .iter()
+        .filter(|p| p.iter().all(|c| close(c[2], z, TOL)))
+        .copied()
+        .collect()
+}
+
+#[test]
+fn a_thin_lip_at_a_plate_edge_colours_a_band_not_the_plate() {
+    // mitcad#767: a 40 x 40 mm plate, 5 mm thick, with a 0.5 mm lip along
+    // its edge x = 40 (x 38 to 40). The plate's bottom is one face of two
+    // triangles that span the plate; one of them reaches the lip with its
+    // long edge, so some of its samples are thin and most are not. Only
+    // the part of it under the lip is shown, not the triangle.
+    let mesh = prism(
+        &[
+            [0.0, 0.0],
+            [40.0, 0.0],
+            [40.0, 0.5],
+            [38.0, 0.5],
+            [38.0, 5.0],
+            [0.0, 5.0],
+        ],
+        40.0,
+    );
+    let found = print_analysis::thickness(&mesh, 0.8, &|| false).unwrap();
+    // The thinnest wall is the lip's, as before.
+    assert!(
+        close(found.thinnest.unwrap(), 0.5, TOL),
+        "{:?}",
+        found.thinnest
+    );
+    let at = found.at.unwrap();
+    assert!(close(at[2], 0.0, TOL) || close(at[2], 0.5, TOL), "{at:?}");
+    // Thin pieces only on the bottom and on the lip's top.
+    let bottom = pieces_at(&found, 0.0);
+    let lip = pieces_at(&found, 0.5);
+    assert_eq!(
+        bottom.len() + lip.len(),
+        found.pieces.len(),
+        "{:?}",
+        found.pieces
+    );
+    // The lip's top is thin all over: its two triangles whole.
+    assert_eq!(lip.len(), 2, "{lip:?}");
+    let lip_area: f64 = lip.iter().map(triangle_area).sum();
+    assert!(close(lip_area, 80.0, TOL), "{lip_area}");
+    // On the bottom, a band along the lip within about one sample distance
+    // (2 mm) of it, not the triangle across the plate (800 mm²).
+    assert!(!bottom.is_empty());
+    for piece in &bottom {
+        for corner in piece {
+            assert!(corner[0] >= 36.0 - TOL, "a piece reaches x {corner:?}");
+        }
+    }
+    let bottom_area: f64 = bottom.iter().map(triangle_area).sum();
+    assert!(
+        bottom_area > 70.0 && bottom_area < 120.0,
+        "{bottom_area} mm² of the bottom shown thin"
+    );
+    // The bottom triangle under the lip is still listed as thin.
+    assert!(found.thin.iter().any(|&t| {
+        mesh.triangles[t]
+            .iter()
+            .all(|&v| close(mesh.vertices[v as usize][2], 0.0, TOL))
+    }));
+    // The lip's top and the band under it: one wall, one region.
+    assert_eq!(found.regions, 1);
+}
+
+#[test]
+fn thin_lips_at_opposite_edges_are_two_regions() {
+    // mitcad#767: lips 0.5 mm thick along both edges x = 0 and x = 40 of a
+    // 5 mm plate. The bottom's two triangles span the plate from lip to
+    // lip and share corners, so as whole triangles the lips were one
+    // region; their thin pieces do not touch: two regions.
+    let mesh = prism(
+        &[
+            [0.0, 0.0],
+            [40.0, 0.0],
+            [40.0, 0.5],
+            [38.0, 0.5],
+            [38.0, 5.0],
+            [2.0, 5.0],
+            [2.0, 0.5],
+            [0.0, 0.5],
+        ],
+        40.0,
+    );
+    let found = print_analysis::thickness(&mesh, 0.8, &|| false).unwrap();
+    assert!(close(found.thinnest.unwrap(), 0.5, TOL));
+    for piece in pieces_at(&found, 0.0) {
+        for corner in piece {
+            assert!(
+                corner[0] <= 4.0 + TOL || corner[0] >= 36.0 - TOL,
+                "a piece reaches x {corner:?}"
+            );
+        }
+    }
+    assert_eq!(found.regions, 2);
+}
+
+#[test]
+fn a_uniformly_thin_plate_is_shown_whole() {
+    // Thin all over: every triangle of the top and the bottom whole, as
+    // before the pieces (mitcad#767), one region.
+    let mesh = box_mesh([0.0; 3], [40.0, 40.0, 0.5]);
+    let found = print_analysis::thickness(&mesh, 0.8, &|| false).unwrap();
+    assert!(close(found.thinnest.unwrap(), 0.5, TOL));
+    assert_eq!(found.thin.len(), 4, "{:?}", found.thin);
+    let whole: Vec<[[f64; 3]; 3]> = found
+        .thin
+        .iter()
+        .map(|&t| mesh.triangles[t].map(|v| mesh.vertices[v as usize]))
+        .collect();
+    assert_eq!(found.pieces, whole);
+    let shown: f64 = found.pieces.iter().map(triangle_area).sum();
+    assert!(close(shown, 3200.0, TOL), "{shown}");
+    assert_eq!(found.regions, 1);
+}

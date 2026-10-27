@@ -4,7 +4,8 @@
 # The CREATE group (U4) through the real UI, with the volumes the model
 # reports (analytic, or tools/cli/tests/f1_*.json):
 #   - Extrude: a thin extrusion (walls centred on the profile), edited to
-#     two sides (a negative side refused, mitcad#693); a start offset up
+#     two sides (a negative side ends on the other side, mitcad#765; ends
+#     that meet refused); a start offset up
 #     to the XY plane; a thin extrusion along
 #     an open chain of sketch curves picked in the panel (mitcad#463).
 #   - Revolve: two sides about the Y axis.
@@ -167,26 +168,40 @@ ui_expect_log "Added thin extrude (New Body), distance 10" "thin extrusion added
 # Walls 2 thick round 30 x 20: (32 x 22 - 28 x 18) x 10.
 ui_expect_volume "New body Body2 (F6.b0): volume \([0-9.]*\) mm3" 2000 "thin walls"
 
-echo "--- Edited to two sides: 10 up and 5 down"
+echo "--- Edited to two sides: 10 up and -4 (from 4 to 10 up), then 5 down"
 ui_step "double-click Extrude2"            ui_double_click_logged "Timeline Extrude2"
 ui_expect_log "Editing F6 with Extrude" "editing Extrude2"
 ui_expect_log "Extrude Wall Thickness: 2 mm" "the thickness came from the feature"
-ui_step "Two Sides"                        ui_choose "Panel Extrude input direction" 1
-ui_expect_log "Extrude: Direction = Two Sides" "two sides chosen"
-# A negative side is refused, not drawn on the other side (mitcad#693).
 ui_mark
-ui_step "side two -5"                      ui_type_in "Panel Extrude input distance2" "-5"
-ui_expect_new "Panel Extrude error: Distance 2 is on the other side: for a solid on one side of the sketch use Start: Offset" \
-  "a negative side two refused" 30
+ui_step "Two Sides"                        ui_choose "Panel Extrude input direction" 1
+ui_expect_new "Extrude: Direction = Two Sides" "two sides chosen" 30
+ui_expect_new "Preview Extrude: ok" "two sides previewed" 30
+# A negative side ends on the other side's side (mitcad#765): with 10 up,
+# -10 meets side one's end and is refused, -4 leaves walls from 4 to 10.
+ui_mark
+ui_step "side two -10"                     ui_type_in "Panel Extrude input distance2" "-10"
+ui_expect_new "Panel Extrude error: The two sides overlap: Distance and Distance 2 must add up to more than zero (a negative distance ends on the other side)" \
+  "ends that meet refused" 30
+ui_mark
+ui_step "side two -4"                      ui_type_in "Panel Extrude input distance2" "-4"
+ui_expect_new "Preview Extrude: ok" "side two -4 previewed" 30
+# Side two's wall is side one's until it is changed.
+ui_expect_log "Extrude Wall Thickness 2: 2 mm" "side two's wall as side one's"
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Edited F6" "Extrude2 edited" 30
+# 6 mm of walls off the sketch plane: 200 x 6.
+ui_expect_volume "Body Body2 (F6.b0): volume 2000.000 -> \([0-9.]*\) mm3" 1200 "6 mm of walls off the sketch"
+ui_mark
+ui_step "double-click Extrude2"            ui_double_click_logged "Timeline Extrude2"
+ui_expect_new "Editing F6 with Extrude" "editing Extrude2 again" 30
 ui_mark
 ui_step "side two 5"                       ui_type_in "Panel Extrude input distance2" "5"
 ui_expect_new "Preview Extrude: ok" "side two 5 previewed" 30
-# Side two's wall is side one's until it is changed.
-ui_expect_log "Extrude Wall Thickness 2: 2 mm" "side two's wall as side one's"
-ui_expect_log "Preview Extrude: ok" "previewed"
+ui_mark
 ui_step "OK (Enter)"                       ui_key Return
-ui_expect_log "Edited F6" "Extrude2 edited"
-ui_expect_volume "Body Body2 (F6.b0): volume 2000.000 -> \([0-9.]*\) mm3" 3000 "15 mm of walls"
+ui_expect_new "Edited F6" "Extrude2 edited again" 30
+ui_expect_volume "Body Body2 (F6.b0): volume 1200.000 -> \([0-9.]*\) mm3" 3000 "15 mm of walls"
 
 echo "--- Revolve: two sides about Y, 90 and 45 degrees"
 ui_step "revolve (search)"                 ui_command "Revolve"

@@ -72,6 +72,10 @@ void ParameterPicker::setContent(std::vector<Sketch> sketches, QHash<QString, QS
   }
   qDebug().noquote() << QStringLiteral("Parameter labels for %1: %2")
                             .arg(m_command, shown.isEmpty() ? QStringLiteral("none") : shown.join(QStringLiteral(", ")));
+  // Without labels, not over the view at all: Qt paints a widget over the
+  // view again at each frame the view draws, an empty one as much as any
+  // (mitcad#768).
+  setVisible(!shown.isEmpty());
   m_logged.clear();
   update();
   logPlaces();

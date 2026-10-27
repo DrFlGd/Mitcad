@@ -239,7 +239,7 @@ fn scoped_cut_replay_assembly_change_invalidates_cached_local_classification() {
 }
 
 #[test]
-fn scoped_cut_replay_keeps_unique_occurrence_and_rejects_shared_definition() {
+fn scoped_cut_replay_keeps_own_shared_definition_and_skips_foreign_one() {
     let mut doc = Document::new(MockKernel::default());
     doc.create_component(
         Some("Part"),
@@ -258,13 +258,45 @@ fn scoped_cut_replay_keeps_unique_occurrence_and_rejects_shared_definition() {
     assert_eq!(doc.status(repeated), Some(&FeatureStatus::Ok));
     assert!(history(&doc, target).starts_with("cut(cut("));
     assert_eq!(doc.body_component(target), Some(ComponentUid(1)));
+    let replayed = history(&doc, target);
     doc.activate_component(ComponentUid::ROOT).unwrap();
     doc.copy_occurrence(
         OccurrenceUid(1),
         Some(Transform::translation([200.0, 0.0, 0.0])),
     )
     .unwrap();
-    failed_scope(&doc, repeated);
+    // A cut inside Part edits Part's definition, which both occurrences
+    // show (mitcad#769): a second occurrence refuses neither the cut nor
+    // its mirrored replay, and the body keeps both cuts.
+    assert_eq!(doc.status(original), Some(&FeatureStatus::Ok));
+    assert_eq!(doc.status(repeated), Some(&FeatureStatus::Ok));
+    assert_eq!(history(&doc, target), replayed);
+    assert_eq!(doc.body_component(target), Some(ComponentUid(1)));
     doc.undo();
     assert_eq!(doc.status(repeated), Some(&FeatureStatus::Ok));
+
+    // A cut from the root, whose tool also reaches one occurrence of a
+    // shared Part, stays local on replay: Part's shared definition is
+    // refused and left uncut, the root's own body is cut by both.
+    let mut doc = Document::new(MockKernel::default());
+    doc.create_component(Some("Part"), Transform::IDENTITY, true)
+        .unwrap();
+    let shared = body(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let root = body(&mut doc);
+    doc.copy_occurrence(
+        OccurrenceUid(1),
+        Some(Transform::translation([200.0, 0.0, 0.0])),
+    )
+    .unwrap();
+    let untouched = history(&doc, shared);
+    let original = cut(&mut doc, Some(scope()));
+    let repeated = doc
+        .add_feature(&def(mirror(original, "adjust")), None)
+        .unwrap()
+        .uid;
+    assert_eq!(doc.status(original), Some(&FeatureStatus::Ok));
+    assert_eq!(doc.status(repeated), Some(&FeatureStatus::Ok));
+    assert!(history(&doc, root).starts_with("cut(cut("));
+    assert_eq!(history(&doc, shared), untouched);
 }

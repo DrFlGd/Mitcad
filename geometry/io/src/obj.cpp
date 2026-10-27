@@ -23,6 +23,11 @@ void write_obj(const std::string& path, const std::vector<Body>& bodies,
   // Each body's triangles once, moved to each placement (mitcad#19).
   detail::add_bodies(document, placed_bodies(meshes));
   RWObj_CafWriter writer(TCollection_AsciiString(path.c_str()));
+  if (options.unit != LengthUnit::Millimeter) {
+    // In metres: Mitcad's millimetre and the file's unit (mitcad#734).
+    writer.ChangeCoordinateSystemConverter().SetInputLengthUnit(0.001);
+    writer.ChangeCoordinateSystemConverter().SetOutputLengthUnit(0.001 * millimeters(options.unit));
+  }
   const NCollection_IndexedDataMap<TCollection_AsciiString, TCollection_AsciiString> info;
   if (!writer.Perform(document, info, Message_ProgressRange())) {
     throw Error("cannot write OBJ file " + path);

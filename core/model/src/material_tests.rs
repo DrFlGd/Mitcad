@@ -621,4 +621,43 @@ fn print_keys_are_listed_for_the_interface() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("no set of print settings"), "{error}");
+    // mitcad#746: a number's range as its slicers take it, each bound only
+    // where there is one; a dialect's narrower range on its entry.
+    let find = |name: &str| {
+        all["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|k| k["key"] == name)
+            .unwrap()
+            .clone()
+    };
+    let density = find("fill_density");
+    assert_eq!(
+        (&density["min"], &density["max"]),
+        (&json!(0.0), &json!(100.0))
+    );
+    let spacing = find("wipe_tower_extra_spacing");
+    assert!(spacing["max"].as_f64().unwrap() >= 150.0);
+    let height = find("layer_height");
+    assert_eq!(height["min"], json!(0.0));
+    assert!(height.get("max").is_none());
+    assert!(find("xy_size_compensation").get("min").is_none());
+    assert!(find("seam_position").get("min").is_none());
+    let walls = find("tree_support_wall_count");
+    assert_eq!(walls["min"], json!(-1.0));
+    let dialect = |name: &str| {
+        walls["dialects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["dialect"] == name)
+            .unwrap()
+            .clone()
+    };
+    assert!(dialect("bambu_studio").get("min").is_none());
+    assert_eq!(
+        (&dialect("orcaslicer")["min"], &dialect("orcaslicer")["max"]),
+        (&json!(0.0), &json!(2.0))
+    );
 }

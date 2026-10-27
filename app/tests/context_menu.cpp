@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // The view's context menu's split (mitcad#494): whether a selection alone
 // completes a command (its first entries) or the command needs further
-// picks (under More), computed from the definition (CommandDef::completedBy).
+// picks (under More), computed from the definition (CommandDef::completedBy);
+// and what the menu offers at its top level (mitcad#735, takenWholeByOneOf).
 #include "framework/Command.hpp"
 
 #include <cstdio>
@@ -124,6 +125,32 @@ int contextMenuTests() {
   CommandDef placedElsewhere = pulley;
   placedElsewhere.group = QStringLiteral("MODIFY");
   CHECK(placedElsewhere.completedBy({rim}));
+
+  // At the top (mitcad#735): Move/Copy's objects, bodies or placed
+  // components, each kind whole; not a mix, faces, or the root.
+  const InputDef bodyObjects =
+      selectionInput(QStringLiteral("bodies"), QStringLiteral("Objects"), SelectKind::Body, 1, 0);
+  const InputDef componentObjects =
+      selectionInput(QStringLiteral("components"), QStringLiteral("Objects"), SelectKind::Component | SelectKind::Body,
+                     1, 0)
+          .withAccepts([](const SelectionItem& item) { return !item.occurrence.isEmpty(); });
+  const auto atTop = takenWholeByOneOf({bodyObjects, componentObjects});
+  const SelectionItem body{SelectKind::Body, QStringLiteral("F2.b0"), QString(), QString()};
+  SelectionItem placedBody{SelectKind::Body, QStringLiteral("F3.b0"), QString(), QString()};
+  placedBody.occurrence = QStringLiteral("O1");
+  SelectionItem occurrence{SelectKind::Component, QStringLiteral("C1"), QString(), QString()};
+  occurrence.occurrence = QStringLiteral("O1");
+  SelectionItem nested = occurrence;
+  nested.occurrence = QStringLiteral("O1/O2");
+  const SelectionItem root{SelectKind::Component, QStringLiteral("C0"), QString(), QString()};
+  CHECK(atTop({body}));
+  CHECK(atTop({body, placedBody}));
+  CHECK(atTop({occurrence, nested}));
+  CHECK(!atTop({body, occurrence}));
+  CHECK(!atTop({face}));
+  CHECK(!atTop({root}));
+  CHECK(!atTop({occurrence, root}));
+  CHECK(!atTop({}));
 
   // The state a command starts with: defaults and a list's first rows.
   const CommandState start = modes.initialState();

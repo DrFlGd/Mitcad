@@ -4,7 +4,9 @@
 # check-all sources: app/OcctViewer.cpp app/MainWindowContextMenu.cpp core/model core/3mf core/vcs tools/cli
 # Print settings and materials (mitcad#640, mitcad#654, mitcad#655) through
 # the real UI, on a design of two boxes:
-#   1. 3D Print with 3MF: Import from slicer… of a slicer's project (a 3MF
+#   1. 3D Print with 3MF: with no process chosen (Slicer default) Own
+#      settings names Body2's own walls (mitcad#747); Import from slicer…
+#      of a slicer's project (a 3MF
 #      in OrcaSlicer's form, written by mitcad-cli): the Printer and Process
 #      rows show the imported ones, the line at the panel's end says where
 #      the materials went, Details… shows the whole report; Cancel keeps
@@ -23,7 +25,9 @@
 #   4. Property Sets of a body: the effective print settings by category
 #      with their source, a summary; the pencil of Own settings opens
 #      Body1's own settings in the settings form, where Walls typed is the
-#      body's own (Source: Body1) and its ↺ clears it.
+#      body's own (Source: Body1) and its ↺ clears it. On the design's
+#      Property Sets a right click on Process's ↺ runs nothing, and the
+#      next left click on Material opens Materials (mitcad#761).
 #   5. Show Build Volume, and 3D Print to a (fake) QIDI Studio sends a 3MF
 #      with QIDI Studio's print settings.
 #   6. A Bambu Studio project whose two filaments are slowed for cooling on
@@ -111,13 +115,15 @@ EOF
   { cat "$WORK/cli-mount.log"; ui_fail "mitcad-cli (the Bambu Studio project)"; }
 [ -s "$WORK/mount.3mf" ] || ui_fail "the Bambu Studio project was not written"
 
-# The design: a 20 mm box at the origin and one 300 mm away.
+# The design: a 20 mm box at the origin and one 300 mm away, the far one
+# (Body2) with walls of its own and no printer or process yet (mitcad#747).
 cat > "$WORK/model.json" << 'EOF'
 [
   {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-10, -10],
     "length": 20, "width": 20, "height": 20, "operation": "new_body"}},
   {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [300, -10],
-    "length": 20, "width": 20, "height": 20, "operation": "new_body"}}
+    "length": 20, "width": 20, "height": 20, "operation": "new_body"}},
+  {"cmd": "set_property", "owner": "F2.b0", "set": "Print Process", "key": "perimeters", "value": 4}
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
@@ -143,6 +149,8 @@ echo "--- 1. 3D Print: Import from slicer…, its line and Details…"
 ui_mark
 ui_command "3D Print"
 ui_expect_new "3D Print printer: Slicer default" "the design has no printer yet"
+ui_expect_new "Panel 3D Print note process_overrides: Body2: Walls [Edit]" \
+  "Own settings names Body2's own walls with the process at Slicer default (mitcad#747)"
 ui_expect_new "Panel 3D Print action import.0 at" "Import from slicer… is shown with 3MF"
 ui_step "Import from slicer…"              ui_click_logged "Panel 3D Print action import.0"
 ui_type_path "Import from Slicer" "$WORK/plate.3mf"
@@ -371,6 +379,47 @@ ui_step "↺"                                ui_click_logged "Own settings clear
 ui_expect_new "Own setting F1.b0 perimeters = cleared" "cleared"
 ui_expect_new "Property sets row: print Print Process/perimeters = 3 (profile Standard" "the profile's again"
 ui_step "close"                            ui_click_logged "Own settings close"
+ui_focus_dialog '^Property Sets$'
+ui_step "close"                            ui_click_logged "Property sets close"
+ui_focus_main
+
+echo "--- 4b. Property Sets of the design: a right click on Process's ↺ does nothing (mitcad#761)"
+ui_mark
+opened=$UI_MARK # the dialog's places are logged from here
+ui_step "right-click the top row"          ui_click_logged "Browser Root" 3
+ui_expect_new "Context menu: " "its menu opened"
+ui_step "choose Property Sets..."          ui_menu_choose "Property Sets..."
+ui_expect_new "Property sets row: print Print Process/profile = Standard (chosen on" \
+  "the design's own process choice"
+ui_focus_dialog '^Property Sets$'
+# Below the levels, out of sight where the window is short: the type-ahead
+# brings the Process row into view (its glyphs are logged again then).
+ui_step "go to Process (type-ahead)"       xdotool type --delay 40 "Process"
+ui_sync
+ui_expect_new "Property sets print Print Process/profile clear at" "↺ after the design's process"
+ui_mark
+ui_step "right-click ↺"                    ui_click_logged "Property sets print Print Process/profile clear" 3
+ui_sync
+# Nothing is to happen: a short wait for a stray reaction (and for the
+# type-ahead's next word to start afresh).
+sleep 0.5
+ui_sync
+if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Property sets print Print Process/profile clear$|Property .* cleared"; then
+  ui_fail "a right click ran ↺: $(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -E "clear$|cleared" | head -3)"
+fi
+echo "ok   a right click on ↺ runs nothing"
+ui_step "go to Material (type-ahead)"      xdotool type --delay 40 "Material"
+ui_sync
+# Logged since the dialog opened: again only where the type-ahead scrolled
+# it into view, else where the dialog showed it at first.
+UI_MARK=$opened
+ui_expect_new "Property sets print Print Filament/material value at" "the Material row's value"
+ui_mark
+ui_step "Material"                         ui_click_logged "Property sets print Print Filament/material value"
+ui_expect_new "Materials opened" "the next left click opens Materials"
+ui_expect_new "Materials close at" "Materials laid out"
+ui_focus_dialog '^Materials$'
+ui_step "close"                            ui_click_logged "Materials close"
 ui_focus_dialog '^Property Sets$'
 ui_step "close"                            ui_click_logged "Property sets close"
 ui_focus_main

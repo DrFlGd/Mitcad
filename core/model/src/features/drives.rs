@@ -518,6 +518,11 @@ pub fn recommended_teeth(profile: BeltProfile) -> f64 {
 /// The fewest teeth in mesh on the smaller pulley by default.
 pub const MIN_TEETH_IN_MESH: f64 = 6.0;
 
+/// The most teeth the `belt_drive` query takes as `max_teeth` (mitcad#748):
+/// a pulley of 1000 GT2 teeth is 0.64 m across; a larger bound is taken
+/// for "no limit" and refused.
+pub const MAX_TEETH: f64 = 1000.0;
+
 /// Within how much (mm) two travels count as the same in Belt Drive's
 /// order, so that the smaller pulleys come first among them.
 pub const TRAVEL_STEP: f64 = 0.5;
@@ -764,6 +769,15 @@ pub fn belt_drives(
     let mut z1 = min_teeth.ceil();
     while z1 <= o.max_teeth {
         let ideal = z1 * o.ratio;
+        // Both pulleys grow with z1: once the smaller pair of this z1 no
+        // longer fits between the axes, no larger one does (mitcad#748: a
+        // huge `max_teeth` returns at once, and the loop never reaches the
+        // counts where `z1 += 1.0` stops changing z1).
+        let r1 = pulley_profile::pitch_diameter(o.profile, z1) / 2.0;
+        let smallest = pulley_profile::pitch_diameter(o.profile, ideal.floor().max(0.0)) / 2.0;
+        if r1 + smallest >= distance {
+            break;
+        }
         let mut seconds = vec![ideal.floor()];
         if ideal.ceil() != ideal.floor() {
             seconds.push(ideal.ceil());
@@ -1221,5 +1235,33 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A huge `max_teeth` (an API client's "no limit") returns at once
+    /// with the candidates of the default (mitcad#748): the search stops
+    /// where the pulleys no longer fit between the axes, here at 63 teeth
+    /// each, below the default's 150.
+    #[test]
+    fn a_huge_max_teeth_stops_where_the_pulleys_no_longer_fit() {
+        let options = BeltDriveOptions {
+            whole_teeth: true,
+            limit: 1000,
+            ..BeltDriveOptions::new(1.0, BeltProfile::Gt2Pitch2)
+        };
+        let default = belt_drives(40.0, &options).unwrap();
+        assert!(!default.is_empty());
+        for max_teeth in [1.0e9, 1.0e16, f64::INFINITY] {
+            let huge = BeltDriveOptions {
+                max_teeth,
+                ..options.clone()
+            };
+            assert_eq!(belt_drives(40.0, &huge).unwrap(), default, "{max_teeth}");
+        }
+        // A ratio that makes the second pulley huge stops as soon.
+        let steep = BeltDriveOptions {
+            max_teeth: 1.0e16,
+            ..BeltDriveOptions::new(1.0e6, BeltProfile::Gt2Pitch2)
+        };
+        assert!(belt_drives(40.0, &steep).unwrap().is_empty());
     }
 }

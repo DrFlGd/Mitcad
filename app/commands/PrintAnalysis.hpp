@@ -107,7 +107,8 @@ struct PrintOverlay {
 QJsonObject printOverlayJson(const QJsonObject& def, const PrintAnswers& answers, const QString& title);
 PrintOverlay printOverlayOf(const QJsonObject& json, const QColor& overhangColor, const QColor& thinColor);
 // For the log, when it changes: "Print overlay: 12 overhang triangle(s)
-// #rrggbb, 4 thin triangle(s) #rrggbb, thinnest 0.50 mm at (x, y, z);
+// #rrggbb, 4 thin triangle(s) #rrggbb (150.0 mm^2: the area drawn thin),
+// thinnest 0.50 mm at (x, y, z);
 // legend Print1: Overhang over 45° | Wall under 0.8 mm", or "Print overlay:
 // none".
 QString printOverlayLog(const PrintOverlay& overlay);

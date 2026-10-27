@@ -13,7 +13,7 @@ endif()
 include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.29.0
+  VERSION 0.30.0
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 
@@ -65,21 +65,26 @@ if(MITCAD_RUST_COMPILER_CACHE)
        AND NOT "$ENV{RUSTC_WRAPPER}" STREQUAL "sccache")
       message(FATAL_ERROR "MITCAD_RUST_COMPILER_CACHE conflicts with RUSTC_WRAPPER; unset it or disable the option")
     endif()
-    if(WIN32)
-      set(MITCAD_SCCACHE_DIR "$ENV{LOCALAPPDATA}/Mozilla/sccache")
+    # The cache's folder: MITCAD_SCCACHE_DIR (e.g. on a large build disk
+    # rather than a small home), else the platform's user cache folder.
+    set(MITCAD_SCCACHE_DIR "" CACHE PATH "The Rust compiler cache's folder (empty: the user cache folder)")
+    if(MITCAD_SCCACHE_DIR)
+      set(MITCAD_SCCACHE_FOLDER "${MITCAD_SCCACHE_DIR}")
+    elseif(WIN32)
+      set(MITCAD_SCCACHE_FOLDER "$ENV{LOCALAPPDATA}/Mozilla/sccache")
     elseif(APPLE)
-      set(MITCAD_SCCACHE_DIR "$ENV{HOME}/Library/Caches/Mozilla.sccache")
+      set(MITCAD_SCCACHE_FOLDER "$ENV{HOME}/Library/Caches/Mozilla.sccache")
     else()
-      set(MITCAD_SCCACHE_DIR "$ENV{HOME}/.cache/sccache")
+      set(MITCAD_SCCACHE_FOLDER "$ENV{HOME}/.cache/sccache")
     endif()
     # Do not allow an inherited failover setting to hide a broken cache
     # server. Unsupported crate kinds still compile normally through sccache.
     set(MITCAD_RUST_CACHE_ENVIRONMENT
       "RUSTC_WRAPPER=${MITCAD_SCCACHE}" "CARGO_INCREMENTAL=0"
-      "SCCACHE_DIR=${MITCAD_SCCACHE_DIR}" "SCCACHE_IGNORE_SERVER_IO_ERROR=0")
-    message(STATUS "Rust compiler cache: ${MITCAD_SCCACHE} (${MITCAD_SCCACHE_DIR}; incremental compilation off)")
+      "SCCACHE_DIR=${MITCAD_SCCACHE_FOLDER}" "SCCACHE_IGNORE_SERVER_IO_ERROR=0")
+    message(STATUS "Rust compiler cache: ${MITCAD_SCCACHE} (${MITCAD_SCCACHE_FOLDER}; incremental compilation off)")
   else()
-    message(STATUS "Rust compiler cache: sccache not found; install it with setup-macos.sh or disable MITCAD_RUST_COMPILER_CACHE")
+    message(STATUS "Rust compiler cache: sccache not found; install it with setup-macos.sh or setup-user.sh, or disable MITCAD_RUST_COMPILER_CACHE")
   endif()
 endif()
 

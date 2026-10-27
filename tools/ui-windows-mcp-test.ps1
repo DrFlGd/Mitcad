@@ -11,8 +11,8 @@
 #      timeline); ui_state reports the sketch and its Sketch Palette's
 #      warning with the projection's entities.
 #   4. sketch.add_line into the open sketch through its session, labelled
-#      "(agent)" in the undo text; another feature's command is refused;
-#      undo takes the line back.
+#      "(agent)" in the undo text; another feature's command is refused,
+#      and so is model_export (mitcad#750); undo takes the line back.
 #   5. ui_select of a curve and a point, then ui_state's selection.
 #   6. ui_screenshot of the view and of the window: PNGs under the limit.
 #   7. ui_command Clean Up Stale Projections (its preview and warning), then
@@ -250,6 +250,9 @@ Mcp-Check ($state.undo -and $state.undo.EndsWith(' (agent)')) "the agent's chang
 Ui-ExpectNew 'MCP: an agent ran sketch.add_line in sketch F4' 'the log says what the agent ran'
 $refused = Mcp-Tool 'model_command' @{ document = $document; command = @{ cmd = 'add_parameter'; name = 'agent_width'; value = 10 } } -IsError
 Mcp-Check ($refused.error.Contains('being edited')) "another feature's command waits for the sketch" $refused.error
+# F5 after the sketch is rolled back while it is edited (mitcad#750).
+$refused = Mcp-Tool 'model_export' @{ document = $document; path = 'edited.stl'; format = 'stl' } -IsError
+Mcp-Check ($refused.error.Contains('Finish the sketch')) 'model_export waits for the sketch' $refused.error
 $null = Mcp-Tool 'model_command' @{ document = $document; command = @{ cmd = 'undo' } }
 Mcp-Check (@((Sketch-Query).entities).Count -eq $before) 'undo takes the line back'
 

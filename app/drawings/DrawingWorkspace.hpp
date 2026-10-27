@@ -188,6 +188,13 @@ private:
   void editView(int view, const QString& field, const QString& value);
   void editSheet();
   void addSheet();
+  // Delete Sheet of a sheet tab's menu: the sheet shown stays shown, at its
+  // new place (mitcad#759).
+  void deleteSheet(int index);
+  // Another sheet shown: the active tool's picks so far, its half-drawn
+  // line or circle and a placing click awaited go, the tool stays
+  // (mitcad#759).
+  void dropPicks();
   void sheetMenu(int index, const QPoint& at);
   void exportDrawing(const QString& format);
   // A revision of the table edited (or deleted) in its dialog.
@@ -229,6 +236,9 @@ private:
   int m_hoverView = -1;
   QPointF m_hoverAt;
   QString m_loggedHover;
+  // The hover's question waits for the job that computes the model
+  // (mitcad#753).
+  bool m_hoverWaits = false;
 
   QWidget* m_bar = nullptr;
   QLabel* m_titleLabel = nullptr;

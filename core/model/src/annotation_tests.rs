@@ -1309,3 +1309,56 @@ fn kept_annotations_are_measured_again_only_when_their_bodies_change() {
     assert!(broken["error"].is_string(), "{broken}");
     assert_eq!(measures(&doc), once + 2);
 }
+
+#[test]
+fn more_annotations_than_the_measure_cache_holds_are_not_measured_again() {
+    // mitcad#758: the annotations are asked for in the same order after
+    // every command; a cache smaller than the keys they use would evict
+    // each before it is asked for again and measure all of them each time.
+    let mut doc = Document::new(MockKernel::default());
+    doc.kernel().measures_selections.set(true);
+    let mut faces = Vec::new();
+    for i in 0..12 {
+        let sketch = format!("F{}", 2 * i + 1);
+        let extrude = format!("F{}", 2 * i + 2);
+        command(
+            &mut doc,
+            json!([
+                {"cmd": "sketch.create"},
+                {"cmd": "sketch.add_rectangle", "sketch": sketch, "corner": [40 * i, 0],
+                 "width": 20, "height": 20},
+                {"cmd": "add_feature", "def": {"type": "extrude",
+                  "profiles": [{"sketch": sketch, "region": R}],
+                  "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+            ]),
+        );
+        let body = format!("{extrude}.b0");
+        faces.push(json!({"body": body, "face": format!("{extrude}:end({R})")}));
+        faces.push(json!({"body": body, "face": format!("{extrude}:start({R})")}));
+    }
+    // 300 distances between distinct ordered pairs of faces apart: as many
+    // distinct measure keys.
+    let pairs: Vec<(&Value, &Value)> = faces
+        .iter()
+        .flat_map(|a| faces.iter().map(move |b| (a, b)))
+        .filter(|(a, b)| a != b)
+        .take(300)
+        .collect();
+    assert_eq!(pairs.len(), 300);
+    for (a, b) in pairs {
+        command(
+            &mut doc,
+            json!({"cmd": "add_annotation", "a": a, "b": b, "kind": "distance"}),
+        );
+    }
+    let measures = |doc: &Document<MockKernel>| doc.kernel().count("measure_between");
+    let listed = annotations(&doc);
+    assert_eq!(listed.len(), 300);
+    for item in &listed {
+        assert!(item.get("error").is_none(), "{item}");
+        assert!(item["value"].as_f64().is_some(), "{item}");
+    }
+    let first = measures(&doc);
+    assert_eq!(annotations(&doc).len(), 300);
+    assert_eq!(measures(&doc), first, "measured again");
+}

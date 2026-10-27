@@ -573,9 +573,11 @@ The translation (`ops.rs`, `commands.md` *From the dump IR*):
   each point along the sketch's normal out of the body crosses it (they
   took a minute for a sketch of 80 regions beside a stored thread of 720
   spline faces).
-  Whitworth and NPT threads fall back (Mitcad models only 60° threads).
-  A tapped hole with a modelled thread gets a modelled `thread` on its
-  walls (angle 0: the walls do not exist before the hole).
+  Whitworth and ISO 7-1 threads fall back (Mitcad models only 60°
+  threads; NPT tapered, mitcad#733). A tapped hole with a modelled thread
+  gets a modelled `thread` on its walls at the angle its state shows,
+  measured on the hole made alone first (the walls do not exist before
+  the hole, mitcad#733).
 - **Sheets** (surface bodies): the history's matching compares solids
   only. The sheets of a state come in with the fallbacks that take it, and
   those of the last state at the end, as stored bodies (base features);

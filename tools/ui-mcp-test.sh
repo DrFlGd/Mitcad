@@ -15,7 +15,9 @@
 # Projections and Finish Sketch, document_save, ui_log. The agent indicator
 # (mitcad#710) names the initialized client while the bridge is connected;
 # with none, a click on it opens Connect AI Assistant and its menu offers
-# Connect AI Assistant and Folders for Designs.
+# Connect AI Assistant and Folders for Designs. Preferences > AI Assistants'
+# Connect AI Assistant... opens the dialog over the modal Preferences, and
+# real clicks choose assistants there while Preferences is open (mitcad#760).
 # Then the shared setup-dialog flow checks isolated file and stub-CLI
 # registration, failures, concurrent edits, folder consent and both layouts.
 #
@@ -30,6 +32,21 @@ LIVE="$(dirname "$0")/ui-mcp-live.py"
 WORK=$(mktemp -d /tmp/mitcad-ui-mcp.XXXXXX)
 trap 'ui_cleanup; rm -rf "$WORK"' EXIT
 [ -x "$ASSISTANT_CLIENT" ] || ui_fail "assistant client stub is missing: build the test_assistant_client target"
+
+# settled "logged place": waits until the place logged last for it stays
+# the same over a sync and a short wait (a dialog just shown is laid out
+# again; a click must not use the place it had before).
+settled() {
+  local before after
+  for _ in $(seq 1 20); do
+    before=$(grep -F "$1 at " "$UI_LOG" | tail -1)
+    ui_sync
+    sleep 0.3
+    after=$(grep -F "$1 at " "$UI_LOG" | tail -1)
+    [ -n "$after" ] && [ "$before" = "$after" ] && return 0
+  done
+  ui_fail "the place of '$1' did not settle"
+}
 
 # The listener's record in a private folder of the test's own; the app makes
 # it (it must not exist yet).
@@ -68,6 +85,32 @@ ui_step "its menu (right click)"         ui_click_logged "Agent indicator" 3
 # (those are in the tooltip, and for several windows).
 ui_expect_new "Agent indicator menu: Connect AI Assistant... | Folders for Designs..." "the menu: Connect AI Assistant, Folders for Designs"
 ui_step "close the menu (Esc)"           ui_key Escape
+
+echo "--- Connect AI Assistant from Preferences > AI Assistants, a modal dialog (mitcad#760)"
+ui_focus_main
+ui_mark
+ui_step "Preferences: AI Assistants"     ui_command "Preferences: AI Assistants"
+ui_expect_new "Preferences connect assistant at" "the AI Assistants page"
+ui_focus_dialog '^Preferences$'
+settled "Preferences connect assistant"
+ui_mark
+ui_step "Connect AI Assistant..."        ui_click_logged "Preferences connect assistant"
+ui_expect_new "Connect AI Assistant opened over Preferences" "the dialog opens over Preferences"
+ui_expect_new "Connect AI Assistant choice Other at" "its choices are placed"
+ui_focus_dialog '^Connect AI Assistant$'
+settled "Connect AI Assistant choice Other"
+ui_mark
+ui_step "Other"                          ui_click_logged "Connect AI Assistant choice Other"
+ui_expect_new "Connect AI Assistant: Other, manual: Copy the configuration into your assistant's settings" \
+  "a click chooses Other and the state line follows, while Preferences is open"
+settled "Connect AI Assistant choice Claude Code"
+ui_mark
+ui_step "Claude Code"                    ui_click_logged "Connect AI Assistant choice Claude Code"
+ui_expect_new "Connect AI Assistant: Claude Code, " "another click chooses Claude Code"
+ui_step "close Connect AI Assistant (Esc)" ui_key Escape
+ui_focus_dialog '^Preferences$'
+ui_step "close Preferences (Esc)"        ui_key Escape
+ui_focus_main
 ui_crashed && ui_fail "the application crashed"
 
 ui_finish "UI live MCP test"

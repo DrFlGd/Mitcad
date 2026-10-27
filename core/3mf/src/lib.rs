@@ -194,6 +194,47 @@ pub struct Model {
     /// More files of the package by their paths
     /// (`Metadata/project_settings.config`): a slicer's settings.
     pub files: Vec<(String, Vec<u8>)>,
+    /// The unit of the meshes' coordinates and the placements' moves
+    /// (mitcad#734): millimetres by default. [`read`] gives millimetres.
+    pub unit: Unit,
+}
+
+/// A 3MF model's length unit (the `unit` attribute of `<model>`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Unit {
+    Micron,
+    #[default]
+    Millimeter,
+    Centimeter,
+    Inch,
+    Foot,
+    Meter,
+}
+
+impl Unit {
+    /// The decimals [`write`] gives a coordinate in this unit: a
+    /// nanometre or finer (6 in millimetres, 8 in inches), never fewer
+    /// than 6, so a placement's turn keeps its precision too.
+    pub fn decimals(self) -> usize {
+        match self {
+            Self::Micron | Self::Millimeter => 6,
+            Self::Centimeter => 7,
+            Self::Inch => 8,
+            Self::Foot | Self::Meter => 9,
+        }
+    }
+
+    /// The attribute's value: `millimeter`, `inch`, ...
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Micron => "micron",
+            Self::Millimeter => "millimeter",
+            Self::Centimeter => "centimeter",
+            Self::Inch => "inch",
+            Self::Foot => "foot",
+            Self::Meter => "meter",
+        }
+    }
 }
 
 /// The object id [`write`] gives the mesh object of part `index` (the

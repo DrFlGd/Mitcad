@@ -111,7 +111,23 @@ pub enum Extent<P = ParamId> {
     },
     /// Side one along the direction, side two against it, each with its own
     /// extent and taper.
-    TwoSides { side1: Side<P>, side2: Side<P> },
+    ///
+    /// With `signed` (mitcad#765: what the Extrude panel makes) a side's
+    /// distance has a sign: side one ends `d1` along the direction and side
+    /// two `d2` against it, so a negative distance ends on the other side's
+    /// side and the solid lies between the two ends only (50 and -30: from
+    /// 30 to 50 along the direction, not touching the start). The ends must
+    /// not meet or cross (`d1 + d2 > 0`). The side that holds the solid
+    /// keeps its taper, measured from the start as without the other side's
+    /// end; the other side's taper has nothing to shape. Without `signed`
+    /// (designs saved before, the imports' features) each side goes its own
+    /// way by its distance's size, as the stored designs measure it.
+    TwoSides {
+        side1: Side<P>,
+        side2: Side<P>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        signed: bool,
+    },
 }
 
 /// The extent of one side of a two-sided extrusion.
@@ -344,9 +360,14 @@ impl<P> ExtrudeDef<P> {
                 full_length: *full_length,
                 taper: map_option("extent.taper", taper, f)?,
             },
-            Extent::TwoSides { side1, side2 } => Extent::TwoSides {
+            Extent::TwoSides {
+                side1,
+                side2,
+                signed,
+            } => Extent::TwoSides {
                 side1: side1.map_params("extent.side1", f)?,
                 side2: side2.map_params("extent.side2", f)?,
+                signed: *signed,
             },
         };
         let thin = match &self.thin {
@@ -409,9 +430,14 @@ impl<P> ExtrudeDef<P> {
             }
         }
         match &self.extent {
-            Extent::TwoSides { side1, side2 } => [distance(side1), distance(side2)],
+            Extent::TwoSides { side1, side2, .. } => [distance(side1), distance(side2)],
             _ => [None, None],
         }
+    }
+
+    /// Whether the extent is two-sided with signed distances (mitcad#765).
+    pub fn signed_two_sides(&self) -> bool {
+        matches!(self.extent, Extent::TwoSides { signed: true, .. })
     }
 
     /// The objects the extrusion starts from or runs to.
@@ -422,7 +448,7 @@ impl<P> ExtrudeDef<P> {
         }
         match &self.extent {
             Extent::ToObject { object, .. } => objects.push(object),
-            Extent::TwoSides { side1, side2 } => {
+            Extent::TwoSides { side1, side2, .. } => {
                 for side in [side1, side2] {
                     if let Side::ToObject { object, .. } = side {
                         objects.push(object);
@@ -778,16 +804,28 @@ impl FeatureInfo for ExtrudeDef {
                     value(*distance)
                 ));
             }
-            Extent::TwoSides { side1, side2 } => {
-                // The sign of a side's distance does not matter (see `tool`;
-                // commands refuse a negative one, mitcad#693).
+            Extent::TwoSides {
+                side1,
+                side2,
+                signed,
+            } => {
+                // Signed distances (mitcad#765) must leave a length between
+                // the two ends; without `signed` the sign of a side's distance
+                // does not matter (see `tool`; commands refuse a negative
+                // one there, mitcad#693).
                 if let (Side::Distance { distance: d1, .. }, Side::Distance { distance: d2, .. }) =
                     (side1, side2)
-                    && !is_positive(value(*d1).abs() + value(*d2).abs())
                 {
-                    return Err(
-                        "the two extrude distances must add up to more than zero".to_owned()
-                    );
+                    let (d1, d2) = (value(*d1), value(*d2));
+                    if *signed {
+                        if !is_positive(d1 + d2) {
+                            return Err(sides_overlap(d1, d2));
+                        }
+                    } else if !is_positive(d1.abs() + d2.abs()) {
+                        return Err(
+                            "the two extrude distances must add up to more than zero".to_owned()
+                        );
+                    }
                 }
             }
             _ => {}
@@ -1005,7 +1043,7 @@ impl ExtrudeDef {
         !self.objects().is_empty()
             || match &self.extent {
                 Extent::ThroughAll { .. } => true,
-                Extent::TwoSides { side1, side2 } => to_object(side1) || to_object(side2),
+                Extent::TwoSides { side1, side2, .. } => to_object(side1) || to_object(side2),
                 _ => false,
             }
     }
@@ -1084,9 +1122,14 @@ impl ExtrudeDef {
                 (SideView::Distance(*distance), *taper),
                 Some((SideView::Distance(*distance), *taper)),
             ),
-            Extent::TwoSides { side1, side2 } => (SideView::of(side1), Some(SideView::of(side2))),
+            Extent::TwoSides { side1, side2, .. } => {
+                (SideView::of(side1), Some(SideView::of(side2)))
+            }
         };
         let two_sides = matches!(self.extent, Extent::TwoSides { .. });
+        // Signed side distances (mitcad#765): one side may end on the
+        // other's side.
+        let signed = self.signed_two_sides();
         // A one-sided distance may be negative: it reverses the direction.
         if let (SideView::Distance(distance), None) = (&one.0, &two)
             && ctx.param(*distance)? < 0.0
@@ -1123,6 +1166,8 @@ impl ExtrudeDef {
 
         let origin: [f64; 3] = std::array::from_fn(|i| frame.origin[i] + start_offset * normal[i]);
         let mut sides = Vec::new();
+        // The sides' distances as given (not through all's lengths).
+        let mut distances: [Option<f64>; 2] = [None, None];
         for (k, (view, taper)) in [Some(one), two].into_iter().flatten().enumerate() {
             let along = if k == 0 {
                 direction
@@ -1141,13 +1186,18 @@ impl ExtrudeDef {
                         // (a cut through all one way with a negative second
                         // distance cuts that far the other way in the API
                         // reference dumps). Commands refuse a negative one
-                        // (mitcad#693, `api/two_sides.rs`); imports add
+                        // there (mitcad#693, `api/two_sides.rs`); imports add
                         // theirs through the document's own API.
-                        _ => ctx.param(id)?.abs(),
+                        _ if !signed => ctx.param(id)?.abs(),
+                        // Signed (mitcad#765): a negative side ends on the
+                        // other side's side, which the kernel then starts
+                        // there.
+                        _ => ctx.param(id)?,
                     };
                     if d == 0.0 && !two_sides {
                         return Err(format!("{} must not be zero", ctx.param_name(id)));
                     }
+                    distances[k] = Some(d);
                     SideEnd::Distance(d)
                 }
                 SideView::ToObject(object, offset) => {
@@ -1182,6 +1232,15 @@ impl ExtrudeDef {
                 taper,
                 thin: if k == 0 { walls.0 } else { walls.1 },
             });
+        }
+        // Signed ends that meet or cross leave nothing between them; a
+        // negative side beside one up to an object or through all is the
+        // kernel's to check (mitcad#765).
+        if signed
+            && let [Some(d1), Some(d2)] = distances
+            && !is_positive(d1 + d2)
+        {
+            return Err(sides_overlap(d1, d2));
         }
         // A side of length zero leaves a one-sided extrusion.
         let zero =
@@ -1289,7 +1348,7 @@ fn check_face_profile(
     let distance = |side: &Side| matches!(side, Side::Distance { .. });
     let by_distance = match &def.extent {
         Extent::Distance { .. } | Extent::Symmetric { .. } => true,
-        Extent::TwoSides { side1, side2 } => distance(side1) && distance(side2),
+        Extent::TwoSides { side1, side2, .. } => distance(side1) && distance(side2),
         _ => false,
     };
     if !by_distance {
@@ -1363,10 +1422,21 @@ impl ExtrudeDef {
                         distance: d2,
                         taper: t2,
                     },
+                signed,
             } => {
                 // Each side goes its own way by its distance's size, as a
-                // sketch profile's; a side of length zero leaves one side.
-                let (a, b) = (ctx.param(*d1)?.abs(), ctx.param(*d2)?.abs());
+                // sketch profile's, or with `signed` (mitcad#765) by its
+                // signed distance: a negative side ends on the other side's
+                // side. A side of length zero leaves one side.
+                let (a, b) = (ctx.param(*d1)?, ctx.param(*d2)?);
+                let (a, b) = if *signed {
+                    if !is_positive(a + b) {
+                        return Err(sides_overlap(a, b));
+                    }
+                    (a, b)
+                } else {
+                    (a.abs(), b.abs())
+                };
                 let (t1, t2) = (taper(ctx, t1)?, taper(ctx, t2)?);
                 match (a == 0.0, b == 0.0) {
                     (false, false) => (a, Some(b), t1, t2),
@@ -1432,6 +1502,17 @@ fn through_all_length<K: Kernel>(
     }
     // Past the far side, so the cap is outside every body.
     Ok(reach * 1.25 + 1.0)
+}
+
+/// The error of signed two-sided distances (mitcad#765) whose ends meet or
+/// cross: side one ends `d1` along the direction, side two `-d2`.
+fn sides_overlap(d1: f64, d2: f64) -> String {
+    format!(
+        "the two sides overlap: side 1 ends at {d1} and side 2 at {} along the extrusion \
+         direction, so nothing lies between them; the two distances must add up to more \
+         than zero",
+        -d2 + 0.0
+    )
 }
 
 /// False for zero, negative and NaN values.

@@ -40,6 +40,8 @@ struct ThreadOf<'a> {
     /// The feature threads faces of the bodies before it (a thread
     /// feature), not faces it makes itself (a hole's walls).
     on_input: bool,
+    /// A taper pipe thread that tapers (mitcad#733).
+    tapers: bool,
 }
 
 impl<K: Kernel> Document<K> {
@@ -78,6 +80,7 @@ impl<K: Kernel> Document<K> {
                         chamfer,
                         profile: (diameters, value(def.radial_clearance).unwrap_or(0.0)),
                         on_input: true,
+                        tapers: def.tapers(),
                     };
                     for face in &def.faces {
                         threads.extend(self.thread_json(&of, face.body, &face.face));
@@ -99,6 +102,7 @@ impl<K: Kernel> Document<K> {
                         chamfer: None,
                         profile: (None, value(thread.radial_clearance).unwrap_or(0.0)),
                         on_input: false,
+                        tapers: thread.tapers(),
                     };
                     let walls: Vec<FaceName> = (0..def.count())
                         .map(|i| hole_face(entry.uid, i, "wall"))
@@ -122,6 +126,7 @@ impl<K: Kernel> Document<K> {
                         chamfer: None,
                         profile: (None, 0.0),
                         on_input: false,
+                        tapers: false,
                     };
                     let bore = FaceName::new(entry.uid, "bore", None);
                     for body in self.bodies() {
@@ -153,6 +158,7 @@ impl<K: Kernel> Document<K> {
                             chamfer: None,
                             profile: (None, 0.0),
                             on_input: false,
+                            tapers: false,
                         };
                         for body in self.bodies() {
                             threads.extend(self.thread_json(&of, body.uid, &face));
@@ -221,6 +227,10 @@ impl<K: Kernel> Document<K> {
             "minor_diameter": data.minor,
             "pitch": data.pitch,
         });
+        // A taper pipe thread's taper on the diameter (mitcad#733).
+        if let Some(taper) = data.taper.filter(|_| of.tapers) {
+            thread["taper"] = json!(taper.per_length);
+        }
         if let Some(cylinder) = cylinder {
             // The cones of end chamfers take `low` and `high` off the face's
             // ends, and the thread starts where a cone meets the cylinder.
@@ -372,8 +382,18 @@ pub(super) fn thread_sizes_json(standard: Option<ThreadStandard>) -> Value {
             let sizes: Vec<Value> = thread_table::sizes(s)
                 .into_iter()
                 .map(|size| {
-                    json!({"size": size.size, "major_diameter": size.major,
-                           "designations": size.designations})
+                    // A taper pipe thread's tap drill (mitcad#733).
+                    let drill = size
+                        .designations
+                        .last()
+                        .and_then(|d| thread_table::lookup(s, d).ok())
+                        .and_then(|data| data.tap_drill());
+                    let mut entry = json!({"size": size.size, "major_diameter": size.major,
+                           "designations": size.designations});
+                    if let Some(drill) = drill {
+                        entry["tap_drill"] = json!(drill);
+                    }
+                    entry
                 })
                 .collect();
             let (external, internal) = thread_table::classes(s);

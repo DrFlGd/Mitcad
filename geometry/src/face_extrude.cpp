@@ -21,6 +21,7 @@
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <gp_Dir.hxx>
+#include <gp_Pln.hxx>
 #include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
@@ -33,9 +34,18 @@
 namespace mitcad::geometry {
 
 ShapePtr extrude_face(const Shape& body, const FaceExtrudeSpec& spec) {
-  detail::require_positive("extrude distance", spec.distance1);
   if (spec.distance2) {
-    detail::require_positive("extrude distance 2", *spec.distance2);
+    // One of two sides may end on the other's side (mitcad#765).
+    detail::require_finite("extrude distance", spec.distance1);
+    detail::require_finite("extrude distance 2", *spec.distance2);
+    if (spec.distance1 == 0.0 || *spec.distance2 == 0.0) {
+      throw std::invalid_argument("extrude distance must not be zero");
+    }
+    if (!(spec.distance1 + *spec.distance2 > 1.0e-7)) {
+      throw std::invalid_argument("the two sides of the extrusion overlap: it has no length");
+    }
+  } else {
+    detail::require_positive("extrude distance", spec.distance1);
   }
   detail::require_finite("start offset", spec.start_offset);
   // As an extrusion's tapers: below 90 degrees by a margin (85 degrees
@@ -106,6 +116,22 @@ ShapePtr extrude_face(const Shape& body, const FaceExtrudeSpec& spec) {
       to_start.SetTranslation(gp_Vec(normal) * spec.start_offset);
       const detail::SweepFace at_start = detail::transformed(sweep, to_start);
       const NameList mid{face_name(spec.feature, "mid", spec.key)};
+      // A side ending on the other side's side (mitcad#765) has no solid of
+      // its own: the other side's is cut off where it ends, the cut face
+      // named as the short side's far cap.
+      const bool short1 = two && spec.distance1 < 0.0;
+      const bool short2 = two && *spec.distance2 < 0.0;
+      if (short1 || short2) {
+        // A tapered face is planar: the plane it starts on.
+        const gp_Pln start_plane(BRepAdaptor_Surface(at_start.face).Plane().Location(), normal);
+        const ShapePtr side = short2 ? detail::distance_side(at_start, spec.distance1, spec.taper1, along, mid, start)
+                                     : detail::distance_side(at_start, *spec.distance2, spec.taper2,
+                                                             along.Reversed(), mid, end);
+        const ShapePtr past = detail::past_other_end(*side, start_plane, short2 ? along : along.Reversed(),
+                                                     short2 ? -*spec.distance2 : -spec.distance1, mid.front(),
+                                                     short2 ? end : start);
+        return detail::finished(*past, "the extrusion of the face");
+      }
       std::vector<ShapePtr> parts;
       parts.push_back(detail::distance_side(at_start, spec.distance1, spec.taper1, along, two ? mid : start,
                                             two ? start : end));

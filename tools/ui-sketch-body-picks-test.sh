@@ -295,12 +295,13 @@ ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
 ui_expect_new "Sketch finished" "Sketch3 finished"
 save
 # The design as the model evaluates it: Sketch3's projected corner and
-# edge where the block is now, the points held on them.
+# edge where the block is now, the points held on them. The edge ends at
+# the corner: its end is the corner's projected point (mitcad#741).
 cat > "$WORK/check.json" << 'EOF2'
 [
   {"expect": {"query": {"query": "sketch", "uid": "F4"}, "result": {
     "entities": [{"type": "point", "at": [80, 0]}, {"type": "point", "at": [80, 0]},
-                 {"type": "point"}, {"type": "point"}, {"type": "line"},
+                 {"type": "point"}, {"type": "line"},
                  {"type": "point", "at": [40, 0]}],
     "constraints": [{"type": "coincident"}, {"type": "midpoint"}],
     "projections": [{"body": "F2.b0", "by_geometry": true}, {"body": "F2.b0", "by_geometry": true}],

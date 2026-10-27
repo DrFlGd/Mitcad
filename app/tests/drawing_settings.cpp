@@ -53,6 +53,10 @@ int drawingSettingsTests() {
   CHECK(back.scale == QStringLiteral("1:2") && back.firstAngle && back.iso && back.hiddenLines);
   CHECK(back.views().size() == 4);
 
+  // DWG is a format of its own (mitcad#728).
+  settings.setValue(QStringLiteral("drawing/format"), QStringLiteral("dwg"));
+  CHECK(DrawingSettings::load(settings).format == QStringLiteral("dwg"));
+
   // Unknown values are the defaults.
   settings.setValue(QStringLiteral("drawing/sheet"), QStringLiteral("B5"));
   settings.setValue(QStringLiteral("drawing/format"), QStringLiteral("png"));

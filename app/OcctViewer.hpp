@@ -44,6 +44,7 @@
 #include <gp_Pnt.hxx>
 #include <gp_Pnt2d.hxx>
 #include <gp_Trsf.hxx>
+#include <gp_Vec.hxx>
 
 #include "LayoutGrid.hpp"
 #include "framework/Appearances.hpp"
@@ -195,6 +196,13 @@ enum class VisualStyle {
   WireframeHiddenEdges, // edges in sight, those behind faces dashed
 };
 
+// How the orientation cube is projected (mitcad#774): as the view is
+// (the default), always orthographic, or always in a perspective of its own.
+enum class CubeProjection { FollowView, Orthographic, Perspective };
+// Its id in the settings and the logs: "follow-view", "orthographic" or
+// "perspective".
+QString cubeProjectionId(CubeProjection projection);
+
 // What a left drag without keys that starts on a body does (mitcad#150):
 // the view's window selection, the owner's drag, or neither (refused: the
 // owner says why).
@@ -345,6 +353,11 @@ public:
   void setCamera(const CameraState& camera);
   void setPerspective(bool perspective);
   bool isPerspective() const;
+  // The orientation cube's projection (mitcad#774); its size and place in
+  // the corner are the same in each. Logs "Orientation cube projection …"
+  // and the cube's places and outline again.
+  void setCubeProjection(CubeProjection projection);
+  CubeProjection cubeProjection() const { return m_cubeProjection; }
   // Looks along `direction` (from the eye to the model) with `up` upwards,
   // fitted, smoothly when the navigation settings say so (standard views,
   // the orientation cube's home).
@@ -459,6 +472,11 @@ public:
   // a shaft or a face an origin plane runs through is picked rather than
   // the plane in front of it; a plane where nothing else is still is.
   void setPlanesBehind(bool on) { m_planesBehind = on; }
+  // While an extent's object takes picks (InputDef::planesByDepth,
+  // mitcad#762): planes are never preferred as the active component's
+  // (setActivePickPriority), so a face of another component in front of an
+  // origin plane is picked; otherwise the order by depth stays.
+  void setPlanesByDepth(bool on) { m_planesByDepth = on; }
 
   // The rendered view (docs/rendering.md): the image fills the view
   // (stretched; a frame that refines is smaller) over the bodies, which
@@ -587,8 +605,18 @@ public:
   std::optional<gp_Pnt2d> sketchPlanePoint(const QPointF& position) const;
 
   // Turns to look at the sketch plane; restoreCamera() returns to the view
-  // saved when `saveCamera` was set.
-  void lookAtSketchPlane(bool saveCamera = true);
+  // saved when `saveCamera` was set. Entering a sketch (`saveCamera`) shows
+  // the sketch's origin in the middle of the free area while the view shows
+  // nothing, or only sketches with the origin in the free area; else, and
+  // for Look At, what that middle showed stays there, on the plane
+  // (mitcad#738). `face`, the faces the sketch lies on (placed in the
+  // design; null for a plane), keeps a face seen at a steep angle in view
+  // as a sketch on it starts (mitcad#772): when what the middle showed is,
+  // on the plane, on none of them, the middle of their box is shown there
+  // instead. Logged "Sketch plane centred on the origin: origin at x,y; free
+  // area centre at x,y" ("on the view's middle", "on the sketch's face"),
+  // in window coordinates.
+  void lookAtSketchPlane(bool saveCamera = true, const TopoDS_Shape& face = TopoDS_Shape());
   void restoreCamera();
   void fitAll();
   // Fits the view to a box (model coordinates) as Fit fits everything:
@@ -803,12 +831,24 @@ private:
   // Starts a smooth camera move to `end` (or jumps when not animating).
   void moveCamera(const occ::handle<Graphic3d_Camera>& end);
   void fitCamera(const occ::handle<Graphic3d_Camera>& camera) const;
+  // turnTo's work, which runViewOperation guards.
+  void turnCameraTo(const gp_Dir& direction, const gp_Dir& up);
+  // Runs a camera change that a button, a command or a slot starts
+  // (mitcad#773): an exception out of a Qt slot ends the application, so a
+  // failure (OCCT's or a standard one) is logged instead, "View operation
+  // failed: <operation> (<step>): <type>: <message>", and the camera is put
+  // back as it was. The step is the last m_viewStep the operation set.
+  void runViewOperation(const QString& operation, const std::function<void()>& run);
   // The part of the view the floating cards leave free (the whole view when
   // there are no cards).
   QRectF freeArea() const;
   // Zooms out and pans a camera that has been fitted to the whole view so
   // that the fitted objects are inside freeArea() and centred in it.
   void fitToFreeArea(const occ::handle<Graphic3d_Camera>& camera) const;
+  // The camera move that brings what the middle of the view shows (at the
+  // depth of the camera's centre) to the middle of freeArea(), without a
+  // zoom; none while the view has no size.
+  gp_Vec freeAreaShift(const occ::handle<Graphic3d_Camera>& camera) const;
   QRectF cubeArea() const;
   void placeHomeButton();
   // The buttons over the view take dark or light icons by the background.
@@ -853,6 +893,16 @@ private:
   void cameraMoved();
   void logCamera();
   void logOrientationCube();
+  // The cube's own perspective (mitcad#774) seen from where the camera
+  // looks from now: its presentation and picking made again when the
+  // direction changed. Nothing in the other projections.
+  void updateCubeEye();
+  // The orientation cube's box as drawn, in widget pixels: its corners
+  // through its own perspective (if any) and its transform persistence as
+  // the renderer applies it (mitcad#766: an orthographic cube is the same
+  // in a perspective view as in an orthographic one). Empty before the view
+  // has its window.
+  QRectF cubeOutline() const;
   // Navigation (mitcad#214): the state evaluated now, and a step of input
   // without a release (wheel, pinch, roll, resize).
   void updateNavigation();
@@ -929,6 +979,7 @@ private:
   bool m_ghostInactive = true;
   bool m_activePickPriority = true; // setActivePickPriority()
   bool m_planesBehind = false;       // setPlanesBehind()
+  bool m_planesByDepth = false;      // setPlanesByDepth()
   std::set<const AIS_InteractiveObject*> m_inactiveObjects;
   QString m_loggedInactiveGhosts = QStringLiteral("none");
   std::map<ProfileKey, occ::handle<AIS_Shape>> m_profiles;
@@ -1071,6 +1122,9 @@ private:
   gp_Ax3 m_gridPlane;
   Graphic3d_ZLayerId m_gridLayer = Graphic3d_ZLayerId_UNKNOWN;
   std::optional<CameraState> m_home;
+  // The step of a camera change under way (runViewOperation), which a
+  // failure names: set by fitCamera too, hence mutable.
+  mutable const char* m_viewStep = nullptr;
   ViewCubeHomeButton* m_homeButton = nullptr;
   bool m_nativeControls = false;
   bool m_backgroundDark = false; // the view's background is dark
@@ -1095,6 +1149,14 @@ private:
   ViewNavigation m_navigationState;
   QElapsedTimer m_navigationClock;
   QTimer* m_navigationTimer = nullptr;
+  // What a navigation cost besides the view's frames, logged when it ends
+  // (mitcad#768, "View navigation: ..."): the widgets over the view painted
+  // again (each makes Qt compose the window's area under the view again at
+  // that frame) and the Print Analysis overlays set.
+  quint64 m_navigationFirstFrame = 0;
+  int m_navigationRepaints = 0;
+  QStringList m_navigationRepainted; // their object names
+  int m_navigationPrintOverlays = 0;
   class RenderedImageQuad;
   occ::handle<RenderedImageQuad> m_renderedQuad;
   Graphic3d_ZLayerId m_renderedBodyLayer = Graphic3d_ZLayerId_UNKNOWN;
@@ -1108,6 +1170,7 @@ private:
   qreal m_cubeRatio = 1.0;       // the device pixel ratio applied to the cube
   double m_cubeBaseSize = 0.0;   // the cube's size and font height at ratio 1
   double m_cubeBaseFont = 0.0;
+  CubeProjection m_cubeProjection = CubeProjection::FollowView; // mitcad#774
   // up, down, left, right, cw, ccw
   std::vector<std::pair<QString, QToolButton*>> m_cubeArrows;
   QTimer* m_restTimer = nullptr;

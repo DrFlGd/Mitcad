@@ -33,6 +33,10 @@ QPointF unit(const QPointF& p) {
   return n > 1e-9 ? QPointF(p.x() / n, p.y() / n) : QPointF(0, -1);
 }
 
+// Whether a handle's points are on the screen at all: a model point with
+// no number (NaN) draws nothing.
+bool onScreen(const QPointF& p) { return std::isfinite(p.x()) && std::isfinite(p.y()); }
+
 double distanceToSegment(const QPointF& p, const QPointF& a, const QPointF& b) {
   const QPointF ab = b - a;
   const double length2 = QPointF::dotProduct(ab, ab);
@@ -271,7 +275,7 @@ ManipulatorOverlay::Drawn ManipulatorOverlay::draw(const Handle& handle) const {
     drawn.origin = m_viewer.toWidgetF(m.origin);
     drawn.handle = drawn.origin;
     drawn.tip = drawn.origin;
-    drawn.valid = true;
+    drawn.valid = onScreen(drawn.origin) && onScreen(drawn.handle) && onScreen(drawn.tip);
     return drawn;
   }
   if (m.kind == Manipulator::Kind::Arrow) {
@@ -294,7 +298,7 @@ ManipulatorOverlay::Drawn ManipulatorOverlay::draw(const Handle& handle) const {
                   : length > box.width() + 24.0 ? around(middle)
                                                 : around(drawn.origin - line * (half + 10.0));
     }
-    drawn.valid = true;
+    drawn.valid = onScreen(drawn.origin) && onScreen(drawn.handle) && onScreen(drawn.tip);
     return drawn;
   }
   const gp_Vec cross = gp_Vec(m.direction).Crossed(gp_Vec(m.reference));
@@ -325,7 +329,7 @@ ManipulatorOverlay::Drawn ManipulatorOverlay::draw(const Handle& handle) const {
     const QPointF arcMiddle = at(handle.value / 2.0);
     drawn.box = around(arcMiddle + unit(arcMiddle - drawn.origin) * 26.0);
   }
-  drawn.valid = true;
+  drawn.valid = onScreen(drawn.origin) && onScreen(drawn.handle) && onScreen(drawn.tip);
   return drawn;
 }
 

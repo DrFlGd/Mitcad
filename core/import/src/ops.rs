@@ -376,7 +376,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     let side = |s: &Side| matches!(s, Side::ToObject { .. });
                     match &e.extent {
                         Extent::ToObject { .. } => true,
-                        Extent::TwoSides { side1, side2 } => side(side1) || side(side2),
+                        Extent::TwoSides { side1, side2, .. } => side(side1) || side(side2),
                         _ => false,
                     }
                 }
@@ -925,6 +925,35 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // first, the selection as it is after them.
         if let Some(bridged) = self.bridged(inputs, &without) {
             out.insert(0, (bridged, false, InputProvenance::Inferred));
+        }
+        // The tapped holes without their threads, last (mitcad#733: a
+        // rectangular pattern of holes tapped with a taper pipe thread
+        // whose copies the file keeps as plain bores, while a circular
+        // pattern of the same holes tapers its copies).
+        let threads: Vec<Value> = inputs
+            .iter()
+            .filter_map(|r| match r {
+                Reference::Feature(f) if f.object_type.as_deref() == Some("HoleFeature") => {
+                    f.timeline_index.flatten()
+                }
+                _ => None,
+            })
+            .filter_map(|i| self.dressups.get(&i))
+            .flatten()
+            .map(|uid| json!(uid.to_string()))
+            .collect();
+        if !threads.is_empty() {
+            let bare: Vec<(Value, bool, InputProvenance)> = out
+                .iter()
+                .filter_map(|(objects, with, _)| {
+                    let mut objects = objects.clone();
+                    objects["features"]
+                        .as_array_mut()?
+                        .retain(|f| !threads.contains(f));
+                    Some((objects, *with, InputProvenance::Inferred))
+                })
+                .collect();
+            out.extend(bare);
         }
         Ok(out)
     }
@@ -2556,13 +2585,24 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // One hole at its distances from two edges of its face (the file's
         // dimensions, mitcad#719): first, as the point the file keeps with
         // it need not be where they put the hole (3.2 mm apart in one
-        // design, the hole's volume the same either way).
+        // design, 296 mm in another, the hole's volume the same either
+        // way). Not trusted over the point unless the hole they give lies
+        // where the item's state has it (mitcad#733: a misread definition
+        // would be taken by its volume alone); after it otherwise, where
+        // the point's hole lies there.
+        let mut offsets_after = None;
         if let (true, [_]) = (on_face, &points[..])
             && let Some(placement) = self.hole_offsets(d, &body, &face, at)
         {
             let mut offsets = def.clone();
             offsets["placement"] = placement;
-            defs.push((offsets, false));
+            let on_state = self.hole_on_state(&offsets);
+            let trusted = offsets_first(on_state, || self.hole_on_state(&def));
+            if trusted {
+                defs.push((offsets, false));
+            } else {
+                offsets_after = Some(offsets);
+            }
         }
         // A hole through all whose depth the file keeps (a lead, mitcad#96):
         // through all first, the history to check it.
@@ -2572,10 +2612,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             defs.push((all, true));
         }
         defs.push((def, false));
+        defs.extend(offsets_after.map(|offsets| (offsets, false)));
         let mut out = Vec::new();
         for (def, guess) in defs {
             out.extend(
-                self.hole_variants(d, vec![def])?
+                self.hole_variants(d, vec![def], true)?
                     .into_iter()
                     .map(|(defs, note)| Candidate {
                         core: CandidateCore::of(defs),
@@ -2748,7 +2789,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     }
                     for (set, defs) in sets.into_iter().enumerate() {
                         for (variant, (defs, thread_note)) in
-                            self.hole_variants(d, defs)?.into_iter().enumerate()
+                            self.hole_variants(d, defs, false)?.into_iter().enumerate()
                         {
                             let mut note = "placed where the history removes material".to_owned();
                             if let Some(n) = thread_note {
@@ -2914,7 +2955,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// history state: the file's thread widens it to the thread's minor
     /// diameter in a state of its own, which the import leaves out), then
     /// with that minor diameter, then without the thread.
-    fn hole_variants(&self, d: &Map<String, Value>, defs: Vec<Value>) -> Result<Vec<Defs>, String> {
+    fn hole_variants(
+        &mut self,
+        d: &Map<String, Value>,
+        defs: Vec<Value>,
+        measure: bool,
+    ) -> Result<Vec<Defs>, String> {
         let tapped = d
             .get("holeTapType")
             .and_then(Value::as_str)
@@ -2953,9 +2999,16 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     Some("face_offsets" | "cylinder_offset")
                 )),
             };
-            match self.hole_thread(d, body, k, count) {
+            // A modelled thread's angles, measured in its state on the
+            // walls the hole makes (mitcad#733); decoded holes only.
+            let angles = if measure {
+                self.hole_thread_angles(d, def, count)
+            } else {
+                Vec::new()
+            };
+            match self.hole_thread(d, body, k, count, &angles) {
                 Ok(Some((thread, n))) => {
-                    threads.push(thread);
+                    threads.extend(thread);
                     thread_note = thread_note.or(n);
                 }
                 Ok(None) => {}
@@ -3204,6 +3257,13 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     {
                         def["angle"] = json!(format!("{a} deg"));
                     }
+                } else if let Some(d) = taper_diameters(info) {
+                    // A cosmetic taper pipe thread (mitcad#733).
+                    def["diameters"] = d;
+                }
+                // A taper pipe thread tapers (mitcad#733).
+                if taper_diameters(info).is_some() {
+                    def["taper"] = json!(true);
                 }
                 if partial {
                     def["length"] = self
@@ -3544,7 +3604,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         body: BodyUid,
         k: usize,
         count: usize,
-    ) -> Result<Option<(Value, Option<String>)>, String> {
+        angles: &[Option<f64>],
+    ) -> Result<Option<HoleThreads>, String> {
         let tapped = d
             .get("holeTapType")
             .and_then(Value::as_str)
@@ -3564,8 +3625,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .collect();
         let mut def = json!({"type": "thread", "faces": faces, "thread": spec});
         if modeled {
-            // The profile of the file's diameters; the walls do not exist
-            // before the hole, so the angle is not measured (0).
+            // The profile of the file's diameters, turned as the thread's
+            // state shows it on each wall (`angles`; else 0).
             let standard: mitcad_model::features::thread_table::ThreadStandard =
                 serde_json::from_value(
                     spec.get("standard").cloned().unwrap_or(json!("iso_metric")),
@@ -3576,6 +3637,16 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             if let Some(d) = thread_diameters(info) {
                 def["diameters"] = d;
             }
+        } else if let Some(d) = taper_diameters(info) {
+            // A cosmetic taper pipe thread tapers the bore from the
+            // diameters it starts with (mitcad#733).
+            def["diameters"] = d;
+        }
+        // A taper pipe thread starts at the hole's start, the low end of
+        // its wall's cylinder, also through a plate (both ends free).
+        if taper_diameters(info).is_some() {
+            def["location"] = json!("low_end");
+            def["taper"] = json!(true);
         }
         if let Some(t) = thread
             && t.get("isFullLength").and_then(Value::as_bool) == Some(false)
@@ -3588,7 +3659,170 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
             def["location"] = json!("low_end");
         }
-        Ok(Some((def, note)))
+        // A modelled thread turned as measured: a thread of its own on each
+        // wall whose angle differs from the first's (mitcad#733).
+        if !modeled || angles.iter().all(|a| a.is_none_or(|a| a == 0.0)) {
+            return Ok(Some((vec![def], note)));
+        }
+        let mut threads: Vec<(Option<f64>, Value)> = Vec::new();
+        for (i, face) in faces.into_iter().enumerate() {
+            let angle = angles.get(i).copied().flatten();
+            match threads.iter_mut().find(|(a, _)| *a == angle) {
+                Some((_, t)) => {
+                    if let Some(list) = t["faces"].as_array_mut() {
+                        list.push(face);
+                    }
+                }
+                None => {
+                    let mut t = def.clone();
+                    t["faces"] = json!([face]);
+                    // In ten-thousandths of a degree, as the threads' own.
+                    if let Some(a) = angle.map(|a| (a.to_degrees() * 1e4).round() / 1e4)
+                        && a != 0.0
+                    {
+                        t["angle"] = json!(format!("{a} deg"));
+                    }
+                    threads.push((angle, t));
+                }
+            }
+        }
+        Ok(Some((threads.into_iter().map(|(_, t)| t).collect(), note)))
+    }
+
+    /// The walls' cylinders of the `count` holes of the hole definition
+    /// `def`: the walls do not exist before the hole, so the hole is made
+    /// on its own, its walls read and the hole taken back. None for a wall
+    /// not found; empty when the hole fails.
+    fn hole_walls(&mut self, def: &Value, count: usize) -> Vec<Option<Cylinder>> {
+        let depth = self.doc.undo_depth();
+        let candidate = Candidate {
+            core: CandidateCore::of(vec![def.clone()]),
+            note: None,
+            guess: false,
+            predicted: None,
+            input_provenance: crate::InputProvenance::Unknown,
+            first: false,
+        };
+        let walls: Vec<Option<Cylinder>> = match self.add_all(&candidate, None) {
+            Ok(uids) => {
+                let kernel = self.doc.kernel();
+                let bodies = crate::body_scope::bodies(self.doc);
+                (0..count)
+                    .map(|i| {
+                        let wall = mitcad_model::features::hole::hole_face(uids[0], i, "wall");
+                        bodies
+                            .iter()
+                            .find_map(|b| kernel.face_cylinder(b.shape, &wall).ok())
+                    })
+                    .collect()
+            }
+            Err(_) => Vec::new(),
+        };
+        self.undo_to(depth);
+        walls
+    }
+
+    /// Whether the one hole of `def` lies where the item's own history
+    /// state has its hole (mitcad#733): eight points round the inside of its
+    /// wall, at nine tenths of its radius halfway along it, all outside the
+    /// state's bodies. A hole a few millimetres off the file's has some in
+    /// the material; the file's own is clear of it. None without the
+    /// history, the item's state or the wall.
+    fn hole_on_state(&mut self, def: &Value) -> Option<bool> {
+        if !self.oracle.enabled {
+            return None;
+        }
+        let state = self.own_state?;
+        let c = self.hole_walls(def, 1).into_iter().next().flatten()?;
+        let along = geom::unit(c.axis.direction)?;
+        let (across, other) = mitcad_model::features::thread::thread_reference(along)?;
+        let middle = geom::add(c.axis.origin, geom::scale(along, c.length / 2.0));
+        let points: Vec<Vec3> = (0..8)
+            .map(|k| {
+                let t = k as f64 * std::f64::consts::TAU / 8.0;
+                let out = geom::add(geom::scale(across, t.cos()), geom::scale(other, t.sin()));
+                geom::add(middle, geom::scale(out, 0.9 * c.radius))
+            })
+            .collect();
+        let kernel = self.doc.kernel();
+        let bodies = self.oracle.state(kernel, state).ok()?.to_vec();
+        for (body, _) in &bodies {
+            let inside = kernel.points_inside(&body.shape, &points).ok()?;
+            if inside.into_iter().any(|i| i) {
+                return Some(false);
+            }
+        }
+        Some(true)
+    }
+
+    /// The angles of a tapped hole's modelled thread on the walls of the
+    /// holes of `def` (`count` holes), measured in the thread's state as a
+    /// thread item's are ([`Importer::thread_angle`]): the walls do not
+    /// exist before the hole, so the hole is made on its own first, its
+    /// walls' cylinders read and the hole taken back (mitcad#733: the
+    /// modelled threads at angle 0 left the bodies after them 0.42 mm off
+    /// the file's). Empty for a hole without a modelled right-handed
+    /// thread; None for a wall not measured.
+    fn hole_thread_angles(
+        &mut self,
+        d: &Map<String, Value>,
+        def: &Value,
+        count: usize,
+    ) -> Vec<Option<f64>> {
+        let thread = d.get("thread").and_then(Value::as_object);
+        let modeled = thread
+            .and_then(|t| t.get("isModeled"))
+            .and_then(Value::as_bool)
+            == Some(true);
+        let right = thread
+            .and_then(|t| t.get("isRightHanded"))
+            .and_then(Value::as_bool)
+            != Some(false);
+        let tapped = d
+            .get("holeTapType")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.starts_with("Tapped"));
+        if !(tapped && modeled && right && self.oracle.enabled) {
+            return Vec::new();
+        }
+        let info = d.get("tappedHoleInfo").and_then(Value::as_object);
+        let Ok((spec, _)) = thread_spec(info, thread, Some(true)) else {
+            return Vec::new();
+        };
+        let standard =
+            serde_json::from_value(spec.get("standard").cloned().unwrap_or(json!("iso_metric")))
+                .unwrap_or_default();
+        let Ok(data) = mitcad_model::features::thread_table::lookup(
+            standard,
+            spec["designation"].as_str().unwrap_or_default(),
+        ) else {
+            return Vec::new();
+        };
+        let pitch_radius = thread_diameters(info)
+            .and_then(|d| d["pitch"].as_f64())
+            .unwrap_or(data.pitch_diameter)
+            / 2.0;
+        let partial = thread
+            .and_then(|t| t.get("isFullLength"))
+            .and_then(Value::as_bool)
+            == Some(false);
+        let length = partial
+            .then(|| parameter_mm(thread.and_then(|t| t.get("threadLength"))))
+            .flatten();
+        let offset = parameter_mm(thread.and_then(|t| t.get("threadOffset"))).unwrap_or(0.0);
+        self.hole_walls(def, count)
+            .into_iter()
+            .map(|wall| {
+                let c = wall?;
+                // The middle of the threaded part, from the hole's start
+                // (the low end of the wall's axis).
+                let middle = match length {
+                    Some(l) => offset + l / 2.0,
+                    None => c.length / 2.0,
+                };
+                self.thread_angle(&c, middle, data.pitch, pitch_radius, true)
+            })
+            .collect()
     }
 
     /// A combine the dump does not describe (the stream decoder): the
@@ -4209,6 +4443,10 @@ fn is_dressup(r: &Reference) -> bool {
 
 fn thread_diameters(info: Option<&Map<String, Value>>) -> Option<Value> {
     let info = info?;
+    // A taper pipe thread's where it starts (mitcad#733).
+    if let Some(taper) = taper_diameters(Some(info)) {
+        return Some(taper);
+    }
     let get = |key: &str| info.get(key).and_then(Value::as_f64).map(mm);
     let (major, minor, pitch) = (
         get("majorDiameter")?,
@@ -4217,6 +4455,40 @@ fn thread_diameters(info: Option<&Map<String, Value>>) -> Option<Value> {
     );
     (minor > 0.0 && minor < pitch && pitch < major)
         .then(|| json!({"major": major, "minor": minor, "pitch": pitch}))
+}
+
+/// A tapped hole's thread definitions (one per angle of a modelled
+/// thread's walls) and a note on what was left out of them.
+type HoleThreads = (Vec<Value>, Option<String>);
+
+/// Whether a hole's distances from edges (or along a shaft) come before the
+/// point the file keeps with it (mitcad#733): unless the hole they give is
+/// not where the item's state has its hole (`offsets`, Some(false)) while
+/// the point's is (`point`, asked only then). Without the history (None)
+/// the distances first: they are the file's dimensions.
+fn offsets_first(offsets: Option<bool>, point: impl FnOnce() -> Option<bool>) -> bool {
+    offsets != Some(false) || point() != Some(true)
+}
+
+/// A taper pipe thread's diameters where it starts, from the taper the
+/// stream decoder gives (`_f3d_taper`, mitcad#733): the pitch diameter at
+/// its small end grown by the taper over its length (2 tan of the half
+/// angle per length, 1:16), the major and minor diameters its height
+/// above and below. The bores of the corpus' NPT and ISO 7-1 holes start
+/// so (the history states' cones, within 1e-4 mm). None for a straight
+/// thread.
+fn taper_diameters(info: Option<&Map<String, Value>>) -> Option<Value> {
+    let taper = info?.get("_f3d_taper")?.as_object()?;
+    let get = |key: &str| taper.get(key).and_then(Value::as_f64);
+    let angle = get("angle")?;
+    let (height, length, small) = (
+        mm(get("height")?),
+        mm(get("length")?),
+        mm(get("smallPitchDiameter")?),
+    );
+    let pitch = small + length * 2.0 * (angle / 2.0).tan();
+    (height > 0.0 && pitch > height)
+        .then(|| json!({"major": pitch + height, "minor": pitch - height, "pitch": pitch}))
 }
 
 /// Whether the point at `t` (a fraction of the way) along a segment lies
@@ -4412,32 +4684,9 @@ fn end_chamfers<K: Kernel>(kernel: &K, shape: &K::Shape, seed: &Cylinder) -> Vec
     found
 }
 
-/// Whether an axis points "up" as a modelled thread's helix takes it
-/// (`geometry/include/mitcad/geometry/thread.hpp`): +Z, across Z +Y, else +X.
-fn thread_upwards(d: Vec3) -> bool {
-    const ACROSS: f64 = 1e-9;
-    if d[2].abs() > ACROSS {
-        d[2] > 0.0
-    } else if d[1].abs() > ACROSS {
-        d[1] > 0.0
-    } else {
-        d[0] > 0.0
-    }
-}
-
-/// The reference direction of a modelled thread's helix about an axis
-/// pointing up, and the direction across both (`thread.hpp`): the world X
-/// axis projected onto the plane across the axis (the Y axis for axes
-/// within about 25 degrees of X), and the axis crossed with it.
-fn thread_reference(along: Vec3) -> Option<(Vec3, Vec3)> {
-    let x = if along[0].abs() > 0.9 {
-        [0.0, 1.0, 0.0]
-    } else {
-        [1.0, 0.0, 0.0]
-    };
-    let reference = geom::unit(geom::sub(x, geom::scale(along, geom::dot(x, along))))?;
-    Some((reference, geom::cross(along, reference)))
-}
+// Whether an axis points "up" as a modelled thread's helix takes it, and
+// its reference direction (the model's, mitcad#733).
+use mitcad_model::features::thread::{thread_reference, thread_upwards};
 
 /// The angle (radians, about the axis pointing up, from its reference
 /// direction) at which a right-handed modelled thread's helix starts at the
@@ -4486,6 +4735,12 @@ fn thread_spec(
         .ok_or("no thread designation")?;
     let (standard, designation) = match kind {
         Some(t) if t.contains("Unified") => (ThreadStandard::Unified, designation.to_owned()),
+        // Taper pipe threads (mitcad#733): `Rc 1/2` (ISO first: its type
+        // may name a taper pipe thread too), `1/2 - 14 NPT`.
+        Some(t) if t.starts_with("ISO Taper") => (ThreadStandard::IsoTaper, designation.to_owned()),
+        Some(t) if t.contains("NPT") || t.contains("Taper Pipe") => {
+            (ThreadStandard::Npt, designation.to_owned())
+        }
         Some(t) if t.contains("Pipe") && t.starts_with("BSP") => {
             // `G <size>-<threads per inch>`.
             let pipe = designation
@@ -4515,7 +4770,12 @@ fn thread_spec(
         spec["standard"] = json!(standard);
     }
     let mut note = None;
-    if let Some(class) = info.get("threadClass").and_then(Value::as_str) {
+    // (Taper pipe threads store none.)
+    if let Some(class) = info
+        .get("threadClass")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+    {
         match thread_table::check_class(standard, class, internal) {
             Ok(()) => spec["class"] = json!(class),
             Err(why) => note = Some(format!("its thread class is left out ({why})")),
@@ -4780,6 +5040,61 @@ mod thread_phase_tests {
             thread_phase(Some([0.0, 0.0, 2.0]), Some([0.0, 5.0, 0.0])),
             thread_phase(Some([0.0, 0.0, 1.0]), Some([0.0, 1.0, 0.0]))
         );
+    }
+}
+
+#[cfg(test)]
+mod taper_and_offset_tests {
+    use super::*;
+
+    /// A hole's distances come first unless the item's state shows the
+    /// point's hole and not theirs (mitcad#733); the point is asked only
+    /// then.
+    #[test]
+    fn hole_offsets_yield_only_to_a_point_the_state_confirms() {
+        let mut asked = false;
+        assert!(offsets_first(Some(true), || {
+            asked = true;
+            Some(false)
+        }));
+        assert!(!asked);
+        assert!(offsets_first(None, || Some(true)));
+        assert!(!offsets_first(Some(false), || Some(true)));
+        assert!(offsets_first(Some(false), || Some(false)));
+        assert!(offsets_first(Some(false), || None));
+    }
+
+    /// A taper pipe thread's diameters where it starts, from the decoder's
+    /// taper (mitcad#733): the drum design's `1/2 - 14 NPT` (cm), whose
+    /// bore starts 18.3209 mm wide in the file's state.
+    #[test]
+    fn taper_pipe_threads_start_where_the_files_cone_does() {
+        let info = json!({"threadType": "NPT", "threadDesignation": "1/2 - 14 NPT",
+            "_f3d_taper": {"angle": 0.062_479_7, "height": 0.145_142_857,
+                           "tapDrill": 1.747_52, "length": 1.357_12,
+                           "smallPitchDiameter": 1.892_40}});
+        let d = taper_diameters(info.as_object()).unwrap();
+        let minor = d["minor"].as_f64().unwrap();
+        assert!((minor - 18.3209).abs() < 2e-4, "{d}");
+        let (major, pitch) = (d["major"].as_f64().unwrap(), d["pitch"].as_f64().unwrap());
+        assert!(((major - pitch) - 0.8 * 25.4 / 14.0).abs() < 1e-6, "{d}");
+        // The thread type maps to Mitcad's NPT standard, the empty class left out.
+        let (spec, note) = thread_spec(info.as_object(), None, Some(true)).unwrap();
+        assert_eq!(
+            spec,
+            json!({"designation": "1/2 - 14 NPT", "standard": "npt"})
+        );
+        assert_eq!(note, None);
+        let rc = json!({"threadType": "ISO Taper Internal", "threadDesignation": "Rc 1/2",
+                        "threadClass": ""});
+        let (spec, _) = thread_spec(rc.as_object(), None, Some(true)).unwrap();
+        assert_eq!(spec["standard"], "iso_taper");
+        // An ISO type that names a taper pipe thread is ISO 7-1's.
+        let iso = json!({"threadType": "ISO Taper Pipe Threads", "threadDesignation": "Rc 1/2"});
+        let (spec, _) = thread_spec(iso.as_object(), None, Some(true)).unwrap();
+        assert_eq!(spec["standard"], "iso_taper");
+        // A straight thread has none.
+        assert!(taper_diameters(json!({"threadType": "NPT"}).as_object()).is_none());
     }
 }
 

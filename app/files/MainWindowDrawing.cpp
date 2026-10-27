@@ -3,7 +3,7 @@
 // bodies, or every shown one, as a drawing with views, dimensions and a
 // hole table, laid out and kept in the design (add_drawing with the
 // dialog's choices as its layout, mitcad#707) and written by the model's
-// export_drawing as PDF, SVG or DXF; or a drawing of the design chosen in
+// export_drawing as PDF, SVG, DXF or DWG; or a drawing of the design chosen in
 // the dialog, written as it is (mitcad#725).
 #include "../MainWindow.hpp"
 

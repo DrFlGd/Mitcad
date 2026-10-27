@@ -31,7 +31,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use super::annotate::{SheetNote, ViewAnnotation};
+use super::annotate::{SheetNote, SketchItem, ViewAnnotation};
 use super::template::{Revision, SheetTemplate};
 use super::{Orientation, P2, Projection, SheetSize, ViewSpec, cross, dot, section_axes, unit};
 use crate::datum::Vec3;
@@ -115,6 +115,48 @@ pub struct Drawing {
     /// one it laid out last again (mitcad#725).
     #[serde(default, skip_serializing_if = "is_default")]
     pub exported: u32,
+    /// The decimals and the letters' height of its dimensions and
+    /// annotations without their own (mitcad#729).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub defaults: DrawingDefaults,
+}
+
+/// What every dimension and annotation of a drawing takes unless it has
+/// its own (mitcad#729): its value's decimals (a dimension's `format`),
+/// its letters' height (an annotation's, a note's or a text's `height`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DrawingDefaults {
+    /// The decimals of dimensions' values; as many as they need, up to
+    /// three, when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u8>,
+    /// The letters' height, paper mm; 3.5 when left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_height: Option<f64>,
+}
+
+impl DrawingDefaults {
+    /// The letters' height of an item whose own is `own`.
+    pub fn text(&self, own: Option<f64>) -> f64 {
+        own.or(self.text_height)
+            .unwrap_or(super::compose::DIMENSION_TEXT)
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if let Some(decimals) = self.decimals
+            && decimals > crate::document::MAX_DECIMALS
+        {
+            return Err(format!(
+                "a dimension shows at most {} decimals",
+                crate::document::MAX_DECIMALS
+            ));
+        }
+        if let Some(height) = self.text_height {
+            super::annotate::check_height(height)?;
+        }
+        Ok(())
+    }
 }
 
 /// One sheet of a drawing.
@@ -152,6 +194,10 @@ pub struct DrawingSheet {
     /// Text notes on the sheet, without a leader (mitcad#707 phase 2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<SheetNote>,
+    /// Lines and arcs drawn on the sheet, outside the model (mitcad#729);
+    /// sheet millimetres.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sketch: Vec<SketchItem>,
 }
 
 /// The fields of a sheet's title block. Left out: the title is the
@@ -255,6 +301,21 @@ pub struct DrawingView {
     /// were added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<ViewAnnotation>,
+    /// How far it is turned on the sheet in its own plane, degrees
+    /// counter-clockwise (mitcad#729): its x axis turned the other way
+    /// about the direction it looks along, so that the views from it,
+    /// its annotations and what is drawn in it turn with it. A detail
+    /// turns with its parent.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotation: f64,
+    /// Lines, arcs and texts drawn in it, outside the model (mitcad#729),
+    /// in its coordinates: they move, scale and turn with it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sketch: Vec<SketchItem>,
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
 }
 
 /// What a view is and where it looks from.
@@ -421,6 +482,28 @@ impl StandardView {
             near(e, toward_eye) && near(x, x_axis)
         })
     }
+
+    /// Whether a view looks along an isometric view's direction, however
+    /// it is turned on the sheet (mitcad#729).
+    pub fn isometric_eye(toward_eye: Vec3) -> bool {
+        Self::ALL.into_iter().any(|v| {
+            let (e, _) = v.axes();
+            v.is_isometric() && (0..3).all(|i| (e[i] - toward_eye[i]).abs() < 1e-9)
+        })
+    }
+}
+
+/// A view's axes turned on the sheet by `degrees` counter-clockwise
+/// (mitcad#729): what it shows turns that way, so its x axis turns the
+/// other way about the direction to the eye.
+pub fn rotated_axes(axes: (Vec3, Vec3), degrees: f64) -> (Vec3, Vec3) {
+    if degrees == 0.0 {
+        return axes;
+    }
+    let (e, x) = axes;
+    let y = cross(e, x);
+    let (s, c) = degrees.to_radians().sin_cos();
+    (e, std::array::from_fn(|i| c * x[i] - s * y[i]))
 }
 
 impl ViewDirection {
@@ -726,13 +809,32 @@ impl Drawing {
         unreachable!("the rounds go on")
     }
 
-    /// The ids of its annotations and text notes, sheet by sheet.
+    /// The ids of its annotations, text notes and what is drawn outside
+    /// the model (mitcad#729), sheet by sheet.
     fn annotation_ids(&self) -> impl Iterator<Item = u32> + '_ {
         self.sheets.iter().flat_map(|s| {
             s.views
                 .iter()
-                .flat_map(|v| v.annotations.iter().map(|a| a.id))
+                .flat_map(|v| {
+                    v.annotations
+                        .iter()
+                        .map(|a| a.id)
+                        .chain(v.sketch.iter().map(SketchItem::id))
+                })
                 .chain(s.notes.iter().map(|n| n.id))
+                .chain(s.sketch.iter().map(SketchItem::id))
+        })
+    }
+
+    /// Where a line, an arc or a text drawn outside the model is: its
+    /// sheet, and the view it is drawn in (None: on the sheet).
+    pub fn find_sketch(&self, id: u32) -> Option<(usize, Option<u32>)> {
+        self.sheets.iter().enumerate().find_map(|(i, s)| {
+            s.views
+                .iter()
+                .find(|v| v.sketch.iter().any(|k| k.id() == id))
+                .map(|v| (i, Some(v.id)))
+                .or_else(|| s.sketch.iter().any(|k| k.id() == id).then_some((i, None)))
         })
     }
 
@@ -742,15 +844,20 @@ impl Drawing {
     }
 
     /// Where an annotation or a text note is: its sheet, and the view it
-    /// is on (None for a text note).
+    /// is on (None for a text note); a line, an arc or a text drawn
+    /// outside the model too ([`Drawing::find_sketch`]).
     pub fn find_annotation(&self, id: u32) -> Option<(usize, Option<u32>)> {
-        self.sheets.iter().enumerate().find_map(|(i, s)| {
-            s.views
-                .iter()
-                .find(|v| v.annotations.iter().any(|a| a.id == id))
-                .map(|v| (i, Some(v.id)))
-                .or_else(|| s.notes.iter().any(|n| n.id == id).then_some((i, None)))
-        })
+        self.sheets
+            .iter()
+            .enumerate()
+            .find_map(|(i, s)| {
+                s.views
+                    .iter()
+                    .find(|v| v.annotations.iter().any(|a| a.id == id))
+                    .map(|v| (i, Some(v.id)))
+                    .or_else(|| s.notes.iter().any(|n| n.id == id).then_some((i, None)))
+            })
+            .or_else(|| self.find_sketch(id))
     }
 
     /// The datum letters of its datum labels.
@@ -774,6 +881,63 @@ impl Drawing {
             .collect()
     }
 
+    /// Every occurrence path it keeps, to change in place: its views'
+    /// occurrence subjects, chosen bodies' occurrences and annotation
+    /// picks' (balloons' included). Paths from the drawing's component.
+    pub(crate) fn occurrence_paths_mut(&mut self) -> Vec<&mut OccurrencePath> {
+        let mut out: Vec<&mut OccurrencePath> = Vec::new();
+        for view in self.sheets.iter_mut().flat_map(|s| s.views.iter_mut()) {
+            match &mut view.subject {
+                Some(Subject::Occurrence { occurrence }) => out.push(occurrence),
+                Some(Subject::Bodies { bodies }) => {
+                    out.extend(bodies.iter_mut().filter_map(|b| b.occurrence.as_mut()));
+                }
+                Some(Subject::Design) | None => {}
+            }
+            out.extend(
+                view.annotations
+                    .iter_mut()
+                    .flat_map(|a| a.picks.iter_mut())
+                    .filter_map(|p| p.occurrence.as_mut()),
+            );
+        }
+        out
+    }
+
+    /// Turns the datums its frames refer to, and with `labels` its datum
+    /// labels' letters, after `renamed` (old letter to new); whether
+    /// anything changed.
+    pub(crate) fn reletter(
+        &mut self,
+        renamed: &std::collections::BTreeMap<String, String>,
+        labels: bool,
+    ) -> bool {
+        let mut changed = false;
+        let annotations = self
+            .sheets
+            .iter_mut()
+            .flat_map(|s| s.views.iter_mut())
+            .flat_map(|v| v.annotations.iter_mut());
+        for annotation in annotations {
+            if labels
+                && let Some(letter) = &mut annotation.letter
+                && let Some(new) = renamed.get(letter.as_str())
+            {
+                letter.clone_from(new);
+                changed = true;
+            }
+            if let Some(frame) = &mut annotation.frame {
+                for datum in &mut frame.datums {
+                    if let Some(new) = renamed.get(datum.as_str()) {
+                        datum.clone_from(new);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
     /// Why the drawing cannot be kept, if it cannot (not its geometry).
     pub fn check(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
@@ -782,6 +946,9 @@ impl Drawing {
         if self.sheets.is_empty() {
             return Err(format!("{}: a drawing needs a sheet", self.name));
         }
+        self.defaults
+            .check()
+            .map_err(|e| format!("{}: {e}", self.name))?;
         let mut ids = Vec::new();
         for (i, sheet) in self.sheets.iter().enumerate() {
             sheet
@@ -848,6 +1015,7 @@ impl DrawingSheet {
             annotations: Annotations::default(),
             views: Vec::new(),
             notes: Vec::new(),
+            sketch: Vec::new(),
         }
     }
 
@@ -885,8 +1053,16 @@ impl DrawingSheet {
         Ok(out)
     }
 
-    /// The direction to the eye and the x axis of a view.
+    /// The direction to the eye and the x axis of a view, as it is turned
+    /// on the sheet (its `rotation`, mitcad#729).
     pub fn axes(&self, id: u32) -> Result<(Vec3, Vec3), String> {
+        let rotation = self.view(id).map_or(0.0, |v| v.rotation);
+        self.own_axes(id).map(|axes| rotated_axes(axes, rotation))
+    }
+
+    /// A view's axes before its own rotation: those of its kind, after
+    /// its parent's as turned (a view from a turned one turns with it).
+    pub fn own_axes(&self, id: u32) -> Result<(Vec3, Vec3), String> {
         let view = self
             .view(id)
             .ok_or_else(|| format!("there is no view {id} on the sheet"))?;
@@ -976,6 +1152,9 @@ impl DrawingSheet {
             return None;
         }
         match &view.kind {
+            // Turned on its own, it no longer shares an axis with its
+            // parent (mitcad#729); one turned with its parent does.
+            ViewKind::Projected { .. } if view.rotation != 0.0 => None,
             ViewKind::Projected { side, .. } => side.aligned_axis(),
             ViewKind::Section {
                 parent: Some(parent),
@@ -1036,9 +1215,9 @@ impl DrawingSheet {
             }),
             _ => None,
         };
-        // An isometric view and a section show no hidden edges.
-        let pictorial = StandardView::of_axes(toward_eye, x_axis)
-            .is_some_and(StandardView::is_isometric)
+        // An isometric view (however it is turned, mitcad#729) and a
+        // section show no hidden edges.
+        let pictorial = StandardView::isometric_eye(toward_eye)
             || matches!(
                 seen.kind,
                 ViewKind::Projected { side, .. } if side.is_corner()
@@ -1169,6 +1348,15 @@ impl DrawingSheet {
             for annotation in &view.annotations {
                 annotation.check().map_err(|e| format!("{at}: {e}"))?;
             }
+            if !view.rotation.is_finite() {
+                return Err(format!("{at}: its rotation is a number of degrees"));
+            }
+            if view.rotation != 0.0 && matches!(view.kind, ViewKind::Detail { .. }) {
+                return Err(format!("{at}: a detail turns with its parent"));
+            }
+            for item in &view.sketch {
+                item.check().map_err(|e| format!("{at}: {e}"))?;
+            }
             let mut along: Vec<&ViewBreak> = view.breaks.iter().collect();
             along.sort_by(|a, b| {
                 (a.direction.axis(), a.from)
@@ -1183,6 +1371,15 @@ impl DrawingSheet {
         }
         for note in &self.notes {
             note.check()?;
+        }
+        for item in &self.sketch {
+            if matches!(item, SketchItem::Text { .. }) {
+                return Err(format!(
+                    "text {}: a text on the sheet is one of its notes",
+                    item.id()
+                ));
+            }
+            item.check()?;
         }
         Ok(())
     }

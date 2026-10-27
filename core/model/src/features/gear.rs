@@ -913,6 +913,13 @@ fn mesh_phase<K: Kernel>(
             mm(distance)
         ));
     }
+    // Each gear is built from its placement along its own axis: on axes
+    // that point opposite ways they grow apart (mitcad#749).
+    if dot(n, frame.normal()) < 0.0 {
+        ctx.warn(
+            "the gear's axis points the opposite way from its mate's: the gears are built from their placements in opposite directions; flip one so that both point the same way",
+        );
+    }
     let theta = dot(across, m.y_axis).atan2(dot(across, m.x_axis));
     let (new_teeth, mate_teeth) = (gear.teeth.round(), mate.teeth.round());
     let fraction = |angle: f64, phase: f64, teeth: f64| (angle - phase) * teeth / TAU;

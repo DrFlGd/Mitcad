@@ -73,4 +73,12 @@ struct SectionCurve {
 std::vector<SectionCurve> section_curves(const Shape& shape, const std::string& name, const gp_Pnt& origin,
                                          const gp_Dir& normal);
 
+// Crossing points of a sketch's Intersect (mitcad#736): where `plane`
+// crosses the edges an edge name resolves to (every edge of a name without
+// #k), each point once: where an edge passes through the plane or touches
+// it, and the ends of an edge (or of a piece of it) lying in the plane.
+// Empty when the plane misses them.
+std::vector<gp_Pnt> section_points(const Shape& shape, const std::string& name, const gp_Pnt& origin,
+                                   const gp_Dir& normal);
+
 } // namespace mitcad::geometry

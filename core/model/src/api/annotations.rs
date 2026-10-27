@@ -855,6 +855,9 @@ impl<K: Kernel> Document<K> {
             symbol: unit.symbol(),
             millimetres: unit.millimetres(),
         };
+        // Each uses at most two keys, its picks' and its plane's pick's
+        // (mitcad#758); all of them stay measured.
+        self.measure_cache().hold(2 * self.annotations().len());
         Value::Array(
             self.annotations()
                 .iter()
@@ -872,12 +875,10 @@ impl<K: Kernel> Document<K> {
         let mut value = serde_json::to_value(annotation).expect("annotations serialize");
         value["visible"] = json!(annotation.visible);
         if annotation.kind.is_leader() {
-            let datums: Vec<&str> = self
-                .annotations()
-                .iter()
-                .filter(|a| a.kind == MeasureKind::Datum)
-                .filter_map(|a| a.letter.as_deref())
-                .collect();
+            // A frame may refer to the drawings' datum labels too: the
+            // model's and the drawings' letters are one set (mitcad#745).
+            let letters = self.all_datum_letters();
+            let datums: Vec<&str> = letters.iter().map(String::as_str).collect();
             value["label"] = leader_label(annotation, units, &datums).to_json();
         }
         // Hidden: not drawn, so not measured unless asked for (mitcad#716);

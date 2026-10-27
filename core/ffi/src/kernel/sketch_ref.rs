@@ -69,6 +69,15 @@ pub mod ffi {
             origin: [f64; 3],
             normal: [f64; 3],
         ) -> Result<Vec<SectionPiece>>;
+
+        /// Where the plane crosses the edges of the name (mitcad#736), x0,
+        /// y0, z0, x1, ... (`geometry::section_points`).
+        fn section_points(
+            shape: &Shape,
+            name: &str,
+            origin: [f64; 3],
+            normal: [f64; 3],
+        ) -> Result<Vec<f64>>;
     }
 }
 

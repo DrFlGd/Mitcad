@@ -119,14 +119,23 @@ fn a_section_is_of_a_face_the_plane_cuts() {
     let mut doc = Document::new(MockKernel::default());
     let (body, face) = block(&mut doc);
     let sketch = command(&mut doc, json!({"cmd": "sketch.create", "plane": "xz"}))["uid"].clone();
-    // Only a face has a section.
-    let edge = json!(format!("E{{{face}|{face}}}"));
+    // A face, an edge or a body has a section, a vertex not.
+    let vertex = json!(format!("V{{{face}|{face}|{face}}}"));
     let error = rejected(
         &mut doc,
-        json!({"cmd": "sketch.project", "sketch": sketch, "source": edge, "body": body,
+        json!({"cmd": "sketch.project", "sketch": sketch, "source": vertex, "body": body,
                "section": true}),
     );
-    assert!(error.contains("a section's source is a face"), "{error}");
+    assert!(
+        error.contains("a section's source is a face, an edge or a body"),
+        "{error}"
+    );
+    // A projection needs its source.
+    let error = rejected(
+        &mut doc,
+        json!({"cmd": "sketch.project", "sketch": sketch, "body": body}),
+    );
+    assert!(error.contains("needs a source"), "{error}");
     // A plane that misses the body cuts nothing.
     let away = command(
         &mut doc,
@@ -366,4 +375,228 @@ fn a_spline_seen_edge_on_is_a_line_between_its_extremes() {
     );
     // Not edge on: a spline.
     assert!(line([[0.0, 0.0, 0.0], [1.0, 1.0, 2.0], [0.0, 3.0, 0.0]]).is_none());
+}
+
+// Intersect (mitcad#736): the section of a whole body and the points where
+// the plane crosses edges.
+
+/// The block's extrusion depth parameter.
+fn depth(doc: &Document<MockKernel>) -> String {
+    doc.parameters()
+        .iter()
+        .find(|p| p.comment().ends_with("distance"))
+        .unwrap()
+        .name()
+        .to_owned()
+}
+
+/// A whole body: every face the plane cuts gives a linked section of its
+/// own (the mock puts side k of its section on the body's face k), in one
+/// undo step, and they all follow the body. The faces' lines share the
+/// corners where they meet (mitcad#741): a closed outline.
+#[test]
+fn a_whole_bodys_section_is_each_faces_section_following_it() {
+    let mut doc = Document::new(MockKernel::default());
+    let (body, _) = block(&mut doc);
+    let sketch = command(&mut doc, json!({"cmd": "sketch.create", "plane": "xz"}))["uid"].clone();
+    let result = command(
+        &mut doc,
+        json!({"cmd": "sketch.project", "sketch": sketch, "body": body,
+               "linked": true, "section": true}),
+    );
+    assert!(result["error"].is_null(), "{result}");
+    let s = query(&doc, json!({"query": "sketch", "uid": sketch}));
+    let lines = s["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] == "line")
+        .count();
+    assert_eq!(lines, 4, "{s}");
+    let projections = s["projections"].as_array().unwrap();
+    assert_eq!(projections.len(), 4, "{s}");
+    let mut sources: Vec<String> = Vec::new();
+    for p in projections {
+        assert_eq!(p["section"], true, "{p}");
+        assert_eq!(p["body"], json!(body.to_string()), "{p}");
+        let source = p["source"].as_str().unwrap().to_owned();
+        assert!(
+            !source.starts_with("E{") && !source.starts_with("V{"),
+            "{p}"
+        );
+        assert!(!sources.contains(&source), "{s}");
+        sources.push(source);
+        // A line and those of its ends no earlier face's line has.
+        let entities = p["entities"].as_array().unwrap();
+        let curves = entities
+            .iter()
+            .filter(|e| e.as_str().is_some_and(|e| e.starts_with('c')))
+            .count();
+        assert!(curves == 1 && entities.len() <= 3, "{p}");
+    }
+    // Each corner of the section is one point, the end of two faces' lines.
+    let corners = |depth: f64| vec![[-5.0, -depth], [-5.0, 0.0], [5.0, -depth], [5.0, 0.0]];
+    assert!(near(&points(&doc, &sketch), &corners(5.0)), "{s}");
+    // One undo step takes it all back.
+    assert!(
+        doc.undo_label()
+            .is_some_and(|l| l.starts_with("Section Curves to")),
+        "{:?}",
+        doc.undo_label()
+    );
+
+    // The block grows to 8: every face's section follows it.
+    let d = depth(&doc);
+    doc.set_parameter(&d, 8.0).unwrap();
+    assert!(near(&points(&doc, &sketch), &corners(8.0)));
+    let uid = sketch.as_str().unwrap().parse().unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    assert_eq!(doc.warnings(uid), Vec::<String>::new());
+
+    // Unlinked: the same curves without records.
+    let other = command(&mut doc, json!({"cmd": "sketch.create", "plane": "xz"}))["uid"].clone();
+    command(
+        &mut doc,
+        json!({"cmd": "sketch.project", "sketch": other, "body": body, "section": true}),
+    );
+    let s = query(&doc, json!({"query": "sketch", "uid": other}));
+    assert!(
+        s["projections"].as_array().is_none_or(|p| p.is_empty()),
+        "{s}"
+    );
+    assert!(near(&points(&doc, &other), &corners(8.0)), "{s}");
+}
+
+#[test]
+fn a_whole_body_the_plane_misses_is_refused() {
+    let mut doc = Document::new(MockKernel::default());
+    let (body, _) = block(&mut doc);
+    let away = command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "construction_plane",
+               "definition": {"type": "offset", "plane": "xz", "distance": 20}}}),
+    )["uid"]
+        .clone();
+    let far = command(&mut doc, json!({"cmd": "sketch.create", "plane": away}))["uid"].clone();
+    let error = rejected(
+        &mut doc,
+        json!({"cmd": "sketch.project", "sketch": far, "body": body, "section": true}),
+    );
+    assert!(error.contains("does not cut the body"), "{error}");
+}
+
+/// An edge: the points where the plane crosses it, linked, following the
+/// edge; an edge the plane misses is refused.
+#[test]
+fn an_edges_crossing_points_follow_it() {
+    let mut doc = Document::new(MockKernel::default());
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(sketch, [-5.0, -5.0], &num(10.0), &num(10.0))
+        .unwrap()
+        .region;
+    let extrude = doc
+        .add_feature(&extrude(sketch, &[&region], 5.0, "new_body", &[]), None)
+        .unwrap()
+        .uid;
+    let body = BodyUid::new(extrude, 0);
+    let edge = |i: usize| crate::document_tests::top_edge(extrude, 1, &region, i).to_string();
+    // Edge 0 runs across the XZ plane (y = 0) at height z; edge 1 stays
+    // on one side of it.
+    let across = |z: f64| Curve3::Line {
+        start: [5.0, -5.0, z],
+        end: [5.0, 5.0, z],
+    };
+    doc.kernel()
+        .named_curves
+        .borrow_mut()
+        .insert(edge(0), across(5.0));
+    doc.kernel().named_curves.borrow_mut().insert(
+        edge(1),
+        Curve3::Line {
+            start: [-5.0, 5.0, 5.0],
+            end: [5.0, 5.0, 5.0],
+        },
+    );
+    let on_xz = command(&mut doc, json!({"cmd": "sketch.create", "plane": "xz"}))["uid"].clone();
+    command(
+        &mut doc,
+        json!({"cmd": "sketch.project", "sketch": on_xz, "source": edge(0), "body": body,
+               "linked": true, "section": true}),
+    );
+    let s = query(&doc, json!({"query": "sketch", "uid": on_xz}));
+    // On XZ, x = +X and y = -Z: the crossing at (5, 0, 5) is (5, -5).
+    assert!(near(&points(&doc, &on_xz), &[[5.0, -5.0]]), "{s}");
+    assert_eq!(s["projections"][0]["section"], true, "{s}");
+    assert_eq!(s["projections"][0]["source"], json!(edge(0)), "{s}");
+    let curves = s["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["type"] != "point")
+        .count();
+    assert_eq!(curves, 0, "{s}");
+
+    // The edge moves (the body changes): its crossing point follows.
+    doc.kernel()
+        .named_curves
+        .borrow_mut()
+        .insert(edge(0), across(7.0));
+    let d = depth(&doc);
+    doc.set_parameter(&d, 7.0).unwrap();
+    assert!(near(&points(&doc, &on_xz), &[[5.0, -7.0]]));
+    let uid = on_xz.as_str().unwrap().parse().unwrap();
+    assert_eq!(doc.warnings(uid), Vec::<String>::new());
+
+    // An edge the plane does not cross is refused.
+    let error = rejected(
+        &mut doc,
+        json!({"cmd": "sketch.project", "sketch": on_xz, "source": edge(1), "body": body,
+               "section": true}),
+    );
+    assert!(error.contains("does not cut it"), "{error}");
+}
+
+#[test]
+fn a_bodys_pieces_group_by_their_faces() {
+    use crate::kernel::SectionCurve;
+    use crate::sketch::project::section_groups;
+    use crate::topo::{FaceName, TopoName};
+    let face = |n: &str| -> FaceName { n.parse().unwrap() };
+    let line = |x: f64| Curve3::Line {
+        start: [x, 0.0, 0.0],
+        end: [x, 1.0, 0.0],
+    };
+    let spline = quadratic([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]]);
+    let groups = section_groups(vec![
+        SectionCurve {
+            curve: line(0.0),
+            faces: vec![face("F2:side(c1)")],
+        },
+        SectionCurve {
+            curve: spline.clone(),
+            faces: vec![face("F2:side(c2)"), face("F2:side(c3)")],
+        },
+        SectionCurve {
+            curve: line(1.0),
+            faces: vec![],
+        },
+        SectionCurve {
+            curve: line(2.0),
+            faces: vec![face("F2:side(c1)")],
+        },
+    ]);
+    assert_eq!(groups.len(), 3, "{groups:?}");
+    // Two lines on one face: one section of that face.
+    assert_eq!(groups[0].source, Some(TopoName::Face(face("F2:side(c1)"))));
+    assert_eq!(groups[0].curves, vec![line(0.0), line(2.0)]);
+    assert!(groups[0].chain.is_empty());
+    // A spline joined across two faces: the first's section with the
+    // second as its chain.
+    assert_eq!(groups[1].source, Some(TopoName::Face(face("F2:side(c2)"))));
+    assert_eq!(groups[1].chain, vec![TopoName::Face(face("F2:side(c3)"))]);
+    assert_eq!(groups[1].curves, vec![spline]);
+    // Pieces on faces without names: unlinked.
+    assert_eq!(groups[2].source, None);
+    assert_eq!(groups[2].curves, vec![line(1.0)]);
 }

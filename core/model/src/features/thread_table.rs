@@ -4,12 +4,13 @@
 //! `G 1/4` and `1/4-18 NPT`, with the basic dimensions of the standard's
 //! profile, in millimetres: the 60-degree profile of ISO 68-1 (ISO metric
 //! and Unified), the 55-degree Whitworth profile (BSW, BSF and the parallel
-//! pipe threads G of ISO 228-1) and the 60-degree taper pipe profile (NPT,
-//! its size at the pipe's outside diameter: the 1:16 taper is not kept),
-//! the tyre valve threads of ISO 4570 (`5V1`, `8V1`; the 60-degree
-//! profile) and the metric trapezoidal threads of ISO 2904 (`Tr8x1.5`, a
-//! multi-start one by its lead and pitch `Tr10x4(P2)`; the 30-degree
-//! profile of ISO 2901).
+//! pipe threads G of ISO 228-1), the taper pipe threads tapered 1:16 on
+//! the diameter (mitcad#733): NPT's 60-degree profile (ASME B1.20.1, its
+//! size at the pipe's outside diameter) and the 55-degree one of ISO 7-1
+//! (`R 1/2` external, `Rc 1/2` internal), the tyre valve threads of ISO
+//! 4570 (`5V1`, `8V1`; the 60-degree profile) and the metric trapezoidal
+//! threads of ISO 2904 (`Tr8x1.5`, a multi-start one by its lead and pitch
+//! `Tr10x4(P2)`; the 30-degree profile of ISO 2901).
 
 use std::sync::OnceLock;
 
@@ -26,7 +27,8 @@ pub enum ThreadStandard {
     /// British Standard Whitworth (BSW), Fine (BSF) and Pipe (G, parallel):
     /// the 55-degree profile (mitcad#4).
     Whitworth,
-    /// American National Standard taper pipe threads (mitcad#4).
+    /// American National Standard taper pipe threads (mitcad#4), tapered
+    /// 1:16 on the diameter (mitcad#733).
     Npt,
     /// Tyre valve threads (ISO 4570): `5V1`, `8V1`, … (mitcad#59).
     TyreValve,
@@ -38,6 +40,10 @@ pub enum ThreadStandard {
     /// `Tr10x4(P2)` (lead 4, pitch 2), the lead screws of linear drives
     /// (mitcad#449). The 30-degree profile; cosmetic only.
     Trapezoidal,
+    /// ISO 7-1 taper pipe threads (BSPT): `R 1/2` external, `Rc 1/2`
+    /// internal, the 55-degree profile tapered 1:16 on the diameter
+    /// (mitcad#733); cosmetic only.
+    IsoTaper,
 }
 
 /// Basic dimensions of a thread size.
@@ -58,6 +64,55 @@ pub struct ThreadData {
     /// 60-degree profile (ISO 68-1), 0.640327 P of the Whitworth profile,
     /// 0.8 P of the taper pipe profile.
     pub depth: f64,
+    /// A taper pipe thread's taper (mitcad#733); None for a straight one.
+    pub taper: Option<Taper>,
+}
+
+/// The taper of a taper pipe thread (NPT, ISO 7-1; mitcad#733): its
+/// diameters change by `per_length` per length along the axis (1/16), and
+/// where a thread starts (an internal thread at its opening, an external
+/// one at its free, small end) its pitch diameter is `internal_start` or
+/// `external_start`, its major and minor diameters `depth` above and below
+/// that.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Taper {
+    pub per_length: f64,
+    /// NPT's E1 = E0 + L1/16 at the hand-tight plane; ISO 7-1's gauge
+    /// diameter less h at the gauge plane, at the opening of an `Rc`
+    /// thread.
+    pub internal_start: f64,
+    /// NPT's E0; ISO 7-1's gauge diameter less h, less the gauge length's
+    /// taper.
+    pub external_start: f64,
+    /// The internal thread's length a tap drill serves: NPT's effective
+    /// thread length L2 = (0.8 D + 6.8) P, ISO 7-1's gauge length.
+    pub length: f64,
+}
+
+/// The taper of every taper pipe thread: 1:16 on the diameter.
+pub const PIPE_TAPER: f64 = 1.0 / 16.0;
+
+impl ThreadData {
+    /// A taper pipe thread's diameters where it starts (major, minor,
+    /// pitch; see [`Taper`]); None for a straight thread.
+    pub fn taper_start(&self, internal: bool) -> Option<(f64, f64, f64)> {
+        let taper = self.taper?;
+        let pitch = if internal {
+            taper.internal_start
+        } else {
+            taper.external_start
+        };
+        Some((pitch + self.depth, pitch - self.depth, pitch))
+    }
+
+    /// A taper pipe thread's tap drill: the internal thread's minor
+    /// diameter `length` into it (NPT: 0.6879 in for 1/2-14 NPT); None for
+    /// a straight thread.
+    pub fn tap_drill(&self) -> Option<f64> {
+        let taper = self.taper?;
+        let (_, minor, _) = self.taper_start(true)?;
+        Some(minor - taper.length * taper.per_length)
+    }
 }
 
 impl ThreadData {
@@ -72,7 +127,7 @@ impl ThreadData {
                 let h = 3f64.sqrt() / 2.0 * pitch;
                 (1.25 * h, 0.75 * h, 0.625 * h)
             }
-            ThreadStandard::Whitworth => {
+            ThreadStandard::Whitworth | ThreadStandard::IsoTaper => {
                 let h = 0.640_327 * pitch;
                 (2.0 * h, h, h)
             }
@@ -91,6 +146,7 @@ impl ThreadData {
             minor: major - below_minor,
             pitch_diameter: major - below_pitch,
             depth,
+            taper: None,
         }
     }
 }
@@ -101,6 +157,7 @@ struct Table {
     unified: UnifiedTable,
     whitworth: WhitworthTable,
     npt: NptTable,
+    iso_taper: IsoTaperTable,
     tyre_valve: TyreValveTable,
     forming_screw: IsoTable,
     trapezoidal: IsoTable,
@@ -161,6 +218,25 @@ struct NptSize {
     /// The pipe's outside diameter, inches.
     d_in: f64,
     tpi: f64,
+    /// The hand-tight engagement L1, inches.
+    l1_in: f64,
+}
+
+#[derive(Deserialize)]
+struct IsoTaperTable {
+    classes_external: Vec<String>,
+    classes_internal: Vec<String>,
+    sizes: Vec<IsoTaperSize>,
+}
+
+#[derive(Deserialize)]
+struct IsoTaperSize {
+    size: String,
+    /// The gauge diameter: the major diameter at the gauge plane, mm.
+    d: f64,
+    tpi: f64,
+    /// The gauge length, mm.
+    gauge_length: f64,
 }
 
 #[derive(Deserialize)]
@@ -378,12 +454,54 @@ pub fn lookup(standard: ThreadStandard, designation: &str) -> Result<ThreadData,
                 .iter()
                 .find(|s| s.size == size.trim() && same(s.tpi, tpi))
                 .ok_or_else(unknown)?;
-            Ok(ThreadData::new(
+            let mut data = ThreadData::new(
                 standard,
                 format!("{}-{} NPT", entry.size, entry.tpi),
                 entry.d_in * INCH,
                 INCH / entry.tpi,
-            ))
+            );
+            // ASME B1.20.1: E0 = D - (0.05 D + 1.1) P, E1 = E0 + L1/16.
+            let e0 = (entry.d_in - (0.05 * entry.d_in + 1.1) / entry.tpi) * INCH;
+            data.taper = Some(Taper {
+                per_length: PIPE_TAPER,
+                internal_start: e0 + entry.l1_in * INCH * PIPE_TAPER,
+                external_start: e0,
+                length: (0.8 * entry.d_in + 6.8) / entry.tpi * INCH,
+            });
+            Ok(data)
+        }
+        ThreadStandard::IsoTaper => {
+            // `R 1/2` (external) or `Rc 1/2` (internal).
+            let text = designation.trim();
+            let (prefix, size) = if let Some(size) = text.strip_prefix("Rc") {
+                ("Rc", size)
+            } else if let Some(size) = text.strip_prefix('R') {
+                ("R", size)
+            } else {
+                return Err(unknown());
+            };
+            let entry = table()
+                .iso_taper
+                .sizes
+                .iter()
+                .find(|s| s.size == size.trim())
+                .ok_or_else(unknown)?;
+            let mut data = ThreadData::new(
+                standard,
+                format!("{prefix} {}", entry.size),
+                entry.d,
+                INCH / entry.tpi,
+            );
+            // The gauge plane: at the opening of an internal thread, the
+            // gauge length from the small end of an external one.
+            let gauge = data.pitch_diameter;
+            data.taper = Some(Taper {
+                per_length: PIPE_TAPER,
+                internal_start: gauge,
+                external_start: gauge - entry.gauge_length * PIPE_TAPER,
+                length: entry.gauge_length,
+            });
+            Ok(data)
         }
         ThreadStandard::Trapezoidal => {
             let (d, lead, pitch) = trapezoidal_parts(designation).ok_or_else(unknown)?;
@@ -470,6 +588,7 @@ fn standard_name(standard: ThreadStandard) -> &'static str {
         ThreadStandard::TyreValve => "tyre valve",
         ThreadStandard::FormingScrew => "forming screw",
         ThreadStandard::Trapezoidal => "trapezoidal",
+        ThreadStandard::IsoTaper => "ISO 7-1 taper pipe",
     }
 }
 
@@ -477,7 +596,7 @@ impl ThreadStandard {
     /// The standards in the order a size table lists them: ISO metric
     /// first, the default (metric defaults, `docs/architecture.md`; inch
     /// sizes only by choice).
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::IsoMetric,
         Self::Unified,
         Self::Whitworth,
@@ -485,6 +604,7 @@ impl ThreadStandard {
         Self::TyreValve,
         Self::FormingScrew,
         Self::Trapezoidal,
+        Self::IsoTaper,
     ];
 
     /// The name of the thread type (as .f3d designs store it for ISO metric
@@ -498,6 +618,7 @@ impl ThreadStandard {
             Self::TyreValve => "ISO Tyre Valve Threads",
             Self::FormingScrew => "Metric Forming Screw Threads",
             Self::Trapezoidal => "ISO Metric Trapezoidal Threads",
+            Self::IsoTaper => "ISO Taper Pipe Threads (R, Rc)",
         }
     }
 
@@ -509,26 +630,24 @@ impl ThreadStandard {
             (Self::Unified, true) => "2B",
             (Self::Unified, false) => "2A",
             (Self::Whitworth, _) => "Medium",
-            (Self::Npt | Self::TyreValve, _) => "Standard",
+            (Self::Npt | Self::TyreValve | Self::IsoTaper, _) => "Standard",
             (Self::Trapezoidal, true) => "7H",
             (Self::Trapezoidal, false) => "7e",
         }
     }
 
-    /// Whether a modelled thread can be cut: the geometry cuts the straight
-    /// 60-degree basic profile, which the Whitworth (55 degrees), taper
-    /// pipe and trapezoidal (30 degrees) threads are not.
+    /// Whether a modelled thread can be cut: the geometry cuts the
+    /// 60-degree basic profile, straight or tapered (NPT, mitcad#733),
+    /// which the Whitworth and ISO 7-1 (55 degrees) and trapezoidal (30
+    /// degrees) threads are not.
     pub fn check_modeled(self) -> Result<(), String> {
         match self {
-            Self::IsoMetric | Self::Unified | Self::TyreValve | Self::FormingScrew => Ok(()),
+            Self::IsoMetric | Self::Unified | Self::TyreValve | Self::FormingScrew | Self::Npt => {
+                Ok(())
+            }
             Self::Whitworth => Err(
                 "a Whitworth thread cannot be modelled: Mitcad cuts the 60-degree profile; make \
                  it cosmetic"
-                    .to_owned(),
-            ),
-            Self::Npt => Err(
-                "an NPT thread cannot be modelled: Mitcad cuts straight threads, not tapered \
-                 ones; make it cosmetic"
                     .to_owned(),
             ),
             Self::Trapezoidal => Err(
@@ -536,7 +655,17 @@ impl ThreadStandard {
                  it cosmetic"
                     .to_owned(),
             ),
+            Self::IsoTaper => Err(
+                "an ISO 7-1 taper pipe thread cannot be modelled: Mitcad cuts the 60-degree \
+                 profile; make it cosmetic"
+                    .to_owned(),
+            ),
         }
+    }
+
+    /// Whether its threads are taper pipe threads (mitcad#733).
+    pub fn is_tapered(self) -> bool {
+        matches!(self, Self::Npt | Self::IsoTaper)
     }
 }
 
@@ -613,6 +742,16 @@ pub fn sizes(standard: ThreadStandard) -> Vec<SizeEntry> {
                 designations: vec![format!("{}-{} NPT", s.size, s.tpi)],
             })
             .collect(),
+        ThreadStandard::IsoTaper => table()
+            .iso_taper
+            .sizes
+            .iter()
+            .map(|s| SizeEntry {
+                size: s.size.clone(),
+                major: s.d,
+                designations: vec![format!("R {}", s.size), format!("Rc {}", s.size)],
+            })
+            .collect(),
         ThreadStandard::TyreValve => {
             let mut sizes: Vec<SizeEntry> = table()
                 .tyre_valve
@@ -661,6 +800,7 @@ pub fn classes(standard: ThreadStandard) -> (&'static [String], &'static [String
         ThreadStandard::Unified => (&t.unified.classes_external, &t.unified.classes_internal),
         ThreadStandard::Whitworth => (&t.whitworth.classes_external, &t.whitworth.classes_internal),
         ThreadStandard::Npt => (&t.npt.classes_external, &t.npt.classes_internal),
+        ThreadStandard::IsoTaper => (&t.iso_taper.classes_external, &t.iso_taper.classes_internal),
         ThreadStandard::TyreValve => (
             &t.tyre_valve.classes_external,
             &t.tyre_valve.classes_internal,
@@ -905,9 +1045,61 @@ mod tests {
         assert!(close(valve.depth, 0.625 * 3f64.sqrt() / 2.0 * 0.794));
         assert!(lookup(ThreadStandard::TyreValve, "8V9").is_err());
         assert!(ThreadStandard::TyreValve.check_modeled().is_ok());
-        // Neither is modelled (the geometry cuts straight 60-degree threads).
+        // The geometry cuts 60-degree threads, straight or tapered.
         assert!(ThreadStandard::Unified.check_modeled().is_ok());
         assert!(ThreadStandard::Whitworth.check_modeled().is_err());
-        assert!(ThreadStandard::Npt.check_modeled().is_err());
+        assert!(ThreadStandard::Npt.check_modeled().is_ok());
+        assert!(ThreadStandard::IsoTaper.check_modeled().is_err());
+    }
+
+    #[test]
+    fn taper_pipe_threads_start_at_their_gauge_diameters() {
+        // ASME B1.20.1, 1/2-14 NPT: E0 = 0.75843 in, E1 = E0 + L1/16 =
+        // 0.77843 in, h = 0.8 P.
+        let npt = lookup(ThreadStandard::Npt, "1/2 - 14 NPT").unwrap();
+        assert_eq!(npt.designation, "1/2-14 NPT");
+        let taper = npt.taper.unwrap();
+        assert!(close(taper.per_length, 1.0 / 16.0));
+        assert!((taper.external_start - 0.758_43 * 25.4).abs() < 1e-4);
+        assert!((taper.internal_start - 0.778_43 * 25.4).abs() < 1e-4);
+        let (major, minor, pitch) = npt.taper_start(true).unwrap();
+        assert!(close(pitch, taper.internal_start));
+        assert!(close(major - pitch, 0.8 * 25.4 / 14.0) && close(pitch - minor, major - pitch));
+        // The bore's minor diameter at the opening: 0.72129 in.
+        assert!((minor - 0.721_29 * 25.4).abs() < 1e-3, "{minor}");
+        assert!(close(
+            npt.taper_start(false).unwrap().2,
+            taper.external_start
+        ));
+        // Its tap drill: the minor diameter L2 = 0.5337 in into the hole.
+        assert!((npt.tap_drill().unwrap() - 0.687_93 * 25.4).abs() < 1e-3);
+        // A straight thread has none.
+        assert!(
+            lookup(ThreadStandard::IsoMetric, "M10")
+                .unwrap()
+                .taper
+                .is_none()
+        );
+        assert!(ThreadStandard::Npt.is_tapered() && !ThreadStandard::Whitworth.is_tapered());
+
+        // ISO 7-1, Rc 1/2: the gauge diameter 20.955 at the opening, the
+        // 55-degree profile's h = 0.640327 P; R 1/2 starts the gauge length
+        // (8.2) before the gauge plane.
+        let rc = lookup(ThreadStandard::IsoTaper, "Rc1/2").unwrap();
+        assert_eq!(rc.designation, "Rc 1/2");
+        let h = 0.640_327 * 25.4 / 14.0;
+        let (major, minor, _) = rc.taper_start(true).unwrap();
+        assert!(close(major, 20.955) && close(minor, 20.955 - 2.0 * h));
+        let r = lookup(ThreadStandard::IsoTaper, "R 1/2").unwrap();
+        assert_eq!(r.designation, "R 1/2");
+        let (major, _, _) = r.taper_start(false).unwrap();
+        assert!(close(major, 20.955 - 8.2 / 16.0), "{major}");
+        for bad in ["Rp 1/2", "R 5/8", "G 1/2", ""] {
+            assert!(lookup(ThreadStandard::IsoTaper, bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            ThreadStandard::IsoTaper.title(),
+            "ISO Taper Pipe Threads (R, Rc)"
+        );
     }
 }

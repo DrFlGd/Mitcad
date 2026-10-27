@@ -53,7 +53,9 @@ int drawingToolsTests() {
                               QStringLiteral("Section View"), QStringLiteral("Detail View"),
                               QStringLiteral("Break"), QStringLiteral("Dimension"), QStringLiteral("Ordinate"),
                               QStringLiteral("Baseline"), QStringLiteral("Center Mark"),
-                              QStringLiteral("Centerline"), QStringLiteral("Text"), QStringLiteral("Note"),
+                              QStringLiteral("Centerline"), QStringLiteral("Line"), QStringLiteral("Arc"),
+                              QStringLiteral("Center Pattern"), QStringLiteral("Edge Extension"),
+                              QStringLiteral("Text"), QStringLiteral("Note"),
                               QStringLiteral("Datum Label"), QStringLiteral("Feature Control Frame"),
                               QStringLiteral("Surface Finish"), QStringLiteral("Hole Table"),
                               QStringLiteral("Parts List"), QStringLiteral("Balloon")}));
@@ -66,12 +68,14 @@ int drawingToolsTests() {
     CHECK(picking == (tool.pickCount != nullptr));
     CHECK(picking == (tool.annotationType != nullptr));
     CHECK(tool.iconOnly == (picking || tool.id == QStringLiteral("drawing.text") ||
-                            tool.pick == SheetPick::ViewThenPlace));
+                            tool.pick == SheetPick::ViewThenPlace || tool.pick == SheetPick::Segment ||
+                            tool.pick == SheetPick::ArcPoints));
     groups << toolGroup(tool);
   }
   // The bar's groups (mitcad#725): Create, Geometry, Dimensions, Text,
-  // Symbols, Tables, each with its caption.
-  CHECK(groups.count(0) == 5 && groups.count(1) == 2 && groups.count(2) == 3 && groups.count(3) == 2 &&
+  // Symbols, Tables, each with its caption; Geometry with Line, Arc, Center
+  // Pattern and Edge Extension (mitcad#729).
+  CHECK(groups.count(0) == 5 && groups.count(1) == 6 && groups.count(2) == 3 && groups.count(3) == 2 &&
         groups.count(4) == 3 && groups.count(5) == 3);
   CHECK(toolGroupName(0) == QStringLiteral("Create") && toolGroupName(1) == QStringLiteral("Geometry") &&
         toolGroupName(2) == QStringLiteral("Dimensions") && toolGroupName(3) == QStringLiteral("Text") &&
@@ -419,6 +423,73 @@ int drawingToolsTests() {
         QStringLiteral("numbers"));
   CHECK(annotationName(QStringLiteral("parts_list")) == QStringLiteral("Parts List"));
   CHECK(annotationName(QStringLiteral("balloon")) == QStringLiteral("Balloon"));
+  // Drawn outside the model (mitcad#729): a line in the view under its
+  // first click, or on the sheet; an arc of three points; a text in a
+  // view when chosen.
+  const DrawingToolDef* line = drawingTool(QStringLiteral("drawing.line"));
+  const DrawingToolDef* arc = drawingTool(QStringLiteral("drawing.arc"));
+  const DrawingToolDef* pattern = drawingTool(QStringLiteral("drawing.center_pattern"));
+  const DrawingToolDef* extension = drawingTool(QStringLiteral("drawing.edge_extension"));
+  CHECK(line && arc && pattern && extension);
+  if (!(line && arc && pattern && extension)) {
+    return failures;
+  }
+  CHECK(line->pick == SheetPick::Segment && arc->pick == SheetPick::ArcPoints);
+  CHECK(line->command(QStringLiteral("D1"), 0, picks(2, {QPointF(1, 2)}), {}).isEmpty());
+  QJsonObject drawn = line->command(QStringLiteral("D1"), 1, picks(2, {QPointF(1, 2), QPointF(3, 4)}), {});
+  CHECK(drawn.value(QStringLiteral("type")).toString() == QStringLiteral("line"));
+  CHECK(drawn.value(QStringLiteral("view")).toInt() == 2 && !drawn.contains(QStringLiteral("sheet")));
+  CHECK(drawn.value(QStringLiteral("points")).toArray().size() == 2);
+  CHECK(drawn.value(QStringLiteral("pen")).toString() == QStringLiteral("thin"));
+  drawn = line->command(QStringLiteral("D1"), 1, picks(0, {QPointF(1, 2), QPointF(3, 4)}),
+                        {{QStringLiteral("pen"), QStringLiteral("thick")}});
+  CHECK(drawn.value(QStringLiteral("sheet")).toInt() == 1 && !drawn.contains(QStringLiteral("view")));
+  CHECK(drawn.value(QStringLiteral("pen")).toString() == QStringLiteral("thick"));
+  drawn = line->command(QStringLiteral("D1"), 1, picks(2, {QPointF(1, 2), QPointF(3, 4)}),
+                        {{QStringLiteral("attach"), QStringLiteral("sheet")}});
+  CHECK(drawn.value(QStringLiteral("sheet")).toInt() == 1);
+  CHECK(arc->command(QStringLiteral("D1"), 0, picks(2, {QPointF(0, 0), QPointF(1, 0)}), {}).isEmpty());
+  drawn = arc->command(QStringLiteral("D1"), 0, picks(2, {QPointF(0, 0), QPointF(1, 0), QPointF(0, 1)}), {});
+  CHECK(drawn.value(QStringLiteral("type")).toString() == QStringLiteral("arc"));
+  CHECK(drawn.value(QStringLiteral("points")).toArray().size() == 3);
+  drawn = text->command(QStringLiteral("D1"), 0, picks(3, {QPointF(30, 40)}),
+                        {{QStringLiteral("text"), QStringLiteral("KEEP CLEAR")},
+                         {QStringLiteral("attach"), QStringLiteral("view")}});
+  CHECK(drawn.value(QStringLiteral("view")).toInt() == 3 && !drawn.contains(QStringLiteral("sheet")));
+  // A centre pattern of one hole; edge extensions of two edges, or one.
+  drawn = pattern->command(QStringLiteral("D1"), 0, annotationPicks(1, {}), {});
+  CHECK(drawn.value(QStringLiteral("type")).toString() == QStringLiteral("center_pattern"));
+  CHECK(pattern->annotationType({}) == QStringLiteral("center_pattern"));
+  CHECK(extension->pickCount({}) == 2);
+  CHECK(extension->pickCount({{QStringLiteral("edges"), QStringLiteral("one")}}) == 1);
+  CHECK(extension->command(QStringLiteral("D1"), 0, annotationPicks(1, {}), {}).isEmpty());
+  drawn = extension->command(QStringLiteral("D1"), 0, annotationPicks(2, {}), {});
+  CHECK(drawn.value(QStringLiteral("type")).toString() == QStringLiteral("edge_extension"));
+  CHECK(toolGroup(*line) == 1 && toolGroup(*pattern) == 1 && toolGroup(*extension) == 1);
+  CHECK(toolKeywords(QStringLiteral("drawing.center_pattern")).contains(QStringLiteral("bolt circle")));
+  CHECK(annotationName(QStringLiteral("edge_extension")) == QStringLiteral("Edge Extension"));
+  CHECK(annotationName(QStringLiteral("arc")) == QStringLiteral("Arc"));
+  // A view turned (mitcad#729); an annotation's letters back to the
+  // drawing's; a line's pen; the drawing's decimals and letters.
+  command = viewEdit(QStringLiteral("D1"), 1, QStringLiteral("rotation"), QStringLiteral("-90"), QJsonObject());
+  CHECK(command.value(QStringLiteral("rotation")).toDouble() == -90.0);
+  CHECK(viewEdit(QStringLiteral("D1"), 1, QStringLiteral("rotation"), QStringLiteral("left"), QJsonObject()).isEmpty());
+  command = annotationEdit(QStringLiteral("D1"), 3, QStringLiteral("height"), QString());
+  CHECK(command.value(QStringLiteral("height")).isNull() && command.contains(QStringLiteral("height")));
+  command = annotationEdit(QStringLiteral("D1"), 3, QStringLiteral("pen"), QStringLiteral("hidden"));
+  CHECK(command.value(QStringLiteral("pen")).toString() == QStringLiteral("hidden"));
+  command = drawingDefaultsEdit(QStringLiteral("D1"), QStringLiteral("decimals"), QStringLiteral("2"));
+  CHECK(command.value(QStringLiteral("cmd")).toString() == QStringLiteral("edit_drawing"));
+  CHECK(command.value(QStringLiteral("decimals")).toInt() == 2);
+  command = drawingDefaultsEdit(QStringLiteral("D1"), QStringLiteral("decimals"), QStringLiteral("auto"));
+  CHECK(command.value(QStringLiteral("decimals")).isNull());
+  CHECK(drawingDefaultsEdit(QStringLiteral("D1"), QStringLiteral("decimals"), QStringLiteral("7")).isEmpty());
+  command = drawingDefaultsEdit(QStringLiteral("D1"), QStringLiteral("text_height"), QStringLiteral("5"));
+  CHECK(command.value(QStringLiteral("text_height")).toDouble() == 5.0);
+  command = drawingDefaultsEdit(QStringLiteral("D1"), QStringLiteral("text_height"), QString());
+  CHECK(command.value(QStringLiteral("text_height")).isNull());
+  CHECK(drawingDefaultsEdit(QStringLiteral("D1"), QStringLiteral("text_height"), QStringLiteral("0")).isEmpty());
+  CHECK(penChoices().size() == 4 && penChoices().first().first == QStringLiteral("thin"));
   // Sheet templates (mitcad#707 phase 4): the query's built-in ones by id, a
   // library's as its data, then the simple title block.
   const QJsonObject templates{

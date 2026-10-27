@@ -4,6 +4,8 @@
 # check-all sources: core/model/src/features/combine.rs tools/cli
 # check-all sources: app/OcctViewer.cpp app/framework/PreviewBodies.cpp
 # check-all sources: core/model/src/features/moves.rs core/model/src/features/point_pattern.rs
+# check-all sources: app/commands/ExtrudeCommands.cpp app/commands/CommandSupport.cpp
+# check-all sources: core/model/src/features/extrude.rs core/model/src/features/reference.rs
 # Input-driven Windows UI test of Combine with the same body in two
 # occurrences as tools (mitcad#544) in the build VM (tools/ui-windows-lib.ps1
 # says how the input is posted), as the last part of
@@ -24,6 +26,18 @@
 #      vertex of its block to the same vertex where Part:1 shows it: the
 #      preview puts Part:2 on Part:1, the file keeps each point's
 #      occurrence, an edit loads them back.
+#   5. Extrude To Object to a face of another component (mitcad#762), as
+#      the last part of the Linux test, on a third design: crank:1 active,
+#      its rectangle extruded up to the top face of frame:1's block, picked
+#      where frame:1 shows it: the extrusion builds with frame inactive and
+#      the file keeps the face's link.
+#   6. Edited: the face shown where it was picked, 5 mm beyond it, the
+#      link kept.
+#   7. crank placed twice, the link seeing the profiles in crank:2: an edit
+#      keeps that target (the session puts profiles in crank:1).
+#   8. Extrude To Object to a construction plane of frame, crank active
+#      (mitcad#772): refused in the panel with the reason, nothing sent to
+#      the model.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-component-combine-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -42,6 +56,17 @@ $work = Join-Path $script:UiOut 'files'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null
 $r = 'r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}'
+
+# Run-Cli script design: mitcad-cli saves the script's design; a failure
+# ends the test at once with its output. Its stderr is no error here: with
+# the lib's $ErrorActionPreference 'Stop' the first line of it ended the
+# script without Ui-Fail, and the app of the section before, left running,
+# kept ctest waiting until its time-out (mitcad#762).
+function Run-Cli([string]$Script, [string]$Design) {
+  $ErrorActionPreference = 'Continue'
+  $output = & $cli run $Script --save $Design 2>&1
+  if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
+}
 
 # Part:1 (O1, C1): Sketch1 (F1) 30 x 20, Extrude1 (F2) 10 up: F2.b0.
 # Part:2 (O2) 30 along X. The root, active: Sketch2 (F3) 20 x 20 at
@@ -64,8 +89,7 @@ Set-Content -Encoding ascii $modelJson (@'
 ]
 '@).Replace('RECT', $r)
 $file = Join-Path $work 'overlap.mitcad'
-$output = & $cli run $modelJson --save $file 2>&1
-if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
+Run-Cli $modelJson $file
 
 Ui-StartApp 'component-combine' @('--open', $file)
 Ui-Step 'top view (F7)'                  { Ui-Key 'F7' }
@@ -157,8 +181,7 @@ Set-Content -Encoding ascii $copiesJson (@'
 ]
 '@).Replace('RECT', $r)
 $copies = Join-Path $work 'copies.mitcad'
-$output = & $cli run $copiesJson --save $copies 2>&1
-if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
+Run-Cli $copiesJson $copies
 
 Ui-StartApp 'component-move' @('--open', $copies)
 Ui-Step 'top view (F7)'                  { Ui-Key 'F7' }
@@ -231,5 +254,186 @@ Ui-ExpectNew "Move/Copy Target Point: 1 vertex [vertex $vertex of F2.b0 in O1]" 
 Ui-ExpectNew 'Preview Move/Copy: ok' 'previewed again' 30
 Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
 if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
+
+Write-Host '--- 5. Extrude To Object to a face of another component (mitcad#762)'
+# frame:1 (O1, C1) 30 up: Sketch1 (F1) 40 x 20, Extrude1 (F2) 10 up:
+# F2.b0, its top 40 up in the design. crank:1 (O2, C2) at the origin:
+# Sketch2 (F3) 10 x 10 at x = 60, beside frame's block.
+$crankJson = Join-Path $work 'crank.json'
+Set-Content -Encoding ascii $crankJson (@'
+[
+  {"cmd": "create_component", "name": "frame", "transform": {"translation": [0, 0, 30]}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 40, "height": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "RECT"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "create_component", "name": "crank"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [60, 0], "width": 10, "height": 10}
+]
+'@).Replace('RECT', $r)
+$crank = Join-Path $work 'crank.mitcad'
+Run-Cli $crankJson $crank
+
+Ui-StartApp 'component-extrude' @('--open', $crank)
+Ui-Step 'top view (F7)'                  { Ui-Key 'F7' }
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-ExpectLog 'Body F2.b0 in O1 at ' "frame's block shown"
+Ui-Mark
+Ui-Step 'activate crank'                 { Ui-ClickLogged 'Browser radio Root/crank:1' }
+Ui-ExpectNew 'Activated crank' 'crank is active'
+Ui-Mark
+Ui-Step 'extrude (E)'                    { Ui-Key 'e' }
+Ui-ExpectNew "Extrude Profiles: 1 profile [profile $r of F3" "crank's rectangle taken"
+Ui-Mark
+# One wheel step towards the user: the next extent, To Object.
+Ui-Step 'To Object (wheel)'              { Ui-WheelLogged 'Panel Extrude input extent' -1 }
+Ui-ExpectNew 'Extrude: Extent = To Object' 'to object chosen' 30
+Ui-ExpectNew 'Pick places:' 'the object input takes faces'
+Ui-Mark
+Ui-Step "pick frame's top face"          { Ui-ClickPick 'face F2.b0/F2:end(' }
+Ui-ExpectNew "Extrude Object: 1 face [face F2:end($r) of F2.b0 in O1]" 'the face picked where frame:1 shows it'
+Ui-ExpectNew 'Preview Extrude: ok' 'previewed with frame inactive' 30
+Ui-FocusMain
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Added extrude (New Body), distance to object' 'the extrusion added' 30
+# From crank's sketch up to the plane of frame's top, 40 up: 10 x 10 x 40.
+Ui-ExpectVolume 'New body [^(]* \(F4\.b0\): volume ([0-9.]+) mm3' 4000 "up to frame's top"
+if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
+if (Ui-LogLines | Where-Object { $_.Contains('belongs to frame') }) { Ui-Fail "the extrusion could not use frame's face" }
+
+# Expect-ExtrudeLink description design target: the saved extrusion links
+# frame's body where frame:1 is, seen at the target (crank:1 or crank:2).
+function Expect-ExtrudeLink([string]$Description, [string]$Design, [string]$Target) {
+  Ui-Mark
+  Ui-Step 'save (Ctrl+S)'                { Ui-Key 'ctrl+s' }
+  Ui-ExpectNew 'Saved ' 'saved'
+  $extrude = @((Get-Content -Raw $Design | ConvertFrom-Json).features | Where-Object { $_.type -eq 'extrude' })[1]
+  if (-not $extrude) { Ui-Fail 'no second extrude in the saved design' }
+  $link = $extrude.object_links.'F2.b0'
+  $shown = $extrude.object_links | ConvertTo-Json -Compress
+  if ($extrude.extent.object.body -ne 'F2.b0' -or -not $link -or $link.source -ne 'O1' -or $link.target -ne $Target) {
+    Ui-Fail "${Description}: the saved links are $shown, expected F2.b0 from O1 seen at $Target"
+  }
+  Write-Host "ok   ${Description}: $shown"
+}
+Expect-ExtrudeLink 'the face linked where frame:1 and crank:1 are' $crank 'O2'
+
+Write-Host '--- 6. Edited: the face kept where it was picked'
+Ui-Mark
+Ui-Step 'edit Extrude2 (double-click)'   { Ui-DoubleClickLogged 'Timeline Extrude2' }
+Ui-ExpectNew 'Editing F4 with Extrude' 'editing the extrusion'
+Ui-ExpectNew "Extrude Object: 1 face [face F2:end($r) of F2.b0 in O1]" 'the face back where frame:1 shows it'
+Ui-ExpectNew 'Preview Extrude: ok' 'the edit previewed' 30
+Ui-Mark
+Ui-Step 'offset 5'                       { Ui-TypeIn 'Panel Extrude input offset' '5' }
+Ui-ExpectNew 'Preview Extrude: ok' '5 mm beyond the face previewed' 30
+Ui-FocusMain
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Edited F4' 'edited' 30
+Ui-ExpectVolume 'Body [^(]* \(F4\.b0\): volume 4000\.000 -> ([0-9.]+) mm3' 4500 "5 mm beyond frame's top"
+if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
+Expect-ExtrudeLink 'the link kept by the edit' $crank 'O2'
+
+Write-Host "--- 7. An edit keeps a link that saw the profiles in crank's second copy (mitcad#762)"
+# As above, crank:2 (O3) 40 along Y and 5 up. Extrude2 (F4), crank's,
+# goes up to frame's top linked where crank:2 sees it: 35 high there
+# (40 where crank:1 does). The session puts a profile in the first copy
+# of its component; the edit must keep the link's target, crank:2.
+$twiceJson = Join-Path $work 'crank-twice.json'
+Set-Content -Encoding ascii $twiceJson (@'
+[
+  {"cmd": "create_component", "name": "frame", "transform": {"translation": [0, 0, 30]}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 40, "height": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "RECT"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "create_component", "name": "crank"},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "copy_occurrence", "occurrence": "crank:1", "transform": {"translation": [0, 40, 5]}},
+  {"cmd": "activate_component", "component": "crank"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [60, 0], "width": 10, "height": 10},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F3", "region": "RECT"}],
+    "extent": {"type": "to_object", "object": {"type": "face", "body": "F2.b0", "face": "F2:end(RECT)"}},
+    "object_links": {"F2.b0": {"source": "O1", "target": "O3"}}, "operation": "new_body"}},
+  {"expect": {"feature": "Extrude2", "status": "ok", "volume": 3500, "tolerance": 1e-6}}
+]
+'@).Replace('RECT', $r)
+$twice = Join-Path $work 'crank-twice.mitcad'
+Run-Cli $twiceJson $twice
+
+Ui-StartApp 'component-extrude-twice' @('--open', $twice)
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-ExpectLog 'Body F2.b0 in O1 at ' "frame's block shown"
+Ui-Mark
+Ui-Step 'edit Extrude2 (double-click)'   { Ui-DoubleClickLogged 'Timeline Extrude2' }
+Ui-ExpectNew 'Editing F4 with Extrude' 'editing the extrusion'
+Ui-ExpectNew "Extrude Object: 1 face [face F2:end($r) of F2.b0 in O1]" 'the face where frame:1 shows it'
+Ui-ExpectNew 'Preview Extrude: ok' 'the edit previewed' 30
+Ui-Mark
+Ui-Step 'offset 5'                       { Ui-TypeIn 'Panel Extrude input offset' '5' }
+Ui-ExpectNew 'Preview Extrude: ok' '5 mm beyond the face previewed' 30
+Ui-FocusMain
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Edited F4' 'edited' 30
+# 35 + 5 high where crank:2 sees frame's top; 40 + 5 had the link moved to crank:1.
+Ui-ExpectVolume 'Body [^(]* \(F4\.b0\): volume 3500\.000 -> ([0-9.]+) mm3' 4000 'still as crank:2 sees frame'
+if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
+Expect-ExtrudeLink "the link's target still crank:2" $twice 'O3'
+
+Write-Host "--- 8. Another component's construction plane as To Object is refused in the panel (mitcad#772)"
+# frame:1 (O1, C1) 30 up: Plane1 (F1), 20 above frame's XY (50 up in the
+# design). crank:1 (O2, C2): Sketch1 (F2) 10 x 10 at x = 60. No link
+# carries a construction plane, and the model reads one only in its own
+# component: Extrude in crank refuses frame's plane with the reason.
+$planeJson = Join-Path $work 'crank-plane.json'
+Set-Content -Encoding ascii $planeJson @'
+[
+  {"cmd": "create_component", "name": "frame", "transform": {"translation": [0, 0, 30]}},
+  {"cmd": "add_feature", "def": {"type": "construction_plane",
+    "definition": {"type": "offset", "plane": "xy", "distance": 20}}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "create_component", "name": "crank"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F2", "corner": [60, 0], "width": 10, "height": 10}
+]
+'@
+$crankPlane = Join-Path $work 'crank-plane.mitcad'
+$output = & $cli run $planeJson --save $crankPlane 2>&1
+if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
+
+Ui-StartApp 'component-extrude-plane' @('--open', $crankPlane)
+Ui-Step 'top view (F7)'                  { Ui-Key 'F7' }
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-Mark
+Ui-Step 'activate crank'                 { Ui-ClickLogged 'Browser radio Root/crank:1' }
+Ui-ExpectNew 'Activated crank' 'crank is active'
+Ui-Mark
+Ui-Step 'extrude (E)'                    { Ui-Key 'e' }
+Ui-ExpectNew "Extrude Profiles: 1 profile [profile $r of F2" "crank's rectangle taken"
+Ui-Mark
+# One wheel step towards the user: the next extent, To Object.
+Ui-Step 'To Object (wheel)'              { Ui-WheelLogged 'Panel Extrude input extent' -1 }
+Ui-ExpectNew 'Extrude: Extent = To Object' 'to object chosen' 30
+Ui-ExpectLog 'Datum F1 in O1 at' "frame's plane can be picked"
+Ui-Sync
+Ui-Mark
+Ui-Step "pick frame's plane"             { Ui-ClickLogged 'Datum F1 in O1' }
+Ui-ExpectNew 'Extrude Object: 1 plane [plane F1 in O1]' "frame's plane picked where frame:1 shows it"
+Ui-ExpectNew 'Preview Extrude: not built: Plane1 is in frame: pick a plane of crank, or a face of frame.' `
+  'refused in the panel with the reason' 30
+Ui-FocusMain
+Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
+Ui-Sync
+if (Ui-LogLines | Where-Object { $_.Contains('a feature of crank cannot use it') }) { Ui-Fail "frame's plane reached the model" }
+if (Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.Contains('Added extrude') }) {
+  Ui-Fail 'an extrusion was added'
+}
 
 Ui-Finish 'UI Windows component combine test'

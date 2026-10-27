@@ -3,6 +3,7 @@
 # check-all sources: app/commands app/browser app/framework core/model/src/features/combine.rs
 # check-all sources: app/OcctViewer.cpp core/model/src/features/moves.rs
 # check-all sources: core/model/src/features/point_pattern.rs
+# check-all sources: core/model/src/features/extrude.rs core/model/src/features/reference.rs
 # Combine with a tool of another component, through the real UI
 # (mitcad#104, mitcad#105, mitcad#544): a block in the root, a block of
 # Part:1 beside it and Part:2 on its other side, both overlapping it.
@@ -22,6 +23,16 @@
 #     Part:2 moved from a vertex of its block to the same vertex where
 #     Part:1 shows it: the preview puts Part:2 on Part:1, the file keeps
 #     each point's occurrence, an edit loads them back.
+#   - Extrude To Object to a face of another component (mitcad#762), on a
+#     third design: crank:1 active, its rectangle extruded up to the top
+#     face of frame:1's block, picked where frame:1 shows it: the
+#     extrusion builds with frame inactive, the file keeps the face's link,
+#     and an edit shows the face where it was picked and keeps the link.
+#     With crank placed twice and the link seeing the profiles in crank:2,
+#     an edit keeps that target (the session puts profiles in crank:1).
+#   - Extrude To Object to a construction plane of frame, crank active
+#     (mitcad#772): refused in the panel with the reason, nothing sent to
+#     the model.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-component-combine-test.sh [screenshot.png]
@@ -214,5 +225,168 @@ ui_expect_new "Move/Copy Target Point: 1 vertex [vertex $vertex of F2.b0 in O1]"
 ui_expect_new "Preview Move/Copy: ok" "previewed again"
 ui_step "cancel (Esc)"                   ui_key Escape
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- Extrude To Object to a face of another component (mitcad#762)"
+# frame:1 (O1, C1) 30 up: Sketch1 (F1) 40 x 20, Extrude1 (F2) 10 up:
+# F2.b0, its top 40 up in the design. crank:1 (O2, C2) at the origin:
+# Sketch2 (F3) 10 x 10 at x = 60, beside frame's block.
+ui_stop_app
+FILE=$WORK/crank.mitcad
+cat > "$WORK/crank.json" << EOF
+[
+  {"cmd": "create_component", "name": "frame", "transform": {"translation": [0, 0, 30]}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 40, "height": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "$R"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "create_component", "name": "crank"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [60, 0], "width": 10, "height": 10}
+]
+EOF
+"$CLI" run "$WORK/crank.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+ui_start_app --open "$FILE"
+ui_step "top view (search)"              ui_command "Top View"
+ui_step "fit (F6)"                       ui_key F6
+ui_expect_log "Body F2.b0 in O1 at " "frame's block shown"
+ui_mark
+ui_step "activate crank (radio)"         ui_click_logged "Browser radio Root/crank:1"
+ui_expect_new "Activated crank" "crank is active"
+ui_mark
+ui_step "extrude (E)"                    ui_key e
+ui_expect_new "Extrude Profiles: 1 profile [profile $R of F3" "crank's rectangle taken"
+ui_mark
+ui_step "To Object"                      ui_choose "Panel Extrude input extent" 1
+ui_expect_new "Extrude: Extent = To Object" "to object chosen"
+ui_expect_new "Pick places:" "the object input takes faces"
+ui_mark
+ui_step "pick frame's top face"          ui_click_pick "face F2.b0/F2:end("
+ui_expect_new "Extrude Object: 1 face [face F2:end($R) of F2.b0 in O1]" \
+  "the face picked where frame:1 shows it"
+ui_expect_new "Preview Extrude: ok" "previewed with frame inactive"
+ui_focus_main
+ui_mark
+ui_step "OK (Enter)"                     ui_key Return
+ui_expect_new "Added extrude (New Body), distance to object" "the extrusion added"
+# From crank's sketch up to the plane of frame's top, 40 up: 10 x 10 x 40.
+ui_expect_volume "New body [^(]* (F4.b0): volume \([0-9.]*\) mm3" 4000 "up to frame's top"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+grep -q "belongs to frame" "$UI_LOG" && ui_fail "the extrusion could not use frame's face"
+save
+expect_file 'doc["features"][3]["extent"]["object"]["body"], doc["features"][3]["object_links"]' \
+  "('F2.b0', {'F2.b0': {'source': 'O1', 'target': 'O2'}})" "the face linked where frame:1 and crank:1 are"
+
+echo "--- Edited: the face kept where it was picked"
+ui_mark
+ui_step "double-click Extrude2"          ui_double_click_logged "Timeline Extrude2"
+ui_expect_new "Editing F4 with Extrude" "editing the extrusion"
+ui_expect_new "Extrude Object: 1 face [face F2:end($R) of F2.b0 in O1]" "the face back where frame:1 shows it"
+ui_expect_new "Preview Extrude: ok" "the edit previewed"
+ui_mark
+ui_step "offset 5"                       ui_type_in "Panel Extrude input offset" "5"
+ui_expect_new "Preview Extrude: ok" "5 mm beyond the face previewed"
+ui_focus_main
+ui_mark
+ui_step "OK (Enter)"                     ui_key Return
+ui_expect_new "Edited F4" "edited"
+ui_expect_volume "Body [^(]* (F4.b0): volume 4000.000 -> \([0-9.]*\) mm3" 4500 "5 mm beyond frame's top"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+save
+expect_file 'doc["features"][3]["object_links"]' "{'F2.b0': {'source': 'O1', 'target': 'O2'}}" \
+  "the link kept by the edit"
+
+echo "--- An edit keeps a link that saw the profiles in crank's second copy (mitcad#762)"
+# As above, crank:2 (O3) 40 along Y and 5 up. Extrude2 (F4), crank's,
+# goes up to frame's top linked where crank:2 sees it: 35 high there
+# (40 where crank:1 does). The session puts a profile in the first copy
+# of its component; the edit must keep the link's target, crank:2.
+ui_stop_app
+FILE=$WORK/crank-twice.mitcad
+cat > "$WORK/crank-twice.json" << EOF
+[
+  {"cmd": "create_component", "name": "frame", "transform": {"translation": [0, 0, 30]}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 40, "height": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "$R"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "create_component", "name": "crank"},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "copy_occurrence", "occurrence": "crank:1", "transform": {"translation": [0, 40, 5]}},
+  {"cmd": "activate_component", "component": "crank"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [60, 0], "width": 10, "height": 10},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F3", "region": "$R"}],
+    "extent": {"type": "to_object", "object": {"type": "face", "body": "F2.b0", "face": "F2:end($R)"}},
+    "object_links": {"F2.b0": {"source": "O1", "target": "O3"}}, "operation": "new_body"}},
+  {"expect": {"feature": "Extrude2", "status": "ok", "volume": 3500, "tolerance": 1e-6}}
+]
+EOF
+"$CLI" run "$WORK/crank-twice.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+ui_start_app --open "$FILE"
+ui_step "fit (F6)"                       ui_key F6
+ui_expect_log "Body F2.b0 in O1 at " "frame's block shown"
+ui_mark
+ui_step "double-click Extrude2"          ui_double_click_logged "Timeline Extrude2"
+ui_expect_new "Editing F4 with Extrude" "editing the extrusion"
+ui_expect_new "Extrude Object: 1 face [face F2:end($R) of F2.b0 in O1]" "the face where frame:1 shows it"
+ui_expect_new "Preview Extrude: ok" "the edit previewed"
+ui_mark
+ui_step "offset 5"                       ui_type_in "Panel Extrude input offset" "5"
+ui_expect_new "Preview Extrude: ok" "5 mm beyond the face previewed"
+ui_focus_main
+ui_mark
+ui_step "OK (Enter)"                     ui_key Return
+ui_expect_new "Edited F4" "edited"
+# 35 + 5 high where crank:2 sees frame's top; 40 + 5 had the link moved to crank:1.
+ui_expect_volume "Body [^(]* (F4.b0): volume 3500.000 -> \([0-9.]*\) mm3" 4000 "still as crank:2 sees frame"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+save
+expect_file 'doc["features"][3]["object_links"]' "{'F2.b0': {'source': 'O1', 'target': 'O3'}}" \
+  "the link's target still crank:2"
+
+echo "--- Another component's construction plane as To Object is refused in the panel (mitcad#772)"
+# frame:1 (O1, C1) 30 up: Plane1 (F1), 20 above frame's XY (50 up in the
+# design). crank:1 (O2, C2): Sketch1 (F2) 10 x 10 at x = 60. No link
+# carries a construction plane, and the model reads one only in its own
+# component: Extrude in crank refuses frame's plane with the reason.
+ui_stop_app
+FILE=$WORK/crank-plane.mitcad
+cat > "$WORK/crank-plane.json" << EOF
+[
+  {"cmd": "create_component", "name": "frame", "transform": {"translation": [0, 0, 30]}},
+  {"cmd": "add_feature", "def": {"type": "construction_plane",
+    "definition": {"type": "offset", "plane": "xy", "distance": 20}}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "create_component", "name": "crank"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F2", "corner": [60, 0], "width": 10, "height": 10}
+]
+EOF
+"$CLI" run "$WORK/crank-plane.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+ui_start_app --open "$FILE"
+ui_step "top view (search)"              ui_command "Top View"
+ui_step "fit (F6)"                       ui_key F6
+ui_mark
+ui_step "activate crank (radio)"         ui_click_logged "Browser radio Root/crank:1"
+ui_expect_new "Activated crank" "crank is active"
+ui_mark
+ui_step "extrude (E)"                    ui_key e
+ui_expect_new "Extrude Profiles: 1 profile [profile $R of F2" "crank's rectangle taken"
+ui_mark
+ui_step "To Object"                      ui_choose "Panel Extrude input extent" 1
+ui_expect_new "Extrude: Extent = To Object" "to object chosen"
+ui_expect_log "Datum F1 in O1 at" "frame's plane can be picked"
+ui_sync
+ui_mark
+ui_step "pick frame's plane"             ui_click_logged "Datum F1 in O1"
+ui_expect_new "Extrude Object: 1 plane [plane F1 in O1]" "frame's plane picked where frame:1 shows it"
+ui_expect_new "Preview Extrude: not built: Plane1 is in frame: pick a plane of crank, or a face of frame." \
+  "refused in the panel with the reason"
+ui_step "cancel (Esc)"                   ui_key Escape
+ui_sync
+grep -q "a feature of crank cannot use it" "$UI_LOG" && ui_fail "frame's plane reached the model"
+grep -q "Added extrude" "$UI_LOG" && ui_fail "an extrusion was added"
 
 ui_finish "UI component combine test"

@@ -272,7 +272,8 @@ pub fn write(records: &[(u64, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
-#[cfg(test)]
+// The ASM test body needs the feature `solids`.
+#[cfg(all(test, feature = "solids"))]
 mod tests {
     use super::*;
 

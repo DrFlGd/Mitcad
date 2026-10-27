@@ -199,6 +199,8 @@ fn sample() -> Drawing {
         center_marks: false,
         retrieved_dimensions: false,
         annotations: Vec::new(),
+        rotation: 0.0,
+        sketch: Vec::new(),
     };
     let projected = DrawingView {
         id: 2,
@@ -216,6 +218,8 @@ fn sample() -> Drawing {
         center_marks: false,
         retrieved_dimensions: false,
         annotations: Vec::new(),
+        rotation: 0.0,
+        sketch: Vec::new(),
     };
     let section = DrawingView {
         id: 3,
@@ -237,6 +241,8 @@ fn sample() -> Drawing {
         center_marks: false,
         retrieved_dimensions: false,
         annotations: Vec::new(),
+        rotation: 0.0,
+        sketch: Vec::new(),
     };
     let detail = DrawingView {
         id: 4,
@@ -256,6 +262,8 @@ fn sample() -> Drawing {
         center_marks: false,
         retrieved_dimensions: false,
         annotations: Vec::new(),
+        rotation: 0.0,
+        sketch: Vec::new(),
     };
     let mut sheet = DrawingSheet::new("Sheet1");
     sheet.views = vec![base, projected, section, detail];
@@ -266,6 +274,7 @@ fn sample() -> Drawing {
         sheets: vec![sheet],
         revisions: Vec::new(),
         exported: 0,
+        defaults: Default::default(),
     }
 }
 
@@ -1223,34 +1232,21 @@ fn sections_and_details_on_a_broken_view_take_its_coordinates() {
 }
 
 #[test]
-fn a_view_with_sections_or_details_keeps_its_direction() {
+fn a_view_with_sections_or_details_turns_and_takes_them_along() {
+    // Turning a view whose sections or details are drawn on it, or on a
+    // view from it, was refused until mitcad#729; now they follow
+    // (`drawing::feature_tests` checks where they go).
     let mut doc = drawn();
     command(
         &mut doc,
         json!({"cmd": "add_drawing_view", "drawing": "D1", "type": "detail", "parent": 2,
                "center": [160, 115], "radius": 4, "at": [300, 40]}),
     );
-    for (cmd, message) in [
-        (
-            json!({"cmd": "edit_drawing_view", "drawing": "D1", "view": 1, "direction": "top"}),
-            "delete them before turning it",
-        ),
-        (
-            json!({"cmd": "edit_drawing_view", "drawing": "D1", "view": 2, "side": "left"}),
-            "delete them before turning it",
-        ),
-        (
-            json!({"cmd": "edit_drawing_sheet", "drawing": "D1", "projection": "first_angle"}),
-            "before changing the projection method",
-        ),
-        (
-            json!({"cmd": "edit_drawing_view", "drawing": "D1", "view": 2, "scale": "fit"}),
-            "only a base view's scale fits",
-        ),
-    ] {
-        let error = refused(&mut doc, cmd);
-        assert!(error.contains(message), "{error}");
-    }
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "edit_drawing_view", "drawing": "D1", "view": 2, "scale": "fit"}),
+    );
+    assert!(error.contains("only a base view's scale fits"), "{error}");
     // The same direction again is no turn; a base view's scale fits.
     command(
         &mut doc,
@@ -1260,15 +1256,17 @@ fn a_view_with_sections_or_details_keeps_its_direction() {
     let front = view(&doc, "D1", 1);
     assert!(front["own_scale"].as_bool().unwrap());
     assert_eq!(view(&doc, "D1", 2)["automatic_scale"], front["scale_text"]);
-    // Without the detail it turns.
-    command(
-        &mut doc,
-        json!({"cmd": "delete_drawing_view", "drawing": "D1", "view": 3}),
-    );
-    command(
-        &mut doc,
+    for cmd in [
         json!({"cmd": "edit_drawing_view", "drawing": "D1", "view": 1, "direction": "top"}),
-    );
+        json!({"cmd": "edit_drawing_view", "drawing": "D1", "view": 2, "side": "left"}),
+        json!({"cmd": "edit_drawing_sheet", "drawing": "D1", "projection": "first_angle"}),
+    ] {
+        command(&mut doc, cmd);
+    }
+    // The detail is still drawn, on its parent.
+    let detail = view(&doc, "D1", 3);
+    assert!(detail.get("error").is_none(), "{detail}");
+    assert_eq!(detail["parent"], 2);
 }
 
 #[test]

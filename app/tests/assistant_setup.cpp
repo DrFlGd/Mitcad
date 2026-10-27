@@ -6,6 +6,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 
 namespace {
@@ -98,6 +100,75 @@ int assistantSetupTests() {
   CHECK(!readAssistantConfiguration(directory.filePath(QStringLiteral("invalid.toml")), content, error));
   CHECK(put(directory.filePath(QStringLiteral("requirements.toml")), QByteArrayLiteral("# Managed\n")));
   CHECK(!assistantConfigurationPolicy(path).isEmpty());
+  // Claude Code's settings file with years of projects' history, over the
+  // 4 MiB that other settings files may have (mitcad#760): read, verified
+  // and replaced with Claude Code's own limit.
+  {
+    QJsonObject entry{{QStringLiteral("command"), bridge},
+                      {QStringLiteral("args"), QJsonArray{QStringLiteral("mcp"), QStringLiteral("--connect")}}};
+    QJsonObject history{{QStringLiteral("display"), QString(5 * 1024 * 1024, QLatin1Char('x'))}};
+    QJsonObject projects{{QStringLiteral("/home/user/project"), QJsonObject{{QStringLiteral("history"), QJsonArray{history}}}}};
+    QJsonObject large{{QStringLiteral("projects"), projects},
+                      {QStringLiteral("mcpServers"), QJsonObject{{QStringLiteral("mitcad"), entry}}}};
+    const QByteArray bytes = QJsonDocument(large).toJson(QJsonDocument::Compact);
+    CHECK(bytes.size() > 4 * 1024 * 1024);
+    const QString claudePath = directory.filePath(QStringLiteral(".claude.json"));
+    CHECK(put(claudePath, bytes));
+    CHECK(!readAssistantConfiguration(claudePath, content, error));
+    CHECK(error.contains(QStringLiteral("larger")));
+    CHECK(readAssistantConfiguration(claudePath, content, error, kClaudeConfigurationLimit));
+    CHECK(content.toUtf8() == bytes);
+    const QJsonObject parsed = QJsonDocument::fromJson(content.toUtf8()).object();
+    CHECK(parsed.value(QStringLiteral("mcpServers")).toObject().value(QStringLiteral("mitcad")).toObject() == entry);
+    CHECK(parsed.value(QStringLiteral("projects")) == large.value(QStringLiteral("projects")));
+    // The compare-before-write reads it with the same limit.
+    QJsonObject changed = large;
+    changed.insert(QStringLiteral("keep"), QStringLiteral("unchanged"));
+    const QString written = QString::fromUtf8(QJsonDocument(changed).toJson(QJsonDocument::Compact));
+    CHECK(!writeAssistantConfiguration(claudePath, content, written, backup, error));
+    CHECK(writeAssistantConfiguration(claudePath, content, written, backup, error, kClaudeConfigurationLimit));
+    CHECK(!backup.isEmpty());
+    CHECK(readAssistantConfiguration(claudePath, content, error, kClaudeConfigurationLimit) && content == written);
+  }
+  // Claude Desktop from the Microsoft Store (mitcad#763): its package's
+  // folder under the local application data's Packages, found without any
+  // `.mcpb` association; a fake LOCALAPPDATA and APPDATA here.
+  {
+    QTemporaryDir local, roaming, other;
+    CHECK(local.isValid() && roaming.isValid() && other.isValid());
+    CHECK(!claudeDesktopPackaged(QString()));
+    CHECK(!claudeDesktopPackaged(local.path()));
+    CHECK(!claudeDesktopInWindowsFolders(local.path(), roaming.path()));
+    CHECK(QDir(local.path()).mkpath(QStringLiteral("Packages/Example.App_abc123")));
+    CHECK(put(QDir(local.path()).filePath(QStringLiteral("Packages/ClaudeNotes.txt")), QByteArrayLiteral("x")));
+    CHECK(!claudeDesktopPackaged(local.path()));
+    // Another family's folder, however named, is not this package.
+    CHECK(QDir(local.path()).mkpath(QStringLiteral("Packages/Claude_other123")));
+    CHECK(QDir(local.path()).mkpath(QStringLiteral("Packages/Example.Claude_other123")));
+    CHECK(!claudeDesktopPackaged(local.path()));
+    CHECK(!claudeDesktopApplicationInWindowsFolders(local.path()));
+    // A file with the family's name is no package.
+    CHECK(QDir(other.path()).mkpath(QStringLiteral("Packages")));
+    CHECK(put(QDir(other.path()).filePath(QStringLiteral("Packages/") + QLatin1String(kClaudeDesktopPackageFamily)),
+              QByteArrayLiteral("x")));
+    CHECK(!claudeDesktopPackaged(other.path()));
+    CHECK(!claudeDesktopApplicationInWindowsFolders(other.path()));
+    CHECK(!claudeDesktopApplicationInWindowsFolders(QString()));
+    CHECK(QDir(local.path()).mkpath(QStringLiteral("Packages/") + QLatin1String(kClaudeDesktopPackageFamily)));
+    CHECK(claudeDesktopPackaged(local.path()));
+    CHECK(claudeDesktopApplicationInWindowsFolders(local.path()));
+    CHECK(claudeDesktopInWindowsFolders(local.path(), QString()));
+    // The settings folder is Claude Desktop found, but not its application:
+    // an uninstalled Claude Desktop leaves it behind.
+    CHECK(!claudeDesktopInWindowsFolders(other.path(), roaming.path()));
+    CHECK(QDir(roaming.path()).mkpath(QStringLiteral("Claude")));
+    CHECK(claudeDesktopInWindowsFolders(other.path(), roaming.path()));
+    CHECK(!claudeDesktopApplicationInWindowsFolders(other.path()));
+    // The installer's application folder.
+    CHECK(QDir(other.path()).mkpath(QStringLiteral("AnthropicClaude")));
+    CHECK(claudeDesktopApplicationInWindowsFolders(other.path()));
+    CHECK(claudeDesktopInWindowsFolders(other.path(), QString()));
+  }
 #ifndef Q_OS_WIN
   const QString linked = directory.filePath(QStringLiteral("linked.toml"));
   CHECK(QFile::link(path, linked));

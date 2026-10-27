@@ -598,6 +598,39 @@ fn the_design_s_process_lists_what_overrides_it() {
     assert_eq!(overrides[0]["keys"], json!(["perimeters"]));
     assert_eq!(overrides[0]["values"]["perimeters"].as_f64(), Some(5.0));
     assert!(overrides[0]["name"].is_string());
+    // The same owners in the answer itself (mitcad#747).
+    assert_eq!(rows["print_overrides"], fine["overrides"]);
+}
+
+#[test]
+fn own_process_values_are_listed_with_slicer_default() {
+    // mitcad#747: with no process chosen (Slicer default) no row carries
+    // `overrides`, but a body's own process values are still exported, so
+    // the answer lists their owners itself.
+    let mut doc = block();
+    command(
+        &mut doc,
+        json!({"cmd": "set_property", "owner": "F2.b0", "set": "Print Process",
+               "key": "perimeters", "value": 4}),
+    );
+    let rows = query(&doc, json!({"query": "library_items", "kind": "process"}));
+    assert!(
+        rows["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["chosen"] == false && r.get("overrides").is_none())
+    );
+    let owners = rows["print_overrides"].as_array().unwrap();
+    assert_eq!(owners.len(), 1, "{owners:?}");
+    assert_eq!(owners[0]["owner"], "F2.b0");
+    assert_eq!(owners[0]["keys"], json!(["perimeters"]));
+    assert_eq!(owners[0]["values"]["perimeters"].as_f64(), Some(4.0));
+    // The printer's set has none; a material's answer no such list.
+    let printers = query(&doc, json!({"query": "library_items", "kind": "printer"}));
+    assert_eq!(printers["print_overrides"], json!([]));
+    let materials = query(&doc, json!({"query": "library_items", "kind": "material"}));
+    assert!(materials.get("print_overrides").is_none());
 }
 
 #[test]

@@ -74,6 +74,47 @@ void test_two_sides_and_symmetric() {
   CHECK(face_at_z(*extrude_feature(spec), start_cap("F2", 1), -15));
 }
 
+// mitcad#765: a negative side ends on the other side's side; the solid lies
+// between the two ends only, its cap there named as the short side's far
+// cap, and the side holding it is tapered from the start as without the
+// other's end (the short side's taper shapes nothing).
+void test_negative_side() {
+  // 50 along the normal and -30 against it: z 30..50.
+  ExtrudeFeatureSpec spec = spec_of({rectangle(1, 0, 0, 60, 40)}, 50);
+  spec.side2 = distance(-30);
+  const ShapePtr up = extrude_feature(spec);
+  CHECK(near(volume(*up), 60 * 40 * 20));
+  CHECK(face_at_z(*up, start_cap("F2", 1), 50) && face_at_z(*up, end_cap("F2", 1), 30));
+  CHECK(up->face_count() == 6 && edge_names_unique(*up));
+
+  // Mirrored, -30 and 50: z -50..-30.
+  spec.side1 = distance(-30);
+  spec.side2 = distance(50);
+  const ShapePtr down = extrude_feature(spec);
+  CHECK(near(volume(*down), 60 * 40 * 20));
+  CHECK(face_at_z(*down, start_cap("F2", 1), -30) && face_at_z(*down, end_cap("F2", 1), -50));
+
+  // Tapered by -5 degrees on side one: the frustum of 0..50 less that of
+  // 0..30, whatever side two's taper.
+  const double angle = 5.0 * kPi / 180.0;
+  const double k = std::tan(angle);
+  spec = spec_of({rectangle(1, 0, 0, 40, 40)}, 50);
+  spec.side1.taper = -angle;
+  spec.side2 = distance(-30, 0.2);
+  const ShapePtr tapered_part = extrude_feature(spec);
+  CHECK(near(volume(*tapered_part), frustum(40, 40 - 100 * k, 50) - frustum(40, 40 - 60 * k, 30)));
+  CHECK(face_at_z(*tapered_part, start_cap("F2", 1), 50) && face_at_z(*tapered_part, end_cap("F2", 1), 30));
+  CHECK(BRepCheck_Analyzer(tapered_part->occt()).IsValid());
+
+  // Ends that meet or cross are refused, as are two negative sides.
+  spec = spec_of({rectangle(1, 0, 0, 60, 40)}, 50);
+  spec.side2 = distance(-50);
+  CHECK(throws_with([&] { extrude_feature(spec); }, "overlap"));
+  spec.side1 = distance(-10);
+  spec.side2 = distance(-5);
+  CHECK(throws_with([&] { extrude_feature(spec); }, "both sides"));
+}
+
 void test_start() {
   // T0 ext_start_offset: 10 mm up, then 20 mm: z 10..30.
   ExtrudeFeatureSpec spec = spec_of({rectangle(1, 0, 0, 60, 40)}, 20);
@@ -711,6 +752,8 @@ void extrude_feature_tests() {
   guarded("test_circles_touching_at_a_point", test_circles_touching_at_a_point);
   guarded("test_several_regions", test_several_regions);
   guarded("test_thin_open_chains", test_thin_open_chains);
+  // A negative side of two (mitcad#765).
+  guarded("test_negative_side", test_negative_side);
 }
 
 } // namespace test

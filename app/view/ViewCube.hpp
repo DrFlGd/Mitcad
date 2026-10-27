@@ -4,6 +4,8 @@
 #include <QToolButton>
 
 #include <AIS_ViewCube.hxx>
+#include <gp_Dir.hxx>
+#include <gp_XYZ.hxx>
 
 class QEnterEvent;
 class QEvent;
@@ -28,6 +30,22 @@ void scaleViewCube(AIS_ViewCube& cube);
 // Whether the view's background is dark: the cube's glass follows it. The
 // caller redisplays the cube.
 void setViewCubeBackdrop(AIS_ViewCube& cube, bool dark);
+
+// The cube in a perspective of its own (mitcad#774), whatever the view's
+// projection: seen from straight in front of its middle, from where a 45
+// degree field of view (the view's default) shows twice its size, and as
+// large as the orthographic cube where its front face is. Its faces, edges,
+// corners, axes, hover and picking are made so on its geometry, for the
+// direction setViewCubeEye gives; the caller draws it with an orthographic
+// transform persistence and redisplays it.
+void setViewCubePerspective(AIS_ViewCube& cube, bool perspective);
+// The direction from the cube towards the eye (the camera's direction
+// reversed). True when the cube's own perspective changed with it: the
+// caller then redisplays the cube and computes its picking again.
+bool setViewCubeEye(AIS_ViewCube& cube, const gp_Dir& toEye);
+// Where the cube draws a point of its own coordinates: through its own
+// perspective, or the point itself without one.
+gp_XYZ viewCubePoint(const AIS_ViewCube& cube, const gp_XYZ& point);
 
 // The Home button at the cube: a small capsule of the cube's glass, its
 // house in the colour of the cube's names, the accent on hover.

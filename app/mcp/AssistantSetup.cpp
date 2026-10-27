@@ -131,18 +131,24 @@ QJsonObject assistantBundleManifest(const QString& bridge, bool windows, const Q
           {QStringLiteral("compatibility"), QJsonObject{{QStringLiteral("platforms"), QJsonArray{platform}}}}};
 }
 
-bool readAssistantConfiguration(const QString& path, QString& content, QString& error) {
+bool readAssistantConfiguration(const QString& path, QString& content, QString& error, qint64 limit) {
   content.clear(); error.clear();
   const QFileInfo info(path);
   if (!info.isAbsolute() || info.isSymLink() || (info.exists() && !info.isFile())) {
     error = QObject::tr("Choose a regular configuration file with an absolute path."); return false;
   }
   if (!info.exists()) return true;
+  if (info.size() > limit) {
+    error = QObject::tr("The configuration is larger than %1 MB.").arg(limit / (1024 * 1024)); return false;
+  }
   QFile file(path);
-  if (info.size() > 4 * 1024 * 1024 || !file.open(QIODevice::ReadOnly)) {
-    error = QObject::tr("The configuration could not be read, or is too large."); return false;
+  if (!file.open(QIODevice::ReadOnly)) {
+    error = QObject::tr("The configuration could not be read."); return false;
   }
   const QByteArray bytes = file.readAll();
+  if (bytes.size() > limit) {
+    error = QObject::tr("The configuration is larger than %1 MB.").arg(limit / (1024 * 1024)); return false;
+  }
   content = QString::fromUtf8(bytes);
   if (content.toUtf8() != bytes) {
     error = QObject::tr("The configuration must be valid UTF-8."); return false;
@@ -151,10 +157,10 @@ bool readAssistantConfiguration(const QString& path, QString& content, QString& 
 }
 
 bool writeAssistantConfiguration(const QString& path, const QString& expected, const QString& content,
-                                 QString& backup, QString& error) {
+                                 QString& backup, QString& error, qint64 limit) {
   backup.clear();
   QString current;
-  if (!readAssistantConfiguration(path, current, error)) return false;
+  if (!readAssistantConfiguration(path, current, error, limit)) return false;
   if (current != expected) {
     error = QObject::tr("The configuration changed while setup was open. Refresh and try again."); return false;
   }
@@ -177,7 +183,7 @@ bool writeAssistantConfiguration(const QString& path, const QString& expected, c
   file.setPermissions(info.exists() ? info.permissions() : QFileDevice::ReadOwner | QFileDevice::WriteOwner);
   if (file.write(bytes) != bytes.size()) { error = file.errorString(); return false; }
   QString latest;
-  if (!readAssistantConfiguration(path, latest, error) || latest != current) {
+  if (!readAssistantConfiguration(path, latest, error, limit) || latest != current) {
     file.cancelWriting();
     if (error.isEmpty()) error = QObject::tr("The configuration changed during setup. Refresh and try again.");
     return false;
@@ -234,6 +240,21 @@ QString assistantDisplayName(const QString& label) {
     if (assistantLabelMatches(client, label)) return assistantSentenceName(client);
   }
   return label;
+}
+
+bool claudeDesktopPackaged(const QString& localAppData) {
+  if (localAppData.isEmpty()) return false;
+  return QFileInfo(QDir(localAppData).filePath(QStringLiteral("Packages/") + QLatin1String(kClaudeDesktopPackageFamily))).isDir();
+}
+
+bool claudeDesktopApplicationInWindowsFolders(const QString& localAppData) {
+  return !localAppData.isEmpty() &&
+      (QFileInfo(QDir(localAppData).filePath(QStringLiteral("AnthropicClaude"))).isDir() || claudeDesktopPackaged(localAppData));
+}
+
+bool claudeDesktopInWindowsFolders(const QString& localAppData, const QString& roamingAppData) {
+  return claudeDesktopApplicationInWindowsFolders(localAppData) ||
+      (!roamingAppData.isEmpty() && QFileInfo(QDir(roamingAppData).filePath(QStringLiteral("Claude"))).isDir());
 }
 
 } // namespace mitcad::mcp

@@ -165,7 +165,7 @@ fn thread_tables_list_iso_metric_first() {
     let doc = Document::new(MockKernel::default());
     let table = query(&doc, json!({"query": "thread_sizes"}));
     let standards = table["standards"].as_array().unwrap();
-    assert_eq!(standards.len(), 7);
+    assert_eq!(standards.len(), 8);
     assert_eq!(standards[0]["standard"], "iso_metric");
     assert_eq!(standards[0]["title"], "ISO Metric profile");
     assert_eq!(standards[0]["default"], true);
@@ -181,6 +181,18 @@ fn thread_tables_list_iso_metric_first() {
     // The trapezoidal threads of lead screws (mitcad#449) after them.
     assert_eq!(standards[6]["standard"], "trapezoidal");
     assert_eq!(standards[6]["default_class_external"], "7e");
+    // ISO 7-1's taper pipe threads (mitcad#733) last.
+    assert_eq!(standards[7]["standard"], "iso_taper");
+    // A taper pipe thread's sizes give their tap drills (mitcad#733).
+    let quarter = standards[3]["sizes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["size"] == "1/4")
+        .unwrap();
+    let drill = quarter["tap_drill"].as_f64().unwrap();
+    assert!((drill - 10.7206).abs() < 1e-3, "{quarter}");
+    assert!(standards[0]["sizes"][0].get("tap_drill").is_none());
     assert_eq!(standards[0]["default_class_internal"], "6H");
     assert_eq!(standards[0]["default_class_external"], "6g");
     let m10 = standards[0]["sizes"]

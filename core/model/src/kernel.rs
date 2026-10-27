@@ -1675,6 +1675,22 @@ pub trait Kernel {
     ) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("extended tools"))
     }
+
+    // Crossing points of a sketch's Intersect (mitcad#736; `sketch/project.rs`).
+
+    /// Where `plane` crosses the edges `edge` resolves to (every edge of a
+    /// name without `#k`), in model space, each point once: a point where
+    /// an edge passes through the plane or touches it, and the ends of an
+    /// edge (or of a piece of it) that lies in the plane. Empty when the
+    /// plane misses them.
+    fn section_points(
+        &self,
+        _shape: &Self::Shape,
+        _edge: &EdgeName,
+        _plane: &DatumPlane,
+    ) -> Result<Vec<[f64; 3]>, KernelError> {
+        Err(KernelError::Unsupported("section points"))
+    }
 }
 
 /// A conical face ([`Kernel::face_cone`], mitcad#473).
@@ -2253,7 +2269,11 @@ pub struct ThinWall {
 
 #[derive(Debug, Clone)]
 pub enum SideEnd<S> {
-    /// From the start, > 0.
+    /// From the start, > 0. With two sides one of them may be negative
+    /// (mitcad#765, signed two-sided extents): it ends on the other side's
+    /// side, and the solid is the other side's from there on, its cap there
+    /// named as this side's far cap and the other side tapered from the
+    /// start as without it. Two distances then add up to more than zero.
     Distance(f64),
     Target(Bound<S>),
 }
@@ -2385,7 +2405,22 @@ pub struct HoleSpec<'a, S> {
 /// into the tooth, keeping the flank angle, the pitch and the crest and
 /// root radii (`features::thread::check_clearance` gives the limits).
 /// `groove` false builds no profile, only the `chamfer` (a cosmetic
-/// thread's end chamfers, mitcad#304).
+/// thread's end chamfers, mitcad#304), or the `taper`'s cone.
+///
+/// A taper pipe thread (`taper`, NPT and ISO 7-1, mitcad#733): `major`,
+/// `minor` and `pitch_diameter` are the profile's diameters where the
+/// thread starts, and every diameter changes by `taper.per_length` per
+/// length along the axis away from there: smaller into an internal thread,
+/// larger along an external one (1:16). The thread starts at the end of
+/// its `part`; over the whole face at its free end (nothing of the body
+/// beyond it: a hole's mouth, a shaft's end) where only one end is free,
+/// else at the high end when `taper.high_end`, the low end otherwise. A
+/// cosmetic one (`groove` false) cuts the cone of its minor diameter out of
+/// an internal thread's face (the tapered bore), or the material outside
+/// the cone of its major diameter off an external one, over its part; the
+/// cone's faces are named `<feature>:thread_taper(<face>)`. A modelled one
+/// sweeps the profile, its flanks square to the axis, along the tapered
+/// helix of its pitch diameter, whose angle is measured at the start.
 #[derive(Debug, Clone)]
 pub struct ThreadSpec<'a> {
     pub feature: FeatureUid,
@@ -2396,11 +2431,26 @@ pub struct ThreadSpec<'a> {
     pub pitch_diameter: f64,
     pub right_handed: bool,
     pub angle: f64,
+    /// Per face (in the order of `faces`), the angle it is turned by
+    /// instead of `angle` (a pattern's copies, mitcad#733); empty: `angle`
+    /// for every face.
+    pub face_angles: &'a [f64],
     pub part: Option<(f64, f64, bool)>,
     pub radial_clearance: f64,
     pub flank_clearance: f64,
     pub groove: bool,
     pub chamfer: Option<ThreadChamfer>,
+    pub taper: Option<ThreadTaper>,
+}
+
+/// The taper of a taper pipe thread (see [`ThreadSpec`], mitcad#733).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThreadTaper {
+    /// The diameters' change per length along the axis (1/16).
+    pub per_length: f64,
+    /// Over the whole face with both or neither end free: whether the
+    /// thread starts at the high end of the axis of the face's cylinder.
+    pub high_end: bool,
 }
 
 /// The end chamfers of a thread (mitcad#304): a cone cut at an end of each
@@ -2568,7 +2618,9 @@ pub struct GearConeSpec<'a> {
 /// bounded area with its holes, swept along its outward normal (against it
 /// with `reversed`) by `side1` from the face moved `start` along its
 /// outward normal, and with `side2` against that direction by `side2` too
-/// (both > 0). Faces are named after `feature` as an extrusion's:
+/// (both > 0, or one of two negative with `side1 + side2 > 0` as a
+/// [`SideEnd::Distance`] of two sides may be, mitcad#765). Faces are named
+/// after `feature` as an extrusion's:
 /// `side(<edge>)` from each edge of the face, by the edge's name in the
 /// body (an edge without one, a surface body's free edge, by its index
 /// among the face's edges), and the caps `start(<key>)` and `end(<key>)`:

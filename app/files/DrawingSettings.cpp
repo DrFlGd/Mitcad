@@ -44,7 +44,8 @@ DrawingSettings DrawingSettings::load(QSettings& settings) {
   DrawingSettings s;
   settings.beginGroup(kGroup);
   const QString format = settings.value(QStringLiteral("format"), s.format).toString();
-  if (format == QStringLiteral("pdf") || format == QStringLiteral("svg") || format == QStringLiteral("dxf")) {
+  if (format == QStringLiteral("pdf") || format == QStringLiteral("svg") || format == QStringLiteral("dxf") ||
+      format == QStringLiteral("dwg")) {
     s.format = format;
   }
   const QString sheet = settings.value(QStringLiteral("sheet"), s.sheet).toString();

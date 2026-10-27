@@ -69,48 +69,9 @@ QJsonObject exportCommand(const QString& path, const QString& format, const QStr
           {QStringLiteral("on_bed"), true}};
 }
 
-// A number of the bed's log line: three decimals, no "-0.000".
-QString bedNumber(double value) {
-  return QString::number(std::abs(value) < 0.0005 ? 0.0 : value, 'f', 3);
-}
-
-// How an export put the bodies on the print bed (mitcad#731), for the log:
-// the body and face on the bed, the plate's centre and the transform after
-// the design's placements (rows "a b c t"); the bodies kept as assembled;
-// or as in the design; then each bed face that cannot be used.
-QString bedLog(const QJsonObject& bed) {
-  const QJsonArray plate = bed.value(QStringLiteral("plate")).toArray();
-  const QString centre = QStringLiteral("%1,%2").arg(bedNumber(plate.at(0).toDouble()),
-                                                     bedNumber(plate.at(1).toDouble()));
-  QString line;
-  if (bed.value(QStringLiteral("body")).isString()) {
-    QStringList rows;
-    for (const QJsonValue& row : bed.value(QStringLiteral("transform")).toArray()) {
-      QStringList numbers;
-      for (const QJsonValue& number : row.toArray()) {
-        numbers << bedNumber(number.toDouble());
-      }
-      rows << numbers.join(QLatin1Char(' '));
-    }
-    line = QStringLiteral("%1 on %2, plate %3, transform %4")
-               .arg(bed.value(QStringLiteral("name")).toString(), bed.value(QStringLiteral("face")).toString(),
-                    centre, rows.join(QStringLiteral(" | ")));
-  } else if (!bed.value(QStringLiteral("kept")).toArray().isEmpty()) {
-    QStringList kept;
-    for (const QJsonValue& uid : bed.value(QStringLiteral("kept")).toArray()) {
-      kept << uid.toString();
-    }
-    line = QStringLiteral("kept as assembled: %1").arg(kept.join(QStringLiteral(", ")));
-  } else {
-    line = QStringLiteral("as in the design");
-  }
-  for (const QJsonValue& value : bed.value(QStringLiteral("problems")).toArray()) {
-    const QJsonObject problem = value.toObject();
-    line += QStringLiteral("; %1: %2").arg(problem.value(QStringLiteral("name")).toString(),
-                                           problem.value(QStringLiteral("reason")).toString());
-  }
-  return line;
-}
+// How an export put the bodies on the print bed (mitcad#731), for the log
+// (Print3d.hpp; Save As Mesh logs it too, mitcad#734).
+QString bedLog(const QJsonObject& bed) { return printBedLog(bed); }
 
 // An export's warnings, one per line.
 QStringList exportWarnings(const QJsonObject& result) {
@@ -182,35 +143,44 @@ QString MainWindow::designPrinterName() const {
 }
 
 QVector<QStringList> MainWindow::processOwnSettings() const {
-  // The owners below the root with process values of their own, from the
-  // design's process row (`overrides`), each once with what it sets in the
-  // one wording (mitcad#655): "Body1: Walls", "Body1: 3 settings".
+  // The owners below the root with process values of their own, each once
+  // with what it sets in the one wording (mitcad#655): "Body1: Walls",
+  // "Body1: 3 settings". From the answer's `print_overrides`, whatever the
+  // process (mitcad#747: also with Slicer default, which chooses no row;
+  // the export writes them all the same).
   PrintKeyTable keys;
   try {
     keys = PrintKeyTable(queryObject({{QStringLiteral("query"), QStringLiteral("print_keys")}}));
   } catch (const std::exception&) {
     // Counted only.
   }
-  QVector<QStringList> owners;
-  for (const LibraryItem& item : queryLibraryItems(*this, QStringLiteral("process"), projectFolder())) {
-    if (!item.chosen) {
-      continue;
+  QJsonArray overrides;
+  try {
+    QJsonObject query{{QStringLiteral("query"), QStringLiteral("library_items")},
+                      {QStringLiteral("kind"), QStringLiteral("process")}};
+    const QString project = projectFolder();
+    if (!project.isEmpty()) {
+      query.insert(QStringLiteral("project"), project);
     }
-    for (const QJsonValue& value : item.row.value(QStringLiteral("overrides")).toArray()) {
-      const QJsonObject owner = value.toObject();
-      const QString uid = owner.value(QStringLiteral("owner")).toString();
-      const QString name = owner.value(QStringLiteral("name")).toString();
-      QStringList changed;
-      for (const QJsonValue& key : owner.value(QStringLiteral("keys")).toArray()) {
-        const QString plain = keys.plainName(key.toString());
-        changed << (plain.isEmpty() ? tr("Process") : plain);
-      }
-      const QString sentence = changed.size() > 2 ? tr("%1: %2 settings").arg(name).arg(changed.size())
-                                                  : tr("%1: %2").arg(name, changed.join(QStringLiteral(", ")));
-      const bool seen = std::any_of(owners.begin(), owners.end(), [&uid](const QStringList& o) { return o.value(0) == uid; });
-      if (!seen) {
-        owners.append({uid, name, sentence});
-      }
+    overrides = queryObject(query).value(QStringLiteral("print_overrides")).toArray();
+  } catch (const std::exception&) {
+    // None to show.
+  }
+  QVector<QStringList> owners;
+  for (const QJsonValue& value : std::as_const(overrides)) {
+    const QJsonObject owner = value.toObject();
+    const QString uid = owner.value(QStringLiteral("owner")).toString();
+    const QString name = owner.value(QStringLiteral("name")).toString();
+    QStringList changed;
+    for (const QJsonValue& key : owner.value(QStringLiteral("keys")).toArray()) {
+      const QString plain = keys.plainName(key.toString());
+      changed << (plain.isEmpty() ? tr("Process") : plain);
+    }
+    const QString sentence = changed.size() > 2 ? tr("%1: %2 settings").arg(name).arg(changed.size())
+                                                : tr("%1: %2").arg(name, changed.join(QStringLiteral(", ")));
+    const bool seen = std::any_of(owners.begin(), owners.end(), [&uid](const QStringList& o) { return o.value(0) == uid; });
+    if (!seen) {
+      owners.append({uid, name, sentence});
     }
   }
   return owners;

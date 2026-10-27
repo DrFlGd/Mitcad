@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use crate::DwgError;
 use crate::classes::Class;
 use crate::container::{self, Sections};
-use crate::testfile::TestDrawing;
+use crate::header::HeaderVars;
 
 fn corrupt(msg: impl Into<String>) -> DwgError {
     DwgError::Corrupt(format!("R2007 container: {}", msg.into()))
@@ -520,12 +520,12 @@ pub fn read(file: &[u8]) -> Result<Sections, DwgError> {
 /// Writes an R2007 file (the test files): the meta data, the file header
 /// (uncompressed), the page map, the data pages (compressed, coded and
 /// interleaved) and the section map.
-pub fn write(d: &TestDrawing, classes: &[Class], objects: &BTreeMap<u64, Vec<u8>>) -> Vec<u8> {
-    use crate::testfile::object_stream;
+pub fn write(header: &HeaderVars, classes: &[Class], objects: &BTreeMap<u64, Vec<u8>>) -> Vec<u8> {
+    use crate::objmap::object_stream;
     let v = crate::Version::R2007;
     let (object_data, map) = object_stream(objects, Vec::new(), 0);
     let sections: Vec<(&str, Vec<u8>, usize)> = vec![
-        (container::HEADER, crate::header::write(v, &d.header), 0x800),
+        (container::HEADER, crate::header::write(v, header), 0x800),
         (
             container::CLASSES,
             crate::classes::write(classes, v),
@@ -657,7 +657,7 @@ pub fn write(d: &TestDrawing, classes: &[Class], objects: &BTreeMap<u64, Vec<u8>
 
     let mut out = Vec::new();
     out.extend_from_slice(b"AC1021");
-    out.extend_from_slice(&[0, 0, 0, 0, 0, crate::testfile::MAINTENANCE, 0]);
+    out.extend_from_slice(&[0, 0, 0, 0, 0, crate::header::MAINTENANCE, 0]);
     out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&[0x1f, 0x00]);
     out.extend_from_slice(&30u16.to_le_bytes());

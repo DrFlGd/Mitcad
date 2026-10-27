@@ -40,6 +40,7 @@
 #include <Geom2d_TrimmedCurve.hxx>
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <GeomAdaptor_Surface.hxx>
+#include <Geom_ConicalSurface.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_Surface.hxx>
@@ -97,6 +98,10 @@ struct Thread {
   // How far the flank clearance moves each flank along the axis, into the
   // tooth (the radii above already carry the radial clearance).
   double relief = 0.0;
+  // A taper pipe thread (mitcad#733): how much every radius grows per
+  // length along `along`; the radii above are those at the origin (0 for a
+  // straight thread).
+  double slope = 0.0;
 
   double crest() const { return internal ? minor_radius : major_radius; }
   double root() const { return internal ? major_radius : minor_radius; }
@@ -176,15 +181,28 @@ TopoDS_Shape groove_sweep(const Thread& t, double theta, int turns, double low, 
   const gp_Dir start_direction = t.direction(theta);
   const double centre = t.groove_centre(theta);
   const gp_Pnt base = t.origin.Translated(gp_Vec(t.along) * centre);
-  const occ::handle<Geom_CylindricalSurface> surface =
-      new Geom_CylindricalSurface(gp_Ax3(base, t.along, start_direction), t.pitch_radius);
+  // (A taper pipe thread's radii where the section is, mitcad#733.)
+  const double grown = t.slope * centre;
+  occ::handle<Geom_Surface> surface;
+  // Along the surface's second parameter per pitch along the axis.
+  double rise = t.pitch;
+  if (t.slope == 0.0) {
+    surface = new Geom_CylindricalSurface(gp_Ax3(base, t.along, start_direction), t.pitch_radius);
+  } else {
+    // The helix of a taper pipe thread on the cone of its pitch diameter:
+    // the second parameter runs along the cone's line, 1 / cos of its
+    // half-angle per length along the axis.
+    const double half_angle = std::atan(t.slope);
+    surface = new Geom_ConicalSurface(gp_Ax3(base, t.along, start_direction), half_angle, t.pitch_radius + grown);
+    rise = t.pitch / std::cos(half_angle);
+  }
   // On the unrolled cylinder the helix is a line: a turn of 2 pi about the
   // axis rises one pitch, or falls one for a left-hand thread. (Turning the
   // other way instead, or mirroring a right-hand groove, gives sweeps that
   // OCCT's boolean cuts wrongly.)
   const occ::handle<Geom2d_Line> line =
-      new Geom2d_Line(gp_Pnt2d(0.0, 0.0), gp_Dir2d(kTwoPi, t.right_handed ? t.pitch : -t.pitch));
-  const double turn = std::hypot(kTwoPi, t.pitch);
+      new Geom2d_Line(gp_Pnt2d(0.0, 0.0), gp_Dir2d(kTwoPi, t.right_handed ? rise : -rise));
+  const double turn = std::hypot(kTwoPi, rise);
   BRepBuilderAPI_MakeWire wire;
   for (int k = 0; k < turns; ++k) {
     BRepBuilderAPI_MakeEdge helix(line, surface, turn * k, turn * (k + 1));
@@ -199,7 +217,8 @@ TopoDS_Shape groove_sweep(const Thread& t, double theta, int turns, double low, 
 
   // The section in the axial plane where the helix starts.
   const auto corner = [&](double side, double radius) {
-    return base.Translated(gp_Vec(t.along) * (side * t.groove_half(radius)) + gp_Vec(start_direction) * radius);
+    return base.Translated(gp_Vec(t.along) * (side * t.groove_half(radius)) +
+                           gp_Vec(start_direction) * (radius + grown));
   };
   BRepBuilderAPI_MakePolygon section(corner(-1.0, low), corner(1.0, low), corner(1.0, high), corner(-1.0, high),
                                      true);
@@ -250,7 +269,10 @@ TopoDS_Shape grooves(const Thread& t, double low, double high, double from, doub
   const double target = t.right_handed ? from - 1.5 * t.pitch : to + 1.5 * t.pitch;
   const double first = t.angle + sign * kTwoPi * (target - t.groove_centre(t.angle)) / t.pitch;
   const int turns = static_cast<int>(std::ceil((to - from) / t.pitch)) + 3;
-  screws = screw_surfaces(t, first, turns, low, high);
+  // (A taper pipe thread's faces lie on no screw surface.)
+  if (t.slope == 0.0) {
+    screws = screw_surfaces(t, first, turns, low, high);
+  }
   return common_of(groove_sweep(t, first, turns, low, high), tube(t, 0.0, outer, from, to),
                    "the thread's grooves could not be cut to length");
 }
@@ -458,6 +480,71 @@ ShapePtr chamfer_face(const Shape& body, const Thread& t, double from, double to
                       t.face_radius, face);
 }
 
+// A taper pipe thread's cone of radius `radius` (at the origin, growing by
+// the slope along the axis) cut out of `body` over [from, to] (mitcad#733):
+// for an internal thread what lies inside it, down to a little inside the
+// face, for an external one what lies outside it, up to a little outside
+// the face; from `beyond` past `from` and `to` (a free end's run-out), and
+// only where the cone lies off the face. The body as it was where the cone
+// does not reach the face.
+ShapePtr cut_taper(ShapePtr body, const Thread& t, double radius, double from, double to, double beyond_from,
+                   double beyond_to, const std::string& name) {
+  const double margin = 0.1 * t.pitch;
+  const double face = t.face_radius;
+  // The other radius of the tool's section: inside the face for an
+  // internal thread, outside it for an external one.
+  const double other = t.internal ? std::max(face - margin, 0.5 * face) : face + margin;
+  const auto at = [&](double s) { return radius + t.slope * s; };
+  // Where the cone crosses the other radius: the tool ends there.
+  double low = from - beyond_from;
+  double high = to + beyond_to;
+  if (t.slope != 0.0) {
+    const double crossing = (other - radius) / t.slope;
+    // The cone lies off the face (inside the material) on one side of the
+    // crossing: the side where the internal cone is wider, the external
+    // one narrower than `other`.
+    const bool before = t.internal == (t.slope < 0.0);
+    if (before) {
+      high = std::min(high, crossing);
+    } else {
+      low = std::max(low, crossing);
+    }
+  }
+  const auto off_face = [&](double s) { return t.internal ? at(s) > face + kSame : at(s) < face - kSame; };
+  if (high - low <= kSame || !(off_face(low) || off_face(high))) {
+    return body;
+  }
+  const auto point = [&](double s, double r) {
+    return t.origin.Translated(gp_Vec(t.along) * s + gp_Vec(t.reference) * r);
+  };
+  // (A corner where the cone meets the other radius is one point.)
+  std::vector<gp_Pnt> corners{point(low, other)};
+  if (std::abs(at(low) - other) > kSame) {
+    corners.push_back(point(low, at(low)));
+  }
+  corners.push_back(point(high, at(high)));
+  if (std::abs(at(high) - other) > kSame) {
+    corners.push_back(point(high, other));
+  }
+  if (corners.size() < 3) {
+    return body;
+  }
+  BRepBuilderAPI_MakePolygon section;
+  for (const gp_Pnt& corner : corners) {
+    section.Add(corner);
+  }
+  section.Close();
+  BRepBuilderAPI_MakeFace profile(section.Wire(), true);
+  if (!profile.IsDone()) {
+    throw std::runtime_error("the thread's taper could not be built");
+  }
+  BRepPrimAPI_MakeRevol revol(profile.Face(), gp_Ax1(t.origin, t.along), kTwoPi);
+  if (!revol.IsDone()) {
+    throw std::runtime_error("the thread's taper could not be built");
+  }
+  return detail::local_boolean(*body, revol.Shape(), detail::LocalOperation::Cut, name).shape;
+}
+
 // One face's thread on the body: the teeth added where the face lies
 // inside the crest, the end chamfers cut, then the grooves (and what lies
 // beyond the crest) removed. `screws` gets the screw surfaces the grooves'
@@ -466,6 +553,38 @@ ShapePtr thread_face(const Shape& body, const std::string& face_reference, const
                      const EndChamfers& chamfers, const std::string& name,
                      std::vector<occ::handle<Geom_Surface>>& screws) {
   const double margin = 0.1 * t.pitch;
+  if (t.slope != 0.0) {
+    // A taper pipe thread (mitcad#733): no teeth added (the face inside
+    // the crest leaves them short, as a tap leaves a drilled bore); what
+    // lies beyond the crest's cone goes, then the grooves between the
+    // root's and the crest's cones, past the free ends by a pitch.
+    ShapePtr current = std::make_shared<Shape>(body);
+    const double inner = t.internal ? std::max(0.0, std::min(t.face_radius, t.crest()) - margin) : t.minor_radius;
+    const double outer = t.internal ? t.major_radius : std::max(t.face_radius, t.crest()) + margin;
+    // (The radii at either end of the part.)
+    const double low_grown = t.slope * from;
+    const double high_grown = t.slope * to;
+    const bool free_low = from <= kSame && !material_past(current->occt(), t, from, -1.0, inner + low_grown,
+                                                          outer + low_grown);
+    const bool free_high = to >= t.length - kSame && !material_past(current->occt(), t, to, 1.0,
+                                                                     inner + high_grown, outer + high_grown);
+    const double run_low = free_low ? t.pitch : 0.0;
+    const double run_high = free_high ? t.pitch : 0.0;
+    current = cut_taper(current, t, t.crest(), from, to, run_low, run_high, name);
+    const double reach = t.reach();
+    const double widest = std::max(std::abs(t.slope * (from - run_low)), std::abs(t.slope * (to + run_high)));
+    TopoDS_Shape cut;
+    if (t.internal) {
+      const double past = std::min(margin / 2.0, 0.5 * (t.minor_radius - (t.pitch_radius - reach)));
+      cut = grooves(t, t.minor_radius - past, t.major_radius, from - run_low, to + run_high,
+                    t.major_radius + widest + margin, screws);
+    } else {
+      const double past = std::min(margin / 2.0, 0.5 * (t.pitch_radius + reach - t.major_radius));
+      cut = grooves(t, t.minor_radius, t.major_radius + past, from - run_low, to + run_high,
+                    t.major_radius + widest + margin, screws);
+    }
+    return detail::local_boolean(*current, cut, detail::LocalOperation::Cut, name).shape;
+  }
   // The face inside the crest: the band between them is filled first,
   // over the face itself (its pieces moved out to the crest, along the
   // radii).
@@ -948,6 +1067,9 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
     detail::require_positive("thread minor diameter", spec.minor);
     detail::require_positive("thread pitch diameter", spec.pitch_diameter);
     detail::require_finite("thread angle", spec.angle);
+    for (const double turned : spec.angles) {
+      detail::require_finite("thread angle", turned);
+    }
     if (!(spec.minor < spec.pitch_diameter && spec.pitch_diameter < spec.major)) {
       throw std::invalid_argument("the thread's diameters must grow from the minor to the pitch to the major one");
     }
@@ -957,6 +1079,13 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
     if (spec.major - spec.pitch_diameter >= 2.0 * reach || spec.pitch_diameter - spec.minor >= 2.0 * reach) {
       throw std::invalid_argument("the thread's diameters are too far apart for its pitch");
     }
+  }
+  detail::require_finite("thread taper", spec.taper);
+  if (spec.taper < 0.0 || spec.taper >= 0.5) {
+    throw std::invalid_argument("the thread's taper must be 0 or more and less than 1:2");
+  }
+  if (spec.taper > 0.0 && spec.chamfer) {
+    throw std::invalid_argument("a taper pipe thread has no end chamfers");
   }
   if (spec.chamfer) {
     detail::require_finite("thread chamfer angle", spec.chamfer_angle);
@@ -1018,7 +1147,13 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
         from = std::max(from, 0.0);
         to = std::min(to, cylinder.length);
       }
-      const Thread thread = thread_of(cylinder, spec);
+      Thread thread = thread_of(cylinder, spec);
+      if (!spec.angles.empty()) {
+        if (spec.angles.size() != spec.faces.size()) {
+          throw std::invalid_argument("the thread's angles must be given for each face");
+        }
+        thread.angle = spec.angles[k];
+      }
       EndChamfers chamfers;
       if (spec.chamfer) {
         chamfers.low = spec.chamfer_ends[k].low;
@@ -1028,13 +1163,41 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
         chamfers.low_name = face_name(spec.feature, "thread_chamfer_low", face);
         chamfers.high_name = face_name(spec.feature, "thread_chamfer_high", face);
       }
-      if (!thread.along.IsEqual(cylinder.axis.Direction(), 1.0e-9)) {
+      const bool reversed = !thread.along.IsEqual(cylinder.axis.Direction(), 1.0e-9);
+      if (reversed) {
         // Measured along the thread's axis.
         std::swap(from, to);
         from = cylinder.length - from;
         to = cylinder.length - to;
         std::swap(chamfers.low, chamfers.high);
         std::swap(chamfers.low_name, chamfers.high_name);
+      }
+      // A taper pipe thread (mitcad#733): where it starts, and which ends
+      // of its part are free (nothing of the body beyond them).
+      bool free_low = false;
+      bool free_high = false;
+      if (spec.taper > 0.0) {
+        const double margin = 0.1 * thread.pitch;
+        const double inner = std::max(thread.face_radius - margin, 0.5 * thread.face_radius);
+        const double outer = thread.face_radius + margin;
+        free_low = from <= kSame && !material_past(current->occt(), thread, from, -1.0, inner, outer);
+        free_high = to >= thread.length - kSame && !material_past(current->occt(), thread, to, 1.0, inner, outer);
+        bool start_high = false;
+        if (!spec.full_length) {
+          start_high = spec.high_end != reversed;
+        } else if (free_low != free_high) {
+          start_high = free_high;
+        } else {
+          start_high = spec.taper_high_end != reversed;
+        }
+        // From the start into the thread the diameters shrink inside a
+        // hole and grow along a shaft.
+        const double into = start_high ? -1.0 : 1.0;
+        thread.slope = (thread.internal ? -1.0 : 1.0) * into * spec.taper / 2.0;
+        const double start = start_high ? to : from;
+        thread.pitch_radius -= thread.slope * start;
+        thread.major_radius -= thread.slope * start;
+        thread.minor_radius -= thread.slope * start;
       }
       if (spec.groove) {
         threads.push_back(face_name(spec.feature, "thread", face));
@@ -1043,6 +1206,13 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
         screws.insert(screws.end(), own.begin(), own.end());
         named.push_back({threads.back(), thread.origin, thread.along});
         named.push_back({face, thread.origin, thread.along});
+      } else if (spec.taper > 0.0) {
+        // The cone of the bore's minor diameter, or of the shaft's major
+        // one, past the free ends by a tenth of a pitch.
+        const double run = 0.1 * thread.pitch;
+        current = cut_taper(current, thread, thread.internal ? thread.minor_radius : thread.major_radius, from, to,
+                            free_low ? run : 0.0, free_high ? run : 0.0,
+                            face_name(spec.feature, "thread_taper", face));
       } else {
         current = chamfer_face(*current, thread, from, to, chamfers, face);
       }

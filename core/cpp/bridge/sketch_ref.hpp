@@ -26,4 +26,8 @@ IndexedElement indexed_element(const geometry::Shape& shape, std::uint8_t kind, 
 rust::Vec<SectionPiece> section_curves(const geometry::Shape& shape, rust::Str name, std::array<double, 3> origin,
                                        std::array<double, 3> normal);
 
+// Crossing points of a sketch's Intersect (mitcad#736): x0, y0, z0, x1, ...
+rust::Vec<double> section_points(const geometry::Shape& shape, rust::Str name, std::array<double, 3> origin,
+                                 std::array<double, 3> normal);
+
 } // namespace mitcad::bridge

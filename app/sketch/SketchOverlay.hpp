@@ -107,6 +107,13 @@ public:
   // background's tone changes and when the sketch's edit starts: a session
   // without a desktop (Windows session 0) may never paint it.
   void logDimensionHalos();
+  // Logs "Sketch axes drawn: origin at x,y in the view; x axis x,y to x,y;
+  // y axis x,y to x,y" (window coordinates; "outside the view", "none")
+  // when what paintAxes draws changes, for the UI tests (mitcad#739: the
+  // sketch draws its origin and axes whatever the Origin folder's light
+  // bulb says). Called when the overlay paints and with the "Sketch view"
+  // line, as a session without a desktop may never paint it.
+  void logAxes();
 
 protected:
   void paintEvent(QPaintEvent* event) override;
@@ -126,7 +133,18 @@ private:
     QRectF textRect;
   };
 
+  // The sketch's origin and its x and y axes as paintAxes draws them, in
+  // view pixels: each axis a line across the view from its negative to its
+  // positive end, none when the plane is seen edge on or the axis misses
+  // the view.
+  struct AxesShape {
+    QPointF origin;
+    std::optional<QLineF> x;
+    std::optional<QLineF> y;
+  };
+
   Projection projection() const;
+  AxesShape axesShape() const;
   std::vector<Glyph> glyphs() const;
   std::vector<DimensionLayout> dimensions() const;
   QRectF textRect(const QPointF& at, const QString& text) const;
@@ -157,6 +175,9 @@ private:
   QString m_loggedDimensionHalos;
   // The last "Sketch inactive drawn:" line logged (mitcad#721).
   QString m_loggedInactive;
+  // The last "Sketch axes drawn:" line logged (mitcad#739); cleared when
+  // the overlay hides, so that every sketch edit logs it again.
+  QString m_loggedAxes;
 };
 
 } // namespace mitcad::sketch

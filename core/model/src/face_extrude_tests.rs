@@ -220,6 +220,82 @@ fn two_sides_symmetric_and_a_start_offset() {
     );
 }
 
+/// Signed two-sided distances (mitcad#765) on a body face: a negative side
+/// ends on the other side's side, the solid lies between the two ends
+/// (5 and -3: from 3 to 5 above the face); ends that meet are refused;
+/// without `signed` the sizes count.
+#[test]
+fn signed_two_sides_of_a_face_lie_between_their_ends() {
+    let mut b = block();
+    let top = top(&b);
+    let new_body = BodyUid::new(FeatureUid(3), 0);
+    let two_sides = |d1: f64, d2: f64, signed: bool| {
+        json!({"type": "two_sides", "signed": signed,
+               "side1": {"type": "distance", "distance": d1},
+               "side2": {"type": "distance", "distance": d2}})
+    };
+    let uid = add(
+        &mut b.doc,
+        face_extrusion(b.body, &top, two_sides(5.0, -3.0, true), "new_body"),
+    );
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        format!("extrude_face F3 {top} key {top} from 0: 5; -3")
+    );
+    // From the top 3 to 5 up.
+    assert_eq!(
+        history(&b.doc, new_body),
+        format!("face_prism(F3:{top}:3..5)")
+    );
+    // Mirrored, with tapers: into the block, 3 to 5 below the top.
+    let mut mirrored = two_sides(-3.0, 5.0, true);
+    mirrored["side1"]["taper"] = json!(0.1);
+    mirrored["side2"]["taper"] = json!(-0.05);
+    b.doc
+        .edit_feature(
+            uid,
+            &def(face_extrusion(b.body, &top, mirrored, "new_body")),
+        )
+        .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        format!("extrude_face F3 {top} key {top} from 0: -3; 5 taper 0.1 -0.05")
+    );
+    // Ends that meet are refused.
+    let error = b
+        .doc
+        .edit_feature(
+            uid,
+            &def(face_extrusion(
+                b.body,
+                &top,
+                two_sides(5.0, -5.0, true),
+                "new_body",
+            )),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("the two sides overlap"), "{error}");
+    // Without the flag each side goes its own way by its size.
+    b.doc
+        .edit_feature(
+            uid,
+            &def(face_extrusion(
+                b.body,
+                &top,
+                two_sides(5.0, -3.0, false),
+                "new_body",
+            )),
+        )
+        .unwrap();
+    assert_eq!(
+        last_spec(&b.doc),
+        format!("extrude_face F3 {top} key {top} from 0: 5; 3")
+    );
+}
+
 #[test]
 fn a_face_of_an_imported_body_extrudes_in_a_design_without_sketches() {
     let mut doc = Document::new(MockKernel::default());

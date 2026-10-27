@@ -55,9 +55,18 @@ namespace {
 // degrees itself is allowed (radians, with rounding).
 constexpr double kMaxTaper = 85.0 * 3.14159265358979323846 / 180.0 + 1.0e-9;
 
-void check_side(const ExtrudeSide& side) {
+// One side's distance is > 0; one of two sides may be negative (mitcad#765:
+// it ends on the other side's side), never zero.
+void check_side(const ExtrudeSide& side, bool two) {
   if (!side.target) {
-    detail::require_positive("extrude distance", side.distance);
+    if (two) {
+      detail::require_finite("extrude distance", side.distance);
+      if (side.distance == 0.0) {
+        throw std::invalid_argument("extrude distance must not be zero");
+      }
+    } else {
+      detail::require_positive("extrude distance", side.distance);
+    }
   }
   detail::require_finite("taper angle", side.taper);
   if (std::abs(side.taper) > kMaxTaper) {
@@ -261,6 +270,15 @@ ShapePtr distance_side(const SweepFace& face, double distance, double taper, con
   return tapered(*solid, neutral, along, taper, caps);
 }
 
+ShapePtr past_other_end(const Shape& solid, const gp_Pln& start, const gp_Dir& along, double distance,
+                        const std::string& near, const NameList& cut) {
+  const gp_Pln end_plane(start.Location().Translated(gp_Vec(along) * distance), start.Axis().Direction());
+  return split_keep(
+      solid, plane_tool(end_plane, bounds_of(solid.occt())), cut,
+      [&near](const Shape& piece) { return !has_face_named(piece, near); },
+      "the extrusion past the other side's end");
+}
+
 } // namespace detail
 
 ShapePtr extrude_feature(const ExtrudeFeatureSpec& spec) {
@@ -273,13 +291,25 @@ ShapePtr extrude_feature(const ExtrudeFeatureSpec& spec) {
   if (spec.chain_keys.size() != spec.chains.size()) {
     throw std::invalid_argument("each chain of curves needs its key");
   }
-  check_side(spec.side1);
   const bool two = spec.side2.has_value();
+  check_side(spec.side1, two);
+  // The side of two that ends on the other side's side (a negative
+  // distance, mitcad#765): 0 or 1, -1 for none.
+  int short_side = -1;
   if (two) {
-    check_side(*spec.side2);
+    check_side(*spec.side2, two);
     if (spec.side1.thin.has_value() != spec.side2->thin.has_value()) {
       throw std::invalid_argument("both sides of a thin extrusion need a wall");
     }
+    const bool short1 = !spec.side1.target && spec.side1.distance < 0.0;
+    const bool short2 = !spec.side2->target && spec.side2->distance < 0.0;
+    if (short1 && short2) {
+      throw std::invalid_argument("both sides of the extrusion end on the other side");
+    }
+    if (!spec.side1.target && !spec.side2->target && !(spec.side1.distance + spec.side2->distance > 1.0e-7)) {
+      throw std::invalid_argument("the two sides of the extrusion overlap: it has no length");
+    }
+    short_side = short1 ? 0 : short2 ? 1 : -1;
   }
   detail::require_finite("start offset", spec.start_offset);
   const gp_Dir normal = spec.frame.normal();
@@ -313,7 +343,9 @@ ShapePtr extrude_feature(const ExtrudeFeatureSpec& spec) {
                            (!two || (!spec.side2->target && same_wall(spec.side1.thin, spec.side2->thin)));
     if (one_prism) {
       // Both sides in one prism; with two sides the far cap of side one is
-      // the start (`startFaces` in .f3d) and the far cap of side two the end.
+      // the start (`startFaces` in .f3d) and the far cap of side two the end
+      // (a negative side's end lies on the other side's side: the prism
+      // then does not reach the start, mitcad#765).
       const double low = two ? -spec.side2->distance : 0.0;
       const double length = spec.side1.distance - low;
       if (!(length > 1.0e-7)) {
@@ -329,16 +361,31 @@ ShapePtr extrude_feature(const ExtrudeFeatureSpec& spec) {
                                             two ? start : end));
       }
     } else {
+      // The plane the sides start from.
+      const gp_Pln start_plane =
+          oblique ? *oblique : gp_Pln(spec.frame.origin.Translated(gp_Vec(normal) * offset), normal);
       for (int k = 0; k < (two ? 2 : 1); ++k) {
+        // A side ending on the other side's side has no solid of its own:
+        // it cuts the other side's off where it ends (mitcad#765).
+        if (k == short_side) {
+          continue;
+        }
         const ExtrudeSide& side = k == 0 ? spec.side1 : *spec.side2;
         const gp_Dir along = k == 0 ? spec.direction : spec.direction.Reversed();
         // Touching profiles taper as one.
         for (const detail::SweepFace& face : profile_faces(spec, side, taper)) {
           const NameList near = detail::cap_names(spec.feature, two ? "mid" : "start", face);
           const NameList far = detail::cap_names(spec.feature, k == 0 && two ? "start" : "end", face);
-          parts.push_back(oblique ? oblique_side(spec.feature, face, *oblique, side, along, near, far)
+          ShapePtr part = oblique ? oblique_side(spec.feature, face, *oblique, side, along, near, far)
                                   : parallel_side(spec.feature, detail::transformed(face, to_start),
-                                                  side, along, near, far));
+                                                  side, along, near, far);
+          if (short_side >= 0) {
+            // The short side's end, named as its far cap.
+            const double cut_at = -(short_side == 0 ? spec.side1 : *spec.side2).distance;
+            const NameList short_end = detail::cap_names(spec.feature, short_side == 0 ? "start" : "end", face);
+            part = detail::past_other_end(*part, start_plane, along, cut_at, near.front(), short_end);
+          }
+          parts.push_back(part);
         }
       }
     }

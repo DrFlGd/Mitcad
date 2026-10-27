@@ -21,6 +21,10 @@
 #   6. A design whose stored face is gone: 3D Print reports it. A side's
 #      menu offers Clear Print Bed Face (beside Set); cleared, 3D Print
 #      warns no more.
+#   7. A box made a surface body (its bottom unstitched) that keeps its
+#      print bed face (mitcad#737): the menus of its top and of a side
+#      offer Clear Print Bed Face only, show no bed face, and Clear clears
+#      it.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-print-bed-test.ps1 [-App build\dev\mitcad.exe] [-Cli build\dev\tools\cli\mitcad-cli.exe] [-Out dir] [-QtBin dir]
 param(
@@ -71,6 +75,25 @@ Set-Content -Encoding ascii $modelScript @'
 '@
 $made = & $Cli run $modelScript --save $design
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $design)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+
+# The box with its top as the print bed face, then its bottom unstitched:
+# Plate (F1.b0) is a surface body of the other five faces that keeps the
+# face (mitcad#737).
+$surfaceScript = Join-Path $work 'surface.json'
+$surface = Join-Path $work 'surface.mitcad'
+Set-Content -Encoding ascii $surfaceScript @'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [0, 0],
+    "length": 40, "width": 20, "height": 10, "operation": "new_body"}},
+  {"cmd": "set_print_bed_face", "uid": "F1.b0", "face": "F1:top"},
+  {"cmd": "add_feature", "def": {"type": "unstitch", "body": "F1.b0", "faces": ["F1:bottom"]}},
+  {"cmd": "rename_body", "uid": "F1.b0", "name": "Plate"}
+]
+'@
+$made = & $Cli run $surfaceScript --save $surface
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $surface)) { Ui-Fail "mitcad-cli surface: $($made -join ' / ')" }
+$kept = (Get-Content -Raw $surface | ConvertFrom-Json).bodies | Where-Object { $_.uid -eq 'F1.b0' }
+if ($kept.print_bed_face -ne 'F1:top') { Ui-Fail "the surface body's print bed face in the file: $($kept.print_bed_face)" }
 
 # Pick-Places: Offset Face started (F7) and cancelled, for the log's pick
 # places of the faces.
@@ -228,5 +251,24 @@ Send
 Ui-ExpectNew '3D Print bed: as in the design' 'written as the design has it' 30
 Slicer-Ran
 Expect-NoNew 'the print bed face is gone' '3D Print warns no more'
+Ui-StopApp
+
+Write-Host '--- 7. A surface body that keeps a print bed face'
+Ui-StartApp 'print-bed-surface' @('--open', $surface)
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-ExpectLog 'Bodies shown: F1.b0' 'the surface body shown'
+Right-Click 'F1:top'
+Expect-Entry 'Clear Print Bed Face' $true
+Expect-Entry 'Set as Print Bed Face' $false
+Ui-Step 'close the menu (Esc)'           { Ui-Key 'Escape' }
+Ui-Step 'clear the selection (Esc)'      { Ui-Key 'Escape' }
+Side-Face
+Right-Click $script:side
+Expect-Entry 'Clear Print Bed Face' $true
+Expect-Entry 'Set as Print Bed Face' $false
+Expect-NoNew 'Print bed face shown:' 'no print bed face shown on a surface body'
+Ui-Mark
+Menu-Choose 'Clear Print Bed Face'
+Ui-ExpectNew 'Print bed face of Plate: none' 'the surface body''s face cleared'
 
 Ui-Finish 'UI Windows print bed test'

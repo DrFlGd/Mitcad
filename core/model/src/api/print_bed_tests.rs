@@ -5,8 +5,10 @@
 //! file; and the 3D print export's `on_bed`, which turns the bodies onto
 //! the one bed face among them and centres them on the plate (a box on its
 //! top, on a tilted face, in a turned component, in a component placed
-//! twice), keeps the bodies as assembled with several bed faces, leaves a
-//! surface body's face out and reports a face that is gone or not planar.
+//! twice), keeps the bodies as assembled with several bed faces or one
+//! body placed twice turned differently, leaves a surface body's face out
+//! (the `bodies` query says why; it can be cleared) and reports a face
+//! that is gone or not planar.
 //! The mock kernel's meshes are the bodies' boxes.
 
 use std::f64::consts::FRAC_PI_2;
@@ -26,6 +28,7 @@ const SIDE: &str = "F2:side(c1[c4,c2])";
 const TOL: f64 = 1e-6;
 const GONE: &str = "the print bed face is gone";
 const NOT_PLANAR: &str = "the print bed face is not planar";
+const NOT_PRINTED: &str = "a surface body is not printed";
 const IDENTITY: mitcad_3mf::Placement = mitcad_3mf::Placement::IDENTITY;
 
 fn command(doc: &mut Document<MockKernel>, command: Value) -> Value {
@@ -461,7 +464,7 @@ fn only_3mf_and_stl_files_go_on_the_bed() {
         &mut doc,
         json!({"cmd": "export", "path": step, "on_bed": true}),
     );
-    assert!(error.contains("only 3MF and STL"), "{error}");
+    assert!(error.contains("only 3MF, STL and OBJ"), "{error}");
     let three = dir.join("print.3mf").to_str().unwrap().to_owned();
     let error = refused(
         &mut doc,
@@ -538,6 +541,56 @@ fn a_component_placed_twice_lies_on_its_face_in_both_places() {
 }
 
 #[test]
+fn a_component_placed_twice_turned_differently_keeps_its_placement() {
+    let mut doc = block();
+    let dir = folder("twice-turned");
+    let body: BodyUid = "F2.b0".parse().unwrap();
+    doc.components_from_bodies(&[body]).unwrap();
+    command(
+        &mut doc,
+        json!({"cmd": "copy_occurrence", "occurrence": "O1",
+               "transform": {"translation": [100, 0, 0],
+                             "rotation": {"axis": [1, 0, 0], "angle": FRAC_PI_2}}}),
+    );
+    set_bed(&mut doc, "F2.b0", json!(top()));
+    let (result, model) = export_3mf(&mut doc, &dir, json!(["F2.b0"]));
+    // The top faces +Z in one place and -Y in the other: no one turn lays
+    // it on the bed in both, so the body stays as it is assembled (mitcad#737).
+    let bed = &result["bed"];
+    assert_eq!(bed["kept"], json!(["F2.b0"]));
+    assert_eq!(bed["body"], Value::Null);
+    assert_eq!(bed["face"], Value::Null);
+    assert_eq!(bed["transform"], Value::Null);
+    assert_eq!(bed["problems"], json!([]));
+    assert_eq!(result["warnings"], json!([]));
+    // The 3MF part's placements are the occurrences' own.
+    let placements = &model.parts[0].placements;
+    assert_eq!(placements.len(), 2);
+    let (first, copy) = if placements[0].translation[0] < 50.0 {
+        (placements[0], placements[1])
+    } else {
+        (placements[1], placements[0])
+    };
+    let numbers = |p: &mitcad_3mf::Placement| -> Vec<f64> {
+        p.linear
+            .iter()
+            .flatten()
+            .chain(&p.translation)
+            .copied()
+            .collect()
+    };
+    for (a, b) in numbers(&first).iter().zip(numbers(&IDENTITY)) {
+        assert!(near(*a, b), "{first:?}");
+    }
+    assert!(near(copy.translation[0], 100.0), "{copy:?}");
+    // The copy turned a quarter about X: its Y goes to Z, its Z to -Y.
+    assert!(near(copy.linear[2][1], 1.0), "{copy:?}");
+    assert!(near(copy.linear[1][2], -1.0), "{copy:?}");
+    assert!(near(copy.linear[2][2], 0.0), "{copy:?}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn a_surface_body_has_no_print_bed_face() {
     let mut doc = block();
     let sheet = ImportBody {
@@ -572,6 +625,23 @@ fn a_surface_body_has_no_print_bed_face() {
     let mut loaded = Document::from_json(&text, MockKernel::default()).unwrap();
     give_surface(&loaded, &face, plane);
     command(&mut loaded, json!({"cmd": "recompute"}));
+    // The `bodies` query says why it is not used (mitcad#737), and the
+    // face can still be cleared.
+    let surface_bed = |doc: &Document<MockKernel>| {
+        let bodies = query(doc, json!({"query": "bodies"}));
+        let entry = bodies
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["uid"] == json!(surface))
+            .unwrap_or_else(|| panic!("no {surface} in {bodies}"))
+            .clone();
+        entry.get("print_bed_face").cloned().unwrap_or(Value::Null)
+    };
+    let stored = surface_bed(&loaded);
+    assert_eq!(stored["face"], json!(face), "{stored}");
+    assert_eq!(stored["faces"].as_array().unwrap().len(), 1, "{stored}");
+    assert_eq!(stored["error"], NOT_PRINTED, "{stored}");
     let dir = folder("surface");
     let path = dir.join("print.3mf").to_str().unwrap().to_owned();
     let result = command(
@@ -583,4 +653,13 @@ fn a_surface_body_has_no_print_bed_face() {
     assert_eq!(result["bed"]["transform"], Value::Null);
     assert_eq!(result["bed"]["problems"], json!([]));
     std::fs::remove_dir_all(&dir).unwrap();
+
+    // Cleared as any body's face (the context menu's Clear only).
+    command(
+        &mut loaded,
+        json!({"cmd": "set_print_bed_face", "uid": surface, "face": null}),
+    );
+    assert_eq!(surface_bed(&loaded), Value::Null);
+    let label = format!("Clear Print Bed Face of {}", loaded.body_name(surface));
+    assert_eq!(document(&loaded)["undo"], label);
 }

@@ -360,7 +360,8 @@ impl<K: Kernel> Document<K> {
     }
 
     /// `print_thickness`: per body the thinnest wall and where it is, the
-    /// triangles of walls under the minimum in design coordinates and how
+    /// triangles of walls under the minimum (whole, or the thin pieces of a
+    /// triangle thin in part, mitcad#767) in design coordinates and how
     /// many regions they make.
     pub(super) fn print_thickness_json(&self, query: &ThicknessQuery) -> Result<Value, ApiError> {
         check_minimum_wall(query.minimum).map_err(ApiError)?;
@@ -379,7 +380,7 @@ impl<K: Kernel> Document<K> {
         let mut truncated = false;
         for body in &bodies {
             self.print_stop()?;
-            let key = result_key("print-thickness-v2", body, &tolerance, &settings);
+            let key = result_key("print-thickness-v3", body, &tolerance, &settings);
             let value = match self.print_cache().result(key) {
                 Some(value) => value,
                 None => {
@@ -391,10 +392,12 @@ impl<K: Kernel> Document<K> {
                     let mesh = print_analysis::placed(&mesh, &body.placement);
                     let found = print_analysis::thickness(&mesh, query.minimum, &cancelled)
                         .map_err(|_| ApiError::from(ModelError::Cancelled))?;
+                    // Where the walls are thin: whole triangles, or the thin
+                    // pieces of those thin in part (mitcad#767).
                     let triangles: Vec<[f64; 9]> = found
-                        .thin
+                        .pieces
                         .iter()
-                        .map(|t| print_analysis::flat(&mesh, *t))
+                        .map(print_analysis::flat_corners)
                         .collect();
                     let value = Arc::new(json!({
                         "thinnest": found.thinnest,

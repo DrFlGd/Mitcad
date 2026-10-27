@@ -19,6 +19,10 @@
 //!   mesh's deviation. A ray that leaves through a face meeting its start
 //!   across a sharp edge within about one sample distance measures the
 //!   edge, not a wall, and is left out (mitcad#689, [`Bvh::across_edge`]).
+//!   What is shown thin is where the wall is thin, not the whole triangle:
+//!   a triangle thin at only some of its samples (a long one at the edge of
+//!   a thin region) is subdivided more finely and only its thin pieces are
+//!   kept (mitcad#767, [`Bvh::wall`]).
 //! - **Estimate** ([`estimate`]): shell, infill and filament from the
 //!   body's volume and area.
 //!
@@ -26,7 +30,7 @@
 //! tested without a kernel (`print_analysis_tests.rs`); the queries that
 //! use them are in `api/print.rs`.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -60,6 +64,13 @@ const THIN_TOLERANCE: f64 = 1e-6;
 /// edge, at most [`MAX_SPLITS`] per edge.
 const SAMPLE_SPACING: f64 = 2.0;
 const MAX_SPLITS: usize = 8;
+/// A triangle that is thin only in part is subdivided this many times more
+/// finely, and only its thin pieces are shown (mitcad#767): at most
+/// (8 × 4)² = 1024 rays more for it. A multiple of 3 plus 1 keeps the
+/// coarse samples among the fine ones (the centroid of coarse piece
+/// `(i, j)` is that of fine piece `(4i + 1, 4j + 1)` pointing up, or
+/// `(4i + 2, 4j + 2)` pointing down).
+const REFINE: usize = 4;
 /// Rays between two looks at the cancel request.
 const CANCEL_EVERY: usize = 256;
 /// Triangles in a leaf of the hierarchy.
@@ -112,7 +123,12 @@ fn area_normal(p: &[Vec3; 3]) -> Vec3 {
 
 /// A triangle's corners as the 9 numbers the queries answer with.
 pub fn flat(mesh: &TriangleMesh, triangle: usize) -> [f64; 9] {
-    let [a, b, c] = corners(mesh, triangle);
+    flat_corners(&corners(mesh, triangle))
+}
+
+/// Three corners (a piece of a triangle, [`Thickness::pieces`]) as the 9
+/// numbers the queries answer with.
+pub fn flat_corners([a, b, c]: &[Vec3; 3]) -> [f64; 9] {
     [a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]]
 }
 
@@ -206,10 +222,18 @@ pub struct Thickness {
     pub at: Option<Vec3>,
     /// The point on the other side of that wall.
     pub to: Option<Vec3>,
-    /// The triangles of walls thinner than the minimum.
+    /// The triangles with a wall thinner than the minimum somewhere: one of
+    /// their samples is.
     pub thin: Vec<usize>,
-    /// The thin triangles in connected groups: those sharing a corner, and
-    /// the two sides of one wall.
+    /// Where the walls are thinner than the minimum, each as its three
+    /// corners: a thin triangle whole, or, where only some of its samples
+    /// are thin (a large triangle at the edge of a thin region), the pieces
+    /// of a finer subdivision of it that are (mitcad#767), so that a thin
+    /// rim at the edge of a large planar face is not shown as slivers
+    /// across the face.
+    pub pieces: Vec<[Vec3; 3]>,
+    /// The thin pieces in connected groups: those that touch (at a corner
+    /// or along an edge), and the two sides of one wall.
     pub regions: usize,
 }
 
@@ -220,6 +244,120 @@ struct Hit {
     from: Vec3,
     to: Vec3,
     triangle: usize,
+}
+
+/// A piece of a triangle: in the subdivision of the triangle into `k` × `k`
+/// similar triangles, the one at grid row `i`, column `j`, pointing up
+/// (grid corners `(i, j)`, `(i + 1, j)`, `(i, j + 1)`) or down (`(i + 1,
+/// j)`, `(i + 1, j + 1)`, `(i, j + 1)`). Grid point `(a, b)` is at
+/// `p0 + (p1 − p0) a / k + (p2 − p0) b / k`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct Cell {
+    k: usize,
+    i: usize,
+    j: usize,
+    up: bool,
+}
+
+impl Cell {
+    /// The whole triangle.
+    const WHOLE: Cell = Cell {
+        k: 1,
+        i: 0,
+        j: 0,
+        up: true,
+    };
+
+    /// The pieces of the `k` × `k` subdivision, row by row.
+    fn all(k: usize) -> Vec<Cell> {
+        let mut out = Vec::with_capacity(k * k);
+        for i in 0..k {
+            for j in 0..k - i {
+                out.push(Cell { k, i, j, up: true });
+                if i + j + 1 < k {
+                    out.push(Cell { k, i, j, up: false });
+                }
+            }
+        }
+        out
+    }
+
+    /// The grid points of its corners.
+    fn grid(self) -> [(usize, usize); 3] {
+        let (i, j) = (self.i, self.j);
+        if self.up {
+            [(i, j), (i + 1, j), (i, j + 1)]
+        } else {
+            [(i + 1, j), (i + 1, j + 1), (i, j + 1)]
+        }
+    }
+
+    /// Its centroid on the triangle `p` and the barycentric weights of the
+    /// triangle's corners there.
+    fn sample(self, p: &[Vec3; 3]) -> (Vec3, [f64; 3]) {
+        let shift = if self.up { 1.0 / 3.0 } else { 2.0 / 3.0 };
+        let k = self.k as f64;
+        let (u, v) = ((self.i as f64 + shift) / k, (self.j as f64 + shift) / k);
+        let (e1, e2) = (sub(p[1], p[0]), sub(p[2], p[0]));
+        (
+            add(p[0], add(scale(e1, u), scale(e2, v))),
+            [1.0 - u - v, u, v],
+        )
+    }
+
+    /// Its corners on the triangle `p`: the triangle's own at the grid's
+    /// corners, so that a whole triangle is exactly itself.
+    fn corners(self, p: &[Vec3; 3]) -> [Vec3; 3] {
+        let k = self.k;
+        self.grid().map(|(a, b)| match grid_corner(k, a, b) {
+            Some(c) => p[c],
+            None => {
+                let (u, v) = (a as f64 / k as f64, b as f64 / k as f64);
+                add(
+                    p[0],
+                    add(scale(sub(p[1], p[0]), u), scale(sub(p[2], p[0]), v)),
+                )
+            }
+        })
+    }
+
+    /// The piece of the `k` × `k` subdivision that holds the point of
+    /// barycentric weights `u`, `v` (of the second and third corners).
+    fn holding(k: usize, u: f64, v: f64) -> Cell {
+        let (a, b) = (u.max(0.0) * k as f64, v.max(0.0) * k as f64);
+        let i = (a.floor() as usize).min(k - 1);
+        let j = (b.floor() as usize).min(k - 1 - i);
+        let up = i + j + 1 >= k || (a - i as f64) + (b - j as f64) <= 1.0;
+        Cell { k, i, j, up }
+    }
+}
+
+/// Which corner of the triangle the grid point `(a, b)` of a `k` × `k`
+/// subdivision is, if it is one.
+fn grid_corner(k: usize, a: usize, b: usize) -> Option<usize> {
+    match (a, b) {
+        (0, 0) => Some(0),
+        _ if a == k && b == 0 => Some(1),
+        _ if a == 0 && b == k => Some(2),
+        _ => None,
+    }
+}
+
+/// A thin piece of a triangle and where the ray of its sample left the
+/// material (the triangle and the point): the wall's other side.
+#[derive(Debug, Clone, Copy)]
+struct Piece {
+    cell: Cell,
+    exit: (usize, Vec3),
+}
+
+/// What the samples of one triangle found: the thinnest wall under it and
+/// its thin pieces (none, the whole triangle, or those of a finer
+/// subdivision, [`Bvh::wall`]).
+#[derive(Debug, Clone, Default)]
+struct Wall {
+    best: Option<Hit>,
+    pieces: Vec<Piece>,
 }
 
 /// The walls of `mesh` (closed, counter-clockwise seen from outside), and
@@ -238,21 +376,31 @@ pub fn thickness(
         .min(count / 512 + 1)
         .max(1);
     let chunk = count.div_ceil(threads).max(1);
-    let mut hits: Vec<Option<Hit>> = vec![None; count];
+    let limit = minimum - THIN_TOLERANCE;
+    let mut walls: Vec<Wall> = vec![Wall::default(); count];
     let stopped = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| {
-        for (part, slots) in hits.chunks_mut(chunk).enumerate() {
+        for (part, slots) in walls.chunks_mut(chunk).enumerate() {
             let (bvh, stopped) = (&bvh, &stopped);
             scope.spawn(move || {
                 let first = part * chunk;
-                for (i, slot) in slots.iter_mut().enumerate() {
-                    if i % CANCEL_EVERY == 0
-                        && (stopped.load(std::sync::atomic::Ordering::Relaxed) || cancelled())
-                    {
+                let stop = || {
+                    if stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                        return true;
+                    }
+                    let now = cancelled();
+                    if now {
                         stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    now
+                };
+                for (i, slot) in slots.iter_mut().enumerate() {
+                    if (i.is_multiple_of(CANCEL_EVERY) && stop())
+                        || stopped.load(std::sync::atomic::Ordering::Relaxed)
+                    {
                         return;
                     }
-                    *slot = bvh.wall(first + i);
+                    *slot = bvh.wall(first + i, limit, &stop);
                 }
             });
         }
@@ -262,15 +410,17 @@ pub fn thickness(
     }
     let mut result = Thickness::default();
     let mut thinnest: Option<Hit> = None;
-    let mut thin = vec![false; count];
-    for (t, hit) in hits.iter().enumerate() {
-        let Some(hit) = hit else { continue };
+    for (t, wall) in walls.iter().enumerate() {
+        let Some(hit) = wall.best else { continue };
         if thinnest.is_none_or(|best| hit.distance < best.distance) {
-            thinnest = Some(*hit);
+            thinnest = Some(hit);
         }
-        if hit.distance < minimum - THIN_TOLERANCE {
-            thin[t] = true;
+        if !wall.pieces.is_empty() {
             result.thin.push(t);
+            let p = corners(mesh, t);
+            result
+                .pieces
+                .extend(wall.pieces.iter().map(|piece| piece.cell.corners(&p)));
         }
     }
     if let Some(best) = thinnest {
@@ -278,28 +428,127 @@ pub fn thickness(
         result.at = Some(best.from);
         result.to = Some(best.to);
     }
-    // Regions: thin triangles that share a corner, and a thin triangle with
-    // the thin one its ray met (the wall's other side).
-    let mut groups = UnionFind::new(count);
-    let mut by_vertex: Vec<Option<usize>> = vec![None; mesh.vertices.len()];
-    for &t in &result.thin {
-        for v in mesh.triangles[t] {
-            match by_vertex[v as usize] {
-                Some(other) => groups.join(t, other),
-                None => by_vertex[v as usize] = Some(t),
+    result.regions = regions(mesh, &walls);
+    Ok(result)
+}
+
+/// How many connected groups the thin pieces make (mitcad#767): pieces
+/// that touch, in one triangle at a grid point and across triangles at a
+/// vertex of the mesh or along an edge of it (the parts of the edge they
+/// reach overlap), and a piece with the thin piece its ray left the
+/// material through (the wall's other side). Whole thin triangles are
+/// grouped as before the pieces: by shared corners and the walls' sides.
+fn regions(mesh: &TriangleMesh, walls: &[Wall]) -> usize {
+    // The pieces in one list: their triangle and cell.
+    let pieces: Vec<(usize, Piece)> = walls
+        .iter()
+        .enumerate()
+        .flat_map(|(t, wall)| wall.pieces.iter().map(move |p| (t, *p)))
+        .collect();
+    if pieces.is_empty() {
+        return 0;
+    }
+    let mut groups = UnionFind::new(pieces.len());
+    let mut at_vertex: Vec<Option<usize>> = vec![None; mesh.vertices.len()];
+    let mut at_grid: HashMap<(usize, usize, usize), usize> = HashMap::new();
+    let mut by_cell: HashMap<(usize, Cell), usize> = HashMap::new();
+    // Along each edge of the mesh (its vertices, the lower first): the
+    // part of it a piece reaches, from the lower vertex (0) to the other.
+    let mut along: Vec<((u32, u32), f64, f64, usize)> = Vec::new();
+    for (id, &(t, Piece { cell, .. })) in pieces.iter().enumerate() {
+        by_cell.insert((t, cell), id);
+        let k = cell.k;
+        let vertices = mesh.triangles[t];
+        // The triangle's edges: from corner to corner, where a grid point
+        // `(a, b)` lies on it and how far along it is (of k).
+        let edges: [(usize, usize); 3] = [(0, 1), (1, 2), (0, 2)];
+        let mut reach = [(usize::MAX, 0usize); 3];
+        for (a, b) in cell.grid() {
+            match grid_corner(k, a, b) {
+                Some(c) => {
+                    let v = vertices[c] as usize;
+                    match at_vertex[v] {
+                        Some(other) => groups.join(id, other),
+                        None => at_vertex[v] = Some(id),
+                    }
+                }
+                None => match at_grid.get(&(t, a, b)) {
+                    Some(&other) => groups.join(id, other),
+                    None => {
+                        at_grid.insert((t, a, b), id);
+                    }
+                },
+            }
+            let on = [
+                (b == 0).then_some(a),
+                (a + b == k).then_some(b),
+                (a == 0).then_some(b),
+            ];
+            for (e, step) in on.into_iter().enumerate() {
+                if let Some(step) = step {
+                    reach[e] = (reach[e].0.min(step), reach[e].1.max(step));
+                }
             }
         }
-        if let Some(hit) = hits[t]
-            && thin[hit.triangle]
-        {
-            groups.join(t, hit.triangle);
+        for (e, &(c0, c1)) in edges.iter().enumerate() {
+            let (low, high) = reach[e];
+            if low == usize::MAX {
+                continue;
+            }
+            let (s0, s1) = (low as f64 / k as f64, high as f64 / k as f64);
+            let (v0, v1) = (vertices[c0], vertices[c1]);
+            if v0 < v1 {
+                along.push(((v0, v1), s0, s1, id));
+            } else {
+                along.push(((v1, v0), 1.0 - s1, 1.0 - s0, id));
+            }
         }
     }
-    let mut roots: Vec<usize> = result.thin.iter().map(|&t| groups.find(t)).collect();
+    along.sort_by(|x, y| x.0.cmp(&y.0).then(x.1.total_cmp(&y.1)));
+    for run in along.chunk_by(|x, y| x.0 == y.0) {
+        let (_, _, mut far, mut last) = run[0];
+        for &(_, s0, s1, id) in &run[1..] {
+            if s0 <= far + 1e-9 {
+                groups.join(id, last);
+            }
+            far = far.max(s1);
+            last = id;
+        }
+    }
+    // The wall's other side: the thin piece of the exit's triangle that
+    // holds the exit point.
+    let cell_size: Vec<usize> = walls
+        .iter()
+        .map(|w| w.pieces.first().map_or(0, |p| p.cell.k))
+        .collect();
+    for (id, (_, piece)) in pieces.iter().enumerate() {
+        let (exit, to) = piece.exit;
+        let k = cell_size[exit];
+        if k == 0 {
+            continue;
+        }
+        let (u, v) = barycentric(&corners(mesh, exit), to);
+        if let Some(&other) = by_cell.get(&(exit, Cell::holding(k, u, v))) {
+            groups.join(id, other);
+        }
+    }
+    let mut roots: Vec<usize> = (0..pieces.len()).map(|id| groups.find(id)).collect();
     roots.sort_unstable();
     roots.dedup();
-    result.regions = roots.len();
-    Ok(result)
+    roots.len()
+}
+
+/// The barycentric weights of the second and third corners of `p` at the
+/// point `q` (projected onto the triangle's plane).
+fn barycentric(p: &[Vec3; 3], q: Vec3) -> (f64, f64) {
+    let (e1, e2, d) = (sub(p[1], p[0]), sub(p[2], p[0]), sub(q, p[0]));
+    let (d00, d01, d11) = (dot(e1, e1), dot(e1, e2), dot(e2, e2));
+    let (d20, d21) = (dot(d, e1), dot(d, e2));
+    let den = d00 * d11 - d01 * d01;
+    if den.abs() < 1e-300 || den.is_nan() {
+        return (0.0, 0.0);
+    }
+    ((d11 * d20 - d01 * d21) / den, (d00 * d21 - d01 * d20) / den)
 }
 
 struct UnionFind(Vec<usize>);
@@ -325,10 +574,10 @@ impl UnionFind {
     }
 }
 
-/// The sample points of a triangle: the centroids of a k × k subdivision,
-/// k growing with the longest edge (the centroid alone on small ones), each
-/// with its barycentric weights of the triangle's corners.
-fn samples(p: &[Vec3; 3]) -> Vec<(Vec3, [f64; 3])> {
+/// How finely a triangle is sampled: its samples are the centroids of the
+/// pieces of a k × k subdivision ([`Cell::all`]), k growing with the
+/// longest edge (the centroid alone on small ones).
+fn subdivision(p: &[Vec3; 3]) -> usize {
     let longest = [
         norm(sub(p[1], p[0])),
         norm(sub(p[2], p[1])),
@@ -336,26 +585,7 @@ fn samples(p: &[Vec3; 3]) -> Vec<(Vec3, [f64; 3])> {
     ]
     .into_iter()
     .fold(0.0, f64::max);
-    let k = ((longest / SAMPLE_SPACING).ceil() as usize).clamp(1, MAX_SPLITS);
-    let (e1, e2) = (sub(p[1], p[0]), sub(p[2], p[0]));
-    let at = |a: f64, b: f64| {
-        let (u, v) = (a / k as f64, b / k as f64);
-        (
-            add(p[0], add(scale(e1, u), scale(e2, v))),
-            [1.0 - u - v, u, v],
-        )
-    };
-    let mut out = Vec::with_capacity(k * k);
-    for i in 0..k {
-        for j in 0..k - i {
-            let (i, j) = (i as f64, j as f64);
-            out.push(at(i + 1.0 / 3.0, j + 1.0 / 3.0));
-            if i + j + 1.0 < k as f64 {
-                out.push(at(i + 2.0 / 3.0, j + 2.0 / 3.0));
-            }
-        }
-    }
-    out
+    ((longest / SAMPLE_SPACING).ceil() as usize).clamp(1, MAX_SPLITS)
 }
 
 /// The surface's unit normal at each corner of each triangle, from the
@@ -504,41 +734,102 @@ impl Bvh {
         node
     }
 
-    /// The thinnest wall under triangle `t`: of its samples, the shortest
-    /// ray along the surface's inward normal there (the corners' normals
-    /// interpolated) to where it leaves the material.
-    fn wall(&self, t: usize) -> Option<Hit> {
-        let (p, n) = &self.triangles[t];
-        let own = unit(*n)?;
-        let corners = &self.normals[t];
-        let mut best: Option<Hit> = None;
-        for (from, w) in samples(p) {
-            let blended = add(
-                add(scale(corners[0], w[0]), scale(corners[1], w[1])),
-                scale(corners[2], w[2]),
-            );
-            let outward = unit(blended)
-                .filter(|s| dot(*s, own) >= SMOOTH_COS)
-                .unwrap_or(own);
-            let inward = scale(outward, -1.0);
-            if let Some((distance, triangle)) = self.first_exit(from, inward, t)
-                && best.is_none_or(|b| distance < b.distance)
-            {
-                let to = add(from, scale(inward, distance));
-                // Across the edge next to it, the ray measures the edge, not
-                // a wall (mitcad#689).
-                if self.across_edge(t, from, triangle, to) {
-                    continue;
-                }
-                best = Some(Hit {
-                    distance,
-                    from,
-                    to,
-                    triangle,
+    /// The walls under triangle `t`: of its samples, the shortest ray along
+    /// the surface's inward normal there (the corners' normals
+    /// interpolated) to where it leaves the material, and the pieces where
+    /// the wall is under `limit` (mm). When every sample is thin, the whole
+    /// triangle; when only some are, the thin pieces of a subdivision
+    /// [`REFINE`] times finer (mitcad#767). `stop` is asked every
+    /// [`CANCEL_EVERY`] rays of the finer subdivision; once it says so, the
+    /// triangle's pieces are left incomplete (the caller drops them all).
+    fn wall(&self, t: usize, limit: f64, stop: &dyn Fn() -> bool) -> Wall {
+        let p = &self.triangles[t].0;
+        let mut wall = Wall::default();
+        let cells = Cell::all(subdivision(p));
+        let mut thin = Vec::new();
+        for &cell in &cells {
+            let below = wall.best.map_or(f64::INFINITY, |b| b.distance).max(limit);
+            let Some(hit) = self.sample(t, cell, below) else {
+                continue;
+            };
+            if wall.best.is_none_or(|b| hit.distance < b.distance) {
+                wall.best = Some(hit);
+            }
+            if hit.distance < limit {
+                thin.push(Piece {
+                    cell,
+                    exit: (hit.triangle, hit.to),
                 });
             }
         }
-        best
+        if thin.is_empty() {
+            return wall;
+        }
+        if thin.len() == cells.len() {
+            // Thin all over: the whole triangle, its wall's other side where
+            // it is thinnest.
+            if let Some(best) = wall.best {
+                wall.pieces.push(Piece {
+                    cell: Cell::WHOLE,
+                    exit: (best.triangle, best.to),
+                });
+            }
+            return wall;
+        }
+        // Thin in part: the thin pieces of the finer subdivision. Its
+        // samples include the coarse ones ([`REFINE`]), so some are thin;
+        // should none be (a ray rounded the other way), the coarse pieces.
+        let fine = Cell::all(cells[0].k * REFINE);
+        let mut pieces = Vec::new();
+        for (n, &cell) in fine.iter().enumerate() {
+            if n % CANCEL_EVERY == CANCEL_EVERY - 1 && stop() {
+                return wall;
+            }
+            if let Some(hit) = self.sample(t, cell, limit)
+                && hit.distance < limit
+            {
+                pieces.push(Piece {
+                    cell,
+                    exit: (hit.triangle, hit.to),
+                });
+            }
+        }
+        wall.pieces = if pieces.is_empty() { thin } else { pieces };
+        wall
+    }
+
+    /// The wall at the sample of `cell` on triangle `t`: the ray along the
+    /// surface's inward normal there to where it leaves the material. Only
+    /// a ray shorter than `below` is checked for crossing an edge rather
+    /// than a wall (mitcad#689, [`Bvh::across_edge`]; such a ray gives
+    /// None); a longer one is answered unchecked, as the callers want
+    /// nothing of it.
+    fn sample(&self, t: usize, cell: Cell, below: f64) -> Option<Hit> {
+        let (p, n) = &self.triangles[t];
+        let own = unit(*n)?;
+        let corners = &self.normals[t];
+        let (from, w) = cell.sample(p);
+        let blended = add(
+            add(scale(corners[0], w[0]), scale(corners[1], w[1])),
+            scale(corners[2], w[2]),
+        );
+        let outward = unit(blended)
+            .filter(|s| dot(*s, own) >= SMOOTH_COS)
+            .unwrap_or(own);
+        let inward = scale(outward, -1.0);
+        let (distance, triangle) = self.first_exit(from, inward, t)?;
+        let to = add(from, scale(inward, distance));
+        // Across the edge next to it, the ray measures the edge, not a wall
+        // (mitcad#689).
+        if distance < below && self.across_edge(t, from, triangle, to) {
+            return None;
+        }
+        Some(Hit {
+            distance,
+            from,
+            to,
+            triangle,
+        })
     }
 
     /// Whether a ray from `from` on triangle `start` that leaves the

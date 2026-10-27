@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/DriveCommands.cpp app/commands/PlaceInputs.cpp app/framework/CommandPanel.cpp
 # check-all sources: app/framework/CommandSession.cpp core/model/src/features/drives.rs
-# check-all sources: core/model/src/features/place_at.rs tools/cli
+# check-all sources: core/model/src/features/place_at.rs core/model/src/api/drives.rs tools/cli
 # Input-driven Windows UI test of Gear Pair and Belt Drive (mitcad#656) in
 # the build VM (tools/ui-windows-lib.ps1 says how the input is posted); on
 # Linux the same steps are the last parts of tools/ui-gear-test.sh and
@@ -13,10 +13,18 @@
 #      correction against undercut with the fewest teeth first (2 mm, 20
 #      and 40 teeth: 2 x 60 / 2 = 60; 2.5 mm with 16 teeth, corrected,
 #      after them); the second row (module 1.25, 32 and 64 teeth)
-#      previewed as new bodies; OK makes both gears.
+#      previewed as new bodies; a Second Offset of 5 mm keeps the second
+#      row chosen (mitcad#761); OK makes both gears.
 #   2. Undo, then Belt Drive between the same shafts, ratio 2, GT2 2 mm:
 #      the rows list the tooth counts with their belts; the first
 #      previewed as new bodies, its belt as values; OK makes both pulleys.
+#   3. Gear Pair with a shaft in another component's occurrence
+#      (mitcad#754), in a second design: an 8 mm shaft in Motor:1 (F1.b0,
+#      the occurrence 60 mm along X) and one in the root at the origin
+#      (F2.b0). The root's shaft first and the motor's second is refused
+#      with the reason (the second gear meshes, so it goes on a shaft of
+#      the active component); the motor's shaft first and the root's
+#      second list the gears for the axes 60 mm apart; OK makes both.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-drives-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -45,6 +53,20 @@ Set-Content -Encoding ascii $shaftsJson @'
 '@
 $shafts = Join-Path $work 'shafts.mitcad'
 $output = & $cli run $shaftsJson --save $shafts 2>&1
+if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
+$motorJson = Join-Path $work 'motor.json'
+Set-Content -Encoding ascii $motorJson @'
+[
+  {"cmd": "create_component", "name": "Motor", "transform": {"translation": [60, 0, 0]}},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}}
+]
+'@
+$motor = Join-Path $work 'motor.mitcad'
+$output = & $cli run $motorJson --save $motor 2>&1
 if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
 
 Ui-StartApp 'drives' @('--open', $shafts)
@@ -75,6 +97,16 @@ Ui-Mark
 Ui-Step 'the second row'                 { Ui-ClickLogged 'Panel Gear Pair input candidate=1' }
 Ui-ExpectNew 'Gear Pair: Gears = 1.25 mm' 'module 1.25 chosen'
 Ui-ExpectNew 'Preview Gear Pair: ok' 'module 1.25 previewed' 30
+# An Offset asks for the candidates again: the second row stays chosen
+# (mitcad#761).
+Ui-Mark
+Ui-Step 'More'                           { Ui-ClickLogged 'Panel Gear Pair input drive_more' }
+Ui-ExpectNew 'Panel Gear Pair input second_offset at' 'the Second Offset shown'
+Ui-Mark
+Ui-Step 'Second Offset 5'                { Ui-TypeIn 'Panel Gear Pair input second_offset' '5' }
+Ui-ExpectNew 'Gear Pair candidates: ' 'the candidates again for the offset' 30
+Ui-ExpectNew 'Gear Pair candidate kept: row 2' 'the second row still chosen'
+Ui-ExpectNew 'Preview Gear Pair: ok' 'the offset previewed' 30
 Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Added gear pair, module 1.25, 32 and 64 teeth (exact)' 'both gears added' 30
@@ -103,5 +135,43 @@ Write-Host "     $note"
 Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Added belt drive (gt2_2mm), ' 'both pulleys added' 30
+
+Write-Host "--- 3. Gear Pair with a shaft in another component's occurrence (mitcad#754)"
+Ui-StartApp 'drives-motor' @('--open', $motor)
+Start-Sleep -Milliseconds 800
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-ExpectLog 'Body F1.b0 in O1 at ' "the motor's shaft shown in its occurrence"
+Ui-Mark
+Ui-Step 'gear pair (F7)'                 { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Gear Pair started' 'the panel opened' 30
+Ui-ExpectNew 'Pick edge F2.b0/E{F2:side0|F2:top} at' "the root's shaft top edge can be picked"
+Ui-Mark
+Ui-Step "the root's shaft first"         { Ui-ClickPick 'edge F2.b0/E{F2:side0|F2:top} at' }
+Ui-ExpectNew 'Gear Pair First Axis: 1 edge' 'the first axis picked'
+Ui-ExpectNew 'Pick edge F1.b0/E{F1:side0|F1:top} at' "the motor's shaft top edge can be picked"
+Ui-Mark
+Ui-Step "the motor's shaft second"       { Ui-ClickPick 'edge F1.b0/E{F1:side0|F1:top} at' }
+Ui-ExpectNew 'Gear Pair candidates: none: The second gear meshes with the first' "a meshing gear on another component's shaft refused with the reason" 30
+Ui-Step 'Cancel (Escape)'                { Ui-Key 'Escape' }
+Start-Sleep -Milliseconds 500
+Ui-Mark
+Ui-Step 'gear pair (F7)'                 { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Gear Pair started' 'the panel opened again' 30
+Ui-ExpectNew 'Pick edge F1.b0/E{F1:side0|F1:top} at' "the motor's shaft top edge can be picked"
+Ui-Mark
+Ui-Step "the motor's shaft first"        { Ui-ClickPick 'edge F1.b0/E{F1:side0|F1:top} at' }
+Ui-ExpectNew 'Gear Pair First Axis: 1 edge' 'the first axis picked'
+Ui-ExpectNew 'Pick edge F2.b0/E{F2:side0|F2:top} at' "the root's shaft top edge can be picked"
+Ui-Mark
+Ui-Step "the root's shaft second"        { Ui-ClickPick 'edge F2.b0/E{F2:side0|F2:top} at' }
+Ui-ExpectNew 'Gear Pair candidates: ' "the model's candidates" 30
+Ui-ExpectNew 'centre distance 60 mm' 'the axes 60 mm apart, where the occurrence puts the shaft'
+Ui-Mark
+Ui-Step 'operation: New Body'            { Ui-WheelLogged 'Panel Gear Pair input operation' -1 }
+Ui-ExpectNew 'Gear Pair: Operation = New Body' 'as new bodies'
+Ui-ExpectNew 'Preview Gear Pair: ok' 'the pair previewed' 30
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Added gear pair, module ' 'both gears added' 30
 
 Ui-Finish 'UI Windows drives test'

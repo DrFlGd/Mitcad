@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Modelled threads: the volume against the profile's exact one (bolts and
 // tapped holes, a class's diameters and the basic ones), where the helix
-// starts, ends at shoulders and partial lengths, end chamfers, names, and
-// the speed on a body of thousands of faces.
+// starts, ends at shoulders and partial lengths, end chamfers, taper pipe
+// threads, names, and the speed on a body of thousands of faces.
 
 #include <chrono>
 #include <cmath>
@@ -1039,8 +1039,102 @@ void test_rounding_along_a_thread_keeps_its_pieces() {
 
 } // namespace
 
+// Taper pipe threads (mitcad#733): 1/2-14 NPT, its diameters 1:16 on the
+// diameter from where it starts. A cosmetic one in a drilled hole cuts the
+// bore's taper from the mouth until it meets the drill; on a shaft it cuts
+// what lies outside the cone of its major diameter from the free end. A
+// modelled one leaves the profile at the local diameters along the taper.
+void test_taper_pipe_threads() {
+  constexpr double kInch = 25.4;
+  const double pitch = kInch / 14.0;
+  const double h = 0.8 * pitch;
+  // ASME B1.20.1: E0 = D - (0.05 D + 1.1) P, E1 = E0 + L1 / 16.
+  const double e0 = (0.84 - (0.05 * 0.84 + 1.1) / 14.0) * kInch;
+  const double e1 = e0 + 0.32 * kInch / 16.0;
+  const auto taper_spec = [&](const std::string& face, double start_pitch) {
+    ThreadSpec spec = spec_of("F4", face, pitch, {start_pitch + h, start_pitch - h, start_pitch});
+    spec.taper = 1.0 / 16.0;
+    spec.groove = false;
+    return spec;
+  };
+  const double k = 1.0 / 32.0;
+
+  // A blind bore of the tap drill 25 deep into a block 30 high: the cone
+  // narrows from E1 - h at the mouth (z = 30) and meets the bore below.
+  const double drill = 17.4752;
+  const ShapePtr block = extrude("F2", {rectangle(1, -20, -20, 40, 40)}, 0, 30);
+  const ShapePtr bore = extrude("F3", {circle(5, 0, 0, drill / 2.0)}, 5, 31);
+  const BooleanResult drilled = boolean(BooleanOp::Cut, {block.get()}, *bore);
+  const ShapePtr hole = drilled.pieces.at(0).shape;
+  const ShapePtr tapered = modeled_thread(*hole, taper_spec("F3:side(c5)", e1));
+  const double a = drill / 2.0;
+  const double length = ((e1 - h) / 2.0 - a) / k;
+  const double cone = kPi * (a * k * length * length + k * k * length * length * length / 3.0);
+  CHECK_NEAR_TOL(volume(*hole) - volume(*tapered), cone, 1e-6);
+  CHECK(!tapered->find_faces("F4:thread_taper(F3:side(c5))").empty());
+  // At the mouth the bore is E1 - h wide; 10 below it 10/16 narrower.
+  CHECK(!inside(*tapered, gp_Pnt((e1 - h) / 2.0 - 0.01, 0, 29.99)));
+  CHECK(inside(*tapered, gp_Pnt((e1 - h - 10.0 / 16.0) / 2.0 + 0.01, 0, 20)));
+  CHECK(!inside(*tapered, gp_Pnt((e1 - h - 10.0 / 16.0) / 2.0 - 0.01, 0, 20)));
+  // A drilled hole, its wall's axis pointing down into the material, with
+  // a flat bottom: the mouth is the free end whichever way the axis runs.
+  HoleSpec drilling;
+  drilling.feature = "F5";
+  drilling.positions = {gp_Ax1(gp_Pnt(0, 0, 30), gp_Dir(0, 0, -1))};
+  drilling.diameter = drill;
+  drilling.flat = true;
+  drilling.depth = 25;
+  drilling.bodies = {block};
+  const ShapePtr hole_down = boolean(BooleanOp::Cut, {block.get()}, *hole_tool(drilling)).pieces.at(0).shape;
+  ThreadSpec down = taper_spec("F5:hole0.wall", e1);
+  // (Which end it names does not matter where only one end is free.)
+  down.taper_high_end = false;
+  const ShapePtr tapered_down = modeled_thread(*hole_down, down);
+  CHECK_NEAR_TOL(volume(*hole_down) - volume(*tapered_down), cone, 1e-6);
+
+  // A rod of the pipe's outside diameter standing on a plate: its top is
+  // the free end, where the major diameter is E0 + h.
+  const double d = 0.84 * kInch;
+  const ShapePtr plate = extrude("F2", {rectangle(1, -20, -20, 40, 40)}, -5, 0);
+  const ShapePtr rod = extrude("F3", {circle(5, 0, 0, d / 2.0)}, 0, 30);
+  const ShapePtr pipe = boolean(BooleanOp::Join, {plate.get()}, *rod).pieces.at(0).shape;
+  const ShapePtr cut_pipe = modeled_thread(*pipe, taper_spec("F3:side(c5)", e0));
+  const double r0 = (e0 + h) / 2.0;
+  const double outer = d / 2.0;
+  const double run = (outer - r0) / k;
+  // The ring outside the cone r0 + k s up to the rod, over `run`.
+  const double ring = kPi * (outer * outer * run - (r0 * r0 * run + r0 * k * run * run + k * k * run * run * run / 3.0));
+  CHECK_NEAR_TOL(volume(*pipe) - volume(*cut_pipe), ring, 1e-6);
+  CHECK(!inside(*cut_pipe, gp_Pnt(r0 + 0.01, 0, 29.99)));
+  CHECK(inside(*cut_pipe, gp_Pnt(r0 - 0.01, 0, 29.99)));
+
+  // Modelled in a plate 10 thick with a bore inside the minor cone all
+  // the way: what it removes is the nut's hole at the local diameters
+  // (the profile per millimetre) less the bore, integrated along the
+  // taper.
+  const ShapePtr thin = extrude("F2", {rectangle(1, -20, -20, 40, 40)}, 0, 10);
+  const ShapePtr small = extrude("F3", {circle(5, 0, 0, 8.0)}, -1, 11);
+  const ShapePtr nut = boolean(BooleanOp::Cut, {thin.get()}, *small).pieces.at(0).shape;
+  ThreadSpec modelled = taper_spec("F3:side(c5)", e1);
+  modelled.groove = true;
+  // Both ends are free: it starts at the high end (the top).
+  modelled.taper_high_end = true;
+  const ShapePtr threaded = modeled_thread(*nut, modelled);
+  BRepCheck_Analyzer valid(threaded->occt());
+  CHECK(valid.IsValid());
+  const double removed = integral(
+      [&](double s) {
+        const double p = e1 - s / 16.0;
+        return nut_hole_per_mm(pitch, {p + h, p - h, p}) - kPi * 8.0 * 8.0;
+      },
+      0.0, 10.0);
+  CHECK_NEAR_TOL(volume(*nut) - volume(*threaded), removed, 1e-3);
+  CHECK(!threaded->find_faces("F4:thread(F3:side(c5))").empty());
+}
+
 void thread_tests() {
   guarded("test_bolt", test_bolt);
+  guarded("test_taper_pipe_threads", test_taper_pipe_threads);
   guarded("test_bolt_profiles", test_bolt_profiles);
   guarded("test_shoulder_and_partial", test_shoulder_and_partial);
   guarded("test_tapped_holes", test_tapped_holes);

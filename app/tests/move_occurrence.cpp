@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-// Move to... on an occurrence (mitcad#219): the actual modal parent picker
-// with a model boundary that records every mutation. The move itself, its
-// geometry, references and undo have core tests.
+// Move to Component... on an occurrence (mitcad#219; Move to... before
+// mitcad#735): the actual modal parent picker with a model boundary that
+// records every mutation. The move itself, its geometry, references and
+// undo have core tests.
 #include "framework/MoveOccurrenceDialog.hpp"
 
 #include <cstdio>

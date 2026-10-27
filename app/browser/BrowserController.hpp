@@ -179,6 +179,10 @@ private:
   // What a body row's Appearance… and Material… are for (mitcad#703): every
   // selected body when the row is one of them, else the row's body alone.
   QStringList menuBodies(const BrowserNode& node) const;
+  // What a body's or an occurrence's row starts Move/Copy with (mitcad#735):
+  // the selected items of the row's kind when the row is one of them, else
+  // the row's item alone.
+  Selection menuMoveItems(const BrowserNode& node) const;
   void timelineMenu(const QString& uid, const QPoint& at);
   // A feature's menu, the same in the timeline and on its rows under
   // sketches in the browser (mitcad#177): `row` is the browser's row, or

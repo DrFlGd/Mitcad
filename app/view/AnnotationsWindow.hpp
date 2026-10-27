@@ -25,7 +25,8 @@ namespace mitcad {
 // Decimals…, Tolerance…, Show, Hide, Delete); Add Frame… puts a feature
 // control frame under one dimension; a group is shown or hidden at once;
 // Edit… or a double-click opens one's editor; a broken one (a pick gone) is marked with the reason. It follows
-// the model (setAnnotations after every refresh); what it changes goes
+// the model (setAnnotations after every refresh, its selection and where
+// the list is scrolled kept, mitcad#759); what it changes goes
 // through its actions, each one undo step.
 //
 // For UI tests it logs its rows when they change ("Annotations row <name>:

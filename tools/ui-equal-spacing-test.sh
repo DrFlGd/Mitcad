@@ -149,10 +149,16 @@ double_click_expect_at() {
 }
 
 # edit_sketch: Sketch1 edited from the timeline, all of it in the view.
+# Entering the sketch puts its origin in the middle of the view (only
+# sketches shown, the origin in sight; mitcad#738), which leaves most of
+# the sketch to the right; the fit brings all of it to the middle, so that
+# the zoom keeps the arc large enough to pick it beside its end points.
 edit_sketch() {
   ui_mark
   ui_step "double-click Sketch1"           ui_double_click_logged "Timeline Sketch1"
   ui_expect_new "Editing sketch F1 (Sketch1)" "Sketch1 edited"
+  ui_sync
+  ui_step "fit (F6)"                       ui_key F6
   ui_sync
   ui_step "zoom out"                       zoom_to_show -30 -30 260 50
 }

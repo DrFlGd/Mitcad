@@ -948,6 +948,7 @@ fn follow_references(
             FeatureDef::Sweep(s) => !s.body_links.is_empty(),
             FeatureDef::SplitBody(s) => !s.tool_links.is_empty(),
             FeatureDef::Extrude(x) => !x.object_links.is_empty(),
+            FeatureDef::Revolve(r) => !r.object_links.is_empty(),
             FeatureDef::ConstructionPlane(p) => !p.links.is_empty(),
             FeatureDef::Derive(d) => !d.links.is_empty(),
             FeatureDef::BodyTransfer(_) => true,
@@ -994,6 +995,11 @@ fn follow_references(
             }
             FeatureDef::Extrude(extrude) => {
                 for (body, link) in &mut extrude.object_links {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
+            }
+            FeatureDef::Revolve(revolve) => {
+                for (body, link) in &mut revolve.object_links {
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
             }

@@ -2,7 +2,7 @@
 #pragma once
 
 // mitcad-cli export-drawing (mitcad#471): a design's bodies as a drawing
-// with views, dimensions and a hole table, written as PDF, SVG or DXF by
+// with views, dimensions and a hole table, written as PDF, SVG, DXF or DWG by
 // the model's export_drawing command.
 
 #include <string>

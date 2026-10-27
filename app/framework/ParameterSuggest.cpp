@@ -236,12 +236,30 @@ Insertion insertParameter(const QString& text, int caret, int selectionStart, in
   return result;
 }
 
-QString expressionPart(const QString& text) {
+namespace {
+
+QRegularExpressionMatch namedMatch(const QString& text) {
   static const QRegularExpression named(QStringLiteral(R"(^\s*(\w+)\s*=(?!=)(.*)$)"),
                                         QRegularExpression::UseUnicodePropertiesOption |
                                             QRegularExpression::DotMatchesEverythingOption);
-  const QRegularExpressionMatch match = named.match(text);
+  return named.match(text);
+}
+
+} // namespace
+
+QString expressionPart(const QString& text) {
+  const QRegularExpressionMatch match = namedMatch(text);
   return match.hasMatch() ? match.captured(2).trimmed() : text.trimmed();
+}
+
+int expressionStart(const QString& text) {
+  const QRegularExpressionMatch match = namedMatch(text);
+  int start = match.hasMatch() ? static_cast<int>(match.capturedStart(2)) : 0;
+  const int size = static_cast<int>(text.size());
+  while (start < size && text.at(start).isSpace()) {
+    ++start;
+  }
+  return start;
 }
 
 QString kindProblem(ParameterKind field, ParameterKind parameter) {

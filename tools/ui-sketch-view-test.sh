@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/OcctViewer.cpp app/OcctViewer.hpp app/view app/MainWindow.cpp tools/cli
+# check-all sources: app/framework/FloatingLayout.cpp
 # check-all sources: core/model/src/api/sketch.rs core/model/src/features/sketch.rs
 # How sketch mode shows its geometry, through the real UI:
 #   - A sketch on XY: its origin is the design's (mitcad#254).
@@ -34,6 +35,12 @@
 #     normal and x axis as commands.md "An upright sketch frame" gives
 #     them, and the view shows the sketch's y axis up and its x axis to
 #     the right, level (so a Horizontal line is horizontal on the screen).
+#   - A sketch on a block's top face, edited from the front view (the face
+#     edge-on, the view's middle far in front of it in depth): the face's
+#     middle in the middle of the free area (mitcad#772).
+#   - After New Design, sketches on XY, XZ and YZ show their origin in the
+#     middle of the free area between the cards, in the Floating and the
+#     Docked layout (mitcad#738: the turn kept the fit's shift).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-view-test.sh [screenshot.png]
@@ -454,5 +461,157 @@ ui_mark
 ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
 ui_expect_new "Sketch finished" "the face's sketch finished"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- A sketch on a face seen edge-on stays in view (mitcad#772)"
+# A 40 x 40 x 20 block far in front (y -400 to -360) and a 40 x 40 x 40
+# block (F2.b0, x 20 to 60, y 0 to 40) beside it; a sketch (F3) on the
+# second block's top face (z 40), which the front view sees edge-on. The
+# view's middle lies half way between the blocks in depth: projected onto
+# the top face's plane it is about 180 mm in front of the face, which the
+# turn to the sketch plane took out of the view. Edit Sketch from the front
+# view shows the middle of the face (40, 20, 40) in the middle of the free
+# area instead.
+cat > "$WORK/oblique.json" << 'EOF'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-60, -400],
+    "length": 40, "width": 40, "height": 20, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [20, 0],
+    "length": 40, "width": 40, "height": 40, "operation": "new_body"}},
+  {"cmd": "sketch.create", "plane": {"face": "F2:top", "body": "F2.b0"}}
+]
+EOF
+"$CLI" run "$WORK/oblique.json" --save "$WORK/oblique.mitcad" > "$WORK/cli.log" 2>&1 ||
+  { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+ui_stop_app
+ui_start_app --open "$WORK/oblique.mitcad"
+UI_MARK=0
+ui_expect_log "Bodies shown: F1.b0, F2.b0" "the blocks shown"
+ui_step "front view (search)"            ui_command "Front View"
+ui_step "fit (F6)"                       ui_key F6
+ui_sync
+ui_expect_log "Timeline Sketch1 at" "the timeline is laid out"
+ui_mark
+ui_double_click_expect "Timeline Sketch1" "Editing sketch F3 (Sketch1)" "the top face's sketch is edited from the front"
+ui_expect_new "Sketch plane centred on the sketch's face: " "the view turned about the middle of the face"
+ui_expect_new "Sketch frame in the design" "the sketch's frame logged"
+# Within six seconds the face's middle, from the sketch's frame (its origin,
+# normal and x axis in the design) and the sketch view (where the sketch
+# points (0, 0), (100, 0) and (0, 100) are in the window), is within 6 px
+# of the middle of the free area.
+frame=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "Sketch frame in the design" | tail -1)
+centred=""
+for i in $(seq 1 30); do
+  ui_sync
+  line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -o "Sketch plane centred on .*" | tail -1)
+  view=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -o "Sketch view [-0-9.,]* [-0-9.,]* [-0-9.,]*" | tail -1)
+  if [ -n "$view" ] && awk -v frame="$frame" -v line="$line" -v view="$view" 'BEGIN {
+    if (line !~ /^Sketch plane centred on the sketch.s face: origin at /) exit 1
+    # "... origin (x, y, z), normal (x, y, z), x axis (x, y, z)"
+    sub(/.*origin \(/, "", frame)
+    if (split(frame, part, /\), [a-z ]+ \(/) < 3) exit 1
+    split(part[1], o, /, */); split(part[2], nn, /, */); split(part[3], xa, /[,)] */)
+    # The sketch y axis: normal x x axis.
+    ya[1] = nn[2] * xa[3] - nn[3] * xa[2]; ya[2] = nn[3] * xa[1] - nn[1] * xa[3]
+    ya[3] = nn[1] * xa[2] - nn[2] * xa[1]
+    d[1] = 40 - o[1]; d[2] = 20 - o[2]; d[3] = 40 - o[3]
+    sx = d[1] * xa[1] + d[2] * xa[2] + d[3] * xa[3]
+    sy = d[1] * ya[1] + d[2] * ya[2] + d[3] * ya[3]
+    split(view, v, " "); split(v[3], p0, ","); split(v[4], pa, ","); split(v[5], pb, ",")
+    px = p0[1] + (pa[1] - p0[1]) * sx / 100 + (pb[1] - p0[1]) * sy / 100
+    py = p0[2] + (pa[2] - p0[2]) * sx / 100 + (pb[2] - p0[2]) * sy / 100
+    sub(/.*free area centre at /, "", line); split(line, f, ",")
+    exit !((px - f[1]) ^ 2 + (py - f[2]) ^ 2 <= 36) }'; then
+    centred=$i
+    break
+  fi
+  sleep 0.2
+done
+[ -n "$centred" ] ||
+  ui_fail "the top face's middle is not in the middle of the free area: '$frame', '$line', '$view'"
+echo "ok   the top face's middle in the middle of the free area ($line; $view)"
+ui_mark
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_new "Sketch finished" "the top face's sketch finished"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- After New Design, a sketch's origin in the middle of the free area (mitcad#738)"
+# expect_centred "description": since the mark the view turned to the new
+# sketch's plane centred on its origin (a new design shows no bodies), and
+# within six seconds the origin, as the view logs it and as the sketch logs
+# it ("Sketch view"), is within 6 px of the middle of the free area between
+# the cards.
+expect_centred() {
+  local line view
+  ui_expect_new "Sketch plane centred on " "$1: the view turned to the plane"
+  for _ in $(seq 1 30); do
+    ui_sync
+    line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -o "Sketch plane centred on .*" | tail -1)
+    view=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -o "Sketch view [-0-9.,]* [-0-9.,]* [-0-9.,]*" | tail -1)
+    if [ -n "$view" ] && awk -v line="$line" -v view="$view" 'BEGIN {
+      if (line !~ /^Sketch plane centred on the origin: origin at /) exit 1
+      sub(/.*origin at /, "", line); split(line, part, /; free area centre at /)
+      split(part[1], o, ","); split(part[2], f, ",")
+      split(view, v, " "); split(v[3], s, ",")
+      exit !((o[1] - f[1]) ^ 2 + (o[2] - f[2]) ^ 2 <= 36 && (s[1] - f[1]) ^ 2 + (s[2] - f[2]) ^ 2 <= 36) }'; then
+      echo "ok   $1: the origin in the middle of the free area ($line; $view)"
+      return
+    fi
+    sleep 0.2
+  done
+  ui_fail "$1: the origin is not in the middle of the free area: '$line', '$view'"
+}
+
+# sketch_on_origin plane: Create Sketch on an origin plane, clicked in the
+# view when Create Sketch shows the origin planes there, else in the
+# browser's Origin folder, which offers them (mitcad#694): New Design opens
+# with the root active beside its Component1 (mitcad#426), which keeps the
+# planes out of the view (mitcad#294).
+sketch_on_origin() {
+  local plane=$1 before
+  before=$(grep -c "Sketch started on $plane" "$UI_LOG")
+  ui_mark
+  ui_command "Create Sketch"
+  ui_expect_new "Create Sketch: origin planes " "Create Sketch says where the origin planes are" > /dev/null
+  ui_sync
+  if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "Create Sketch: origin planes shown"; then
+    ui_click_logged "Datum $plane"
+  else
+    ui_expect_new "Browser Root/Origin/${plane^^} at" "the browser offers ${plane^^}" > /dev/null
+    ui_sync
+    ui_click_logged "Browser Root/Origin/${plane^^}"
+  fi
+  for _ in $(seq 1 25); do
+    [ "$(grep -c "Sketch started on $plane" "$UI_LOG")" -gt "$before" ] && return 0
+    sleep 0.2
+  done
+  ui_fail "no sketch started on $plane"
+}
+
+# centred_round layout [app arguments]: New Design (its fit centres the
+# design in the free area, which moves the camera's centre off the origin
+# once the cards are laid out), then sketches on XY, XZ and YZ in turn;
+# each shows its origin in the middle of the free area.
+centred_round() {
+  local layout=$1 plane
+  shift
+  ui_stop_app
+  ui_start_app "$@"
+  ui_mark
+  ui_step "$layout: new design (Ctrl+N)" ui_key ctrl+n
+  ui_expect_new "New document" "$layout: a new design"
+  ui_wait_idle
+  ui_sync
+  for plane in xy xz yz; do
+    ui_mark
+    ui_step "$layout: create sketch on ${plane^^}" sketch_on_origin "$plane"
+    expect_centred "$layout, ${plane^^}"
+    ui_mark
+    ui_step "$layout: finish sketch (Ctrl+Enter)" ui_key ctrl+Return
+    ui_expect_new "Sketch finished" "$layout: the ${plane^^} sketch finished"
+  done
+}
+
+centred_round "Floating" --chrome=floating
+centred_round "Docked" --chrome=docked
 
 ui_finish "UI sketch view test"

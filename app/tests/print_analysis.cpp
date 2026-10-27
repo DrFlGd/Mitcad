@@ -242,9 +242,9 @@ void overlayTests() {
   CHECK(overlay.legend[0].first == warning && overlay.legend[0].second == QStringLiteral("Overhang, angle 45°"));
   CHECK(overlay.legend[1].first == error && overlay.legend[1].second == QStringLiteral("Thin wall, under 0.8 mm"));
   CHECK(mitcad::printOverlayLog(overlay) ==
-        QStringLiteral("Print overlay: 2 overhang triangle(s) #c08000, 1 thin triangle(s) #d02020, marker Thinnest "
-                       "0.50 mm at (20, 10, 20.5); legend Print1: #c08000 Overhang, angle 45° | #d02020 Thin "
-                       "wall, under 0.8 mm"));
+        QStringLiteral("Print overlay: 2 overhang triangle(s) #c08000, 1 thin triangle(s) #d02020 (150.0 mm^2), "
+                       "marker Thinnest 0.50 mm at (20, 10, 20.5); legend Print1: #c08000 Overhang, angle 45° | "
+                       "#d02020 Thin wall, under 0.8 mm"));
 
   // Thin walls off: no thin triangles, no marker, one legend row.
   PrintAnalysisSettings noWalls;

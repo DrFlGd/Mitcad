@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "DrawingTools.hpp"
 
+#include <cmath>
+
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -226,17 +228,75 @@ QJsonObject centerline(const QString& drawing, int /*sheet*/, const ToolPicks& p
   return picked(picks, 2, false) ? annotationOn(drawing, picks, QStringLiteral("centerline")) : QJsonObject();
 }
 
+// What is drawn outside the model (mitcad#729): in the view under the
+// first click when the tool's Drawn option says so and there is one, else
+// on the sheet.
+QJsonObject drawnOutside(const QString& drawing, int sheet, const ToolPicks& picks, const QString& type,
+                         const QString& attach) {
+  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("add_drawing_annotation")},
+                      {QStringLiteral("drawing"), drawing},
+                      {QStringLiteral("type"), type}};
+  if (attach == QStringLiteral("view") && picks.view > 0) {
+    command.insert(QStringLiteral("view"), picks.view);
+  } else {
+    command.insert(QStringLiteral("sheet"), sheet);
+  }
+  return command;
+}
+
 QJsonObject textNote(const QString& drawing, int sheet, const ToolPicks& picks, const QHash<QString, QString>& options) {
   const QString text = toolOption("drawing.text", options, "text");
   if (picks.points.isEmpty() || text.trimmed().isEmpty()) {
     return {};
   }
-  return {{QStringLiteral("cmd"), QStringLiteral("add_drawing_annotation")},
-          {QStringLiteral("drawing"), drawing},
-          {QStringLiteral("sheet"), sheet},
-          {QStringLiteral("type"), QStringLiteral("text")},
-          {QStringLiteral("at"), point(picks.points.first())},
-          {QStringLiteral("text"), text}};
+  QJsonObject command =
+      drawnOutside(drawing, sheet, picks, QStringLiteral("text"), toolOption("drawing.text", options, "attach"));
+  command.insert(QStringLiteral("at"), point(picks.points.first()));
+  command.insert(QStringLiteral("text"), text);
+  return command;
+}
+
+QJsonObject sketchLine(const QString& drawing, int sheet, const ToolPicks& picks,
+                       const QHash<QString, QString>& options) {
+  if (picks.points.size() < 2) {
+    return {};
+  }
+  QJsonObject command =
+      drawnOutside(drawing, sheet, picks, QStringLiteral("line"), toolOption("drawing.line", options, "attach"));
+  command.insert(QStringLiteral("points"), QJsonArray{point(picks.points[0]), point(picks.points[1])});
+  command.insert(QStringLiteral("pen"), toolOption("drawing.line", options, "pen"));
+  return command;
+}
+
+QJsonObject sketchArc(const QString& drawing, int sheet, const ToolPicks& picks,
+                      const QHash<QString, QString>& options) {
+  if (picks.points.size() < 3) {
+    return {};
+  }
+  QJsonObject command =
+      drawnOutside(drawing, sheet, picks, QStringLiteral("arc"), toolOption("drawing.arc", options, "attach"));
+  command.insert(QStringLiteral("points"),
+                 QJsonArray{point(picks.points[0]), point(picks.points[1]), point(picks.points[2])});
+  command.insert(QStringLiteral("pen"), toolOption("drawing.arc", options, "pen"));
+  return command;
+}
+
+QString centerPatternType(const QHash<QString, QString>& /*options*/) { return QStringLiteral("center_pattern"); }
+QString edgeExtensionType(const QHash<QString, QString>& /*options*/) { return QStringLiteral("edge_extension"); }
+
+int extensionPicks(const QHash<QString, QString>& options) {
+  return toolOption("drawing.edge_extension", options, "edges") == QStringLiteral("one") ? 1 : 2;
+}
+
+QJsonObject centerPattern(const QString& drawing, int /*sheet*/, const ToolPicks& picks,
+                          const QHash<QString, QString>& /*options*/) {
+  return picked(picks, 1, false) ? annotationOn(drawing, picks, QStringLiteral("center_pattern")) : QJsonObject();
+}
+
+QJsonObject edgeExtension(const QString& drawing, int /*sheet*/, const ToolPicks& picks,
+                          const QHash<QString, QString>& options) {
+  return picked(picks, extensionPicks(options), false) ? annotationOn(drawing, picks, QStringLiteral("edge_extension"))
+                                                       : QJsonObject();
 }
 
 QJsonObject leaderNote(const QString& drawing, int /*sheet*/, const ToolPicks& picks,
@@ -404,9 +464,40 @@ void addAnnotationTools(QVector<DrawingToolDef>& tools) {
                 tr("Draws a centreline through two circles or between two edges"), SheetPick::Picks,
                 tr("Click two circles, or two parallel edges"), {}, &centerline, false, QString(), &twoPicks,
                 &centerlineType, true});
+  // Drawn outside the model, on the sheet or in a view (mitcad#729).
+  const auto attach = [&choice](const QString& value) {
+    return choice(QStringLiteral("attach"), tr("Drawn"),
+                  {{QStringLiteral("view"), tr("In the View Clicked")}, {QStringLiteral("sheet"), tr("On the Sheet")}},
+                  value);
+  };
+  tools.append({QStringLiteral("drawing.line"), tr("Line"), QStringLiteral("line"),
+                tr("Draws a line on the sheet or in a view, outside the model"), SheetPick::Segment,
+                tr("Click the line's two ends"),
+                {attach(QStringLiteral("view")),
+                 choice(QStringLiteral("pen"), tr("Line"), penChoices(), QStringLiteral("thin"))},
+                &sketchLine, false, QString(), nullptr, nullptr, true});
+  tools.append({QStringLiteral("drawing.arc"), tr("Arc"), QStringLiteral("arc-center"),
+                tr("Draws an arc on the sheet or in a view, outside the model"), SheetPick::ArcPoints,
+                tr("Click the arc's centre, its start, then its end (counter-clockwise)"),
+                {attach(QStringLiteral("view")),
+                 choice(QStringLiteral("pen"), tr("Line"), penChoices(), QStringLiteral("thin"))},
+                &sketchArc, false, QString(), nullptr, nullptr, true});
+  tools.append({QStringLiteral("drawing.center_pattern"), tr("Center Pattern"), QStringLiteral("circular-pattern"),
+                tr("Marks every hole of a pattern from one of them"), SheetPick::Picks,
+                tr("Click one hole of the pattern, seen end on"), {}, &centerPattern, false, QString(), &onePick,
+                &centerPatternType, true});
+  tools.append({QStringLiteral("drawing.edge_extension"), tr("Edge Extension"), QStringLiteral("extend"),
+                tr("Runs straight edges on to where they meet"), SheetPick::Picks,
+                tr("Click the straight edges to run on"),
+                {choice(QStringLiteral("edges"), tr("Edges"),
+                        {{QStringLiteral("two"), tr("Two, to Their Corner")},
+                         {QStringLiteral("one"), tr("One, Both Ways")}},
+                        QStringLiteral("two"))},
+                &edgeExtension, false, QString(), &extensionPicks, &edgeExtensionType, true});
   tools.append({QStringLiteral("drawing.text"), tr("Text"), QStringLiteral("drawing-text"),
-                tr("Writes a note on the sheet"), SheetPick::Point, tr("Click where the text goes"),
-                {text(QStringLiteral("text"), tr("Text"))}, &textNote, false, QString(), nullptr, nullptr, true});
+                tr("Writes a note on the sheet or in a view"), SheetPick::Point, tr("Click where the text goes"),
+                {text(QStringLiteral("text"), tr("Text")), attach(QStringLiteral("sheet"))}, &textNote, false,
+                QString(), nullptr, nullptr, true});
   tools.append({QStringLiteral("drawing.note"), tr("Note"), QStringLiteral("drawing-note"),
                 tr("Writes a note on a leader to an edge or a point"), SheetPick::Picks,
                 tr("Click the edge or point the note's arrow points at"), {text(QStringLiteral("text"), tr("Text"))},
@@ -521,7 +612,9 @@ const DrawingToolDef* drawingTool(const QString& id) {
 
 int toolGroup(const DrawingToolDef& tool) {
   const QString& id = tool.id;
-  if (id == QStringLiteral("drawing.center_mark") || id == QStringLiteral("drawing.centerline")) {
+  if (id == QStringLiteral("drawing.center_mark") || id == QStringLiteral("drawing.centerline") ||
+      id == QStringLiteral("drawing.line") || id == QStringLiteral("drawing.arc") ||
+      id == QStringLiteral("drawing.center_pattern") || id == QStringLiteral("drawing.edge_extension")) {
     return 1;
   }
   if (id == QStringLiteral("drawing.dimension") || id == QStringLiteral("drawing.ordinate") ||
@@ -575,6 +668,12 @@ QStringList toolKeywords(const QString& id) {
     out << QStringLiteral("break view");
   } else if (id == QStringLiteral("drawing.parts_list")) {
     out << QStringLiteral("bom") << QStringLiteral("bill of materials");
+  } else if (id == QStringLiteral("drawing.line") || id == QStringLiteral("drawing.arc")) {
+    out << QStringLiteral("sketch");
+  } else if (id == QStringLiteral("drawing.center_pattern")) {
+    out << QStringLiteral("bolt circle") << QStringLiteral("centered pattern");
+  } else if (id == QStringLiteral("drawing.edge_extension")) {
+    out << QStringLiteral("virtual sharp") << QStringLiteral("intersection");
   }
   return out;
 }
@@ -753,6 +852,14 @@ QJsonObject viewEdit(const QString& drawing, int view, const QString& field, con
       return {};
     }
     command.insert(field, subject);
+  } else if (field == QStringLiteral("rotation")) {
+    // Degrees, counter-clockwise (mitcad#729).
+    bool number = false;
+    const double degrees = value.toDouble(&number);
+    if (!number || !std::isfinite(degrees)) {
+      return {};
+    }
+    command.insert(field, degrees);
   } else {
     command.insert(field, value);
   }
@@ -794,12 +901,32 @@ QJsonObject annotationEdit(const QString& drawing, int annotation, const QString
     }
     command.insert(QStringLiteral("finish"), changed);
   } else if (field == QStringLiteral("height")) {
+    // Empty: the drawing's letters again (mitcad#729).
+    if (value.trimmed().isEmpty()) {
+      command.insert(field, QJsonValue(QJsonValue::Null));
+      return command;
+    }
     bool number = false;
     const double height = value.toDouble(&number);
     if (!number || !(height > 0.0)) {
       return {};
     }
     command.insert(field, height);
+  } else if (field == QStringLiteral("pen")) {
+    command.insert(field, value);
+  } else if (field == QStringLiteral("length")) {
+    // An edge extension's reach beyond its edge's ends, mm (mitcad#729);
+    // empty: its own default.
+    if (value.trimmed().isEmpty()) {
+      command.insert(QStringLiteral("line_offset"), QJsonValue(QJsonValue::Null));
+      return command;
+    }
+    bool number = false;
+    const double length = value.toDouble(&number);
+    if (!number || !(length > 0.0)) {
+      return {};
+    }
+    command.insert(QStringLiteral("line_offset"), length);
   } else if (field == QStringLiteral("columns")) {
     // A table's columns, in order: none would leave the type's own.
     QJsonArray columns;
@@ -858,7 +985,58 @@ QString annotationName(const QString& type) {
   if (type == QStringLiteral("balloon")) {
     return tr("Balloon");
   }
+  if (type == QStringLiteral("line")) {
+    return tr("Line");
+  }
+  if (type == QStringLiteral("arc")) {
+    return tr("Arc");
+  }
+  if (type == QStringLiteral("center_pattern")) {
+    return tr("Center Pattern");
+  }
+  if (type == QStringLiteral("edge_extension")) {
+    return tr("Edge Extension");
+  }
   return tr("Dimension");
+}
+
+QJsonObject drawingDefaultsEdit(const QString& drawing, const QString& field, const QString& value) {
+  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("edit_drawing")}, {QStringLiteral("drawing"), drawing}};
+  const QString text = value.trimmed();
+  if (field == QStringLiteral("decimals")) {
+    if (text == QStringLiteral("auto") || text.isEmpty()) {
+      command.insert(field, QJsonValue(QJsonValue::Null));
+      return command;
+    }
+    bool number = false;
+    const int decimals = text.toInt(&number);
+    if (!number || decimals < 0 || decimals > 6) {
+      return {};
+    }
+    command.insert(field, decimals);
+    return command;
+  }
+  if (field == QStringLiteral("text_height")) {
+    if (text.isEmpty()) {
+      command.insert(field, QJsonValue(QJsonValue::Null));
+      return command;
+    }
+    bool number = false;
+    const double height = text.toDouble(&number);
+    if (!number || !(height > 0.0) || height > 100.0) {
+      return {};
+    }
+    command.insert(field, height);
+    return command;
+  }
+  return {};
+}
+
+QList<QPair<QString, QString>> penChoices() {
+  return {{QStringLiteral("thin"), tr("Thin")},
+          {QStringLiteral("thick"), tr("Thick")},
+          {QStringLiteral("hidden"), tr("Dashed")},
+          {QStringLiteral("chain"), tr("Center Line")}};
 }
 
 } // namespace mitcad::drawings

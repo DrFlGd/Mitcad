@@ -709,7 +709,7 @@ QString SettingField::typedText() const {
 
 void SettingField::commitTyped() {
   QString error;
-  const QJsonValue typed = printValueOf(m_key, typedText(), &error);
+  const QJsonValue typed = printValueOf(m_key, typedText(), &error, m_dialect);
   if (!error.isEmpty()) {
     setError(error); // at the field (mitcad#655)
     qDebug().noquote() << QStringLiteral("Setting %1 refused: %2").arg(m_key.key, error);

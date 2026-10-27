@@ -172,7 +172,14 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   // The feature commands whose first selection input takes everything
   // selected, by kind, in the registry's (the ribbon's) order.
   QVector<QPair<const CommandDef*, bool>> fitting[4];
+  // Those the menu offers at its top level (mitcad#735: Move/Copy).
+  QVector<const CommandDef*> atTop;
   for (const auto& def : m_registry->commands()) {
+    if (def->kind == CommandDef::Kind::Feature && def->offeredAtTop && isAvailable(*def) &&
+        def->offeredAtTop(selection)) {
+      atTop.append(def.get());
+      continue;
+    }
     const InputDef* input = def->primarySelection();
     if (def->kind != CommandDef::Kind::Feature || input == nullptr || !isAvailable(*def) ||
         !std::all_of(selection.begin(), selection.end(),
@@ -223,6 +230,11 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   if (selection.size() == 1 && !feature.isEmpty() && editorOf(feature, &name) != nullptr) {
     addCall(QStringLiteral("edit"), tr("Edit %1").arg(name), [this, feature] { editFeature(feature); });
   }
+  // Move/Copy for bodies and components (mitcad#735), started with the
+  // selection as its own action is.
+  for (const CommandDef* command : atTop) {
+    add(m_registry->action(command->id));
+  }
   const QString sketch = sketchOf(first);
   if (selection.size() == 1 && !sketch.isEmpty()) {
     addCall(QStringLiteral("sketch"), tr("Edit Sketch"), [this, sketch] { editSketch(sketch); });
@@ -256,8 +268,11 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   }
   // The face that lies on the print bed (mitcad#731): a planar face of a
   // solid sets it, the body's own clears it. While the menu is open, the
-  // body's bed face elsewhere shows in the bed's colour.
-  if (selection.size() == 1 && first.kind == SelectKind::Face && !surfaces && !windowReadOnly()) {
+  // body's bed face elsewhere shows in the bed's colour. A surface body is
+  // not printed: a face it keeps (it became a surface body, or a file
+  // stored one) is only cleared, from any of its faces (mitcad#737).
+  if (selection.size() == 1 && first.kind == SelectKind::Face && !windowReadOnly() &&
+      (!surfaces || !m_snapshot.bodies.value(first.owner).printBedFace.isEmpty())) {
     const DocumentSnapshot::Body body = m_snapshot.bodies.value(first.owner);
     const QString uid = first.owner;
     const auto setBedFace = [this, uid](const QString& face) {
@@ -269,18 +284,19 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
                                  .arg(bodyName(uid), face.isEmpty() ? QStringLiteral("none") : face);
       }
     };
-    // A stored face that is gone or not planar is cleared from any face of
-    // the body; a planar face can still take its place.
-    const bool broken = !body.printBedFace.isEmpty() && !body.printBedError.isEmpty();
+    // A stored face that is gone or not planar, or a surface body's, is
+    // cleared from any face of the body; on a solid a planar face can still
+    // take its place.
+    const bool broken = !body.printBedFace.isEmpty() && (surfaces || !body.printBedError.isEmpty());
     const bool onBed = !broken && isPrintBedFace(first, body.printBedFaces, bodyShape(uid));
-    if (!onBed && first.geometry == QStringLiteral("plane")) {
+    if (!surfaces && !onBed && first.geometry == QStringLiteral("plane")) {
       const QString face = first.name;
       addCall(QStringLiteral("print-3d"), tr("Set as Print Bed Face"), [setBedFace, face] { setBedFace(face); });
     }
     if (onBed || broken) {
       addCall(QStringLiteral("print-3d"), tr("Clear Print Bed Face"), [setBedFace] { setBedFace(QString()); });
     }
-    if (!onBed && body.printBedError.isEmpty() && !body.printBedFaces.isEmpty()) {
+    if (!surfaces && !onBed && body.printBedError.isEmpty() && !body.printBedFaces.isEmpty()) {
       m_printBedShown = SelectionItem{SelectKind::Face, uid, body.printBedFaces.first(), QStringLiteral("plane"),
                                       first.occurrence};
       updateIdleView();
@@ -355,6 +371,22 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   // A feature selected as its faces (mitcad#28) has no row of its own.
   if (selection.size() == 1 && first.kind != SelectKind::Feature && (onBody(first) || !feature.isEmpty())) {
     addCall(QStringLiteral("browser"), tr("Find in Browser"), [this, first] { m_controller->findInBrowser(first); });
+  }
+  // Save As Mesh (mitcad#734): the bodies of the bodies, faces, edges,
+  // vertices and components selected to mesh files; disabled with the
+  // reason when none is a solid or mesh body.
+  if (std::all_of(selection.begin(), selection.end(),
+                  [](const SelectionItem& item) { return onBody(item) || item.kind == SelectKind::Component; })) {
+    const QString meshBlocked = saveAsMeshBlocked(selection);
+    QAction* meshAction = new QAction(themeIcon(QStringLiteral("export")), tr("Save As Mesh…"), &menu);
+    connect(meshAction, &QAction::triggered, &menu, [this, selection] { saveAsMesh(selection); });
+    if (!meshBlocked.isEmpty()) {
+      meshAction->setEnabled(false);
+      meshAction->setToolTip(meshBlocked);
+      menu.setToolTipsVisible(true);
+      qDebug().noquote() << QStringLiteral("Save As Mesh disabled: %1").arg(meshBlocked);
+    }
+    add(meshAction);
   }
   menu.addSeparator();
   addCall(QString(), tr("Clear Selection"), [this] { setSelection({}); });

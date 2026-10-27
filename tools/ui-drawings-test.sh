@@ -4,6 +4,7 @@
 # check-all sources: core/model/src/api/drawings.rs core/model/src/api/drawing.rs core/model/src/document/drawings.rs tools/cli
 # check-all sources: core/model/src/api/drawing_annotations.rs core/model/src/api/annotations.rs app/view/AnnotationDialogs.cpp
 # check-all sources: core/model/src/api/drawing_tables.rs core/model/src/api/drawing_templates.rs app/print
+# check-all sources: core/dwg/src/write.rs
 # Drawings kept in the design (mitcad#707) through the real UI, in the
 # Docked layout, on a 40 x 30 x 20 block with a 10 mm hole through it from
 # the top that mitcad-cli makes (Body1, F2.b0):
@@ -29,13 +30,20 @@
 #     note on a leader; the dimension's ± tolerance from the annotations'
 #     tolerance dialog; the dimension dragged; the edge under the pointer
 #     highlighted before its click and the dimension's lines previewed
-#     while it is placed (mitcad#725).
+#     while it is placed (mitcad#725). The dimension undone and redone
+#     (the redo made 1.5 s longer) right after the pointer moved onto an
+#     edge: the hover's question waits for the redo, the document is not
+#     read while it computes (mitcad#753).
 #   - Several items (mitcad#725): the dimension and the note selected with
 #     Ctrl+click, dragged and deleted together, undone; Esc clears the
 #     selection and leaves the drawing open; the note's menu (Edit Text…)
 #     and a double-click open its text; a view's menu shades it.
 #   - Tables (phase 3): a top view at 1:1 (Base View's Orientation and
 #     Scale), a hole table of it placed by a click (the hole tagged A1).
+#   - Another sheet (mitcad#759): a top view on a second sheet; Dimension's
+#     pick on the first sheet, then the second sheet's tab: a diameter
+#     there without Esc; a third sheet shown while the second is deleted
+#     stays shown; the third deleted too.
 #   - Close Drawing; the extrusion made 35 high in its panel; the drawing
 #     opened again from the browser: the front view has grown upward and
 #     the dimension says 35.
@@ -43,14 +51,17 @@
 #     dimension still drawn, the hole table empty.
 #   - Saved and opened again: the drawing with its five views and its
 #     annotations.
-#   - Export… PDF: a PDF of the sheet with the note and the dimension.
+#   - Export… PDF: a PDF of the sheet with the note and the dimension;
+#     Export… DWG: an R2000 DWG file of it (mitcad#728).
 #   - Templates and revisions (phase 4): Body1 made PLA (Material...), the
 #     title block's material follows; Add Revision: the revision table and
 #     the title block show it; Export… PDF with them.
 #   - An assembly mitcad-cli makes (Component1 placed twice, Component2
 #     once), in the Floating layout: a front view, a parts list with its
 #     balloons (undone), a parts list without and a balloon on
-#     Component1's second placement; Export… SVG with the parts list; the placement
+#     Component1's second placement; the front view dragged with its parts
+#     list selected: the list moves too (mitcad#752), undone; Export… SVG
+#     with the parts list; the placement
 #     deleted from the browser: the list counts one Component1 and the
 #     balloon is broken; Undo brings them back.
 #   - File › Export Drawing twice: a new drawing, a note added to it by
@@ -99,6 +110,14 @@ sheet_at() {
 sheet_click() { ui_sync; xdotool mousemove $(sheet_at "$1" "$2") click 1; ui_sync; }
 # sheet_hover x y: the pointer moved to a sheet point (mm), no click.
 sheet_hover() { ui_sync; xdotool mousemove $(sheet_at "$1" "$2"); ui_sync; }
+# hover_then_redo x y: the pointer moved to a sheet point (mm) and Redo
+# (Ctrl+Y) at once, before the hover's question is asked (mitcad#753).
+hover_then_redo() {
+  local at
+  at=$(sheet_at "$1" "$2")
+  ui_sync
+  xdotool mousemove $at key ctrl+y
+}
 
 # ctrl_click_logged "logged place": a Ctrl+click there (adds to the
 # selection or takes from it).
@@ -175,7 +194,8 @@ no_refusal() {
 }
 
 ui_start_display
-ui_start_app --open "$FILE" --no-native-dialogs
+# A redo takes 1.5 s longer in this run (mitcad#753), whatever it changes.
+MITCAD_TEST_JOB_SLEEP_MS=redo=1500 ui_start_app --open "$FILE" --no-native-dialogs
 ui_expect_log "block.mitcad" "the design opened"
 
 echo "--- Create Drawing"
@@ -380,6 +400,23 @@ ui_step "where the dimension goes"         sheet_click 172 120
 ui_expect_new '"type":"linear"' "a linear dimension asked for"
 ui_expect_new "Drawing annotations drawn: 1 = 20" "drawn: the block is 20 high"
 no_refusal
+# The hover's question waits while a job computes the model (mitcad#753):
+# the dimension undone, then redone (1.5 s longer, MITCAD_TEST_JOB_SLEEP_MS)
+# right after the pointer moved onto an edge, so that the hover's timer
+# fires while the window waits for the redo.
+ui_mark
+ui_step "undo the dimension (Ctrl+Z)"      ui_key ctrl+z
+ui_expect_new "Drawing annotations drawn: none" "the dimension undone, the tool still on"
+ui_step "point at the empty sheet"         sheet_hover 200 75
+ui_expect_new "Drawing hover: nothing" "nothing under the pointer"
+ui_mark
+ui_step "onto the bottom edge, then redo (Ctrl+Y)" hover_then_redo 95 100.5
+ui_expect_new "Drawing annotations drawn: 1 = 20" "the dimension redone" 10
+ui_wait_idle
+ui_expect_new "Drawing hover: line" "the edge under the pointer asked for once the redo was done"
+grep -qF "The document was read while a job computes it" <(tail -n +$((UI_MARK + 1)) "$UI_LOG") &&
+  ui_fail "the hover read the model while the redo computed it"
+ui_crashed && ui_fail "crashed while the hover waited for the redo"
 # A diameter of the hole, seen from the side in the section.
 ui_mark
 settled "Drawing panel drawingOption_type"
@@ -494,7 +531,7 @@ ui_focus_main
 ui_mark
 ui_step "Esc"                              ui_key Escape
 ui_step "right-click the projected view"   ui_click_logged "Drawing view 2" 3
-ui_expect_new "Context menu: Projected View | Section View | Detail View | Break | Hidden Edges | Tangent Edges | Shaded | Center Marks | Delete View" "the view's menu"
+ui_expect_new "Context menu: Projected View | Section View | Detail View | Break | Rotate 90° Left | Rotate 90° Right | Hidden Edges | Tangent Edges | Shaded | Center Marks | Delete View" "the view's menu"
 ui_step "choose Shaded"                    ui_menu_choose "Shaded"
 ui_expect_new '"shaded":true' "the view shaded"
 no_refusal
@@ -538,6 +575,93 @@ ui_expect_new '"type":"hole_table"' "a hole table asked for"
 ui_expect_new "5 = A1 20 15 Ø10 THRU" "the hole tagged A1 and listed from the view's corner"
 ui_expect_new "Drawing annotation 5 selected" "the table selected, its panel shown"
 ui_expect_new "Drawing panel drawingTableTags at" "its settings in the panel"
+no_refusal
+
+echo "--- Another sheet shown: the tool's picks stay behind; an earlier sheet deleted (mitcad#759)"
+# A second sheet with a top view at 1:1 (Base View's options as last
+# chosen) around 150, 100: the hole's circle (radius 5) in its middle.
+ui_mark
+settled "Drawing Add Sheet"
+ui_step "+ (a second sheet)"               ui_click_logged "Drawing Add Sheet"
+ui_expect_new '"cmd":"add_drawing_sheet"' "a sheet asked for"
+ui_expect_new "Drawing sheet drawn: 0 views" "the new sheet shown"
+ui_mark
+settled "Drawing tool Base View"
+ui_step "Base View"                        ui_click_logged "Drawing tool Base View"
+ui_expect_new "Drawing tool: Base View" "the tool is on"
+ui_step "click the sheet at 150, 100"      sheet_click 150 100
+ui_expect_new '"direction":"top"' "a top view asked for"
+ui_expect_new "Drawing sheet drawn: 1 views" "the top view drawn on the second sheet"
+ui_expect_new "Drawing tool: Projected View" "projected views follow"
+no_refusal
+second=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -o "Drawing view [0-9]* at" | tail -1 | awk '{print $3}')
+[ -n "$second" ] || ui_fail "no place of the second sheet's view"
+ui_mark
+ui_step "end the tool (Esc)"               ui_key Escape
+ui_expect_new "Drawing tool: selection" "back to the selection"
+ui_mark
+settled "Drawing Sheet tab 1"
+ui_step "the first sheet's tab"            ui_click_logged "Drawing Sheet tab 1"
+ui_expect_new "Drawing sheet 1 shown" "the first sheet shown"
+ui_expect_new "Drawing sheet drawn: 5 views" "its five views"
+# Dimension, a diameter as last chosen: one pick on the first sheet, then
+# the second sheet's tab.
+ui_mark
+settled "Drawing tool Dimension"
+ui_step "Dimension"                        ui_click_logged "Drawing tool Dimension"
+ui_expect_new "Drawing tool: Dimension" "the dimension tool is on"
+settled "Drawing view 3"
+ui_step "the hole's wall in the section"   shifted_click "Drawing view 3" 10 0
+ui_expect_new "Drawing picked axis (1)" "the hole's round face picked on the first sheet"
+ui_expect_new "Drawing placing view" "its place would be clicked next"
+ui_mark
+settled "Drawing Sheet tab 2"
+ui_step "the second sheet's tab"           ui_click_logged "Drawing Sheet tab 2"
+ui_expect_new "Drawing sheet 2 shown" "the second sheet shown"
+ui_expect_new "Drawing sheet drawn: 1 views" "its top view"
+ui_expect_new "Drawing view $second at" "the top view placed"
+# The pick left behind: the next click is a pick on this sheet, not the
+# first sheet's placing click; a dimension on this sheet without Esc.
+ui_mark
+settled "Drawing view $second"
+ui_step "the hole's circle, off its centre marks" shifted_click "Drawing view $second" 3.54 3.54
+ui_expect_new "Drawing picked " "the circle picked on the second sheet"
+ui_expect_new "Drawing placing view" "its place is clicked next"
+ui_step "above the view"                   shifted_click "Drawing view $second" 0 25
+ui_expect_new '"type":"diameter"' "a diameter asked for"
+ui_expect_new "\"view\":$second" "on the second sheet's view"
+ui_expect_new "= Ø10" "drawn on the second sheet: the hole is 10 across"
+no_refusal
+ui_mark
+ui_step "end the tool (Esc)"               ui_key Escape
+ui_expect_new "Drawing tool: selection" "back to the selection"
+# A third sheet shown, the second deleted from its tab's menu: the third
+# stays shown, now the second.
+ui_mark
+settled "Drawing Add Sheet"
+ui_step "+ (a third sheet)"                ui_click_logged "Drawing Add Sheet"
+ui_expect_new "Drawing sheet drawn: 0 views" "the third sheet shown"
+ui_expect_new "Drawing Sheet tab 3 at" "its tab"
+ui_mark
+settled "Drawing Sheet tab 2"
+ui_step "the second sheet's tab menu"      ui_click_logged "Drawing Sheet tab 2" 3
+ui_expect_new "Drawing sheet menu: sheet 2" "the second sheet's menu"
+ui_step "Delete Sheet (Down, Down, Enter)" ui_key Down Down Return
+ui_expect_new '"cmd":"delete_drawing_sheet"' "its deletion asked for"
+ui_expect_new "Drawing sheet 2 shown" "the sheet shown stays shown, now the second"
+no_refusal
+ui_sync
+shown=$(grep -o "Drawing sheet drawn: [0-9]* views" "$UI_LOG" | tail -1)
+[ "$shown" = "Drawing sheet drawn: 0 views" ] || ui_fail "another sheet shown after the delete: $shown"
+echo "ok   the empty third sheet still shown"
+# It deleted too, from its own tab: the first sheet again.
+ui_mark
+settled "Drawing Sheet tab 2"
+ui_step "its tab's menu"                   ui_click_logged "Drawing Sheet tab 2" 3
+ui_expect_new "Drawing sheet menu: sheet 2" "the tab's menu"
+ui_step "Delete Sheet (Down, Down, Enter)" ui_key Down Down Return
+ui_expect_new "Drawing sheet 1 shown" "the first sheet shown"
+ui_expect_new "Drawing sheet drawn: 5 views" "its five views"
 no_refusal
 
 echo "--- The model changes, the drawing follows"
@@ -618,6 +742,17 @@ echo "ok   the PDF has its page"
 grep -aq "(DEBURR)" "$WORK/drawing.pdf" || ui_fail "the PDF has no note"
 grep -aq "(35 " "$WORK/drawing.pdf" || ui_fail "the PDF has no dimension of the block"
 echo "ok   the PDF has the note and the dimension"
+
+echo "--- Export a DWG (mitcad#728)"
+ui_mark
+ui_step "Export…"                          ui_click_logged "Drawing Export"
+ui_step "DWG… (Down x4, Enter)"            ui_key Down Down Down Down Return
+ui_step "type the path, Enter"             ui_type_path "Export Drawing" "$WORK/drawing.dwg"
+ui_focus_main
+ui_expect_new "Exported $WORK/drawing.dwg: drawing Drawing1, 1 sheets" "the DWG written" 30
+[ "$(head -c 6 "$WORK/drawing.dwg")" = "AC1015" ] || ui_fail "no R2000 DWG file"
+[ "$(stat -c %s "$WORK/drawing.dwg")" -gt 4096 ] || ui_fail "the DWG holds no sheet"
+echo "ok   the DWG is an R2000 drawing"
 
 echo "--- The template's title block follows the design; a revision (phase 4)"
 ui_mark
@@ -750,6 +885,39 @@ no_refusal
 ui_mark
 ui_step "end the tool (Esc)"               ui_key Escape
 ui_expect_new "Drawing tool: selection" "back to the selection"
+# The front view dragged with its parts list selected: the list, which
+# stands on the sheet whatever its view's place, moves by the drag too
+# (mitcad#752); undone.
+ui_mark
+settled "Drawing view 1"
+ui_step "select the front view"            ui_click_logged "Drawing view 1"
+ui_expect_new "Drawing view 1 selected" "the front view selected"
+ui_step "Ctrl+click the parts list"        ctrl_click_logged "Drawing annotation 1"
+ui_expect_new "Drawing selection: view 1, annotation 1" "the view and its parts list selected"
+read -r list_x list_y <<< "$(grep -o "Drawing annotation 1 at [0-9]*,[0-9]*" "$UI_LOG" | tail -1 | sed 's/.* at //; s/,/ /')"
+read -r view_x view_y <<< "$(grep -o "Drawing view 1 at [0-9]*,[0-9]*" "$UI_LOG" | tail -1 | sed 's/.* at //; s/,/ /')"
+[ -n "$list_y" ] && [ -n "$view_y" ] || ui_fail "no places of the front view and its parts list"
+ui_mark
+ui_step "drag them 20 mm down"             sheet_drag "Drawing view 1" 120 100
+ui_expect_new "Drawing selection dragged by" "both dragged"
+ui_expect_new '"cmd":"edit_drawing_annotation"' "the parts list moved by a command of its own"
+ui_expect_new "Drawing view 1 at" "the front view drawn at its new place"
+no_refusal
+ui_sync
+read -r moved_x moved_y <<< "$(grep -o "Drawing annotation 1 at [0-9]*,[0-9]*" "$UI_LOG" | tail -1 | sed 's/.* at //; s/,/ /')"
+read -r now_x now_y <<< "$(grep -o "Drawing view 1 at [0-9]*,[0-9]*" "$UI_LOG" | tail -1 | sed 's/.* at //; s/,/ /')"
+# Both moved the same way down the window (y grows downward), about as far.
+[ $((now_y - view_y)) -gt 5 ] || ui_fail "the front view did not move down ($view_y -> $now_y)"
+[ $((moved_y - list_y)) -gt 5 ] || ui_fail "the parts list stayed behind ($list_y -> $moved_y, the view $view_y -> $now_y)"
+gap=$(((moved_y - list_y) - (now_y - view_y)))
+[ "${gap#-}" -le 3 ] && [ $((moved_x - list_x)) -le 3 ] && [ $((list_x - moved_x)) -le 3 ] ||
+  ui_fail "the parts list did not move as the view did: list $list_x,$list_y -> $moved_x,$moved_y, view $view_y -> $now_y"
+echo "ok   the parts list moved with the view: $list_x,$list_y -> $moved_x,$moved_y"
+ui_mark
+ui_step "undo (Ctrl+Z)"                    ui_key ctrl+z
+ui_expect_new "Drawing view 1 at $view_x,$view_y" "the front view back"
+ui_expect_new "Drawing annotation 1 at $list_x,$list_y" "the parts list back with one undo"
+ui_step "Esc"                              ui_key Escape
 ui_mark
 ui_step "Export…"                          ui_click_logged "Drawing Export"
 ui_step "SVG… (Down, Down, Enter)"         ui_key Down Down Return

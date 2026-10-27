@@ -25,6 +25,10 @@
 #      the hint says so; one undo takes both back. The Point tool (a
 #      shortcut of the test's) on a derived offset curve: the point is
 #      added, the coincident of its snap is refused, and the hint shows why.
+#   7. A design (mitcad-cli, mitcad#736): a block and a sketch on XZ through
+#      it. Intersect (a shortcut of the test's) takes the block picked in the
+#      browser: its section, linked. Extrude1 made 30 high: the sketch has
+#      no warning and the section's corner is at the new top.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-projections-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -35,7 +39,8 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7'; 'sketch.clean_up_projections' = 'F8'
-  'sketch.clean_up_stale_projections' = 'F9'; 'sketch.constraint.coincident' = 'Shift+F5'; 'sketch.point' = 'Shift+F6' }
+  'sketch.clean_up_stale_projections' = 'F9'; 'sketch.constraint.coincident' = 'Shift+F5'; 'sketch.point' = 'Shift+F6'
+  'sketch.intersect' = 'Shift+F7' }
 
 Write-Host '--- A block and a sketch on its front face'
 Ui-StartApp 'projections'
@@ -277,4 +282,90 @@ Ui-ExpectNew 'Sketch notice: Coincident not added: ' 'the hint shows the reason'
 Ui-Step 'end the tool (Esc)'             { Ui-Key 'Escape' }
 Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
 Ui-ExpectLog 'Sketch finished' 'sketch finished'
+
+Write-Host '--- Intersect: the section of a body follows it (mitcad#736)'
+# mitcad-cli builds it: a 40 x 25 block 20 high from (-20, -10); Sketch2
+# (F3) on XZ cuts it through (x along X, y along -Z).
+$script = Join-Path $work 'intersect.json'
+$design = Join-Path $work 'intersect.mitcad'
+Set-Content -Encoding ascii $script @'
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-20, -10], "width": 40, "height": 25},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+  {"cmd": "sketch.create", "plane": "xz"}
+]
+'@
+$made = & $cli run $script --save $design
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $design)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+
+Ui-StartApp 'intersect' @('--open', $design)
+Ui-ExpectLog 'intersect.mitcad' 'the design opened'
+Ui-Mark
+Ui-Step 'edit Sketch2 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch2' }
+Ui-ExpectNew 'Editing sketch F3 (Sketch2)' 'Sketch2 edited' 30
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Start-Sleep -Milliseconds 800
+Ui-Mark
+Ui-Step 'intersect (Shift+F7)'           { Ui-Key 'shift+F7' }
+Ui-ExpectLog 'Browser Root/Bodies/Body1 at' 'Body1 in the browser'
+Ui-Step 'pick Body1 in the browser'      { Ui-ClickLogged 'Browser Root/Bodies/Body1' }
+Ui-ExpectNew 'Intersect Geometry: 1 body' 'the body went to Intersect'
+Ui-ExpectNew 'Preview Intersect: ok' 'the section previewed' 30
+Ui-WaitIdle
+Ui-FocusMain
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Intersected 1 item(s)' 'the section kept'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'Sketch2 finished'
+
+Ui-Mark
+Ui-Step 'edit Extrude1 (double-click)'   { Ui-DoubleClickLogged 'Timeline Extrude1' }
+Ui-ExpectNew ' with Extrude' 'editing Extrude1' 30
+Ui-Step 'distance 30'                    { Ui-TypeIn 'Panel Extrude input distance' '30' }
+Ui-ExpectNew 'Preview Extrude: ok' 'the edit previewed' 30
+Ui-WaitIdle
+Ui-FocusMain
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Edited F2' 'Extrude1 edited' 30
+if ((Ui-LogLines) -match 'Recompute failed') { Ui-Fail 'a recompute failed' }
+
+Ui-Mark
+Ui-Step 'edit Sketch2 again'             { Ui-DoubleClickLogged 'Timeline Sketch2' }
+Ui-ExpectNew 'Editing sketch F3 (Sketch2)' 'Sketch2 edited' 30
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Start-Sleep -Milliseconds 800
+# The lines since the mark (Ui-Mark is the index of the log's last, still
+# empty line: the first new line is there).
+$since = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
+if ($since -match 'Palette warning') { Ui-Fail 'Sketch2 warns: the section did not follow the block' }
+Write-Host 'ok   Sketch2 has no warning: the section followed the block'
+# The section's top right corner is at x = 20, z = 30 now: (20, -30).
+Ui-Mark
+$from = Ui-SketchAt 20 -30
+$to = Ui-SketchAt 26 -36
+Ui-Step 'drag the section''s new corner' { Ui-Drag $from[0] $from[1] $to[0] $to[1] }
+Start-Sleep -Milliseconds 800
+$since = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
+if (-not ($since -match 'Drag of p[0-9]+ did not move it|Dragged p[0-9]+ to \(20\.000, -30\.000\)')) {
+  Ui-Fail 'no section point at the block''s new top corner'
+}
+Write-Host 'ok   the section''s corner is where the block is now'
+# The old top line ran along z = 20: nothing of the section is there now.
+Ui-Mark
+$from = Ui-SketchAt 0 -20
+$to = Ui-SketchAt 6 -26
+Ui-Step 'drag at the old top'            { Ui-Drag $from[0] $from[1] $to[0] $to[1] }
+Start-Sleep -Milliseconds 800
+$since = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
+if ($since -match 'Drag of |Dragged ') { Ui-Fail 'a section curve stayed at the old top' }
+Write-Host 'ok   nothing of the section is left at the old top'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'Sketch2 finished'
+if ((Ui-LogLines) -match 'Recompute failed') { Ui-Fail 'a recompute failed' }
 Ui-Finish 'UI Windows projections test'

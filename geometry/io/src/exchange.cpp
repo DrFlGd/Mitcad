@@ -92,7 +92,7 @@ void write_file(const std::string& path, const std::vector<Body>& bodies,
     return;
   }
   case Format::Obj:
-    write_obj(path, bodies, ObjWriteOptions{options.mesh});
+    write_obj(path, bodies, ObjWriteOptions{options.mesh, options.unit});
     return;
   case Format::Brep:
     write_brep(path, bodies);

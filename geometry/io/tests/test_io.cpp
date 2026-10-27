@@ -1225,7 +1225,7 @@ void test_obj(const std::string& dir) {
   const std::vector<Body> bodies = sample_bodies();
   const std::string path = dir + "/bodies.obj";
   const mitcad::io::MeshOptions mesh = mitcad::io::MeshOptions::from(mitcad::io::Refinement::Low);
-  mitcad::io::write_obj(path, bodies, {mesh});
+  mitcad::io::write_obj(path, bodies, {mesh, mitcad::io::LengthUnit::Millimeter});
   CHECK(std::filesystem::exists(dir + "/bodies.mtl"));
   const std::vector<Body> read = mitcad::io::read_obj(path);
   CHECK(read.size() == 2);
@@ -1241,6 +1241,17 @@ void test_obj(const std::string& dir) {
   }
   const std::vector<Body> scaled = mitcad::io::read_obj(path, {10.0});
   CHECK(scaled.size() == 2 && near(bbox(scaled[1].shape).max[0], 1500.0, 1e-2));
+  // In centimetres (mitcad#734): a tenth of the numbers, the same size read
+  // back at 10 mm per unit.
+  const std::string centimetres = dir + "/bodies-cm.obj";
+  mitcad::io::write_obj(centimetres, bodies, {mesh, mitcad::io::LengthUnit::Centimeter});
+  const std::vector<Body> plain = mitcad::io::read_obj(centimetres);
+  const std::vector<Body> sized = mitcad::io::read_obj(centimetres, {10.0});
+  CHECK(plain.size() == 2 && sized.size() == 2);
+  if (plain.size() == 2 && sized.size() == 2 && read.size() == 2) {
+    CHECK(near(bbox(plain[1].shape).max[0], bbox(read[1].shape).max[0] / 10.0, 1e-4));
+    CHECK(same_box(bbox(sized[1].shape), bbox(read[1].shape), 1e-3));
+  }
 }
 
 bool box_near(const Box& a, const Box& b, double tolerance) {
@@ -1322,7 +1333,7 @@ void test_placements(const std::string& dir) {
   mitcad::io::write_iges(iges, bodies);
   const std::string obj = dir + "/placed.obj";
   const mitcad::io::MeshOptions mesh = mitcad::io::MeshOptions::from(mitcad::io::Refinement::Low);
-  mitcad::io::write_obj(obj, bodies, {mesh});
+  mitcad::io::write_obj(obj, bodies, {mesh, mitcad::io::LengthUnit::Millimeter});
   for (const std::vector<Body>& read : {mitcad::io::read_iges(iges), mitcad::io::read_obj(obj)}) {
     CHECK(read.size() == 3);
     const Body* a = with_box(read, first, 1e-3);
@@ -1352,7 +1363,7 @@ void test_placements(const std::string& dir) {
   mitcad::io::write_stl(pin_stl, {pin});
   const Body scan{"Scan", mitcad::io::read_stl(pin_stl).shape, std::nullopt, {turned}};
   const std::string mesh_obj = dir + "/scan.obj";
-  mitcad::io::write_obj(mesh_obj, {scan}, {mesh});
+  mitcad::io::write_obj(mesh_obj, {scan}, {mesh, mitcad::io::LengthUnit::Millimeter});
   const std::vector<Body> scan_obj = mitcad::io::read_obj(mesh_obj);
   CHECK(scan_obj.size() == 1 && scan_obj[0].name == "Scan" && box_near(bbox(scan_obj[0].shape), first, 1e-3));
   const std::string mesh_brep = dir + "/scan.brep";

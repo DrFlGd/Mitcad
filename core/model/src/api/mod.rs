@@ -79,7 +79,8 @@ mod limits;
 mod parameters_csv;
 // Drawings kept in the design: drawings, sheets and views (mitcad#707).
 mod drawings;
-// A two-sided extrusion's negative distance refused in commands (mitcad#693).
+// A two-sided extrusion's negative distance: refused in commands without
+// signed distances (mitcad#693), taken with them (mitcad#765).
 mod two_sides;
 // Purge volumes on filament changes (mitcad#705).
 mod purge_volumes;
@@ -1020,16 +1021,10 @@ impl<K: Kernel> Document<K> {
                         self.set_parameter_expression(&name, &expression, unit)?
                     } else {
                         match expression_of(value, expression)? {
+                            // From the table's change set: a text parameter's
+                            // value is always 0 (mitcad#758).
                             Expression::Number(value) if unit.is_none() => {
-                                let before: Vec<f64> =
-                                    self.parameters().iter().map(|p| p.value()).collect();
-                                self.set_parameter(&name, value)?;
-                                self.parameters()
-                                    .iter()
-                                    .zip(before)
-                                    .filter(|(p, old)| p.value() != *old)
-                                    .map(|(p, _)| p.name().to_owned())
-                                    .collect()
+                                self.set_parameter_value(&name, value)?
                             }
                             Expression::Number(value) => {
                                 let unit = unit.expect("checked");
@@ -2133,6 +2128,14 @@ mod sketch_inactive_tests;
 // A body's print bed face and the 3D print export on it (mitcad#731).
 #[cfg(test)]
 mod print_bed_tests;
+// Offsets of projected outlines: a curve projected twice, ends that meet
+// within a model's tolerance, the reasons an offset fails (mitcad#741).
+#[cfg(test)]
+mod projected_offset_tests;
+// Mesh files in a unit, with a longest edge, OBJ on the print bed and a
+// file per body: Save As Mesh's options (mitcad#734).
+#[cfg(test)]
+mod mesh_export_tests;
 
 /// The feature a command edits by name (mitcad#401): `edit_feature`,
 /// `suppress_feature` and `reorder_feature` its `uid`, a sketch command

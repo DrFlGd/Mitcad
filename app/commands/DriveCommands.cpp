@@ -6,7 +6,9 @@
 // panel; the row chosen is previewed (the command applied and taken back,
 // CommandDef::sketchCommand) and OK makes both parts in one undo step
 // (`add_gear_pair`, `add_belt_drive`). Each part is placed on its axis as
-// Place On places it (`at.axis`); the second gear meshes with the first.
+// Place On places it (`at.axis`), a shaft in another component's
+// occurrence as a seat with its link (mitcad#754); the second gear meshes
+// with the first, so it goes on geometry of the active component.
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -28,6 +30,7 @@
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
 #include "Commands.hpp"
+#include "PlaceInputs.hpp"
 
 namespace mitcad::cmd {
 namespace {
@@ -64,24 +67,90 @@ bool isAxisPick(const SelectionItem& item) {
 // The part's Offset along its axis (mitcad#656: the two parts lined up).
 QString offsetKey(const QString& key) { return key + QStringLiteral("_offset"); }
 
-// The `at` of a picked axis, with the end its click was nearer and the
-// part's Offset along it (`numbers`: as a number, for queries while it is
-// typed).
-QJsonObject axisAt(const CommandState& state, const QString& key, bool numbers = false) {
+const QString kAtForm = QStringLiteral("at");
+const QString kSeatForm = QStringLiteral("seat");
+
+// Where a part goes on its picked axis, with the end its click was nearer
+// and the part's Offset along it (`numbers`: as a number, for queries
+// while it is typed): `{"at": {"axis": ...}}`, or for a shaft in another
+// component's occurrence `{"seat": {"shaft": ..., "link": ...}}`, as Gear
+// and Pulley write it (mitcad#754: an `at` would resolve that shaft in the
+// active component's coordinates, in the wrong place); empty without a
+// pick.
+QJsonObject placeOf(const CommandState& state, const CommandContext& context, const QString& key,
+                    bool numbers = false) {
   const Selection& items = state.items(key);
   if (items.isEmpty()) {
     return QJsonObject();
   }
-  QJsonObject at{{QStringLiteral("axis"), items.first().reference()}};
+  const SelectionItem& item = items.first();
+  const QJsonObject link = occurrenceLinkOf(context, item);
+  QJsonObject place;
+  if (link.isEmpty()) {
+    place.insert(QStringLiteral("axis"), item.reference());
+  } else {
+    place.insert(QStringLiteral("shaft"), item.reference());
+    place.insert(QStringLiteral("link"), link);
+  }
   const QJsonValue nearPick = state.object(key + QStringLiteral("_pick")).value(QStringLiteral("near"));
-  if (items.first().kind == SelectKind::Face && nearPick.isArray()) {
-    at.insert(QStringLiteral("near"), nearPick);
+  if (item.kind == SelectKind::Face && nearPick.isArray()) {
+    place.insert(QStringLiteral("near"), nearPick);
   }
   if (nonZero(state, offsetKey(key))) {
-    at.insert(QStringLiteral("offset"), numbers ? QJsonValue(state.value(offsetKey(key)))
-                                                : QJsonValue(state.expression(offsetKey(key))));
+    place.insert(QStringLiteral("offset"), numbers ? QJsonValue(state.value(offsetKey(key)))
+                                                   : QJsonValue(state.expression(offsetKey(key))));
   }
-  return at;
+  return QJsonObject{{link.isEmpty() ? kAtForm : kSeatForm, place}};
+}
+
+// Whether a place is a seat on another component's shaft.
+bool seated(const QJsonObject& place) { return place.contains(kSeatForm); }
+
+// A place as `gear_pair` and `belt_drive` take it: the `at` itself, or
+// `{"seat": ...}`.
+QJsonValue queryPlace(const QJsonObject& place) {
+  return seated(place) ? QJsonValue(place) : place.value(kAtForm);
+}
+
+// The place without its Offset: where the part would start without it.
+QJsonObject withoutOffset(QJsonObject place) {
+  if (place.isEmpty()) {
+    return place;
+  }
+  const QString form = seated(place) ? kSeatForm : kAtForm;
+  QJsonObject fields = place.value(form).toObject();
+  fields.remove(QStringLiteral("offset"));
+  place.insert(form, fields);
+  return place;
+}
+
+// Where a place puts its part at the timeline marker, its origin and
+// axis (`place_frame`, or `seat_frame` for a seat); none while it does
+// not resolve.
+std::optional<std::pair<gp_Pnt, gp_Dir>> frameOfPlace(const QJsonObject& place, const CommandContext& context) {
+  if (place.isEmpty()) {
+    return std::nullopt;
+  }
+  try {
+    const QJsonObject frame =
+        seated(place) ? context.queryObject({{QStringLiteral("query"), QStringLiteral("seat_frame")},
+                                             {QStringLiteral("seat"), place.value(kSeatForm)}})
+                      : context.queryObject({{QStringLiteral("query"), QStringLiteral("place_frame")},
+                                             {QStringLiteral("at"), place.value(kAtForm)}});
+    const QJsonArray origin = frame.value(QStringLiteral("origin")).toArray();
+    const QJsonArray axis = frame.value(QStringLiteral("axis")).toArray();
+    if (origin.size() != 3 || axis.size() != 3) {
+      return std::nullopt;
+    }
+    const gp_Vec along(axis.at(0).toDouble(), axis.at(1).toDouble(), axis.at(2).toDouble());
+    if (along.Magnitude() < 1e-12) {
+      return std::nullopt;
+    }
+    return std::make_pair(gp_Pnt(origin.at(0).toDouble(), origin.at(1).toDouble(), origin.at(2).toDouble()),
+                          gp_Dir(along));
+  } catch (...) {
+    return std::nullopt;
+  }
 }
 
 // A part's Offset along its axis: an arrow with its value box from where
@@ -91,27 +160,11 @@ InputDef offsetInput(const QString& key, const QString& label,
   return valueInput(offsetKey(key), label, ValueKind::Length, QStringLiteral("0 mm"))
       .withOnChange(std::move(find))
       .withManipulator([key](const CommandState& state, const CommandContext& context) -> std::optional<Manipulator> {
-        QJsonObject at = axisAt(state, key, true);
-        if (at.isEmpty()) {
+        const auto frame = frameOfPlace(withoutOffset(placeOf(state, context, key, true)), context);
+        if (!frame) {
           return std::nullopt;
         }
-        at.remove(QStringLiteral("offset"));
-        QJsonObject frame;
-        try {
-          frame = context.queryObject({{QStringLiteral("query"), QStringLiteral("place_frame")}, {QStringLiteral("at"), at}});
-        } catch (...) {
-          return std::nullopt;
-        }
-        const QJsonArray origin = frame.value(QStringLiteral("origin")).toArray();
-        const QJsonArray axis = frame.value(QStringLiteral("axis")).toArray();
-        if (origin.size() != 3 || axis.size() != 3) {
-          return std::nullopt;
-        }
-        const gp_Vec direction(axis[0].toDouble(), axis[1].toDouble(), axis[2].toDouble());
-        if (direction.Magnitude() < 1e-12) {
-          return std::nullopt;
-        }
-        Manipulator m = arrow(gp_Pnt(origin[0].toDouble(), origin[1].toDouble(), origin[2].toDouble()), gp_Dir(direction));
+        Manipulator m = arrow(frame->first, frame->second);
         m.valueBox = true;
         m.boxAtZero = false;
         return m;
@@ -175,21 +228,48 @@ double ratioOf(const CommandState& state) {
   return second / first;
 }
 
+// Whether two candidates are the same pair: the same teeth, module, fit
+// and kind of teeth. An Offset along the axes changes none of them.
+bool sameCandidate(const QJsonObject& a, const QJsonObject& b) {
+  const auto kindOf = [](const QJsonObject& c) {
+    return c.value(QStringLiteral("first")).toObject().value(QStringLiteral("kind"));
+  };
+  return a.value(QStringLiteral("teeth")) == b.value(QStringLiteral("teeth")) &&
+         a.value(QStringLiteral("module")) == b.value(QStringLiteral("module")) &&
+         a.value(QStringLiteral("fit")) == b.value(QStringLiteral("fit")) &&
+         a.value(QStringLiteral("corrected")) == b.value(QStringLiteral("corrected")) && kindOf(a) == kindOf(b);
+}
+
 // Asks the model for the candidates (`query` with the two axes and the
-// ratio) and keeps them; the best one chosen.
+// ratio) and keeps them; the one chosen before stays chosen while the new
+// list has it (an Offset typed, mitcad#761), else the best one. `secondOnSeat`:
+// why the second part cannot go on a shaft of another component, if it
+// cannot (Gear Pair's second gear meshes, mitcad#754); then nothing is asked.
 void findCandidates(CommandState& state, const CommandContext& context, const QString& command,
-                    QJsonObject query) {
+                    QJsonObject query, const QString& secondOnSeat = QString()) {
+  bool hadChoice = false;
+  const int before = state.choice(kCandidate).toInt(&hadChoice);
+  const QJsonArray oldRows = rowsOf(state);
+  const QJsonObject previous =
+      hadChoice && before >= 0 && before < oldRows.size() ? oldRows.at(before).toObject() : QJsonObject();
   QJsonObject kept;
-  const QJsonObject first = axisAt(state, kFirst, true);
-  const QJsonObject second = axisAt(state, kSecond, true);
+  const QJsonObject first = placeOf(state, context, kFirst, true);
+  const QJsonObject second = placeOf(state, context, kSecond, true);
   const double ratio = ratioOf(state);
   if (first.isEmpty() || second.isEmpty() || !std::isfinite(ratio) || ratio <= 0.0) {
     state.setObject(kCandidates, kept);
     state.setChoice(kCandidate, QString());
     return;
   }
-  query.insert(QStringLiteral("first"), first);
-  query.insert(QStringLiteral("second"), second);
+  if (!secondOnSeat.isEmpty() && seated(second)) {
+    kept = {{QStringLiteral("error"), secondOnSeat}};
+    qDebug().noquote() << QStringLiteral("%1 candidates: none: %2").arg(command, secondOnSeat);
+    state.setObject(kCandidates, kept);
+    state.setChoice(kCandidate, QString());
+    return;
+  }
+  query.insert(QStringLiteral("first"), queryPlace(first));
+  query.insert(QStringLiteral("second"), queryPlace(second));
   query.insert(QStringLiteral("ratio"), ratio);
   try {
     const QJsonObject answer = context.queryObject(query);
@@ -216,7 +296,18 @@ void findCandidates(CommandState& state, const CommandContext& context, const QS
     qDebug().noquote() << QStringLiteral("%1 candidates: none: %2").arg(command, QString::fromUtf8(e.what()));
   }
   state.setObject(kCandidates, kept);
-  state.setChoice(kCandidate, rowsOf(state).isEmpty() ? QString() : QStringLiteral("0"));
+  const QJsonArray rows = rowsOf(state);
+  int row = rows.isEmpty() ? -1 : 0;
+  if (!previous.isEmpty()) {
+    for (int i = 0; i < rows.size(); ++i) {
+      if (sameCandidate(rows.at(i).toObject(), previous)) {
+        row = i;
+        qDebug().noquote() << QStringLiteral("%1 candidate kept: row %2").arg(command).arg(i + 1);
+        break;
+      }
+    }
+  }
+  state.setChoice(kCandidate, row < 0 ? QString() : QString::number(row));
 }
 
 // The failure while nothing is chosen: the axes to pick, or why nothing
@@ -236,10 +327,15 @@ Built nothingChosen(const CommandState& state) {
                         error.isEmpty() ? QStringLiteral("ratio") : kSecond);
 }
 
-// A part's definition from a candidate's fields, on its axis.
-QJsonObject partOf(const QJsonObject& fields, const CommandState& state, const QString& key) {
+// A part's definition from a candidate's fields, on its axis: its `at`, or
+// its `seat` with the link on another component's shaft.
+QJsonObject partOf(const QJsonObject& fields, const CommandState& state, const CommandContext& context,
+                   const QString& key) {
   QJsonObject part = fields;
-  part.insert(QStringLiteral("at"), axisAt(state, key));
+  const QJsonObject place = placeOf(state, context, key);
+  for (auto it = place.begin(); it != place.end(); ++it) {
+    part.insert(it.key(), it.value());
+  }
   return part;
 }
 
@@ -338,7 +434,11 @@ CommandDef gearPairCommand(const CommandContext& context, DocumentHost& host) {
         query.insert(QStringLiteral("modules"), QJsonArray{std::min(low, high), std::max(low, high)});
       }
     }
-    findCandidates(state, model, QObject::tr("Gear Pair"), query);
+    // The second gear meshes with the first: a gear placed by a mesh goes
+    // on geometry of its own component, as Gear says (mitcad#754).
+    findCandidates(state, model, QObject::tr("Gear Pair"), query,
+                   QObject::tr("The second gear meshes with the first, so it goes on a shaft of the active "
+                               "component: pick one there, or this shaft as the First Axis"));
   };
   const auto ranged = [](const CommandState& state) { return state.choice(QStringLiteral("modules")) == QStringLiteral("range"); };
   // Shown with More, or while not as it starts.
@@ -416,14 +516,14 @@ CommandDef gearPairCommand(const CommandContext& context, DocumentHost& host) {
   };
   def.init = [find](CommandState& state, const CommandContext& model) { find(state, model); };
 
-  def.build = [](const CommandState& state, const CommandContext&) {
+  def.build = [](const CommandState& state, const CommandContext& model) {
     const QJsonObject candidate = chosen(state);
     if (candidate.isEmpty()) {
       return nothingChosen(state);
     }
     QJsonArray parts;
     for (const QString& key : {kFirst, kSecond}) {
-      QJsonObject gear = partOf(candidate.value(key).toObject(), state, key);
+      QJsonObject gear = partOf(candidate.value(key).toObject(), state, model, key);
       gear.insert(QStringLiteral("face_width"), state.expression(QStringLiteral("face_width")));
       if (onBody(state, key) && std::isfinite(state.value(QStringLiteral("bore_clearance")))) {
         gear.insert(QStringLiteral("bore_clearance"), state.expression(QStringLiteral("bore_clearance")));
@@ -576,14 +676,14 @@ CommandDef beltDriveCommand(const CommandContext& context) {
   };
   def.init = [find](CommandState& state, const CommandContext& model) { find(state, model); };
 
-  def.build = [](const CommandState& state, const CommandContext&) {
+  def.build = [](const CommandState& state, const CommandContext& model) {
     const QJsonObject candidate = chosen(state);
     if (candidate.isEmpty()) {
       return nothingChosen(state);
     }
     QJsonArray parts;
     for (const QString& key : {kFirst, kSecond}) {
-      QJsonObject pulley = partOf(candidate.value(key).toObject(), state, key);
+      QJsonObject pulley = partOf(candidate.value(key).toObject(), state, model, key);
       pulley.insert(QStringLiteral("belt_width"), state.expression(QStringLiteral("belt_width")));
       if (onBody(state, key) && std::isfinite(state.value(QStringLiteral("bore_clearance")))) {
         pulley.insert(QStringLiteral("bore_clearance"), state.expression(QStringLiteral("bore_clearance")));
@@ -642,29 +742,10 @@ CommandDef beltDriveCommand(const CommandContext& context) {
     if (diameters.size() != 2) {
       return {};
     }
-    // Where each pulley starts on its axis: its origin and the axis.
-    const auto frameAt = [&state, &model](const QString& key) -> std::optional<std::pair<gp_Pnt, gp_Dir>> {
-      const QJsonObject at = axisAt(state, key, true);
-      if (at.isEmpty()) {
-        return std::nullopt;
-      }
-      try {
-        const QJsonObject frame =
-            model.queryObject({{QStringLiteral("query"), QStringLiteral("place_frame")}, {QStringLiteral("at"), at}});
-        const QJsonArray origin = frame.value(QStringLiteral("origin")).toArray();
-        const QJsonArray axis = frame.value(QStringLiteral("axis")).toArray();
-        const gp_Vec along(axis.at(0).toDouble(), axis.at(1).toDouble(), axis.at(2).toDouble());
-        if (origin.size() != 3 || along.Magnitude() < 1e-12) {
-          return std::nullopt;
-        }
-        return std::make_pair(gp_Pnt(origin.at(0).toDouble(), origin.at(1).toDouble(), origin.at(2).toDouble()),
-                              gp_Dir(along));
-      } catch (...) {
-        return std::nullopt;
-      }
-    };
-    const auto first = frameAt(kFirst);
-    const auto second = frameAt(kSecond);
+    // Where each pulley starts on its axis: its origin and the axis (on
+    // another component's shaft where its occurrence puts it).
+    const auto first = frameOfPlace(placeOf(state, model, kFirst, true), model);
+    const auto second = frameOfPlace(placeOf(state, model, kSecond, true), model);
     if (!first || !second) {
       return {};
     }

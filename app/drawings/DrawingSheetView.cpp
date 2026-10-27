@@ -6,6 +6,7 @@
 #include <limits>
 
 #include <QContextMenuEvent>
+#include <QEnterEvent>
 #include <QFontMetrics>
 #include <QFontMetricsF>
 #include <QKeyEvent>
@@ -239,9 +240,12 @@ void DrawingSheetView::setSheet(const QJsonObject& sheet) {
   if (view(m_parentView) == nullptr) {
     m_parentView = 0;
   }
-  if (resized || !m_fitted) {
+  // The zoom and the pan kept for the model's next answer (mitcad#751):
+  // fitted the first time and for another size only.
+  if (resized || !m_everFitted) {
     fit();
   }
+  sheetMoved();
   int items = 0;
   int marks = 0;
   for (const QJsonValue& group : std::as_const(m_groups)) {
@@ -257,7 +261,18 @@ void DrawingSheetView::setSheet(const QJsonObject& sheet) {
                             .arg(marks);
   logAnnotations();
   logPlaces();
+}
+
+void DrawingSheetView::sheetMoved() {
+  m_sheetPainted = false;
   update();
+}
+
+bool DrawingSheetView::followsPointer() const {
+  // A line's or a circle's rubber band, the line to where a view or an
+  // annotation goes and its preview, a projected view's box beside its
+  // parent.
+  return m_placing || !m_picks.points.isEmpty() || m_pick == SheetPick::OutOfView;
 }
 
 void DrawingSheetView::logAnnotations() {
@@ -624,8 +639,9 @@ void DrawingSheetView::fit() {
   m_zoom = std::max(0.05, std::min(w / m_width, h / m_height));
   m_origin = QPointF((width() - m_width * m_zoom) / 2.0, (height() + m_height * m_zoom) / 2.0);
   m_fitted = true;
+  m_everFitted = true;
   logPlaces();
-  update();
+  sheetMoved();
 }
 
 QPointF DrawingSheetView::toSheet(const QPointF& widget) const {
@@ -693,15 +709,35 @@ void DrawingSheetView::resetPicks() {
   }
 }
 
-void DrawingSheetView::paintEvent(QPaintEvent* /*event*/) {
-  QPainter painter(this);
+void DrawingSheetView::paintSheet(const QSize& pixels, qreal ratio) {
+  m_sheetPicture = QPixmap(pixels.expandedTo(QSize(1, 1)));
+  m_sheetPicture.setDevicePixelRatio(ratio);
+  m_sheetPicture.fill(kBackground);
+  QPainter painter(&m_sheetPicture);
   painter.setRenderHint(QPainter::Antialiasing);
-  painter.fillRect(rect(), kBackground);
+  painter.setFont(font());
   // The paper with a shadow.
   const QRectF paper(toWidget({0.0, m_height}), toWidget({m_width, 0.0}));
   painter.fillRect(paper.translated(3.0, 3.0), QColor(0, 0, 0, 40));
   painter.fillRect(paper, Qt::white);
   paintItems(painter);
+  m_sheetPainted = true;
+  ++m_sheetPaints;
+}
+
+void DrawingSheetView::paintEvent(QPaintEvent* /*event*/) {
+  // The sheet from its picture, painted again only when it changed or
+  // moved (mitcad#759: a shaded view's triangles and every text are not
+  // walked again for a move of the pointer); what is selected, hovered and
+  // placed over it.
+  const qreal ratio = devicePixelRatioF();
+  const QSize pixels = (QSizeF(size()) * ratio).toSize().expandedTo(QSize(1, 1));
+  if (!m_sheetPainted || m_sheetPicture.size() != pixels || m_sheetPicture.devicePixelRatio() != ratio) {
+    paintSheet(pixels, ratio);
+  }
+  QPainter painter(this);
+  painter.drawPixmap(QPointF(0.0, 0.0), m_sheetPicture);
+  painter.setRenderHint(QPainter::Antialiasing);
 
   // The views: the selected one, the one under the pointer, a tool's
   // parent.
@@ -786,11 +822,18 @@ void DrawingSheetView::paintEvent(QPaintEvent* /*event*/) {
   } else if (m_pointerIn && !m_picks.points.isEmpty()) {
     const QPointF first = toWidget(m_picks.points.first());
     const QPointF now = toWidget(m_pointer);
-    if (m_pick == SheetPick::Line) {
+    if (m_pick == SheetPick::Line || m_pick == SheetPick::Segment) {
       painter.drawLine(first, now);
     } else if (m_pick == SheetPick::Circle) {
       const double r = distance(first, now);
       painter.drawEllipse(first, r, r);
+    } else if (m_pick == SheetPick::ArcPoints) {
+      // The arc's centre, then its circle through the start (mitcad#729).
+      painter.drawLine(first, now);
+      if (m_picks.points.size() > 1) {
+        const double r = distance(first, toWidget(m_picks.points[1]));
+        painter.drawEllipse(first, r, r);
+      }
     }
   }
   if (m_drag == Drag::OutOfView && m_dragMoved) {
@@ -1076,6 +1119,7 @@ void DrawingSheetView::mousePressEvent(QMouseEvent* event) {
 
 void DrawingSheetView::mouseMoveEvent(QMouseEvent* event) {
   const QPointF at = toSheet(event->position());
+  const bool wasIn = m_pointerIn;
   m_pointer = at;
   m_pointerIn = true;
   switch (m_drag) {
@@ -1084,7 +1128,7 @@ void DrawingSheetView::mouseMoveEvent(QMouseEvent* event) {
     m_dragFrom = event->position();
     m_origin += delta;
     m_fitted = false;
-    update();
+    sheetMoved();
     return;
   }
   case Drag::View:
@@ -1105,10 +1149,10 @@ void DrawingSheetView::mouseMoveEvent(QMouseEvent* event) {
     break;
   }
   const int under = viewAt(at);
-  if (under != m_hovered) {
-    m_hovered = under;
-  }
-  m_hoveredAnnotation = m_pick == SheetPick::None ? annotationAt(at) : 0;
+  const int note = m_pick == SheetPick::None ? annotationAt(at) : 0;
+  const bool hoverChanged = !wasIn || under != m_hovered || note != m_hoveredAnnotation;
+  m_hovered = under;
+  m_hoveredAnnotation = note;
   // A projected view's box beside its parent, a section's or a detail's
   // where it goes (mitcad#725).
   if (((m_placing && (m_pick == SheetPick::Line || m_pick == SheetPick::Circle)) ||
@@ -1120,7 +1164,23 @@ void DrawingSheetView::mouseMoveEvent(QMouseEvent* event) {
   if (m_pick == SheetPick::Picks && !m_placing) {
     emit hoverRequested(under, at);
   }
-  update();
+  // Painted again only when what shows changed (mitcad#759): the outline
+  // under the pointer, or what follows it; the model's hover marks paint
+  // when they come (setHoverMarks).
+  if (hoverChanged || followsPointer()) {
+    update();
+  }
+}
+
+void DrawingSheetView::enterEvent(QEnterEvent* event) {
+  QWidget::enterEvent(event);
+  // The pointer over the sheet again without a move, as when a job's
+  // progress dialog closes (its showing took the pointer away, leaveEvent):
+  // what a click there would pick is asked again (mitcad#753).
+  if (m_pick == SheetPick::Picks && !m_placing && m_drag == Drag::None) {
+    const QPointF at = toSheet(event->position());
+    emit hoverRequested(viewAt(at), at);
+  }
 }
 
 void DrawingSheetView::leaveEvent(QEvent* event) {
@@ -1325,6 +1385,26 @@ void DrawingSheetView::mouseReleaseEvent(QMouseEvent* event) {
     qDebug().noquote() << QStringLiteral("Drawing picked view %1").arg(under);
     startPlacing();
     break;
+  case SheetPick::Segment:
+  case SheetPick::ArcPoints: {
+    // Anywhere on the sheet (mitcad#729): the view under the first click
+    // is the one it may be drawn in.
+    if (m_picks.points.isEmpty()) {
+      m_picks.view = under;
+    }
+    m_picks.points.append(at);
+    qDebug().noquote() << QStringLiteral("Drawing point %1 at %2,%3")
+                              .arg(m_picks.points.size())
+                              .arg(at.x(), 0, 'f', 1)
+                              .arg(at.y(), 0, 'f', 1);
+    const qsizetype needed = m_pick == SheetPick::Segment ? 2 : 3;
+    if (m_picks.points.size() >= needed) {
+      const ToolPicks picks = m_picks;
+      resetPicks();
+      emit picked(picks);
+    }
+    break;
+  }
   }
   m_dragMoved = false;
   update();
@@ -1341,7 +1421,7 @@ void DrawingSheetView::wheelEvent(QWheelEvent* event) {
   m_origin = QPointF(event->position().x() - under.x() * m_zoom, event->position().y() + under.y() * m_zoom);
   m_fitted = false;
   logPlaces();
-  update();
+  sheetMoved();
 }
 
 bool DrawingSheetView::event(QEvent* event) {

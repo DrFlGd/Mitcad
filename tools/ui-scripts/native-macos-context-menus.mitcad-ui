@@ -47,7 +47,7 @@ view-pointer move 60 55 none
 sleep 250
 expect-view-orientation ${before_cube_menu} unchanged
 mark
-view-context-menu-logged 'Orientation cube .* at' Perspective
+view-context-menu-logged 'Orientation cube .* at' Camera/Perspective
 expect-view-buttons none
 expect-log 'Camera direction .*\(perspective\)' 30
 native-action view.orthographic

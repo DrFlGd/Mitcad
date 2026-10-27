@@ -232,7 +232,7 @@ void write_file(rust::Str path_text, const ShapeList& shapes, rust::Slice<const 
     return;
   }
   case ExportFormat::Obj:
-    io::write_obj(path, bodies, io::ObjWriteOptions{mesh});
+    io::write_obj(path, bodies, io::ObjWriteOptions{mesh, unit});
     return;
   case ExportFormat::Brep:
     io::write_brep(path, bodies);

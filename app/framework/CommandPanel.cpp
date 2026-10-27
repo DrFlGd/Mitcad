@@ -13,6 +13,7 @@
 #include <QCoreApplication>
 #include <QDialogButtonBox>
 #include <QEvent>
+#include <QFocusEvent>
 #include <QFont>
 #include <QFormLayout>
 #include <QFrame>
@@ -1767,9 +1768,12 @@ bool CommandPanel::eventFilter(QObject* watched, QEvent* event) {
     for (const auto& row : m_rows) {
       if (row->edit == watched && event->type() == QEvent::FocusOut) {
         // Left, a long expression shows from its start again (mitcad#656);
-        // a name picked from the view still goes where the cursor was.
-        row->leftAt = row->edit->cursorPosition();
-        row->edit->home(false);
+        // a name picked from the view still goes where the cursor was. Not
+        // for the field's own context menu (mitcad#756).
+        const int caret = leaveValueField(row->edit, *static_cast<QFocusEvent*>(event));
+        if (caret >= 0) {
+          row->leftAt = caret;
+        }
       }
       if (row->edit == watched && row->input->type == InputDef::Type::Value) {
         auto call = CommandPresenter::actions().valueFocused;

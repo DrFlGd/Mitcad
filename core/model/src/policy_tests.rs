@@ -29,6 +29,16 @@ fn rejected(doc: &mut Document<MockKernel>, command: Value) -> String {
     doc.command(&command.to_string()).unwrap_err().to_string()
 }
 
+/// The mock kernel's curves for any source: one edge at `y`. Projections
+/// of the same edge join into one (mitcad#741), so each new reference
+/// needs an edge of its own.
+fn edge_at(doc: &Document<MockKernel>, y: f64) {
+    *doc.kernel().curves.borrow_mut() = vec![Curve3::Line {
+        start: [0.0, y, 5.0],
+        end: [10.0, y, 5.0],
+    }];
+}
+
 /// Lets every owner's sketches attach to every other owner's faces and
 /// planes (fixtures of linked sketches, made before the policy).
 pub(crate) fn allow_attachments(doc: &mut Document<MockKernel>) {
@@ -450,6 +460,7 @@ fn references_are_checked_in_both_directions_and_apart_from_attachments() {
     // A refuses references from others: a new linked projection is
     // refused, an unlinked one (no reference) is not.
     set(&mut doc, "A", json!({"references_from_others": false}));
+    edge_at(&doc, 2.0);
     let error = rejected(&mut doc, project(true));
     assert!(error.contains("cannot reference geometry of A"), "{error}");
     assert!(error.contains("Projection Link"), "{error}");
@@ -462,6 +473,7 @@ fn references_are_checked_in_both_directions_and_apart_from_attachments() {
     // B refuses references to others instead.
     set(&mut doc, "A", json!({"references_from_others": true}));
     set(&mut doc, "B", json!({"reference_others": false}));
+    edge_at(&doc, 4.0);
     let error = rejected(&mut doc, project(true));
     assert!(
         error.contains("B's policy does not allow references to other"),
@@ -511,7 +523,8 @@ fn violations_count_direct_objects_and_consumers_once() {
         json!({"cmd": "sketch.create", "plane": {"face": face, "body": body},
                "occurrence": "O1"}),
     ));
-    for _ in 0..2 {
+    for y in [0.0, 2.0] {
+        edge_at(&doc, y);
         command(
             &mut doc,
             json!({"cmd": "sketch.project", "sketch": sketch, "source": face,
@@ -567,6 +580,7 @@ fn violations_count_direct_objects_and_consumers_once() {
                "width": 2, "height": 2}),
     );
     let depth = doc.undo_depth();
+    edge_at(&doc, 4.0);
     let error = rejected(
         &mut doc,
         json!({"cmd": "sketch.project", "sketch": sketch, "source": face,

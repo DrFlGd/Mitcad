@@ -82,6 +82,15 @@
 //! that has it. [`write`] refuses such a value, so that export leaves it out
 //! of that dialect's file with a warning (the slicer keeps its default).
 //!
+//! Every numeric key has the range its slicers take ([`KeyDef::limits`],
+//! mitcad#746): the widest of their definitions, so that the editors
+//! refuse only what no slicer of the key takes (a fill density of 150 %,
+//! a negative layer height) and keep what one does (a purge line spacing
+//! of 150 %, Bambu Studio's -1); a dialect's narrower range is
+//! [`KeyDef::dialect_limits`]. The model itself takes any finite number
+//! ([`KeyDef::check`]): the key ranges are the editors' (the `print_keys`
+//! query gives them), the dialect ranges also export's.
+//!
 //! # Sources
 //!
 //! Built from the slicers' option definitions and preset key lists, read
@@ -270,6 +279,7 @@ macro_rules! key {
     };
 }
 
+mod limits;
 mod table;
 #[cfg(test)]
 mod tests;
@@ -1017,6 +1027,35 @@ impl KeyDef {
                 self.kind.choice_values().collect::<Vec<_>>().join(", ")
             ),
             Kind::Points => "an outline of three or more points".to_owned(),
+        }
+    }
+
+    /// The numbers the key takes, `(min, max)` in its unit (mitcad#746):
+    /// the widest range its slicers define, so that an editor refuses only
+    /// what none of them takes; infinite where there is no bound. A
+    /// number-or-percentage key's range is that of its numbers. `None` for
+    /// keys that are not numbers.
+    pub fn limits(&self) -> Option<(f64, f64)> {
+        match self.kind {
+            Kind::Integer(_) | Kind::Number(_) | Kind::Percent | Kind::OrPercent(..) => Some(
+                limits::LIMITS
+                    .iter()
+                    .find(|(key, _, _)| *key == self.key)
+                    .map_or((0.0, f64::INFINITY), |(_, min, max)| (*min, *max)),
+            ),
+            _ => None,
+        }
+    }
+
+    /// The numbers a dialect takes where they are narrower than the key's
+    /// [`limits`](Self::limits) (mitcad#746: Bambu Studio's -1 for
+    /// "automatic" is not OrcaSlicer's), in Mitcad's unit: the dialect
+    /// key's range when the dialect writes the value as it is.
+    pub fn dialect_limits(&self, dialect: Dialect) -> Option<(f64, f64)> {
+        let dk = self.dialect(dialect)?;
+        match dk.form {
+            Form::Same | Form::Int => dk.range,
+            _ => None,
         }
     }
 }

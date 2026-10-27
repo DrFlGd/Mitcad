@@ -96,6 +96,47 @@ bool loadObject(const QJsonObject& object, CommandState& state, const QString& s
                 const CommandContext& context);
 bool objectShowable(const QJsonObject& object, const CommandContext& context);
 
+// --- Objects of other components (mitcad#762)
+
+// An object picked in another occurrence than `here`, the one the
+// feature's profiles are seen at: its body's link into `links` (the
+// model's `object_links`, commands.md "extrude"), `{"source": <its
+// occurrence>, "target": <here>}` with an empty path (the root) left out,
+// as Combine's tools in occurrences. Planes, and faces and bodies picked
+// where the profiles are, need none. False when the body is linked from
+// another occurrence already (one link per body).
+bool addObjectLink(QJsonObject& links, const SelectionItem& item, const QString& here);
+// Where the profiles (or a feature's other picks of its own sketch) are
+// seen: the first pick's occurrence, else the first occurrence path to
+// its sketch's component, as the model's links take it; empty in the
+// root.
+QString profilesOccurrence(const Selection& profiles, const CommandContext& context);
+// A loaded face or body object back in the occurrence its link names.
+void linkObject(SelectionItem& item, const QJsonObject& links);
+// An edited feature's links: their target (where the links saw its
+// profiles) kept in the state for linksOccurrence(); nothing without links.
+void keepLinksTarget(CommandState& state, const QJsonObject& links);
+// Where the profiles are seen for a feature's links: an edited feature's
+// kept target while that occurrence places the profiles' sketch's
+// component (the session resets a profile's occurrence to the first one),
+// else profilesOccurrence().
+QString linksOccurrence(const Selection& profiles, const CommandState& state, const CommandContext& context);
+// The component an occurrence path ("O1/O4") places, "C0" for the root's
+// empty path; empty when the path leads nowhere.
+QString occurrenceComponent(const QString& path, const CommandContext& context);
+
+// --- Construction planes of other components (mitcad#772)
+
+// The component of a picked construction plane (its feature's, "C0" for the
+// root's); empty for an origin plane, anything but a plane, or a plane the
+// model does not know.
+QString planeComponent(const SelectionItem& item, const CommandContext& context);
+// Why an extent's object or a start plane cannot be used by a feature of the
+// profiles' sketch's component: a construction plane of another component,
+// which the model reads only in its own component and no link carries (the
+// links carry bodies, `addObjectLink`); empty when it can be used.
+QString foreignPlane(const SelectionItem& item, const Selection& profiles, const CommandContext& context);
+
 // --- Values
 
 // Fills a value input from a definition's parameter slot (null: left as is).

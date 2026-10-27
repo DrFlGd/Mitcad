@@ -93,8 +93,13 @@ bool MainWindow::runAnnotationCommand(const QJsonObject& command, const QString&
     fields.removeAll(QLatin1String(key));
   }
   const bool visibilityOnly = fields.isEmpty() && command.contains(QStringLiteral("visible"));
-  if (!visibilityOnly && !canChangeModel(true)) {
+  // In a command's panel too: the change runs outside its undo range, as
+  // Keep's does (mitcad#764: the Measure panel's Annotations… opens the
+  // window, whose edits were refused there).
+  const bool inPanel = m_mode == Mode::Command && m_session && !windowReadOnly();
+  if (!visibilityOnly && !inPanel && !canChangeModel(true)) {
     showHint(changeBlockedReason());
+    qDebug().noquote() << QStringLiteral("Annotation command refused: %1").arg(changeBlockedReason());
     return false;
   }
   qDebug().noquote() << QStringLiteral("Annotation command: %1").arg(compactJson(command));

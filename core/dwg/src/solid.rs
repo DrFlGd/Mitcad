@@ -7,13 +7,20 @@
 //! 0x9F - c). Both are parsed by the `.f3d` reader's ASM code
 //! (`mitcad_f3d::asm`), the text form through its text tokeniser.
 
+#[cfg(feature = "solids")]
 use mitcad_f3d::asm::AsmFile;
 
 use crate::objects::BrepData;
 
+/// The older naming's binary magic, as `mitcad_f3d::asm::file` has it: here
+/// too, so that the data storage reads without the feature `solids`.
+const OLDER_MAGIC: &[u8] = &[
+    0x41, 0x43, 0x49, 0x53, b' ', b'B', b'i', b'n', b'a', b'r', b'y', b'F', b'i', b'l', b'e',
+];
+
 /// The binary form's magic, in the ASM and the older naming.
 pub fn is_binary(data: &[u8]) -> bool {
-    data.starts_with(b"ASM BinaryFile") || data.starts_with(mitcad_f3d::asm::file::OLDER_MAGIC)
+    data.starts_with(b"ASM BinaryFile") || data.starts_with(OLDER_MAGIC)
 }
 
 /// The text form as stored in the entity, unmasked.
@@ -70,7 +77,8 @@ pub fn record(data: &BrepData, stored: Option<&Vec<u8>>) -> Option<(Form, Vec<u8
     }
 }
 
-/// Parses a record of either form.
+/// Parses a record of either form (the feature `solids`).
+#[cfg(feature = "solids")]
 pub fn parse(form: Form, bytes: &[u8]) -> Result<AsmFile, String> {
     match form {
         Form::Text => mitcad_f3d::asm::text::parse(bytes).map_err(|e| e.to_string()),
@@ -81,6 +89,12 @@ pub fn parse(form: Form, bytes: &[u8]) -> Result<AsmFile, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "solids")]
+    #[test]
+    fn the_older_magic_is_the_asm_readers() {
+        assert_eq!(OLDER_MAGIC, mitcad_f3d::asm::file::OLDER_MAGIC);
+    }
 
     #[test]
     fn masking() {

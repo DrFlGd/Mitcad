@@ -203,13 +203,26 @@ impl<K: Kernel> Document<K> {
     }
 }
 
+/// A range's bounds as `min` and `max`, each only where it is finite
+/// (mitcad#746): a missing one is no bound.
+fn add_limits(value: &mut Value, min: f64, max: f64) {
+    if min.is_finite() {
+        value["min"] = json!(min);
+    }
+    if max.is_finite() {
+        value["max"] = json!(max);
+    }
+}
+
 /// The `print_keys` query: the key map's keys of a set (or all) in display
 /// order, each with `key`, `set`, `name`, `kind` (`boolean`, `integer`,
 /// `number`, `percent`, `number_or_percent`, `text`, `color`, `choice`,
 /// `points`), `unit`, `category`, `group`, `advanced`, `of` (a
-/// percentage's basis), `choices` (`{value, name}`), `per_dialect`, and
-/// `dialects`: `{dialect, key, list}` per slicer that has it; and
-/// `layout`: per set its categories and their groups in display order
+/// percentage's basis), `choices` (`{value, name}`), `per_dialect`, for a
+/// number `min` and `max` (mitcad#746: what its slicers take, each only
+/// where bounded), and `dialects`: `{dialect, key, list}` per slicer that
+/// has it, with the dialect's own `min` and `max` where they are narrower;
+/// and `layout`: per set its categories and their groups in display order
 /// (mitcad#655).
 pub(super) fn print_keys_json(query: &PrintKeysQuery) -> Result<Value, ApiError> {
     let set = match query.set.as_deref() {
@@ -261,6 +274,10 @@ pub(super) fn print_keys_json(query: &PrintKeysQuery) -> Result<Value, ApiError>
                         );
                         entry["percent"] = json!(percent);
                     }
+                    // A dialect's narrower range (mitcad#746).
+                    if let Some((min, max)) = k.dialect_limits(d) {
+                        add_limits(&mut entry, min, max);
+                    }
                     Some(entry)
                 })
                 .collect();
@@ -286,6 +303,9 @@ pub(super) fn print_keys_json(query: &PrintKeysQuery) -> Result<Value, ApiError>
             }
             if k.per_dialect {
                 value["per_dialect"] = json!(true);
+            }
+            if let Some((min, max)) = k.limits() {
+                add_limits(&mut value, min, max);
             }
             value
         })

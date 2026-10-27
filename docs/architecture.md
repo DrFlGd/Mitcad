@@ -25,7 +25,7 @@ values continue to reach the model through the existing sketch commands.
 | `core/ifc` (`mitcad-ifc`) | Rust | IFC files (IFC2X3, IFC4, IFC4X3; `.ifczip`): an own ISO 10303-21 reader, units, the spatial structure, products and their placements, relationships, styles, and the shapes' representation items decoded (profiles, swept solids, booleans, breps, face sets, mapped items; [README](../core/ifc/README.md)). No geometry. |
 | `core/solidcraft` (`mitcad-solidcraft`) | Rust | `.solidcraft` designs: the JSON document or its container, upgraded from any file format to one by SolidCraft's own steps (`third_party/solidcraft`), typed sketches and feature kinds, expressions in Mitcad's language. No geometry. |
 | `core/dxf` | Rust | DXF read and write. |
-| `core/dwg` (`mitcad-dwg`) | Rust | `.dwg` drawings, R13 to R2018: the containers and their compression, header variables, classes, the object map, objects, the data storage; the 3D content (B-rep records parsed by `core/f3d`'s ASM code, meshes, blocks and inserts) and the plan of components ([README](../core/dwg/README.md)). No geometry. |
+| `core/dwg` (`mitcad-dwg`) | Rust | `.dwg` drawings, R13 to R2018: the containers and their compression, header variables, classes, the object map, objects, the data storage; the 3D content (B-rep records parsed by `core/f3d`'s ASM code, meshes, blocks and inserts) and the plan of components; the writer of 2D drawings in R2000 for the drawing export (mitcad#728) ([README](../core/dwg/README.md)). No geometry. |
 | `core/3mf` (`mitcad-3mf`) | Rust | 3MF writer (one object of parts) and a checking reader for tests. |
 | `core/usdz` (`mitcad-usdz`) | Rust | USDZ writer: the binary USD layer (crate format 0.8.0, LZ4 and USD's integer coding written here, no USD library) of a scene of meshes, `Xform`s and `UsdPreviewSurface` materials, packed with its textures 64-byte aligned; a checking reader for tests (mitcad#123). |
 | `core/vcs` (`mitcad-vcs`) | Rust | Version history of projects in git (gitoxide, only here); remotes through the system's git; component libraries and community indexes in git repositories ([libraries.md](libraries.md)). |
@@ -1219,7 +1219,10 @@ curves (`Projection::section`, `sketch.project` with `section`), where
 the sketch's plane cuts a face, computed by the kernel
 (`Kernel::section_curves`: each face cut by itself, B-spline pieces that
 meet end to end joined into one), with the plane moved into the source
-component's coordinates by the link; and a projection of a chain of edges
+component's coordinates by the link; Intersect (mitcad#736) adds an
+edge's crossing points with the plane (`Kernel::section_points`) and a
+whole body's section, one section record per face its pieces lie on
+(`sketch::project::section_groups`); and a projection of a chain of edges
 (`Projection::chain`, made by the `.f3d` import for a curve the model
 splits into pieces, a thread's helix of an edge per turn), the edges'
 curves joined end to end into one B-spline in the model

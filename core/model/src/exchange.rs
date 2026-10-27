@@ -31,6 +31,9 @@ mod usdz;
 mod bed;
 pub use bed::{DEFAULT_PLATE, OnBed};
 
+// Meshes with a longest edge (mitcad#734, `MeshTolerance::max_edge`).
+mod edges;
+
 /// What a body is made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyKind {
@@ -248,7 +251,8 @@ pub enum StepSchema {
     Ap242,
 }
 
-/// Length unit of a STEP or IGES file.
+/// Length unit of a STEP, IGES, STL, OBJ or 3MF file (the mesh formats
+/// since mitcad#734).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LengthUnit {
     #[default]
@@ -262,6 +266,30 @@ pub enum LengthUnit {
     Inch,
     #[serde(rename = "ft")]
     Foot,
+}
+
+impl LengthUnit {
+    /// The length of one unit in millimetres.
+    pub fn millimeters(self) -> f64 {
+        match self {
+            Self::Millimeter => 1.0,
+            Self::Centimeter => 10.0,
+            Self::Meter => 1000.0,
+            Self::Inch => 25.4,
+            Self::Foot => 304.8,
+        }
+    }
+
+    /// The unit of a 3MF file's model.
+    fn three_mf(self) -> mitcad_3mf::Unit {
+        match self {
+            Self::Millimeter => mitcad_3mf::Unit::Millimeter,
+            Self::Centimeter => mitcad_3mf::Unit::Centimeter,
+            Self::Meter => mitcad_3mf::Unit::Meter,
+            Self::Inch => mitcad_3mf::Unit::Inch,
+            Self::Foot => mitcad_3mf::Unit::Foot,
+        }
+    }
 }
 
 /// Mesh refinement of STL and OBJ export: a preset or the
@@ -309,10 +337,21 @@ pub struct MeshTolerance {
     /// tolerance given as numbers): `deviation` everywhere.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub face_triangles: u64,
+    /// The longest edge a triangle of an exported mesh may have, mm
+    /// (mitcad#734): STL, OBJ and 3MF split longer edges at their middles
+    /// after the kernel's meshing (`edges.rs`), which keeps the mesh's shape
+    /// and adds triangles only. 0 (the default, and the presets'): no limit.
+    /// The kernel's meshing does not use it.
+    #[serde(default, skip_serializing_if = "is_no_length")]
+    pub max_edge: f64,
 }
 
 fn is_zero(n: &u64) -> bool {
     *n == 0
+}
+
+fn is_no_length(length: &f64) -> bool {
+    *length == 0.0
 }
 
 impl Refinement {
@@ -329,6 +368,7 @@ impl Refinement {
             deviation,
             angle: degrees.to_radians(),
             face_triangles,
+            max_edge: 0.0,
         }
     }
 }
@@ -338,9 +378,9 @@ impl Refinement {
 pub struct ExportOptions {
     pub format: ExportFormat,
     pub step_schema: StepSchema,
-    /// STEP and IGES.
+    /// STEP, IGES, STL, OBJ and 3MF (the kernel's OBJ writer scales to it).
     pub unit: LengthUnit,
-    /// STL and OBJ.
+    /// STL, OBJ, 3MF and USDZ.
     pub refinement: Refinement,
     /// STL: text instead of binary.
     pub ascii: bool,
@@ -649,9 +689,12 @@ impl<K: Kernel> Document<K> {
             ));
         }
         if placement.on_bed {
-            if !matches!(format, ExportFormat::ThreeMf | ExportFormat::Stl) {
+            if !matches!(
+                format,
+                ExportFormat::ThreeMf | ExportFormat::Stl | ExportFormat::Obj
+            ) {
                 return Err(invalid(
-                    "only 3MF and STL files put the bodies on the print bed",
+                    "only 3MF, STL and OBJ files put the bodies on the print bed",
                 ));
             }
             if !design {
@@ -698,6 +741,11 @@ impl<K: Kernel> Document<K> {
         if !(tolerance.deviation > 0.0 && tolerance.angle > 0.0) {
             return Err(invalid(
                 "the mesh deviation and angle must be greater than zero",
+            ));
+        }
+        if !(tolerance.max_edge >= 0.0 && tolerance.max_edge.is_finite()) {
+            return Err(invalid(
+                "the maximum edge length must be greater than zero (or 0 for none)",
             ));
         }
         let color = |uid: BodyUid| {
@@ -758,6 +806,7 @@ impl<K: Kernel> Document<K> {
                 &chosen,
                 bodies.is_empty(),
                 &tolerance,
+                options.unit,
                 color,
                 placements,
                 options.dialect.map(|d| {
@@ -776,8 +825,27 @@ impl<K: Kernel> Document<K> {
                 path,
                 &chosen,
                 &tolerance,
-                options.ascii,
+                options,
                 placements,
+                on_bed.as_mut(),
+            )?;
+            self.report_bed(&mut exported, on_bed);
+            return Ok(exported);
+        }
+        if format == ExportFormat::Obj && (on_bed.is_some() || tolerance.max_edge > 0.0) {
+            // The model's meshes (mitcad#734): split to the longest edge,
+            // and placed on the print bed; the kernel writes them.
+            let placed: Vec<Vec<BodyPlacement>> = chosen
+                .iter()
+                .map(|b| if design { placed_at(b.uid) } else { Vec::new() })
+                .collect();
+            let mut exported = self.export_obj_meshes(
+                path,
+                &chosen,
+                &placed,
+                &tolerance,
+                options,
+                color,
                 on_bed.as_mut(),
             )?;
             self.report_bed(&mut exported, on_bed);
@@ -833,33 +901,51 @@ impl<K: Kernel> Document<K> {
         })
     }
 
+    /// A body's triangle mesh for a mesh file: the kernel's within the
+    /// tolerance, its edges split to `max_edge` (mitcad#734). An empty
+    /// body, or one without triangles, is an error.
+    fn export_mesh(
+        &self,
+        body: &BodyView<'_, K::Shape>,
+        tolerance: &MeshTolerance,
+    ) -> Result<TriangleMesh, ModelError> {
+        let kind = self.kernel().body_kind(body.shape).map_err(kernel_error)?;
+        if kind == BodyKind::Empty {
+            return Err(invalid(format!("{} is empty", body.name)));
+        }
+        let mesh = self
+            .kernel()
+            .triangle_mesh(body.shape, tolerance)
+            .map_err(|e| invalid(format!("{}: {e}", body.name)))?;
+        if mesh.triangles.is_empty() {
+            return Err(invalid(format!("{} has no triangles", body.name)));
+        }
+        edges::split_long_edges(mesh, tolerance.max_edge, edges::MOST_TRIANGLES).map_err(|e| {
+            invalid(format!(
+                "{}: the maximum edge length {} mm would make more than {} triangles",
+                body.name, tolerance.max_edge, e.most
+            ))
+        })
+    }
+
     /// An STL file of the bodies (mitcad#17): their triangle meshes as one
     /// solid, each body once per placement (in the design's coordinates,
     /// or once in its component's); turned onto the print bed face, the
     /// lowest point on the bed and centred on the plate, with `bed`'s turn
-    /// (mitcad#731).
+    /// (mitcad#731); text with `options.ascii`, in `options.unit`
+    /// (mitcad#734).
     fn export_stl(
         &self,
         path: &str,
         chosen: &[&BodyView<'_, K::Shape>],
         tolerance: &MeshTolerance,
-        ascii: bool,
+        options: &ExportOptions,
         placements: impl Fn(BodyUid) -> Vec<Transform>,
         on_bed: Option<&mut OnBed>,
     ) -> Result<Exported, ModelError> {
         let mut all = TriangleMesh::default();
         for body in chosen {
-            let kind = self.kernel().body_kind(body.shape).map_err(kernel_error)?;
-            if kind == BodyKind::Empty {
-                return Err(invalid(format!("{} is empty", body.name)));
-            }
-            let mesh = self
-                .kernel()
-                .triangle_mesh(body.shape, tolerance)
-                .map_err(|e| invalid(format!("{}: {e}", body.name)))?;
-            if mesh.triangles.is_empty() {
-                return Err(invalid(format!("{} has no triangles", body.name)));
-            }
+            let mesh = self.export_mesh(body, tolerance)?;
             for placement in placements(body.uid) {
                 // The first vertex's index; every index must fit in a u32.
                 let first = u32::try_from(all.vertices.len() + mesh.vertices.len())
@@ -886,12 +972,98 @@ impl<K: Kernel> Document<K> {
             }
             on_bed.transform = Some(moved);
         }
+        // In the file's unit (mitcad#734).
+        let scale = 1.0 / options.unit.millimeters();
+        if scale != 1.0 {
+            for vertex in &mut all.vertices {
+                *vertex = vertex.map(|v| v * scale);
+            }
+        }
         let name = Path::new(path)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Mitcad");
-        std::fs::write(path, stl::write(&all, name, ascii))
+        std::fs::write(path, stl::write(&all, name, options.ascii))
             .map_err(|e| invalid(format!("cannot write {path}: {e}")))?;
+        Ok(Exported {
+            bodies: chosen.iter().map(|b| b.uid).collect(),
+            ..Exported::default()
+        })
+    }
+
+    /// An OBJ file of the model's meshes (mitcad#734): each body's mesh
+    /// split to the longest edge, made a mesh body
+    /// ([`Kernel::triangle_body`]) and written by the kernel at its
+    /// `placed` placements, which `on_bed`'s turn moves onto the print bed
+    /// face, the lowest point on the bed and centred on the plate, as STL
+    /// does (mitcad#731). The kernel scales to `options.unit`.
+    #[allow(clippy::too_many_arguments)]
+    fn export_obj_meshes(
+        &self,
+        path: &str,
+        chosen: &[&BodyView<'_, K::Shape>],
+        placed: &[Vec<BodyPlacement>],
+        tolerance: &MeshTolerance,
+        options: &ExportOptions,
+        color: impl Fn(BodyUid) -> Option<[f64; 3]>,
+        on_bed: Option<&mut OnBed>,
+    ) -> Result<Exported, ModelError> {
+        let mut meshes = Vec::with_capacity(chosen.len());
+        for body in chosen {
+            let mesh = self.export_mesh(body, tolerance)?;
+            let shape = self
+                .kernel()
+                .triangle_body(&mesh.vertices, &mesh.triangles)
+                .map_err(|e| invalid(format!("{}: {e}", body.name)))?;
+            meshes.push((mesh, shape));
+        }
+        let mut placed = placed.to_vec();
+        // On the print bed (mitcad#731): every placement moved alike, as
+        // the bodies are one piece.
+        if let Some(on_bed) = on_bed
+            && let Some(turn) = on_bed.transform
+        {
+            let mut points = Vec::new();
+            for ((mesh, _), placements) in meshes.iter().zip(&placed) {
+                if placements.is_empty() {
+                    points.extend(mesh.vertices.iter().copied());
+                }
+                for placement in placements {
+                    points.extend(
+                        mesh.vertices
+                            .iter()
+                            .map(|v| placement.transform.apply_point(*v)),
+                    );
+                }
+            }
+            let moved = bed::settled(&turn, points.into_iter(), on_bed.plate);
+            for placements in &mut placed {
+                if placements.is_empty() {
+                    placements.push(BodyPlacement {
+                        transform: Transform::IDENTITY,
+                        name: String::new(),
+                    });
+                }
+                for placement in placements.iter_mut() {
+                    placement.transform = moved.after(&placement.transform);
+                }
+            }
+            on_bed.transform = Some(moved);
+        }
+        let out: Vec<ExportBody<'_, K::Shape>> = chosen
+            .iter()
+            .zip(&meshes)
+            .zip(&placed)
+            .map(|((body, (_, shape)), placements)| ExportBody {
+                name: &body.name,
+                color: color(body.uid),
+                shape,
+                placements,
+            })
+            .collect();
+        self.kernel()
+            .write_file(path, &out, options)
+            .map_err(kernel_error)?;
         Ok(Exported {
             bodies: chosen.iter().map(|b| b.uid).collect(),
             ..Exported::default()
@@ -908,7 +1080,8 @@ impl<K: Kernel> Document<K> {
     /// dialect (mitcad#640, `crate::print_files`). With `on_bed`'s turn the
     /// parts' placements turn onto the print bed face, the lowest point on
     /// the bed and the middle over the plate's centre (mitcad#731): the
-    /// meshes stay as the kernel made them.
+    /// meshes stay as the kernel made them. The model is in `unit`, its
+    /// meshes and placements scaled to it (mitcad#734).
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::type_complexity)]
     fn export_3mf(
@@ -917,6 +1090,7 @@ impl<K: Kernel> Document<K> {
         chosen: &[&BodyView<'_, K::Shape>],
         all: bool,
         tolerance: &MeshTolerance,
+        unit: LengthUnit,
         color: impl Fn(BodyUid) -> Option<[f64; 3]>,
         placements: impl Fn(BodyUid) -> Vec<Transform>,
         print: Option<(
@@ -940,13 +1114,7 @@ impl<K: Kernel> Document<K> {
                 exported.skipped.push((body.uid, why));
                 continue;
             }
-            let mesh = self
-                .kernel()
-                .triangle_mesh(body.shape, tolerance)
-                .map_err(|e| invalid(format!("{}: {e}", body.name)))?;
-            if mesh.triangles.is_empty() {
-                return Err(invalid(format!("{} has no triangles", body.name)));
-            }
+            let mesh = self.export_mesh(body, tolerance)?;
             let placements = placements(body.uid)
                 .iter()
                 .map(|t| mitcad_3mf::Placement {
@@ -997,6 +1165,19 @@ impl<K: Kernel> Document<K> {
             }
             on_bed.transform = Some(moved);
         }
+        // In the file's unit (mitcad#734): the meshes and the placements'
+        // moves scaled, the turns as they are.
+        let scale = 1.0 / unit.millimeters();
+        if scale != 1.0 {
+            for part in &mut parts {
+                for vertex in &mut part.mesh.vertices {
+                    *vertex = vertex.map(|v| v * scale);
+                }
+                for placement in &mut part.placements {
+                    placement.translation = placement.translation.map(|v| v * scale);
+                }
+            }
+        }
         let mut model = mitcad_3mf::Model {
             name: Path::new(path)
                 .file_stem()
@@ -1004,6 +1185,7 @@ impl<K: Kernel> Document<K> {
                 .unwrap_or("Mitcad")
                 .to_owned(),
             parts,
+            unit: unit.three_mf(),
             application: format!("Mitcad {}", env!("CARGO_PKG_VERSION")),
             ..mitcad_3mf::Model::default()
         };

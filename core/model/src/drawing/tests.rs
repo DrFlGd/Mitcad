@@ -569,7 +569,7 @@ fn export_drawing_writes_the_shown_bodies_on_one_sheet_or_one_each() {
     for (command, message) in [
         (
             json!({"cmd": "export_drawing", "path": dir.join("x.png").to_string_lossy()}),
-            "drawings are written to .pdf, .svg or .dxf files",
+            "drawings are written to .pdf, .svg, .dxf or .dwg files",
         ),
         (
             json!({"cmd": "export_drawing", "path": svg_path, "units": "furlong"}),

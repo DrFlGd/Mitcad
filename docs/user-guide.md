@@ -33,7 +33,8 @@ assistant indicator, or choose **Connect AI Assistant…** in
    | *Assistant* was not found on this computer | **Get Claude Desktop** or **How to install** | Install it from the page that opens, then come back. If it is installed after all, press **Connect anyway** (Claude Desktop, ChatGPT / Codex) |
    | Ready to connect *assistant* | **Connect** | Mitcad sets the connection up |
    | Approve Mitcad in Claude Desktop, then start a new chat | **Open in Claude Desktop again** | Approve the extension in Claude Desktop; the button opens it again if needed |
-   | Install Claude Desktop first, in red | **Get Claude Desktop** | No application on this computer took the extension: install Claude Desktop, then choose it again |
+   | Install Claude Desktop first, in red | **Get Claude Desktop** | No application on this computer took the extension and Claude Desktop was not found (also after **Open Claude Desktop** found it gone): install Claude Desktop, then choose it again |
+   | Install the extension in Claude Desktop | **Show in Explorer** (**Show in Finder** on macOS), and **Open Claude Desktop** | Claude Desktop is installed but does not open the extension by itself (Claude Desktop from the Microsoft Store). The line below says where: **In Claude Desktop: Settings › Extensions › Advanced settings › Install Extension…, then choose** the saved `mitcad-desktop.mcpb`, which the button shows (do not double-click it). Approve and enable the extension, then start a new chat |
    | Start a new Claude Code session to use Mitcad / Restart ChatGPT or start a new Codex session to use Mitcad | none | Start a new conversation in the assistant |
    | ✓ Connected: *assistant* | **Disconnect** | Work with the assistant; **Disconnect** keeps the design and its unsaved changes |
    | A short message saying what went wrong, in red | **Try again** | Do what the message says, then try again |
@@ -339,12 +340,26 @@ and mouse drags keep their own sensitivity.
 The **orientation cube** turns the view. A click on a face, an edge or
 a corner of the cube turns the view there. Drag the cube to orbit. The
 house returns to the home view. The right button opens the cube's menu:
-Home, Orthographic, Perspective, Set Current View as Home, Reset Home.
+Home, Camera (Orthographic, Perspective: the camera's projection, as in
+View › Camera), Set Current View as Home, Reset Home, Fit.
 
 The cube is dark glass over a dark background and frosted light glass
 over a light background. Its face names are printed on it. The faces,
 edges and corners light up in the accent colour under the pointer. The
 house is the small capsule above the upper left corner of the cube.
+
+**Preferences › Display › Orientation cube** sets how the cube is drawn:
+
+- **Follow the View** (the default): as the camera draws the model. With
+  a perspective camera the cube is in perspective too, and in its corner
+  you also see the sides that face the middle of the view.
+- **Orthographic**: always orthographic, so it keeps its square shape in
+  the corner, also with a perspective camera.
+- **Perspective**: always in a perspective of its own, as if you looked
+  straight at it, also with an orthographic camera.
+
+The cube keeps its size and place in the corner with each choice, and a
+click on it turns the view to what you clicked.
 
 The **View menu** has the standard views, Look At, Fit, the camera, the
 display styles, the background, Grid and Snaps, and the named views.
@@ -651,6 +666,13 @@ Cylinder and the other creation commands that would only stand on the
 face. Commands for surface bodies (Untrim, Unstitch, Reverse Normal and
 others) show on surface bodies only.
 
+**Move/Copy** is an entry of the menu itself, near Edit, when the
+selection is bodies or components (not in Solid). It starts with them
+selected. Select a body or a component in the Browser, then right-click
+it in the view: the selection stays, and the menu is the one of the body
+or the component. A face of a body that is not selected selects the
+face, and a face has no Move/Copy.
+
 **Delete** removes a whole thing, in one undo step. The thing is one
 of these:
 
@@ -679,12 +701,23 @@ components](#cutting-across-components).
 
 **Two Sides and Start: Offset.** With **Direction: Two Sides**,
 **Distance** goes along the sketch normal from the start and **Distance
-2** the other way. Each distance stays on its own side: the panel
-refuses a negative one, and dragging an arrow of a Two Sides extrusion
-stops at the start. For a solid on one side of the sketch that does not
-touch the sketch, set **Start: Offset**. The extrusion then starts at
-that offset from the sketch plane, and its distances are measured from
-there.
+2** the other way. A negative distance ends on the other side, so the
+solid lies on one side of the sketch without touching it: **Distance**
+50 mm and **Distance 2** −30 mm give a solid from 30 mm to 50 mm along
+the sketch normal. You can also drag an arrow across the sketch plane to
+get a negative distance. The two ends must not meet or cross: 50 mm and
+−50 mm is refused. A taper still widens or narrows the solid as measured
+from the sketch plane. Join, Cut and Intersect work with such a solid
+too. **Start: Offset** is another way to get a solid that does not touch
+the sketch. The extrusion then starts at that offset from the sketch
+plane, and its distances are measured from there. Extrusions saved
+before this change, and imported ones, keep their solids: a negative
+distance there goes its own way by its size.
+
+**To Object in another component.** The object of To Object or of
+Start: Object can be a face or a body of another component, picked
+where an occurrence shows it. The extrusion then follows that object
+and both occurrences ([Components](#components)).
 
 **A planar face as the profile.** Extrude also takes a planar face of a
 body as its profile, with no sketch. Select the face and press **E**.
@@ -793,9 +826,24 @@ A hole made on a face in an earlier version opens on its face. If you do
 not move it, it is saved as it was. If it has several positions,
 **Earlier Positions** keeps them until you choose By Pick.
 
+An imported hole can be placed at distances from two edges of its face,
+on a plane, or along a shaft. It opens with that placement: **From Two
+Edges** (with *Edge Offset 1* and *Edge Offset 2*), **On a Plane**, or
+**Along a Shaft** (with *Offset*, from the face it is measured from).
+Change the distances there, or choose By Pick to place it again.
+
 A counterdrilled hole has a counterbore whose floor is a cone down to
 the hole. A tapered hole has a Taper Angle. The wall leans in as the
 hole goes deeper.
+
+A hole tapped with a taper pipe thread (NPT, or ISO 7-1 *Rc*) is
+*Tapered* by default. It then keeps its *Diameter*: that is the tap
+drill, which the size fills in. The thread tapers the bore from the
+hole's mouth, 1:16 on the diameter, from its minor diameter at the
+mouth until it meets the drilled bore. This happens also when the
+thread is cosmetic. A hole saved by an earlier version stays as it was
+(not tapered, its bore the size's minor diameter) until you check
+*Tapered*.
 
 ### Thread
 
@@ -809,6 +857,19 @@ class 6g. A hole gets the size whose tap drill it is and class 6H: a
 5 mm hole gets M6x1 6H. Once the faces are known, *Class* offers only
 the classes of their side, and a new size or designation keeps the
 class on that side.
+
+A taper pipe thread (*Thread Type* NPT, or ISO Taper Pipe Threads with
+*R* sizes for shafts and *Rc* sizes for holes) is *Tapered* by default:
+1:16 on the diameter. It starts at the free end of the face: the mouth
+of a hole, or the end of a shaft. If both ends or neither is free, it
+starts at the end that *Thread Location* names. Its size sets the
+diameters there. From there they shrink into a hole and grow along a
+shaft. Even a cosmetic tapered thread changes the geometry: it tapers
+the bore, or the shaft's end, to the thread's cone. Mitcad can model
+tapered NPT threads; ISO 7-1 threads are cosmetic only. Tapered threads
+have no end chamfers, so the panel does not offer *Chamfer Ends*. A
+thread saved by an earlier version stays as it was, straight, until you
+check *Tapered*.
 
 *Chamfer Ends* cuts a cone at the free ends through which the thread
 runs out. Examples are the tip of a shaft and the mouth of a hole. Thus
@@ -1032,7 +1093,11 @@ when you edit it, reopen it, undo it or redo it.
 
 Repeated occurrences of a shared component definition show disabled, with
 a reason. Linked read-only components also show disabled, with a reason.
-This cut cannot change only one occurrence of a shared definition. Older
+This cut cannot change only one occurrence of a shared definition. The
+active component is different: a cut made inside it changes its own
+definition, like its other features. So it can cut its own bodies even
+when the component has several occurrences, and every occurrence shows
+the result. Its row says so. Older
 cuts keep their **Local bodies** scope when you edit them. When you open
 an existing cut, Mitcad does not add other component targets.
 
@@ -1095,8 +1160,10 @@ perpendicularity, angularity, concentricity, symmetry and runout refer to
 at least one. To put a frame under a dimension instead, select the
 dimension in the Annotations window and click *Add Frame…*: the frame
 stands just below the dimension line and moves with the dimension. A
-frame that refers to a letter no datum label has shows a warning in the
-window. A frame refers to single datum labels: common datums (A-B)
+frame that refers to a letter no datum label has, of the model or of a
+drawing, shows a warning in the window. When you change a datum label's
+letter, the frames that refer to it follow, in the model and in the
+drawings. A frame refers to single datum labels: common datums (A-B)
 are not supported yet.
 
 A dimension lies in a plane, not facing the screen: a length in the plane
@@ -1239,7 +1306,14 @@ open and its preview is shown (Offset, Mirror, the patterns, Project,
 sketch Fillet and others). The option stays on for the next sketch.
 
 The sketch's X and Y axes run across the view through the sketch's
-origin. The origin has a ring, also when the design's Origin is hidden.
+origin. The origin has a ring. The sketch always shows its origin and
+axes, also when the eye of the Origin folder is off, as it is in a new
+design. The sketch does not change the eye, so the Origin folder is as
+before when you finish the sketch. The same holds when you edit a sketch
+again. The tools snap to the sketch's origin, and Sketch Dimension and
+the constraints can use its origin and axes (refer to
+[Dimensions](#dimensions)). They belong to the sketch: you cannot select
+them outside the sketch or as the geometry of a body.
 A sketch can have an origin that is not the design's: a sketch on a
 face or a construction plane, or in a component put elsewhere. Such a
 sketch names the place of its origin in the design beside the origin.
@@ -1310,7 +1384,7 @@ The Create menu of the Sketch tab groups the sketch curve tools:
 | Other Geometry | Ellipse, the polygons, the slots, the splines and Point |
 | Text | Text, QR Code |
 | Patterns | Rectangular Pattern, Circular Pattern and Mirror |
-| Project | Project (references from the bodies) |
+| References | Project, Intersect, Clean Up Projections and Clean Up Stale Projections (references from the bodies) |
 | Sketch Dimension | Sketch Dimension |
 
 On the toolbar, Line and Sketch Dimension are buttons. Rectangles,
@@ -1356,6 +1430,18 @@ Offset and chain selection see the corner as joined. If one end is
 fixed, Mitcad keeps that end. Mitcad removes a distance between the two
 ends. A point and a curve, a centre, a lone point or a projected point
 stay a coincident constraint.
+
+**Offset** (Modify) copies a chain of curves at a distance. With Chain
+Selection, a click on one curve also takes the curves that are joined
+to it end to end. Sometimes a curve lies on another curve, for example
+the edge that two projected faces share, or an edge that an earlier
+version of Mitcad projected again after its face. Offset then uses the curve of the two that is joined to the other
+curves, so that the whole outline is offset. If you select both curves,
+Offset uses one of them, and the panel tells which. If the curves are
+not one chain, the panel tells why: two ends at the same place that are
+two points (a Coincident constraint joins them), or three curves that
+end at one point. If an open chain stops where another curve ends on a
+point of its own, the panel tells that too.
 
 **Convert to Sketch Geometry** is in Modify and in the context menu of
 projected geometry. It makes the selected projected curves and points
@@ -1590,11 +1676,32 @@ Projected geometry obeys these rules:
 - Projected geometry is fixed. A dimension to sketch geometry moves
   that geometry. A dimension between two projected edges is driven.
 - If the sketch already has a projection of the same edge or corner,
-  Mitcad uses that projection again.
+  Mitcad uses that projection again. This also applies to an edge of a
+  face that you projected before, and to a face after one of its edges:
+  the sketch gets no second curve on the edge, and the new curves end
+  on the points that are already there. Thus the outline stays one
+  chain for Offset. A face beside a face that you projected keeps its
+  own line on the edge that they share, so that each outline stays one
+  chain.
 - **Convert to Sketch Geometry** makes projected geometry ordinary
   sketch geometry (refer to [Sketch curve tools](#sketch-curve-tools)).
 - Project has selection rows of its own while it runs (refer to
   [Selection in sketch mode](#selection-in-sketch-mode)).
+
+**Intersect** (Create › References) adds the curves where the sketch
+plane cuts the bodies and faces that you select. It adds points where
+the sketch plane crosses the edges that you select. For a body, Mitcad
+cuts every face of the body. For example, a sketch through a shaft gets
+the section of the shaft as a circle. Project is different: it flattens
+edges onto the sketch plane.
+
+- *Projection Link* is on by default. Then the curves and points follow
+  the model when the design changes, as projected geometry does.
+- You can also select the faces, edges and bodies of other components.
+- If the sketch plane does not cut a selection, the panel shows the
+  reason and OK is not available.
+- Intersect is also in the context menu of a face or an edge, after
+  Project. The command search also finds it with the word "section".
 
 **Clean Up Projections** (Create › References) removes projected curves
 that repeat another curve, and projected lines that lie on another
@@ -1774,6 +1881,14 @@ a change of the eye. A sketch hides by itself when a feature first uses
 it. The sketch shows again when you delete the last feature that uses
 it. The eye has priority over this automatic behaviour.
 
+The eye of the Origin folder shows the design's origin in the view: its
+point, its X, Y and Z axes and the XY, XZ and YZ planes. The design
+saves the eye. A new design starts with it off. You do not need the
+origin to start a sketch: Create Sketch shows the origin planes for the
+pick when the design has no other components (refer to
+[Sketch mode](#sketch-mode)), and every sketch shows its own origin and
+axes, whatever the eye of the Origin folder says.
+
 When you edit a feature, the view shows the sketches that the feature
 uses, also hidden sketches. A hidden sketch is a little lighter. You can
 select its profiles, curves and points for the inputs of the panel. When
@@ -1800,6 +1915,8 @@ undoes them.
 these entries:
 
 - Edit
+- Move/Copy (for bodies and components: the rows that are selected
+  with the row, or the row alone)
 - Show/Hide
 - Isolate
 - New Component
@@ -1807,7 +1924,7 @@ these entries:
 - Copy
 - Paste
 - Paste New
-- Move to... (for a component: another parent). The joints,
+- Move to Component... (for a component: another parent). The joints,
   constraints, rigid groups and moves that put the component in place
   go with it.
 - Ground
@@ -1818,6 +1935,7 @@ these entries:
 - Rename
 - Delete
 - Find in Timeline
+- Save As Mesh... (for bodies and components)
 - Collapse All
 
 **Collapse All** is the last entry of the menu of every row. It folds
@@ -2435,7 +2553,10 @@ value in it. The filament colour is chosen with the colour picker;
 unset, it shows the appearance's colour and name, which is the colour
 the slicer gets. **↺** clears a
 value. A value that does not fit says what to use under its field, for
-example "Use a value of 0 or more".
+example "Use a value of 0 or more". The fields take what the slicers
+take for that setting, and the design's slicer decides where slicers
+differ: Bambu Studio takes -1 ("automatic") in a few settings that
+OrcaSlicer does not.
 
 Each value is saved when you press Enter or leave the field. There is no
 OK button. Undo takes back the change, also in your library.
@@ -2883,7 +3004,8 @@ Paste makes an occurrence. Paste New makes a new component. Activate a
 component with its radio button. Then new features go into it.
 
 Ground fixes an occurrence. Move/Copy moves components as a timeline
-feature. With Point to Point, the Origin Point and the Target Point can
+feature. It is also in the context menu of a component's row and, for a
+selected component, in the context menu of the view. With Point to Point, the Origin Point and the Target Point can
 be on any component: a vertex, a sketch point, a construction point or
 the centre of a circle, picked where the view shows it. Mitcad keeps the
 occurrence that you picked it in, so the point is where that occurrence
@@ -2925,6 +3047,16 @@ Project in such a sketch, or in any sketch, also takes edges, faces
 and vertices of other components. These projections are linked when
 Projection Link is on. Features other than sketches work only on the
 bodies of their own component.
+
+Extrude and Revolve are an exception for the object an extent ends at.
+Extrude's To Object, on either side, and its Start: Object can take a face
+or a body of another component. Revolve's To Object can too. Pick the
+object where an occurrence shows it; the component of the object stays
+inactive. The feature stays linked to that occurrence: it follows the
+object when the object changes or when either component moves. When you
+edit the feature, the panel shows the object where you picked it. Hole's
+To Object takes only an object of the hole's own component. The panel
+says so when you pick another component's face or body.
 
 ### Design policy
 
@@ -3007,14 +3139,17 @@ bodies together. Each move is one undo step.
 
 **Move a component to another parent.** If a component is active when
 you make a new component, the new one is inside it. You can move it
-out. **Move to...** on its row in the browser lists the root and the
-other components by their full paths. Select one. Mitcad moves the
-component, with everything in it, under the one that you selected.
+out. **Move to Component...** on its row in the browser lists the root
+and the other components by their full paths. Select one. Mitcad moves
+the component, with everything in it, under the one that you selected.
+This changes the structure only. To move the component in space, use
+Move/Copy, which is also in the context menu of its row.
 
 The component stays where it is in the design, also under turned
 parents. Its history, parameters, name and grounding stay too.
-Sketches, links, joints, cut scopes, section analyses and Isolate that
-refer to it through its old place follow it.
+Sketches, links, joints, cut scopes, section analyses, Isolate,
+annotations, and the drawings' views, dimensions and balloons that refer
+to it through its old place follow it.
 
 Parents that the component cannot go into are listed greyed, with the
 reason:
@@ -3032,6 +3167,8 @@ What the move cannot keep is named instead of changed:
 - A joint whose moved component would change
 - A link across it, while the timeline moves a parent on the way
 - Pattern at Points
+- A drawing of a component that shows it, when it would leave that
+  component
 
 The move is one undo step. Cancel changes nothing.
 
@@ -4176,7 +4313,16 @@ make two bodies that work together between two shafts or axes:
    sketch lines, circles or arcs. The axes must be parallel. Under
    **More**, each axis has an **Offset** along it, so that both bodies
    lie in one plane (its handle is in the view all the time). If they
-   do not, the panel says so.
+   do not, the panel says so. Each body grows from its axis in the
+   direction of that axis: an end edge points into its shaft, a side
+   face from the end nearer your click. If the two axes point opposite
+   ways, the bodies would grow apart, and the panel says so too: select
+   one shaft nearer its other end.
+   A shaft can be in another component, where the view shows it (for
+   example a motor placed in the assembly): the bodies go where that
+   shaft is. The second gear of a Gear Pair meshes with the first, so
+   its shaft must be in the active component; select a shaft of
+   another component as the First Axis.
 2. Type the **Ratio**, for example *1 : 2*: the teeth of the first
    part to the teeth of the second.
 3. For a belt drive, select the **Belt Profile**. For gears, **More**
@@ -5329,7 +5475,7 @@ file's history.
 | IFC (`.ifc`, `.ifczip`) | Open, Import. Storeys become components, elements become features, bodies and meshes | None | Swept solids and their cuts as features |
 | `.rvt` (projects) | Open. Levels become components, elements become bodies and meshes | None | Walls, floors, roofs, ceilings, columns, beams and stair runs as features |
 | SolidCraft (`.solidcraft`) | Open, Import (every file format version) | None | Features, sketches, parameters, components and joints. Sheet metal |
-| DWG (`.dwg`, R13 to R2018) | Open, Import. 3D solids become bodies, 3D faces and meshes become mesh bodies, blocks become components with their occurrences | None | None. A drawing keeps no history |
+| DWG (`.dwg`, R13 to R2018) | Open, Import. 3D solids become bodies, 3D faces and meshes become mesh bodies, blocks become components with their occurrences | A drawing (R2000) | None. A drawing keeps no history |
 | STEP (`.step`, `.stp`) | Bodies | Bodies (AP214 or AP242) | None |
 | IGES (`.iges`, `.igs`) | Bodies | Bodies | None |
 | BRep (`.brep`, `.brp`) | Bodies | Bodies | None |
@@ -5340,7 +5486,7 @@ file's history.
 | 3MF | None | For slicers | None |
 | USDZ | None | For AR and 3D viewers: meshes with appearances, components kept | None |
 | Web page (`.html`) | None | The design in one HTML file with its viewer, for any browser | None |
-| Drawing (PDF, SVG, DXF) | None | Views with hidden lines removed, sizes, hole diameters, a hole table and a title block | None |
+| Drawing (PDF, SVG, DXF, DWG) | None | Views with hidden lines removed, sizes, hole diameters, a hole table and a title block | None |
 
 If a file does not import correctly, please
 [open an issue](https://github.com/mitcad/Mitcad/issues).
@@ -5448,10 +5594,42 @@ custom deviation applies to every face.
 **3D Print** (the Make group) sends the selected bodies, or every
 visible body, to a slicer ([3D printing](#3d-printing)).
 
+#### Save As Mesh
+
+**Save As Mesh…** in the context menu of a body or a component, in the
+browser or in the view, saves its bodies as a mesh file. With several
+bodies or components selected, it saves all of them. A component saves
+the bodies in it and in its subcomponents. Surface and empty bodies are
+left out. When there is nothing else, the entry is unavailable, and its
+tooltip tells why.
+
+The dialog has these choices:
+
+- **Format:** 3MF, STL (binary), STL (ASCII) or OBJ.
+- **Unit:** mm, cm, m, in or ft. The bodies keep their size; only the
+  numbers in the file change.
+- **Structure:** one file, or one file per body (with several bodies).
+- **Refinement:** Low, Medium or High, as in Export, or Custom: the
+  surface deviation, the normal deviation (the angle between neighbouring
+  triangles) and the maximum edge length. Longer edges are split, which
+  adds triangles but keeps the shape. None is no limit.
+- **On its print bed face:** each piece lies on its body's print bed face
+  and is centred on the plate, as 3D Print does ([The print bed
+  face](#the-print-bed-face)). One file is one piece; with one file per
+  body each body lies on its own face. The box is unavailable when no
+  body has a usable print bed face; its tooltip tells why.
+
+OK asks for the file, or for the folder of the files. The proposed name
+is the body's name for one body, the component's name for one
+component, and the design's name for several. With one file per body
+each file has its body's name, made unique when two bodies share a name.
+Characters that a file name cannot hold are replaced. The design does
+not change.
+
 **File › Export Drawing** writes the selected bodies, or every visible
 body, as a drawing for the workshop or a supplier. The drawing has
 front, top and right views with sizes, hole diameters and a hole table.
-The formats are PDF, SVG and DXF ([Drawings](#drawings)).
+The formats are PDF, SVG, DXF and DWG ([Drawings](#drawings)).
 
 ### Base features
 
@@ -6036,7 +6214,8 @@ The panel also has these options:
 - **Import from slicer…**, **Printer**, **Process**, **Own settings**
   and **Materials** (3MF only, greyed out with STL): Import from
   slicer… first, above the design's printer and process, then the
-  bodies' own process settings and the bodies' materials (see
+  bodies' own process settings (whatever the process, Slicer default
+  too: the slicer gets them all the same) and the bodies' materials (see
   [Print settings](#print-settings)).
 - **Refinement:** Low, Medium, High (the default) or Custom. The
   refinement sets how far the triangles can lie from the surface (mm)
@@ -6085,15 +6264,26 @@ The tooltip of the body in the browser names the face, for example
   a 256 × 256 mm plate. A component that is placed several times, only
   moved, turns the same way in every place.
 - Several bodies that each have a print bed face, for example the parts
-  of a component: Mitcad sends them as they are assembled.
+  of a component: Mitcad sends them as they are assembled. So does a
+  component that is placed several times and turned differently in each
+  place, as no single turn lays the face on the bed in every place.
 - With STL, each file is turned onto the print bed face of its body.
 
 If the print bed face is gone after an edit, or is no longer planar,
 Mitcad sends the body as the design has it, with -Z down. The status
 line tells which body, for example `Body1: the print bed face is gone;
 printed as in the design`. The tooltip in the browser says *gone* or
-*not planar*. Then **Clear Print Bed Face** is in the context menu of
-every face of the body, or choose a new print bed face.
+*not planar*, or another reason, for example when the face was renamed
+by an edit and Mitcad cannot find its plane. Then **Clear Print Bed
+Face** is in the context menu of every face of the body, or choose a new
+print bed face.
+
+Surface bodies have no print bed face. Mitcad does not print them:
+**3D Print** leaves them out. If a body with a print bed face becomes a
+surface body, for example after **Unstitch**, the body keeps the face,
+but Mitcad does not use it. The tooltip in the browser says *not used, a
+surface body is not printed*. The context menu of a face of the surface
+body then offers only **Clear Print Bed Face**.
 
 #### Print Analysis
 
@@ -6125,7 +6315,9 @@ the thinnest wall to zoom to it. The estimate looks like
 `41.5 g · 13.9 m · 1.04 €`. It is only an estimate: the slicer decides.
 
 In the view, the overhangs have the warning colour and the thin walls
-have the error colour. A marker shows the thinnest point. A legend in
+have the error colour. Only the thin part is coloured: a thin rim at the
+edge of a large flat face shows as a band along the rim, not across the
+face. A marker shows the thinnest point. A legend in
 the lower left corner shows the colours, the angle and the minimum wall.
 
 **OK** keeps the analysis in the **Analysis** folder of the browser as
@@ -6223,8 +6415,9 @@ change with it. Undo and redo work for drawings too.
 #### Views
 
 The bar over the sheet has the drawing's tools in groups, each with its
-caption: **Create** (the views' tools below), **Geometry** (centre marks
-and centrelines), **Dimensions**, **Text**, **Symbols** (datum labels,
+caption: **Create** (the views' tools below), **Geometry** (centre marks,
+centrelines, lines and arcs, centre patterns and edge extensions),
+**Dimensions**, **Text**, **Symbols** (datum labels,
 feature control frames, surface finish symbols), **Tables** and
 **Export**.
 
@@ -6278,12 +6471,26 @@ properties:
   Parent*. A base view's scale can *Fit the Sheet*. Another view takes
   its view's scale (a detail twice it) unless it has its own; the list
   shows the scale that gives.
+- Every view but a detail: its **Rotation** in degrees,
+  counter-clockwise. The view turns on the sheet about the middle of its
+  box. The views made from it turn with it, and so do its dimensions,
+  notes and symbols, the lines and texts drawn in it, and the circles of
+  its details: they keep showing what they showed. A horizontal
+  dimension turned a quarter becomes a vertical one; turned another
+  angle, it keeps measuring along the same direction of the model. A
+  view with breaks turns by quarter turns only. A detail turns with its
+  view. The view's menu also has *Rotate 90° Left* and *Rotate 90°
+  Right*.
 
-A view that has sections or details on it keeps its direction: delete
-them first to turn the view, change a projected view's side or a
-section's direction, or change the projection method of a sheet whose
-projected views have them. Delete
-removes the view and the views made from it.
+You can turn a view to another direction while sections or details
+are drawn on it or on the views made from it: a base view's
+orientation, a projected view's side, *Look the Other Way* of a
+section, or the projection method of the sheet. The views made from it
+follow. A section line stays where you drew it on its view and cuts
+what that view shows there now; a detail keeps its circle where it is
+on its view. Dimensions and notes on them follow the edges they picked;
+one whose edge the turned view no longer shows is marked broken, as when
+the model changes. Delete removes the view and the views made from it.
 
 **Several at once.** Ctrl+click a view or an annotation to add it to the
 selection, or to take it out. Delete deletes everything selected, and a
@@ -6314,7 +6521,11 @@ tools, as icons:
 | Baseline | Several dimensions at once: from the first point to each of the others (Baseline) or from each to the next (Chain). Click the points, then a free place. |
 | Center Mark | Centre lines across a circle, or the centreline of a hole or a shaft seen from the side. Click the circle or the round face. |
 | Centerline | A centreline through two circles, or between two edges. |
-| Text | Text on the sheet. Click where it goes. |
+| Line | A line drawn by hand, outside the model. Click its two ends. *Drawn: In the View Clicked* keeps it in the view under the first click, so that it moves, scales and turns with the view; *On the Sheet* keeps it on the paper. *Line* chooses thin, thick, dashed or a centre line. |
+| Arc | An arc drawn by hand: click its centre, its start, then its end, counter-clockwise. In a view or on the sheet, as a line. |
+| Center Pattern | Centre marks on every hole of a pattern in one step. Click one hole seen end on: Mitcad finds the holes of the same size of that body the view shows. On a bolt circle it draws the circle through their centres (an arc when they stand on a part of it) and a line through each; in a row, the line through them; else a centre mark on each. |
+| Edge Extension | Thin lines that run straight edges on: two edges to where their lines meet (a corner rounded or chamfered away), or one edge beyond both its ends (*Edges: One, Both Ways*; how far, in millimetres of paper, is its *Length* in the panel: 10 unless set). |
+| Text | Text on the sheet, or in the view clicked (*Drawn*). Click where it goes. |
 | Note | Text on a leader. Click the edge or point it points at, then where the text goes. |
 | Datum Label | A datum label (A, B, …) on a face or an axis. The letters of the model's datum labels and the drawings' are one set: a new label takes the first letter no other has. |
 | Feature Control Frame | A geometric tolerance on a face or an axis. A dialog asks for it; its datums are the letters of the model's and the drawings' datum labels. |
@@ -6350,7 +6561,19 @@ Click an annotation to select it. Drag it to move its line or its text.
 Its panel shows its value and has *Tolerance…* and *Decimals…* (the
 same dialogs as in the 3D view), its text before and after, a note's
 text, a datum's letter, a frame's tolerance or a finish's requirement,
-and *Delete*. Delete deletes it too.
+its **Text Height**, a line's or an arc's pen, and *Delete*. Delete
+deletes it too.
+
+**The drawing's decimals and text height.** With nothing selected, the
+panel shows the sheet with the drawing's **Decimals** and **Text
+Height** (mm). They are for every dimension, note, symbol, table and
+text of the drawing that has none of its own: change them once and the
+whole drawing follows. A dimension's own decimals and an annotation's
+own text height win over them; clear an annotation's text height to
+take the drawing's again. *Automatic* decimals write as many as the
+value needs, up to three; the text height is 3.5 mm unless you set one.
+The dimensions a view retrieves from the sketches take the drawing's
+decimals too.
 
 An annotation whose edge or face is gone (the feature deleted or
 suppressed, the body no longer in the view) is not drawn. A small red
@@ -6399,7 +6622,7 @@ dimensions and tables (the design's, or millimetres, inches and others),
 and the title block's title, drawing number, author and date. Without a drawing number, the title block names the bodies.
 Without a date, it shows the date of the day.
 
-**Export…** writes the drawing as PDF (all sheets), SVG or DXF (a file
+**Export…** writes the drawing as PDF (all sheets), SVG, DXF or DWG (a file
 per sheet). The command line writes a drawing of the design too, all
 its sheets or one (`--sheet 2`: the second):
 
@@ -6463,6 +6686,7 @@ drawing has one of these formats:
 | PDF    | To print or to send         |
 | SVG    | For documents and web pages |
 | DXF    | For other drawing programs  |
+| DWG    | For other drawing programs: version R2000, with what the DXF file holds |
 
 **Bodies.** Mitcad draws the selected bodies or every visible body,
 where the design shows them. A selected face, edge or vertex stands
@@ -6698,7 +6922,7 @@ guide that explains its settings.
 |---|---|---|
 | **General** | The *Import tolerance* of imported files. **Autosave**: on or off, 1 to 60 minutes, the folder with Open Folder | [Import](#import), [Saving and recovery](#saving-and-recovery) |
 | **Navigation** | The mouse scheme for orbit, pan and zoom | [View and navigation](#view-and-navigation) |
-| **Display** | **Layout**, **Browser background**, **Ghost inactive components**, **Pick the active component first** | [Layouts](#layouts), [Components](#components) |
+| **Display** | **Camera**, **Orientation cube**, **Layout**, **Browser background**, **Ghost inactive components**, **Pick the active component first** | [View and navigation](#view-and-navigation), [Layouts](#layouts), [Components](#components) |
 | **Cache** | The cache of computed results: on or off, the size, the folder, **Clear**, the memory limit | [Cache of computed results](#cache-of-computed-results) |
 | **Cloud** | The git program, the default author, the defaults of projects, live updates, the broker, **Known brokers** | [Sharing a project](#sharing-a-project), [Live updates](#live-updates) |
 | **Updates** | The automatic check for updates: on or off. Pre-releases: offered or not | [Updates](#updates) |

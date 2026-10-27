@@ -32,6 +32,8 @@ enum class SheetPick {
   Circle,    // a click on a view and a second at the radius (a detail)
   Picks,     // clicks on a view's edges, circles and corners (the model finds what each picks)
   ViewThenPlace, // a click on a view, then where what it makes goes (a table)
+  Segment,   // two clicks anywhere on the sheet (a line drawn outside the model, mitcad#729)
+  ArcPoints, // three clicks anywhere: an arc's centre, start and end (mitcad#729)
 };
 
 // An option of a tool's panel.
@@ -96,15 +98,21 @@ struct DrawingToolDef {
 
 // The tools: Base View, Projected View, Section View, Detail View, Break;
 // then the annotations' tools: Dimension, Ordinate, Baseline, Center
-// Mark, Centerline, Text, Note, Datum Label, Feature Control Frame,
-// Surface Finish; then the tables' (mitcad#707 phase 3): Hole Table,
-// Parts List, Balloon. The bar shows them by their groups (`toolGroup`).
+// Mark, Centerline, Line, Arc, Center Pattern, Edge Extension
+// (mitcad#729), Text, Note, Datum Label, Feature Control Frame, Surface
+// Finish; then the tables' (mitcad#707 phase 3): Hole Table, Parts List,
+// Balloon. The bar shows them by their groups (`toolGroup`).
+//
+// Line and Arc (mitcad#729) draw outside the model, on the sheet or in the
+// view under their first click (their Drawn option), which they then move,
+// scale and turn with; Text does too (on the sheet unless chosen).
 const QVector<DrawingToolDef>& drawingTools();
 const DrawingToolDef* drawingTool(const QString& id);
 
 // The groups of the bar, in its order, each under its caption
 // (`toolGroupName`, mitcad#725): Create (the views' tools), Geometry
-// (Center Mark, Centerline), Dimensions (Dimension, Ordinate, Baseline),
+// (Center Mark, Centerline, Line, Arc, Center Pattern, Edge Extension;
+// mitcad#729), Dimensions (Dimension, Ordinate, Baseline),
 // Text (Text, Note), Symbols (Datum Label, Feature Control Frame, Surface
 // Finish), Tables (Hole Table, Parts List, Balloon); the bar's Export
 // group comes after them.
@@ -115,7 +123,9 @@ QString toolGroupName(int group);
 // The command search's other words for a tool (mitcad#725): "leader" for
 // Note, "chain" for Baseline, "datum identifier" for Datum Label,
 // "surface texture" for Surface Finish, "break view" for Break, "bom" for
-// Parts List; besides "drawing" and "sheet", which every tool has.
+// Parts List, "sketch" for Line and Arc, "bolt circle" for Center Pattern,
+// "virtual sharp" for Edge Extension (mitcad#729); besides "drawing" and
+// "sheet", which every tool has.
 QStringList toolKeywords(const QString& id);
 
 // What a base view shows (mitcad#725): its Shows list for a drawing of
@@ -152,8 +162,9 @@ QList<QPair<QString, QString>> sideChoices();
 // "tangent_edges", "shaded", "label", "direction", "aligned", "side",
 // "letter", "hatch", "flip", "radius" (sheet mm), "center" ("x y", sheet
 // mm), "subject" (the model's JSON as text), "center_marks",
-// "retrieved_dimensions") of view `view`, whose style is `style` now (a
-// style is changed as a whole); empty for a value the field cannot take.
+// "retrieved_dimensions", "rotation" (degrees counter-clockwise,
+// mitcad#729)) of view `view`, whose style is `style` now (a style is
+// changed as a whole); empty for a value the field cannot take.
 QJsonObject viewEdit(const QString& drawing, int view, const QString& field, const QString& value,
                      const QJsonObject& style);
 
@@ -165,9 +176,22 @@ QJsonObject viewEdit(const QString& drawing, int view, const QString& field, con
 // `finish`), "height" (a text note's, mm); a table's "columns" (the keys,
 // separated by commas), "sort" (empty: its own), "descending", "origin",
 // "tags", "levels" and "title" (empty: its own)); empty for a value the
-// field cannot take.
+// field cannot take. Since mitcad#729 "height" is every annotation's own
+// letters' height (empty: the drawing's again), "pen" a line's or an
+// arc's, and "length" an edge extension's reach beyond its edge (mm,
+// its `line_offset`; empty: 10).
 QJsonObject annotationEdit(const QString& drawing, int annotation, const QString& field, const QString& value,
                            const QJsonObject& finish = QJsonObject());
+
+// The drawing's own decimals and letters' height (mitcad#729) as the
+// sheet's panel edits them: the edit_drawing command for "decimals"
+// ("auto": none, else 0 to 6) or "text_height" (mm; empty: none); empty
+// for a value the field cannot take.
+QJsonObject drawingDefaultsEdit(const QString& drawing, const QString& field, const QString& value);
+
+// The pens a line or an arc drawn outside the model takes, as the model
+// names them, with their labels (mitcad#729).
+QList<QPair<QString, QString>> penChoices();
 
 // The annotation's name in the panel and the undo history: "Dimension",
 // "Center Mark", "Note", … for the model's type.

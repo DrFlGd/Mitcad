@@ -21,7 +21,9 @@ use crate::header::HeaderVars;
 use crate::objects::types;
 
 /// The maintenance release the test files claim.
-pub const MAINTENANCE: u8 = 6;
+pub use crate::header::MAINTENANCE;
+/// The objects one after another (in the object map's module).
+pub use crate::objmap::object_stream;
 
 /// What an entity of the test drawing is.
 #[derive(Clone, Debug)]
@@ -651,7 +653,20 @@ fn objects(d: &TestDrawing, v: Version) -> Written {
                 w.data.bl(0).bl(0);
             }
             TestEntity::Line(a, b) => {
-                w.data.bd3(*a).bd3(*b);
+                // R2000 on: the z's zero bit, x, y and z each as RD and
+                // DD (the specification's 20.4.21); then the thickness
+                // and the extrusion.
+                if v < Version::R2000 {
+                    w.data.bd3(*a).bd3(*b);
+                } else {
+                    let flat = a[2] == 0.0 && b[2] == 0.0;
+                    w.data.bit(flat);
+                    w.data.rd(a[0]).dd(b[0], a[0]).rd(a[1]).dd(b[1], a[1]);
+                    if !flat {
+                        w.data.rd(a[2]).dd(b[2], a[2]);
+                    }
+                }
+                w.data.bt(0.0).be([0.0, 0.0, 1.0]);
             }
         }
         out.insert(p.handle, w.finish(has_ds));
@@ -665,25 +680,9 @@ pub fn write(d: &TestDrawing, v: Version) -> Vec<u8> {
     let (objects, stored) = objects(d, v);
     match v {
         Version::R13 | Version::R14 | Version::R2000 => write_r13(d, v, &classes, &objects),
-        Version::R2007 => crate::r2007::write(d, &classes, &objects),
+        Version::R2007 => crate::r2007::write(&d.header, &classes, &objects),
         _ => write_r2004(d, v, &classes, &objects, &stored),
     }
-}
-
-/// The objects one after another from `start`, and the map of their
-/// offsets (plus `base`).
-pub fn object_stream(
-    objects: &BTreeMap<u64, Vec<u8>>,
-    start: Vec<u8>,
-    base: u64,
-) -> (Vec<u8>, BTreeMap<u64, u64>) {
-    let mut data = start;
-    let mut map = BTreeMap::new();
-    for (&h, bytes) in objects {
-        map.insert(h, base + data.len() as u64);
-        data.extend_from_slice(bytes);
-    }
-    (data, map)
 }
 
 fn write_r13(
@@ -1029,6 +1028,13 @@ mod tests {
             if v >= Version::R2013 {
                 assert_eq!(file.stored_breps.len(), 2, "{v}");
             }
+            // The line, read as a 2D entity (mitcad#728).
+            let line = &file.objects[&0x63].kind;
+            assert!(
+                matches!(line, crate::objects::Kind::Entity(_, crate::objects::EntityData::Line { start, end })
+                    if *start == [0.0; 3] && *end == [1.0; 3]),
+                "{v}: {line:?}"
+            );
         }
     }
 }

@@ -965,6 +965,9 @@ void CommandSession::activate(const QString& key) {
   // A placement input picks the model before the planes in front of it
   // (mitcad#656).
   viewer.setPlanesBehind(input != nullptr && input->places);
+  // An extent's object: a face in front of an origin plane is the pick,
+  // also one of another component (mitcad#762).
+  viewer.setPlanesByDepth(input != nullptr && input->planesByDepth);
   if (input == nullptr) {
     viewer.setPickFilter(SelectFilter());
     updateGhosts();
@@ -3861,6 +3864,12 @@ void CommandSession::createCursorBox() {
   auto* box = new QLineEdit(&m_host.viewer());
   box->setObjectName(QStringLiteral("cursorValueBox"));
   box->setFixedWidth(120);
+  // It takes no mouse input: it follows the cursor only while the view gets
+  // the moves, so a move that lands on it (a jump down and to the right)
+  // went to the box instead, which then stayed, and a click there picked
+  // nothing in the view (mitcad#740). The keyboard reaches it as before:
+  // typing over the view focuses it (eventFilter).
+  box->setAttribute(Qt::WA_TransparentForMouseEvents);
   box->hide();
   connect(box, &QLineEdit::textEdited, this, [this](const QString& text) {
     if (!m_done && m_presenter != nullptr && m_presenter->actions().textEdited) {
@@ -4154,6 +4163,7 @@ void CommandSession::finish(bool committed) {
   OcctViewer& viewer = m_host.viewer();
   viewer.setPreview(TopoDS_Shape());
   viewer.setPlanesBehind(false);
+  viewer.setPlanesByDepth(false);
   viewer.setHandleBoxes({}); // the handles' value boxes went with them
   viewer.setHighlights({});
   viewer.setGhosts({});

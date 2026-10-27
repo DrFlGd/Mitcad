@@ -10,9 +10,13 @@
 // filter that walks the stack from the fault (StackWalk64, on a thread of
 // its own) and a SIGABRT handler with CaptureStackBackTrace, both naming
 // the frames' functions from the PDB file next to the executable where
-// there is one (dbghelp's SymFromAddr). An uncaught C++
-// exception (std::terminate) and a Rust panic (noteMessage, before the
-// abort that follows it) leave their message in the report.
+// there is one (dbghelp's SymFromAddr; without it the executable's frames
+// keep their offset in it, never the name of a nearby exported function).
+// An uncaught C++ exception (std::terminate; on Windows the unhandled
+// exception 0xE06D7363, CXX_EXCEPTION, which is read before anything
+// unwinds) and a Rust panic (noteMessage, before the abort that follows
+// it) leave their message in the report: an exception's type and its
+// what() (mitcad#773).
 //
 // A report is a text file `crash-<time>-<pid>.crash` in the crash folder
 // (setDirectory; a worker takes it from MITCAD_CRASH_DIR, which the
@@ -50,10 +54,15 @@ void noteAction(const char* action);
 void noteMessage(const char* message, std::size_t length);
 
 // For tests (MITCAD_TEST_CRASH, ReportCenter.hpp): whether the variable
-// names `where` ("app", "model-worker", "import-worker", "render-worker").
+// names `where` ("app", "app-exception", "model-worker", "import-worker",
+// "render-worker").
 bool testCrashRequested(const char* where);
 
 // For tests: crashes as an access violation would.
 [[noreturn]] void crashNow();
+
+// For tests: throws a std::range_error that nothing catches, as an OCCT
+// failure escaping a Qt slot did (mitcad#773).
+[[noreturn]] void throwNow();
 
 } // namespace mitcad::crash

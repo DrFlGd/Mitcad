@@ -288,6 +288,9 @@ void CutTargetsPanel::rebuild() {
     const QString component = row.value(QStringLiteral("component")).toString();
     const QString name = row.value(QStringLiteral("path_name")).toString(row.value(QStringLiteral("name")).toString(component));
     const QString reason = row.value(QStringLiteral("reason")).toString();
+    // The extrusion's own component with several occurrences (mitcad#769):
+    // cut in its definition, so every occurrence changes.
+    const QString note = row.value(QStringLiteral("note")).toString();
     const bool eligible = row.value(QStringLiteral("eligible")).toBool();
     const bool intersects = row.value(QStringLiteral("intersects")).toBool();
     const bool hidden = row.value(QStringLiteral("hidden")).toBool(); // mitcad#475
@@ -295,6 +298,7 @@ void CutTargetsPanel::rebuild() {
     if (hidden) { text += tr(" (hidden)"); }
     if (!intersects) { text += tr(" — outside current cut"); }
     if (!reason.isEmpty()) { text += QStringLiteral(" — ") + reason; }
+    if (!note.isEmpty()) { text += QStringLiteral(" — ") + note; }
     auto* item = new QTreeWidgetItem(m_tree, {text});
     item->setToolTip(0, text + QStringLiteral("\n") + component + QStringLiteral(" @ ") + (path.isEmpty() ? tr("Root") : path));
     item->setData(0, kTargetRole, identity(row));
@@ -323,11 +327,11 @@ void CutTargetsPanel::rebuild() {
       child->setToolTip(0, item->toolTip(0) + QStringLiteral("\n") + uid);
     }
     item->setExpanded(expanded.contains(item->data(0, NativeControlIdentifierRole).toString()));
-    qDebug().noquote() << QStringLiteral("Cut target %1@%2: %3, %4, %5%6")
+    qDebug().noquote() << QStringLiteral("Cut target %1@%2: %3, %4, %5%6%7")
         .arg(component, path, eligible ? QStringLiteral("eligible") : QStringLiteral("unavailable"),
              item->checkState(0) == Qt::Checked ? QStringLiteral("checked") : item->checkState(0) == Qt::PartiallyChecked
                  ? QStringLiteral("partial") : QStringLiteral("unchecked"), intersects ? QStringLiteral("intersects") : QStringLiteral("outside"),
-             hidden ? QStringLiteral(", hidden") : QString());
+             hidden ? QStringLiteral(", hidden") : QString(), note.isEmpty() ? QString() : QStringLiteral(", own definition"));
   }
   m_tree->verticalScrollBar()->setValue(scroll);
   m_all->setEnabled(m_current);

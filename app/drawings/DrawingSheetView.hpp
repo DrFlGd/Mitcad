@@ -21,7 +21,9 @@
 // picks wait for the click that places what they make, "Drawing preview:
 // <what>" when what is placed shows under the pointer meanwhile (a view's
 // box, a dimension's lines, a leader), "Drawing selection: view 3, annotation
-// 1" when Ctrl+click adds to the selection or takes from it. A view the
+// 1" when Ctrl+click adds to the selection or takes from it, "Drawing point
+// <n> at x,y" for each click of a line or an arc drawn outside the model
+// (mitcad#729). A view the
 // model could not draw keeps a red box at its place, as does an annotation
 // whose picks are gone, to be selected and deleted.
 //
@@ -34,10 +36,12 @@
 #include <QJsonObject>
 #include <QLineF>
 #include <QList>
+#include <QPixmap>
 #include <QPoint>
 #include <QPointF>
 #include <QPolygonF>
 #include <QRectF>
+#include <QSize>
 #include <QString>
 #include <QVector>
 #include <QWidget>
@@ -85,7 +89,9 @@ public:
   explicit DrawingSheetView(QWidget* parent = nullptr);
 
   // A sheet of the `drawing` query (its size, views, annotations and
-  // groups); the view is fitted when the sheet's size changes.
+  // groups); the view is fitted the first time and when the sheet's size
+  // changes, and keeps its zoom and pan otherwise (mitcad#751: the next
+  // model command does not undo a zoom).
   void setSheet(const QJsonObject& sheet);
   // What the clicks are for; None: the selection. With `place`, one more
   // click after a line or a circle says where the new view goes.
@@ -150,6 +156,12 @@ public:
   void fit();
   QPointF toSheet(const QPointF& widget) const;
   QPointF toWidget(const QPointF& sheet) const;
+  // How many times the sheet itself (the paper and the groups' lines,
+  // fills and texts) was painted (mitcad#759): it is kept as a picture
+  // painted again only for a new sheet, a zoom, a pan or another size, and
+  // the selection, the hover and the previews are painted over it. For
+  // tests.
+  int sheetPaints() const { return m_sheetPaints; }
 
 signals:
   void viewSelected(int id);
@@ -200,11 +212,21 @@ protected:
   void mouseReleaseEvent(QMouseEvent* event) override;
   void mouseDoubleClickEvent(QMouseEvent* event) override;
   void contextMenuEvent(QContextMenuEvent* event) override;
+  void enterEvent(QEnterEvent* event) override;
   void leaveEvent(QEvent* event) override;
   void wheelEvent(QWheelEvent* event) override;
   void keyPressEvent(QKeyEvent* event) override;
 
 private:
+  // Paints the paper and the groups' items into the sheet's picture, of
+  // `pixels` at `ratio` device pixels per pixel.
+  void paintSheet(const QSize& pixels, qreal ratio);
+  // The sheet's picture is painted again before the next paint.
+  void sheetMoved();
+  // Whether what is painted follows the pointer (a tool's rubber band or
+  // preview): every move paints again then, else only a change of what is
+  // under the pointer does.
+  bool followsPointer() const;
   // Paints the groups' items with the sheet's transform.
   void paintItems(QPainter& painter) const;
   // Paints the annotations' selection, broken ones and an annotation
@@ -238,7 +260,16 @@ private:
   // Pixels per millimetre and where the sheet's lower left corner is.
   double m_zoom = 1.0;
   QPointF m_origin;
+  // Showing the whole sheet: a resize fits it again. A zoom or a pan ends
+  // it.
   bool m_fitted = false;
+  // Fitted once: a later sheet of the same size keeps the zoom and the pan
+  // (mitcad#751).
+  bool m_everFitted = false;
+  // The paper with the groups' items, as painted last (mitcad#759).
+  QPixmap m_sheetPicture;
+  bool m_sheetPainted = false;
+  int m_sheetPaints = 0;
 
   SheetPick m_pick = SheetPick::None;
   bool m_place = false;   // a placing click after the line or circle

@@ -1651,6 +1651,14 @@ impl Kernel for MockKernel {
                 chamfer.ends
             );
         }
+        // Per face angles (a pattern's copies, mitcad#733).
+        if !spec.face_angles.is_empty() {
+            clearance += &format!(" angles {:?}", spec.face_angles);
+        }
+        // A taper pipe thread's taper (mitcad#733).
+        if let Some(taper) = &spec.taper {
+            clearance += &format!(" taper {:.4} high {}", taper.per_length, taper.high_end);
+        }
         self.specs.borrow_mut().push(format!(
             "thread {} pitch {} diameters {:.4}/{:.4}/{:.4} angle {:.6} right {} part {:?}{clearance}",
             spec.faces
@@ -1736,6 +1744,10 @@ impl Kernel for MockKernel {
             }
             if high {
                 shape.faces.push(named("thread_chamfer_high"));
+            }
+            // A cosmetic taper pipe thread's cone (mitcad#733).
+            if spec.taper.is_some() && !spec.groove {
+                shape.faces.push(named("thread_taper"));
             }
         }
         Ok(shape)
@@ -2839,7 +2851,9 @@ impl Kernel for MockKernel {
     }
 
     /// Where the plane cuts the shape's bounds (a box): a line per side of
-    /// the polygon, each on the face asked for (on none for all faces).
+    /// the polygon, each on the face asked for; for all faces (Intersect of
+    /// a whole body, mitcad#736) side k on the shape's face k (round its
+    /// faces), as the faces' own sections would hold them.
     fn section_curves(
         &self,
         shape: &MockShape,
@@ -2891,14 +2905,20 @@ impl Kernel for MockKernel {
             dot(d, plane.y_axis).atan2(dot(d, plane.x_axis))
         };
         points.sort_by(|a, b| angle(a).total_cmp(&angle(b)));
-        let faces: Vec<FaceName> = face.into_iter().cloned().collect();
+        let faces = |k: usize| -> Vec<FaceName> {
+            match face {
+                Some(face) => vec![face.clone()],
+                None if shape.faces.is_empty() => Vec::new(),
+                None => vec![shape.faces[k % shape.faces.len()].clone()],
+            }
+        };
         Ok((0..points.len())
             .map(|k| crate::kernel::SectionCurve {
                 curve: crate::kernel::Curve3::Line {
                     start: points[k],
                     end: points[(k + 1) % points.len()],
                 },
-                faces: faces.clone(),
+                faces: faces(k),
             })
             .collect())
     }
@@ -4476,6 +4496,43 @@ impl Kernel for MockKernel {
             edges: Vec::new(),
             bounds: Some(*bounds),
             parts: Vec::new(),
+        })
+    }
+
+    /// Where the plane crosses the edge's curve when `named_curves` gives
+    /// it one (lines and points only): a line through the plane at one
+    /// point, a line in it at its ends, a point on it.
+    fn section_points(
+        &self,
+        shape: &MockShape,
+        edge: &EdgeName,
+        plane: &crate::datum::DatumPlane,
+    ) -> Result<Vec<[f64; 3]>, KernelError> {
+        self.call("section_points")?;
+        use mitcad_vec3::{dot, sub};
+        let name = crate::topo::TopoName::Edge(edge.clone());
+        let Some(curve) = self.named_curves.borrow().get(&name.to_string()).cloned() else {
+            return Ok(Vec::new());
+        };
+        if shape.faces.is_empty() {
+            return Ok(Vec::new());
+        }
+        let normal = plane.normal();
+        let side = |p: [f64; 3]| dot(sub(p, plane.origin), normal);
+        Ok(match curve {
+            crate::kernel::Curve3::Point(p) if side(p).abs() < 1e-9 => vec![p],
+            crate::kernel::Curve3::Line { start, end } => {
+                let (a, b) = (side(start), side(end));
+                if a.abs() < 1e-9 && b.abs() < 1e-9 {
+                    vec![start, end]
+                } else if (a > 1e-9 && b > 1e-9) || (a < -1e-9 && b < -1e-9) {
+                    Vec::new()
+                } else {
+                    let t = a / (a - b);
+                    vec![std::array::from_fn(|k| start[k] + t * (end[k] - start[k]))]
+                }
+            }
+            _ => Vec::new(),
         })
     }
 }

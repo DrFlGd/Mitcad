@@ -550,7 +550,8 @@ fn annotations_refuse_what_they_cannot_be() {
                "picks": [[85, 120], [105, 120]]}),
     );
     assert!(error.contains("nothing to pick"), "{error}");
-    // A linear dimension takes two picks; a text note no view.
+    // A linear dimension takes two picks; a text note no picks (a text in
+    // a view is drawn in it, mitcad#729).
     let error = refused(
         &mut doc,
         json!({"cmd": "add_drawing_annotation", "drawing": "D1", "view": 1, "type": "linear",
@@ -559,8 +560,8 @@ fn annotations_refuse_what_they_cannot_be() {
     assert!(error.contains("takes 2 picks"), "{error}");
     let error = refused(
         &mut doc,
-        json!({"cmd": "add_drawing_annotation", "drawing": "D1", "view": 1, "type": "text",
-               "at": [10, 10], "text": "X"}),
+        json!({"cmd": "add_drawing_annotation", "drawing": "D1", "sheet": 0, "type": "text",
+               "at": [10, 10], "text": "X", "picks": [[85, 120]]}),
     );
     assert!(error.contains("on the sheet"), "{error}");
     let error = refused(

@@ -14,6 +14,8 @@
 #     refused entry undoes the entries before it, results list what changed,
 #     model_export writes a chosen body into the allowed folder, screenshots
 #     come as image blocks or JPEG files of an asked size;
+#   - mitcad#750: model_export is refused while a sketch with later
+#     features is edited, and writes the design once the sketch is left;
 #   - mitcad#405: ui_camera reads the camera, sets eye, target, up and
 #     height (the reply says where it is), frames a box: two equal blocks
 #     500 mm apart framed one after the other give the same screenshot,
@@ -285,6 +287,29 @@ expect '.error | contains("already exists")' "an existing file is refused"
 mcp_tool model_export "$(jq -cn --arg d "$DOC" --arg p "$OUTSIDE/lid.step" '{document: $d, path: $p, format: "step"}')" true
 expect '.error | contains("not in a folder for designs")' "an export outside the folder is refused"
 [ -e "$OUTSIDE/lid.step" ] && ui_fail "a refused export wrote a file outside the folder"
+
+# mitcad#750: editing a sketch with later features rolls them back until
+# it ends, so the export waits for the sketch.
+mcp_tool model_command "$(jq -cn --arg d "$DOC" '{document: $d, command: [
+  {cmd: "add_feature", def: {type: "sketch", plane: "xy", entities: [
+    {id: "p1", type: "point", at: [0, -40]}, {id: "p2", type: "point", at: [20, -40]},
+    {id: "c3", type: "line", start: "p1", end: "p2"}]}},
+  {cmd: "add_feature", def: {type: "box", plane: {type: "origin", plane: "xy"}, corner: [0, -80],
+   length: 20, width: 20, height: 20, operation: "new_body"}}]}')"
+SKETCH=$(jq -r '[.changes.features[] | select(.change == "added")][0].uid' "$WORK/result.json")
+mcp_tool ui_command "$(jq -cn --arg d "$DOC" --arg s "$SKETCH" '{document: $d, edit: $s}')"
+expect '.mode == "sketch" and .sketch == $s' "the sketch before the last box opens for editing" --arg s "$SKETCH"
+mcp_tool model_export "$(jq -cn --arg d "$DOC" '{document: $d, path: "edited.stl", format: "stl"}')" true
+expect '.error | contains("Finish the sketch")' "model_export is refused while the sketch is edited"
+[ -e "$ALLOWED/edited.stl" ] && ui_fail "a refused export wrote edited.stl"
+mcp_tool ui_command "$(jq -cn --arg d "$DOC" '{document: $d, finish: "cancel"}')"
+mcp_tool ui_state '{}'
+expect '.mode != "sketch"' "the sketch is left"
+mcp_tool model_export "$(jq -cn --arg d "$DOC" '{document: $d, path: "edited.stl", format: "stl"}')"
+expect '.exported == true' "after the sketch the export writes the design"
+[ -s "$ALLOWED/edited.stl" ] || ui_fail "edited.stl was not written"
+mcp_tool model_command "$(jq -cn --arg d "$DOC" '{document: $d, command: {cmd: "undo"}}')"
+expect '.applied == true' "the sketch and the box are undone"
 
 mcp_tool ui_camera '{"frame": "shown", "aspect": 1.5}'
 expect '.framed == "shown" and .aspect == 1.5' "ui_camera frames for a picture's aspect"

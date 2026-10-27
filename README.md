@@ -15,7 +15,8 @@ is the [MIT licence](LICENSE).
   with their history. IFC and `.rvt` building models open with their
   storeys and elements. DWG drawings open with their 3D solids and
   blocks. Mitcad imports and exports STEP, IGES, BRep, STL, OBJ, DXF and
-  3MF, imports SVG, and exports USDZ, web pages and drawings (PDF, SVG).
+  3MF, imports SVG, and exports USDZ, web pages and drawings (PDF, SVG,
+  DXF, DWG).
   The full table is in the user guide:
   [File formats](docs/user-guide.md#file-formats).
 - **3D printing.** Mitcad sends bodies directly to a slicer (Bambu

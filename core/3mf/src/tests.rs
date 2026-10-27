@@ -100,14 +100,21 @@ fn placements_in_3mf_form() {
 }
 
 #[test]
-fn numbers_have_six_decimals_at_most() {
-    use crate::write::number_for_tests as number;
+fn numbers_have_six_decimals_at_most_in_millimetres() {
+    use crate::Unit;
+    use crate::write::number_for_tests;
+    let number = |value: f64| number_for_tests(value, Unit::Millimeter.decimals());
     assert_eq!(number(12.5), "12.5");
     assert_eq!(number(-0.000125), "-0.000125");
     assert_eq!(number(1.0 / 3.0), "0.333333");
     assert_eq!(number(-0.0000004), "0");
     assert_eq!(number(100.0), "100");
     assert_eq!(number(1e-7), "0");
+    // Coarser units keep a nanometre (mitcad#734): 20 mm in inches.
+    assert_eq!(
+        number_for_tests(20.0 / 25.4, Unit::Inch.decimals()),
+        "0.78740157"
+    );
 }
 
 #[test]
@@ -308,6 +315,7 @@ fn settings_go_with_the_model_and_read_back() {
             "Metadata/project_settings.config".to_owned(),
             b"{\"layer_height\": \"0.2\"}".to_vec(),
         )],
+        unit: Unit::Millimeter,
     };
     let data = write(&model).unwrap();
     let xml = model_xml(&data);
@@ -349,4 +357,38 @@ fn settings_go_with_the_model_and_read_back() {
         ..model.clone()
     };
     assert!(write(&outside).is_err());
+}
+
+#[test]
+fn a_model_in_another_unit_reads_back_in_millimetres() {
+    // A cube of 1 inch, moved by 2 inches (mitcad#734).
+    let model = Model {
+        name: "Inches".to_owned(),
+        parts: vec![part(
+            "Body1",
+            cube([0.0; 3], 1.0),
+            None,
+            vec![Placement {
+                translation: [2.0, 0.0, 0.0],
+                ..Placement::IDENTITY
+            }],
+        )],
+        unit: Unit::Inch,
+        ..Model::default()
+    };
+    let data = write(&model).unwrap();
+    assert!(model_xml(&data).contains("<model unit=\"inch\""));
+    let read = read(&data).unwrap();
+    assert_eq!(read.unit, Unit::Millimeter);
+    assert!((read.parts[0].mesh.volume() - 25.4f64.powi(3)).abs() < 1e-6);
+    assert!((read.parts[0].placements[0].translation[0] - 50.8).abs() < 1e-9);
+    for (unit, name) in [
+        (Unit::Micron, "micron"),
+        (Unit::Millimeter, "millimeter"),
+        (Unit::Centimeter, "centimeter"),
+        (Unit::Meter, "meter"),
+        (Unit::Foot, "foot"),
+    ] {
+        assert_eq!(unit.as_str(), name);
+    }
 }

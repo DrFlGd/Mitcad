@@ -79,6 +79,22 @@ pub fn write(map: &BTreeMap<u64, u64>) -> Vec<u8> {
     out
 }
 
+/// The objects one after another from `start`, and the map of their
+/// offsets (plus `base`): the objects' bytes of a written file.
+pub fn object_stream(
+    objects: &BTreeMap<u64, Vec<u8>>,
+    start: Vec<u8>,
+    base: u64,
+) -> (Vec<u8>, BTreeMap<u64, u64>) {
+    let mut data = start;
+    let mut map = BTreeMap::new();
+    for (&h, bytes) in objects {
+        map.insert(h, base + data.len() as u64);
+        data.extend_from_slice(bytes);
+    }
+    (data, map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

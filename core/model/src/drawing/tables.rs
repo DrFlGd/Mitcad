@@ -272,12 +272,21 @@ pub fn compare_cells(a: &str, b: &str) -> std::cmp::Ordering {
 /// Draws a table (its group `A<id>` of class `class`) with its upper left
 /// corner at `place`: its title, then its header and rows in cells as wide
 /// as their texts, then on its view its tags and the cross of its origin.
-pub fn lay_out_table(id: u32, class: &'static str, data: &TableData, place: P2) -> Laid {
+/// `scale`: its letters and rows against their usual size (its own
+/// letters' height or its drawing's over 3.5 mm, mitcad#729).
+pub fn lay_out_table(
+    id: u32,
+    class: &'static str,
+    data: &TableData,
+    place: P2,
+    scale: f64,
+) -> Laid {
+    let (title, text, row) = (TITLE * scale, TEXT * scale, ROW * scale);
     let mut g = Group::new(class);
     g.id = Some(format!("A{id}"));
     g.text(
-        [place[0], place[1] - TITLE],
-        TITLE,
+        [place[0], place[1] - title],
+        title,
         0.0,
         Anchor::Start,
         data.title.clone(),
@@ -286,13 +295,13 @@ pub fn lay_out_table(id: u32, class: &'static str, data: &TableData, place: P2) 
         .map(|i| {
             std::iter::once(&data.header[i])
                 .chain(data.rows.iter().filter_map(|r| r.get(i)))
-                .map(|cell| text_width(cell, TEXT) + 3.0)
-                .fold(8.0, f64::max)
+                .map(|cell| text_width(cell, text) + 3.0 * scale)
+                .fold(8.0 * scale, f64::max)
         })
         .collect();
     let width: f64 = columns.iter().sum();
-    let top = place[1] - TITLE - 2.0;
-    let bottom = top - ROW * (data.rows.len() + 1) as f64;
+    let top = place[1] - title - 2.0 * scale;
+    let bottom = top - row * (data.rows.len() + 1) as f64;
     if !columns.is_empty() {
         g.rect(Pen::Thin, [place[0], bottom], [place[0] + width, top]);
         let mut x = place[0];
@@ -314,8 +323,8 @@ pub fn lay_out_table(id: u32, class: &'static str, data: &TableData, place: P2) 
             for (i, w) in columns.iter().enumerate() {
                 if let Some(cell) = cells.get(i).filter(|c| !c.is_empty()) {
                     g.text(
-                        [x + 1.5, y - ROW + 1.5],
-                        TEXT,
+                        [x + 1.5 * scale, y - row + 1.5 * scale],
+                        text,
                         0.0,
                         Anchor::Start,
                         cell.clone(),
@@ -323,11 +332,11 @@ pub fn lay_out_table(id: u32, class: &'static str, data: &TableData, place: P2) 
                 }
                 x += w;
             }
-            y -= ROW;
+            y -= row;
         }
     }
     for (at, tag) in &data.tags {
-        g.text(*at, TEXT, 0.0, Anchor::Start, tag.clone());
+        g.text(*at, text, 0.0, Anchor::Start, tag.clone());
     }
     if let Some(o) = data.origin {
         g.items.push(super::sheet::Item::Arc {
@@ -364,7 +373,7 @@ mod tests {
             tags: vec![([50.0, 50.0], "A1".to_owned())],
             origin: Some([10.0, 10.0]),
         };
-        let laid = lay_out_table(3, "hole-table", &data, [100.0, 150.0]);
+        let laid = lay_out_table(3, "hole-table", &data, [100.0, 150.0], 1.0);
         assert_eq!(laid.group.id.as_deref(), Some("A3"));
         let texts: Vec<&str> = laid
             .group

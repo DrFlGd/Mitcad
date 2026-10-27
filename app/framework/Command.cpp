@@ -247,6 +247,23 @@ InputDef noteInput(const QString& id, std::function<InputNote(const CommandState
   return input;
 }
 
+std::function<bool(const Selection&)> takenWholeByOneOf(const std::vector<InputDef>& inputs) {
+  return [inputs](const Selection& selection) {
+    if (selection.isEmpty()) {
+      return false;
+    }
+    const SelectKind kind = selection.first().kind;
+    if (std::any_of(selection.begin(), selection.end(),
+                    [kind](const SelectionItem& item) { return item.kind != kind; })) {
+      return false;
+    }
+    return std::any_of(inputs.begin(), inputs.end(), [&selection](const InputDef& input) {
+      return std::all_of(selection.begin(), selection.end(),
+                         [&input](const SelectionItem& item) { return input.takes(item); });
+    });
+  };
+}
+
 const Selection& CommandState::items(const QString& id) const {
   const auto it = m_items.constFind(key(id));
   return it == m_items.cend() ? kNoItems : it.value();

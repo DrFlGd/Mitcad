@@ -251,6 +251,31 @@ void test_tapered_face() {
   CHECK(faces_named(*both, face_name("F3", "mid", top)) == 0);
   CHECK(edge_names_unique(*both));
 
+  // mitcad#765: 5 and -3 lie 3 to 5 above the top, side one tapered from
+  // the top as without the other's end (side two's taper shapes nothing):
+  // the tapered block of 5 less that of 3. The cut at 3 is side two's end.
+  FaceExtrudeSpec past = two;
+  past.distance2 = -3.0;
+  const ShapePtr above = extrude_face(*block, past);
+  CHECK(BRepCheck_Analyzer(above->occt()).IsValid());
+  CHECK_NEAR_TOL(volume_of(*above), tapered_block(5.0, t) - tapered_block(3.0, t), 1e-6);
+  bounds(above->occt(), x0, y0, z0, x1, y1, z1);
+  CHECK_NEAR_TOL(z0, 23.0, 1e-7);
+  CHECK_NEAR_TOL(z1, 25.0, 1e-7);
+  CHECK_NEAR_TOL(face_middle(*above, start).Z(), 25.0, 1e-7);
+  CHECK_NEAR_TOL(face_middle(*above, end).Z(), 23.0, 1e-7);
+  CHECK(faces_named(*above, face_name("F3", "mid", top)) == 0);
+  // Untapered: one prism between the ends.
+  FaceExtrudeSpec straight = spec_of(top, 5.0);
+  straight.distance2 = -3.0;
+  const ShapePtr slab = extrude_face(*block, straight);
+  CHECK_NEAR(volume_of(*slab), 60.0 * 40.0 * 2.0);
+  CHECK_NEAR_TOL(face_middle(*slab, start).Z(), 25.0, 1e-7);
+  CHECK_NEAR_TOL(face_middle(*slab, end).Z(), 23.0, 1e-7);
+  // Ends that meet are refused.
+  straight.distance2 = -5.0;
+  CHECK(throws_with([&] { extrude_face(*block, straight); }, "overlap"));
+
   CHECK_NEAR(volume_of(*block), 60.0 * 40.0 * 20.0);
 }
 

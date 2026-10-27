@@ -2454,6 +2454,25 @@ impl Kernel for OcctKernel {
         )
         .map_err(failed)
     }
+
+    // Crossing points of a sketch's Intersect (mitcad#736; sketch_ref.rs,
+    // geometry's sketch_ref.hpp).
+
+    fn section_points(
+        &self,
+        shape: &Self::Shape,
+        edge: &EdgeName,
+        plane: &DatumPlane,
+    ) -> Result<Vec<[f64; 3]>, KernelError> {
+        let found = sketch_ref::ffi::section_points(
+            occt(shape)?,
+            &edge.to_string(),
+            plane.origin,
+            plane.normal(),
+        )
+        .map_err(failed)?;
+        Ok(found.chunks(3).map(|p| [p[0], p[1], p[2]]).collect())
+    }
 }
 
 /// Face or edge indices for the bridge (mitcad#714).

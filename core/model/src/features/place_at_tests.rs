@@ -4,16 +4,18 @@
 //! its own, a pulley at a sketch point following its sketch's plane, a
 //! coil and a hole by the placement's other forms, a gear turned by its
 //! mesh on its own axis, the old forms building as before, and the
-//! refusals.
+//! refusals; Gear Pair and Belt Drive on axes pointing opposite ways and on
+//! a shaft in another component's occurrence.
 
 use serde_json::{Value, json};
 
 use crate::datum::SurfaceGeometry;
 use crate::document_tests::def;
 use crate::features::{SketchPlane, ValueInput};
-use crate::ids::{BodyUid, FeatureUid};
+use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::testing::MockKernel;
 use crate::topo::{FaceName, SegmentKey};
+use crate::transform::Transform;
 use crate::{Document, FeatureStatus, ModelError};
 
 fn command(doc: &mut Document<MockKernel>, value: Value) -> Value {
@@ -585,4 +587,278 @@ fn align_side_turns_the_line_round() {
         pulley(json!({"at": {"axis": "z", "align_side": [0, 1, 0]}})),
     );
     assert!(message.contains("only a placement with align"), "{message}");
+}
+
+/// `extra`'s fields over `value`'s.
+fn with(mut value: Value, extra: Value) -> Value {
+    for (k, v) in extra.as_object().unwrap() {
+        value[k] = v.clone();
+    }
+    value
+}
+
+/// A pair's definitions as `add_gear_pair` and `add_belt_drive` take them
+/// (no `type`): a spur gear of module 2 and 20 teeth, a GT2 pulley of 40
+/// teeth, placed by `place`.
+fn pair_gear(place: Value) -> Value {
+    with(
+        json!({"kind": "spur", "module": 2, "teeth": 20, "face_width": 10,
+               "operation": "new_body"}),
+        place,
+    )
+}
+
+fn pair_pulley(place: Value) -> Value {
+    with(
+        json!({"kind": "toothed", "profile": "gt2_2mm", "teeth": 40, "belt_width": 6,
+               "operation": "new_body"}),
+        place,
+    )
+}
+
+/// Axes that point opposite ways (mitcad#749): each part is built from its
+/// placement along its own axis, so they grow apart and the offset along
+/// the axes is measured from the wrong end. Gear Pair's and Belt Drive's
+/// queries, `belt_check` and a gear meshed on its own axis warn.
+#[test]
+fn axes_pointing_opposite_ways_warn() {
+    let mut doc = Document::new(MockKernel::default());
+    let first = json!({"axis": "z"});
+    let same = json!({"point": {"point": [40, 0, 0]}, "plane": "xy"});
+    let flipped = json!({"point": {"point": [40, 0, 0]}, "plane": "xy", "flip": true});
+    for extra in [
+        json!({"query": "gear_pair"}),
+        json!({"query": "belt_drive", "profile": "gt2_2mm"}),
+    ] {
+        let ask = |second: &Value| {
+            query(
+                &doc,
+                with(
+                    json!({"ratio": 1, "first": first, "second": second}),
+                    extra.clone(),
+                ),
+            )
+        };
+        let result = ask(&flipped);
+        let warning = result["warning"].as_str().unwrap_or_default();
+        assert!(
+            warning.contains("the second axis points the opposite way from the first"),
+            "{result}"
+        );
+        assert!(warning.contains("flip one"), "{warning}");
+        // The same way round: nothing to say.
+        let result = ask(&same);
+        assert!(result.get("warning").is_none(), "{result}");
+    }
+
+    // Two pulleys made so: their belt check says it too.
+    let made = command(
+        &mut doc,
+        json!({"cmd": "add_belt_drive",
+               "first": pair_pulley(json!({"at": first})),
+               "second": pair_pulley(json!({"at": flipped}))}),
+    );
+    let check = query(
+        &doc,
+        json!({"query": "belt_check", "pulleys": made["uids"].clone()}),
+    );
+    let distance = check["center_distance"].as_f64().unwrap();
+    assert!((distance - 40.0).abs() < 1.0e-6, "{check}");
+    let warning = check["warning"].as_str().unwrap_or_default();
+    assert!(warning.contains("points the opposite way"), "{check}");
+
+    // A gear on its own axis meshed with a gear on the opposite axis: made,
+    // with a warning.
+    let mate = add(&mut doc, gear(json!({"at": {"axis": "z"}}))).unwrap();
+    ok(&doc, mate);
+    let meshed = add(
+        &mut doc,
+        gear(json!({"at": flipped, "mesh_with": {"gear": mate}})),
+    )
+    .unwrap();
+    ok(&doc, meshed);
+    let warnings = doc.warnings(meshed);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("the gear's axis points the opposite way from its mate's")),
+        "{warnings:?}"
+    );
+    // The same way round: no warning.
+    let aligned = add(
+        &mut doc,
+        gear(json!({"at": same, "mesh_with": {"gear": mate}})),
+    )
+    .unwrap();
+    ok(&doc, aligned);
+    assert!(
+        doc.warnings(aligned).is_empty(),
+        "{:?}",
+        doc.warnings(aligned)
+    );
+}
+
+/// A shaft in another component's occurrence (mitcad#754): Gear Pair's and
+/// Belt Drive's queries take it as a seat with its occurrence link, as the
+/// parts' definitions do, and work out the distance where the occurrence
+/// puts the shaft; the pair is made there. A gear that meshes stays on a
+/// shaft of its own component.
+#[test]
+fn pairs_take_a_shaft_in_another_components_occurrence() {
+    let mut doc = Document::new(MockKernel::default());
+    // The shaft in Motor:1 (O1), 80 mm along X; the pair in the root.
+    doc.create_component(
+        Some("Motor"),
+        Transform::translation([80.0, 0.0, 0.0]),
+        true,
+    )
+    .unwrap();
+    let (body, side) = shaft(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    // Picked near its bottom, in Motor's coordinates: from the bottom end
+    // up the shaft, as the root's z axis runs.
+    let seat = json!({"shaft": {"body": body, "face": side}, "near": [4, 0, 1],
+                      "link": {"source": "O1"}});
+    for extra in [
+        json!({"query": "gear_pair"}),
+        json!({"query": "belt_drive", "profile": "gt2_2mm"}),
+    ] {
+        let result = query(
+            &doc,
+            with(
+                json!({"ratio": 1, "first": {"axis": "z"}, "second": {"seat": seat}}),
+                extra,
+            ),
+        );
+        let distance = result["center_distance"].as_f64().unwrap();
+        assert!((distance - 80.0).abs() < 1.0e-6, "{result}");
+        let axial = result["axial_offset"].as_f64().unwrap();
+        assert!(axial.abs() < 1.0e-6, "{result}");
+        assert!(result.get("warning").is_none(), "{result}");
+    }
+    // A seat takes no field of a placement's.
+    let error = doc
+        .query(
+            &json!({"query": "belt_drive", "ratio": 1, "profile": "gt2_2mm",
+                    "first": {"axis": "z"}, "second": {"seat": seat, "flip": true}})
+            .to_string(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("flip"), "{error}");
+
+    // A belt drive with its second pulley there.
+    let made = command(
+        &mut doc,
+        json!({"cmd": "add_belt_drive",
+               "first": pair_pulley(json!({"at": {"axis": "z"}})),
+               "second": pair_pulley(json!({"seat": seat}))}),
+    );
+    let pulleys: [FeatureUid; 2] = serde_json::from_value(made["uids"].clone()).unwrap();
+    ok(&doc, pulleys[1]);
+    let (origin, axis) = mount(&doc, pulleys[1], "bore");
+    assert!(near3(origin, [80.0, 0.0, 0.0]), "{origin:?}");
+    assert!(near3(axis, [0.0, 0.0, 1.0]), "{axis:?}");
+    let check = query(
+        &doc,
+        json!({"query": "belt_check", "pulleys": made["uids"].clone()}),
+    );
+    let distance = check["center_distance"].as_f64().unwrap();
+    assert!((distance - 80.0).abs() < 1.0e-6, "{check}");
+
+    // A gear pair with its first gear there, the second 40 mm from it.
+    let made = command(
+        &mut doc,
+        json!({"cmd": "add_gear_pair",
+               "first": pair_gear(json!({"seat": seat})),
+               "second": pair_gear(json!({"at": {"point": {"point": [40, 0, 0]},
+                                                 "plane": "xy"}}))}),
+    );
+    let gears: [FeatureUid; 2] = serde_json::from_value(made["uids"].clone()).unwrap();
+    ok(&doc, gears[0]);
+    ok(&doc, gears[1]);
+    let (origin, _) = mount(&doc, gears[0], "gear");
+    assert!(near3(origin, [80.0, 0.0, 0.0]), "{origin:?}");
+    assert!(
+        doc.warnings(gears[1]).is_empty(),
+        "{:?}",
+        doc.warnings(gears[1])
+    );
+    // The gear that meshes on that shaft: refused, nothing of the pair
+    // made.
+    let depth = doc.undo_depth();
+    let error = doc
+        .command(
+            &json!({"cmd": "add_gear_pair",
+                    "first": pair_gear(json!({"at": {"point": {"point": [40, 0, 0]},
+                                                    "plane": "xy"}})),
+                    "second": pair_gear(json!({"seat": seat}))})
+            .to_string(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not placed by a mesh too"), "{error}");
+    assert_eq!(doc.undo_depth(), depth);
+}
+
+/// A pair whose second part is refused (mitcad#758 item 6): the first was
+/// committed as a step of its own, which cleared the redo steps, and undone
+/// again, which left it waiting on redo. Now both go in one step or none.
+#[test]
+fn a_refused_pair_keeps_the_undo_and_redo_steps() {
+    let mut doc = Document::new(MockKernel::default());
+    let placed = add(
+        &mut doc,
+        gear(json!({"at": {"point": {"point": [0, 0, 0]}, "plane": "xy"}})),
+    )
+    .unwrap();
+    ok(&doc, placed);
+    // A gear added and undone: its step waits on redo.
+    let lone = add(
+        &mut doc,
+        gear(json!({"at": {"point": {"point": [100, 0, 0]}, "plane": "xy"}})),
+    )
+    .unwrap();
+    ok(&doc, lone);
+    let undone = doc.undo().expect("the gear's step");
+    let depth = doc.undo_depth();
+    let undo_label = doc.undo_label().map(str::to_owned);
+    let revision = doc.revision();
+    assert_eq!(doc.redo_label(), Some(undone.as_str()));
+
+    // The first gear is fine, the second is seated on an axis and placed by
+    // the mesh too: refused.
+    let refusals = [
+        (
+            json!({"cmd": "add_gear_pair",
+                   "first": pair_gear(json!({"at": {"point": {"point": [40, 0, 0]},
+                                                    "plane": "xy"}})),
+                   "second": pair_gear(json!({"seat": {"shaft": "z", "offset": 20}}))}),
+            "not placed by a mesh too",
+        ),
+        // A belt drive whose second pulley has the name the first took.
+        (
+            json!({"cmd": "add_belt_drive",
+                   "first": pair_pulley(json!({"at": {"axis": "z"}})),
+                   "second": pair_pulley(json!({"at": {"axis": "z"}})),
+                   "names": ["Drive", "Drive"]}),
+            "already named 'Drive'",
+        ),
+    ];
+    for (refused, expected) in refusals {
+        let cmd = refused["cmd"].clone();
+        let error = doc.command(&refused.to_string()).unwrap_err().to_string();
+        assert!(error.contains(expected), "{cmd}: {error}");
+        assert_eq!(doc.undo_depth(), depth, "{cmd}: {error}");
+        assert_eq!(doc.undo_label().map(str::to_owned), undo_label, "{cmd}");
+        assert_eq!(doc.redo_label(), Some(undone.as_str()), "{cmd}");
+        assert_eq!(doc.revision(), revision, "{cmd}");
+        assert_eq!(doc.features().count(), 1, "{cmd}");
+    }
+
+    // Redo still brings the undone gear back, and only it.
+    assert_eq!(doc.redo().as_deref(), Some(undone.as_str()));
+    assert_eq!(doc.redo_label(), None);
+    assert_eq!(doc.undo_depth(), depth + 1);
+    ok(&doc, lone);
 }

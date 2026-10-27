@@ -21,6 +21,10 @@
 #      status line and writes the box as the design has it. A side's menu
 #      offers Clear Print Bed Face (beside Set); cleared, 3D Print warns
 #      no more.
+#   7. A box made a surface body (its bottom unstitched) that keeps its
+#      print bed face (mitcad#737): the menus of its top and of a side
+#      offer Clear Print Bed Face only, show no bed face, and Clear clears
+#      it.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-print-bed-test.sh
@@ -34,6 +38,7 @@ WORK=$(mktemp -d "$ROOT/build/ui-print-bed.XXXXXX")
 trap 'ui_cleanup; rm -rf "$WORK"' EXIT
 FILE=$WORK/plate.mitcad
 GONE=$WORK/gone.mitcad
+SURFACE=$WORK/surface.mitcad
 # The app's temporary folder, where the files for the slicer go.
 export TMPDIR=$WORK/tmp
 mkdir -p "$TMPDIR"
@@ -58,6 +63,22 @@ cat > "$WORK/model.json" << 'EOF'
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+
+# The box with its top as the print bed face, then its bottom unstitched:
+# Plate (F1.b0) is a surface body of the other five faces that keeps the
+# face (mitcad#737).
+cat > "$WORK/surface.json" << 'EOF'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [0, 0],
+    "length": 40, "width": 20, "height": 10, "operation": "new_body"}},
+  {"cmd": "set_print_bed_face", "uid": "F1.b0", "face": "F1:top"},
+  {"cmd": "add_feature", "def": {"type": "unstitch", "body": "F1.b0", "faces": ["F1:bottom"]}},
+  {"cmd": "rename_body", "uid": "F1.b0", "name": "Plate"}
+]
+EOF
+"$CLI" run "$WORK/surface.json" --save "$SURFACE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli surface"; }
+[ "$(jq -c '.bodies[] | select(.uid == "F1.b0") | .print_bed_face' "$SURFACE")" = '"F1:top"' ] ||
+  ui_fail "the surface body has no print bed face in $SURFACE"
 
 # expect_file file filter expected description: a jq filter on a design file.
 expect_file() {
@@ -210,5 +231,24 @@ ui_step "3D print (Enter)"                 send
 ui_expect_new "3D Print bed: as in the design" "written as the design has it"
 slicer_ran
 no_new "the print bed face is gone" "3D Print warns no more"
+ui_stop_app
+
+echo "--- 7. A surface body that keeps a print bed face"
+ui_start_app --open "$SURFACE"
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Bodies shown: F1.b0" "the surface body shown"
+right_click F1:top
+has "Clear Print Bed Face"
+lacks "Set as Print Bed Face"
+ui_step "Escape (close the menu)"          ui_key Escape
+ui_step "Escape (clear the selection)"     ui_key Escape
+side_face
+right_click "$SIDE"
+has "Clear Print Bed Face"
+lacks "Set as Print Bed Face"
+no_new "Print bed face shown:" "no print bed face shown on a surface body"
+ui_mark
+ui_step "Clear Print Bed Face"             ui_menu_choose "Clear Print Bed Face"
+ui_expect_new "Print bed face of Plate: none" "the surface body's face cleared"
 
 ui_finish "UI print bed"

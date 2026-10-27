@@ -3,7 +3,12 @@
 //! countersink or counterdrill, straight or tapered, with a drill point or
 //! a flat bottom, to a depth, through all or up to an object, at points on
 //! a planar face or at sketch points, optionally tapped with a thread whose
-//! size sets the bore (cosmetic, or modelled).
+//! size sets the bore (cosmetic, or modelled). A taper pipe thread (NPT,
+//! ISO 7-1 `Rc`; mitcad#733) with `taper` is drilled at the hole's
+//! diameter (the tap drill) and tapers the bore from the hole's start,
+//! 1:16 on the diameter from the thread's minor diameter at its opening,
+//! cosmetic or modelled; without `taper` (holes saved before) its bore is
+//! the size's minor diameter, as it was.
 //!
 //! Mitcad's definitions (experiments K24-K28 test them on .f3d designs):
 //! the depth runs to the shoulder and the drill point is extra; a
@@ -29,7 +34,9 @@ use super::{
     ToolUse, is_false,
 };
 use crate::ids::{BodyUid, EntityUid, FeatureUid, curve_serde};
-use crate::kernel::{Axis, Bound, Cylinder, HoleEnd, HoleShape, HoleSpec, Kernel, ThreadSpec};
+use crate::kernel::{
+    Axis, Bound, Cylinder, HoleEnd, HoleShape, HoleSpec, Kernel, ThreadSpec, ThreadTaper,
+};
 use crate::parameters::ParamId;
 use crate::profile::{cross, dot};
 use crate::sketch::geometry::Curve2;
@@ -163,7 +170,9 @@ pub enum HoleExtent<P = ParamId> {
 }
 
 /// A tapped hole's thread (`setToTappedHole` in .f3d designs). It sets the bore to
-/// the size's basic minor diameter; a modelled one is cut into the wall.
+/// the size's basic minor diameter; a modelled one is cut into the wall. A
+/// taper pipe thread with `taper` keeps the hole's diameter (the tap drill)
+/// and tapers the bore from the hole's start (mitcad#733).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HoleThread<P = ParamId> {
@@ -188,6 +197,12 @@ pub struct HoleThread<P = ParamId> {
     pub radial_clearance: Option<P>,
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub flank_clearance: Option<P>,
+    /// A taper pipe thread (`npt`, `iso_taper`) that tapers the bore from
+    /// the hole's start, the hole drilled at its `diameter`, the tap drill
+    /// (mitcad#733). Without it (holes saved before) the bore is the size's
+    /// minor diameter and nothing tapers.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub taper: bool,
 }
 
 fn yes() -> bool {
@@ -203,6 +218,11 @@ fn is_iso(standard: &ThreadStandard) -> bool {
 }
 
 impl<P> HoleThread<P> {
+    /// Whether it is a taper pipe thread that tapers the bore (mitcad#733).
+    pub fn tapers(&self) -> bool {
+        self.taper && self.standard.is_tapered()
+    }
+
     pub fn size(&self) -> ThreadSize {
         ThreadSize {
             standard: self.standard,
@@ -217,7 +237,8 @@ impl<P> HoleThread<P> {
 #[serde(deny_unknown_fields)]
 pub struct HoleDef<P = ParamId> {
     pub placement: HolePlacement<P>,
-    /// The hole's diameter; a tapped hole's thread sets it instead.
+    /// The hole's diameter; a tapped hole's thread sets it instead (but a
+    /// taper pipe thread's, mitcad#733: the tap drill).
     pub diameter: P,
     #[serde(
         default = "Default::default",
@@ -360,6 +381,7 @@ impl<P> HoleDef<P> {
                     f,
                 )?,
                 flank_clearance: map_option("thread.flank_clearance", &thread.flank_clearance, f)?,
+                taper: thread.taper,
             }),
         };
         let taper = map_option("taper", &self.taper, f)?;
@@ -523,8 +545,14 @@ impl FeatureInfo for HoleDef {
             if thread.offset.is_some() && thread.length.is_none() {
                 return Err("a thread over the whole wall has no offset".to_owned());
             }
+            if thread.taper && !thread.standard.is_tapered() {
+                return Err(
+                    "only a taper pipe thread (NPT, ISO 7-1) is tapered: leave out `taper`"
+                        .to_owned(),
+                );
+            }
             if thread.modeled {
-                thread.standard.check_modeled()?;
+                super::thread::check_modeled(thread.standard, thread.taper)?;
             } else if thread.radial_clearance.is_some() || thread.flank_clearance.is_some() {
                 return Err("only a modelled thread has extra clearance".to_owned());
             }
@@ -552,7 +580,9 @@ impl FeatureInfo for HoleDef {
                 ))
             }
         };
-        let diameter = if self.thread.is_some() {
+        // (A tapering taper pipe thread keeps the hole's diameter,
+        // mitcad#733.)
+        let diameter = if self.thread.as_ref().is_some_and(|t| !t.tapers()) {
             None
         } else {
             Some(positive("hole diameter", self.diameter)?)
@@ -635,8 +665,13 @@ impl FeatureInfo for HoleDef {
     }
 
     fn tool_use(&self) -> Option<ToolUse> {
-        // A pattern repeats only the tool, which has no modelled thread.
-        if self.thread.as_ref().is_some_and(|t| t.modeled) {
+        // A pattern repeats only the tool, which has no modelled thread
+        // and no taper (mitcad#733).
+        if self
+            .thread
+            .as_ref()
+            .is_some_and(|t| t.modeled || t.tapers())
+        {
             return None;
         }
         Some(ToolUse {
@@ -900,9 +935,12 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             Some(thread) => Some((thread, thread.size().check(Some(true))?)),
             None => None,
         };
+        // A tapering taper pipe thread's hole is drilled at its diameter,
+        // the tap drill (mitcad#733); another's bore is the size's minor
+        // diameter.
         let diameter = match &thread {
-            Some((_, data)) => data.minor,
-            None => ctx.positive(self.diameter)?,
+            Some((t, data)) if !t.tapers() => data.minor,
+            _ => ctx.positive(self.diameter)?,
         };
         let shape = match &self.kind {
             HoleKind::Simple => HoleShape::Simple,
@@ -983,9 +1021,18 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             return Ok(output);
         }
         let mut output = apply_operation(ctx, Operation::Cut, participants, tool, "hole")?;
-        let Some((thread, data)) = thread.filter(|(t, _)| t.modeled) else {
+        // A modelled thread, or a cosmetic taper pipe thread's taper.
+        let Some((thread, data)) = thread.filter(|(t, _)| t.modeled || t.tapers()) else {
             return Ok(output);
         };
+        // A taper pipe thread's diameters where it starts, at the hole's
+        // start (mitcad#733).
+        let (major, minor, pitch_diameter) = (if thread.tapers() {
+            data.taper_start(true)
+        } else {
+            None
+        })
+        .unwrap_or((data.major, data.minor, data.pitch_diameter));
         // Cut the thread into the walls each body has: from the holes' start,
         // which is the low end of the walls' axes when they point inwards.
         let walls: Vec<FaceName> = (0..positions.len())
@@ -997,17 +1044,12 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
         // fine for it (mitcad#691).
         let clearance = fitted_clearance(
             data.pitch,
-            (data.major, data.minor, data.pitch_diameter),
+            (major, minor, pitch_diameter),
             true,
             clearance,
             flank_from_fit(ctx, thread.flank_clearance),
         );
-        check_clearance(
-            data.pitch,
-            (data.major, data.minor, data.pitch_diameter),
-            true,
-            clearance,
-        )?;
+        check_clearance(data.pitch, (major, minor, pitch_diameter), true, clearance)?;
         let (radial_clearance, flank_clearance) = clearance;
         let mut threaded = Vec::new();
         for change in &mut output.changes {
@@ -1028,27 +1070,39 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             let Some(first) = faces.first() else {
                 continue;
             };
-            if let Some((_, _, high)) = &mut part {
+            // The hole's start: the high end of the walls' axes where they
+            // point out of the material.
+            let start_high = if part.is_some() || thread.tapers() {
                 let cylinder = ctx
                     .kernel
                     .face_cylinder(shape, first)
                     .map_err(|e| e.to_string())?;
-                *high = dot(cylinder.axis.direction, positions[0].direction) < 0.0;
+                dot(cylinder.axis.direction, positions[0].direction) < 0.0
+            } else {
+                false
+            };
+            if let Some((_, _, high)) = &mut part {
+                *high = start_high;
             }
             let spec = ThreadSpec {
                 feature: ctx.uid,
                 faces: &faces,
                 pitch: data.pitch,
-                major: data.major,
-                minor: data.minor,
-                pitch_diameter: data.pitch_diameter,
+                major,
+                minor,
+                pitch_diameter,
                 right_handed: thread.right_handed,
                 angle: 0.0,
+                face_angles: &[],
                 part,
                 radial_clearance,
                 flank_clearance,
-                groove: true,
+                groove: thread.modeled,
                 chamfer: None,
+                taper: data.taper.filter(|_| thread.tapers()).map(|t| ThreadTaper {
+                    per_length: t.per_length,
+                    high_end: start_high,
+                }),
             };
             let cut = ctx
                 .kernel
@@ -1057,7 +1111,7 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             // The walls the thread left no piece of, or only pieces outside
             // its part (the crest off the wall: what is left does not show
             // where the thread runs, mitcad#628), as they were.
-            for wall in &faces {
+            for wall in faces.iter().filter(|_| thread.modeled) {
                 let Ok(cylinder) = ctx.kernel.face_cylinder(shape, wall) else {
                     continue;
                 };

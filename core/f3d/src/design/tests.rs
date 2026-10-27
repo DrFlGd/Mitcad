@@ -811,6 +811,95 @@ fn a_modelled_thread_of_a_hole_is_its_last_operation() {
     assert_eq!(results, [(json!(6), json!(7)), (json!(6), Value::Null)]);
 }
 
+/// A taper pipe thread (mitcad#733), as a hole's `1/2 - 14 NPT` and `Rc
+/// 1/2` threads store it: the angle 0, the tap drill as both diameters, the
+/// pitch diameter 0 and the taper's five numbers after the handedness byte.
+/// The hole's tail lists no sub-items: the thread names the hole. Its
+/// cosmetic operations taper the bore, so they end the hole's state.
+#[test]
+fn a_taper_pipe_thread_names_its_hole_and_its_taper() {
+    const HOLE: &str = "1C037A07-4A15-43F6-ABFC-BBF61B9038D4";
+    let taper = [0.062_479_7, 0.145_142_9, 1.747_52, 1.357_12, 1.892_40];
+    let thread = cat(&[
+        &[0, 0],
+        &f64s(&[0.0]),
+        &[0],
+        &u32b(0),
+        &s16(""),
+        &s16(""),
+        &s16("1/2 - 14 NPT"),
+        &s16("1/2"),
+        &s16("NPT"),
+        &[1],
+        &u32b(2),
+        &f64s(&[1.747_52, 1.747_52]),
+        &[0],
+        &f64s(&[2.54 / 14.0, 0.0]),
+        &r(600),
+        &r(653),
+        &r(654),
+        &[1],
+        &f64s(&taper),
+        &u32b(1),
+        &tail(7, "Thread", 1, "", [0, 0, 0], 652),
+    ]);
+    let mut d = sample();
+    d.class(HOLE, ROOT, 7);
+    d.class(THREAD, ROOT, 5);
+    d.objects.retain(|o| o.0 != 3);
+    d.obj(
+        3,
+        TIMELINE,
+        cat(&[&[0, 0], &r(1), &u32b(3), &r(10), &r(20), &r(600)]),
+    );
+    d.obj(
+        600,
+        HOLE,
+        cat(&[
+            &[0, 0],
+            &6i32.to_le_bytes(),
+            &s16("Hole"),
+            &u32b(1),
+            &u32b(0),
+            &s16(""),
+            &u32b(0),
+            &[0, 0, 0],
+            &r(601),
+            &[0],
+        ]),
+    );
+    d.obj(601, HEALTH, vec![0, 0]);
+    d.obj(650, THREAD, thread);
+    d.obj(652, HEALTH, vec![0, 0]);
+    // (The two references before the handedness byte.)
+    d.obj(653, HEALTH, vec![0, 0]);
+    d.obj(654, HEALTH, vec![0, 0]);
+    let (m, b) = d.streams();
+    let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+    let hole = &v["timeline"]["items"][2];
+    let info = &hole["detail"]["tappedHoleInfo"];
+    assert_eq!(hole["detail"]["holeTapType"], "TappedHoleTapType", "{hole}");
+    assert_eq!(info["threadDesignation"], "1/2 - 14 NPT");
+    assert_eq!(info["threadType"], "NPT");
+    assert_eq!(info["isTapered"], true);
+    assert_eq!(info["isRightHanded"], true);
+    let numbers = &info["_f3d_taper"];
+    for (key, want) in [
+        "angle",
+        "height",
+        "tapDrill",
+        "length",
+        "smallPitchDiameter",
+    ]
+    .into_iter()
+    .zip(taper)
+    {
+        assert_eq!(numbers[key], want, "{key}");
+    }
+    assert_eq!(hole["detail"]["thread"]["isModeled"], false);
+    assert_eq!(hole["_f3d"]["last_result_no"], 7);
+}
+
 /// A text parameter keeps a default expression with a unit (`1 mm`) in the
 /// string after its role: it is no comment, and the parameter has no number.
 #[test]

@@ -2478,6 +2478,8 @@ int macToolButtonTests();
 int navigationPreferencesTests();
 int formulaEditorTests();
 int drawingToolsTests();
+int saveAsMeshTests();
+int drawingSheetViewTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2571,6 +2573,8 @@ int main(int argc, char* argv[]) {
     failures += navigationPreferencesTests();
     failures += formulaEditorTests();
     failures += drawingToolsTests();
+    failures += saveAsMeshTests();
+    failures += drawingSheetViewTests();
     mitcad::tests::navigationSettingsTests(check);
   }
   if (failures != 0) {

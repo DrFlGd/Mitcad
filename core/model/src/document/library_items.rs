@@ -438,7 +438,19 @@ impl<K: Kernel> Document<K> {
         }
         others.sort_by_key(|row| row["name"].as_str().unwrap_or_default().to_lowercase());
         rows.extend(others);
-        json!({"items": rows, "problems": libraries.problems})
+        let mut answer = json!({"items": rows, "problems": libraries.problems});
+        // The owners with values of the printer's or the process' set
+        // whatever the design chose, also with Slicer default (no row
+        // chosen), as the export writes them (mitcad#747).
+        let profile = match kind {
+            ItemKind::Printer => Some(ProfileKind::Printer),
+            ItemKind::Process => Some(ProfileKind::Process),
+            ItemKind::Material => None,
+        };
+        if let Some(profile) = profile {
+            answer["print_overrides"] = json!(self.print_overrides(profile));
+        }
+        answer
     }
 
     /// The fields a row shows for a library item: its design copy's when
@@ -810,10 +822,11 @@ impl<K: Kernel> Document<K> {
         let mut edited = original.clone();
         change.apply_to(&mut edited);
         let path = folder.join(&item.path);
-        if edited == *original {
-            return Ok((path, old));
-        }
-        let version = old + 1;
+        // The library has these values already (a newer version made in
+        // another design): its file stays, and only the design's copies
+        // that differ take the change (mitcad#758).
+        let unchanged = edited == *original;
+        let version = if unchanged { old } else { old + 1 };
         edited.version = Some(version);
         edited.origin = None;
         let appearance = carried_appearance(
@@ -836,39 +849,45 @@ impl<K: Kernel> Document<K> {
             }
             let mut copy = m.clone();
             change.apply_to(&mut copy);
-            if m.origin.as_ref().and_then(|o| o.version) == Some(old) {
-                copy.version = Some(version);
-                if let Some(origin) = &mut copy.origin {
-                    origin.version = Some(version);
+            if !unchanged {
+                if m.origin.as_ref().and_then(|o| o.version) == Some(old) {
+                    copy.version = Some(version);
+                    if let Some(origin) = &mut copy.origin {
+                        origin.version = Some(version);
+                    }
                 }
-            }
-            // A change the design declined stays declined (mitcad#655).
-            if let Some(origin) = &mut copy.origin
-                && origin.declined == Some(old)
-            {
-                origin.declined = Some(version);
+                // A change the design declined stays declined (mitcad#655).
+                if let Some(origin) = &mut copy.origin
+                    && origin.declined == Some(old)
+                {
+                    origin.declined = Some(version);
+                }
             }
             if copy != *m {
                 self.check_material(&copy, Some(i))?;
                 copies.push((i, copy));
             }
         }
+        if unchanged && copies.is_empty() {
+            return Ok((path, old));
+        }
         // The file and the copies are one undo step (mitcad#655).
         let label = format!("Edit Material {}", edited.name);
-        let data = ItemData::Material {
-            material: edited,
-            appearance,
+        let files = if unchanged {
+            Vec::new()
+        } else {
+            let data = ItemData::Material {
+                material: edited,
+                appearance,
+            };
+            vec![FileWrite::new(path.clone(), Some(data.text().into_bytes()))]
         };
-        self.with_files(
-            label,
-            vec![FileWrite::new(path.clone(), Some(data.text().into_bytes()))],
-            move |state| {
-                for (i, copy) in copies {
-                    state.materials[i] = copy;
-                }
-                Ok(())
-            },
-        )?;
+        self.with_files(label, files, move |state| {
+            for (i, copy) in copies {
+                state.materials[i] = copy;
+            }
+            Ok(())
+        })?;
         Ok((path, version))
     }
 
@@ -903,6 +922,10 @@ impl<K: Kernel> Document<K> {
                 state.materials.retain(|m| !gone.contains(&m.id));
                 for m in state.materials.iter_mut().filter(|m| own.contains(&m.id)) {
                     m.origin = None;
+                }
+                // The removed copies' purge volumes set by hand (mitcad#758).
+                for id in &gone {
+                    state.drop_purge_overrides_of(id);
                 }
                 Ok(())
             },
@@ -1089,10 +1112,10 @@ impl<K: Kernel> Document<K> {
         change.apply_to(&mut edited);
         edited.normalize();
         let path = folder.join(&item.path);
-        if edited == *original {
-            return Ok((path, old));
-        }
-        let version = old + 1;
+        // As for a material: the library has these values already, so only
+        // the design's copies that differ take the change (mitcad#758).
+        let unchanged = edited == *original;
+        let version = if unchanged { old } else { old + 1 };
         edited.version = Some(version);
         edited.origin = None;
         edited.check().map_err(invalid)?;
@@ -1104,37 +1127,43 @@ impl<K: Kernel> Document<K> {
             let mut copy = p.clone();
             change.apply_to(&mut copy);
             copy.normalize();
-            if p.origin.as_ref().and_then(|o| o.version) == Some(old) {
-                copy.version = Some(version);
-                if let Some(origin) = &mut copy.origin {
-                    origin.version = Some(version);
+            if !unchanged {
+                if p.origin.as_ref().and_then(|o| o.version) == Some(old) {
+                    copy.version = Some(version);
+                    if let Some(origin) = &mut copy.origin {
+                        origin.version = Some(version);
+                    }
                 }
-            }
-            // A change the design declined stays declined (mitcad#655).
-            if let Some(origin) = &mut copy.origin
-                && origin.declined == Some(old)
-            {
-                origin.declined = Some(version);
+                // A change the design declined stays declined (mitcad#655).
+                if let Some(origin) = &mut copy.origin
+                    && origin.declined == Some(old)
+                {
+                    origin.declined = Some(version);
+                }
             }
             if copy != *p {
                 self.check_profile(&copy, Some(i))?;
                 copies.push((i, copy));
             }
         }
+        if unchanged && copies.is_empty() {
+            return Ok((path, old));
+        }
         // The file and the copies are one undo step (mitcad#655).
         let label = format!("Edit {} {}", profile_title(kind), edited.name);
-        let text = ItemData::Profile(edited).text();
-        self.with_files(
-            label,
-            vec![FileWrite::new(path.clone(), Some(text.into_bytes()))],
-            move |state| {
-                for (i, copy) in copies {
-                    state.print_profiles[i] = copy;
-                }
-                state.sync_profile_types();
-                Ok(())
-            },
-        )?;
+        let files = if unchanged {
+            Vec::new()
+        } else {
+            let text = ItemData::Profile(edited).text();
+            vec![FileWrite::new(path.clone(), Some(text.into_bytes()))]
+        };
+        self.with_files(label, files, move |state| {
+            for (i, copy) in copies {
+                state.print_profiles[i] = copy;
+            }
+            state.sync_profile_types();
+            Ok(())
+        })?;
         Ok((path, version))
     }
 

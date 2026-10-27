@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/OcctViewer.cpp app/OcctViewer.hpp app/view app/MainWindow.cpp tools/cli
+# check-all sources: app/framework/FloatingLayout.cpp
 # Input-driven Windows UI test of how sketch mode shows its geometry in the
 # build VM (tools/ui-windows-lib.ps1 says how the input is posted):
 #   1. A sketch on XY: its origin is the design's (mitcad#254).
@@ -23,6 +24,12 @@
 #      dark on the dark background and light on the light one, read from
 #      the log ("Sketch dimension halos:"; mitcad#633; the pixels are
 #      checked by tools/ui-sketch-view-test.sh).
+#   8. A sketch on a block's top face, edited from the front view (the face
+#      edge-on, the view's middle far in front of it in depth): the face's
+#      middle in the middle of the free area (mitcad#772).
+#   9. After New Design, sketches on XY, XZ and YZ show their origin in the
+#      middle of the free area between the cards, in the Floating and the
+#      Docked layout (mitcad#738: the turn kept the fit's shift).
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-sketch-view-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -32,7 +39,8 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7'; 'view.environment.dark' = 'F8'; 'view.environment.light' = 'F9' }
+Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7'; 'view.environment.dark' = 'F8'; 'view.environment.light' = 'F9';
+  'view.front' = 'F11' }
 
 # Expect-Recoloured "dark|light": the sketch entities shown were recoloured
 # for that background, the rectangle's four lines among the fully
@@ -263,5 +271,169 @@ Ui-Step 'dark background (F8)'           { Ui-Key 'F8' }
 Expect-DimensionHalos 'dark'
 Ui-Step 'light background (F9)'          { Ui-Key 'F9' }
 Expect-DimensionHalos 'light'
+
+Write-Host '--- A sketch on a face seen edge-on stays in view (mitcad#772)'
+# mitcad-cli builds a 40 x 40 x 20 block far in front (y -400 to -360) and
+# a 40 x 40 x 40 block (F2.b0, x 20 to 60, y 0 to 40) beside it, and a
+# sketch (F3) on the second block's top face (z 40), which the front view
+# sees edge-on. The view's middle lies half way between the blocks in
+# depth: projected onto the top face's plane it is about 180 mm in front of
+# the face, which the turn to the sketch plane took out of the view. Edit
+# Sketch from the front view shows the middle of the face (40, 20, 40) in
+# the middle of the free area instead.
+$obliqueScript = Join-Path $work 'oblique.json'
+$obliqueDesign = Join-Path $work 'oblique.mitcad'
+Set-Content -Encoding ascii $obliqueScript @'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-60, -400],
+    "length": 40, "width": 40, "height": 20, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [20, 0],
+    "length": 40, "width": 40, "height": 40, "operation": "new_body"}},
+  {"cmd": "sketch.create", "plane": {"face": "F2:top", "body": "F2.b0"}}
+]
+'@
+$made = & $cli run $obliqueScript --save $obliqueDesign
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $obliqueDesign)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+
+Ui-StartApp 'sketch-view-oblique' @('--open', $obliqueDesign)
+Ui-ExpectLog 'oblique.mitcad' 'the design opened'
+Ui-ExpectLog 'Bodies shown: F1.b0, F2.b0' 'the blocks shown'
+Ui-Step 'front view (F11)'               { Ui-Key 'F11' }
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-WaitIdle
+Ui-ExpectLog 'Timeline Sketch1 at' 'the timeline is laid out'
+Ui-Mark
+Ui-Step 'edit Sketch1 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch1' }
+Ui-ExpectNew 'Editing sketch F3 (Sketch1)' "the top face's sketch is edited from the front" 30
+Ui-ExpectNew "Sketch plane centred on the sketch's face: " 'the view turned about the middle of the face'
+Ui-ExpectNew 'Sketch frame in the design' "the sketch's frame logged"
+# Within six seconds the face's middle, from the sketch's frame (its origin,
+# normal and x axis in the design) and the sketch view (where the sketch
+# points (0, 0), (100, 0) and (0, 100) are in the window), is within 6 px
+# of the middle of the free area.
+$culture = [Globalization.CultureInfo]::InvariantCulture
+$number = '(-?[0-9.]+)'
+$triple = "\($number, $number, $number\)"
+$frame = Ui-LogLines | Select-Object -Skip $script:UiMark |
+  Where-Object { $_.Contains('Sketch frame in the design') } | Select-Object -Last 1
+if ("$frame" -notmatch "origin $triple, normal $triple, x axis $triple") { Ui-Fail "the sketch's frame is not logged: '$frame'" }
+$f = @(1..9 | ForEach-Object { [double]::Parse($Matches[$_], $culture) })
+$o = $f[0..2]
+$n = $f[3..5]
+$xa = $f[6..8]
+# The sketch's y axis: normal x x axis.
+$ya = @(($n[1] * $xa[2] - $n[2] * $xa[1]), ($n[2] * $xa[0] - $n[0] * $xa[2]), ($n[0] * $xa[1] - $n[1] * $xa[0]))
+$d = @((40 - $o[0]), (20 - $o[1]), (40 - $o[2]))
+$sx = $d[0] * $xa[0] + $d[1] * $xa[1] + $d[2] * $xa[2]
+$sy = $d[0] * $ya[0] + $d[1] * $ya[1] + $d[2] * $ya[2]
+$centred = $false
+$line = $null
+$view = $null
+for ($i = 0; $i -lt 30 -and -not $centred; $i++) {
+  Ui-Sync
+  $lines = Ui-LogLines | Select-Object -Skip $script:UiMark
+  $line = $lines | Where-Object { $_.Contains('Sketch plane centred on ') } | Select-Object -Last 1
+  $view = $lines | Where-Object { $_ -match 'Sketch view [-0-9.,]+ [-0-9.,]+ [-0-9.,]+' } | Select-Object -Last 1
+  if ("$line" -match "Sketch plane centred on the sketch's face: origin at $number,$number; free area centre at $number,$number") {
+    $fx = [double]::Parse($Matches[3], $culture)
+    $fy = [double]::Parse($Matches[4], $culture)
+    if ("$view" -match "Sketch view $number,$number $number,$number $number,$number") {
+      $p = @(1..6 | ForEach-Object { [double]::Parse($Matches[$_], $culture) })
+      $px = $p[0] + ($p[2] - $p[0]) * $sx / 100 + ($p[4] - $p[0]) * $sy / 100
+      $py = $p[1] + ($p[3] - $p[1]) * $sx / 100 + ($p[5] - $p[1]) * $sy / 100
+      $centred = ($px - $fx) * ($px - $fx) + ($py - $fy) * ($py - $fy) -le 36
+    }
+  }
+  if (-not $centred) { Start-Sleep -Milliseconds 200 }
+}
+if (-not $centred) { Ui-Fail "the top face's middle is not in the middle of the free area: '$frame', '$line', '$view'" }
+Write-Host "ok   the top face's middle in the middle of the free area ($line; $view)"
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' "the top face's sketch finished"
+
+Write-Host "--- After New Design, a sketch's origin in the middle of the free area (mitcad#738)"
+# Expect-Centred "description": since the mark the view turned to the new
+# sketch's plane centred on its origin (a new design shows no bodies), and
+# within six seconds the origin, as the view logs it and as the sketch logs
+# it ("Sketch view"), is within 6 px of the middle of the free area between
+# the cards.
+function Expect-Centred([string]$Description) {
+  Ui-ExpectNew 'Sketch plane centred on ' "${Description}: the view turned to the plane"
+  $culture = [Globalization.CultureInfo]::InvariantCulture
+  $line = $null
+  $view = $null
+  for ($i = 0; $i -lt 30; $i++) {
+    Ui-Sync
+    $lines = Ui-LogLines | Select-Object -Skip $script:UiMark
+    $line = $lines | Where-Object { $_.Contains('Sketch plane centred on ') } | Select-Object -Last 1
+    $view = $lines | Where-Object { $_ -match 'Sketch view [-0-9.,]+ [-0-9.,]+ [-0-9.,]+' } | Select-Object -Last 1
+    if ("$line" -match 'Sketch plane centred on the origin: origin at (-?[0-9.]+),(-?[0-9.]+); free area centre at (-?[0-9.]+),(-?[0-9.]+)') {
+      $ox = [double]::Parse($Matches[1], $culture)
+      $oy = [double]::Parse($Matches[2], $culture)
+      $fx = [double]::Parse($Matches[3], $culture)
+      $fy = [double]::Parse($Matches[4], $culture)
+      if ("$view" -match 'Sketch view (-?[0-9.]+),(-?[0-9.]+) ') {
+        $sx = [double]::Parse($Matches[1], $culture)
+        $sy = [double]::Parse($Matches[2], $culture)
+        $logged = ($ox - $fx) * ($ox - $fx) + ($oy - $fy) * ($oy - $fy)
+        $sketch = ($sx - $fx) * ($sx - $fx) + ($sy - $fy) * ($sy - $fy)
+        if ($logged -le 36 -and $sketch -le 36) {
+          Write-Host "ok   ${Description}: the origin in the middle of the free area ($line; $view)"
+          return
+        }
+      }
+    }
+    Start-Sleep -Milliseconds 200
+  }
+  Ui-Fail "${Description}: the origin is not in the middle of the free area: '$line', '$view'"
+}
+
+# Sketch-OnOrigin plane: Create Sketch on an origin plane, clicked in the
+# view when Create Sketch shows the origin planes there, else in the
+# browser's Origin folder, which offers them (mitcad#694): New Design opens
+# with the root active beside its Component1 (mitcad#426), which keeps the
+# planes out of the view (mitcad#294).
+function Sketch-OnOrigin([string]$Plane) {
+  $name = $Plane.ToUpperInvariant()
+  Ui-Mark
+  Ui-Key 'F7'
+  Ui-ExpectNew 'Create Sketch: origin planes ' 'Create Sketch says where the origin planes are' | Out-Null
+  Start-Sleep -Milliseconds 300
+  Ui-Sync
+  $shown = Ui-LogLines | Select-Object -Skip $script:UiMark |
+    Where-Object { $_.Contains('Create Sketch: origin planes shown') }
+  if ($shown) {
+    Ui-ClickLogged "Datum $Plane"
+  } else {
+    Ui-ExpectNew "Browser Root/Origin/$name at" "the browser offers $name" | Out-Null
+    Ui-Sync
+    Ui-ClickLogged "Browser Root/Origin/$name"
+  }
+  Ui-ExpectNew "Sketch started on $Plane" "sketch started on $Plane" | Out-Null
+}
+
+# Centred-Round layout chrome: New Design (its fit centres the design in the
+# free area, which moves the camera's centre off the origin once the cards
+# are laid out), then sketches on XY, XZ and YZ in turn; each shows its
+# origin in the middle of the free area.
+function Centred-Round([string]$Layout, [string]$Chrome) {
+  Ui-StartApp "sketch-view-centred-$Chrome" @("--chrome=$Chrome")
+  Ui-Mark
+  Ui-Step "${Layout}: new design (Ctrl+N)" { Ui-Key 'ctrl+n' }
+  Ui-ExpectNew 'New document' "${Layout}: a new design"
+  Ui-WaitIdle
+  foreach ($plane in @('xy', 'xz', 'yz')) {
+    $name = $plane.ToUpperInvariant()
+    Ui-Step "${Layout}: create sketch on $name (F7)" { Sketch-OnOrigin $plane }
+    Expect-Centred "$Layout, $name"
+    Ui-Mark
+    Ui-Step "${Layout}: finish sketch (Ctrl+Enter)" { Ui-Key 'ctrl+Return' }
+    Ui-ExpectNew 'Sketch finished' "${Layout}: the $name sketch finished"
+  }
+}
+
+Centred-Round 'Floating' 'floating'
+Centred-Round 'Docked' 'docked'
 
 Ui-Finish 'UI Windows sketch view test'

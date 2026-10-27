@@ -33,6 +33,12 @@ namespace mitcad {
 //   an open reads ("400,preview=1500,set_parameter=0"). The .f3d import's
 //   worker takes "import_f3d" for the definitions it tries
 //   (files/F3dImport.cpp; tools/ui-import-test.sh stops it so).
+// - MITCAD_TEST_JOB_SLEEP_MS=<label>=m[,<label>=m...]: for tests, the job
+//   named <label> (a model command's name: "redo") takes m ms longer on
+//   the worker after its work, whether it evaluates features or not, so
+//   that a test can watch what the window does while it waits for a job
+//   that only changes a drawing (tools/ui-drawings-test.sh: the hover's
+//   question while a redo runs, mitcad#753).
 // - MITCAD_COMPUTE_INLINE=1: jobs run on the UI thread, with the same
 //   progress and cancel in the model but without waiting for them (no
 //   dialog, no drawing meanwhile): for a debugger, or to compare.
@@ -75,6 +81,21 @@ inline int testRecomputeDelay(const QString& label) {
     return parsed;
   }();
   return delays.value(label, delays.value(QString()));
+}
+
+inline int testJobSleep(const QString& label) {
+  static const QHash<QString, int> sleeps = [] {
+    QHash<QString, int> parsed;
+    const QString spec = qEnvironmentVariable("MITCAD_TEST_JOB_SLEEP_MS");
+    for (const QString& part : spec.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+      const qsizetype equals = part.lastIndexOf(QLatin1Char('='));
+      if (equals > 0) {
+        parsed.insert(part.left(equals).trimmed(), part.mid(equals + 1).trimmed().toInt());
+      }
+    }
+    return parsed;
+  }();
+  return sleeps.value(label, 0);
 }
 
 inline bool computeInline() {

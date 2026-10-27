@@ -93,6 +93,10 @@ Insertion insertParameter(const QString& text, int caret, int selectionStart, in
 // The expression part of a field's text: after a leading `name =` (a
 // single `=`), trimmed.
 QString expressionPart(const QString& text);
+// Where expressionPart's text starts in `text`: after the `name =` and the
+// spaces that follow it, where the match found them, not where the
+// expression's text first occurs ("t2 = 2" starts at 5, mitcad#755).
+int expressionStart(const QString& text);
 
 // A choice in the list: the parameter and why the field cannot take it
 // (empty when it can).

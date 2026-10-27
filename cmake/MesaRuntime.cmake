@@ -128,7 +128,16 @@ if(MITCAD_MESA_DIR)
               -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sketch-view-test.ps1"
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-view"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
-    set_tests_properties(app.ui-windows-sketch-view PROPERTIES TIMEOUT 300)
+    set_tests_properties(app.ui-windows-sketch-view PROPERTIES TIMEOUT 420)
+    # The sketch's own origin and axes drawn in a new design whose Origin
+    # folder's light bulb is off, on XY, XZ and YZ and in an edited sketch,
+    # the light bulb untouched, the origin snapped to (mitcad#739).
+    add_test(NAME app.ui-windows-sketch-origin
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sketch-origin-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-origin"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-sketch-origin PROPERTIES TIMEOUT 300)
     # Extrude's preview in components placed off the origin (mitcad#266):
     # hidden bodies and occurrences stay hidden, shown and new bodies are
     # where their occurrences put them, a linked component's too.
@@ -484,13 +493,14 @@ if(MITCAD_MESA_DIR)
     # Combine with the same body in two occurrences as tools (mitcad#544):
     # Part's block picked where Part:1 and where Part:2 show it, listed
     # "Part:1, Part:2", both cut from the root's block; the design file
-    # keeps a tool in each occurrence and an edit takes both back.
+    # keeps a tool in each occurrence and an edit takes both back. Extrude
+    # To Object to a face of another component (mitcad#762), linked.
     add_test(NAME app.ui-windows-component-combine
       COMMAND powershell -NoProfile -ExecutionPolicy Bypass
               -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-component-combine-test.ps1"
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-component-combine"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
-    set_tests_properties(app.ui-windows-component-combine PROPERTIES TIMEOUT 300)
+    set_tests_properties(app.ui-windows-component-combine PROPERTIES TIMEOUT 480)
 
     # The patterns' Direction Type and Distance Type (mitcad#545): a
     # rectangular pattern symmetric along X and by extent along Y, a
@@ -639,6 +649,34 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
               -Out "${CMAKE_BINARY_DIR}/ui-windows-print-bed" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-print-bed PROPERTIES TIMEOUT 300)
+    # Move/Copy in the context menus (mitcad#735): on a body's row and on
+    # two occurrences' rows in the browser, and at the top of the view's
+    # menu for a body selected in the browser; none for a face alone.
+    add_test(NAME app.ui-windows-move-copy-menu
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-move-copy-menu-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-move-copy-menu" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-move-copy-menu PROPERTIES TIMEOUT 300)
+    # Save As Mesh (mitcad#734): from a body's, a component's and the
+    # root's browser rows, 3MF on the print bed face, text STL in inches,
+    # OBJ a file per body with a longest edge; disabled for a surface body.
+    add_test(NAME app.ui-windows-save-as-mesh
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-save-as-mesh-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-save-as-mesh" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-save-as-mesh PROPERTIES TIMEOUT 300)
+    # The view cube in a sketch with a constraint selected (mitcad#773):
+    # an active, an inactive and a drawn line's inferred constraint
+    # selected in turn, every arrow and Home clicked; the app lives on,
+    # writes no crash report and logs no failed view operation.
+    add_test(NAME app.ui-windows-sketch-cube
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sketch-cube-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-cube"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-sketch-cube PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

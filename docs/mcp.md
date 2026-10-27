@@ -6,6 +6,9 @@
 For a design already open in Mitcad, choose **Help › Connect AI Assistant…**.
 The assistant indicator (a click with no assistant connected, or **Connect
 AI Assistant…** in its menu) and **Preferences › AI Assistants** offer the same command; command search also finds `claude`, `codex`, `chatgpt` and `mcp`.
+Opened from Preferences, the dialog opens over Preferences and takes
+input while Preferences stays open; when Preferences closes, the dialog
+stays open over the main window (mitcad#760).
 The dialog has three parts: the assistant (**Claude Desktop**, **Claude
 Code**, **ChatGPT / Codex** or **Other**; the dialog's lines say just
 Codex), a state line with one button, and the folder line. Everything else is under **Advanced**.
@@ -22,11 +25,29 @@ The state line names the next step, and its button does it:
   guess, Claude Desktop and ChatGPT / Codex also offer a small **Connect
   anyway**, which runs the same setup as **Connect**; Claude Code's setup
   runs its CLI, so it has none. An extension installer that opens shows
-  that Claude Desktop is there; one that no application takes shows that it
-  is not: **Install Claude Desktop first** in the error colour, with **Get
-  Claude Desktop**. On Windows, which offers "Open with" for any file,
-  Mitcad asks first whether an application is associated with `.mcpb`
-  files, and the line clears once one is.
+  that Claude Desktop is there. One that no application takes, with no
+  Claude Desktop application found either (its settings folder alone,
+  which stays after an uninstall, does not count), shows that it is not:
+  **Install Claude Desktop first** in the error colour, with **Get Claude
+  Desktop**. On
+  Windows, which offers "Open with" for any file, Mitcad asks first
+  whether an application is associated with `.mcpb` files, and the line
+  clears once one is.
+- **Install the extension in Claude Desktop** with **Show in Explorer**
+  (**Show in Finder** on macOS) and a small **Open Claude Desktop**: Claude
+  Desktop is installed, but no application opens its extension files. This
+  is the case on Windows with Claude Desktop from the Microsoft Store,
+  which Mitcad finds as the installed package `Claude_pzs8sxrjxfjjc` and
+  which registers no `.mcpb` association. The line below says where:
+  **In Claude Desktop: Settings › Extensions › Advanced settings ›
+  Install Extension…, then choose** the saved extension (on Windows
+  `%LOCALAPPDATA%\Mitcad\Mitcad\assistant-setup\mitcad-desktop.mcpb`);
+  **Show in Explorer** shows that file selected. Do not double-click it:
+  Windows has no application for it. **Open Claude Desktop** opens Claude
+  Desktop through its `claude://` link; when Claude Desktop is no longer
+  there, the line becomes **Install Claude Desktop first**. Approve the
+  installation in Claude Desktop and enable the extension, then start a
+  new chat. Once Claude Desktop connects, the line goes away.
 - **Ready to connect *assistant*** with **Connect**: Mitcad sets the
   connection up (below).
 - The assistant's own next step: **Approve Mitcad in Claude Desktop, then
@@ -55,7 +76,10 @@ The state line names the next step, and its button does it:
 - **Claude Desktop** (Windows and macOS): generates a Mitcad extension
   (an MCP Bundle) and opens its installer in Claude Desktop. Approve the
   installation and enable the extension there, then start a new chat. If
-  the tools are missing, fully quit and reopen Claude Desktop. The bundle
+  the tools are missing, fully quit and reopen Claude Desktop. When no
+  application opens the bundle although Claude Desktop is installed (the
+  Microsoft Store install on Windows), the bundle is installed from Claude
+  Desktop's settings instead (above). The bundle
   contains a small native launcher that starts the installed Mitcad CLI;
   Claude's configuration file is not edited. Whether the extension was
   installed is known only once Claude Desktop connects.
@@ -66,7 +90,9 @@ The state line names the next step, and its button does it:
   `~/.claude.json`, or `.claude.json` inside an existing
   `CLAUDE_CONFIG_DIR`. A failed registration or closing the dialog leaves
   the previous connection intact. Start a new session and check `/mcp`;
-  normal client trust approvals still apply.
+  normal client trust approvals still apply. That file keeps Claude
+  Code's projects and history and grows large over time: Mitcad reads it
+  up to 256 MB (other assistants' settings files up to 4 MB, mitcad#760).
 - **ChatGPT / Codex:** uses the shared local Codex configuration. It
   respects `CODEX_HOME`; under **Advanced**, **Change…** selects the
   settings file actually used by a desktop client with another location.
@@ -353,7 +379,12 @@ the formats of the headless `model_export` (3MF, STL, STEP, drawings,
 …), with `bodies` choosing what goes in, for example without a hidden
 helper body. The export does not change the document. It is refused
 while a command panel is open, while a dialog is open and when the
-document has failed features. `ui_screenshot` with a `path` writes its
+document has failed features. It is also refused while a sketch that
+has later features is edited (mitcad#750): editing it rolls those
+features back until the sketch is finished, so the bodies of that moment
+are not the design's. The answer is "Finish the sketch before
+exporting: …". A new sketch at the end of the timeline does not stop
+the export. `ui_screenshot` with a `path` writes its
 image into these folders as well.
 
 Without a `path`, `document_save` writes the document's own file as
@@ -369,8 +400,9 @@ or an import runs. That result is an error with `busy: true`,
 milliseconds. `ui_state`, `ui_log` and `ui_screenshot` are never refused
 for a sketch or a command. Over MCP, `print_thickness` answers its
 summary only (the thinnest wall, where it is, the regions and the
-count of thin triangles, `thin_triangles`), because the corners of
-every thin triangle can exceed a client's response limit. Give
+count of thin triangles or pieces of triangles, `thin_triangles`),
+because the corners of every thin one can exceed a client's response
+limit. Give
 `"triangles": true` for them, with `max_triangles` to cap them
 (mitcad#689).
 

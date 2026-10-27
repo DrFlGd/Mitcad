@@ -652,10 +652,17 @@ void layoutPlanar(const MeasurementDisplay& m, const MeasurementProjection& proj
 }
 
 // The deviation on the picture of a drag `delta` across a shape's line
-// (along its plane's y axis).
+// (along its plane's y axis): the part `b` along y of the drag split into
+// the plane's axes (a x + b y), as the drag is committed
+// (measurementDragMillimetres); in an oblique view the axes are not at
+// right angles on the picture, so not the drag's perpendicular projection
+// on y (mitcad#759). None where the plane is seen edge on.
 QPointF acrossLine(const MeasurementShape& shape, const QPointF& delta) {
-  const QPointF y = unitOf(shape.yPerMillimetre);
-  return y * dotOf(delta, y);
+  const std::optional<std::array<double, 2>> along = measurementDragMillimetres(shape, delta);
+  if (!along) {
+    return {};
+  }
+  return shape.yPerMillimetre * (*along)[1];
 }
 
 void paintPlanarLabel(QPainter& painter, const MeasurementShape& shape, const QFont& font, double scale,

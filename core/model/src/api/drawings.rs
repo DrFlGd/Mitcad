@@ -29,21 +29,23 @@ use super::dispatch::named_enum;
 use super::drawing_annotations::{AddAnnotationCommand, EditAnnotationCommand};
 use super::drawing_templates::{RevisionCommand, SaveTemplateCommand};
 use crate::assembly::{Assembly, inverse};
+use crate::datum::Vec3;
 use crate::document::{Document, deleted_views};
+use crate::drawing::annotate::{turned, turned_with_view};
 use crate::drawing::clip::{self, Band, ViewMap};
 use crate::drawing::compose::{
     self, Bounds, Composed, DetailMark, HoleInput, PlacedView, SectionMark, SheetContent,
     SheetSetup, TitleInfo, ViewRole, view_bounds,
 };
 use crate::drawing::def::{
-    Annotations, BreakDirection, Drawing, DrawingSheet, DrawingView, Side, StandardView, Subject,
-    ViewBreak, ViewDirection, ViewKind, ViewStyle, section_plane,
+    Annotations, BreakDirection, Drawing, DrawingDefaults, DrawingSheet, DrawingView, Side,
+    StandardView, Subject, ViewBreak, ViewDirection, ViewKind, ViewStyle, section_plane,
 };
 use crate::drawing::sheet::{Anchor, Item, Pen, Sheet};
 use crate::drawing::template::SheetTemplate;
 use crate::drawing::{
     CutPlane, DrawingOptions, Orientation, P2, Projection, Shading, SheetSize, Units,
-    ViewProjection, ViewSpec, dot, parse_scale, scale_text, today,
+    ViewProjection, ViewSpec, cross, dot, parse_scale, scale_text, today,
 };
 use crate::exchange::{BodyKind, MeshTolerance};
 use crate::fingerprint::Fingerprint;
@@ -94,6 +96,27 @@ pub(super) struct AddDrawingCommand {
     /// template's data, or `""` or null for the simple title block.
     #[serde(default, deserialize_with = "present")]
     template: Option<Option<Value>>,
+    /// The decimals and the letters' height (mm) of its dimensions and
+    /// annotations without their own (mitcad#729).
+    #[serde(default)]
+    decimals: Option<u8>,
+    #[serde(default)]
+    text_height: Option<f64>,
+}
+
+/// `edit_drawing`: its name, and the decimals and the letters' height of
+/// its dimensions and annotations without their own (mitcad#729; `null`:
+/// none of the drawing's).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct EditDrawingCommand {
+    drawing: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, deserialize_with = "present")]
+    decimals: Option<Option<u8>>,
+    #[serde(default, deserialize_with = "present")]
+    text_height: Option<Option<f64>>,
 }
 
 /// `add_drawing_sheet` and `edit_drawing_sheet`: a sheet's fields (`sheet`: where a new one
@@ -252,6 +275,10 @@ pub(super) struct EditViewCommand {
     center_marks: Option<bool>,
     #[serde(default)]
     retrieved_dimensions: Option<bool>,
+    /// How far it is turned on the sheet, degrees counter-clockwise
+    /// (mitcad#729).
+    #[serde(default)]
+    rotation: Option<f64>,
 }
 
 named_enum! {
@@ -259,11 +286,7 @@ named_enum! {
     #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
     pub(super) enum DrawingCommand {
         "add_drawing" => AddDrawing(Box<AddDrawingCommand>),
-        "edit_drawing" => EditDrawing {
-            drawing: String,
-            #[serde(default)]
-            name: Option<String>,
-        },
+        "edit_drawing" => EditDrawing(Box<EditDrawingCommand>),
         "delete_drawing" => DeleteDrawing {
             drawing: String,
         },
@@ -535,15 +558,117 @@ fn parent_view(sheet: &DrawingSheet, parent: Option<u32>) -> Result<&DrawingView
         .ok_or_else(|| ApiError(format!("there is no view {parent} on the sheet")))
 }
 
-/// Whether a section or a detail is drawn on a view or on a view from it
-/// (they keep its coordinates).
-fn has_marks(sheet: &DrawingSheet, id: u32) -> bool {
-    sheet.dependents(id).iter().any(|d| {
-        matches!(
-            sheet.view(*d).map(|v| &v.kind),
-            Some(ViewKind::Section { .. } | ViewKind::Detail { .. })
-        )
-    })
+/// A view's frame: its x and y axes and the direction to the eye.
+fn frame_of((e, x): (Vec3, Vec3)) -> [Vec3; 3] {
+    [x, cross(e, x), e]
+}
+
+/// Whether two vectors are the same.
+fn same_vector(a: Vec3, b: Vec3) -> bool {
+    (0..3).all(|i| (a[i] - b[i]).abs() < 1e-9)
+}
+
+/// A view's breaks carried over a quarter turn (`quarters` of 90 degrees
+/// counter-clockwise) of its coordinates: a band along x becomes one
+/// along y and the other way, mirrored where the axis turned over.
+fn turned_breaks(breaks: &mut [ViewBreak], quarters: i64) {
+    for b in breaks {
+        let flip = |b: &mut ViewBreak| {
+            (b.from, b.to) = (-b.to, -b.from);
+        };
+        match (quarters.rem_euclid(4), b.direction) {
+            (1, BreakDirection::Horizontal) => b.direction = BreakDirection::Vertical,
+            (1, BreakDirection::Vertical) => {
+                b.direction = BreakDirection::Horizontal;
+                flip(b);
+            }
+            (2, _) => flip(b),
+            (3, BreakDirection::Horizontal) => {
+                b.direction = BreakDirection::Vertical;
+                flip(b);
+            }
+            (3, BreakDirection::Vertical) => b.direction = BreakDirection::Horizontal,
+            _ => {}
+        }
+    }
+}
+
+/// Carries what views keep in their coordinates over a change of their
+/// axes (mitcad#729: a view turned on the sheet, a base view's direction,
+/// a projected view's side, a section looking the other way, the sheet's
+/// projection method), parents first, so that the views from a view
+/// changed and their annotations follow it:
+///
+/// - a view turned in its own plane (its eye the same): its annotations,
+///   what is drawn in it, its breaks (by quarter turns only) and the
+///   circles of its details turn with it;
+/// - a view that looks along another direction: what is kept on it stays
+///   where it is on it: a section drawn on it is turned with it, so that
+///   its line stays where it was drawn (the section then cuts what the
+///   view shows there now), a detail keeps its circle; annotations follow
+///   their picks, and are broken where the view no longer sees them.
+fn follow_turns(before: &DrawingSheet, after: &mut DrawingSheet) -> Result<(), ApiError> {
+    for i in 0..after.views.len() {
+        let id = after.views[i].id;
+        // A view the sheet did not have, or that could not be worked out.
+        let Ok(old) = before.axes(id) else {
+            continue;
+        };
+        // A section on a view that turned to another direction: its plane
+        // turned with the view, its line where it is on it.
+        if let ViewKind::Section {
+            parent: Some(parent),
+            ..
+        } = after.views[i].kind
+            && let (Ok(po), Ok(pn)) = (before.axes(parent), after.axes(parent))
+            && !same_vector(po.0, pn.0)
+        {
+            let (from, to) = (frame_of(po), frame_of(pn));
+            let carry = |v: Vec3| -> Vec3 {
+                let c = [dot(v, from[0]), dot(v, from[1]), dot(v, from[2])];
+                std::array::from_fn(|k| c[0] * to[0][k] + c[1] * to[1][k] + c[2] * to[2][k])
+            };
+            if let ViewKind::Section { origin, normal, .. } = &mut after.views[i].kind {
+                *origin = carry(*origin);
+                *normal = carry(*normal);
+            }
+        }
+        let Ok(new) = after.axes(id) else {
+            continue;
+        };
+        if !same_vector(old.0, new.0) || same_vector(old.1, new.1) {
+            continue;
+        }
+        // Turned in its own plane: what it shows turns `angle` degrees.
+        let y = cross(old.0, old.1);
+        let angle = (-dot(new.1, y)).atan2(dot(new.1, old.1)).to_degrees();
+        let quarters = (angle / 90.0).round();
+        let view = &mut after.views[i];
+        if !view.breaks.is_empty() {
+            if (angle - 90.0 * quarters).abs() > 1e-6 {
+                return Err(ApiError(format!(
+                    "view {id} has breaks: it turns by quarter turns only while it has them \
+                     (Remove Breaks first)"
+                )));
+            }
+            turned_breaks(&mut view.breaks, quarters as i64);
+        }
+        for annotation in &mut view.annotations {
+            turned_with_view(annotation, angle);
+        }
+        for item in &mut view.sketch {
+            item.carried(&|p| turned(p, Some(angle)), angle.to_radians(), 1.0);
+        }
+        // Its details keep showing what they showed.
+        for detail in &mut after.views {
+            if let ViewKind::Detail { parent, center, .. } = &mut detail.kind
+                && *parent == id
+            {
+                *center = turned(*center, Some(angle));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Keeps each aligned view in line with its parent, parents first.
@@ -698,13 +823,25 @@ impl<K: Kernel> Document<K> {
     ) -> Result<Value, ApiError> {
         match command {
             DrawingCommand::AddDrawing(c) => self.add_drawing_command(*c),
-            DrawingCommand::EditDrawing { drawing, name } => {
-                let old = self.find_drawing(&drawing)?.clone();
+            DrawingCommand::EditDrawing(c) => {
+                let old = self.find_drawing(&c.drawing)?.clone();
                 let mut changed = old.clone();
-                if let Some(name) = name {
-                    changed.name = name;
+                if let Some(name) = &c.name {
+                    changed.name.clone_from(name);
                 }
-                self.set_drawing(old.uid, format!("Rename {}", old.name), changed)?;
+                // The drawing's defaults (mitcad#729): `null` none.
+                if let Some(decimals) = c.decimals {
+                    changed.defaults.decimals = decimals;
+                }
+                if let Some(height) = c.text_height {
+                    changed.defaults.text_height = height;
+                }
+                let label = if c.decimals.is_none() && c.text_height.is_none() {
+                    format!("Rename {}", old.name)
+                } else {
+                    format!("Edit {}", old.name)
+                };
+                self.set_drawing(old.uid, label, changed)?;
                 Ok(json!({"drawing": old.uid}))
             }
             DrawingCommand::DeleteDrawing { drawing } => {
@@ -715,13 +852,15 @@ impl<K: Kernel> Document<K> {
             DrawingCommand::AddSheet(c) => {
                 let old = self.find_drawing(&c.drawing)?.clone();
                 let mut changed = old.clone();
-                // The last sheet's setup, without its views.
+                // The last sheet's setup, without its views and its text
+                // notes (their ids are the drawing's, mitcad#742).
                 let mut sheet = old
                     .sheets
                     .last()
                     .cloned()
                     .unwrap_or_else(|| DrawingSheet::new(""));
                 sheet.views.clear();
+                sheet.notes.clear();
                 sheet.name = (1..)
                     .map(|n| format!("Sheet{n}"))
                     .find(|n| !old.sheets.iter().any(|s| s.name == *n))
@@ -755,19 +894,6 @@ impl<K: Kernel> Document<K> {
                     .get_mut(index)
                     .ok_or_else(|| ApiError(format!("{} has no sheet {index}", old.name)))?;
                 let label = format!("Edit {} of {}", sheet.name, old.name);
-                // The projection method turns the projected views: not
-                // while sections or details are drawn on them.
-                if c.projection.is_some_and(|p| p != sheet.projection)
-                    && let Some(v) = sheet.views.iter().find(|v| {
-                        matches!(v.kind, ViewKind::Projected { .. }) && has_marks(sheet, v.id)
-                    })
-                {
-                    return Err(ApiError(format!(
-                        "view {} has section or detail views: delete them before changing the \
-                         projection method",
-                        v.id
-                    )));
-                }
                 set_fields(
                     sheet,
                     &c.name,
@@ -779,8 +905,10 @@ impl<K: Kernel> Document<K> {
                     c.annotations,
                     resolve_template(&c.template)?,
                 )?;
-                // A changed projection method turns the projected views;
-                // they stay in line with their parents.
+                // A changed projection method turns the projected views:
+                // the sections and details drawn on them follow
+                // (mitcad#729), and they stay in line with their parents.
+                follow_turns(&old.sheets[index], sheet)?;
                 align(sheet);
                 self.set_drawing(old.uid, label, changed)?;
                 Ok(json!({"drawing": old.uid, "sheet": index}))
@@ -887,9 +1015,12 @@ impl<K: Kernel> Document<K> {
                 sheets: vec![DrawingSheet::new("Sheet1")],
                 revisions: Vec::new(),
                 exported: 0,
+                defaults: DrawingDefaults::default(),
             },
         };
         drawing.component = component;
+        drawing.defaults.decimals = c.decimals;
+        drawing.defaults.text_height = c.text_height;
         if let Some(name) = &c.name {
             drawing.name = name.clone();
         }
@@ -1058,6 +1189,8 @@ impl<K: Kernel> Document<K> {
             center_marks: c.center_marks.unwrap_or(true),
             retrieved_dimensions: c.retrieved_dimensions.unwrap_or(false),
             annotations: Vec::new(),
+            rotation: 0.0,
+            sketch: Vec::new(),
         });
         changed.check().map_err(ApiError)?;
         // Clear of the views already on the sheet, inside its area (their
@@ -1189,6 +1322,30 @@ impl<K: Kernel> Document<K> {
         let mut changed = old.clone();
         let mut moved = false;
         let mut fit = false;
+        // Turned on the sheet (mitcad#729): about the middle of its box,
+        // which stays where it is (its box's middle on the sheet and in
+        // the view's coordinates, before).
+        let turn = match c.rotation {
+            Some(r) if !r.is_finite() => {
+                return Err(ApiError("a rotation is a number of degrees".to_owned()));
+            }
+            Some(r) => {
+                let mut r = r.rem_euclid(360.0);
+                if r > 180.0 {
+                    r -= 360.0;
+                }
+                let current = old.sheets[si].view(id).map_or(0.0, |v| v.rotation);
+                (r != current).then_some(r)
+            }
+            None => None,
+        };
+        let pivot = match turn {
+            Some(_) => self.placed_view(&old, si, id).ok().and_then(|placed| {
+                (!placed.bounds.is_empty())
+                    .then(|| (placed.sheet_box().center(), placed.bounds.center()))
+            }),
+            None => None,
+        };
         {
             let sheet = &mut changed.sheets[si];
             let parent_map = sheet
@@ -1197,16 +1354,26 @@ impl<K: Kernel> Document<K> {
                 .and_then(|p| sheet.view(p))
                 .map(|p| view_map(sheet, p));
             let own_map = view_map(sheet, sheet.view(id).expect("found"));
-            // Sections and details are drawn on a view and keep its
-            // coordinates: it keeps its direction while it has them.
-            let marked = has_marks(sheet, id);
-            let keep_turn = || {
-                ApiError(format!(
-                    "view {id} has section or detail views: delete them before turning it"
-                ))
-            };
             let i = sheet.view_index(id).expect("found");
             let view = &mut sheet.views[i];
+            // Where it was: a turn and a move take the views from it along.
+            let before = view.place;
+            if let Some(r) = turn {
+                if matches!(view.kind, ViewKind::Detail { .. }) {
+                    return Err(ApiError(
+                        "a detail turns with its parent: turn its parent".to_owned(),
+                    ));
+                }
+                let by = r - view.rotation;
+                view.rotation = r;
+                // The middle of its box stays where it was: the view
+                // point there turns about the view's origin.
+                if let Some((on_sheet, in_view)) = pivot {
+                    let s = own_map.scale;
+                    let p = turned(in_view, Some(by));
+                    view.place = [on_sheet[0] - s * p[0], on_sheet[1] - s * p[1]];
+                }
+            }
             if let Some(scale) = &c.scale {
                 match scale_value(scale)? {
                     // A base view has no parent: its automatic scale is
@@ -1245,21 +1412,16 @@ impl<K: Kernel> Document<K> {
             if let Some(on) = c.retrieved_dimensions {
                 view.retrieved_dimensions = on;
             }
+            // A view turned another way takes the views from it and their
+            // annotations along (`follow_turns` below, mitcad#729).
             match &mut view.kind {
                 ViewKind::Base { direction } => {
                     if let Some(d) = &c.direction {
-                        let d = direction_value(d)?;
-                        if d != *direction && marked {
-                            return Err(keep_turn());
-                        }
-                        *direction = d;
+                        *direction = direction_value(d)?;
                     }
                 }
                 ViewKind::Projected { side, .. } => {
                     if let Some(s) = c.side {
-                        if s != *side && marked {
-                            return Err(keep_turn());
-                        }
                         *side = s;
                     }
                 }
@@ -1271,9 +1433,6 @@ impl<K: Kernel> Document<K> {
                     ..
                 } => {
                     if c.flip {
-                        if marked {
-                            return Err(keep_turn());
-                        }
                         *normal = normal.map(|v| -v);
                         // The line runs the other way along itself.
                         if let Some([a, b]) = *span {
@@ -1349,7 +1508,6 @@ impl<K: Kernel> Document<K> {
                 view.breaks.push(break_of(&own_map, b)?);
             }
             // Moving: by a drag, or to a place.
-            let before = view.place;
             if let Some(place) = c.place {
                 view.place = place;
             }
@@ -1377,6 +1535,9 @@ impl<K: Kernel> Document<K> {
                     }
                 }
             }
+            // Turned: the views from it, their annotations and its own
+            // follow (mitcad#729).
+            follow_turns(&old.sheets[si], sheet)?;
             align(sheet);
         }
         if fit {
@@ -1397,6 +1558,7 @@ impl<K: Kernel> Document<K> {
             && c.side.is_none()
             && c.breaks.is_none()
             && c.add_break.is_none()
+            && turn.is_none()
         {
             format!("Move view {id} of {}", old.name)
         } else {
@@ -1600,6 +1762,7 @@ impl<K: Kernel> Document<K> {
             deviation: 0.1,
             angle: 0.35,
             face_triangles: 0,
+            max_edge: 0.0,
         };
         let eye = spec.toward_eye;
         let mut faces: Vec<(f64, Vec<P2>, f64)> = Vec::new();
@@ -1731,11 +1894,13 @@ impl<K: Kernel> Document<K> {
                     }
                     _ => ViewRole::Pictorial,
                 };
-                // Its group's id: by its direction or kind, else its id.
+                // Its group's id: by its direction (however it is turned on
+                // the sheet, mitcad#729) or kind, else its id.
+                let (own_eye, own_x) = sheet.own_axes(view.id)?;
                 let mut id = match &view.kind {
                     ViewKind::Section { .. } => "view-section".to_owned(),
                     ViewKind::Detail { .. } => "view-detail".to_owned(),
-                    _ => StandardView::of_axes(spec.toward_eye, spec.x_axis).map_or_else(
+                    _ => StandardView::of_axes(own_eye, own_x).map_or_else(
                         || format!("view-V{}", view.id),
                         |v| format!("view-{}", v.key()),
                     ),
@@ -1906,15 +2071,29 @@ impl<K: Kernel> Document<K> {
         let annotated = self.annotate_sheet(drawing, si, &evaluated, units, &all_sketch_dimensions);
         warnings.extend(annotated.warnings.iter().cloned());
         // The sheet's own sketch dimensions (File › Export Drawing's), but
-        // those a view retrieved already (mitcad#717: once each).
+        // those a view retrieved already (mitcad#717: once each); each
+        // where the placements of the bodies its sketch shapes put it
+        // (mitcad#744), as it is when the sheet shows none of them.
         let sketch_dimensions: Vec<compose::SketchDimension> =
             if sheet.annotations.sketch_dimensions {
-                all_sketch_dimensions
-                    .iter()
-                    .enumerate()
-                    .filter(|(i, _)| !annotated.retrieved.contains(i))
-                    .map(|(_, (_, d))| d.clone())
-                    .collect()
+                let placements = self.sketch_placements(drawing.component, &evaluated.shown);
+                let mut out = Vec::new();
+                for (i, (sketch, d)) in all_sketch_dimensions.iter().enumerate() {
+                    if annotated.retrieved.contains(&i) {
+                        continue;
+                    }
+                    let mut placed = placements
+                        .iter()
+                        .filter(|(f, _)| f == sketch)
+                        .map(|(_, t)| super::drawing_annotations::placed_dimension(d, t))
+                        .peekable();
+                    if placed.peek().is_none() {
+                        out.push(d.clone());
+                    } else {
+                        out.extend(placed);
+                    }
+                }
+                out
             } else {
                 Vec::new()
             };
@@ -2084,6 +2263,10 @@ impl<K: Kernel> Document<K> {
             // What a feature control frame can refer to: the letters of the
             // model's datum labels and the drawings' (mitcad#717).
             "datum_letters": self.all_datum_letters(),
+            // Its dimensions' and annotations' own unless they have one
+            // (mitcad#729): null for the engine's decimals, 3.5 mm.
+            "decimals": drawing.defaults.decimals,
+            "text_height": drawing.defaults.text_height,
         }))
     }
 }
@@ -2113,6 +2296,9 @@ fn view_json(sheet: &DrawingSheet, view: &DrawingView) -> Value {
         "center_marks": view.center_marks,
         "retrieved_dimensions": view.retrieved_dimensions,
         "annotations": view.annotations.iter().map(|a| a.id).collect::<Vec<_>>(),
+        // Turned on the sheet, and what is drawn in it (mitcad#729).
+        "rotation": view.rotation,
+        "sketch": view.sketch.iter().map(|k| k.id()).collect::<Vec<_>>(),
     });
     match &view.kind {
         ViewKind::Base { direction } => {

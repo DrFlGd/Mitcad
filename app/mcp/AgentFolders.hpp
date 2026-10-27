@@ -16,6 +16,7 @@
 
 class QListWidget;
 class QPushButton;
+class QShowEvent;
 
 namespace mitcad::mcp {
 
@@ -62,9 +63,13 @@ signals:
   void changed();
   void connectRequested();
 
+protected:
+  void showEvent(QShowEvent* event) override;
+
 private:
   void addFolder(const QString& folder);
 
+  QPushButton* m_connect = nullptr;
   QListWidget* m_folders = nullptr;
   QPushButton* m_remove = nullptr;
 };

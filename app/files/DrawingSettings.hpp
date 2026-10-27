@@ -17,7 +17,7 @@ class QSettings;
 namespace mitcad {
 
 struct DrawingSettings {
-  QString format = QStringLiteral("pdf"); // pdf, svg, dxf
+  QString format = QStringLiteral("pdf"); // pdf, svg, dxf, dwg
   QString sheet = QStringLiteral("A4");   // A4..A0, ANSI_A..ANSI_E
   bool portrait = false;
   QString scale = QStringLiteral("fit"); // fit, or "1:2", "2:1"

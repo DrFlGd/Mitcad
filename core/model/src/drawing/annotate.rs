@@ -70,6 +70,13 @@ const BALLOON_RADIUS: f64 = 3.5;
 /// than an edge to win over it.
 pub const PICK_REACH: f64 = 3.0;
 pub const POINT_REACH: f64 = 2.0;
+/// The most circles a centre pattern marks (mitcad#729).
+pub const MAX_PATTERN: usize = 256;
+/// How far an edge extension of one edge reaches beyond each end when it
+/// has no length of its own, paper mm (mitcad#729).
+pub const EXTENSION_LENGTH: f64 = 10.0;
+/// The largest letters a drawing takes, paper mm (mitcad#729).
+pub const MAX_TEXT_HEIGHT: f64 = 100.0;
 
 /// What an annotation on a view is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,10 +113,17 @@ pub enum AnnotationType {
     /// A component's number in a parts list, in a circle on a leader to
     /// it.
     Balloon,
+    /// Centre marks on the circles of a pattern, made in one step, with
+    /// the circle or the line through their centres (mitcad#729).
+    CenterPattern,
+    /// Thin lines that run straight edges on beyond their ends: to where
+    /// two of them meet (a corner rounded or chamfered away), or one by a
+    /// length (mitcad#729).
+    EdgeExtension,
 }
 
 impl AnnotationType {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::Linear,
         Self::Angle,
         Self::Radius,
@@ -124,6 +138,8 @@ impl AnnotationType {
         Self::HoleTable,
         Self::PartsList,
         Self::Balloon,
+        Self::CenterPattern,
+        Self::EdgeExtension,
     ];
 
     /// Its name in commands and files.
@@ -143,15 +159,18 @@ impl AnnotationType {
             Self::HoleTable => "hole_table",
             Self::PartsList => "parts_list",
             Self::Balloon => "balloon",
+            Self::CenterPattern => "center_pattern",
+            Self::EdgeExtension => "edge_extension",
         }
     }
 
     /// How many picks it takes, at least and at most: a hole table its
-    /// origin or none, a parts list none.
+    /// origin or none, a parts list none, a centre pattern its circles.
     pub fn picks(self) -> (usize, usize) {
         match self {
             Self::Linear | Self::Angle | Self::Ordinate => (2, 2),
-            Self::Centerline => (1, 2),
+            Self::Centerline | Self::EdgeExtension => (1, 2),
+            Self::CenterPattern => (1, MAX_PATTERN),
             Self::HoleTable => (0, 1),
             Self::PartsList => (0, 0),
             _ => (1, 1),
@@ -188,8 +207,8 @@ impl AnnotationType {
     pub fn wants(self) -> Want {
         match self {
             Self::Ordinate | Self::HoleTable => Want::Point,
-            Self::Angle => Want::Line,
-            Self::Radius | Self::Diameter | Self::CenterMark => Want::Circle,
+            Self::Angle | Self::EdgeExtension => Want::Line,
+            Self::Radius | Self::Diameter | Self::CenterMark | Self::CenterPattern => Want::Circle,
             _ => Want::Any,
         }
     }
@@ -336,6 +355,17 @@ pub struct ViewAnnotation {
     /// columns, sort, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub table: Option<TableSettings>,
+    /// Its letters' height, paper mm: its own over the drawing's
+    /// (mitcad#729); the drawing's (3.5 mm unless it has one) when left
+    /// out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f64>,
+    /// How far a horizontal or vertical dimension's direction has turned
+    /// with its view (degrees, counter-clockwise; mitcad#729): it keeps
+    /// measuring along the same direction of the model when its view is
+    /// rotated. None: along the view's x or y.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<f64>,
 }
 
 /// A text note on the sheet, without a leader.
@@ -390,6 +420,8 @@ impl ViewAnnotation {
             frame: None,
             finish: None,
             table: None,
+            height: None,
+            turn: None,
         }
     }
 
@@ -487,8 +519,271 @@ impl ViewAnnotation {
             (Some(_), false) => return Err(format!("a {name} is no table")),
             (None, false) => {}
         }
+        if let Some(height) = self.height {
+            check_height(height)?;
+        }
+        if let Some(turn) = self.turn {
+            let measured = matches!(kind, AnnotationType::Linear | AnnotationType::Ordinate)
+                && matches!(self.along, Some(Along::Horizontal | Along::Vertical));
+            if !measured {
+                return Err(
+                    "only a horizontal or vertical dimension turns with its view".to_owned(),
+                );
+            }
+            if !turn.is_finite() {
+                return Err("a turn is a number of degrees".to_owned());
+            }
+        }
         Ok(())
     }
+}
+
+/// Why letters cannot be this high, if they cannot (mitcad#729).
+pub(crate) fn check_height(height: f64) -> Result<(), String> {
+    if height.is_finite() && height > 0.0 && height <= MAX_TEXT_HEIGHT {
+        Ok(())
+    } else {
+        Err(format!(
+            "letters are more than 0 and at most {MAX_TEXT_HEIGHT} mm high"
+        ))
+    }
+}
+
+// --- Lines, arcs and texts drawn outside the model (mitcad#729) ------------
+
+/// The pen of a line or an arc drawn on a sheet or in a view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SketchPen {
+    /// Continuous narrow, as dimension lines.
+    #[default]
+    Thin,
+    /// Continuous wide, as visible edges.
+    Thick,
+    /// Dashed, as hidden edges.
+    Hidden,
+    /// Long dash dotted, as centre lines.
+    Chain,
+}
+
+impl SketchPen {
+    pub fn pen(self) -> Pen {
+        match self {
+            Self::Thin => Pen::Thin,
+            Self::Thick => Pen::Thick,
+            Self::Hidden => Pen::Hidden,
+            Self::Chain => Pen::Chain,
+        }
+    }
+}
+
+fn is_thin(pen: &SketchPen) -> bool {
+    *pen == SketchPen::Thin
+}
+
+/// A line, an arc or a text drawn on a sheet (sheet mm) or in a view (the
+/// view's coordinates, model mm, so that it moves, scales and turns with
+/// the view), outside the model: nothing of the model is picked, and it
+/// follows nothing but its view. A text on a sheet is a [`SheetNote`].
+/// Its id is one of the drawing's annotation ids.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SketchItem {
+    Line {
+        id: u32,
+        from: P2,
+        to: P2,
+        #[serde(default, skip_serializing_if = "is_thin")]
+        pen: SketchPen,
+    },
+    /// Counter-clockwise from `start` to `end` (radians; `end` - `start`
+    /// up to a whole turn).
+    Arc {
+        id: u32,
+        center: P2,
+        radius: f64,
+        start: f64,
+        end: f64,
+        #[serde(default, skip_serializing_if = "is_thin")]
+        pen: SketchPen,
+    },
+    /// Lines split at `\n`, the first one starting at `at`.
+    Text {
+        id: u32,
+        text: String,
+        at: P2,
+        /// Its letters' height, paper mm; the drawing's when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<f64>,
+    },
+}
+
+impl SketchItem {
+    pub fn id(&self) -> u32 {
+        match self {
+            Self::Line { id, .. } | Self::Arc { id, .. } | Self::Text { id, .. } => *id,
+        }
+    }
+
+    /// Its name in commands, files and undo steps.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Self::Line { .. } => "line",
+            Self::Arc { .. } => "arc",
+            Self::Text { .. } => "text",
+        }
+    }
+
+    /// Its words in the `drawing` query: a text's lines on one line, else
+    /// its kind.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Text { text, .. } => text.replace('\n', " / "),
+            other => other.key().to_owned(),
+        }
+    }
+
+    /// Why it cannot be kept, if it cannot.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        let at = format!("{} {}", self.key(), self.id());
+        let point = |p: &P2| p.iter().all(|v| v.is_finite());
+        let why = match self {
+            Self::Line { from, to, .. } => {
+                if !(point(from) && point(to)) {
+                    Some("its ends are points".to_owned())
+                } else if len2(sub2(*to, *from)) < 1e-9 {
+                    Some("a line has a length".to_owned())
+                } else {
+                    None
+                }
+            }
+            Self::Arc {
+                center,
+                radius,
+                start,
+                end,
+                ..
+            } => {
+                if !(point(center) && radius.is_finite() && *radius > 0.0) {
+                    Some("an arc is about a point, of some size".to_owned())
+                } else if !(start.is_finite()
+                    && end.is_finite()
+                    && end > start
+                    && end - start <= TAU + 1e-9)
+                {
+                    Some("an arc turns from its start to its end, a whole turn at most".to_owned())
+                } else {
+                    None
+                }
+            }
+            Self::Text {
+                text, at, height, ..
+            } => {
+                if text.trim().is_empty() {
+                    Some("a text needs a text".to_owned())
+                } else if !point(at) {
+                    Some("its place is not a point".to_owned())
+                } else {
+                    height.and_then(|h| check_height(h).err())
+                }
+            }
+        };
+        match why {
+            Some(why) => Err(format!("{at}: {why}")),
+            None if self.id() == 0 => Err("annotation ids start from 1".to_owned()),
+            None => Ok(()),
+        }
+    }
+
+    /// Moved by `f` (a point of its coordinates to its new place), its
+    /// arc's angles turned by `turn` radians and its radius scaled by
+    /// `scale`: carried to other coordinates.
+    pub(crate) fn carried(&mut self, f: &dyn Fn(P2) -> P2, turn: f64, scale: f64) {
+        match self {
+            Self::Line { from, to, .. } => {
+                *from = f(*from);
+                *to = f(*to);
+            }
+            Self::Arc {
+                center,
+                radius,
+                start,
+                end,
+                ..
+            } => {
+                *center = f(*center);
+                *radius *= scale;
+                let sweep = *end - *start;
+                *start = (*start + turn).rem_euclid(TAU);
+                *end = *start + sweep;
+            }
+            Self::Text { at, .. } => *at = f(*at),
+        }
+    }
+}
+
+/// A line, an arc or a text drawn outside the model laid out on the
+/// sheet through its map (an identity map for one on the sheet): its group
+/// (`sketch`, `A<id>`) and box. `text`: the letters' height without its
+/// own.
+pub fn lay_out_sketch(item: &SketchItem, map: &ViewMap, text: f64) -> Laid {
+    let mut g = Group::new("sketch");
+    g.id = Some(format!("A{}", item.id()));
+    match item {
+        SketchItem::Line { from, to, pen, .. } => g.line(pen.pen(), map.at(*from), map.at(*to)),
+        SketchItem::Arc {
+            center,
+            radius,
+            start,
+            end,
+            pen,
+            ..
+        } => {
+            if map.breaks.is_empty() {
+                g.items.push(Item::Arc {
+                    pen: pen.pen(),
+                    center: map.at(*center),
+                    radius: radius * map.scale,
+                    start: *start,
+                    end: *end,
+                });
+            } else {
+                // Across a break's band the arc is no arc on the sheet.
+                let n = ((end - start) / TAU * 96.0).ceil().max(4.0) as usize;
+                let points = (0..=n)
+                    .map(|i| {
+                        let a = start + (end - start) * i as f64 / n as f64;
+                        map.at(add2(*center, mul2([a.cos(), a.sin()], *radius)))
+                    })
+                    .collect();
+                g.items.push(Item::Polyline {
+                    pen: pen.pen(),
+                    points,
+                    closed: false,
+                });
+            }
+        }
+        SketchItem::Text {
+            text: words,
+            at,
+            height,
+            ..
+        } => {
+            let h = height.unwrap_or(text);
+            let start = map.at(*at);
+            for (i, line) in words.lines().enumerate() {
+                g.text(
+                    [start[0], start[1] - i as f64 * h * 1.6],
+                    h,
+                    0.0,
+                    Anchor::Start,
+                    line.trim_end(),
+                );
+            }
+        }
+    }
+    let bounds = group_bounds(&g);
+    Laid { group: g, bounds }
 }
 
 /// A body's named edges, round faces and planar faces, in its own
@@ -864,10 +1159,9 @@ impl ValueText {
             .fold(0.0, f64::max)
     }
 
-    /// Writes it on a baseline: `at` its start (`Anchor::Start`), its
-    /// middle or its end, along `angle`.
-    fn write(&self, group: &mut Group, at: P2, angle: f64, anchor: Anchor) {
-        let h = DIMENSION_TEXT;
+    /// Writes it on a baseline, its letters `h` high: `at` its start
+    /// (`Anchor::Start`), its middle or its end, along `angle`.
+    fn write(&self, group: &mut Group, at: P2, angle: f64, anchor: Anchor, h: f64) {
         let along = [angle.cos(), angle.sin()];
         let up = [-angle.sin(), angle.cos()];
         let shift = match anchor {
@@ -890,12 +1184,14 @@ impl ValueText {
 
 // --- On the sheet ----------------------------------------------------------
 
-/// What lays an annotation out: its view's map onto the sheet and the
-/// view's box on the sheet.
+/// What lays an annotation out: its view's map onto the sheet, the view's
+/// box on the sheet and the letters' height (paper mm: the annotation's
+/// own, else its drawing's; mitcad#729).
 #[derive(Debug, Clone, Copy)]
 pub struct Frame<'a> {
     pub map: &'a ViewMap,
     pub view_box: Bounds,
+    pub text: f64,
 }
 
 impl Frame<'_> {
@@ -916,14 +1212,11 @@ pub struct Laid {
 pub fn measure(annotation: &ViewAnnotation, seen: &[Seen]) -> Result<Option<f64>, String> {
     match annotation.kind {
         AnnotationType::Linear => {
-            let (_, d) = linear_axes(annotation.along, seen)?;
+            let (_, d) = linear_axes(annotation.along, annotation.turn, seen)?;
             Ok(Some(dot2(sub2(seen[1].point(), seen[0].point()), d).abs()))
         }
         AnnotationType::Ordinate => {
-            let d = match annotation.along {
-                Some(Along::Vertical) => [0.0, 1.0],
-                _ => [1.0, 0.0],
-            };
+            let (d, _) = ordinate_axes(annotation);
             Ok(Some(dot2(sub2(seen[1].point(), seen[0].point()), d)))
         }
         AnnotationType::Angle => {
@@ -962,16 +1255,44 @@ pub fn default_along(seen: &[Seen]) -> Along {
     }
 }
 
+/// A direction of the view turned `turn` degrees counter-clockwise (a
+/// dimension's that turned with its view, mitcad#729).
+pub fn turned(d: P2, turn: Option<f64>) -> P2 {
+    match turn {
+        Some(t) if t != 0.0 => {
+            let (s, c) = t.to_radians().sin_cos();
+            [c * d[0] - s * d[1], s * d[0] + c * d[1]]
+        }
+        _ => d,
+    }
+}
+
+/// The direction (unit, view) an ordinate dimension measures along and
+/// the one its leader runs along: the view's x and y (vertical: y and x),
+/// as turned with its view.
+fn ordinate_axes(annotation: &ViewAnnotation) -> (P2, P2) {
+    let (d, n) = match annotation.along {
+        Some(Along::Vertical) => ([0.0, 1.0], [1.0, 0.0]),
+        _ => ([1.0, 0.0], [0.0, 1.0]),
+    };
+    (turned(d, annotation.turn), turned(n, annotation.turn))
+}
+
 /// The direction (unit, view) a linear dimension measures along, and
-/// whether its picks are parallel lines.
-fn linear_axes(along: Option<Along>, seen: &[Seen]) -> Result<(bool, P2), String> {
+/// whether its picks are parallel lines; a horizontal or vertical one's
+/// as turned with its view (`turn`, degrees).
+fn linear_axes(
+    along: Option<Along>,
+    turn: Option<f64>,
+    seen: &[Seen],
+) -> Result<(bool, P2), String> {
     let line_of = |s: &Seen| match *s {
         Seen::Line(a, b) => Some(unit2(sub2(b, a))),
         _ => None,
     };
     match along {
-        Some(Along::Horizontal) | None => Ok((false, [1.0, 0.0])),
-        Some(Along::Vertical) => Ok((false, [0.0, 1.0])),
+        Some(Along::Horizontal) | None => Ok((false, turned([1.0, 0.0], turn))),
+        Some(Along::Vertical) => Ok((false, turned([0.0, 1.0], turn))),
         Some(Along::Aligned) => {
             let lines: Vec<P2> = seen.iter().filter_map(line_of).collect();
             if let Some(first) = lines.first() {
@@ -1020,8 +1341,12 @@ pub fn lay_out(
     value: Option<&ValueText>,
     frame_cells: &[String],
 ) -> Result<Laid, String> {
+    let h = frame.text;
     let mut g = Group::new(match annotation.kind {
-        AnnotationType::CenterMark | AnnotationType::Centerline => "center-mark",
+        AnnotationType::CenterMark | AnnotationType::Centerline | AnnotationType::CenterPattern => {
+            "center-mark"
+        }
+        AnnotationType::EdgeExtension => "edge-extension",
         AnnotationType::Note => "note",
         AnnotationType::Datum => "datum",
         AnnotationType::Frame => "feature-control-frame",
@@ -1035,7 +1360,7 @@ pub fn lay_out(
     let words = || value.cloned().unwrap_or_default();
     match annotation.kind {
         AnnotationType::Linear => {
-            let (_, d) = linear_axes(annotation.along, seen)?;
+            let (_, d) = linear_axes(annotation.along, annotation.turn, seen)?;
             linear(&mut g, annotation, seen, d, frame, &words());
         }
         AnnotationType::Ordinate => ordinate(&mut g, annotation, seen, frame, &words()),
@@ -1060,6 +1385,8 @@ pub fn lay_out(
             }
         },
         AnnotationType::Centerline => centerline_of(&mut g, seen, frame)?,
+        AnnotationType::CenterPattern => center_pattern(&mut g, seen, frame)?,
+        AnnotationType::EdgeExtension => edge_extension(&mut g, annotation, seen, frame)?,
         AnnotationType::Note => {
             let tip = leader_tip(annotation, &seen[0], frame);
             let shift = annotation.text_offset.unwrap_or(NOTE_SHIFT);
@@ -1070,7 +1397,7 @@ pub fn lay_out(
                 .lines()
                 .map(|l| l.trim_end().to_owned())
                 .collect();
-            leader_text(&mut g, tip, add2(tip, shift), &lines);
+            leader_text(&mut g, tip, add2(tip, shift), &lines, h);
         }
         AnnotationType::Datum => {
             let tip = leader_tip(annotation, &seen[0], frame);
@@ -1080,6 +1407,7 @@ pub fn lay_out(
                 tip,
                 add2(tip, shift),
                 annotation.letter.as_deref().unwrap_or(""),
+                h,
             );
         }
         AnnotationType::Frame => {
@@ -1089,19 +1417,26 @@ pub fn lay_out(
                 .frame
                 .as_ref()
                 .map_or(Characteristic::Flatness, |f| f.characteristic);
-            control_frame(&mut g, tip, add2(tip, shift), characteristic, frame_cells);
+            control_frame(
+                &mut g,
+                tip,
+                add2(tip, shift),
+                characteristic,
+                frame_cells,
+                h,
+            );
         }
         AnnotationType::Finish => {
             let tip = leader_tip(annotation, &seen[0], frame);
             let shift = annotation.text_offset.unwrap_or([0.0, 0.0]);
             let finish = annotation.finish.clone().unwrap_or_default();
-            surface_finish(&mut g, tip, add2(tip, shift), &finish);
+            surface_finish(&mut g, tip, add2(tip, shift), &finish, h);
         }
         AnnotationType::Balloon => {
             // Its number in `value` (its row's in the parts list).
             let tip = leader_tip(annotation, &seen[0], frame);
             let shift = annotation.text_offset.unwrap_or(BALLOON_SHIFT);
-            balloon(&mut g, tip, add2(tip, shift), &words().main);
+            balloon(&mut g, tip, add2(tip, shift), &words().main, h);
         }
         AnnotationType::HoleTable | AnnotationType::PartsList => {
             return Err("a table is laid out with its rows (tables::lay_out_table)".to_owned());
@@ -1111,10 +1446,10 @@ pub fn lay_out(
     Ok(Laid { group: g, bounds })
 }
 
-/// A balloon: a circle with the number at `at` and a leader from its rim
-/// to an arrow at `tip`.
-fn balloon(g: &mut Group, tip: P2, at: P2, number: &str) {
-    let r = BALLOON_RADIUS.max(text_width(number, DIMENSION_TEXT) / 2.0 + 1.2);
+/// A balloon: a circle with the number (`h` high) at `at` and a leader
+/// from its rim to an arrow at `tip`.
+fn balloon(g: &mut Group, tip: P2, at: P2, number: &str, h: f64) {
+    let r = (BALLOON_RADIUS * h / DIMENSION_TEXT).max(text_width(number, h) / 2.0 + 1.2);
     g.items.push(Item::Arc {
         pen: Pen::Thin,
         center: at,
@@ -1122,13 +1457,7 @@ fn balloon(g: &mut Group, tip: P2, at: P2, number: &str) {
         start: 0.0,
         end: TAU,
     });
-    g.text(
-        [at[0], at[1] - DIMENSION_TEXT / 2.0],
-        DIMENSION_TEXT,
-        0.0,
-        Anchor::Middle,
-        number,
-    );
+    g.text([at[0], at[1] - h / 2.0], h, 0.0, Anchor::Middle, number);
     let towards = sub2(tip, at);
     if len2(towards) > r + 0.5 {
         let from = add2(at, mul2(unit2(towards), r));
@@ -1137,11 +1466,12 @@ fn balloon(g: &mut Group, tip: P2, at: P2, number: &str) {
     }
 }
 
-/// A text note on the sheet.
-pub fn lay_out_note(note: &SheetNote) -> Laid {
+/// A text note on the sheet; `text`: its letters' height without its own
+/// (the drawing's, mitcad#729).
+pub fn lay_out_note(note: &SheetNote, text: f64) -> Laid {
     let mut g = Group::new("note");
     g.id = Some(format!("A{}", note.id));
-    let h = note.height.unwrap_or(DIMENSION_TEXT);
+    let h = note.height.unwrap_or(text);
     for (i, line) in note.text.lines().enumerate() {
         g.text(
             [note.at[0], note.at[1] - i as f64 * h * 1.6],
@@ -1191,7 +1521,7 @@ pub fn line_position(
     seen: &[Seen],
     frame: &Frame<'_>,
 ) -> Option<(f64, f64)> {
-    let (_, d) = linear_axes(annotation.along, seen).ok()?;
+    let (_, d) = linear_axes(annotation.along, annotation.turn, seen).ok()?;
     let n = perp(d);
     let middle = mid(frame.at(seen[0].point()), frame.at(seen[1].point()));
     let c = linear_offset(annotation, middle, n, &frame.view_box);
@@ -1208,7 +1538,7 @@ pub fn offset_for(
     frame: &Frame<'_>,
     position: f64,
 ) -> Option<f64> {
-    let (_, d) = linear_axes(annotation.along, seen).ok()?;
+    let (_, d) = linear_axes(annotation.along, annotation.turn, seen).ok()?;
     let n = perp(d);
     let middle = mid(frame.at(seen[0].point()), frame.at(seen[1].point()));
     Some(position - dot2(middle, n))
@@ -1245,13 +1575,13 @@ fn linear(
     let a = anchor_of(&seen[0], frame, toward);
     let b = anchor_of(&seen[1], frame, toward);
     let foot = |p: P2| add2(p, mul2(n, c - dot2(sub2(p, middle), n)));
-    dimension_line(g, a, b, foot(a), foot(b), n, annotation, words);
+    dimension_line(g, a, b, foot(a), foot(b), n, annotation, words, frame.text);
 }
 
 /// Extension lines from `a` and `b` to the feet `fa` and `fb` on the
 /// dimension line, the line with its arrows and the text over its middle
 /// (moved along it by the text offset; the line runs on under a text
-/// moved past an end).
+/// moved past an end), its letters `h` high.
 #[allow(clippy::too_many_arguments)]
 fn dimension_line(
     g: &mut Group,
@@ -1262,6 +1592,7 @@ fn dimension_line(
     n: P2,
     annotation: &ViewAnnotation,
     words: &ValueText,
+    h: f64,
 ) {
     for (from, foot) in [(a, fa), (b, fb)] {
         let reach = len2(sub2(foot, from));
@@ -1304,7 +1635,7 @@ fn dimension_line(
     let angle = upright(towards);
     let up = [-angle.sin(), angle.cos()];
     let at = add2(middle, mul2(up, 1.0 + v));
-    words.write(g, at, angle, Anchor::Middle);
+    words.write(g, at, angle, Anchor::Middle, h);
 }
 
 /// An ordinate dimension: a thin line from the point across to the level
@@ -1317,10 +1648,7 @@ fn ordinate(
     words: &ValueText,
 ) {
     // Measured along d, the leader runs along n.
-    let n = match annotation.along {
-        Some(Along::Vertical) => [1.0, 0.0],
-        _ => [0.0, 1.0],
-    };
+    let (_, n) = ordinate_axes(annotation);
     let origin = frame.at(seen[0].point());
     let p = frame.at(seen[1].point());
     let level = match annotation.line_offset {
@@ -1351,7 +1679,8 @@ fn ordinate(
     };
     // The text's baseline beside the line, its middle on it.
     let up = [-angle.sin(), angle.cos()];
-    words.write(g, sub2(at, mul2(up, DIMENSION_TEXT / 2.0)), angle, anchor);
+    let h = frame.text;
+    words.write(g, sub2(at, mul2(up, h / 2.0)), angle, anchor, h);
 }
 
 /// How far a straight edge's ends are from a corner on the sheet: the
@@ -1443,7 +1772,7 @@ fn angle(
     let along = tangent(middle);
     let at = add2(add2(center, mul2(middle, radius + 1.0 + v)), mul2(along, u));
     let angle = upright(along);
-    words.write(g, at, angle, Anchor::Middle);
+    words.write(g, at, angle, Anchor::Middle, frame.text);
     Ok(())
 }
 
@@ -1506,7 +1835,7 @@ fn round(
             }
             arrow(g, rim, u);
             let side = if shift[0] >= 0.0 { 1.0 } else { -1.0 };
-            let width = words.width(DIMENSION_TEXT) + 1.0;
+            let width = words.width(frame.text) + 1.0;
             if len2(shift) > r {
                 g.line(Pen::Thin, rim, text_at);
                 g.line(Pen::Thin, text_at, add2(text_at, [side * width, 0.0]));
@@ -1516,7 +1845,7 @@ fn round(
             } else {
                 (text_at[0] - 0.5, Anchor::End)
             };
-            words.write(g, [x, text_at[1] + 1.0], 0.0, anchor);
+            words.write(g, [x, text_at[1] + 1.0], 0.0, anchor, frame.text);
             return Ok(());
         }
         Seen::Circle {
@@ -1570,7 +1899,17 @@ fn round(
         None => p,
     };
     let (sa, sb) = (start(a), start(b));
-    dimension_line(g, sa, sb, foot(a), foot(b), n, annotation, words);
+    dimension_line(
+        g,
+        sa,
+        sb,
+        foot(a),
+        foot(b),
+        n,
+        annotation,
+        words,
+        frame.text,
+    );
     Ok(())
 }
 
@@ -1655,6 +1994,226 @@ fn centerline_of(g: &mut Group, seen: &[Seen], frame: &Frame<'_>) -> Result<(), 
     }
 }
 
+/// Where a circle's centre is on the sheet and its radius there: a circle
+/// seen end on, or a point (no radius).
+fn mark_of(seen: &Seen, frame: &Frame<'_>) -> Option<(P2, f64)> {
+    match *seen {
+        Seen::Circle {
+            center,
+            radius,
+            end_on: true,
+            ..
+        } => Some((frame.at(center), radius * frame.map.scale)),
+        Seen::Point(p) => Some((frame.at(p), 0.0)),
+        _ => None,
+    }
+}
+
+/// The circle through three points, if they are not on one line.
+fn circle_through(a: P2, b: P2, c: P2) -> Option<(P2, f64)> {
+    let (ab, ac) = (sub2(b, a), sub2(c, a));
+    let d = 2.0 * vec2::cross(ab, ac);
+    if d.abs() < 1e-9 * len2(ab).max(1.0) * len2(ac).max(1.0) {
+        return None;
+    }
+    let (b2, c2) = (dot2(ab, ab), dot2(ac, ac));
+    let o = [(ac[1] * b2 - ab[1] * c2) / d, (ab[0] * c2 - ac[0] * b2) / d];
+    Some((add2(a, o), len2(o)))
+}
+
+/// A centre pattern (mitcad#729): on circles about one centre, the circle
+/// through their centres (long-dash dotted; an arc over them when they
+/// stand on a part of it), a radial line through each, and a small cross
+/// at the pattern's centre; on circles in a row, the line through their
+/// centres and a short cross line on each; else a centre mark on each.
+fn center_pattern(g: &mut Group, seen: &[Seen], frame: &Frame<'_>) -> Result<(), String> {
+    let marks: Vec<(P2, f64)> = seen
+        .iter()
+        .map(|s| mark_of(s, frame))
+        .collect::<Option<_>>()
+        .ok_or_else(|| "a centre pattern is of circles seen end on".to_owned())?;
+    let pen = |r: f64| if r >= 4.0 { Pen::Chain } else { Pen::Thin };
+    // The two farthest apart, and a third off their line.
+    let (mut i, mut j, mut far) = (0, 0, 0.0);
+    for (a, (pa, _)) in marks.iter().enumerate() {
+        for (b, (pb, _)) in marks.iter().enumerate().skip(a + 1) {
+            let d = len2(sub2(*pb, *pa));
+            if d > far {
+                (i, j, far) = (a, b, d);
+            }
+        }
+    }
+    if marks.len() < 2 || far < 1e-9 {
+        for (c, r) in &marks {
+            center_mark(g, *c, *r);
+        }
+        return Ok(());
+    }
+    let tolerance = 0.01_f64.max(1e-6 * far);
+    let (a, b) = (marks[i].0, marks[j].0);
+    let d = unit2(sub2(b, a));
+    let off_line = |p: P2| vec2::cross(d, sub2(p, a)).abs();
+    let third = marks
+        .iter()
+        .map(|(p, _)| *p)
+        .max_by(|p, q| off_line(*p).total_cmp(&off_line(*q)))
+        .filter(|p| off_line(*p) > tolerance);
+    let Some(third) = third else {
+        // In a row: the line through them, beyond the outer ones.
+        let ts: Vec<f64> = marks.iter().map(|(p, _)| dot2(sub2(*p, a), d)).collect();
+        let (lo, hi) = ts.iter().enumerate().fold(
+            ((0, f64::INFINITY), (0, f64::NEG_INFINITY)),
+            |(lo, hi), (k, t)| {
+                (
+                    if *t < lo.1 { (k, *t) } else { lo },
+                    if *t > hi.1 { (k, *t) } else { hi },
+                )
+            },
+        );
+        centerline(
+            g,
+            marks[lo.0].0,
+            marks[hi.0].0,
+            marks[lo.0].1,
+            marks[hi.0].1,
+        );
+        let n = perp(d);
+        for (c, r) in &marks {
+            let reach = r + CENTER_BEYOND;
+            g.line(pen(*r), add2(*c, mul2(n, reach)), sub2(*c, mul2(n, reach)));
+        }
+        return Ok(());
+    };
+    let Some((o, radius)) = circle_through(a, b, third).filter(|(o, r)| {
+        marks
+            .iter()
+            .all(|(p, _)| (len2(sub2(*p, *o)) - r).abs() <= tolerance)
+    }) else {
+        for (c, r) in &marks {
+            center_mark(g, *c, *r);
+        }
+        return Ok(());
+    };
+    // Each hole's angle about the centre; the circle whole unless they
+    // leave a gap wider than one and a half of their pitch.
+    let mut angles: Vec<f64> = marks
+        .iter()
+        .map(|(p, _)| {
+            let v = sub2(*p, o);
+            v[1].atan2(v[0]).rem_euclid(TAU)
+        })
+        .collect();
+    angles.sort_by(f64::total_cmp);
+    let n = angles.len();
+    let (gap, after) = (0..n)
+        .map(|k| {
+            let next = if k + 1 < n {
+                angles[k + 1]
+            } else {
+                angles[0] + TAU
+            };
+            (next - angles[k], k)
+        })
+        .fold(
+            (0.0, 0),
+            |best, step| if step.0 > best.0 { step } else { best },
+        );
+    let widest = marks.iter().map(|(_, r)| *r).fold(0.0, f64::max);
+    if gap > 1.5 * TAU / n as f64 {
+        // An arc from the hole after the gap round to the one before it,
+        // a little beyond each.
+        let beyond = (widest + CENTER_BEYOND) / radius.max(1e-9);
+        let start = angles[(after + 1) % n] - beyond;
+        let end = start + (TAU - gap) + 2.0 * beyond;
+        g.items.push(Item::Arc {
+            pen: Pen::Chain,
+            center: o,
+            radius,
+            start,
+            end: end.min(start + TAU),
+        });
+    } else {
+        g.items.push(Item::Arc {
+            pen: Pen::Chain,
+            center: o,
+            radius,
+            start: 0.0,
+            end: TAU,
+        });
+    }
+    for (c, r) in &marks {
+        let u = unit2(sub2(*c, o));
+        let reach = r + CENTER_BEYOND;
+        g.line(pen(*r), sub2(*c, mul2(u, reach)), add2(*c, mul2(u, reach)));
+    }
+    center_mark(g, o, 0.0);
+    Ok(())
+}
+
+/// An edge extension (mitcad#729): two straight edges run on from their
+/// nearer ends to where their lines meet, a little past it so that the
+/// lines cross there; one straight edge run on beyond both its ends by
+/// `line_offset` (paper mm, [`EXTENSION_LENGTH`] when left out). Each
+/// starts a small gap off the edge.
+fn edge_extension(
+    g: &mut Group,
+    annotation: &ViewAnnotation,
+    seen: &[Seen],
+    frame: &Frame<'_>,
+) -> Result<(), String> {
+    let lines: Vec<(P2, P2)> = seen
+        .iter()
+        .map(|s| match *s {
+            Seen::Line(a, b) => Some((frame.at(a), frame.at(b))),
+            _ => None,
+        })
+        .collect::<Option<_>>()
+        .ok_or_else(|| "an edge extension is of straight edges".to_owned())?;
+    match lines.as_slice() {
+        [(a, b)] => {
+            let d = unit2(sub2(*b, *a));
+            let reach = annotation.line_offset.unwrap_or(EXTENSION_LENGTH).max(0.5);
+            g.line(
+                Pen::Thin,
+                sub2(*a, mul2(d, EXTENSION_GAP)),
+                sub2(*a, mul2(d, EXTENSION_GAP + reach)),
+            );
+            g.line(
+                Pen::Thin,
+                add2(*b, mul2(d, EXTENSION_GAP)),
+                add2(*b, mul2(d, EXTENSION_GAP + reach)),
+            );
+            Ok(())
+        }
+        [(a1, b1), (a2, b2)] => {
+            let (d1, d2) = (sub2(*b1, *a1), sub2(*b2, *a2));
+            let det = vec2::cross(d1, d2);
+            if det.abs() < 1e-9 * len2(d1).max(1e-9) * len2(d2).max(1e-9) {
+                return Err("the edges are parallel: their lines do not meet".to_owned());
+            }
+            let t = vec2::cross(sub2(*a2, *a1), d2) / det;
+            let corner = add2(*a1, mul2(d1, t));
+            for (a, b) in [(*a1, *b1), (*a2, *b2)] {
+                let d = unit2(sub2(b, a));
+                let (ta, tb) = (dot2(sub2(a, corner), d), dot2(sub2(b, corner), d));
+                // The corner on the edge itself: nothing to run on.
+                if ta.min(tb) <= 0.0 && ta.max(tb) >= 0.0 {
+                    continue;
+                }
+                let near = if ta.abs() <= tb.abs() { a } else { b };
+                let out = unit2(sub2(corner, near));
+                g.line(
+                    Pen::Thin,
+                    add2(near, mul2(out, EXTENSION_GAP)),
+                    add2(corner, mul2(out, EXTENSION_BEYOND)),
+                );
+            }
+            Ok(())
+        }
+        _ => Err("an edge extension takes one or two straight edges".to_owned()),
+    }
+}
+
 /// Where a leader's arrow points (sheet): the pick's point nearest where
 /// it was clicked (its point, where it is one).
 fn leader_tip(annotation: &ViewAnnotation, seen: &Seen, frame: &Frame<'_>) -> P2 {
@@ -1663,13 +2222,10 @@ fn leader_tip(annotation: &ViewAnnotation, seen: &Seen, frame: &Frame<'_>) -> P2
 }
 
 /// A leader from `tip` (its arrow there) to text lines on a shoulder at
-/// `knee`, the shoulder and the text running away from the tip.
-fn leader_text(g: &mut Group, tip: P2, knee: P2, lines: &[String]) {
+/// `knee`, the shoulder and the text (`h` high) running away from the tip.
+fn leader_text(g: &mut Group, tip: P2, knee: P2, lines: &[String], h: f64) {
     let side = if knee[0] >= tip[0] { 1.0 } else { -1.0 };
-    let width = lines
-        .iter()
-        .map(|l| text_width(l, DIMENSION_TEXT))
-        .fold(0.0, f64::max);
+    let width = lines.iter().map(|l| text_width(l, h)).fold(0.0, f64::max);
     g.line(Pen::Thin, tip, knee);
     g.line(Pen::Thin, knee, add2(knee, [side * (width + 2.0), 0.0]));
     arrow(g, tip, unit2(sub2(tip, knee)));
@@ -1679,29 +2235,31 @@ fn leader_text(g: &mut Group, tip: P2, knee: P2, lines: &[String]) {
         (knee[0] - 1.0, Anchor::End)
     };
     for (i, line) in lines.iter().rev().enumerate() {
-        let y = knee[1] + 1.0 + i as f64 * DIMENSION_TEXT * 1.6;
-        g.text([x, y], DIMENSION_TEXT, 0.0, anchor, line.clone());
+        let y = knee[1] + 1.0 + i as f64 * h * 1.6;
+        g.text([x, y], h, 0.0, anchor, line.clone());
     }
 }
 
 /// A datum label: a filled triangle on the feature at `tip`, a leader to
-/// a square at `at` (its lower middle) with the letter.
-fn datum(g: &mut Group, tip: P2, at: P2, letter: &str) {
+/// a square at `at` (its lower middle) with the letter (`h` high, the
+/// square in proportion).
+fn datum(g: &mut Group, tip: P2, at: P2, letter: &str, h: f64) {
     let v = unit2(sub2(at, tip));
     let base = mul2(perp(v), 1.6);
     g.items.push(Item::Fill {
         points: vec![add2(tip, base), sub2(tip, base), add2(tip, mul2(v, 2.8))],
     });
     g.line(Pen::Thin, tip, at);
-    let half = CELL / 2.0;
+    let cell = CELL * h / DIMENSION_TEXT;
+    let half = cell / 2.0;
     g.rect(
         Pen::Thin,
         [at[0] - half, at[1]],
-        [at[0] + half, at[1] + CELL],
+        [at[0] + half, at[1] + cell],
     );
     g.text(
-        [at[0], at[1] + half - DIMENSION_TEXT / 2.0],
-        DIMENSION_TEXT,
+        [at[0], at[1] + half - h / 2.0],
+        h,
         0.0,
         Anchor::Middle,
         letter,
@@ -1711,35 +2269,44 @@ fn datum(g: &mut Group, tip: P2, at: P2, letter: &str) {
 /// A feature control frame at `at` (its left middle), a leader from it to
 /// an arrow at `tip`: the characteristic's symbol drawn, then the other
 /// cells (`cells`: the symbol's text first, which is not written; the
-/// tolerance; the datums).
-fn control_frame(g: &mut Group, tip: P2, at: P2, characteristic: Characteristic, cells: &[String]) {
+/// tolerance; the datums), its letters `h` high and its cells in
+/// proportion.
+fn control_frame(
+    g: &mut Group,
+    tip: P2,
+    at: P2,
+    characteristic: Characteristic,
+    cells: &[String],
+    h: f64,
+) {
+    let cell = CELL * h / DIMENSION_TEXT;
     let widths: Vec<f64> = cells
         .iter()
         .enumerate()
         .map(|(i, c)| {
             if i == 0 {
-                CELL
+                cell
             } else {
-                (text_width(c, DIMENSION_TEXT) + 3.0).max(CELL)
+                (text_width(c, h) + 3.0).max(cell)
             }
         })
         .collect();
-    let total: f64 = widths.iter().sum::<f64>().max(CELL);
-    let bottom = at[1] - CELL / 2.0;
-    g.rect(Pen::Thin, [at[0], bottom], [at[0] + total, bottom + CELL]);
+    let total: f64 = widths.iter().sum::<f64>().max(cell);
+    let bottom = at[1] - cell / 2.0;
+    g.rect(Pen::Thin, [at[0], bottom], [at[0] + total, bottom + cell]);
     let mut x = at[0];
     for (i, w) in widths.iter().enumerate() {
         if i > 0 {
-            g.line(Pen::Thin, [x, bottom], [x, bottom + CELL]);
+            g.line(Pen::Thin, [x, bottom], [x, bottom + cell]);
             g.text(
-                [x + w / 2.0, at[1] - DIMENSION_TEXT / 2.0],
-                DIMENSION_TEXT,
+                [x + w / 2.0, at[1] - h / 2.0],
+                h,
                 0.0,
                 Anchor::Middle,
                 cells[i].clone(),
             );
         } else {
-            symbol(g, characteristic, [x + w / 2.0, at[1]], CELL * 0.6);
+            symbol(g, characteristic, [x + w / 2.0, at[1]], cell * 0.6);
         }
         x += w;
     }
@@ -1851,13 +2418,14 @@ fn arrow_small(g: &mut Group, tip: P2, direction: P2) {
 /// A surface finish symbol (ISO 1302) on the surface at `root` (sheet; a
 /// leader from `tip` to it when moved off): a short leg and a long one at
 /// 60 degrees to each other, a bar closing them for material removal, a
-/// circle in them for none, the requirement over the long leg's line.
-fn surface_finish(g: &mut Group, tip: P2, root: P2, finish: &SurfaceFinish) {
+/// circle in them for none, the requirement (`h` high) over the long leg's
+/// line.
+fn surface_finish(g: &mut Group, tip: P2, root: P2, finish: &SurfaceFinish, h: f64) {
     if len2(sub2(root, tip)) > 0.5 {
         g.line(Pen::Thin, root, tip);
         arrow(g, tip, unit2(sub2(tip, root)));
     }
-    let short = 1.4 * DIMENSION_TEXT;
+    let short = 1.4 * h;
     let long = 2.0 * short;
     let (c60, s60) = (0.5, 3f64.sqrt() / 2.0);
     let left = [root[0] - short * c60, root[1] + short * s60];
@@ -1882,11 +2450,11 @@ fn surface_finish(g: &mut Group, tip: P2, root: P2, finish: &SurfaceFinish) {
         FinishProcess::Any => {}
     }
     if let Some(text) = finish.text.as_deref().filter(|t| !t.trim().is_empty()) {
-        let width = text_width(text, DIMENSION_TEXT) + 1.0;
+        let width = text_width(text, h) + 1.0;
         g.line(Pen::Thin, right, [right[0] + width, right[1]]);
         g.text(
-            [right[0] + 0.5, right[1] - DIMENSION_TEXT - 0.8],
-            DIMENSION_TEXT,
+            [right[0] + 0.5, right[1] - h - 0.8],
+            h,
             0.0,
             Anchor::Start,
             text.trim(),
@@ -1952,7 +2520,7 @@ pub fn moved(annotation: &mut ViewAnnotation, seen: &[Seen], frame: &Frame<'_>, 
     };
     match annotation.kind {
         AnnotationType::Linear => {
-            let Ok((_, d)) = linear_axes(annotation.along, seen) else {
+            let Ok((_, d)) = linear_axes(annotation.along, annotation.turn, seen) else {
                 return;
             };
             let n = perp(d);
@@ -1964,10 +2532,7 @@ pub fn moved(annotation: &mut ViewAnnotation, seen: &[Seen], frame: &Frame<'_>, 
             annotation.text_offset = Some([u + dot2(delta, along), v]);
         }
         AnnotationType::Ordinate => {
-            let n = match annotation.along {
-                Some(Along::Vertical) => [1.0, 0.0],
-                _ => [0.0, 1.0],
-            };
+            let (_, n) = ordinate_axes(annotation);
             let origin = frame.at(seen[0].point());
             let level = annotation.line_offset.unwrap_or_else(|| {
                 let b = &frame.view_box;
@@ -2038,7 +2603,12 @@ pub fn moved(annotation: &mut ViewAnnotation, seen: &[Seen], frame: &Frame<'_>, 
                 table.place = add2(table.place, delta);
             }
         }
-        AnnotationType::CenterMark | AnnotationType::Centerline => {}
+        // Drawn where their picks are (an edge extension's reach is its
+        // `line_offset`).
+        AnnotationType::CenterMark
+        | AnnotationType::Centerline
+        | AnnotationType::CenterPattern
+        | AnnotationType::EdgeExtension => {}
     }
 }
 
@@ -2053,7 +2623,7 @@ fn upright_along(d: P2) -> P2 {
 pub fn placed_at(annotation: &mut ViewAnnotation, seen: &[Seen], frame: &Frame<'_>, at: P2) {
     match annotation.kind {
         AnnotationType::Linear => {
-            if let Ok((_, d)) = linear_axes(annotation.along, seen) {
+            if let Ok((_, d)) = linear_axes(annotation.along, annotation.turn, seen) {
                 let n = perp(d);
                 let (pa, pb) = (frame.at(seen[0].point()), frame.at(seen[1].point()));
                 let middle = mid(pa, pb);
@@ -2065,10 +2635,7 @@ pub fn placed_at(annotation: &mut ViewAnnotation, seen: &[Seen], frame: &Frame<'
             }
         }
         AnnotationType::Ordinate => {
-            let n = match annotation.along {
-                Some(Along::Vertical) => [1.0, 0.0],
-                _ => [0.0, 1.0],
-            };
+            let (_, n) = ordinate_axes(annotation);
             let origin = frame.at(seen[0].point());
             annotation.line_offset = Some(dot2(sub2(at, origin), n));
         }
@@ -2118,7 +2685,79 @@ pub fn placed_at(annotation: &mut ViewAnnotation, seen: &[Seen], frame: &Frame<'
                 table.place = at;
             }
         }
-        AnnotationType::CenterMark | AnnotationType::Centerline => {}
+        AnnotationType::CenterMark
+        | AnnotationType::Centerline
+        | AnnotationType::CenterPattern
+        | AnnotationType::EdgeExtension => {}
+    }
+}
+
+/// What an annotation keeps in its view's coordinates carried over its
+/// view turned by `angle` degrees counter-clockwise in its own plane
+/// (mitcad#729), so that it turns with the view: where a leader's pick
+/// was clicked, a leader's text and a circle's text from their points, a
+/// horizontal or vertical dimension's direction (its `turn`; a quarter
+/// turn makes it the other one). A dimension's line and text keep their
+/// places from their picks across the line; the text keeps its side when
+/// the way it reads turns over.
+pub fn turned_with_view(annotation: &mut ViewAnnotation, angle: f64) {
+    let rotate = |p: P2| turned(p, Some(angle));
+    if let Some(at) = annotation.at {
+        annotation.at = Some(rotate(at));
+    }
+    match annotation.kind {
+        AnnotationType::Note
+        | AnnotationType::Datum
+        | AnnotationType::Frame
+        | AnnotationType::Finish
+        | AnnotationType::Balloon
+        | AnnotationType::Radius
+        | AnnotationType::Diameter => {
+            if let Some(shift) = annotation.text_offset {
+                annotation.text_offset = Some(rotate(shift));
+            }
+        }
+        AnnotationType::Linear | AnnotationType::Ordinate
+            if matches!(annotation.along, Some(Along::Horizontal | Along::Vertical)) =>
+        {
+            let before = match annotation.along {
+                Some(Along::Vertical) if annotation.kind == AnnotationType::Linear => {
+                    turned([0.0, 1.0], annotation.turn)
+                }
+                _ => turned([1.0, 0.0], annotation.turn),
+            };
+            let mut turn = (annotation.turn.unwrap_or(0.0) + angle).rem_euclid(360.0);
+            if turn > 180.0 {
+                turn -= 360.0;
+            }
+            let (left, right) = ((turn - 90.0).abs() < 1e-9, (turn + 90.0).abs() < 1e-9);
+            // A quarter turn of a linear dimension is the other axis.
+            if annotation.kind == AnnotationType::Linear {
+                match annotation.along {
+                    Some(Along::Horizontal) if left => {
+                        annotation.along = Some(Along::Vertical);
+                        turn = 0.0;
+                    }
+                    Some(Along::Vertical) if right => {
+                        annotation.along = Some(Along::Horizontal);
+                        turn = 0.0;
+                    }
+                    _ => {}
+                }
+            }
+            annotation.turn = (turn.abs() > 1e-9).then_some(turn);
+            // The text reads from below or from the right: where that
+            // turns it over, its shift along and across the line does too.
+            if annotation.kind == AnnotationType::Linear
+                && let Some([u, v]) = annotation.text_offset
+            {
+                let after = rotate(before);
+                if dot2(upright_along(after), rotate(upright_along(before))) < 0.0 {
+                    annotation.text_offset = Some([-u, -v]);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -2162,6 +2801,7 @@ mod tests {
         let frame = Frame {
             map: &map,
             view_box: view_box(),
+            text: DIMENSION_TEXT,
         };
         // The two upright sides of a 40 x 20 box at the view's origin.
         let seen = [
@@ -2202,6 +2842,7 @@ mod tests {
         let frame = Frame {
             map: &map,
             view_box: view_box(),
+            text: DIMENSION_TEXT,
         };
         let left = Seen::Line([0.0, 0.0], [0.0, 20.0]);
         let right = Seen::Line([40.0, 0.0], [40.0, 20.0]);
@@ -2262,6 +2903,7 @@ mod tests {
         let frame = Frame {
             map: &map,
             view_box: view_box(),
+            text: DIMENSION_TEXT,
         };
         let laid = lay_out(&dia, &[circle], &frame, Some(&words("Ø10")), &[]).unwrap();
         assert_eq!(texts(&laid), ["Ø10"]);
@@ -2339,7 +2981,7 @@ mod tests {
             height: None,
         };
         note.check().unwrap();
-        let laid = lay_out_note(&note);
+        let laid = lay_out_note(&note, DIMENSION_TEXT);
         assert_eq!(laid.group.items.len(), 2);
         for characteristic in Characteristic::ALL {
             let mut g = Group::new("feature-control-frame");
@@ -2355,11 +2997,326 @@ mod tests {
                 process: FinishProcess::Removal,
                 text: Some("Ra 1.6".to_owned()),
             },
+            DIMENSION_TEXT,
         );
         assert!(
             g.items
                 .iter()
                 .any(|i| matches!(i, Item::Text { text, .. } if text == "Ra 1.6"))
         );
+    }
+
+    fn circle(center: P2, radius: f64) -> Seen {
+        Seen::Circle {
+            center,
+            radius,
+            end_on: true,
+            across: [1.0, 0.0],
+            arc: None,
+        }
+    }
+
+    fn arcs(laid: &Laid) -> Vec<(P2, f64, f64, f64)> {
+        laid.group
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Arc {
+                    center,
+                    radius,
+                    start,
+                    end,
+                    ..
+                } => Some((*center, *radius, *start, *end)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_centre_pattern_marks_a_bolt_circle_a_row_or_each_circle() {
+        let map = map();
+        let frame = Frame {
+            map: &map,
+            view_box: view_box(),
+            text: DIMENSION_TEXT,
+        };
+        let pattern = ViewAnnotation::new(1, AnnotationType::CenterPattern, Vec::new());
+        // Six holes of 3 on a circle of 20 about (30, 10): the whole
+        // circle through them, centred there.
+        let ring: Vec<Seen> = (0..6)
+            .map(|k| {
+                let a = f64::from(k) * TAU / 6.0;
+                circle([30.0 + 20.0 * a.cos(), 10.0 + 20.0 * a.sin()], 3.0)
+            })
+            .collect();
+        let laid = lay_out(&pattern, &ring, &frame, None, &[]).unwrap();
+        assert_eq!(laid.group.class, "center-mark");
+        let pitch = arcs(&laid);
+        assert_eq!(pitch.len(), 1, "{pitch:?}");
+        let (c, r, start, end) = pitch[0];
+        assert!(
+            (c[0] - 130.0).abs() < 1e-6 && (c[1] - 110.0).abs() < 1e-6,
+            "{c:?}"
+        );
+        assert!((r - 20.0).abs() < 1e-6 && (end - start - TAU).abs() < 1e-9);
+        // Three of them on a quarter: an arc over them, not the circle.
+        let quarter: Vec<Seen> = (0..3)
+            .map(|k| {
+                let a = f64::from(k) * TAU / 8.0;
+                circle([20.0 * a.cos(), 20.0 * a.sin()], 2.0)
+            })
+            .collect();
+        let laid = lay_out(&pattern, &quarter, &frame, None, &[]).unwrap();
+        let (_, _, start, end) = arcs(&laid)[0];
+        assert!(end - start < PI, "{start} {end}");
+        // In a row: one line through them, no arc.
+        let row = [
+            circle([0.0, 0.0], 2.0),
+            circle([10.0, 0.0], 2.0),
+            circle([20.0, 0.0], 2.0),
+        ];
+        let laid = lay_out(&pattern, &row, &frame, None, &[]).unwrap();
+        assert!(arcs(&laid).is_empty());
+        assert!(laid.bounds.width() > 20.0 + 2.0 * (2.0 + CENTER_BEYOND) - 1e-6);
+        // Scattered: a centre mark each.
+        let scattered = [
+            circle([0.0, 0.0], 2.0),
+            circle([10.0, 3.0], 2.0),
+            circle([4.0, 25.0], 2.0),
+            circle([-30.0, 1.0], 2.0),
+        ];
+        let laid = lay_out(&pattern, &scattered, &frame, None, &[]).unwrap();
+        assert!(arcs(&laid).is_empty());
+        assert_eq!(laid.group.items.len(), 4 * 4);
+        // A circle seen from the side is no hole of a pattern.
+        let side = Seen::Axis {
+            a: [0.0, 0.0],
+            b: [0.0, 5.0],
+            radius: 1.0,
+        };
+        assert!(lay_out(&pattern, &[side], &frame, None, &[]).is_err());
+    }
+
+    #[test]
+    fn edge_extensions_run_edges_on_to_their_corner() {
+        let map = map();
+        let frame = Frame {
+            map: &map,
+            view_box: view_box(),
+            text: DIMENSION_TEXT,
+        };
+        let mut extension = ViewAnnotation::new(1, AnnotationType::EdgeExtension, Vec::new());
+        // A corner rounded away: the bottom edge ends at x 30, the right
+        // side starts at y 5; their lines meet at (35, 0).
+        let edges = [
+            Seen::Line([0.0, 0.0], [30.0, 0.0]),
+            Seen::Line([35.0, 5.0], [35.0, 20.0]),
+        ];
+        let laid = lay_out(&extension, &edges, &frame, None, &[]).unwrap();
+        assert_eq!(laid.group.class, "edge-extension");
+        let lines: Vec<(P2, P2)> = laid
+            .group
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Line { a, b, .. } => Some((*a, *b)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        // Along the bottom from x 31 to 2 mm past the corner.
+        assert!((lines[0].0[0] - 131.0).abs() < 1e-9 && (lines[0].1[0] - 137.0).abs() < 1e-9);
+        assert!((lines[1].1[1] - 98.0).abs() < 1e-9, "{:?}", lines[1]);
+        // Parallel edges meet nowhere.
+        let parallel = [
+            Seen::Line([0.0, 0.0], [30.0, 0.0]),
+            Seen::Line([0.0, 5.0], [30.0, 5.0]),
+        ];
+        assert!(lay_out(&extension, &parallel, &frame, None, &[]).is_err());
+        // One edge: beyond both its ends by its reach.
+        extension.line_offset = Some(5.0);
+        let laid = lay_out(&extension, &edges[..1], &frame, None, &[]).unwrap();
+        assert!((laid.bounds.min[0] - (100.0 - 6.0)).abs() < 1e-9);
+        assert!((laid.bounds.max[0] - (130.0 + 6.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn letters_take_the_height_given() {
+        let map = map();
+        let frame = |text: f64| Frame {
+            map: &map,
+            view_box: view_box(),
+            text,
+        };
+        let heights = |laid: &Laid| -> Vec<f64> {
+            laid.group
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Text { height, .. } => Some(*height),
+                    _ => None,
+                })
+                .collect()
+        };
+        let seen = [
+            Seen::Line([0.0, 0.0], [0.0, 20.0]),
+            Seen::Line([40.0, 0.0], [40.0, 20.0]),
+        ];
+        let mut d = ViewAnnotation::new(1, AnnotationType::Linear, Vec::new());
+        d.along = Some(Along::Horizontal);
+        let laid = lay_out(&d, &seen, &frame(5.0), Some(&words("40")), &[]).unwrap();
+        assert_eq!(heights(&laid), [5.0]);
+        let mut note = ViewAnnotation::new(2, AnnotationType::Note, vec![]);
+        note.text = Some("A\nB".to_owned());
+        let laid = lay_out(&note, &seen[..1], &frame(2.5), None, &[]).unwrap();
+        assert_eq!(heights(&laid), [2.5, 2.5]);
+        let sheet_note = SheetNote {
+            id: 3,
+            text: "C".to_owned(),
+            at: [0.0, 0.0],
+            height: None,
+        };
+        assert_eq!(heights(&lay_out_note(&sheet_note, 7.0)), [7.0]);
+        // Checked.
+        assert!(check_height(0.0).unwrap_err().contains("high"));
+        assert!(check_height(MAX_TEXT_HEIGHT + 1.0).is_err());
+        check_height(5.0).unwrap();
+    }
+
+    #[test]
+    fn a_dimension_turns_with_its_view() {
+        let pick = ViewPick {
+            body: "F2.b0".parse().unwrap(),
+            occurrence: None,
+            edge: Some("E{F2:start|F2:side(c1[c4,c2])}".parse().unwrap()),
+            face: None,
+            point: None,
+        };
+        let mut d = ViewAnnotation::new(1, AnnotationType::Linear, Vec::new());
+        d.along = Some(Along::Horizontal);
+        // Seen after the view turned a quarter to the left, its picks
+        // stand one above the other: it measures them as before.
+        let before = [Seen::Point([0.0, 0.0]), Seen::Point([40.0, 5.0])];
+        let after = [Seen::Point([0.0, 0.0]), Seen::Point([-5.0, 40.0])];
+        turned_with_view(&mut d, 90.0);
+        assert_eq!(d.along, Some(Along::Vertical));
+        assert_eq!(d.turn, None);
+        assert!((measure(&d, &after).unwrap().unwrap() - 40.0).abs() < 1e-9);
+        // An angle of 30 degrees: its turn kept, its value the same.
+        let mut d =
+            ViewAnnotation::new(1, AnnotationType::Linear, vec![pick.clone(), pick.clone()]);
+        d.along = Some(Along::Horizontal);
+        let value = measure(&d, &before).unwrap().unwrap();
+        turned_with_view(&mut d, 30.0);
+        assert_eq!(d.along, Some(Along::Horizontal));
+        assert!((d.turn.unwrap() - 30.0).abs() < 1e-9);
+        d.check().unwrap();
+        let rotated: Vec<Seen> = before
+            .iter()
+            .map(|s| Seen::Point(turned(s.point(), Some(30.0))))
+            .collect();
+        assert!((measure(&d, &rotated).unwrap().unwrap() - value).abs() < 1e-9);
+        // An ordinate keeps its signed value.
+        let mut o = ViewAnnotation::new(2, AnnotationType::Ordinate, Vec::new());
+        o.along = Some(Along::Vertical);
+        let value = measure(&o, &before).unwrap().unwrap();
+        turned_with_view(&mut o, -120.0);
+        let rotated: Vec<Seen> = before
+            .iter()
+            .map(|s| Seen::Point(turned(s.point(), Some(-120.0))))
+            .collect();
+        assert!((measure(&o, &rotated).unwrap().unwrap() - value).abs() < 1e-9);
+        // A leader's text turns about its arrow.
+        let mut note = ViewAnnotation::new(3, AnnotationType::Note, Vec::new());
+        note.text = Some("X".to_owned());
+        note.text_offset = Some([10.0, 0.0]);
+        note.at = Some([5.0, 0.0]);
+        turned_with_view(&mut note, 90.0);
+        let [u, v] = note.text_offset.unwrap();
+        assert!(u.abs() < 1e-9 && (v - 10.0).abs() < 1e-9);
+        assert!((note.at.unwrap()[1] - 5.0).abs() < 1e-9);
+        // An aligned dimension has no turn of its own.
+        let mut aligned = ViewAnnotation::new(4, AnnotationType::Linear, vec![pick.clone(), pick]);
+        aligned.along = Some(Along::Aligned);
+        turned_with_view(&mut aligned, 45.0);
+        assert_eq!(aligned.turn, None);
+        aligned.turn = Some(10.0);
+        assert!(aligned.check().unwrap_err().contains("turns with its view"));
+    }
+
+    #[test]
+    fn lines_arcs_and_texts_are_drawn_where_their_view_puts_them() {
+        let line = SketchItem::Line {
+            id: 1,
+            from: [0.0, 0.0],
+            to: [10.0, 0.0],
+            pen: SketchPen::Thick,
+        };
+        line.check().unwrap();
+        // In a view at 2:1 placed at (100, 50).
+        let map = ViewMap::new(2.0, [0.0, 0.0], [100.0, 50.0]);
+        let laid = lay_out_sketch(&line, &map, DIMENSION_TEXT);
+        assert_eq!(laid.group.class, "sketch");
+        assert_eq!(laid.group.id.as_deref(), Some("A1"));
+        assert!(matches!(
+            laid.group.items[0],
+            Item::Line { pen: Pen::Thick, a, b } if a == [100.0, 50.0] && b == [120.0, 50.0]
+        ));
+        let arc = SketchItem::Arc {
+            id: 2,
+            center: [5.0, 5.0],
+            radius: 4.0,
+            start: 0.0,
+            end: PI,
+            pen: SketchPen::Thin,
+        };
+        arc.check().unwrap();
+        let laid = lay_out_sketch(&arc, &map, DIMENSION_TEXT);
+        let (c, r, _, _) = arcs(&laid)[0];
+        assert!(c == [110.0, 60.0] && (r - 8.0).abs() < 1e-12);
+        let text = SketchItem::Text {
+            id: 3,
+            text: "KEEP\nCLEAR".to_owned(),
+            at: [0.0, 10.0],
+            height: None,
+        };
+        text.check().unwrap();
+        assert_eq!(text.label(), "KEEP / CLEAR");
+        assert_eq!(texts(&lay_out_sketch(&text, &map, 5.0)), ["KEEP", "CLEAR"]);
+        // Carried with its view turned a quarter.
+        let mut turned_arc = arc.clone();
+        turned_arc.carried(&|p| turned(p, Some(90.0)), PI / 2.0, 1.0);
+        let SketchItem::Arc {
+            center, start, end, ..
+        } = turned_arc
+        else {
+            panic!("an arc");
+        };
+        assert!((center[0] + 5.0).abs() < 1e-9 && (center[1] - 5.0).abs() < 1e-9);
+        assert!((start - PI / 2.0).abs() < 1e-9 && (end - 3.0 * PI / 2.0).abs() < 1e-9);
+        // Checked.
+        let short = SketchItem::Line {
+            id: 4,
+            from: [1.0, 1.0],
+            to: [1.0, 1.0],
+            pen: SketchPen::Thin,
+        };
+        assert!(short.check().unwrap_err().contains("length"));
+        let backwards = SketchItem::Arc {
+            id: 5,
+            center: [0.0, 0.0],
+            radius: 1.0,
+            start: 1.0,
+            end: 0.5,
+            pen: SketchPen::Thin,
+        };
+        assert!(backwards.check().is_err());
+        // Its file form: the pen left out when thin.
+        let value = serde_json::to_value(&arc).unwrap();
+        assert_eq!(value["type"], "arc");
+        assert!(value.get("pen").is_none());
+        let back: SketchItem = serde_json::from_value(value).unwrap();
+        assert_eq!(back, arc);
     }
 }

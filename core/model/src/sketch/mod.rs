@@ -1216,7 +1216,9 @@ pub struct Projection {
     pub by_geometry: bool,
     /// Section curves (mitcad#389): the entities are where the sketch's
     /// plane cuts the source, a face (every face of a name without `#k`),
-    /// not the source projected onto it ([`crate::Kernel::section_curves`]).
+    /// not the source projected onto it ([`crate::Kernel::section_curves`]);
+    /// of an edge, the points where the plane crosses it
+    /// ([`crate::Kernel::section_points`], mitcad#736).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub section: bool,
     /// Edges the source continues into, in order (mitcad#389): a curve the

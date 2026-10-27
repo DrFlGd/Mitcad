@@ -94,7 +94,9 @@ std::optional<DragProxyRule> extrudeDragProxy(const CommandState& shown, const C
     return rule;
   }
   if (two && (key == QStringLiteral("distance") || key == QStringLiteral("distance2"))) {
-    // Each side's arrow points away from the profile plane.
+    // Each side's arrow points away from the profile plane. A side dragged
+    // across it (a negative distance, which ends on the other side's side,
+    // mitcad#765) or shown so is left to the exact preview.
     if (from <= 0.0 || value <= 0.0 || shown.value(QStringLiteral("distance")) <= 0.0 ||
         shown.value(QStringLiteral("distance2")) <= 0.0) {
       return std::nullopt;

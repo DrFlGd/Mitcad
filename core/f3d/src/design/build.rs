@@ -315,7 +315,8 @@ fn face_input(seg: &Segment, input: u64) -> Option<Reference> {
 /// str16 class | str16 designation | str16 designation | str16 size | str16 type
 /// u8 full length | u32 location | f64 major diameter | f64 minor diameter (cm)
 /// u8 modelled | f64 pitch | f64 pitch diameter (cm) | ref hole (null for an
-/// item) | ref | ref | u8 right-handed | ...
+/// item) | ref | ref | u8 right-handed | f64 taper angle | f64 height
+/// | f64 tap drill | f64 taper length | f64 small pitch diameter (cm) | ...
 /// ```
 ///
 /// `external` is 1 on every external face of the corpus' threads and 0 on
@@ -325,6 +326,12 @@ fn face_input(seg: &Segment, input: u64) -> Option<Reference> {
 /// one (the controlled variants of a cosmetic and a modelled thread each
 /// differ in this byte only, apart from the list of the modelled one; every
 /// thread of the corpora has 1).
+///
+/// A taper pipe thread (mitcad#733: `1/2 - 14 NPT` of type `NPT`, `Rc 1/2`
+/// of type `ISO Taper Internal`) stores the angle 0, its tap drill as both
+/// diameters and the pitch diameter 0; the five numbers after the
+/// handedness byte (all 0 on straight threads) give its taper
+/// ([`ThreadTaper`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ThreadFields {
     /// The flank angle, degrees (60, 55 for Whitworth pipe threads).
@@ -346,17 +353,40 @@ pub struct ThreadFields {
     /// Handedness; `None` where the layout has no such byte (versions
     /// before 4) or the bytes do not fit it.
     pub right_handed: Option<bool>,
+    /// A taper pipe thread's taper (mitcad#733); `None` for a straight one.
+    pub taper: Option<ThreadTaper>,
+    /// The hole whose thread it is (the reference after the pitch
+    /// diameter); `None` for a thread item.
+    pub hole: Option<u64>,
+}
+
+/// A taper pipe thread's numbers after the handedness byte (mitcad#733), as
+/// the drum design's `1/2 - 14 NPT` and `Rc 1/2` holes have them: the
+/// taper's full angle (radians: 2 atan(1/32) for 1:16 on the diameter), the
+/// thread's height h (0.8 P of NPT, 0.640327 P of the 55-degree profile),
+/// the tap drill, the thread's length and the pitch diameter at its small
+/// end, `length` from the large one (cm). The large end's minor diameter is
+/// `small_pitch + length × 2 tan(angle / 2) − h`: the bore's taper of both
+/// holes starts with it at the hole's start (the history states' cones).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThreadTaper {
+    pub angle: f64,
+    pub height: f64,
+    pub tap_drill: f64,
+    pub length: f64,
+    pub small_pitch: f64,
 }
 
 /// The handedness byte of a thread object: after the pitch diameter come
 /// the hole reference (one `0` byte for a thread that is no hole's), two
 /// more references, then the byte (1 right-handed, 0 left-handed). `ref_end`
-/// gives the end of the reference at a position.
+/// gives the end of the reference at a position. With the byte, where it
+/// is.
 fn thread_handedness(
     d: &[u8],
     q: usize,
     ref_end: impl Fn(&[u8], usize) -> Option<usize>,
-) -> Option<bool> {
+) -> Option<(bool, usize)> {
     let mut q = q;
     q = if *d.get(q)? == 0 {
         q + 1
@@ -367,10 +397,30 @@ fn thread_handedness(
         q = ref_end(d, q)?;
     }
     match *d.get(q)? {
-        0 => Some(false),
-        1 => Some(true),
+        0 => Some((false, q)),
+        1 => Some((true, q)),
         _ => None,
     }
+}
+
+/// The taper numbers after the handedness byte at `q` ([`ThreadTaper`]):
+/// `None` when they are all 0 (a straight thread) or do not fit a taper.
+fn thread_taper(d: &[u8], q: usize) -> Option<ThreadTaper> {
+    let v = f64s_at(d, q + 1, 5)?;
+    let [angle, height, tap_drill, length, small_pitch] = [v[0], v[1], v[2], v[3], v[4]];
+    let positive = |x: f64| x.is_finite() && x > 0.0;
+    (angle > 0.0
+        && angle < 0.5
+        && [height, tap_drill, length, small_pitch]
+            .into_iter()
+            .all(positive))
+    .then_some(ThreadTaper {
+        angle,
+        height,
+        tap_drill,
+        length,
+        small_pitch,
+    })
 }
 
 impl ThreadFields {
@@ -391,6 +441,18 @@ impl ThreadFields {
         });
         if let Some(right) = self.right_handed {
             info["isRightHanded"] = right.into();
+        }
+        // A taper pipe thread (mitcad#733): its taper's numbers (cm, the
+        // angle in radians).
+        if let Some(t) = &self.taper {
+            info["isTapered"] = true.into();
+            info["_f3d_taper"] = serde_json::json!({
+                "angle": t.angle,
+                "height": t.height,
+                "tapDrill": t.tap_drill,
+                "length": t.length,
+                "smallPitchDiameter": t.small_pitch,
+            });
         }
         info
     }
@@ -446,7 +508,10 @@ pub fn thread_fields(seg: &Segment, id: u64) -> Option<ThreadFields> {
     let pitch = f64_at(d, p + 22)?;
     let pitch_diameter = f64_at(d, p + 30)?;
     let sane = |x: f64| x.is_finite() && x > 0.0;
-    if full_length > 1 || modeled > 1 || !(sane(angle) && sane(major) && sane(minor) && sane(pitch))
+    // (A taper pipe thread stores the angle 0, mitcad#733.)
+    if full_length > 1
+        || modeled > 1
+        || !(angle.is_finite() && angle >= 0.0 && sane(major) && sane(minor) && sane(pitch))
     {
         return None;
     }
@@ -454,13 +519,24 @@ pub fn thread_fields(seg: &Segment, id: u64) -> Option<ThreadFields> {
         text.insert(1, String::new());
     }
     let [class, first, second, size, thread_type]: [String; 5] = text.try_into().ok()?;
-    let right_handed = if version >= 4 {
+    let handedness = if version >= 4 {
         thread_handedness(d, p + 38, |d, q| seg.ref_at(d, q).map(|r| r.end))
     } else {
         None
     };
+    let taper = handedness.and_then(|(_, q)| thread_taper(d, q));
+    // A straight thread has its angle.
+    if taper.is_none() && !sane(angle) {
+        return None;
+    }
+    let hole = match d.get(p + 38) {
+        Some(0) | None => None,
+        Some(_) => seg.ref_at(d, p + 38).map(|r| r.id),
+    };
     Some(ThreadFields {
-        right_handed,
+        right_handed: handedness.map(|(right, _)| right),
+        taper,
+        hole,
         angle,
         internal: external == 0,
         full_length: full_length == 1,
@@ -1149,16 +1225,31 @@ fn sub_base_result(seg: &Segment, tail: &decode::ItemTail) -> Option<i32> {
 /// thread sub-item has a result number of its own, the hole's plus one,
 /// and its history state cuts the thread into the hole's bore (an M10
 /// thread's 195 mm³ in a 20 mm deep hole); the hole's own state has only
-/// the bore. `None` for other items and cosmetic threads.
-fn modelled_thread_result(seg: &Segment, tail: &decode::ItemTail) -> Option<i32> {
-    tail.sub_features
+/// the bore. A cosmetic taper pipe thread's operations taper the bore
+/// (mitcad#733: 150 mm³ of a `1/2 - 14 NPT` hole) and count alike; the
+/// thread of a hole whose tail lists no sub-items is the one that names
+/// the hole (`id`). `None` for other items and straight cosmetic threads.
+fn modelled_thread_result(seg: &Segment, id: u64, tail: &decode::ItemTail) -> Option<i32> {
+    let shapes = |t: &ThreadFields| t.modeled || t.taper.is_some();
+    let listed: Vec<u64> = tail
+        .sub_features
         .iter()
         .flatten()
-        .filter(|&&s| thread_fields(seg, s).is_some_and(|t| t.modeled))
-        .find_map(|&s| {
-            let t = decode::feature_tail(seg, seg.object(s)?)?;
-            (t.result_no > tail.result_no && tail.result_no > 0).then_some(t.result_no)
-        })
+        .copied()
+        .filter(|&s| thread_fields(seg, s).is_some_and(|t| shapes(&t)))
+        .collect();
+    let threads = if listed.is_empty() && tail.sub_features.iter().flatten().next().is_none() {
+        seg.objects_of(THREAD)
+            .filter(|o| thread_fields(seg, o.id).is_some_and(|t| t.hole == Some(id) && shapes(&t)))
+            .map(|o| o.id)
+            .collect()
+    } else {
+        listed
+    };
+    threads.into_iter().find_map(|s| {
+        let t = decode::feature_tail(seg, seg.object(s)?)?;
+        (t.result_no > tail.result_no && tail.result_no > 0).then_some(t.result_no)
+    })
 }
 
 /// Names of the parameters that depend on `p`: those whose expression
@@ -2641,12 +2732,20 @@ impl Builder<'_> {
                     });
                 }
                 // A tapped hole's thread is its sub-item (mitcad#35); its
-                // depth is the thread's length.
+                // depth is the thread's length. A hole whose tail lists no
+                // sub-items has the thread that names it as its hole
+                // (mitcad#733: a hole tapped `Rc 1/2`).
                 let thread = it
                     .tail
                     .iter()
                     .flat_map(|t| t.sub_features.iter().flatten())
-                    .find_map(|&s| Some((s, thread_fields(seg, s)?)));
+                    .find_map(|&s| Some((s, thread_fields(seg, s)?)))
+                    .or_else(|| {
+                        seg.objects_of(THREAD).find_map(|o| {
+                            let t = thread_fields(seg, o.id)?;
+                            (t.hole == Some(fid)).then_some((o.id, t))
+                        })
+                    });
                 if let Some((sub, t)) = thread {
                     let roles = self.roles(sub);
                     let sub_param =
@@ -3483,7 +3582,7 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
             f3d.sub_features = Some(t.sub_features.clone());
         }
         if let Some(t) = &it.tail {
-            f3d.last_result_no = modelled_thread_result(seg, t);
+            f3d.last_result_no = modelled_thread_result(seg, it.id, t);
         }
         if it.class == COMPONENT_FROM_BODIES {
             f3d.made_result_no = made_result(seg, it.id);
@@ -4118,14 +4217,17 @@ mod tests {
             d.extend(reference(5));
             d.extend(reference(6));
             d.extend([byte, 0, 0, 0, 0]);
-            assert_eq!(thread_handedness(&d, 0, plain_ref_end), want);
+            assert_eq!(
+                thread_handedness(&d, 0, plain_ref_end).map(|(right, _)| right),
+                want
+            );
         }
         // A tapped hole's thread: the hole is a reference.
         let mut d = reference(4);
         d.extend(reference(5));
         d.extend(reference(6));
         d.extend([1, 0, 0]);
-        assert_eq!(thread_handedness(&d, 0, plain_ref_end), Some(true));
+        assert_eq!(thread_handedness(&d, 0, plain_ref_end), Some((true, 33)));
         // Too short, or the references missing.
         assert_eq!(thread_handedness(&[0, 1, 2], 0, plain_ref_end), None);
         assert_eq!(thread_handedness(&[], 0, plain_ref_end), None);

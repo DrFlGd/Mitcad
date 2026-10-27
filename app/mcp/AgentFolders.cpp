@@ -8,8 +8,11 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
+#include <QShowEvent>
 #include <QSignalBlocker>
+#include <QTimer>
 #include <QVBoxLayout>
+#include <QtLogging>
 
 #include <utility>
 
@@ -186,12 +189,12 @@ AgentPreferencesBox::AgentPreferencesBox(QWidget* parent)
 #endif
 {
   auto* layout = new QVBoxLayout(this);
-  auto* connectAssistant = new QPushButton(tr("Connect AI Assistant…"));
-  connectAssistant->setObjectName(QStringLiteral("connectAssistant"));
-  connectAssistant->setAutoDefault(false);
-  connect(connectAssistant, &QPushButton::clicked, this, &AgentPreferencesBox::connectRequested);
+  m_connect = new QPushButton(tr("Connect AI Assistant…"));
+  m_connect->setObjectName(QStringLiteral("connectAssistant"));
+  m_connect->setAutoDefault(false);
+  connect(m_connect, &QPushButton::clicked, this, &AgentPreferencesBox::connectRequested);
   // Its natural width, as the other pages' buttons.
-  layout->addWidget(connectAssistant, 0, Qt::AlignLeft);
+  layout->addWidget(m_connect, 0, Qt::AlignLeft);
   // The list's name, as the Connect AI Assistant dialog's folder line.
   auto* title = new QLabel(tr("Folders for designs"));
   layout->addWidget(title);
@@ -239,6 +242,19 @@ AgentPreferencesBox::AgentPreferencesBox(QWidget* parent)
   connect(m_remove, &QPushButton::clicked, this, [this] {
     qDeleteAll(m_folders->selectedItems());
     emit changed();
+  });
+}
+
+void AgentPreferencesBox::showEvent(QShowEvent* event) {
+  AgentPreferencesBase::showEvent(event);
+  // Where Connect AI Assistant… is, in the main window's coordinates (UI
+  // tests, mitcad#760).
+  QTimer::singleShot(0, this, [this] {
+    QWidget* main = window()->parentWidget() != nullptr ? window()->parentWidget()->window() : nullptr;
+    if (main != nullptr && m_connect->isVisible()) {
+      const QPoint at = m_connect->mapToGlobal(m_connect->rect().center()) - main->mapToGlobal(QPoint(0, 0));
+      qDebug().noquote() << QStringLiteral("Preferences connect assistant at %1,%2").arg(at.x()).arg(at.y());
+    }
   });
 }
 

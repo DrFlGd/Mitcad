@@ -131,7 +131,9 @@ bool machinery(const Frame& frame) {
       QStringLiteral("__restore_rt"), QStringLiteral("_sigtramp"), QStringLiteral("__cxa_throw"),
       QStringLiteral("__cxa_rethrow"), QStringLiteral("rust_panic"), QStringLiteral("KiUserExceptionDispatcher"),
       QStringLiteral("UnhandledExceptionFilter"), QStringLiteral("RtlCaptureStackBackTrace"),
-      QStringLiteral("CaptureStackBackTrace")};
+      QStringLiteral("CaptureStackBackTrace"),
+      // An unhandled C++ exception on Windows (mitcad#773): the throw.
+      QStringLiteral("RaiseException"), QStringLiteral("_CxxThrowException"), QStringLiteral("CxxThrowException")};
   static const QStringList prefixes{
       QStringLiteral("mitcad::crash::detail::"), QStringLiteral("mitcad::geometry::detail::dispatch_occt_signal"),
       QStringLiteral("mitcad::geometry::detail::call_signal_handler"), QStringLiteral("std::terminate"),

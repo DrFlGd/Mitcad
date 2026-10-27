@@ -5,7 +5,9 @@
 // the key's own unit; Advanced off hides an advanced key unless it is set,
 // a tab with nothing to show is hidden, the search finds the plain names
 // only; a field commits what is typed, in its range.
+#include <cmath>
 #include <cstdio>
+#include <limits>
 
 #include <QComboBox>
 #include <QJsonArray>
@@ -47,6 +49,46 @@ QJsonObject key(const char* name, const char* plain, const char* kind, const cha
                      {QStringLiteral("advanced"), advanced}};
 }
 
+// A key or a dialect entry with a range: `min`, and `max` unless it is
+// unbounded (as the `print_keys` query leaves it out).
+QJsonObject limited(QJsonObject object, double low, double high = std::numeric_limits<double>::infinity()) {
+  object.insert(QStringLiteral("min"), low);
+  if (std::isfinite(high)) {
+    object.insert(QStringLiteral("max"), high);
+  }
+  return object;
+}
+
+// Keys whose ranges go beyond the usual (mitcad#746): a purge line spacing
+// and a tower infill gap above 100 %, and Bambu Studio's -1 ("automatic")
+// that OrcaSlicer does not take.
+QJsonObject rangedAnswer() {
+  QJsonArray keys;
+  keys.append(limited(key("wipe_tower_extra_spacing", "Prime tower extra spacing", "percent", "", "others",
+                          "prime_tower", true),
+                      100.0, 300.0));
+  keys.append(limited(
+      key("prime_tower_infill_gap", "Prime tower infill gap", "percent", "", "others", "prime_tower", true), 100.0));
+  keys.append(limited(key("fill_density", "Sparse infill density", "percent", "", "strength", "sparse_infill", false),
+                      0.0, 100.0));
+  QJsonObject walls =
+      limited(key("tree_support_wall_count", "Tree support walls", "integer", "", "support", "tree_supports", true),
+              -1.0);
+  QJsonArray dialects;
+  dialects.append(QJsonObject{{QStringLiteral("dialect"), QStringLiteral("bambu_studio")},
+                              {QStringLiteral("key"), QStringLiteral("tree_support_wall_count")},
+                              {QStringLiteral("list"), false}});
+  dialects.append(limited(QJsonObject{{QStringLiteral("dialect"), QStringLiteral("orcaslicer")},
+                                      {QStringLiteral("key"), QStringLiteral("tree_support_wall_count")},
+                                      {QStringLiteral("list"), false}},
+                          0.0, 2.0));
+  walls.insert(QStringLiteral("dialects"), dialects);
+  keys.append(walls);
+  keys.append(key("xy_size_compensation", "X-Y outer contour compensation", "number", "mm", "quality", "precision",
+                  true));
+  return QJsonObject{{QStringLiteral("keys"), keys}};
+}
+
 QJsonObject group(const char* id, const char* title) {
   return QJsonObject{{QStringLiteral("id"), QString::fromLatin1(id)}, {QStringLiteral("title"), QString::fromLatin1(title)}};
 }
@@ -62,14 +104,17 @@ QJsonObject answer(bool withLayout) {
                                  {QStringLiteral("name"), QStringLiteral("Nearest")}});
   seam.insert(QStringLiteral("choices"), seamChoices);
   QJsonArray keys;
-  keys.append(key("layer_height", "Layer height", "number", "mm", "quality", "layer_height", false));
-  keys.append(key("first_layer_extrusion_width", "First layer line width", "number_or_percent", "mm", "quality",
-                  "layer_height", false));
+  // Numbers with their ranges as the model gives them (mitcad#746).
+  keys.append(limited(key("layer_height", "Layer height", "number", "mm", "quality", "layer_height", false), 0.0));
+  keys.append(limited(key("first_layer_extrusion_width", "First layer line width", "number_or_percent", "mm",
+                          "quality", "layer_height", false),
+                      0.0));
   keys.append(seam);
   keys.append(key("wall_sequence", "Walls printing order", "text", "", "quality", "order_and_flow", true));
-  keys.append(key("perimeters", "Walls", "integer", "", "strength", "walls", false));
-  keys.append(key("fill_density", "Sparse infill density", "percent", "", "strength", "sparse_infill", false));
-  keys.append(key("default_jerk", "Default", "number", "mm/s", "speed", "jerk", true));
+  keys.append(limited(key("perimeters", "Walls", "integer", "", "strength", "walls", false), 0.0));
+  keys.append(
+      limited(key("fill_density", "Sparse infill density", "percent", "", "strength", "sparse_infill", false), 0.0, 100.0));
+  keys.append(limited(key("default_jerk", "Default", "number", "mm/s", "speed", "jerk", true), 0.0));
   QJsonObject result{{QStringLiteral("keys"), keys}};
   if (withLayout) {
     QJsonArray quality;
@@ -158,6 +203,37 @@ int printSettingsFormTests() {
   CHECK(printValueOf(*walls, QStringLiteral("-1"), &error).isNull() && !error.isEmpty());
   CHECK(printValueOf(*density, QStringLiteral("150"), &error).isNull() && !error.isEmpty());
   CHECK(printValueOf(*width, QStringLiteral("-0.4"), &error).isNull() && !error.isEmpty());
+
+  // mitcad#746: the model's ranges, not guesses from the key's name: a
+  // purge line spacing and a tower infill gap of 150 %, Bambu Studio's -1
+  // ("automatic") with a Bambu Studio printer but not with an OrcaSlicer
+  // one; a compensation either way; still no fill density of 150 %.
+  const PrintKeyTable ranged(rangedAnswer());
+  const PrintKey* spacing = ranged.find(QStringLiteral("wipe_tower_extra_spacing"));
+  const PrintKey* gap = ranged.find(QStringLiteral("prime_tower_infill_gap"));
+  const PrintKey* treeWalls = ranged.find(QStringLiteral("tree_support_wall_count"));
+  const PrintKey* infill = ranged.find(QStringLiteral("fill_density"));
+  const PrintKey* contour = ranged.find(QStringLiteral("xy_size_compensation"));
+  CHECK(spacing != nullptr && gap != nullptr && treeWalls != nullptr && infill != nullptr && contour != nullptr);
+  if (spacing != nullptr && gap != nullptr && treeWalls != nullptr && infill != nullptr && contour != nullptr) {
+    CHECK(printValueOf(*spacing, QStringLiteral("150"), &error) == QJsonValue(150.0) && error.isEmpty());
+    CHECK(printValueOf(*spacing, QStringLiteral("150%"), &error) == QJsonValue(150.0) && error.isEmpty());
+    CHECK(printValueOf(*spacing, QStringLiteral("50"), &error).isNull() &&
+          error == QStringLiteral("Use a value from 100 to 300"));
+    CHECK(printValueOf(*gap, QStringLiteral("150"), &error) == QJsonValue(150.0) && error.isEmpty());
+    CHECK(printValueOf(*gap, QStringLiteral("150"), &error, QStringLiteral("bambu_studio")) == QJsonValue(150.0));
+    CHECK(printValueOf(*treeWalls, QStringLiteral("-1"), &error, QStringLiteral("bambu_studio")) == QJsonValue(-1.0) &&
+          error.isEmpty());
+    CHECK(printValueOf(*treeWalls, QStringLiteral("-1"), &error) == QJsonValue(-1.0) && error.isEmpty()); // no slicer
+    CHECK(printValueOf(*treeWalls, QStringLiteral("-1"), &error, QStringLiteral("orcaslicer")).isNull() &&
+          error == QStringLiteral("Use a value from 0 to 2"));
+    CHECK(printValueOf(*treeWalls, QStringLiteral("-2"), &error, QStringLiteral("bambu_studio")).isNull() &&
+          error == QStringLiteral("Use a value of -1 or more"));
+    CHECK(printRange(*treeWalls, QStringLiteral("orcaslicer")).high == 2.0);
+    CHECK(printValueOf(*infill, QStringLiteral("150"), &error, QStringLiteral("bambu_studio")).isNull() &&
+          error == QStringLiteral("Use a value from 0 to 100"));
+    CHECK(printValueOf(*contour, QStringLiteral("-0.05"), &error) == QJsonValue(-0.05) && error.isEmpty());
+  }
 
   // The form: Advanced off hides an advanced key unless it is set; a tab
   // with nothing to show is hidden; the search finds every key.

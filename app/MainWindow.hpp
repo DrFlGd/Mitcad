@@ -60,6 +60,7 @@ class CommandSearch;
 class ComputeProgress;
 class F3dImport;
 struct PrintImport;
+struct MeshPlan;
 class FloatingLayout;
 class GlassCard;
 class LockController;
@@ -264,6 +265,7 @@ public:
   void editFeature(const QString& uid) override;
   void startCommand(const QString& id, const Selection& preselection,
                     std::function<void(bool committed)> finished) override;
+  bool offersCommand(const QString& id, const Selection& items) const override;
   void createSketchOn(const SelectionItem& plane) override;
   void pickItems(const Selection& items) override;
   bool takesFeatures() const override;
@@ -284,6 +286,9 @@ public:
   QString documentFolder() const override;
   QString projectFolder() const override { return m_project.isProject() ? m_project.root : QString(); }
   void exportFlatPattern(const QString& body) override;
+  // Save As Mesh (mitcad#734; files/MainWindowSaveAsMesh.cpp).
+  void saveAsMesh(const Selection& items) override;
+  QString saveAsMeshBlocked(const Selection& items) const override;
   // Drawings kept in the design (mitcad#707; drawings/MainWindowDrawings.cpp):
   // one opened over the 3D view, a new one in a component's Drawings folder
   // (the root's: "C0") opened at once.
@@ -470,6 +475,9 @@ private:
   void logDatumPlaces();
   QVector<QJsonObject> m_loggedDatums;
   QString m_loggedDatumPlaces;
+  // The last "Design origin … in the view; the Origin folder's light bulb …"
+  // line (showDatums, mitcad#739).
+  QString m_loggedOriginState;
   // Where the shown bodies are in the window, for UI tests (when changed).
   void logBodyPlaces();
   // Whether an instance of a body is shown while something is isolated.
@@ -486,6 +494,10 @@ private:
   // the sketch's component (where its face was picked), else the
   // component's first occurrence; empty for the root.
   QString sketchEditOccurrence(const QString& uid, const QString& picked) const;
+  // The face a sketch lies on, placed where its link's source (another
+  // component's face) or the sketch's own occurrence shows it, for the turn
+  // to the sketch plane (mitcad#772); null for a sketch on a plane.
+  TopoDS_Shape sketchFace(const QString& uid) const;
   gp_Trsf sketchPlacement(const QString& uid) const override;
   QString sketchOccurrence(const QString& uid) const override;
 
@@ -1078,6 +1090,9 @@ private:
   // The appearance colours the view shows of bodies (all when empty), as
   // `export`'s `colors` for 3MF files.
   QJsonObject appearanceColors(const QStringList& bodies) const;
+  // What Save As Mesh writes for the items (mitcad#734,
+  // files/MainWindowSaveAsMesh.cpp).
+  MeshPlan saveAsMeshPlan(const Selection& items) const;
   // The bodies Edit Appearances assigns to: those the selection stands for
   // (bodies, and the bodies of faces, edges and vertices), each once.
   Selection appearanceTargets() const;

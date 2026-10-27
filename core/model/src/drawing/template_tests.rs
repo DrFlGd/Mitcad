@@ -656,3 +656,114 @@ fn a_template_brings_its_projection_method() {
     );
     assert_eq!(answer["sheets"][0]["projection"], "third_angle");
 }
+
+/// A title block field's text on a drawing's first sheet, by its label.
+fn field_of(doc: &Document<MockKernel>, drawing: &str, label: &str) -> String {
+    let answer = query(doc, json!({"query": "drawing", "drawing": drawing}));
+    answer["sheets"][0]["title_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["label"] == label)
+        .unwrap_or_else(|| panic!("no field {label}: {answer}"))["text"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn material_name(doc: &Document<MockKernel>, id: &str) -> String {
+    query(doc, json!({"query": "materials"}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == id)
+        .unwrap_or_else(|| panic!("no material {id}"))["name"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn a_components_drawing_takes_the_default_material_of_the_components_between() {
+    // mitcad#758 item 1: a component's drawing looked for the material of
+    // a body in a subcomponent only in the body's own component and the
+    // root, skipping the drawing's component and those between.
+    let mut doc = Document::new(MockKernel::default());
+    doc.kernel().measures.set(true);
+    // Frame holds Bracket:1, whose block has no material of its own.
+    command(
+        &mut doc,
+        json!({"cmd": "create_component", "name": "Frame"}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "create_component", "name": "Bracket"}),
+    );
+    command(
+        &mut doc,
+        json!([
+            {"cmd": "sketch.create"},
+            {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 40, "height": 30},
+            {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": R}],
+              "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+        ]),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "activate_component", "component": "C0"}),
+    );
+    // The root's default PLA, Frame's steel (denser by far).
+    command(
+        &mut doc,
+        json!({"cmd": "set_component_material", "component": "C0", "material": "pla"}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "set_component_material", "component": "Frame", "material": "steel"}),
+    );
+    let root = command(&mut doc, json!({"cmd": "add_drawing", "template": "iso"}))["drawing"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let frame = command(
+        &mut doc,
+        json!({"cmd": "add_drawing", "component": "Frame", "template": "iso"}),
+    )["drawing"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let steel = material_name(&doc, "steel");
+    // The root's drawing finds Frame's default up the path Frame:1/Bracket:1,
+    // and so does Frame's own drawing: steel, not the root's PLA.
+    assert_eq!(field_of(&doc, &root, "MATERIAL"), steel);
+    assert_eq!(field_of(&doc, &frame, "MATERIAL"), steel);
+    // The mass with steel's density, as the root's drawing works it out.
+    let mass = field_of(&doc, &frame, "MASS");
+    assert!(mass.ends_with("kg"), "{mass}");
+    assert_eq!(mass, field_of(&doc, &root, "MASS"));
+    // Without Frame's default both drawings come down to the root's PLA,
+    // and the mass drops with the density.
+    command(
+        &mut doc,
+        json!({"cmd": "set_component_material", "component": "Frame", "material": null}),
+    );
+    let pla = material_name(&doc, "pla");
+    assert_eq!(field_of(&doc, &frame, "MATERIAL"), pla);
+    assert_eq!(field_of(&doc, &root, "MATERIAL"), pla);
+    let lighter = field_of(&doc, &frame, "MASS");
+    assert_ne!(lighter, mass);
+    assert_eq!(lighter, field_of(&doc, &root, "MASS"));
+    // Bracket's own default wins over Frame's on Frame's drawing.
+    command(
+        &mut doc,
+        json!({"cmd": "set_component_material", "component": "Frame", "material": "steel"}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "set_component_material", "component": "Bracket", "material": "nylon"}),
+    );
+    assert_eq!(
+        field_of(&doc, &frame, "MATERIAL"),
+        material_name(&doc, "nylon")
+    );
+}

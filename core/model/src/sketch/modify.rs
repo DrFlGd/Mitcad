@@ -1604,7 +1604,13 @@ impl SketchEdit<'_> {
         for c in curves {
             self.editable(*c)?;
         }
-        let chain = self.chain(curves)?;
+        let solved = self.solved()?;
+        let chain = self.chain(curves, &solved)?;
+        // A curve taken in place of the same one picked (mitcad#741).
+        for (c, _) in &chain.curves {
+            self.editable(*c)?;
+        }
+        self.report.warnings.extend(chain.warnings.iter().cloned());
         let exact = match chain.curves.as_slice() {
             [(id, _)] if matches!(self.curve(*id)?.kind, EntityKind::Circle { .. }) => true,
             list => list.iter().all(|(id, _)| {
@@ -1619,7 +1625,6 @@ impl SketchEdit<'_> {
         let id = self.constraint_id();
         let param = self.offset_param(id, distance, None)?;
         let parameter = Some(self.params.name(param));
-        let solved = self.solved()?;
         // The offset of each curve, in chain direction.
         let mut pieces: Vec<Offset> = Vec::new();
         for (id, forward) in &chain.curves {
@@ -1674,8 +1679,12 @@ impl SketchEdit<'_> {
             let pairs = if chain.closed { n } else { n - 1 };
             for i in 0..pairs {
                 let j = (i + 1) % n;
-                let p = meet(&pieces[i], &pieces[j], pieces[i].end())
-                    .ok_or("the offset curves do not meet at a corner")?;
+                let p = meet(&pieces[i], &pieces[j], pieces[i].end()).ok_or_else(|| {
+                    format!(
+                        "the offsets of c{} and c{} do not meet at their corner",
+                        chain.curves[i].0.0, chain.curves[j].0.0
+                    )
+                })?;
                 corners[i + 1] = Some(self.add_point(p));
             }
             if chain.closed {
@@ -1796,19 +1805,35 @@ impl SketchEdit<'_> {
         }
     }
 
-    /// Orders curves into a chain through shared end points.
-    fn chain(&self, curves: &[EntityUid]) -> Result<Chain, String> {
+    /// Orders curves into a chain through shared end points. Curves that
+    /// are the same (a curve projected twice, mitcad#741) count once: of
+    /// such a pair the one that shares its ends with more of the others is
+    /// taken, picked or not, and a warning says so. Fails with the reason
+    /// when they are no chain; an open chain that ends where another curve
+    /// ends without sharing its point warns.
+    fn chain(&self, curves: &[EntityUid], solved: &Solved) -> Result<Chain, String> {
         if curves.is_empty() {
             return Err("no curves to offset".to_owned());
         }
-        let mut ends: Vec<(EntityUid, Option<(EntityUid, EntityUid)>)> = Vec::new();
         for id in curves {
+            self.curve(*id)?;
+        }
+        let size = sketch_size(&solved.curves);
+        let mut warnings = Vec::new();
+        let (curves, twins) = self.without_twins(curves, solved, size, &mut warnings);
+        let mut ends: Vec<(EntityUid, Option<(EntityUid, EntityUid)>)> = Vec::new();
+        for id in &curves {
             ends.push((*id, self.curve(*id)?.kind.ends()));
         }
         if ends.len() == 1 {
+            let closed = ends[0].1.is_none_or(|(s, e)| s == e);
+            if let (false, Some((s, e))) = (closed, ends[0].1) {
+                warnings.extend(self.loose_ends(&[s, e], &curves, &twins, solved, size));
+            }
             return Ok(Chain {
                 curves: vec![(ends[0].0, true)],
-                closed: ends[0].1.is_none_or(|(s, e)| s == e),
+                closed,
+                warnings,
             });
         }
         if ends.iter().any(|(_, e)| e.is_none()) {
@@ -1841,7 +1866,7 @@ impl SketchEdit<'_> {
             let next = (0..ends.len())
                 .find(|i| !used[*i] && matches!(ends[*i].1, Some((s, t)) if s == at || t == at));
             let Some(i) = next else {
-                return Err("the curves are not one connected chain".to_owned());
+                return Err(self.not_a_chain(&ends, &used, solved, size));
             };
             used[i] = true;
             let (s, t) = ends[i].1.expect("open");
@@ -1850,10 +1875,257 @@ impl SketchEdit<'_> {
             order.push((ends[i].0, fwd));
         }
         let start = if forward { s0 } else { t0 };
+        let closed = at == start;
+        if !closed {
+            warnings.extend(self.loose_ends(&[start, at], &curves, &twins, solved, size));
+        }
         Ok(Chain {
             curves: order,
-            closed: at == start,
+            closed,
+            warnings,
         })
+    }
+
+    /// The curves without repeats (mitcad#741): each curve the same as
+    /// another of the sketch (within [`super::project::SAME`] of its size)
+    /// is one of the pair, the one that shares its ends with more of the
+    /// other curves; picked first when that is as good. Also the repeats
+    /// that were not taken, picked or not.
+    fn without_twins(
+        &self,
+        curves: &[EntityUid],
+        solved: &Solved,
+        size: f64,
+        warnings: &mut Vec<String>,
+    ) -> (Vec<EntityUid>, BTreeSet<EntityUid>) {
+        let tol = super::project::SAME * size;
+        let ends = |id: EntityUid| self.def.entity(id).and_then(|e| e.kind.ends());
+        let construction = |id: EntityUid| self.def.entity(id).is_some_and(|e| e.construction);
+        let twins_of = |id: EntityUid| -> Vec<EntityUid> {
+            let Some(c) = solved.curves.get(&id) else {
+                return Vec::new();
+            };
+            solved
+                .curves
+                .iter()
+                .filter(|(other, o)| {
+                    **other != id
+                        && construction(**other) == construction(id)
+                        && ends(**other).is_some() == ends(id).is_some()
+                        && super::project::same_curve(c, o, tol)
+                })
+                .map(|(other, _)| *other)
+                .filter(|other| {
+                    self.def.entity(*other).is_some_and(|e| e.axis.is_none())
+                        && self.editable(*other).is_ok()
+                })
+                .collect()
+        };
+        // How many of `others` a curve shares an end point with.
+        let joins = |id: EntityUid, others: &[EntityUid]| -> usize {
+            let Some((s, t)) = ends(id) else {
+                return 0;
+            };
+            others
+                .iter()
+                .filter(|o| ends(**o).is_some_and(|(a, b)| a == s || a == t || b == s || b == t))
+                .count()
+        };
+        let mut out: Vec<EntityUid> = Vec::new();
+        let mut left: BTreeSet<EntityUid> = BTreeSet::new();
+        let mut handled: BTreeSet<EntityUid> = BTreeSet::new();
+        for id in curves {
+            if !handled.insert(*id) {
+                continue;
+            }
+            let group: Vec<EntityUid> = std::iter::once(*id).chain(twins_of(*id)).collect();
+            if group.len() == 1 {
+                out.push(*id);
+                continue;
+            }
+            handled.extend(group.iter().copied());
+            let others: Vec<EntityUid> = curves
+                .iter()
+                .copied()
+                .filter(|c| !group.contains(c))
+                .collect();
+            let mut best = *id;
+            let mut score = joins(best, &others);
+            for g in &group[1..] {
+                let s = joins(*g, &others);
+                if s > score {
+                    best = *g;
+                    score = s;
+                }
+            }
+            out.push(best);
+            for g in group.iter().filter(|g| **g != best) {
+                left.insert(*g);
+                if curves.contains(g) {
+                    let projected = |c: EntityUid| self.def.entity(c).is_some_and(|e| e.reference);
+                    warnings.push(format!(
+                        "c{} lies on c{} (the same curve twice): c{} is offset{}",
+                        g.0,
+                        best.0,
+                        best.0,
+                        if projected(*g) && projected(best) {
+                            "; Clean Up Projections removes the repeat"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+            }
+        }
+        (out, left)
+    }
+
+    /// Why curves are no chain: where they branch, or the curve that does
+    /// not join the others and how far its nearest end is from theirs.
+    fn not_a_chain(
+        &self,
+        ends: &[(EntityUid, Option<(EntityUid, EntityUid)>)],
+        used: &[bool],
+        solved: &Solved,
+        size: f64,
+    ) -> String {
+        let all: Vec<EntityUid> = ends
+            .iter()
+            .filter_map(|(_, e)| *e)
+            .flat_map(|(s, t)| [s, t])
+            .collect();
+        let degree = |p: EntityUid| {
+            ends.iter()
+                .filter(|(_, e)| matches!(e, Some((s, t)) if *s == p || *t == p))
+                .count()
+        };
+        if let Some(p) = all.iter().find(|p| degree(**p) > 2) {
+            return format!(
+                "the curves are not one connected chain: {} of them end at p{} (it branches there)",
+                degree(*p),
+                p.0
+            );
+        }
+        let at = |p: EntityUid| solved.points.get(&p).copied();
+        // The nearest pair of ends of a curve left over and one taken.
+        let mut nearest: Option<(f64, EntityUid, EntityUid, EntityUid, EntityUid)> = None;
+        for (i, (u, e)) in ends.iter().enumerate() {
+            let Some((s, t)) = e else { continue };
+            if used[i] {
+                continue;
+            }
+            for (j, (v, f)) in ends.iter().enumerate() {
+                let Some((a, b)) = f else { continue };
+                if !used[j] {
+                    continue;
+                }
+                for p in [*s, *t] {
+                    for q in [*a, *b] {
+                        if let (Some(x), Some(y)) = (at(p), at(q)) {
+                            let d = dist(x, y);
+                            if nearest.is_none_or(|n| d < n.0) {
+                                nearest = Some((d, *u, p, *v, q));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let Some((d, u, p, v, q)) = nearest else {
+            return "the curves are not one connected chain".to_owned();
+        };
+        if d <= GAP {
+            format!(
+                "the curves are not one connected chain: c{} ends {} p{} of c{} but on a \
+                 point of its own (p{}); a Coincident constraint joins them",
+                u.0,
+                apart(d, size),
+                q.0,
+                v.0,
+                p.0
+            )
+        } else {
+            format!(
+                "the curves are not one connected chain: c{} does not join the others (its \
+                 nearest end is {} mm from c{})",
+                u.0,
+                gap_text(d),
+                v.0
+            )
+        }
+    }
+
+    /// Warnings for the free ends of an open chain (`points`) where a curve
+    /// that is not in it (nor the same as one in it) ends within [`GAP`]
+    /// without sharing the point: the chain stops there (mitcad#741).
+    fn loose_ends(
+        &self,
+        points: &[EntityUid],
+        chain: &[EntityUid],
+        twins: &BTreeSet<EntityUid>,
+        solved: &Solved,
+        size: f64,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        // Chain Selection joins curves of the chain's kind only.
+        let construction = chain
+            .first()
+            .and_then(|c| self.def.entity(*c))
+            .is_some_and(|e| e.construction);
+        for p in points {
+            let Some(x) = solved.points.get(p).copied() else {
+                continue;
+            };
+            let other = self.def.entities.iter().find_map(|e| {
+                if chain.contains(&e.id) || twins.contains(&e.id) || e.construction != construction
+                {
+                    return None;
+                }
+                let (s, t) = e.kind.ends()?;
+                [s, t].into_iter().find_map(|q| {
+                    let y = solved.points.get(&q).copied()?;
+                    (q != *p && dist(x, y) <= GAP).then_some((e.id, q, dist(x, y)))
+                })
+            });
+            if let Some((c, q, d)) = other {
+                out.push(format!(
+                    "the chain ends at p{}, where c{} ends {} on a point of its own (p{}); a \
+                     Coincident constraint joins them",
+                    p.0,
+                    c.0,
+                    if d <= 1e-9 * size {
+                        "at the same place".to_owned()
+                    } else {
+                        format!("{} mm away", gap_text(d))
+                    },
+                    q.0
+                ));
+            }
+        }
+        out
+    }
+}
+
+/// How far apart, millimetres, curve ends may be for the reason of a chain
+/// that stops or breaks to name them as meant to meet: the import's
+/// geometric tolerance (mitcad#224).
+const GAP: f64 = 0.01;
+
+/// A small distance for a message: `2.0e-5` or `0.012`.
+fn gap_text(d: f64) -> String {
+    if d < 1e-3 {
+        format!("{d:.1e}")
+    } else {
+        format!("{d:.3}")
+    }
+}
+
+/// "at" or "2.0e-5 mm from", for ends `d` apart in a sketch of `size`.
+fn apart(d: f64, size: f64) -> String {
+    if d <= 1e-9 * size {
+        "at".to_owned()
+    } else {
+        format!("{} mm from", gap_text(d))
     }
 }
 
@@ -1871,6 +2143,9 @@ struct Chain {
     /// Curves in order, and whether each runs forward along the chain.
     curves: Vec<(EntityUid, bool)>,
     closed: bool,
+    /// What the offset is to say (mitcad#741): a repeat left out, a loose
+    /// end.
+    warnings: Vec<String>,
 }
 
 /// An offset curve in chain direction.

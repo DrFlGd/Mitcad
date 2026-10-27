@@ -28,6 +28,7 @@
 //! foreshortened: they are refused there, and an aligned dimension
 //! measures the true distance of its picks in 3D.
 
+use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 use std::sync::Arc;
 
@@ -42,12 +43,13 @@ use crate::datum::{CurveGeometry, SurfaceGeometry, Vec3};
 use crate::document::{AnnotationFormat, Document, GeometricTolerance, MeasureKind, Tolerance};
 use crate::drawing::annotate::{
     self, Along, AnnotationType, BodyGeometry, FlatFace, Frame, PickPoint, RoundFace, Seen,
-    SheetNote, SurfaceFinish, ViewAnnotation, ViewPick, Want,
+    SheetNote, SketchItem, SketchPen, SurfaceFinish, ViewAnnotation, ViewPick, Want,
 };
+use crate::drawing::clip::ViewMap;
 use crate::drawing::compose::{
-    Bounds, PlacedView, SketchDimension, ViewRole, sketch_dimension, view_bounds,
+    Bounds, DIMENSION_TEXT, PlacedView, SketchDimension, ViewRole, sketch_dimension, view_bounds,
 };
-use crate::drawing::def::{Drawing, DrawingSheet, DrawingUid, Subject, ViewKind};
+use crate::drawing::def::{Drawing, DrawingDefaults, DrawingSheet, DrawingUid, Subject, ViewKind};
 use crate::drawing::sheet::Group;
 use crate::drawing::tables::{
     HOLE_COLUMNS, Levels, PARTS_COLUMNS, TableSettings, header, lay_out_table,
@@ -55,7 +57,7 @@ use crate::drawing::tables::{
 use crate::drawing::{BodyInView, CutFace, CutPlane, P2, Units, ViewCurve, ViewSpec, clip};
 use crate::features::OccurrencePath;
 use crate::fingerprint::Fingerprint;
-use crate::ids::{BodyUid, FeatureUid, OccurrenceUid};
+use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::{Kernel, KernelError};
 use crate::topo::{EdgeName, FaceName};
 use crate::transform::Transform;
@@ -133,7 +135,8 @@ pub(super) struct AddAnnotationCommand {
     frame: Option<GeometricTolerance>,
     #[serde(default)]
     finish: Option<SurfaceFinish>,
-    /// A text note's letters' height, mm.
+    /// Its letters' height, mm (a text note's, mitcad#707; every
+    /// annotation's own, mitcad#729).
     #[serde(default)]
     height: Option<f64>,
     #[serde(default)]
@@ -145,6 +148,13 @@ pub(super) struct AddAnnotationCommand {
     /// view shows, as the Balloon tool places them.
     #[serde(default)]
     balloons: bool,
+    /// A line's two ends, an arc's centre, start and end, on the sheet
+    /// (mm; mitcad#729).
+    #[serde(default)]
+    points: Vec<P2>,
+    /// A line's or an arc's pen.
+    #[serde(default)]
+    pen: Option<SketchPen>,
 }
 
 /// `edit_drawing_annotation`: what is given changes; `null` sets a field
@@ -181,10 +191,17 @@ pub(super) struct EditAnnotationCommand {
     line_offset: Option<Option<f64>>,
     #[serde(default, deserialize_with = "present")]
     text_offset: Option<Option<P2>>,
-    #[serde(default)]
-    height: Option<f64>,
+    /// Its letters' height, mm; `null`: the drawing's (mitcad#729).
+    #[serde(default, deserialize_with = "present")]
+    height: Option<Option<f64>>,
     #[serde(default)]
     table: Option<TableEdit>,
+    /// A line's or an arc's points on the sheet, as when it was added
+    /// (mitcad#729).
+    #[serde(default)]
+    points: Option<Vec<P2>>,
+    #[serde(default)]
+    pen: Option<SketchPen>,
 }
 
 /// The `drawing_pick` query: what a click at a sheet point (mm) picks on
@@ -288,9 +305,15 @@ impl ViewAt<'_> {
     }
 
     pub(super) fn frame(&self) -> Frame<'_> {
+        self.frame_with(DIMENSION_TEXT)
+    }
+
+    /// Its frame for letters `text` high (mitcad#729).
+    pub(super) fn frame_with(&self, text: f64) -> Frame<'_> {
         Frame {
             map: &self.placed.map,
             view_box: self.placed.sheet_box(),
+            text,
         }
     }
 
@@ -392,6 +415,96 @@ fn placed_curve(curve: &CurveGeometry, t: &Transform) -> CurveGeometry {
             end: t.apply_point(*end),
         },
     }
+}
+
+/// A sketch dimension of a component where a placement puts it: its
+/// points and directions taken through `t` (mitcad#744).
+pub(super) fn placed_dimension(dim: &SketchDimension, t: &Transform) -> SketchDimension {
+    match dim {
+        SketchDimension::Linear {
+            a,
+            b,
+            along,
+            text,
+            value,
+            normal,
+        } => SketchDimension::Linear {
+            a: t.apply_point(*a),
+            b: t.apply_point(*b),
+            along: along.map(|v| t.apply_vector(v)),
+            text: text.map(|p| t.apply_point(p)),
+            value: *value,
+            normal: t.apply_vector(*normal),
+        },
+        SketchDimension::Radial {
+            center,
+            radius,
+            diameter,
+            text,
+            value,
+            normal,
+        } => SketchDimension::Radial {
+            center: t.apply_point(*center),
+            radius: *radius,
+            diameter: *diameter,
+            text: text.map(|p| t.apply_point(p)),
+            value: *value,
+            normal: t.apply_vector(*normal),
+        },
+    }
+}
+
+/// One retrieved sketch dimension (in the drawing's coordinates) laid out
+/// on a view, when the view sees it square on and shows where it is; its
+/// value with the drawing's decimals (mitcad#729).
+fn retrieved_dimension(
+    view: &ViewAt<'_>,
+    dim: &SketchDimension,
+    units: WordUnits,
+    decimals: Option<u8>,
+) -> Option<Group> {
+    let spec = &view.placed.spec;
+    let (normal, points, kind, value) = match dim {
+        SketchDimension::Linear {
+            a,
+            b,
+            normal,
+            value,
+            ..
+        } => (*normal, vec![*a, *b], MeasureKind::Distance, value.abs()),
+        SketchDimension::Radial {
+            center,
+            normal,
+            diameter,
+            value,
+            ..
+        } => (
+            *normal,
+            vec![*center],
+            if *diameter {
+                MeasureKind::Diameter
+            } else {
+                MeasureKind::Radius
+            },
+            *value,
+        ),
+    };
+    let square = mitcad_vec3::dot(spec.toward_eye, normal).abs();
+    if square <= 1.0 - 1e-9
+        || !points
+            .iter()
+            .all(|p| view.kept(*p) && view.sees(spec.project(*p)))
+    {
+        return None;
+    }
+    let format = AnnotationFormat {
+        decimals,
+        ..AnnotationFormat::default()
+    };
+    let (words, _) = value_text(kind, &format, None, value, units);
+    let mut g = sketch_dimension(dim, spec, &view.placed.map, &words.text)?;
+    g.class = "retrieved-dimension";
+    Some(g)
 }
 
 fn sub3(a: Vec3, b: Vec3) -> Vec3 {
@@ -702,6 +815,8 @@ fn noun(kind: AnnotationType) -> &'static str {
         AnnotationType::HoleTable => "hole table",
         AnnotationType::PartsList => "parts list",
         AnnotationType::Balloon => "balloon",
+        AnnotationType::CenterPattern => "centre pattern",
+        AnnotationType::EdgeExtension => "edge extension",
         _ => "dimension",
     }
 }
@@ -1222,16 +1337,27 @@ impl<K: Kernel> Document<K> {
     ) -> Result<Value, ApiError> {
         let old = self.find_drawing(&c.drawing)?.clone();
         let first = old.next_annotation_id();
+        // Lines, arcs and texts drawn outside the model (mitcad#729): a
+        // text in a view, a line or an arc on the sheet or in a view.
+        if c.kind == "line" || c.kind == "arc" || (c.kind == "text" && c.view.is_some()) {
+            return self.add_sketch_item(old, c, first);
+        }
         if c.kind == "text" {
             return self.add_text_note(old, c, first);
         }
         let kind: AnnotationType = serde_json::from_value(json!(c.kind)).map_err(|_| {
             ApiError(format!(
-                "unknown annotation type '{}': {} or text",
+                "unknown annotation type '{}': {}, text, line or arc",
                 c.kind,
                 AnnotationType::ALL.map(AnnotationType::key).join(", ")
             ))
         })?;
+        if !c.points.is_empty() || c.pen.is_some() {
+            return Err(ApiError(format!(
+                "a {} is drawn from its picks: it takes no points or pen",
+                noun(kind)
+            )));
+        }
         let view_id = c
             .view
             .ok_or_else(|| ApiError(format!("a {} is on a view", noun(kind))))?;
@@ -1248,7 +1374,12 @@ impl<K: Kernel> Document<K> {
         let view = self
             .view_at(&old, si, &evaluated, view_id)
             .map_err(ApiError)?;
-        let (picks, clicked) = self.picks_of(&view, &c.picks, kind.wants())?;
+        let (mut picks, clicked) = self.picks_of(&view, &c.picks, kind.wants())?;
+        // A centre pattern of one circle: every circle of its pattern
+        // (mitcad#729).
+        if kind == AnnotationType::CenterPattern && picks.len() == 1 {
+            picks = self.pattern_of(&view, &picks[0]).map_err(ApiError)?;
+        }
         let found: Vec<Found> = picks
             .iter()
             .map(|p| self.resolve_found(&view, p))
@@ -1256,6 +1387,7 @@ impl<K: Kernel> Document<K> {
             .map_err(ApiError)?;
         let frame = view.frame();
         let mut template = ViewAnnotation::new(first, kind, Vec::new());
+        template.height = c.height;
         template.format = c.format.clone().unwrap_or_default();
         template.tolerance = c.tolerance.clone();
         template.text = c.text.clone();
@@ -1398,6 +1530,14 @@ impl<K: Kernel> Document<K> {
                 }
             }
             annotate::measure(&annotation, &own).map_err(ApiError)?;
+            // Drawn from its picks alone: refused when they cannot draw it
+            // (mitcad#729: parallel edges meet nowhere).
+            if matches!(
+                kind,
+                AnnotationType::CenterPattern | AnnotationType::EdgeExtension
+            ) {
+                annotate::lay_out(&annotation, &own, &frame, None, &[]).map_err(ApiError)?;
+            }
             annotation.check().map_err(ApiError)?;
             added.push(annotation);
         }
@@ -1506,9 +1646,9 @@ impl<K: Kernel> Document<K> {
         c: AddAnnotationCommand,
         id: u32,
     ) -> Result<Value, ApiError> {
-        if c.view.is_some() || !c.picks.is_empty() {
+        if c.view.is_some() || !c.picks.is_empty() || !c.points.is_empty() || c.pen.is_some() {
             return Err(ApiError(
-                "a text note is on the sheet: give its `sheet` and `at`, no view or picks"
+                "a text note is on the sheet: give its `sheet` and `at`, no picks, points or pen"
                     .to_owned(),
             ));
         }
@@ -1531,15 +1671,261 @@ impl<K: Kernel> Document<K> {
         Ok(json!({"drawing": old.uid, "annotation": id, "annotations": [id]}))
     }
 
+    /// A line or an arc on a sheet or in a view, or a text in a view,
+    /// drawn outside the model (mitcad#729): its points given on the sheet,
+    /// kept in the view's coordinates so that it moves, scales and turns
+    /// with the view.
+    fn add_sketch_item(
+        &mut self,
+        old: Drawing,
+        c: AddAnnotationCommand,
+        id: u32,
+    ) -> Result<Value, ApiError> {
+        if !c.picks.is_empty()
+            || c.along.is_some()
+            || c.format.is_some()
+            || c.tolerance.is_some()
+            || c.letter.is_some()
+            || c.frame.is_some()
+            || c.finish.is_some()
+            || c.series.is_some()
+            || c.table.is_some()
+            || c.balloons
+        {
+            return Err(ApiError(format!(
+                "a {} is drawn outside the model: it takes its points (a text its place, \
+                 `at`), its pen, text and height only",
+                c.kind
+            )));
+        }
+        let (si, map) = match c.view {
+            Some(v) => {
+                let (si, view) = old
+                    .find_view(v)
+                    .ok_or_else(|| ApiError(format!("{} has no view {v}", old.name)))?;
+                (si, super::drawings::view_map(&old.sheets[si], view))
+            }
+            None => {
+                if c.sheet >= old.sheets.len() {
+                    return Err(ApiError(format!("{} has no sheet {}", old.name, c.sheet)));
+                }
+                (c.sheet, ViewMap::new(1.0, [0.0, 0.0], [0.0, 0.0]))
+            }
+        };
+        if c.kind == "text" && c.pen.is_some() {
+            return Err(ApiError("a text has no pen".to_owned()));
+        }
+        let item = sketch_item(
+            &c.kind,
+            id,
+            &c.points,
+            c.at,
+            c.text.as_deref(),
+            c.height,
+            c.pen.unwrap_or_default(),
+            &map,
+        )?;
+        item.check().map_err(ApiError)?;
+        let mut changed = old.clone();
+        let sheet = &mut changed.sheets[si];
+        match c.view {
+            Some(v) => {
+                let i = sheet.view_index(v).expect("found above");
+                sheet.views[i].sketch.push(item);
+            }
+            None => sheet.sketch.push(item),
+        }
+        self.set_drawing(
+            old.uid,
+            format!("Add {} {id} to {}", c.kind, old.name),
+            changed,
+        )?;
+        Ok(json!({"drawing": old.uid, "annotation": id, "annotations": [id]}))
+    }
+
+    /// A line, an arc or a text drawn outside the model changed: its
+    /// points or place, pen, text, height, or moved by a drag
+    /// (mitcad#729).
+    fn edit_sketch_item(
+        &mut self,
+        old: Drawing,
+        c: &EditAnnotationCommand,
+        si: usize,
+        view: Option<u32>,
+    ) -> Result<Value, ApiError> {
+        let id = c.annotation;
+        if c.picks.is_some()
+            || c.along.is_some()
+            || c.format.is_some()
+            || c.tolerance.is_some()
+            || c.letter.is_some()
+            || c.frame.is_some()
+            || c.finish.is_some()
+            || c.line_offset.is_some()
+            || c.text_offset.is_some()
+            || c.table.is_some()
+        {
+            return Err(ApiError(
+                "a line, an arc or a text drawn outside the model has its points (a text its \
+                 place), pen, text and height only"
+                    .to_owned(),
+            ));
+        }
+        let identity = ViewMap::new(1.0, [0.0, 0.0], [0.0, 0.0]);
+        let map = match view.and_then(|v| old.sheets[si].view(v)) {
+            Some(v) => super::drawings::view_map(&old.sheets[si], v),
+            None => identity,
+        };
+        let mut changed = old.clone();
+        let sheet = &mut changed.sheets[si];
+        let list = match view {
+            Some(v) => {
+                let i = sheet.view_index(v).expect("found above");
+                &mut sheet.views[i].sketch
+            }
+            None => &mut sheet.sketch,
+        };
+        let item = list.iter_mut().find(|k| k.id() == id).expect("found above");
+        let kind = item.key();
+        if let Some(points) = &c.points {
+            let pen = match item {
+                SketchItem::Line { pen, .. } | SketchItem::Arc { pen, .. } => *pen,
+                SketchItem::Text { .. } => {
+                    return Err(ApiError(
+                        "a text has its place, `at`, not points".to_owned(),
+                    ));
+                }
+            };
+            *item = sketch_item(kind, id, points, None, None, None, pen, &map)?;
+        }
+        if let Some(chosen) = c.pen {
+            match item {
+                SketchItem::Line { pen, .. } | SketchItem::Arc { pen, .. } => *pen = chosen,
+                SketchItem::Text { .. } => return Err(ApiError("a text has no pen".to_owned())),
+            }
+        }
+        if let Some(words) = &c.text {
+            match item {
+                SketchItem::Text { text, .. } => text.clone_from(words),
+                _ => return Err(ApiError(format!("a {kind} has no text"))),
+            }
+        }
+        if let Some(own) = c.height {
+            match item {
+                SketchItem::Text { height, .. } => *height = own,
+                _ => return Err(ApiError(format!("a {kind} has no letters"))),
+            }
+        }
+        if let Some(place) = c.at {
+            match item {
+                SketchItem::Text { at, .. } => *at = map.view_point(place),
+                _ => {
+                    return Err(ApiError(format!(
+                        "a {kind} is moved by `move` or given its `points`"
+                    )));
+                }
+            }
+        }
+        if let Some(d) = c.shift {
+            item.carried(
+                &|p| {
+                    let on = map.at(p);
+                    map.view_point([on[0] + d[0], on[1] + d[1]])
+                },
+                0.0,
+                1.0,
+            );
+        }
+        item.check().map_err(ApiError)?;
+        let moved_only = c.points.is_none()
+            && c.pen.is_none()
+            && c.text.is_none()
+            && c.height.is_none()
+            && (c.at.is_some() || c.shift.is_some());
+        let verb = if moved_only { "Move" } else { "Edit" };
+        self.set_drawing(
+            old.uid,
+            format!("{verb} {kind} {id} of {}", old.name),
+            changed,
+        )?;
+        Ok(json!({"drawing": old.uid, "annotation": id}))
+    }
+
+    /// The circles of the pattern a circle picked on a view is one of
+    /// (mitcad#729): those of its body, where the same occurrence places
+    /// it, that the view sees end on, as large and where it shows them,
+    /// picked as it was (edges or round faces); each centre once, the one
+    /// picked first, the others along the view's x and then y.
+    fn pattern_of(&self, view: &ViewAt<'_>, pick: &ViewPick) -> Result<Vec<ViewPick>, String> {
+        let found = self.resolve_found(view, pick)?;
+        let Seen::Circle {
+            center,
+            radius,
+            end_on: true,
+            ..
+        } = found.seen
+        else {
+            return Err("a centre pattern starts from a circle the view sees end on".to_owned());
+        };
+        let tolerance = 1e-6 * radius.max(1.0);
+        let mut centers = vec![center];
+        let mut more: Vec<(P2, ViewPick)> = Vec::new();
+        for c in self.candidates(view) {
+            if c.pick.point.is_some()
+                || c.pick.body != pick.body
+                || c.pick.path() != pick.path()
+                || c.pick.face.is_some() != pick.face.is_some()
+            {
+                continue;
+            }
+            let Seen::Circle {
+                center: other,
+                radius: r,
+                end_on: true,
+                ..
+            } = c.found.seen
+            else {
+                continue;
+            };
+            if (r - radius).abs() > tolerance
+                || !view.sees(other)
+                || centers
+                    .iter()
+                    .any(|p| (p[0] - other[0]).hypot(p[1] - other[1]) < 1e-6)
+            {
+                continue;
+            }
+            centers.push(other);
+            more.push((other, c.pick));
+        }
+        more.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]).then(a.0[1].total_cmp(&b.0[1])));
+        let mut out = vec![pick.clone()];
+        out.extend(
+            more.into_iter()
+                .map(|(_, p)| p)
+                .take(annotate::MAX_PATTERN - 1),
+        );
+        Ok(out)
+    }
+
     pub(super) fn edit_drawing_annotation(
         &mut self,
         c: EditAnnotationCommand,
     ) -> Result<Value, ApiError> {
         let old = self.find_drawing(&c.drawing)?.clone();
         let id = c.annotation;
+        // A line, an arc or a text drawn outside the model (mitcad#729).
+        if let Some((si, view)) = old.find_sketch(id) {
+            return self.edit_sketch_item(old, &c, si, view);
+        }
         let (si, view_id) = old
             .find_annotation(id)
             .ok_or_else(|| ApiError(format!("{} has no annotation {id}", old.name)))?;
+        if c.points.is_some() || c.pen.is_some() {
+            return Err(ApiError(format!(
+                "annotation {id} is drawn from its picks: it has no points or pen"
+            )));
+        }
         let mut changed = old.clone();
         let only_moved = c.picks.is_none()
             && c.along.is_none()
@@ -1583,7 +1969,8 @@ impl<K: Kernel> Document<K> {
                 note.at = [note.at[0] + d[0], note.at[1] + d[1]];
             }
             if let Some(height) = c.height {
-                note.height = Some(height);
+                // `null`: the drawing's (mitcad#729).
+                note.height = height;
             }
             note.check().map_err(ApiError)?;
             let verb = if only_moved { "Move" } else { "Edit" };
@@ -1633,6 +2020,8 @@ impl<K: Kernel> Document<K> {
                 annotation.line_offset = None;
                 annotation.text_offset = None;
             }
+            // Along the view's x or y as it is now (mitcad#729).
+            annotation.turn = None;
             annotation.along = Some(along);
         }
         if let Some(format) = &c.format {
@@ -1644,8 +2033,19 @@ impl<K: Kernel> Document<K> {
         if let Some(text) = &c.text {
             annotation.text = Some(text.clone());
         }
+        // A datum's new letter: the frames referring to its old one follow
+        // it, the model's and every drawing's (mitcad#745).
+        let mut relettered: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
         if let Some(letter) = &c.letter {
-            annotation.letter = Some(letter.trim().to_owned());
+            let new = letter.trim().to_owned();
+            if kind == AnnotationType::Datum
+                && let Some(before) = &current
+                && *before != new
+            {
+                relettered.insert(before.clone(), new.clone());
+            }
+            annotation.letter = Some(new);
         }
         if let Some(frame) = &c.frame {
             annotation.frame = Some(frame.clone());
@@ -1667,8 +2067,9 @@ impl<K: Kernel> Document<K> {
         if let Some(offset) = c.text_offset {
             annotation.text_offset = offset;
         }
-        if c.height.is_some() {
-            return Err(ApiError("only a text note has a height".to_owned()));
+        if let Some(height) = c.height {
+            // Its own letters' height; `null`: the drawing's (mitcad#729).
+            annotation.height = height;
         }
         if let Some(edit) = &c.table {
             let table = annotation
@@ -1713,10 +2114,11 @@ impl<K: Kernel> Document<K> {
         } else {
             "Edit"
         };
-        self.set_drawing(
+        self.set_drawing_relettered(
             old.uid,
             format!("{verb} {} {id} of {}", noun(kind), old.name),
             changed,
+            &relettered,
         )?;
         Ok(json!({"drawing": old.uid, "annotation": id}))
     }
@@ -1745,8 +2147,10 @@ impl<K: Kernel> Document<K> {
         let mut changed = old.clone();
         for sheet in &mut changed.sheets {
             sheet.notes.retain(|n| !ids.contains(&n.id));
+            sheet.sketch.retain(|k| !ids.contains(&k.id()));
             for view in &mut sheet.views {
                 view.annotations.retain(|a| !ids.contains(&a.id));
+                view.sketch.retain(|k| !ids.contains(&k.id()));
             }
         }
         let label = match ids.as_slice() {
@@ -1864,6 +2268,9 @@ impl<K: Kernel> Document<K> {
     ) -> Annotated {
         let sheet = &drawing.sheets[si];
         let words_units = WordUnits::new(units.symbol, units.mm);
+        // What the drawing's dimensions and annotations take without their
+        // own (mitcad#729).
+        let defaults = &drawing.defaults;
         let mut out = Annotated {
             groups: Vec::new(),
             entries: Vec::new(),
@@ -1915,7 +2322,9 @@ impl<K: Kernel> Document<K> {
                     && v.placed.role != ViewRole::Pictorial
                     && !v.pictorial
                 {
-                    for (i, g) in self.retrieved_dimensions(v, sketches, words_units) {
+                    for (i, g) in
+                        self.retrieved_dimensions(v, sketches, words_units, defaults.decimals)
+                    {
                         out.groups.push(g);
                         if !out.retrieved.contains(&i) {
                             out.retrieved.push(i);
@@ -1933,11 +2342,14 @@ impl<K: Kernel> Document<K> {
                             let threads = threads.get_or_insert_with(|| {
                                 super::drawing::threads_of(&self.threads_json())
                             });
-                            self.lay_out_hole_table(annotation, v, units, threads, &mut entry)
-                                .map(|(laid, label, warnings)| {
-                                    out.warnings.extend(warnings);
-                                    (laid, None, label, None)
-                                })
+                            let scale = defaults.text(annotation.height) / DIMENSION_TEXT;
+                            self.lay_out_hole_table(
+                                annotation, v, units, threads, &mut entry, scale,
+                            )
+                            .map(|(laid, label, warnings)| {
+                                out.warnings.extend(warnings);
+                                (laid, None, label, None)
+                            })
                         }
                         AnnotationType::PartsList => {
                             match parts_lists.iter().find(|(id, _)| *id == annotation.id) {
@@ -1955,6 +2367,7 @@ impl<K: Kernel> Document<K> {
                                         "parts-list",
                                         &list.data,
                                         place,
+                                        defaults.text(annotation.height) / DIMENSION_TEXT,
                                     );
                                     Ok((laid, None, list.label.clone(), None))
                                 }
@@ -1990,6 +2403,7 @@ impl<K: Kernel> Document<K> {
                                     words_units,
                                     &datums,
                                     Some(n.to_string().as_str()),
+                                    defaults,
                                 ),
                                 // Gone, or listed nowhere: why.
                                 None => self
@@ -1999,11 +2413,19 @@ impl<K: Kernel> Document<K> {
                                         words_units,
                                         &datums,
                                         Some("?"),
+                                        defaults,
                                     )
                                     .and_then(|_| Err(self.unlisted(annotation))),
                             }
                         }
-                        _ => self.lay_out_annotation(annotation, v, words_units, &datums, None),
+                        _ => self.lay_out_annotation(
+                            annotation,
+                            v,
+                            words_units,
+                            &datums,
+                            None,
+                            defaults,
+                        ),
                     },
                 };
                 match laid {
@@ -2033,9 +2455,17 @@ impl<K: Kernel> Document<K> {
                 }
                 out.entries.push(entry);
             }
+            // Lines, arcs and texts drawn in it (mitcad#729): placed by its
+            // definition alone, so drawn whatever the model does.
+            let map = super::drawings::view_map(sheet, view);
+            for item in &view.sketch {
+                let laid = annotate::lay_out_sketch(item, &map, defaults.text(None));
+                out.entries.push(sketch_entry(item, Some(view.id), &laid));
+                out.groups.push(laid.group);
+            }
         }
         for note in &sheet.notes {
-            let laid = annotate::lay_out_note(note);
+            let laid = annotate::lay_out_note(note, defaults.text(None));
             let mut entry = serde_json::to_value(note).unwrap_or(Value::Null);
             entry["type"] = json!("text");
             entry["view"] = Value::Null;
@@ -2045,7 +2475,52 @@ impl<K: Kernel> Document<K> {
             out.groups.push(laid.group);
             out.entries.push(entry);
         }
+        let on_sheet = ViewMap::new(1.0, [0.0, 0.0], [0.0, 0.0]);
+        for item in &sheet.sketch {
+            let laid = annotate::lay_out_sketch(item, &on_sheet, defaults.text(None));
+            out.entries.push(sketch_entry(item, None, &laid));
+            out.groups.push(laid.group);
+        }
         out
+    }
+
+    /// Where the dimensions of the sketches that shape the shown bodies
+    /// are drawn (mitcad#744): each sketch with the transforms from its
+    /// component into the drawing's (`component`), one per occurrence
+    /// path. A sketch of the body's own component goes where the body's
+    /// placement puts it; one of the drawing's component (a body it made
+    /// into another component) where it is.
+    pub(super) fn sketch_placements(
+        &self,
+        component: ComponentUid,
+        shown: &[Shown],
+    ) -> Vec<(FeatureUid, Transform)> {
+        let component_of: HashMap<FeatureUid, ComponentUid> =
+            self.features().map(|e| (e.uid, e.component)).collect();
+        let mut placements: Vec<(FeatureUid, &[OccurrenceUid], Transform)> = Vec::new();
+        for s in shown {
+            let body_component = self.body_component(s.body);
+            for sketch in self.sketches_shaping(&[s.body]) {
+                let own = component_of.get(&sketch).copied();
+                let (path, transform) = if own == body_component {
+                    (s.path.as_slice(), s.transform)
+                } else if own == Some(component) {
+                    (&[][..], Transform::IDENTITY)
+                } else {
+                    continue;
+                };
+                if !placements
+                    .iter()
+                    .any(|(f, p, _)| *f == sketch && *p == path)
+                {
+                    placements.push((sketch, path, transform));
+                }
+            }
+        }
+        placements
+            .into_iter()
+            .map(|(sketch, _, transform)| (sketch, transform))
+            .collect()
     }
 
     /// The sketch dimensions a view retrieves (mitcad#717): of the
@@ -2053,57 +2528,26 @@ impl<K: Kernel> Document<K> {
     /// shows them (behind a section's plane, in a detail's circle, beside
     /// breaks); written by #702's engine. Each with its index in
     /// `sketches`.
+    ///
+    /// A sketch's dimensions are in its component's coordinates: each
+    /// placement of its shaped bodies the view shows (one per occurrence
+    /// path) draws them where that placement puts them (mitcad#744), so a
+    /// component placed twice gives them twice.
     fn retrieved_dimensions(
         &self,
         view: &ViewAt<'_>,
         sketches: &[(FeatureUid, SketchDimension)],
         units: WordUnits,
+        decimals: Option<u8>,
     ) -> Vec<(usize, Group)> {
-        let spec = &view.placed.spec;
-        let bodies: Vec<BodyUid> = view.shown.iter().map(|s| s.body).collect();
-        let own = self.sketches_shaping(&bodies);
+        let placements = self.sketch_placements(ComponentUid::ROOT, &view.shown);
         let mut out = Vec::new();
         for (i, (sketch, dim)) in sketches.iter().enumerate() {
-            if !own.contains(sketch) {
-                continue;
-            }
-            let (normal, points, kind, value) = match dim {
-                SketchDimension::Linear {
-                    a,
-                    b,
-                    normal,
-                    value,
-                    ..
-                } => (*normal, vec![*a, *b], MeasureKind::Distance, value.abs()),
-                SketchDimension::Radial {
-                    center,
-                    normal,
-                    diameter,
-                    value,
-                    ..
-                } => (
-                    *normal,
-                    vec![*center],
-                    if *diameter {
-                        MeasureKind::Diameter
-                    } else {
-                        MeasureKind::Radius
-                    },
-                    *value,
-                ),
-            };
-            let square = mitcad_vec3::dot(spec.toward_eye, normal).abs();
-            if square <= 1.0 - 1e-9
-                || !points
-                    .iter()
-                    .all(|p| view.kept(*p) && view.sees(spec.project(*p)))
-            {
-                continue;
-            }
-            let (words, _) = value_text(kind, &AnnotationFormat::default(), None, value, units);
-            if let Some(mut g) = sketch_dimension(dim, spec, &view.placed.map, &words.text) {
-                g.class = "retrieved-dimension";
-                out.push((i, g));
+            for (_, transform) in placements.iter().filter(|(f, _)| f == sketch) {
+                let placed = placed_dimension(dim, transform);
+                if let Some(g) = retrieved_dimension(view, &placed, units, decimals) {
+                    out.push((i, g));
+                }
             }
         }
         out
@@ -2121,6 +2565,7 @@ impl<K: Kernel> Document<K> {
         units: WordUnits,
         datums: &[&str],
         number: Option<&str>,
+        defaults: &DrawingDefaults,
     ) -> Result<(annotate::Laid, Option<f64>, String, Option<String>), String> {
         if view.pictorial_for(&annotation.picks)
             && let Some(why) = pictorial_refusal(annotation.kind, annotation.along)
@@ -2140,11 +2585,16 @@ impl<K: Kernel> Document<K> {
         if points && annotation.kind == AnnotationType::Linear && found.len() == 2 {
             value = Some(mitcad_vec3::distance(found[0].at, found[1].at));
         }
+        // The drawing's decimals where it has none of its own (mitcad#729).
+        let mut format = annotation.format.clone();
+        if format.decimals.is_none() {
+            format.decimals = defaults.decimals;
+        }
         let (words, mut warning) = match (value, number) {
             (Some(v), _) => {
                 let (words, warning) = value_text(
                     annotation.kind.measure_kind(),
-                    &annotation.format,
+                    &format,
                     annotation.tolerance.as_ref(),
                     v,
                     units,
@@ -2188,7 +2638,8 @@ impl<K: Kernel> Document<K> {
                 },
             ),
         };
-        let laid = annotate::lay_out(annotation, &seen, &view.frame(), words.as_ref(), &cells)?;
+        let frame = view.frame_with(defaults.text(annotation.height));
+        let laid = annotate::lay_out(annotation, &seen, &frame, words.as_ref(), &cells)?;
         Ok((laid, value, text, warning))
     }
 
@@ -2202,6 +2653,7 @@ impl<K: Kernel> Document<K> {
         units: Units,
         threads: &[super::drawing::ThreadOf],
         entry: &mut Value,
+        scale: f64,
     ) -> Result<(annotate::Laid, String, Vec<String>), String> {
         // Its origin pick, found again: the origin follows the model.
         let origin = annotation
@@ -2222,7 +2674,7 @@ impl<K: Kernel> Document<K> {
         };
         let place = annotation.table.as_ref().map_or([0.0; 2], |t| t.place);
         Ok((
-            lay_out_table(annotation.id, "hole-table", &data, place),
+            lay_out_table(annotation.id, "hole-table", &data, place, scale),
             label,
             warnings,
         ))
@@ -2325,6 +2777,88 @@ impl<K: Kernel> Document<K> {
             out.push(g);
         }
         out
+    }
+}
+
+/// A line's, an arc's or a text's entry in the `drawing` query
+/// (mitcad#729): its file form with its view (null on the sheet), its
+/// words and its box.
+fn sketch_entry(item: &SketchItem, view: Option<u32>, laid: &annotate::Laid) -> Value {
+    let mut entry = serde_json::to_value(item).unwrap_or(Value::Null);
+    entry["view"] = json!(view);
+    entry["broken"] = json!(false);
+    entry["label"] = json!(item.label());
+    entry["box"] = bounds_json(&laid.bounds);
+    entry
+}
+
+/// A line, an arc or a text of a command (mitcad#729), its sheet points
+/// taken into the coordinates `map` puts on the sheet: a line from its two
+/// points, an arc about its first from the second counter-clockwise to the
+/// third (a whole circle when the third lies the way the second does), a
+/// text at `at`.
+#[allow(clippy::too_many_arguments)]
+fn sketch_item(
+    kind: &str,
+    id: u32,
+    points: &[P2],
+    at: Option<P2>,
+    text: Option<&str>,
+    height: Option<f64>,
+    pen: SketchPen,
+    map: &ViewMap,
+) -> Result<SketchItem, ApiError> {
+    let local = |p: P2| map.view_point(p);
+    match kind {
+        "line" => {
+            let [from, to] = points else {
+                return Err(ApiError(
+                    "a line takes its two ends on the sheet, `points`".to_owned(),
+                ));
+            };
+            Ok(SketchItem::Line {
+                id,
+                from: local(*from),
+                to: local(*to),
+                pen,
+            })
+        }
+        "arc" => {
+            let [center, start, end] = points else {
+                return Err(ApiError(
+                    "an arc takes its centre, start and end on the sheet, `points`".to_owned(),
+                ));
+            };
+            let (c, s, e) = (local(*center), local(*start), local(*end));
+            let radius = (s[0] - c[0]).hypot(s[1] - c[1]);
+            let from = (s[1] - c[1]).atan2(s[0] - c[0]);
+            let mut to = (e[1] - c[1]).atan2(e[0] - c[0]);
+            while to <= from + 1e-12 {
+                to += TAU;
+            }
+            Ok(SketchItem::Arc {
+                id,
+                center: c,
+                radius,
+                start: from,
+                end: to,
+                pen,
+            })
+        }
+        _ => {
+            if !points.is_empty() {
+                return Err(ApiError(
+                    "a text has its place, `at`, not points".to_owned(),
+                ));
+            }
+            let at = at.ok_or_else(|| ApiError("a text needs its place, `at`".to_owned()))?;
+            Ok(SketchItem::Text {
+                id,
+                text: text.unwrap_or_default().to_owned(),
+                at: local(at),
+                height,
+            })
+        }
     }
 }
 

@@ -120,6 +120,31 @@ fn a_sketch_text_follows_its_text_parameter() {
 }
 
 #[test]
+fn a_number_value_lists_the_text_parameters_that_use_it() {
+    // A text parameter's number value is always 0, so the changed names
+    // come from the table's change set (mitcad#758).
+    let mut d = label_sketch();
+    let changed = command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "Count", "value": 3}),
+    );
+    assert_eq!(changed["changed"], json!(["Count", "Label"]));
+    assert_eq!(sketch(&d)["texts"][0]["text"], "XXX");
+    // A value that leaves the text as it was lists only the number.
+    let changed = command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "Count", "value": 3.5}),
+    );
+    assert_eq!(changed["changed"], json!(["Count"]));
+    // The same value is no change at all.
+    let changed = command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "Count", "value": 3.5}),
+    );
+    assert_eq!(changed["changed"], json!([]));
+}
+
+#[test]
 fn a_sketch_text_follows_an_expression_of_its_own() {
     let mut d = label_sketch();
     let id = text_id(&d);

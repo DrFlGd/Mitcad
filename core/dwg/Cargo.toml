@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 [package]
 name = "mitcad-dwg"
-description = "Reader for .dwg drawings: the file header, sections and their decompression, the object map, classes, header variables, and the 3D content (B-rep solids, meshes, blocks and their inserts, layers)"
+description = "Reader for .dwg drawings: the file header, sections and their decompression, the object map, classes, header variables, and the 3D content (B-rep solids, meshes, blocks and their inserts, layers); a writer of 2D drawings (R2000)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,11 +14,15 @@ name = "mitcad_dwg"
 [[bin]]
 name = "mitcad-dwg-inspect"
 path = "src/bin/mitcad-dwg-inspect.rs"
+# It parses the solids, the import's part.
+required-features = ["solids"]
 
 [dependencies]
 # The B-rep record of solids is an ASM file (binary, or its text form),
-# parsed and converted by the .f3d reader's ASM code.
-mitcad-f3d = { path = "../f3d" }
+# parsed and converted by the .f3d reader's ASM code: only with the
+# feature `solids` (the import, core/ffi); the drawing writer that
+# mitcad-model uses (mitcad#728) needs none of it.
+mitcad-f3d = { path = "../f3d", optional = true }
 # Drawing units ($INSUNITS) shared with the DXF reader.
 mitcad-dxf = { path = "../dxf" }
 # Vector helpers on [f64; 3].
@@ -26,3 +30,10 @@ mitcad-vec3 = { path = "../vec3" }
 # The drawing's summary and the import report as JSON.
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[features]
+default = ["solids"]
+# The 3D content: the B-rep records of solids parsed and converted by the
+# .f3d reader's ASM code, the scene and plan of the import, the test
+# drawings (`scene`, `testfile`, `solid::parse`, mitcad-dwg-inspect).
+solids = ["dep:mitcad-f3d"]

@@ -7,8 +7,9 @@
 //! stays where it is in the design at the timeline marker. Occurrence
 //! paths that lead through it follow it in the same undo step: links of
 //! sketch planes, projections and modelling features to other components,
-//! cut scopes, joints and assembly constraints, section analyses and
-//! Isolate.
+//! cut scopes, joints and assembly constraints, section analyses,
+//! Isolate, the model's annotations and the drawings' views, dimensions
+//! and balloons (mitcad#743).
 //!
 //! The timeline features that place the occurrence (mitcad#301) go with
 //! it in the same step: its joints, as-built joints, assembly constraint
@@ -38,6 +39,8 @@
 //! - joints and constraints whose moved occurrence would change, or whose
 //!   component the occurrence would leave;
 //! - Pattern at Points features and instances that refer to it;
+//! - a component's drawing whose views or annotations lead through the
+//!   occurrence when the occurrence would leave that component;
 //! - references across the occurrence while a parent on the way from the
 //!   old parent or to the new one is placed by a timeline feature: the
 //!   relative placement could then differ at the reference's point of the
@@ -63,6 +66,7 @@ use super::components::check_transform;
 use super::{DocState, Document, ModelError, invalid, same_placement};
 use crate::assembly::{Assembly, inverse, matrix_rows};
 use crate::document::AnalysisDef;
+use crate::drawing::def::Drawing;
 use crate::features::extrude_scope::{CutScope, TargetScope};
 use crate::features::moves::MoveSpec;
 use crate::features::{
@@ -133,6 +137,9 @@ struct Rewritten {
     /// Annotations' picks (mitcad#649, mitcad#702): the annotation, which
     /// pick (0: `a`, 1: `b`, 2: its plane's) and its new occurrence path.
     measurements: Vec<(usize, usize, OccurrencePath)>,
+    /// Drawings whose views and picks follow it (mitcad#743): the drawing
+    /// and its new definition.
+    drawings: Vec<(usize, Drawing)>,
     /// Placing features that go into the new parent whole.
     components: Vec<(usize, ComponentUid)>,
     /// New features of the new parent, each right after the feature at
@@ -294,6 +301,11 @@ impl Rewrite<'_> {
             }
             FeatureDef::SplitBody(s) => {
                 for link in s.tool_links.values_mut() {
+                    changed |= self.link(link)?;
+                }
+            }
+            FeatureDef::Revolve(r) => {
+                for link in r.object_links.values_mut() {
                     changed |= self.link(link)?;
                 }
             }
@@ -468,6 +480,56 @@ fn rewrite_references(
         }
         if moved {
             updates.push(measurement.name.clone());
+        }
+    }
+    // Drawings' views and picks follow it (mitcad#743). Their paths are
+    // from the drawing's component: the root's go the new way; a placed
+    // component's follow while the occurrence stays inside it.
+    for (i, drawing) in state.drawings.iter().enumerate() {
+        let placed = rewrite.assembly.paths_to(drawing.component);
+        let [at] = placed.as_slice() else {
+            // Not placed once: no path of it leads through the occurrence,
+            // whose parent is placed once.
+            continue;
+        };
+        // A drawing of the moved component or of one inside it keeps its
+        // paths: they are below the occurrence.
+        let Some(old) = rewrite
+            .old
+            .strip_prefix(at.as_slice())
+            .filter(|old| !old.is_empty())
+        else {
+            continue;
+        };
+        let new = rewrite.new.strip_prefix(at.as_slice());
+        let mut changed = drawing.clone();
+        let mut moved = false;
+        let mut stuck = false;
+        for path in changed.occurrence_paths_mut() {
+            if !path.0.starts_with(old) {
+                continue;
+            }
+            match new {
+                Some(new) => {
+                    let rest = path.0.split_off(old.len());
+                    path.0 = new.to_vec();
+                    path.0.extend(rest);
+                    moved = true;
+                }
+                None => stuck = true,
+            }
+        }
+        if stuck {
+            blockers.push(format!(
+                "{} of {}: its views lead through {}, which would leave {}",
+                drawing.name,
+                rewrite.assembly.name(drawing.component),
+                rewrite.name(),
+                rewrite.assembly.name(drawing.component)
+            ));
+        } else if moved {
+            updates.push(drawing.name.clone());
+            out.drawings.push((i, changed));
         }
     }
     // Occurrences made by Pattern at Points keep the paths they were made
@@ -1002,6 +1064,9 @@ fn take(state: &mut DocState, plan: &ReparentPlan) {
         if let Some(pick) = pick {
             pick.occurrence = Some(path.clone());
         }
+    }
+    for (i, drawing) in &plan.changes.drawings {
+        state.drawings[*i].clone_from(drawing);
     }
 }
 

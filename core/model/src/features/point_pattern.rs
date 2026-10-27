@@ -391,6 +391,34 @@ impl PointPatternDef {
                         shapes.push(ctx.feature_tool(*uid)?);
                     }
                 }
+                // Threads alone (mitcad#733): the middles of the faces they
+                // thread, on the bodies before them.
+                let mut threads_alone = true;
+                for uid in features {
+                    threads_alone &= matches!(ctx.feature_entry(*uid)?.def, FeatureDef::Thread(_));
+                }
+                if threads_alone {
+                    for uid in features {
+                        let FeatureDef::Thread(thread) = &ctx.feature_entry(*uid)?.def else {
+                            continue;
+                        };
+                        for face in &thread.faces {
+                            let Some(shape) =
+                                super::dressup_copies::input_shape(ctx, *uid, face.body)
+                            else {
+                                continue;
+                            };
+                            if let Ok(c) = ctx.kernel.face_cylinder(&shape, &face.face) {
+                                points.push(std::array::from_fn(|i| {
+                                    c.axis.origin[i] + c.length / 2.0 * c.axis.direction[i]
+                                }));
+                            }
+                        }
+                    }
+                    if !points.is_empty() {
+                        return Ok((centre(&points)?, "thread_faces"));
+                    }
+                }
                 if shapes.is_empty() {
                     for uid in features {
                         for body in ctx.feature_changed_bodies(*uid)? {

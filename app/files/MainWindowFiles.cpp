@@ -188,12 +188,13 @@ void MainWindow::registerFileCommands() {
   // Drawings with views, dimensions and a hole table (mitcad#471,
   // MainWindowDrawing.cpp).
   CommandDef drawingDef = def("file.export_drawing", tr("Export Drawing…"), "export",
-                              tr("The bodies as a drawing with views, sizes and a hole table: PDF, SVG or DXF"),
+                              tr("The bodies as a drawing with views, sizes and a hole table: PDF, SVG, DXF or DWG"),
                               [this] { exportDrawing(); });
   drawingDef.tab.clear(); // the File menu
   drawingDef.mode = CommandDef::Mode::Any;
   drawingDef.keywords = {QStringLiteral("drawing"), QStringLiteral("pdf"), QStringLiteral("svg"),
-                         QStringLiteral("dxf"), QStringLiteral("print"), QStringLiteral("blueprint")};
+                         QStringLiteral("dxf"), QStringLiteral("dwg"), QStringLiteral("print"),
+                         QStringLiteral("blueprint")};
   m_registry->add(drawingDef);
   // A drawing kept in the design (mitcad#707, drawings/MainWindowDrawings.cpp):
   // in the root's Drawings folder, opened at once.

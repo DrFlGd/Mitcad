@@ -193,6 +193,11 @@ std::shared_ptr<geometry::Shape> modeled_thread(rust::Str feature, const geometr
   for (const std::uint8_t ends : input.chamfer_ends) {
     spec.chamfer_ends.push_back({(ends & 1U) != 0, (ends & 2U) != 0});
   }
+  spec.taper = input.taper;
+  spec.taper_high_end = input.taper_high_end;
+  for (const double turned : input.angles) {
+    spec.angles.push_back(turned);
+  }
   return geometry::modeled_thread(body, spec);
 }
 

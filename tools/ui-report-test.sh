@@ -24,6 +24,9 @@
 #      again" turns the offers off in the settings.
 #   5. With the offers off, a crash report found at the start is marked
 #      offered without a question.
+#   6. An exception out of a slot that nothing catches
+#      (MITCAD_TEST_CRASH=app-exception, mitcad#773): the process aborts
+#      and the report's message names the exception's type and message.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-report-test.sh
@@ -241,4 +244,18 @@ ui_expect_log "Error report not offered (turned off): Mitcad" "not offered"
 [ -f "$CRASHES/crash-1-1.crash.offered" ] || ui_fail "the report was not marked offered"
 echo "ok   marked offered"
 ui_stop_app
+
+echo "--- 6. An exception that nothing catches: its type and message in the report"
+UI_LOG_BEFORE=$UI_LOG
+UI_LOG=$WORK/exception.log
+MITCAD_TEST_CRASH=app-exception timeout 120 "$UI_APP" --no-recovery --demo > "$UI_LOG" 2>&1
+STATUS=$?
+[ "$STATUS" = 134 ] || { cat "$UI_LOG"; ui_fail "the app ended with $STATUS, not SIGABRT (134)"; }
+ui_expect_log "Throwing for a test (MITCAD_TEST_CRASH=app-exception)" "thrown out of a slot"
+ui_expect_log "Mitcad crashed: SIGABRT; crash report: $CRASHES/crash-" "the crash report written"
+REPORT=$(grep -o "crash report: $CRASHES/crash-[0-9-]*\.crash" "$UI_LOG" | tail -1 | sed 's/^crash report: //')
+grep -qxF 'message: uncaught exception std::range_error: thrown for a test (MITCAD_TEST_CRASH=app-exception)' \
+  "$REPORT" || { cat "$REPORT"; ui_fail "the report's message does not name the exception's type and message"; }
+echo "ok   the report names the exception's type and message"
+UI_LOG=$UI_LOG_BEFORE
 ui_finish "ui-report-test"

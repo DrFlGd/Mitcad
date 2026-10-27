@@ -151,11 +151,12 @@ fn extents_starts_tapers_and_walls_reach_the_kernel() {
     assert_eq!(status, FeatureStatus::Ok);
 }
 
-/// A two-sided extrusion's negative distance (mitcad#693): commands and
-/// their previews refuse it, whether a number, an expression or a
-/// parameter gives it; the document's own API, which the imports add
-/// through, still takes its size, and an edit that keeps such a distance
-/// passes.
+/// A negative distance of a two-sided extrusion without `signed`
+/// (mitcad#693): commands and their previews refuse it, whether a number,
+/// an expression or a parameter gives it; the document's own API, which
+/// the imports add through, still takes its size, and an edit that keeps
+/// such a distance passes. With `signed` (mitcad#765) see
+/// `signed_two_sides_lie_between_their_ends`.
 #[test]
 fn commands_refuse_a_negative_two_sided_distance() {
     let mut b = block();
@@ -186,7 +187,7 @@ fn commands_refuse_a_negative_two_sided_distance() {
         ] {
             let error = result.unwrap_err().0;
             assert!(
-                error.contains(expected) && error.contains("use a start offset"),
+                error.contains(expected) && error.contains("\"signed\": true"),
                 "{what} {d1} {d2}: {error}"
             );
         }
@@ -229,6 +230,208 @@ fn commands_refuse_a_negative_two_sided_distance() {
         spec.ends_with("distance 20 taper 0; distance 6 taper 0"),
         "{spec}"
     );
+}
+
+/// Two sides with signed distances (mitcad#765): a negative distance ends
+/// on the other side's side and the solid lies between the two ends only
+/// (50 and -30: from 30 to 50), mirrored for a negative first side; ends
+/// that meet or cross are refused; commands and previews take it; Join and
+/// Cut use the solid off the sketch plane; the flag survives the design
+/// file and undo. Without the flag (designs saved before, imports) each
+/// side still goes its own way by its size.
+#[test]
+fn signed_two_sides_lie_between_their_ends() {
+    let mut b = block();
+    let two_sides = |d1: Value, d2: Value, signed: bool| {
+        let mut extent = json!({"type": "two_sides",
+                                "side1": {"type": "distance", "distance": d1},
+                                "side2": {"type": "distance", "distance": d2}});
+        if signed {
+            extent["signed"] = json!(true);
+        }
+        extent
+    };
+    let heights = |doc: &Document<MockKernel>, body: BodyUid| {
+        let bounds = doc.body_shape(body).unwrap().bounds.unwrap();
+        (bounds.min[2], bounds.max[2])
+    };
+    // 50 and -30: from 30 to 50 above the sketch, both ends past the
+    // block's top (20).
+    let depth = b.doc.undo_depth();
+    let command = json!({"cmd": "add_feature",
+                         "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": RECT}],
+                                 "extent": two_sides(json!(50), json!("-30 mm"), true),
+                                 "operation": "new_body"}})
+    .to_string();
+    b.doc.preview(&command).unwrap();
+    let reply: Value = serde_json::from_str(&b.doc.command(&command).unwrap()).unwrap();
+    assert_eq!(reply["uid"], json!("F3"), "{reply}");
+    let uid = FeatureUid(3);
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    let spec = last_spec(&b.doc);
+    assert!(
+        spec.ends_with(
+            "along [0.0, 0.0, 1.0] from offset 0: distance 50 taper 0; distance -30 taper 0"
+        ),
+        "{spec}"
+    );
+    let body = BodyUid::new(uid, 0);
+    assert_eq!(heights(&b.doc, body), (30.0, 50.0));
+    // The design file keeps the flag; undo takes the feature away.
+    let text = b.doc.to_json();
+    assert!(text.contains("\"signed\""), "{text}");
+    let loaded = Document::from_json(&text, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), text);
+    match &loaded.feature(uid).unwrap().def {
+        FeatureDef::Extrude(extrude) => assert!(extrude.signed_two_sides()),
+        other => panic!("expected an extrusion, got {other:?}"),
+    }
+    b.doc.undo();
+    assert_eq!(b.doc.undo_depth(), depth);
+    assert!(b.doc.body_shape(body).is_none());
+
+    let cases = [
+        // Mirrored: -30 and 50 lie 30 to 50 below the sketch.
+        (json!(-30), json!(50), json!({}), (-50.0, -30.0)),
+        // Flipped: side one goes down.
+        (json!(50), json!(-30), json!({"flip": true}), (-50.0, -30.0)),
+        // From a start offset: measured from there.
+        (
+            json!(10),
+            json!(-4),
+            json!({"start": {"type": "offset", "offset": 5}}),
+            (9.0, 15.0),
+        ),
+    ];
+    for (d1, d2, extra, expected) in cases {
+        let uid = b
+            .doc
+            .add_feature(
+                &extrude_def(two_sides(d1.clone(), d2.clone(), true), extra.clone()),
+                None,
+            )
+            .unwrap()
+            .uid;
+        assert_eq!(status(&b.doc, uid), FeatureStatus::Ok, "{d1} {d2} {extra}");
+        assert_eq!(
+            heights(&b.doc, BodyUid::new(uid, 0)),
+            expected,
+            "{d1} {d2} {extra}"
+        );
+        b.doc.undo();
+    }
+
+    // Each side's taper reaches the kernel with the signed distance; the
+    // kernel tapers the side that holds the solid from the start.
+    let mut tapered = two_sides(json!(50), json!(-30), true);
+    tapered["side1"]["taper"] = json!(0.1);
+    tapered["side2"]["taper"] = json!(0.2);
+    let (spec, status_tapered) = extrude_with(&mut b, tapered, json!({}));
+    assert!(
+        spec.ends_with("distance 50 taper 0.1; distance -30 taper 0.2"),
+        "{spec}"
+    );
+    assert_eq!(status_tapered, FeatureStatus::Ok);
+    // Beside a side through all, the negative side's end goes to the kernel.
+    let mut through = two_sides(json!(0), json!(-8), true);
+    through["side1"] = json!({"type": "through_all"});
+    let (spec, _) = extrude_with(&mut b, through, json!({}));
+    assert!(
+        spec.ends_with("distance 26 taper 0; distance -8 taper 0"),
+        "{spec}"
+    );
+
+    // Ends that meet or cross leave nothing: refused, by the command too.
+    for (d1, d2) in [(50.0, -50.0), (-30.0, 10.0), (-30.0, 0.0), (0.0, -5.0)] {
+        let definition = extrude_def(two_sides(json!(d1), json!(d2), true), json!({}));
+        let error = b
+            .doc
+            .add_feature(&definition, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("the two sides overlap"),
+            "{d1} {d2}: {error}"
+        );
+    }
+    let command = json!({"cmd": "add_feature",
+                         "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": RECT}],
+                                 "extent": two_sides(json!(50), json!(-50), true),
+                                 "operation": "new_body"}})
+    .to_string();
+    let error = b.doc.command(&command).unwrap_err().0;
+    assert!(
+        error.contains("the two sides overlap: side 1 ends at 50 and side 2 at 50"),
+        "{error}"
+    );
+    // A parameter change that makes them cross fails the feature.
+    let uid = b
+        .doc
+        .add_feature(
+            &extrude_def(
+                two_sides(json!("top_end = 50 mm"), json!(-30), true),
+                json!({}),
+            ),
+            None,
+        )
+        .unwrap()
+        .uid;
+    b.doc.set_parameter("top_end", 20.0).unwrap();
+    match status(&b.doc, uid) {
+        FeatureStatus::Failed(message) => {
+            assert!(message.contains("the two sides overlap"), "{message}")
+        }
+        other => panic!("expected a failure, got {other:?}"),
+    }
+    b.doc.undo();
+    b.doc.undo();
+
+    // Join and Cut take the solid off the sketch plane as it is: a cut from
+    // 5 to 15 inside the block, a join from 15 to 25 across its top.
+    for (operation, d1, d2, expected) in [
+        ("cut", 15, -5, "cut(prism(F2:0..20),prism({uid}:-15..-5))"),
+        (
+            "join",
+            25,
+            -15,
+            "join(prism(F2:0..20),prism({uid}:-25..-15))",
+        ),
+    ] {
+        let uid = b
+            .doc
+            .add_feature(
+                &extrude_def(
+                    two_sides(json!(d1), json!(d2), true),
+                    json!({"operation": operation}),
+                ),
+                None,
+            )
+            .unwrap()
+            .uid;
+        assert_eq!(status(&b.doc, uid), FeatureStatus::Ok, "{operation}");
+        let history = b.doc.body_shape(b.body).unwrap().history.clone();
+        assert_eq!(history, expected.replace("{uid}", &uid.to_string()));
+        b.doc.undo();
+    }
+
+    // Without the flag the sizes count, as saved designs and the imports
+    // have them: 50 up and 30 down.
+    let uid = b
+        .doc
+        .add_feature(
+            &extrude_def(two_sides(json!(50), json!(-30), false), json!({})),
+            None,
+        )
+        .unwrap()
+        .uid;
+    let spec = last_spec(&b.doc);
+    assert!(
+        spec.ends_with("distance 50 taper 0; distance 30 taper 0"),
+        "{spec}"
+    );
+    assert_eq!(heights(&b.doc, BodyUid::new(uid, 0)), (-30.0, 50.0));
+    let text = b.doc.to_json();
+    assert!(!text.contains("\"signed\""), "{text}");
 }
 
 #[test]
@@ -815,6 +1018,300 @@ fn trapezoidal_threads_are_cosmetic_and_listed() {
             .contains("trapezoidal thread cannot be modelled"))
             || status(&doc, uid) != FeatureStatus::Ok
     );
+}
+
+#[test]
+fn taper_pipe_threads_taper_even_when_cosmetic() {
+    // An NPT thread with `taper` on the rod (mitcad#733): a cosmetic one
+    // cuts the cone of its major diameter (E0 + h at the free end), a
+    // modelled one the profile; the kernel gets the start's diameters and
+    // the taper.
+    let mut doc = rod();
+    let npt = json!({"standard": "npt", "designation": "1/8-27 NPT"});
+    let uid = doc
+        .add_feature(
+            &thread_def("F2:side(c1)", json!({"thread": npt, "taper": true})),
+            None,
+        )
+        .unwrap()
+        .uid;
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    // E0 = 0.36351 in, h = 0.8 P = 0.75259 mm.
+    let spec = last_spec(&doc);
+    assert!(
+        spec.starts_with(
+            "thread F2:side(c1) pitch 0.9407407407407407 diameters 9.9857/8.4805/9.2331"
+        ),
+        "{spec}"
+    );
+    assert!(spec.ends_with(" cosmetic taper 0.0625 high true"), "{spec}");
+    let threads = query(&doc, json!({"query": "threads"}));
+    assert_eq!(threads[0]["taper"], 0.0625, "{threads}");
+    assert_eq!(threads[0]["designation"], "1/8-27 NPT");
+    // Modelled, from the low end; with the diameters a design stores at
+    // the start.
+    let modeled = thread_def(
+        "F2:side(c1)",
+        json!({"thread": npt, "modeled": true, "location": "low_end", "taper": true,
+               "diameters": {"major": 9.9, "minor": 8.4, "pitch": 9.15}}),
+    );
+    doc.edit_feature(uid, &modeled).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    let spec = last_spec(&doc);
+    assert!(spec.contains("diameters 9.9000/8.4000/9.1500"), "{spec}");
+    assert!(spec.ends_with(" taper 0.0625 high false"), "{spec}");
+    assert!(!spec.contains("cosmetic"), "{spec}");
+    // Cosmetic with diameters too (an .f3d design's taper).
+    let cosmetic = thread_def(
+        "F2:side(c1)",
+        json!({"thread": npt, "taper": true,
+               "diameters": {"major": 9.9, "minor": 8.4, "pitch": 9.15}}),
+    );
+    doc.edit_feature(uid, &cosmetic).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    // End chamfers are left out with a warning, not refused.
+    let calls = doc.kernel().count("thread");
+    let chamfered = thread_def(
+        "F2:side(c1)",
+        json!({"thread": npt, "taper": true, "chamfer": "start"}),
+    );
+    doc.edit_feature(uid, &chamfered).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(
+        doc.warnings(uid)
+            .iter()
+            .any(|w| w.contains("no end chamfers")),
+        "{:?}",
+        doc.warnings(uid)
+    );
+    assert!(doc.kernel().count("thread") > calls);
+    assert!(!last_spec(&doc).contains("chamfer"), "{}", last_spec(&doc));
+    // Only a taper pipe thread tapers; a straight NPT one is not modelled.
+    let error = doc
+        .edit_feature(uid, &thread_def("F2:side(c1)", json!({"taper": true})))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("only a taper pipe thread"), "{error}");
+    let error = doc
+        .edit_feature(
+            uid,
+            &thread_def("F2:side(c1)", json!({"thread": npt, "modeled": true})),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cannot be modelled straight"), "{error}");
+    // ISO 7-1 names its side, and is cosmetic only.
+    let rc = json!({"standard": "iso_taper", "designation": "Rc 1/8"});
+    doc.edit_feature(
+        uid,
+        &thread_def("F2:side(c1)", json!({"thread": rc, "taper": true})),
+    )
+    .unwrap();
+    assert_eq!(
+        status(&doc, uid),
+        FeatureStatus::Failed("Rc 1/8 is an internal thread; use R 1/8 for a shaft".to_owned())
+    );
+    let r = json!({"standard": "iso_taper", "designation": "R 1/8"});
+    doc.edit_feature(
+        uid,
+        &thread_def("F2:side(c1)", json!({"thread": r, "taper": true})),
+    )
+    .unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    let error = doc
+        .edit_feature(
+            uid,
+            &thread_def(
+                "F2:side(c1)",
+                json!({"thread": r, "taper": true, "modeled": true}),
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cannot be modelled"), "{error}");
+}
+
+/// The design file of `doc` opened again (a design written before
+/// mitcad#733 has none of its fields: its definitions here have none).
+fn reopened(doc: &Document<MockKernel>) -> Document<MockKernel> {
+    let json = doc.to_json();
+    assert!(!json.contains("\"taper\": true"), "{json}");
+    let mut opened = Document::from_json(&json, MockKernel::default()).unwrap();
+    opened.recompute();
+    opened
+}
+
+#[test]
+fn taper_pipe_threads_saved_before_stay_straight() {
+    // Designs saved before mitcad#733 have no `taper`: their NPT threads
+    // and NPT-tapped holes open and evaluate as they did. A cosmetic NPT
+    // thread cuts nothing; with Chamfer Ends it cuts only the chamfers.
+    let npt = json!({"standard": "npt", "designation": "1/8-27 NPT"});
+    let mut doc = rod();
+    doc.add_feature(&thread_def("F2:side(c1)", json!({"thread": npt})), None)
+        .unwrap();
+    let doc = reopened(&doc);
+    assert_eq!(status(&doc, FeatureUid(3)), FeatureStatus::Ok);
+    assert_eq!(doc.kernel().count("thread"), 0);
+    let threads = query(&doc, json!({"query": "threads"}));
+    assert!(threads[0].get("taper").is_none(), "{threads}");
+    let mut doc = rod();
+    doc.add_feature(
+        &thread_def("F2:side(c1)", json!({"thread": npt, "chamfer": "both"})),
+        None,
+    )
+    .unwrap();
+    let doc = reopened(&doc);
+    assert_eq!(status(&doc, FeatureUid(3)), FeatureStatus::Ok);
+    let spec = last_spec(&doc);
+    assert!(
+        spec.contains("cosmetic chamfer") && !spec.contains("taper"),
+        "{spec}"
+    );
+    // Straight, as before: the size's own diameters, not the taper's.
+    assert!(spec.contains("diameters 10.2870/8.7818/9.5344"), "{spec}");
+    // NPT-tapped holes: the bore is the size's minor diameter, whatever
+    // `diameter` holds (the panel's hidden 6, or 0), and nothing tapers.
+    for diameter in [6.0, 0.0] {
+        let mut b = block();
+        let on_top =
+            json!({"type": "face", "body": "F2.b0", "face": TOP, "points": [[10, 10, 20]]});
+        b.doc
+            .add_feature(
+                &hole_def(on_top, json!({"diameter": diameter, "thread": npt})),
+                None,
+            )
+            .unwrap();
+        let doc = reopened(&b.doc);
+        assert_eq!(status(&doc, FeatureUid(3)), FeatureStatus::Ok, "{diameter}");
+        assert_eq!(doc.kernel().count("thread"), 0, "{diameter}");
+        let hole = last_spec(&doc);
+        assert!(hole.contains("diameter 8.781815"), "{diameter}: {hole}");
+    }
+}
+
+#[test]
+fn holes_tapped_with_taper_pipe_threads_keep_their_drill() {
+    // A tapped hole of 1/8-27 NPT with `taper` (mitcad#733): drilled at its
+    // diameter, the tap drill, and tapered from its start (the high end of
+    // the mock wall's axis), cosmetic or modelled.
+    let mut b = block();
+    let on_top = json!({"type": "face", "body": "F2.b0", "face": TOP, "points": [[10, 10, 20]]});
+    let npt = json!({"standard": "npt", "designation": "1/8-27 NPT", "taper": true});
+    let uid = b
+        .doc
+        .add_feature(
+            &hole_def(on_top.clone(), json!({"diameter": 8.4, "thread": npt})),
+            None,
+        )
+        .unwrap()
+        .uid;
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(b.doc.kernel().count("thread"), 1);
+    let spec = last_spec(&b.doc);
+    // E1 = E0 + L1/16 = 0.37360 in: the minor diameter 8.7375 at the start.
+    assert!(
+        spec.starts_with(
+            "thread F3:hole0.wall pitch 0.9407407407407407 diameters 10.2421/8.7369/9.4895"
+        ),
+        "{spec}"
+    );
+    assert!(spec.ends_with(" cosmetic taper 0.0625 high true"), "{spec}");
+    let hole = b
+        .doc
+        .kernel()
+        .specs
+        .borrow()
+        .iter()
+        .rev()
+        .find(|s| s.starts_with("hole"))
+        .cloned()
+        .unwrap();
+    assert!(hole.contains("diameter 8.4"), "{hole}");
+    b.doc.undo();
+    // A tapering hole needs its diameter.
+    let error = b
+        .doc
+        .add_feature(
+            &hole_def(on_top.clone(), json!({"diameter": 0, "thread": npt})),
+            None,
+        )
+        .map(|_| ())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("hole diameter"), "{error}");
+    // Modelled.
+    b.doc
+        .add_feature(
+            &hole_def(
+                on_top,
+                json!({"diameter": 8.4, "thread": {"standard": "npt", "designation": "1/8-27 NPT",
+                       "modeled": true, "taper": true}}),
+            ),
+            None,
+        )
+        .unwrap();
+    let spec = last_spec(&b.doc);
+    assert!(spec.ends_with(" taper 0.0625 high true"), "{spec}");
+    assert!(!spec.contains("cosmetic"), "{spec}");
+}
+
+#[test]
+fn patterns_of_a_thread_alone_thread_the_faces_at_their_places() {
+    // A second rod 30 along X (F4.b0), a modelled thread on the first
+    // (F5); patterns of the thread alone (mitcad#733) go on the second
+    // rod's side, where the first rod's moves: no copied feature made it,
+    // so it is found by its place.
+    let mut doc = rod();
+    let sketch = doc
+        .add_sketch(crate::features::SketchPlane::Xy)
+        .unwrap()
+        .uid;
+    let region = doc
+        .add_circle(sketch, [30.0, 0.0], &crate::ValueInput::Number(10.0))
+        .unwrap()
+        .region;
+    doc.add_feature(
+        &def(
+            json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                    "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}),
+        ),
+        None,
+    )
+    .unwrap();
+    let thread = doc
+        .add_feature(&thread_def("F2:side(c1)", json!({"modeled": true})), None)
+        .unwrap()
+        .uid;
+    assert_eq!(status(&doc, thread), FeatureStatus::Ok);
+    let other_side = doc
+        .body_shape(BodyUid::new(FeatureUid(4), 0))
+        .unwrap()
+        .faces
+        .iter()
+        .find(|f| f.role == "side")
+        .unwrap()
+        .to_string();
+    for pattern in [
+        json!({"type": "rectangular_pattern",
+               "objects": {"type": "features", "features": [thread]},
+               "direction1": {"axis": "x", "quantity": 2, "distance": 30},
+               "distance_type": "spacing"}),
+        // At points: the anchor is the middle of the threaded face.
+        json!({"type": "pattern_at_points",
+               "objects": {"type": "features", "features": [thread]},
+               "targets": [{"point": {"point": [30.0, 0.0, 10.0]}}]}),
+    ] {
+        let uid = doc.add_feature(&def(pattern.clone()), None).unwrap().uid;
+        assert_eq!(status(&doc, uid), FeatureStatus::Ok, "{pattern}");
+        assert!(doc.warnings(uid).is_empty(), "{:?}", doc.warnings(uid));
+        let spec = last_spec(&doc);
+        assert!(
+            spec.starts_with(&format!("thread {other_side} pitch 1.5")),
+            "{spec}"
+        );
+        doc.undo();
+    }
 }
 
 /// Sketch1 with a 10 mm circle extruded 20 mm into a rod (F2.b0).

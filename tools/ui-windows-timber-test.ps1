@@ -31,7 +31,8 @@
 #      after the click, which stays there while the mouse moves, a click on
 #      another face moving it once (mitcad#508), and again when the
 #      distance changes their count (mitcad#487) and again when the Offset
-#      typed after the click moves the set (mitcad#492), placed as one set
+#      typed after the click moves the set from end A, chosen in From
+#      (mitcad#492), placed as one set
 #      of as many; Spacing Set edits its distance.
 #   5. Connector at a timber junction: wood screws by default, sized from
 #      the members, one click.
@@ -777,14 +778,26 @@ $at200 = Set-Previewed 'centre distance 200' 'at 200'
 if ($at200 -le $at400) { Ui-Fail "200 mm previewed $at200 members, not more than the $at400 at 400 mm" }
 # The Offset typed after the click moves the set (mitcad#492): from its
 # reference it starts 300 mm in, fewer members; back to 0, as before.
+# The reference is chosen first: the click's depends on where on the side
+# the pick place lies (the middle here: 300 mm from it ran off the beam,
+# clamped to end B, mitcad#740). From End A, the list's first entry: a
+# drop-down's list cannot open in session 0, so wheel steps up the list,
+# one message a step (tools/ui-windows-mount-test.ps1); at the top a step
+# changes nothing.
+Ui-Step 'From End A'                     {
+  Ui-WheelLogged 'Panel Timber input from' 1
+  Start-Sleep -Milliseconds 150
+  Ui-WheelLogged 'Panel Timber input from' 1
+}
+Ui-Sync
 Ui-Mark
 Ui-Step 'an offset of 300'               { Ui-TypeIn 'Panel Timber input offset' '300' }
-Expect-Inspect 'Timber' @(' at 300.0 mm from ', 'centre distance 200') 'the set previewed 300 mm from its reference'
-$at300 = Set-Previewed ' at 300.0 mm from ' 'offset 300'
+Expect-Inspect 'Timber' @(' at 300.0 mm from a', 'centre distance 200') 'the set previewed 300 mm from end A'
+$at300 = Set-Previewed ' at 300.0 mm from a' 'offset 300'
 if ($at300 -ge $at200) { Ui-Fail "offset 300 previewed $at300 members, not fewer than the $at200 at offset 0" }
 Ui-Mark
 Ui-Step 'the offset back to 0'           { Ui-TypeIn 'Panel Timber input offset' '0' }
-$again0 = Set-Previewed ' at 0.0 mm from ' 'offset 0 again'
+$again0 = Set-Previewed ' at 0.0 mm from a' 'offset 0 again'
 if ($again0 -ne $at200) { Ui-Fail "offset 0 previewed $again0 members, not the $at200 before" }
 Place 'Timber 48x98 test'
 Ui-ExpectNew '; a set of ' 'placed as one set'

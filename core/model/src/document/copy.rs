@@ -857,6 +857,16 @@ impl CopyReferences<'_> {
                     copy.object_links.insert(mapped, link);
                 }
             }
+            // A revolution's object on another component's body (mitcad#762):
+            // as an extrusion's.
+            (FeatureDef::Revolve(copy), FeatureDef::Revolve(original)) => {
+                copy.object_links.clear();
+                for (body, link) in &original.object_links {
+                    let (link, internal) = self.link(link, component)?;
+                    let mapped = if internal { self.body(*body) } else { *body };
+                    copy.object_links.insert(mapped, link);
+                }
+            }
             (FeatureDef::Combine(copy), FeatureDef::Combine(original)) => {
                 let mut tools = HashMap::new();
                 copy.tool_links.clear();

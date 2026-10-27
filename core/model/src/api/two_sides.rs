@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
-//! A two-sided extrusion's distances in commands (mitcad#693): each side
-//! goes its own way from the start, so `add_feature`, `edit_feature` and
-//! their previews refuse a negative side distance instead of taking its
-//! size the other way. A solid on one side of the sketch takes a start
-//! offset. The document's own API, which the imports add their features
+//! A two-sided extrusion's distances in commands (mitcad#693, mitcad#765).
+//! With `signed` (what the Extrude panel sends since mitcad#765) a side's
+//! distance has a sign and a negative one ends on the other side's side, so
+//! commands take it as it is. Without `signed` each side goes its own way by
+//! its distance's size, so `add_feature`, `edit_feature` and their previews
+//! refuse a negative side distance there instead of taking its size the
+//! other way. The document's own API, which the imports add their features
 //! through, still takes a side's size, as the stored designs measure it.
 
 use super::ApiError;
@@ -15,9 +17,10 @@ use crate::kernel::Kernel;
 use crate::parameters::{Parameters, unit_for};
 
 impl<K: Kernel> Document<K> {
-    /// Refuses a two-sided extrusion with a negative side distance. An
-    /// edit that keeps a side's negative distance as the feature has it (an
-    /// imported feature's, while another of its inputs changes) passes.
+    /// Refuses a two-sided extrusion without `signed` with a negative side
+    /// distance. An edit that keeps a side's negative distance as the
+    /// feature has it (an imported feature's, while another of its inputs
+    /// changes) passes.
     pub(super) fn check_two_side_distances(
         &self,
         def: &FeatureDef<ValueInput>,
@@ -26,6 +29,11 @@ impl<K: Kernel> Document<K> {
         let FeatureDef::Extrude(extrude) = def else {
             return Ok(());
         };
+        // Signed distances (mitcad#765): the feature's check says whether
+        // the two ends leave a length between them.
+        if extrude.signed_two_sides() {
+            return Ok(());
+        }
         let params = self.parameters();
         let before = match edited
             .and_then(|uid| self.feature(uid))
@@ -42,9 +50,9 @@ impl<K: Kernel> Document<K> {
             };
             if value < 0.0 && before[k] != Some(value) {
                 return Err(ApiError(format!(
-                    "side {}'s distance is {value}: each side of a two-sided extrusion goes its \
-                     own way from the start and takes no negative distance; for a solid on one \
-                     side of the sketch use a start offset",
+                    "side {}'s distance is {value}: without \"signed\": true each side of a \
+                     two-sided extrusion goes its own way from the start and takes no negative \
+                     distance; with it a negative distance ends on the other side's side",
                     k + 1
                 )));
             }

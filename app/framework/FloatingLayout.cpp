@@ -114,6 +114,8 @@ void FloatingLayout::requestLayout() {
   });
 }
 
+void FloatingLayout::layoutNow() { layoutCards(); }
+
 void FloatingLayout::showEvent(QShowEvent* event) {
   QWidget::showEvent(event);
   if (!m_windowed) {

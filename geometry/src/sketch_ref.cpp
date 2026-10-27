@@ -468,4 +468,56 @@ std::vector<SectionCurve> section_curves(const Shape& shape, const std::string& 
   });
 }
 
+std::vector<gp_Pnt> section_points(const Shape& shape, const std::string& name, const gp_Pnt& origin,
+                                   const gp_Dir& normal) {
+  return detail::run("section points", [&] {
+    const gp_Pln plane(origin, normal);
+    std::vector<gp_Pnt> points;
+    for (const int e : shape.find_edges(name)) {
+      const TopoDS_Edge& edge = shape.edge(e);
+      if (BRep_Tool::Degenerated(edge)) {
+        continue;
+      }
+      // Whether the edge's box reaches both sides of the plane.
+      Bnd_Box box;
+      BRepBndLib::Add(edge, box);
+      if (box.IsVoid()) {
+        continue;
+      }
+      double x[2];
+      double y[2];
+      double z[2];
+      box.Get(x[0], y[0], z[0], x[1], y[1], z[1]);
+      bool below = false;
+      bool above = false;
+      for (int i = 0; i < 8; ++i) {
+        const double d = side_of(plane, gp_Pnt(x[i & 1], y[(i >> 1) & 1], z[(i >> 2) & 1]));
+        below = below || d <= kMeet;
+        above = above || d >= -kMeet;
+      }
+      if (!below || !above) {
+        continue;
+      }
+      // The section's vertices: crossings, and the ends of what lies in
+      // the plane.
+      BRepAlgoAPI_Section section(edge, plane, false);
+      section.Build();
+      if (!section.IsDone()) {
+        throw std::runtime_error("the plane's section of an edge failed");
+      }
+      for (TopExp_Explorer it(section.Shape(), TopAbs_VERTEX); it.More(); it.Next()) {
+        const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(it.Current()));
+        bool seen = false;
+        for (const gp_Pnt& known : points) {
+          seen = seen || beside(known, p);
+        }
+        if (!seen) {
+          points.push_back(p);
+        }
+      }
+    }
+    return points;
+  });
+}
+
 } // namespace mitcad::geometry

@@ -29,7 +29,14 @@
 #include <cstring>
 #include <ctime>
 #include <exception>
+#include <stdexcept>
 #include <string>
+#include <typeinfo>
+
+#if __has_include(<cxxabi.h>)
+#include <cxxabi.h>
+#define MITCAD_HAS_CXXABI 1
+#endif
 
 namespace mitcad::crash {
 namespace {
@@ -47,6 +54,7 @@ char g_header[kTextSize];  // the report's first lines (process, version, ...)
 char g_process[64];        // "app", "import-worker", ...
 char g_directory[kPathSize];
 #ifdef _WIN32
+constexpr DWORD kCxxException = 0xE06D7363; // MSVC's C++ exception ("msc")
 wchar_t g_directoryWide[kPathSize];
 wchar_t g_symbolPath[kPathSize]; // the executable's folder, where its PDB file is
 #endif
@@ -256,8 +264,17 @@ void putFrame(File file, void* frame) {
     symbol->MaxNameLen = kName;
     DWORD64 displacement = 0;
     char name[kName * 3] = "";
-    if (SymFromAddrW(GetCurrentProcess(), address, &displacement, symbol) != FALSE &&
-        WideCharToMultiByte(CP_UTF8, 0, symbol->Name, -1, name, sizeof name, nullptr, nullptr) > 1) {
+    // The executable's functions come from its PDB file only: without one
+    // dbghelp names the nearest of the few functions it exports, a wrong
+    // name far from the place (mitcad#773). Its frames then keep their
+    // offset in the executable, which the release's kept PDB file resolves.
+    bool named = SymFromAddrW(GetCurrentProcess(), address, &displacement, symbol) != FALSE;
+    if (named && module == GetModuleHandleW(nullptr)) {
+      IMAGEHLP_MODULEW64 moduleInfo{};
+      moduleInfo.SizeOfStruct = sizeof moduleInfo;
+      named = SymGetModuleInfoW64(GetCurrentProcess(), base, &moduleInfo) != FALSE && moduleInfo.SymType == SymPdb;
+    }
+    if (named && WideCharToMultiByte(CP_UTF8, 0, symbol->Name, -1, name, sizeof name, nullptr, nullptr) > 1) {
       put(file, "!");
       put(file, name);
       put(file, "+0x");
@@ -321,9 +338,142 @@ const char* exceptionName(DWORD code) {
     return "EXCEPTION_PRIV_INSTRUCTION";
   case EXCEPTION_DATATYPE_MISALIGNMENT:
     return "EXCEPTION_DATATYPE_MISALIGNMENT";
+  case kCxxException:
+    return "CXX_EXCEPTION";
   default:
     return "EXCEPTION";
   }
+}
+
+// An unhandled C++ exception (mitcad#773). MSVC throws it as the SEH
+// exception 0xE06D7363 with the thrown object and its throw information
+// (the types a handler could catch it as, most derived first) as
+// parameters; on 64-bit Windows the information's pointers are offsets
+// from the image base in the fourth parameter. Nothing handled it, so the
+// filter runs before any unwinding and the object is still alive. Its
+// type comes from the first catchable type's decorated name
+// (".?AVStandard_ConstructionError@@"), its message from what() when one of
+// the types is std::exception.
+struct CxxTypeDescriptor {
+  const void* table;
+  void* spare;
+  char name[1];
+};
+struct CxxCatchableType {
+  unsigned properties;
+  int type;
+  int memberOffset; // this-pointer adjustment to the type
+  int virtualBase;  // -1 unless the type is a virtual base
+  int virtualOffset;
+  int size;
+  int copy;
+};
+struct CxxCatchableTypes {
+  int count;
+  int types[1];
+};
+struct CxxThrowInfo {
+  unsigned attributes;
+  int unwind;
+  int forwardCompat;
+  int catchableTypes;
+};
+
+// "Standard_ConstructionError" from ".?AVStandard_ConstructionError@@",
+// "std::exception" from ".?AVexception@std@@"; another form as it is.
+void readableTypeName(const char* decorated, char* text, std::size_t size) {
+  text[0] = '\0';
+  if (std::strncmp(decorated, ".?AV", 4) != 0 && std::strncmp(decorated, ".?AU", 4) != 0) {
+    copy(text, size, decorated);
+    return;
+  }
+  const char* parts[8] = {};
+  std::size_t lengths[8] = {};
+  int count = 0;
+  for (const char* part = decorated + 4; *part != '\0' && *part != '@' && count < 8;) {
+    const char* end = std::strchr(part, '@');
+    if (end == nullptr || *part == '?') { // a template or an unusual name: as it is
+      copy(text, size, decorated);
+      return;
+    }
+    parts[count] = part;
+    lengths[count] = static_cast<std::size_t>(end - part);
+    ++count;
+    part = end + 1;
+  }
+  for (int i = count - 1; i >= 0; --i) {
+    std::size_t used = std::strlen(text);
+    for (std::size_t j = 0; j < lengths[i] && used + 1 < size; ++j) {
+      text[used++] = parts[i][j];
+    }
+    text[used] = '\0';
+    if (i > 0) {
+      append(text, size, "::");
+    }
+  }
+}
+
+#ifdef _MSC_VER
+// Reads the thrown object's type and message into `type` and `message`;
+// a damaged record leaves them empty (the reads are guarded).
+void describeCxxException(const EXCEPTION_RECORD& record, char* type, std::size_t typeSize, char* message,
+                          std::size_t messageSize) {
+  type[0] = '\0';
+  message[0] = '\0';
+  if (record.ExceptionCode != kCxxException || record.NumberParameters < 4) {
+    return;
+  }
+  const ULONG_PTR magic = record.ExceptionInformation[0];
+  if (magic != 0x19930520 && magic != 0x19930521 && magic != 0x19930522) {
+    return;
+  }
+  const auto* object = reinterpret_cast<const char*>(record.ExceptionInformation[1]);
+  const auto* info = reinterpret_cast<const CxxThrowInfo*>(record.ExceptionInformation[2]);
+  const auto* base = reinterpret_cast<const char*>(record.ExceptionInformation[3]);
+  if (object == nullptr || info == nullptr || base == nullptr) {
+    return; // a rethrow (throw;) carries none
+  }
+  __try {
+    const auto* types = reinterpret_cast<const CxxCatchableTypes*>(base + info->catchableTypes);
+    for (int i = 0; i < types->count && i < 64; ++i) {
+      const auto* catchable = reinterpret_cast<const CxxCatchableType*>(base + types->types[i]);
+      const auto* descriptor = reinterpret_cast<const CxxTypeDescriptor*>(base + catchable->type);
+      if (i == 0) {
+        readableTypeName(descriptor->name, type, typeSize);
+      }
+      if (catchable->virtualBase < 0 && std::strcmp(descriptor->name, ".?AVexception@std@@") == 0) {
+        const auto* standard = reinterpret_cast<const std::exception*>(object + catchable->memberOffset);
+        copy(message, messageSize, standard->what());
+        break;
+      }
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    // What could be read is kept.
+  }
+}
+#else
+void describeCxxException(const EXCEPTION_RECORD&, char* type, std::size_t, char* message, std::size_t) {
+  type[0] = '\0';
+  message[0] = '\0';
+}
+#endif
+
+// "unhandled C++ exception <type>: <message>" for the report's message.
+void noteCxxException(const EXCEPTION_RECORD& record) {
+  char type[256];
+  char message[kMessageSize];
+  describeCxxException(record, type, sizeof type, message, sizeof message);
+  char text[kMessageSize];
+  copy(text, sizeof text, "unhandled C++ exception");
+  if (type[0] != '\0') {
+    append(text, sizeof text, " ");
+    append(text, sizeof text, type);
+  }
+  if (message[0] != '\0') {
+    append(text, sizeof text, ": ");
+    append(text, sizeof text, message);
+  }
+  noteMessage(text, std::strlen(text));
 }
 
 // The crashed thread's stack from the faulting instruction on, walked from
@@ -385,6 +535,9 @@ LONG WINAPI onException(EXCEPTION_POINTERS* info) {
     Crash crash{};
     const EXCEPTION_RECORD* record = info != nullptr ? info->ExceptionRecord : nullptr;
     crash.signal = exceptionName(record != nullptr ? record->ExceptionCode : 0);
+    if (record != nullptr && record->ExceptionCode == kCxxException) {
+      noteCxxException(*record);
+    }
     char digits[32];
     copy(crash.address, sizeof crash.address, "0x");
     append(crash.address, sizeof crash.address,
@@ -505,17 +658,41 @@ alignas(16) char g_signalStack[64 * 1024];
 
 #endif
 
-// An uncaught exception: its message, then abort() (and the report).
+// The type of the exception being handled, readable: demangled where the
+// C++ ABI offers it (GCC, Clang), MSVC's own name ("class X") otherwise.
+std::string currentExceptionType(const std::type_info* type) {
+#ifdef MITCAD_HAS_CXXABI
+  if (const std::type_info* thrown = abi::__cxa_current_exception_type()) {
+    type = thrown;
+  }
+  if (type != nullptr) {
+    int status = 0;
+    char* name = abi::__cxa_demangle(type->name(), nullptr, nullptr, &status);
+    if (status == 0 && name != nullptr) {
+      std::string text(name);
+      std::free(name);
+      return text;
+    }
+    std::free(name);
+  }
+#endif
+  return type != nullptr ? std::string(type->name()) : std::string();
+}
+
+// An uncaught exception: its type and message, then abort() (and the
+// report; mitcad#773).
 void onTerminate() {
   if (std::exception_ptr error = std::current_exception()) {
     try {
       std::rethrow_exception(error);
     } catch (const std::exception& exception) {
-      const std::string text = std::string("uncaught exception: ") + exception.what();
+      const std::string type = currentExceptionType(&typeid(exception));
+      const std::string text = "uncaught exception " + (type.empty() ? std::string() : type + ": ") + exception.what();
       noteMessage(text.data(), text.size());
     } catch (...) {
-      const char text[] = "uncaught exception";
-      noteMessage(text, sizeof text - 1);
+      const std::string type = currentExceptionType(nullptr);
+      const std::string text = "uncaught exception" + (type.empty() ? std::string() : " " + type);
+      noteMessage(text.data(), text.size());
     }
   } else {
     const char text[] = "std::terminate";
@@ -611,6 +788,13 @@ void crashNow() {
   volatile int* volatile nowhere = nullptr;
   *nowhere = 0;
   std::abort();
+}
+
+void throwNow() {
+#ifdef __linux__
+  prctl(PR_SET_DUMPABLE, 0, 0, 0, 0); // as crashNow
+#endif
+  throw std::range_error("thrown for a test (MITCAD_TEST_CRASH=app-exception)");
 }
 
 } // namespace mitcad::crash

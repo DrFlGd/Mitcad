@@ -4,21 +4,37 @@
 // to the text, the choices a field cannot take, new names; and on a plain
 // field of a window on the offscreen platform, the list's keys (Enter puts
 // the reference in without the field's own Enter, Esc only closes the
-// list), the fx browser searching comments, and `name = …`.
+// list), the fx browser searching comments, and `name = …`; Edit
+// Formula… keeping the `name =` (mitcad#755), and the context menu acting
+// on the field's caret and selection (mitcad#756).
+#include "framework/FormulaEditor.hpp"
 #include "framework/ParameterField.hpp"
 #include "framework/ParameterSuggest.hpp"
 
 #include <cstdio>
+#include <functional>
 #include <vector>
 
+#include <QAction>
 #include <QApplication>
+#include <QClipboard>
+#include <QContextMenuEvent>
 #include <QEvent>
+#include <QFocusEvent>
+#include <QGuiApplication>
+#include <QHelpEvent>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QList>
+#include <QMenu>
+#include <QPlainTextEdit>
+#include <QPoint>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
+#include <QToolTip>
 #include <QWidget>
 
 namespace {
@@ -132,6 +148,14 @@ void insertionTests() {
   CHECK(expressionPart(QStringLiteral("width = d1 * 2")) == QStringLiteral("d1 * 2"));
   CHECK(expressionPart(QStringLiteral(" w=3")) == QStringLiteral("3"));
   CHECK(expressionPart(QStringLiteral("d1 == 2")) == QStringLiteral("d1 == 2"));
+  // Where the expression starts: after the `name =` the match found, not
+  // where its text first occurs (mitcad#755).
+  CHECK(expressionStart(QStringLiteral("t2 = 2")) == 5);
+  CHECK(expressionStart(QStringLiteral("width = w")) == 8);
+  CHECK(expressionStart(QStringLiteral("depth = ")) == 8);
+  CHECK(expressionStart(QStringLiteral(" w=3")) == 3);
+  CHECK(expressionStart(QStringLiteral("d1 == 2")) == 0);
+  CHECK(expressionStart(QStringLiteral("  2 * d1")) == 2);
 }
 
 void nameTests() {
@@ -425,6 +449,242 @@ void fieldTests() {
   CHECK(added == 0);
 }
 
+// Runs `opener`, which shows a modal dialog or a menu and returns once it
+// closes, with `act` given the dialog or menu as soon as it shows; a
+// watchdog closes it when `act` did not.
+void whileOpen(const std::function<void()>& opener, const std::function<void(QWidget*)>& act) {
+  QTimer watchdog;
+  watchdog.setSingleShot(true);
+  QObject::connect(&watchdog, &QTimer::timeout, [] {
+    check(false, "the dialog or menu is closed by the test's action", __LINE__);
+    if (QWidget* popup = QApplication::activePopupWidget()) {
+      popup->close();
+    } else if (QWidget* modal = QApplication::activeModalWidget()) {
+      modal->close();
+    }
+  });
+  watchdog.start(3000);
+  QObject alive; // the action is not run after this returns
+  QTimer::singleShot(0, &alive, [&act] {
+    QWidget* shown = QApplication::activePopupWidget();
+    if (shown == nullptr) {
+      shown = QApplication::activeModalWidget();
+    }
+    CHECK(shown != nullptr);
+    if (shown != nullptr) {
+      act(shown);
+    }
+  });
+  opener();
+  watchdog.stop();
+}
+
+// Chooses the menu's action whose text starts with `name` (without its
+// `&` and shortcut) as a user does: made current, then Enter.
+void choose(QMenu* menu, const QString& name) {
+  CHECK(menu != nullptr);
+  if (menu == nullptr) {
+    return;
+  }
+  QAction* found = nullptr;
+  const QList<QAction*> actions = menu->actions();
+  for (QAction* action : actions) {
+    if (action->text().remove(QLatin1Char('&')).startsWith(name)) {
+      found = action;
+      break;
+    }
+  }
+  CHECK(found != nullptr && found->isEnabled());
+  if (found == nullptr) {
+    return;
+  }
+  menu->setActiveAction(found);
+  QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+  QApplication::sendEvent(menu, &enter);
+}
+
+// The field's context menu, as a right click opens it.
+void openContextMenu(QLineEdit* edit) {
+  const QPoint at(5, edit->height() / 2);
+  QContextMenuEvent request(QContextMenuEvent::Mouse, at, edit->mapToGlobal(at));
+  QApplication::sendEvent(edit, &request);
+}
+
+// What a command panel does as its value field loses the keyboard
+// (CommandPanel::eventFilter).
+class PanelFocus : public QObject {
+public:
+  explicit PanelFocus(QLineEdit* edit) : QObject(edit), m_edit(edit) { edit->installEventFilter(this); }
+  int leftAt = -1;
+
+protected:
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (watched == m_edit && event->type() == QEvent::FocusOut) {
+      const auto& focus = *static_cast<QFocusEvent*>(event);
+      // The offscreen platform the unit tests run on activates a menu's
+      // own window and, as the menu closes, leaves no window active: the
+      // field then loses the keyboard once more (ActiveWindowFocusReason)
+      // after the menu gave it back. A desktop's menu takes no activation,
+      // so that loss is not the user's and is ignored here.
+      if (focus.reason() == Qt::ActiveWindowFocusReason &&
+          QGuiApplication::platformName() == QLatin1String("offscreen")) {
+        return true;
+      }
+      const int was = leaveValueField(m_edit, focus);
+      if (was >= 0) {
+        leftAt = was;
+      }
+    }
+    return QObject::eventFilter(watched, event);
+  }
+
+private:
+  QLineEdit* m_edit;
+};
+
+// Edit Formula… keeps the field's `name =` where the expression's text
+// also occurs in the name (mitcad#755).
+void formulaPrefixTests() {
+  QWidget window;
+  window.resize(640, 480);
+  setParameterSource(&window, {[] { return designParameters(); },
+                               [](const QJsonObject&, QString*) { return true; },
+                               [] { return QStringLiteral("mm"); },
+                               [](const QJsonObject&) { return QJsonObject(); }});
+  auto* edit = new QLineEdit(&window);
+  edit->setGeometry(20, 20, 200, 24);
+  ParameterFieldOptions options;
+  options.label = QStringLiteral("test dimension");
+  options.naming = true;
+  options.create = false;
+  ParameterField* field = ParameterField::attach(edit, options);
+  window.show();
+  // The field's text after the editor's OK, with `formula` typed in it
+  // (left as it opened when empty).
+  const auto apply = [edit, field](const QString& text, const QString& formula) {
+    edit->setText(text);
+    whileOpen([field] { field->openFormulaEditor(); },
+              [&formula](QWidget* shown) {
+                auto* dialog = dynamic_cast<FormulaEditor*>(shown);
+                CHECK(dialog != nullptr);
+                if (dialog == nullptr) {
+                  shown->close();
+                  return;
+                }
+                auto* input = dialog->findChild<QPlainTextEdit*>(QStringLiteral("formulaText"));
+                CHECK(input != nullptr);
+                if (input != nullptr && !formula.isEmpty()) {
+                  input->setPlainText(formula);
+                }
+                dialog->accept();
+              });
+    return edit->text();
+  };
+  CHECK(apply(QStringLiteral("t2 = 2"), QString()) == QStringLiteral("t2 = 2"));
+  CHECK(apply(QStringLiteral("t2 = 2"), QStringLiteral("3")) == QStringLiteral("t2 = 3"));
+  CHECK(apply(QStringLiteral("width = w"), QString()) == QStringLiteral("width = w"));
+  CHECK(apply(QStringLiteral("width = w"), QStringLiteral("w * 2")) == QStringLiteral("width = w * 2"));
+  CHECK(apply(QStringLiteral("20 + 5"), QStringLiteral("25")) == QStringLiteral("25"));
+}
+
+// A field's own tooltip (its parameter's name, expression and comment,
+// mitcad#250) shows where the formula help has nothing to say; the
+// value of the part under the pointer where it has (mitcad#761).
+void tooltipTests() {
+  QWidget window;
+  window.resize(640, 480);
+  setParameterSource(&window, {[] { return designParameters(); },
+                               [](const QJsonObject&, QString*) { return true; },
+                               [] { return QStringLiteral("mm"); },
+                               [](const QJsonObject& asked) {
+                                 if (!asked.value(QStringLiteral("expression")).toString().contains(
+                                         QStringLiteral("d1"))) {
+                                   return QJsonObject();
+                                 }
+                                 return QJsonObject{
+                                     {QStringLiteral("selection"),
+                                      QJsonObject{{QStringLiteral("text"), QStringLiteral("d1 = 35 mm")}}}};
+                               }});
+  auto* edit = new QLineEdit(&window);
+  edit->setGeometry(20, 20, 200, 24);
+  edit->setToolTip(QStringLiteral("own tip"));
+  ParameterFieldOptions options;
+  options.label = QStringLiteral("test distance");
+  options.create = false;
+  ParameterField::attach(edit, options);
+  window.show();
+  const QPoint at(5, edit->height() / 2);
+  edit->setText(QStringLiteral("20 + 5"));
+  QHelpEvent plain(QEvent::ToolTip, at, edit->mapToGlobal(at));
+  QApplication::sendEvent(edit, &plain);
+  CHECK(QToolTip::text() == QStringLiteral("own tip"));
+  edit->setText(QStringLiteral("d1 * 2"));
+  QHelpEvent onPart(QEvent::ToolTip, at, edit->mapToGlobal(at));
+  QApplication::sendEvent(edit, &onPart);
+  CHECK(QToolTip::text() == QStringLiteral("d1 = 35 mm"));
+  QToolTip::hideText();
+}
+
+// A value field's context menu acts on the caret and the selection the
+// field had: opening it does not take the field back to its start
+// (mitcad#756), leaving the field for good does (mitcad#656).
+void fieldMenuTests() {
+  QWidget window;
+  window.resize(640, 480);
+  setParameterSource(&window, {[] { return designParameters(); },
+                               [](const QJsonObject&, QString*) { return true; },
+                               [] { return QStringLiteral("mm"); }});
+  auto* edit = new QLineEdit(&window);
+  edit->setGeometry(20, 20, 200, 24);
+  ParameterFieldOptions options;
+  options.label = QStringLiteral("test distance");
+  options.create = false;
+  ParameterField* field = ParameterField::attach(edit, options);
+  auto* panel = new PanelFocus(edit);
+  window.show();
+  window.activateWindow();
+  QApplication::processEvents();
+  edit->setFocus(Qt::OtherFocusReason);
+  QApplication::processEvents();
+  CHECK(edit->hasFocus()); // else the menu would take no focus from it
+
+  // "20" of "20 + 5" selected: Copy copies it.
+  edit->setText(QStringLiteral("20 + 5"));
+  edit->setSelection(0, 2);
+  QApplication::clipboard()->setText(QStringLiteral("nothing"));
+  whileOpen([edit] { openContextMenu(edit); },
+            [edit](QWidget* shown) {
+              CHECK(edit->selectedText() == QStringLiteral("20"));
+              CHECK(edit->cursorPosition() == 2);
+              choose(qobject_cast<QMenu*>(shown), QStringLiteral("Copy"));
+            });
+  CHECK(QApplication::clipboard()->text() == QStringLiteral("20"));
+  CHECK(edit->selectedText() == QStringLiteral("20"));
+  CHECK(panel->leftAt == -1);
+
+  // The caret at the end of "2 * ": Insert Parameter… puts the choice there.
+  edit->setText(QStringLiteral("2 * "));
+  edit->setCursorPosition(4);
+  whileOpen([edit] { openContextMenu(edit); },
+            [edit](QWidget* shown) {
+              CHECK(edit->cursorPosition() == 4);
+              choose(qobject_cast<QMenu*>(shown), QStringLiteral("Insert Parameter"));
+            });
+  QApplication::processEvents(); // the browser opens after the menu
+  CHECK(field->isOpen());
+  type(*edit, QStringLiteral("wall"));
+  CHECK(press(*edit, Qt::Key_Return));
+  CHECK(edit->text() == QStringLiteral("2 * thickness"));
+
+  // Leaving the field otherwise shows it from its start again and keeps
+  // where the caret was.
+  edit->setCursorPosition(4);
+  QFocusEvent away(QEvent::FocusOut, Qt::MouseFocusReason);
+  QApplication::sendEvent(edit, &away);
+  CHECK(panel->leftAt == 4);
+  CHECK(edit->cursorPosition() == 0);
+}
+
 } // namespace
 
 int parameterSuggestTests() {
@@ -434,5 +694,8 @@ int parameterSuggestTests() {
   nameTests();
   matchTests();
   fieldTests();
+  formulaPrefixTests();
+  fieldMenuTests();
+  tooltipTests();
   return failures;
 }

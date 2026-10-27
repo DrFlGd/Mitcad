@@ -1,8 +1,9 @@
 # mitcad-dwg
 
 Reader for `.dwg` drawings, R13 to R2018, for the import of their 3D
-content (mitcad#453). Read-only, no geometry: the bodies are built by the
-import (`core/ffi/src/dwg_import.rs`, the `import_dwg` command,
+content (mitcad#453), and a writer of 2D drawings in R2000 for the drawing
+export ([Writer](#writer), mitcad#728). No geometry: the bodies are built
+by the import (`core/ffi/src/dwg_import.rs`, the `import_dwg` command,
 `mitcad-cli import-dwg`).
 
 The format knowledge comes from the *Open Design Specification for .dwg
@@ -181,8 +182,82 @@ with the transform; an array insert places one occurrence per cell.
 Colours: the entity's own, `BYLAYER` the layer's, `BYBLOCK` the
 inserting entity's.
 
+## Writer
+
+`write::drawing` writes a 2D drawing (`mitcad_dxf::Drawing`: the drawing
+export's sheet with a layer per pen, mitcad#728) as an R2000 (`AC1015`)
+file, the version other drawing programs read most widely and the one
+with the plain container: the sections one after another at the
+addresses the file header's five locators give, nothing compressed.
+Mitcad's own code from the same specification as the reader; no
+third-party writer.
+
+The 3D content needs the `.f3d` reader's ASM code: the feature `solids`
+(on by default; `core/ffi` asks for it) brings `scene`, `testfile`,
+`solid::parse`, `mitcad-dwg-inspect` and the dependency on `mitcad-f3d`.
+`mitcad-model` uses the crate without it (`default-features = false`),
+for the writer, the reader of the sections and objects and `flat`; so
+the model does not depend on the `.f3d` reader, whose tests use the
+model.
+
+- **The file:** the file header (version, the preview's address, code
+  page 30 (ANSI 1252), the locators of the header variables, the classes,
+  the object map, the object free space record and the template record,
+  their CRC XOR 0x3CC4 and the sentinel), the header variables, the
+  classes, 0x200 bytes of padding, the objects in handle order, the object
+  map, the object free space record (the object count, the update date,
+  where the objects start), the template record (`MEASUREMENT`) and an
+  empty preview. The second file header of R13 to R2000 is left out:
+  nothing points to it, and readers find the sections by the locators.
+- **The header variables:** every variable of chapter 9 for R2000, with
+  the defaults of a metric drawing (ISO dimension values, `LUNITS` 2,
+  `LUPREC` 4), `INSUNITS` and `MEASUREMENT` from the drawing's units, the
+  extents of what it holds, the paper as the limits, the creation and
+  update dates, the handles of the tables, dictionaries, blocks and line
+  types below, and identifiers made from the drawing's content and date.
+- **The objects:** the ten table controls (blocks, layers, text styles,
+  line types, views, UCSs, viewports, applications, dimension styles,
+  viewport entity headers); layer `0` and the drawing's layers (a layer
+  that is off has its colour negated and the 2 bit of its flags set, which
+  the specification calls "on" but drawings leave clear on layers that
+  are on); the text style `Standard` (font `txt`); the line types
+  `ByBlock`, `ByLayer`, `Continuous`; the application `ACAD`; the
+  dimension style `Standard`; the viewport `*Active` showing the whole
+  drawing; the named objects dictionary with `ACAD_GROUP`, `ACAD_LAYOUT`
+  (`Model`, `Layout1`), `ACAD_MLINESTYLE` (`Standard`),
+  `ACAD_PLOTSETTINGS` and `ACAD_PLOTSTYLENAME` (a dictionary with the
+  default `Normal`, a placeholder); `*Model_Space` and `*Paper_Space`
+  with their BLOCK and ENDBLK entities and layouts. The classes are those
+  three objects without a fixed type: `ACDBDICTIONARYWDFLT`,
+  `ACDBPLACEHOLDER`, `LAYOUT`.
+- **The entities,** in model space, colour, line type and line weight by
+  layer, each linked to the one before and after it: `LINE`, `ARC`,
+  `CIRCLE` (an arc of a full turn), `POINT`, `ELLIPSE`, `SPLINE` (by its
+  control points and knots, or its fit points) and `TEXT` (left aligned
+  on its baseline, a text of several lines as a text per line, each 5/3
+  of the height below the one before).
+- **Texts** are in code page 1252; other characters are written as
+  `\U+XXXX`, and `%%` (which starts a control code) as `%%%%%%`
+  (`write::encode`, `write::decode`).
+- Where the specification lists a field only some readers expect (the
+  count of further handles of the dimension style control, four shorts at
+  the end of the header variables), it is written: a reader that does
+  not expect it stops at the object's or section's size.
+
+The reader decodes `LINE`, `ARC`, `CIRCLE`, `POINT`, `ELLIPSE` and `TEXT`
+(`objects::EntityData`; one that does not read stays undecoded, as other
+2D entities), and `flat::drawing` gives a drawing's model space back as a
+`mitcad_dxf::Drawing`: the tests read what the writer writes. The import
+leaves 2D entities out as before.
+
 ## Tests
 
+- `write` in `core.dwg`: a drawing of every entity kind written and read
+  back: every object read, the header variables, the classes, the layers
+  (one off), the entities' links, the geometry exactly and the texts with
+  their characters; the file header's CRC, each object's CRC, the free
+  space record, the template record and the preview; an empty drawing;
+  invalid geometry refused.
 - `core.dwg`: the bit codes (the specification's examples), the CRCs, both
   compressions, the object map and the data storage round trips, and a
   test drawing (`testfile`: a small truss of blocks, solids in both forms,

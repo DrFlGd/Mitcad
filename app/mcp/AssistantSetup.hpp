@@ -22,11 +22,18 @@ QString assistantCommand(const QString& program, const QStringList& arguments, b
 QStringList assistantRegistration(AssistantClient client, const QString& bridge);
 QJsonObject assistantJsonConfiguration(const QString& bridge);
 QJsonObject assistantBundleManifest(const QString& bridge, bool windows, const QString& platform);
-bool readAssistantConfiguration(const QString& path, QString& content, QString& error);
+// The largest settings file read: Codex's TOML (and a file chosen under
+// Advanced) is small; Claude Code keeps its projects' state and history in
+// its .claude.json, which grows to tens of megabytes (mitcad#760), and only
+// its parse and the compare-before-write need the content.
+constexpr qint64 kAssistantConfigurationLimit = 4LL * 1024 * 1024;
+constexpr qint64 kClaudeConfigurationLimit = 256LL * 1024 * 1024;
+bool readAssistantConfiguration(const QString& path, QString& content, QString& error,
+                                qint64 limit = kAssistantConfigurationLimit);
 // Compare the file again before replacing it; a symlink or concurrent edit
 // never gets overwritten. Existing bytes are backed up with a unique name.
 bool writeAssistantConfiguration(const QString& path, const QString& expected, const QString& content,
-                                 QString& backup, QString& error);
+                                 QString& backup, QString& error, qint64 limit = kAssistantConfigurationLimit);
 // Managed settings are never changed by this user-level setup flow.
 QString assistantConfigurationPolicy(const QString& path);
 // Whether a connected client's display label (its clientInfo.name) is this
@@ -42,5 +49,24 @@ QString assistantSentenceName(AssistantClient client);
 // a sentence's form ("Claude Desktop" for "claude-ai"), else the label as the
 // client gave it.
 QString assistantDisplayName(const QString& label);
+
+// Claude Desktop installed from the Microsoft Store, an MSIX package
+// (mitcad#763): its package family, and whether the package's folder is under
+// Packages in this local application data folder (LOCALAPPDATA): only this
+// family's, not another `Claude_*` one. The application asks the package
+// manager; a test run takes the folder for the package. Such a package
+// registers no `.mcpb` file association: that no application opens the
+// extension then does not mean that Claude Desktop is missing.
+inline constexpr char kClaudeDesktopPackageFamily[] = "Claude_pzs8sxrjxfjjc";
+bool claudeDesktopPackaged(const QString& localAppData);
+// Claude Desktop's application on Windows by the local application data
+// folder alone: the installer's application folder or the package's folder
+// above, never the settings folder, which an uninstalled Claude Desktop
+// leaves behind.
+bool claudeDesktopApplicationInWindowsFolders(const QString& localAppData);
+// Claude Desktop on Windows by the user's application data folders
+// (LOCALAPPDATA, APPDATA): the installer's application folder, the package
+// above, or the settings folder Claude Desktop makes on its first start.
+bool claudeDesktopInWindowsFolders(const QString& localAppData, const QString& roamingAppData);
 
 } // namespace mitcad::mcp

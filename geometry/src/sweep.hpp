@@ -91,6 +91,14 @@ ShapePtr tapered(const Shape& solid, const gp_Pln& neutral, const gp_Dir& pull, 
 ShapePtr distance_side(const SweepFace& face, double distance, double taper, const gp_Dir& along,
                        const NameList& near, const NameList& far);
 
+// A side's solid past `distance` along `along` from the plane `start` it
+// starts on (extrude.cpp, mitcad#765: the other side of two ends there, on
+// this side's side): split by `start` moved that far, the part away from
+// the face named `near` kept, the cut face named `cut`. The side keeps its
+// taper as built from the start. Throws when nothing lies past it.
+ShapePtr past_other_end(const Shape& solid, const gp_Pln& start, const gp_Dir& along, double distance,
+                        const std::string& near, const NameList& cut);
+
 // The plane of a plane target or of a planar face target, offset, with its
 // normal turned along `along`.
 gp_Pln target_plane(const Target& target, const gp_Dir& along);

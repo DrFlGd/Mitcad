@@ -237,6 +237,55 @@ fn a_pair_set_by_hand_is_kept_marked_and_reset() {
 }
 
 #[test]
+fn a_deleted_material_s_pairs_do_not_reach_a_new_one_of_its_id() {
+    // mitcad#758: a new material takes the first free `custom{n}`, the id
+    // of a material deleted before it.
+    let mut doc = design();
+    let make = json!({"cmd": "create_material", "name": "White PETG",
+                      "filament": {"filament_type": "PETG"}});
+    assert_eq!(command(&mut doc, make)["id"], "custom1");
+    let arm = json!({"cmd": "set_component_material", "component": "Arm",
+                     "material": "custom1"});
+    command(&mut doc, arm.clone());
+    command(
+        &mut doc,
+        json!({"cmd": "set_purge_volumes",
+               "volumes": [{"from": "custom1", "to": "pla", "volume": 50}]}),
+    );
+    let t = table(&mut doc);
+    assert_eq!(t["slots"][1]["material"], "custom1");
+    assert_eq!(cell(&t, 1, 0).0, 50.0);
+    assert!(cell(&t, 1, 0).2);
+
+    // Deleted: its pair goes in the same step.
+    command(&mut doc, json!({"cmd": "delete_material", "id": "custom1"}));
+    assert!(doc.purge_overrides().is_empty());
+    // A new material gets custom1 again: its cells are computed.
+    let make = json!({"cmd": "create_material", "name": "Black TPU",
+                      "filament": {"filament_type": "TPU"}});
+    assert_eq!(command(&mut doc, make)["id"], "custom1");
+    command(&mut doc, arm);
+    let t = table(&mut doc);
+    assert_eq!(t["slots"][1]["material"], "custom1");
+    let (volume, worked_out, edited) = cell(&t, 1, 0);
+    assert!(!edited, "{t}");
+    assert_eq!(volume, worked_out);
+    assert!(!doc.to_json().contains("\"purge_volumes\""));
+
+    // Undoing the delete brings the pair back with the material.
+    doc.undo();
+    doc.undo();
+    doc.undo();
+    assert_eq!(doc.purge_overrides().len(), 1);
+    assert_eq!(doc.purge_overrides()[0].from, "custom1");
+    assert_eq!(doc.purge_overrides()[0].volume, 50.0);
+    let t = table(&mut doc);
+    assert_eq!(t["slots"][1]["material"], "custom1");
+    assert_eq!(cell(&t, 1, 0).0, 50.0);
+    assert!(cell(&t, 1, 0).2);
+}
+
+#[test]
 fn exports_write_the_table_with_the_pairs_set_by_hand() {
     let mut doc = design();
     command(

@@ -5,15 +5,16 @@
 #   - Move to Component... on a sketch row of the root (mitcad#218) opens
 #     the timeline's destination picker: the sketch goes into an existing
 #     component in one undo step.
-#   - Move to... on a component nested in a turned assembly (mitcad#219):
-#     to the root, its body staying where it was on screen and its row
-#     selected at the new place; one undo step puts it back; then into
-#     another component. A component cannot go into one placed in it: the
-#     picker says why, and Cancel changes nothing.
-#   - Move to... on a component a joint of its parent places (mitcad#301):
-#     the picker names the joint that goes along, the move takes it into
-#     the root with the component, which stays where it was on screen;
-#     one undo step puts both back.
+#   - Move to Component... (Move to... before mitcad#735) on a component
+#     nested in a turned assembly (mitcad#219): to the root, its body
+#     staying where it was on screen and its row selected at the new
+#     place; one undo step puts it back; then into another component. A
+#     component cannot go into one placed in it: the picker says why, and
+#     Cancel changes nothing.
+#   - Move to Component... on a component a joint of its parent places
+#     (mitcad#301): the picker names the joint that goes along, the move
+#     takes it into the root with the component, which stays where it was
+#     on screen; one undo step puts both back.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-move-test.sh [screenshot.png]
@@ -133,10 +134,10 @@ save
 expect_file '[f.get("component", "C0") for f in doc["features"]][:3]' "['C2', 'C2', 'C0']" \
   "one undo step puts Sketch2 back in the root"
 
-echo "--- Move to... on a component: to the root (mitcad#219)"
+echo "--- Move to Component... on a component: to the root (mitcad#219)"
 ui_mark
 ui_step "right-click Part:1"             ui_click_logged "Browser Root/Assembly:1/Part:1" 3
-ui_step "choose Move to..."              ui_menu_choose "Move to..."
+ui_step "choose Move to Component..."    ui_menu_choose "Move to Component..."
 ui_focus_dialog '^Move Component$'
 ui_expect_new "Move Component parents of Part:1: Root | Root/Assembly:1 (unavailable)" \
   "the parents with their full paths, the current one unavailable"
@@ -167,10 +168,10 @@ save
 expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]][:3]' \
   "[('O1', 'C0'), ('O2', 'C1'), ('O3', 'C0')]" "Part:1 placed in Assembly again"
 
-echo "--- Move to... into another component"
+echo "--- Move to Component... into another component"
 ui_mark
 ui_step "right-click Part:1"             ui_click_logged "Browser Root/Assembly:1/Part:1" 3
-ui_step "choose Move to..."              ui_menu_choose "Move to..."
+ui_step "choose Move to Component..."    ui_menu_choose "Move to Component..."
 ui_focus_dialog '^Move Component$'
 ui_step "parents (Alt+P, Home)"          ui_key alt+p Home
 ui_step "Holder:1 (Down x3)"             ui_key Down Down Down
@@ -190,7 +191,7 @@ expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]][:3]' \
 echo "--- A component cannot go into one placed in it; Cancel changes nothing"
 ui_mark
 ui_step "right-click Holder:1"           ui_click_logged "Browser Root/Holder:1" 3
-ui_step "choose Move to..."              ui_menu_choose "Move to..."
+ui_step "choose Move to Component..."    ui_menu_choose "Move to Component..."
 ui_focus_dialog '^Move Component$'
 ui_step "parents (Alt+P, Home)"          ui_key alt+p Home
 ui_step "Holder:1/Part:1 (Down x3)"      ui_key Down Down Down
@@ -203,13 +204,13 @@ save
 expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]][:3]' \
   "[('O1', 'C0'), ('O2', 'C3'), ('O3', 'C0')]" "nothing changed"
 
-echo "--- Move to... on a component a joint places: the joint goes along (mitcad#301)"
+echo "--- Move to Component... on a component a joint places: the joint goes along (mitcad#301)"
 ui_expect_log "F7.b0 in O4/O5" "the slider shown in Frame:1"
 SLIDER=$(place F7.b0)
 [ -n "$SLIDER" ] || ui_fail "no place logged for the slider"
 ui_mark
 ui_step "right-click Slider:1"           ui_click_logged "Browser Root/Frame:1/Slider:1" 3
-ui_step "choose Move to..."              ui_menu_choose "Move to..."
+ui_step "choose Move to Component..."    ui_menu_choose "Move to Component..."
 ui_focus_dialog '^Move Component$'
 ui_step "parents (Alt+P, Home)"          ui_key alt+p Home
 ui_expect_new "Move Component features: Joint1 -> Root" "the preview names the joint that moves along"

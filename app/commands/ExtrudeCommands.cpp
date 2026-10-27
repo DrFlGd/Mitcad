@@ -144,6 +144,26 @@ bool loadSide(const QJsonObject& side, CommandState& state, const QString& suffi
   return type == kDistance || type == kThroughAll;
 }
 
+// Whether a stored side's distance is negative: a number, or a parameter
+// by its value (mm) in the `parameters` query.
+bool negativeDistance(const QJsonObject& side, const CommandContext& context) {
+  if (str(side, "type") != kDistance) {
+    return false;
+  }
+  const QJsonValue slot = side.value(QStringLiteral("distance"));
+  if (slot.isDouble()) {
+    return slot.toDouble() < 0.0;
+  }
+  const QString name = slot.toString();
+  for (const QJsonValue& value : context.queryArray(QStringLiteral("parameters"))) {
+    const QJsonObject parameter = value.toObject();
+    if (parameter.value(QStringLiteral("name")).toString() == name) {
+      return parameter.value(QStringLiteral("value")).toDouble() < 0.0;
+    }
+  }
+  return false;
+}
+
 bool sideEditable(const QJsonObject& side, const CommandContext* context) {
   const QString type = str(side, "type");
   if (type == kToObject) {
@@ -177,12 +197,9 @@ QVector<InputDef> sideInputs(const QString& suffix, std::function<bool(const Com
             if ((one && state.checked(QStringLiteral("flip"))) || !suffix.isEmpty()) {
               direction.Reverse(); // side two goes against the normal
             }
-            Manipulator handle = arrow(base->first, direction);
-            if (state.choice(QStringLiteral("direction")) == kTwoSides) {
-              // Each side stays on its own side of the start (mitcad#693).
-              handle.minimum = 0.0;
-            }
-            return handle;
+            // A Two Sides arrow crosses the start to a negative distance,
+            // which ends on the other side's side (mitcad#765).
+            return arrow(base->first, direction);
           }),
   };
   inputs += objectInputs(suffix, when(kToObject));
@@ -273,6 +290,7 @@ CommandDef extrudeCommand(const CommandContext& context) {
       selectionInput(QStringLiteral("start_object"), QObject::tr("Start Object"), kPlaneKinds, 1, 1)
           .withTooltip(QObject::tr("The plane or planar face the profiles are projected onto"))
           .withAccepts(isPlanar)
+          .withPlanesByDepth() // another component's face before an origin plane behind it (mitcad#762)
           .withVisible(choiceIs(QStringLiteral("start"), QStringLiteral("object"))),
       choiceInput(QStringLiteral("direction"), QObject::tr("Direction"), kDirections, kOneSide),
       // Wrapped onto a cylinder or a cone (mitcad#473), as an emboss.
@@ -419,7 +437,7 @@ CommandDef extrudeCommand(const CommandContext& context) {
   };
   def.completes = [](const Selection&) { return true; };
 
-  def.build = [](const CommandState& state, const CommandContext&) {
+  def.build = [](const CommandState& state, const CommandContext& model) {
     Built result;
     const Selection& picked = state.items(QStringLiteral("profiles"));
     // A planar face of a body as the profile (mitcad#535), alone.
@@ -477,20 +495,26 @@ CommandDef extrudeCommand(const CommandContext& context) {
       if (!result.error.isEmpty()) {
         return result;
       }
-      // Each side goes its own way from the start: a negative distance is
-      // refused, not drawn on the other side (mitcad#693).
-      for (const QString& suffix : {QString(), QStringLiteral("2")}) {
-        const QString key = QStringLiteral("distance") + suffix;
-        if (state.choice(QStringLiteral("extent") + suffix) == kDistance && state.value(key) < 0.0) {
-          const QString name = suffix.isEmpty() ? QObject::tr("Distance") : QObject::tr("Distance %1").arg(suffix);
-          return Built::failure(
-              QObject::tr("%1 is on the other side: for a solid on one side of the sketch use Start: Offset").arg(name),
-              key);
-        }
-      }
       extent = {{QStringLiteral("type"), kTwoSides},
                 {QStringLiteral("side1"), side1},
                 {QStringLiteral("side2"), side2}};
+      // Signed distances (mitcad#765): a negative one ends on the other
+      // side's side, so 50 and -30 make a solid from 30 to 50 off the
+      // sketch, and the two must leave a length between their ends. An
+      // edited feature saved without them whose own distances are negative
+      // (an imported one's sizes, `load`) keeps its meaning.
+      if (!state.object(QStringLiteral("kept")).value(QStringLiteral("unsigned_two_sides")).toBool()) {
+        const bool distances = state.choice(QStringLiteral("extent")) == kDistance &&
+                               state.choice(QStringLiteral("extent2")) == kDistance;
+        const double d1 = state.value(QStringLiteral("distance"));
+        const double d2 = state.value(QStringLiteral("distance2"));
+        if (distances && std::isfinite(d1) && std::isfinite(d2) && !(d1 + d2 > 0.0)) {
+          return Built::failure(QObject::tr("The two sides overlap: Distance and Distance 2 must add up to "
+                                            "more than zero (a negative distance ends on the other side)"),
+                                QStringLiteral("distance2"));
+        }
+        extent.insert(QStringLiteral("signed"), true);
+      }
     } else {
       extent = sideOf(state, QString(), result);
       if (!result.error.isEmpty()) {
@@ -510,6 +534,31 @@ CommandDef extrudeCommand(const CommandContext& context) {
         } else {
           extent.insert(QStringLiteral("both_sides"), true);
         }
+      }
+    }
+    // Objects picked in another occurrence than the profiles (a face or a
+    // body of another component) go with their bodies' links (mitcad#762).
+    const QString here = linksOccurrence(picked, state, model);
+    QJsonObject links;
+    // One link per body: the same body picked in two occurrences is refused.
+    const auto twice = [&model](const SelectionItem& item) {
+      return QObject::tr("Pick both objects in the same occurrence of %1.")
+          .arg(componentName(occurrenceComponent(item.occurrence, model), model));
+    };
+    for (const QString& suffix : {QString(), QStringLiteral("2")}) {
+      const bool side = suffix.isEmpty() || direction == kTwoSides;
+      const Selection& objects = state.items(QStringLiteral("object") + suffix);
+      if (!side || state.choice(QStringLiteral("extent") + suffix) != kToObject || objects.isEmpty()) {
+        continue;
+      }
+      // Another component's construction plane: no link carries it
+      // (mitcad#772).
+      const QString foreign = foreignPlane(objects.first(), picked, model);
+      if (!foreign.isEmpty()) {
+        return Built::failure(foreign, QStringLiteral("object") + suffix);
+      }
+      if (!addObjectLink(links, objects.first(), here)) {
+        return Built::failure(twice(objects.first()), QStringLiteral("object") + suffix);
       }
     }
     const QString start = state.choice(QStringLiteral("start"));
@@ -545,14 +594,31 @@ CommandDef extrudeCommand(const CommandContext& context) {
         return Built::failure(QObject::tr("Select the plane the extrusion starts at."),
                               QStringLiteral("start_object"));
       }
-      QJsonObject begin{{QStringLiteral("type"), QStringLiteral("object")},
-                        {QStringLiteral("object"),
-                         QJsonObject{{QStringLiteral("type"), QStringLiteral("plane")},
-                                     {QStringLiteral("plane"), object.first().reference()}}}};
+      // A planar face of another occurrence goes as a face, whose body
+      // the model takes by its link (a plane reference takes no link).
+      const SelectionItem& item = object.first();
+      const QString foreign = foreignPlane(item, picked, model);
+      if (!foreign.isEmpty()) {
+        return Built::failure(foreign, QStringLiteral("start_object"));
+      }
+      QJsonObject plane{{QStringLiteral("type"), QStringLiteral("plane")},
+                        {QStringLiteral("plane"), item.reference()}};
+      if (item.kind == SelectKind::Face && item.occurrence != here) {
+        plane = {{QStringLiteral("type"), QStringLiteral("face")},
+                 {QStringLiteral("body"), item.owner},
+                 {QStringLiteral("face"), item.name}};
+        if (!addObjectLink(links, item, here)) {
+          return Built::failure(twice(item), QStringLiteral("start_object"));
+        }
+      }
+      QJsonObject begin{{QStringLiteral("type"), QStringLiteral("object")}, {QStringLiteral("object"), plane}};
       if (nonZero(state, QStringLiteral("start_offset"))) {
         begin.insert(QStringLiteral("offset"), state.expression(QStringLiteral("start_offset")));
       }
       result.def.insert(QStringLiteral("start"), begin);
+    }
+    if (!links.isEmpty()) {
+      result.def.insert(QStringLiteral("object_links"), links);
     }
     if (thinType) {
       QJsonObject walls{{QStringLiteral("location"), state.choice(QStringLiteral("wall"))},
@@ -647,7 +713,13 @@ CommandDef extrudeCommand(const CommandContext& context) {
       loadValue(state, QStringLiteral("start_offset"), start.value(QStringLiteral("offset")), feature, context);
       if (startType == QStringLiteral("object")) {
         const QJsonObject object = start.value(QStringLiteral("object")).toObject();
-        const SelectionItem item = itemOf(object.value(QStringLiteral("plane")), context);
+        // A face of another occurrence goes as a face (mitcad#762).
+        const SelectionItem item =
+            str(object, "type") == QStringLiteral("face")
+                ? itemOf(QJsonObject{{QStringLiteral("body"), object.value(QStringLiteral("body"))},
+                                     {QStringLiteral("face"), object.value(QStringLiteral("face"))}},
+                         context)
+                : itemOf(object.value(QStringLiteral("plane")), context);
         if (item.isValid()) {
           state.setItems(QStringLiteral("start_object"), {item});
         }
@@ -672,6 +744,19 @@ CommandDef extrudeCommand(const CommandContext& context) {
     if (wrap.isValid()) {
       state.setItems(QStringLiteral("wrap"), {wrap});
     }
+    // Objects of other components (mitcad#762) where their links saw them,
+    // so that the picks show and are kept as they were made; the links'
+    // target, where they saw the profiles, kept for `build`.
+    const QJsonObject links = feature.value(QStringLiteral("object_links")).toObject();
+    if (!links.isEmpty()) {
+      for (const QString& input :
+           {QStringLiteral("object"), QStringLiteral("object2"), QStringLiteral("start_object")}) {
+        for (SelectionItem& item : state.items(input)) {
+          linkObject(item, links);
+        }
+      }
+    }
+    keepLinksTarget(state, links);
     loadOperation(feature, state);
     state.setObject(QStringLiteral("cut_scope"), feature.value(QStringLiteral("cut_scope")).toObject());
     state.setObject(QStringLiteral("cut_view"), {});
@@ -697,6 +782,16 @@ CommandDef extrudeCommand(const CommandContext& context) {
       qDebug().noquote() << QStringLiteral("Extrude: keeps its direction %1")
                                 .arg(QString::fromUtf8(QJsonDocument(feature.value(QStringLiteral("direction")).toArray())
                                                            .toJson(QJsonDocument::Compact)));
+    }
+    // A two-sided extrusion saved without signed distances (designs from
+    // before mitcad#765, the imports') with a negative distance goes by the
+    // sizes; `build` keeps that by leaving the flag out. With none negative
+    // both meanings agree, and the edit makes it signed.
+    if (type == kTwoSides && !extent.value(QStringLiteral("signed")).toBool() &&
+        (negativeDistance(extent.value(QStringLiteral("side1")).toObject(), context) ||
+         negativeDistance(extent.value(QStringLiteral("side2")).toObject(), context))) {
+      kept.insert(QStringLiteral("unsigned_two_sides"), true);
+      qDebug().noquote() << QStringLiteral("Extrude: keeps its two sides by their sizes");
     }
     state.setObject(QStringLiteral("kept"), kept);
   };
@@ -760,8 +855,13 @@ CommandDef extrudeCommand(const CommandContext& context) {
     const QJsonObject start = feature.value(QStringLiteral("start")).toObject();
     if (str(start, "type") == QStringLiteral("object")) {
       const QJsonObject object = start.value(QStringLiteral("object")).toObject();
-      ok = ok && str(object, "type") == QStringLiteral("plane") &&
-           isShowable(object.value(QStringLiteral("plane")), context);
+      // A face of another occurrence goes as a face (mitcad#762).
+      const QString objectType = str(object, "type");
+      ok = ok && ((objectType == QStringLiteral("plane") && isShowable(object.value(QStringLiteral("plane")), context)) ||
+                  (objectType == QStringLiteral("face") && !object.value(QStringLiteral("chained")).toBool() &&
+                   isShowable(QJsonObject{{QStringLiteral("body"), object.value(QStringLiteral("body"))},
+                                          {QStringLiteral("face"), object.value(QStringLiteral("face"))}},
+                              context)));
     }
     // The face a wrapped extrusion wraps onto (mitcad#473).
     const QJsonValue wrap = feature.value(QStringLiteral("wrap"));
@@ -880,7 +980,7 @@ CommandDef revolveCommand(const CommandContext& context) {
   def.init = newestProfile;
   def.enabled = [&context] { return hasProfiles(context) || hasBodies(context); };
 
-  def.build = [](const CommandState& state, const CommandContext&) {
+  def.build = [](const CommandState& state, const CommandContext& model) {
     Built result;
     const Selection& profiles = state.items(QStringLiteral("profiles"));
     // A planar face of a body as the profile (mitcad#543), alone.
@@ -929,11 +1029,27 @@ CommandDef revolveCommand(const CommandContext& context) {
       if (state.items(QStringLiteral("object")).isEmpty()) {
         return Built::failure(QObject::tr("Select the object the revolution ends at."), QStringLiteral("object"));
       }
+      // Another component's construction plane: no link carries it
+      // (mitcad#772).
+      const QString foreign = foreignPlane(state.items(QStringLiteral("object")).first(), profiles, model);
+      if (!foreign.isEmpty()) {
+        return Built::failure(foreign, QStringLiteral("object"));
+      }
       extent.insert(QStringLiteral("object"), objectOf(state, QString()));
     }
     result.def = {{QStringLiteral("type"), QStringLiteral("revolve")},
                   {QStringLiteral("axis"), state.items(QStringLiteral("axis")).first().reference()},
                   {QStringLiteral("extent"), extent}};
+    // An object picked in another occurrence than the profiles (a face or a
+    // body of another component) goes with its body's link (mitcad#762).
+    if (type == kToObject) {
+      QJsonObject links;
+      addObjectLink(links, state.items(QStringLiteral("object")).first(),
+                    linksOccurrence(profiles, state, model));
+      if (!links.isEmpty()) {
+        result.def.insert(QStringLiteral("object_links"), links);
+      }
+    }
     if (face != nullptr) {
       result.def.insert(QStringLiteral("profile_face"), face->reference());
     } else {
@@ -952,12 +1068,20 @@ CommandDef revolveCommand(const CommandContext& context) {
     if (axis.isValid()) {
       state.setItems(QStringLiteral("axis"), {axis});
     }
+    // The links' target, where they saw the profiles, kept for `build`
+    // (mitcad#762).
+    const QJsonObject links = feature.value(QStringLiteral("object_links")).toObject();
+    keepLinksTarget(state, links);
     const QJsonObject extent = feature.value(QStringLiteral("extent")).toObject();
     const QString type = str(extent, "type");
     if (type == QStringLiteral("full") || type == kToObject) {
       state.setChoice(QStringLiteral("type"), type);
       if (type == kToObject) {
         loadObject(extent.value(QStringLiteral("object")).toObject(), state, QString(), context);
+        // Another component's object where its link saw it (mitcad#762).
+        for (SelectionItem& item : state.items(QStringLiteral("object"))) {
+          linkObject(item, links);
+        }
       }
     } else {
       state.setChoice(QStringLiteral("type"), QStringLiteral("angle"));

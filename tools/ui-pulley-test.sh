@@ -3,8 +3,8 @@
 # check-all sources: app/commands/PulleyCommands.cpp app/framework/CommandSession.cpp
 # check-all sources: core/model/src/features/pulley.rs core/model/src/features/pulley_profile.rs core/model/src/api/pulleys.rs
 # check-all sources: app/commands/PlaceInputs.cpp core/model/src/features/seat.rs core/model/src/api/seats.rs tools/cli
-# check-all sources: core/model/src/features/place_at.rs core/model/src/features/drives.rs
-# check-all sources: app/framework/ManipulatorOverlay.cpp
+# check-all sources: core/model/src/features/place_at.rs core/model/src/features/drives.rs core/model/src/api/drives.rs
+# check-all sources: app/framework/ManipulatorOverlay.cpp app/commands/DriveCommands.cpp
 # Pulley (mitcad#562) through the real UI; the Windows counterpart is
 # tools/ui-windows-pulley-test.ps1 (ctest app.ui-windows-pulley):
 #   1. Pulley in an empty design, placed by a click on the XY plane and
@@ -34,6 +34,14 @@
 #      2 mm: the rows list the tooth counts with their belts, the least
 #      tension travel first; the first previewed as new bodies; OK makes
 #      both pulleys.
+#   6. Check Belt with a shaft in another component's occurrence
+#      (mitcad#754), in a design with an 8 mm shaft 30 high in Motor:1
+#      (F1.b0, the occurrence 80 mm along X) and a 20-tooth pulley in the
+#      root at the origin, 30 mm up and facing down (F2.b0): Pulley (20
+#      teeth) on the shaft's top edge where the occurrence shows it; its
+#      Offset handle sits on that shaft, not at the root's origin; Check
+#      Belt with the root's pulley gives the belt for the pulleys 80 mm
+#      apart (2 x 80 + 20 x 2 = 200 mm); OK makes the pulley there.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-pulley-test.sh [screenshot.png]
@@ -61,6 +69,18 @@ cat > "$WORK/shafts.json" << 'JSON'
 ]
 JSON
 "$CLI" run "$WORK/shafts.json" --save "$WORK/shafts.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+cat > "$WORK/motor.json" << 'JSON'
+[
+  {"cmd": "create_component", "name": "Motor", "transform": {"translation": [80, 0, 0]}},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 8, "height": 30, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "add_feature", "def": {"type": "pulley", "kind": "toothed", "profile": "gt2_2mm",
+    "teeth": 20, "belt_width": 6, "operation": "new_body",
+    "at": {"point": {"point": [0, 0, 30]}, "plane": "xy", "flip": true}}}
+]
+JSON
+"$CLI" run "$WORK/motor.json" --save "$WORK/motor.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
 ui_start_display
 ui_start_app
@@ -195,6 +215,52 @@ ui_expect_new "Panel Belt Drive note: Belt length " "the belt as values" 30
 ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added belt drive (gt2_2mm), " "both pulleys added" 30
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- 6. Check Belt with a shaft in another component's occurrence (mitcad#754)"
+ui_stop_app
+ui_start_app --open "$WORK/motor.mitcad"
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Body F1.b0 in O1 at " "the motor's shaft shown in its occurrence"
+ui_mark
+ui_step "Pulley"                           ui_command "Pulley"
+ui_expect_new "Command Pulley started" "the panel opened, waiting for a pick" 30
+ui_step "teeth 20"                         ui_type_in "Panel Pulley input teeth" "20"
+ui_mark
+ui_step "Place On"                         ui_click_logged "Panel Pulley input at"
+ui_expect_new "Pick places:" "the picks are logged"
+ui_expect_new "Pick edge F1.b0/E{F1:side0|F1:top} at" "the motor's shaft top edge can be picked"
+ui_expect_new "Pick face F2.b0/" "the root's pulley can be picked"
+# Where the shaft (80 mm along X) and the root's pulley (at the origin)
+# are on the screen.
+read -r shaft_x _ <<< "$(ui_pick_at "edge F1.b0/E{F1:side0|F1:top} at")"
+read -r root_x _ <<< "$(ui_pick_at "face F2.b0/")"
+ui_mark
+ui_step "click the shaft's top edge"       ui_click_pick "edge F1.b0/E{F1:side0|F1:top} at"
+ui_expect_new "Place Pulley: axis edge E{F1:side0|F1:top} of F1.b0" "placed on the motor's shaft"
+# The handle shows with the placement (logged since the click); More
+# shows the rows Check Belt is in.
+ui_expect_new "Manipulator Pulley at_offset at " "the Offset handle shown" 30
+ui_step "More"                             ui_click_logged "Panel Pulley input at_more"
+read -r handle_x _ <<< "$(ui_logged_at "Manipulator Pulley at_offset")"
+# The handle on the shaft where its occurrence puts it, not where the
+# shaft lies in Motor's own coordinates (the root's origin).
+[ $(( (handle_x - shaft_x) * (handle_x - shaft_x) )) -lt $(( (handle_x - root_x) * (handle_x - root_x) )) ] ||
+  ui_fail "the Offset handle at x $handle_x is not on the shaft (x $shaft_x) but nearer the origin (x $root_x)"
+echo "ok   the Offset handle on the motor's shaft (x $handle_x, the shaft $shaft_x, the origin $root_x)"
+ui_mark
+ui_step "Check Belt"                       ui_click_logged "Panel Pulley input check_belt"
+ui_expect_new "Pick places:" "the picks are logged"
+ui_expect_new "Pick face F2.b0/F2:" "a face of the root's pulley can be picked"
+face=$(sed -n 's/^Pick face F2\.b0\/\(F2:[^ ]*\) at [0-9]*,[0-9]*$/\1/p' "$UI_LOG" | tail -1)
+[ -n "$face" ] || ui_fail "no face of the root's pulley to pick"
+ui_mark
+ui_step "click $face"                      ui_click_pick "face F2.b0/$face at"
+ui_expect_new "Pulley belt check with F2: Belt length 200 mm (100 teeth)" "the belt for the pulleys 80 mm apart" 30
+grep "^Pulley belt check with " "$UI_LOG" | tail -1 | sed 's/^/     /'
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added pulley (Toothed), GT2 2 mm, 20 teeth" "the pulley on the motor's shaft added" 30
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 
 ui_finish "UI pulley test"

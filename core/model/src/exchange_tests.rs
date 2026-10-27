@@ -508,7 +508,8 @@ fn export_writes_bodies_with_names_and_imported_colours() {
         MeshTolerance {
             deviation: 0.01,
             angle: 8f64.to_radians(),
-            face_triangles: 50_000
+            face_triangles: 50_000,
+            max_edge: 0.0
         }
     );
     // Numbers are taken as they are: no limit unless one is given.

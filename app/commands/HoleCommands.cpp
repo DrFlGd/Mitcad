@@ -7,8 +7,11 @@
 // model's table (`thread_sizes`, P9), ISO metric first (P11).
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <limits>
 
+#include <QDebug>
+#include <QHash>
 #include <QJsonArray>
 #include <QKeySequence>
 
@@ -24,9 +27,78 @@
 namespace mitcad::cmd {
 namespace {
 
-// A face hole of several positions written before (mitcad#656): kept as it
-// was while the placement stays Earlier Positions.
+// A face hole of several positions written before (mitcad#656), or a hole
+// placed at distances from two edges of its face, on a plane or along a
+// shaft (as the .f3d import writes them, mitcad#733): kept as it was while
+// the placement stays as it is, its distances editable.
 const QString kKept = QStringLiteral("kept_placement");
+const QString kOffset1 = QStringLiteral("kept_offset1");
+const QString kOffset2 = QStringLiteral("kept_offset2");
+const QString kShaftOffset = QStringLiteral("kept_offset");
+
+// The type of the placement kept as it was (`face`, `face_offsets`,
+// `plane`, `cylinder_offset`); empty when none is.
+QString keptType(const CommandState& state) { return str(state.object(kKept), "type"); }
+
+// The placement choice's name of a kept placement.
+QString keptName(const QString& type) {
+  if (type == QStringLiteral("face_offsets")) {
+    return QStringLiteral("From Two Edges");
+  }
+  if (type == QStringLiteral("cylinder_offset")) {
+    return QStringLiteral("Along a Shaft");
+  }
+  if (type == QStringLiteral("plane")) {
+    return QStringLiteral("On a Plane");
+  }
+  return QStringLiteral("Earlier Positions");
+}
+
+// Whether the placement is kept as it was and of this type.
+std::function<bool(const CommandState&)> keptIs(const QString& type) {
+  return [type](const CommandState& state) {
+    return state.choice(QStringLiteral("placement")) == QStringLiteral("positions") && keptType(state) == type;
+  };
+}
+
+// The component an edited hole belongs to (mitcad#762); a new hole's is
+// the active one.
+const QString kHoleOwner = QStringLiteral("hole_owner");
+
+// Why a hole cannot end at the object (mitcad#762): a face or body of
+// another component than the hole's, which the model reads only in the
+// hole's own component, or such a construction plane (mitcad#772); empty
+// when it can.
+QString foreignObject(const CommandState& state, const CommandContext& context) {
+  const Selection& objects = state.items(QStringLiteral("object"));
+  if (objects.isEmpty()) {
+    return QString();
+  }
+  const SelectionItem& object = objects.first();
+  const bool plane = object.kind == SelectKind::Plane;
+  if (object.kind != SelectKind::Face && object.kind != SelectKind::Body && !plane) {
+    return QString();
+  }
+  // A construction plane's component is its feature's (none for an origin
+  // plane, every component's own); a face's or body's, where it was picked.
+  const QString at = plane ? planeComponent(object, context) : occurrenceComponent(object.occurrence, context);
+  if (at.isEmpty()) {
+    return QString();
+  }
+  QString own = state.object(kHoleOwner).value(QStringLiteral("component")).toString();
+  if (own.isEmpty()) {
+    try {
+      own = componentsOf(context).value(QStringLiteral("active")).toString(QStringLiteral("C0"));
+    } catch (const std::exception&) {
+      return QString();
+    }
+  }
+  if (at == own) {
+    return QString();
+  }
+  return QObject::tr("The object is in %1: a hole ends at a plane, face or body of its own component.")
+      .arg(componentName(at, context));
+}
 
 std::function<bool(const CommandState&)> choiceIs(const QString& id, const QString& value) {
   return [id, value](const CommandState& state) { return state.choice(id) == value; };
@@ -94,6 +166,8 @@ struct ThreadStandard {
   QString id;
   QString title;
   QVector<QPair<QString, QStringList>> sizes;
+  // A taper pipe thread's tap drill by size (mitcad#733).
+  QHash<QString, double> tapDrills;
   QStringList external;
   QStringList internal;
   QString defaultExternal;
@@ -118,7 +192,11 @@ const QVector<ThreadStandard>& threadTable(const CommandContext& context) {
     entry.id = str(standard, "standard");
     entry.title = str(standard, "title");
     for (const QJsonValue& size : standard.value(QStringLiteral("sizes")).toArray()) {
-      entry.sizes.append({str(size.toObject(), "size"), strings(size.toObject().value(QStringLiteral("designations")))});
+      const QJsonObject sized = size.toObject();
+      entry.sizes.append({str(sized, "size"), strings(sized.value(QStringLiteral("designations")))});
+      if (sized.contains(QStringLiteral("tap_drill"))) {
+        entry.tapDrills.insert(str(sized, "size"), sized.value(QStringLiteral("tap_drill")).toDouble());
+      }
     }
     entry.external = strings(standard.value(QStringLiteral("classes_external")));
     entry.internal = strings(standard.value(QStringLiteral("classes_internal")));
@@ -161,6 +239,41 @@ std::optional<std::pair<QString, QString>> sizeOfDesignation(const ThreadStandar
     }
   }
   return std::nullopt;
+}
+
+// A taper pipe thread tapered 1:16 (mitcad#733): the check, shown for the
+// NPT and ISO 7-1 standards; on for new threads. Threads and holes saved
+// before have it off (their taper pipe threads are straight).
+const QString kTaperThread = QStringLiteral("taper_thread");
+
+bool taperStandard(const CommandState& state) {
+  const QString standard = state.choice(QStringLiteral("standard"));
+  return standard == QStringLiteral("npt") || standard == QStringLiteral("iso_taper");
+}
+
+// Whether the thread is a taper pipe thread that tapers.
+bool tapers(const CommandState& state) { return taperStandard(state) && state.checked(kTaperThread); }
+
+InputDef taperInput(const std::function<bool(const CommandState&)>& shown) {
+  return checkInput(kTaperThread, QObject::tr("Tapered"), true)
+      .withTooltip(QObject::tr("Taper the thread 1:16 on the diameter; a cosmetic one tapers the bore or the shaft too"))
+      .withVisible([shown](const CommandState& s) { return taperStandard(s) && (!shown || shown(s)); });
+}
+
+// A tapped hole's Diameter at its taper pipe thread's tap drill (the
+// `thread_sizes` query's, mitcad#733), when it tapers.
+void startTapDrill(CommandState& state, const CommandContext& model) {
+  if (state.choice(QStringLiteral("tap")) != QStringLiteral("tapped") || !tapers(state)) {
+    return;
+  }
+  const ThreadStandard* standard = standardOf(model, state.choice(QStringLiteral("standard")));
+  if (standard == nullptr || !standard->tapDrills.contains(state.choice(QStringLiteral("size")))) {
+    return;
+  }
+  const double drill = standard->tapDrills.value(state.choice(QStringLiteral("size")));
+  state.setText(QStringLiteral("diameter"), lengthText(std::round(drill * 1000.0) / 1000.0, model));
+  state.setValue(QStringLiteral("diameter"), std::numeric_limits<double>::quiet_NaN());
+  qDebug().noquote() << QStringLiteral("Hole tap drill: %1 mm").arg(number(std::round(drill * 1000.0) / 1000.0));
 }
 
 // The side of the faces a thread goes on (mitcad#691), kept in the state
@@ -234,13 +347,18 @@ struct ThreadStart {
 };
 
 QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart& start, bool internalOnly,
-                               const std::function<bool(const CommandState&)>& shown) {
+                               const std::function<bool(const CommandState&)>& shown,
+                               const std::function<void(CommandState&, const CommandContext&)>& sized = nullptr) {
   const auto standardIn = [&context](const CommandState& state) {
     return standardOf(context, state.choice(QStringLiteral("standard")));
   };
-  // A new size or designation keeps the class on the faces' side.
-  const auto keepClass = [internalOnly](CommandState& state, const CommandContext& model) {
+  // A new size or designation keeps the class on the faces' side (and
+  // tells `sized`).
+  const auto keepClass = [internalOnly, sized](CommandState& state, const CommandContext& model) {
     keepClassOnSide(state, model, internalOnly);
+    if (sized) {
+      sized(state, model);
+    }
   };
   // The designations of the state's size.
   const auto designationsIn = [standardIn](const CommandState& state) {
@@ -256,7 +374,8 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
   // Another standard starts at the start size (Unified at 1/4, else its
   // first) with its coarse designation and the default class of the same
   // side.
-  const auto startStandard = [&context, standardIn, start, internalOnly](CommandState& state, const CommandContext&) {
+  const auto startStandard = [&context, standardIn, start, internalOnly, sized](CommandState& state,
+                                                                               const CommandContext& model) {
     const ThreadStandard* standard = standardIn(state);
     if (standard == nullptr || standard->sizes.isEmpty()) {
       return;
@@ -279,6 +398,9 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
                           });
     state.setChoice(QStringLiteral("class"), internal ? standard->defaultInternal : standard->defaultExternal);
     keepClassOnSide(state, context, internalOnly);
+    if (sized) {
+      sized(state, model);
+    }
   };
   QVector<QPair<QString, QString>> standards;
   for (const ThreadStandard& standard : threadTable(context)) {
@@ -391,9 +513,9 @@ const QString kChamferAngle = QStringLiteral("chamfer_angle");
 const QString kChamferDiameter = QStringLiteral("chamfer_diameter");
 
 QVector<InputDef> chamferInputs(const CommandContext& context) {
-  const auto chamfered = [](const CommandState& s) { return s.checked(kChamfer); };
+  const auto chamfered = [](const CommandState& s) { return s.checked(kChamfer) && !tapers(s); };
   const auto given = [](const CommandState& s) {
-    return s.checked(kChamfer) && s.choice(kChamferSize) == QStringLiteral("custom");
+    return s.checked(kChamfer) && !tapers(s) && s.choice(kChamferSize) == QStringLiteral("custom");
   };
   // Given values start at the size's defaults (the `thread_chamfer` query),
   // inside when the class is an internal one.
@@ -422,9 +544,11 @@ QVector<InputDef> chamferInputs(const CommandContext& context) {
     state.setValue(kChamferAngle, std::numeric_limits<double>::quiet_NaN());
   };
   return {
+      // A tapered taper pipe thread has no end chamfers (mitcad#733).
       checkInput(kChamfer, QObject::tr("Chamfer Ends"), false)
           .withHeading(QObject::tr("End chamfer"))
-          .withTooltip(QObject::tr("Cut a cone at the free ends the thread runs out through")),
+          .withTooltip(QObject::tr("Cut a cone at the free ends the thread runs out through"))
+          .withVisible([](const CommandState& s) { return !tapers(s); }),
       choiceInput(kChamferEnds, QObject::tr("Ends"),
                   {{QStringLiteral("both"), QStringLiteral("Both")},
                    {QStringLiteral("start"), QStringLiteral("Start")},
@@ -450,7 +574,7 @@ QVector<InputDef> chamferInputs(const CommandContext& context) {
 
 // Puts the end chamfer into a thread's definition.
 void insertChamfer(const CommandState& state, QJsonObject& def) {
-  if (!state.checked(kChamfer)) {
+  if (!state.checked(kChamfer) || tapers(state)) {
     return;
   }
   def.insert(kChamfer, state.choice(kChamferEnds));
@@ -505,14 +629,26 @@ CommandDef holeCommand(const CommandContext& context) {
           .withChoices([](const CommandState& state) {
             Choices options{{QStringLiteral("face"), QStringLiteral("By Pick")},
                             {QStringLiteral("sketch"), QStringLiteral("From Sketch")}};
-            // A face hole of several positions made before keeps them.
+            // A face hole of several positions made before keeps them; a
+            // hole at distances from edges, on a plane or along a shaft
+            // keeps its placement (mitcad#733).
             if (!state.object(kKept).isEmpty()) {
-              options.append({QStringLiteral("positions"), QStringLiteral("Earlier Positions")});
+              options.append({QStringLiteral("positions"), keptName(keptType(state))});
             }
             return options;
           }),
       // Beside the placement (mitcad#656), on a face or from a sketch.
       flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withBesidePrevious(),
+      // A kept placement's distances (mitcad#733).
+      valueInput(kOffset1, QObject::tr("Edge Offset 1"), ValueKind::Length, QStringLiteral("10 mm"))
+          .withTooltip(QObject::tr("The hole's distance from the line of the first edge"))
+          .withVisible(keptIs(QStringLiteral("face_offsets"))),
+      valueInput(kOffset2, QObject::tr("Edge Offset 2"), ValueKind::Length, QStringLiteral("10 mm"))
+          .withTooltip(QObject::tr("The hole's distance from the line of the second edge"))
+          .withVisible(keptIs(QStringLiteral("face_offsets"))),
+      valueInput(kShaftOffset, QObject::tr("Offset"), ValueKind::Length, QStringLiteral("10 mm"))
+          .withTooltip(QObject::tr("The hole's distance from the plane it is measured from, along the shaft"))
+          .withVisible(keptIs(QStringLiteral("cylinder_offset"))),
   };
   def.inputs += placeInputs(place);
   def.inputs += {
@@ -543,12 +679,16 @@ CommandDef holeCommand(const CommandContext& context) {
       choiceInput(QStringLiteral("tap"), QObject::tr("Hole Tap Type"),
                   {{QStringLiteral("simple"), QStringLiteral("Simple")},
                    {QStringLiteral("tapped"), QStringLiteral("Tapped")}},
-                  QStringLiteral("simple")),
+                  QStringLiteral("simple"))
+          .withOnChange(startTapDrill),
       choiceInput(QStringLiteral("drill"), QObject::tr("Drill Point"),
                   {{QStringLiteral("angle"), QStringLiteral("Angle")}, {QStringLiteral("flat"), QStringLiteral("Flat")}},
                   QStringLiteral("angle")),
+      // A tapered taper pipe thread's hole keeps its diameter, the tap
+      // drill (mitcad#733); another thread sets it.
       valueInput(QStringLiteral("diameter"), QObject::tr("Diameter"), ValueKind::Length, QStringLiteral("6 mm"))
-          .withVisible([tapped](const CommandState& s) { return !tapped(s); }),
+          .withTooltip(QObject::tr("The hole's diameter; the tap drill of a tapered pipe thread"))
+          .withVisible([tapped](const CommandState& s) { return !tapped(s) || tapers(s); }),
       // A tapped hole has no taper (the model refuses it).
       valueInput(QStringLiteral("taper"), QObject::tr("Taper Angle"), ValueKind::Angle, QStringLiteral("0") + QChar(0x00B0))
           .withTooltip(QObject::tr("The wall's angle to the axis; positive narrows the hole as it goes deeper"))
@@ -592,7 +732,9 @@ CommandDef holeCommand(const CommandContext& context) {
       valueInput(QStringLiteral("tip_angle"), QObject::tr("Drill Point Angle"), ValueKind::Angle, QStringLiteral("118") + QChar(0x00B0))
           .withVisible(choiceIs(QStringLiteral("drill"), QStringLiteral("angle"))),
   };
-  def.inputs += threadInputs(context, {QStringLiteral("6"), QStringLiteral("M6x1"), QStringLiteral("6H")}, true, tapped);
+  def.inputs += threadInputs(context, {QStringLiteral("6"), QStringLiteral("M6x1"), QStringLiteral("6H")}, true, tapped,
+                             startTapDrill);
+  def.inputs.append(taperInput(tapped).withOnChange(startTapDrill));
   def.inputs.append(checkInput(QStringLiteral("modeled"), QObject::tr("Modeled"), false).withVisible(tapped));
   def.inputs += clearanceInputs(
       [tapped](const CommandState& s) { return tapped(s) && s.checked(QStringLiteral("modeled")); });
@@ -624,6 +766,13 @@ CommandDef holeCommand(const CommandContext& context) {
       }
     } else if (placed == QStringLiteral("positions")) {
       placement = state.object(kKept);
+      // Its distances as typed (mitcad#733).
+      if (str(placement, "type") == QStringLiteral("face_offsets")) {
+        placement.insert(QStringLiteral("offset1"), state.expression(kOffset1));
+        placement.insert(QStringLiteral("offset2"), state.expression(kOffset2));
+      } else if (str(placement, "type") == QStringLiteral("cylinder_offset")) {
+        placement.insert(QStringLiteral("offset"), state.expression(kShaftOffset));
+      }
     } else {
       const Selection& items = state.items(QStringLiteral("points"));
       const QString sketch = oneSketch(items, result, QStringLiteral("points"));
@@ -656,6 +805,10 @@ CommandDef holeCommand(const CommandContext& context) {
     if (extentType == QStringLiteral("distance")) {
       extent.insert(QStringLiteral("depth"), state.expression(QStringLiteral("depth")));
     } else if (extentType == QStringLiteral("to_object")) {
+      const QString foreign = foreignObject(state, model);
+      if (!foreign.isEmpty()) {
+        return Built::failure(foreign, QStringLiteral("object"));
+      }
       extent.insert(QStringLiteral("object"), objectOf(state, QString()));
       if (nonZero(state, QStringLiteral("offset"))) {
         extent.insert(QStringLiteral("offset"), state.expression(QStringLiteral("offset")));
@@ -664,7 +817,8 @@ CommandDef holeCommand(const CommandContext& context) {
     const bool tapped = state.choice(QStringLiteral("tap")) == QStringLiteral("tapped");
     result.def = {{QStringLiteral("type"), QStringLiteral("hole")},
                   {QStringLiteral("placement"), placement},
-                  // A tapped hole's bore comes from its thread; the model ignores this then.
+                  // A tapped hole's bore comes from its thread (but a taper
+                  // pipe thread's, mitcad#733); the model ignores this then.
                   {QStringLiteral("diameter"), state.expression(QStringLiteral("diameter"))},
                   {QStringLiteral("kind"), kind},
                   {QStringLiteral("extent"), extent}};
@@ -683,6 +837,11 @@ CommandDef holeCommand(const CommandContext& context) {
                          {QStringLiteral("modeled"), state.checked(QStringLiteral("modeled"))}};
       if (state.checked(QStringLiteral("modeled"))) {
         insertClearance(state, thread);
+      }
+      // A tapered taper pipe thread: drilled at the Diameter, the bore
+      // tapered (mitcad#733).
+      if (tapers(state)) {
+        thread.insert(QStringLiteral("taper"), true);
       }
       result.def.insert(QStringLiteral("thread"), thread);
     }
@@ -724,6 +883,17 @@ CommandDef holeCommand(const CommandContext& context) {
         logPlacement(state, context, place);
         keepEarlierForm(state, context, place, {{QStringLiteral("placement"), placement}});
       }
+    } else if (placed == QStringLiteral("face_offsets") || placed == QStringLiteral("cylinder_offset") ||
+               placed == QStringLiteral("plane")) {
+      // At distances from two edges, along a shaft or on a plane (the .f3d
+      // import's, mitcad#733): kept as it was, its distances editable.
+      loadPlace({{QStringLiteral("uid"), feature.value(QStringLiteral("uid"))}}, state, context, place);
+      state.setObject(kKept, placement);
+      state.setChoice(QStringLiteral("placement"), QStringLiteral("positions"));
+      loadValue(state, kOffset1, placement.value(QStringLiteral("offset1")), feature, context);
+      loadValue(state, kOffset2, placement.value(QStringLiteral("offset2")), feature, context);
+      loadValue(state, kShaftOffset, placement.value(QStringLiteral("offset")), feature, context);
+      qDebug().noquote() << QStringLiteral("Hole placement kept: %1").arg(placed);
     } else {
       state.setChoice(QStringLiteral("placement"), QStringLiteral("sketch"));
       const QString sketch = str(placement, "sketch");
@@ -759,6 +929,18 @@ CommandDef holeCommand(const CommandContext& context) {
     if (str(extent, "type") == QStringLiteral("to_object")) {
       loadObject(extent.value(QStringLiteral("object")).toObject(), state, QString(), context);
     }
+    // The hole's own component, which its object must be of (mitcad#762).
+    state.setObject(kHoleOwner, QJsonObject());
+    if (feature.contains(QStringLiteral("uid"))) {
+      try {
+        const QJsonObject stored = context.queryObject(
+            {{QStringLiteral("query"), QStringLiteral("feature")}, {QStringLiteral("uid"), feature.value(QStringLiteral("uid"))}});
+        state.setObject(kHoleOwner, {{QStringLiteral("component"),
+                                      stored.value(QStringLiteral("component")).toString(QStringLiteral("C0"))}});
+      } catch (const std::exception&) {
+        // The active component then.
+      }
+    }
     if (feature.value(QStringLiteral("flat")).toBool()) {
       state.setChoice(QStringLiteral("drill"), QStringLiteral("flat"));
     }
@@ -769,19 +951,18 @@ CommandDef holeCommand(const CommandContext& context) {
       loadThreadInputs(thread, state, context);
       state.setChecked(QStringLiteral("modeled"), thread.value(QStringLiteral("modeled")).toBool());
       loadClearance(thread, feature, state, context);
+      // A hole saved before mitcad#733 keeps its straight thread.
+      state.setChecked(kTaperThread, thread.value(QStringLiteral("taper")).toBool());
     }
     state.setChecked(QStringLiteral("flip"), feature.value(QStringLiteral("flip")).toBool());
     state.setItems(QStringLiteral("objects"), bodiesOf(feature.value(QStringLiteral("participants")).toArray()));
   };
 
-  // Holes at offsets from two edges, sketch coordinates, left-handed or
-  // partial threads have no inputs.
+  // Holes at sketch coordinates, left-handed or partial threads have no
+  // inputs.
   def.canEdit = [&context](const QJsonObject& feature) {
     const QJsonObject placement = feature.value(QStringLiteral("placement")).toObject();
     const QString type = str(placement, "type");
-    if (type == QStringLiteral("face_offsets")) {
-      return false;
-    }
     if (type == QStringLiteral("at") &&
         !placeShowable({{QStringLiteral("at"), placement.value(QStringLiteral("at"))}}, context)) {
       return false;
@@ -805,11 +986,10 @@ CommandDef holeCommand(const CommandContext& context) {
 
   def.describe = [](const CommandState& state, const CommandContext&) {
     const QString placed = state.choice(QStringLiteral("placement"));
+    // (A kept placement at distances or along a shaft has one hole.)
+    const QJsonArray kept = state.object(kKept).value(QStringLiteral("points")).toArray();
     const int count = placed == QStringLiteral("face")        ? 1
-                      : placed == QStringLiteral("positions") ? static_cast<int>(state.object(kKept)
-                                                                                      .value(QStringLiteral("points"))
-                                                                                      .toArray()
-                                                                                      .size())
+                      : placed == QStringLiteral("positions") ? std::max(1, static_cast<int>(kept.size()))
                                                               : static_cast<int>(state.items(QStringLiteral("points")).size());
     const bool tapped = state.choice(QStringLiteral("tap")) == QStringLiteral("tapped");
     const QString taper = !tapped && nonZero(state, QStringLiteral("taper"))
@@ -876,6 +1056,7 @@ CommandDef threadCommand(const CommandContext& context) {
   };
   def.inputs += threadInputs(context, {QStringLiteral("10"), QStringLiteral("M10x1.5"), QStringLiteral("6g")}, false,
                              nullptr);
+  def.inputs.append(taperInput(nullptr));
   def.inputs += {
       choiceInput(QStringLiteral("direction"), QObject::tr("Direction"),
                   {{QStringLiteral("right"), QStringLiteral("Right Hand")},
@@ -896,11 +1077,15 @@ CommandDef threadCommand(const CommandContext& context) {
           .withVisible(partial),
       valueInput(QStringLiteral("offset"), QObject::tr("Offset"), ValueKind::Length, QStringLiteral("0 mm"))
           .withVisible(partial),
+      // A tapered thread over the whole face starts at the end it names
+      // where both ends or neither is free (mitcad#733).
       choiceInput(QStringLiteral("location"), QObject::tr("Thread Location"),
                   {{QStringLiteral("high_end"), QStringLiteral("High End")},
                    {QStringLiteral("low_end"), QStringLiteral("Low End")}},
                   QStringLiteral("high_end"))
-          .withVisible(partial),
+          .withTooltip(QObject::tr("The end the thread is measured from; a tapered thread starts at a free end, "
+                                   "else at this one"))
+          .withVisible([partial](const CommandState& s) { return partial(s) || tapers(s); }),
   };
   def.inputs += chamferInputs(context);
   def.enabled = [&context] { return hasBodies(context); };
@@ -928,6 +1113,12 @@ CommandDef threadCommand(const CommandContext& context) {
       result.def.insert(QStringLiteral("length"), state.expression(QStringLiteral("length")));
       result.def.insert(QStringLiteral("offset"), state.expression(QStringLiteral("offset")));
       result.def.insert(QStringLiteral("location"), state.choice(QStringLiteral("location")));
+    } else if (tapers(state) && state.choice(QStringLiteral("location")) != QStringLiteral("high_end")) {
+      result.def.insert(QStringLiteral("location"), state.choice(QStringLiteral("location")));
+    }
+    // A tapered taper pipe thread (mitcad#733).
+    if (tapers(state)) {
+      result.def.insert(QStringLiteral("taper"), true);
     }
     insertChamfer(state, result.def);
     return result;
@@ -950,6 +1141,8 @@ CommandDef threadCommand(const CommandContext& context) {
     loadValue(state, QStringLiteral("length"), feature.value(QStringLiteral("length")), feature, context);
     loadValue(state, QStringLiteral("offset"), feature.value(QStringLiteral("offset")), feature, context);
     state.setChoice(QStringLiteral("location"), feature.value(QStringLiteral("location")).toString(QStringLiteral("high_end")));
+    // A thread saved before mitcad#733 stays straight.
+    state.setChecked(kTaperThread, feature.value(QStringLiteral("taper")).toBool());
     loadChamfer(feature, state, context);
   };
 

@@ -1631,3 +1631,54 @@ the placing of occurrences and one pattern skipped with it. What is left:
 - **A row of dimples 0.4 mm off.** The segment's rectangular pattern of
   dimples matches its state within 2.4e-4, its body 0.4 mm off the file's
   after it (cause not traced yet).
+
+### The follow-ups (mitcad#733)
+
+Now 60 of the 68 items are parametric, none falls back, and no base
+feature stands before a pattern; five of the six final bodies lie on the
+file's within the geometric tolerance (the shaft within 1e-4 mm, the
+others exactly), from three:
+
+- **Taper pipe threads.** The thread objects of the two `1/2 - 14 NPT`
+  holes and of the lid's `Rc 1/2` hole (type `ISO Taper Internal`) store
+  the angle 0, the tap drill as both diameters and the pitch diameter 0,
+  so the decoder took them for no thread; after the handedness byte come
+  five numbers, all 0 on straight threads: the taper's full angle (2
+  atan(1/32)), the height h, the tap drill, the length and the pitch
+  diameter at the small end. The lid's hole lists no sub-items: its
+  thread is the thread object that names it as its hole. The file's
+  thread sizes the bore to the tap drill (0.18 mm³) and cuts its taper
+  (150 mm³), a cone of 1:16 on the diameter whose minor diameter at the
+  hole's start is the small end's pitch diameter grown over the length,
+  less h (NPT: E1 − 0.8 P, within 1e-4 mm of ASME B1.20.1; the `Rc 1/2`
+  hole's 0.22 mm below ISO 7-1's gauge diameter less 2 h, so the import
+  takes the file's numbers as the thread's `diameters`). Mitcad has taper
+  pipe threads now (`npt`, `iso_taper` with `taper`, which the import sets;
+  threads saved before stay straight), cosmetic ones tapering the bore,
+  and the thread's operations end the hole's state, as a modelled one's
+  do.
+- **A pattern whose copies have no taper.** The shaft's rectangular
+  pattern of the two tapped holes keeps its copies as plain bores (sized,
+  not tapered), while the circular pattern of the holes and that pattern
+  tapers its copies of the holes. The pattern's objects are tried with
+  the holes' threads, then (inferred) without them.
+- **The angle of a tapped hole's modelled thread.** It is measured in the
+  thread's state as a thread item's (the hole is made on its own first to
+  read its walls): the two M10 threads stand at 60 degrees. A pattern's
+  copy of a modelled thread is the original moved there: its angle is
+  where the moved helix lies on the copy's face, not the original's angle
+  about the copy's own axis (`thread::copied_angle`).
+- **The segment's dimples, left.** The first deviation is the segment's
+  rectangular pattern (item 51) of the dimple, its drill dent and their
+  circular pattern (8 rows over SegmentAngle × 7/8 = 26.25 degrees,
+  identical compute): the file's state after it has the original column
+  at the circular pattern's steps of 3.75 degrees, but every copied
+  column at steps of 3.757143 degrees, 26.3/7 (the dimples' counterbore
+  axes in the stored body: 166.875, 170.63214, 174.38929 … degrees). The
+  copies lie up to 0.40 mm (the eighth row) off the replay's, which
+  repeats the circular pattern's own transforms. 26.3 is the total angle
+  rounded to a tenth of a degree, the angle's display precision; the
+  file stores no 26.3 (neither the parameters nor the design stream).
+  Repeating a nested pattern with a rounded angle is not done: it is a
+  quirk of one file's history, so the body after the pattern stays 0.40
+  mm off (its volume within 1e-5).

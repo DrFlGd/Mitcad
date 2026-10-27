@@ -108,8 +108,8 @@ struct Manipulator {
   // Arrow: millimetres along the arrow per unit of the value (a diameter's
   // handle sits at the radius: 0.5).
   double factor = 1.0;
-  // Arrow: the smallest value a drag gives; the handle stops there (a Two
-  // Sides extrusion's distance at its start, mitcad#693).
+  // Arrow: the smallest value a drag gives; the handle stops there
+  // (mitcad#693; Two Sides distances cross their start since mitcad#765).
   double minimum = -std::numeric_limits<double>::infinity();
   // Toggle: the element it stands for and whether it is on.
   int element = -1;
@@ -269,6 +269,11 @@ struct InputDef {
   // (the placement input, mitcad#656): the view's context menu offers the
   // command under More for them, as for a face or a plane.
   bool places = false;
+  // Selection: planes by their depth (OcctViewer::setPlanesByDepth): while
+  // a component is active, its pick priority does not put the origin's
+  // planes before nearer faces of other components, so a face in front of
+  // an origin plane is the pick (an extent's object, mitcad#762).
+  bool planesByDepth = false;
   // Selection of bodies the command consumes (Combine's tools without Keep
   // Tools, mitcad#561): while the input is active, a picked body that the
   // preview removes stays drawn where other occurrences show it, as a tool
@@ -441,6 +446,10 @@ struct InputDef {
   }
   InputDef& withToolOverlays() {
     toolOverlays = true;
+    return *this;
+  }
+  InputDef& withPlanesByDepth() {
+    planesByDepth = true;
     return *this;
   }
   InputDef& withVisible(std::function<bool(const CommandState&)> shown) {
@@ -635,6 +644,10 @@ InputDef listInput(const QString& id, const QString& label, std::vector<InputDef
 InputDef noteInput(const QString& id, std::function<InputNote(const CommandState&)> note,
                    std::function<void(int action, const CommandState&, const CommandContext&)> onAction,
                    const QString& label = QString());
+// A CommandDef::offeredAtTop (mitcad#735): a selection of one kind whose
+// every item one of the inputs takes (Move/Copy: bodies, or placed
+// components; not a mix, which would go to two inputs).
+std::function<bool(const Selection&)> takenWholeByOneOf(const std::vector<InputDef>& inputs);
 
 // The current values of a command's inputs. The inputs of a list's rows
 // are kept under "<list>.<row>.<input>"; row() gives a row's state with
@@ -974,6 +987,13 @@ struct CommandDef {
   bool surfaceBodiesOnly = false;
   std::function<bool(const Selection&)> offeredFor;
   std::function<bool(const Selection&)> completes;
+  // When set and it holds for the selection, the view's context menu
+  // offers the command at its top level instead of in its kind's submenu,
+  // and the browser's rows offer it for the rows selected
+  // (MainWindow::offersCommand; mitcad#735: Move/Copy for bodies and
+  // placed components, takenWholeByOneOf). It says on its own which items
+  // the command takes.
+  std::function<bool(const Selection&)> offeredAtTop;
 
   int inputIndex(const QString& inputId) const;
   // The first selection input, which the context menu matches.

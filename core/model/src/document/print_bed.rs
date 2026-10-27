@@ -9,7 +9,9 @@
 //! The 3D print export turns the bodies onto it (`exchange/bed.rs`), and
 //! Print Analysis starts from it. A face that is gone or no longer planar
 //! stays kept (an undo or another edit may bring it back): the `bodies`
-//! query and the export say why it cannot be used.
+//! query and the export say why it cannot be used. So does a surface
+//! body's (one that became a surface body, or stored so in a file): it is
+//! not printed, and the export leaves it out (mitcad#737).
 
 use std::str::FromStr;
 
@@ -28,6 +30,9 @@ use crate::topo::FaceName;
 pub(crate) const GONE: &str = "the print bed face is gone";
 /// Why a print bed face that is no longer planar cannot be used.
 pub(crate) const NOT_PLANAR: &str = "the print bed face is not planar";
+/// Why the print bed face of a body that is not printed (a surface body,
+/// or a body that became one, or one stored so in a file) is not used.
+pub(crate) const NOT_PRINTED: &str = "a surface body is not printed";
 
 /// A body's print bed face at the timeline marker.
 #[derive(Debug, Clone, PartialEq)]
@@ -55,7 +60,12 @@ impl<K: Kernel> Document<K> {
     pub fn print_bed_face(&self, uid: BodyUid) -> Option<PrintBedFace> {
         let attributes = self.state.body_attributes.get(&uid)?;
         let face = attributes.print_bed_face.clone()?;
-        let (faces, found) = self.find_print_bed_face(uid, &face);
+        let (faces, mut found) = self.find_print_bed_face(uid, &face);
+        // A body that is not printed keeps its face (it may become a solid
+        // again), which is not used meanwhile (mitcad#737).
+        if found.is_ok() && !self.printed_body(uid) {
+            found = Err(NOT_PRINTED.to_owned());
+        }
         Some(PrintBedFace {
             face,
             faces,

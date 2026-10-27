@@ -1417,3 +1417,24 @@ fn a_surface_sweep_takes_fixed_curves_in_no_plane() {
     value["surface"] = json!(false);
     assert!(b.doc.edit_feature(uid, &def(value)).is_err());
 }
+
+#[test]
+fn a_path_with_a_curve_twice_takes_it_once() {
+    // The bend a second time over itself (as an edge projected again,
+    // mitcad#741): chained, it was a branch at both its ends.
+    let (mut b, _) = with_path();
+    let path = FeatureUid(3);
+    let twice = line(&mut b.doc, path, [40.0, 0.0], [40.0, 30.0]);
+    assert_ne!(twice, "c4");
+    let uid = add(
+        &mut b.doc,
+        json!({"type": "pipe", "path": {"sketch": "F3", "curves": ["c1"], "chain": true},
+               "section": "square", "size": 8, "thickness": 1, "operation": "new_body"}),
+    )
+    .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        "pipe F5 path c1,c4,c7 extents 1 0 Square size 8 thickness Some(1.0)"
+    );
+}

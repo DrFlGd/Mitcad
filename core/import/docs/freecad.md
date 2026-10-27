@@ -361,7 +361,7 @@ check's limit is 1e-6, the reference models `pd_helix_more`,
 | Helix cut outside the profile | 3.4e-6, 2.9e-4 | 1.4e-4, 1.2e-4 | 1.4e-4, 1.2e-4 | FreeCAD refines the intersection (Refine): its stored shape lies 1e-5 of the volume and 1e-4 of the size in the centre from the plain intersection of its own helix and support (measured in FreeCAD 1.1); without Refine the conical one matches (9.9e-7) |
 | Modelled ISO metric thread (M6, blind) | 1.3e-6 | FreeCAD fails it | 1.3e-6 | The groove's flanks: FreeCAD sweeps the section by the Frenet frame along a helix approximated turn by turn, Mitcad's helix keeps the axis as its binormal (the area differs by 1.3e-6; volumes agree to 3e-7) |
 | Modelled Unified thread (1/4 UNC, through) | 2.0e-6 | 1.9e-6 | 2.0e-6 | As above |
-| Modelled tyre valve, Whitworth, NPT threads | | | | FreeCAD rounds the tyre valve crests and cuts Whitworth's 55° profile; Mitcad's modelled thread is the straight 60° one, and does not taper |
+| Modelled tyre valve, Whitworth, NPT threads | | | | FreeCAD rounds the tyre valve crests and cuts Whitworth's 55° profile; Mitcad's modelled thread is the 60° one, tapered 1:16 for NPT (mitcad#733) |
 | Attachment turns about an axis out of the support's plane, or with a shift | | | | Mitcad's planes turn about lines in them (an `angle` plane); a turn that also turns the plane within itself has no parametric plane: a fixed plane, FreeCAD's value kept |
 
 Tyre valve threads exist from FreeCAD 1.1; their holes import parametric.

@@ -357,10 +357,23 @@ QString itemKey(const SelectionItem& item) {
 
 // A body's print bed face in its row's tooltip (mitcad#731): "end face of
 // Extrude1" by the feature and role of its name ("a face of Base1" for
-// roles without a plain word), or why it cannot lie on the bed.
+// roles without a plain word), or why it cannot lie on the bed: "gone" and
+// "not planar" for the model's own two reasons (document/print_bed.rs),
+// "not printed" for a surface body's, else the model's reason as it is
+// (mitcad#737), such as a renamed face whose plane is not found.
 QString printBedText(const DocumentSnapshot& snapshot, const DocumentSnapshot::Body& body) {
-  if (!body.printBedError.isEmpty()) {
-    return body.printBedFaces.isEmpty() ? QObject::tr("gone") : QObject::tr("not planar");
+  const QString& error = body.printBedError;
+  if (error == QLatin1String("the print bed face is gone")) {
+    return QObject::tr("gone");
+  }
+  if (error == QLatin1String("the print bed face is not planar")) {
+    return QObject::tr("not planar");
+  }
+  if (error == QLatin1String("a surface body is not printed")) {
+    return QObject::tr("not used, a surface body is not printed");
+  }
+  if (!error.isEmpty()) {
+    return error;
   }
   const QString face = body.printBedFaces.value(0, body.printBedFace);
   const QString feature = face.section(QLatin1Char(':'), 0, 0);

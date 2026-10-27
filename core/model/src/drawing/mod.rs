@@ -25,9 +25,16 @@ mod annotation_tests;
 pub mod clip;
 pub mod compose;
 pub mod def;
+pub mod dwg;
+#[cfg(test)]
+mod dwg_tests;
 pub mod dxf;
 #[cfg(test)]
+mod feature_tests;
+#[cfg(test)]
 mod follow_up_tests;
+#[cfg(test)]
+mod model_follow_tests;
 pub mod pdf;
 #[cfg(test)]
 mod pick_tests;

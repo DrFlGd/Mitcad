@@ -2,12 +2,22 @@
 //! Thread: a screw thread on cylindrical faces.
 //! A cosmetic thread changes no geometry; it is data on the faces that the
 //! `threads` query lists for display. A modelled thread builds the
-//! 60-degree profile on the faces (ISO metric and Unified threads;
-//! Whitworth and NPT threads are cosmetic only): the basic profile of the
-//! size, or the profile of given diameters (a tolerance class's, as .f3d
-//! designs store them), turned about its axis by an angle, with optional
-//! extra radial and flank clearance for a looser fit (mitcad#195). Either
-//! may have a chamfer cut at its free ends (mitcad#304), a cosmetic one too.
+//! 60-degree profile on the faces (ISO metric, Unified and NPT threads;
+//! Whitworth and ISO 7-1 threads are cosmetic only): the basic profile of
+//! the size, or the profile of given diameters (a tolerance class's, as
+//! .f3d designs store them), turned about its axis by an angle, with
+//! optional extra radial and flank clearance for a looser fit (mitcad#195).
+//! Either may have a chamfer cut at its free ends (mitcad#304), a cosmetic
+//! one too.
+//!
+//! A taper pipe thread (NPT, ISO 7-1 `R`/`Rc`; mitcad#733) is tapered 1:16
+//! on the diameter from where it starts: an internal thread at its opening,
+//! an external one at its free end (see `ThreadSpec`). Even a cosmetic one
+//! changes the geometry: it tapers the bore to its minor diameter (the
+//! face's material inside that cone goes), or a shaft to its major diameter.
+//! Its diameters at the start are the size's (`ThreadData::taper_start`) or
+//! given (`diameters`, as .f3d designs store them). It has no end
+//! chamfers.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,9 +28,10 @@ use super::{
     is_false,
 };
 use crate::ids::{BodyUid, FeatureUid};
-use crate::kernel::{Kernel, ThreadChamfer, ThreadSpec};
+use crate::kernel::{Axis, Cylinder, Kernel, ThreadChamfer, ThreadSpec, ThreadTaper};
 use crate::parameters::ParamId;
 use crate::topo::FaceName;
+use crate::transform::Transform;
 
 fn yes() -> bool {
     true
@@ -59,6 +70,25 @@ impl ThreadSize {
         let data = self.data()?;
         if let Some(class) = &self.class {
             thread_table::check_class(self.standard, class, internal)?;
+        }
+        // ISO 7-1 names the side: `Rc` internal, `R` external (mitcad#733).
+        if self.standard == ThreadStandard::IsoTaper
+            && let Some(internal) = internal
+        {
+            let rc = data.designation.starts_with("Rc");
+            let size = data.designation.trim_start_matches(['R', 'c', ' ']);
+            if internal && !rc {
+                return Err(format!(
+                    "{} is an external thread; use Rc {size} for a hole",
+                    data.designation
+                ));
+            }
+            if !internal && rc {
+                return Err(format!(
+                    "{} is an internal thread; use R {size} for a shaft",
+                    data.designation
+                ));
+            }
         }
         Ok(data)
     }
@@ -173,8 +203,9 @@ pub struct ThreadDef<P = ParamId> {
     pub offset: Option<P>,
     #[serde(default, skip_serializing_if = "ThreadEnd::is_high")]
     pub location: ThreadEnd,
-    /// A modelled thread's diameters; the size's basic ones (D, D1, D2)
-    /// without.
+    /// A modelled thread's diameters, or a taper pipe thread's where it
+    /// starts (mitcad#733); the size's basic ones (D, D1, D2; a taper pipe
+    /// thread's at its start) without.
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub diameters: Option<ThreadDiameters<P>>,
     /// A modelled thread turned about its axis (see `ThreadSpec`); 0
@@ -200,6 +231,12 @@ pub struct ThreadDef<P = ParamId> {
     /// size without (it follows the size).
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub chamfer_diameter: Option<P>,
+    /// A taper pipe thread (`npt`, `iso_taper`) tapered 1:16 on the
+    /// diameter (mitcad#733): its cone is cut even when cosmetic, and NPT
+    /// may be modelled. Without it (threads saved before) a taper pipe
+    /// thread is a straight one, as it was: cosmetic only, no cone.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub taper: bool,
 }
 
 impl<P> ThreadDef<P> {
@@ -248,12 +285,113 @@ impl<P> ThreadDef<P> {
                 .as_ref()
                 .map(|v| f("chamfer_diameter", v))
                 .transpose()?,
+            taper: self.taper,
         })
+    }
+
+    /// Whether it is a taper pipe thread that tapers (mitcad#733).
+    pub fn tapers(&self) -> bool {
+        self.taper && self.thread.standard.is_tapered()
     }
 }
 
-/// A body's threaded faces with the ends (low, high) to chamfer of each.
-type ThreadedBody<S> = (BodyUid, S, Vec<FaceName>, Vec<(bool, bool)>);
+/// A body's threaded faces with the ends (low, high) to chamfer of each,
+/// and the angle each is turned by.
+type ThreadedBody<S> = (BodyUid, S, Vec<FaceName>, Vec<(bool, bool)>, Vec<f64>);
+
+/// Whether an axis points "up" as a modelled thread's helix takes it
+/// (`geometry/include/mitcad/geometry/thread.hpp`): +Z, across Z +Y, else
+/// +X.
+pub fn thread_upwards(d: [f64; 3]) -> bool {
+    const ACROSS: f64 = 1e-9;
+    if d[2].abs() > ACROSS {
+        d[2] > 0.0
+    } else if d[1].abs() > ACROSS {
+        d[1] > 0.0
+    } else {
+        d[0] > 0.0
+    }
+}
+
+/// The reference direction of a modelled thread's helix about a unit axis
+/// pointing up, and the direction across both (`thread.hpp`): the world X
+/// axis projected onto the plane across the axis (the Y axis for axes
+/// within about 25 degrees of X), and the axis crossed with it.
+pub fn thread_reference(along: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+    let x = if along[0].abs() > 0.9 {
+        [0.0, 1.0, 0.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let along_x = mitcad_vec3::dot(x, along);
+    let reference = mitcad_vec3::unit(std::array::from_fn(|i| x[i] - along_x * along[i]))?;
+    Some((reference, mitcad_vec3::cross(along, reference)))
+}
+
+/// A modelled thread's frame on a face's cylinder (`thread.hpp`): the point
+/// of the axis at the face's low end along the axis pointing up, that axis,
+/// and the helix's reference direction and the direction across.
+fn thread_frame(c: &Cylinder) -> Option<[[f64; 3]; 4]> {
+    let mut along = mitcad_vec3::unit(c.axis.direction)?;
+    let mut origin = c.axis.origin;
+    if !thread_upwards(along) {
+        origin = std::array::from_fn(|i| origin[i] + c.length * along[i]);
+        along = along.map(|v| -v);
+    }
+    let (reference, across) = thread_reference(along)?;
+    Some([origin, along, reference, across])
+}
+
+/// The angle of a copy of a modelled thread on the face `copy` (mitcad#733):
+/// the copy is the original thread (`angle`, `pitch`, right-handed or not)
+/// moved by `transform` (a rigid motion or a mirror, which turns it the
+/// other way) as a whole, its helix where the moved helix is, not the
+/// original's angle measured about the copy's own axis. The original
+/// face's cylinder is the copy's moved back. `angle` where the transform
+/// is not orthogonal (a scale).
+pub(crate) fn copied_angle(
+    angle: f64,
+    copy: &Cylinder,
+    transform: &Transform,
+    pitch: f64,
+    right_handed: bool,
+) -> f64 {
+    use std::f64::consts::TAU;
+    if !transform.is_orthogonal() || pitch <= 0.0 {
+        return angle;
+    }
+    let back = crate::assembly::inverse(transform);
+    let original = Cylinder {
+        axis: Axis {
+            origin: back.apply_point(copy.axis.origin),
+            direction: back.apply_vector(copy.axis.direction),
+        },
+        ..*copy
+    };
+    let (Some([o, u, r, a]), Some([o2, u2, r2, a2])) =
+        (thread_frame(&original), thread_frame(copy))
+    else {
+        return angle;
+    };
+    // The middle of the groove at `angle` from the low end (an internal
+    // thread's three quarters of a pitch, an external one's a quarter; any
+    // point of the helix will do, the radius too).
+    let base = if copy.internal { 0.75 } else { 0.25 } * pitch;
+    let on_helix: [f64; 3] =
+        std::array::from_fn(|i| o[i] + base * u[i] + angle.cos() * r[i] + angle.sin() * a[i]);
+    let moved = transform.apply_point(on_helix);
+    let v: [f64; 3] = std::array::from_fn(|i| moved[i] - o2[i]);
+    let along = mitcad_vec3::dot(v, u2);
+    let at = mitcad_vec3::dot(v, a2).atan2(mitcad_vec3::dot(v, r2));
+    // The copy's helix rises by a pitch a turn (falls for a left-hand one):
+    // its angle at the low end is where it is `along - base` below.
+    let right = right_handed != (transform.determinant() < 0.0);
+    let sign = if right { 1.0 } else { -1.0 };
+    let turned = at - TAU * (along - base) / (pitch * sign);
+    // (In (-pi, pi].)
+    let turned = turned - TAU * (turned / TAU).round();
+    turned + 0.0
+}
 
 /// A chamfer angle's check: between 0 and 90 degrees to the axis.
 fn check_chamfer_angle(angle: f64) -> Result<(), String> {
@@ -265,6 +403,19 @@ fn check_chamfer_angle(angle: f64) -> Result<(), String> {
             angle.to_degrees()
         ))
     }
+}
+
+/// Whether a thread of `standard` can be modelled: an NPT thread only
+/// tapered (`taper`, mitcad#733), as the threads saved before knew it.
+pub(crate) fn check_modeled(standard: ThreadStandard, taper: bool) -> Result<(), String> {
+    if standard == ThreadStandard::Npt && !taper {
+        return Err(
+            "an NPT thread cannot be modelled straight: Mitcad cuts it tapered (`taper`); make \
+             it cosmetic or tapered"
+                .to_owned(),
+        );
+    }
+    standard.check_modeled()
 }
 
 /// The narrowest crest a flank clearance may leave, in pitches.
@@ -445,9 +596,14 @@ impl FeatureInfo for ThreadDef {
         if self.offset.is_some() && self.length.is_none() {
             return Err("a thread over the whole face has no offset".to_owned());
         }
+        if self.taper && !self.thread.standard.is_tapered() {
+            return Err(
+                "only a taper pipe thread (NPT, ISO 7-1) is tapered: leave out `taper`".to_owned(),
+            );
+        }
         if self.modeled {
-            self.thread.standard.check_modeled()?;
-        } else if self.diameters.is_some() || self.angle.is_some() {
+            check_modeled(self.thread.standard, self.taper)?;
+        } else if self.angle.is_some() || (self.diameters.is_some() && !self.taper) {
             return Err("only a modelled thread has diameters and an angle".to_owned());
         } else if self.radial_clearance.is_some() || self.flank_clearance.is_some() {
             return Err("only a modelled thread has extra clearance".to_owned());
@@ -514,7 +670,7 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
                 let found = ctx.face_or(&shape, &face.face, || {
                     format!("body {} has no face {}", face.body, face.face)
                 })?;
-                targets.push((face.body, shape, found));
+                targets.push((face.body, shape, found, None));
             }
             Ok(targets)
         })?;
@@ -528,8 +684,10 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
     }
 }
 
-/// The faces a thread goes on: each with its body and the body's shape.
-type ThreadTargets<S> = Vec<(BodyUid, S, FaceName)>;
+/// The faces a thread goes on: each with its body, the body's shape, and
+/// for a pattern's copy the transform that took the original there
+/// (mitcad#733).
+type ThreadTargets<S> = Vec<(BodyUid, S, FaceName, Option<Transform>)>;
 
 /// What gives a thread its faces, read once the thread's own values are
 /// checked ([`ThreadDef::threaded`]).
@@ -540,19 +698,21 @@ type TargetsOf<'a, K> =
 
 impl ThreadDef {
     /// The thread on `faces` of `shape` (a pattern's copy of the faces,
-    /// mitcad#719), its new faces named after `feature`: the shape
-    /// threaded, as it was for a cosmetic thread without chamfers.
+    /// mitcad#719, each with the transform that took the original there:
+    /// a modelled copy is turned as the original moved there, mitcad#733),
+    /// its new faces named after `feature`: the shape threaded, as it was
+    /// for a cosmetic thread without chamfers.
     pub(crate) fn thread_on<K: Kernel>(
         &self,
         ctx: &mut EvalContext<'_, K>,
         feature: FeatureUid,
         body: BodyUid,
         shape: &K::Shape,
-        faces: &[FaceName],
+        faces: &[(FaceName, Option<Transform>)],
     ) -> Result<K::Shape, String> {
         let targets: ThreadTargets<K::Shape> = faces
             .iter()
-            .map(|f| (body, shape.clone(), f.clone()))
+            .map(|(f, t)| (body, shape.clone(), f.clone(), *t))
             .collect();
         let mut threaded = self.threaded(ctx, feature, &mut |_| Ok(targets.clone()))?;
         Ok(threaded
@@ -599,8 +759,16 @@ impl ThreadDef {
         };
         let clearance = thread_clearance(ctx, self.radial_clearance, self.flank_clearance)?;
         let (radial, _) = clearance;
+        // A tapered taper pipe thread has no end chamfers: its ends are
+        // left as they are (mitcad#733).
+        let ends_asked = if self.tapers() && self.chamfer.is_some() {
+            ctx.warn("a tapered taper pipe thread has no end chamfers: Chamfer Ends is left out");
+            None
+        } else {
+            self.chamfer
+        };
         // The chamfer's angle (checked before the faces).
-        let chamfer_angle = match (self.chamfer, self.chamfer_angle) {
+        let chamfer_angle = match (ends_asked, self.chamfer_angle) {
             (Some(_), Some(id)) => {
                 let angle = ctx.param(id)?;
                 check_chamfer_angle(angle)?;
@@ -611,7 +779,7 @@ impl ThreadDef {
         };
         let chamfer_diameter = self
             .chamfer_diameter
-            .filter(|_| self.chamfer.is_some())
+            .filter(|_| ends_asked.is_some())
             .map(|id| ctx.positive(id))
             .transpose()?;
         // The faces by body, each a cylinder, all on one side of their
@@ -621,11 +789,24 @@ impl ThreadDef {
         // chamfer's check.
         let mut extreme_diameter: Option<f64> = None;
         let mut internal = None;
-        for (body, shape, found) in targets(ctx)? {
+        for (body, shape, found, moved) in targets(ctx)? {
             let cylinder = ctx
                 .kernel
                 .face_cylinder(&shape, &found)
                 .map_err(|e| e.to_string())?;
+            // A pattern's copy of a modelled thread: turned as the original
+            // moved there (mitcad#733).
+            let turned = match moved {
+                Some(t) if self.modeled => copied_angle(
+                    angle,
+                    &cylinder,
+                    &t,
+                    self.thread.data()?.pitch,
+                    // (A mirror's copy is the other way round already.)
+                    self.thread.right_handed != (t.determinant() < 0.0),
+                ),
+                _ => angle,
+            };
             if internal.is_some_and(|i| i != cylinder.internal) {
                 return Err("the faces of a thread must all be internal or all external".to_owned());
             }
@@ -635,8 +816,15 @@ impl ThreadDef {
             // inside it, an internal thread's root outside the bore (each
             // moved by the radial clearance).
             let diameter = 2.0 * cylinder.radius;
-            let (major, minor, _) =
-                diameters.unwrap_or((data.major, data.minor, data.pitch_diameter));
+            // (A taper pipe thread's where it starts, mitcad#733.)
+            let (major, minor, _) = diameters.unwrap_or_else(|| {
+                (if self.tapers() {
+                    data.taper_start(cylinder.internal)
+                } else {
+                    None
+                })
+                .unwrap_or((data.major, data.minor, data.pitch_diameter))
+            });
             let fits = if cylinder.internal {
                 diameter < major + 2.0 * radial
             } else {
@@ -650,7 +838,7 @@ impl ThreadDef {
             }
             // The ends asked for that the thread reaches; the kernel
             // chamfers those with nothing beyond them.
-            let ends = match self.chamfer {
+            let ends = match ends_asked {
                 Some(chamfer) => {
                     let (low, high) = chamfer.low_high(self.location);
                     let (reaches_low, reaches_high) = part_reaches(part, cylinder.length);
@@ -672,19 +860,32 @@ impl ThreadDef {
                 Some(d) if cylinder.internal => d.max(material),
                 Some(d) => d.min(material),
             });
-            match bodies.iter_mut().find(|(uid, _, _, _)| *uid == body) {
-                Some((_, _, faces, all_ends)) => {
+            match bodies.iter_mut().find(|(uid, _, _, _, _)| *uid == body) {
+                Some((_, _, faces, all_ends, angles)) => {
                     faces.push(found);
                     all_ends.push(ends);
+                    angles.push(turned);
                 }
-                None => bodies.push((body, shape, vec![found], vec![ends])),
+                None => bodies.push((body, shape, vec![found], vec![ends], vec![turned])),
             }
         }
         let mut output = Vec::new();
         let data = self.thread.data()?;
-        let (major, minor, pitch_diameter) =
-            diameters.unwrap_or((data.major, data.minor, data.pitch_diameter));
         let is_internal = internal.unwrap_or(false);
+        let (major, minor, pitch_diameter) = diameters.unwrap_or_else(|| {
+            (if self.tapers() {
+                data.taper_start(is_internal)
+            } else {
+                None
+            })
+            .unwrap_or((data.major, data.minor, data.pitch_diameter))
+        });
+        // A tapered taper pipe thread (mitcad#733): even a cosmetic one
+        // tapers the faces. Without `taper` (saved before) it is straight.
+        let taper = data.taper.filter(|_| self.tapers()).map(|t| ThreadTaper {
+            per_length: t.per_length,
+            high_end: self.location.is_high(),
+        });
         // The printed-fit flank clearance capped where the pitch is too
         // fine for it (mitcad#691); checked below with the other values.
         let clearance = if self.modeled {
@@ -704,7 +905,7 @@ impl ThreadDef {
             Some(angle)
                 if bodies
                     .iter()
-                    .any(|(_, _, _, ends)| ends.iter().any(|&(l, h)| l || h)) =>
+                    .any(|(_, _, _, ends, _)| ends.iter().any(|&(l, h)| l || h)) =>
             {
                 // The profile's root diameter, moved by the radial clearance.
                 let root = self.modeled.then_some(if is_internal {
@@ -732,7 +933,7 @@ impl ThreadDef {
             }
             _ => None,
         };
-        if !self.modeled && chamfer.is_none() {
+        if !self.modeled && chamfer.is_none() && taper.is_none() {
             return Ok(output);
         }
         if self.modeled {
@@ -743,7 +944,14 @@ impl ThreadDef {
                 clearance,
             )?;
         }
-        for (uid, shape, faces, ends) in bodies {
+        for (uid, shape, faces, ends, angles) in bodies {
+            // Faces turned otherwise (copies of a pattern, mitcad#733): their
+            // own angles, in one operation.
+            let face_angles: &[f64] = if angles.iter().all(|a| *a == angle) {
+                &[]
+            } else {
+                &angles
+            };
             let spec = ThreadSpec {
                 feature,
                 faces: &faces,
@@ -753,6 +961,7 @@ impl ThreadDef {
                 pitch_diameter,
                 right_handed: self.thread.right_handed,
                 angle,
+                face_angles,
                 part,
                 radial_clearance,
                 flank_clearance,
@@ -762,8 +971,10 @@ impl ThreadDef {
                     diameter,
                     ends,
                 }),
+                taper,
             };
             if !self.modeled
+                && spec.taper.is_none()
                 && spec
                     .chamfer
                     .as_ref()
@@ -778,5 +989,58 @@ impl ThreadDef {
             output.push((uid, threaded));
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::{FRAC_PI_2, PI};
+
+    fn rod(origin: [f64; 3], direction: [f64; 3]) -> Cylinder {
+        Cylinder {
+            axis: Axis { origin, direction },
+            radius: 1.0,
+            length: 10.0,
+            internal: false,
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        let d = (a - b).rem_euclid(std::f64::consts::TAU);
+        d.min(std::f64::consts::TAU - d) < 1e-9
+    }
+
+    /// A modelled thread's copy is turned as the original moved there
+    /// (mitcad#733), not by the original's angle about its own axis.
+    #[test]
+    fn copies_of_modelled_threads_turn_with_the_pattern() {
+        let up = [0.0, 0.0, 1.0];
+        // Moved along: the same angle.
+        let along = Transform::translation([20.0, 5.0, 0.0]);
+        let copy = rod([20.0, 5.0, 0.0], up);
+        assert!(close(copied_angle(0.3, &copy, &along, 1.0, true), 0.3));
+        // Turned a quarter about the Z axis: the helix a quarter on.
+        let turn = Transform::rotation([0.0; 3], up, FRAC_PI_2).unwrap();
+        let copy = rod([0.0, 10.0, 0.0], up);
+        assert!(close(
+            copied_angle(0.3, &copy, &turn, 1.0, true),
+            0.3 + FRAC_PI_2
+        ));
+        // Turned over about the X axis through the rod's middle: the copy's
+        // axis points down, so its low end is the original's high end; the
+        // groove at angle 0 a quarter pitch above the original's low end is
+        // (1, 0, 9.75), where the copy's groove, 9.5 turns on, is at pi.
+        let over = Transform::rotation([0.0, 0.0, 5.0], [1.0, 0.0, 0.0], PI).unwrap();
+        let copy = rod([0.0, 0.0, 10.0], [0.0, 0.0, -1.0]);
+        assert!(close(copied_angle(0.0, &copy, &over, 1.0, true), PI));
+        // Mirrored across x = 20: the left-handed image's groove lies
+        // across the axis from the original's, at its low end.
+        let mirror = Transform::mirror([20.0, 0.0, 0.0], [1.0, 0.0, 0.0]).unwrap();
+        let copy = rod([40.0, 0.0, 0.0], up);
+        assert!(close(copied_angle(0.0, &copy, &mirror, 1.0, true), PI));
+        // A scale keeps the angle.
+        let scale = Transform::scale([0.0; 3], [2.0, 2.0, 2.0]);
+        assert!(close(copied_angle(0.3, &copy, &scale, 1.0, true), 0.3));
     }
 }

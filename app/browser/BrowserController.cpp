@@ -59,6 +59,17 @@ public:
     QObject::connect(action, &QAction::triggered, &m_menu, std::move(call));
     m_entries << text;
   }
+  // An entry that cannot be chosen while `blocked` says why (its tooltip).
+  void add(const QString& icon, const QString& text, std::function<void()> call, const QString& blocked) {
+    QAction* action = m_menu.addAction(themeIcon(icon), text);
+    QObject::connect(action, &QAction::triggered, &m_menu, std::move(call));
+    m_entries << text;
+    if (!blocked.isEmpty()) {
+      action->setEnabled(false);
+      action->setToolTip(blocked);
+      m_menu.setToolTipsVisible(true);
+    }
+  }
   void separator() { m_menu.addSeparator(); }
   bool isEmpty() const { return m_entries.isEmpty(); }
   void exec(const QPoint& at) {
@@ -758,9 +769,9 @@ void BrowserController::moveToComponent(const QJsonObject& selection) {
   }
 }
 
-// Move to... on an occurrence (mitcad#219): the occurrence with everything
-// in it under another parent, where it stays in the design; its row is
-// selected again at its new path.
+// Move to Component… on an occurrence (mitcad#219): the occurrence with
+// everything in it under another parent, where it stays in the design; its
+// row is selected again at its new path.
 void BrowserController::moveOccurrence(const BrowserNode& node) {
   if (node.occurrence.isEmpty() || !canChange()) {
     return;
@@ -909,6 +920,26 @@ QStringList BrowserController::menuBodies(const BrowserNode& node) const {
   return bodies.contains(node.uid) ? bodies : QStringList{node.uid};
 }
 
+Selection BrowserController::menuMoveItems(const BrowserNode& node) const {
+  const SelectionItem row = node.item();
+  if (!row.isValid()) {
+    return {};
+  }
+  const auto sameRow = [&row](const SelectionItem& shown) {
+    return shown.kind == row.kind && shown.owner == row.owner && shown.occurrence == row.occurrence;
+  };
+  if (std::none_of(m_shownItems.begin(), m_shownItems.end(), sameRow)) {
+    return {row};
+  }
+  Selection items;
+  for (const SelectionItem& shown : m_shownItems) {
+    if (shown.kind == row.kind) {
+      items.append(shown);
+    }
+  }
+  return items;
+}
+
 void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
   Menu menu(m_window);
   const SelectionItem item = node.item();
@@ -943,7 +974,42 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
   const auto timelineEntry = [&](const QString& feature) {
     menu.add(QStringLiteral("timeline"), tr("Find in Timeline"), [this, feature] { findInTimeline(feature); });
   };
+  // Move/Copy on a body's or an occurrence's row (mitcad#735), for the
+  // rows selected with it; left out where the command cannot start.
+  const auto moveEntry = [&] {
+    const Selection moved = menuMoveItems(node);
+    if (m_host.offersCommand(QStringLiteral("solid.move"), moved)) {
+      menu.add(QStringLiteral("move"), tr("Move/Copy"),
+               [this, moved] { m_host.startCommand(QStringLiteral("solid.move"), moved, nullptr); });
+    }
+  };
   const bool plane = item.kind == SelectKind::Plane;
+  // Save As Mesh (mitcad#734): the row's bodies, or those of the body and
+  // component rows selected with it, to mesh files; disabled with the
+  // reason when none is a solid or mesh body. Last before Collapse All, which
+  // ends every row's menu, so that the entries above keep their places.
+  const auto saveAsMeshEntry = [&] {
+    const SelectionItem own =
+        item.isValid() ? item : SelectionItem{SelectKind::Component, node.uid, QString(), QString()}; // the root
+    Selection meshItems;
+    bool listed = false;
+    for (const SelectionItem& shown : m_shownItems) {
+      if (shown.kind == SelectKind::Body || shown.kind == SelectKind::Component) {
+        meshItems << shown;
+        listed = listed || (shown.kind == own.kind && shown.owner == own.owner && shown.occurrence == own.occurrence);
+      }
+    }
+    if (!listed) {
+      meshItems = {own};
+    }
+    const QString blocked = m_host.saveAsMeshBlocked(meshItems);
+    if (!blocked.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Save As Mesh disabled: %1").arg(blocked);
+    }
+    menu.separator();
+    menu.add(QStringLiteral("export"), tr("Save As Mesh…"), [this, meshItems] { m_host.saveAsMesh(meshItems); },
+             blocked);
+  };
 
   switch (node.type) {
   case BrowserNode::Type::Component: {
@@ -975,12 +1041,15 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
       menu.add(QStringLiteral("paste"), tr("Paste"), [this] { paste(false); });
       menu.add(QStringLiteral("paste"), tr("Paste New"), [this] { paste(true); });
     }
-    // Another parent for the occurrence, with what is in it (mitcad#219).
+    // Another parent for the occurrence, with what is in it (mitcad#219),
+    // named as the body's structure move so that it is not taken for
+    // Move/Copy (mitcad#735).
     if (!root) {
-      menu.add(QStringLiteral("component"), tr("Move to…"), [this, node] { moveOccurrence(node); });
+      menu.add(QStringLiteral("component"), tr("Move to Component…"), [this, node] { moveOccurrence(node); });
     }
     menu.separator();
     if (!root) {
+      moveEntry();
       const DocumentSnapshot::Occurrence* placed = occurrence(node.occurrence);
       const bool grounded = placed != nullptr && placed->grounded;
       menu.add(QStringLiteral("ground"), grounded ? tr("Unground") : tr("Ground"), [this, node, grounded] {
@@ -1021,6 +1090,7 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     if (root) {
       menu.add(QStringLiteral("orientation-cube"), tr("Reorient Design…"), [this] { openReorient(); });
     }
+    saveAsMeshEntry();
     break;
   }
   case BrowserNode::Type::Body: {
@@ -1028,6 +1098,7 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     const DocumentSnapshot::Feature* made = m_snapshot.feature(feature);
     menu.add(QStringLiteral("edit"), tr("Edit %1").arg(made != nullptr ? made->name : feature),
              [this, feature] { m_host.editFeature(feature); });
+    moveEntry();
     menu.separator();
     visibility();
     isolate();
@@ -1068,6 +1139,7 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
     timelineEntry(feature);
+    saveAsMeshEntry();
     break;
   }
   case BrowserNode::Type::Sketch:

@@ -158,7 +158,11 @@ BeltCheck beltRows(const CommandState& state, const CommandContext& model, const
   const QString profile = pulley.value(QStringLiteral("profile")).toString();
   const double z1 = mateValues.value(QStringLiteral("teeth")).toDouble(0.0);
   const double z2 = state.value(QStringLiteral("teeth"));
-  const QJsonObject first = atOfFeature(mateDef, mate, model);
+  // A pulley on another component's shaft by its seat with the link
+  // (mitcad#754), as the query takes it.
+  const QJsonObject mateSeat = mateDef.value(QStringLiteral("seat")).toObject();
+  const QJsonObject first = mateSeat.contains(QStringLiteral("link")) ? QJsonObject{{QStringLiteral("seat"), mateSeat}}
+                                                                      : atOfFeature(mateDef, mate, model);
   const QJsonObject& second = placement;
   QString error;
   if (toothed(state) && z1 > 0.0 && std::isfinite(z2) && z2 > 0.0 && !first.isEmpty() && !second.isEmpty() &&
@@ -524,7 +528,13 @@ CommandDef pulleyCommand(const CommandContext& context) {
         return QString();
       }
       built.def.remove(QStringLiteral("type"));
-      const BeltCheck check = beltRows(state, model, built.def, atOf(state, model, place, true), shared->editing);
+      // On another component's shaft the seat with its link (mitcad#754):
+      // atOf gives no `at` there, which would put the pulley where the
+      // shaft lies in its own component.
+      const QJsonObject seat = built.def.value(QStringLiteral("seat")).toObject();
+      const QJsonObject placement = seat.contains(QStringLiteral("link")) ? QJsonObject{{QStringLiteral("seat"), seat}}
+                                                                          : atOf(state, model, place, true);
+      const BeltCheck check = beltRows(state, model, built.def, placement, shared->editing);
       if (!check.lines.isEmpty()) {
         qDebug().noquote() << QStringLiteral("Pulley belt check with %1: %2")
                                   .arg(mateOf(state), check.lines.join(QStringLiteral(", ")));

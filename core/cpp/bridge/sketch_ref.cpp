@@ -100,4 +100,17 @@ rust::Vec<SectionPiece> section_curves(const geometry::Shape& shape, rust::Str n
   return result;
 }
 
+rust::Vec<double> section_points(const geometry::Shape& shape, rust::Str name, std::array<double, 3> origin,
+                                 std::array<double, 3> normal) {
+  rust::Vec<double> result;
+  for (const gp_Pnt& p :
+       geometry::section_points(shape, std::string(name), gp_Pnt(origin[0], origin[1], origin[2]),
+                                gp_Dir(normal[0], normal[1], normal[2]))) {
+    result.push_back(p.X());
+    result.push_back(p.Y());
+    result.push_back(p.Z());
+  }
+  return result;
+}
+
 } // namespace mitcad::bridge

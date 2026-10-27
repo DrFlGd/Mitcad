@@ -52,6 +52,9 @@ struct ViewSettings {
   // Picks take the active component's items first (mitcad#420,
   // `view/activePickPriority`).
   bool activePickPriority = true;
+  // The orientation cube's projection (mitcad#774, `view/cubeProjection`
+  // by its id): as the view's by default (owner 27.10.2026).
+  CubeProjection cubeProjection = CubeProjection::FollowView;
 
   static ViewSettings load();
   void save() const;

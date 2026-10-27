@@ -111,6 +111,9 @@ public:
 
   // Places the cards again (queued: many changes make one layout).
   void requestLayout();
+  // Places the cards at once, for a change whose free area is read right
+  // away (a sketch's view centred in it as sketch mode starts, mitcad#738).
+  void layoutNow();
 
   // A card's width as the user dragged it (GlassCard::setWidthAdjustable,
   // mitcad#529), placed at once: at most two thirds of the view less the

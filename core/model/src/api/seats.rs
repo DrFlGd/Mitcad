@@ -27,25 +27,30 @@ pub(super) struct SeatFrameQuery {
 
 impl<K: Kernel> Document<K> {
     pub(super) fn seat_frame_json(&self, query: &SeatFrameQuery) -> Result<Value, ApiError> {
-        let params = self.parameters();
-        let context = params.context();
-        let seat = query
-            .seat
-            .map_params("seat.", &mut |slot, value| match value {
-                ValueInput::Number(n) => Ok(*n),
-                ValueInput::Name(text) => {
-                    let unit = unit_for(slot_unit(slot).dims(), &context)
-                        .unwrap_or(crate::expr::Unit::NONE);
-                    let parsed = Expr::parse(text).map_err(|e| ApiError(format!("{slot}: {e}")))?;
-                    parsed
-                        .eval_as(params.table(), &context, unit)
-                        .map(|v| v.value)
-                        .map_err(|e| ApiError(format!("{slot}: {e}")))
-                }
-            })?;
+        let seat = self.seat_values(&query.seat)?;
         let component = query.component.unwrap_or(self.active_component());
         self.seat_frame(&seat, component)
             .map(|frame| frame.to_json())
             .map_err(ApiError)
+    }
+
+    /// A seat's values: numbers as they are (mm), names and expressions
+    /// evaluated in the slot's unit (also Gear Pair's and Belt Drive's
+    /// queries, mitcad#754).
+    pub(super) fn seat_values(&self, seat: &Seat<ValueInput>) -> Result<Seat<f64>, ApiError> {
+        let params = self.parameters();
+        let context = params.context();
+        seat.map_params("seat.", &mut |slot, value| match value {
+            ValueInput::Number(n) => Ok(*n),
+            ValueInput::Name(text) => {
+                let unit =
+                    unit_for(slot_unit(slot).dims(), &context).unwrap_or(crate::expr::Unit::NONE);
+                let parsed = Expr::parse(text).map_err(|e| ApiError(format!("{slot}: {e}")))?;
+                parsed
+                    .eval_as(params.table(), &context, unit)
+                    .map(|v| v.value)
+                    .map_err(|e| ApiError(format!("{slot}: {e}")))
+            }
+        })
     }
 }

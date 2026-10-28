@@ -62,8 +62,9 @@ function Frame-Of-Four([string]$Cmd, [string]$Key, [string]$Part, [string]$L1, [
   # The third one's end faces -X: the view from the front left (the cube's
   # places logged, MITCAD_LOG_ORIENTATION_CUBE).
   Ui-Step 'the view from the front left' { Ui-ClickLogged 'Orientation cube front-left-top' }
+  # The camera at rest once the step's sync answered (its rest timer is
+  # watched; mitcad#870: a fixed 800 ms more before).
   Ui-Sync
-  Start-Sleep -Milliseconds 800
   Corner $Cmd $m3 '+Y' $(if ($Typed) { $L2 } else { '' })
   if ($Through) {
     Ui-Step 'to the centre (Tab)'        { Ui-Key 'Tab' }

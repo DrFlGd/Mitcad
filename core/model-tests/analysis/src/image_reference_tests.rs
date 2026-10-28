@@ -92,6 +92,63 @@ fn data() -> String {
     mitcad_model::internal::base64::encode(&bmp(200, 100))
 }
 
+fn boxed(kind: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut bytes = u32::try_from(8 + body.len())
+        .unwrap()
+        .to_be_bytes()
+        .to_vec();
+    bytes.extend_from_slice(kind);
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+/// A full box: version 0, no flags.
+fn full(kind: &[u8], body: &[u8]) -> Vec<u8> {
+    boxed(kind, &[&[0u8; 4][..], body].concat())
+}
+
+/// A HEIF file (mitcad#850) of one HEVC image, `width` x `height` pixels
+/// coded, a quarter turn anticlockwise (`irot`) when `turned`, with `bits`
+/// per channel. Its 16 bytes of image data are no HEVC: the model reads
+/// only the header (`image_header`'s tests read more kinds; the
+/// application's `app.unit` decodes real ones).
+fn heif(width: u32, height: u32, turned: bool, bits: u8) -> Vec<u8> {
+    let mut bytes = boxed(b"ftyp", b"heic\0\0\0\0mif1heic");
+    let mut hdlr = vec![0; 4];
+    hdlr.extend_from_slice(b"pict");
+    hdlr.extend_from_slice(&[0; 13]);
+    let mut infe = vec![2, 0, 0, 0, 0, 1, 0, 0];
+    infe.extend_from_slice(b"hvc1\0");
+    let iinf = full(b"iinf", &[&[0, 1][..], &boxed(b"infe", &infe)[..]].concat());
+    let mut hvcc = vec![
+        1, 1, 0x60, 0, 0, 0, 0x90, 0, 0, 0, 0, 0, 90, 0xf0, 0, 0xfc, 0xfd,
+    ];
+    hvcc.extend_from_slice(&[0xf8 | (bits - 8), 0xf8 | (bits - 8)]);
+    let mut ispe = width.to_be_bytes().to_vec();
+    ispe.extend_from_slice(&height.to_be_bytes());
+    let mut ipco = boxed(b"hvcC", &hvcc);
+    ipco.extend(full(b"ispe", &ispe));
+    let mut ipma = vec![0, 0, 0, 1, 0, 1];
+    if turned {
+        ipco.extend(boxed(b"irot", &[1]));
+        ipma.extend_from_slice(&[3, 0x81, 2, 0x83]);
+    } else {
+        ipma.extend_from_slice(&[2, 0x81, 2]);
+    }
+    let mut iprp = boxed(b"ipco", &ipco);
+    iprp.extend(full(b"ipma", &ipma));
+    let meta = [
+        full(b"hdlr", &hdlr),
+        full(b"pitm", &[0, 1]),
+        iinf,
+        boxed(b"iprp", &iprp),
+    ]
+    .concat();
+    bytes.extend(full(b"meta", &meta));
+    bytes.extend(boxed(b"mdat", &[0; 16]));
+    bytes
+}
+
 /// A block (F2.b0) 20 high on a 20 x 20 rectangle on XY, its height the
 /// parameter `height`.
 fn block() -> Document<MockKernel> {
@@ -284,7 +341,7 @@ fn images_refuse_what_they_cannot_keep() {
     assert!(error.contains("the image's plane"), "{error}");
     let gif = mitcad_model::internal::base64::encode(b"GIF89a");
     let error = refused(&mut doc, insert(json!({"data": gif})));
-    assert!(error.contains("no PNG, JPEG, BMP or WebP"), "{error}");
+    assert!(error.contains("no PNG, JPEG, BMP, WebP or HEIF"), "{error}");
     let error = refused(&mut doc, insert(json!({"path": "a.png"})));
     assert!(error.contains("not both"), "{error}");
     let error = refused(&mut doc, insert(json!({"scale": 0.1, "width": 20})));
@@ -366,4 +423,84 @@ fn images_are_saved_with_their_bytes_and_read_back() {
         panic!("a name twice was read");
     };
     assert!(error.to_string().contains("more than once"), "{error}");
+}
+
+#[test]
+fn heif_images_are_inserted_upright_saved_and_read_back() {
+    let mut doc = block();
+    // A photo coded 4032 x 3024 and turned a quarter: shown 3024 x 4032.
+    let data = mitcad_model::internal::base64::encode(&heif(4032, 3024, true, 10));
+    let inserted = command(
+        &mut doc,
+        json!({"cmd": "insert_image_reference", "data": data, "file_name": "photo.heic",
+               "plane": "xy", "width": 75.6}),
+    );
+    assert_eq!(inserted["name"], "Image1");
+    let image = &images(&doc)[0];
+    assert_eq!(image["format"], "heif");
+    assert_eq!(image["file_name"], "photo.heic");
+    assert_eq!(image["pixels"], json!([3024, 4032]));
+    near(&image["scale"], 0.025);
+    near(&image["size"][0], 75.6);
+    near(&image["size"][1], 100.8);
+    // The file's bytes as they were, for the application to decode.
+    let file = query(
+        &doc,
+        json!({"query": "image_reference_image", "name": "Image1"}),
+    );
+    assert_eq!(file["data"], data);
+
+    let saved = doc.to_json();
+    let stored: Value = serde_json::from_str(&saved).unwrap();
+    let stored = &stored["image_references"][0]["image"];
+    assert_eq!(stored["format"], "heif");
+    assert_eq!(stored["width"], 3024);
+    assert_eq!(stored["height"], 4032);
+    assert_eq!(stored["data"], data);
+    let mut loaded = Document::from_json(&saved, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), saved);
+    command(&mut loaded, json!({"cmd": "recompute"}));
+    assert_eq!(images(&loaded), images(&doc));
+    // The stored size checked against the bytes as for the other formats.
+    let wrong = saved.replacen("\"width\": 3024,", "\"width\": 4032,", 1);
+    let Err(error) = Document::from_json(&wrong, MockKernel::default()) else {
+        panic!("a wrong size was read");
+    };
+    assert!(
+        error.to_string().contains("not the 4032 x 4032 heif"),
+        "{error}"
+    );
+
+    // A file's header for the panel: no pixel size stated, 96 to the inch.
+    let name = format!("mitcad-image-{}.heic", std::process::id());
+    let path = std::env::temp_dir().join(name);
+    std::fs::write(&path, heif(64, 32, false, 8)).unwrap();
+    let info = query(&doc, json!({"query": "image_info", "path": path}));
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(info["format"], "heif");
+    assert_eq!(info["pixels"], json!([64, 32]));
+    assert_eq!(info["stated"], false);
+    near(&info["pixel_size"], 25.4 / 96.0);
+}
+
+#[test]
+fn heif_images_it_cannot_keep_are_refused() {
+    let mut doc = block();
+    let insert = |bytes: &[u8]| {
+        json!({"cmd": "insert_image_reference", "plane": "xy",
+               "data": mitcad_model::internal::base64::encode(bytes)})
+    };
+    let error = refused(&mut doc, insert(&heif(64, 32, false, 12)));
+    assert!(error.contains("12 bits per channel"), "{error}");
+    let error = refused(&mut doc, insert(&heif(40_000, 32, false, 8)));
+    assert!(error.contains("more than 32768"), "{error}");
+    let file = heif(64, 32, false, 8);
+    let error = refused(&mut doc, insert(&file[..file.len() - 4]));
+    assert!(error.contains("ends inside"), "{error}");
+    // More than a design embeds.
+    let mut large = heif(64, 32, false, 8);
+    large.extend(boxed(b"free", &vec![0; 32 << 20]));
+    let error = refused(&mut doc, insert(&large));
+    assert!(error.contains("more than the 32 MB"), "{error}");
+    assert!(images(&doc).is_empty());
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -28,6 +29,7 @@ class QToolButton;
 
 namespace mitcad {
 
+class AssignmentPanel;
 class DocumentHost;
 class TextureBrowser;
 
@@ -51,6 +53,12 @@ class TextureBrowser;
 // filter for both. A source's assets show as a grid of thumbnails; Use
 // fetches the chosen one's maps and makes them a new appearance of the
 // design with the images embedded, which is then selected for Assign.
+//
+// The assignment panel (mitcad#861, AssignmentPanel.hpp) at the bottom
+// shows what the targets have and whether it varies with an option. With
+// None, Assign and a double-click in the list set the selected appearance
+// as before; with an option, they fill the panel's selected rows, and so
+// do New and a texture's Use.
 class AppearanceDialog : public QDialog {
   Q_OBJECT
 
@@ -64,6 +72,8 @@ public:
   void setTargets(const Selection& targets);
   // Shows the appearances as the model has them now.
   void refresh();
+  // Add Option… of Varies with: the Configurations window.
+  std::function<void()> openConfigurations;
 
 private:
   struct NumberField {
@@ -89,6 +99,11 @@ private:
   void newAppearance();
   void deleteAppearance();
   void assign();
+  // Assign's text and state: the targets' (None) or the panel's rows.
+  void updateAssign();
+  // Grows the window by the assignment panel's height when it shows or gets
+  // taller.
+  void growForPanel();
   // Gives the bodies of the selected faces (and the selected bodies) the
   // appearance as their own (mitcad#346).
   void assignToBodies();
@@ -146,6 +161,13 @@ private:
   QPushButton* m_assign = nullptr;
   QPushButton* m_assignBodies = nullptr;
   QPushButton* m_close = nullptr;
+  AssignmentPanel* m_panel = nullptr; // mitcad#861
+  QWidget* m_bodyView = nullptr;       // the scrolling body's viewport
+  // Assign as the targets name it (None): its text and tooltip.
+  QString m_assignText;
+  QString m_assignTip;
+  bool m_hasFaces = false;
+  int m_panelHeight = 0; // the panel's tallest height the window grew by
   bool m_building = false;
   bool m_fitted = false; // sized to the screen at its first show (mitcad#818)
   QString m_logged; // the logged places

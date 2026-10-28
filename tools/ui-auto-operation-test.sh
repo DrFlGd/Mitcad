@@ -5,7 +5,8 @@
 # check-all sources: app/framework/AutoOperationPolicy.hpp app/framework/Command.hpp
 # check-all sources: core/model/src/document/auto_operation.rs core/model-api/src/lib.rs
 # check-all sources: geometry/src/contact.cpp geometry/src/boolean.cpp tools/cli
-# Extrude's automatic operation (mitcad#289, mitcad#575) through the real UI, on a
+# Extrude's automatic operation (mitcad#289) for new features, and edits that keep
+# their stored operation (mitcad#868), through the real UI, on a
 # design mitcad-cli makes: a 40 x 30 block 20 deep under the XY plane
 # (Body1, F2.b0; its top face lies in XY), a square on XY over the block
 # (Sketch2, F3) and a square on XY far from it (Sketch3, F4).
@@ -15,8 +16,9 @@
 #   3. Undone; Extrude of the same square with New Body chosen by hand:
 #      the choice stays when the distance goes into the block; OK adds a
 #      new body.
-#   2a. Editing the committed Join follows Cut/Join until Operation is chosen.
-#   2b. A new edit follows geometry until Objects is chosen.
+#   2a. Editing the committed Join keeps it (mitcad#868): going into the
+#       block, then flipped into it, the Operation field stays Join; Cut
+#       chosen by hand still works; cancelled.
 #   4. Editing the deliberate touching New Body keeps its stored choice.
 # tools/ui-windows-auto-operation-test.ps1 is the Windows counterpart.
 #
@@ -91,50 +93,34 @@ ui_mark
 ui_step "OK (Enter)"                     ui_key Return
 ui_expect_new "Added extrude (Join), distance 5" "joined"
 ui_expect_volume "Body Body1 (F2.b0): volume 24000.000 -> \([0-9.]*\) mm3" 24500 "the block grew by the square's 500 mm3"
-echo "--- 2a. Editing an automatic Join follows the geometry until Operation is chosen"
+echo "--- 2a. Editing keeps the stored Join; Operation changes only by hand (mitcad#868)"
 ui_mark
 ui_step "edit automatic Extrude3"         ui_double_click_logged "Timeline Extrude3"
-ui_expect_new "stored operation matches automatic choice; editing follows geometry" "the stored Join matches the initial probe"
+ui_expect_new "Extrude: editing keeps the stored operation" "the edit keeps the stored Join"
+ui_expect_new "operation=join" "it opens with its Join"
 ui_expect_new "Preview Extrude: ok" "the stored Join previewed"
 ui_mark
 ui_step "edited distance -5"              ui_type_in "Panel Extrude input distance" "-5"
-ui_expect_new "Extrude: automatic Operation = Cut" "the edit cuts going into the block"
-ui_expect_new "Preview Extrude: ok" "the edited Cut previewed"
+ui_expect_new "Extrude Distance: -5 = -5 mm" "the edit goes into the block"
+ui_expect_new "Preview Extrude: ok" "the edited Join previewed going in"
+ui_wait_idle
+no_new "Extrude: automatic Operation" "the edited Join stays Join going into the block"
 ui_mark
 ui_step "edited distance 5"               ui_type_in "Panel Extrude input distance" "5"
-ui_expect_new "Extrude: automatic Operation = Join" "the edit joins coming out again"
-ui_expect_new "Preview Extrude: ok" "the edited Join previewed"
-ui_mark
-ui_step "manual New Body in edit"         ui_choose "Panel Extrude input operation" -1
-ui_expect_new "Extrude: Operation = New Body" "New Body explicitly chosen in the edit"
-ui_expect_new "Extrude: operation chosen by hand" "Operation stopped edit automation"
-ui_mark
-ui_step "distance -6 after override"      ui_type_in "Panel Extrude input distance" "-6"
-ui_expect_new "Extrude Distance: -6 = -6 mm" "the manual edit goes into the block"
-ui_expect_new "Preview Extrude: ok" "the manual New Body previewed"
+ui_expect_new "Extrude Distance: 5 = 5 mm" "out of the block again"
+ui_step "flip into the block"             ui_click_logged "Panel Extrude input flip"
+ui_expect_new "Extrude: Flip = on" "flipped into the block, as the reported boss"
+ui_expect_new "Preview Extrude: ok" "the flipped Join previewed"
 ui_wait_idle
-no_new "Extrude: automatic Operation" "manual Operation stays chosen for the rest of the edit"
-ui_step "cancel manual edit"              ui_key Escape
+no_new "Extrude: automatic Operation" "Flip into the block leaves the stored Join"
+no_new "Extrude: Operation = " "nothing changes the Operation field"
+ui_mark
+ui_step "Cut by hand (one down from Join)" ui_choose "Panel Extrude input operation" 1
+ui_expect_new "Extrude: Operation = Cut" "the user still changes Operation by hand"
+ui_expect_new "Preview Extrude: ok" "the hand-picked Cut previewed"
+ui_focus_main
+ui_step "cancel the edit"                 ui_key Escape
 ui_expect_new "Command Extrude cancelled" "the original stored Join retained"
-
-echo "--- 2b. Editing Objects also stops automatic operation"
-ui_mark
-ui_step "edit automatic Extrude3 again"   ui_double_click_logged "Timeline Extrude3"
-ui_expect_new "stored operation matches automatic choice; editing follows geometry" "a fresh edit probes the stored Join"
-ui_expect_new "Preview Extrude: ok" "the Join previewed before the body pick"
-ui_mark
-ui_step "activate Local bodies"           ui_click_logged "Panel Extrude input objects"
-ui_step "toggle the selected block out"   ui_click_logged "Browser Root/Bodies/Body1"
-ui_expect_new "Extrude Local bodies: nothing" "the real body pick cleared Objects"
-ui_expect_new "Extrude: operation chosen by hand" "Objects stopped edit automation"
-ui_mark
-ui_step "distance -7 after Objects edit"  ui_type_in "Panel Extrude input distance" "-7"
-ui_expect_new "Extrude Distance: -7 = -7 mm" "changed geometry after the explicit target pick"
-ui_expect_new "Preview Extrude: ok" "the fixed Join operation previewed"
-ui_wait_idle
-no_new "Extrude: automatic Operation" "Objects keeps the operation fixed for the rest of the edit"
-ui_step "cancel Objects edit"             ui_key Escape
-ui_expect_new "Command Extrude cancelled" "the original stored targets retained"
 ui_focus_main
 
 ui_mark
@@ -170,7 +156,7 @@ ui_mark
 ui_step "edit Extrude3 (double-click)"   ui_double_click_logged "Timeline Extrude3"
 ui_expect_new " with Extrude" "editing Extrude3"
 ui_expect_new "operation=new_body" "it opens with its New Body"
-ui_expect_new "stored operation differs from automatic choice; editing keeps it" "the deliberate New Body fails the automatic-policy match"
+ui_expect_new "Extrude: editing keeps the stored operation" "the edit keeps the deliberate New Body"
 ui_mark
 ui_step "distance -8"                    ui_type_in "Panel Extrude input distance" "-8"
 ui_expect_new "Preview Extrude: ok" "the edit previewed"

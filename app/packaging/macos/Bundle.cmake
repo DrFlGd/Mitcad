@@ -169,6 +169,23 @@ set(MITCAD_RENDER_THIRD_PARTY_NOTES
 
 ")
 
+# The HEIF decoder of image references (mitcad#850), in builds with
+# MITCAD_HEIF.
+set(MITCAD_HEIF_THIRD_PARTY_NOTES "")
+if(MITCAD_HEIF)
+  set(MITCAD_HEIF_THIRD_PARTY_NOTES
+"libheif and libde265, which decode the HEIF/HEIC images of image references: GNU
+  LGPL-3.0 or later, linked dynamically (libheif and libde265 dylibs in
+  Contents/Frameworks; the app links libheif, which links libde265), decoding only,
+  no encoder built; both can be replaced with interface-compatible builds. The
+  texts, with the GNU GPL the LGPL builds on: libheif-copyright.txt and
+  libde265-copyright.txt. Source code: https://github.com/strukturag/libheif and
+  https://github.com/strukturag/libde265 at the release tags of the versions
+  vcpkg's ports name, built unchanged but for the ports' build patches (vcpkg's
+  commit is vcpkg.json's builtin-baseline in MitCad's source).
+")
+endif()
+
 # What vcpkg installed has its licence texts in share/<port>/copyright: OCCT
 # (LGPL-2.1 with the OCCT exception), FreeType (the FreeType Licence or the
 # GPL, see the notice below) and what they depend on. Helper ports are no
@@ -221,7 +238,7 @@ Open CASCADE Technology ${OpenCASCADE_VERSION}: GNU LGPL-2.1 with the Open CASCA
   other failures and crashes of the fillet, and that make an allocation that
   fails throw instead of crashing; the patches are in MitCad's source code
   (third_party/vcpkg-ports/opencascade).
-FreeType: used under the FreeType Licence (FTL), not the GPL, which the package
+${MITCAD_HEIF_THIRD_PARTY_NOTES}FreeType: used under the FreeType Licence (FTL), not the GPL, which the package
   offers as an alternative.
 Droid Sans (the font of sketch texts, embedded): Apache-2.0 (DroidSans-Apache-2.0.txt).
 three.js r170 (https://threejs.org/), embedded, and in every web page that Export > Web

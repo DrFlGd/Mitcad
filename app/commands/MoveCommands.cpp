@@ -342,6 +342,49 @@ std::function<std::optional<Manipulator>(const CommandState&, const CommandConte
   };
 }
 
+gp_Trsf moveFrame(const CommandState& state, const CommandContext& context);
+
+// Rotate's axis as the model turned the shown preview about it (mitcad#838,
+// keptRotateAxis): its ring runs about that axis, so that the ring's sense,
+// a drag's proxy and the result agree (a circle's own axis may point the
+// other way than the model's). Move/Copy's and Move Face's (mitcad#854).
+const QString kRotateBasis = QStringLiteral("rotate_basis");
+
+// A preview's report came (CommandDef::previewReported, Move/Copy's and
+// Move Face's): Rotate's reported axis kept with the axis input it is of
+// (rotateBasisToKeep). Nothing to compute again.
+bool keepRotateBasis(QJsonObject& report, CommandState& state) {
+  const Selection& axis = state.items(QStringLiteral("axis"));
+  if (axis.isEmpty()) {
+    return false;
+  }
+  const QJsonObject kept = rotateBasisToKeep(report, state.choice(QStringLiteral("type")), axis.first().reference(),
+                                             axis.first().occurrence);
+  if (!kept.isEmpty()) {
+    state.setObject(kRotateBasis, kept);
+  }
+  return false;
+}
+
+// Point to Position's handles (mitcad#838): an arrow along each axis of the
+// move's component, from the plane of the other two to the position, where
+// the picked point goes; none until the point is picked.
+std::function<std::optional<Manipulator>(const CommandState&, const CommandContext&)> positionHandle(int axis) {
+  return [axis](const CommandState& state, const CommandContext& context) -> std::optional<Manipulator> {
+    if (state.items(QStringLiteral("point")).isEmpty()) {
+      return std::nullopt;
+    }
+    gp_XYZ from(state.value(QStringLiteral("px")), state.value(QStringLiteral("py")), state.value(QStringLiteral("pz")));
+    if (!std::isfinite(from.X()) || !std::isfinite(from.Y()) || !std::isfinite(from.Z())) {
+      return std::nullopt;
+    }
+    from.SetCoord(axis + 1, 0.0);
+    const gp_Trsf frame = moveFrame(state, context);
+    const gp_Dir direction(axis == 0 ? 1 : 0, axis == 1 ? 1 : 0, axis == 2 ? 1 : 0);
+    return arrow(gp_Pnt(from).Transformed(frame), direction.Transformed(frame));
+  };
+}
+
 // The model's transform of a move.
 QJsonObject transformOf(const CommandState& state, const CommandContext& context, Built& error) {
   const QString type = state.choice(QStringLiteral("type"));
@@ -584,13 +627,27 @@ QVector<InputDef> motionInputs(const Choices& types, bool along) {
                if (axis.isEmpty() || !center) {
                  return std::nullopt;
                }
-               const auto line = axisOf(axis.first(), model);
+               // The axis the model turns about once a preview reported it
+               // (mitcad#838; Move Face's too, mitcad#854), the picked
+               // geometry's own until then.
+               const SelectionItem& picked = axis.first();
+               const QJsonObject kept = state.object(kRotateBasis);
+               const gp_Trsf frame = kept.isEmpty() ? gp_Trsf() : moveFrame(state, model);
+               const auto line = rotateRingAxis(
+                   kept, picked.reference(), picked.occurrence, frame,
+                   [&picked, &model]() -> std::optional<gp_Ax1> {
+                     const auto own = axisOf(picked, model);
+                     if (!own) {
+                       return std::nullopt;
+                     }
+                     return gp_Ax1(own->first, own->second);
+                   },
+                   *center);
                if (!line) {
                  return std::nullopt;
                }
-               const gp_Vec along(line->second);
-               const gp_Pnt foot = line->first.Translated(along * gp_Vec(line->first, *center).Dot(along));
-               Manipulator m = ring(foot, line->second);
+               const gp_Pnt foot = line->Location();
+               Manipulator m = ring(foot, line->Direction());
                if (foot.Distance(*center) > 1e-9) {
                  m.reference = gp_Dir(gp_Vec(foot, *center));
                }
@@ -609,10 +666,13 @@ QVector<InputDef> motionInputs(const Choices& types, bool along) {
              .withVisible(type("point_to_position"))
       << valueInput(QStringLiteral("px"), QObject::tr("X"), ValueKind::Length, QStringLiteral("0 mm"))
              .withVisible(type("point_to_position"))
+             .withManipulator(positionHandle(0))
       << valueInput(QStringLiteral("py"), QObject::tr("Y"), ValueKind::Length, QStringLiteral("0 mm"))
              .withVisible(type("point_to_position"))
+             .withManipulator(positionHandle(1))
       << valueInput(QStringLiteral("pz"), QObject::tr("Z"), ValueKind::Length, QStringLiteral("0 mm"))
-             .withVisible(type("point_to_position"));
+             .withVisible(type("point_to_position"))
+             .withManipulator(positionHandle(2));
   return inputs;
 }
 
@@ -658,22 +718,37 @@ gp_Trsf moveFrame(const CommandState& state, const CommandContext& context) {
 
 // Move/Copy's provisional drag motion (CommandDef::dragMotion, mitcad#838):
 // Free Move's handles turn about the pivot the exact preview had, and
-// Free Move's and Translate's arrows move; the bodies or components follow
-// a drag at once, the exact preview after it.
+// Free Move's and Translate's arrows move; Rotate's ring turns about the
+// axis and Point to Position's arrows move from the point the model
+// resolved for the exact preview; the bodies or components follow a drag
+// at once, the exact preview after it. Point to Point has no value to drag.
 std::optional<DragMotion> moveDragMotion(const CommandState& state, const CommandContext& context) {
   const QString type = state.choice(QStringLiteral("type"));
-  gp_Pnt pivot;
-  if (type == QStringLiteral("free")) {
-    const auto middle = pivotOf(state, context);
-    if (!middle) {
-      return std::nullopt;
+  DragMotion motion;
+  if (type == QStringLiteral("free") || type == QStringLiteral("translate")) {
+    gp_Pnt pivot;
+    if (type == QStringLiteral("free")) {
+      const auto middle = pivotOf(state, context);
+      if (!middle) {
+        return std::nullopt;
+      }
+      pivot = *middle;
     }
-    pivot = *middle;
-  } else if (type != QStringLiteral("translate")) {
+    motion.of = [pivot](const CommandState& inputs) { return moveMotion(inputs, pivot); };
+  } else if (type == QStringLiteral("rotate") || type == QStringLiteral("point_to_point") ||
+             type == QStringLiteral("point_to_position")) {
+    // About the axis, from the points the model worked the exact preview
+    // out of (its report's `motion`), so that the bodies turn during a drag
+    // of the Angle as they do in the result.
+    motion.resolve = [](const QJsonObject& basis) -> DragMotion::Motion {
+      if (basis.isEmpty()) {
+        return {};
+      }
+      return [basis](const CommandState& inputs) { return basisMotion(inputs, basis); };
+    };
+  } else {
     return std::nullopt;
   }
-  DragMotion motion;
-  motion.of = [pivot](const CommandState& inputs) { return moveMotion(inputs, pivot); };
   motion.frame = moveFrame(state, context);
   // What moves: the occurrences, the bodies, or their copies.
   if (state.choice(QStringLiteral("move_type")) == QStringLiteral("components")) {
@@ -798,6 +873,8 @@ CommandDef moveCommand(const CommandContext& context) {
   };
   // The bodies or components follow a handle's drag at once (mitcad#838).
   def.dragMotion = moveDragMotion;
+  // Rotate's ring about the axis the model turns about (mitcad#838).
+  def.previewReported = keepRotateBasis;
 
   def.describe = [](const CommandState& state, const CommandContext&) {
     return QStringLiteral("%1 %2 %3 (%4)")
@@ -917,6 +994,12 @@ CommandDef moveFaceCommand(const CommandContext& context) {
   def.canEdit = [&context](const QJsonObject& feature) {
     return transformEditable(feature.value(QStringLiteral("transform")).toObject(), context, true);
   };
+  // Rotate's ring, and so the angle a drag of it gives, about the axis the
+  // model turns the faces about (the preview's `motion`), as Move/Copy's
+  // (mitcad#854). No provisional drag motion: the faces' body is not moved
+  // rigidly (the faces around extend or shorten), so a drag shows the
+  // exact previews.
+  def.previewReported = keepRotateBasis;
   // Under the inputs after a preview: what moves and how.
   def.note = [](const CommandState& state, const CommandContext& context) { return shownSummary(state, context); };
   def.describe = [](const CommandState& state, const CommandContext& context) {

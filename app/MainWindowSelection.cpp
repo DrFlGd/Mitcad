@@ -96,6 +96,10 @@ const SelectionScope* MainWindow::commandScope() const {
   return m_commandScope ? &*m_commandScope : nullptr;
 }
 
+QString MainWindow::editedSketch() const {
+  return m_sketch != nullptr && m_sketch->isActive() ? m_sketch->uid() : QString();
+}
+
 SelectionScope* MainWindow::activeSelectionScope() {
   if (m_commandScope) {
     return &*m_commandScope;

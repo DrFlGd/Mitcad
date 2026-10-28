@@ -81,6 +81,8 @@ pub mod internal;
 // Insert Point on a spline: a fit point, or a control point by knot
 // insertion (mitcad#836).
 pub mod spline_points;
+// Scaling a sketch, and the first dimension that scales it (mitcad#860).
+pub mod scale;
 
 #[cfg(test)]
 mod tests;
@@ -692,11 +694,18 @@ pub enum ConstraintKind {
         curve: EntityUid,
     },
     /// Two points, or two curves of one type, mirrored about a line.
+    /// `radii` (two circles or arcs; default true): their radii are made
+    /// equal too. False when other constraints or dimensions already fix
+    /// both radii (mitcad#865): `sketch.add_constraint` then mirrors only
+    /// the positions (the centres, an arc's end directions), so that it
+    /// does not over-constrain the sketch.
     Symmetric {
         a: Ref,
         b: Ref,
         #[serde(with = "curve_serde")]
         axis: EntityUid,
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        radii: bool,
     },
     /// Equal spacing (mitcad#221): the successive intervals between the
     /// anchors, in their stored order, are equal, measured as `mode` says.
@@ -817,7 +826,7 @@ impl ConstraintKind {
                 refs
             }
             Midpoint { point, curve } => vec![p(*point), c(*curve)],
-            Symmetric { a, b, axis } => vec![*a, *b, c(*axis)],
+            Symmetric { a, b, axis, .. } => vec![*a, *b, c(*axis)],
             EqualSpacing {
                 anchors, direction, ..
             } => anchors

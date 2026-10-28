@@ -549,30 +549,83 @@ void addConvertProjected(CommandRegistry& registry, SketchController& c) {
   registry.add(def);
 }
 
+// A point of the sketch where exactly two lines of one kind end (the drawn
+// ones, else the construction ones): a corner Sketch Fillet rounds
+// (mitcad#867; the model's `sketch.fillet` with `points`).
+bool cornerOfTwoLines(const sketch::SketchModel& model, const QString& point) {
+  for (const bool construction : {false, true}) {
+    int lines = 0;
+    int others = 0;
+    for (const sketch::CurveData& curve : model.curves) {
+      if (curve.construction == construction && (curve.start == point || curve.end == point)) {
+        ++(curve.isLine() ? lines : others);
+      }
+    }
+    if (lines + others > 0) {
+      return lines == 2 && others == 0;
+    }
+  }
+  return false;
+}
+
+// Sketch Fillet (mitcad#867): two lines, a closed chain of lines (a whole
+// rectangle), lines and corner points, several corners at once with one
+// radius dimension and the arcs Equal; one undo step.
 void addFillet(CommandRegistry& registry, SketchController& c) {
   CommandDef def = sketchCommand("sketch.fillet", QObject::tr("Sketch Fillet"), "sketch-fillet", "MODIFY",
                                  CommandDef::Kind::Feature);
   def.sketchCommand = true;
   def.pinned = true;
-  def.tooltip = QObject::tr("Rounds the corner of two lines with a tangent arc and a radius dimension");
+  def.tooltip = QObject::tr("Rounds line corners with tangent arcs: two lines, a chain or corner points");
+  def.keywords = {QStringLiteral("round corners"), QStringLiteral("rounded rectangle")};
   def.inputs = {
-      selectionInput(QStringLiteral("a"), QObject::tr("First Line"), SelectKind::SketchCurve, 1, 1)
-          .withAccepts(linesOf(c)),
-      selectionInput(QStringLiteral("b"), QObject::tr("Second Line"), SelectKind::SketchCurve, 1, 1)
-          .withAccepts(linesOf(c)),
+      selectionInput(QStringLiteral("corners"), QObject::tr("Lines or Corners"),
+                     SelectKind::SketchCurve | SelectKind::SketchPoint, 1, 0)
+          .withAccepts([&c](const SelectionItem& item) {
+            if (item.owner != c.uid()) {
+              return false;
+            }
+            if (item.geometry == QStringLiteral("line")) {
+              return true;
+            }
+            return c.model().pointAt(item.name).has_value() && cornerOfTwoLines(c.model(), item.name);
+          })
+          .withTooltip(QObject::tr("Two lines: their corner; more lines: every corner where two end together; "
+                                   "a point: its corner")),
       valueInput(QStringLiteral("radius"), QObject::tr("Radius"), ValueKind::Length, QStringLiteral("2")),
   };
   def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
+    QJsonArray curves;
+    QJsonArray points;
+    for (const SelectionItem& item : s.items(QStringLiteral("corners"))) {
+      (c.model().pointAt(item.name) ? points : curves).append(item.name);
+    }
+    if (points.isEmpty() && curves.size() < 2) {
+      return Built::failure(QObject::tr("Pick two lines, a chain of lines or corner points."),
+                            QStringLiteral("corners"));
+    }
     QJsonObject cmd = base(c, "sketch.fillet");
-    cmd.insert(QStringLiteral("a"), s.items(QStringLiteral("a")).first().name);
-    cmd.insert(QStringLiteral("b"), s.items(QStringLiteral("b")).first().name);
+    if (!curves.isEmpty()) {
+      cmd.insert(QStringLiteral("curves"), curves);
+    }
+    if (!points.isEmpty()) {
+      cmd.insert(QStringLiteral("points"), points);
+    }
     cmd.insert(QStringLiteral("radius"), s.expression(QStringLiteral("radius")));
     return Built::of(cmd);
   };
   def.describe = [](const CommandState& s, const CommandContext&) {
-    return QStringLiteral("Sketch fillet of %1 and %2, radius %3")
-        .arg(s.items(QStringLiteral("a")).first().name, s.items(QStringLiteral("b")).first().name,
-             s.expression(QStringLiteral("radius")));
+    const Selection& picked = s.items(QStringLiteral("corners"));
+    QStringList ids;
+    for (const SelectionItem& item : picked) {
+      ids << item.name;
+    }
+    if (ids.size() == 2) {
+      return QStringLiteral("Sketch fillet of %1 and %2, radius %3")
+          .arg(ids[0], ids[1], s.expression(QStringLiteral("radius")));
+    }
+    return QStringLiteral("Sketch fillet of %1, radius %2")
+        .arg(ids.join(QStringLiteral(", ")), s.expression(QStringLiteral("radius")));
   };
   registry.add(def);
 }
@@ -1157,6 +1210,13 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
        QObject::tr("A rectangle at any angle: a side, then the opposite side")});
   add({"sketch.rectangle_center", QObject::tr("Center Rectangle"), "rectangle-center", "CREATE/Rectangles",
        draw(sketch::rectangleTool, "center"), none, false, QObject::tr("A rectangle from its centre and a corner")});
+  // Rounded corners (mitcad#867): four tangent arcs, Equal, one radius.
+  add({"sketch.rectangle_rounded", QObject::tr("2-Point Rounded Rectangle"), "rectangle-rounded",
+       "CREATE/Rectangles", draw(sketch::roundedRectangleTool, "two_point"), none, false,
+       QObject::tr("A rectangle with rounded corners from two opposite corners and a corner radius")});
+  add({"sketch.rectangle_rounded_center", QObject::tr("Center Rounded Rectangle"), "rectangle-rounded-center",
+       "CREATE/Rectangles", draw(sketch::roundedRectangleTool, "center"), none, false,
+       QObject::tr("A rectangle with rounded corners from its centre, a corner and a corner radius")});
   add({"sketch.circle", QObject::tr("Center Diameter Circle"), "circle", "CREATE/Circles",
        draw(sketch::circleTool, "center"), QKeySequence(Qt::Key_C), true,
        QObject::tr("A circle from its centre and a point on it")});

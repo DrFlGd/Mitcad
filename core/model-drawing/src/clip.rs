@@ -11,7 +11,7 @@
 
 use std::f64::consts::TAU;
 
-use super::{CutFace, P2, ViewCurve, ViewEdge, ViewProjection};
+use super::{CutFace, P2, ViewCurve, ViewEdge, ViewProjection, ViewSpline};
 
 /// A band taken out of a view: from `from` to `to` along `axis` (0: x,
 /// 1: y) of the view, in view millimetres, closed up to `gap` millimetres
@@ -211,7 +211,8 @@ pub fn inside_circle(projection: &ViewProjection, center: P2, radius: f64) -> Vi
                     edges.push(piece(ViewCurve::Line(p[0], p[p.len() - 1])));
                 }
             }
-            ViewCurve::Polyline(points) => {
+            // A B-spline is cut as its polyline (mitcad#853).
+            ViewCurve::Polyline(points) | ViewCurve::Spline(ViewSpline { points, .. }) => {
                 for p in cut_polyline(points, &crossings, &inside) {
                     edges.push(piece(ViewCurve::Polyline(p)));
                 }
@@ -481,7 +482,9 @@ pub fn without_bands(projection: &ViewProjection, breaks: &[Band]) -> ViewProjec
                 }
                 points
             }
-            ViewCurve::Polyline(points) => points.clone(),
+            ViewCurve::Polyline(points) | ViewCurve::Spline(ViewSpline { points, .. }) => {
+                points.clone()
+            }
         };
         // Every way from one part to another crosses a band, so the runs
         // each lie in one part.

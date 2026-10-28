@@ -46,9 +46,11 @@ public:
   explicit MeasureHistoryView(const MeasureHistory& history, QWidget* parent = nullptr);
   void setActions(Actions actions) { m_actions = std::move(actions); }
   // Whether the measurement the panel shows can be kept (picks of the
-  // model's, with a result): Keep is enabled; logs "Measure Keep enabled"
-  // or "… disabled" when it changes, and the places again.
-  void setKeepable(bool keepable);
+  // model's, with a result): Keep is enabled. Disabled with a reason
+  // (sketch geometry picked, mitcad#869), its tooltip gives the reason
+  // instead of what Keep does. Logs "Measure Keep enabled" or "… disabled"
+  // (": <reason>" with one) when it changes, and the places again.
+  void setKeepable(bool keepable, const QString& why = QString());
   // Whether the panel shows one pick of the model's, which a note can
   // point at: Note… is enabled; and whether it is a feature (not a vertex
   // or a datum point) a datum label or a frame can mark: Datum Label… and
@@ -77,6 +79,7 @@ private:
   QPushButton* m_copyAll = nullptr;
   QPushButton* m_clear = nullptr;
   QPushButton* m_keep = nullptr;    // keeps the measurement shown (mitcad#649)
+  QString m_keepTip;                // Keep's own tooltip, when it has no reason
   QPushButton* m_keepRow = nullptr; // keeps the row clicked last
   QPushButton* m_note = nullptr;    // a note on the pick shown (mitcad#702)
   QPushButton* m_datum = nullptr;   // a datum label on it

@@ -11,6 +11,7 @@
 
 #include <QContextMenuEvent>
 #include <QAction>
+#include <QCursor>
 #include <QApplication>
 #include <QDockWidget>
 #include <QFocusEvent>
@@ -198,7 +199,9 @@ public:
     m_hoverTimer.setInterval(350);
     connect(&m_hoverTimer, &QTimer::timeout, this, [this] {
       if (m_hover < 0 || m_dragItem || m_dragMarker) return;
-      const QPoint at = cell(m_hover).center();
+      // On a feature's fx badge: there, which shows its card (mitcad#862).
+      const QPoint pointer = mapFromGlobal(QCursor::pos());
+      const QPoint at = badgeAt(pointer) == m_hover ? pointer : cell(m_hover).center();
       QHelpEvent help(QEvent::ToolTip, at, mapToGlobal(at));
       QApplication::sendEvent(this, &help);
     });
@@ -206,6 +209,7 @@ public:
 
   void setItems(QVector<Item> items, int marker, QVector<Group> groups) {
     setHover(-1);
+    m_badgeHover = -1;
     QToolTip::hideText();
     m_items = std::move(items);
     m_groups = std::move(groups);
@@ -370,6 +374,26 @@ public:
     return QRect(m_left[static_cast<std::size_t>(i)], kTop, hidden(i) ? 0 : kItem, kItem);
   }
   QRect markerRect() const { return QRect(m_markerX, 0, kMarkerSlot, height()); }
+  // The fx badge on the icon of a feature suppressed by a condition
+  // (mitcad#809; its card, mitcad#862), as boundIcon draws it; empty for
+  // another feature.
+  QRect badgeRect(int i) const {
+    if (hidden(i) || isHead(i) || m_items[i].feature.suppressedWhen.isEmpty()) {
+      return QRect();
+    }
+    const QRect icon(cell(i).left() + (kItem - kIcon) / 2, kTop + (kItem - kIcon) / 2, kIcon, kIcon);
+    const int side = std::max(7, kIcon * 3 / 5);
+    return QRect(icon.right() + 1 - side, icon.bottom() + 1 - side, side, side).adjusted(-1, -1, 1, 1);
+  }
+  // The feature whose fx badge is at a point, or -1.
+  int badgeAt(const QPoint& at) const {
+    for (int i = 0; i < count(); ++i) {
+      if (badgeRect(i).contains(at)) {
+        return i;
+      }
+    }
+    return -1;
+  }
   // The band over an open group's cells.
   QRect bandRect(const Group& group) const {
     const int left = cell(group.first).left();
@@ -597,6 +621,17 @@ protected:
     setHover(-1);
     QToolTip::hideText();
     const QPoint at = event->position().toPoint();
+    // A click on a feature's fx badge pins its bindings card (mitcad#862).
+    if (const int bound = badgeAt(at); bound >= 0) {
+      m_press = -1;
+      m_pressGroup = -1;
+      m_dragItem = false;
+      const QRect badge = badgeRect(bound);
+      qDebug().noquote() << QStringLiteral("Timeline fx click %1").arg(m_items[bound].feature.name);
+      emit m_owner.bindingsRequested(m_items[bound].feature.uid,
+                                     QRect(mapToGlobal(badge.topLeft()), badge.size()), true);
+      return;
+    }
     if (markerRect().adjusted(-3, 0, 3, 0).contains(at)) {
       m_dragMarker = true;
       m_dragPosition = m_marker;
@@ -651,6 +686,15 @@ protected:
     if (hover != m_hover) {
       setHover(hover);
       update();
+    }
+    // Onto a feature's fx badge within its cell: the card after the same
+    // pause (mitcad#862).
+    const int badge = badgeAt(at);
+    if (badge != m_badgeHover) {
+      m_badgeHover = badge;
+      if (badge >= 0 && badge == m_hover) {
+        m_hoverTimer.start();
+      }
     }
   }
 
@@ -713,6 +757,11 @@ protected:
     const QPoint at = event->position().toPoint();
     const int i = itemAt(at);
     if (event->button() != Qt::LeftButton) {
+      return;
+    }
+    // A quick second click on an fx badge pins its card again, no edit.
+    if (badgeAt(at) >= 0) {
+      m_press = -1;
       return;
     }
     if (i >= 0 && isHead(i)) {
@@ -788,6 +837,14 @@ protected:
     }
     if (event->type() == QEvent::ToolTip) {
       const auto* help = static_cast<QHelpEvent*>(event);
+      // The pointer on a feature's fx badge: its bindings card (mitcad#862).
+      if (const int bound = badgeAt(help->pos()); bound >= 0 && !m_dragItem && !m_dragMarker) {
+        QToolTip::hideText();
+        const QRect badge = badgeRect(bound);
+        emit m_owner.bindingsRequested(m_items[bound].feature.uid,
+                                       QRect(mapToGlobal(badge.topLeft()), badge.size()), false);
+        return true;
+      }
       const int i = itemAt(help->pos());
       // The marker rolls back the features the filter hides too
       // (mitcad#98): how many of them are after it.
@@ -868,6 +925,7 @@ private:
     }
   }
   QTimer m_hoverTimer;
+  int m_badgeHover = -1; // the feature whose fx badge has the pointer (mitcad#862)
   TimelineWidget& m_owner;
   QVector<Item> m_items;
   QVector<Group> m_groups;
@@ -1386,6 +1444,11 @@ void TimelineWidget::logLayout() {
     }
     const QPoint at = GlassCard::mapToHost(m_strip, m_strip->cell(i).center());
     lines << QStringLiteral("Timeline %1 at %2,%3").arg(m_strip->item(i)->feature.name).arg(at.x()).arg(at.y());
+    // A feature's fx badge (mitcad#862).
+    if (const QRect badge = m_strip->badgeRect(i); !badge.isEmpty()) {
+      const QPoint fx = GlassCard::mapToHost(m_strip, badge.center());
+      lines << QStringLiteral("Timeline fx %1 at %2,%3").arg(m_strip->item(i)->feature.name).arg(fx.x()).arg(fx.y());
+    }
   }
   for (const TimelineStrip::Group& group : m_strip->groups()) {
     const QPoint at = GlassCard::mapToHost(m_strip, m_strip->groupRect(group).center());

@@ -596,8 +596,13 @@ std::vector<ShapePtr> solids(const Shape& shape) {
         faces.push_back({f.Current(), names});
       }
     }
-    keyed.emplace_back(detail::shape_key(it.Current()),
-                       std::make_shared<Shape>(it.Current(), faces));
+    auto solid = std::make_shared<Shape>(it.Current(), faces);
+    // A solid of a shape the checker found valid is valid (mitcad#855: a
+    // later boolean then checks only where it changes it).
+    if (shape.checked_valid().value_or(false)) {
+      solid->set_checked_valid(true);
+    }
+    keyed.emplace_back(detail::shape_key(it.Current()), std::move(solid));
   }
   std::stable_sort(keyed.begin(), keyed.end(),
                    [](const auto& a, const auto& b) { return a.first < b.first; });

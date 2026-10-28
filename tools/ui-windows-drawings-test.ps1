@@ -71,7 +71,9 @@ function Sheet-At([double]$X, [double]$Y) {
 function Sheet-Click([double]$X, [double]$Y) {
   $at = Sheet-At $X $Y
   Ui-Click $at[0] $at[1]
-  Start-Sleep -Milliseconds 300
+  # The click handled before the next one, as the Linux test's sheet_click
+  # syncs (mitcad#870: a fixed 300 ms before).
+  Ui-Sync
 }
 
 # View-Y id: the window y of the middle of a view's box, as logged last.

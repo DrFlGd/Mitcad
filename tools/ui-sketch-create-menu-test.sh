@@ -28,7 +28,8 @@
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
-RECTANGLES="2-Point Rectangle | 3-Point Rectangle | Center Rectangle"
+RECTANGLES="2-Point Rectangle | 3-Point Rectangle | Center Rectangle | 2-Point Rounded Rectangle"
+RECTANGLES="$RECTANGLES | Center Rounded Rectangle"
 CIRCLES="Center Diameter Circle | 2-Point Circle | 3-Point Circle | 2-Tangent Circle | 3-Tangent Circle"
 ARCS="3-Point Arc | Center Point Arc | Tangent Arc"
 OTHER="Ellipse | Circumscribed Polygon | Inscribed Polygon | Edge Polygon | Center to Center Slot | Overall Slot"

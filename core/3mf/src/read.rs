@@ -7,7 +7,8 @@ use mitcad_zip::Archive;
 use roxmltree::{Document, Node};
 
 use crate::{
-    CORE_NAMESPACE, Error, MODEL_CONTENT_TYPE, MODEL_RELATIONSHIP, Mesh, Model, Part, Placement,
+    BuildObject, CORE_NAMESPACE, Error, MODEL_CONTENT_TYPE, MODEL_RELATIONSHIP, Mesh, Model, Part,
+    Placement,
 };
 
 /// How deep components may nest.
@@ -19,7 +20,9 @@ fn error(message: impl Into<String>) -> Error {
 
 /// Reads a 3MF package: the root model part's build, every build item
 /// followed through its components to mesh objects, as parts with their
-/// placements, names and base material colours, in millimetres. It checks
+/// placements, names and base material colours, in millimetres, and with
+/// several build items each item's placements as an object of
+/// [`Model::objects`] (mitcad#856). It checks
 /// what the core specification requires: the content type and the
 /// relationship of the model part, the core namespace and a known unit, no
 /// required extensions, unique object ids, references to objects defined
@@ -161,12 +164,26 @@ fn read_model(model: Node<'_, '_>) -> Result<Model, Error> {
     if items.is_empty() {
         return Err(error("the build has no items"));
     }
-    // Every placement of every mesh object, through the components.
+    // Every placement of every mesh object, through the components; with
+    // several build items, each item's (mitcad#856).
     let mut parts: Vec<Part> = Vec::new();
     let mut part_of: HashMap<u32, usize> = HashMap::new();
-    let mut stack: Vec<(u32, Placement, usize)> =
-        items.iter().rev().map(|&(id, p)| (id, p, 0)).collect();
-    while let Some((id, placement, depth)) = stack.pop() {
+    let mut built: Vec<BuildObject> = items
+        .iter()
+        .map(|(id, _)| BuildObject {
+            name: match &objects[id] {
+                Object::Mesh { name, .. } | Object::Components { name, .. } => name.clone(),
+            },
+            components: Vec::new(),
+        })
+        .collect();
+    let mut stack: Vec<(u32, Placement, usize, usize)> = items
+        .iter()
+        .enumerate()
+        .rev()
+        .map(|(item, &(id, p))| (id, p, 0, item))
+        .collect();
+    while let Some((id, placement, depth, item)) = stack.pop() {
         match &objects[&id] {
             Object::Mesh { name, color, mesh } => {
                 let index = *part_of.entry(id).or_insert_with(|| {
@@ -185,23 +202,29 @@ fn read_model(model: Node<'_, '_>) -> Result<Model, Error> {
                 let mut placed = placement;
                 placed.translation = placed.translation.map(|c| c * scale);
                 parts[index].placements.push(placed);
+                built[item]
+                    .components
+                    .push((index, parts[index].placements.len() - 1));
             }
             Object::Components { components, .. } => {
                 if depth >= MAX_DEPTH {
                     return Err(error("components nest too deep"));
                 }
                 for &(child, inner) in components.iter().rev() {
-                    stack.push((child, placement.after(&inner), depth + 1));
+                    stack.push((child, placement.after(&inner), depth + 1, item));
                 }
             }
         }
     }
-    let first = match &objects[&items[0].0] {
-        Object::Mesh { name, .. } | Object::Components { name, .. } => name.clone(),
-    };
+    let first = built[0].name.clone();
+    // One item is the model's one object.
+    if built.len() == 1 {
+        built.clear();
+    }
     Ok(Model {
         name: title.unwrap_or(first),
         parts,
+        objects: built,
         ..Model::default()
     })
 }

@@ -35,7 +35,7 @@ QString chooseSlicerFile(QWidget* parent);
 
 // What one import did.
 struct SlicerImportResult {
-  QString file;               // what was imported: the file's name, "3 presets"
+  QString file;               // what was imported: the file's name, "3 presets", one preset's name
   QString into;               // design, user or project
   QJsonObject answer;         // the import command's answer
   PrintImportSummary summary; // the line and the report behind Details…

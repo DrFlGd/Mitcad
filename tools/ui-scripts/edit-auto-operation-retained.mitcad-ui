@@ -6,7 +6,7 @@ command view.fit
 mark
 dblclick-logged '^Timeline Extrude1 at '
 expect-log 'Editing F4 with Extrude'
-expect-log 'Extrude: stored operation differs from automatic choice; editing keeps it'
+expect-log 'Extrude: editing keeps the stored operation'
 mark
 focus-widget input_distance
 key ctrl+a
@@ -20,7 +20,7 @@ expect-log 'Saved .*edit-auto\.mitcad'
 mark
 dblclick-logged '^Timeline Extrude1 at '
 expect-log 'Editing F4 with Extrude'
-expect-log 'Extrude: stored operation differs from automatic choice; editing keeps it'
+expect-log 'Extrude: editing keeps the stored operation'
 expect-no-log 'Extrude: automatic Operation'
 key Escape
 expect-log 'Command Extrude cancelled'

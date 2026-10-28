@@ -10,7 +10,9 @@
 // right angles to toward_eye through the model origin: x along x_axis, y
 // along toward_eye x x_axis. The projection is OCCT's hidden line removal:
 // HLRBRep_Algo on the exact B-rep (lines and circles stay lines and arcs,
-// other curves come as polylines), or HLRBRep_PolyAlgo on a triangulation
+// B-splines and Bézier curves come as their B-splines, other curves as
+// B-splines within 1e-6 mm, each with a polyline of it too; mitcad#853),
+// or HLRBRep_PolyAlgo on a triangulation
 // of copies of the shapes when the exact one is not asked for or fails.
 // The shapes are not modified.
 
@@ -54,10 +56,13 @@ struct DrawingViewSpec {
 enum class DrawnKind { Sharp, Smooth, Outline };
 
 // One projected edge: a line (two points), an arc of a circle counter-
-// clockwise from `start` to `end` (a full circle from 0 to 2 pi), or a
-// polyline.
+// clockwise from `start` to `end` (a full circle from 0 to 2 pi), a
+// polyline, or a B-spline (mitcad#853): `degree`, its full knot vector
+// (`poles.size() + degree + 1` knots), `poles` and `weights` (empty when it
+// is not rational), from its start to its end, with `points` a polyline of
+// it within the deflection.
 struct DrawnCurve {
-  enum class Type { Line, Arc, Polyline };
+  enum class Type { Line, Arc, Polyline, Spline };
   bool visible = true;
   DrawnKind kind = DrawnKind::Sharp;
   Type type = Type::Line;
@@ -66,6 +71,10 @@ struct DrawnCurve {
   double radius = 0.0;
   double start = 0.0;
   double end = 0.0;
+  int degree = 0;
+  std::vector<double> knots;
+  std::vector<Point2> poles;
+  std::vector<double> weights;
 };
 
 // The faces a section view's plane cuts, each as its closed loops

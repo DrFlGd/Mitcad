@@ -1133,7 +1133,7 @@ impl<P> SketchDef<P> {
                         &[(p(*point), ANY), (cv(*curve), &["line", "arc"])],
                     )?;
                 }
-                K::Symmetric { a, b, axis } => {
+                K::Symmetric { a, b, axis, .. } => {
                     check_kinds(&index, &what, &[(*a, ANY), (*b, ANY), (cv(*axis), LINE)])?;
                     if a.is_point() != b.is_point() {
                         return Err(format!("{what}: two points or two curves"));

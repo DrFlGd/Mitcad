@@ -1213,6 +1213,32 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
     const auto item = itemFor(owner);
     return item && item->kind == SelectKind::Plane;
   });
+  // Sketch curves and points behind the bodies' faces, edges and vertices
+  // while an input asks for it (mitcad#869, setSketchesBehind).
+  mitcad::setPickYield(
+      m_context,
+      [this](const occ::handle<SelectMgr_EntityOwner>& owner) {
+        if (!m_sketchesBehind || owner.IsNull()) {
+          return false;
+        }
+        const auto info =
+            m_pickInfo.find(dynamic_cast<const AIS_InteractiveObject*>(owner->Selectable().get()));
+        if (info == m_pickInfo.end()) {
+          return false;
+        }
+        const SelectionItem& item = info->second.item;
+        return (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint) &&
+               (m_sketchKept.isEmpty() || item.owner != m_sketchKept);
+      },
+      [this](const occ::handle<SelectMgr_EntityOwner>& owner) {
+        if (!m_sketchesBehind || owner.IsNull()) {
+          return false;
+        }
+        // A body's face, edge or vertex, or the whole body.
+        const auto info =
+            m_pickInfo.find(dynamic_cast<const AIS_InteractiveObject*>(owner->Selectable().get()));
+        return info != m_pickInfo.end() && info->second.body != nullptr;
+      });
   mitcad::setPickSources(m_context, [this](const occ::handle<SelectMgr_EntityOwner>& owner)
       -> const SelectMgr_SelectableObject* {
     const auto* selectable = owner->Selectable().get();

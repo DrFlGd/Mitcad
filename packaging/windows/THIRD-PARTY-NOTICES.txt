@@ -17,6 +17,20 @@ Open CASCADE Technology (TK*.dll in bin)
   crashing; the patches are in MitCad's source code
   (third_party/vcpkg-ports/opencascade).
 
+libheif 1.23.5 and libde265 1.1.3 (heif.dll and libde265.dll in bin), which
+decode the HEIF/HEIC images of image references
+  Licence: GNU LGPL version 3 or later; the texts, with the GNU GPL the
+  LGPL builds on, are in licenses\vcpkg\libheif\copyright and
+  licenses\vcpkg\libde265\copyright (libde265's also gives the licence of
+  its Windows condition variables, win32cond.c). Linked dynamically
+  (mitcad.exe links heif.dll, which links libde265.dll); both can be
+  replaced with interface-compatible builds. Decoding only: no encoder is
+  built. Source code: https://github.com/strukturag/libheif/releases/tag/v1.23.5
+  and https://github.com/strukturag/libde265/releases/tag/v1.1.3, built
+  unchanged but for the build patches of vcpkg's ports libheif and
+  libde265 at vcpkg.json's builtin-baseline,
+  https://github.com/microsoft/vcpkg/tree/3aea538b2bb21a586502c67b00eb474fdd2e3098/ports .
+
 Other libraries from vcpkg (for example FreeType, libpng, zlib, bzip2,
 Brotli)
   Their licence texts are in licenses\vcpkg\<library>\copyright.

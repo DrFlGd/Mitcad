@@ -130,6 +130,17 @@ for library in libQt6Core libQt6Widgets libQt6Network libQt6Svg libQt6XcbQpa lib
   compgen -G "$DIR/usr/lib/$library.so*" > /dev/null || ui_fail "the AppImage has no $library"
 done
 grep -qx 'Exec=mitcad' "$DIR/mitcad.desktop" || ui_fail "the desktop file does not start mitcad"
+# The HEIF decoder of image references (mitcad#850) when mitcad links it
+# (MITCAD_HEIF): shared libraries of their own, and their licence texts.
+if readelf -d "$DIR/usr/bin/mitcad" | grep -q 'NEEDED.*libheif'; then
+  for library in libheif libde265; do
+    compgen -G "$DIR/usr/lib/$library.so*" > /dev/null || ui_fail "the AppImage has no $library"
+    [ -e "$DIR/usr/share/doc/mitcad/licenses/vcpkg/$library/copyright" ] ||
+      ui_fail "the AppImage has no licence text of $library"
+  done
+  grep -q "libheif" "$DIR/usr/share/doc/mitcad/THIRD-PARTY-NOTICES.txt" || ui_fail "the notices do not list libheif"
+  echo "ok   libheif and libde265 as shared libraries, with their licence texts"
+fi
 echo "ok   the executables, the desktop file, the icon, Qt's plugins, OCCT and the licences"
 [ -e "$DIR/usr/bin/mitcad-render" ] || ui_fail "the AppImage has no render worker usr/bin/mitcad-render"
 for file in usr/share/doc/mitcad/licenses/cycles/LICENSE usr/share/doc/mitcad/licenses/cycles/BSD-3-Clause-license.txt \

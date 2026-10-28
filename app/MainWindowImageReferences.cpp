@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <QByteArray>
+#include <QFile>
 #include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
@@ -29,6 +30,7 @@
 #include "framework/Json.hpp"
 #include "framework/ModelShapes.hpp"
 #include "view/ImageCalibration.hpp"
+#include "view/ImageFile.hpp"
 #include "view/ImageReferences.hpp"
 
 namespace mitcad {
@@ -50,6 +52,27 @@ QJsonArray xyz(const ImagePoint& point) { return QJsonArray{point[0], point[1], 
 
 // A number without trailing zeros, for the panel's texts.
 QString plain(double value) { return QString::number(value, 'g', 10); }
+
+// The most a design embeds (the model's MAX_EMBEDDED_IMAGE): a larger file
+// is the model's to refuse, not decoded here first.
+constexpr qint64 kEmbeddedImageLimit = qint64(32) << 20;
+
+// Why a HEIF file cannot be drawn, if it cannot: MitCad decodes HEIF itself
+// (view/ImageFile.hpp), and its decoder may refuse a file whose header the
+// model takes, or the build may have none. Other formats are Qt's, as
+// before; empty when the file is drawable or not HEIF.
+QString heifProblem(const QString& path) {
+  QFile file(path);
+  if (QFileInfo(path).size() > kEmbeddedImageLimit || !file.open(QIODevice::ReadOnly) ||
+      !isHeifFile(file.peek(4096))) {
+    return {};
+  }
+  QString why;
+  if (decodeImageFile(file.readAll(), &why).isNull()) {
+    return why;
+  }
+  return {};
+}
 
 // The panel's settings common to the insert, the edit and the outline:
 // angle (degrees), flip, width (when one is typed), the plane picked.
@@ -127,9 +150,12 @@ CommandDef MainWindow::imageReferenceCommand() {
           QStringLiteral("choose"),
           [](const CommandState&) { return InputNote{QString(), {tr("Choose Image…")}, {}}; },
           [this, chosen](int, const CommandState&, const CommandContext&) {
+            // HEIF in builds with its decoder (MITCAD_HEIF, mitcad#850).
+            const QString filter = heifDecoderBuilt()
+                                       ? tr("Images (*.png *.jpg *.jpeg *.bmp *.webp *.heic *.heif);;All files (*)")
+                                       : tr("Images (*.png *.jpg *.jpeg *.bmp *.webp);;All files (*)");
             const QString path =
-                dialogOpenFileName(this, tr("Insert Image Reference"), dialogFolder(DialogGroup::Import),
-                                   tr("Images (*.png *.jpg *.jpeg *.bmp *.webp);;All files (*)"));
+                dialogOpenFileName(this, tr("Insert Image Reference"), dialogFolder(DialogGroup::Import), filter);
             if (!path.isEmpty()) {
               rememberDialogFolder(DialogGroup::Import, path);
               *chosen = path;
@@ -205,6 +231,10 @@ CommandDef MainWindow::imageReferenceCommand() {
     }
     if (!QFileInfo(file).isFile()) {
       return Built::failure(tr("There is no file %1.").arg(file), QStringLiteral("file"));
+    }
+    const QString problem = heifProblem(file);
+    if (!problem.isEmpty()) {
+      return Built::failure(tr("The image cannot be read: %1.").arg(problem), QStringLiteral("file"));
     }
     command.insert(QStringLiteral("cmd"), QStringLiteral("insert_image_reference"));
     command.insert(QStringLiteral("path"), QFileInfo(file).absoluteFilePath());
@@ -312,15 +342,24 @@ void MainWindow::followImageReferences() {
     }
     QImage picture = m_imageReferenceImages.value(image.sha256);
     if (picture.isNull()) {
+      QString why;
       try {
         const QJsonObject file = queryObject({{QStringLiteral("query"), QStringLiteral("image_reference_image")},
                                               {QStringLiteral("name"), image.name}});
-        picture = QImage::fromData(QByteArray::fromBase64(file.value(QStringLiteral("data")).toString().toLatin1()));
+        // HEIF through MitCad's decoder, the rest through Qt's readers
+        // (view/ImageFile.hpp).
+        picture = decodeImageFile(QByteArray::fromBase64(file.value(QStringLiteral("data")).toString().toLatin1()),
+                                  &why);
       } catch (const std::exception& e) {
         qWarning().noquote() << QStringLiteral("Image reference %1 not read: %2").arg(image.name, errorText(e));
       }
       if (picture.isNull()) {
-        qWarning().noquote() << QStringLiteral("Image reference %1: Qt cannot read its image").arg(image.name);
+        qWarning().noquote() << QStringLiteral("Image reference %1 cannot be drawn: %2").arg(image.name, why);
+      } else {
+        qDebug().noquote() << QStringLiteral("Image reference %1 decoded: %2 x %3 pixels")
+                                  .arg(image.name)
+                                  .arg(picture.width())
+                                  .arg(picture.height());
       }
     }
     images.insert(image.sha256, picture);

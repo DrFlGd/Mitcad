@@ -29,6 +29,7 @@ class QTreeWidgetItem;
 
 namespace mitcad {
 
+class AssignmentPanel;
 class DocumentHost;
 class SettingsForm;
 
@@ -61,6 +62,13 @@ class SettingsForm;
 // (confirmDelete). A refusal of a setting shows under its field, others
 // on the message line. Read only is disabled, never hidden.
 //
+// Opened for bodies, the assignment panel (mitcad#861, AssignmentPanel.hpp)
+// under the list shows their material and whether it varies with an
+// option. With None, Assign and a double-click set the selected material as
+// above; with an option, they fill the panel's selected rows (the window
+// stays), and so do New and Duplicate. A library's material that is not
+// in the design yet is copied in by the same undo step.
+//
 // In a library (setLibrary, My Library): the library's items by class,
 // then the built-in ones under Built-in to duplicate; New and Duplicate
 // make the item in the library, edits and Delete change its file. No
@@ -86,12 +94,19 @@ public:
   void setKeepOpen(bool keepOpen);
   // Shows the materials and the selected one as the model has them now.
   void refresh();
+  // Shows the materials with the item `key` ("<place>/<id>") selected and
+  // in sight (My Library after an import), logged as "Material selected:
+  // <name> (<place>)".
+  void showItem(const QString& key);
   // A button of the window at the end of the row under the list (My
   // Library…, Close), its place logged as "<logName> <name> at x,y".
   void addButton(QPushButton* button, const QString& name);
   // Edit Appearances… of the Appearance box (the controller's window);
   // none: the box has no such entry.
   std::function<void()> editAppearances;
+  // Add Option… of the assignment panel's Varies with: the Configurations
+  // window (mitcad#861).
+  std::function<void()> openConfigurations;
 
 signals:
   // Assign gave the targets the material: the window closes.
@@ -123,6 +138,10 @@ private:
   // Asks once about the selected item when another design changed it.
   void askChanges();
   void assign();
+  // The selected material into the assignment panel's rows (mitcad#861).
+  void fillRows();
+  // Assign's text: the targets' (None) or the panel's rows.
+  void updateAssign();
   void appearanceChosen(int index);
   // The model can change now; else says why on the message line.
   bool canChange();
@@ -177,6 +196,8 @@ private:
   QPushButton* m_delete = nullptr;
   QPushButton* m_assign = nullptr;
   QLabel* m_mixed = nullptr; // the targets' mixed state beside Assign
+  AssignmentPanel* m_assignment = nullptr; // mitcad#861
+  QString m_assignText;                    // Assign as the targets name it
   QVector<std::pair<QString, QPushButton*>> m_windowButtons; // addButton's
   QString m_loggedRows;
   QString m_loggedPlaces;
@@ -200,6 +221,8 @@ public:
   std::function<void()> editAppearances;
   // My Library… (mitcad#704).
   std::function<void()> openMyLibrary;
+  // Add Option… of Varies with (mitcad#861).
+  std::function<void()> openConfigurations;
 
 private:
   DesignItemsHost m_designHost;

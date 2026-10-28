@@ -5,6 +5,7 @@
 // free of test frameworks.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -57,7 +58,9 @@ inline void check_near(double a, double b, double relative, const char* expressi
   ::test::check_near((a), (b), (relative), #a " ~ " #b, __FILE__, __LINE__)
 
 // Runs a test function; an exception it throws counts as a failure. With
-// MITCAD_TEST_ONLY set, only the tests whose names contain it run.
+// MITCAD_TEST_ONLY set, only the tests whose names contain it run. A test
+// that takes a second or more prints its time, so that a run's output
+// shows where a part's time goes (mitcad#870).
 template <class F>
 void guarded(const char* name, F&& f) {
   std::string only;
@@ -76,11 +79,16 @@ void guarded(const char* name, F&& f) {
   if (!only.empty() && std::string(name).find(only) == std::string::npos) {
     return;
   }
+  const auto start = std::chrono::steady_clock::now();
   try {
     f();
   } catch (const std::exception& error) {
     std::fprintf(stderr, "%s: unexpected error: %s\n", name, error.what());
     ++failures;
+  }
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  if (seconds >= 1.0) {
+    std::printf("%s: %.1f s\n", name, seconds);
   }
 }
 
@@ -146,9 +154,17 @@ void datum_tests();
 void extrude_feature_tests();
 void revolve_tests();
 void hole_tests();
-void thread_tests();
-// Sweeps, lofts, pipes, coils, ribs and webs (F3).
-void sweeps_tests();
+// Modelled threads, in three parts of about equal time (mitcad#870).
+void thread_tests_1();
+void thread_tests_2();
+void thread_tests_3();
+// Sweeps, lofts, pipes, coils, ribs and webs (F3), in five parts of about
+// equal time (mitcad#870).
+void sweeps_tests_1();
+void sweeps_tests_2();
+void sweeps_tests_3();
+void sweeps_tests_4();
+void sweeps_tests_5();
 // Sketch text (P3).
 void text_tests();
 // Lofts with end conditions and rails, curve and surface fitting (P2).

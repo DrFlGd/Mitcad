@@ -2246,35 +2246,56 @@ void test_parallel_loft() {
   CHECK(throws_with([&] { loft(spec); }, "it needs one"));
 }
 
-void sweeps_tests() {
+// The suite's parts sweeps.1-sweeps.5 (test_main.cpp), each a ctest of its
+// own so that they run beside each other (mitcad#870). Every test is in
+// exactly one part. The Windows round of 28.10.2026 put nearly all the time
+// in the helical booleans (helices on cylinders and the helix slivers,
+// together 60 s or so, the helix pieces and turns about 45 s, the growing
+// helices and thread roots about 20 s) and almost none in the plain sweeps,
+// lofts and rails: each part has one or two of the slow tests and some of
+// the quick ones. guarded() prints the time of each test of a second or
+// more, for moving a line when the parts drift apart.
+void sweeps_tests_1() {
   // A parallel loft along a centre line (mitcad#547).
   guarded("parallel loft", test_parallel_loft);
   guarded("sweeps", test_sweeps);
   // A body face as the profile (mitcad#543).
   guarded("face sweep", test_face_sweep);
+  guarded("rail regions", test_rail_regions);
+  guarded("helices", test_helices);
+  guarded("helices on cylinders", test_helices_on_cylinders);
+}
+
+void sweeps_tests_2() {
+  guarded("backward sweeps", test_backward_sweeps);
+  guarded("parallel turns", test_parallel_turns);
+  guarded("helix slivers within the bodies' faces", test_helix_slivers_within_the_bodies_faces);
+  guarded("ribs", test_ribs);
+}
+
+void sweeps_tests_3() {
   // Frenet and auxiliary frames (mitcad#539).
   guarded("sweep frames", test_sweep_frames);
   guarded("fixed binormal", test_fixed_binormal);
-  guarded("backward sweeps", test_backward_sweeps);
-  guarded("parallel turns", test_parallel_turns);
-  guarded("rail regions", test_rail_regions);
-  guarded("two rails and end scale", test_two_rails_and_end_scale);
   guarded("rail plane", test_rail_plane);
-  guarded("pipes", test_pipes);
   guarded("coils", test_coils);
-  guarded("helices", test_helices);
   guarded("growing helices", test_growing_helices);
-  guarded("helices with flat ends", test_helices_with_flat_ends);
-  guarded("helices on cylinders", test_helices_on_cylinders);
-  guarded("shifted helix pieces", test_shifted_helix_pieces);
-  guarded("helix sides on cylinders exact", test_helix_sides_on_cylinders_exact);
-  guarded("helix slivers within the bodies' faces", test_helix_slivers_within_the_bodies_faces);
-  guarded("helix turns that meet in one edge", test_helix_turns_meet_in_one_edge);
   guarded("lofts", test_lofts);
-  guarded("ribs", test_ribs);
-  guarded("guide surfaces", test_guide_surfaces);
   guarded("thread roots rounded up to the nut's faces", test_thread_roots_rounded_up_to_the_nuts_faces);
   guarded("thread crest rounded down to a run-out", test_thread_crest_rounded_down_to_a_run_out);
+}
+
+void sweeps_tests_4() {
+  guarded("two rails and end scale", test_two_rails_and_end_scale);
+  guarded("pipes", test_pipes);
+  guarded("shifted helix pieces", test_shifted_helix_pieces);
+  guarded("helix sides on cylinders exact", test_helix_sides_on_cylinders_exact);
+}
+
+void sweeps_tests_5() {
+  guarded("helices with flat ends", test_helices_with_flat_ends);
+  guarded("helix turns that meet in one edge", test_helix_turns_meet_in_one_edge);
+  guarded("guide surfaces", test_guide_surfaces);
 }
 
 } // namespace test

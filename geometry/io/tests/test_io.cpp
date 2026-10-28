@@ -5,6 +5,7 @@
 #include "mitcad/io/exchange.hpp"
 #include "mitcad/io/face_mesh.hpp"
 #include "mitcad/io/mesh_compare.hpp"
+#include "mitcad/io/mesh_store.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -18,7 +19,9 @@
 #include <iterator>
 #include <map>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -885,6 +888,102 @@ void test_reuse_triangulations() {
   CHECK(mitcad::io::reuse_triangulations(anew, {}) == 0);
 }
 
+// How many of the shape's edges have a polygon on each face's
+// triangulation they bound (a seam's two count once).
+int edge_polygons(const TopoDS_Shape& shape) {
+  int found = 0;
+  for (TopExp_Explorer faces(shape, TopAbs_FACE); faces.More(); faces.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(faces.Current());
+    TopLoc_Location location;
+    const auto triangulation = BRep_Tool::Triangulation(face, location);
+    if (triangulation.IsNull()) {
+      continue;
+    }
+    for (TopExp_Explorer edges(face, TopAbs_EDGE); edges.More(); edges.Next()) {
+      if (!BRep_Tool::PolygonOnTriangulation(TopoDS::Edge(edges.Current()), triangulation, location).IsNull()) {
+        ++found;
+      }
+    }
+  }
+  return found;
+}
+
+// Display triangulations kept in the result store (mitcad#858): the bytes
+// of a meshed shape give a copy of it without triangulations the same
+// triangles and edge polygons, which a meshing then keeps (nothing meshed
+// again); a second time nothing; a shape of other faces, or bytes cut
+// short, nothing at all (an error). A face met again in another placement
+// is written once.
+void test_display_mesh_bytes() {
+  using mitcad::io::MeshOptions;
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
+  BRep_Builder builder;
+  TopoDS_Compound twice;
+  builder.MakeCompound(twice);
+  const TopoDS_Shape cylinder = BRepPrimAPI_MakeCylinder(10.0, 30.0).Shape();
+  gp_Trsf aside;
+  aside.SetTranslation(gp_Vec(50.0, 0.0, 0.0));
+  builder.Add(twice, cylinder);
+  builder.Add(twice, cylinder.Moved(TopLoc_Location(aside)));
+  for (const TopoDS_Shape& meshed : {perforated_plate(), holed_block(), filleted_block(), TopoDS_Shape(twice)}) {
+    CHECK(mitcad::io::mesh_in_place(meshed, view));
+    const std::string bytes = mitcad::io::triangulation_bytes(meshed);
+    const TopoDS_Shape copy = BRepBuilderAPI_Copy(meshed, false, false).Shape();
+    CHECK(mitcad::io::mesh_stats(copy).triangles == 0);
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faces;
+    TopExp::MapShapes(copy, TopAbs_FACE, faces);
+    // Every face counts once given one, also one in another placement that
+    // shares its TShape with an earlier face or (in the copy) is a copy of it.
+    const std::size_t given = mitcad::io::restore_triangulations(copy, bytes);
+    std::printf("Display meshes: %zu bytes gave %zu of %d faces\n", bytes.size(), given, faces.Extent());
+    CHECK(given == static_cast<std::size_t>(faces.Extent()));
+    CHECK(mitcad::io::has_triangulation(copy));
+    CHECK(mitcad::io::mesh_stats(copy).triangles == mitcad::io::mesh_stats(meshed).triangles);
+    CHECK(mitcad::io::mesh_stats(copy).nodes == mitcad::io::mesh_stats(meshed).nodes);
+    CHECK(edge_polygons(copy) == edge_polygons(meshed));
+    CHECK(BRepTools::Triangulation(copy, 0.01, true));
+    mitcad::io::MeshReport report;
+    CHECK(mitcad::io::mesh_in_place(copy, view, Message_ProgressRange(), &report));
+    CHECK(report.meshed == 0);
+    CHECK(mitcad::io::restore_triangulations(copy, bytes) == 0);
+    // The same bytes, cut short: nothing written.
+    const TopoDS_Shape again = BRepBuilderAPI_Copy(meshed, false, false).Shape();
+    bool refused = false;
+    try {
+      mitcad::io::restore_triangulations(again, std::string_view(bytes).substr(0, bytes.size() - 5));
+    } catch (const std::runtime_error&) {
+      refused = true;
+    }
+    CHECK(refused);
+    CHECK(mitcad::io::mesh_stats(again).triangles == 0);
+  }
+  // The cylinder twice again, sharing its TShape as the meshed compound
+  // does: the repeated faces take the triangulations through it.
+  {
+    const TopoDS_Shape fresh = BRepPrimAPI_MakeCylinder(10.0, 30.0).Shape();
+    TopoDS_Compound shared;
+    builder.MakeCompound(shared);
+    builder.Add(shared, fresh);
+    builder.Add(shared, fresh.Moved(TopLoc_Location(aside)));
+    const std::size_t given = mitcad::io::restore_triangulations(shared, mitcad::io::triangulation_bytes(twice));
+    CHECK(given == static_cast<std::size_t>(count(shared, TopAbs_FACE)));
+    CHECK(mitcad::io::has_triangulation(shared));
+    CHECK(mitcad::io::mesh_stats(shared).triangles == mitcad::io::mesh_stats(twice).triangles);
+  }
+  // Bytes of another shape: nothing written.
+  const TopoDS_Shape block = holed_block();
+  CHECK(mitcad::io::mesh_in_place(block, view));
+  const TopoDS_Shape other = filleted_block();
+  bool refused = false;
+  try {
+    mitcad::io::restore_triangulations(other, mitcad::io::triangulation_bytes(block));
+  } catch (const std::runtime_error&) {
+    refused = true;
+  }
+  CHECK(refused);
+  CHECK(mitcad::io::mesh_stats(other).triangles == 0);
+}
+
 // The most points a circle edge of the shape's cylinder faces has in their
 // triangulations (0 without one).
 int circle_points(const TopoDS_Shape& meshed) {
@@ -1035,6 +1134,58 @@ void test_abandoned_face() {
   CHECK(mitcad::io::has_triangulation(plain));
   CHECK(plainReport.abandoned == 0 && plainReport.meshed == 3);
   CHECK(face_triangles(plain) == face_triangles(again));
+}
+
+// A square plate of 1 650 mm, 125 to 1 775 mm from the origin on both axes,
+// less a disc of `radius` about the origin: a concave arc cut from its
+// corner (mitcad#846).
+TopoDS_Shape corner_cut_square(double radius) {
+  const double low = 125.0;
+  const double high = 1775.0;
+  const double along = std::sqrt(radius * radius - low * low);
+  const gp_Pnt arc_end(low, along, 0.0);
+  const gp_Pnt arc_start(along, low, 0.0);
+  BRepBuilderAPI_MakeWire wire;
+  wire.Add(BRepBuilderAPI_MakeEdge(arc_end, gp_Pnt(low, high, 0.0)).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(low, high, 0.0), gp_Pnt(high, high, 0.0)).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(high, high, 0.0), gp_Pnt(high, low, 0.0)).Edge());
+  wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(high, low, 0.0), arc_start).Edge());
+  const gp_Circ circle(gp_Ax2(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 0.0, 1.0)), radius);
+  wire.Add(BRepBuilderAPI_MakeEdge(circle, arc_start, arc_end).Edge());
+  return BRepBuilderAPI_MakeFace(wire.Wire(), true).Face();
+}
+
+// Planes whose boundary is nearly cocircular, through Delabella (OCCT port
+// patch 1070, mitcad#846): a square less a disc about its corner, the arc in
+// 150 to 300 points at the view's deviation. Delabella's rounded in-circle
+// signs contradicted each other on such arcs, and its hull walk crashed or
+// never ended: with a disc of 1 200 mm (a building's plate) on Windows,
+// and with the other radii here on Linux too (a crash, then two endless
+// loops). Each plane meshes in both of the view's Delabella tiers, the
+// interactive one (unchecked) and the checked one, its triangles covering
+// the area its boundary encloses, none made again by the default insertion.
+void test_nearly_cocircular_planes() {
+  using mitcad::io::MeshOptions;
+  using mitcad::io::MeshReport;
+  const MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
+  MeshOptions preview = view;
+  preview.fast_planes = true;
+  MeshOptions checked = preview;
+  checked.check_planes = true;
+  // 400 mm + 5 mm steps + 0.37 mm: the radii of a sweep that failed.
+  const double radii[] = {1200.0, 400.0 + 163 * 5.0 + 0.37, 400.0 + 194 * 5.0 + 0.37, 400.0 + 227 * 5.0 + 0.37};
+  for (const double radius : radii) {
+    for (const MeshOptions& options : {preview, checked}) {
+      const TopoDS_Shape plate = corner_cut_square(radius);
+      MeshReport report;
+      CHECK(mitcad::io::mesh_in_place(plate, options, Message_ProgressRange(), &report));
+      std::printf("Corner cut by a disc of %.2f mm, %s: %s\n", radius,
+                  options.check_planes ? "checked" : "interactive", report.line().c_str());
+      CHECK(report.meshed == 1 && report.failed == 0);
+      CHECK(report.planes_redone == 0);
+      CHECK(planes_fit(plate, 1e-4) == 1);
+    }
+  }
 }
 
 // Building-scale cylinders and cones (mitcad#438): at the view's absolute
@@ -1549,9 +1700,11 @@ int main(int argc, char** argv) {
     test_mesh_all_in_place();
     test_mesh_report_and_fast_planes();
     test_reuse_triangulations();
+    test_display_mesh_bytes();
     test_compare_meshing();
     test_checked_planes();
     test_abandoned_face();
+    test_nearly_cocircular_planes();
     test_building_scale_round_faces();
     test_stl(dir);
     test_indexed_mesh(dir);

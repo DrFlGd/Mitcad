@@ -22,6 +22,8 @@ pub mod def;
 pub mod annotate_def;
 pub mod tables_def;
 pub mod template_def;
+// Cut sheets: flat parts at 1:1 for cutting (mitcad#853).
+pub mod cut_sheet_def;
 
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +33,7 @@ use crate::datum::Vec3;
 // the model (mitcad#777).
 pub use mitcad_model_base::drawing_view::{
     CutFace, CutPlane, P2, RoundHole, ViewCurve, ViewEdge, ViewEdgeKind, ViewProjection, ViewSpec,
+    ViewSpline,
 };
 
 // --- The command's options --------------------------------------------------

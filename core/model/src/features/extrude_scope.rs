@@ -70,6 +70,47 @@ pub struct CutScope {
     pub initialize_on_cut: bool,
 }
 
+/// What a stored place of a [`CutScope`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaceKind {
+    Context,
+    /// An excluded or included component.
+    Component,
+    /// An excluded body.
+    Body(BodyUid),
+}
+
+/// One stored place of a [`CutScope`], to be rewritten in place.
+pub(crate) struct PlaceMut<'a> {
+    pub kind: PlaceKind,
+    pub component: &'a mut ComponentUid,
+    pub occurrence: &'a mut OccurrencePath,
+}
+
+/// Features of one component moved into another (Move to Component,
+/// Move History into Component; mitcad#859).
+pub(crate) struct ComponentMove<'a> {
+    pub from: ComponentUid,
+    pub to: ComponentUid,
+    /// Where a path from the root that places `from` places `to` now.
+    pub path: &'a dyn Fn(&OccurrencePath) -> OccurrencePath,
+    /// The bodies that went into `to`.
+    pub bodies: &'a [BodyUid],
+    /// `from` still has bodies after the move.
+    pub keeps: bool,
+}
+
+/// How an extrusion relates to a [`ComponentMove`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MovedFeature {
+    /// It went into `to` with the features.
+    Moved,
+    /// It stays in `from`: its own targets stay its own.
+    StaysInSource,
+    /// It is a feature of another component.
+    Elsewhere,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CutBody {
     pub body: BodyUid,
@@ -189,6 +230,85 @@ impl CutScope {
             .chain(self.stored_targets().iter().map(|t| &t.occurrence))
             .chain(self.excluded_bodies().iter().map(|t| &t.occurrence))
             .collect()
+    }
+
+    /// Every stored place, the context first, for the edits that move
+    /// them: Move to Component and moving an occurrence to another parent.
+    pub(crate) fn places_mut(&mut self) -> Vec<PlaceMut<'_>> {
+        let mut places = vec![PlaceMut {
+            kind: PlaceKind::Context,
+            component: &mut self.context.component,
+            occurrence: &mut self.context.occurrence,
+        }];
+        let (targets, bodies) = match &mut self.targets {
+            TargetScope::Automatic {
+                excluded,
+                excluded_bodies,
+            } => (excluded, excluded_bodies),
+            TargetScope::Explicit {
+                included,
+                excluded_bodies,
+            } => (included, excluded_bodies),
+        };
+        places.extend(targets.iter_mut().map(|t| PlaceMut {
+            kind: PlaceKind::Component,
+            component: &mut t.component,
+            occurrence: &mut t.occurrence,
+        }));
+        places.extend(bodies.iter_mut().map(|t| PlaceMut {
+            kind: PlaceKind::Body(t.body),
+            component: &mut t.component,
+            occurrence: &mut t.occurrence,
+        }));
+        places
+    }
+
+    /// Follows features moved out of `m.from` into `m.to` (mitcad#859).
+    /// A moved extrusion's context and its targets of `m.from` go with it;
+    /// so do body targets of the bodies that moved, whoever stores them.
+    /// What `m.from` keeps stays named by its old place: an automatic
+    /// scope's exclusion of it, and another component's cut into it,
+    /// cover both places then. True when anything changed.
+    pub(crate) fn follow_move(&mut self, m: &ComponentMove<'_>, feature: MovedFeature) -> bool {
+        let automatic = matches!(self.targets, TargetScope::Automatic { .. });
+        let mut kept = Vec::new();
+        let mut changed = false;
+        for place in self.places_mut() {
+            if *place.component != m.from {
+                continue;
+            }
+            let follows = match (place.kind, feature) {
+                (PlaceKind::Context, MovedFeature::Moved) => true,
+                (PlaceKind::Context, _) => false,
+                (PlaceKind::Body(body), _) => m.bodies.contains(&body),
+                (PlaceKind::Component, MovedFeature::StaysInSource) => false,
+                (PlaceKind::Component, MovedFeature::Moved | MovedFeature::Elsewhere) => {
+                    let both = matches!(feature, MovedFeature::Elsewhere) || automatic;
+                    if m.keeps && both {
+                        kept.push(ComponentTarget {
+                            component: *place.component,
+                            occurrence: place.occurrence.clone(),
+                        });
+                    }
+                    true
+                }
+            };
+            if follows {
+                *place.occurrence = (m.path)(place.occurrence);
+                *place.component = m.to;
+                changed = true;
+            }
+        }
+        let targets = match &mut self.targets {
+            TargetScope::Automatic { excluded, .. } => excluded,
+            TargetScope::Explicit { included, .. } => included,
+        };
+        for target in kept {
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        changed
     }
 
     pub(crate) fn add_references(&self, refs: &mut References) {

@@ -73,6 +73,7 @@ public:
       return;
     }
     coveredFirst();
+    yieldingBehind();
     narrowFaceFirst();
     lastBehind();
     edgesFirst();
@@ -90,8 +91,47 @@ public:
   }
   void setSources(PickSourceResolver resolve) { m_sources = std::move(resolve); }
   void setCovers(PickCoverResolver resolve) { m_covers = std::move(resolve); }
+  // setPickYield().
+  void setYield(std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> yields,
+                std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> over) {
+    m_yields = std::move(yields);
+    m_over = std::move(over);
+  }
 
 private:
+  // The owners `over` behind the first yielding one (a sketch point on a
+  // body's corner, mitcad#869) moved in front of it, in their order; the
+  // rest after them keep theirs.
+  void yieldingBehind() const {
+    if (!m_yields || !m_over) {
+      return;
+    }
+    std::vector<int> order;
+    for (int rank = myIndexes.Lower(); rank <= myIndexes.Upper(); ++rank) {
+      order.push_back(myIndexes(rank));
+    }
+    const auto first = std::find_if(order.begin(), order.end(),
+                                    [this](const int index) { return m_yields(mystored.FindKey(index)); });
+    if (first == order.end()) {
+      return;
+    }
+    std::vector<int> moved;
+    std::vector<int> rest;
+    for (auto it = first; it != order.end(); ++it) {
+      (m_over(mystored.FindKey(*it)) ? moved : rest).push_back(*it);
+    }
+    if (moved.empty()) {
+      return;
+    }
+    int rank = myIndexes.Lower() + static_cast<int>(std::distance(order.begin(), first));
+    for (const int index : moved) {
+      myIndexes(rank++) = index;
+    }
+    for (const int index : rest) {
+      myIndexes(rank++) = index;
+    }
+  }
+
   // The owners put last (construction planes while a placement input takes
   // picks, mitcad#656) behind the others, each group in its order.
   void lastBehind() const {
@@ -330,6 +370,8 @@ private:
   PickCoverResolver m_covers;
   std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> m_preferred;
   std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> m_last;
+  std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> m_yields;
+  std::function<bool(const occ::handle<SelectMgr_EntityOwner>&)> m_over;
   mutable bool m_prioritized = false;
 
   // Whether an edge or vertex picked with a face lies on the face's surface
@@ -386,6 +428,14 @@ void setPickLast(const occ::handle<AIS_InteractiveContext>& context, PickPrefere
   const auto selector = occ::handle<EdgeFirstSelector>::DownCast(context->MainSelector());
   if (!selector.IsNull()) {
     selector->setLast(std::move(last));
+  }
+}
+
+void setPickYield(const occ::handle<AIS_InteractiveContext>& context, PickPreference yields,
+                  PickPreference over) {
+  const auto selector = occ::handle<EdgeFirstSelector>::DownCast(context->MainSelector());
+  if (!selector.IsNull()) {
+    selector->setYield(std::move(yields), std::move(over));
   }
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Tests of the Mitcad model through its JSON api (mitcad#777): Drawings:
-//! the sheet, stored drawings, templates and revisions, tables and the .dwg
-//! export.
+//! the sheet, stored drawings, templates and revisions, tables, the .dwg
+//! export and cut sheets (mitcad#853).
 //!
 //! A test crate of its own, so that a test added here recompiles only
 //! this crate (core/model-tests/README.md).
@@ -12,3 +12,5 @@ mod dwg_tests;
 mod stored_tests;
 mod table_tests;
 mod template_tests;
+// Cut sheets (mitcad#853).
+mod cut_sheet_tests;

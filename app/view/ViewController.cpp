@@ -80,6 +80,8 @@
 // Font folders for sketch text (mitcad#473).
 #include "../sketch/FontFiles.hpp"
 #include "../platform/MacDialogs.hpp"
+// The Sketch page: the first dimension scales the sketch (mitcad#860).
+#include "../sketch/SketchPreferences.hpp"
 
 namespace mitcad {
 namespace {
@@ -226,6 +228,8 @@ const PreferencePage kPreferencePages[] = {
     {"agents", QT_TRANSLATE_NOOP("View", "AI Assistants"), "mcp agent agents ai folders save open connection assistant assistants designs codex claude"},
     // Folders of font files for sketch text (mitcad#473).
     {"fonts", QT_TRANSLATE_NOOP("View", "Fonts"), "font folders text ttf otf woff typeface"},
+    // The first dimension scales the sketch (mitcad#860).
+    {"sketch", QT_TRANSLATE_NOOP("View", "Sketch"), "sketch dimension first scale proportion drawn size"},
 };
 
 // The pages whose folder list takes the page's height (mitcad#727,
@@ -1168,6 +1172,31 @@ void ViewController::showPreferences(const QString& page) {
   // Font folders for sketch text (mitcad#473).
   auto* fontsBox = new sketch::FontPreferencesBox;
   groups.insert(QStringLiteral("fonts"), fontsBox);
+  // Sketch (mitcad#860): the first dimension of a sketch drawn out of
+  // proportion scales the whole sketch to it. Saved when the dialog is
+  // accepted, at once in the Settings window.
+  QWidget* sketchBox = section(tr("Sketch"));
+  auto* sketchForm = new QFormLayout(sketchBox);
+  auto* firstDimensionScale = new QCheckBox(tr("&Scale the sketch to its first dimension"));
+  firstDimensionScale->setObjectName(QStringLiteral("scaleToFirstDimension"));
+  firstDimensionScale->setChecked(sketch::scaleToFirstDimension());
+  firstDimensionScale->setToolTip(
+      tr("A sketch's first length dimension scales the whole sketch so that it holds"));
+  control(sketchForm, firstDimensionScale);
+  const auto applyScaleToFirstDimension = [firstDimensionScale] {
+    const bool on = firstDimensionScale->isChecked();
+    if (on == sketch::scaleToFirstDimension()) {
+      return;
+    }
+    sketch::saveScaleToFirstDimension(on);
+    qDebug().noquote() << QStringLiteral("Preferences: scale the sketch to its first dimension %1").arg(onOff(on));
+  };
+  if (window != nullptr) {
+    connect(firstDimensionScale, &QCheckBox::toggled, host, applyScaleToFirstDimension);
+  } else {
+    connect(dialog.get(), &QDialog::accepted, firstDimensionScale, applyScaleToFirstDimension);
+  }
+  groups.insert(QStringLiteral("sketch"), sketchBox);
 
   QWidget* navigationBox = section(tr("Navigation"));
   auto* navigationLayout = new QVBoxLayout(navigationBox);
@@ -1563,6 +1592,7 @@ void ViewController::showPreferences(const QString& page) {
         {"textures", "photo.on.rectangle", "photo"},
         {"agents", "person.badge.key", "person.crop.circle"},
         {"fonts", "textformat", "textformat.alt"},
+        {"sketch", "pencil.and.ruler", "pencil"},
     };
     for (const PreferencePage& entry : kPreferencePages) {
       QWidget* group = groups.value(QLatin1String(entry.id));

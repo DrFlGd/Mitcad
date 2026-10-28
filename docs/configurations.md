@@ -251,6 +251,13 @@ Each of the following can follow an expression (decision 2):
   recompute nothing.
 - Parameters that a binding uses cannot be deleted, renames rewrite the
   binding, and `dependencies` lists them.
+- Bindings are seen at a glance (mitcad#862): a bound browser row's fx
+  badge counts its bound properties (`fx 3`) and shows a card of what they
+  follow in words (`Color: Black → Black plastic, White → White plastic`,
+  `when Holes = Yes · hidden now`), with Edit… per line; the Configurations
+  window's Bindings tab lists every binding of the design, filtered by
+  the option that drives it, and the Options tab says how many bindings
+  use each option.
 
 ## Inserted components (decision 8)
 
@@ -345,9 +352,11 @@ decision 7):
 
 **Bindings**:
 
-- A body's context menu has Appearance ▸ Follow Option… and Material ▸
-  Follow Option…, each a table from option values to appearances or
-  materials.
+- The Appearances and Materials windows (Appearance… and Material… of a
+  body's context menu) have Varies with in their assignment panel: a table
+  from option values to appearances or materials, filled from the
+  window's own list (mitcad#861; it replaced mitcad#809's Follow Option
+  dialog).
 - A feature's context menu has Suppress When….
 - A body's or an occurrence's context menu has Show When….
 - Each one is an expression field with the Formula Editor.

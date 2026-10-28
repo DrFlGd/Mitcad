@@ -26,11 +26,21 @@
 //! their results taken in timeline order (mitcad#842, `recompute/ahead.rs`,
 //! which describes the scheduling and its barriers); the result is the
 //! one without workers.
+//!
+//! A result read from the result store keeps the shapes of the bodies it
+//! sets packed (mitcad#858, [`Changes`]): the body states hold a stand-in
+//! ([`Kernel::shape_unpacker`]) under the stored version, and the shapes are
+//! unpacked once something may read them: before a feature is evaluated
+//! (unless it reads no body, `reads_no_bodies`) or a joint is applied,
+//! and at the end for the bodies that are left. A state a later restored
+//! result replaces before that is never unpacked; its result unpacks it if
+//! something reads it later (the timeline's history). Not where workers
+//! evaluate ahead, nor for a preview.
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::datum::Datum;
@@ -40,7 +50,7 @@ use crate::features::{
 };
 use crate::fingerprint::Fingerprint;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
-use crate::kernel::{Kernel, KernelError};
+use crate::kernel::{Kernel, KernelError, ShapeUnpacker};
 use crate::monitor::{Cancelled, RecomputeMonitor};
 use crate::parameters::{ParamId, Parameters};
 use crate::store::ResultStore;
@@ -102,6 +112,132 @@ pub enum Change<S> {
     Remove(BodyUid),
 }
 
+impl<S> Change<S> {
+    pub fn head(&self) -> ChangeHead {
+        match self {
+            Self::Set(uid, shape) => ChangeHead::Set(*uid, shape.version),
+            Self::Remove(uid) => ChangeHead::Remove(*uid),
+        }
+    }
+}
+
+/// A body change without its shape (mitcad#858): the body a result sets,
+/// with the version of the shape it gives it, or removes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeHead {
+    Set(BodyUid, Version),
+    Remove(BodyUid),
+}
+
+/// The body changes of a result ([`Output::changes`]). A result read from
+/// the result store keeps its shapes packed (mitcad#858) until something
+/// reads them: [`Changes::heads`], [`Changes::len`] and
+/// [`Changes::is_empty`] tell what it changes without unpacking them;
+/// the changes themselves (a slice, [`Changes::unpacked`]) unpack them
+/// first, once, on whatever thread reads them first.
+pub struct Changes<S> {
+    heads: Vec<ChangeHead>,
+    unpacked: OnceLock<Vec<Change<S>>>,
+    packed: Mutex<Option<crate::store::Packed<S>>>,
+}
+
+impl<S> Changes<S> {
+    pub fn new(changes: Vec<Change<S>>) -> Self {
+        Self {
+            heads: changes.iter().map(Change::head).collect(),
+            unpacked: OnceLock::from(changes),
+            packed: Mutex::new(None),
+        }
+    }
+
+    /// Changes whose shapes `packed` makes when they are first read.
+    pub(crate) fn packed(heads: Vec<ChangeHead>, packed: crate::store::Packed<S>) -> Self {
+        Self {
+            heads,
+            unpacked: OnceLock::new(),
+            packed: Mutex::new(Some(packed)),
+        }
+    }
+
+    /// The bodies set, with their versions, and removed, in order.
+    pub fn heads(&self) -> &[ChangeHead] {
+        &self.heads
+    }
+
+    pub fn len(&self) -> usize {
+        self.heads.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.heads.is_empty()
+    }
+
+    /// Whether the shapes are there (made by an evaluation, or unpacked).
+    pub fn is_unpacked(&self) -> bool {
+        self.unpacked.get().is_some()
+    }
+
+    /// The changes with their shapes, in the order of [`Changes::heads`];
+    /// packed ones are unpacked first.
+    pub fn unpacked(&self) -> &[Change<S>] {
+        self.unpacked.get_or_init(|| {
+            let packed = self
+                .packed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            packed.map_or_else(Vec::new, |packed| packed.unpack(&self.heads))
+        })
+    }
+
+    /// The bytes of the packed shapes; 0 once they are unpacked.
+    pub(crate) fn packed_bytes(&self) -> u64 {
+        self.packed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map_or(0, crate::store::Packed::bytes)
+    }
+}
+
+impl<S> Default for Changes<S> {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl<S> std::ops::Deref for Changes<S> {
+    type Target = [Change<S>];
+
+    fn deref(&self) -> &[Change<S>] {
+        self.unpacked()
+    }
+}
+
+impl<'a, S> IntoIterator for &'a Changes<S> {
+    type Item = &'a Change<S>;
+    type IntoIter = std::slice::Iter<'a, Change<S>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.unpacked().iter()
+    }
+}
+
+impl<S> FromIterator<Change<S>> for Changes<S> {
+    fn from_iter<I: IntoIterator<Item = Change<S>>>(changes: I) -> Self {
+        Self::new(changes.into_iter().collect())
+    }
+}
+
+impl<S: std::fmt::Debug> std::fmt::Debug for Changes<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.unpacked.get() {
+            Some(changes) => std::fmt::Debug::fmt(changes, f),
+            None => f.debug_tuple("Packed").field(&self.heads).finish(),
+        }
+    }
+}
+
 /// A mark a shared result can take later (atomic, so that results stay
 /// `Sync` like the rest of the document).
 #[derive(Debug, Default)]
@@ -146,8 +282,12 @@ pub struct Output<S> {
     pub pattern_anchor: Option<crate::features::point_pattern::PatternAnchor>,
     /// Where a sweep's profile lies on its path (mitcad#795).
     pub sweep_place: Option<crate::features::sweep::SweepPlace>,
+    /// What a move's motion was worked out from (mitcad#838).
+    pub move_basis: Option<crate::features::moves::MotionBasis>,
     pub sketch: Option<Versioned<Arc<SketchOutput>>>,
-    pub changes: Vec<Change<S>>,
+    /// The bodies it sets and removes; packed when read from the result
+    /// store (mitcad#858).
+    pub changes: Changes<S>,
     pub owners: BTreeMap<BodyUid, ComponentUid>,
     pub cut_targets: Option<crate::features::extrude_scope::CutTargets>,
     pub tool: Option<S>,
@@ -495,6 +635,10 @@ pub struct Cache<S> {
 /// Results kept per feature: enough for a few undo steps and value changes.
 const ENTRIES_PER_FEATURE: usize = 8;
 
+/// The memory a packed shape takes once unpacked, estimated as its packed
+/// (compressed) bytes times this (mitcad#858).
+const PACKED_MEMORY_FACTOR: u64 = 8;
+
 impl<S> Default for Cache<S> {
     fn default() -> Self {
         Self {
@@ -518,10 +662,16 @@ fn output_bytes<K: Kernel>(kernel: &K, output: &Output<K::Shape>) -> u64 {
     let mut bytes = 256 + 48 * output.reads.len() as u64;
     bytes += serde_json::to_vec(&output.sheets).map_or(0, |v| v.len() as u64);
     bytes += 24 * output.sheet_footprint.len() as u64;
-    for change in &output.changes {
-        if let Change::Set(_, shape) = change {
-            bytes += kernel.shape_memory(&shape.value);
+    if output.changes.is_unpacked() {
+        for change in output.changes.unpacked() {
+            if let Change::Set(_, shape) = change {
+                bytes += kernel.shape_memory(&shape.value);
+            }
         }
+    } else {
+        // Shapes still packed (mitcad#858): what they will take once
+        // unpacked, by their packed bytes, without unpacking them.
+        bytes += PACKED_MEMORY_FACTOR * output.changes.packed_bytes();
     }
     if let Some(tool) = &output.tool {
         bytes += kernel.shape_memory(tool);
@@ -689,6 +839,21 @@ fn never_cached(def: &FeatureDef) -> bool {
         if matches!(p.objects, crate::features::PatternObjects::Components { .. }))
 }
 
+/// Whether evaluating the definition reads no body (mitcad#858): a sketch
+/// on an origin or construction plane (of its own component or a linked
+/// one) without projected or intersected geometry. Bodies whose restored
+/// shapes are still packed stay so while such features are evaluated;
+/// before any other evaluation they are unpacked.
+fn reads_no_bodies(def: &FeatureDef) -> bool {
+    match def {
+        FeatureDef::Sketch(sketch) => {
+            sketch.projections.is_empty()
+                && !matches!(sketch.plane, crate::features::SketchPlane::Face { .. })
+        }
+        _ => false,
+    }
+}
+
 impl<S> Cache<S> {
     fn tick(&mut self) -> u64 {
         self.clock += 1;
@@ -739,16 +904,22 @@ impl<S> Cache<S> {
     }
 
     /// The result the store keeps for the inputs `env` gives, now in the
-    /// cache too; `before_insert` sees it before it goes in.
+    /// cache too; `before_insert` sees it before it goes in. With an
+    /// unpacker, the shapes of the bodies it sets stay packed (mitcad#858).
     fn restore<K: Kernel<Shape = S>>(
         &mut self,
         kernel: &K,
         entry: &FeatureEntry,
         def_fp: u128,
         env: &Env<'_, S>,
+        unpacker: Option<&ShapeUnpacker<S>>,
         before_insert: impl FnOnce(&Self, &Output<S>),
     ) -> Option<Arc<Output<S>>> {
-        let output = Arc::new(self.store.as_ref()?.find(kernel, entry, def_fp, env)?);
+        let output = Arc::new(
+            self.store
+                .as_ref()?
+                .find(kernel, entry, def_fp, env, unpacker)?,
+        );
         before_insert(self, &output);
         self.insert(kernel, entry, output.clone());
         self.stats.restored += 1;
@@ -1002,6 +1173,8 @@ pub(crate) fn recompute_after<K: Kernel>(
                 measured_ids: point.measured.iter().map(|(id, _)| *id).collect(),
                 touched: Vec::new(),
                 not_resumable: false,
+                unpacker: None,
+                pending: BTreeMap::new(),
             }
         }
         None => {
@@ -1023,6 +1196,8 @@ pub(crate) fn recompute_after<K: Kernel>(
                 measured_ids: Vec::new(),
                 touched: Vec::new(),
                 not_resumable: false,
+                unpacker: None,
+                pending: BTreeMap::new(),
             }
         }
     };
@@ -1041,6 +1216,17 @@ pub(crate) fn recompute_after<K: Kernel>(
         && cache.preview.is_none()
         && written_from.is_empty()
         && !ahead::on_worker();
+    // Results restored from the store keep the shapes of the bodies they
+    // set packed until something may read them (mitcad#858; the module
+    // comment): not with workers, which read the body states on their own
+    // threads, nor for a preview.
+    if cache.workers <= 1
+        && cache.preview.is_none()
+        && cache.store.is_some()
+        && crate::store::lazy_restore()
+    {
+        walk.unpacker = kernel.shape_unpacker().ok();
+    }
     let count = state.features.len();
     let mut position = first;
     while position < count {
@@ -1062,6 +1248,8 @@ pub(crate) fn recompute_after<K: Kernel>(
         step(&run, cache, &mut walk, position, None)?;
         position += 1;
     }
+    // The bodies left are the result's: their shapes unpacked.
+    walk.unpack_pending();
     let Walk {
         mut done,
         components,
@@ -1069,6 +1257,8 @@ pub(crate) fn recompute_after<K: Kernel>(
         mut measured_ids,
         touched,
         not_resumable,
+        unpacker: _,
+        pending: _,
     } = walk;
     let all = match resumed {
         // The earlier result's bodies with those the features after it
@@ -1158,6 +1348,13 @@ struct Walk<'s, S> {
     /// on after this one: a joint (applied after its evaluation, on what
     /// the whole state holds) or a feature evaluated anew every time.
     not_resumable: bool,
+    /// Results from the result store keep their bodies' shapes packed
+    /// (mitcad#858): how they are unpacked, and what stands in the body
+    /// states meanwhile; None: they are read whole.
+    unpacker: Option<ShapeUnpacker<S>>,
+    /// The bodies whose states hold a stand-in, with the result that sets
+    /// them.
+    pending: BTreeMap<BodyUid, Arc<Output<S>>>,
 }
 
 /// Where a feature's result came from, for the recompute's lists.
@@ -1218,69 +1415,98 @@ fn step<K: Kernel>(
         .get(&entry.component)
         .cloned()
         .unwrap_or_default();
+    // The result from the cache or the result store; else the definition's
+    // fingerprint, to evaluate it with.
+    let found = {
+        let env = walk.env(state, &own, run.written_from);
+        match cache.lookup(entry, &env) {
+            Some(output) => Ok((output, Came::Cache)),
+            None => {
+                let def_fp = def_fingerprint(&entry.def, env.params);
+                let start = Instant::now();
+                // (Workers let go of the results they hold before the cache
+                // drops any for its budget, mitcad#842.)
+                let restored = cache.restore(
+                    kernel,
+                    entry,
+                    def_fp,
+                    &env,
+                    walk.unpacker.as_ref(),
+                    |cache, output| {
+                        if let Some(ahead) = ahead.as_deref_mut()
+                            && cache.would_trim(output_bytes(kernel, output))
+                        {
+                            ahead.release();
+                        }
+                    },
+                );
+                match restored {
+                    Some(output) => Ok((output, Came::Store(start.elapsed()))),
+                    None => Err(def_fp),
+                }
+            }
+        }
+    };
+    // What an evaluation may read of the bodies is unpacked first, where
+    // results were restored with their shapes packed (mitcad#858).
+    let own = if found.is_err() && !walk.pending.is_empty() && !reads_no_bodies(&entry.def) {
+        drop(own);
+        walk.unpack_pending();
+        walk.components
+            .get(&entry.component)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        own
+    };
     let env = walk.env(state, &own, run.written_from);
-    let (output, came) = match cache.lookup(entry, &env) {
-        Some(output) => (output, Came::Cache),
-        None => {
-            let def_fp = def_fingerprint(&entry.def, env.params);
-            let start = Instant::now();
-            // (Workers let go of the results they hold before the cache
-            // drops any for its budget, mitcad#842.)
-            let restored = cache.restore(kernel, entry, def_fp, &env, |cache, output| {
-                if let Some(ahead) = ahead.as_deref_mut()
-                    && cache.would_trim(output_bytes(kernel, output))
+    let (output, came) = match found {
+        Ok(found) => found,
+        Err(def_fp) => {
+            if let Some(monitor) = monitor {
+                monitor.evaluating(&entry.name);
+            }
+            // A worker's result where one evaluated the feature ahead
+            // and what it read holds here (mitcad#842).
+            let from_worker = match ahead.as_deref_mut() {
+                Some(ahead) => ahead.take(position, def_fp, &env, monitor)?,
+                None => None,
+            };
+            let output = match (from_worker, monitor) {
+                (Some(output), _) => output,
+                (None, Some(monitor)) => {
+                    kernel.interruptible(monitor, || evaluate(kernel, entry, env, def_fp))
+                }
+                (None, None) => evaluate(kernel, entry, env, def_fp),
+            };
+            // A result that came back after a cancel request is not
+            // kept: the request may have cut it short (P7), or the
+            // kernel stopped inside and failed (P7e). One that ran
+            // out of memory says so all the same: the request may
+            // have come for that very failure (the .f3d import's
+            // memory guard counts failed allocations, mitcad#132).
+            let out_of_memory =
+                matches!(&output.result, Err(m) if KernelError::is_out_of_memory(m));
+            if let Some(monitor) = monitor
+                && !out_of_memory
+            {
+                monitor.evaluation_done()?;
+            }
+            // Nor is a failure for lack of memory: the feature may
+            // build once memory is free again (mitcad#80).
+            if !out_of_memory {
+                if let Some(ahead) = &mut ahead
+                    && cache.would_trim(output_bytes(kernel, &output))
                 {
                     ahead.release();
                 }
-            });
-            if let Some(output) = restored {
-                (output, Came::Store(start.elapsed()))
-            } else {
-                if let Some(monitor) = monitor {
-                    monitor.evaluating(&entry.name);
-                }
-                // A worker's result where one evaluated the feature ahead
-                // and what it read holds here (mitcad#842).
-                let from_worker = match ahead.as_deref_mut() {
-                    Some(ahead) => ahead.take(position, def_fp, &env, monitor)?,
-                    None => None,
-                };
-                let output = match (from_worker, monitor) {
-                    (Some(output), _) => output,
-                    (None, Some(monitor)) => {
-                        kernel.interruptible(monitor, || evaluate(kernel, entry, env, def_fp))
-                    }
-                    (None, None) => evaluate(kernel, entry, env, def_fp),
-                };
-                // A result that came back after a cancel request is not
-                // kept: the request may have cut it short (P7), or the
-                // kernel stopped inside and failed (P7e). One that ran
-                // out of memory says so all the same: the request may
-                // have come for that very failure (the .f3d import's
-                // memory guard counts failed allocations, mitcad#132).
-                let out_of_memory =
-                    matches!(&output.result, Err(m) if KernelError::is_out_of_memory(m));
-                if let Some(monitor) = monitor
-                    && !out_of_memory
-                {
-                    monitor.evaluation_done()?;
-                }
-                // Nor is a failure for lack of memory: the feature may
-                // build once memory is free again (mitcad#80).
-                if !out_of_memory {
-                    if let Some(ahead) = &mut ahead
-                        && cache.would_trim(output_bytes(kernel, &output))
-                    {
-                        ahead.release();
-                    }
-                    cache.insert(kernel, entry, output.clone());
-                }
-                if let Some(monitor) = monitor {
-                    monitor.kept();
-                }
-                let time = output.time;
-                (output, Came::Evaluated(time))
+                cache.insert(kernel, entry, output.clone());
             }
+            if let Some(monitor) = monitor {
+                monitor.kept();
+            }
+            let time = output.time;
+            (output, Came::Evaluated(time))
         }
     };
     // What the open command's preview shows of its feature besides the
@@ -1354,6 +1580,34 @@ impl<'s, S: Clone> Walk<'s, S> {
             measured_ids: Vec::new(),
             touched: Vec::new(),
             not_resumable: false,
+            unpacker: None,
+            pending: BTreeMap::new(),
+        }
+    }
+
+    /// Gives the bodies whose states hold a stand-in their shapes, unpacked
+    /// from the results that set them (mitcad#858).
+    fn unpack_pending(&mut self) {
+        for (uid, output) in std::mem::take(&mut self.pending) {
+            let shape = output
+                .changes
+                .unpacked()
+                .iter()
+                .rev()
+                .find_map(|change| match change {
+                    Change::Set(set, shape) if *set == uid => Some(shape),
+                    _ => None,
+                });
+            let (Some(shape), Some(owner)) = (shape, self.done.owners.get(&uid).copied()) else {
+                continue;
+            };
+            if let Some(bodies) = self.components.get_mut(&owner)
+                && bodies
+                    .get(&uid)
+                    .is_some_and(|body| body.version == shape.version)
+            {
+                Arc::make_mut(bodies).insert(uid, shape.clone());
+            }
         }
     }
 
@@ -1367,6 +1621,10 @@ impl<'s, S: Clone> Walk<'s, S> {
         entry: &FeatureEntry,
         output: Arc<Output<S>>,
     ) {
+        // Joints read the bodies of every component (mitcad#858).
+        if crate::joints::applies(&entry.def) {
+            self.unpack_pending();
+        }
         let assembly = &state.assembly;
         let done = &mut self.done;
         let mut status = match &output.result {
@@ -1431,36 +1689,59 @@ impl<'s, S: Clone> Walk<'s, S> {
                 }
             }
             // Bodies the feature sets go to the component it made, if any.
+            // A result restored with its shapes packed gives them a
+            // stand-in until something may read them (mitcad#858).
             let target = assembly.created_by(entry.uid).unwrap_or(entry.component);
-            for change in &output.changes {
-                match change {
-                    Change::Set(uid, shape) => {
-                        self.touched.push(*uid);
-                        let target = output.owners.get(uid).copied().unwrap_or(target);
+            let stand_in = match &self.unpacker {
+                Some(unpacker) if !output.changes.is_unpacked() => Some(unpacker.stand_in),
+                _ => None,
+            };
+            for (i, head) in output.changes.heads().iter().enumerate() {
+                match *head {
+                    ChangeHead::Set(uid, version) => {
+                        self.touched.push(uid);
+                        let target = output.owners.get(&uid).copied().unwrap_or(target);
                         crate::sheet::publish(
                             &mut done.sheets,
-                            *uid,
+                            uid,
                             target,
-                            shape.version,
+                            version,
                             entry.uid,
-                            output.sheets.get(uid),
+                            output.sheets.get(&uid),
                         );
-                        if let Some(old) = done.owners.insert(*uid, target)
+                        if let Some(old) = done.owners.insert(uid, target)
                             && old != target
                             && let Some(bodies) = self.components.get_mut(&old)
                         {
-                            Arc::make_mut(bodies).remove(uid);
+                            Arc::make_mut(bodies).remove(&uid);
                         }
+                        let shape = match stand_in {
+                            Some(stand_in) => {
+                                self.pending.insert(uid, output.clone());
+                                Versioned {
+                                    version,
+                                    value: stand_in(),
+                                }
+                            }
+                            None => {
+                                self.pending.remove(&uid);
+                                match output.changes.unpacked().get(i) {
+                                    Some(Change::Set(_, shape)) => shape.clone(),
+                                    _ => continue,
+                                }
+                            }
+                        };
                         Arc::make_mut(self.components.entry(target).or_default())
-                            .insert(*uid, shape.clone());
+                            .insert(uid, shape);
                     }
-                    Change::Remove(uid) => {
-                        self.touched.push(*uid);
-                        done.sheets.remove(uid);
-                        if let Some(old) = done.owners.remove(uid)
+                    ChangeHead::Remove(uid) => {
+                        self.touched.push(uid);
+                        self.pending.remove(&uid);
+                        done.sheets.remove(&uid);
+                        if let Some(old) = done.owners.remove(&uid)
                             && let Some(bodies) = self.components.get_mut(&old)
                         {
-                            Arc::make_mut(bodies).remove(uid);
+                            Arc::make_mut(bodies).remove(&uid);
                         }
                     }
                 }
@@ -1548,9 +1829,9 @@ fn follow_pieces<S>(done: &mut Recomputed<S>, feature: FeatureUid, output: &Outp
             .any(|p| p.body == *body && !p.gone)
     };
     let mut set = Vec::new();
-    for change in &output.changes {
+    for change in output.changes.heads() {
         match change {
-            Change::Set(uid, _) => {
+            ChangeHead::Set(uid, _) => {
                 set.push(*uid);
                 done.gone_pieces.remove(uid);
                 match output.changed_pieces.iter().find(|(b, _)| b == uid) {
@@ -1563,7 +1844,7 @@ fn follow_pieces<S>(done: &mut Recomputed<S>, feature: FeatureUid, output: &Outp
                     None => {}
                 }
             }
-            Change::Remove(uid) => {
+            ChangeHead::Remove(uid) => {
                 done.changed_pieces.remove(uid);
             }
         }
@@ -1695,6 +1976,7 @@ fn evaluate<K: Kernel>(
             elements,
             pattern_anchor: ctx.pattern_anchor,
             sweep_place: ctx.sweep_place,
+            move_basis: ctx.move_basis,
             owners: produced.owners,
             cut_targets: ctx.cut_targets,
             sketch: produced.sketch.map(|sketch| Versioned {
@@ -1744,10 +2026,14 @@ fn evaluate<K: Kernel>(
             // Known also when the sweep failed (mitcad#795): the panel
             // shows its distances for a path the extent does not fit.
             sweep_place: ctx.sweep_place,
+            // Known also when the move failed (mitcad#854): a Move Face
+            // whose faces cannot follow the angle (or one that moves
+            // nothing) still turns its ring about the model's axis.
+            move_basis: ctx.move_basis,
             owners: BTreeMap::new(),
             cut_targets: ctx.cut_targets,
             sketch: None,
-            changes: Vec::new(),
+            changes: Changes::default(),
             tool: None,
             datum: None,
             placements: Vec::new(),

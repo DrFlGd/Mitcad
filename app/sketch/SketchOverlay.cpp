@@ -1062,6 +1062,19 @@ void SketchOverlay::paintEntityHighlight(QPainter& painter, const QString& entit
     }
     return;
   }
+  // A body edge or vertex out of the plane (mitcad#866): where it is, thin
+  // and dashed, and below what it projects to, as for one in the plane.
+  if (const BodyItem* item = onBody ? body.item(entity) : nullptr; item != nullptr && !item->inPlane) {
+    const QPolygonF path = m_c.bodyPath(*item);
+    painter.save();
+    painter.setPen(QPen(color, 1.5, Qt::DashLine, Qt::RoundCap, Qt::RoundJoin));
+    if (path.size() == 1) {
+      painter.drawEllipse(path.front(), 3.0, 3.0);
+    } else {
+      painter.drawPolyline(path);
+    }
+    painter.restore();
+  }
   if (const auto p = onBody ? body.pointAt(entity) : model.pointAt(entity)) {
     painter.setBrush(color);
     painter.drawEllipse(m_c.toScreen(*p), 4.5, 4.5);

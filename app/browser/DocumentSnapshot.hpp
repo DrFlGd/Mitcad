@@ -166,6 +166,14 @@ struct DocumentSnapshot {
   // the view is isolated to (bodies and occurrences; none: everything).
   bool originShown = false;
   Selection isolation;
+  // The values of the parameters that Show When conditions use
+  // (mitcad#863), by name, as an expression writes them ('No', 12.5 mm):
+  // the light bulbs' tooltips of conditioned rows. Read only while a body
+  // or an occurrence has a condition.
+  QHash<QString, QString> conditionValues;
+  // The parameters a condition names, with their values ("Holes is 'No'"),
+  // in the order it names them; those not in conditionValues left out.
+  QStringList conditionParts(const QString& condition) const;
   // The answers the snapshot was made from: equal keys, equal snapshots.
   QByteArray key;
 

@@ -77,8 +77,8 @@ QJsonArray vectorOf(const gp_Dir& d) { return QJsonArray{d.X() + 0.0, d.Y() + 0.
 } // namespace
 
 bool MainWindow::measurementPicks(const QHash<QString, Selection>& inputs, QJsonObject& command, QString& why) {
-  const SelectionItem* a = firstOf(inputs, {"a", "body_a"});
-  const SelectionItem* b = firstOf(inputs, {"b", "body_b"});
+  const SelectionItem* a = firstOf(inputs, {"a", "body_a", "sketch_a"});
+  const SelectionItem* b = firstOf(inputs, {"b", "body_b", "sketch_b"});
   if (a == nullptr) {
     why = tr("Pick what to measure first.");
     return false;
@@ -86,8 +86,9 @@ bool MainWindow::measurementPicks(const QHash<QString, Selection>& inputs, QJson
   const QJsonValue pickA = measurementPick(*a);
   const QJsonValue pickB = b != nullptr ? measurementPick(*b) : QJsonValue();
   if (pickA.isNull() || (b != nullptr && pickB.isNull())) {
-    why = tr("Sketch curves and points are measured in the panel only: pick the bodies' faces, edges or "
-             "vertices to keep a measurement.");
+    // Also Keep's tooltip while it is greyed out (mitcad#869): one short
+    // line.
+    why = tr("Sketch geometry cannot be kept as an annotation: pick the body's corners or edges");
     return false;
   }
   command.insert(QStringLiteral("a"), pickA);
@@ -98,8 +99,8 @@ bool MainWindow::measurementPicks(const QHash<QString, Selection>& inputs, QJson
 }
 
 bool MainWindow::notePick(const QHash<QString, Selection>& inputs, QJsonObject& pick, QJsonValue& at) {
-  const SelectionItem* a = firstOf(inputs, {"a", "body_a"});
-  if (a == nullptr || firstOf(inputs, {"b", "body_b"}) != nullptr) {
+  const SelectionItem* a = firstOf(inputs, {"a", "body_a", "sketch_a"});
+  if (a == nullptr || firstOf(inputs, {"b", "body_b", "sketch_b"}) != nullptr) {
     return false;
   }
   // A face, edge or vertex of a body, a body clicked, or a datum plane,
@@ -125,7 +126,7 @@ bool MainWindow::notePick(const QHash<QString, Selection>& inputs, QJsonObject& 
 }
 
 bool MainWindow::markablePick(const QHash<QString, Selection>& inputs) {
-  const SelectionItem* a = firstOf(inputs, {"a", "body_a"});
+  const SelectionItem* a = firstOf(inputs, {"a", "body_a", "sketch_a"});
   return a != nullptr && a->kind != SelectKind::Vertex && a->kind != SelectKind::Point;
 }
 
@@ -195,7 +196,7 @@ void MainWindow::keepLeader(const QHash<QString, Selection>& inputs, const QStri
                 "point."));
     return;
   }
-  const SelectionItem* item = firstOf(inputs, {"a", "body_a"});
+  const SelectionItem* item = firstOf(inputs, {"a", "body_a", "sketch_a"});
   const QString what = item != nullptr ? item->describe() : QString();
   QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("add_annotation")},
                       {QStringLiteral("kind"), kind},

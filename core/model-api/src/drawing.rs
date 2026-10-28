@@ -543,6 +543,7 @@ impl<K: Kernel> DrawingOps<K> for Document<K> {
             revisions: Vec::new(),
             exported: 0,
             defaults: Default::default(),
+            cut_sheet: None,
         };
         Ok(AutoDrawing {
             drawing,
@@ -853,6 +854,21 @@ impl<K: Kernel> DrawingLocal<K> for Document<K> {
         command: ExportDrawingCommand,
         check: impl Fn(&str) -> Result<(), String>,
     ) -> Result<Value, ApiError> {
+        // A cut sheet (mitcad#853) is written as its own DXF or SVG.
+        if let Some(name) = &command.drawing
+            && self.find_drawing(name)?.cut_sheet.is_some()
+        {
+            if command.sheet.is_some_and(|s| s > 0) {
+                return Err(ApiError(format!("{name} has one sheet")));
+            }
+            return self.export_cut_sheet_checked(
+                name,
+                &command.path,
+                command.format.as_deref(),
+                false,
+                &check,
+            );
+        }
         let extension = std::path::Path::new(&command.path)
             .extension()
             .and_then(|e| e.to_str())

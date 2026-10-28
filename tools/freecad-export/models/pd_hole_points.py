@@ -9,12 +9,14 @@
 #   linked to the whole sketch.
 # - PointFillet: radius 1 on the hole's two circular edges.
 #
-# Holes at sketch points are checked from FreeCAD 1.0.
+# Holes at sketch points exist from FreeCAD 1.1: 1.0's Hole has no
+# BaseProfileType and fails on a profile without circles ("Cannot make
+# face from profile").
 #
 # Mitcad expects: no fallback
 
-if not at_least(1, 0):
-    raise Unsupported("holes at sketch points are checked from FreeCAD 1.0")
+if not at_least(1, 1):
+    raise Unsupported("holes at sketch points exist from FreeCAD 1.1")
 
 
 def hole_circle(middle, edge):

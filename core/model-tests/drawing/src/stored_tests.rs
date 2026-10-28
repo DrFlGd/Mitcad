@@ -277,6 +277,7 @@ fn sample() -> Drawing {
         revisions: Vec::new(),
         exported: 0,
         defaults: Default::default(),
+        cut_sheet: None,
     }
 }
 

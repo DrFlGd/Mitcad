@@ -6,15 +6,23 @@
 // fit) and Extrude's rules for when and how (extrudeDragProxy). Move/
 // Copy's provisional motion (mitcad#838): the placements a drag gives the
 // bodies it moves and the components it places (draggedPlacement), and
-// the motion of its inputs (moveMotion). No window and no model: the tools
-// are OCCT boxes meshed here.
+// the motion of its inputs (moveMotion), and of Rotate's and the point
+// types' inputs from the basis an exact preview reports (basisMotion), and
+// Rotate's ring about the reported axis (keptRotateAxis), Move Face's ring
+// too (rotateBasisToKeep, rotateRingAxis; mitcad#854). No
+// window and no model: the tools are OCCT boxes meshed here.
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <vector>
+
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
@@ -419,6 +427,200 @@ void testMotions() {
   CHECK(!mitcad::cmd::moveMotion(rotate, pivot));
 }
 
+QJsonArray xyz(double x, double y, double z) { return QJsonArray{x, y, z}; }
+
+// Rotate, Point to Point and Point to Position from the basis the model
+// reports with an exact preview (basisMotion, mitcad#838).
+void testBasisMotions() {
+  using mitcad::cmd::basisMotion;
+  const double quarterTurn = std::atan(1.0) * 2.0;
+  // Rotate: right-handed about the reported axis, here -Z through
+  // (10, 0, 0), as the model turns; a quarter takes (20, 0, 0) to
+  // (10, -10, 0).
+  CommandState rotate;
+  rotate.setChoice(QStringLiteral("type"), QStringLiteral("rotate"));
+  rotate.setValue(QStringLiteral("angle"), quarterTurn);
+  const QJsonObject axis{{QStringLiteral("type"), QStringLiteral("rotate")},
+                         {QStringLiteral("origin"), xyz(10, 0, 0)},
+                         {QStringLiteral("direction"), xyz(0, 0, -1)}};
+  auto motion = basisMotion(rotate, axis);
+  CHECK(motion && at(gp_Pnt(20, 0, 0).Transformed(*motion), 10, -10, 0));
+  CHECK(motion && at(gp_Pnt(10, 0, 7).Transformed(*motion), 10, 0, 7));
+  // A drag of the angle from a third of the turn to the quarter: the body
+  // the exact preview drew turned by the rest, about the same axis.
+  CommandState shown = rotate;
+  shown.setValue(QStringLiteral("angle"), quarterTurn / 3.0);
+  const auto from = basisMotion(shown, axis);
+  CHECK(from && motion);
+  if (from && motion) {
+    const gp_Trsf placed =
+        mitcad::draggedPlacement(gp_Trsf(), mitcad::MotionSide::Shape, *from, *motion, gp_Trsf());
+    CHECK(at(gp_Pnt(20, 0, 0).Transformed(*from).Transformed(placed), 10, -10, 0));
+    // An occurrence 100 mm along X that the move places: the exact preview
+    // drew it turned by the third, the drag turns it on to the quarter.
+    const gp_Trsf occurrence = mitcad::draggedPlacement(*from * moved(100, 0, 0), mitcad::MotionSide::Occurrence,
+                                                         *from, *motion, gp_Trsf());
+    CHECK(at(gp_Pnt(20, 0, 0).Transformed(occurrence), 10, -110, 0));
+  }
+  // An angle that is not a number, a basis of another type, a basis
+  // without its axis: none.
+  CommandState typing = rotate;
+  typing.setValue(QStringLiteral("angle"), std::numeric_limits<double>::quiet_NaN());
+  CHECK(!basisMotion(typing, axis));
+  CHECK(!basisMotion(rotate, QJsonObject{{QStringLiteral("type"), QStringLiteral("point_to_point")}}));
+  CHECK(!basisMotion(rotate, QJsonObject{{QStringLiteral("type"), QStringLiteral("rotate")}}));
+  // Point to Point: from the reported point to the other.
+  CommandState points;
+  points.setChoice(QStringLiteral("type"), QStringLiteral("point_to_point"));
+  motion = basisMotion(points, QJsonObject{{QStringLiteral("type"), QStringLiteral("point_to_point")},
+                                           {QStringLiteral("from"), xyz(10, 5, 0)},
+                                           {QStringLiteral("to"), xyz(0, 0, 30)}});
+  CHECK(motion && at(gp_Pnt(10, 5, 0).Transformed(*motion), 0, 0, 30));
+  // Point to Position: the reported point to X, Y and Z.
+  CommandState position;
+  position.setChoice(QStringLiteral("type"), QStringLiteral("point_to_position"));
+  position.setValue(QStringLiteral("px"), 40.0);
+  position.setValue(QStringLiteral("py"), -5.0);
+  position.setValue(QStringLiteral("pz"), 2.0);
+  const QJsonObject point{{QStringLiteral("type"), QStringLiteral("point_to_position")},
+                          {QStringLiteral("point"), xyz(10, 5, 0)}};
+  motion = basisMotion(position, point);
+  CHECK(motion && at(gp_Pnt(10, 5, 0).Transformed(*motion), 40, -5, 2));
+  CHECK(motion && at(gp_Pnt(0, 0, 0).Transformed(*motion), 30, -10, 2));
+  position.setValue(QStringLiteral("px"), std::numeric_limits<double>::quiet_NaN());
+  CHECK(!basisMotion(position, point));
+}
+
+// Rotate's ring about the axis the model reported (keptRotateAxis,
+// mitcad#838): a circular edge whose circle's own axis is +Z while the
+// model turns about -Z (its canonical axis can point the other way). The
+// ring takes the reported axis, so a drag of its angle turns a point the
+// way the proxy and the result turn it.
+void testRingAxis() {
+  using mitcad::cmd::keptRotateAxis;
+  const QJsonValue edge(QJsonObject{{QStringLiteral("body"), QStringLiteral("F2.b0")},
+                                    {QStringLiteral("edge"), QStringLiteral("E{F2:end(r{c1})|F2:side(r{c1},c1)}")}});
+  const QJsonObject basis{{QStringLiteral("type"), QStringLiteral("rotate")},
+                          {QStringLiteral("origin"), xyz(10, 0, 0)},
+                          {QStringLiteral("direction"), xyz(0, 0, -1)}};
+  const QJsonObject kept{{QStringLiteral("basis"), basis},
+                         {QStringLiteral("axis"), edge},
+                         {QStringLiteral("occurrence"), QString()}};
+  // In a component 100 mm along X: the design's axis through (110, 0, 0).
+  const auto ring = keptRotateAxis(kept, edge, QString(), moved(100, 0, 0));
+  CHECK(ring && at(ring->Location(), 110, 0, 0));
+  CHECK(ring && ring->Direction().IsEqual(gp_Dir(0, 0, -1), 1e-12));
+  // The ring's angle runs right-handed about its axis: a quarter of it
+  // turns (120, 0, 0) to (110, -10, 0), as the result turns the body
+  // (basisMotion, in the component's coordinates, placed by the frame).
+  CommandState rotate;
+  rotate.setChoice(QStringLiteral("type"), QStringLiteral("rotate"));
+  rotate.setValue(QStringLiteral("angle"), std::atan(1.0) * 2.0);
+  const auto result = mitcad::cmd::basisMotion(rotate, basis);
+  CHECK(ring && result);
+  if (ring && result) {
+    gp_Trsf byRing;
+    byRing.SetRotation(*ring, std::atan(1.0) * 2.0);
+    const gp_Pnt turned = gp_Pnt(120, 0, 0).Transformed(byRing);
+    CHECK(at(turned, 110, -10, 0));
+    const gp_Trsf frame = moved(100, 0, 0);
+    CHECK(at(gp_Pnt(20, 0, 0).Transformed(*result).Transformed(frame), turned.X(), turned.Y(), turned.Z()));
+  }
+  // Kept for another axis, another occurrence, or not of a Rotate: none
+  // (the picked geometry's own axis until the next preview).
+  const QJsonValue other(QJsonObject{{QStringLiteral("body"), QStringLiteral("F2.b0")},
+                                     {QStringLiteral("edge"), QStringLiteral("E{F2:start(r{c1})|F2:side(r{c1},c1)}")}});
+  CHECK(!keptRotateAxis(kept, other, QString(), gp_Trsf()));
+  CHECK(!keptRotateAxis(kept, edge, QStringLiteral("O1"), gp_Trsf()));
+  QJsonObject points = kept;
+  points.insert(QStringLiteral("basis"), QJsonObject{{QStringLiteral("type"), QStringLiteral("point_to_point")}});
+  CHECK(!keptRotateAxis(points, edge, QString(), gp_Trsf()));
+  CHECK(!keptRotateAxis(QJsonObject(), edge, QString(), gp_Trsf()));
+}
+
+// Move Face's Rotate ring (mitcad#854) about a circular edge whose
+// circle's own axis points down (-Z) while the model turns the faces about
+// its canonical axis (+Z): Move Face keeps the axis its preview reports
+// (rotateBasisToKeep, its previewReported) and its ring runs about it
+// (rotateRingAxis, shared with Move/Copy), so that the angle a drag of the
+// ring gives turns the faces the way the ring shows.
+void testMoveFaceRing() {
+  using mitcad::cmd::basisMotion;
+  using mitcad::cmd::rotateBasisToKeep;
+  using mitcad::cmd::rotateRingAxis;
+  const double quarterTurn = std::atan(1.0) * 2.0;
+  const QJsonValue rim(QJsonObject{{QStringLiteral("body"), QStringLiteral("F2.b0")},
+                                   {QStringLiteral("edge"), QStringLiteral("E{F2:end(r{c1})|F2:side(r{c1},c1)}")}});
+  // The circle's own axis, as the picked geometry gives it.
+  int asked = 0;
+  const auto own = [&asked]() -> std::optional<gp_Ax1> {
+    ++asked;
+    return gp_Ax1(gp_Pnt(10, 0, 20), gp_Dir(0, 0, -1));
+  };
+  // The middle of the faces that move.
+  const gp_Pnt middle(20, 0, 15);
+  // Before a preview reported the axis: the circle's own.
+  auto ring = rotateRingAxis(QJsonObject(), rim, QString(), gp_Trsf(), own, middle);
+  CHECK(asked == 1);
+  CHECK(ring && at(ring->Location(), 10, 0, 15));
+  CHECK(ring && ring->Direction().IsEqual(gp_Dir(0, 0, -1), 1e-12));
+  // Move Face's preview reports the axis the faces turn about.
+  const QJsonObject basis{{QStringLiteral("type"), QStringLiteral("rotate")},
+                          {QStringLiteral("origin"), xyz(10, 0, 20)},
+                          {QStringLiteral("direction"), xyz(0, 0, 1)}};
+  const QJsonObject report{{QStringLiteral("status"), QStringLiteral("ok")}, {QStringLiteral("motion"), basis}};
+  const QJsonObject kept = rotateBasisToKeep(report, QStringLiteral("rotate"), rim, QString());
+  CHECK(kept.value(QStringLiteral("basis")).toObject() == basis);
+  // The ring now runs about the reported axis, through the foot of the
+  // faces' middle, without asking the picked geometry.
+  ring = rotateRingAxis(kept, rim, QString(), gp_Trsf(), own, middle);
+  CHECK(asked == 1);
+  CHECK(ring && at(ring->Location(), 10, 0, 15));
+  CHECK(ring && ring->Direction().IsEqual(gp_Dir(0, 0, 1), 1e-12));
+  // A quarter of the ring's angle (right-handed about its axis) takes the
+  // faces' middle where the model's turn by that angle takes it; about the
+  // circle's own axis it would go the other way.
+  CommandState rotate;
+  rotate.setChoice(QStringLiteral("type"), QStringLiteral("rotate"));
+  rotate.setValue(QStringLiteral("angle"), quarterTurn);
+  const auto result = basisMotion(rotate, basis);
+  CHECK(ring && result);
+  if (ring && result) {
+    gp_Trsf byRing;
+    byRing.SetRotation(*ring, quarterTurn);
+    CHECK(at(middle.Transformed(byRing), 10, 10, 15));
+    CHECK(at(middle.Transformed(*result), 10, 10, 15));
+    gp_Trsf byCircle;
+    byCircle.SetRotation(gp_Ax1(gp_Pnt(10, 0, 20), gp_Dir(0, 0, -1)), quarterTurn);
+    CHECK(at(middle.Transformed(byCircle), 10, -10, 15));
+  }
+  // Faces of a component placed 100 mm along X: the reported axis taken
+  // into the design.
+  ring = rotateRingAxis(kept, rim, QString(), moved(100, 0, 0), own, gp_Pnt(120, 0, 15));
+  CHECK(ring && at(ring->Location(), 110, 0, 15));
+  CHECK(ring && ring->Direction().IsEqual(gp_Dir(0, 0, 1), 1e-12));
+  // Another rim picked since: the circle's own axis until the next preview.
+  const QJsonValue otherRim(QJsonObject{{QStringLiteral("body"), QStringLiteral("F2.b0")},
+                                        {QStringLiteral("edge"), QStringLiteral("E{F2:start(r{c1})|F2:side(r{c1},c1)}")}});
+  ring = rotateRingAxis(kept, otherRim, QString(), gp_Trsf(), own, middle);
+  CHECK(asked == 2);
+  CHECK(ring && ring->Direction().IsEqual(gp_Dir(0, 0, -1), 1e-12));
+  // Nothing kept from a report without a rotate motion, for another move
+  // type, or without an axis picked.
+  CHECK(rotateBasisToKeep(QJsonObject{{QStringLiteral("status"), QStringLiteral("ok")}}, QStringLiteral("rotate"), rim,
+                          QString())
+            .isEmpty());
+  CHECK(rotateBasisToKeep(report, QStringLiteral("point_to_point"), rim, QString()).isEmpty());
+  CHECK(rotateBasisToKeep(report, QStringLiteral("rotate"), QJsonValue(), QString()).isEmpty());
+  const QJsonObject points{
+      {QStringLiteral("motion"), QJsonObject{{QStringLiteral("type"), QStringLiteral("point_to_point")},
+                                             {QStringLiteral("from"), xyz(0, 0, 0)},
+                                             {QStringLiteral("to"), xyz(0, 0, 1)}}}};
+  CHECK(rotateBasisToKeep(points, QStringLiteral("rotate"), rim, QString()).isEmpty());
+  // Neither a kept axis nor the picked geometry's: no ring.
+  CHECK(!rotateRingAxis(QJsonObject(), rim, QString(), gp_Trsf(), {}, middle));
+}
+
 } // namespace
 
 int main() {
@@ -427,6 +629,9 @@ int main() {
   testAxes();
   testExtrudeRules();
   testMotions();
+  testBasisMotions();
+  testRingAxis();
+  testMoveFaceRing();
   if (failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

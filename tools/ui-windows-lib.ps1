@@ -85,6 +85,18 @@ public static class UiInput {
         return title.ToString();
     }
 
+    [DllImport("user32.dll", EntryPoint = "IsWindow")] static extern bool IsWindowHandle(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+    const uint GW_OWNER = 4;
+
+    // Whether the window still exists (a dialog's is destroyed once it
+    // has closed and Qt deleted it).
+    public static bool Exists(IntPtr hwnd) { return hwnd != IntPtr.Zero && IsWindowHandle(hwnd); }
+
+    // The window that owns a top-level window: Qt makes a dialog's
+    // transient parent (the window it was opened over) its owner.
+    public static IntPtr Owner(IntPtr hwnd) { return GetWindow(hwnd, GW_OWNER); }
+
     static uint ThreadOf(IntPtr hwnd) {
         uint pid;
         return GetWindowThreadProcessId(hwnd, out pid);
@@ -417,6 +429,9 @@ function Ui-StartApp([string]$Name, [string[]]$Arguments = @(), [switch]$Recover
   # No update checks (mitcad#9): the tests make no network requests.
   if ($Updates) { Remove-Item Env:MITCAD_NO_UPDATE_CHECK -ErrorAction SilentlyContinue }
   else { $env:MITCAD_NO_UPDATE_CHECK = '1' }
+  # The first dimension of a drawn sketch scales nothing (mitcad#860), as in
+  # the Linux tests.
+  $env:MITCAD_SKETCH_FIRST_DIMENSION_SCALE = '0'
   $env:MITCAD_AUTOSAVE_DIR = $script:UiAutosave
   # Crash reports of the test's own (mitcad#62): none offered from the user's.
   $env:MITCAD_CRASH_DIR = Join-Path $script:UiOut 'crashes'
@@ -435,21 +450,27 @@ function Ui-StartApp([string]$Name, [string[]]$Arguments = @(), [switch]$Recover
   $script:UiMark = 0
   $script:UiLastPress = $null
   $clock = [Diagnostics.Stopwatch]::StartNew()
-  for ($i = 0; $i -lt 100; $i++) {
+  do {
     $windows = [UiInput]::Windows($script:UiProcess.Id, ' - MitCad\*?$')
     if ($windows.Count -gt 0) { break }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 20000)
   if ($windows.Count -eq 0) { Ui-Fail 'the Mitcad window did not appear' }
   $window = $clock.ElapsedMilliseconds
   $script:UiWindow = $windows[0]
   $script:UiTarget = $script:UiWindow
   # The view logs its area once it is laid out and drawn.
   Ui-ExpectLog 'View area' 'the 3D view is up' | Out-Null
+  $view = $clock.ElapsedMilliseconds
+  # Then the app has handled its start (what it set going, such as the
+  # window's first layouts, logged) and computes nothing, as the Linux
+  # tests' ui_start_app waits (mitcad#870: a fixed 1.5 s before); an app
+  # without the sync (an earlier release in an update test) gets the pause.
+  Ui-WaitIdle
+  if (-not $script:UiSyncOn) { Start-Sleep -Milliseconds 1500 }
   if ($script:UiTimes) {
-    Write-Host "time start ${Name}: window $window ms, the 3D view $($clock.ElapsedMilliseconds) ms"
+    Write-Host "time start ${Name}: window $window ms, the 3D view $view ms, idle $($clock.ElapsedMilliseconds) ms"
   }
-  Start-Sleep -Milliseconds 1500
 }
 
 function Ui-StopApp {
@@ -459,7 +480,9 @@ function Ui-StopApp {
       $script:UiProcess.Kill()
       $script:UiProcess.WaitForExit(10000) | Out-Null
     }
-    Start-Sleep -Milliseconds 300
+    # A process that has exited has closed its files (its log, locks and
+    # autosaves): no pause then (mitcad#870).
+    if (-not $script:UiProcess.HasExited) { Start-Sleep -Milliseconds 300 }
     $script:UiProcess = $null
   }
 }
@@ -539,11 +562,13 @@ function Ui-Crashed { return $script:UiProcess.HasExited }
 # the job's progress dialog blocked, which dropped it (a click lost under
 # load, mitcad#271).
 function Ui-WaitIdle {
-  for ($i = 0; $i -lt 300; $i++) {
-    if (Ui-Computing) { Start-Sleep -Milliseconds 200; continue }
+  # Polled at 50 ms (a job's end is mostly a moment away), up to 60 s.
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    if (Ui-Computing) { Start-Sleep -Milliseconds 50; continue }
     Ui-Sync
     if (-not (Ui-Computing)) { return }
-  }
+  } while ($clock.ElapsedMilliseconds -lt 60000)
   Write-Host 'note: the app was still computing after 60 s'
 }
 
@@ -665,7 +690,7 @@ function Ui-Key([string[]]$Keys) {
       # the input for later but answers Sync, so the modifiers went up
       # before the key was handled, and Shift+F9 became F9 under load
       # (mitcad#271).
-      $from = @(Ui-LogLines).Count - 1
+      $from = "$(Ui-LogText)".Length
       [UiInput]::Press($script:UiTarget, $vk, $ctrl, $shift, $alt)
       if ([UiInput]::Note) { Write-Host "note: '$spec': $([UiInput]::Note)" }
       Ui-WaitKeyLogged $vk (@(@('ctrl', 'alt', 'shift') | Where-Object { $mods -contains $_ }) -join '+') $spec $from
@@ -682,28 +707,37 @@ function Ui-Key([string[]]$Keys) {
 # app before mitcad#271 does not, as an earlier release in an update test).
 function Ui-KeyLogOn {
   if ($null -eq $script:UiKeyLog) {
-    $script:UiKeyLog = [bool]((Ui-LogLines) | Where-Object { $_.Contains('Key log on') })
+    $script:UiKeyLog = "$(Ui-LogText)".Contains('Key log on')
   }
   return $script:UiKeyLog
 }
 
 # Ui-WaitKeyLogged vk modifiers spec from: waits (up to 60 s) for the app's
-# "Key press: <key> with <modifiers> (native <vk>)" after line <from>. The
-# same key with other modifiers fails the test unless the right line follows
-# within 5 s (the line of a key without modifiers sent just before, which
-# the app took late). A key the app never takes (one for a window a modal
-# dialog blocks, which Qt drops) ends the wait with a note.
+# "Key press: <key> with <modifiers> (native <vk>)" in the log after its
+# first <from> characters (the log's length before the key). The same key
+# with other modifiers fails the test unless the right line follows within
+# 5 s (the line of a key without modifiers sent just before, which the app
+# took late). A key the app never takes (one for a window a modal dialog
+# blocks, which Qt drops) ends the wait with a note. Polled at 20 ms: the
+# app logs the key a moment after it is posted (mitcad#870: 100 ms, and
+# every line of the log split on each look, before).
 function Ui-WaitKeyLogged([int]$Vk, [string]$Modifiers, [string]$Spec, [int]$From) {
-  $pattern = "Key press: \S+(?: with ([a-z+]+))? \(native $Vk\)$"
+  $pattern = New-Object System.Text.RegularExpressions.Regex ("(?m)Key press: \S+(?: with ([a-z+]+))? \(native $Vk\)\r?$")
   $other = $null
   $clock = [Diagnostics.Stopwatch]::StartNew()
   while ($clock.ElapsedMilliseconds -lt 60000) {
-    $lines = @(Ui-LogLines)
-    for ($n = [Math]::Max(0, $From); $n -lt $lines.Count; $n++) {
-      $match = [regex]::Match($lines[$n], $pattern)
-      if (-not $match.Success) { continue }
+    $text = "$(Ui-LogText)"
+    # From the start of the line the log ended in before the key.
+    $start = [Math]::Min([Math]::Max(0, $From), $text.Length)
+    if ($start -gt 0) { $start = $text.LastIndexOf("`n", $start - 1, [StringComparison]::Ordinal) + 1 }
+    for ($match = $pattern.Match($text, $start); $match.Success; $match = $match.NextMatch()) {
       if ($match.Groups[1].Value -eq $Modifiers) { return }
-      if ($null -eq $other) { $other = $lines[$n]; $seen = $clock.ElapsedMilliseconds }
+      if ($null -eq $other) {
+        $begin = $text.LastIndexOf("`n", [Math]::Max(0, $match.Index - 1), [StringComparison]::Ordinal) + 1
+        if ($match.Index -eq 0) { $begin = 0 }
+        $other = $text.Substring($begin, $match.Index + $match.Length - $begin).TrimEnd("`r")
+        $seen = $clock.ElapsedMilliseconds
+      }
     }
     if ($null -ne $other -and $clock.ElapsedMilliseconds - $seen -gt 5000) {
       Ui-Fail ("'$Spec': the app took the key without the modifiers $Modifiers held: $other " +
@@ -711,7 +745,7 @@ function Ui-WaitKeyLogged([int]$Vk, [string]$Modifiers, [string]$Spec, [int]$Fro
     }
     # A job keeps the key for later; without one, 10 s are enough.
     if ($clock.ElapsedMilliseconds -gt 10000 -and -not (Ui-Computing)) { break }
-    Start-Sleep -Milliseconds 100
+    Start-Sleep -Milliseconds 20
   }
   Write-Host "note: '$Spec': the app did not log the key within $([int]($clock.ElapsedMilliseconds / 1000)) s"
 }
@@ -790,7 +824,8 @@ function Ui-ViewClick([double]$Px, [double]$Py, [int]$Button = 1) {
 # 6 s): a busy app (other tests beside it) may log it a moment after the
 # line the test waited for (mitcad#255).
 function Ui-LoggedAt([string]$Text) {
-  for ($i = 0; $i -lt 30; $i++) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
     $line = Ui-LastLineWith "$Text at "
     # "$line", not [string]$line: the .NET method gets null for the latter
     # while nothing is logged yet, and the exception ended the script (the
@@ -798,8 +833,8 @@ function Ui-LoggedAt([string]$Text) {
     # its time-out).
     $match = [regex]::Match("$line", ' at (\d+),(\d+)')
     if ($match.Success) { return @([int]$match.Groups[1].Value, [int]$match.Groups[2].Value) }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 6000)
   Ui-Fail "no place logged for '$Text'"
 }
 
@@ -901,11 +936,16 @@ function Ui-DoubleClickLogged([string]$Text) {
 # Ui-PickAt "text": where a click picks the face, edge, vertex or profile
 # whose "Pick ..." line (after the last "Pick places:") contains the text.
 function Ui-PickAt([string]$Text) {
-  $lines = Ui-LogLines
-  $start = 0
-  for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains('Pick places:')) { $start = $i; break } }
-  $line = $lines[$start..($lines.Count - 1)] | Where-Object { $_.Contains('Pick ') -and $_.Contains($Text) } |
-    Select-Object -Last 1
+  # The lines from the last "Pick places:" one on, searched with .NET calls
+  # (a pipeline over a long log's lines takes long, mitcad#870).
+  $log = "$(Ui-LogText)"
+  $at = $log.LastIndexOf('Pick places:', [StringComparison]::Ordinal)
+  $start = if ($at -gt 0) { $log.LastIndexOf("`n", $at - 1, [StringComparison]::Ordinal) + 1 } else { 0 }
+  $lines = $log.Substring($start) -split "`r?`n"
+  $line = $null
+  for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+    if ($lines[$i].Contains('Pick ') -and $lines[$i].Contains($Text)) { $line = $lines[$i]; break }
+  }
   # "$line": with no line, $line is an empty result, and -notmatch on it
   # gave an empty (false) result, not true; $Matches was then null and the
   # error ended the script with the app left running (mitcad#525).
@@ -924,7 +964,9 @@ function Ui-CreateSketch([string]$Key, [string]$Plane = 'xy') {
   Ui-Mark
   Ui-Key $Key
   Ui-ExpectNew 'Create Sketch: select a plane' 'Create Sketch asks for a plane' | Out-Null
-  Start-Sleep -Milliseconds 500
+  # The planes shown and their places logged, as ui_create_sketch syncs
+  # (mitcad#870: a fixed 500 ms before).
+  Ui-SyncOr 500
   Ui-ClickLogged "Datum $Plane"
   Ui-ExpectNew "Sketch started on $Plane" "sketch started on $Plane" | Out-Null
 }
@@ -948,7 +990,9 @@ function Ui-SketchClick([double]$X, [double]$Y) {
 # Ui-TypeIn "Panel <command> input <id>" text: replaces a panel field's text.
 function Ui-TypeIn([string]$Field, [string]$Text) {
   Ui-ClickLogged $Field
-  Start-Sleep -Milliseconds 200
+  # The click handled (the field has the keyboard), as ui_type_in syncs
+  # (mitcad#870: a fixed 200 ms before).
+  Ui-SyncOr 200
   Ui-Key 'ctrl+a'
   Ui-Type $Text
 }
@@ -964,31 +1008,63 @@ function Ui-Windows([string]$TitlePattern) { return , [UiInput]::Windows($script
 # own after the application, such as the 3D view's offscreen surfaces
 # ("Mitcad", the application name), so a message box (titled "MitCad") is
 # best found as a new window.
+#
+# Neither waits a fixed time once the window is there (mitcad#870: 500 ms
+# and 300 ms before), as the Linux tests' ui_focus_dialog and ui_focus_main
+# sync: the dialog the keys went to before, if it is closing (a button's
+# click comes a moment after its key, Qt's animateClick, and nothing is
+# logged for it), is waited for until its window is gone, as long as the
+# pause was at the most; then the app has handled the input before
+# (Ui-Sync).
 function Ui-FocusDialog([string]$TitlePattern, [IntPtr[]]$Except = @()) {
-  for ($i = 0; $i -lt 50; $i++) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
     $windows = @([UiInput]::Windows($script:UiProcess.Id, $TitlePattern) | Where-Object { $Except -notcontains $_ })
     if ($windows.Count -gt 0) {
+      $previous = $script:UiTarget
       $script:UiTarget = $windows[0]
-      Start-Sleep -Milliseconds 500
+      # Not a dialog that owns this one: it stays open under it.
+      if ($previous -ne $script:UiWindow -and $previous -ne $windows[0] -and
+          [UiInput]::Owner($windows[0]) -ne $previous) {
+        Ui-WaitGone $previous 500
+      }
+      Ui-SyncOr 500
       return
     }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 10000)
   Ui-Fail "no window matching '$TitlePattern'"
 }
 
 function Ui-FocusMain {
-  Start-Sleep -Milliseconds 300
+  $previous = $script:UiTarget
   $script:UiTarget = $script:UiWindow
+  if ($previous -ne $script:UiWindow) { Ui-WaitGone $previous 300 }
+  Ui-SyncOr 300
+}
+
+# Ui-WaitGone window ms: waits until the window is gone, up to ms.
+function Ui-WaitGone([IntPtr]$Window, [int]$Milliseconds) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while ([UiInput]::Exists($Window) -and $clock.ElapsedMilliseconds -lt $Milliseconds) { Start-Sleep -Milliseconds 20 }
+}
+
+# Ui-SyncOr ms: the app has handled the input before (Ui-Sync); an app
+# without the sync (an earlier release in an update test) gets the fixed
+# pause of ms instead.
+function Ui-SyncOr([int]$Milliseconds) {
+  Ui-Sync
+  if (-not $script:UiSyncOn) { Start-Sleep -Milliseconds $Milliseconds }
 }
 
 # Ui-ExpectVolume "regex with one group" expected description [tolerance]:
 # the last logged number the pattern captures equals the expected volume.
 function Ui-ExpectVolume([string]$Pattern, [double]$Expected, [string]$Description, [double]$Tolerance = 1e-6) {
   $volume = $null
-  for ($i = 0; $i -lt 150 -and $null -eq $volume; $i++) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while ($null -eq $volume -and $clock.ElapsedMilliseconds -lt 30000) {
     $volume = Ui-LastMatch $Pattern
-    if ($null -eq $volume) { Start-Sleep -Milliseconds 200 }
+    if ($null -eq $volume) { Start-Sleep -Milliseconds 50 }
   }
   if ($null -eq $volume) { Ui-Fail "${Description}: no volume logged" }
   $v = [double]::Parse($volume, [Globalization.CultureInfo]::InvariantCulture)

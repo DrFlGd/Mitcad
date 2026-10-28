@@ -98,14 +98,17 @@ void MainWindow::inspectionRecorded(const CommandDef& def, const CommandState& s
   m_measureShown = row.inputs;
   QJsonObject probe;
   QString why;
-  const bool keepable = !row.values.isEmpty() && measurementPicks(row.inputs, probe, why);
+  const bool modelPicks = measurementPicks(row.inputs, probe, why);
+  const bool keepable = !row.values.isEmpty() && modelPicks;
   // A note (mitcad#702) on the one pick shown; a datum label or a frame
   // on it when it is a feature.
   QJsonObject notePicked;
   QJsonValue noteAt;
   const bool noteable = notePick(row.inputs, notePicked, noteAt);
   if (auto* view = static_cast<MeasureHistoryView*>(m_measureHistoryView.data())) {
-    view->setKeepable(keepable);
+    // Greyed out for sketch geometry with the reason as its tooltip
+    // (mitcad#869).
+    view->setKeepable(keepable, modelPicks ? QString() : why);
     view->setNoteable(noteable, markablePick(row.inputs));
   }
   if (m_measureHistory.record(std::move(row))) {

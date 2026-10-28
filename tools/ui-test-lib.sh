@@ -68,6 +68,9 @@ fi
 # No update checks (mitcad#9): the tests make no network requests;
 # tools/ui-update-test.sh checks against a local server of its own.
 export MITCAD_NO_UPDATE_CHECK=1
+# The first dimension of a drawn sketch scales nothing (mitcad#860): the
+# tests' sketches keep the sizes they are drawn at, as their clicks expect.
+export MITCAD_SKETCH_FIRST_DIMENSION_SCALE=0
 # No browser either: an address the app would open (a report's issue form,
 # mitcad#61) is logged instead ("Open URL (test, not opened): <url>").
 export MITCAD_TEST_LOG_URLS=1

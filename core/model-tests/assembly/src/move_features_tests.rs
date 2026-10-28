@@ -7,7 +7,7 @@
 
 use serde_json::{Value, json};
 
-use mitcad_model::features::SketchPlane;
+use mitcad_model::features::{FeatureDef, SketchPlane};
 use mitcad_model::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use mitcad_model::kernel::{BoundingBox, Kernel};
 use mitcad_model::test_support::{block, def, extrude, num};
@@ -1129,4 +1129,354 @@ fn readonly_destinations_and_cancelled_creation_leave_no_component_or_undo_step(
     same_placement(&placed(&b.doc), &before);
     b.doc.set_monitor(None);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// The cut scope every extrusion made in the UI stores (mitcad#859): its
+/// own component as the context, automatic targets; a new body's waits
+/// dormant until the extrusion cuts.
+fn ui_scope(context: Value, dormant: bool) -> Value {
+    let mut scope = json!({"context": context,
+        "targets": {"type": "automatic", "excluded": [], "excluded_bodies": []}});
+    if dormant {
+        scope["initialize_on_cut"] = json!(true);
+    }
+    scope
+}
+
+fn root_context() -> Value {
+    json!({"component": "C0", "occurrence": ""})
+}
+
+/// A sketch with a rectangle at `corner` and its extrusion 5 mm with
+/// `scope`, in the active component, as the UI makes them.
+fn ui_extrude(
+    doc: &mut Document<MockKernel>,
+    corner: [f64; 2],
+    size: [f64; 2],
+    operation: &str,
+    scope: Value,
+) -> FeatureUid {
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(sketch, corner, &num(size[0]), &num(size[1]))
+        .unwrap()
+        .region;
+    doc.add_feature(
+        &def(
+            json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                    "extent": {"type": "distance", "distance": 5},
+                    "operation": operation, "cut_scope": scope}),
+        ),
+        None,
+    )
+    .unwrap()
+    .uid
+}
+
+fn scope_of(doc: &Document<MockKernel>, uid: FeatureUid) -> Value {
+    let FeatureDef::Extrude(extrusion) = &doc.feature(uid).unwrap().def else {
+        unreachable!()
+    };
+    serde_json::to_value(extrusion.cut_scope.as_ref().unwrap()).unwrap()
+}
+
+fn volumes(doc: &Document<MockKernel>, bodies: &[BodyUid]) -> Vec<f64> {
+    bodies
+        .iter()
+        .map(|b| {
+            doc.kernel()
+                .mass_properties(doc.body_shape(*b).unwrap())
+                .unwrap()
+                .volume
+        })
+        .collect()
+}
+
+fn same_volumes(actual: &[f64], expected: &[f64]) {
+    assert_eq!(actual.len(), expected.len());
+    for (a, e) in actual.iter().zip(expected) {
+        assert!(
+            (a - e).abs() <= 1e-6 * e.abs(),
+            "{actual:?} != {expected:?}"
+        );
+    }
+}
+
+fn is_cut(doc: &Document<MockKernel>, body: BodyUid) -> bool {
+    doc.body_shape(body).unwrap().history.starts_with("cut(")
+}
+
+/// The extrusion's definition edits back with another distance: its
+/// moved scope still checks.
+fn editable(doc: &mut Document<MockKernel>, uid: FeatureUid) {
+    let mut def = query(doc, json!({"query": "feature", "uid": uid}))["def"].clone();
+    def["extent"]["distance"] = json!(4);
+    let edit = command(doc, json!({"cmd": "edit_feature", "uid": uid, "def": def}));
+    assert_eq!(edit["error"], Value::Null, "{edit}");
+    all_ok(doc);
+    doc.undo();
+}
+
+/// The root's two sketches and extrusions as the UI makes them: Body1 and
+/// a pocket cut into it.
+fn ui_part(doc: &mut Document<MockKernel>) -> (FeatureUid, FeatureUid, BodyUid) {
+    let boss = ui_extrude(
+        doc,
+        [0.0, 0.0],
+        [10.0, 10.0],
+        "new_body",
+        ui_scope(root_context(), true),
+    );
+    let cut = ui_extrude(
+        doc,
+        [2.0, 2.0],
+        [4.0, 4.0],
+        "cut",
+        ui_scope(root_context(), false),
+    );
+    let body = BodyUid::new(boss, 0);
+    all_ok(doc);
+    assert!(is_cut(doc, body));
+    (boss, cut, body)
+}
+
+fn reopens(doc: &Document<MockKernel>, world: &[(BodyUid, BoundingBox)]) {
+    let mut loaded = Document::from_json(&doc.to_json(), MockKernel::default()).unwrap();
+    loaded.recompute();
+    all_ok(&loaded);
+    same_placement(&placed(&loaded), world);
+}
+
+#[test]
+fn ui_extrusions_move_into_an_existing_component_with_their_cut_scopes() {
+    let mut doc = Document::new(MockKernel::default());
+    doc.kernel().measures.set(true);
+    let (component, occurrence) = doc
+        .create_component(
+            Some("Component1"),
+            Transform::translation([30.0, -10.0, 0.0]),
+            false,
+        )
+        .unwrap();
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let (boss, cut, body) = ui_part(&mut doc);
+    let before = volumes(&doc, &[body]);
+    let world = placed(&doc);
+    let destination = json!({"kind": "existing", "component": component, "occurrence": occurrence});
+
+    // The dialog's preview reports nothing in the way.
+    let plan = query(
+        &doc,
+        json!({"query": "move_to_component", "bodies": [body], "destination": destination}),
+    );
+    assert_eq!(plan["problems"], json!([]), "{plan}");
+    assert_eq!(
+        plan["groups"][0]["features"].as_array().unwrap().len(),
+        4,
+        "{plan}"
+    );
+    let result = command(
+        &mut doc,
+        json!({"cmd": "move_to_component", "bodies": [body], "destination": destination}),
+    );
+    assert_eq!(result["components"][0]["component"], json!(component));
+    let context = json!({"component": component, "occurrence": occurrence});
+    for uid in [boss, cut] {
+        assert_eq!(doc.feature(uid).unwrap().component, component);
+        assert_eq!(scope_of(&doc, uid)["context"], context);
+    }
+    // The new body's scope stays dormant; the cut's targets are automatic.
+    assert_eq!(scope_of(&doc, boss)["initialize_on_cut"], true);
+    assert_eq!(
+        scope_of(&doc, cut)["targets"],
+        json!({"type": "automatic", "excluded": [], "excluded_bodies": []})
+    );
+    all_ok(&doc);
+    assert!(is_cut(&doc, body));
+    same_volumes(&volumes(&doc, &[body]), &before);
+    same_placement(&placed(&doc), &world);
+    editable(&mut doc, cut);
+    editable(&mut doc, boss);
+    reopens(&doc, &world);
+}
+
+#[test]
+fn ui_extrusions_move_into_a_new_component_with_their_cut_scopes() {
+    let explicit = json!({"kind": "new", "parent": "C0", "parent_occurrence": "", "name": "Part"});
+    for destination in [None, Some(explicit)] {
+        let mut doc = Document::new(MockKernel::default());
+        doc.kernel().measures.set(true);
+        let (boss, cut, body) = ui_part(&mut doc);
+        let before = volumes(&doc, &[body]);
+        let world = placed(&doc);
+        let mut selection = json!({"query": "move_to_component"});
+        if let Some(destination) = &destination {
+            selection["destination"] = destination.clone();
+        }
+        let plan = query(&doc, selection.clone());
+        assert_eq!(plan["problems"], json!([]), "{plan}");
+        selection.as_object_mut().unwrap().remove("query");
+        selection["cmd"] = json!("move_to_component");
+        let result = command(&mut doc, selection);
+        let made = &result["components"][0];
+        let component: ComponentUid = made["component"].as_str().unwrap().parse().unwrap();
+        let context = json!({"component": component, "occurrence": made["occurrence"]});
+        for uid in [boss, cut] {
+            assert_eq!(doc.feature(uid).unwrap().component, component);
+            assert_eq!(scope_of(&doc, uid)["context"], context, "{destination:?}");
+        }
+        assert!(doc.component_bodies(ComponentUid::ROOT).is_empty());
+        all_ok(&doc);
+        assert!(is_cut(&doc, body));
+        same_volumes(&volumes(&doc, &[body]), &before);
+        same_placement(&placed(&doc), &world);
+        editable(&mut doc, cut);
+        editable(&mut doc, boss);
+        reopens(&doc, &world);
+        // Undo takes the scopes back with the features.
+        doc.undo();
+        for uid in [boss, cut] {
+            assert_eq!(scope_of(&doc, uid)["context"], root_context());
+        }
+        all_ok(&doc);
+    }
+}
+
+#[test]
+fn a_cut_keeps_its_explicit_body_target_that_moves_with_it() {
+    // Into a new component (everything), and into an existing one.
+    for existing in [false, true] {
+        let mut doc = Document::new(MockKernel::default());
+        doc.kernel().measures.set(true);
+        let target = existing.then(|| {
+            let made = doc
+                .create_component(
+                    Some("Component1"),
+                    Transform::translation([0.0, 40.0, 0.0]),
+                    false,
+                )
+                .unwrap();
+            doc.activate_component(ComponentUid::ROOT).unwrap();
+            made
+        });
+        let first = ui_extrude(
+            &mut doc,
+            [0.0, 0.0],
+            [10.0, 10.0],
+            "new_body",
+            ui_scope(root_context(), true),
+        );
+        let second = ui_extrude(
+            &mut doc,
+            [20.0, 0.0],
+            [10.0, 10.0],
+            "new_body",
+            ui_scope(root_context(), true),
+        );
+        let (a, b) = (BodyUid::new(first, 0), BodyUid::new(second, 0));
+        // The cut reaches both bodies; the second is left out by name.
+        let cut = ui_extrude(
+            &mut doc,
+            [5.0, 2.0],
+            [20.0, 4.0],
+            "cut",
+            json!({"context": root_context(),
+                   "targets": {"type": "explicit", "included": [root_context()],
+                               "excluded_bodies": [{"component": "C0", "occurrence": "", "body": b}]}}),
+        );
+        all_ok(&doc);
+        assert!(is_cut(&doc, a));
+        assert!(!is_cut(&doc, b));
+        let before = volumes(&doc, &[a, b]);
+        let world = placed(&doc);
+        let mut selection = json!({"cmd": "move_to_component"});
+        if let Some((component, occurrence)) = target {
+            selection["bodies"] = json!([a, b]);
+            selection["destination"] =
+                json!({"kind": "existing", "component": component, "occurrence": occurrence});
+        }
+        let result = command(&mut doc, selection);
+        let made = &result["components"][0];
+        let component: ComponentUid = made["component"].as_str().unwrap().parse().unwrap();
+        if let Some((existing, _)) = target {
+            assert_eq!(component, existing);
+        }
+        let place = json!({"component": component, "occurrence": made["occurrence"]});
+        assert_eq!(doc.feature(cut).unwrap().component, component);
+        assert_eq!(doc.body_component(b), Some(component));
+        let mut body_target = place.clone();
+        body_target["body"] = json!(b);
+        assert_eq!(
+            scope_of(&doc, cut),
+            json!({"context": place,
+                   "targets": {"type": "explicit", "included": [place],
+                               "excluded_bodies": [body_target]}})
+        );
+        all_ok(&doc);
+        assert!(is_cut(&doc, a));
+        assert!(!is_cut(&doc, b));
+        same_volumes(&volumes(&doc, &[a, b]), &before);
+        same_placement(&placed(&doc), &world);
+        editable(&mut doc, cut);
+        reopens(&doc, &world);
+    }
+}
+
+#[test]
+fn another_components_cut_follows_a_body_it_leaves_out() {
+    let mut doc = Document::new(MockKernel::default());
+    doc.kernel().measures.set(true);
+    let first = ui_extrude(
+        &mut doc,
+        [0.0, 0.0],
+        [10.0, 10.0],
+        "new_body",
+        ui_scope(root_context(), true),
+    );
+    let root_body = BodyUid::new(first, 0);
+    // Other:1 at the same place, with a body of its own and a cut through
+    // both that leaves the root's body out.
+    let (other, occurrence) = doc
+        .create_component(Some("Other"), Transform::IDENTITY, true)
+        .unwrap();
+    let own = json!({"component": other, "occurrence": occurrence});
+    let boss = ui_extrude(
+        &mut doc,
+        [0.0, 0.0],
+        [10.0, 10.0],
+        "new_body",
+        ui_scope(own.clone(), true),
+    );
+    let other_body = BodyUid::new(boss, 0);
+    let cut = ui_extrude(
+        &mut doc,
+        [2.0, 2.0],
+        [4.0, 4.0],
+        "cut",
+        json!({"context": own,
+               "targets": {"type": "automatic", "excluded": [],
+                           "excluded_bodies": [{"component": "C0", "occurrence": "", "body": root_body}]}}),
+    );
+    all_ok(&doc);
+    assert!(is_cut(&doc, other_body));
+    assert!(!is_cut(&doc, root_body));
+    let before = volumes(&doc, &[root_body, other_body]);
+    let world = placed(&doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+
+    let result = command(&mut doc, json!({"cmd": "move_to_component"}));
+    let made = &result["components"][0];
+    // The cut stays in Other; the body it leaves out is named where it went.
+    assert_eq!(doc.feature(cut).unwrap().component, other);
+    assert_eq!(
+        scope_of(&doc, cut)["targets"]["excluded_bodies"],
+        json!([{"component": made["component"], "occurrence": made["occurrence"], "body": root_body}])
+    );
+    assert_eq!(scope_of(&doc, cut)["context"], own);
+    all_ok(&doc);
+    assert!(is_cut(&doc, other_body));
+    assert!(!is_cut(&doc, root_body));
+    same_volumes(&volumes(&doc, &[root_body, other_body]), &before);
+    same_placement(&placed(&doc), &world);
+    editable(&mut doc, cut);
 }

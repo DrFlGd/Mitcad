@@ -316,6 +316,7 @@ fn settings_go_with_the_model_and_read_back() {
             b"{\"layer_height\": \"0.2\"}".to_vec(),
         )],
         unit: Unit::Millimeter,
+        objects: Vec::new(),
     };
     let data = write(&model).unwrap();
     let xml = model_xml(&data);
@@ -391,4 +392,67 @@ fn a_model_in_another_unit_reads_back_in_millimetres() {
     ] {
         assert_eq!(unit.as_str(), name);
     }
+}
+
+#[test]
+fn several_objects_are_build_items_of_their_own_and_read_back() {
+    // A nut placed three times (mitcad#856): two objects of one placement
+    // each, a third of the last placement and the washer's.
+    let at = |x: f64| Placement {
+        translation: [x, 0.0, 0.0],
+        ..Placement::IDENTITY
+    };
+    let model = Model {
+        name: "Nuts".to_owned(),
+        parts: vec![
+            part(
+                "Nut",
+                cube([0.0; 3], 5.0),
+                None,
+                vec![at(0.0), at(10.0), at(20.0)],
+            ),
+            part("Washer", cube([0.0; 3], 2.0), None, vec![at(30.0)]),
+        ],
+        objects: vec![
+            BuildObject {
+                name: "Nut (Nut:1)".to_owned(),
+                components: vec![(0, 0)],
+            },
+            BuildObject {
+                name: "Nut (Nut:2)".to_owned(),
+                components: vec![(0, 1)],
+            },
+            BuildObject {
+                name: "Rest".to_owned(),
+                components: vec![(0, 2), (1, 0)],
+            },
+        ],
+        ..Model::default()
+    };
+    let data = write(&model).unwrap();
+    let xml = model_xml(&data);
+    assert_eq!(xml.matches("<item ").count(), 3);
+    for id in [4, 5, 6] {
+        assert!(xml.contains(&format!("<item objectid=\"{id}\"/>")), "{xml}");
+    }
+    assert_eq!(build_object_id(2, 0), assembly_object_id(2));
+    assert!(xml.contains("<object id=\"5\" type=\"model\" name=\"Nut (Nut:2)\">"));
+    let back = read(&data).unwrap();
+    assert_eq!(back.objects, model.objects);
+    assert_eq!(back.parts[0].placements, model.parts[0].placements);
+    // One object reads back as the model's one.
+    let one = Model {
+        objects: Vec::new(),
+        ..model.clone()
+    };
+    assert!(read(&write(&one).unwrap()).unwrap().objects.is_empty());
+    // An object of a placement that is not there is refused.
+    let wrong = Model {
+        objects: vec![BuildObject {
+            name: "Wrong".to_owned(),
+            components: vec![(0, 3)],
+        }],
+        ..model.clone()
+    };
+    assert!(write(&wrong).is_err());
 }

@@ -64,7 +64,7 @@ use mitcad_model_drawing::sheet::Group;
 use mitcad_model_drawing::tables::{
     HOLE_COLUMNS, Levels, PARTS_COLUMNS, TableSettings, header, lay_out_table,
 };
-use mitcad_model_drawing::{CutFace, CutPlane, P2, Units, ViewCurve, ViewSpec, clip};
+use mitcad_model_drawing::{CutFace, CutPlane, P2, Units, ViewCurve, ViewSpec, ViewSpline, clip};
 
 /// A pick as a command gives it: model topology, or a point on the sheet
 /// (mm) where the nearest pick of the view is found.
@@ -363,7 +363,7 @@ impl ViewAt<'_> {
 fn curve_distance(curve: &ViewCurve, p: P2) -> f64 {
     match curve {
         ViewCurve::Line(a, b) => annotate::segment_distance(p, *a, *b),
-        ViewCurve::Polyline(points) => points
+        ViewCurve::Polyline(points) | ViewCurve::Spline(ViewSpline { points, .. }) => points
             .windows(2)
             .map(|w| annotate::segment_distance(p, w[0], w[1]))
             .fold(f64::INFINITY, f64::min),

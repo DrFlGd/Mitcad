@@ -21,8 +21,12 @@
 //! [`annotate`], [`tables`] and [`template`].
 
 pub mod annotate;
+// B-splines cut and turned exactly (mitcad#853).
+pub mod bspline;
 pub mod clip;
 pub mod compose;
+// Cut sheets: flat parts' outlines at 1:1 as DXF and SVG (mitcad#853).
+pub mod cut_sheet;
 pub mod dwg;
 pub mod dxf;
 pub mod pdf;
@@ -90,6 +94,9 @@ pub struct ProjectionCache {
     /// body, shape version, placement, view spec, circle and breaks
     /// (mitcad#722).
     body_views: Entries<BodyInView>,
+    /// Cut sheets' parts worked out (mitcad#853), by body, shape version,
+    /// placement and the face chosen.
+    part_views: Entries<cut_sheet::PartView>,
 }
 
 /// What one body shows on a section, a detail or a broken view, from its
@@ -206,6 +213,14 @@ impl ProjectionCache {
 
     pub fn keep_body_view(&self, key: u128, value: std::sync::Arc<BodyInView>) {
         keep(&self.body_views, key, value, CACHED_BODY_VIEWS);
+    }
+
+    pub fn part_view(&self, key: u128) -> Option<std::sync::Arc<cut_sheet::PartView>> {
+        cached(&self.part_views, key)
+    }
+
+    pub fn keep_part_view(&self, key: u128, value: std::sync::Arc<cut_sheet::PartView>) {
+        keep(&self.part_views, key, value, CACHED_BODY_VIEWS);
     }
 
     /// How many views' projections it keeps.

@@ -19,7 +19,9 @@ pub mod ffi {
 
     /// One projected edge. `kind`: 0 sharp, 1 smooth, 2 outline; `shape`:
     /// 0 a line (two points), 1 an arc (centre, radius, angles), 2 a
-    /// polyline. `points` holds x, y pairs.
+    /// polyline, 3 a B-spline (`degree`, `knots`, `poles` as x, y pairs,
+    /// `weights`; its polyline in `points`, mitcad#853). `points` holds x,
+    /// y pairs.
     struct DrawingCurve {
         visible: bool,
         kind: u8,
@@ -29,6 +31,10 @@ pub mod ffi {
         radius: f64,
         start: f64,
         end: f64,
+        degree: u32,
+        knots: Vec<f64>,
+        poles: Vec<f64>,
+        weights: Vec<f64>,
     }
 
     /// A closed loop of a cut face: x, y pairs.
@@ -72,7 +78,7 @@ pub mod ffi {
 }
 
 use mitcad_model::drawing::{
-    CutFace, RoundHole, ViewCurve, ViewEdge, ViewEdgeKind, ViewProjection, ViewSpec,
+    CutFace, RoundHole, ViewCurve, ViewEdge, ViewEdgeKind, ViewProjection, ViewSpec, ViewSpline,
 };
 
 pub fn view(spec: &ViewSpec) -> ffi::DrawingView {
@@ -119,6 +125,13 @@ pub fn projection(drawn: &ffi::DrawingProjection) -> ViewProjection {
                     start: c.start,
                     end: c.end,
                 },
+                3 => ViewCurve::Spline(ViewSpline {
+                    degree: c.degree,
+                    knots: c.knots.clone(),
+                    poles: pairs(&c.poles),
+                    weights: c.weights.clone(),
+                    points: pairs(&c.points),
+                }),
                 _ => ViewCurve::Polyline(pairs(&c.points)),
             },
         })

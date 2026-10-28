@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 
 use super::ApiError;
 use super::annotations::present;
+use super::cut_sheets::PartEdit;
 use super::dispatch::named_enum;
 use super::drawing_annotations::{AddAnnotationCommand, EditAnnotationCommand};
 use super::drawing_templates::{RevisionCommand, SaveTemplateCommand};
@@ -982,9 +983,57 @@ impl<K: Kernel> DrawingsOps<K> for Document<K> {
                 )?;
                 Ok(json!({"drawing": old.uid}))
             }
-            DrawingCommand::AddView(c) => self.add_view_command(*c),
-            DrawingCommand::EditView(c) => self.edit_view_command(*c),
+            DrawingCommand::AddView(c) => {
+                if self.find_drawing(&c.drawing)?.cut_sheet.is_some() {
+                    return Err(ApiError(format!(
+                        "{} is a cut sheet: it takes parts (add_cut_sheet_parts), not views",
+                        c.drawing
+                    )));
+                }
+                self.add_view_command(*c)
+            }
+            DrawingCommand::EditView(c) => {
+                // A cut sheet's parts (mitcad#853) move and turn as views do.
+                if self.find_drawing(&c.drawing)?.cut_sheet.is_none() {
+                    return self.edit_view_command(*c);
+                }
+                let other = c.scale.is_some()
+                    || c.style.is_some()
+                    || c.label.is_some()
+                    || c.direction.is_some()
+                    || c.subject.is_some()
+                    || c.side.is_some()
+                    || c.letter.is_some()
+                    || c.hatch.is_some()
+                    || c.flip
+                    || c.center.is_some()
+                    || c.radius.is_some()
+                    || c.breaks.is_some()
+                    || c.add_break.is_some()
+                    || c.aligned.is_some()
+                    || c.center_marks.is_some()
+                    || c.retrieved_dimensions.is_some();
+                if other {
+                    return Err(ApiError(
+                        "a cut sheet's part is moved and turned only (place, move, rotation)"
+                            .to_owned(),
+                    ));
+                }
+                self.edit_cut_part(
+                    &c.drawing,
+                    c.view,
+                    PartEdit {
+                        place: c.place,
+                        shift: c.shift,
+                        rotation: c.rotation,
+                        ..PartEdit::default()
+                    },
+                )
+            }
             DrawingCommand::DeleteView { drawing, view } => {
+                if self.find_drawing(&drawing)?.cut_sheet.is_some() {
+                    return self.delete_cut_parts(&drawing, &[view]);
+                }
                 let old = self.find_drawing(&drawing)?.clone();
                 let (index, _) = old
                     .find_view(view)
@@ -1455,17 +1504,29 @@ impl<K: Kernel> DrawingsOps<K> for Document<K> {
             .drawings()
             .iter()
             .map(|d| {
-                json!({
-                    "drawing": d.uid,
-                    "name": d.name,
-                    "component": d.component,
-                    "component_name": self.assembly().name(d.component),
-                    "exported": d.exported,
-                    "sheets": d.sheets.iter().map(|s| json!({
+                // A cut sheet (mitcad#853): its material's size and its
+                // parts as its sheet's views.
+                let sheets: Vec<Value> = match &d.cut_sheet {
+                    Some(cut) => vec![json!({
+                        "name": d.sheets.first().map_or("Sheet1", |s| s.name.as_str()),
+                        "size": format!("{} x {} mm", mitcad_model_drawing::trim_number(cut.width, 3),
+                                        mitcad_model_drawing::trim_number(cut.height, 3)),
+                        "views": cut.parts.len(),
+                    })],
+                    None => d.sheets.iter().map(|s| json!({
                         "name": s.name,
                         "size": s.size.name(),
                         "views": s.views.len(),
-                    })).collect::<Vec<_>>(),
+                    })).collect(),
+                };
+                json!({
+                    "drawing": d.uid,
+                    "name": d.name,
+                    "kind": if d.cut_sheet.is_some() { "cut_sheet" } else { "drawing" },
+                    "component": d.component,
+                    "component_name": self.assembly().name(d.component),
+                    "exported": d.exported,
+                    "sheets": sheets,
                 })
             })
             .collect();
@@ -1474,6 +1535,16 @@ impl<K: Kernel> DrawingsOps<K> for Document<K> {
 
     fn drawing_json(&self, query: &DrawingQuery) -> Result<Value, ApiError> {
         let drawing = self.find_drawing(&query.drawing)?;
+        // A cut sheet (mitcad#853): its parts as views.
+        if drawing.cut_sheet.is_some() {
+            if query.sheet > 0 {
+                return Err(ApiError(format!(
+                    "{} has no sheet {}",
+                    drawing.name, query.sheet
+                )));
+            }
+            return Ok(self.cut_sheet_drawing_json(drawing, query.geometry));
+        }
         if query.sheet >= drawing.sheets.len() {
             return Err(ApiError(format!(
                 "{} has no sheet {}",
@@ -1653,6 +1724,7 @@ impl<K: Kernel> DrawingsLocal<K> for Document<K> {
                 revisions: Vec::new(),
                 exported: 0,
                 defaults: DrawingDefaults::default(),
+                cut_sheet: None,
             },
         };
         drawing.component = component;

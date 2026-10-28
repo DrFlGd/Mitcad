@@ -71,7 +71,8 @@ MeasureHistoryView::MeasureHistoryView(const MeasureHistory& history, QWidget* p
   // of the design.
   auto* keepRow = new QHBoxLayout;
   m_keep = new QPushButton(tr("Keep"), this);
-  m_keep->setToolTip(tr("Keep this measurement in the design as a dimension, drawn in the view"));
+  m_keepTip = tr("Keep this measurement in the design as a dimension, drawn in the view");
+  m_keep->setToolTip(m_keepTip);
   m_keep->setEnabled(false);
   // Keep Row: the history row clicked last (beside Keep, so that the row
   // of Copy, Copy All and Clear keeps the panel's width).
@@ -229,13 +230,18 @@ void MeasureHistoryView::refresh() {
   TestSync::singleShot(0, this, [this] { logPlaces(); });
 }
 
-void MeasureHistoryView::setKeepable(bool keepable) {
-  if (m_keep->isEnabled() == keepable) {
+void MeasureHistoryView::setKeepable(bool keepable, const QString& why) {
+  // A greyed-out Keep says why (mitcad#869).
+  const QString reason = keepable ? QString() : why;
+  const QString tip = reason.isEmpty() ? m_keepTip : reason;
+  if (m_keep->isEnabled() == keepable && m_keep->toolTip() == tip) {
     return;
   }
   m_keep->setEnabled(keepable);
-  qDebug().noquote() << QStringLiteral("Measure Keep %1")
-                            .arg(keepable ? QStringLiteral("enabled") : QStringLiteral("disabled"));
+  m_keep->setToolTip(tip);
+  qDebug().noquote() << QStringLiteral("Measure Keep %1%2")
+                            .arg(keepable ? QStringLiteral("enabled") : QStringLiteral("disabled"),
+                                 reason.isEmpty() ? QString() : QStringLiteral(": ") + reason);
   TestSync::singleShot(0, this, [this] { logPlaces(); });
 }
 

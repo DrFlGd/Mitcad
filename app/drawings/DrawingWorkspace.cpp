@@ -15,6 +15,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QEvent>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -25,10 +26,12 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSizePolicy>
+#include <QSpinBox>
 #include <QTabBar>
 #include <QTimer>
 #include <QToolButton>
@@ -188,10 +191,19 @@ DrawingWorkspace::DrawingWorkspace(OcctViewer* viewer, DocumentHost& host, std::
   bar->setContentsMargins(0, 0, 0, 0);
   bar->setSpacing(4);
   rows->addLayout(bar);
-  auto* toolRow = new QHBoxLayout;
+  // The tools in a row of their own, which a cut sheet's row replaces
+  // (mitcad#853).
+  m_toolRow = new QWidget;
+  auto* toolRow = new QHBoxLayout(m_toolRow);
   toolRow->setContentsMargins(0, 0, 0, 0);
   toolRow->setSpacing(4);
-  rows->addLayout(toolRow);
+  rows->addWidget(m_toolRow);
+  m_cutRow = new QWidget;
+  auto* cutRow = new QHBoxLayout(m_cutRow);
+  cutRow->setContentsMargins(0, 0, 0, 0);
+  cutRow->setSpacing(4);
+  rows->addWidget(m_cutRow);
+  m_cutRow->hide();
   const auto button = [](const QString& icon, const QString& text, const QString& tooltip) {
     auto* b = new QToolButton;
     b->setIcon(themeIcon(icon));
@@ -311,6 +323,27 @@ DrawingWorkspace::DrawingWorkspace(OcctViewer* viewer, DocumentHost& host, std::
   m_export->setMenu(formats);
   group(tr("Export"), {m_export}, m_groupCaptions);
   toolRow->addStretch(1);
+  // A cut sheet's row (mitcad#853): Add Parts… and its export as DXF or
+  // SVG, with the parts' names on the layer LABEL or not.
+  m_addParts = button(QStringLiteral("add"), tr("Add Parts…"),
+                      tr("Adds bodies as flat parts, each seen along its largest planar face"));
+  connect(m_addParts, &QToolButton::clicked, this, [this] { addParts(); });
+  cutRow->addWidget(m_addParts);
+  m_cutExport = button(QStringLiteral("export"), tr("Export…"), tr("The parts' outlines at 1:1 as DXF or SVG"));
+  m_cutExport->setPopupMode(QToolButton::InstantPopup);
+  auto* cutFormats = new QMenu(m_cutExport);
+  cutFormats->addAction(tr("DXF…"), this, [this] { exportDrawing(QStringLiteral("dxf")); });
+  cutFormats->addAction(tr("SVG…"), this, [this] { exportDrawing(QStringLiteral("svg")); });
+  cutFormats->addSeparator();
+  QAction* labels = cutFormats->addAction(tr("Part Names on the LABEL Layer"));
+  labels->setCheckable(true);
+  connect(labels, &QAction::toggled, this, [this](bool on) {
+    m_cutLabels = on;
+    qDebug().noquote() << QStringLiteral("Cut sheet labels: %1").arg(on ? QStringLiteral("on") : QStringLiteral("off"));
+  });
+  m_cutExport->setMenu(cutFormats);
+  cutRow->addWidget(m_cutExport);
+  cutRow->addStretch(1);
   column->addWidget(m_bar);
 
   // The sheet and the panel beside it.
@@ -463,6 +496,26 @@ void DrawingWorkspace::refresh() {
 
 void DrawingWorkspace::showSheet(const QJsonObject& answer) {
   m_answer = answer;
+  // A cut sheet (mitcad#853): its row instead of the tools, one sheet.
+  const bool cut = answer.value(QStringLiteral("kind")).toString() == QStringLiteral("cut_sheet");
+  if (cut != m_cutSheet) {
+    m_cutSheet = cut;
+    m_toolRow->setVisible(!cut);
+    m_cutRow->setVisible(cut);
+    m_addSheet->setVisible(!cut);
+    m_addRevision->setVisible(!cut);
+    m_tabs->setVisible(!cut);
+    m_sheetButton->setText(cut ? tr("Material…") : tr("Sheet…"));
+    m_sheetButton->setToolTip(cut ? tr("The cut sheet's material: its width and height")
+                                  : tr("The sheet's size, projection, units, template and title block"));
+    // Said once for the cut sheet opened, "none" too.
+    m_cutWarnings = QStringLiteral("\n");
+    m_toolsWidth = -1;
+    if (m_tool == nullptr) {
+      showHint();
+    }
+    QTimer::singleShot(0, this, [this] { logButtons(); });
+  }
   m_name = answer.value(QStringLiteral("name")).toString();
   const QString component = answer.value(QStringLiteral("component_name")).toString();
   m_titleLabel->setText(answer.value(QStringLiteral("component")).toString() == QStringLiteral("C0")
@@ -497,7 +550,24 @@ void DrawingWorkspace::showSheet(const QJsonObject& answer) {
   // The views the model could not draw, in the status bar when that
   // changes (their boxes show on the sheet).
   QStringList problems;
+  // A cut sheet's warnings (overlaps, parts off the sheet, missing
+  // bodies) say it all.
+  if (m_cutSheet) {
+    QStringList warnings;
+    for (const QJsonValue& warning : sheet.value(QStringLiteral("warnings")).toArray()) {
+      warnings << warning.toString();
+    }
+    const QString told = warnings.join(QStringLiteral("; "));
+    if (told != m_cutWarnings) {
+      m_cutWarnings = told;
+      qDebug().noquote() << QStringLiteral("Cut sheet warnings: %1").arg(told.isEmpty() ? QStringLiteral("none") : told);
+      setStatus(told, true);
+    }
+  }
   for (const QJsonValue& value : sheet.value(QStringLiteral("views")).toArray()) {
+    if (m_cutSheet) {
+      break;
+    }
     const QJsonObject view = value.toObject();
     if (view.contains(QStringLiteral("error"))) {
       problems << tr("View %1: %2").arg(view.value(QStringLiteral("id")).toInt())
@@ -523,6 +593,10 @@ void DrawingWorkspace::startTool(const QString& id) {
   if (tool == nullptr || !isOpen()) {
     return;
   }
+  if (m_cutSheet) {
+    setStatus(tr("A cut sheet holds parts: Add Parts… adds them."), true);
+    return;
+  }
   setTool(m_tool == tool ? nullptr : tool);
 }
 
@@ -545,7 +619,13 @@ void DrawingWorkspace::setTool(const DrawingToolDef* tool) {
   fillPanel();
 }
 
-void DrawingWorkspace::showHint() { m_sheetView->setHint(m_tool != nullptr ? m_tool->hint : QString()); }
+void DrawingWorkspace::showHint() {
+  if (m_tool == nullptr && m_cutSheet) {
+    m_sheetView->setHint(tr("Add Parts… adds bodies; drag a part to move it, its menu turns it"));
+    return;
+  }
+  m_sheetView->setHint(m_tool != nullptr ? m_tool->hint : QString());
+}
 
 void DrawingWorkspace::escape() {
   // Both: an annotation tool's picks are the workspace's, its placing
@@ -593,6 +673,16 @@ void DrawingWorkspace::fillPanel() {
       m_sheetView->setFocus(Qt::OtherFocusReason);
     }
   };
+  if (m_cutSheet) {
+    if (m_sheetView->selectionSize() <= 1 && m_sheetView->selectedView() != 0) {
+      fillPartPanel(m_sheetView->selectedView());
+    } else {
+      fillCutSheetPanel();
+    }
+    refocus();
+    QTimer::singleShot(0, this, [this] { logButtons(); });
+    return;
+  }
   if (m_tool != nullptr) {
     fillToolPanel(*m_tool);
   } else if (m_sheetView->selectionSize() > 1) {
@@ -1815,6 +1905,26 @@ void DrawingWorkspace::contextMenu(QPointF at, const QPoint& global) {
   const int count = m_sheetView->selectionSize();
   const int viewId = m_sheetView->selectedView();
   const int note = m_sheetView->selectedAnnotation();
+  // A cut sheet's parts (mitcad#853): turned a quarter, copied, deleted.
+  if (m_cutSheet) {
+    if (count > 1) {
+      add(tr("Delete"), later([this] { deleteSelection(); }));
+    } else if (viewId != 0) {
+      add(tr("Rotate 90° Left"),
+          later([this, viewId] { editPart(viewId, {{QStringLiteral("turn"), 90.0}}); }));
+      add(tr("Rotate 90° Right"),
+          later([this, viewId] { editPart(viewId, {{QStringLiteral("turn"), -90.0}}); }));
+      add(tr("Add Copy"), later([this, viewId] { addCopy(viewId); }));
+      menu.addSeparator();
+      add(tr("Delete Part"), later([this, viewId] { deleteView(viewId); }));
+    } else {
+      add(tr("Add Parts…"), later([this] { addParts(); }));
+      add(tr("Material…"), later([this] { editCutSheet(); }));
+    }
+    qDebug().noquote() << QStringLiteral("Context menu: %1").arg(entries.join(QStringLiteral(" | ")));
+    execMenu(&menu, global);
+    return;
+  }
   if (count > 1) {
     add(tr("Delete"), later([this] { deleteSelection(); }));
   } else if (note != 0) {
@@ -1908,6 +2018,10 @@ bool DrawingWorkspace::run(const QJsonObject& command, QJsonObject* result) {
 }
 
 void DrawingWorkspace::editSheet() {
+  if (m_cutSheet) {
+    editCutSheet();
+    return;
+  }
   const QJsonObject sheet = m_answer.value(QStringLiteral("sheets")).toArray().at(m_sheet).toObject();
   const QJsonObject block = sheet.value(QStringLiteral("title_block")).toObject();
   QDialog dialog(this);
@@ -2217,7 +2331,8 @@ void DrawingWorkspace::exportDrawing(const QString& format) {
                          : format == QStringLiteral("svg") ? tr("SVG (*.svg)")
                          : format == QStringLiteral("dwg") ? tr("DWG (*.dwg)")
                                                            : tr("DXF (*.dxf)");
-  const QString path = dialogSaveFileName(this, tr("Export Drawing"), suggested, filter);
+  const QString path =
+      dialogSaveFileName(this, m_cutSheet ? tr("Export Cut Sheet") : tr("Export Drawing"), suggested, filter);
   if (path.isEmpty()) {
     return;
   }
@@ -2226,6 +2341,24 @@ void DrawingWorkspace::exportDrawing(const QString& format) {
 }
 
 bool DrawingWorkspace::exportTo(const QString& path) {
+  // A cut sheet (mitcad#853): its parts' outlines, their names with Part
+  // Names on the LABEL Layer.
+  if (m_cutSheet) {
+    const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("export_cut_sheet")},
+                              {QStringLiteral("path"), path},
+                              {QStringLiteral("drawing"), m_drawing},
+                              {QStringLiteral("labels"), m_cutLabels}};
+    QJsonObject result;
+    qDebug().noquote() << QStringLiteral("Drawing export: %1").arg(QDir::toNativeSeparators(path));
+    if (!m_host.runModelCommand(command, &result)) {
+      setStatus(m_host.lastError(), true);
+      return false;
+    }
+    const int parts = result.value(QStringLiteral("parts")).toInt();
+    qInfo().noquote() << QStringLiteral("Exported %1: cut sheet %2, %3 parts").arg(path, m_name).arg(parts);
+    setStatus(tr("Exported %1 (%2 part(s)).").arg(QDir::toNativeSeparators(path)).arg(parts), false);
+    return true;
+  }
   QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("export_drawing")},
                       {QStringLiteral("path"), path},
                       {QStringLiteral("drawing"), m_drawing}};
@@ -2431,7 +2564,10 @@ void DrawingWorkspace::logButtons() {
   lines << QStringLiteral("Drawing Close Drawing at %1").arg(at(m_close));
   lines << QStringLiteral("Drawing Add Sheet at %1").arg(at(m_addSheet));
   lines << QStringLiteral("Drawing Sheet at %1").arg(at(m_sheetButton));
-  lines << QStringLiteral("Drawing Export at %1").arg(at(m_export));
+  lines << QStringLiteral("Drawing Export at %1").arg(at(m_cutSheet ? m_cutExport : m_export));
+  if (m_cutSheet) {
+    lines << QStringLiteral("Drawing Add Parts at %1").arg(at(m_addParts));
+  }
   lines << QStringLiteral("Drawing Add Revision at %1").arg(at(m_addRevision));
   for (const DrawingToolDef& tool : drawingTools()) {
     lines << QStringLiteral("Drawing tool %1 at %2").arg(tool.name, at(m_toolButtons.value(tool.id)));
@@ -2464,6 +2600,257 @@ void DrawingWorkspace::logButtons() {
   m_loggedButtons = text;
   for (const QString& line : std::as_const(lines)) {
     qDebug().noquote() << line;
+  }
+}
+
+// --- Cut sheets (mitcad#853) -------------------------------------------------
+
+void DrawingWorkspace::editPart(int part, const QJsonObject& fields) {
+  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("edit_cut_sheet_part")},
+                      {QStringLiteral("drawing"), m_drawing},
+                      {QStringLiteral("part"), part}};
+  for (auto it = fields.begin(); it != fields.end(); ++it) {
+    command.insert(it.key(), it.value());
+  }
+  QTimer::singleShot(0, this, [this, command] { run(command); });
+}
+
+void DrawingWorkspace::addCopy(int part) {
+  const SheetView* shown = m_sheetView->view(part);
+  if (shown == nullptr) {
+    return;
+  }
+  const QJsonObject json = shown->json;
+  QJsonObject body{{QStringLiteral("body"), json.value(QStringLiteral("body"))}};
+  if (json.value(QStringLiteral("occurrence")).isString()) {
+    body.insert(QStringLiteral("occurrence"), json.value(QStringLiteral("occurrence")));
+  }
+  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("add_cut_sheet_parts")},
+                      {QStringLiteral("drawing"), m_drawing},
+                      {QStringLiteral("bodies"), QJsonArray{body}}};
+  if (json.value(QStringLiteral("own_face")).toBool()) {
+    command.insert(QStringLiteral("face"), json.value(QStringLiteral("face")));
+  }
+  QTimer::singleShot(0, this, [this, command] { run(command); });
+}
+
+void DrawingWorkspace::addParts() {
+  if (!isOpen() || !m_cutSheet) {
+    return;
+  }
+  QJsonArray bodies;
+  try {
+    bodies = m_host.model().queryArray(QStringLiteral("bodies"));
+  } catch (const std::exception& e) {
+    setStatus(QString::fromUtf8(e.what()), true);
+    return;
+  }
+  const QString component = m_answer.value(QStringLiteral("component")).toString();
+  const bool root = component.isEmpty() || component == QStringLiteral("C0");
+  const QJsonArray selected = m_host.selectedModelBodies();
+  QDialog dialog(this);
+  dialog.setWindowTitle(tr("Add Parts"));
+  auto* form = new QFormLayout(&dialog);
+  auto* list = new QListWidget;
+  list->setObjectName(QStringLiteral("cutSheetBodies"));
+  list->setSelectionMode(QAbstractItemView::ExtendedSelection);
+  list->setToolTip(tr("The bodies to add as parts; Ctrl+click chooses several"));
+  for (const QJsonValue& value : bodies) {
+    const QJsonObject body = value.toObject();
+    const QString owner = body.value(QStringLiteral("component")).toString();
+    const bool own = root ? owner.isEmpty() || owner == QStringLiteral("C0") : owner == component;
+    const QString uid = body.value(QStringLiteral("uid")).toString();
+    if (!own || uid.isEmpty()) {
+      continue;
+    }
+    const QString name = body.value(QStringLiteral("name")).toString();
+    auto* item = new QListWidgetItem(name.isEmpty() ? uid : name, list);
+    item->setData(Qt::UserRole, uid);
+    item->setSelected(selected.contains(QJsonValue(uid)));
+  }
+  form->addRow(tr("&Bodies"), list);
+  auto* count = new QSpinBox;
+  count->setObjectName(QStringLiteral("cutSheetCount"));
+  count->setRange(1, 1000);
+  count->setToolTip(tr("How many parts of each body"));
+  form->addRow(tr("&Count"), count);
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  form->addRow(buttons);
+  list->setFocus(Qt::OtherFocusReason);
+  qDebug().noquote() << QStringLiteral("Cut sheet Add Parts dialog opened: %1 bodies").arg(list->count());
+  if (execDialog(&dialog) != QDialog::Accepted) {
+    return;
+  }
+  QJsonArray chosen;
+  for (int row = 0; row < list->count(); ++row) {
+    if (list->item(row)->isSelected()) {
+      chosen.append(list->item(row)->data(Qt::UserRole).toString());
+    }
+  }
+  if (chosen.isEmpty()) {
+    setStatus(tr("Choose the bodies to add as parts."), true);
+    return;
+  }
+  run({{QStringLiteral("cmd"), QStringLiteral("add_cut_sheet_parts")},
+       {QStringLiteral("drawing"), m_drawing},
+       {QStringLiteral("bodies"), chosen},
+       {QStringLiteral("count"), count->value()}});
+}
+
+void DrawingWorkspace::editCutSheet() {
+  if (!isOpen() || !m_cutSheet) {
+    return;
+  }
+  const double width = m_answer.value(QStringLiteral("width")).toDouble();
+  const double height = m_answer.value(QStringLiteral("height")).toDouble();
+  QDialog dialog(this);
+  dialog.setWindowTitle(tr("Cut Sheet"));
+  auto* form = new QFormLayout(&dialog);
+  const auto length = [](double value, const char* name) {
+    auto* box = new QDoubleSpinBox;
+    box->setObjectName(QString::fromLatin1(name));
+    box->setRange(1.0, 100000.0);
+    box->setDecimals(1);
+    box->setSuffix(QStringLiteral(" mm"));
+    box->setValue(value);
+    return box;
+  };
+  QDoubleSpinBox* widthBox = length(width, "cutSheetWidth");
+  QDoubleSpinBox* heightBox = length(height, "cutSheetHeight");
+  form->addRow(tr("&Width"), widthBox);
+  form->addRow(tr("&Height"), heightBox);
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+  connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+  connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+  form->addRow(buttons);
+  qDebug().noquote() << QStringLiteral("Cut sheet material dialog opened");
+  if (execDialog(&dialog) != QDialog::Accepted) {
+    return;
+  }
+  if (widthBox->value() == width && heightBox->value() == height) {
+    return;
+  }
+  run({{QStringLiteral("cmd"), QStringLiteral("edit_cut_sheet")},
+       {QStringLiteral("drawing"), m_drawing},
+       {QStringLiteral("width"), widthBox->value()},
+       {QStringLiteral("height"), heightBox->value()}});
+}
+
+void DrawingWorkspace::fillCutSheetPanel() {
+  m_panelTitle->setText(tr("Cut Sheet"));
+  const QJsonObject sheet = m_answer.value(QStringLiteral("sheets")).toArray().at(0).toObject();
+  m_form->addRow(tr("Material"), new QLabel(sheet.value(QStringLiteral("size")).toString()));
+  m_form->addRow(tr("Scale"), new QLabel(QStringLiteral("1:1")));
+  m_form->addRow(tr("Parts"), new QLabel(QString::number(sheet.value(QStringLiteral("views")).toArray().size())));
+  for (const QJsonValue& warning : sheet.value(QStringLiteral("warnings")).toArray()) {
+    auto* said = new QLabel(warning.toString());
+    said->setWordWrap(true);
+    said->setStyleSheet(QStringLiteral("color: #c92a2a;"));
+    m_form->addRow(said);
+  }
+  auto* add = new QPushButton(tr("Add Parts…"));
+  add->setObjectName(QStringLiteral("cutSheetAddParts"));
+  connect(add, &QPushButton::clicked, this, [this] { QTimer::singleShot(0, this, [this] { addParts(); }); });
+  m_form->addRow(QString(), add);
+  auto* material = new QPushButton(tr("Material…"));
+  material->setObjectName(QStringLiteral("cutSheetMaterial"));
+  connect(material, &QPushButton::clicked, this,
+          [this] { QTimer::singleShot(0, this, [this] { editCutSheet(); }); });
+  m_form->addRow(QString(), material);
+}
+
+void DrawingWorkspace::fillPartPanel(int id) {
+  const SheetView* view = m_sheetView->view(id);
+  if (view == nullptr) {
+    fillCutSheetPanel();
+    return;
+  }
+  const QJsonObject json = view->json;
+  m_panelTitle->setText(tr("Part %1").arg(id));
+  if (!view->error.isEmpty()) {
+    auto* why = new QLabel(view->error);
+    why->setWordWrap(true);
+    why->setStyleSheet(QStringLiteral("color: #c92a2a;"));
+    m_form->addRow(why);
+  }
+  m_form->addRow(tr("Body"), new QLabel(view->label));
+  // The planar face it lies on: the largest, or one of the body's.
+  QList<QPair<QString, QString>> faces{{QString(), tr("Largest Planar Face")}};
+  for (const QJsonValue& value : json.value(QStringLiteral("faces")).toArray()) {
+    const QJsonObject face = value.toObject();
+    const QString name = face.value(QStringLiteral("face")).toString();
+    faces.append({name, tr("%1 (%2 mm²)").arg(name).arg(face.value(QStringLiteral("area")).toDouble(), 0, 'f', 0)});
+  }
+  const bool own = json.value(QStringLiteral("own_face")).toBool();
+  QComboBox* face = comboOf(faces, own ? json.value(QStringLiteral("face")).toString() : QString());
+  face->setObjectName(QStringLiteral("cutPartFace"));
+  face->setToolTip(tr("The planar face the part is seen along"));
+  connect(face, &QComboBox::currentIndexChanged, this, [this, id, face] {
+    const QString chosen = face->currentData().toString();
+    editPart(id, {{QStringLiteral("face"), chosen.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(chosen)}});
+  });
+  m_form->addRow(tr("Face"), face);
+  const QString shownTurn = QString::number(json.value(QStringLiteral("rotation")).toDouble(), 'g', 6);
+  auto* rotation = new QLineEdit(shownTurn);
+  rotation->setObjectName(QStringLiteral("cutPartRotation"));
+  rotation->setToolTip(tr("How far the part is turned on the sheet, degrees counter-clockwise"));
+  connect(rotation, &QLineEdit::editingFinished, this, [this, id, rotation, shownTurn] {
+    const QString text = rotation->text().trimmed();
+    if (text == shownTurn) {
+      return;
+    }
+    const std::optional<double> degrees = parsePlainNumber(text);
+    if (!degrees) {
+      setStatus(tr("A rotation is a number of degrees, not %1.").arg(text), true);
+      rotation->setText(shownTurn);
+      return;
+    }
+    editPart(id, {{QStringLiteral("rotation"), *degrees}});
+  });
+  m_form->addRow(tr("Rotation (°)"), rotation);
+  auto* turns = new QWidget;
+  auto* turnRow = new QHBoxLayout(turns);
+  turnRow->setContentsMargins(0, 0, 0, 0);
+  struct Turn {
+    const char* text;
+    double degrees;
+    const char* name;
+  };
+  static const Turn kTurns[] = {{QT_TR_NOOP("Rotate 90° Left"), 90.0, "cutPartLeft"},
+                                {QT_TR_NOOP("Rotate 90° Right"), -90.0, "cutPartRight"}};
+  for (const Turn& quarter : kTurns) {
+    auto* turn = new QPushButton(tr(quarter.text));
+    turn->setObjectName(QString::fromLatin1(quarter.name));
+    const double degrees = quarter.degrees;
+    connect(turn, &QPushButton::clicked, this,
+            [this, id, degrees] { editPart(id, {{QStringLiteral("turn"), degrees}}); });
+    turnRow->addWidget(turn);
+  }
+  m_form->addRow(turns);
+  auto* copy = new QPushButton(tr("Add Copy"));
+  copy->setObjectName(QStringLiteral("cutPartAddCopy"));
+  copy->setToolTip(tr("Adds another part of the same body and face"));
+  connect(copy, &QPushButton::clicked, this, [this, id] { addCopy(id); });
+  m_form->addRow(QString(), copy);
+  // What is wrong with where it is.
+  QStringList wrong;
+  if (json.value(QStringLiteral("off_sheet")).toBool()) {
+    wrong << tr("It leaves the sheet.");
+  }
+  QStringList others;
+  for (const QJsonValue& other : json.value(QStringLiteral("overlaps")).toArray()) {
+    others << QString::number(other.toInt());
+  }
+  if (!others.isEmpty()) {
+    wrong << tr("It overlaps part %1.").arg(others.join(QStringLiteral(", ")));
+  }
+  if (!wrong.isEmpty()) {
+    auto* said = new QLabel(wrong.join(QLatin1Char(' ')));
+    said->setWordWrap(true);
+    said->setStyleSheet(QStringLiteral("color: #c92a2a;"));
+    m_form->addRow(said);
   }
 }
 

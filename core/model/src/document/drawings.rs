@@ -181,6 +181,21 @@ impl DocState {
                     }
                 }
             }
+            // A cut sheet's parts (mitcad#853): their bodies, occurrences
+            // and faces.
+            if let Some(cut) = &mut copy.cut_sheet {
+                for part in &mut cut.parts {
+                    part.body = body(part.body);
+                    if let Some(p) = &mut part.occurrence {
+                        *p = path(p);
+                    }
+                    if let Some(face) = &part.face
+                        && let Ok(mapped) = renamed(face.to_string()).parse()
+                    {
+                        part.face = Some(mapped);
+                    }
+                }
+            }
             self.reletter_datums(&mut copy);
             self.drawings.push(copy);
         }

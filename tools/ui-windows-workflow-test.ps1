@@ -107,7 +107,8 @@ function Type-Into-Dialog([string]$Title, [string]$Path) {
   Ui-FocusDialog $Title
   Ui-Key 'ctrl+a'
   Ui-Type $Path
-  Start-Sleep -Milliseconds 300
+  # The characters handled before Enter (mitcad#870: a fixed 300 ms before).
+  Ui-Sync
   Ui-Key 'Return'
   Ui-FocusMain
 }
@@ -150,8 +151,27 @@ $filleted = [double]::Parse((Ui-LastMatch 'Body Body1 \(F2\.b0\): volume 20000\.
 
 Write-Host '--- Autosave'
 Ui-ExpectLog 'Autosaved Untitled: ' 'the changed design was autosaved'
-# One interval more: the last change is written, and nothing after it.
-Start-Sleep -Milliseconds 2500
+# Within one interval more the last change is written, and nothing after
+# it: the autosave with the fillet looked for until then (mitcad#870: one
+# look after a fixed 2.5 s before); the checks below say what is wrong if
+# it did not come.
+$clock = [Diagnostics.Stopwatch]::StartNew()
+do {
+  try {
+    $metadata = @(Get-ChildItem $script:UiAutosave -Filter '*.json')
+    if ($metadata.Count -eq 1) {
+      $about = Get-Content -Raw $metadata[0].FullName | ConvertFrom-Json
+      $autosaved = Join-Path $script:UiAutosave $about.project
+      if ((Test-Path $autosaved) -and (Get-Item $autosaved).Length -eq $about.size) {
+        $features = (Get-Content -Raw $autosaved | ConvertFrom-Json).features | ForEach-Object { $_.type }
+        if (($features -join ',') -eq 'sketch,extrude,fillet') { break }
+      }
+    }
+  } catch {
+    # A file being written: looked at again.
+  }
+  Start-Sleep -Milliseconds 100
+} while ($clock.ElapsedMilliseconds -lt 2500)
 $metadata = @(Get-ChildItem $script:UiAutosave -Filter '*.json')
 if ($metadata.Count -ne 1) { Ui-Fail "$($metadata.Count) autosave sessions in $($script:UiAutosave)" }
 $about = Get-Content -Raw $metadata[0].FullName | ConvertFrom-Json
@@ -335,10 +355,12 @@ Write-Host '--- 3D Print to a fake slicer'
 $printFolder = [IO.Path]::GetFullPath((Join-Path $printTemp 'mitcad-print\block'))
 # The fake slicer's arguments, once it ran (PowerShell takes a while to start).
 function Slicer-Arguments {
-  for ($i = 0; $i -lt 100; $i++) {
+  # Looked for every 50 ms (200 ms before, mitcad#870), up to 20 s.
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
     if (Test-Path $slicerArgs) { return @(Get-Content $slicerArgs | ForEach-Object { [IO.Path]::GetFullPath($_) }) }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 20000)
   Ui-Fail 'the slicer was not started'
 }
 Ui-Mark
@@ -644,7 +666,8 @@ Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Added extrude (New Body), distance 10' 'the extrusion added' 30
 Ui-ExpectNew 'New body ' 'its bodies measured' 30
-Start-Sleep -Milliseconds 500
+# Each new body's line logged (mitcad#870: a fixed 500 ms before).
+Ui-WaitIdle
 # 10 mm of the ring a (60^2 - 40^2) and the square c (20^2), in its bodies.
 $lines = Ui-LogLines
 $added = 0.0

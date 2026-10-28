@@ -387,7 +387,10 @@ resident memory (`/usr/bin/time -l` on macOS reports the latter in bytes).
 The CLI's `--timings` report does not measure viewport meshing or display.
 `MITCAD_TEST_ONLY` selects `guarded` geometry tests by a name substring;
 `test_geometry --part <name>` runs one part of the suite (`--list` names
-them; each is the ctest `geometry.suite.<name>`, mitcad#832).
+them; each is the ctest `geometry.suite.<name>`, mitcad#832). The long
+thread and sweep groups are numbered parts of about equal time
+(`thread.1`-`thread.3`, `sweeps.1`-`sweeps.5`, mitcad#870); a test of a
+second or more prints its time, for moving a test between them.
 Legacy groups that call their cases directly still run, so inspect the
 test entry point before treating a filtered invocation as one isolated
 case. Keep workload, compiler flags, thread
@@ -895,6 +898,7 @@ file's format and what is left: [tools/testrun/README.md](../tools/testrun/READM
 | `MITCAD_TEST_OCCT_ALLOCATION_FAILS=<operation>` | An allocation of OCCT's collections fails in that kernel operation (e.g. `extrude`) or in the healing of a body built from B-rep data (`heal`), and is caught there as OCCT's checker catches its failures: only OCCT's count of failed allocations tells, and the operation or the body's build fails "out of memory" (mitcad#132). |
 | `MITCAD_CHECK_INPUTS=1` | Report operations that modify their input shapes ([architecture](architecture.md#geometry-kernel)). |
 | `MITCAD_NO_FAR_FEATURES=1` | Booleans on perforated bodies work on the whole body and cut a pattern's copies at once ([architecture](architecture.md#geometry-kernel)), for comparisons. |
+| `MITCAD_NO_PATTERN_RUNS=1` | Patterns of features join or cut each feature's copies on their own instead of a run of features in one boolean ([architecture](architecture.md#geometry-kernel), mitcad#855), for comparisons. |
 | `MITCAD_NO_NEAR_COPIES=1` | A mirror's `combine` joins every image with its body whole, also a near copy of it ([commands.md](../core/model-api/src/commands.md#mirror)), for comparisons. |
 | `MITCAD_RESULT_STORE` | Result store folder; `off` disables it. |
 | `MITCAD_RESULT_STORE_MIN_MS` | Store results that took at least this long (default 100). |
@@ -909,6 +913,7 @@ file's format and what is left: [tools/testrun/README.md](../tools/testrun/READM
 | `MITCAD_MOSQUITTO` | The mosquitto program for the live updates' tests, when it is not on `PATH` or in the usual places. |
 | `MITCAD_TEST_LIVE_CA` | A PEM file of certificate authorities the app's live updates trust besides the system's (the test broker's, `tools/ui-live-test.sh`). |
 | `MITCAD_NO_UPDATE_CHECK=1` | No update checks; update test variables: [updates.md](updates.md#tests). |
+| `MITCAD_SKETCH_FIRST_DIMENSION_SCALE=0` | Preferences › Sketch › *Scale the sketch to its first dimension* is off until it is saved (mitcad#860); the UI test libraries set it, so that their drawn sketches keep their sizes. |
 | `MITCAD_TEST_LOG_URLS=1` | Addresses the app would open in the browser (a report's issue form) are logged, not opened; the UI test library sets it. |
 | `MITCAD_LOG_TYPED_TEXT=1` | Text fields are logged as they change: `File dialog <title>: <text>` (Qt's file dialog's file name), `Dialog field <title>: <text>` and `Panel field <input>: <text>` (typed into another dialog's field or a command panel's input; never a password); the UI test libraries set it (`app/framework/TypedTextLog.hpp`). |
 | `MITCAD_TEST_CRASH=app\|app-exception\|model-worker\|import-worker\|render-worker` | That process (or the model's worker thread) crashes as an access violation would (`app-exception`: the application throws an exception nothing catches, mitcad#773), for the crash reports' tests ([app/COMMANDS.md](../app/COMMANDS.md#feedback-and-error-reports)). |
@@ -1598,6 +1603,34 @@ before. Build and lint use half the cores unless
   (a proprietary licence: binary-only, NVIDIA hardware only, recipients
   bound to its terms) would be compiled in, so MitCad does not use OptiX
   (README, FAQ).
+- HEIF images of image references (mitcad#850): libheif and its HEVC
+  decoder libde265 (GNU LGPL version 3 or later, as their sources say;
+  vcpkg's metadata names LGPL-3.0-only) from vcpkg, decode only. The
+  manifest's default feature `heif` asks for `libheif` with
+  `default-features: false`: its default feature `hevc` is the x265
+  encoder (GPL-2.0-or-later), and no other encoder feature is turned on,
+  so the dependencies are libde265 and vcpkg's build helpers. Both are
+  shared libraries of the dynamic triplets, linked by `mitcad` (libde265
+  through libheif); `app/CMakeLists.txt` stops on a static libheif or
+  libde265, and `tools/check-dependencies.sh` on a static archive of
+  either or an x265 or x264 in the build's vcpkg tree. They stay separate
+  files a user can replace with interface-compatible builds (the
+  AppImage's `usr/lib/libheif.so*` and `libde265.so*`, the installer's
+  `heif.dll` and `libde265.dll`, the bundle's `Contents/Frameworks`,
+  where replacing a library breaks the bundle's signature as for Qt and
+  OCCT). Their licence texts (their COPYING files, with the LGPL and the
+  GPL it builds on, which `check-dependencies.sh` looks for; libde265's
+  with `win32cond.c`'s licence for the Windows build) go into the packages
+  with the other vcpkg ports' copyright files,
+  and the third-party notices name the versions and the corresponding
+  sources: the upstream release tags, built unmodified but for the build
+  patches of vcpkg's ports at `vcpkg.json`'s `builtin-baseline`. They are
+  in a build only with `-DMITCAD_HEIF=ON`: `MITCAD_HEIF` is off by
+  default, releases included, and such a build neither builds nor ships
+  them and reads no HEIF image. The HEVC
+  test data of `app/tests/heif_image.cpp` was made with ffmpeg's libx265
+  (GPL) by `tools/heif-test-fixture.py`, a separate program run by hand;
+  nothing of it is linked or shipped.
 - This is not a legal review; licence combinations are checked before a
   release.
 

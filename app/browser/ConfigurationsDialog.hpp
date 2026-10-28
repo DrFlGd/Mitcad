@@ -44,9 +44,14 @@ public:
 // (ConfigurationRulesPage.cpp). The window takes it as its third tab.
 ConfigurationPage* makeConfigurationRulesPage(DocumentHost& host, QWidget* parent);
 
+// The Bindings page (mitcad#862, ConfigurationBindingsPage.hpp): the
+// window's fourth tab, and what its Edit… and Select in Browser call.
+class ConfigurationBindingsPage;
+struct BindingActions;
+
 // Configurations (mitcad#807; docs/configurations.md, decision 7): the
 // design's configuration table in a window of its own, with the tabs
-// Options, Rows and Rules. Every change is a model command and an undo
+// Options, Rows, Rules and Bindings. Every change is a model command and an undo
 // step at once, as in Change Parameters; what the model refuses stays in
 // its cell in red with the reason.
 //
@@ -64,6 +69,8 @@ ConfigurationPage* makeConfigurationRulesPage(DocumentHost& host, QWidget* paren
 //   red with the rule's name; a row that breaks a rule is marked in its
 //   cells with the rule in the tooltip.
 // - Rules: makeConfigurationRulesPage.
+// - Bindings (mitcad#862): ConfigurationBindingsPage, every binding of the
+//   design; the Options tab says per option how many use it (Used By).
 //
 // The JSON is configurations::'s (ConfigurationsData.hpp).
 class ConfigurationsDialog : public QDialog {
@@ -75,8 +82,21 @@ public:
   // Shows the table as the model has it now.
   void refresh();
 
+  // The Bindings tab (mitcad#862): what its Edit… and Select in Browser
+  // do, and the tab shown with the bindings an option drives (empty: all).
+  void setBindingActions(const BindingActions& actions);
+  void showBindings(const QString& option = QString());
+
 private:
-  enum OptionColumn { kOptionName, kOptionUnit, kOptionDomain, kOptionDefault, kOptionComment, kOptionDriven };
+  enum OptionColumn {
+    kOptionName,
+    kOptionUnit,
+    kOptionDomain,
+    kOptionDefault,
+    kOptionComment,
+    kOptionDriven,
+    kOptionUsedBy // mitcad#862
+  };
 
   QWidget* makeOptionsPage();
   QWidget* makeRowsPage();
@@ -148,6 +168,8 @@ private:
   QPushButton* m_apply = nullptr;
 
   ConfigurationPage* m_rules = nullptr;
+  ConfigurationBindingsPage* m_bindings = nullptr; // mitcad#862
+  QString m_loggedUsage;
 
   // The model's table, its options' reports and the user parameters
   // (by name, as the parameters query gives them).

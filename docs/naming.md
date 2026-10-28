@@ -118,6 +118,8 @@ not a level of its own, and MitCad has no separate assembly file.
 | **Balloon** | A component's number in a parts list, in a circle on a leader to the component on a view. UI: *Balloon*. | `AnnotationType::Balloon` |
 | **Sheet template** | A sheet's frame, title block and revision table as data: its fields filled in from the design (name, part number, material, mass, author, date, scale, sheet, revision, any property). Built in (ISO, ANSI), the user's or a project's; a sheet keeps a copy. UI: *Template*, *Save as Template…*; *Simple Title Block* for a sheet without one. | `SheetTemplate` (`core/model/src/drawing/template_def.rs`) |
 | **Revision** (of a drawing) | A row of a drawing's revision table: its letter, description, date and author; the title block shows the latest one's letter. UI: *Add Revision*. | `Revision`, `Drawing::revisions` |
+| **Cut sheet** | A drawing of its own kind that lays flat parts out at 1:1 on a sheet of material and writes their outlines as DXF or SVG for cutting. UI: *Cut Sheet* (Create Drawing's Kind). | `CutSheet`, `Drawing::cut_sheet` (`core/model/src/drawing/cut_sheet_def.rs`) |
+| **Part** (on a cut sheet) | A piece to cut out: a body seen square on to one of its planar faces, its outline the body's silhouette there. *Part* in the shop's sense, never a component. UI: *Add Parts…*, *Add Copy*. | `CutPart`, `cut_sheet::silhouette` |
 
 ## Sketches
 

@@ -17,6 +17,7 @@
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
 #include "ExtrudeDragProxy.hpp"
+#include "ProfilePicks.hpp"
 #include "../framework/CutTargetsPanel.hpp"
 
 namespace mitcad::cmd {
@@ -265,7 +266,14 @@ CommandDef extrudeCommand(const CommandContext& context) {
                 return thin(state) ? SelectKind::Profile | SelectKind::SketchCurve
                                    : SelectKind::Profile | SelectKind::Face;
               },
-              [](const SelectionItem&, const CommandState&) { return true; }),
+              // A face alone, or sketch items (mitcad#868, ProfilePicks).
+              [](const SelectionItem& item, const CommandState& state) {
+                return profilesTake(item, state.items(QStringLiteral("profiles")));
+              })
+          .withRefusedHint([](const SelectionItem& item, const CommandState& state) {
+            return profilesRefused(item, state.items(QStringLiteral("profiles")), isPlanar(item),
+                                   ProfilesCommand::Extrude, state.choice(QStringLiteral("start")));
+          }),
       choiceInput(QStringLiteral("start"), QObject::tr("Start"),
                   {{QStringLiteral("profile_plane"), QStringLiteral("Profile Plane")},
                    {QStringLiteral("offset"), QStringLiteral("Offset")},
@@ -947,7 +955,16 @@ CommandDef revolveCommand(const CommandContext& context) {
                      0)
           .withTooltip(QObject::tr("Profiles of one sketch, or one planar face"))
           .withAccepts([](const SelectionItem& item) { return item.kind != SelectKind::Face || isPlanar(item); })
-          .withoutMeshes(),
+          .withoutMeshes()
+          // A face alone, or profiles (mitcad#868, ProfilePicks).
+          .withPickRule([](const CommandState&) -> SelectFilter { return SelectKind::Profile | SelectKind::Face; },
+                        [](const SelectionItem& item, const CommandState& state) {
+                          return profilesTake(item, state.items(QStringLiteral("profiles")));
+                        })
+          .withRefusedHint([](const SelectionItem& item, const CommandState& state) {
+            return profilesRefused(item, state.items(QStringLiteral("profiles")), isPlanar(item),
+                                   ProfilesCommand::Revolve);
+          }),
       selectionInput(QStringLiteral("axis"), QObject::tr("Axis"),
                      SelectKind::SketchCurve | SelectKind::Axis | SelectKind::Edge | SelectKind::Face, 1, 1)
           .withTooltip(QObject::tr("A sketch line, an origin or construction axis, a straight "

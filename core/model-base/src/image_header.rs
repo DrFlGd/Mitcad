@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
 //! The size of an image file from its header (mitcad#782, image
 //! references): PNG, JPEG, BMP and WebP, the formats the application reads
-//! in every build. Only the header is read: the format, the width and
-//! height in pixels, and the size of a pixel where the file states one
-//! (PNG's `pHYs`, JPEG's JFIF density, BMP's pixels per metre). The pixels
-//! themselves are decoded by the application when it draws the image.
+//! in every build, and HEIF (mitcad#850, `image_header/heif.rs`:
+//! HEVC-coded still images, which builds with the HEIF decoder read). Only
+//! the header is read: the
+//! format, the width and height in pixels as the image is shown, and the
+//! size of a pixel where the file states one (PNG's `pHYs`, JPEG's JFIF
+//! density, BMP's pixels per metre). The pixels themselves are decoded by
+//! the application when it draws the image.
+
+mod heif;
 
 /// The largest width or height taken, in pixels.
 pub const MAX_SIDE: u32 = 32_768;
@@ -16,7 +21,7 @@ pub const DEFAULT_PIXEL_SIZE: f64 = 25.4 / 96.0;
 /// What an image file's header says.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageHeader {
-    /// `png`, `jpeg`, `bmp` or `webp`.
+    /// `png`, `jpeg`, `bmp`, `webp` or `heif`.
     pub format: &'static str,
     pub width: u32,
     pub height: u32,
@@ -31,8 +36,9 @@ impl ImageHeader {
     }
 }
 
-/// The header of a PNG, JPEG, BMP or WebP file, or why it is none of them
-/// (or one without a size, or larger than [`MAX_SIDE`]).
+/// The header of a PNG, JPEG, BMP, WebP or HEIF file, or why it is none of
+/// them (or one without a size, larger than [`MAX_SIDE`], or a HEIF file
+/// MitCad does not read).
 pub fn read(bytes: &[u8]) -> Result<ImageHeader, String> {
     let header = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         png(bytes)
@@ -42,8 +48,10 @@ pub fn read(bytes: &[u8]) -> Result<ImageHeader, String> {
         bmp(bytes)
     } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         webp(bytes)
+    } else if heif::is_heif(bytes) {
+        heif::read(bytes)
     } else {
-        return Err("the file is no PNG, JPEG, BMP or WebP image".to_owned());
+        return Err("the file is no PNG, JPEG, BMP, WebP or HEIF image".to_owned());
     }?;
     if header.width == 0 || header.height == 0 {
         return Err(format!("the {} image has no pixels", header.format));
@@ -388,7 +396,7 @@ mod tests {
     #[test]
     fn other_files_are_refused() {
         let error = read(b"GIF89a").unwrap_err();
-        assert!(error.contains("no PNG, JPEG, BMP or WebP"), "{error}");
+        assert!(error.contains("no PNG, JPEG, BMP, WebP or HEIF"), "{error}");
         let error = read(&png_file(0, 10, None)).unwrap_err();
         assert!(error.contains("no pixels"), "{error}");
         let error = read(&png_file(40_000, 10, None)).unwrap_err();

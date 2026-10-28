@@ -5,7 +5,9 @@
 //! it. The kernel lists a body's edges and vertices and their curves
 //! ([`Kernel::edges`], [`Kernel::curves_of`], [`Kernel::indexed_element`]);
 //! whether they lie in the plane is decided here, within the model's linear
-//! tolerance.
+//! tolerance. On request the edges and vertices out of the plane come too
+//! (mitcad#866), projected along its normal as `sketch.project` projects
+//! them, with where they are above or below it.
 
 use std::collections::BTreeSet;
 
@@ -21,6 +23,7 @@ use crate::sketch::geometry::{Curve2, P2};
 use crate::sketch::project::{Projected, project, transform_curve};
 use crate::topo::TopoName;
 use crate::transform::Transform;
+use mitcad_model_base::curves::{bspline_point, conic_point, helix_point};
 use mitcad_vec3::{cross, dot};
 
 /// A body edge or vertex that lies in a sketch's plane.
@@ -34,6 +37,25 @@ pub struct PlaneItem {
     /// None for the sketch's own component, which needs no link.
     pub occurrence: Option<Vec<OccurrenceUid>>,
     pub shape: PlaneShape,
+    /// None for an item in the plane; for one out of it
+    /// ([`Document::sketch_body_geometry`] with `out_of_plane`), where it
+    /// is (mitcad#866).
+    pub out_of_plane: Option<OutOfPlane>,
+}
+
+/// Where a body edge or vertex out of a sketch's plane is: what a client
+/// needs to find it on the screen, where the view shows it, rather than its
+/// projection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutOfPlane {
+    /// Its points in sketch coordinates with their height above the plane
+    /// along its normal (negative below): a vertex's one point, an edge's
+    /// points from its start to its end (a line's two ends, 24 steps of
+    /// another curve).
+    pub path: Vec<[f64; 3]>,
+    /// The height of a vertex, of a conic's centre, else of the middle of
+    /// the path.
+    pub height: f64,
 }
 
 /// Where a [`PlaneItem`] is, in sketch coordinates: what projecting it
@@ -42,6 +64,9 @@ pub struct PlaneItem {
 pub enum PlaneShape {
     Vertex(P2),
     Curve(Curve2),
+    /// An edge seen end on (a line along the plane's normal): the point it
+    /// projects to, as `sketch.project` makes it (out of the plane only).
+    Point(P2),
 }
 
 /// How far a model curve is from the plane through `origin` with the unit
@@ -91,6 +116,90 @@ fn distance_from_plane(curve: &Curve3, origin: [f64; 3], normal: [f64; 3]) -> f6
     }
 }
 
+/// Points along a model curve from its start to its end: a line's ends, 24
+/// steps of a conic, a helix or a B-spline.
+fn points_along(curve: &Curve3) -> Vec<[f64; 3]> {
+    const STEPS: u32 = 24;
+    let along = |f: &dyn Fn(f64) -> [f64; 3], t0: f64, t1: f64| -> Vec<[f64; 3]> {
+        (0..=STEPS)
+            .map(|k| f(t0 + (t1 - t0) * f64::from(k) / f64::from(STEPS)))
+            .collect()
+    };
+    match curve {
+        Curve3::Point(p) => vec![*p],
+        Curve3::Line { start, end } => vec![*start, *end],
+        Curve3::Conic {
+            center,
+            normal,
+            x_axis,
+            major,
+            minor,
+            start,
+            end,
+            closed,
+        } => {
+            let end = if *closed {
+                start + std::f64::consts::TAU
+            } else {
+                *end
+            };
+            along(
+                &|t| conic_point(*center, *normal, *x_axis, (*major, *minor), t),
+                *start,
+                end,
+            )
+        }
+        Curve3::BSpline {
+            degree,
+            poles,
+            weights,
+            knots,
+        } => {
+            let p = *degree as usize;
+            if p == 0 || poles.len() <= p || knots.len() != poles.len() + p + 1 {
+                return poles.clone();
+            }
+            along(
+                &|t| bspline_point(p, poles, weights, knots, t),
+                knots[p],
+                knots[poles.len()],
+            )
+        }
+        Curve3::Helix {
+            center,
+            axis,
+            x_axis,
+            radius,
+            pitch,
+            start,
+            end,
+        } => along(
+            &|t| helix_point(*center, *axis, *x_axis, (*radius, *pitch), t),
+            *start,
+            *end,
+        ),
+    }
+}
+
+/// A model point in sketch coordinates with its height above the plane.
+fn lifted(frame: &SketchFrame, normal: [f64; 3], p: [f64; 3]) -> [f64; 3] {
+    let d: [f64; 3] = std::array::from_fn(|i| p[i] - frame.origin[i]);
+    [dot(d, frame.x_axis), dot(d, frame.y_axis), dot(d, normal)]
+}
+
+/// Where an edge out of the plane is ([`OutOfPlane`]).
+fn out_of_plane(curve: &Curve3, frame: &SketchFrame, normal: [f64; 3]) -> OutOfPlane {
+    let path: Vec<[f64; 3]> = points_along(curve)
+        .into_iter()
+        .map(|p| lifted(frame, normal, p))
+        .collect();
+    let height = match curve {
+        Curve3::Conic { center, .. } => lifted(frame, normal, *center)[2],
+        _ => path.get(path.len() / 2).map_or(0.0, |p| p[2]),
+    };
+    OutOfPlane { path, height }
+}
+
 /// `v` divided by its length; `v` itself when it has none.
 fn unit(v: [f64; 3]) -> [f64; 3] {
     unit_div_above(v, 0.0).unwrap_or(v)
@@ -114,6 +223,20 @@ impl<K: Kernel> Document<K> {
     /// them, as `sketch.project` with `occurrence` takes them (mitcad#100),
     /// when the design policy lets the sketch reference them.
     pub fn plane_geometry(&self, sketch: FeatureUid) -> Result<Vec<PlaneItem>, ModelError> {
+        self.sketch_body_geometry(sketch, false)
+    }
+
+    /// [`Document::plane_geometry`], and with `out_of_plane` also every
+    /// other named edge and vertex of those bodies (mitcad#866), projected
+    /// onto the plane along its normal as `sketch.project` projects them
+    /// (a line along the normal to its point), each with
+    /// [`PlaneItem::out_of_plane`]. The items in the plane come first, as
+    /// without it.
+    pub fn sketch_body_geometry(
+        &self,
+        sketch: FeatureUid,
+        out_of_plane: bool,
+    ) -> Result<Vec<PlaneItem>, ModelError> {
         let position = self.state.require(sketch)?;
         let frame = match (
             self.sketch_output(sketch),
@@ -183,18 +306,30 @@ impl<K: Kernel> Document<K> {
         }
         let normal = unit(cross(frame.x_axis, frame.y_axis));
         let mut items = Vec::new();
+        let mut others = Vec::new();
         for body in &seen {
-            self.plane_items_of(body, &frame, normal, &mut items);
+            let mut found = Vec::new();
+            self.plane_items_of(body, &frame, normal, out_of_plane, &mut found);
+            for item in found {
+                if item.out_of_plane.is_some() {
+                    others.push(item);
+                } else {
+                    items.push(item);
+                }
+            }
         }
+        items.extend(others);
         Ok(items)
     }
 
-    /// The edges and vertices of one body in the plane.
+    /// The edges and vertices of one body in the plane, and with
+    /// `out_of_plane` the others too.
     fn plane_items_of(
         &self,
         seen: &Seen<'_, K::Shape>,
         frame: &SketchFrame,
         normal: [f64; 3],
+        out_of_plane: bool,
         items: &mut Vec<PlaneItem>,
     ) {
         let kernel = &self.kernel;
@@ -203,7 +338,7 @@ impl<K: Kernel> Document<K> {
             None => curve,
         };
         // The tolerance grows with the body's size; a body whose box does
-        // not reach the plane has nothing in it.
+        // not reach the plane has nothing in it (but what is out of it).
         let mut size = 1.0_f64;
         if let Ok(Some(b)) = kernel.bounding_box(seen.shape) {
             let mut low = f64::INFINITY;
@@ -228,18 +363,19 @@ impl<K: Kernel> Document<K> {
                 .sqrt();
             size = size.max(diagonal);
             let tolerance = mitcad_model_base::internal::datum::LINEAR * size;
-            if low > tolerance || high < -tolerance {
+            if !out_of_plane && (low > tolerance || high < -tolerance) {
                 return;
             }
         }
         let tolerance = mitcad_model_base::internal::datum::LINEAR * size;
-        let item = |source: TopoName, shape: PlaneShape| PlaneItem {
+        let item = |source: TopoName, shape: PlaneShape, out: Option<OutOfPlane>| PlaneItem {
             source,
             body: seen.body,
             occurrence: seen.occurrence.clone(),
             shape,
+            out_of_plane: out,
         };
-        // Edges whose every point is in the plane.
+        // Edges whose every point is in the plane (and the others).
         for edge in kernel.edges(seen.shape).unwrap_or_default() {
             let Some(Ok(source @ TopoName::Edge(_))) = edge.name.map(|n| n.parse::<TopoName>())
             else {
@@ -253,16 +389,30 @@ impl<K: Kernel> Document<K> {
             };
             let curve = moved(curve.clone());
             if distance_from_plane(&curve, frame.origin, normal) > tolerance {
+                // Out of the plane (mitcad#866): projected along the normal,
+                // a line along it to a point.
+                if out_of_plane {
+                    let shape = match project(std::slice::from_ref(&curve), frame)
+                        .into_iter()
+                        .next()
+                    {
+                        Some(Projected::Curve(c)) => PlaneShape::Curve(c),
+                        Some(Projected::Point(p)) => PlaneShape::Point(p),
+                        None => continue,
+                    };
+                    let out = self::out_of_plane(&curve, frame, normal);
+                    items.push(item(source, shape, Some(out)));
+                }
                 continue;
             }
             if let Some(Projected::Curve(c)) = project(std::slice::from_ref(&curve), frame)
                 .into_iter()
                 .next()
             {
-                items.push(item(source, PlaneShape::Curve(c)));
+                items.push(item(source, PlaneShape::Curve(c), None));
             }
         }
-        // Vertices in the plane.
+        // Vertices in the plane (and the others).
         for index in 0.. {
             let Ok(Some(element)) = kernel.indexed_element(seen.shape, ElementKind::Vertex, index)
             else {
@@ -277,14 +427,16 @@ impl<K: Kernel> Document<K> {
                 continue;
             };
             let point = moved(Curve3::Point(*at));
-            if distance_from_plane(&point, frame.origin, normal) > tolerance {
+            let out = distance_from_plane(&point, frame.origin, normal) > tolerance;
+            if out && !out_of_plane {
                 continue;
             }
             if let Some(Projected::Point(p)) = project(std::slice::from_ref(&point), frame)
                 .into_iter()
                 .next()
             {
-                items.push(item(source, PlaneShape::Vertex(p)));
+                let place = out.then(|| self::out_of_plane(&point, frame, normal));
+                items.push(item(source, PlaneShape::Vertex(p), place));
             }
         }
     }

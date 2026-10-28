@@ -105,7 +105,9 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi_bridges_sources FILES
   # A planar face of a body extruded as a profile (mitcad#535).
   kernel/face_extrude.rs
   # A planar face of a body revolved as a profile (mitcad#539).
-  kernel/face_revolve.rs)
+  kernel/face_revolve.rs
+  # Display meshes kept in the result store (mitcad#858).
+  kernel/display_mesh.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -252,6 +254,10 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/face_revolve.cpp
   cpp/bridge/face_revolve.hpp)
+# Display meshes kept in the result store (mitcad#858).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/display_mesh.cpp
+  cpp/bridge/display_mesh.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 # What corrosion_add_cxxbridge links for a CRATE that Corrosion imported
 # (mitcad#792): the bridge with the Rust library, both ways.

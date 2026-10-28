@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "mitcad",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "description": "Open source parametric desktop CAD",
   "license": "MIT",
   "builtin-baseline": "3aea538b2bb21a586502c67b00eb474fdd2e3098",
@@ -21,6 +21,15 @@
     "cgltf",
     { "name": "sse2neon", "platform": "osx & arm64" }
   ],
+  "default-features": ["heif"],
+  "features": {
+    "heif": {
+      "description": "HEIF/HEIC image references (MITCAD_HEIF): libheif with the libde265 HEVC decoder only; its default feature hevc (the x265 encoder, GPL) stays off",
+      "dependencies": [
+        { "name": "libheif", "default-features": false }
+      ]
+    }
+  },
   "overrides": [
     { "name": "opencascade", "version": "8.0.1" }
   ]

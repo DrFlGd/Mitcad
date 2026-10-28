@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use mitcad_model::datum::SurfaceGeometry;
+use mitcad_model::datum::{CurveGeometry, SurfaceGeometry};
 use mitcad_model::features::SketchPlane;
 use mitcad_model::ids::{BodyUid, FeatureUid};
 use mitcad_model::kernel::BoundingBox;
@@ -645,10 +645,8 @@ fn patterns_of_patterns_repeat_the_originals_at_every_product() {
         assert_eq!(status(&b.doc, turn), FeatureStatus::Ok, "{compute}");
         // Identical: the hole's copies at the row's two places (the
         // original's and element 2's) are cut in one operation (mitcad#181);
-        // Adjust applies the places one after another.
-        if compute == "identical" {
-            assert_eq!(b.doc.kernel().count("cut") - cuts, 1);
-        }
+        // Adjust too, as the two places' copies stay apart (mitcad#855).
+        assert_eq!(b.doc.kernel().count("cut") - cuts, 1, "{compute}");
         // The hole, the row's element 2 (1 is suppressed), and both turned:
         // the inner instance named inside the outer one.
         let mut names = faces(&b.doc);
@@ -1435,6 +1433,137 @@ fn moves_and_copies_place_bodies() {
         )
         .unwrap_err();
     assert!(error.to_string().contains("no bodies"), "{error}");
+}
+
+#[test]
+fn move_previews_report_what_their_motion_turns_about() {
+    // mitcad#838: a preview reports a Rotate's axis and the points of
+    // Point to Point and Point to Position as the move resolved them, so
+    // that a drag of its angle or position moves the shown bodies as the
+    // exact result does; nothing for Free Move and Translate.
+    let mut b = block();
+    let before = b.doc.features().count();
+    let motion = |doc: &mut Document<MockKernel>, transform: Value| {
+        let command = json!({"cmd": "add_feature",
+                             "def": {"type": "move", "bodies": ["F2.b0"], "transform": transform}});
+        let report: Value =
+            serde_json::from_str(&doc.preview(&command.to_string()).unwrap()).unwrap();
+        assert_eq!(report["status"], "ok", "{report}");
+        report["motion"].clone()
+    };
+    // The axis as the move turns about it: a unit direction, its sense
+    // kept (right-handed about it).
+    let rotate = json!({"type": "rotate",
+                        "axis": {"type": "fixed", "origin": [30, 20, 5], "direction": [0, 0, -2]},
+                        "angle": 0.5});
+    assert_eq!(
+        motion(&mut b.doc, rotate),
+        json!({"type": "rotate", "origin": [30.0, 20.0, 5.0], "direction": [0.0, 0.0, -1.0]})
+    );
+    let points = json!({"type": "point_to_point", "from": {"type": "fixed", "point": [10, 5, 0]},
+                        "to": {"type": "origin"}});
+    assert_eq!(
+        motion(&mut b.doc, points),
+        json!({"type": "point_to_point", "from": [10.0, 5.0, 0.0], "to": [0.0, 0.0, 0.0]})
+    );
+    let position = json!({"type": "point_to_position", "point": {"type": "fixed", "point": [10, 5, 0]},
+                          "x": 1, "y": 2, "z": 3});
+    assert_eq!(
+        motion(&mut b.doc, position),
+        json!({"type": "point_to_position", "point": [10.0, 5.0, 0.0]})
+    );
+    let translate = json!({"type": "translate_xyz", "x": 1, "y": 2, "z": 3});
+    assert_eq!(motion(&mut b.doc, translate), Value::Null);
+    // An origin axis.
+    let rotate = json!({"type": "rotate", "axis": {"type": "origin", "axis": "x"}, "angle": 0.5});
+    assert_eq!(
+        motion(&mut b.doc, rotate),
+        json!({"type": "rotate", "origin": [0.0, 0.0, 0.0], "direction": [1.0, 0.0, 0.0]})
+    );
+    // Previews add nothing.
+    assert_eq!(b.doc.features().count(), before);
+}
+
+#[test]
+fn move_face_previews_report_the_axis_they_turn_about() {
+    // mitcad#854: a Move Face preview reports the axis its Rotate turns
+    // about, as a move's does, so that the app's ring runs about it: a
+    // circular edge whose circle's own axis points down (-Z) is taken in
+    // its canonical direction (+Z), the way the faces turn.
+    let mut b = block();
+    let before = b.doc.features().count();
+    let top = FaceName::end(b.extrude, b.region.clone());
+    let body = shape(&b.doc, "F2.b0");
+    let rim = body
+        .edges
+        .iter()
+        .find(|(one, other)| *one == top || *other == top)
+        .map(|(one, other)| {
+            format!("E{{{one}|{other}}}")
+                .parse::<EdgeName>()
+                .unwrap()
+                .to_string()
+        })
+        .expect("an edge of the top face");
+    b.doc.kernel().edge_curves.borrow_mut().insert(
+        rim.clone(),
+        CurveGeometry::Circle {
+            center: [30.0, 20.0, 20.0],
+            normal: [0.0, 0.0, -1.0],
+            radius: 5.0,
+            start: [35.0, 20.0, 20.0],
+            end: [35.0, 20.0, 20.0],
+        },
+    );
+    let report = |doc: &mut Document<MockKernel>, transform: Value| -> Value {
+        let command = json!({"cmd": "add_feature",
+                             "def": {"type": "move_face", "body": "F2.b0", "faces": [top],
+                                     "transform": transform}});
+        serde_json::from_str(&doc.preview(&command.to_string()).unwrap()).unwrap()
+    };
+    let rotate = |angle: f64| {
+        json!({"type": "rotate", "axis": {"type": "edge", "body": "F2.b0", "edge": rim},
+               "angle": angle})
+    };
+    let about =
+        json!({"type": "rotate", "origin": [30.0, 20.0, 20.0], "direction": [0.0, 0.0, 1.0]});
+    let turned = report(&mut b.doc, rotate(0.1));
+    assert_eq!(turned["status"], "ok", "{turned}");
+    assert_eq!(turned["motion"], about);
+    // A motion that moves nothing fails, and still reports the axis the
+    // ring turns about.
+    let still = report(&mut b.doc, rotate(0.0));
+    assert_ne!(still["status"], "ok", "{still}");
+    assert_eq!(still["motion"], about);
+    // Point to Point and Point to Position: the points it moves from.
+    let points = report(
+        &mut b.doc,
+        json!({"type": "point_to_point", "from": {"type": "fixed", "point": [10, 5, 20]},
+               "to": {"type": "fixed", "point": [10, 5, 22]}}),
+    );
+    assert_eq!(points["status"], "ok", "{points}");
+    assert_eq!(
+        points["motion"],
+        json!({"type": "point_to_point", "from": [10.0, 5.0, 20.0], "to": [10.0, 5.0, 22.0]})
+    );
+    let position = report(
+        &mut b.doc,
+        json!({"type": "point_to_position", "point": {"type": "fixed", "point": [10, 5, 20]},
+               "x": 10, "y": 5, "z": 23}),
+    );
+    assert_eq!(position["status"], "ok", "{position}");
+    assert_eq!(
+        position["motion"],
+        json!({"type": "point_to_position", "point": [10.0, 5.0, 20.0]})
+    );
+    // Translate reports none.
+    let translate = report(
+        &mut b.doc,
+        json!({"type": "translate_xyz", "x": 0, "y": 0, "z": 2}),
+    );
+    assert_eq!(translate["status"], "ok", "{translate}");
+    assert_eq!(translate["motion"], Value::Null);
+    assert_eq!(b.doc.features().count(), before);
 }
 
 #[test]
@@ -2780,4 +2909,69 @@ fn primitive_positions_take_expressions_and_follow_parameters() {
         error.to_string().contains("a number or an expression"),
         "{error}"
     );
+}
+
+/// The block with four join extrudes of 2 x 2 mm squares, 3, 8, 13 and
+/// 18 mm from (30, 20) along x (with `touching`, the second one against
+/// the first, 5 mm from it), and the names of their end faces.
+fn four_joins(touching: bool) -> (Document<MockKernel>, Vec<FeatureUid>, Vec<String>) {
+    let mut doc = block().doc;
+    let mut features = Vec::new();
+    let mut ends = Vec::new();
+    for i in 0..4 {
+        let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+        let x = if touching && i == 1 {
+            35.0
+        } else {
+            33.0 + 5.0 * f64::from(i)
+        };
+        let region = doc
+            .add_rectangle(sketch, [x, 19.0], &num(2.0), &num(2.0))
+            .unwrap()
+            .region;
+        let extrude = add(
+            &mut doc,
+            json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                   "extent": {"type": "distance", "distance": 30}, "operation": "join",
+                   "participants": ["F2.b0"]}),
+        );
+        assert_eq!(status(&doc, extrude), FeatureStatus::Ok);
+        ends.push(format!("{extrude}:end({region})"));
+        features.push(extrude);
+    }
+    (doc, features, ends)
+}
+
+#[test]
+fn a_pattern_of_join_features_apart_from_each_other_joins_once() {
+    // mitcad#855: the copies of features whose boxes stay apart join the
+    // body in one operation (a circular pattern x6 of four joins), named
+    // as the features one after another name them; features whose copies
+    // meet go one after another.
+    for compute in ["adjust", "identical"] {
+        for touching in [false, true] {
+            let (mut doc, features, ends) = four_joins(touching);
+            let joins = doc.kernel().count("join");
+            let pattern = add(
+                &mut doc,
+                json!({"type": "circular_pattern",
+                       "objects": {"type": "features", "features": features},
+                       "axis": {"origin": [30, 20, 0], "direction": [0, 0, 1]},
+                       "quantity": 6, "angle": std::f64::consts::TAU, "compute": compute}),
+            );
+            let case = format!("{compute}, touching {touching}");
+            assert_eq!(status(&doc, pattern), FeatureStatus::Ok, "{case}");
+            // Touching: the first feature alone, then the other three.
+            let expected = if touching { 2 } else { 1 };
+            assert_eq!(doc.kernel().count("join") - joins, expected, "{case}");
+            assert_eq!(uids(&doc), ["F2.b0"], "{case}");
+            let body = shape(&doc, "F2.b0");
+            for end in &ends {
+                for k in 1..=5 {
+                    let name: FaceName = format!("{pattern}:inst{k}({end})").parse().unwrap();
+                    assert!(body.faces.contains(&name), "{case}: {name}");
+                }
+            }
+        }
+    }
 }

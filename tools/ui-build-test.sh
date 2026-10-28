@@ -339,8 +339,10 @@ marker_in_middle() {
     fi
     last=$off
     xdotool mousemove $((X + cx * UI_SCALE)) $((Y + cy * UI_SCALE)) click $button
+    # The zoomed view drawn, its markers logged and the camera at rest: the
+    # view's navigation and rest timers are watched (mitcad#870: a fixed
+    # 0.5 s more before).
     ui_sync >&2 # (its note would end up in the position)
-    sleep 0.5
   done
   ui_fail "Profile's marker '$1' did not come into the middle of the view"
 }

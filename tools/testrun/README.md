@@ -155,8 +155,8 @@ test with no history:
   1 GiB and 1 core, corpus tests (`corpus` in the name or a label) 2 GiB
   and 2 cores, the others 512 MiB and 1 core (`--default-memory`,
   `--default-cores`), all 60 s (`--default-wall`); ctest's `PROCESSORS`
-  raises the cores. The cargo test builds run alone (RUN_SERIAL) whatever
-  their guess.
+  raises the cores. The cargo test builds run one at a time (RESOURCE_LOCK
+  `cargo_build` on Linux and Windows, RUN_SERIAL on macOS).
 
 It stays a test with no history until its own first run, which replaces
 the guess. While fewer than half of the tests have a history, at most half
@@ -225,10 +225,14 @@ DEPENDS and a fixture's setup tests order only the tests that name them,
 a test whose fixture setup failed is not run, cleanups run after every
 test of their fixture, a RESOURCE_LOCK keeps apart only the tests with the
 same lock, and only a test with RUN_SERIAL set runs alone (as with ctest
--j, nothing else runs beside it). In this tree both cargo test builds,
-`core.cargo_build` and `core.cargo_build_release`, have RUN_SERIAL
-(`core/CMakeLists.txt`). `--dry-run` shows each test's RUN_SERIAL and
-RESOURCE_LOCK. A test still running two minutes after its ctest TIMEOUT
+-j, nothing else runs beside it). In this tree the cargo test builds,
+`core.cargo_build` and `core.cargo_build_release`, share the lock
+`cargo_build` on Linux and Windows and have RUN_SERIAL on macOS
+(`core/CMakeLists.txt`); the Windows UI tests that use the system
+clipboard, which all tests of one ssh logon share, hold the lock
+`system_clipboard` (mitcad#870). RUN_SERIAL: the timed `cli.perf_*`, the
+macOS Aqua UI tests and the macOS render-surface tests. `--dry-run` shows
+each test's RUN_SERIAL and RESOURCE_LOCK. A test still running two minutes after its ctest TIMEOUT
 (1500 s by default) is stopped and counted as a timeout.
 
 Every failure is printed as it happens (marked `priority lane` for the

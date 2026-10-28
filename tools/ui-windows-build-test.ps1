@@ -248,17 +248,23 @@ function Place([string]$What) {
   Ui-ExpectNew "Placed $What as " "$What placed" 30
 }
 $side = ':part(F2:side('
+# The waits below look at the log every 50 ms (200 ms before, mitcad#870)
+# with the same time-outs, the lines since the mark taken as Ui-NewLines
+# gives them and a last line as Ui-LastLineWith finds it: a pipeline over a
+# long log's every line took long on each look.
+#
 # Expect-Row INPUT shown|hidden description: Profile's panel row INPUT as
 # the panel laid it out last ("Panel Profile input <id> at x,y", with
 # " (hidden)" when hidden).
 function Expect-Row([string]$Row, [string]$State, [string]$Description) {
   $line = $null
-  for ($i = 0; $i -lt 30; $i++) {
-    $line = Ui-LogLines | Where-Object { $_.Contains("Panel Profile input $Row at ") } | Select-Object -Last 1
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $line = Ui-LastLineWith "Panel Profile input $Row at "
     $hidden = "$line".EndsWith('(hidden)')
     if ($line -and (($State -eq 'hidden') -eq $hidden)) { Write-Host "ok   $Description"; return }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 6000)
   Ui-Fail "${Description}: Panel Profile input $Row is not $State ($line)"
 }
 # Marker-At LABEL: where Profile's last preview marker LABEL (a regex; also
@@ -297,21 +303,24 @@ function Marker-InMiddle([string]$Label) {
     [UiInput]::Move($script:UiWindow, $cx, $cy, 0x04)
     Start-Sleep -Milliseconds 80
     [UiInput]::Wheel($script:UiWindow, $cx, $cy, $sign)
+    # The zoomed view drawn, its markers logged and the camera at rest
+    # (the view's rest timer is watched; mitcad#870: a fixed 500 ms more
+    # before).
     Ui-Sync
-    Start-Sleep -Milliseconds 500
   }
   Ui-Fail "Profile's marker '$Label' did not come into the middle of the view"
 }
 # Expect-Inspect TEXTS description: an "Inspect Profile:" line since the
 # mark has every text.
 function Expect-Inspect([string[]]$Texts, [string]$Description) {
-  for ($i = 0; $i -lt 30; $i++) {
-    $found = Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Inspect Profile: ') } |
-      Where-Object { $line = $_; @($Texts | Where-Object { -not $line.Contains($_) }).Count -eq 0 } |
-      Select-Object -First 1
-    if ($found) { Write-Host "ok   $Description"; return }
-    Start-Sleep -Milliseconds 200
-  }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    foreach ($line in @(Ui-NewLines)) {
+      if (-not $line.StartsWith('Inspect Profile: ')) { continue }
+      if (@($Texts | Where-Object { -not $line.Contains($_) }).Count -eq 0) { Write-Host "ok   $Description"; return }
+    }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 6000)
   Ui-Fail "${Description}: no 'Inspect Profile:' line since the mark with $($Texts -join ' / ')"
 }
 # Expect-BodyLength description: the last "Inspect Profile:" line since the
@@ -319,10 +328,11 @@ function Expect-Inspect([string[]]$Texts, [string]$Description) {
 # has it equal to the length shown ("length <n> mm").
 function Expect-BodyLength([string]$Description) {
   $line = $null
-  for ($i = 0; $i -lt 30 -and -not $line; $i++) {
-    $line = Ui-LogLines | Select-Object -Skip $script:UiMark |
-      Where-Object { $_.StartsWith('Inspect Profile: ') -and $_.Contains('; body ') } | Select-Object -Last 1
-    if (-not $line) { Start-Sleep -Milliseconds 200 }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while (-not $line -and $clock.ElapsedMilliseconds -lt 6000) {
+    $line = Ui-NewLines | Where-Object { $_.StartsWith('Inspect Profile: ') -and $_.Contains('; body ') } |
+      Select-Object -Last 1
+    if (-not $line) { Start-Sleep -Milliseconds 50 }
   }
   if (-not $line) { Ui-Fail "${Description}: no 'Inspect Profile:' line with the body's length since the mark" }
   $length = if ($line -match '^Inspect Profile: place [a-z]*, length ([0-9.]*) mm') { $Matches[1] } else { '?' }
@@ -336,7 +346,7 @@ function Expect-BodyLength([string]$Description) {
 function No-Inspect([string]$Cmd, [string]$Description) {
   Start-Sleep -Milliseconds 1500
   Ui-Sync
-  $found = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith("Inspect ${Cmd}: ") })
+  $found = @(Ui-NewLines | Where-Object { $_.StartsWith("Inspect ${Cmd}: ") })
   if ($found.Count -gt 0) { Ui-Fail "${Description}: $($found[0])" }
   Write-Host "ok   $Description"
 }
@@ -350,7 +360,7 @@ function Last-EndA([string]$Cmd) {
 # EndA-Since CMD: the places of the preview's end A in the "Inspect CMD:"
 # lines since the mark, each once.
 function EndA-Since([string]$Cmd) {
-  return @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith("Inspect ${Cmd}: ") } |
+  return @(Ui-NewLines | Where-Object { $_.StartsWith("Inspect ${Cmd}: ") } |
     ForEach-Object { if ($_ -match '; end A at ([^;]*);') { $Matches[1] } } | Select-Object -Unique)
 }
 # Moved-Once CMD WAS description: after a click, the "Inspect CMD:" lines
@@ -358,9 +368,10 @@ function EndA-Since([string]$Cmd) {
 # place: the preview moved once, to the click (mitcad#508).
 function Moved-Once([string]$Cmd, [string]$Was, [string]$Description) {
   $places = @()
-  for ($i = 0; $i -lt 30 -and $places.Count -eq 0; $i++) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while ($places.Count -eq 0 -and $clock.ElapsedMilliseconds -lt 6000) {
     $places = @(EndA-Since $Cmd)
-    if ($places.Count -eq 0) { Start-Sleep -Milliseconds 200 }
+    if ($places.Count -eq 0) { Start-Sleep -Milliseconds 50 }
   }
   # A moment more: a preview still following the mouse would add places.
   Start-Sleep -Milliseconds 1000
@@ -395,10 +406,12 @@ function Pick-Markers([int[]]$Area) {
   $inspect = 0
   for ($j = $lines.Count - 1; $j -ge 0; $j--) { if ($lines[$j].StartsWith('Inspect Profile: ')) { $inspect = $j; break } }
   # The markers come after the inspection's line.
-  for ($i = 0; $i -lt 25; $i++) {
-    if (Ui-LogLines | Select-Object -Skip $inspect | Where-Object { $_.StartsWith('Preview marker Profile ') }) { return }
-    Start-Sleep -Milliseconds 100
-  }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $lines = @(Ui-LogLines)
+    for ($j = $inspect; $j -lt $lines.Count; $j++) { if ($lines[$j].StartsWith('Preview marker Profile ')) { return } }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 2500)
 }
 # Shot NAME: with -Shots, a screenshot of the window there as NAME.png. The
 # app runs a test driver script for it (MITCAD_TEST_INPUT,
@@ -434,7 +447,9 @@ function Shot([string]$Name) {
 function Wheel-Choice([string]$Choice, [int]$Steps) {
   for ($i = 0; $i -lt [Math]::Abs($Steps); $i++) {
     Ui-WheelLogged "Panel Profile input $Choice" ([Math]::Sign(-$Steps))
-    Start-Sleep -Milliseconds 150
+    # The step handled and the panel's places logged again (mitcad#870: a
+    # fixed 150 ms before).
+    Ui-Sync
   }
 }
 # No-PolicyMessage: no design-policy refusal reached the log.
@@ -450,11 +465,12 @@ function No-PolicyMessage {
 # the main window's clicks do not reach).
 function Picker-Click([string]$Text) {
   $place = $null
-  for ($i = 0; $i -lt 30 -and -not $place; $i++) {
-    $line = Ui-LogLines | Where-Object { $_.Contains("$Text at ") } | Select-Object -Last 1
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while (-not $place -and $clock.ElapsedMilliseconds -lt 6000) {
+    $line = Ui-LastLineWith "$Text at "
     $match = [regex]::Match("$line", 'in the picker (-?\d+),(-?\d+)$')
     if ($match.Success) { $place = @([int]$match.Groups[1].Value, [int]$match.Groups[2].Value) }
-    else { Start-Sleep -Milliseconds 200 }
+    else { Start-Sleep -Milliseconds 50 }
   }
   if (-not $place) { Ui-Fail "no place of the part picker logged for '$Text'" }
   # Ui-Windows gives the array itself (as one object): no @( ) around it.
@@ -736,12 +752,12 @@ foreach ($face in @(Faces-Of $b2 $side)) {
   Ui-Mark
   Ui-Step "the second profile's $face"   { Pick-Face $b2 $face }
   $inspect = $null
-  for ($i = 0; $i -lt 25; $i++) {
-    $inspect = Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Inspect Profile: ') } |
-      Select-Object -Last 1
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $inspect = Ui-NewLines | Where-Object { $_.StartsWith('Inspect Profile: ') } | Select-Object -Last 1
     if ($inspect) { break }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 5000)
   # Bound to the third: "(bound, auto: to the face to <its face> of <name>)" or "... to <name>)".
   if ("$inspect".Contains("(bound, ") -and "$inspect".Contains(" $p3Name)")) { $found = $face; break }
 }
@@ -791,9 +807,10 @@ $over = Ui-PickAt "$b3/$($faces3[0]) at"
 # state, so it is a plain move over the view).
 Ui-Step 'the mouse over the third profile' { [UiInput]::Move($script:UiWindow, $over[0], $over[1], 0x04) }
 $shown = $false
-for ($i = 0; $i -lt 25 -and -not $shown; $i++) {
-  $shown = [bool](Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_ -match '^Preview marker Connector [^>]' })
-  if (-not $shown) { Start-Sleep -Milliseconds 200 }
+$clock = [Diagnostics.Stopwatch]::StartNew()
+while (-not $shown -and $clock.ElapsedMilliseconds -lt 5000) {
+  $shown = [bool](Ui-NewLines | Where-Object { $_ -match '^Preview marker Connector [^>]' })
+  if (-not $shown) { Start-Sleep -Milliseconds 50 }
 }
 if (-not $shown) { Ui-Fail 'no junction of the third profile shown on its hover' }
 Write-Host "ok   the hovered profile's junctions shown"
@@ -1008,9 +1025,10 @@ Expect-Inspect @('place grounded', '; part Profile 30 test') 'the preview uses t
 # applies when the list is made again.
 $tilesBefore = $null
 $groupsBefore = $null
-for ($i = 0; $i -lt 30 -and -not $tilesBefore; $i++) {
+$clock = [Diagnostics.Stopwatch]::StartNew()
+while (-not $tilesBefore -and $clock.ElapsedMilliseconds -lt 6000) {
   $tilesBefore = Ui-LastMatch '^Part picker tiles: (.*)$'
-  if (-not $tilesBefore) { Start-Sleep -Milliseconds 200 }
+  if (-not $tilesBefore) { Start-Sleep -Milliseconds 50 }
 }
 $groupsBefore = Ui-LastMatch '^Part picker groups: (.*)$'
 # The 20 profile (with its uses in the design) then the 30 profile.
@@ -1022,7 +1040,7 @@ Ui-Step 'star it (Star)'                 { Picker-Click 'Part picker place star'
 Ui-ExpectNew 'Part picker star p30-test on' 'the 30 profile starred'
 Ui-ExpectNew "Part picker tiles kept: $tilesBefore; current test-profiles/p30-test" 'the tiles stay in their places, the selection on the starred tile'
 Ui-ExpectNew "Part picker groups kept: $groupsBefore" 'the groups stay in their places'
-if (Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Part picker group Slot profile/Profiles: ') }) {
+if (Ui-NewLines | Where-Object { $_.StartsWith('Part picker group Slot profile/Profiles: ') }) {
   Ui-Fail 'a star made the tiles again'
 }
 Ui-Mark
@@ -1084,7 +1102,7 @@ Expect-Inspect @('failed: Click a plane or a face where the next one goes.') 'af
 Ui-ExpectNew 'View hint Profile: Click a plane or a face for the next one' 'the view asks for the next one''s plane'
 Start-Sleep -Milliseconds 1500
 Ui-Sync
-$ghost = @(Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Inspect Profile: place grounded') })
+$ghost = @(Ui-NewLines | Where-Object { $_.StartsWith('Inspect Profile: place grounded') })
 if ($ghost.Count -gt 0) { Ui-Fail "a profile previewed at the origin after Place: $($ghost[0])" }
 Write-Host 'ok   no profile previewed at the origin on top of the one placed'
 Ui-ExpectNew 'test-profiles/p30-test x1' 'In this design has it after the placement'
@@ -1148,11 +1166,12 @@ Ui-ExpectNew 'Part picker group Favourites: 2 parts, first test-profiles/p30' 't
 # The first favourite in the picker's order (the catalog's among the
 # starred), from the group's line since the star, and the other one.
 $first = $null
-for ($i = 0; $i -lt 30 -and -not $first; $i++) {
-  $first = Ui-LogLines | Select-Object -Skip $script:UiMark |
+$clock = [Diagnostics.Stopwatch]::StartNew()
+while (-not $first -and $clock.ElapsedMilliseconds -lt 6000) {
+  $first = Ui-NewLines |
     ForEach-Object { if ($_ -match '^Part picker group Favourites: 2 parts, first test-profiles/(p30[a-z]*-test)$') { $Matches[1] } } |
     Select-Object -Last 1
-  if (-not $first) { Start-Sleep -Milliseconds 200 }
+  if (-not $first) { Start-Sleep -Milliseconds 50 }
 }
 Ui-Mark
 Ui-Step 'All parts (the group row)'      { Picker-Click 'Part picker group row All parts' }
@@ -1214,7 +1233,7 @@ function Shift-PickFace([string]$Body, [string]$Face) {
 function No-Placement([string]$Description) {
   Start-Sleep -Seconds 1
   Ui-Sync
-  $placed = Ui-LogLines | Select-Object -Skip $script:UiMark | Where-Object { $_.StartsWith('Placed ') } |
+  $placed = Ui-NewLines | Where-Object { $_.StartsWith('Placed ') } |
     Select-Object -First 1
   if ($placed) { Ui-Fail "${Description}: $placed" }
   Write-Host "ok   $Description"

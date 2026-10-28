@@ -8,6 +8,7 @@
 #include <QPair>
 #include <QPoint>
 #include <QPointer>
+#include <QRect>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -126,6 +127,10 @@ signals:
   void reorderRequested(const QString& uid, int index);
   // A right click on a group's band or folded cell.
   void groupMenuRequested(const QString& name, const QPoint& globalPosition);
+  // The fx badge of a feature suppressed by a condition (mitcad#862): the
+  // pointer rests on it (`pinned` false) or it was clicked; `anchor` is
+  // the badge in global coordinates.
+  void bindingsRequested(const QString& uid, const QRect& anchor, bool pinned);
   // A search began (its text is no longer empty): what is selected now
   // comes back when it is cleared. A step to a match selects it as a click
   // does (featuresClicked).

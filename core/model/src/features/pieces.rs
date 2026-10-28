@@ -98,7 +98,7 @@ const SHIFT: f64 = 0.25;
 
 /// The pieces of an evaluating feature: what it remembers and what it
 /// makes.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct PieceState {
     remembered: Option<Arc<Vec<PieceGroup>>>,
     /// Indices of the feature's own bodies remembered: new bodies skip them.
@@ -124,6 +124,14 @@ impl PieceState {
             reserved,
             ..Self::default()
         }
+    }
+
+    /// Counts `count` more passes over `body` (each cut of it is one, which
+    /// numbers the splits it remembers): a pattern's run of features cut
+    /// in one operation passes over the body as often as the features one
+    /// by one (mitcad#855).
+    pub(crate) fn skip_passes(&mut self, body: BodyUid, count: u32) {
+        *self.passes.entry(body).or_insert(0) += count;
     }
 }
 

@@ -110,6 +110,8 @@ mod component_options;
 mod tables;
 // A table as CSV: its export, the preview and the import (mitcad#804).
 mod tables_csv;
+// Cut sheets: flat parts at 1:1 written as DXF and SVG (mitcad#853).
+mod cut_sheets;
 // Section Analysis worked out without the document, off the UI thread
 // (mitcad#438).
 pub use analysis::{PreparedClips, PreparedQuery};
@@ -189,6 +191,8 @@ pub mod prelude {
     pub(crate) use super::tables::TablesOps;
     // A table as CSV (mitcad#804).
     pub(crate) use super::tables_csv::TablesCsvOps;
+    // Cut sheets (mitcad#853).
+    pub(crate) use super::cut_sheets::CutSheetsOps;
 }
 
 use std::fmt;
@@ -779,6 +783,9 @@ named_enum! {
         // Body edges and vertices in a sketch's plane (mitcad#256, `sketch.rs`).
         "plane_geometry" => PlaneGeometry {
             sketch: FeatureUid,
+            // Also those out of the plane, projected (mitcad#866).
+            #[serde(default)]
+            out_of_plane: bool,
         },
         // Tangent chains of edges and faces (mitcad#290, `tangent_chains.rs`).
         "tangent_chains" => TangentChains(tangent_chains::TangentChainsQuery),
@@ -900,6 +907,8 @@ named_enum! {
         // A table as CSV (mitcad#804, `tables_csv.rs`).
         "table_csv" => TableCsv(tables_csv::TableCsvQuery),
         "table_csv_preview" => TableCsvPreview(tables_csv::TableCsvPreviewQuery),
+        // A cut sheet's parts and their outlines (mitcad#853, `cut_sheets.rs`).
+        "cut_sheet" => CutSheet(cut_sheets::CutSheetQuery),
     }
 }
 
@@ -1234,7 +1243,10 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
             // Moving an occurrence to another parent (mitcad#219).
             Query::ReparentOccurrence(query) => self.reparent_json(&query)?,
             // Body edges and vertices in a sketch's plane (mitcad#256).
-            Query::PlaneGeometry { sketch } => self.plane_geometry_json(sketch)?,
+            Query::PlaneGeometry {
+                sketch,
+                out_of_plane,
+            } => self.plane_geometry_json(sketch, out_of_plane)?,
             // Tangent chains of edges and faces (mitcad#290).
             Query::TangentChains(query) => self.tangent_chains_json(&query)?,
             // A thread's default end chamfer (mitcad#304).
@@ -1331,6 +1343,8 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
             // A table as CSV (mitcad#804).
             Query::TableCsv(query) => self.table_csv_json(&query)?,
             Query::TableCsvPreview(query) => self.table_csv_preview_json(&query)?,
+            // Cut sheets (mitcad#853).
+            Query::CutSheet(query) => self.cut_sheet_json(&query)?,
         };
         Ok(result.to_string())
     }
@@ -1442,6 +1456,17 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
         // Results read from the result store (P7d), when there were any.
         if recomputed && !stats.restored.is_empty() {
             result["restored"] = json!(stats.restored.len());
+            // Of them, those whose bodies' shapes stayed packed: states a
+            // later result replaced before anything read them (mitcad#858).
+            let packed = self
+                .last_result()
+                .results
+                .iter()
+                .filter(|r| stats.restored.contains(&r.uid))
+                .filter_map(|r| r.output.as_ref())
+                .filter(|o| !o.changes.is_empty() && !o.changes.is_unpacked())
+                .count();
+            result["restored_packed"] = json!(packed);
         }
         result["error"] = json!(stats.error.map(|e| e.to_string()));
         // Every failed feature, and whether this command made it
@@ -2349,6 +2374,10 @@ fn preview_json(report: &PreviewReport) -> Value {
     // Where a sweep's profile lies on its path (mitcad#795).
     if let Some(place) = &report.sweep_place {
         value["sweep_path"] = json!(place);
+    }
+    // What a move's motion was worked out from (mitcad#838).
+    if let Some(basis) = &report.move_basis {
+        value["motion"] = json!(basis);
     }
     if !report.instances.is_empty() {
         value["instances"] = json!(

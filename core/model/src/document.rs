@@ -1164,6 +1164,9 @@ pub struct PreviewReport {
     pub anchor: Option<crate::features::point_pattern::PatternAnchor>,
     /// Where a sweep's profile lies on its path (mitcad#795).
     pub sweep_place: Option<crate::features::sweep::SweepPlace>,
+    /// What a move's motion was worked out from: a Rotate's axis, the
+    /// points of Point to Point and Point to Position (mitcad#838).
+    pub move_basis: Option<crate::features::moves::MotionBasis>,
     /// New shared-body occurrence instances, in world coordinates.
     pub instances: Vec<crate::assembly::Instance>,
     pub removed_instances: Vec<(Vec<OccurrenceUid>, BodyUid)>,
@@ -2239,8 +2242,9 @@ impl<K: Kernel> Document<K> {
         let names = &self.state.body_names;
         let unnamed = self.result.results.iter().any(|feature| {
             feature.output.as_ref().is_some_and(|output| {
-                output.changes.iter().any(|change| {
-                    matches!(change, crate::recompute::Change::Set(uid, _)
+                // (By the heads: restored shapes stay packed, mitcad#858.)
+                output.changes.heads().iter().any(|change| {
+                    matches!(change, crate::recompute::ChangeHead::Set(uid, _)
                         if !names.contains_key(uid))
                 })
             })
@@ -3656,6 +3660,10 @@ impl<K: Kernel> Document<K> {
                 .result(uid)
                 .and_then(|r| r.output.as_ref())
                 .and_then(|o| o.sweep_place),
+            move_basis: result
+                .result(uid)
+                .and_then(|r| r.output.as_ref())
+                .and_then(|o| o.move_basis),
             instances: preview_instances
                 .into_iter()
                 .filter(|i| !old_instances.contains(&(i.path.clone(), i.body)))
@@ -3815,8 +3823,8 @@ fn display_names<S>(state: &DocState, result: &Recomputed<S>) -> BTreeMap<BodyUi
         let Some(output) = &feature.output else {
             continue;
         };
-        for change in &output.changes {
-            let crate::recompute::Change::Set(uid, _) = change else {
+        for change in output.changes.heads() {
+            let crate::recompute::ChangeHead::Set(uid, _) = change else {
                 continue;
             };
             if names.contains_key(uid) {

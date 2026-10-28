@@ -34,6 +34,7 @@
 #include "../framework/Icons.hpp"
 #include "../framework/PlaceWatcher.hpp"
 #include "../framework/Theme.hpp"
+#include "ConfigurationBindingsPage.hpp"
 #include "DocumentHost.hpp"
 
 namespace mitcad {
@@ -572,6 +573,9 @@ ConfigurationsDialog::ConfigurationsDialog(DocumentHost& host, QWidget* parent) 
   m_tabs->addTab(makeRowsPage(), tr("Rows"));
   m_rules = makeConfigurationRulesPage(m_host, m_tabs);
   m_tabs->addTab(m_rules, tr("Rules"));
+  // Every binding of the design (mitcad#862).
+  m_bindings = new ConfigurationBindingsPage(m_host, m_tabs);
+  m_tabs->addTab(m_bindings, tr("Bindings"));
   layout->addWidget(m_tabs, 1);
 
   m_message = new QLabel;
@@ -600,8 +604,11 @@ QWidget* ConfigurationsDialog::makeOptionsPage() {
   auto* tree = new OptionTree([this] { optionsDropped(); });
   m_options = tree;
   m_options->setObjectName(QStringLiteral("configurationsOptions"));
-  m_options->setColumnCount(6);
-  m_options->setHeaderLabels({tr("Option"), tr("Unit"), tr("Domain"), tr("Default"), tr("Comment"), tr("Driven")});
+  m_options->setColumnCount(7);
+  m_options->setHeaderLabels(
+      {tr("Option"), tr("Unit"), tr("Domain"), tr("Default"), tr("Comment"), tr("Driven"), tr("Used By")});
+  m_options->headerItem()->setToolTip(kOptionUsedBy, tr("The bindings that follow the option; double-click to "
+                                                        "list them in the Bindings tab"));
   m_options->headerItem()->setToolTip(kOptionDomain, tr("What the option can be before the rules: a list or a range"));
   m_options->headerItem()->setToolTip(
       kOptionDefault, tr("The option's own value: what the design has before a row or a chooser changes it"));
@@ -623,6 +630,9 @@ QWidget* ConfigurationsDialog::makeOptionsPage() {
   m_options->header()->setSectionResizeMode(kOptionComment, QHeaderView::Stretch);
   m_options->header()->setStretchLastSection(false);
   m_options->header()->resizeSection(kOptionDriven, 70);
+  // As wide as its widest `used by N bindings` (mitcad#862 review: 130 px
+  // cut it with larger fonts).
+  m_options->header()->setSectionResizeMode(kOptionUsedBy, QHeaderView::ResizeToContents);
   layout->addWidget(m_options, 1);
   auto* buttons = new QHBoxLayout;
   m_addOption = new QPushButton(themeIcon(QStringLiteral("add")), tr("Add Option…"));
@@ -655,6 +665,9 @@ QWidget* ConfigurationsDialog::makeOptionsPage() {
     }
     if (column == kOptionDomain) {
       later([this] { editDomain(); });
+    } else if (column == kOptionUsedBy) {
+      // The bindings the option drives (mitcad#862).
+      showBindings(item->data(kOptionName, kNameRole).toString());
     } else if ((column == kOptionDefault && item->text(kOptionDriven).isEmpty()) || column == kOptionComment) {
       m_options->editItem(item, column);
       qDebug().noquote() << QStringLiteral("Editing option %1 %2")
@@ -823,6 +836,10 @@ void ConfigurationsDialog::refresh() {
     }
   }
   checkRows();
+  // The bindings first: the Options tab counts their users (mitcad#862).
+  if (m_bindings != nullptr) {
+    m_bindings->refresh();
+  }
   m_building = true;
   fillOptions();
   fillRows();
@@ -885,6 +902,7 @@ void ConfigurationsDialog::fillOptions() {
   const QString current = selectedOption();
   m_options->clear();
   QStringList logged;
+  QStringList usage;
   for (const QString& name : std::as_const(m_table.options)) {
     const QJsonObject parameter = m_parameters.value(name);
     const cfg::OptionReport* report = m_report.option(name);
@@ -930,6 +948,15 @@ void ConfigurationsDialog::fillOptions() {
         item->setToolTip(column, refused.value().second);
       }
     }
+    // The bindings that follow it (mitcad#862).
+    if (const int users = m_bindings != nullptr ? m_bindings->usage().value(name) : 0; users > 0) {
+      item->setText(kOptionUsedBy, users == 1 ? tr("used by 1 binding") : tr("used by %1 bindings").arg(users));
+      item->setToolTip(kOptionUsedBy, m_bindings->usersOf(name).join(QLatin1Char('\n')));
+      usage << QStringLiteral("Configurations option %1 used by %2 binding%3")
+                   .arg(name)
+                   .arg(users)
+                   .arg(users == 1 ? QString() : QStringLiteral("s"));
+    }
     if (name == current) {
       m_options->setCurrentItem(item);
     }
@@ -943,6 +970,20 @@ void ConfigurationsDialog::fillOptions() {
     m_loggedOptions = text;
     qDebug().noquote() << text;
   }
+  const QString used = usage.join(QLatin1Char('\n'));
+  if (used != m_loggedUsage) {
+    m_loggedUsage = used;
+    for (const QString& line : std::as_const(usage)) {
+      qDebug().noquote() << line;
+    }
+  }
+}
+
+void ConfigurationsDialog::setBindingActions(const BindingActions& actions) { m_bindings->setActions(actions); }
+
+void ConfigurationsDialog::showBindings(const QString& option) {
+  m_tabs->setCurrentWidget(m_bindings);
+  m_bindings->showOption(option);
 }
 
 QVector<ConfigurationsDialog::RowColumn> ConfigurationsDialog::rowColumns() const {
@@ -1454,7 +1495,7 @@ void ConfigurationsDialog::logLayout() {
       if (!viewport.contains(row.center())) {
         continue;
       }
-      for (int column = kOptionName; column <= kOptionDriven; ++column) {
+      for (int column = kOptionName; column <= kOptionUsedBy; ++column) {
         const QRect cell(m_options->header()->sectionViewportPosition(column), row.top(),
                          m_options->header()->sectionSize(column), row.height());
         place(QStringLiteral("Configurations option %1 %2")

@@ -42,6 +42,7 @@
 
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -758,6 +759,107 @@ void testCancelEndlessFace() {
   CHECK(mitcad::io::has_triangulation(next->occt()));
 }
 
+// The triangles of the shown bodies' faces.
+std::size_t shownTriangles(const Document& document) {
+  std::size_t triangles = 0;
+  for (const ShapePtr& body : mitcad::shownBodyShapes(document)) {
+    triangles += mitcad::io::mesh_stats(body->occt()).triangles;
+  }
+  return triangles;
+}
+
+// A design opened twice with the result store (mitcad#858), as the window
+// opens it (the recompute, its results stored, the shown bodies meshed
+// with the store): the second open takes the body's triangulations from
+// the store and meshes no face, with the same triangles, which the view's
+// drawers keep; the block's state the cut replaced is never unpacked. A
+// body changed since (another cut) is meshed again, and stored.
+void testWarmOpen() {
+  const QString dir =
+      QDir::temp().filePath(QStringLiteral("mitcad-warm-open-%1").arg(QCoreApplication::applicationPid()));
+  QDir(dir).removeRecursively();
+  const QByteArray store = dir.toUtf8();
+  rust::Box<Document> design = mitcad::new_document();
+  makeFixture(*design, true);
+  const auto open = [&store](const std::string& json, QJsonObject* recomputed) {
+    rust::Box<Document> document = mitcad::load_document(rust::Str(json));
+    document->set_result_store(rustStr(store), rustStr(QByteArrayLiteral("warm open test")),
+                               rustStr(QByteArrayLiteral("warm.mitcad")));
+    *recomputed = run(*document, QJsonObject{{"cmd", "recompute"}});
+    document->persist_results(0.0);
+    return document;
+  };
+  const std::string json = std::string(design->to_json());
+
+  QJsonObject recomputed;
+  rust::Box<Document> cold = open(json, &recomputed);
+  mitcad::ModelJob first;
+  const mitcad::DisplayMeshing made = mitcad::meshOpenedForDisplay(*cold, first, true);
+  mitcad::logDisplayMeshing(made, QStringLiteral("cold open"));
+  CHECK(made.restored == 0);
+  CHECK(made.bodies == 1 && made.report.meshed > 0);
+  CHECK(made.stored == 1 && made.storedBytes > 0 && made.storeErrors.isEmpty());
+  const std::size_t triangles = shownTriangles(*cold);
+  CHECK(triangles > 0);
+
+  rust::Box<Document> warm = open(json, &recomputed);
+  // The block's extrusion and the holes' cut from the store; the block's
+  // state, which the cut replaced, stays packed (mitcad#858).
+  CHECK(recomputed.value("restored").toInt() == 2);
+  CHECK(recomputed.value("restored_packed").toInt() == 1);
+  mitcad::ModelJob second;
+  const mitcad::DisplayMeshing taken = mitcad::meshOpenedForDisplay(*warm, second, true);
+  mitcad::logDisplayMeshing(taken, QStringLiteral("warm open"));
+  std::printf("Warm open: %zu bodies, %zu faces from the result store in %lld ms; %zu faces meshed\n",
+              taken.restored, taken.restoredFaces, static_cast<long long>(taken.restoreMilliseconds),
+              taken.report.meshed);
+  // Every face of the block with its 83 holes (6 + 83 = 89; the fixture's
+  // 94 of testFixture include the joined boss, which is not made here).
+  const mitcad::DisplayShapes shown = mitcad::shownBodyShapes(*warm);
+  CHECK(shown.size() == 1);
+  CHECK(!shown.empty() && countOf(shown.front()->occt(), TopAbs_FACE) == 89);
+  CHECK(taken.restored == 1 && taken.restoredFaces == 89);
+  CHECK(taken.bodies == 0 && taken.report.meshed == 0);
+  CHECK(taken.stored == 0);
+  CHECK(shownTriangles(*warm) == triangles);
+  mitcad::useViewMeshing();
+  const occ::handle<Prs3d_Drawer> defaults = new Prs3d_Drawer();
+  defaults->SetupOwnDefaults();
+  mitcad::setViewTessellation(defaults);
+  const occ::handle<Prs3d_Drawer> drawer = new Prs3d_Drawer();
+  drawer->SetLink(defaults);
+  for (const ShapePtr& body : shown) {
+    CHECK(finalTier(body));
+    CHECK(mitcad::viewMeshes(*body));
+    const std::size_t before = mitcad::io::presentation_faces_meshed();
+    CHECK(StdPrs_ToolTriangulatedShape::IsTessellated(body->occt(), drawer));
+    StdPrs_ToolTriangulatedShape::Tessellate(body->occt(), drawer);
+    CHECK(mitcad::io::presentation_faces_meshed() == before);
+  }
+
+  // Another hole through the block: the body's shape is another, meshed
+  // and stored again.
+  const QString drill = run(*design, QJsonObject{{"cmd", "sketch.create"}}).value("uid").toString();
+  const QJsonObject circle = run(*design, QJsonObject{{"cmd", "sketch.add_circle"},
+                                                      {"sketch", drill},
+                                                      {"center", QJsonArray{60, 50}},
+                                                      {"diameter", 6}});
+  run(*design, QJsonObject{{"cmd", "add_feature"},
+                           {"def", QJsonObject{{"type", "extrude"},
+                                               {"profiles", QJsonArray{profile(drill, circle.value("region").toString())}},
+                                               {"start", QJsonObject{{"type", "offset"}, {"offset", -5}}},
+                                               {"extent", QJsonObject{{"type", "distance"}, {"distance", 30}}},
+                                               {"operation", "cut"}}}});
+  rust::Box<Document> changed = open(std::string(design->to_json()), &recomputed);
+  mitcad::ModelJob third;
+  const mitcad::DisplayMeshing again = mitcad::meshOpenedForDisplay(*changed, third, true);
+  mitcad::logDisplayMeshing(again, QStringLiteral("changed open"));
+  CHECK(again.restored == 0);
+  CHECK(again.bodies == 1 && again.report.meshed > 0);
+  CHECK(again.stored == 1);
+  QDir(dir).removeRecursively();
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -797,6 +899,7 @@ int main(int argc, char** argv) {
   testCommitUndoEdit();
   testCancelFailureDestruction();
   testCancelEndlessFace();
+  testWarmOpen();
   if (failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

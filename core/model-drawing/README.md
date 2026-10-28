@@ -17,12 +17,15 @@ them out.
 | `template` | Sheet templates drawn; the built-in ones (`templates/*.json`) and the user's and projects' libraries |
 | `sheet` | The sheet's groups, pens and texts that the writers write |
 | `pdf`, `svg`, `dxf`, `dwg` | The writers |
+| `cut_sheet` | Cut sheets (mitcad#853): a part's outline as the body's silhouette from its projection, parts placed, turned and checked for overlaps, the DXF and SVG of their outlines |
+| `bspline` | B-splines in a plane evaluated, cut, turned round and split into Bézier pieces, so cut sheets write the projection's curves as they are |
 | `lib.rs` | The projection cache in the document's side cache (`DrawingCache`) |
 
 What a design file keeps of a drawing stays in the model
 (`core/model/src/drawing`): the definition (`def.rs`) with its stored
 annotations (`annotate_def.rs`), table settings (`tables_def.rs`) and
-templates and revisions (`template_def.rs`), and the options of
+templates and revisions (`template_def.rs`), a cut sheet's material and
+parts (`cut_sheet_def.rs`), and the options of
 `export_drawing`. This crate re-exports all of it under the same paths,
 so `mitcad_model_drawing::…` names everything of drawings.
 

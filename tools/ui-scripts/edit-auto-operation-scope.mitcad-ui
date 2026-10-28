@@ -1,19 +1,18 @@
 # SPDX-License-Identifier: MIT
-# A saved modern Cut gets automatic edits when its checked target set
-# matches the baseline suggestion. A real checklist override disables it.
+# A saved modern Cut keeps its operation in an edit (mitcad#868); a real
+# checklist change changes only its targets.
 wait-idle
 window-resize 1400 990
 command view.fit
 expect-model-bodies 3 34000
 mark
 dblclick-logged '^Timeline Extrude1 at '
-expect-log 'Extrude: stored operation matches automatic choice; editing follows geometry'
+expect-log 'Extrude: editing keeps the stored operation'
 expect-log 'Cut target C0@: eligible, checked, intersects'
 mark
 focus-main
 focus-widget cut_targets_list
 key Home Right Down Down Space
-expect-log 'Extrude: operation chosen by hand'
 expect-log 'Cut target C0@: eligible, partial, intersects'
 mark
 focus-widget input_distance

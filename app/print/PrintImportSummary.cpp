@@ -122,8 +122,20 @@ PrintImportSummary printImportSummary(const QString& file, const QString& into, 
   // the process show in their rows, the materials through Assign….
   summary.materialsAdded = static_cast<int>(items.materials.size());
   QStringList parts;
-  parts << (into == QStringLiteral("design") ? QObject::tr("%1 imported").arg(file)
-                                             : QObject::tr("%1 imported into %2").arg(file, placeTitle(into)));
+  // One item that came in as a copy under the next free name (a slicer's
+  // preset of a name the target has, mitcad#830): the name it got.
+  const QJsonArray copied = result.value(QStringLiteral("copied")).toArray();
+  const auto total = items.printers.size() + items.processes.size() + items.materials.size();
+  const QString copyName =
+      total == 1 && copied.size() == 1 ? copied.first().toObject().value(QStringLiteral("name")).toString() : QString();
+  if (copyName.isEmpty()) {
+    parts << (into == QStringLiteral("design") ? QObject::tr("%1 imported").arg(file)
+                                               : QObject::tr("%1 imported into %2").arg(file, placeTitle(into)));
+  } else {
+    parts << (into == QStringLiteral("design")
+                  ? QObject::tr("%1 imported as %2").arg(file, copyName)
+                  : QObject::tr("%1 imported into %2 as %3").arg(file, placeTitle(into), copyName));
+  }
   // Only what failed is counted (mitcad#655): the settings kept as the
   // slicer's own are imported too.
   const QString outcome = notRead > 0 ? QObject::tr("%1 not read").arg(counted(notRead, QObject::tr("setting"),

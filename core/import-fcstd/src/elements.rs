@@ -7,7 +7,8 @@
 //!
 //! An element is taken from the object's stored shape (in its component's
 //! coordinates, [`Kernel::indexed_element`]) and found by its geometry (the
-//! same curves, either way along; [`SAME_GEOMETRY`]) in the Mitcad body
+//! same curves, either way along, whole circles and the seams of a face of
+//! revolution wherever they start; [`SAME_GEOMETRY`]) in the Mitcad body
 //! that holds the object's result: first in that body's shape right after
 //! the object (Mitcad's names carry through the later features, as
 //! FreeCAD's references do), the name then checked in the body now; else
@@ -624,6 +625,50 @@ fn on_curve(c: &Curve3, p: [f64; 3]) -> bool {
     }
 }
 
+/// Whether two whole circles or ellipses are the same curve, wherever
+/// their seams are and either way round (mitcad#835: FreeCAD's hole
+/// starts its circles on the sketch's x axis, Mitcad's revolved hole
+/// elsewhere): the same centre, plane, radii and, for an ellipse, major
+/// axis. None when either is not a whole conic.
+fn same_whole_conic(x: &Curve3, y: &Curve3) -> Option<bool> {
+    let (
+        Curve3::Conic {
+            center: c1,
+            normal: n1,
+            x_axis: x1,
+            major: a1,
+            minor: b1,
+            closed: true,
+            ..
+        },
+        Curve3::Conic {
+            center: c2,
+            normal: n2,
+            x_axis: x2,
+            major: a2,
+            minor: b2,
+            closed: true,
+            ..
+        },
+    ) = (x, y)
+    else {
+        return None;
+    };
+    let size = 1.0 + norm(*c1).max(norm(*c2)) + a1.max(*a2);
+    let tol = SAME_GEOMETRY * size;
+    let parallel = |u: &[f64; 3], v: &[f64; 3]| match (unit(*u), unit(*v)) {
+        (Some(u), Some(v)) => norm(cross(u, v)) * size <= tol,
+        _ => false,
+    };
+    Some(
+        norm(sub(*c1, *c2)) <= tol
+            && (a1 - a2).abs() <= tol
+            && (b1 - b2).abs() <= tol
+            && parallel(n1, n2)
+            && ((a1 - b1).abs() <= tol || parallel(x1, x2)),
+    )
+}
+
 /// Whether two lists of curves are the same geometry (in any order, either
 /// way along).
 pub(super) fn same_curves(a: &[Curve3], b: &[Curve3]) -> bool {
@@ -635,6 +680,9 @@ pub(super) fn same_curves(a: &[Curve3], b: &[Curve3]) -> bool {
         norm(sub(*p, *q)) <= SAME_GEOMETRY * size
     };
     let same = |x: &Curve3, y: &Curve3| {
+        if let Some(same) = same_whole_conic(x, y) {
+            return same;
+        }
         std::mem::discriminant(x) == std::mem::discriminant(y) && {
             let (px, py) = (key_points(x), key_points(y));
             px.len() == py.len()
@@ -643,17 +691,107 @@ pub(super) fn same_curves(a: &[Curve3], b: &[Curve3]) -> bool {
         }
     };
     let mut used = vec![false; b.len()];
-    a.iter().all(|x| {
-        let found = b
+    let mut left = Vec::new();
+    for x in a {
+        match b.iter().enumerate().find(|(j, y)| !used[*j] && same(x, y)) {
+            Some((j, _)) => used[j] = true,
+            None => left.push(x),
+        }
+    }
+    // The seams of a face of revolution (a hole's wall) lie wherever its
+    // maker started it: one seam is the same as another turned about the
+    // axis of a whole circle of the face.
+    let mut seams: Vec<Option<Seam>> = b
+        .iter()
+        .zip(&used)
+        .filter(|(_, used)| !**used)
+        .map(|(y, _)| Seam::of(y, b))
+        .collect();
+    left.into_iter().all(|x| {
+        let Some(seam) = Seam::of(x, a) else {
+            return false;
+        };
+        let found = seams
             .iter()
-            .enumerate()
-            .find(|(j, y)| !used[*j] && same(x, y))
-            .map(|(j, _)| j);
+            .position(|s| s.as_ref().is_some_and(|s| s.same(&seam)));
         if let Some(j) = found {
-            used[j] = true;
+            seams[j] = None;
         }
         found.is_some()
     })
+}
+
+/// A straight seam of a face of revolution: a line in a plane through the
+/// axis of a whole circle of the face that one of its ends lies on, as
+/// that axis and its ends' heights along it and distances from it.
+struct Seam {
+    origin: [f64; 3],
+    axis: [f64; 3],
+    ends: [(f64, f64); 2],
+    tol: f64,
+}
+
+impl Seam {
+    fn of(line: &Curve3, face: &[Curve3]) -> Option<Seam> {
+        let Curve3::Line { start, end } = line else {
+            return None;
+        };
+        face.iter().find_map(|c| {
+            let Curve3::Conic {
+                center,
+                normal,
+                major,
+                minor,
+                closed: true,
+                ..
+            } = c
+            else {
+                return None;
+            };
+            let size = 1.0 + norm(*center).max(norm(*start)).max(norm(*end)) + major;
+            let tol = SAME_GEOMETRY * size;
+            if (major - minor).abs() > tol || !(on_curve(c, *start) || on_curve(c, *end)) {
+                return None;
+            }
+            let axis = unit(*normal)?;
+            let place = |p: [f64; 3]| {
+                let r = sub(p, *center);
+                let h = dot(r, axis);
+                let radial: [f64; 3] = std::array::from_fn(|i| r[i] - h * axis[i]);
+                (h, radial)
+            };
+            let ((h0, r0), (h1, r1)) = (place(*start), place(*end));
+            // Both ends on one side of the axis, in one plane through it.
+            if norm(r0) > tol && norm(r1) > tol && norm(sub(unit(r0)?, unit(r1)?)) * size > tol {
+                return None;
+            }
+            Some(Seam {
+                origin: *center,
+                axis,
+                ends: [(h0, norm(r0)), (h1, norm(r1))],
+                tol,
+            })
+        })
+    }
+
+    /// Whether two seams are the same turned about the same axis.
+    fn same(&self, other: &Seam) -> bool {
+        let tol = self.tol.max(other.tol);
+        let size = tol / SAME_GEOMETRY;
+        let offset = sub(other.origin, self.origin);
+        let along = dot(offset, self.axis);
+        let off_axis: [f64; 3] = std::array::from_fn(|i| offset[i] - along * self.axis[i]);
+        if norm(cross(self.axis, other.axis)) * size > tol || norm(off_axis) > tol {
+            return false;
+        }
+        // The other's ends in this seam's heights.
+        let sign = dot(self.axis, other.axis).signum();
+        let theirs = other.ends.map(|(h, r)| (along + sign * h, r));
+        let near =
+            |p: (f64, f64), q: (f64, f64)| (p.0 - q.0).abs() <= tol && (p.1 - q.1).abs() <= tol;
+        near(self.ends[0], theirs[0]) && near(self.ends[1], theirs[1])
+            || near(self.ends[0], theirs[1]) && near(self.ends[1], theirs[0])
+    }
 }
 
 /// The first and last points of a model curve, along its parameter (a

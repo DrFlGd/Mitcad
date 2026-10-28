@@ -452,7 +452,7 @@ ui_expect_new "Diagnostics: memory " "the diagnostics dialog"
 line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -m1 "Diagnostics: memory ")
 echo "     $line"
 case $line in
-  *"(4 files)"*"last recompute 5 evaluated, 0 from the store, 1 cached"*) echo "ok   the store's files and the last change" ;;
+  *"(5 files)"*"last recompute 5 evaluated, 0 from the store, 1 cached"*) echo "ok   the store's files and the last change" ;;
   *) ui_fail "unexpected diagnostics: $line" ;;
 esac
 ui_focus_dialog '^Diagnostics$'
@@ -472,7 +472,7 @@ ui_mark
 ui_step "preferences, Cache (search)"    ui_command "Preferences: Cache"
 ui_focus_dialog '^Preferences$'
 ui_step "clear the results (Alt+L)"      ui_key alt+l
-ui_expect_new "Result store cleared: 4 files" "Clear removed the four files"
+ui_expect_new "Result store cleared: 5 files" "Clear removed the five files"
 [ -z "$(find "$UI_RESULTS" -name '*.mrs')" ] || ui_fail "result files are left"
 ui_step "keep no results (Alt+K)"        ui_key alt+k
 ui_step "OK (Enter)"                     ui_key Return

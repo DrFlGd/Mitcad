@@ -282,6 +282,11 @@ struct InputDef {
   // planes before nearer faces of other components, so a face in front of
   // an origin plane is the pick (an extent's object, mitcad#762).
   bool planesByDepth = false;
+  // Selection: sketches behind the bodies (OcctViewer::setSketchesBehind,
+  // mitcad#869): a sketch's curves and points under the cursor come after
+  // the bodies' faces, edges and vertices there, except those of the sketch
+  // that sketch mode edits (Measure's Faces, Edges and Vertices).
+  bool sketchesBehind = false;
   // Selection of bodies the command consumes (Combine's tools without Keep
   // Tools, mitcad#561): while the input is active, a picked body that the
   // preview removes stays drawn where other occurrences show it, as a tool
@@ -320,6 +325,17 @@ struct InputDef {
   // length: face, centre, through; mitcad#375). Shift+Tab still moves the
   // keyboard between the fields.
   QStringList tabCycle;
+  // Selection of one item (max 1): Tab, while the main window has the
+  // keyboard and the input is the active one, picks the next of these
+  // items (after the one picked, the first when none is), so that Enter
+  // takes it (mitcad#857: 3D Print's print bed faces to choose from, each
+  // shown in turn). None, or an empty list: Tab as before.
+  std::function<Selection(const CommandState&)> tabPicks;
+  // Selection: a click on an item of the input's kinds that it does not
+  // take shows this text in the status bar (logged "<command> <label>:
+  // <item> not taken: <text>"); none, or an empty text: nothing
+  // (mitcad#857: "Not one of the print bed faces: click a green face.").
+  std::function<QString(const SelectionItem&, const CommandState&)> refusedHint;
   // Choice: a picture for each option (by its value) beside its label;
   // a null image for none (BUILD's connectors: the library's previews).
   std::function<QImage(const QString&)> choiceImage;
@@ -459,6 +475,10 @@ struct InputDef {
     planesByDepth = true;
     return *this;
   }
+  InputDef& withSketchesBehind() {
+    sketchesBehind = true;
+    return *this;
+  }
   InputDef& withVisible(std::function<bool(const CommandState&)> shown) {
     visible = std::move(shown);
     return *this;
@@ -524,6 +544,19 @@ struct InputDef {
   }
   InputDef& withTabCycle(const QStringList& values) {
     tabCycle = values;
+    return *this;
+  }
+  InputDef& withTabPicks(std::function<Selection(const CommandState&)> items) {
+    tabPicks = std::move(items);
+    return *this;
+  }
+  InputDef& withRefusedHint(std::function<QString(const SelectionItem&, const CommandState&)> hint) {
+    refusedHint = std::move(hint);
+    return *this;
+  }
+  InputDef& withItemsText(
+      std::function<QString(const Selection&, const CommandState&, const CommandContext&)> text) {
+    itemsText = std::move(text);
     return *this;
   }
   InputDef& withChoiceImages(std::function<QImage(const QString&)> image) {
@@ -803,7 +836,14 @@ struct DragMotion {
   // The motion the inputs give what the command moves, in the coordinates
   // `frame` puts into the design; none when the inputs give none (a value
   // that is not a number). It must not query the model.
-  std::function<std::optional<gp_Trsf>(const CommandState&)> of;
+  using Motion = std::function<std::optional<gp_Trsf>(const CommandState&)>;
+  Motion of;
+  // A motion that needs what the model worked it out from (a Rotate's
+  // axis, the points of Point to Point and Point to Position: the preview
+  // report's `motion`, mitcad#838) leaves `of` empty and gives this: `of`
+  // from that basis, made when the exact preview is shown (it must not
+  // query the model); empty when the basis does not fit the inputs.
+  std::function<Motion(const QJsonObject& basis)> resolve;
   // Where those coordinates are in the design: the placement of the first
   // occurrence of the component the command works in (identity in the
   // root).
@@ -945,6 +985,15 @@ struct CommandDef {
   // with whether it was committed: what it opened beside its panel goes
   // with it (BUILD's part picker, mitcad#418).
   std::function<void(bool committed)> ended;
+  // Items drawn in a colour of their own while the panel is open, besides
+  // the inputs' picks (3D Print's print bed faces to choose from,
+  // mitcad#857); a click on one picks it as on the item. Asked whenever
+  // the highlights are drawn again (CommandSession::ask).
+  std::function<std::vector<std::pair<SelectionItem, QColor>>(const CommandState&)> marks;
+  // Esc while the panel is open (mitcad#857: 3D Print's bed face choice,
+  // where Esc ends the question, nothing sent): true when the command took
+  // it (the inputs follow, as after a change); otherwise Esc cancels.
+  std::function<bool(CommandState&, const CommandContext&)> escape;
   std::function<Built(const CommandState&, const CommandContext&)> build;
   std::function<std::vector<PreviewMarker>(const QJsonObject&)> previewMarkers;
   // As previewMarkers, with the inputs' state (in its place when set): the

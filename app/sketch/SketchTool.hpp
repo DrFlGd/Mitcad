@@ -109,6 +109,8 @@ protected:
 std::unique_ptr<SketchTool> lineTool(SketchController& c);
 // mode: two_point, three_point, center
 std::unique_ptr<SketchTool> rectangleTool(SketchController& c, const QString& mode);
+// mode: two_point, center; the corners rounded (mitcad#867)
+std::unique_ptr<SketchTool> roundedRectangleTool(SketchController& c, const QString& mode);
 // mode: center, two_point, three_point, two_tangent, three_tangent
 std::unique_ptr<SketchTool> circleTool(SketchController& c, const QString& mode);
 // mode: three_point, center, tangent

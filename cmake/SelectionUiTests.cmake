@@ -4,23 +4,31 @@
 if(BUILD_TESTING AND TARGET mitcad AND TARGET mitcad-cli)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   set(selection_ui_platform "")
-  # On macOS and Windows these tests run alone (RUN_SERIAL): one Aqua
-  # session, and the Windows VM's session 0. On Linux each has a hidden
-  # X server of its own (xvfb-run) and its own settings, autosave, project
-  # and discovery folders (and MCP's port is the system's choice), so they
-  # run beside the other tests; the test runner holds them to the
-  # machine's UI entries at once and reruns one that failed beside others
-  # alone (tools/testrun/README.md, mitcad#832).
-  set(selection_ui_alone RUN_SERIAL TRUE)
+  # Each test has its own settings (an INI file, not the registry),
+  # autosave, project, thumbnail, crash and discovery folders, MCP listens
+  # on a port the system picks, and the in-process test driver sends its
+  # events to the app's own widgets and grabs its own windows, so nothing
+  # of one test is another's. On Linux each also has a hidden X server of
+  # its own (xvfb-run). On Linux and Windows they therefore run beside the
+  # other tests; the test runner holds them to the machine's UI entries at
+  # once and reruns one that failed beside others alone
+  # (tools/testrun/README.md, mitcad#832, mitcad#870). Windows: no window
+  # is activated by the system in the VM's session 0 (ssh), so no other
+  # process can deactivate one and hide its tooltip or focus, as with the
+  # PowerShell UI tests, which already run side by side there. On macOS
+  # they run alone (RUN_SERIAL): one Aqua session, whose frontmost
+  # application, key window and menu bar every UI test there shares
+  # (tools/test-macos.sh runs one at a time).
+  set(selection_ui_alone "")
   if(APPLE AND MITCAD_MACOS_UI_TESTS)
     set(selection_ui_platform macos)
+    set(selection_ui_alone RUN_SERIAL TRUE)
   elseif(WIN32 AND MITCAD_MESA_DIR)
     set(selection_ui_platform windows)
   elseif(UNIX AND NOT APPLE)
     find_program(MITCAD_XVFB_RUN_EXECUTABLE xvfb-run)
     if(MITCAD_XVFB_RUN_EXECUTABLE)
       set(selection_ui_platform linux)
-      set(selection_ui_alone "")
     endif()
   endif()
   # selection_ui_command_prefix(<display>): selection_ui_prefix, the
@@ -85,6 +93,13 @@ if(BUILD_TESTING AND TARGET mitcad AND TARGET mitcad-cli AND TARGET test_assista
             "$<TARGET_FILE_DIR:Qt6::Core>")
   set_tests_properties("${assistant_ui_test}" PROPERTIES TIMEOUT 600 ${selection_ui_alone}
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+  if(selection_ui_platform STREQUAL "windows")
+    # Its copy buttons write the system clipboard and the driver reads it
+    # back. On Windows every test of one ssh logon shares that clipboard,
+    # so the tests that write it do not run at once (MesaRuntime.cmake);
+    # a Linux test has its X server's own.
+    set_property(TEST "${assistant_ui_test}" PROPERTY RESOURCE_LOCK system_clipboard)
+  endif()
   if(selection_ui_platform STREQUAL "linux")
     set_property(TEST "${assistant_ui_test}" APPEND PROPERTY ENVIRONMENT "LIBGL_ALWAYS_SOFTWARE=1")
   endif()

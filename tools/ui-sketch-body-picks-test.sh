@@ -20,6 +20,11 @@
 #     edge projected, a point and a midpoint constraint.
 #   - The block made 80 wide (Sketch1's width): both points follow.
 #   - A click at the same corner again adds no projection and no point.
+# Sketch4 is 10 above the block's top (mitcad#866, GitHub #50), with a
+# free point:
+#   - A block edge out of its plane selected, then Sketch Dimension (D): the
+#     selection is used, the edge projected (linked) and the distance from
+#     the point added.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-body-picks-test.sh [screenshot.png]
@@ -37,7 +42,8 @@ TOP='F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})'
 # Sketch1 (F1) 60 x 40 at the origin (its width k5, d1, shown above its bottom line, in the view),
 # Extrude1 (F2) 20 up: Body1 (F2.b0). Sketch2 (F3) on its top face (the
 # sketch's x and y are the design's), with two free points: (20, 10) and
-# (45, 25). Sketch3 (F4) on the same face, empty.
+# (45, 25). Sketch3 (F4) on the same face, empty. Sketch4 (F5) on the XY
+# plane 30 up, 10 above the block's top, with a free point at (20, 10).
 cat > "$WORK/model.json" << EOF
 [
   {"cmd": "sketch.create"},
@@ -49,7 +55,10 @@ cat > "$WORK/model.json" << EOF
   {"cmd": "sketch.create", "plane": {"face": "$TOP", "body": "F2.b0"}},
   {"cmd": "sketch.add_point", "sketch": "F3", "at": [20, 10]},
   {"cmd": "sketch.add_point", "sketch": "F3", "at": [45, 25]},
-  {"cmd": "sketch.create", "plane": {"face": "$TOP", "body": "F2.b0"}}
+  {"cmd": "sketch.create", "plane": {"face": "$TOP", "body": "F2.b0"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.redefine_plane", "sketch": "F5", "offset": 30},
+  {"cmd": "sketch.add_point", "sketch": "F5", "at": [20, 10]}
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
@@ -311,5 +320,31 @@ EOF2
 "$CLI" run "$WORK/check.json" --open "$FILE" > "$WORK/check.log" 2>&1 ||
   { cat "$WORK/check.log"; ui_fail "Sketch3 does not follow the block"; }
 echo "ok   both points follow the block: the corner (80, 0), the edge's middle (40, 0)"
+
+echo "--- Sketch4 10 above the block: a selected edge out of its plane, then D (mitcad#866)"
+edit_sketch Sketch4 F5
+ui_expect_log "Sketch Sketch4: 2 DOF" "a free point"
+ui_mark
+# Seen from above, the block's top front edge lies under the sketch's
+# y = 0: a click there selects it.
+ui_step "select the block's front edge"  ui_sketch_click 38 0
+ui_expect_new "Selected: 1 edge [" "the edge 10 below the sketch selected"
+ui_mark
+ui_step "sketch dimension (D)"           ui_key d
+ui_expect_new "Sketch body geometry out of the plane:" "the edges out of the plane read"
+ui_expect_new "out of the plane: projected as a line" "the selected edge taken as the line it projects to"
+since_mark "cannot be projected onto this sketch" && ui_fail "the selected edge was refused"
+ui_step "pick the point (20, 10)"        ui_sketch_click 20 10
+ui_step "place the value above it"       ui_sketch_click 30 5
+dimension_value 15
+ui_expect_new "Projected the body edge E{" "the edge projected onto the sketch plane"
+ui_expect_new "point_line_distance" "from the point to the projected edge"
+ui_expect_new "Sketch Sketch4: 1 DOF" "the point is 15 mm from the edge"
+ui_expect_new "Sketch Sketch4: 1 linked projection(s)" "the projection linked"
+ui_step "end the tool (Esc)"             ui_key Escape
+ui_mark
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_new "Sketch finished" "Sketch4 finished"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 
 ui_finish "UI sketch body picks test"

@@ -426,8 +426,10 @@ also shows the extrusion at once in see-through amber with dashed edges:
 a provisional shape, drawn while the exact preview of that value is still
 computed, which replaces it when it is ready. The automatic operation and
 the bodies it affects follow the exact preview; OK always keeps the exact
-result of the last value. Dragging a handle of Move/Copy's Free Move or
-Translate moves the bodies or components with the pointer at once; the
+result of the last value. Dragging a handle of Move/Copy's Free Move,
+Translate, Rotate (the ring about the axis) or Point to Position (an arrow
+along each axis to the position) moves the bodies or components with the
+pointer at once; the
 exact preview is computed when you stop for a moment or release the
 button, and OK keeps it. Typing a value keeps the precision you enter.
 A preview that fails shows in red, and OK does not accept it. Enter is
@@ -511,9 +513,9 @@ the menus of the groups.
 | Create Sketch | Alt+S (Option+S) | Select a plane or a planar face, or select it before the command. Available outside a sketch |
 | Finish Sketch | Ctrl+Enter | Go back to the 3D view |
 | Line | L | Draw lines one after another. Drag from the last point for a tangent arc |
-| 2-Point Rectangle | R | Also 3-Point Rectangle and Center Rectangle |
+| 2-Point Rectangle | R | Also 3-Point Rectangle, Center Rectangle and the rounded rectangles |
 | Center Diameter Circle | C | Also 2-Point, 3-Point, 2-Tangent and 3-Tangent circles |
-| Sketch Dimension | D | A length, a distance, an angle, a radius or a diameter. A distance is horizontal, vertical or aligned. A horizontal or vertical distance can also be signed. The angle is the one on the side where you put the value. A dimension can also go to a body edge or corner in the sketch plane, to the axes of the sketch and to its origin |
+| Sketch Dimension | D | A length, a distance, an angle, a radius or a diameter. A distance is horizontal, vertical or aligned. A horizontal or vertical distance can also be signed. The angle is the one on the side where you put the value. A dimension can also go to a body edge or corner, in the sketch plane or not, to the axes of the sketch and to its origin |
 | Trim | T | Remove the part of a curve between intersections (also Extend) |
 | Offset, Project, Move/Copy | O, P, M | In a sketch: offset a curve, make a projection, move. Project is also in the context menu of a face, an edge or a vertex |
 | Construction | X | Change the selected curves to construction geometry and back |
@@ -708,6 +710,13 @@ and Wrap Onto](#emboss-and-wrap-onto)). For an Extrude with **Operation:
 Cut** in an assembly, refer to [Cutting across
 components](#cutting-across-components).
 
+While you make a new extrusion, MitCad selects the Operation from where
+the solid lies: Join where it touches a body, Cut where it goes into one,
+New Body where it touches none, until you select one yourself. When you
+edit an extrusion, its Operation stays as it was saved, also when Flip,
+Start or a distance moves the solid into a body or out of it; select
+another Operation yourself to change it.
+
 **Two Sides and Start: Offset.** With **Direction: Two Sides**,
 **Distance** goes along the sketch normal from the start and **Distance
 2** the other way. A negative distance ends on the other side, so the
@@ -744,6 +753,11 @@ moves or resizes the face, the extrusion follows. If the face is gone,
 the extrusion fails and says so. It does not take another profile. If
 the selected face is not planar, or if it is a face of a mesh body, the
 panel refuses it.
+
+A face goes into Profiles alone. While Profiles holds sketch profiles, a
+click on a face does not go in, and the status bar says what to do: to
+start the extrusion at that face, click Start Object first, then the
+face; to extrude the face itself, clear Profiles first.
 
 ### Thin Extrude
 
@@ -1027,6 +1041,10 @@ the top. Sometimes the faces around cannot follow the motion: a face
 would vanish, split or no longer meet its neighbour. Then MitCad
 refuses the motion, and the panel says why.
 
+Rotate's ring turns about the axis that the faces turn about, as in
+Move/Copy. So dragging the ring turns the faces the way the ring shows,
+even about a circular edge.
+
 The panel's note and the selection card of its timeline item say what
 it moves, for example "MoveFace1: 2 faces of Body1, translate (-1.856,
 0, -0.361) mm". A double-click on the item edits it. This also applies
@@ -1136,6 +1154,17 @@ pick two parallel planar faces or planes, Measure also shows their
 *Offset*: the distance between the two planes. The distance can be
 longer than the offset when the faces do not overlap.
 
+The *Selection Filter* of the Measure panel says what a click picks.
+With *Faces, Edges and Vertices* (the default), the bodies come first:
+where a shown sketch's point or line lies on a body's corner, edge or
+face, for example a sketch in the middle plane of a body extruded to
+both sides, a click picks the body's vertex, edge or face, and the
+highlight under the pointer shows it before you click. A sketch's curves
+and points are picked where no body is under the pointer; while you edit
+a sketch, its own curves and points are picked as before. *Sketch Curves and
+Points* picks only sketch geometry, also where it lies on a body.
+*Bodies* picks whole bodies.
+
 Measure also works with axes. When you pick a round face, a circle, an
 arc or a construction axis, the panel shows its axis: the centre and the
 direction. The view draws the axis as a line while Measure is open.
@@ -1160,7 +1189,10 @@ the Measure panel, or click a row of the history and then *Keep Row*.
 The measurement becomes an *annotation*: a dimension drawn in the view
 as on a drawing
 (ISO 129 style, millimetres), in its own colour. MitCad names it after
-what it shows (`Distance1`, `Angle1`, `Offset1`, `Diameter1`, …). With
+what it shows (`Distance1`, `Angle1`, `Offset1`, `Diameter1`, …).
+Sketch curves and points cannot be kept: with them picked, *Keep* is
+greyed out and its tooltip says so; pick the body's corners or edges
+instead. With
 one face, edge or vertex picked, *Note…* adds a *leader note* instead:
 an arrow to the pick and a text of one or more lines.
 
@@ -1426,7 +1458,7 @@ The Create menu of the Sketch tab groups the sketch curve tools:
 | Entry | Tools |
 | --- | --- |
 | Line | the line tool (lines end to end, with tangent arcs) |
-| Rectangles | 2-Point, 3-Point and Center Rectangle |
+| Rectangles | 2-Point, 3-Point and Center Rectangle, 2-Point and Center Rounded Rectangle |
 | Circles | Center Diameter, 2-Point, 3-Point, 2-Tangent and 3-Tangent Circle |
 | Arcs | 3-Point, Center Point and Tangent Arc |
 | Other Geometry | Ellipse, the polygons, the slots, the splines and Point |
@@ -1458,6 +1490,20 @@ would make the polygon irregular.
 The centre, the size and the orientation of a polygon stay free until
 you constrain them. To constrain them, fix the centre or set its place,
 dimension a circle or a side, or make a side horizontal.
+
+**Rounded rectangles.** 2-Point Rounded Rectangle and Center Rounded
+Rectangle draw a rectangle with rounded corners, as 2-Point Rectangle
+and Center Rectangle do. After the first click, a third field, Corner
+Radius, follows Width and Height (Tab moves to it). If you do not type a
+radius, the tool uses the last radius that you used with it, at first
+2 mm. The result is four lines and four arcs that are tangent to them.
+The lines are horizontal and vertical, the arcs are Equal, and one
+radius dimension sets all four. Change that dimension and all four
+corners change. The sharp corners stay as points on the lines, so a
+typed width or height measures the whole rectangle from corner to
+corner. Thus a rounded rectangle is fully constrained by its width, its
+height, its radius and its position. MitCad refuses a radius of half the
+shorter side or more, and tells why.
 
 **Closed splines.** Fit Point Spline draws a smooth curve through the
 points that you click. Press Enter or double-click to end it. To close
@@ -1503,6 +1549,21 @@ Offset and chain selection see the corner as joined. If one end is
 fixed, MitCad keeps that end. MitCad removes a distance between the two
 ends. A point and a curve, a centre, a lone point or a projected point
 stay a coincident constraint.
+
+**Sketch Fillet** (Modify) rounds corners of lines with arcs that are
+tangent to the lines. Select what to round in Lines or Corners:
+
+- Two lines: the corner where they meet.
+- More lines, for example a whole rectangle (also selected with a
+  window): every corner where two of the lines end together.
+- Corner points: the corner of the two lines that end at each point.
+
+Each corner gets an arc. One radius dimension sets them all, and the
+other arcs are Equal to the first. Undo takes back all the corners in
+one step. The sharp corner stays as a point on both lines, and a length
+dimension of a line becomes the distance to that point, so the
+dimensions keep their meaning. If the radius does not fit on a line,
+MitCad names the line and the largest radius that fits.
 
 **Offset** (Modify) copies a chain of curves at a distance. With Chain
 Selection, a click on one curve also takes the curves that are joined
@@ -1586,6 +1647,27 @@ Sketch Dimension (D) makes a dimension of the selected geometry. The
 value fields that show while you draw also make dimensions (refer to
 [Sketch mode](#sketch-mode)).
 
+**The first dimension scales the sketch:** you can draw a sketch at any
+size and then give it its true size with one dimension. When you add
+the first dimension to a sketch, MitCad first scales the whole sketch
+about the sketch origin so that the dimension holds. Then it adds the
+dimension. For example, draw a rectangle 10 × 5 and give its long side
+100: the rectangle becomes 100 × 50. The sketch keeps its shape and its
+constraints. Text heights scale too. The scale and the dimension are one
+undo step. A message tells the scale factor.
+
+- This applies to a length, a distance, a radius or a diameter. It does
+  not apply to an angle or to a driven dimension.
+- MitCad scales only a sketch that has no other dimensions, offsets or
+  rectangular patterns, no projected, intersected or linked geometry,
+  and no fixed points other than the origin. In all other cases the
+  dimension moves only the geometry that it controls.
+- A value that you type while you draw makes the shape at that size.
+  Thus it scales nothing unless the shape is not at that size.
+- **Preferences › Sketch › Scale the sketch to its first dimension** sets
+  this. It is on by default. Set it to off to keep the drawn size of the
+  sketch.
+
 **Angles:** Sketch Dimension (D) on two lines measures the angle on the
 side where you put the value. The two lines, extended, make four angles
 at their crossing. MitCad measures the angle that the pointer is in.
@@ -1628,7 +1710,25 @@ uses that projection again.
 
 Projected geometry is fixed. Thus a dimension to sketch geometry moves
 that geometry, but a dimension between two projected edges is driven.
-For edges that are not in the plane, Project (P) is still necessary.
+
+**Dimensions to bodies below or above the sketch:** Sketch Dimension (D)
+also selects the edges and corners of visible bodies that are not in the
+sketch plane. An example is the edge of a plate below a sketch on the top
+of a cylinder. You select the edge where the view shows it. An edge
+behind a face is not selected. The pointer
+highlights the edge with a dashed line, and the curve or point that the
+edge gives in the sketch plane. MitCad projects the edge onto the sketch
+plane, linked, when it makes the dimension. The dimension attaches to the
+projection, as for an edge in the plane:
+
+- A line gives a line, and a circle parallel to the plane gives a circle.
+- A corner gives a point.
+- An edge that is perpendicular to the plane gives a point.
+
+Edges and corners that you selected before you push D are used too. When
+the same place in the view has an edge in the sketch plane and an edge
+out of it, the edge in the plane wins. When the design changes, the
+projection and the dimension follow the edge.
 
 **The sketch's axes and origin:** Sketch Dimension (D) and the
 constraint tools also select the sketch's x and y axes. They select an
@@ -1704,10 +1804,22 @@ several circles equal to a dimensioned one. Horizontal/Vertical on
 several lines makes each line horizontal or vertical. The constraints
 are one undo step.
 
+If the selection is only part of what the constraint takes, the button
+uses it as the first selections and lets you select the rest. For
+example, select two circles, click Symmetry and then click the line or
+the sketch's axis to mirror about.
+
 If the sketch refuses some of the constraints, MitCad leaves them out
 with a message. The sketch refuses a constraint that is already implied
 or that conflicts. MitCad also refuses a constraint that would
-over-constrain the sketch, with a message.
+over-constrain the sketch, with a message. When you click geometry that
+a constraint tool does not take, the status line tells why.
+
+Symmetry of two circles or arcs makes their radii equal. If dimensions
+or an Equal constraint already fix both radii, Symmetry mirrors only
+their positions. If another constraint on one of the circles then
+becomes redundant, MitCad removes it and tells you, but it never removes
+a dimension.
 
 **Tangent at an end.** When the two curves share an end, or one of them
 is a spline, Tangent and Curvature apply at the end where you pick each
@@ -1749,8 +1861,9 @@ activates both.
 
 **Project** (P, in Create) projects references from the bodies into the
 sketch. Projected geometry is linked: it follows its source when the
-design changes. MitCad draws projected geometry purple. For edges that
-are not in the sketch plane, Project is necessary. The Point tool and
+design changes. MitCad draws projected geometry purple. The Point tool
+snaps only to edges and corners in the sketch plane. Sketch Dimension
+also takes edges and corners that are not in the plane. The Point tool and
 Sketch Dimension project corners and edges of bodies as Project does it
 (refer to [Snaps and auto constraints](#snaps-and-auto-constraints) and
 [Dimensions](#dimensions)).
@@ -2730,16 +2843,29 @@ switch the whole design between its variants: change it in Change
 Parameters (or apply a configuration) and the looks, the materials and the
 features follow.
 
-- **Follow Option** (in the context menu of a body in the browser, and of
-  bodies and faces in the view): **Appearance…** or **Material…**. Choose
-  the parameter to follow (**Option**). Its allowed values are listed;
-  **Add Value** adds another. For each value, choose or type an appearance
-  (or a material) by its name, for example `Paint - Black`. **Other
-  values** is what every other value gives. **Formula Editor…** edits the
-  expression as text, for example `if(Length > 1 m; 'paint_red';
-  'paint_white')`. A name that no appearance or material has gives the
-  body a warning (in its tooltip in the browser), and the body then has
-  its default look.
+- **Varies with** (in the **Appearances** and **Materials** windows, which
+  **Appearance…** and **Material…** open for the selected bodies or
+  faces): the panel above the buttons names them and shows what they have
+  now (**Now:**). Choose the parameter in **Varies with**: the options of
+  the configuration and the parameters with a list of allowed values (with
+  none, **Add Option…** opens the Configurations window). A row per value
+  appears, each with what the bodies have now, so nothing changes yet; the
+  design's value now reads, for example, *Black (now)*. Click a row, then
+  double-click an appearance (or a material) in the list, or press
+  **Assign to row Black**: the row gets it at once, and the next row is
+  next. After the last row, click a row to fill it again. Shift and Ctrl select several
+  rows to fill with one pick, and **New** puts a new appearance straight
+  into the row. An option whose values are not a fixed list has an
+  **Other** row for every other value. Choosing **None** again keeps what
+  the bodies show now. **Formula Editor…** edits the expression as text,
+  for example `if(Length > 1 m; 'paint_red'; 'paint_white')`; such an
+  expression shows as **Custom**, and **Replace with a table** turns it
+  into rows. Bodies that differ are named in a **Mixed** line, and the
+  first change gives them all the table shown. A name that no appearance
+  or material has gives the body a warning (in its tooltip in the
+  browser), and the body then has its default look. While a body follows
+  an option, its **Appearance…** or **Material…** in the context menu is
+  marked *fx*.
 - **Suppress When…** (in the context menu of a feature in the timeline
   and the browser): a condition, for example `Holes = 'No'` or `Length <
   500 mm`. The feature is suppressed while it holds.
@@ -2749,8 +2875,8 @@ features follow.
 A body, a component or a feature that follows parameters has a small
 *fx* on its icon in the browser and the timeline, and its tooltip shows
 the expression. Setting the value by hand (Appearance…, Material…, Hide,
-Suppress Features) ends it. **Remove Expression** or **Remove Condition**
-in the dialog ends it too and keeps the value it gave. Each change is one
+Suppress Features) ends it. **None** in Varies with or **Remove
+Condition** in the dialog ends it too and keeps the value it gave. Each change is one
 step to undo. A parameter that is followed cannot be deleted; renaming it
 changes the expressions.
 ## Configurations
@@ -3231,9 +3357,14 @@ at the top. A preset whose name the library already has is shown in
 another colour; point at it to see what it meets, for example "My
 library has a process of this name". These are not ticked at first.
 Beside each one, choose **Copy** to import it as a new item ("Fine 2"),
-or **Override** to update the existing item; **Same name** above the
-list sets them all. **Import** brings in the ticked presets with the
-values they take from the slicer's own presets filled in. MitCad only
+or **Override** to update the existing item; choosing one also ticks the
+preset. **All same names** above the list sets the choice of them all;
+it is empty while they differ. With the keyboard, the arrow keys move
+between the presets, Space ticks or unticks one, and Tab reaches its
+Copy or Override. **Import** brings in the ticked presets with the
+values they take from the slicer's own presets filled in; the line
+names a single preset ("Fine imported into My library as Fine 2"), and
+the library shows the first imported item on its tab. MitCad only
 reads the slicer's files; it never changes them. **Import from Slicer**
 in the Printers and Processes window offers the same, into the design,
 as one Undo step.
@@ -6110,7 +6241,11 @@ planar face, and it changes no geometry.
 
 1. Choose **Insert > Image Reference**.
 2. Click **Choose Image…**, or type the image file's path in **Image**.
-   MitCad reads PNG, JPEG, BMP and WebP files.
+   MitCad reads PNG, JPEG, BMP, WebP and HEIF (`.heic`, `.heif`)
+   files. A HEIF photo is shown the right way up: MitCad turns, mirrors
+   and crops it as the file says. MitCad reads HEIF images coded with HEVC, the usual kind of phone
+   photo, with 8 or 10 bits per channel; it tells you when a file is of
+   another kind, such as AVIF or an image sequence.
 3. Pick an origin plane, a construction plane or a planar face.
 4. Set the other values if you need to, then click **OK**.
 
@@ -6873,11 +7008,43 @@ The tooltip of the body in the browser names the face, for example
   of the design's printer (see [Print settings](#print-settings)), else
   a 256 × 256 mm plate. A component that is placed several times, only
   moved, turns the same way in every place.
-- Several bodies that each have a print bed face, for example the parts
-  of a component: MitCad sends them as they are assembled. So does a
-  component that is placed several times and turned differently in each
-  place, as no single turn lays the face on the bed in every place.
+- Several bodies that each have a print bed face, or a body placed
+  several times, each turned differently (a nut in an assembly): with
+  3MF, each body in each place is an object of its own, turned onto its
+  print bed face and set beside the others on the plate. Bodies without
+  a print bed face stay as they are assembled.
+- A component you selected before **3D Print** is sent whole: its bodies
+  stay as they are assembled, one object, turned onto the print bed face
+  when one of them has one and every place turns it alike.
+- When such a piece has two or more print bed faces (counted in each
+  place: a nut placed twice, turned differently, has two), **Send** asks
+  which one before it writes any file. The print bed faces of the piece
+  are highlighted in green, in every place, and the panel and the status
+  bar say what is asked, for example *Not sent yet: Pair:1 has 2 print
+  bed faces. Click the green one to put on the bed.* **Send** is
+  disabled until you choose. Point at a green face to see its body in the
+  status bar (*Tall: print bed face*), and click it: MitCad turns the
+  whole piece so that this face lies on the bed, the bodies staying
+  where they are to each other, and sends it. A click on another face
+  does nothing but say *Not one of the print bed faces: click a green
+  face.* With the keyboard, Tab picks the green faces in turn (the one
+  picked in blue, named in **Bed face**) and Enter sends on it. Click
+  **Send as assembled** beside **Bed face** to send the piece as it is
+  assembled. Esc ends the question without sending anything, and the
+  panel stays open; a second Esc closes it, as everywhere. Changing
+  **Format** or **Bodies** while it asks ends the question too. When two pieces each have several print bed
+  faces, they are asked about one after the other, each by its name.
+  The choice holds until the panel closes, so a second **Send** does not
+  ask again. With one print bed face, or none, nothing is asked.
+- Only the places you picked are sent: select one occurrence of the nut,
+  and 3D Print sends that nut alone, on its print bed face. With nothing
+  picked of a body, every place where it is shown is sent.
 - With STL, each file is turned onto the print bed face of its body.
+
+The status line says how many bodies lie on their print bed faces, for
+example `Sent 3 bodies to Bambu Studio. 3 bodies on their print bed
+faces.`, and names a face you chose: `Sent 2 bodies to Bambu Studio.
+Pair:1 on Tall's print bed face.`
 
 If the print bed face is gone after an edit, or is no longer planar,
 MitCad sends the body as the design has it, with -Z down. The status
@@ -7286,6 +7453,48 @@ the drawing has a revision, the latest on top, and the title block
 shows the latest letter. The sheet's panel lists the revisions: a click
 on one edits or deletes it.
 
+#### Cut sheets
+
+A cut sheet lays flat parts out at 1:1 on a sheet of material and writes
+their outlines as a DXF or SVG file for a laser, water-jet or plasma
+cutter: the ribs and formers of a model aircraft, brackets, panels.
+It keeps no title block, frame, dimensions or hidden lines: only the
+edges to cut. MitCad keeps it in the Drawings folder with the drawings,
+and it follows the model: change a part, and its outline changes.
+
+**Creating one.** Select the bodies to cut in the browser or the 3D view
+(or none), then File › Create Drawing (or Create Drawing in a Drawings
+folder's menu). In the dialog, set **Kind** to **Cut Sheet** and type
+the material's **Width** and **Height** (600 × 300 mm unless changed).
+MitCad names it CutSheet1, CutSheet2 and so on, adds the selected bodies
+as parts and opens it.
+
+**Parts.** **Add Parts…** lists the bodies: choose one or several
+(Ctrl+click) and a **Count** (2 for two parts of each body). Each part is
+its body seen square on to its largest flat face: the outer boundary of
+the whole body and the holes and cut-outs that go right through it. A
+blind hole or a pocket is not cut. MitCad places new parts in free room
+from the top left of the sheet; it does not nest them.
+
+- Drag a part to move it.
+- Turn it from its menu (Rotate 90° Left, Rotate 90° Right) or type an
+  angle in the panel's **Rotation**.
+- **Face** in the panel chooses another flat face to lay it on.
+- **Add Copy** adds one more of the same part; Delete removes one.
+
+A part that overlaps another or reaches past the material's edge is
+named in the panel and in the status bar. A part whose body is deleted
+keeps a red box on the sheet until it is deleted or the body comes back.
+
+**Writing the file.** **Export…** › **DXF…** or **SVG…** writes the
+parts at 1:1 in millimetres. Outer boundaries are on the layer
+`CUT_OUTER` and holes on `CUT_INNER`, as the sheet-metal Flat Pattern's
+DXF names them; arcs and circles stay arcs and circles, and curved
+edges (splines) stay splines with their own control points (in SVG,
+Bézier curves). Check **Part
+Names on the LABEL Layer** in the same menu to write each part's name
+as text on a layer `LABEL` (for engraving, or to tell the parts apart).
+
 #### Export Drawing
 
 File › Export Drawing writes the bodies as a drawing on a sheet. The
@@ -7516,7 +7725,7 @@ Web Viewer writes the index again from all designs.
 
 **Tools › Preferences** holds the settings of MitCad. It has one page
 for each kind of setting: General, Navigation, Display, Cache, Cloud,
-Updates, 3D Print, Diagnostics, Textures, AI Assistants and Fonts.
+Updates, 3D Print, Diagnostics, Textures, AI Assistants, Fonts and Sketch.
 Command search finds each page by its name or by what it sets, for example "autosave",
 "slicer" or "git". The result shows as *Preferences: Cache* and so on.
 The window opens no larger than the screen, and you can resize it.
@@ -7541,6 +7750,7 @@ guide that explains its settings.
 | **Textures** | The *Local Folders* of the texture sources. *Allow texture sources on the internet* | [Textures](#textures) |
 | **AI Assistants** | Connect AI Assistant…, and the folders that an AI assistant connected through MCP can save to and open from | [mcp.md](mcp.md) |
 | **Fonts** | The folders of font files that the font chooser of Edit Text lists | [Text, fonts and QR codes](#text-fonts-and-qr-codes) |
+| **Sketch** | **Scale the sketch to its first dimension**: on or off | [Dimensions](#dimensions) |
 
 
 **Layout.** The **Layout** setting of the Display page selects how the

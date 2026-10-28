@@ -14,6 +14,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QJsonArray>
@@ -42,9 +43,11 @@ QJsonObject cameraOf(const OcctViewer& viewer) {
           {QStringLiteral("up"), QJsonArray{up.X() + 0.0, up.Y() + 0.0, up.Z() + 0.0}}};
 }
 
-// Create Drawing's question: the first sheet's template, size, orientation
-// and projection method (the model's names), or none when cancelled. A
-// template chosen brings its own sheet size; ISO is chosen first.
+// Create Drawing's question: a drawing (the first sheet's template, size,
+// orientation and projection method, the model's names) or a cut sheet
+// (mitcad#853: the material's width and height, mm, as `kind`
+// "cut_sheet"), or none when cancelled. A template chosen brings its own
+// sheet size; ISO is chosen first.
 std::optional<QJsonObject> askNewDrawing(QWidget* parent, const QList<drawings::TemplateChoice>& templates) {
   QDialog dialog(parent);
   dialog.setWindowTitle(QObject::tr("Create Drawing"));
@@ -56,6 +59,12 @@ std::optional<QJsonObject> askNewDrawing(QWidget* parent, const QList<drawings::
     }
     return box;
   };
+  // A drawing, or a cut sheet of flat parts at 1:1 (mitcad#853).
+  QComboBox* kind = combo({{QStringLiteral("drawing"), QObject::tr("Drawing")},
+                           {QStringLiteral("cut_sheet"), QObject::tr("Cut Sheet")}});
+  kind->setObjectName(QStringLiteral("drawingKind"));
+  kind->setToolTip(QObject::tr("A drawing of views, or a cut sheet of flat parts at 1:1 for cutting"));
+  form->addRow(QObject::tr("&Kind"), kind);
   auto* templateBox = new QComboBox;
   templateBox->setObjectName(QStringLiteral("drawingTemplate"));
   for (const drawings::TemplateChoice& choice : templates) {
@@ -100,6 +109,31 @@ std::optional<QJsonObject> askNewDrawing(QWidget* parent, const QList<drawings::
   // The template chosen first brings its sheet too, as the handler was not
   // connected when it was chosen (mitcad#722).
   templateSheet();
+  // A cut sheet's material, 600 x 300 mm unless typed.
+  const auto length = [](double value, const char* name) {
+    auto* box = new QDoubleSpinBox;
+    box->setObjectName(QString::fromLatin1(name));
+    box->setRange(1.0, 100000.0);
+    box->setDecimals(1);
+    box->setSuffix(QStringLiteral(" mm"));
+    box->setValue(value);
+    return box;
+  };
+  QDoubleSpinBox* width = length(600.0, "drawingCutWidth");
+  QDoubleSpinBox* height = length(300.0, "drawingCutHeight");
+  form->addRow(QObject::tr("&Width"), width);
+  form->addRow(QObject::tr("&Height"), height);
+  const auto showKind = [form, kind, templateBox, sizes, orientation, projection, width, height] {
+    const bool cut = kind->currentData().toString() == QStringLiteral("cut_sheet");
+    for (QWidget* field : {static_cast<QWidget*>(templateBox), static_cast<QWidget*>(sizes),
+                           static_cast<QWidget*>(orientation), static_cast<QWidget*>(projection)}) {
+      form->setRowVisible(field, !cut);
+    }
+    form->setRowVisible(width, cut);
+    form->setRowVisible(height, cut);
+  };
+  QObject::connect(kind, &QComboBox::currentIndexChanged, &dialog, showKind);
+  showKind();
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
   QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
@@ -108,6 +142,14 @@ std::optional<QJsonObject> askNewDrawing(QWidget* parent, const QList<drawings::
   if (execDialog(&dialog) != QDialog::Accepted) {
     qDebug().noquote() << QStringLiteral("Create Drawing cancelled");
     return std::nullopt;
+  }
+  if (kind->currentData().toString() == QStringLiteral("cut_sheet")) {
+    qDebug().noquote() << QStringLiteral("Create Drawing dialog: cut sheet %1 x %2")
+                              .arg(width->value(), 0, 'g', 7)
+                              .arg(height->value(), 0, 'g', 7);
+    return QJsonObject{{QStringLiteral("kind"), QStringLiteral("cut_sheet")},
+                       {QStringLiteral("width"), width->value()},
+                       {QStringLiteral("height"), height->value()}};
   }
   QJsonObject out{{QStringLiteral("size"), sizes->currentData().toString()},
                   {QStringLiteral("orientation"), orientation->currentData().toString()},
@@ -221,7 +263,15 @@ void MainWindow::createDrawing(const QString& component) {
     return;
   }
   QJsonObject command = *sheet;
-  command.insert(QStringLiteral("cmd"), QStringLiteral("add_drawing"));
+  // A cut sheet (mitcad#853) starts with the bodies selected in the model.
+  const bool cut = command.take(QStringLiteral("kind")).toString() == QStringLiteral("cut_sheet");
+  command.insert(QStringLiteral("cmd"), cut ? QStringLiteral("add_cut_sheet") : QStringLiteral("add_drawing"));
+  if (cut) {
+    const QJsonArray bodies = selectedModelBodies();
+    if (!bodies.isEmpty()) {
+      command.insert(QStringLiteral("bodies"), bodies);
+    }
+  }
   if (!component.isEmpty() && component != QStringLiteral("C0")) {
     command.insert(QStringLiteral("component"), component);
   }
@@ -235,9 +285,27 @@ void MainWindow::createDrawing(const QString& component) {
                                  result.value(QStringLiteral("component")).toString());
   openDrawing(uid);
   // A new drawing's first view comes next (mitcad#725): Base View is on.
-  if (drawingOpen()) {
+  // A cut sheet takes its parts from Add Parts.
+  if (drawingOpen() && !cut) {
     m_drawingWorkspace->startTool(QStringLiteral("drawing.base_view"));
   }
+}
+
+QJsonArray MainWindow::selectedModelBodies() const {
+  QJsonArray out;
+  for (const SelectionItem& item : m_selection) {
+    if (item.kind != SelectKind::Body || item.owner.isEmpty()) {
+      continue;
+    }
+    const QJsonValue body = item.occurrence.isEmpty()
+                                ? QJsonValue(item.owner)
+                                : QJsonValue(QJsonObject{{QStringLiteral("body"), item.owner},
+                                                         {QStringLiteral("occurrence"), item.occurrence}});
+    if (!out.contains(body)) {
+      out.append(body);
+    }
+  }
+  return out;
 }
 
 void MainWindow::followDrawing() {

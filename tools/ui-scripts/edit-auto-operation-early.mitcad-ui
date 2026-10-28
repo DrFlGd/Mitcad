@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
-# A changed distance while the immutable stored-geometry probe is busy
-# must not make a deliberately saved New Body eligible for automatic mode.
+# A changed distance while the edit's first preview is busy keeps the
+# deliberately saved New Body: an edit keeps its stored operation
+# (mitcad#868).
 wait-idle
 window-resize 1400 990
 mark
@@ -9,7 +10,7 @@ wait-log 'Computing preview started' 30
 expect-model-busy true
 qt-type-now input_distance '5 mm'
 wait-log '^Extrude Distance: 5 mm' 30
-expect-log 'Extrude: stored operation differs from automatic choice; editing keeps it' 30
+expect-log 'Extrude: editing keeps the stored operation' 30
 wait-idle 30
 expect-no-log 'Extrude: automatic Operation'
 focus-main

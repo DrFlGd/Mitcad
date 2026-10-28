@@ -804,6 +804,7 @@ impl SketchEdit<'_> {
                             a: Ref::Point(original),
                             b: Ref::Point(copy),
                             axis,
+                            radii: true,
                         });
                     }
                 }
@@ -812,6 +813,7 @@ impl SketchEdit<'_> {
                         a: Ref::Curve(original),
                         b: Ref::Curve(copy),
                         axis,
+                        radii: true,
                     });
                 }
                 other => {
@@ -821,6 +823,7 @@ impl SketchEdit<'_> {
                                 a: Ref::Point(p),
                                 b: Ref::Point(copies[&p]),
                                 axis,
+                                radii: true,
                             });
                         }
                     }
@@ -1448,10 +1451,256 @@ impl SketchEdit<'_> {
     ) -> Result<EntityUid, String> {
         self.shape_editable(a)?;
         self.shape_editable(b)?;
+        let r = self.fillet_radius(radius)?;
+        let arc = self.fillet_arc(a, b, r)?;
+        self.add_dimension(
+            DimensionKind::Radius { curve: arc },
+            Some(radius),
+            false,
+            Some("fillet radius"),
+        )?;
+        Ok(arc)
+    }
+
+    /// The value of a fillet's radius, which must be positive.
+    fn fillet_radius(&self, radius: &ValueInput) -> Result<f64, String> {
         let r = self.value_of(radius, crate::expr::Unit::MM)?;
         if !(r.is_finite() && r > 0.0) {
             return Err(format!("the fillet radius must be positive, got {r}"));
         }
+        Ok(r)
+    }
+
+    /// Rounds several corners at once (mitcad#867): every corner where two
+    /// of `curves` end at one point, and every one of `points` that ends
+    /// exactly two lines (construction lines count only among
+    /// construction lines, so a rectangle's diagonal does not spoil its
+    /// corners). Each corner gets an arc of `radius` as in
+    /// [`SketchEdit::fillet`]; the first arc has the radius dimension and
+    /// the others are Equal to it, so the one dimension drives them all.
+    /// Two lines without a shared end are one corner where they meet. The
+    /// arcs are returned in the order of the corners.
+    pub fn fillet_corners(
+        &mut self,
+        curves: &[EntityUid],
+        points: &[EntityUid],
+        radius: &ValueInput,
+    ) -> Result<Vec<EntityUid>, String> {
+        let r = self.fillet_radius(radius)?;
+        let corners = self.corners_of(curves, points)?;
+        for &(a, b) in &corners {
+            self.shape_editable(a)?;
+            self.shape_editable(b)?;
+        }
+        if let [(a, b)] = corners[..]
+            && self.shared_end(a, b).is_none()
+        {
+            // Two lines that meet where they would cross.
+            return Ok(vec![self.fillet(a, b, radius)?]);
+        }
+        self.check_fillets_fit(&corners, r)?;
+        let mut arcs = Vec::with_capacity(corners.len());
+        for &(a, b) in &corners {
+            arcs.push(self.fillet_arc(a, b, r)?);
+        }
+        self.add_dimension(
+            DimensionKind::Radius { curve: arcs[0] },
+            Some(radius),
+            false,
+            Some("fillet radius"),
+        )?;
+        for &arc in &arcs[1..] {
+            self.add_constraint(ConstraintKind::Equal { a: arcs[0], b: arc });
+        }
+        Ok(arcs)
+    }
+
+    /// A rectangle (as [`SketchEdit::rectangle`]) with its four corners
+    /// rounded by `radius` (mitcad#867), as [`SketchEdit::fillet_corners`]
+    /// rounds them: one radius dimension and the arcs Equal. Returns the
+    /// four lines and the four arcs. A radius of half the shorter side or
+    /// more is refused.
+    pub fn rounded_rectangle(
+        &mut self,
+        mode: super::tools::RectangleMode,
+        construction: bool,
+        radius: &ValueInput,
+    ) -> Result<(Vec<EntityUid>, Vec<EntityUid>), String> {
+        let r = self.fillet_radius(radius)?;
+        let lines = self.rectangle(mode, construction)?;
+        let mut shorter = f64::INFINITY;
+        for &l in &lines {
+            let (s, e) = self.line_ends(l)?;
+            shorter = shorter.min(dist(self.at(s)?, self.at(e)?));
+        }
+        if r >= shorter / 2.0 {
+            return Err(format!(
+                "the corner radius {} mm must be less than half the shorter side ({} mm)",
+                short(r),
+                short(shorter / 2.0)
+            ));
+        }
+        let arcs = self.fillet_corners(&lines, &[], radius)?;
+        Ok((lines, arcs))
+    }
+
+    /// The ends of a line, or why it is not one.
+    fn line_ends(&self, id: EntityUid) -> Result<(EntityUid, EntityUid), String> {
+        match self.curve(id)?.kind {
+            EntityKind::Line { start, end, .. } => Ok((start, end)),
+            ref other => Err(format!(
+                "c{} is a {}: Sketch Fillet rounds corners of lines",
+                id.0,
+                other.type_name()
+            )),
+        }
+    }
+
+    /// The point where two lines end together.
+    fn shared_end(&self, a: EntityUid, b: EntityUid) -> Option<EntityUid> {
+        let (a0, a1) = self.line_ends(a).ok()?;
+        let (b0, b1) = self.line_ends(b).ok()?;
+        [a0, a1].into_iter().find(|p| *p == b0 || *p == b1)
+    }
+
+    /// The corners (pairs of lines) that `curves` and `points` name for
+    /// [`SketchEdit::fillet_corners`], each once.
+    fn corners_of(
+        &self,
+        curves: &[EntityUid],
+        points: &[EntityUid],
+    ) -> Result<Vec<(EntityUid, EntityUid)>, String> {
+        let mut lines: Vec<EntityUid> = Vec::new();
+        for &c in curves {
+            self.line_ends(c)?;
+            if !lines.contains(&c) {
+                lines.push(c);
+            }
+        }
+        let mut corners: Vec<(EntityUid, EntityUid)> = Vec::new();
+        let mut at: Vec<EntityUid> = Vec::new();
+        // Where two of the lines of one kind end together (a construction
+        // diagonal at a rectangle's corner is no part of the corner); a
+        // point where three or more of them end is no corner of two.
+        let construction = |l: EntityUid| self.def.entity(l).is_some_and(|e| e.construction);
+        let mut ending: BTreeMap<(EntityUid, bool), Vec<EntityUid>> = BTreeMap::new();
+        for &l in &lines {
+            let (s, e) = self.line_ends(l)?;
+            for p in [s, e] {
+                let list = ending.entry((p, construction(l))).or_default();
+                if !list.contains(&l) {
+                    list.push(l);
+                }
+            }
+        }
+        for &l in &lines {
+            let (s, e) = self.line_ends(l)?;
+            for p in [s, e] {
+                let list = &ending[&(p, construction(l))];
+                if list.len() > 2 {
+                    return Err(format!(
+                        "{} of the lines end at p{}: pick the corners of two lines",
+                        list.len(),
+                        p.0
+                    ));
+                }
+                if list.len() == 2 && list[0] == l && !at.contains(&p) {
+                    // Lines in line (a line drawn in two) make no corner.
+                    if self.corner(list[0], list[1]).is_ok() {
+                        at.push(p);
+                        corners.push((list[0], list[1]));
+                    }
+                }
+            }
+        }
+        for &p in points {
+            match self.def.entity(p) {
+                Some(e) if e.is_point() => {}
+                _ => return Err(format!("point p{} does not exist", p.0)),
+            }
+            if at.contains(&p) {
+                continue;
+            }
+            // The curves that end there, of one kind: the drawn ones, else
+            // the construction ones.
+            let ends_at = |kind: bool| {
+                self.def
+                    .entities
+                    .iter()
+                    .filter(|e| {
+                        e.construction == kind
+                            && e.kind.ends().is_some_and(|(s, t)| s == p || t == p)
+                    })
+                    .collect::<Vec<&Entity>>()
+            };
+            let drawn = ends_at(false);
+            let ends_here = if drawn.is_empty() {
+                ends_at(true)
+            } else {
+                drawn
+            };
+            let is_line = |e: &Entity| matches!(e.kind, EntityKind::Line { .. });
+            match ends_here[..] {
+                [a, b] if is_line(a) && is_line(b) => {
+                    self.corner(a.id, b.id)
+                        .map_err(|e| format!("p{} is no corner: {e}", p.0))?;
+                    at.push(p);
+                    corners.push((a.id, b.id));
+                }
+                _ => {
+                    return Err(format!(
+                        "p{} is not the corner of two lines ({} curve(s) end there)",
+                        p.0,
+                        ends_here.len()
+                    ));
+                }
+            }
+        }
+        if corners.is_empty() {
+            if let ([a, b], []) = (&lines[..], points) {
+                // Two lines that do not end together: where they meet.
+                return Ok(vec![(*a, *b)]);
+            }
+            return Err("the selection has no corner where two lines end together".to_owned());
+        }
+        Ok(corners)
+    }
+
+    /// Refuses fillets of `r` at `corners` (of lines with shared ends)
+    /// that would take more of a line than it has, naming the line and the
+    /// largest radius that fits it.
+    fn check_fillets_fit(&self, corners: &[(EntityUid, EntityUid)], r: f64) -> Result<(), String> {
+        // What the corners take of each line, and its length.
+        let mut taken: BTreeMap<EntityUid, (f64, f64)> = BTreeMap::new();
+        for &(a, b) in corners {
+            let corner = self.corner(a, b)?;
+            let half = dot(corner.dir_a, corner.dir_b).clamp(-1.0, 1.0).acos() / 2.0;
+            let back = r / half.tan();
+            for (line, len) in [(a, corner.len_a), (b, corner.len_b)] {
+                let entry = taken.entry(line).or_insert((0.0, len));
+                entry.0 += back;
+                entry.1 = entry.1.max(len);
+            }
+        }
+        for (line, (need, len)) in taken {
+            if need >= len {
+                return Err(format!(
+                    "the fillet radius {} mm does not fit on c{}: its corners take {} mm of its {} mm, \
+                     the radius must be less than {} mm",
+                    short(r),
+                    line.0,
+                    short(need),
+                    short(len),
+                    short(r * len / need)
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Rounds the corner of two lines with an arc of `r` tangent to both,
+    /// without a dimension; the corner stays as a point on both lines.
+    fn fillet_arc(&mut self, a: EntityUid, b: EntityUid, r: f64) -> Result<EntityUid, String> {
         let corner = self.corner(a, b)?;
         let half = dot(corner.dir_a, corner.dir_b).clamp(-1.0, 1.0).acos() / 2.0;
         let back = r / half.tan();
@@ -1484,12 +1733,6 @@ impl SketchEdit<'_> {
         self.add_constraint(ConstraintKind::tangent(a, arc));
         self.add_constraint(ConstraintKind::tangent(b, arc));
         self.keep_corner(&corner, a, b);
-        self.add_dimension(
-            DimensionKind::Radius { curve: arc },
-            Some(radius),
-            false,
-            Some("fillet radius"),
-        )?;
         Ok(arc)
     }
 
@@ -2138,6 +2381,12 @@ impl SketchEdit<'_> {
 /// geometric tolerance (mitcad#224).
 const GAP: f64 = 0.01;
 
+/// A length in a message: rounded to a micrometre, without trailing zeros.
+fn short(v: f64) -> String {
+    let rounded = (v * 1e6).round() / 1e6;
+    format!("{}", rounded + 0.0)
+}
+
 /// A small distance for a message: `2.0e-5` or `0.012`.
 fn gap_text(d: f64) -> String {
     if d < 1e-3 {
@@ -2316,7 +2565,7 @@ pub(super) fn remap(kind: &mut ConstraintKind, copies: &BTreeMap<EntityUid, Enti
             m(point);
             m(curve);
         }
-        K::Symmetric { a, b, axis } => {
+        K::Symmetric { a, b, axis, .. } => {
             mr(a);
             mr(b);
             m(axis);

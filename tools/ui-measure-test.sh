@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands app/framework core/model-api/src tools/cli
 # check-all sources: app/MainWindowMeasureHistory.cpp
+# check-all sources: app/MainWindowMeasurements.cpp app/MainWindowSelection.cpp app/PickContext.cpp app/PickContext.hpp
 # Measure through the real UI, in the Docked layout, on two cylinders of
 # radius 5, 20 high (Body1 about Z through the origin, Body2 through
 # (30, 40)) and a block 10 x 10 x 20 at (20, -30) (Body3). Axes
@@ -18,6 +19,10 @@
 # Floating layout, after the design is opened again: no rows, then one
 # measurement's row shown again in the next panel.
 # Tools/ui-windows-measure-test.ps1 does the same in the Windows VM.
+# The picks' preference (mitcad#869), on a block extruded to both sides of
+# its shown sketch, from the top: the two corners where the sketch's points
+# lie give the body's vertices and Keep is enabled; with Sketch Curves and
+# Points the two sketch points, and Keep greyed out with the reason.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-measure-test.sh [screenshot.png]
@@ -164,6 +169,84 @@ ui_expect_new "Measure history row 1 at" "its row laid out"
 ui_step "show it again"                    ui_click_logged "Measure history row 1"
 ui_expect_new "Measure history showed row 1" "shown again"
 ui_expect_new "distance 40, angle 0 deg, axis distance 50, axis lines 2" "measured again"
+ui_step "close (Enter)"                    ui_key Return
+ui_expect_new "Closed Measure" "measure closed"
+
+echo "--- A shown sketch in the body's middle plane (mitcad#869)"
+# A block 120 x 70 extruded 15 to each side of its sketch, which is shown:
+# seen from the top, the sketch's corner points lie on the block's top
+# corners and its lines on the top edges. Faces, Edges and Vertices takes
+# the body's vertex there; Sketch Curves and Points the sketch's points,
+# which Keep cannot keep: its tooltip says why.
+cat > "$WORK/middle.json" << EOF
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-60, -35], "width": 120, "height": 70},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "$R"}],
+    "extent": {"type": "symmetric", "distance": 15, "full_length": false}, "operation": "new_body"}},
+  {"cmd": "set_feature_visible", "uid": "F1", "visible": true}
+]
+EOF
+"$CLI" run "$WORK/middle.json" --save "$WORK/middle.mitcad" > "$WORK/cli.log" 2>&1 ||
+  { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+ui_stop_app
+ui_start_app --open "$WORK/middle.mitcad"
+ui_step "top view (search)"                ui_command "Top View"
+ui_step "fit (F6)"                         ui_key F6
+ui_mark
+ui_step "measure (I)"                      ui_key i
+ui_expect_new "Command Measure started" "measure started"
+ui_expect_new "Sketch entity F1/p5 at" "the sketch is shown, its corner points pickable"
+ui_expect_new "Pick vertex F2.b0/" "the block's top corners have pick places over the sketch's points"
+ui_sync
+# The two top corners at the ends of the sketch's first line (c1, from
+# (-60, -35) to (60, -35)), where its points p5 and p6 lie in the view.
+start=$(grep -n "Pick places:" "$UI_LOG" | tail -1 | cut -d: -f1)
+mapfile -t corners < <(tail -n +"${start:-1}" "$UI_LOG" | grep -F "Pick vertex F2.b0/" |
+  grep -F "side(c1[c4,c2])" | sed -n 's/.* at \([0-9]*\),\([0-9]*\)$/\1 \2/p')
+[ "${#corners[@]}" -eq 2 ] || ui_fail "the first line's two top corners: ${#corners[@]} pick places"
+read -r c1x c1y <<< "${corners[0]}"
+read -r c2x c2y <<< "${corners[1]}"
+read -r s5x s5y <<< "$(ui_logged_at "Sketch entity F1/p5")"
+read -r s6x s6y <<< "$(ui_logged_at "Sketch entity F1/p6")"
+# Each corner within a sketch point's pick width (8 pixels) of p5 or p6.
+for corner in "$c1x $c1y" "$c2x $c2y"; do
+  read -r cx cy <<< "$corner"
+  cx=$((X + cx * UI_SCALE))
+  cy=$((Y + cy * UI_SCALE))
+  near=0
+  for point in "$s5x $s5y" "$s6x $s6y"; do
+    read -r px py <<< "$point"
+    [ $(((cx - px) * (cx - px) + (cy - py) * (cy - py))) -le $((64 * UI_SCALE * UI_SCALE)) ] && near=1
+  done
+  [ "$near" = 1 ] || ui_fail "the corner at $cx,$cy is not under a sketch point"
+done
+echo "ok   the corners lie under the sketch's points"
+ui_mark
+ui_step "pick a top corner"                xdotool mousemove $((X + c1x * UI_SCALE)) $((Y + c1y * UI_SCALE)) click 1
+ui_expect_new "Measure Selection 1: 1 vertex" "the body's vertex, not the sketch point on it"
+ui_step "pick the other top corner"        xdotool mousemove $((X + c2x * UI_SCALE)) $((Y + c2y * UI_SCALE)) click 1
+ui_expect_new "Measure Selection 2: 1 vertex" "the other body vertex"
+ui_expect_new "distance 120" "the corners 120 apart"
+ui_expect_new "Measure Keep enabled" "Keep enabled for the body's corners"
+ui_sync
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "Measure Selection [12]: 1 sketch point" && ui_fail "a sketch point was picked"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -E "Measure Keep (enabled|disabled)" | tail -1 | grep -q "Measure Keep enabled" ||
+  ui_fail "Keep is not enabled with both corners picked"
+ui_step "close (Enter)"                    ui_key Return
+ui_expect_new "Closed Measure" "measure closed"
+ui_mark
+ui_step "measure (I)"                      ui_key i
+ui_expect_new "Command Measure started" "measure started"
+ui_step "Selection Filter: Sketch Curves and Points" ui_choose "Panel Measure input filter" 2
+ui_expect_new "Measure: Selection Filter = Sketch Curves and Points" "sketch geometry asked for"
+ui_step "pick the sketch's corner p5"      ui_click_logged "Sketch entity F1/p5"
+ui_expect_new "Measure Selection 1: 1 sketch point" "the sketch point"
+ui_step "pick its corner p6"               ui_click_logged "Sketch entity F1/p6"
+ui_expect_new "Measure Selection 2: 1 sketch point" "the other sketch point"
+ui_expect_new "distance 120" "the points 120 apart"
+ui_expect_new "Measure Keep disabled: Sketch geometry cannot be kept as an annotation" \
+  "Keep greyed out, its tooltip gives the reason"
 ui_step "close (Enter)"                    ui_key Return
 ui_expect_new "Closed Measure" "measure closed"
 

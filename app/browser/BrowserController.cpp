@@ -38,6 +38,8 @@
 #include "DocumentHost.hpp"
 #include "AppearanceDialog.hpp"
 #include "Bindings.hpp"
+#include "BindingsCard.hpp"
+#include "ConfigurationBindingsPage.hpp"
 #include "ConfigurationBar.hpp"
 #include "ConfigurationsDialog.hpp"
 #include "FindDialog.hpp"
@@ -76,25 +78,34 @@ public:
       m_menu.setToolTipsVisible(true);
     }
   }
-  // A submenu of entries, logged as "Context menu <title>: A | B" as the
-  // view's submenus are (mitcad#809: Follow Option).
-  void addSubmenu(const QString& icon, const QString& title,
-                  const QVector<QPair<QString, std::function<void()>>>& entries) {
-    QMenu* submenu = m_menu.addMenu(themeIcon(icon), title);
-    QStringList texts;
-    for (const auto& entry : entries) {
-      QAction* action = submenu->addAction(entry.first);
-      QObject::connect(action, &QAction::triggered, &m_menu, entry.second);
-      texts << entry.first;
+  // An entry with a tooltip that says what it leaves out (mitcad#863).
+  void addWithTip(const QString& icon, const QString& text, std::function<void()> call, const QString& tip) {
+    QAction* action = m_menu.addAction(themeIcon(icon), text);
+    QObject::connect(action, &QAction::triggered, &m_menu, std::move(call));
+    m_entries << text;
+    if (!tip.isEmpty()) {
+      action->setToolTip(tip);
+      m_menu.setToolTipsVisible(true);
     }
-    m_entries << title;
-    m_submenus << QStringLiteral("Context menu %1: %2").arg(title, texts.join(QStringLiteral(" | ")));
+  }
+  // An entry for a property that can follow an expression: while it does
+  // (`bound`), an fx mark on its icon and after its text ("Appearance…
+  // fx", mitcad#861), logged "Context menu fx: Appearance…"; the entry is
+  // logged by its text alone either way.
+  void addBound(const QString& icon, const QString& text, std::function<void()> call, bool bound) {
+    QAction* action = m_menu.addAction(bound ? boundIcon(themeIcon(icon)) : themeIcon(icon),
+                                       bound ? text + QStringLiteral("\tfx") : text);
+    QObject::connect(action, &QAction::triggered, &m_menu, std::move(call));
+    m_entries << text;
+    if (bound) {
+      m_bound << text;
+    }
   }
   void separator() { m_menu.addSeparator(); }
   bool isEmpty() const { return m_entries.isEmpty(); }
   void exec(const QPoint& at) {
-    for (const QString& line : std::as_const(m_submenus)) {
-      qDebug().noquote() << line;
+    if (!m_bound.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Context menu fx: %1").arg(m_bound.join(QStringLiteral(" | ")));
     }
     qDebug().noquote() << QStringLiteral("Context menu: %1").arg(m_entries.join(QStringLiteral(" | ")));
     execMenu(&m_menu, at);
@@ -103,7 +114,7 @@ public:
 private:
   QMenu m_menu;
   QStringList m_entries;
-  QStringList m_submenus;
+  QStringList m_bound;
 };
 
 const QStringList kLengthUnits = {QStringLiteral("mm"), QStringLiteral("cm"), QStringLiteral("m"),
@@ -198,6 +209,10 @@ BrowserController::BrowserController(DocumentHost& host, QWidget* window)
     m_searchFeatures = m_shownFeatures;
   });
   follow(m_timeline, &TimelineWidget::searchRestored, &BrowserController::restoreSearchSelection);
+  // The fx badges show their bindings cards (mitcad#862); not while a job
+  // computes the model.
+  follow(m_browser, &BrowserPanel::bindingsRequested, &BrowserController::browserBindings, true);
+  follow(m_timeline, &TimelineWidget::bindingsRequested, &BrowserController::timelineBindings, true);
 
   // A click on a badge goes to its feature, or lists them to go to.
   connect(m_failures, &QToolButton::clicked, this, [this] {
@@ -244,6 +259,10 @@ void BrowserController::refresh(const DocumentSnapshot& snapshot) {
   m_configurationBar->refresh();
   if (m_configurations && m_configurations->isVisible()) {
     m_configurations->refresh();
+  }
+  // A bindings card shown reads its item again (mitcad#862).
+  if (m_bindingsCard && m_bindingsCard->isVisible()) {
+    m_bindingsCard->refresh();
   }
   if (m_appearances && m_appearances->isVisible()) {
     m_appearances->refresh();
@@ -495,11 +514,23 @@ void BrowserController::toggleVisibility(const BrowserNode& node) {
                         {{QStringLiteral("occurrence"), node.occurrence}, {QStringLiteral("visible"), show}}));
     break;
   case BrowserNode::Type::Bodies: {
+    // Bodies with a Show When condition follow it (mitcad#863): the folder
+    // changes the others.
+    const QStringList kept = conditionedBodies(node.component);
     const DocumentSnapshot::Component* component = m_snapshot.component(node.component);
     for (const QString& uid : component != nullptr ? component->bodies : QStringList()) {
-      commands.append(cmd("set_body_visible", {{QStringLiteral("uid"), uid}, {QStringLiteral("visible"), show}}));
+      if (m_snapshot.bodies.value(uid).visibleWhen.isEmpty()) {
+        commands.append(cmd("set_body_visible", {{QStringLiteral("uid"), uid}, {QStringLiteral("visible"), show}}));
+      }
     }
     label = show ? tr("Show Bodies") : tr("Hide Bodies");
+    if (!kept.isEmpty()) {
+      keptByConditions(label, node.path, kept);
+      if (commands.isEmpty()) {
+        m_host.showStatus(bodiesFollowConditions(kept), false);
+        return;
+      }
+    }
     done = commands.isEmpty(); // an empty folder: nothing to change
     break;
   }
@@ -535,6 +566,15 @@ void BrowserController::toggleVisibility(const BrowserNode& node) {
   default:
     return;
   }
+  // A body or an occurrence that follows a Show When condition: the value
+  // set by hand removes the condition in the same undo step (the model's
+  // rule), which the status bar says (mitcad#863).
+  QString condition;
+  if (node.type == BrowserNode::Type::Body) {
+    condition = m_snapshot.bodies.value(node.uid).visibleWhen;
+  } else if (node.type == BrowserNode::Type::Component && !node.occurrence.isEmpty()) {
+    condition = occurrenceCondition(node.occurrence);
+  }
   if (!commands.isEmpty()) {
     done = m_host.runVisibilityCommands(commands, label);
   }
@@ -543,7 +583,55 @@ void BrowserController::toggleVisibility(const BrowserNode& node) {
     qDebug().noquote() << (during.isEmpty()
                                ? QStringLiteral("Visibility %1: %2").arg(node.path, verb)
                                : QStringLiteral("Visibility %1: %2 (during %3)").arg(node.path, verb, during));
+    if (!condition.isEmpty()) {
+      conditionRemoved(node.name);
+    }
   }
+}
+
+QString BrowserController::occurrenceCondition(const QString& path) const {
+  const DocumentSnapshot::Occurrence* placed = occurrence(path);
+  return placed != nullptr ? placed->visibleWhen : QString();
+}
+
+void BrowserController::conditionRemoved(const QString& name) {
+  const QString message = tr("Show When of %1 removed – Undo brings it back").arg(name);
+  m_host.showStatus(message, false);
+  qDebug().noquote() << QStringLiteral("Status: %1").arg(message);
+}
+
+void BrowserController::keptByConditions(const QString& label, const QString& where, const QStringList& kept) {
+  const QString names = kept.join(QStringLiteral(", "));
+  qDebug().noquote() << QStringLiteral("%1%2: kept %3 following Show When: %4")
+                            .arg(label, where.isEmpty() ? QString() : QStringLiteral(" %1").arg(where))
+                            .arg(kept.size())
+                            .arg(names);
+  const QString message = tr("%1 left Show When in place for %2").arg(label, names);
+  m_host.showStatus(message, false);
+  qDebug().noquote() << QStringLiteral("Status: %1").arg(message);
+}
+
+QStringList BrowserController::conditionedBodies(const QString& owner) const {
+  QStringList names;
+  const DocumentSnapshot::Component* def = m_snapshot.component(owner);
+  for (const QString& uid : def != nullptr ? def->bodies : QStringList()) {
+    const DocumentSnapshot::Body body = m_snapshot.bodies.value(uid);
+    if (!body.visibleWhen.isEmpty()) {
+      names << (body.name.isEmpty() ? uid : body.name);
+    }
+  }
+  return names;
+}
+
+QString BrowserController::leftToConditions(const QStringList& bodies) {
+  return bodies.size() == 1
+             ? tr("%1 follows its Show When and is left as it is.").arg(bodies.first())
+             : tr("%1 follow their Show When and are left as they are.").arg(bodies.join(QStringLiteral(", ")));
+}
+
+QString BrowserController::bodiesFollowConditions(const QStringList& bodies) {
+  return QStringLiteral("%1 %2").arg(leftToConditions(bodies),
+                                     tr("Show When… on a body's row changes its condition."));
 }
 
 void BrowserController::activate(const BrowserNode& node) {
@@ -1182,25 +1270,28 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     });
     // For the selected bodies when the row is one of them (mitcad#703).
     const QStringList bodies = menuBodies(node);
-    menu.add(QStringLiteral("appearance"), tr("Appearance…"), [this, bodies] {
-      Selection targets;
-      for (const QString& uid : bodies) {
-        targets.append(SelectionItem{SelectKind::Body, uid, QString(), QString()});
-      }
-      openAppearances(targets);
-    });
-    // Their material: density, appearance and filament (mitcad#640).
-    menu.add(QStringLiteral("material"), tr("Material…"), [this, bodies] { openMaterial(bodies); });
-    // Their appearance or material from an option (mitcad#809).
-    {
-      Selection targets;
-      for (const QString& uid : bodies) {
-        targets.append(SelectionItem{SelectKind::Body, uid, QString(), QString()});
-      }
-      menu.addSubmenu(QStringLiteral("parameters"), tr("Follow Option"),
-                      {{tr("Appearance…"), [this, targets] { followOption(targets, false); }},
-                       {tr("Material…"), [this, targets] { followOption(targets, true); }}});
+    // An fx mark while one of them follows an expression (mitcad#861): the
+    // windows' assignment panel shows and edits it.
+    bool appearanceBound = false;
+    bool materialBound = false;
+    for (const QString& uid : bodies) {
+      const DocumentSnapshot::Body bodyState = m_snapshot.bodies.value(uid);
+      appearanceBound = appearanceBound || !bodyState.appearanceExpr.isEmpty();
+      materialBound = materialBound || !bodyState.materialExpr.isEmpty();
     }
+    menu.addBound(
+        QStringLiteral("appearance"), tr("Appearance…"),
+        [this, bodies] {
+          Selection targets;
+          for (const QString& uid : bodies) {
+            targets.append(SelectionItem{SelectKind::Body, uid, QString(), QString()});
+          }
+          openAppearances(targets);
+        },
+        appearanceBound);
+    // Their material: density, appearance and filament (mitcad#640).
+    menu.addBound(QStringLiteral("material"), tr("Material…"), [this, bodies] { openMaterial(bodies); },
+                  materialBound);
     // Its properties, its occurrence's and its component's (mitcad#496).
     menu.add(QStringLiteral("parameters"), tr("Property Sets…"),
              [this, node] { openPropertySets({node.uid, node.occurrence, QString()}); });
@@ -1265,10 +1356,34 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
   case BrowserNode::Type::Origin:
   case BrowserNode::Type::Bodies:
   case BrowserNode::Type::Sketches:
-  case BrowserNode::Type::Construction:
-    menu.add(node.visible ? QStringLiteral("eye-off") : QStringLiteral("eye"),
-             node.visible ? tr("Hide All") : tr("Show All"), [this, node] { toggleVisibility(node); });
+  case BrowserNode::Type::Construction: {
+    // A Bodies folder's bodies that follow Show When are left as they are
+    // (mitcad#863): the entry's tooltip names them; with nothing else in the
+    // folder it is disabled, the tooltip saying why.
+    QString blocked;
+    QString tip;
+    if (node.type == BrowserNode::Type::Bodies) {
+      const QStringList kept = conditionedBodies(node.component);
+      const DocumentSnapshot::Component* def = m_snapshot.component(node.component);
+      if (!kept.isEmpty() && def != nullptr && kept.size() == def->bodies.size()) {
+        blocked = bodiesFollowConditions(kept);
+      } else if (!kept.isEmpty()) {
+        tip = leftToConditions(kept);
+      }
+    }
+    const QString entry = node.visible ? tr("Hide All") : tr("Show All");
+    const QString icon = node.visible ? QStringLiteral("eye-off") : QStringLiteral("eye");
+    if (!blocked.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("%1 disabled: %2").arg(entry, blocked);
+      menu.add(icon, entry, [this, node] { toggleVisibility(node); }, blocked);
+    } else {
+      if (!tip.isEmpty()) {
+        qDebug().noquote() << QStringLiteral("%1 tooltip: %2").arg(entry, tip);
+      }
+      menu.addWithTip(icon, entry, [this, node] { toggleVisibility(node); }, tip);
+    }
     break;
+  }
   case BrowserNode::Type::Units:
   case BrowserNode::Type::Settings:
     menu.add(QStringLiteral("units"), tr("Change Active Units"), [this] { changeUnits(); });
@@ -1884,14 +1999,34 @@ void BrowserController::hideBodies(const Selection& items) {
   if (bodies.isEmpty()) {
     return;
   }
+  // One body is hidden by hand: its Show When condition goes, as the status
+  // bar says. Several are a bulk change that leaves those with a condition
+  // to it (mitcad#863).
+  const bool one = bodies.size() == 1;
+  const bool removed = one && !m_snapshot.bodies.value(bodies.first()).visibleWhen.isEmpty();
   QJsonArray commands;
   QStringList names;
+  QStringList kept;
   for (const QString& uid : bodies) {
+    const QString name = m_host.model().bodyName(uid);
+    if (!one && !m_snapshot.bodies.value(uid).visibleWhen.isEmpty()) {
+      kept << name;
+      continue;
+    }
     commands.append(cmd("set_body_visible", {{QStringLiteral("uid"), uid}, {QStringLiteral("visible"), false}}));
-    names << m_host.model().bodyName(uid);
+    names << name;
   }
-  if (m_host.runVisibilityCommands(commands, bodies.size() == 1 ? QString() : tr("Hide Bodies"))) {
+  if (!kept.isEmpty()) {
+    keptByConditions(tr("Hide Bodies"), QString(), kept);
+  }
+  if (commands.isEmpty()) {
+    return;
+  }
+  if (m_host.runVisibilityCommands(commands, commands.size() == 1 ? QString() : tr("Hide Bodies"))) {
     qDebug().noquote() << QStringLiteral("Hid body %1").arg(names.join(QStringLiteral(", ")));
+    if (removed) {
+      conditionRemoved(names.first());
+    }
   }
 }
 
@@ -1900,16 +2035,35 @@ void BrowserController::hideOccurrences(const Selection& items) {
   if (occurrences.isEmpty()) {
     return;
   }
+  // As hideBodies (mitcad#863): one occurrence loses its condition, several
+  // leave those with one to it.
+  const bool one = occurrences.size() == 1;
+  const bool removed = one && !occurrenceCondition(occurrences.first()).isEmpty();
   QJsonArray commands;
   QStringList names;
+  QStringList kept;
   for (const QString& path : occurrences) {
+    const DocumentSnapshot::Occurrence* found = occurrence(path);
+    const QString name = found != nullptr ? found->name : path;
+    if (!one && found != nullptr && !found->visibleWhen.isEmpty()) {
+      kept << name;
+      continue;
+    }
     commands.append(
         cmd("set_occurrence_visible", {{QStringLiteral("occurrence"), path}, {QStringLiteral("visible"), false}}));
-    const DocumentSnapshot::Occurrence* found = occurrence(path);
-    names << (found != nullptr ? found->name : path);
+    names << name;
   }
-  if (m_host.runVisibilityCommands(commands, occurrences.size() == 1 ? QString() : tr("Hide Components"))) {
+  if (!kept.isEmpty()) {
+    keptByConditions(tr("Hide Components"), QString(), kept);
+  }
+  if (commands.isEmpty()) {
+    return;
+  }
+  if (m_host.runVisibilityCommands(commands, commands.size() == 1 ? QString() : tr("Hide Components"))) {
     qDebug().noquote() << QStringLiteral("Hid component %1").arg(names.join(QStringLiteral(", ")));
+    if (removed) {
+      conditionRemoved(names.first());
+    }
   }
 }
 
@@ -2069,24 +2223,46 @@ void BrowserController::findVisibility(bool show) {
     return;
   }
   // The bodies by uid and the components by occurrence, each once: the same
-  // commands as the light bulbs, in one undo step.
+  // commands as the light bulbs, in one undo step. Those with a Show When
+  // condition follow it (mitcad#863): Show and Hide of the found items are
+  // a bulk change.
   QStringList bodies;
   QStringList occurrences;
+  QStringList seen;
+  QStringList kept;
   QJsonArray commands;
   for (const FindResult& result : m_find->targets()) {
     if (result.kind == FindResult::Kind::Body) {
-      if (!bodies.contains(result.uid)) {
+      if (!seen.contains(result.uid)) {
+        seen << result.uid;
+        const DocumentSnapshot::Body body = m_snapshot.bodies.value(result.uid);
+        if (!body.visibleWhen.isEmpty()) {
+          kept << (body.name.isEmpty() ? result.uid : body.name);
+          continue;
+        }
         bodies << result.uid;
         commands.append(
             cmd("set_body_visible", {{QStringLiteral("uid"), result.uid}, {QStringLiteral("visible"), show}}));
       }
-    } else if (!occurrences.contains(result.occurrence)) {
+    } else if (!seen.contains(result.occurrence)) {
+      seen << result.occurrence;
+      const DocumentSnapshot::Occurrence* found = occurrence(result.occurrence);
+      if (found != nullptr && !found->visibleWhen.isEmpty()) {
+        kept << found->name;
+        continue;
+      }
       occurrences << result.occurrence;
       commands.append(cmd("set_occurrence_visible",
                           {{QStringLiteral("occurrence"), result.occurrence}, {QStringLiteral("visible"), show}}));
     }
   }
-  if (commands.isEmpty() || !canChange(true)) {
+  if ((commands.isEmpty() && kept.isEmpty()) || !canChange(true)) {
+    return;
+  }
+  if (!kept.isEmpty()) {
+    keptByConditions(show ? tr("Show Found Items") : tr("Hide Found Items"), QString(), kept);
+  }
+  if (commands.isEmpty()) {
     return;
   }
   const QString counts = countedKinds(static_cast<int>(bodies.size()), static_cast<int>(occurrences.size()));
@@ -2177,6 +2353,11 @@ ParametersDialog* BrowserController::parametersDialog() const { return m_paramet
 void BrowserController::openConfigurations() {
   if (!m_configurations) {
     m_configurations = new ConfigurationsDialog(m_host, m_window);
+    // The Bindings tab's Edit… and Select in Browser (mitcad#862).
+    BindingActions actions;
+    actions.edit = [this](const BindingEntry& entry) { editBinding(entry); };
+    actions.select = [this](const BindingEntry& entry) { selectBinding(entry); };
+    m_configurations->setBindingActions(actions);
   }
   showDialog(m_configurations);
   if (!m_configurations->testAttribute(Qt::WA_DontShowOnScreen)) {
@@ -2189,9 +2370,113 @@ void BrowserController::openConfigurations() {
 
 ConfigurationsDialog* BrowserController::configurationsDialog() const { return m_configurations.data(); }
 
+// Bindings at a glance (mitcad#862).
+
+void BrowserController::browserBindings(const BrowserNode& node, const QRect& anchor, bool pinned) {
+  BindingItem item;
+  switch (node.type) {
+  case BrowserNode::Type::Body:
+    item.kind = BindingItem::Kind::Body;
+    item.uid = node.uid;
+    break;
+  case BrowserNode::Type::Feature:
+  case BrowserNode::Type::Sketch:
+  case BrowserNode::Type::Datum:
+    item.kind = BindingItem::Kind::Feature;
+    item.uid = node.uid;
+    break;
+  case BrowserNode::Type::Component:
+    if (!node.occurrence.isEmpty()) {
+      item.kind = BindingItem::Kind::Occurrence;
+      item.uid = node.occurrence.section(QLatin1Char('/'), -1);
+      item.path = node.occurrence;
+    }
+    break;
+  default:
+    break;
+  }
+  showBindingsCard(item, anchor, pinned);
+}
+
+void BrowserController::timelineBindings(const QString& uid, const QRect& anchor, bool pinned) {
+  showBindingsCard({BindingItem::Kind::Feature, uid, QString()}, anchor, pinned);
+}
+
+void BrowserController::showBindingsCard(const BindingItem& item, const QRect& anchor, bool pinned) {
+  if (!item.isValid()) {
+    return;
+  }
+  if (!m_bindingsCard) {
+    BindingsCard::Actions actions;
+    actions.edit = [this](const BindingEntry& entry) { editBinding(entry); };
+    actions.showAll = [this] { showAllBindings(); };
+    m_bindingsCard = new BindingsCard(m_host.model(), actions, m_window);
+  }
+  m_bindingsCard->showFor(item, anchor, pinned);
+}
+
+void BrowserController::editBinding(const BindingEntry& entry) {
+  switch (entry.kind) {
+  case BindingEntry::Kind::Appearance:
+    openAppearances({SelectionItem{SelectKind::Body, entry.uid, QString(), QString()}});
+    break;
+  case BindingEntry::Kind::FaceAppearance:
+    openAppearances({SelectionItem{SelectKind::Face, entry.uid, entry.face, QString()}});
+    break;
+  case BindingEntry::Kind::Material:
+    openMaterial({entry.uid});
+    break;
+  case BindingEntry::Kind::Shown:
+    showBodyWhen(entry.uid);
+    break;
+  case BindingEntry::Kind::Suppressed:
+    suppressWhen(entry.uid);
+    break;
+  case BindingEntry::Kind::OccurrenceShown:
+    showOccurrenceWhen(entry.path);
+    break;
+  }
+}
+
+void BrowserController::selectBinding(const BindingEntry& entry) {
+  switch (entry.kind) {
+  case BindingEntry::Kind::Suppressed:
+    reveal(entry.uid);
+    return;
+  case BindingEntry::Kind::OccurrenceShown: {
+    const DocumentSnapshot::Occurrence* placed = occurrence(entry.path);
+    if (placed != nullptr) {
+      SelectionItem item{SelectKind::Component, placed->component, QString(), QString()};
+      item.occurrence = entry.path;
+      findInBrowser(item);
+    }
+    return;
+  }
+  case BindingEntry::Kind::Appearance:
+  case BindingEntry::Kind::Material:
+  case BindingEntry::Kind::Shown:
+  case BindingEntry::Kind::FaceAppearance: {
+    // A body of a component: its first placement's row.
+    SelectionItem item{SelectKind::Body, entry.uid, QString(), QString()};
+    item.occurrence = m_snapshot.firstOccurrence(m_snapshot.bodies.value(entry.uid).component);
+    findInBrowser(item);
+    return;
+  }
+  }
+}
+
+void BrowserController::showAllBindings() {
+  openConfigurations();
+  if (m_configurations) {
+    m_configurations->showBindings();
+  }
+}
+
 void BrowserController::openAppearances(const Selection& targets) {
   if (!m_appearances) {
     m_appearances = new AppearanceDialog(m_host, m_window);
+    // Add Option… of Varies with (mitcad#861).
+    m_appearances->openConfigurations = [this] { openConfigurations(); };
   }
   showDialog(m_appearances);
   if (!m_appearances->testAttribute(Qt::WA_DontShowOnScreen)) {
@@ -2350,6 +2635,7 @@ void BrowserController::openMaterial(const QStringList& bodies, const QString& c
     m_materials = new MaterialsDialog(m_host, m_window);
     m_materials->editAppearances = [this] { openAppearances({}); };
     m_materials->openMyLibrary = [this] { openMyLibrary(); };
+    m_materials->openConfigurations = [this] { openConfigurations(); };
   }
   // The targets by name: Assign to Body1, Assign to Arm.
   QStringList names;
@@ -2502,73 +2788,6 @@ void BrowserController::showOccurrenceWhen(const QString& path) {
                                                : QStringLiteral("Show %1 when %2").arg(name, condition));
   } else {
     qDebug().noquote() << QStringLiteral("Show When of %1 refused: %2").arg(name, m_host.lastError());
-  }
-}
-
-void BrowserController::followOption(const Selection& targets, bool material) {
-  if (targets.isEmpty() || !canChange()) {
-    return;
-  }
-  // The bodies, and for the appearance the faces of each body picked (a
-  // face stands for its body's material).
-  QStringList bodies;
-  QHash<QString, QStringList> faces;
-  for (const SelectionItem& target : targets) {
-    if (!material && target.kind == SelectKind::Face) {
-      faces[target.owner] << target.name;
-    } else if (!bodies.contains(target.owner)) {
-      bodies << target.owner;
-    }
-  }
-  const auto nameOf = [this](const QString& uid) {
-    const QString name = m_snapshot.bodies.value(uid).name;
-    return name.isEmpty() ? uid : name;
-  };
-  // What the first target follows now.
-  const SelectionItem& first = targets.first();
-  const DocumentSnapshot::Body body = m_snapshot.bodies.value(first.owner);
-  QString current = body.appearanceExpr;
-  if (material) {
-    current = body.materialExpr;
-  } else if (first.kind == SelectKind::Face) {
-    current = body.faceAppearanceExprs.value(first.name).toString();
-  }
-  QString what;
-  if (!faces.isEmpty() && bodies.isEmpty()) {
-    int count = 0;
-    for (const QStringList& list : std::as_const(faces)) {
-      count += static_cast<int>(list.size());
-    }
-    what = count == 1 ? tr("Appearance of a Face of %1").arg(nameOf(first.owner))
-                      : tr("Appearance of %n Faces", nullptr, count);
-  } else {
-    const QString of = bodies.size() == 1 ? nameOf(bodies.first()) : tr("%n Bodies", nullptr, static_cast<int>(bodies.size()));
-    what = material ? tr("Material of %1").arg(of) : tr("Appearance of %1").arg(of);
-  }
-  FollowOptionDialog dialog(m_host.model(), material ? FollowOptionDialog::Kind::Material
-                                                     : FollowOptionDialog::Kind::Appearance,
-                            tr("%1 Follows Option").arg(what), current, m_window);
-  if (execDialog(&dialog) != QDialog::Accepted || dialog.expression() == current) {
-    return;
-  }
-  const QString expression = dialog.expression();
-  QJsonArray commands;
-  for (const QString& uid : std::as_const(bodies)) {
-    commands.append(cmd(material ? "set_body_material" : "set_body_appearance",
-                        {{QStringLiteral("uid"), uid}, {QStringLiteral("expression"), expression}}));
-  }
-  for (auto face = faces.cbegin(); face != faces.cend(); ++face) {
-    commands.append(cmd("set_face_appearance", {{QStringLiteral("uid"), face.key()},
-                                                {QStringLiteral("faces"), QJsonArray::fromStringList(face.value())},
-                                                {QStringLiteral("expression"), expression}}));
-  }
-  const bool done = commands.size() == 1 ? m_host.runModelCommand(commands.first().toObject())
-                                         : m_host.runModelCommands(commands, tr("%1 Follows Option").arg(what));
-  if (done) {
-    qDebug().noquote() << (expression.isEmpty() ? QStringLiteral("Follow Option of %1 removed").arg(what)
-                                                : QStringLiteral("%1 follows %2").arg(what, expression));
-  } else {
-    qDebug().noquote() << QStringLiteral("Follow Option of %1 refused: %2").arg(what, m_host.lastError());
   }
 }
 

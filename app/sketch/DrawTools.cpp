@@ -772,11 +772,20 @@ protected:
 // ---------------------------------------------------------------------------
 // Rectangle
 
+// The 2-Point and Center Rectangle also come with rounded corners
+// (mitcad#867): a Corner Radius field beside Width and Height, and the
+// model's `sketch.rectangle` with `radius` (four tangent arcs, Equal, one
+// radius dimension).
 class RectangleTool : public StepTool {
 public:
-  RectangleTool(SketchController& c, const QString& mode) : StepTool(c), m_mode(mode) {}
+  RectangleTool(SketchController& c, const QString& mode, bool rounded = false)
+      : StepTool(c), m_mode(mode), m_rounded(rounded) {}
 
   QString name() const override {
+    if (m_rounded) {
+      return m_mode == QStringLiteral("center") ? QObject::tr("Center Rounded Rectangle")
+                                                : QObject::tr("2-Point Rounded Rectangle");
+    }
     if (m_mode == QStringLiteral("three_point")) {
       return QObject::tr("3-Point Rectangle");
     }
@@ -794,7 +803,11 @@ public:
       fieldLength(preview, m_c, QStringLiteral("length"), click(0), cursor());
       return;
     }
-    preview.add({corners.begin(), corners.end()}, Style::Draw, true);
+    if (m_rounded) {
+      paintRounded(preview, corners);
+    } else {
+      preview.add({corners.begin(), corners.end()}, Style::Draw, true);
+    }
     if (m_mode != QStringLiteral("three_point")) {
       fieldLength(preview, m_c, QStringLiteral("width"), corners[2], corners[3], -36.0);
     }
@@ -808,6 +821,16 @@ protected:
   int clicks() const override { return m_mode == QStringLiteral("three_point") ? 3 : 2; }
 
   QString prompt(int clicked) const override {
+    if (m_rounded) {
+      if (m_mode == QStringLiteral("center")) {
+        return clicked == 0 ? QObject::tr("Center Rounded Rectangle: click the centre.")
+                            : QObject::tr("Center Rounded Rectangle: click a corner, or type the width "
+                                          "(Tab: height, corner radius).");
+      }
+      return clicked == 0 ? QObject::tr("Rounded Rectangle: click the first corner.")
+                          : QObject::tr("Rounded Rectangle: click the opposite corner, or type the width "
+                                        "(Tab: height, corner radius).");
+    }
     if (m_mode == QStringLiteral("center")) {
       return clicked == 0 ? QObject::tr("Center Rectangle: click the centre.")
                           : QObject::tr("Center Rectangle: click a corner, or type the width (Tab: height).");
@@ -828,8 +851,53 @@ protected:
       }
       return {{QStringLiteral("height"), QObject::tr("Height"), FieldSpec::Kind::Length}};
     }
-    return {{QStringLiteral("width"), QObject::tr("Width"), FieldSpec::Kind::Length},
-            {QStringLiteral("height"), QObject::tr("Height"), FieldSpec::Kind::Length}};
+    QVector<FieldSpec> result = {{QStringLiteral("width"), QObject::tr("Width"), FieldSpec::Kind::Length},
+                                 {QStringLiteral("height"), QObject::tr("Height"), FieldSpec::Kind::Length}};
+    if (m_rounded) {
+      result.push_back({QStringLiteral("radius"), QObject::tr("Corner Radius"), FieldSpec::Kind::Length});
+    }
+    return result;
+  }
+
+  // The corner radius: the typed one, else the last one used.
+  double radius() const {
+    if (const auto typed = m_c.fieldValue(QStringLiteral("radius"))) {
+      return *typed;
+    }
+    return m_radius;
+  }
+
+  // The outline with its corners (counter-clockwise) rounded by radius(),
+  // sharp while the radius does not fit (the model refuses it), and the
+  // radius field at the second corner.
+  void paintRounded(ToolPreview& preview, const std::vector<V2>& corners) const {
+    const double shorter = std::min(dist(corners[0], corners[1]), dist(corners[1], corners[2]));
+    const double r = radius();
+    const bool fits = r > 0.0 && r < shorter / 2.0;
+    if (!fits) {
+      preview.add({corners.begin(), corners.end()}, Style::Draw, true);
+    }
+    std::vector<V2> outline;
+    for (std::size_t i = 0; i < corners.size(); ++i) {
+      const V2& corner = corners[i];
+      const V2 back = unit(corners[(i + 3) % 4] - corner);
+      const V2 ahead = unit(corners[(i + 1) % 4] - corner);
+      const double shown = fits ? r : shorter / 2.0;
+      const V2 center = corner + (back + ahead) * shown;
+      if (i == 1) {
+        fieldRadius(preview, m_c, QStringLiteral("radius"), center, shown, corner - center);
+      }
+      if (!fits) {
+        continue;
+      }
+      const Curve2 arc =
+          Curve2::arc(center, r, angleOf(corner + back * r - center), angleOf(corner + ahead * r - center));
+      const std::vector<V2> points = arc.sample(step());
+      outline.insert(outline.end(), points.begin(), points.end());
+    }
+    if (fits) {
+      preview.add(std::move(outline), Style::Draw, true);
+    }
   }
 
   V2 cursor() const override {
@@ -876,6 +944,9 @@ protected:
     const double scale = m_mode == QStringLiteral("center") ? 2.0 : 1.0;
     m_c.setLive(QStringLiteral("width"), std::abs(p.x - a.x) * scale);
     m_c.setLive(QStringLiteral("height"), std::abs(p.y - a.y) * scale);
+    if (m_rounded) {
+      m_c.setLive(QStringLiteral("radius"), m_radius);
+    }
   }
 
   std::vector<V2> cornersFor(const V2& p) const {
@@ -915,13 +986,30 @@ protected:
       }
     }
     cmd.insert(QStringLiteral("construction"), m_c.construction());
+    if (m_rounded) {
+      if (m_c.typed(QStringLiteral("radius"))) {
+        cmd.insert(QStringLiteral("radius"), m_c.fieldExpression(QStringLiteral("radius")));
+      } else {
+        cmd.insert(QStringLiteral("radius"), m_radius);
+      }
+    }
     QJsonObject result;
     if (!op.run(cmd, &result)) {
       refuse(m_c, op, name());
       return;
     }
-    const QStringList lines = made(result);
+    // A rounded rectangle's lines, then its arcs.
+    const QStringList curves = made(result);
+    const QStringList lines = m_rounded ? curves.mid(0, 4) : curves;
     const SketchModel& model = op.model();
+    // A rounded rectangle's corners (kept as points on its lines), counter-
+    // clockwise from the first.
+    QStringList cornerPoints;
+    if (m_rounded) {
+      for (const V2& p : cornersFor(click(1))) {
+        cornerPoints << pointNear(model, result, p);
+      }
+    }
     // Each clicked corner (or centre) is constrained where it snapped.
     std::vector<std::pair<QString, Snap>> constrained;
     for (int i = 0; i <= last; ++i) {
@@ -955,20 +1043,54 @@ protected:
         heightLine = lines[1];
       }
     }
+    QJsonObject widthDimension;
+    QJsonObject heightDimension;
+    const auto lengthOf = [](const QString& line) {
+      return QJsonObject{{QStringLiteral("type"), QStringLiteral("length")}, {QStringLiteral("line"), line}};
+    };
+    if (!widthLine.isEmpty()) {
+      widthDimension = lengthOf(widthLine);
+    }
+    if (!heightLine.isEmpty()) {
+      heightDimension = lengthOf(heightLine);
+    }
+    if (cornerPoints.size() == 4) {
+      // The lines end at the arcs: the sizes are between the corners.
+      const auto distance = [&cornerPoints](int a, int b) {
+        return QJsonObject{{QStringLiteral("type"), QStringLiteral("distance")},
+                           {QStringLiteral("a"), cornerPoints[a]},
+                           {QStringLiteral("b"), cornerPoints[b]}};
+      };
+      widthDimension = distance(0, 1);
+      heightDimension = distance(1, 2);
+    }
     for (const auto& [point, s] : constrained) {
       op.constrain(point, s);
     }
     const QString widthField =
         m_mode == QStringLiteral("three_point") ? QStringLiteral("length") : QStringLiteral("width");
-    if (m_c.typed(widthField) && !widthLine.isEmpty()) {
-      op.addDimension({{QStringLiteral("type"), QStringLiteral("length")}, {QStringLiteral("line"), widthLine}},
-                      m_c.fieldExpression(widthField));
+    if (m_c.typed(widthField) && !widthDimension.isEmpty()) {
+      op.addDimension(widthDimension, m_c.fieldExpression(widthField));
     }
-    if (m_c.typed(QStringLiteral("height")) && !heightLine.isEmpty()) {
-      op.addDimension({{QStringLiteral("type"), QStringLiteral("length")}, {QStringLiteral("line"), heightLine}},
-                      m_c.fieldExpression(QStringLiteral("height")));
+    if (m_c.typed(QStringLiteral("height")) && !heightDimension.isEmpty()) {
+      op.addDimension(heightDimension, m_c.fieldExpression(QStringLiteral("height")));
     }
     op.commit();
+    if (m_rounded) {
+      // The next rounded rectangle starts with this radius.
+      m_radius = radius();
+      const auto cornerAt = [this, &cornerPoints](int i) {
+        return m_c.model().pointAt(cornerPoints.value(i)).value_or(V2{});
+      };
+      qDebug().noquote() << QStringLiteral("Added rounded rectangle %1 x %2 mm, corner radius %3 mm at (%4, %5) [%6]")
+                                .arg(dist(cornerAt(0), cornerAt(1)))
+                                .arg(dist(cornerAt(1), cornerAt(2)))
+                                .arg(m_radius)
+                                .arg(cornerAt(0).x)
+                                .arg(cornerAt(0).y)
+                                .arg(curves.join(QStringLiteral(", ")));
+      return;
+    }
     // The size from the made lines.
     double width = 0.0;
     double height = 0.0;
@@ -992,6 +1114,10 @@ protected:
 
 private:
   QString m_mode;
+  bool m_rounded = false;
+  // The corner radius while none is typed: the last one used, at first
+  // that of a new Sketch Fillet.
+  double m_radius = 2.0;
 };
 
 // ---------------------------------------------------------------------------
@@ -2580,6 +2706,10 @@ std::unique_ptr<SketchTool> lineTool(SketchController& c) { return std::make_uni
 
 std::unique_ptr<SketchTool> rectangleTool(SketchController& c, const QString& mode) {
   return std::make_unique<RectangleTool>(c, mode);
+}
+
+std::unique_ptr<SketchTool> roundedRectangleTool(SketchController& c, const QString& mode) {
+  return std::make_unique<RectangleTool>(c, mode, true);
 }
 
 std::unique_ptr<SketchTool> circleTool(SketchController& c, const QString& mode) {

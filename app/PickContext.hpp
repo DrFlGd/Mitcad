@@ -65,4 +65,14 @@ bool pickPrioritized(const occ::handle<AIS_InteractiveContext>& context);
 // picked. An unset predicate puts none last.
 void setPickLast(const occ::handle<AIS_InteractiveContext>& context, PickPreference last);
 
+// Owners that give way to others under the cursor (mitcad#869: Measure's
+// sketch curves and points to the bodies' faces, edges and vertices),
+// ordered right after setPickCovers' rule and before the others above: the
+// owners `over` that lie under the cursor behind the first owner that
+// `yields` come before it, in their order; the others keep theirs. Where
+// none of `over` is under the cursor, a yielding owner is picked as before.
+// Unset predicates move nothing.
+void setPickYield(const occ::handle<AIS_InteractiveContext>& context, PickPreference yields,
+                  PickPreference over);
+
 } // namespace mitcad

@@ -443,6 +443,11 @@ target_sources(mitcad PRIVATE
 target_sources(mitcad PRIVATE
   commands/MoveDragMotion.cpp
   commands/MoveDragMotion.hpp)
+# What Extrude's and Revolve's Profiles take with a click: a face alone or
+# sketch items, a mixing click refused with a hint (mitcad#868).
+target_sources(mitcad PRIVATE
+  commands/ProfilePicks.cpp
+  commands/ProfilePicks.hpp)
 
 if(WIN32)
   # wglGetCurrentDC() in OcctViewer.cpp
@@ -632,8 +637,11 @@ target_sources(mitcad PRIVATE
   browser/DecimalAlignDelegate.cpp
   browser/DecimalAlignDelegate.hpp)
 
-# Follow Option, Suppress When and Show When (mitcad#809).
+# Suppress When and Show When (mitcad#809), and the Appearances and
+# Materials windows' assignment panel with Varies with (mitcad#861).
 target_sources(mitcad PRIVATE
+  browser/AssignmentPanel.cpp
+  browser/AssignmentPanel.hpp
   browser/Bindings.cpp
   browser/Bindings.hpp)
 # Configurations (mitcad#807): the Configurations window, the
@@ -647,6 +655,16 @@ target_sources(mitcad PRIVATE
   browser/ConfigurationsData.hpp
   browser/ConfigurationsDialog.cpp
   browser/ConfigurationsDialog.hpp)
+# Bindings at a glance (mitcad#862): the design's bindings in words, the
+# fx card of the browser's and the timeline's badges, and the
+# Configurations window's Bindings tab.
+target_sources(mitcad PRIVATE
+  browser/BindingList.cpp
+  browser/BindingList.hpp
+  browser/BindingsCard.cpp
+  browser/BindingsCard.hpp
+  browser/ConfigurationBindingsPage.cpp
+  browser/ConfigurationBindingsPage.hpp)
 
 if(BUILD_TESTING)
   # Unit tests of the application's own helpers, on Qt's offscreen platform
@@ -754,6 +772,9 @@ if(BUILD_TESTING)
   # (mitcad#807): plain Qt Core.
   target_sources(test_app PRIVATE tests/configurations_data.cpp browser/ConfigurationsData.cpp
                  browser/ConfigurationsData.hpp)
+  # What Extrude's and Revolve's Profiles take with a click (mitcad#868):
+  # plain Qt Core.
+  target_sources(test_app PRIVATE tests/profile_picks.cpp commands/ProfilePicks.cpp commands/ProfilePicks.hpp)
   target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
@@ -1740,6 +1761,62 @@ if(BUILD_TESTING)
   target_sources(test_app PRIVATE tests/image_references.cpp view/ImageReferences.cpp view/ImageReferences.hpp)
 endif()
 
+# HEIF images of image references (mitcad#850, MITCAD_HEIF in the top
+# CMakeLists.txt): view/ImageFile.* decodes an image reference's file, HEIF
+# through libheif with its HEVC decoder libde265 from vcpkg (the manifest's
+# feature `heif`, without encoders), the other formats through Qt.
+# libheif and libde265 are LGPL: shared libraries only, never linked
+# statically (docs/development.md, "Licence policy").
+target_sources(mitcad PRIVATE view/ImageFile.cpp view/ImageFile.hpp)
+if(BUILD_TESTING)
+  # The formats told apart, HEIF images decoded upright: tests/heif_image.cpp.
+  target_sources(test_app PRIVATE tests/heif_image.cpp view/ImageFile.cpp view/ImageFile.hpp)
+endif()
+if(MITCAD_HEIF)
+  find_package(libheif CONFIG REQUIRED)
+  if(TARGET libheif::heif)
+    set(mitcad_heif_target libheif::heif)
+  elseif(TARGET heif)
+    set(mitcad_heif_target heif)
+  else()
+    message(FATAL_ERROR "libheif's CMake package has no target heif")
+  endif()
+  get_target_property(mitcad_heif_type ${mitcad_heif_target} TYPE)
+  if(NOT mitcad_heif_type STREQUAL "SHARED_LIBRARY")
+    message(FATAL_ERROR "libheif (LGPL) must be a shared library, not ${mitcad_heif_type}: use a dynamic vcpkg triplet")
+  endif()
+  # A Debug build links libheif's release library, as OCCT's (the top
+  # CMakeLists.txt, MITCAD_OCCT_RELEASE_IN_DEBUG). Its debug one would put
+  # vcpkg's debug/lib before lib in the executable's RUNPATH, and the loader
+  # would then take OCCT's debug libraries, which have the same names as
+  # the release ones: every OCCT computation several times slower (the UI
+  # tests' previews and recomputes ran out of time, mitcad#850).
+  if(MITCAD_OCCT_RELEASE_IN_DEBUG AND NOT WIN32)
+    get_target_property(mitcad_heif_imported ${mitcad_heif_target} ALIASED_TARGET)
+    if(NOT mitcad_heif_imported)
+      set(mitcad_heif_imported ${mitcad_heif_target})
+    endif()
+    set_target_properties(${mitcad_heif_imported} PROPERTIES MAP_IMPORTED_CONFIG_DEBUG "Release")
+  endif()
+  # libde265, which only libheif links: a shared library too, when its
+  # package names a target to check.
+  find_package(libde265 CONFIG QUIET)
+  foreach(mitcad_de265_target IN ITEMS libde265::de265 de265 libde265)
+    if(TARGET ${mitcad_de265_target})
+      get_target_property(mitcad_de265_type ${mitcad_de265_target} TYPE)
+      if(NOT mitcad_de265_type STREQUAL "SHARED_LIBRARY")
+        message(FATAL_ERROR "libde265 (LGPL) must be a shared library, not ${mitcad_de265_type}")
+      endif()
+    endif()
+  endforeach()
+  target_link_libraries(mitcad PRIVATE ${mitcad_heif_target})
+  target_compile_definitions(mitcad PRIVATE MITCAD_HEIF=1)
+  if(BUILD_TESTING)
+    target_link_libraries(test_app PRIVATE ${mitcad_heif_target})
+    target_compile_definitions(test_app PRIVATE MITCAD_HEIF=1)
+  endif()
+endif()
+
 # The rule block editor of the Configurations window (mitcad#808,
 # app/COMMANDS.md "The rule block editor"): a rule's blocks and their JSON,
 # the native canvas and palette, and the Rules page that
@@ -1785,3 +1862,7 @@ if(APPLE AND MITCAD_MACOS_NATIVE_UI)
   set_source_files_properties(platform/macos/NativeCardWidths.mm platform/macos/NativeWindowFit.mm
     PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 endif()
+
+# The Sketch page of Preferences (mitcad#860): the first dimension that
+# scales the whole sketch to it.
+target_sources(mitcad PRIVATE sketch/SketchPreferences.cpp sketch/SketchPreferences.hpp)

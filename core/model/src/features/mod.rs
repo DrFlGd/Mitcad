@@ -840,6 +840,8 @@ pub struct EvalContext<'a, K: Kernel> {
     pub(crate) cut_targets: Option<extrude_scope::CutTargets>,
     /// Where a sweep's profile lies on its path (mitcad#795).
     pub(crate) sweep_place: Option<sweep::SweepPlace>,
+    /// What a move's motion was worked out from (mitcad#838).
+    pub(crate) move_basis: Option<moves::MotionBasis>,
     /// A pattern's copy of this feature (its tool rebuilt in place): an
     /// object that is no longer in its body is found in the body as it was
     /// before this feature, as the original found it.
@@ -868,6 +870,7 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
             pattern_anchor: None,
             cut_targets: None,
             sweep_place: None,
+            move_basis: None,
             objects_before: None,
             geom_links: std::collections::BTreeMap::new(),
             next_body: 0,

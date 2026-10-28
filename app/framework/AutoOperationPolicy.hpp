@@ -1,67 +1,27 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include <QJsonArray>
-#include <QJsonObject>
-#include <QSet>
-#include <QString>
-
 namespace mitcad {
 
-// The baseline is immutable throughout an edit's initial asynchronous probe.
-// Cancellation leaves it pending; a manual choice prevents a late reply from
-// enabling automatic operation again (mitcad#575).
+// Whether a command's Operation and Objects follow the model's automatic
+// choice (mitcad#289, Extrude's CommandDef::autoOperation). A new feature
+// follows it until the user picks Operation, Objects or Affected
+// components. An edit never does: an edited feature keeps the operation
+// stored with it, also when Flip, Start or a distance moves its tool into
+// a body or out of it, and the user changes Operation by hand (the owner,
+// mitcad#868, 28.10.2026; it replaces mitcad#575's edits that followed the
+// geometry when the stored operation matched the automatic choice, which
+// turned an edited boss's Join into a Cut when Flip pointed it into its
+// arm).
 class AutoOperationPolicy {
 public:
-  void start(bool enabled, const QJsonObject& storedDefinition) {
-    m_active = enabled && storedDefinition.isEmpty();
-    m_stored = enabled ? storedDefinition : QJsonObject();
-  }
+  void start(bool enabled, bool editing) { m_active = enabled && !editing; }
   bool active() const { return m_active; }
-  bool pending() const { return !m_stored.isEmpty(); }
-  const QJsonObject& stored() const { return m_stored; }
-  void disable() { m_active = false; m_stored = {}; }
-
-  // No result may replace the decision once resolved or manually disabled.
-  bool resolve(const QJsonObject& report) {
-    if (!pending()) return false;
-    m_active = matches(m_stored, report);
-    m_stored = {};
-    return true;
-  }
+  // The user's own choice stays for the rest of the command.
+  void disable() { m_active = false; }
 
 private:
-  static QSet<QString> bodySet(const QJsonArray& bodies) {
-    QSet<QString> result;
-    for (const QJsonValue& body : bodies) result.insert(body.toString());
-    return result;
-  }
-
-  static bool matches(const QJsonObject& stored, const QJsonObject& report) {
-    const QJsonObject automatic = report.value(QStringLiteral("auto_operation")).toObject();
-    const QString operation = automatic.value(QStringLiteral("operation")).toString();
-    if (report.value(QStringLiteral("status")).toString() != QStringLiteral("ok") || operation.isEmpty() ||
-        operation != stored.value(QStringLiteral("operation")).toString()) return false;
-    QSet<QString> selected = bodySet(stored.value(QStringLiteral("participants")).toArray());
-    if (operation == QStringLiteral("cut") && !stored.value(QStringLiteral("cut_scope")).toObject().isEmpty()) {
-      // The hidden Objects input does not represent a modern Cut. Compare
-      // the actual selected intersections, including foreign selections and
-      // body exclusions, with the model's local automatic target bodies.
-      const QJsonObject targets = report.value(QStringLiteral("cut_targets")).toObject();
-      if (!targets.contains(QStringLiteral("rows"))) return false;
-      selected.clear();
-      for (const QJsonValue& row : targets.value(QStringLiteral("rows")).toArray()) {
-        for (const QJsonValue& body : row.toObject().value(QStringLiteral("bodies")).toArray()) {
-          const QJsonObject target = body.toObject();
-          if (target.value(QStringLiteral("checked")).toBool()) selected.insert(target.value(QStringLiteral("body")).toString());
-        }
-      }
-    }
-    return selected == bodySet(automatic.value(QStringLiteral("objects")).toArray());
-  }
-
   bool m_active = false;
-  QJsonObject m_stored;
 };
 
 } // namespace mitcad

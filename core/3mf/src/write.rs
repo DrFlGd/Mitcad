@@ -16,7 +16,9 @@ const MODEL_PART: &str = "3D/3dmodel.model";
 /// model whose components place a mesh object per part (each placement of
 /// a part a component of its own), in millimetres. Parts with a colour
 /// refer to it in one `basematerials` group, named after them. Every part
-/// needs a mesh with triangles and at least one placement.
+/// needs a mesh with triangles and at least one placement. With
+/// [`Model::objects`] (mitcad#856) the build has an item per object, each
+/// of the placements it names.
 pub fn write(model: &Model) -> Result<Vec<u8>, Error> {
     if model.parts.is_empty() {
         return Err(Error("nothing to write: no parts".to_owned()));
@@ -27,6 +29,23 @@ pub fn write(model: &Model) -> Result<Vec<u8>, Error> {
         }
         if part.placements.is_empty() {
             return Err(Error(format!("{} is not placed", part.name)));
+        }
+    }
+    for object in &model.objects {
+        if object.components.is_empty() {
+            return Err(Error(format!("object {} has no components", object.name)));
+        }
+        let placed = |&(part, placement): &(usize, usize)| {
+            model
+                .parts
+                .get(part)
+                .is_some_and(|p| placement < p.placements.len())
+        };
+        if !object.components.iter().all(placed) {
+            return Err(Error(format!(
+                "object {} refers to a placement of a part that is not there",
+                object.name
+            )));
         }
     }
     for (path, _) in &model.files {
@@ -104,7 +123,7 @@ fn relationships() -> String {
 }
 
 /// The model part. Object ids: the material group 1, the parts' mesh
-/// objects from 2 in order, the assembly last.
+/// objects from 2 in order, the build's objects last.
 fn model_xml(model: &Model) -> String {
     let triangles: usize = model.parts.iter().map(|p| p.mesh.triangles.len()).sum();
     let vertices: usize = model.parts.iter().map(|p| p.mesh.vertices.len()).sum();
@@ -208,15 +227,33 @@ fn model_xml(model: &Model) -> String {
         }
         xml.push_str("    </triangles>\n   </mesh>\n  </object>\n");
     }
-    let assembly = model.parts.len() + 2;
-    let _ = writeln!(
-        xml,
-        "  <object id=\"{assembly}\" type=\"model\" name=\"{}\">\n   <components>",
-        escape(&model.name)
-    );
-    for (i, part) in model.parts.iter().enumerate() {
-        for placement in &part.placements {
-            let _ = write!(xml, "    <component objectid=\"{}\"", i + 2);
+    // The build's objects: one of every placement by default, else those
+    // of the model (mitcad#856).
+    let objects: Vec<(&str, Vec<(usize, usize)>)> = if model.objects.is_empty() {
+        let every = model
+            .parts
+            .iter()
+            .enumerate()
+            .flat_map(|(i, part)| (0..part.placements.len()).map(move |k| (i, k)))
+            .collect();
+        vec![(model.name.as_str(), every)]
+    } else {
+        model
+            .objects
+            .iter()
+            .map(|o| (o.name.as_str(), o.components.clone()))
+            .collect()
+    };
+    for (index, (name, components)) in objects.iter().enumerate() {
+        let _ = writeln!(
+            xml,
+            "  <object id=\"{}\" type=\"model\" name=\"{}\">\n   <components>",
+            crate::build_object_id(model.parts.len(), index),
+            escape(name)
+        );
+        for &(part, k) in components {
+            let placement = &model.parts[part].placements[k];
+            let _ = write!(xml, "    <component objectid=\"{}\"", part + 2);
             if *placement != Placement::IDENTITY {
                 let numbers: Vec<String> = placement
                     .to_3mf()
@@ -227,9 +264,16 @@ fn model_xml(model: &Model) -> String {
             }
             xml.push_str("/>\n");
         }
+        xml.push_str("   </components>\n  </object>\n");
     }
-    xml.push_str("   </components>\n  </object>\n </resources>\n <build>\n");
-    let _ = writeln!(xml, "  <item objectid=\"{assembly}\"/>");
+    xml.push_str(" </resources>\n <build>\n");
+    for index in 0..objects.len() {
+        let _ = writeln!(
+            xml,
+            "  <item objectid=\"{}\"/>",
+            crate::build_object_id(model.parts.len(), index)
+        );
+    }
     xml.push_str(" </build>\n</model>\n");
     xml
 }

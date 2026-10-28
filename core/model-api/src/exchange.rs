@@ -10,11 +10,12 @@ use serde_json::{Value, json};
 use super::ApiError;
 use mitcad_model::Document;
 use mitcad_model::exchange::{
-    Coordinates, ExportFormat, ExportOptions, ExportPlacement, Imported, LengthUnit, OnBed,
-    ReadOptions, Refinement, StepSchema,
+    BedChoice, Coordinates, ExportFormat, ExportOptions, ExportPlacement, Imported, LengthUnit,
+    OnBed, ReadOptions, Refinement, StepSchema,
 };
 use mitcad_model::ids::{BodyUid, FeatureUid};
 use mitcad_model::kernel::Kernel;
+use mitcad_model::transform::Transform;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +69,43 @@ pub(super) struct ExportCommand {
     /// centred on the plate (mitcad#731).
     #[serde(default)]
     on_bed: bool,
+    /// 3MF (mitcad#856): per body (uid or name), the occurrences whose
+    /// placements are written (`O1/O4` or `Arm:1/Pin:2`, `""` the design
+    /// itself; an empty list all of them).
+    #[serde(default)]
+    occurrences: BTreeMap<String, Vec<String>>,
+    /// 3MF on the print bed (mitcad#856): occurrences sent whole, each
+    /// one object as assembled.
+    #[serde(default)]
+    whole: Vec<String>,
+    /// On the print bed (mitcad#857): the print bed face that turns the
+    /// piece it is in, `{"body", "occurrence"}`, or a list of them (one
+    /// per piece).
+    #[serde(default)]
+    bed_face: Option<BedFaces>,
+    /// On the print bed (mitcad#857): only how the bodies would lie, with
+    /// each piece's `choices`; nothing is written.
+    #[serde(default)]
+    plan: bool,
+}
+
+/// A print bed face chosen (mitcad#857): a body (uid or name) and the
+/// occurrence of its placement (`O1/O4` or `Arm:1/Pin:2`, `""` the design
+/// itself).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BedFaceChoice {
+    body: String,
+    #[serde(default)]
+    occurrence: String,
+}
+
+/// `bed_face`: one, or one per piece.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BedFaces {
+    One(BedFaceChoice),
+    Many(Vec<BedFaceChoice>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,10 +217,44 @@ impl<K: Kernel> ExchangeOps<K> for Document<K> {
             ),
             None => None,
         };
+        let find = |path: &str| {
+            self.assembly()
+                .find_path(path)
+                .ok_or_else(|| ApiError(format!("there is no occurrence '{path}'")))
+        };
+        let mut occurrences = BTreeMap::new();
+        for (body, paths) in &command.occurrences {
+            let uid = self.body_by_uid_or_name(body)?;
+            let paths = paths
+                .iter()
+                .map(|p| find(p.as_str()))
+                .collect::<Result<Vec<_>, _>>()?;
+            occurrences.insert(uid, paths);
+        }
+        let whole = command
+            .whole
+            .iter()
+            .map(|p| find(p.as_str()))
+            .collect::<Result<Vec<_>, _>>()?;
+        // The print bed faces chosen (mitcad#857).
+        let chosen: Vec<&BedFaceChoice> = match &command.bed_face {
+            None => Vec::new(),
+            Some(BedFaces::One(one)) => vec![one],
+            Some(BedFaces::Many(many)) => many.iter().collect(),
+        };
+        let mut bed_faces = Vec::with_capacity(chosen.len());
+        for choice in chosen {
+            let uid = self.body_by_uid_or_name(&choice.body)?;
+            bed_faces.push((uid, find(choice.occurrence.as_str())?));
+        }
         let placement = ExportPlacement {
             coordinates: command.coordinates,
             within,
             on_bed: command.on_bed,
+            occurrences,
+            whole,
+            bed_faces,
+            plan_only: command.plan,
         };
         let exported = self.export_bodies(&command.path, &bodies, &options, &colors, &placement)?;
         let mut result =
@@ -359,13 +431,50 @@ trait ExchangeLocal<K: Kernel> {
 
 impl<K: Kernel> ExchangeLocal<K> for Document<K> {
     fn on_bed_json(&self, on_bed: &OnBed) -> Value {
-        let rows = on_bed.transform.map(|t| {
-            let row = |r: usize| {
-                let [x, y, z] = t.linear[r];
-                [x, y, z, t.translation[r]]
-            };
-            [row(0), row(1), row(2)]
-        });
+        let rows_of = |transform: Option<Transform>| {
+            transform.map(|t| {
+                let row = |r: usize| {
+                    let [x, y, z] = t.linear[r];
+                    [x, y, z, t.translation[r]]
+                };
+                [row(0), row(1), row(2)]
+            })
+        };
+        let rows = rows_of(on_bed.transform);
+        // The bed faces a piece kept as assembled could lie on, one per
+        // placement (mitcad#857): the occurrence by uids, as `bed_face`
+        // takes it, and by names.
+        let choices_of = |choices: &[BedChoice]| -> Vec<Value> {
+            choices
+                .iter()
+                .map(|choice| {
+                    let path = choice.path.as_deref().unwrap_or(&[]);
+                    let uids: Vec<String> = path.iter().map(ToString::to_string).collect();
+                    json!({
+                        "body": choice.body,
+                        "name": self.body_name(choice.body),
+                        "face": choice.face,
+                        "occurrence": uids.join("/"),
+                        "occurrence_name": self.assembly().path_name(path),
+                    })
+                })
+                .collect()
+        };
+        // The file's other objects, each on the bed by itself (mitcad#856).
+        let objects: Vec<Value> = on_bed
+            .objects
+            .iter()
+            .map(|object| {
+                json!({
+                    "name": object.name,
+                    "body": object.face.as_ref().map(|(uid, _)| *uid),
+                    "face": object.face.as_ref().map(|(_, face)| face),
+                    "transform": rows_of(object.transform),
+                    "kept": object.kept,
+                    "choices": choices_of(&object.choices),
+                })
+            })
+            .collect();
         let problems: Vec<Value> = on_bed
             .problems
             .iter()
@@ -379,6 +488,9 @@ impl<K: Kernel> ExchangeLocal<K> for Document<K> {
             "plate": on_bed.plate,
             "kept": on_bed.kept,
             "problems": problems,
+            "objects": objects,
+            "on_faces": on_bed.on_faces,
+            "choices": choices_of(&on_bed.choices),
         })
     }
 }

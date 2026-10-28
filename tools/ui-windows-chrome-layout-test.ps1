@@ -115,12 +115,14 @@ function Has-Line([string]$Text) { return [bool]((Ui-LogLines) | Where-Object { 
 function Cards-BelowBar([string]$Description, [int]$Min, [int]$Max) {
   $line = $null
   $width = -1
-  for ($i = 0; $i -lt 25; $i++) {
-    $line = [string](Ui-LogLines | Where-Object { $_.StartsWith('Floating cards: ') } | Select-Object -Last 1)
+  # Looked for every 50 ms (200 ms before, mitcad#870), up to 5 s.
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $line = "$(Ui-LastLineWith 'Floating cards: ' -Start)"
     if ($line -match '^Floating cards: window (\d+)x') { $width = [int]$Matches[1] }
     if ($width -ge $Min -and $width -le $Max) { break }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 5000)
   if ($width -lt $Min -or $width -gt $Max) {
     Ui-Fail "${Description}: no Floating cards line of a window $Min to $Max wide (last: '$line')"
   }
@@ -234,7 +236,8 @@ function Click-TitleRow($Entries) {
 # it to its end, and it logs its places again when it scrolls.
 function Click-PaletteFinish {
   Ui-WheelLogged 'Palette paletteHideAbove' -10
-  Start-Sleep -Milliseconds 300
+  # The scroll handled and its places logged (watched; mitcad#870: a fixed
+  # 300 ms before the sync before).
   Ui-Sync
   Ui-ClickLogged 'Palette Finish Sketch'
 }

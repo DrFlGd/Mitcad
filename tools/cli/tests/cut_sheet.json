@@ -1,0 +1,74 @@
+[
+  {"comment": "SPDX-License-Identifier: MIT. Cut sheets (mitcad#853) through OCCT: a plate len (100) x 60 x 3 (F2.b0) with through holes of 10 at (20, 30) and 8 at (80, 45) and a slot 8 wide from (50, 15) to (70, 15), cut from three sketches; added twice to a cut sheet. Each part is the plate seen along its top: one outer loop and three inner loops at 1:1 (within 1e-6 mm), placed in rows from the sheet's top left (55, 265) and (160, 265). A longer plate grows about its middle, out of the sheet."},
+  {"cmd": "add_parameter", "name": "len", "value": 100},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": "len", "height": 60},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 3}, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "hole",
+    "placement": {"type": "face", "body": "F2.b0", "face": "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})",
+                  "points": [[20, 30, 3]]},
+    "diameter": 10, "extent": {"type": "through_all"}}},
+  {"cmd": "add_feature", "def": {"type": "hole",
+    "placement": {"type": "face", "body": "F2.b0", "face": "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})",
+                  "points": [[80, 45, 3]]},
+    "diameter": 8, "extent": {"type": "through_all"}}},
+  {"expect": {"feature": "F4", "status": "ok", "bodies": 1, "body": "F2.b0"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F5", "corner": [50, 11], "width": 20, "height": 8},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F5", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "through_all"}, "operation": "cut"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F7", "center": [50, 15], "diameter": 8},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F7", "region": "r{c1}"}],
+    "extent": {"type": "through_all"}, "operation": "cut"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F9", "center": [70, 15], "diameter": 8},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F9", "region": "r{c1}"}],
+    "extent": {"type": "through_all"}, "operation": "cut"}},
+  {"expect": {"feature": "F10", "status": "ok", "bodies": 1, "body": "F2.b0",
+              "volume": 16982.787656, "tolerance": 1e-6}},
+  {"cmd": "add_cut_sheet", "bodies": ["F2.b0"], "count": 2},
+  {"expect": {"query": {"query": "cut_sheet", "drawing": "CutSheet1"}, "tolerance": 1e-9, "result": {
+    "kind": "cut_sheet", "width": 600, "height": 300, "warnings": [],
+    "counts": [{"body": "F2.b0", "count": 2, "parts": [1, 2]}],
+    "parts": [
+      {"id": 1, "outer": 1, "inner": 3, "size": [100, 60], "place": [55, 265], "missing": false,
+       "off_sheet": false, "overlaps": [], "box": [[5, 235], [105, 295]],
+       "loops": [
+         {"outer": true, "pieces": [{}, {}, {}, {}]},
+         {"outer": false, "pieces": [{}, {}, {}, {}]},
+         {"outer": false, "pieces": [{"arc": {"center": [25, 265], "radius": 5}}]},
+         {"outer": false, "pieces": [{"arc": {"center": [85, 280], "radius": 4}}]}
+       ]},
+      {"id": 2, "outer": 1, "inner": 3, "size": [100, 60], "place": [160, 265],
+       "box": [[110, 235], [210, 295]]}
+    ]}}},
+  {"cmd": "set_parameter", "name": "len", "value": 120},
+  {"expect": {"query": {"query": "cut_sheet", "drawing": "D1", "geometry": false}, "tolerance": 1e-9, "result": {
+    "parts": [
+      {"id": 1, "outer": 1, "inner": 3, "size": [120, 60], "box": [[-5, 235], [115, 295]], "off_sheet": true,
+       "overlaps": [2]},
+      {"id": 2, "outer": 1, "inner": 3, "size": [120, 60], "box": [[100, 235], [220, 295]], "overlaps": [1]}
+    ]}}},
+  {"comment": "A second plate (F12.b0) whose top is a B-spline of degree 2 (mitcad#853): three lines from (0, 100) to (40, 100) and up to (40, 120), the spline by its control points (40, 120), (20, 128), (0, 120), and the line back. Its outline on a cut sheet of its own keeps the spline as the curve it is: degree 2, its control points moved with the part to (45, 291), (25, 299), (5, 291) (the outline's box 40 x 24, its middle (20, 112), placed at (25, 283))."},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_line", "sketch": "F11", "start": [0, 100], "end": [40, 100]},
+  {"cmd": "sketch.add_line", "sketch": "F11", "start": "p3", "end": [40, 120]},
+  {"cmd": "sketch.spline", "sketch": "F11", "points": ["p5", [20, 128], [0, 120]], "degree": 2},
+  {"cmd": "sketch.add_line", "sketch": "F11", "start": "p8", "end": "p2"},
+  {"expect": {"sketch": "F11", "regions": ["r{c1[c9,c4],c4[c1,c6],c6[c4,c9],c9[c6,c1]}"]}},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F11", "region": "r{c1[c9,c4],c4[c1,c6],c6[c4,c9],c9[c6,c1]}"}],
+    "extent": {"type": "distance", "distance": 3}, "operation": "new_body"}},
+  {"expect": {"feature": "F12", "status": "ok", "bodies": 2, "body": "F12.b0"}},
+  {"cmd": "add_cut_sheet", "bodies": ["F12.b0"]},
+  {"expect": {"query": {"query": "cut_sheet", "drawing": "CutSheet2", "geometry": false}, "tolerance": 1e-9, "result": {
+    "warnings": [],
+    "parts": [
+      {"id": 1, "outer": 1, "inner": 0, "size": [40, 24], "place": [25, 283], "box": [[5, 271], [45, 295]],
+       "splines": [{"degree": 2, "poles": [[45, 291], [25, 299], [5, 291]]}]}
+    ]}}}
+]

@@ -20,6 +20,7 @@
 #include <QToolButton>
 #include <QToolTip>
 #include <QtLogging>
+#include <gp_Vec.hxx>
 
 #include "../OcctViewer.hpp"
 #include "../framework/CommandRegistry.hpp"
@@ -31,6 +32,7 @@
 #include "../framework/ParameterField.hpp"
 #include "../framework/TestSync.hpp"
 #include "SketchOverlay.hpp"
+#include "SketchPreferences.hpp"
 #include "SketchTool.hpp"
 
 namespace mitcad::sketch {
@@ -191,12 +193,16 @@ QJsonObject SketchOp::command(const QString& name) const {
 
 bool SketchOp::run(const QJsonObject& command, QJsonObject* result) {
   try {
-    const QJsonObject answer = m_c.runModel(command);
+    // A dimension asks for the first-dimension rule while the preference
+    // is on (mitcad#860): the dimension tool's and a drawing tool's typed
+    // value's alike.
+    const QJsonObject answer = m_c.runModel(withFirstDimensionScale(command));
     if (m_label.isEmpty()) {
       m_label = m_c.undoLabel();
     }
     m_stale = true;
     noteImplied(command, answer);
+    noteScaled(answer);
     if (result != nullptr) {
       *result = answer;
     }
@@ -251,6 +257,16 @@ void SketchOp::noteImplied(const QJsonObject& command, const QJsonObject& answer
     m_notices << QObject::tr("%1 removed: implied by the new %2")
                      .arg(constraintName(removedType), constraintName(type));
   }
+}
+
+void SketchOp::noteScaled(const QJsonObject& answer) {
+  const QJsonValue factor = answer.value(QStringLiteral("scaled"));
+  if (!factor.isDouble()) {
+    return;
+  }
+  const QString times = QString::number(factor.toDouble(), 'g', 6);
+  qDebug().noquote() << QStringLiteral("Scaled the sketch by %1 to its first dimension").arg(times);
+  m_notices << QObject::tr("The sketch was scaled by %1 to its first dimension").arg(times);
 }
 
 QJsonValue SketchOp::pointInput(const Snap& snap) {
@@ -379,12 +395,21 @@ ProjectedItem SketchOp::projectBody(const BodyItem& item) {
       m_label.clear();
     }
     const SketchModel& after = model();
+    // A vertex, or an edge seen end on out of the plane, projects to a
+    // point (mitcad#866).
     for (const QJsonValue& value : result.value(QStringLiteral("entities")).toArray()) {
       const QString id = value.toString();
-      if (item.isVertex() && out.point.isEmpty() && after.point(id) != nullptr) {
+      if (item.isPoint() && out.point.isEmpty() && after.point(id) != nullptr) {
         out.point = id;
-      } else if (!item.isVertex() && out.curve.isEmpty() && after.curve(id) != nullptr) {
+      } else if (!item.isPoint() && out.curve.isEmpty() && after.curve(id) != nullptr) {
         out.curve = id;
+      }
+    }
+    // Joined to the same curve or point projected before from another
+    // source (an edge below one projected already): that one.
+    if (out.empty()) {
+      if (const auto joined = projectedLike(after, item)) {
+        out = *joined;
       }
     }
     qDebug().noquote() << QStringLiteral("Projected %1 of %2: %3")
@@ -585,6 +610,12 @@ void SketchController::leave() {
   ++m_modelRevision;
   m_body.clear();
   m_bodyKey.clear();
+  m_inPlaneItems.clear();
+  m_outOfPlaneItems.clear();
+  m_outOfPlaneKey.clear();
+  m_bodyOutOfPlane = false;
+  m_bodyScreen.clear();
+  m_bodyScreenRevision = -1;
   m_hover.clear();
   m_picked.clear();
   m_hoverAnnotation.clear();
@@ -1606,6 +1637,19 @@ QPointF SketchController::toScreen(const V2& p) const {
   return m_viewer.toWidgetF(toModel(m_model.frame, p));
 }
 
+QPointF SketchController::toScreen(const V2& p, double height) const {
+  const gp_Pnt on = toModel(m_model.frame, p);
+  return m_viewer.toWidgetF(on.Translated(gp_Vec(m_model.frame.normal()) * height));
+}
+
+QPolygonF SketchController::bodyPath(const BodyItem& item) const {
+  QPolygonF line;
+  for (const BodyItem::Lifted& p : item.path) {
+    line << toScreen(p.at, p.height);
+  }
+  return line;
+}
+
 std::optional<V2> SketchController::sketchAt(const QPointF& screen) const {
   if (const auto p = m_viewer.sketchPlanePoint(screen)) {
     return V2{p->X(), p->Y()};
@@ -1646,8 +1690,11 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
   QString best;
   double bestDistance = std::numeric_limits<double>::max();
   // Body geometry in the plane (mitcad#256) counts as this much further
-  // than it is: the sketch's own entity at the same place wins.
+  // than it is: the sketch's own entity at the same place wins. Body
+  // geometry out of the plane (mitcad#866), picked where the view shows it,
+  // a little further still: what is in the plane at the same place wins.
   constexpr double kBodyTiePixels = 1.0;
+  constexpr double kOutOfPlaneTiePixels = 1.5;
   // The sketch's origin and axes (mitcad#500) count as further still: any
   // entity at the same place wins.
   constexpr double kAxisTiePixels = 2.0;
@@ -1666,11 +1713,18 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
       }
     }
     for (const auto& [id, at] : body ? m_body.points() : std::vector<std::pair<QString, V2>>()) {
+      const BodyItem* item = m_body.item(id);
+      if (item != nullptr && !item->inPlane) {
+        continue; // below: where the view shows it (mitcad#866)
+      }
       const double d = screenDistance(toScreen(at), screen);
       if (d <= kPointPixels && d + kBodyTiePixels < bestDistance) {
         best = id;
         bestDistance = d + kBodyTiePixels;
       }
+    }
+    if (body) {
+      outOfPlaneAt(screen, true, kPointPixels, kOutOfPlaneTiePixels, best, bestDistance);
     }
     if (axes && m_model.originPoint().isEmpty()) {
       // The origin before anything made its point.
@@ -1703,14 +1757,19 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
     }
     for (std::size_t i = 0; body && i < m_body.items().size(); ++i) {
       const BodyItem& item = m_body.items()[i];
-      if (item.isVertex()) {
-        continue;
+      if (item.isPoint() || !item.inPlane) {
+        continue; // edges out of the plane: below
       }
       const double d = item.curve.distanceTo(*raw) / px;
       if (d <= kCurvePixels && d + kBodyTiePixels < bestDistance) {
         best = BodyGeometry::itemId(i);
         bestDistance = d + kBodyTiePixels;
       }
+    }
+    // Edges out of the plane where the view shows them and in sight
+    // (mitcad#866).
+    if (body) {
+      outOfPlaneAt(screen, false, kCurvePixels, kOutOfPlaneTiePixels, best, bestDistance);
     }
     if (axes) {
       // The axes across the view: the distance from the infinite line, in
@@ -1736,31 +1795,173 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
   return best;
 }
 
-const BodyGeometry& SketchController::bodyGeometry() {
+const BodyGeometry& SketchController::bodyGeometry(bool outOfPlane) {
   if (!isActive()) {
     return m_body;
   }
-  const QString key = QStringLiteral("%1 %2 %3").arg(m_uid, m_revision).arg(m_toolSession);
   // Queries wait while a job computes the model: the last read until then.
-  if (key == m_bodyKey || m_host.modelBusy()) {
+  if (m_host.modelBusy()) {
     return m_body;
   }
-  m_bodyKey = key;
-  try {
-    m_body.load(m_host.query({{QStringLiteral("query"), QStringLiteral("plane_geometry")},
+  bool changed = false;
+  const QString key = QStringLiteral("%1 %2 %3").arg(m_uid, m_revision).arg(m_toolSession);
+  if (key != m_bodyKey) {
+    m_bodyKey = key;
+    changed = true;
+    BodyGeometry read;
+    try {
+      read.load(m_host.query({{QStringLiteral("query"), QStringLiteral("plane_geometry")},
                               {QStringLiteral("sketch"), m_uid}})
                     .toArray(),
                 &curveFromJson);
-  } catch (const std::exception& e) {
-    m_body.clear();
-    qDebug().noquote() << QStringLiteral("Sketch plane geometry not read: %1").arg(errorText(e));
-    return m_body;
+      // For UI tests: what the tools can pick and snap to.
+      qDebug().noquote() << QStringLiteral("Sketch plane geometry: %1 edge(s), %2 vertex(es)")
+                                .arg(read.edgeCount())
+                                .arg(read.vertexCount());
+    } catch (const std::exception& e) {
+      qDebug().noquote() << QStringLiteral("Sketch plane geometry not read: %1").arg(errorText(e));
+    }
+    m_inPlaneItems = read.items();
   }
-  // For UI tests: what the tools can pick and snap to.
-  qDebug().noquote() << QStringLiteral("Sketch plane geometry: %1 edge(s), %2 vertex(es)")
-                            .arg(m_body.edgeCount())
-                            .arg(m_body.vertexCount());
+  // Out of the plane (mitcad#866): the Dimension tool's only, read once
+  // while the document stays as it is (not per tool session), as the model
+  // lists every edge and vertex of the bodies for it.
+  const QString outKey = QStringLiteral("%1 %2").arg(m_uid, m_revision);
+  if (outOfPlane && outKey != m_outOfPlaneKey) {
+    m_outOfPlaneKey = outKey;
+    changed = true;
+    m_outOfPlaneItems.clear();
+    BodyGeometry read;
+    try {
+      read.load(m_host.query({{QStringLiteral("query"), QStringLiteral("plane_geometry")},
+                              {QStringLiteral("sketch"), m_uid},
+                              {QStringLiteral("out_of_plane"), true}})
+                    .toArray(),
+                &curveFromJson);
+    } catch (const std::exception& e) {
+      qDebug().noquote() << QStringLiteral("Sketch body geometry out of the plane not read: %1").arg(errorText(e));
+    }
+    for (const BodyItem& item : read.items()) {
+      if (!item.inPlane) {
+        m_outOfPlaneItems.push_back(item);
+      }
+    }
+    qDebug().noquote()
+        << QStringLiteral("Sketch body geometry out of the plane: %1 item(s)")
+               .arg(static_cast<qulonglong>(m_outOfPlaneItems.size()));
+  }
+  if (changed || outOfPlane != m_bodyOutOfPlane) {
+    m_bodyOutOfPlane = outOfPlane;
+    std::vector<BodyItem> items = m_inPlaneItems;
+    if (outOfPlane) {
+      items.insert(items.end(), m_outOfPlaneItems.begin(), m_outOfPlaneItems.end());
+    }
+    m_body.set(std::move(items));
+  }
   return m_body;
+}
+
+const std::vector<SketchController::BodyScreen>& SketchController::bodyScreens() const {
+  // Read again when the items or the camera changed: where the sketch's
+  // origin, its axes' points 100 mm out and a point 100 mm above it are in
+  // the view tells both (and the view's size).
+  const std::array<QPointF, 4> camera{toScreen(V2{}), toScreen(V2{100.0, 0.0}), toScreen(V2{0.0, 100.0}),
+                                      toScreen(V2{}, 100.0)};
+  if (m_bodyScreenRevision != m_body.revision() || camera != m_bodyScreenView) {
+    m_bodyScreenRevision = m_body.revision();
+    m_bodyScreenView = camera;
+    m_bodyScreen.assign(m_body.items().size(), BodyScreen());
+    for (std::size_t i = 0; i < m_body.items().size(); ++i) {
+      const BodyItem& item = m_body.items()[i];
+      if (item.inPlane) {
+        continue;
+      }
+      BodyScreen& place = m_bodyScreen[i];
+      place.line = bodyPath(item);
+      place.box = place.line.boundingRect();
+      if (item.hasCenter()) {
+        place.center = toScreen(item.curve.center, item.height);
+      }
+    }
+  }
+  return m_bodyScreen;
+}
+
+void SketchController::outOfPlaneAt(const QPointF& screen, bool points, double reach, double tie, QString& best,
+                                    double& bestDistance) const {
+  // Those near enough to win, nearest first; each is tested for sight (a
+  // ray to the eye against the shown bodies) only until one is in sight.
+  struct Candidate {
+    double distance;
+    QString id;
+    gp_Pnt at;
+  };
+  std::vector<Candidate> candidates;
+  const std::vector<BodyScreen>& screens = bodyScreens();
+  const auto lifted = [this](const V2& at, double height) {
+    return toModel(m_model.frame, at).Translated(gp_Vec(m_model.frame.normal()) * height);
+  };
+  for (std::size_t i = 0; i < m_body.items().size(); ++i) {
+    const BodyItem& item = m_body.items()[i];
+    if (item.inPlane || item.isPoint() != points) {
+      if (points && !item.inPlane && item.hasCenter()) {
+        // A circle's or an arc's centre, at its height.
+        const BodyScreen* seen = i < screens.size() ? &screens[i] : nullptr;
+        const double d = seen != nullptr ? screenDistance(seen->center, screen) : reach + 1.0;
+        if (d <= reach && d + tie < bestDistance) {
+          candidates.push_back({d, BodyGeometry::itemId(i) + QStringLiteral(":center"),
+                                lifted(item.curve.center, item.height)});
+        }
+      }
+      continue;
+    }
+    const BodyScreen* seen = i < screens.size() ? &screens[i] : nullptr;
+    if (seen == nullptr || seen->line.isEmpty() ||
+        !seen->box.adjusted(-reach, -reach, reach, reach).contains(screen)) {
+      continue;
+    }
+    // The nearest place on the path in the view, and the point of the item
+    // there: on a line exactly, on a curve its nearest sample (a point of
+    // the curve, not of the chord between two).
+    double d = std::numeric_limits<double>::max();
+    BodyItem::Lifted at = item.path.front();
+    if (seen->line.size() == 1) {
+      d = screenDistance(seen->line.front(), screen);
+    }
+    for (int k = 1; k < seen->line.size(); ++k) {
+      const QPointF a = seen->line.at(k - 1);
+      const QPointF step = seen->line.at(k) - a;
+      const double length2 = step.x() * step.x() + step.y() * step.y();
+      const double along = (screen.x() - a.x()) * step.x() + (screen.y() - a.y()) * step.y();
+      const double t = length2 > 0.0 ? std::clamp(along / length2, 0.0, 1.0) : 0.0;
+      const double here = screenDistance(a + step * t, screen);
+      if (here >= d) {
+        continue;
+      }
+      d = here;
+      const BodyItem::Lifted& p0 = item.path[static_cast<std::size_t>(k - 1)];
+      const BodyItem::Lifted& p1 = item.path[static_cast<std::size_t>(k)];
+      if (item.path.size() == 2) {
+        at = {p0.at + (p1.at - p0.at) * t, p0.height + (p1.height - p0.height) * t};
+      } else {
+        at = t < 0.5 ? p0 : p1;
+      }
+    }
+    if (d <= reach && d + tie < bestDistance) {
+      candidates.push_back({d, BodyGeometry::itemId(i), lifted(at.at, at.height)});
+    }
+  }
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate& x, const Candidate& y) { return x.distance < y.distance; });
+  // A few at most: what is hidden there is behind faces anyway.
+  constexpr std::size_t kSightTests = 4;
+  for (std::size_t k = 0; k < candidates.size() && k < kSightTests; ++k) {
+    if (m_viewer.inSight(candidates[k].at)) {
+      best = candidates[k].id;
+      bestDistance = candidates[k].distance + tie;
+      return;
+    }
+  }
 }
 
 void SketchController::setHover(const QString& entity) {

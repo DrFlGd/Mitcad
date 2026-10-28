@@ -840,7 +840,7 @@ pub(crate) fn constraint_entities(c: &Constraint) -> Vec<EntityId> {
         | EqualSize(a, b)
         | TangentAt { a, b, .. }
         | SmoothAt { a, b, .. } => vec![a, b],
-        SymmetricEntities { a, b, axis } => vec![a, b, axis],
+        SymmetricEntities { a, b, axis } | SymmetricCentres { a, b, axis } => vec![a, b, axis],
         EqualSpacing {
             mode: SpacingMode::Along(e),
             ..
@@ -1056,7 +1056,7 @@ impl System {
             SymmetricPoints { axis, .. } => {
                 self.line(axis)?;
             }
-            SymmetricEntities { a, b, axis } => {
+            SymmetricEntities { a, b, axis } | SymmetricCentres { a, b, axis } => {
                 let (x1, x2) = self.line(axis)?;
                 match (self.ent(a)?.clone(), self.ent(b)?.clone()) {
                     (EntityData::Line { p1, .. }, EntityData::Line { p1: q1, p2: q2 }) => {

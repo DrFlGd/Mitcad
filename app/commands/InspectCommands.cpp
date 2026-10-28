@@ -393,7 +393,11 @@ CommandDef measureCommand() {
   // in the view, so it is a choice); datums that are shown (construction
   // features, the origin when its light bulb is on); and sketch curves and
   // points (P9), also in sketch mode, where Measure starts without leaving
-  // the sketch.
+  // the sketch. With Faces, Edges and Vertices a body's face, edge or
+  // vertex under the pointer comes before a shown sketch's curve or point
+  // there (a sketch in the body's middle plane, mitcad#869), except the
+  // curves and points of the sketch being edited; Sketch Curves and Points
+  // picks only those.
   def.mode = CommandDef::Mode::Any;
   const SelectFilter kinds = SelectKind::Face | SelectKind::Edge | SelectKind::Vertex |
                              SelectKind::Plane | SelectKind::Axis | SelectKind::Point |
@@ -401,28 +405,39 @@ CommandDef measureCommand() {
   const auto bodies = [](const CommandState& s) {
     return s.choice(QStringLiteral("filter")) == QStringLiteral("bodies");
   };
-  const auto geometry = [bodies](const CommandState& s) { return !bodies(s); };
+  const auto sketches = [](const CommandState& s) {
+    return s.choice(QStringLiteral("filter")) == QStringLiteral("sketch");
+  };
+  const auto geometry = [bodies, sketches](const CommandState& s) { return !bodies(s) && !sketches(s); };
+  const SelectFilter sketchKinds = SelectKind::SketchCurve | SelectKind::SketchPoint;
   def.inputs = {
       choiceInput(QStringLiteral("filter"), QObject::tr("Selection Filter"),
                   {{QStringLiteral("geometry"), QObject::tr("Faces, Edges and Vertices")},
-                   {QStringLiteral("bodies"), QObject::tr("Bodies")}},
+                   {QStringLiteral("bodies"), QObject::tr("Bodies")},
+                   {QStringLiteral("sketch"), QObject::tr("Sketch Curves and Points")}},
                   QStringLiteral("geometry")),
-      selectionInput(QStringLiteral("a"), QObject::tr("Selection 1"), kinds, 1, 1).withVisible(geometry),
-      selectionInput(QStringLiteral("b"), QObject::tr("Selection 2"), kinds, 0, 1).withVisible(geometry),
+      selectionInput(QStringLiteral("a"), QObject::tr("Selection 1"), kinds, 1, 1)
+          .withVisible(geometry)
+          .withSketchesBehind(),
+      selectionInput(QStringLiteral("b"), QObject::tr("Selection 2"), kinds, 0, 1)
+          .withVisible(geometry)
+          .withSketchesBehind(),
       selectionInput(QStringLiteral("body_a"), QObject::tr("Body 1"), SelectKind::Body, 1, 1).withVisible(bodies),
       selectionInput(QStringLiteral("body_b"), QObject::tr("Body 2"), SelectKind::Body, 0, 1).withVisible(bodies),
+      selectionInput(QStringLiteral("sketch_a"), QObject::tr("Selection 1"), sketchKinds, 1, 1).withVisible(sketches),
+      selectionInput(QStringLiteral("sketch_b"), QObject::tr("Selection 2"), sketchKinds, 0, 1).withVisible(sketches),
   };
   for (InputDef& input : def.inputs) {
     input.showsOrigin = false;
   }
-  def.inspect = [bodies](const CommandState& state, const CommandContext& context) {
+  def.inspect = [bodies, sketches](const CommandState& state, const CommandContext& context) {
     Inspection result;
-    const bool whole = bodies(state);
-    const Selection& first = state.items(whole ? QStringLiteral("body_a") : QStringLiteral("a"));
-    const Selection& second = state.items(whole ? QStringLiteral("body_b") : QStringLiteral("b"));
-    // The inputs that hold the picks, for the history (mitcad#648).
-    const QStringList inputs = whole ? QStringList{QStringLiteral("body_a"), QStringLiteral("body_b")}
-                                     : QStringList{QStringLiteral("a"), QStringLiteral("b")};
+    // The inputs that hold the picks, also for the history (mitcad#648).
+    const QStringList inputs = bodies(state)     ? QStringList{QStringLiteral("body_a"), QStringLiteral("body_b")}
+                               : sketches(state) ? QStringList{QStringLiteral("sketch_a"), QStringLiteral("sketch_b")}
+                                                 : QStringList{QStringLiteral("a"), QStringLiteral("b")};
+    const Selection& first = state.items(inputs.at(0));
+    const Selection& second = state.items(inputs.at(1));
     if (isSketchItem(first.first()) || (!second.isEmpty() && isSketchItem(second.first()))) {
       result = measureShapes(first.first(), second.isEmpty() ? nullptr : &second.first(), context);
       result.record.inputs = inputs;

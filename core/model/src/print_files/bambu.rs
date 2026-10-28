@@ -485,8 +485,14 @@ fn write_purge(config: &mut Map<String, Value>, purge: &crate::print_purge::Matr
     config.insert(MULTIPLIER.to_owned(), text(m));
 }
 
-/// The project's settings and the parts' filaments and overrides.
-pub(super) fn export(shared: &Shared<'_>, model_name: &str) -> ExportOutput {
+/// The project's settings and the parts' filaments and overrides, by the
+/// build's objects (`objects`, mitcad#856; none: one object named
+/// `model_name` of every part).
+pub(super) fn export(
+    shared: &Shared<'_>,
+    model_name: &str,
+    objects: &[super::ExportObject<'_>],
+) -> ExportOutput {
     let dialect = shared.dialect;
     let mut out = ExportOutput::default();
     let mut warnings = Vec::new();
@@ -707,60 +713,43 @@ pub(super) fn export(shared: &Shared<'_>, model_name: &str) -> ExportOutput {
     let mut project =
         serde_json::to_string_pretty(&Value::Object(config)).expect("settings serialize");
     project.push('\n');
-    // Each part's filament and the values it does not share.
-    let mut model = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n");
-    let _ = writeln!(
-        model,
-        "  <object id=\"{}\">",
-        mitcad_3mf::assembly_object_id(shared.parts.len())
-    );
-    let _ = writeln!(
-        model,
-        "    <metadata key=\"name\" value=\"{}\"/>",
-        xml_escape(model_name)
-    );
-    let _ = writeln!(
-        model,
-        "    <metadata key=\"extruder\" value=\"{}\"/>",
-        shared.slots.first().map_or(1, |s| s + 1)
-    );
-    for (i, part) in shared.parts.iter().enumerate() {
-        let _ = writeln!(
-            model,
-            "    <part id=\"{}\" subtype=\"normal_part\">",
-            mitcad_3mf::part_object_id(i)
-        );
-        let _ = writeln!(
-            model,
-            "      <metadata key=\"name\" value=\"{}\"/>",
-            xml_escape(part.name)
-        );
-        let _ = writeln!(
-            model,
-            "      <metadata key=\"extruder\" value=\"{}\"/>",
-            shared.slots[i] + 1
-        );
-        let context: BTreeMap<String, Value> = part
-            .settings
-            .values
+    // Each object's parts: each part's filament and the values it does not
+    // share.
+    let every: Vec<usize> = (0..shared.parts.len()).collect();
+    let listed: Vec<(&str, &[usize])> = if objects.is_empty() {
+        vec![(model_name, every.as_slice())]
+    } else {
+        objects
             .iter()
-            .map(|(k, (v, _))| (k.clone(), v.clone()))
-            .collect();
-        for set in [PrintSet::Printer, PrintSet::Process] {
-            for (def, value) in defs_in(set, &shared.overrides[i]) {
-                for (key, text) in dialect_texts(dialect, def, value, &context, &mut warnings) {
-                    let _ = writeln!(
-                        model,
-                        "      <metadata key=\"{}\" value=\"{}\"/>",
-                        xml_escape(key),
-                        xml_escape(&text)
-                    );
-                }
-            }
+            .map(|o| (o.name, o.parts.as_slice()))
+            .collect()
+    };
+    let mut model = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<config>\n");
+    for (index, (name, parts)) in listed.iter().enumerate() {
+        let _ = writeln!(
+            model,
+            "  <object id=\"{}\">",
+            mitcad_3mf::build_object_id(shared.parts.len(), index)
+        );
+        let _ = writeln!(
+            model,
+            "    <metadata key=\"name\" value=\"{}\"/>",
+            xml_escape(name)
+        );
+        let _ = writeln!(
+            model,
+            "    <metadata key=\"extruder\" value=\"{}\"/>",
+            parts
+                .first()
+                .and_then(|&i| shared.slots.get(i))
+                .map_or(1, |s| s + 1)
+        );
+        for &i in parts.iter() {
+            write_part(&mut model, shared, i, &mut warnings);
         }
-        model.push_str("    </part>\n");
+        model.push_str("  </object>\n");
     }
-    model.push_str("  </object>\n</config>\n");
+    model.push_str("</config>\n");
     let application = match dialect {
         Dialect::QidiStudio => format!("QIDIStudio-{VERSION}"),
         _ => format!("BambuStudio-{VERSION}"),
@@ -777,6 +766,46 @@ pub(super) fn export(shared: &Shared<'_>, model_name: &str) -> ExportOutput {
     warnings.dedup();
     out.warnings = warnings;
     out
+}
+
+/// A part of an object in `model_settings.config`: its filament and the
+/// values it does not share.
+fn write_part(model: &mut String, shared: &Shared<'_>, i: usize, warnings: &mut Vec<String>) {
+    let part = &shared.parts[i];
+    let _ = writeln!(
+        model,
+        "    <part id=\"{}\" subtype=\"normal_part\">",
+        mitcad_3mf::part_object_id(i)
+    );
+    let _ = writeln!(
+        model,
+        "      <metadata key=\"name\" value=\"{}\"/>",
+        xml_escape(part.name)
+    );
+    let _ = writeln!(
+        model,
+        "      <metadata key=\"extruder\" value=\"{}\"/>",
+        shared.slots[i] + 1
+    );
+    let context: BTreeMap<String, Value> = part
+        .settings
+        .values
+        .iter()
+        .map(|(k, (v, _))| (k.clone(), v.clone()))
+        .collect();
+    for set in [PrintSet::Printer, PrintSet::Process] {
+        for (def, value) in defs_in(set, &shared.overrides[i]) {
+            for (key, text) in dialect_texts(shared.dialect, def, value, &context, warnings) {
+                let _ = writeln!(
+                    model,
+                    "      <metadata key=\"{}\" value=\"{}\"/>",
+                    xml_escape(key),
+                    xml_escape(&text)
+                );
+            }
+        }
+    }
+    model.push_str("    </part>\n");
 }
 
 #[cfg(any(test, feature = "testing"))]

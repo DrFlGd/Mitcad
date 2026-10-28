@@ -11,7 +11,8 @@
 #   - a typed distance previews in the interactive tier ("Display meshes
 #     of preview: 2 bodies ... (interactive)"), the 88 faces the Join keeps
 #     taken from the block as shown, only the top and the boss meshed
-#     ("Mesh trace preview interactive: ... 88 faces reused; faces=... kept=88
+#     ("Mesh trace preview interactive: ... 88 faces reused, 0 faces from the
+#     result store; faces=... kept=88
 #     meshed=11"); once no input changes, the bodies themselves are meshed
 #     in the final tier and drawn ("refining the display meshes of 2
 #     bodies", "display meshes refined");
@@ -94,7 +95,7 @@ ui_mark
 ui_step "distance 5"                       ui_type_in "Panel Extrude input distance" "5"
 ui_expect_new "Preview Extrude: ok" "previewed"
 ui_expect_new "(interactive)" "the preview meshed in the interactive tier"
-ui_expect_new "Mesh trace preview interactive: 0 bodies ready, 2 meshed, 88 faces reused; faces=" \
+ui_expect_new "Mesh trace preview interactive: 0 bodies ready, 2 meshed, 88 faces reused, 0 faces from the result store; faces=" \
   "the 88 faces the Join keeps taken from the block as shown"
 ui_expect_new "kept=88 meshed=11 failed=0" "only the top and the boss meshed (and the tool)"
 ui_expect_new "Preview Extrude: refining the display meshes of 2 bodies" "refined once the input rests" 10

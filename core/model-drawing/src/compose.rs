@@ -25,7 +25,7 @@ use super::def::Annotations;
 use super::sheet::{Anchor, Group, Item, Pen, Sheet, text_width};
 use super::{
     CutPlane, DrawingOptions, Orientation, P2, Projection, RoundHole, ScaleChoice, SheetSize,
-    Units, ViewCurve, ViewEdgeKind, ViewName, ViewProjection, ViewSpec, scale_text,
+    Units, ViewCurve, ViewEdgeKind, ViewName, ViewProjection, ViewSpec, ViewSpline, scale_text,
 };
 use mitcad_model::datum::Vec3;
 use mitcad_model::internal::drawing::DIMENSION_TEXT;
@@ -209,7 +209,7 @@ pub fn view_bounds(projection: &ViewProjection) -> Bounds {
                     }
                 }
             }
-            ViewCurve::Polyline(points) => {
+            ViewCurve::Polyline(points) | ViewCurve::Spline(ViewSpline { points, .. }) => {
                 for p in points {
                     b.add(*p);
                 }
@@ -1120,11 +1120,14 @@ pub fn render(
                     start: *start,
                     end: *end,
                 },
-                ViewCurve::Polyline(points) => Item::Polyline {
-                    pen,
-                    points: points.iter().map(|p| place.at(*p)).collect(),
-                    closed: false,
-                },
+                // A B-spline drawn as its polyline (mitcad#853).
+                ViewCurve::Polyline(points) | ViewCurve::Spline(ViewSpline { points, .. }) => {
+                    Item::Polyline {
+                        pen,
+                        points: points.iter().map(|p| place.at(*p)).collect(),
+                        closed: false,
+                    }
+                }
             });
         }
         if !view.bounds.is_empty() {

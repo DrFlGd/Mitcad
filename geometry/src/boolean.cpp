@@ -725,8 +725,20 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
     }
   }
   trace.mark("kept");
-  const bool valid_after_merge = !simplify || untouched || detail::is_valid_where_changed(namer.result(), kept);
+  // What the checker saw, for the trace: the faces where the result changed
+  // (and the solids of several shells it checked as solids), or the whole
+  // result and why (util.hpp: a target the checker had not found valid, a
+  // non-manifold edge, ...).
+  detail::WhereChanged report;
+  const bool valid_after_merge =
+      !simplify || untouched || detail::is_valid_where_changed(namer.result(), kept, &report);
   trace.mark("check");
+  if (simplify && !untouched) {
+    trace.note(report.whole != nullptr
+                   ? std::string("checked=whole-") + report.whole
+                   : "checked=" + std::to_string(report.faces) + "-faces" +
+                         (report.solids > 0 ? "+" + std::to_string(report.solids) + "-solids" : std::string()));
+  }
   if (!valid_after_merge) {
     // The merge can break a result the operation made valid (a join of a
     // corpus design: its merged faces made a shell that cannot be
@@ -735,7 +747,9 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
     return run_operation(op, targets, tool, tool_tag, false, seen, reduce, split, fuzzy, lost);
   }
   if (!simplify && !untouched) {
-    detail::require_valid_where_changed(namer.result(), kept, "the boolean operation");
+    detail::require_valid_where_changed(namer.result(), kept, "the boolean operation", &report);
+    trace.note(report.whole != nullptr ? std::string("checked=whole-") + report.whole
+                                       : "checked=" + std::to_string(report.faces) + "-faces");
   }
   trace.mark("check2");
   // Checked, or the targets as they were (a cut that left them alone).

@@ -338,3 +338,294 @@ fn a_circular_edge_in_the_plane_comes_with_its_centre() {
         in_sketch(&doc, "F3", [40.0, 20.0, 10.0])
     ));
 }
+
+/// The block as a plate with a cylinder of diameter 30 on its top
+/// (Sketch2 F3 on the top face, Extrude2 F4 10 up, Body2 F4.b0) and
+/// Sketch3 (F5) on the cylinder's top, 10 above the plate (mitcad#866):
+/// the mock kernel knows the plate's edges and corners and the cylinder's
+/// two circles and its seam.
+struct Plate {
+    doc: Document<MockKernel>,
+    top: FaceName,
+    sides: Vec<FaceName>,
+    /// The cylinder's faces: its top, its bottom and its side.
+    cylinder: [FaceName; 3],
+}
+
+fn plate_with_cylinder() -> Plate {
+    let Block {
+        mut doc,
+        top,
+        sides,
+        ..
+    } = block();
+    command(
+        &mut doc,
+        json!({"cmd": "sketch.create", "plane": {"face": top.to_string(), "body": "F2.b0"}}),
+    );
+    let centre = in_sketch(&doc, "F3", [30.0, 20.0, 20.0]);
+    let added = command(
+        &mut doc,
+        json!({"cmd": "sketch.add_circle", "sketch": "F3", "center": centre, "diameter": 30}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+               "profiles": [{"sketch": "F3", "region": added["region"]}],
+               "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}}),
+    );
+    let shape = doc
+        .body_shape(BodyUid::new(FeatureUid(4), 0))
+        .expect("Body2")
+        .clone();
+    let find = |role: &str| shape.faces.iter().find(|f| f.role == role).unwrap().clone();
+    let (end, start, side) = (find("end"), find("start"), find("side"));
+    let circle = |z: f64| Curve3::Conic {
+        center: [30.0, 20.0, z],
+        normal: [0.0, 0.0, 1.0],
+        x_axis: [1.0, 0.0, 0.0],
+        major: 15.0,
+        minor: 15.0,
+        start: 0.0,
+        end: std::f64::consts::TAU,
+        closed: true,
+    };
+    {
+        let mut curves = doc.kernel().named_curves.borrow_mut();
+        curves.insert(edge(&end, &side), circle(30.0));
+        curves.insert(edge(&start, &side), circle(20.0));
+        curves.insert(
+            edge(&side, &side),
+            Curve3::Line {
+                start: [45.0, 20.0, 20.0],
+                end: [45.0, 20.0, 30.0],
+            },
+        );
+    }
+    command(
+        &mut doc,
+        json!({"cmd": "sketch.create", "plane": {"face": end.to_string(), "body": "F4.b0"}}),
+    );
+    Plate {
+        doc,
+        top,
+        sides,
+        cylinder: [end, start, side],
+    }
+}
+
+fn plane_geometry_all(doc: &Document<MockKernel>, sketch: &str) -> Vec<Value> {
+    query(
+        doc,
+        json!({"query": "plane_geometry", "sketch": sketch, "out_of_plane": true}),
+    )
+    .as_array()
+    .unwrap()
+    .clone()
+}
+
+/// The top edge of the plate over the side whose line runs along x = `x`.
+fn plate_edge_at_x(plate: &Plate, x: f64) -> String {
+    let curves = plate.doc.kernel().named_curves.borrow();
+    plate
+        .sides
+        .iter()
+        .map(|s| edge(&plate.top, s))
+        .find(|name| {
+            matches!(curves.get(name), Some(Curve3::Line { start, end })
+                if close(start[0], x) && close(end[0], x))
+        })
+        .unwrap_or_else(|| panic!("no top edge at x = {x}"))
+}
+
+#[test]
+fn edges_and_vertices_out_of_the_plane_come_projected_on_request() {
+    let plate = plate_with_cylinder();
+    let doc = &plate.doc;
+    let [end, start, side] = &plate.cylinder;
+    // Without `out_of_plane`: the cylinder's top circle only, as before.
+    let in_plane = plane_geometry(doc, "F5");
+    assert_eq!(kinds(&in_plane), ["circle"], "{in_plane:?}");
+    assert_eq!(in_plane[0]["source"], edge(end, side));
+    assert!(in_plane[0].get("in_plane").is_none(), "{in_plane:?}");
+    // With it: the same first, then the others, projected.
+    let items = plane_geometry_all(doc, "F5");
+    assert_eq!(items[0], in_plane[0], "{items:?}");
+    assert!(
+        items[1..].iter().all(|i| i["in_plane"] == false),
+        "{items:?}"
+    );
+    let find = |source: &str| {
+        items
+            .iter()
+            .find(|i| i["source"] == source)
+            .unwrap_or_else(|| panic!("no {source} in {items:?}"))
+    };
+    // A plate edge 10 below: its line where it is seen from above.
+    let right = find(&plate_edge_at_x(&plate, 60.0));
+    assert_eq!(right["kind"], "line", "{right}");
+    assert_eq!(right["body"], "F2.b0");
+    let ends = [
+        in_sketch(doc, "F5", [60.0, 0.0, 30.0]),
+        in_sketch(doc, "F5", [60.0, 40.0, 30.0]),
+    ];
+    for key in ["start", "end"] {
+        assert!(
+            ends.iter().any(|e| near(&right["geometry"][key], *e)),
+            "{right}"
+        );
+    }
+    assert!(close(right["height"].as_f64().unwrap(), -10.0), "{right}");
+    let path = right["path"].as_array().unwrap();
+    assert_eq!(path.len(), 2, "{right}");
+    for p in path {
+        assert!(close(p[2].as_f64().unwrap(), -10.0), "{right}");
+        assert!(ends.iter().any(|e| near(p, *e)), "{right}");
+    }
+    // The cylinder's bottom circle: the same circle, 10 below.
+    let bottom = find(&edge(start, side));
+    assert_eq!(bottom["kind"], "circle", "{bottom}");
+    assert!(
+        near(
+            &bottom["geometry"]["center"],
+            in_sketch(doc, "F5", [30.0, 20.0, 30.0])
+        ),
+        "{bottom}"
+    );
+    assert!(
+        close(bottom["geometry"]["radius"].as_f64().unwrap(), 15.0),
+        "{bottom}"
+    );
+    assert!(close(bottom["height"].as_f64().unwrap(), -10.0), "{bottom}");
+    assert_eq!(bottom["path"].as_array().unwrap().len(), 25, "{bottom}");
+    // The seam runs along the normal: the point it is seen as.
+    let seam = find(&edge(side, side));
+    assert_eq!(seam["kind"], "point", "{seam}");
+    assert!(
+        near(
+            &seam["geometry"]["at"],
+            in_sketch(doc, "F5", [45.0, 20.0, 30.0])
+        ),
+        "{seam}"
+    );
+    // A plate corner on the bottom, 30 below.
+    let corner = items
+        .iter()
+        .find(|i| {
+            i["kind"] == "vertex"
+                && i["body"] == "F2.b0"
+                && close(i["height"].as_f64().unwrap(), -30.0)
+                && near(&i["geometry"]["at"], in_sketch(doc, "F5", [0.0, 0.0, 30.0]))
+        })
+        .unwrap_or_else(|| panic!("no bottom corner at the origin in {items:?}"));
+    assert_eq!(corner["path"].as_array().unwrap().len(), 1, "{corner}");
+}
+
+/// The signed distance of `p` from the line through `a` and `b`.
+fn from_line(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let length = d[0].hypot(d[1]);
+    (d[0] * (p[1] - a[1]) - d[1] * (p[0] - a[0])) / length
+}
+
+fn xy(v: &Value) -> [f64; 2] {
+    [v[0].as_f64().unwrap(), v[1].as_f64().unwrap()]
+}
+
+#[test]
+fn a_distance_to_a_plate_edge_below_follows_the_plate() {
+    // GitHub #50: a sketch on the cylinder's top, a circle on it, and a
+    // distance from the circle's centre to a plate edge below.
+    let plate = plate_with_cylinder();
+    let source = plate_edge_at_x(&plate, 60.0);
+    let mut doc = plate.doc;
+    let at = in_sketch(&doc, "F5", [20.0, 10.0, 30.0]);
+    let circle = command(
+        &mut doc,
+        json!({"cmd": "sketch.circle", "sketch": "F5", "mode": "center", "center": at,
+               "radius": 3}),
+    );
+    let circle = circle["made"][0].as_str().unwrap().to_owned();
+    let entity = |doc: &Document<MockKernel>, id: &str| -> Value {
+        query(doc, json!({"query": "sketch", "uid": "F5"}))["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == id)
+            .unwrap_or_else(|| panic!("no {id} in Sketch3"))
+            .clone()
+    };
+    let centre = entity(&doc, &circle)["center"].as_str().unwrap().to_owned();
+    // What the sketch Dimension tool picks and projects: the edge out of
+    // the plane, linked, as `sketch.project` makes it.
+    let item = plane_geometry_all(&doc, "F5")
+        .into_iter()
+        .find(|i| i["source"] == source.as_str())
+        .expect("the plate edge is offered");
+    assert_eq!(item["in_plane"], false);
+    let projected = command(
+        &mut doc,
+        json!({"cmd": "sketch.project", "sketch": "F5", "source": source, "body": "F2.b0",
+               "linked": true}),
+    );
+    let line = projected["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| entity(&doc, id.as_str().unwrap()))
+        .find(|e| e["type"] == "line")
+        .unwrap_or_else(|| panic!("no projected line in {projected}"));
+    let line_id = line["id"].as_str().unwrap().to_owned();
+    command(
+        &mut doc,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F5",
+               "dimension": {"type": "point_line_distance", "point": centre, "line": line_id},
+               "value": 15}),
+    );
+    let s = query(&doc, json!({"query": "sketch", "uid": "F5"}));
+    assert_eq!(s["projections"].as_array().unwrap().len(), 1, "{s}");
+    assert_eq!(s["projections"][0]["source"], source.as_str(), "{s}");
+    assert_eq!(s["projections"][0]["by_geometry"], true, "{s}");
+    let measure = |doc: &Document<MockKernel>| -> ([f64; 2], [f64; 2], f64) {
+        let line = entity(doc, &line_id);
+        let (a, b) = (xy(&line["geometry"]["start"]), xy(&line["geometry"]["end"]));
+        let p = xy(&entity(doc, &centre)["at"]);
+        (a, b, from_line(p, a, b))
+    };
+    let (a, b, before) = measure(&doc);
+    assert!(close(before.abs(), 15.0), "{before}");
+    let ends = |doc: &Document<MockKernel>, x: f64| {
+        [
+            in_sketch(doc, "F5", [x, 0.0, 30.0]),
+            in_sketch(doc, "F5", [x, 40.0, 30.0]),
+        ]
+    };
+    let on = |p: [f64; 2], q: [f64; 2]| close(p[0], q[0]) && close(p[1], q[1]);
+    let at_x = |doc: &Document<MockKernel>, a: [f64; 2], b: [f64; 2], x: f64| {
+        let [e0, e1] = ends(doc, x);
+        (on(a, e0) && on(b, e1)) || (on(a, e1) && on(b, e0))
+    };
+    assert!(at_x(&doc, a, b, 60.0), "{a:?} {b:?}");
+    // The plate made 80 wide: its right edge moves, and with it the
+    // projection and the circle 15 from it, on the same side.
+    {
+        let mut curves = doc.kernel().named_curves.borrow_mut();
+        curves.insert(
+            source.clone(),
+            Curve3::Line {
+                start: [80.0, 0.0, 20.0],
+                end: [80.0, 40.0, 20.0],
+            },
+        );
+    }
+    let changed = command(
+        &mut doc,
+        json!({"cmd": "set_parameter", "name": "d1", "value": 80}),
+    );
+    assert_eq!(changed["error"], Value::Null, "{changed}");
+    let (a, b, after) = measure(&doc);
+    assert!(at_x(&doc, a, b, 80.0), "{a:?} {b:?}");
+    assert!(close(after, before), "{after} vs {before}");
+    let s = query(&doc, json!({"query": "sketch", "uid": "F5"}));
+    assert_eq!(s["warnings"], json!([]), "{s}");
+}

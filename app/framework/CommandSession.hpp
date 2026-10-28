@@ -165,6 +165,10 @@ public:
   // (the newest, a loaded definition) are highlighted where they are shown,
   // and a click on one is on the same entry (mitcad#199).
   virtual QString profileOccurrence(const QString& /*sketch*/) const { return QString(); }
+  // The sketch that sketch mode edits, empty outside sketch mode: its curves
+  // and points keep their place where an input puts sketches behind the
+  // bodies (InputDef::sketchesBehind, mitcad#869).
+  virtual QString editedSketch() const { return QString(); }
   // The same for a body's faces, edges and vertices: the first occurrence of
   // the body's component (empty in the root). A loaded definition's face of
   // a placed component was otherwise highlighted unplaced, on another part.
@@ -296,6 +300,18 @@ public:
   bool runParameter(const QJsonObject& command, QString& refusal);
   // The feature the session edits (its uid), empty for a new one.
   const QString& editUid() const { return m_editUid; }
+  // An application command asks for a pick before it goes on (mitcad#857:
+  // 3D Print's print bed face, from its `accept`): the panel shows its
+  // inputs again, the selection input `key` (shown now, emptied) becomes
+  // the active one, the status bar says `message` (logged "Panel <command>
+  // asks: <message>"; the panel's grey message line is cleared: the
+  // command's rows say it), OK waits for the pick (a required input is
+  // empty) and the highlights (CommandDef::marks) are drawn again. False
+  // when the command has ended or no such input is shown.
+  bool ask(const QString& key, const QString& message);
+  // Esc while the panel is open: the command's own (CommandDef::escape),
+  // true when it took it; else the window's Esc cancels.
+  bool escape();
 
   // Live MCP (mitcad#265, CommandSessionScript.cpp): an agent fills the
   // inputs by their keys through the panel's own actions, as typing,
@@ -483,7 +499,9 @@ private:
   // another closes. False (the panel stays) when the model refused.
   bool applyCommand();
   // Whether a choice with a Tab cycle is shown (the filter is installed
-  // only for such commands) and steps it; false when there is none.
+  // only for such commands) and steps it, or the active selection with
+  // InputDef::tabPicks picks its next item (mitcad#857); false when there
+  // is none.
   bool cycleChoice();
   int m_applied = 0; // OKs of a command that repeats
   // The box at the cursor of a value input with InputDef::cursorBox
@@ -644,6 +662,10 @@ private:
   QString m_chainKey;
   TopoDS_Shape m_chainShape;
   QString m_loggedHover; // the hover's last log line
+  QString m_loggedMarks; // the command's marks as last logged (mitcad#857)
+  // The inputs whose picks are not drawn while the command shows marks,
+  // as last logged (mitcad#857 review: the green faces stand out).
+  QString m_loggedUnmarked;
   // The point under the mouse moved (CommandDef::hoverPreview, mitcad#417):
   // the command's preview again when the command says so.
   void hoverMoved(const SelectionItem& item);
@@ -760,13 +782,14 @@ private:
   bool m_motionPaused = false;
   quint64 m_motionShown = 0;     // exact previews shown (ProxyBasis::shown)
   quint64 m_motionDrawnFrom = 0; // the basis the motion proxy was drawn from
+  // Where the motion proxy last drew the first moved body's middle, to
+  // compare with the exact preview that replaces it (mitcad#838).
+  std::optional<gp_Pnt> m_motionAt;
   // `tool` placed at `toolPlacements` (a compound of placed copies when
   // there are several), null when none is shown.
   static TopoDS_Shape placedTool(const TopoDS_Shape& tool, const std::vector<gp_Trsf>& placements);
 
-  void startAutoOperation(const QJsonObject& storedDefinition);
-  bool probeAutoOperation();
-  void resolveAutoOperationProbe(const QJsonObject& report);
+  void startAutoOperation();
   void addAutoOperation(QJsonObject& command) const;
   // True when the answer changed the inputs: their own preview follows
   // instead of the answer's.

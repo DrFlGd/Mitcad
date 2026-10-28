@@ -455,12 +455,143 @@ QString printBedLog(const QJsonObject& bed) {
   } else {
     line = QStringLiteral("as in the design");
   }
+  // The file's other objects, each on the bed by itself (mitcad#856): with
+  // no object of the rest only they.
+  QStringList objects;
+  for (const QJsonValue& value : bed.value(QStringLiteral("objects")).toArray()) {
+    const QJsonObject object = value.toObject();
+    const QString objectName = object.value(QStringLiteral("name")).toString();
+    objects << (object.value(QStringLiteral("face")).isString()
+                    ? QStringLiteral("%1 on %2").arg(objectName, object.value(QStringLiteral("face")).toString())
+                    : QStringLiteral("%1 kept as assembled").arg(objectName));
+  }
+  if (!objects.isEmpty()) {
+    const bool rest = bed.value(QStringLiteral("body")).isString() ||
+                      !bed.value(QStringLiteral("kept")).toArray().isEmpty();
+    line = (rest ? line + QStringLiteral("; ") : QString()) +
+           QStringLiteral("objects %1").arg(objects.join(QStringLiteral(", ")));
+  }
   for (const QJsonValue& value : bed.value(QStringLiteral("problems")).toArray()) {
     const QJsonObject problem = value.toObject();
     line += QStringLiteral("; %1: %2").arg(problem.value(QStringLiteral("name")).toString(),
                                            problem.value(QStringLiteral("reason")).toString());
   }
   return line;
+}
+
+QColor printBedColor() { return QColor(0x2e, 0xb8, 0x72); }
+
+QString PrintBedFace::describe() const {
+  return occurrenceName.isEmpty() ? QStringLiteral("%1 %2").arg(name, face)
+                                  : QStringLiteral("%1 %2 in %3").arg(name, face, occurrenceName);
+}
+
+QVector<PrintBedAsk> printBedAsks(const QJsonObject& bed) {
+  QVector<PrintBedAsk> asks;
+  const auto add = [&asks](const QString& piece, const QJsonArray& choices) {
+    if (choices.size() < 2) {
+      return;
+    }
+    PrintBedAsk ask;
+    ask.piece = piece;
+    QStringList keys;
+    for (const QJsonValue& value : choices) {
+      const QJsonObject choice = value.toObject();
+      PrintBedFace face;
+      face.body = choice.value(QStringLiteral("body")).toString();
+      face.name = choice.value(QStringLiteral("name")).toString();
+      face.face = choice.value(QStringLiteral("face")).toString();
+      face.occurrence = choice.value(QStringLiteral("occurrence")).toString();
+      face.occurrenceName = choice.value(QStringLiteral("occurrence_name")).toString();
+      keys << QStringLiteral("%1@%2").arg(face.body, face.occurrence);
+      ask.faces.append(face);
+    }
+    keys.sort();
+    ask.key = piece + QLatin1Char('|') + keys.join(QLatin1Char(','));
+    asks.append(ask);
+  };
+  add(QString(), bed.value(QStringLiteral("choices")).toArray());
+  for (const QJsonValue& value : bed.value(QStringLiteral("objects")).toArray()) {
+    const QJsonObject object = value.toObject();
+    add(object.value(QStringLiteral("name")).toString(), object.value(QStringLiteral("choices")).toArray());
+  }
+  return asks;
+}
+
+QString PrintBedAsk::pieceName() const {
+  if (!piece.isEmpty()) {
+    return piece;
+  }
+  // The occurrence names the faces' paths start with alike.
+  QStringList shared;
+  bool first = true;
+  for (const PrintBedFace& face : faces) {
+    const QStringList names = face.occurrenceName.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (first) {
+      shared = names;
+      first = false;
+      continue;
+    }
+    qsizetype same = 0;
+    while (same < shared.size() && same < names.size() && shared.at(same) == names.at(same)) {
+      ++same;
+    }
+    shared = shared.mid(0, same);
+  }
+  return shared.join(QLatin1Char('/'));
+}
+
+namespace {
+
+// The body of a face to choose, by name; with its place when the piece has
+// faces of the body in several places (mitcad#857).
+QString bedFaceOwner(const PrintBedAsk& ask, const PrintBedFace& face) {
+  const auto sameBody = std::count_if(ask.faces.begin(), ask.faces.end(),
+                                      [&face](const PrintBedFace& other) { return other.body == face.body; });
+  if (sameBody < 2 || face.occurrenceName.isEmpty()) {
+    return face.name;
+  }
+  return QStringLiteral("%1 (%2)").arg(face.name, face.occurrenceName);
+}
+
+} // namespace
+
+QString printBedQuestion(const PrintBedAsk& ask) {
+  const QString piece = ask.pieceName();
+  return QObject::tr("Not sent yet: %1 has %2 print bed faces. Click the green one to put on the bed.")
+      .arg(piece.isEmpty() ? QObject::tr("the piece") : piece)
+      .arg(ask.faces.size());
+}
+
+QString printBedHover(const PrintBedAsk& ask, const PrintBedFace& face) {
+  return QObject::tr("%1: print bed face").arg(bedFaceOwner(ask, face));
+}
+
+QString printBedRefused() { return QObject::tr("Not one of the print bed faces: click a green face."); }
+
+QString printBedChosen(const PrintBedAsk& ask, const PrintBedFace& face) {
+  const QString piece = ask.pieceName();
+  return QObject::tr("%1 on %2's print bed face.")
+      .arg(piece.isEmpty() ? QObject::tr("The piece") : piece, bedFaceOwner(ask, face));
+}
+
+QString printBedLine(const QString& message, int onFaces, const QStringList& chosen) {
+  QString line = message;
+  for (const QString& face : chosen) {
+    line += QLatin1Char(' ') + face;
+  }
+  const int others = onFaces - static_cast<int>(chosen.size());
+  if (others <= 0) {
+    return line;
+  }
+  if (chosen.isEmpty()) {
+    return line + QLatin1Char(' ') +
+           (others == 1 ? QObject::tr("1 body on its print bed face.")
+                        : QObject::tr("%1 bodies on their print bed faces.").arg(others));
+  }
+  return line + QLatin1Char(' ') +
+         (others == 1 ? QObject::tr("1 other body on its print bed face.")
+                      : QObject::tr("%1 other bodies on their print bed faces.").arg(others));
 }
 
 QString preparePrintFolder(const QString& root, const QString& design, QString* error) {

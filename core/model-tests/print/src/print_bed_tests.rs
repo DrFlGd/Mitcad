@@ -8,7 +8,9 @@
 //! twice), keeps the bodies as assembled with several bed faces or one
 //! body placed twice turned differently, leaves a surface body's face out
 //! (the `bodies` query says why; it can be cleared) and reports a face
-//! that is gone or not planar.
+//! that is gone or not planar. A piece kept for several bed faces lists
+//! them, one per placement, and a face chosen puts the piece on it
+//! (mitcad#857).
 //! The mock kernel's meshes are the bodies' boxes.
 
 use std::f64::consts::FRAC_PI_2;
@@ -663,4 +665,446 @@ fn a_surface_body_has_no_print_bed_face() {
     assert_eq!(surface_bed(&loaded), Value::Null);
     let label = format!("Clear Print Bed Face of {}", loaded.body_name(surface));
     assert_eq!(document(&loaded)["undo"], label);
+}
+
+/// A 20 mm block with its top as the print bed face (F2.b0, Body1) in a
+/// component Nut placed three times in Nuts:1 (mitcad#856): Nut:1 as it
+/// is, Nut:2 turned a quarter about X and moved 50 along x, Nut:3 turned a
+/// quarter about Y and moved 100 along x; the top faces +Z, -Y and +X.
+/// The placements' paths are O1/O2, O1/O3 and O1/O4.
+fn nuts() -> Document<MockKernel> {
+    let mut doc = Document::new(MockKernel::default());
+    command(
+        &mut doc,
+        json!([
+            {"cmd": "create_component", "name": "Nuts"},
+            {"cmd": "create_component", "name": "Nut"},
+            {"cmd": "sketch.create"},
+            {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 20, "height": 20},
+            {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": R}],
+              "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+            {"cmd": "activate_component", "component": "Nuts"},
+            {"cmd": "copy_occurrence", "occurrence": "O2", "transform": {"translation": [50, 0, 0],
+              "rotation": {"axis": [1, 0, 0], "angle": FRAC_PI_2}}},
+            {"cmd": "copy_occurrence", "occurrence": "O2", "transform": {"translation": [100, 0, 0],
+              "rotation": {"axis": [0, 1, 0], "angle": FRAC_PI_2}}},
+            {"cmd": "activate_component", "component": "C0"},
+        ]),
+    );
+    set_bed(&mut doc, "F2.b0", json!(top()));
+    let paths: Vec<Value> = query(&doc, json!({"query": "instances"}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["path"].clone())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            json!(["O1", "O2"]),
+            json!(["O1", "O3"]),
+            json!(["O1", "O4"])
+        ]
+    );
+    doc
+}
+
+/// Exports Body1 to a 3MF file on the print bed with more of the export's
+/// fields: the result and the file read back.
+fn export_nuts(
+    doc: &mut Document<MockKernel>,
+    dir: &Path,
+    more: Value,
+) -> (Value, mitcad_3mf::Model) {
+    let path = dir.join("nuts.3mf").to_str().unwrap().to_owned();
+    let mut export = json!({"cmd": "export", "path": path, "bodies": ["F2.b0"], "on_bed": true});
+    for (key, value) in more.as_object().unwrap() {
+        export[key] = value.clone();
+    }
+    let result = command(doc, export);
+    let model = mitcad_3mf::read(&std::fs::read(&path).unwrap()).unwrap();
+    (result, model)
+}
+
+/// A placement of the block lies on its top: the top's outward normal
+/// (+Z in the component) straight down, the top (z = 20) on the bed and
+/// nothing under it. Its box.
+fn on_its_top(part: &mitcad_3mf::Part, placement: &mitcad_3mf::Placement) -> ([f64; 3], [f64; 3]) {
+    let down: [f64; 3] = std::array::from_fn(|r| placement.linear[r][2]);
+    assert!(
+        near(down[0], 0.0) && near(down[1], 0.0) && near(down[2], -1.0),
+        "{placement:?}"
+    );
+    let top = placement.apply([10.0, 10.0, 20.0]);
+    assert!(near(top[2], 0.0), "{top:?}");
+    let alone = mitcad_3mf::Part {
+        placements: vec![*placement],
+        ..part.clone()
+    };
+    let found = placed_box(&alone);
+    assert!(near(found.0[2], 0.0), "lowest z {}", found.0[2]);
+    found
+}
+
+#[test]
+fn a_chosen_occurrence_of_a_body_placed_turned_differently_lies_on_its_face() {
+    let mut doc = nuts();
+    let dir = folder("nuts-one");
+    // Nut:2 alone: one object, its top on the bed and centred on the plate.
+    let (result, model) = export_nuts(&mut doc, &dir, json!({"occurrences": {"F2.b0": ["O1/O3"]}}));
+    assert!(model.objects.is_empty(), "one object: {:?}", model.objects);
+    assert_eq!(model.parts.len(), 1);
+    assert_eq!(model.parts[0].placements.len(), 1);
+    let bed = &result["bed"];
+    assert_eq!(bed["body"], "F2.b0");
+    assert_eq!(bed["face"], top());
+    assert_eq!(bed["kept"], json!([]));
+    assert_eq!(bed["objects"], json!([]));
+    assert_eq!(bed["on_faces"], 1);
+    let part = &model.parts[0];
+    on_its_top(part, &part.placements[0]);
+    assert_on_plate(placed_box(part), [128.0, 128.0]);
+    // The path by occurrence names picks the same.
+    let (by_name, _) = export_nuts(
+        &mut doc,
+        &dir,
+        json!({"occurrences": {"F2.b0": ["Nuts:1/Nut:2"]}}),
+    );
+    assert_eq!(by_name["bed"], result["bed"]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn every_occurrence_chosen_is_an_object_of_its_own_on_its_face() {
+    let mut doc = nuts();
+    let dir = folder("nuts-all");
+    // An empty list: every placement, each an object on its top.
+    let (result, model) = export_nuts(&mut doc, &dir, json!({"occurrences": {"F2.b0": []}}));
+    let bed = &result["bed"];
+    assert_eq!(bed["on_faces"], 3);
+    assert_eq!(bed["body"], Value::Null, "no object of the rest: {bed}");
+    let objects = bed["objects"].as_array().unwrap();
+    assert_eq!(objects.len(), 3, "{bed}");
+    for object in objects {
+        assert_eq!(object["body"], "F2.b0");
+        assert_eq!(object["face"], top());
+        assert!(
+            object["name"].as_str().unwrap().contains(" (Nuts:1/Nut:"),
+            "{object}"
+        );
+    }
+    assert_eq!(model.parts.len(), 1);
+    assert_eq!(model.parts[0].placements.len(), 3);
+    assert_eq!(model.objects.len(), 3, "a build item each");
+    // Each on its top, side by side along X with a gap of 5 mm, the row
+    // centred on the plate.
+    let mut boxes = Vec::new();
+    for object in &model.objects {
+        assert_eq!(object.components.len(), 1, "{object:?}");
+        let (p, k) = object.components[0];
+        let part = &model.parts[p];
+        boxes.push(on_its_top(part, &part.placements[k]));
+    }
+    boxes.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]));
+    for pair in boxes.windows(2) {
+        assert!(near(pair[1].0[0] - pair[0].1[0], 5.0), "{pair:?}");
+    }
+    assert!(
+        near((boxes[0].0[0] + boxes[2].1[0]) / 2.0, 128.0),
+        "{boxes:?}"
+    );
+    // The three listed by their paths are the same.
+    let (listed, _) = export_nuts(
+        &mut doc,
+        &dir,
+        json!({"occurrences": {"F2.b0": ["O1/O2", "O1/O3", "O1/O4"]}}),
+    );
+    assert_eq!(listed["bed"]["on_faces"], 3);
+    assert_eq!(listed["bed"]["objects"].as_array().unwrap().len(), 3);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_component_sent_whole_keeps_its_assembly() {
+    let mut doc = nuts();
+    let dir = folder("nuts-whole");
+    // Nuts:1 sent whole: one object, the nuts as assembled (their tops
+    // turned differently: none on the bed).
+    for more in [
+        json!({"occurrences": {"F2.b0": []}, "whole": ["Nuts:1"]}),
+        json!({}),
+    ] {
+        let (result, model) = export_nuts(&mut doc, &dir, more.clone());
+        let bed = &result["bed"];
+        assert!(model.objects.is_empty(), "{more}: {:?}", model.objects);
+        assert_eq!(bed["kept"], json!(["F2.b0"]), "{more}: {bed}");
+        assert_eq!(bed["transform"], Value::Null, "{more}");
+        assert_eq!(bed["objects"], json!([]), "{more}");
+        assert_eq!(bed["on_faces"], 0, "{more}");
+        let placements = &model.parts[0].placements;
+        assert_eq!(placements.len(), 3, "{more}");
+        assert!(placements.contains(&IDENTITY), "{more}: {placements:?}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn the_occurrences_to_write_are_checked() {
+    let mut doc = nuts();
+    let dir = folder("nuts-checked");
+    let three = dir.join("nuts.3mf").to_str().unwrap().to_owned();
+    let stl = dir.join("nuts.stl").to_str().unwrap().to_owned();
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "export", "path": stl, "on_bed": true, "occurrences": {"F2.b0": ["O1/O3"]}}),
+    );
+    assert!(error.contains("only 3MF files"), "{error}");
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "export", "path": three, "occurrences": {"F2.b0": ["O1"]}}),
+    );
+    assert!(error.contains("is not placed by Nuts:1"), "{error}");
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "export", "path": three, "occurrences": {"F2.b0": ["O9"]}}),
+    );
+    assert!(error.contains("there is no occurrence 'O9'"), "{error}");
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "export", "path": three, "on_bed": true, "whole": [""]}),
+    );
+    assert!(error.contains("not the design"), "{error}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Body2's side as its print bed face: facing -Y at y = 0, as the mock
+/// kernel gives it (mitcad#857).
+const PAIR_SIDE: &str = "F3:side(c1[c4,c2])";
+
+/// A component Pair (O1, Pair:1) of two bodies, each with a print bed face
+/// (mitcad#857): Body1 (F2.b0), the 20 mm block on z 0 to 20, its top
+/// (+Z); Body2 (F3.b0), 10 high under it on z -10 to 0, its side facing -Y
+/// at y = 0.
+fn pair() -> Document<MockKernel> {
+    let mut doc = Document::new(MockKernel::default());
+    command(
+        &mut doc,
+        json!([
+            {"cmd": "create_component", "name": "Pair"},
+            {"cmd": "sketch.create"},
+            {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 20, "height": 20},
+            {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": R}],
+              "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+            {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": R}],
+              "extent": {"type": "distance", "distance": -10}, "operation": "new_body"}},
+            {"cmd": "activate_component", "component": "C0"},
+        ]),
+    );
+    give_surface(
+        &doc,
+        PAIR_SIDE,
+        SurfaceGeometry::Plane {
+            origin: [10.0, 0.0, -5.0],
+            normal: [0.0, -1.0, 0.0],
+        },
+    );
+    set_bed(&mut doc, "F2.b0", json!(top()));
+    set_bed(&mut doc, "F3.b0", json!(PAIR_SIDE));
+    doc
+}
+
+/// Exports both bodies of Pair to a 3MF file on the print bed with more of
+/// the export's fields: the result and the file read back.
+fn export_pair(
+    doc: &mut Document<MockKernel>,
+    dir: &Path,
+    more: Value,
+) -> (Value, mitcad_3mf::Model) {
+    let path = dir.join("pair.3mf").to_str().unwrap().to_owned();
+    let mut export =
+        json!({"cmd": "export", "path": path, "bodies": ["F2.b0", "F3.b0"], "on_bed": true});
+    for (key, value) in more.as_object().unwrap() {
+        export[key] = value.clone();
+    }
+    let result = command(doc, export);
+    let model = mitcad_3mf::read(&std::fs::read(&path).unwrap()).unwrap();
+    (result, model)
+}
+
+/// The two bodies keep their places to each other: one and the same
+/// placement each, a turn without stretching.
+fn assert_together(model: &mitcad_3mf::Model) {
+    assert_eq!(model.parts.len(), 2);
+    assert_eq!(model.parts[0].placements.len(), 1);
+    assert_eq!(model.parts[0].placements, model.parts[1].placements);
+    let placement = model.parts[0].placements[0];
+    let (a, b) = ([0.0, 0.0, -10.0], [20.0, 20.0, 20.0]);
+    let (pa, pb) = (placement.apply(a), placement.apply(b));
+    let length =
+        |p: [f64; 3], q: [f64; 3]| (0..3).map(|i| (p[i] - q[i]).powi(2)).sum::<f64>().sqrt();
+    assert!(near(length(pa, pb), length(a, b)), "{placement:?}");
+}
+
+#[test]
+fn a_piece_kept_for_several_bed_faces_lists_them_to_choose_from() {
+    let mut doc = pair();
+    let dir = folder("pair-plan");
+    let path = dir.join("pair.3mf").to_str().unwrap().to_owned();
+    // As 3D Print sends Pair:1 whole, the plan only: nothing is written.
+    for more in [
+        json!({"occurrences": {"F2.b0": [], "F3.b0": []}, "whole": ["Pair:1"]}),
+        json!({}),
+    ] {
+        let mut export = json!({"cmd": "export", "path": path, "bodies": ["F2.b0", "F3.b0"],
+                                "on_bed": true, "plan": true});
+        for (key, value) in more.as_object().unwrap() {
+            export[key] = value.clone();
+        }
+        let result = command(&mut doc, export);
+        assert!(!Path::new(&path).exists(), "{more}: a file was written");
+        let bed = &result["bed"];
+        assert_eq!(bed["kept"], json!(["F2.b0", "F3.b0"]), "{more}: {bed}");
+        assert_eq!(bed["transform"], Value::Null, "{more}");
+        assert_eq!(
+            bed["choices"],
+            json!([
+                {"body": "F2.b0", "name": "Body1", "face": top(), "occurrence": "O1",
+                 "occurrence_name": "Pair:1"},
+                {"body": "F3.b0", "name": "Body2", "face": PAIR_SIDE, "occurrence": "O1",
+                 "occurrence_name": "Pair:1"},
+            ]),
+            "{more}"
+        );
+    }
+    // A body placed three times turned differently: a choice per
+    // placement (counted per occurrence).
+    let mut placed = nuts();
+    let result = command(
+        &mut placed,
+        json!({"cmd": "export", "path": path, "bodies": ["F2.b0"], "on_bed": true, "plan": true,
+               "occurrences": {"F2.b0": []}, "whole": ["Nuts:1"]}),
+    );
+    let occurrences: Vec<&Value> = result["bed"]["choices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| &c["occurrence"])
+        .collect();
+    assert_eq!(
+        occurrences,
+        [&json!("O1/O2"), &json!("O1/O3"), &json!("O1/O4")]
+    );
+    // One bed face: nothing to choose.
+    set_bed(&mut doc, "F3.b0", Value::Null);
+    let result = command(
+        &mut doc,
+        json!({"cmd": "export", "path": path, "bodies": ["F2.b0", "F3.b0"], "on_bed": true, "plan": true}),
+    );
+    assert_eq!(result["bed"]["body"], "F2.b0");
+    assert_eq!(result["bed"]["choices"], json!([]));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_bed_face_chosen_puts_the_piece_on_it() {
+    let mut doc = pair();
+    let dir = folder("pair-chosen");
+    for whole in [
+        json!({"occurrences": {"F2.b0": [], "F3.b0": []}, "whole": ["Pair:1"]}),
+        json!({}),
+    ] {
+        // Body2's side: it faces down, on the bed at z = 0, the bodies
+        // together as assembled.
+        let mut more = whole.clone();
+        more["bed_face"] = json!({"body": "F3.b0", "occurrence": "Pair:1"});
+        let (result, model) = export_pair(&mut doc, &dir, more);
+        let bed = &result["bed"];
+        assert_eq!(bed["body"], "F3.b0", "{whole}: {bed}");
+        assert_eq!(bed["face"], PAIR_SIDE, "{whole}");
+        assert_eq!(bed["kept"], json!([]), "{whole}");
+        assert_eq!(bed["choices"], json!([]), "{whole}");
+        assert_eq!(bed["on_faces"], 1, "{whole}");
+        let down = turned(&result, [0.0, -1.0, 0.0]);
+        assert!(
+            near(down[0], 0.0) && near(down[1], 0.0) && near(down[2], -1.0),
+            "{whole}: {down:?}"
+        );
+        assert!(near(moved(&result, [10.0, 0.0, -5.0])[2], 0.0), "{whole}");
+        assert!(model.objects.is_empty(), "{whole}: one object");
+        assert_together(&model);
+        let placement = model.parts[1].placements[0];
+        assert!(near(placement.apply([10.0, 0.0, -5.0])[2], 0.0), "{whole}");
+        let mut lowest = f64::INFINITY;
+        for part in &model.parts {
+            lowest = lowest.min(placed_box(part).0[2]);
+        }
+        assert!(near(lowest, 0.0), "{whole}: lowest z {lowest}");
+
+        // Body1's top, by uids in a list: the piece turned over onto it.
+        let mut more = whole.clone();
+        more["bed_face"] = json!([{"body": "Body1", "occurrence": "O1"}]);
+        let (result, model) = export_pair(&mut doc, &dir, more);
+        assert_eq!(result["bed"]["body"], "F2.b0", "{whole}");
+        assert!(near(turned(&result, [0.0, 0.0, 1.0])[2], -1.0), "{whole}");
+        assert!(near(moved(&result, [10.0, 10.0, 20.0])[2], 0.0), "{whole}");
+        assert_together(&model);
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_bed_face_chosen_is_checked() {
+    let mut doc = pair();
+    let dir = folder("pair-checked");
+    let path = dir.join("pair.3mf").to_str().unwrap().to_owned();
+    let export = |more: Value| {
+        let mut export =
+            json!({"cmd": "export", "path": path, "bodies": ["F2.b0", "F3.b0"], "on_bed": true});
+        for (key, value) in more.as_object().unwrap() {
+            export[key] = value.clone();
+        }
+        export
+    };
+    // Two in one piece.
+    let error = refused(
+        &mut doc,
+        export(json!({"bed_face": [{"body": "F2.b0", "occurrence": "O1"},
+                                   {"body": "F3.b0", "occurrence": "O1"}]})),
+    );
+    assert!(error.contains("chosen for one piece"), "{error}");
+    // Not where the body is written.
+    let error = refused(
+        &mut doc,
+        export(json!({"bed_face": {"body": "F2.b0", "occurrence": ""}})),
+    );
+    assert!(
+        error.contains("is not written as the design itself places it"),
+        "{error}"
+    );
+    // Without one.
+    set_bed(&mut doc, "F3.b0", Value::Null);
+    let error = refused(
+        &mut doc,
+        export(json!({"bed_face": {"body": "F3.b0", "occurrence": "O1"}})),
+    );
+    assert!(error.contains("Body2 has no print bed face"), "{error}");
+    // A body not written.
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "export", "path": path, "bodies": ["F3.b0"], "on_bed": true,
+               "bed_face": {"body": "F2.b0", "occurrence": "O1"}}),
+    );
+    assert!(error.contains("not among the bodies written"), "{error}");
+    // Not on the bed.
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "export", "path": path, "bed_face": {"body": "F2.b0", "occurrence": "O1"}}),
+    );
+    assert!(error.contains("(on_bed)"), "{error}");
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "export", "path": path, "plan": true}),
+    );
+    assert!(error.contains("(on_bed)"), "{error}");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

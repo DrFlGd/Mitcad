@@ -5,12 +5,13 @@
 use serde::Deserialize;
 
 use super::{
-    DocState, Document, ModelError, MovePlan, PlannedGroup, has_origins, invalid, plane_features,
-    set_component,
+    DocState, Document, ModelError, MovePlan, PlannedGroup, follow_cut_scopes, has_origins,
+    invalid, plane_features, set_component,
 };
 use crate::assembly::inverse;
 use crate::document::same_placement;
 use crate::features::extrude::{Extent, Side, Start};
+use crate::features::extrude_scope::ComponentMove;
 use crate::features::{FeatureDef, FrameDef, OccurrencePath};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::Kernel;
@@ -345,6 +346,11 @@ impl<K: Kernel> Document<K> {
             self.assembly().unused_name("Component")
         };
         let label_source = self.assembly().name(source);
+        let keeps = self
+            .result
+            .owners
+            .iter()
+            .any(|(b, c)| *c == source && !group.bodies.contains(b));
         self.apply_move(|state| {
             let created = matches!(destination, MoveDestination::New { .. });
             let (component, target) = if let MoveDestination::New { name, .. } = destination {
@@ -371,6 +377,19 @@ impl<K: Kernel> Document<K> {
                 (context.component, context.target.clone())
             };
             set_component(state, &group.features, component);
+            // The extrusions' cut scopes take the destination (mitcad#859).
+            let path = OccurrencePath(target.clone());
+            follow_cut_scopes(
+                state,
+                &group.features,
+                &ComponentMove {
+                    from: source,
+                    to: component,
+                    path: &|_: &OccurrencePath| path.clone(),
+                    bodies: &group.bodies,
+                    keeps,
+                },
+            );
             relocate_links(
                 state,
                 &context.source,

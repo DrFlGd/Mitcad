@@ -22,6 +22,10 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_TangentialDeflection.hxx>
+#include <GeomConvert.hxx>
+#include <GeomConvert_ApproxCurve.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_BezierCurve.hxx>
 #include <HLRAlgo_Projector.hxx>
 #include <HLRBRep_Algo.hxx>
 #include <HLRBRep_HLRToShape.hxx>
@@ -93,6 +97,36 @@ std::vector<gp_Pnt> sample(const BRepAdaptor_Curve& curve, double first, double 
   return points;
 }
 
+// A projected curve other than a line or a circle as a B-spline (mitcad#853):
+// a B-spline or a Bézier curve as itself, cut to the edge's range, any other
+// (an ellipse, an offset curve, ...) approximated within 1e-6 mm. Null when
+// it cannot be.
+occ::handle<Geom_BSplineCurve> as_bspline(const BRepAdaptor_Curve& curve, double first, double last) {
+  try {
+    occ::handle<Geom_BSplineCurve> spline;
+    if (curve.GetType() == GeomAbs_BSplineCurve) {
+      spline = occ::handle<Geom_BSplineCurve>::DownCast(curve.BSpline()->Copy());
+    } else if (curve.GetType() == GeomAbs_BezierCurve) {
+      spline = GeomConvert::CurveToBSplineCurve(curve.Bezier());
+    } else {
+      GeomConvert_ApproxCurve approx(curve.Trim(first, last, 1e-9), 1e-6, GeomAbs_C2, 64, 9);
+      return approx.HasResult() ? approx.Curve() : occ::handle<Geom_BSplineCurve>();
+    }
+    if (spline.IsNull()) {
+      return spline;
+    }
+    if (spline->IsPeriodic()) {
+      spline->SetNotPeriodic();
+    }
+    if (first > spline->FirstParameter() + 1e-12 || last < spline->LastParameter() - 1e-12) {
+      spline->Segment(first, last);
+    }
+    return spline;
+  } catch (const Standard_Failure&) {
+    return occ::handle<Geom_BSplineCurve>();
+  }
+}
+
 // One edge of a projection: its curve lies in the view's plane (x, y, 0).
 void add_projected(const TopoDS_Edge& edge, bool visible, DrawnKind kind, double deflection, DrawnView& view) {
   if (BRep_Tool::Degenerated(edge)) {
@@ -142,6 +176,25 @@ void add_projected(const TopoDS_Edge& edge, bool visible, DrawnKind kind, double
     drawn.type = DrawnCurve::Type::Polyline;
     for (const gp_Pnt& p : sample(curve, first, last, deflection)) {
       drawn.points.push_back(flat(p));
+    }
+    // The curve itself too, as a B-spline (mitcad#853): cut sheets write
+    // it as it is.
+    const occ::handle<Geom_BSplineCurve> spline = as_bspline(curve, first, last);
+    if (!spline.IsNull()) {
+      drawn.type = DrawnCurve::Type::Spline;
+      drawn.degree = spline->Degree();
+      for (int i = 1; i <= spline->NbPoles(); ++i) {
+        drawn.poles.push_back(flat(spline->Pole(i)));
+      }
+      if (spline->IsRational()) {
+        for (int i = 1; i <= spline->NbPoles(); ++i) {
+          drawn.weights.push_back(spline->Weight(i));
+        }
+      }
+      const auto& knots = spline->KnotSequence();
+      for (int i = knots.Lower(); i <= knots.Upper(); ++i) {
+        drawn.knots.push_back(knots(i));
+      }
     }
     break;
   }

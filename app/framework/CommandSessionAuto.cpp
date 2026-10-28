@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: MIT
-// CommandSession: a feature's operation and objects chosen by the model
-// from each preview's tool until the user picks them (mitcad#289:
-// Extrude's automatic operation; CommandDef::autoOperation). The rest of
-// the session is in CommandSession.cpp.
+// CommandSession: a new feature's operation and objects chosen by the
+// model from each preview's tool until the user picks them (mitcad#289:
+// Extrude's automatic operation; CommandDef::autoOperation); an edit keeps
+// its stored operation (mitcad#868, AutoOperationPolicy). The rest of the
+// session is in CommandSession.cpp.
 #include <QDebug>
 #include <QJsonArray>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QStringList>
 
 #include "CommandSession.hpp"
-#include "ModelWorker.hpp"
 
 namespace mitcad {
 namespace {
@@ -28,71 +27,14 @@ QStringList ownersOf(const Selection& items) {
 
 } // namespace
 
-void CommandSession::startAutoOperation(const QJsonObject& storedDefinition) {
-  m_autoOperation.start(m_def.autoOperation && m_analysis.isEmpty() && slotOf(kOperation).has_value(),
-                        isEditing() ? storedDefinition : QJsonObject());
-}
-
-void CommandSession::resolveAutoOperationProbe(const QJsonObject& report) {
-  if (!m_autoOperation.resolve(report)) return;
-  const bool verified = report.value(QStringLiteral("status")).toString() == QStringLiteral("ok") &&
-                        report.value(QStringLiteral("auto_operation")).toObject().contains(kOperation);
-  qDebug().noquote() << QStringLiteral("%1: %2").arg(m_def.name,
-      m_autoOperation.active() ? QStringLiteral("stored operation matches automatic choice; editing follows geometry")
-      : verified ? QStringLiteral("stored operation differs from automatic choice; editing keeps it")
-                 : QStringLiteral("stored operation could not be verified; editing keeps it"));
-}
-
-bool CommandSession::probeAutoOperation() {
-  if (!m_autoOperation.pending()) return false;
-  const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("edit_feature")},
-                            {QStringLiteral("uid"), m_editUid},
-                            {QStringLiteral("def"), m_autoOperation.stored()},
-                            {QStringLiteral("auto_operation"), true}};
-  const QByteArray key = QJsonDocument(command).toJson(QJsonDocument::Compact);
-  const quint64 generation = m_generation;
-  m_presenter->setMessage(tr("Computing preview…"), false);
-  m_presenter->setOkEnabled(false);
-  if (m_host.asynchronousPreviews()) {
-    m_asyncPending = true;
-    const bool started = m_host.modelPreviewAsync(key, m_def.name, this,
-        [this, key, generation](const CommandHost::AsyncResult& result) {
-          if (!asyncPresenterAvailable()) return;
-          m_asyncPending = false;
-          if (m_cancelRequested) {
-            if (m_host.asynchronousCommands()) { finishAsyncCancel(); }
-            else { cancel(); }
-            return;
-          }
-          if (result.cancelled) {
-            // An input cancels old work before it is applied. Retry the
-            // same stored baseline after that input, never its new geometry.
-            if (generation != m_generation) schedulePreview();
-            else showCancelledPreview(key);
-            return;
-          }
-          resolveAutoOperationProbe(result.succeeded() ? result.answer : QJsonObject());
-          // A changed input may still be queued behind the model job. The
-          // normal preview follows after it and alone updates the controls.
-          schedulePreview(0);
-        });
-    if (!started) { m_asyncPending = false; schedulePreview(); }
-    return true;
+void CommandSession::startAutoOperation() {
+  const bool enabled = m_def.autoOperation && m_analysis.isEmpty() && slotOf(kOperation).has_value();
+  m_autoOperation.start(enabled, isEditing());
+  if (enabled && isEditing()) {
+    // An edit keeps the operation stored with the feature (mitcad#868):
+    // only the user changes it.
+    qDebug().noquote() << QStringLiteral("%1: editing keeps the stored operation").arg(m_def.name);
   }
-  try {
-    const QJsonObject report = m_host.modelPreview(key, m_def.name);
-    if (!m_done && m_presenter) resolveAutoOperationProbe(report);
-  } catch (const ComputationCancelled&) {
-    if (!m_done && m_presenter) {
-      if (generation != m_generation) schedulePreview();
-      else showCancelledPreview(key);
-    }
-    return true;
-  } catch (const std::exception&) {
-    if (!m_done && m_presenter) resolveAutoOperationProbe({});
-  }
-  if (!m_done && m_presenter) schedulePreview();
-  return true;
 }
 
 void CommandSession::addAutoOperation(QJsonObject& command) const {
@@ -160,8 +102,7 @@ bool CommandSession::takeAutoOperation(const QJsonObject& report) {
 void CommandSession::autoOperationOverruled(const QString& key) {
   const auto slot = slotOf(key);
   const bool targets = slot && slot->def->type == InputDef::Type::CutTargets;
-  if ((!m_autoOperation.active() && !m_autoOperation.pending()) ||
-      (key != kOperation && key != kObjects && !targets)) {
+  if (!m_autoOperation.active() || (key != kOperation && key != kObjects && !targets)) {
     return;
   }
   // The user's own choice stays for the rest of the command.

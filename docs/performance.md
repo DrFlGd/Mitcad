@@ -124,8 +124,25 @@ Stack samples of every thread (gdb, every one or two seconds) and flat
 `MITCAD_BOOLEAN_TRACE=1` prints a line per boolean on standard error: the
 operands' face counts and the time of each phase of `run_operation`
 (`geometry/src/boolean.cpp`: copy, far features, OCCT's boolean, face
-merge, naming, checker, holes put back) and of the whole call. On the
-reference design with one thread (release build, after #243):
+merge, naming, checker, holes put back) and of the whole call. Since
+mitcad#855 each line also says what the checker saw after the face
+merge: `checked=<n>-faces` (and `+<m>-solids`, solids of several shells
+checked as solids) where only the changed faces were checked, or
+`checked=whole-<reason>` with the reason the whole result was
+(`unchecked-target`: a target the checker had not found valid;
+`not-solids`, `solid-not-of-shells`, `no-shells`, `face-not-oriented`,
+`face-twice`, `edge-not-oriented`, `free-edge`, `non-manifold-edge`,
+`edge-uses-one-way`, `shell-not-connected`, `most-faces-changed`). Patterns
+of features add `boolean-trace: pattern <uid> …` lines about their runs
+of features in one boolean: `no run at <feature>/<place>: <why>`, `run
+from … ends before …: <why>` (another body or operation, copies near
+another feature's, or `face <i> of <body>, near its copies and those of
+<feature>/<place>, may split`: foreseen from the face boxes), `run kept:
+…` and `run not kept: …: <why>; the pattern goes on one place by one` (no
+body reached, a new body, a feature's copies missing from the result, or
+a face split near several features' copies, with its name). On the
+reference design with one thread (release build, after
+#243):
 
 - 216 boolean calls (230 operations with the reruns without the face
   merge) take 18.7 s of a 161 s import; OCCT's boolean itself 11.1 s,

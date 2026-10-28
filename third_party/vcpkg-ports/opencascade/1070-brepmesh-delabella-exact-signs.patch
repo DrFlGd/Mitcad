@@ -1,0 +1,611 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Delabella (the sweep-hull Delaunay triangulation BRepMesh's Delabella
+algorithms take a plane's base triangulation from): the signs it decides
+on computed exactly, and a hull that still comes out inconsistent ends the
+triangulation as failed instead of a crash or an endless loop
+(mitcad#846).
+
+The case: a plane face, a square with a concave arc of a large radius cut
+from a corner (1650 x 1650 mm, r = 1200 mm, the arc in 150 to 300 points).
+Delabella lifts the points onto the paraboloid z = x^2 + y^2 and builds
+their convex hull a point at a time: the faces the next point sees are
+deleted, and new faces join it to their silhouette. Whether a face sees a
+point is the sign of an in-circle determinant, which Delabella rounds
+(long double: 64 bits of mantissa with GCC and Clang on x86, 53 with MSVC
+and on ARM). The arc's points are nearly cocircular, and the rounded signs
+contradict each other: the faces a point sees are no longer a disk (a
+vertex on the silhouette twice, a face it does not see inside it). The
+silhouette then has fewer edges than the new faces need, the face taken as
+the last one added was never written in this step, and the silhouette walk
+follows `next` and `sew` links left from earlier steps or never set: a
+null or stray pointer (a crash), or a loop that never comes back to its
+start (an endless loop at the walk's `while (pr != entry)`). With 53 bits
+(Delabella's long double as double) the case's points crashed in three of
+the face's four copies and a synthetic stand-in in two of four; with 64
+bits, BRepMesh on the face with the radius swept from 400 to 1550 mm at
+0.01 mm deviation crashed on 12 of 230 radii and looped on 2.
+
+- incircleSign, orientSign: the signs of the in-circle and orientation
+  determinants of the input coordinates, exact. The floating-point value
+  is taken when it is larger than Shewchuk's error bound for it (doubled,
+  for the fused multiply-adds a compiler may form); else the determinant
+  is computed exactly as an expansion, a sum of doubles that do not
+  overlap (J. R. Shewchuk, "Adaptive Precision Floating-Point Arithmetic
+  and Fast Robust Geometric Predicates", 1997), with std::fma for the
+  products' errors. Face::dot returns the in-circle sign (the triple
+  product of the lifted points, without rounding the lifted z), and
+  Face::cross the orientation's sign as the normal's z, which decides the
+  Delaunay faces (z < 0). The normal's x and y are as before; they decide
+  only for points in a line, in the start's contour of coplanar points.
+  With exact signs every point is a vertex of the lifted hull, and the
+  faces it sees are a disk.
+- Guards for a hull that still comes out inconsistent (Inconsistent: an
+  "[ERR]" message and 0, as when out of memory): a silhouette vertex met
+  twice in one step (Vert::step), a number of new faces other than the
+  deleted faces' plus 2, a silhouette walk that does not return to its
+  start through every new face's first vertex (checked before anything is
+  sewn), a neighbour not linked back to a deleted face, and no face seeing
+  a point. The walk around the last point is bounded by the number of
+  faces, and the fall-back search runs over the faces on the hull
+  (Face::alive) instead of an index range. The face taken as the last one
+  added is the last one added. Vertices and faces are allocated zeroed.
+- The start on cocircular points (all points on one circle): the point
+  retracted to become the cone's top is unlinked from the contour; the
+  contour kept it, and the cone took more faces than there are.
+- BRepMesh_DelabellaBaseMeshAlgo::buildBaseTriangulation throws
+  Standard_Failure when Delabella returns 0, so that the face fails
+  (MitCad's checked planes then triangulate it by the default insertion)
+  instead of going on without a base triangulation.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_DelabellaBaseMeshAlgo.cxx b/src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_DelabellaBaseMeshAlgo.cxx
+--- a/src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_DelabellaBaseMeshAlgo.cxx
++++ b/src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_DelabellaBaseMeshAlgo.cxx
+@@ -134,6 +134,14 @@ void BRepMesh_DelabellaBaseMeshAlgo::buildBaseTriangulation()
+                                                        &aPoints[1],
+                                                        2 * sizeof(double));
+ 
++    if (aVerticesNb == 0)
++    {
++      // out of memory, or the hull came out inconsistent: the face fails
++      // rather than going on without a base triangulation
++      throw Standard_Failure(
++        "BRepMesh_DelabellaBaseMeshAlgo::buildBaseTriangulation: Delabella failed");
++    }
++
+     if (aVerticesNb > 0)
+     {
+       const DelaBella_Triangle* aTrianglePtr = aTriangulator->GetFirstDelaunayTriangle();
+diff --git a/src/ModelingAlgorithms/TKMesh/BRepMesh/delabella.cpp b/src/ModelingAlgorithms/TKMesh/BRepMesh/delabella.cpp
+--- a/src/ModelingAlgorithms/TKMesh/BRepMesh/delabella.cpp
++++ b/src/ModelingAlgorithms/TKMesh/BRepMesh/delabella.cpp
+@@ -40,6 +40,8 @@ SOFTWARE.
+ #endif
+ 
+ #include <algorithm>
++#include <cmath>
++#include <vector>
+ #include "delabella.pxx" // we just need LOG() macro
+ 
+ // assuming BITS is max(X_BITS,Y_BITS)
+@@ -69,6 +71,224 @@ typedef int64_t  Signed62;		// 4xBITS + 6	dot(vect,norm)
+ // in order to expand xy range
+ */
+ 
++// The signs Triangulate() decides on (a face seen from a point, a face
++// turning down) computed exactly: a floating-point sign is taken when it
++// is certain, else the sign of the exact value (an expansion: a sum of
++// doubles that do not overlap, after J. R. Shewchuk, "Adaptive Precision
++// Floating-Point Arithmetic and Fast Robust Geometric Predicates", 1997).
++// Rounded signs disagree with each other on nearly cocircular points: the
++// faces a point sees no longer form one disk, the silhouette walk below
++// reads vertices and faces this step never wrote, and Triangulate() loops
++// forever or crashes.
++namespace
++{
++typedef std::vector<double> Expansion;
++
++const double THE_EPSILON = 1.1102230246251565e-16; // 2^-53
++// Shewchuk's error bounds of the floating-point orient2d and incircle,
++// doubled for the fused multiply-adds a compiler may form.
++const double THE_ORIENT_BOUND = 2.0 * (3.0 + 16.0 * THE_EPSILON) * THE_EPSILON;
++const double THE_INCIRCLE_BOUND = 2.0 * (10.0 + 96.0 * THE_EPSILON) * THE_EPSILON;
++
++// a + b = x + y exactly, x the rounded sum.
++inline void twoSum(double a, double b, double& x, double& y)
++{
++  x               = a + b;
++  const double bv = x - a;
++  const double av = x - bv;
++  y               = (a - av) + (b - bv);
++}
++
++// a * b = x + y exactly, x the rounded product.
++inline void twoProduct(double a, double b, double& x, double& y)
++{
++  x = a * b;
++  y = std::fma(a, b, -x);
++}
++
++// e + b, both exact, components in increasing magnitude, zeros dropped.
++Expansion growExpansion(const Expansion& e, double b)
++{
++  Expansion h;
++  h.reserve(e.size() + 1);
++  double q = b;
++  for (const double c : e)
++  {
++    double sum = 0.0, err = 0.0;
++    twoSum(q, c, sum, err);
++    if (err != 0.0)
++    {
++      h.push_back(err);
++    }
++    q = sum;
++  }
++  if (q != 0.0 || h.empty())
++  {
++    h.push_back(q);
++  }
++  return h;
++}
++
++Expansion sumExpansions(const Expansion& e, const Expansion& f)
++{
++  Expansion h = e;
++  for (const double c : f)
++  {
++    h = growExpansion(h, c);
++  }
++  return h;
++}
++
++// e * b exactly.
++Expansion scaleExpansion(const Expansion& e, double b)
++{
++  Expansion h;
++  h.reserve(2 * e.size());
++  double q = 0.0;
++  for (const double c : e)
++  {
++    double product = 0.0, productErr = 0.0;
++    twoProduct(c, b, product, productErr);
++    double sum = 0.0, err = 0.0;
++    twoSum(q, productErr, sum, err);
++    if (err != 0.0)
++    {
++      h.push_back(err);
++    }
++    twoSum(product, sum, q, err);
++    if (err != 0.0)
++    {
++      h.push_back(err);
++    }
++  }
++  if (q != 0.0 || h.empty())
++  {
++    h.push_back(q);
++  }
++  return h;
++}
++
++Expansion multiplyExpansions(const Expansion& e, const Expansion& f)
++{
++  Expansion h(1, 0.0);
++  for (const double c : f)
++  {
++    h = sumExpansions(h, scaleExpansion(e, c));
++  }
++  return h;
++}
++
++Expansion negateExpansion(Expansion e)
++{
++  for (double& c : e)
++  {
++    c = -c;
++  }
++  return e;
++}
++
++// a - b exactly.
++Expansion difference(double a, double b)
++{
++  double x = 0.0, y = 0.0;
++  twoSum(a, -b, x, y);
++  return growExpansion(Expansion(1, y), x);
++}
++
++// The sign of an expansion: that of its largest component, the last one.
++int expansionSign(const Expansion& e)
++{
++  for (size_t k = e.size(); k > 0; --k)
++  {
++    if (e[k - 1] != 0.0)
++    {
++      return e[k - 1] > 0.0 ? 1 : -1;
++    }
++  }
++  return 0;
++}
++
++// p x q exactly, of differences.
++Expansion crossExact(const Expansion& px, const Expansion& py, const Expansion& qx, const Expansion& qy)
++{
++  return sumExpansions(multiplyExpansions(px, qy), negateExpansion(multiplyExpansions(py, qx)));
++}
++
++// The sign of (b - a) x (c - a): positive when a, b, c turn
++// counterclockwise.
++int orientSign(double ax, double ay, double bx, double by, double cx, double cy)
++{
++  const double left  = (bx - ax) * (cy - ay);
++  const double right = (by - ay) * (cx - ax);
++  const double det   = left - right;
++  const double bound = THE_ORIENT_BOUND * (std::abs(left) + std::abs(right));
++  if (det > bound)
++  {
++    return 1;
++  }
++  if (-det > bound)
++  {
++    return -1;
++  }
++  return expansionSign(
++    crossExact(difference(bx, ax), difference(by, ay), difference(cx, ax), difference(cy, ay)));
++}
++
++// The sign of the determinant of the rows (x, y, x^2 + y^2) of a - d,
++// b - d and c - d: positive when d lies inside the circle through a, b, c
++// turning counterclockwise. It is the triple product of the points lifted
++// onto the paraboloid z = x^2 + y^2, (a - d) . ((b - d) x (c - d)).
++int incircleSign(double ax,
++                 double ay,
++                 double bx,
++                 double by,
++                 double cx,
++                 double cy,
++                 double dx,
++                 double dy)
++{
++  const double adx = ax - dx, ady = ay - dy;
++  const double bdx = bx - dx, bdy = by - dy;
++  const double cdx = cx - dx, cdy = cy - dy;
++
++  const double bdxcdy = bdx * cdy, cdxbdy = cdx * bdy;
++  const double cdxady = cdx * ady, adxcdy = adx * cdy;
++  const double adxbdy = adx * bdy, bdxady = bdx * ady;
++  const double alift = adx * adx + ady * ady;
++  const double blift = bdx * bdx + bdy * bdy;
++  const double clift = cdx * cdx + cdy * cdy;
++
++  const double det = alift * (bdxcdy - cdxbdy) + blift * (cdxady - adxcdy)
++                     + clift * (adxbdy - bdxady);
++  const double permanent = (std::abs(bdxcdy) + std::abs(cdxbdy)) * alift
++                           + (std::abs(cdxady) + std::abs(adxcdy)) * blift
++                           + (std::abs(adxbdy) + std::abs(bdxady)) * clift;
++  const double bound = THE_INCIRCLE_BOUND * permanent;
++  if (det > bound)
++  {
++    return 1;
++  }
++  if (-det > bound)
++  {
++    return -1;
++  }
++
++  const Expansion eadx = difference(ax, dx), eady = difference(ay, dy);
++  const Expansion ebdx = difference(bx, dx), ebdy = difference(by, dy);
++  const Expansion ecdx = difference(cx, dx), ecdy = difference(cy, dy);
++  const Expansion ealift =
++    sumExpansions(multiplyExpansions(eadx, eadx), multiplyExpansions(eady, eady));
++  const Expansion eblift =
++    sumExpansions(multiplyExpansions(ebdx, ebdx), multiplyExpansions(ebdy, ebdy));
++  const Expansion eclift =
++    sumExpansions(multiplyExpansions(ecdx, ecdx), multiplyExpansions(ecdy, ecdy));
++  const Expansion a = multiplyExpansions(ealift, crossExact(ebdx, ebdy, ecdx, ecdy));
++  const Expansion b = multiplyExpansions(eblift, crossExact(ecdx, ecdy, eadx, eady));
++  const Expansion c = multiplyExpansions(eclift, crossExact(eadx, eady, ebdx, ebdy));
++  return expansionSign(sumExpansions(sumExpansions(a, b), c));
++}
++} // namespace
++
+ static Unsigned28 s14sqr(const Signed14& s)
+ {
+   return (Unsigned28)((Signed29)s * s);
+@@ -104,6 +324,7 @@ struct CDelaBella : IDelaBella
+   {
+     Unsigned28 z;
+     Face*      sew;
++    int        step; // the step of Triangulate() whose silhouette it is on
+ 
+     Vect operator-(const Vert& v) const // diff
+     {
+@@ -161,19 +382,22 @@ struct CDelaBella : IDelaBella
+   struct Face : DelaBella_Triangle
+   {
+     Norm n;
++    bool alive; // on the hull, not in the cache
+ 
+     static Face* Alloc(Face** from)
+     {
+-      Face* f = *from;
+-      *from   = (Face*)f->next;
+-      f->next = nullptr;
++      Face* f  = *from;
++      *from    = (Face*)f->next;
++      f->next  = nullptr;
++      f->alive = true;
+       return f;
+     }
+ 
+     void Free(Face** to)
+     {
+-      next = *to;
+-      *to  = this;
++      next  = *to;
++      *to   = this;
++      alive = false;
+     }
+ 
+     Face* Next(const Vert* p) const
+@@ -195,15 +419,20 @@ struct CDelaBella : IDelaBella
+       return nullptr;
+     }
+ 
+-    Signed62 dot(const Vert& p) const // dot
++    // The sign of the dot product of the face's normal with p - v[0], the
++    // points lifted onto the paraboloid: exact (incircleSign).
++    Signed62 dot(const Vert& p) const
+     {
+-      Vect d = p - *(Vert*)v[0];
+-      return (Signed62)n.x * d.x + (Signed62)n.y * d.y + (Signed62)n.z * d.z;
++      return (Signed62)incircleSign(v[1]->x, v[1]->y, v[2]->x, v[2]->y, p.x, p.y, v[0]->x, v[0]->y);
+     }
+ 
+-    Norm cross() const // cross of diffs
++    // The normal of the face (cross of diffs), its z the exact sign
++    // (orientSign).
++    Norm cross() const
+     {
+-      return (*(Vert*)v[1] - *(Vert*)v[0]).cross(*(Vert*)v[2] - *(Vert*)v[0]);
++      Norm aNorm = (*(Vert*)v[1] - *(Vert*)v[0]).cross(*(Vert*)v[2] - *(Vert*)v[0]);
++      aNorm.z    = (Signed31)orientSign(v[0]->x, v[0]->y, v[1]->x, v[1]->y, v[2]->x, v[2]->y);
++      return aNorm;
+     }
+   };
+ 
+@@ -224,6 +453,20 @@ struct CDelaBella : IDelaBella
+ 
+   virtual ~CDelaBella() = default;
+ 
++  // Triangulate()'s end when its hull came out inconsistent: no
++  // triangles, 0 as when out of memory.
++  int Inconsistent(const char* theWhat)
++  {
++    if (errlog_proc)
++    {
++      errlog_proc(errlog_file, "[ERR] inconsistent hull: %s\n", theWhat);
++    }
++    first_dela_face = nullptr;
++    first_hull_face = nullptr;
++    first_hull_vert = nullptr;
++    return 0;
++  }
++
+   int Triangulate()
+   {
+     int points = inp_verts;
+@@ -303,7 +546,7 @@ struct CDelaBella : IDelaBella
+         free(face_alloc);
+       }
+       max_faces  = 0;
+-      face_alloc = (Face*)malloc(sizeof(Face) * hull_faces);
++      face_alloc = (Face*)calloc(hull_faces, sizeof(Face));
+       if (face_alloc)
+       {
+         max_faces = hull_faces;
+@@ -320,8 +563,10 @@ struct CDelaBella : IDelaBella
+ 
+     for (int i = 1; i < hull_faces; i++)
+     {
+-      face_alloc[i - 1].next = face_alloc + i;
++      face_alloc[i - 1].next  = face_alloc + i;
++      face_alloc[i - 1].alive = false;
+     }
++    face_alloc[hull_faces - 1].alive = false;
+     face_alloc[hull_faces - 1].next = nullptr;
+ 
+     Face* cache = face_alloc;
+@@ -378,6 +623,13 @@ struct CDelaBella : IDelaBella
+                  || (f.n.y < 0 && TvL.y < 0) || (f.n.z > 0 && TvL.z > 0)
+                  || (f.n.z < 0 && TvL.z < 0);
+ 
++      if (f.n.z != 0)
++      {
++        // a plane that is not upright: the signs in the plane, exact
++        lvh = orientSign(last->x, last->y, v->x, v->y, head->x, head->y) == f.n.z;
++        tvl = orientSign(tail->x, tail->y, v->x, v->y, last->x, last->y) == f.n.z;
++      }
++
+       if (lvh && !tvl) // insert new f on top of e(2,0) = (last,head)
+       {
+         // f.v[0] = head;
+@@ -400,8 +652,7 @@ struct CDelaBella : IDelaBella
+       }
+       else
+       {
+-        // wtf? dilithium crystals are fucked.
+-        assert(0);
++        return Inconsistent("a cocircular point on neither side");
+       }
+ 
+       last = v;
+@@ -482,8 +733,9 @@ struct CDelaBella : IDelaBella
+         }
+ 
+         // retract last point it will be added as a cone's top later
+-        last = head;
+-        head = (Vert*)head->next;
++        // (unlinked from the contour: tail -> last -> head)
++        tail->next = head;
++        last       = tail;
+         i--;
+       }
+     }
+@@ -660,18 +912,23 @@ struct CDelaBella : IDelaBella
+ 
+       // 1. FIND FIRST VISIBLE FACE
+       //    simply iterate around last vertex using last added triangle adjecency info
++      //    (each face once: 2 * i - 4 faces are on the hull)
++      int around = 0;
+       while (_f->dot(*_q) <= 0)
+       {
+         _f = _f->Next(_p);
+-        if (_f == hull)
++        if (_f == hull || _f == nullptr || ++around > 2 * i - 4)
+         {
+           // if no visible face can be located at last vertex,
+-          // let's run through all faces (approximately last to first),
++          // let's run through all faces (last to first),
+           // yes this is emergency fallback and should not ever happen.
+-          _f = face_alloc + 2 * i - 4 - 1;
+-          while (_f->dot(*_q) <= 0)
++          _f = face_alloc + hull_faces - 1;
++          while (!_f->alive || _f->dot(*_q) <= 0)
+           {
+-            assert(_f != face_alloc); // no face is visible? you must be kidding!
++            if (_f == face_alloc)
++            {
++              return Inconsistent("no face sees a point");
++            }
+             _f--;
+           }
+         }
+@@ -681,6 +938,11 @@ struct CDelaBella : IDelaBella
+       //    (we also build silhouette (vertex loop) between visible & invisible faces)
+ 
+       // push first visible face onto stack (of visible faces)
++      // (counting the faces deleted and the sides added: a disk of faces
++      // has two sides more, one on each edge of its silhouette)
++      int   deleted = 0;
++      int   added   = 0;
++      Face* added_last = nullptr;
+       Face* stack = _f;
+       _f->next    = _f; // old trick to use list pointers as 'on-stack' markers
+       while (stack)
+@@ -700,6 +962,7 @@ struct CDelaBella : IDelaBella
+ 
+         // delete visible face
+         _f->Free(&cache);
++        ++deleted;
+ 
+         // check all 3 neighbors
+         for (int e = 0; e < 3; e++)
+@@ -718,10 +981,19 @@ struct CDelaBella : IDelaBella
+               Vert* a = fv[ab[e][0]];
+               Vert* b = fv[ab[e][1]];
+ 
++              // one silhouette edge from each of its vertices
++              if (a->step == i)
++              {
++                return Inconsistent("the silhouette meets itself");
++              }
++              a->step = i;
++
+               Face* s = Face::Alloc(&cache);
+               s->v[0] = a;
+               s->v[1] = b;
+               s->v[2] = _q;
++              added_last = s;
++              ++added;
+ 
+               s->n    = s->cross();
+               s->f[2] = n;
+@@ -741,7 +1013,7 @@ struct CDelaBella : IDelaBella
+               }
+               else
+               {
+-                assert(0);
++                return Inconsistent("a neighbour not linked back");
+               }
+ 
+               // build silhouette needed for sewing sides in the second pass
+@@ -767,7 +1039,7 @@ struct CDelaBella : IDelaBella
+               }
+               else
+               {
+-                assert(0);
++                return Inconsistent("a neighbour not linked back");
+               }
+ 
+               // push neighbor face, it's visible and requires processing
+@@ -780,13 +1052,35 @@ struct CDelaBella : IDelaBella
+ 
+       // 3. SEW SIDES OF CONE BUILT ON SLIHOUTTE SEGMENTS
+ 
+-      hull = face_alloc + 2 * i - 4 + 1; // last added face
++      if (added != deleted + 2 || added_last == nullptr)
++      {
++        return Inconsistent("the faces a point sees are not a disk");
++      }
++
++      hull = added_last; // last added face
+ 
+       // last face must contain part of the silhouette
+       // (edge between its v[0] and v[1])
+       Vert* entry = (Vert*)hull->v[0];
+ 
+-      Vert* pr = entry;
++      // the silhouette is one loop through every side's first vertex
++      Vert* pr     = entry;
++      int   walked = 0;
++      do
++      {
++        Vert* nx = (Vert*)pr->next;
++        if (++walked > added || nx == nullptr || nx->step != i)
++        {
++          return Inconsistent("the silhouette is not one loop");
++        }
++        pr = nx;
++      } while (pr != entry);
++      if (walked != added)
++      {
++        return Inconsistent("the silhouette is not one loop");
++      }
++
++      pr = entry;
+       do
+       {
+         // sew pr<->nx
+@@ -870,7 +1164,7 @@ struct CDelaBella : IDelaBella
+         max_verts  = 0;
+       }
+ 
+-      vert_alloc = (Vert*)malloc(sizeof(Vert) * points);
++      vert_alloc = (Vert*)calloc(points, sizeof(Vert));
+       if (vert_alloc)
+       {
+         max_verts = points;
+@@ -920,6 +1214,9 @@ struct CDelaBella : IDelaBella
+       v->x    = (Signed14) * (const float*)((const char*)x + i * advance_bytes);
+       v->y    = (Signed14) * (const float*)((const char*)y + i * advance_bytes);
+       v->z    = s14sqr(v->x) + s14sqr(v->y);
++      v->next = nullptr;
++      v->sew  = nullptr;
++      v->step = -1;
+     }
+ 
+     out_verts = Triangulate();
+@@ -955,6 +1252,9 @@ struct CDelaBella : IDelaBella
+       v->x    = (Signed14) * (const double*)((const char*)x + i * advance_bytes);
+       v->y    = (Signed14) * (const double*)((const char*)y + i * advance_bytes);
+       v->z    = s14sqr(v->x) + s14sqr(v->y);
++      v->next = nullptr;
++      v->sew  = nullptr;
++      v->step = -1;
+     }
+ 
+     out_verts = Triangulate();

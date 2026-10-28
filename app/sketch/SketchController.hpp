@@ -7,6 +7,7 @@
 // (`sketch.*` commands); this class turns mouse and keyboard input into
 // those commands, one undo step per user action.
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -19,6 +20,7 @@
 #include <QObject>
 #include <QPointF>
 #include <QPointer>
+#include <QPolygonF>
 #include <QRectF>
 #include <QString>
 #include <QStringList>
@@ -159,6 +161,9 @@ private:
   // Logs the constraints a new one replaced (mitcad#287) and keeps them
   // for the hint at the end.
   void noteImplied(const QJsonObject& command, const QJsonObject& answer);
+  // Logs a scale of the sketch to its first dimension (mitcad#860) and
+  // keeps it for the hint at the end.
+  void noteScaled(const QJsonObject& answer);
 
   SketchController& m_c;
   int m_depth = 0;
@@ -326,6 +331,11 @@ public:
   OcctViewer& viewer() { return m_viewer; }
   const SketchOverlay& overlay() const { return *m_overlay; }
   QPointF toScreen(const V2& p) const;
+  // A point `height` above the sketch plane (along its normal; negative
+  // below), and the path of a body item out of the plane (mitcad#866), in
+  // the view.
+  QPointF toScreen(const V2& p, double height) const;
+  QPolygonF bodyPath(const BodyItem& item) const;
   // The sketch plane point under a view position.
   std::optional<V2> sketchAt(const QPointF& screen) const;
   // The unrounded inverse of toScreen, for dimension/editor layout.
@@ -428,8 +438,10 @@ public:
   int selectEntities(const QStringList& ids, bool reveal, bool fit = false);
   // Body edges and vertices in the sketch plane (mitcad#256, mitcad#258), for
   // the tool that picks or snaps to them: the model's plane_geometry query,
-  // read once per tool session and again after the document changed.
-  const BodyGeometry& bodyGeometry();
+  // read once per tool session and again after the document changed. With
+  // `outOfPlane` (the Dimension tool, mitcad#866) also the others, as what
+  // they project to: read once while the document stays as it is.
+  const BodyGeometry& bodyGeometry(bool outOfPlane = false);
   // As last read, for drawing (no query).
   const BodyGeometry& bodyGeometryShown() const { return m_body; }
   // Changes whenever the sketch is read again (a tool's view of it is
@@ -591,6 +603,29 @@ private:
   // for which sketch, document revision and tool session.
   BodyGeometry m_body;
   QString m_bodyKey;
+  // The items in the plane (per tool session) and out of it (mitcad#866:
+  // per document revision), and whether m_body has the latter.
+  std::vector<BodyItem> m_inPlaneItems;
+  std::vector<BodyItem> m_outOfPlaneItems;
+  QString m_outOfPlaneKey;
+  bool m_bodyOutOfPlane = false;
+  // Where the items out of the plane are in the view (mitcad#866), made
+  // again only when the items or the camera change.
+  struct BodyScreen {
+    QPolygonF line;
+    QRectF box;
+    QPointF center;
+  };
+  mutable std::vector<BodyScreen> m_bodyScreen;
+  mutable std::array<QPointF, 4> m_bodyScreenView{};
+  mutable int m_bodyScreenRevision = -1;
+  const std::vector<BodyScreen>& bodyScreens() const;
+  // entityAt()'s items out of the plane (mitcad#866): the points (vertices,
+  // edges seen end on, centres) or the edges within `reach` pixels where
+  // the view shows them that would beat `bestDistance` counted `tie`
+  // further, nearest first, the first in sight (OcctViewer::inSight).
+  void outOfPlaneAt(const QPointF& screen, bool points, double reach, double tie, QString& best,
+                    double& bestDistance) const;
   QString m_revision; // the document's, when the sketch was read
   int m_toolSession = 0;
   int m_modelRevision = 0;

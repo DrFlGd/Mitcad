@@ -5,6 +5,7 @@
 # check-all sources: core/model-api/src/drawing_annotations.rs core/model-api/src/annotations.rs app/view/AnnotationDialogs.cpp
 # check-all sources: core/model-api/src/drawing_tables.rs core/model-api/src/drawing_templates.rs app/print
 # check-all sources: core/dwg/src/write.rs
+# check-all sources: core/model-api/src/cut_sheets.rs app/browser/DocumentHost.hpp
 # Drawings kept in the design (mitcad#707) through the real UI, in the
 # Docked layout, on a 40 x 30 x 20 block with a 10 mm hole through it from
 # the top that mitcad-cli makes (Body1, F2.b0):
@@ -66,6 +67,9 @@
 #     balloon is broken; Undo brings them back.
 #   - File › Export Drawing twice: a new drawing, a note added to it by
 #     hand, then the same drawing written as it is, the note kept (mitcad#725).
+#   - A cut sheet (mitcad#853) on a plate and a disk mitcad-cli makes:
+#     Create Drawing's Kind Cut Sheet (600 x 300), Add Parts… with both
+#     bodies, Export… DXF: the outlines on CUT_OUTER, the disk a circle.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-drawings-test.sh [screenshot.png]
@@ -991,6 +995,61 @@ ui_expect_new "Exported $WORK/second.pdf: drawing" "the PDF written" 30
 grep -q "Drawing kept: D3" <(tail -n +$((UI_MARK + 1)) "$UI_LOG") && ui_fail "a new drawing on the second export"
 grep -aq "(BY HAND)" "$WORK/second.pdf" || ui_fail "the note added by hand is not in the second PDF"
 echo "ok   the note made by hand kept and written"
+
+echo "--- A cut sheet (mitcad#853): Create Drawing › Cut Sheet, two bodies, DXF"
+# A plate 100 x 60 (Body1) and a disk of 40 (Body2), 3 thick.
+PLATES="$WORK/plates.mitcad"
+cat > "$WORK/plates.json" << EOF
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 100, "height": 60},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "$R"}],
+    "extent": {"type": "distance", "distance": 3}, "operation": "new_body"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F3", "center": [150, 30], "diameter": 40},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F3", "region": "r{c1}"}],
+    "extent": {"type": "distance", "distance": 3}, "operation": "new_body"}}
+]
+EOF
+"$CLI" run "$WORK/plates.json" --save "$PLATES" > "$WORK/cli.log" 2>&1 ||
+  { cat "$WORK/cli.log"; ui_fail "mitcad-cli (the plates)"; }
+ui_stop_app
+ui_start_app --open "$PLATES" --no-native-dialogs
+ui_expect_log "plates.mitcad" "the plates opened"
+ui_mark
+ui_step "Create Drawing (search)"          ui_command "Create Drawing"
+ui_expect_new "Create Drawing dialog opened" "its dialog"
+ui_focus_dialog '^Create Drawing$'
+ui_step "Kind: Cut Sheet (Alt+K, End)"     ui_key alt+k End
+ui_step "OK: 600 x 300"                    ui_key Return
+ui_focus_main
+ui_expect_new "Create Drawing dialog: cut sheet 600 x 300" "a cut sheet of 600 x 300 mm asked for"
+ui_expect_new "Drawing created: D1 CutSheet1 in C0" "CutSheet1 in the root's folder"
+ui_expect_new "Drawing opened: D1 CutSheet1, sheet 1 of 1" "its sheet over the view"
+ui_expect_new "Drawing sheet drawn: 0 views" "no parts yet"
+ui_expect_new "Drawing Add Parts at" "Add Parts… on the bar"
+ui_mark
+settled "Drawing Add Parts"
+ui_step "Add Parts…"                       ui_click_logged "Drawing Add Parts"
+ui_expect_new "Cut sheet Add Parts dialog opened: 2 bodies" "its dialog lists both bodies"
+ui_focus_dialog '^Add Parts$'
+ui_step "both bodies (Ctrl+A), OK"         ui_key ctrl+a Return
+ui_focus_main
+ui_expect_new '"cmd":"add_cut_sheet_parts"' "the parts asked for"
+ui_expect_new "Drawing sheet drawn: 2 views" "two parts on the sheet"
+ui_expect_new "Drawing view 2 at" "the second part drawn"
+grep -q "Cut sheet warnings: part" <(tail -n +$((UI_MARK + 1)) "$UI_LOG") && ui_fail "the parts were placed overlapping or off the sheet"
+no_refusal
+ui_mark
+settled "Drawing Export"
+ui_step "Export…"                          ui_click_logged "Drawing Export"
+ui_step "DXF… (Down, Enter)"               ui_key Down Return
+ui_step "type the path, Enter"             ui_type_path "Export Cut Sheet" "$WORK/parts.dxf"
+ui_focus_main
+ui_expect_new "Exported $WORK/parts.dxf: cut sheet CutSheet1, 2 parts" "the DXF written" 30
+grep -q "CUT_OUTER" "$WORK/parts.dxf" || ui_fail "the DXF has no layer CUT_OUTER"
+grep -q "CIRCLE" "$WORK/parts.dxf" || ui_fail "the DXF has no circle (the disk)"
+echo "ok   the DXF has the parts' outlines"
 
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_finish "UI drawings test"

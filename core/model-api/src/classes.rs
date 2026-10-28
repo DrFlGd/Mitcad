@@ -307,6 +307,15 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     // A table as CSV (mitcad#804): the CSV is the command's text, the
     // application reads the file.
     ("import_table_csv", Model),
+    // Cut sheets (mitcad#853, `cut_sheets.rs`); the export writes a file.
+    ("add_cut_sheet", Model),
+    ("edit_cut_sheet", Model),
+    ("add_cut_sheet_parts", Model),
+    ("edit_cut_sheet_part", Model),
+    ("delete_cut_sheet_parts", Model),
+    ("export_cut_sheet", FileIo),
+    // Scale of a whole sketch (mitcad#860).
+    ("sketch.scale", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -472,6 +481,8 @@ const QUERIES: &[(&str, ApiClass)] = &[
     // A table as CSV (mitcad#804).
     ("table_csv", Model),
     ("table_csv_preview", Model),
+    // A cut sheet's parts and their outlines (mitcad#853).
+    ("cut_sheet", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

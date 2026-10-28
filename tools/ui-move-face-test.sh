@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands/MoveCommands.cpp app/commands/MoveFaceText.cpp app/commands/MoveFaceText.hpp
+# check-all sources: app/commands/MoveCommands.cpp app/commands/MoveFaceText.cpp app/commands/MoveFaceText.hpp app/commands/MoveDragMotion.cpp
 # check-all sources: app/MainWindowMoveFace.cpp app/framework/CommandPanel.cpp core/model/src/features/move_face.rs
 # check-all sources: geometry/src/move_faces.cpp tools/cli
 # MODIFY > Move Face (mitcad#531) through the real UI, on a 60 x 40 x 20

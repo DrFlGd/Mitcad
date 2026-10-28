@@ -14,6 +14,7 @@ namespace mitcad {
 class MaterialsPanel;
 class ProfilesPanel;
 class SlicerImportBar;
+struct SlicerImportResult;
 
 // My Library (mitcad#704): the user's own materials, printers and
 // processes, managed without a design. Tools › My Library… and My
@@ -27,7 +28,9 @@ class SlicerImportBar;
 // editor. In a project a place switch at the top, My library or This
 // project's library. Import from Slicer… beside it reads a slicer's
 // project or preset into the library (`import_print_profile` with
-// `into`), its line and Details… before it (SlicerImportBar, mitcad#829).
+// `into`), its line and Details… before it (SlicerImportBar, mitcad#829);
+// after an import the first item that came in shows on its tab,
+// selected.
 //
 // It works through a model of its own (LibraryItemsHost): the open
 // design does not change, and learns of the library's changes as of
@@ -59,6 +62,9 @@ private:
   // The place shown: `user` or `project`.
   QString place() const;
   void placeChosen();
+  // After an import: the tab of the first item that came in, with that
+  // item selected.
+  void showImported(const SlicerImportResult& result);
   void scheduleLogPlaces();
   void logPlaces();
 

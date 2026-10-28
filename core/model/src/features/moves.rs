@@ -81,6 +81,24 @@ pub enum MoveSpec<P = ParamId> {
     },
 }
 
+/// What a move's motion was worked out from (mitcad#838): a Rotate's axis
+/// and the points of Point to Point and Point to Position as the move
+/// resolved them, in the feature's component's coordinates (mm, a unit
+/// direction). A preview reports it (`motion`), so that a drag of the
+/// angle or the position moves the shown bodies about the same axis and
+/// from the same point as the exact result, without asking the model.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum MotionBasis {
+    /// Turns right-handed about the axis through `origin` along
+    /// `direction` by the angle.
+    Rotate { origin: Vec3, direction: Vec3 },
+    /// Moves by `to - from`.
+    PointToPoint { from: Vec3, to: Vec3 },
+    /// Moves by the position minus `point`.
+    PointToPosition { point: Vec3 },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MoveDef<P = ParamId> {
@@ -318,6 +336,11 @@ impl MoveSpec {
                 axis_occurrence,
             } => {
                 let axis = placed_axis(ctx, axis, axis_occurrence.as_ref())?;
+                // The axis the motion turns about, for a drag (mitcad#838).
+                ctx.move_basis = Some(MotionBasis::Rotate {
+                    origin: axis.origin,
+                    direction: axis.direction,
+                });
                 Transform::rotation(axis.origin, axis.direction, ctx.param(*angle)?)
                     .expect("a unit axis direction")
             }
@@ -329,6 +352,7 @@ impl MoveSpec {
             } => {
                 let from = placed_point(ctx, from, from_occurrence.as_ref())?;
                 let to = placed_point(ctx, to, to_occurrence.as_ref())?;
+                ctx.move_basis = Some(MotionBasis::PointToPoint { from, to });
                 Transform::translation(sub(to, from))
             }
             Self::PointToPosition {
@@ -339,6 +363,7 @@ impl MoveSpec {
                 point_occurrence,
             } => {
                 let point = placed_point(ctx, point, point_occurrence.as_ref())?;
+                ctx.move_basis = Some(MotionBasis::PointToPosition { point });
                 let position = [ctx.param(*x)?, ctx.param(*y)?, ctx.param(*z)?];
                 Transform::translation(sub(position, point))
             }

@@ -93,7 +93,7 @@ fn is_zero(value: &f64) -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddedImage {
-    /// `png`, `jpeg`, `bmp` or `webp`.
+    /// `png`, `jpeg`, `bmp`, `webp` or `heif`.
     pub format: String,
     /// In pixels.
     pub width: u32,

@@ -20,6 +20,15 @@
 #   - Component1:1's Z arrow dragged: its body follows, only placed
 #     elsewhere in the view (its drawn objects kept: "0 new, 1 placed"),
 #     and OK moves the component.
+#   - Pegs:1 (O2), a larger component with many curved faces (8 x 8 pegs),
+#     turned by Rotate's ring about the Z axis (the case of GitHub #43):
+#     its bodies follow the ring at once, only placed elsewhere, about the
+#     axis the model turns them about (the preview's `motion`); the exact
+#     preview of the last angle replaces them where the proxy drew them
+#     (within 0.000001 mm), and OK turns the component.
+#   - Pegs:1 moved by Point to Position's X arrow, a peg's top rim (its
+#     centre, where Pegs:1 places it) as its point: the same, from the
+#     point the model resolved. Point to Point has no value to drag.
 # Each drag's line is printed: inputs (snapped values), proxy updates,
 # exact previews while held, frames drawn and the time held.
 #
@@ -86,6 +95,43 @@ no_meshing() {
   echo "ok   $1: nothing meshed again (${line#*: })"
 }
 
+# exact_agrees label: the exact preview of the last value replaced the
+# provisional motion where the motion drew the first moved body.
+exact_agrees() {
+  local line apart
+  ui_expect_new "Drag proxy Move/Copy: the exact preview of " "$1: the exact preview replaces it" 30
+  line=$(new_line "Drag proxy Move/Copy: the exact preview of .* replaced it ")
+  [[ $line =~ ,\ ([0-9.]+)\ mm\ from\ the\ proxy$ ]] || ui_fail "$1: no distance from the proxy: $line"
+  apart=${BASH_REMATCH[1]}
+  awk -v d="$apart" 'BEGIN { exit !(d <= 0.000001) }' ||
+    ui_fail "$1: the exact preview draws the body $apart mm from where the proxy drew it"
+  echo "ok   $1: the exact preview where the proxy drew it ($apart mm apart)"
+}
+
+# only_placed label: a drawing of the drag kept every body's drawn objects
+# and only placed them elsewhere.
+only_placed() {
+  local line
+  ui_expect_new " placed" "$1: bodies only placed elsewhere" 20
+  line=$(new_line "Timing display: .*, 0 new, [0-9]+ placed")
+  [ -n "$line" ] || ui_fail "$1: the bodies were drawn anew: $(new_line "Timing display: ")"
+  echo "ok   $1: ${line#*: }"
+}
+
+# Pegs: one body with many curved faces, in the component Pegs: a plate
+# (Sketch F5, extruded 4 mm: F6.b0) with 8 x 8 pegs 8 mm across, 12 mm
+# apart (Sketch F7, extruded 30 mm and joined to the plate: F8). One body
+# keeps the browser short enough to stay unfolded, so the rows the test
+# clicks stay where they were logged. A circle takes two ids (its centre
+# point too), so the k-th circle's region is r{c(2k-1)}.
+PEG_CIRCLES="" PEG_PROFILES=""
+for ((i = 0; i < 8; i++)); do
+  for ((j = 0; j < 8; j++)); do
+    PEG_CIRCLES+="  {\"cmd\": \"sketch.add_circle\", \"sketch\": \"F7\", \"center\": [$((i * 12)), $((j * 12))], \"diameter\": 8},"
+    PEG_PROFILES+="${PEG_PROFILES:+, }{\"sketch\": \"F7\", \"region\": \"r{c$((2 * (i * 8 + j) + 1))}\"}"
+  done
+done
+
 cat > "$WORK/model.json" << EOF
 [
   {"cmd": "sketch.create"},
@@ -96,7 +142,18 @@ cat > "$WORK/model.json" << EOF
   {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [0, 0], "width": 30, "height": 20},
   {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F3", "region": "$R"}],
     "extent": {"type": "distance", "distance": 10}, "operation": "new_component"}},
-  {"cmd": "set_occurrence_transform", "occurrence": "Component1:1", "transform": {"translation": [60, 0, 0]}}
+  {"cmd": "set_occurrence_transform", "occurrence": "Component1:1", "transform": {"translation": [60, 0, 0]}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "create_component", "name": "Pegs", "transform": {"translation": [0, 120, 0]}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F5", "corner": [-8, -8], "width": 100, "height": 100},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F5", "region": "$R"}],
+    "extent": {"type": "distance", "distance": 4}, "operation": "new_body"}},
+  {"cmd": "sketch.create"},
+$PEG_CIRCLES
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [$PEG_PROFILES],
+    "extent": {"type": "distance", "distance": 30}, "operation": "join", "participants": ["F6.b0"]}},
+  {"cmd": "activate_component", "component": "Root"}
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
@@ -189,6 +246,71 @@ ui_focus_main
 ui_mark
 ui_step "OK (Enter)"                     ui_key Return
 ui_expect_new "Moved 1 components (" "OK moves Component1:1" 30
+ui_wait_idle
+
+echo "=== Pegs:1 turned by Rotate's ring"
+ui_mark
+ui_step "click Pegs:1"                   ui_click_logged "Browser Root/Pegs:1"
+ui_expect_new "Selected: 1 component" "Pegs:1 selected"
+ui_mark
+ui_step "right-click Pegs:1"             ui_click_logged "Browser Root/Pegs:1" 3
+ui_step "choose Move/Copy"               ui_menu_choose "Move/Copy"
+ui_expect_new "Panel Move/Copy choices: move_type=components" "moving the component"
+ui_wait_idle
+ui_step "Rotate"                         ui_choose "Panel Move/Copy input type" 2
+ui_expect_new "Move/Copy: Move Type = Rotate" "Rotate"
+ui_step "pick the Z axis"                ui_click_logged "Datum z"
+ui_expect_new "Move/Copy Axis: 1 axis [axis z]" "about the Z axis"
+ui_wait_idle
+ui_expect_new "Preview Move/Copy: ok" "previewed" 30
+ui_expect_log "Manipulator Move/Copy angle at " "the ring" > /dev/null
+ui_focus_main
+ui_mark
+held_drag "Manipulator Move/Copy angle" 70 40
+ui_expect_new "Manipulator Move/Copy angle dragged to " "released" 20
+drag_summary "Rotate's ring" angle 3
+ui_expect_new "Drag proxy Move/Copy: shown for angle " "the component turns with the ring"
+only_placed "Rotate's ring"
+ui_wait_idle
+exact_agrees "Rotate's ring"
+ui_focus_main
+ui_mark
+ui_step "OK (Enter)"                     ui_key Return
+ui_expect_new "Moved 1 components (Rotate)" "OK turns Pegs:1" 30
+ui_wait_idle
+
+echo "=== Pegs:1 moved by Point to Position's X arrow"
+ui_mark
+ui_step "click Pegs:1"                   ui_click_logged "Browser Root/Pegs:1"
+ui_expect_new "Selected: 1 component" "Pegs:1 selected"
+ui_mark
+ui_step "right-click Pegs:1"             ui_click_logged "Browser Root/Pegs:1" 3
+ui_step "choose Move/Copy"               ui_menu_choose "Move/Copy"
+ui_expect_new "Panel Move/Copy choices: move_type=components" "moving the component"
+ui_wait_idle
+ui_step "Point to Position"              ui_choose "Panel Move/Copy input type" 4
+ui_expect_new "Move/Copy: Move Type = Point to Position" "Point to Position"
+ui_step "the Point input"                ui_click_logged "Panel Move/Copy input point"
+ui_expect_new "Pick places:" "the places of the picks logged"
+ui_sync
+ui_step "pick a peg's top rim"          ui_click_pick "/E{F8:end(r{c"
+ui_expect_new "Move/Copy Point: 1 edge" "a peg's circle (its centre) as the point"
+ui_wait_idle
+ui_expect_new "Preview Move/Copy: ok" "previewed" 30
+ui_expect_log "Manipulator Move/Copy px at " "the X arrow" > /dev/null
+ui_focus_main
+ui_mark
+held_drag "Manipulator Move/Copy px" 120 0
+ui_expect_new "Manipulator Move/Copy px dragged to " "released" 20
+drag_summary "Point to Position's X arrow" px
+ui_expect_new "Drag proxy Move/Copy: shown for px " "the component follows the arrow"
+only_placed "Point to Position's X arrow"
+ui_wait_idle
+exact_agrees "Point to Position's X arrow"
+ui_focus_main
+ui_mark
+ui_step "OK (Enter)"                     ui_key Return
+ui_expect_new "Moved 1 components (Point to Position)" "OK moves Pegs:1" 30
 ui_wait_idle
 grep -q "faces that could not be meshed" "$UI_LOG" && ui_fail "faces failed to mesh"
 grep -qE "The document was read while a job computes it|OCCT view event failed" "$UI_LOG" &&

@@ -13,7 +13,7 @@ use serde_json::json;
 
 use mitcad_model::features::SketchPlane;
 use mitcad_model::ids::FeatureUid;
-use mitcad_model::store::testing::{set_time, store_files};
+use mitcad_model::store::testing::{mesh_files, set_time, store_files};
 use mitcad_model::store::{self, ResultStore};
 use mitcad_model::test_support::{Block, block, corner, def, extrude, num};
 use mitcad_model::testing::MockKernel;
@@ -386,4 +386,159 @@ fn stored_tapped_holes_keep_the_walls_their_threads_took() {
     assert!(opened.stats().restored.contains(&uid));
     assert_eq!(opened.kernel().count("thread"), 0);
     assert_eq!(opened.query(r#"{"query": "threads"}"#).unwrap(), threads);
+}
+
+/// The project read again with a store, by a kernel that keeps the shapes
+/// of restored results packed until something reads them (mitcad#858).
+fn open_lazy(json: &str, store: Option<ResultStore>) -> Document<MockKernel> {
+    let kernel = MockKernel::default();
+    kernel.lazy.set(true);
+    let mut doc = Document::from_json(json, kernel).unwrap();
+    doc.set_result_store(store);
+    doc.recompute();
+    doc
+}
+
+/// Whether the result of `uid` in the last recompute still has its
+/// bodies' shapes packed.
+fn packed(doc: &Document<MockKernel>, uid: FeatureUid) -> bool {
+    let output = doc
+        .last_result()
+        .result(uid)
+        .unwrap()
+        .output
+        .as_ref()
+        .unwrap();
+    !output.changes.is_unpacked()
+}
+
+#[test]
+fn a_state_replaced_before_anything_reads_it_is_not_unpacked() {
+    let folder = Folder::new();
+    let mut p = part();
+    p.b.doc.set_result_store(Some(folder.store()));
+    let report = p.b.doc.persist_results(Duration::ZERO);
+    let json = p.b.doc.to_json();
+    let opened = open_lazy(&json, Some(folder.store()));
+    assert_eq!(opened.stats().restored, vec![p.b.extrude, p.boss, p.fillet]);
+    // The block's state and the boss's are replaced by restored results
+    // before anything reads them (the boss's sketch is on the XY plane and
+    // projects nothing): never unpacked; the fillet's is the body's.
+    assert!(packed(&opened, p.b.extrude));
+    assert!(packed(&opened, p.boss));
+    assert!(!packed(&opened, p.fillet));
+    // Only the tools and the body were read: the bodies are the same.
+    assert!(opened.kernel().count("shape_from_bytes") < report.shapes);
+    assert_eq!(histories(&opened), histories(&p.b.doc));
+    assert_eq!(opened.versions(), p.b.doc.versions());
+    // The timeline's history unpacks a state when something reads it.
+    let before = |doc: &Document<MockKernel>| {
+        doc.body_before(p.fillet, p.b.body)
+            .map(|shape| shape.history.clone())
+    };
+    assert_eq!(before(&opened), before(&p.b.doc));
+    assert!(!packed(&opened, p.boss));
+    assert!(packed(&opened, p.b.extrude));
+
+    // The command's answer counts what stayed packed.
+    let mut command = Document::from_json(&json, MockKernel::default()).unwrap();
+    command.kernel().lazy.set(true);
+    command.set_result_store(Some(folder.store()));
+    let answer: serde_json::Value =
+        serde_json::from_str(&command.command(r#"{"cmd": "recompute"}"#).unwrap()).unwrap();
+    assert_eq!(answer["restored"], 3);
+    assert_eq!(answer["restored_packed"], 2);
+    // Without the lazy kernel, nothing stays packed.
+    let whole = open(&json, Some(folder.store()));
+    assert!(!packed(&whole, p.b.extrude));
+    assert_eq!(whole.kernel().count("shape_from_bytes"), report.shapes);
+}
+
+#[test]
+fn an_evaluation_reads_the_restored_shapes_unpacked() {
+    let folder = Folder::new();
+    let mut p = part();
+    p.b.doc.set_result_store(Some(folder.store()));
+    p.b.doc.persist_results(Duration::ZERO);
+    let mut opened = open_lazy(&p.b.doc.to_json(), Some(folder.store()));
+    // Another fillet radius: the block and the boss come from the memory
+    // cache still packed, and the fillet, evaluated, reads the boss's body
+    // unpacked; the block's state is never read.
+    opened.set_parameter("d7", 3.0).unwrap();
+    p.b.doc.set_parameter("d7", 3.0).unwrap();
+    assert_eq!(opened.stats().evaluated, vec![p.fillet]);
+    assert!(!packed(&opened, p.boss));
+    assert!(packed(&opened, p.b.extrude));
+    assert_eq!(histories(&opened), histories(&p.b.doc));
+    // And a change before them evaluates from the start, as without.
+    opened.set_parameter("d6", 35.0).unwrap();
+    p.b.doc.set_parameter("d6", 35.0).unwrap();
+    assert_eq!(histories(&opened), histories(&p.b.doc));
+}
+
+#[test]
+fn display_meshes_are_kept_for_the_body_s_shape() {
+    let folder = Folder::new();
+    let mut p = part();
+    p.b.doc.set_result_store(Some(folder.store()));
+    p.b.doc.persist_results(Duration::ZERO);
+    let json = p.b.doc.to_json();
+    let store = folder.store();
+    let options = "final deviation=0.01";
+    let version = p.b.doc.body_version(p.b.body).unwrap();
+    let shape = p.b.doc.body_shape(p.b.body).unwrap().clone();
+    let written = store
+        .write_display_mesh(p.b.doc.kernel(), version, options, &shape)
+        .unwrap();
+    let meshes = mesh_files(&folder.0);
+    assert_eq!(meshes.len(), 1);
+    assert_eq!(meshes[0].1, written);
+
+    // Opened again: the body's shape has the same version and takes them.
+    let opened = open_lazy(&json, Some(folder.store()));
+    assert_eq!(opened.body_version(p.b.body), Some(version));
+    let body = opened.body_shape(p.b.body).unwrap();
+    let hits = store::stats().mesh_hits;
+    assert_eq!(
+        store.restore_display_mesh(opened.kernel(), version, options, body),
+        Some(body.faces.len())
+    );
+    assert!(store::stats().mesh_hits > hits);
+    // Other options or another build find none.
+    assert_eq!(
+        store.restore_display_mesh(opened.kernel(), version, "other", body),
+        None
+    );
+    let other = ResultStore::new(&folder.0, "another build");
+    assert_eq!(
+        other.restore_display_mesh(opened.kernel(), version, options, body),
+        None
+    );
+    // A changed body has another version, which has none.
+    let mut changed = open(&json, Some(folder.store()));
+    changed.set_parameter("d7", 3.0).unwrap();
+    let now = changed.body_version(p.b.body).unwrap();
+    assert_ne!(now, version);
+    let body = changed.body_shape(p.b.body).unwrap();
+    assert_eq!(
+        store.restore_display_mesh(changed.kernel(), now, options, body),
+        None
+    );
+    // Meshes of another shape under a version write nothing.
+    let block = p.b.doc.body_before(p.boss, p.b.body).unwrap().clone();
+    store
+        .write_display_mesh(p.b.doc.kernel(), now, options, &block)
+        .unwrap();
+    assert_eq!(
+        store.restore_display_mesh(changed.kernel(), now, options, body),
+        None
+    );
+
+    // The store's size, its clean-up and Clear count them.
+    let usage = store::usage(&folder.0, BUILD);
+    assert_eq!((usage.meshes, usage.entries.len()), (2, 3));
+    assert_eq!(usage.files, 5);
+    let report = store::gc(&folder.0, 1);
+    assert_eq!(report.removed, 5);
+    assert!(folder.files().is_empty());
 }

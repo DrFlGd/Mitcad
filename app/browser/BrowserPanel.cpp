@@ -8,6 +8,9 @@
 #include <vector>
 
 #include <QApplication>
+#include <QCursor>
+#include <QFont>
+#include <QFontMetrics>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QHelpEvent>
@@ -60,6 +63,41 @@ constexpr int kRadioRole = Qt::UserRole + 2;
 // A feature row whose result is in other components than its sketch
 // (mitcad#177): their names.
 constexpr int kLinkedRole = Qt::UserRole + 3;
+// A row whose item follows expressions (mitcad#862): how many of its
+// properties do, shown as the fx badge after its name (`fx 3`).
+constexpr int kBindingsRole = Qt::UserRole + 4;
+
+// The fx badge's font and text (mitcad#862).
+QFont bindingsFont(const QFont& font) {
+  QFont badge = font;
+  badge.setPointSizeF(std::max(6.0, font.pointSizeF() > 0 ? font.pointSizeF() * 0.85 : 8.0));
+  badge.setWeight(QFont::DemiBold);
+  badge.setItalic(false);
+  return badge;
+}
+// The fx badge's colours (mitcad#862 review): dark text on a solid light
+// fill (about 6.5:1), light text on a solid dark fill in a dark theme
+// (about 9:1); opaque, so that a selected row's band does not thin them.
+struct BindingsColors {
+  QColor text;
+  QColor fill;
+};
+BindingsColors bindingsColors(const QPalette& palette) {
+  if (palette.color(QPalette::Base).lightness() < 128) {
+    return {QColor(0xd6, 0xe4, 0xff), QColor(0x1e, 0x3a, 0x66)};
+  }
+  return {QColor(0x17, 0x4e, 0xa6), QColor(0xdc, 0xe8, 0xfb)};
+}
+QString bindingsText(int count) { return QStringLiteral("fx %1").arg(count); }
+int bindingsWidth(const QFont& font, int count) {
+  return QFontMetrics(bindingsFont(font)).horizontalAdvance(bindingsText(count)) + 10;
+}
+// The light bulb's tooltip of a row that follows a Show When condition and
+// of a folder that holds such rows (mitcad#863), in place of Hide / Show.
+constexpr int kEyeTipRole = Qt::UserRole + 8;
+// A row that follows a Show When condition itself (mitcad#863): its bulb
+// has the small fx badge; a folder's never has.
+constexpr int kEyeBoundRole = Qt::UserRole + 9;
 // The space between a light bulb and the icon, and between the name and
 // the radio button.
 constexpr int kGap = 4;
@@ -81,9 +119,24 @@ class EyeIconEngine : public QIconEngine {
 public:
   EyeIconEngine(QIcon eye, QIcon icon) : m_eye(std::move(eye)), m_icon(std::move(icon)) {}
 
+  // The bulb of a row that follows a Show When condition (mitcad#863): the
+  // whole plain bulb (open or closed eye) with a small fx badge in its lower
+  // right corner, outlined in the accent colour as the row's fx badge
+  // (mitcad#862), on the view's base colour, with darker text.
+  void setBadge(const QColor& accent, const QColor& base, const QColor& text) {
+    m_badge = true;
+    m_accent = accent;
+    m_base = base;
+    m_text = text;
+  }
+
   void paint(QPainter* painter, const QRect& rect, QIcon::Mode mode, QIcon::State state) override {
     const int side = rect.height();
-    m_eye.paint(painter, QRect(rect.left(), rect.top(), side, side), Qt::AlignCenter, mode, QIcon::Off);
+    const QRect eye(rect.left(), rect.top(), side, side);
+    m_eye.paint(painter, eye, Qt::AlignCenter, mode, QIcon::Off);
+    if (m_badge) {
+      paintBadge(painter, eye);
+    }
     m_icon.paint(painter, QRect(rect.right() + 1 - side, rect.top(), side, side), Qt::AlignCenter, mode,
                  state);
   }
@@ -96,11 +149,49 @@ public:
     return pixmap;
   }
 
-  QIconEngine* clone() const override { return new EyeIconEngine(m_eye, m_icon); }
+  QIconEngine* clone() const override {
+    auto* copy = new EyeIconEngine(m_eye, m_icon);
+    if (m_badge) {
+      copy->setBadge(m_accent, m_base, m_text);
+    }
+    return copy;
+  }
 
 private:
+  // The badge in the eye's lower right corner, reaching a little into the
+  // gap before the row's icon, so that it covers only the eye's corner.
+  void paintBadge(QPainter* painter, const QRect& eye) const {
+    const int height = std::max(7, eye.height() / 2);
+    const int width = std::max(10, eye.width() * 3 / 4);
+    const QRectF badge(eye.right() + 1 + kGap / 2 - width, eye.bottom() + 1 - height, width, height);
+    const QRectF pill = badge.adjusted(0.5, 0.5, -0.5, -0.5);
+    const qreal radius = pill.height() / 2;
+    QColor tint = m_accent;
+    tint.setAlphaF(0.14f);
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(m_base); // opaque: the eye does not show through
+    painter->drawRoundedRect(pill, radius, radius);
+    painter->setPen(QPen(m_accent, 1.0));
+    painter->setBrush(tint);
+    painter->drawRoundedRect(pill, radius, radius);
+    QFont font = painter->font();
+    font.setPixelSize(std::max(6, height - 2));
+    font.setBold(true);
+    font.setItalic(true);
+    painter->setFont(font);
+    painter->setPen(m_text);
+    painter->drawText(badge, Qt::AlignCenter, QStringLiteral("fx"));
+    painter->restore();
+  }
+
   QIcon m_eye;
   QIcon m_icon;
+  bool m_badge = false;
+  QColor m_accent;
+  QColor m_base;
+  QColor m_text;
 };
 
 // The icon of a feature row whose result is in another component than its
@@ -142,6 +233,7 @@ public:
     QRect name;  // the name's text as drawn
     QRect eye;   // the light bulb (empty without one)
     QRect radio; // the radio button (empty without one)
+    QRect fx;    // the fx badge of a bound row (mitcad#862; empty without one)
   };
 
   using TreeItemDelegate::TreeItemDelegate;
@@ -173,12 +265,30 @@ public:
           .paint(painter, at.radio, Qt::AlignCenter,
                  opt.state & QStyle::State_Selected ? QIcon::Selected : QIcon::Normal);
     }
+    // The fx badge (mitcad#862): a solid pill with the count of the
+    // properties that follow expressions.
+    if (!editing(index) && !at.fx.isEmpty()) {
+      const BindingsColors colors = bindingsColors(opt.palette);
+      painter->save();
+      painter->setRenderHint(QPainter::Antialiasing);
+      painter->setPen(QPen(colors.text, 1.0));
+      painter->setBrush(colors.fill);
+      const QRectF pill = QRectF(at.fx).adjusted(0.5, 0.5, -0.5, -0.5);
+      painter->drawRoundedRect(pill, pill.height() / 2, pill.height() / 2);
+      painter->setFont(bindingsFont(opt.font));
+      painter->setPen(colors.text);
+      painter->drawText(at.fx, Qt::AlignCenter, bindingsText(index.data(kBindingsRole).toInt()));
+      painter->restore();
+    }
   }
 
   QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
     QSize size = QStyledItemDelegate::sizeHint(option, index);
     if (index.data(kRadioRole).isValid()) {
       size.rwidth() += kGap + option.decorationSize.height();
+    }
+    if (const int count = index.data(kBindingsRole).toInt(); count > 0) {
+      size.rwidth() += kGap + bindingsWidth(option.font, count);
     }
     return size;
   }
@@ -189,7 +299,11 @@ public:
       const Parts at = parts(option, index);
       QString tip;
       if (at.eye.contains(event->pos())) {
-        tip = index.data(kEyeRole).toBool() ? BrowserPanel::tr("Hide") : BrowserPanel::tr("Show");
+        // A conditioned row's bulb says what a click does to it (mitcad#863).
+        tip = index.data(kEyeTipRole).toString();
+        if (tip.isEmpty()) {
+          tip = index.data(kEyeRole).toBool() ? BrowserPanel::tr("Hide") : BrowserPanel::tr("Show");
+        }
       } else if (at.radio.contains(event->pos())) {
         tip = BrowserPanel::tr("Activate");
       }
@@ -215,8 +329,15 @@ protected:
     const QVariant eye = index.data(kEyeRole);
     if (eye.isValid()) {
       const int side = option->decorationSize.height();
-      option->icon = QIcon(new EyeIconEngine(
-          themeIcon(eye.toBool() ? QStringLiteral("eye") : QStringLiteral("eye-off")), option->icon));
+      auto* engine = new EyeIconEngine(
+          themeIcon(eye.toBool() ? QStringLiteral("eye") : QStringLiteral("eye-off")), option->icon);
+      // A row that follows a condition: the fx corner badge (mitcad#863).
+      if (index.data(kEyeBoundRole).toBool()) {
+        const QColor accent = accentColor(option->palette);
+        const QColor base = option->palette.color(QPalette::Base);
+        engine->setBadge(accent, base, base.lightness() > 128 ? accent.darker(160) : accent.lighter(160));
+      }
+      option->icon = QIcon(engine);
       option->decorationSize = QSize(2 * side + kGap, side);
       option->features |= QStyleOptionViewItem::HasDecoration;
     }
@@ -241,7 +362,9 @@ private:
     if (index.data(kEyeRole).isValid()) {
       parts.eye = QRect(decoration.left(), opt.rect.top(), side + kGap / 2, opt.rect.height());
     }
-    const int room = qMax(0, text.width() - 2 * margin - (radio ? kGap + side : 0));
+    const int bound = index.data(kBindingsRole).toInt();
+    const int badge = bound > 0 ? bindingsWidth(opt.font, bound) : 0;
+    const int room = qMax(0, text.width() - 2 * margin - (radio ? kGap + side : 0) - (badge > 0 ? kGap + badge : 0));
     if (opt.fontMetrics.horizontalAdvance(opt.text) > room) {
       opt.text = opt.fontMetrics.elidedText(opt.text, Qt::ElideRight, room);
     }
@@ -250,6 +373,11 @@ private:
     if (radio) {
       parts.radio = QRect(parts.name.right() + 1 + kGap, opt.rect.top() + (opt.rect.height() - side) / 2,
                           side, side);
+    }
+    if (badge > 0) {
+      const int height = std::min(opt.rect.height() - 4, QFontMetrics(bindingsFont(opt.font)).height() + 3);
+      const int left = (radio ? parts.radio.right() : parts.name.right()) + 1 + kGap;
+      parts.fx = QRect(left, opt.rect.top() + (opt.rect.height() - height) / 2, badge, height);
     }
     return parts;
   }
@@ -597,7 +725,10 @@ public:
       option.state |= QStyle::State_Selected; // its name in semibold is wider
     }
     const BrowserDelegate::Parts parts = m_delegate->parts(option, index);
-    const int end = std::max(parts.name.right(), parts.radio.isEmpty() ? parts.name.right() : parts.radio.right());
+    int end = std::max(parts.name.right(), parts.radio.isEmpty() ? parts.name.right() : parts.radio.right());
+    if (!parts.fx.isEmpty()) {
+      end = std::max(end, parts.fx.right()); // the fx badge (mitcad#862)
+    }
     const int left = cell.left() - indentation() + 2;
     const int right = std::min(end + kBoxPadding, viewport()->width() - 1);
     return QRect(QPoint(left, cell.top() + 2), QPoint(std::max(left, right), cell.bottom() - 2));
@@ -609,6 +740,22 @@ protected:
       paintRowBox(painter, option, index);
     }
     QTreeWidget::drawRow(painter, option, index);
+  }
+
+  // A row's fx badge has its bindings card (mitcad#862,
+  // BrowserPanel::hoverBindings), not the row's tooltip.
+  bool viewportEvent(QEvent* event) override {
+    if (event->type() == QEvent::ToolTip) {
+      const QPoint at = static_cast<QHelpEvent*>(event)->pos();
+      if (QTreeWidgetItem* item = itemAt(at); item != nullptr) {
+        const BrowserDelegate::Parts parts = partsOf(item);
+        if (!parts.fx.isEmpty() && parts.fx.contains(at)) {
+          QToolTip::hideText();
+          return true;
+        }
+      }
+    }
+    return QTreeWidget::viewportEvent(event);
   }
 
   void mousePressEvent(QMouseEvent* event) override {
@@ -761,8 +908,17 @@ private:
       emit m_panel.activateClicked(node);
       return true;
     }
+    // The fx badge pins the row's bindings card (mitcad#862).
+    if (!parts.fx.isEmpty() && parts.fx.contains(at)) {
+      qDebug().noquote() << QStringLiteral("Browser fx click %1").arg(node.path);
+      emit m_panel.bindingsRequested(node, globalRect(parts.fx), true);
+      return true;
+    }
     return false;
   }
+
+  // A rectangle of the viewport in global coordinates.
+  QRect globalRect(const QRect& rect) const { return QRect(viewport()->mapToGlobal(rect.topLeft()), rect.size()); }
 
   BrowserPanel& m_panel;
   BrowserDelegate* m_delegate;
@@ -870,6 +1026,45 @@ BrowserPanel::BrowserPanel(QWidget* parent) : QWidget(parent), m_tree(new Browse
   // (followed without a button: the joint rows' preview, mitcad#523).
   m_tree->viewport()->installEventFilter(this);
   m_tree->viewport()->setMouseTracking(true);
+  // The pointer resting on an fx badge shows its card (mitcad#862).
+  m_bindingsTimer = new QTimer(this);
+  m_bindingsTimer->setSingleShot(true);
+  m_bindingsTimer->setInterval(450);
+  connect(m_bindingsTimer, &QTimer::timeout, this, &BrowserPanel::bindingsRested);
+  TestSync::watch(m_bindingsTimer); // UI tests wait for the card
+}
+
+void BrowserPanel::hoverBindings(QTreeWidgetItem* item, const QPoint& at) {
+  QString key;
+  if (item != nullptr) {
+    const BrowserDelegate::Parts parts = m_tree->partsOf(item);
+    if (!parts.fx.isEmpty() && parts.fx.contains(at)) {
+      key = keyOf(nodeOf(item));
+    }
+  }
+  if (key == m_bindingsHover) {
+    return;
+  }
+  m_bindingsHover = key;
+  if (key.isEmpty()) {
+    m_bindingsTimer->stop();
+  } else {
+    m_bindingsTimer->start();
+  }
+}
+
+void BrowserPanel::bindingsRested() {
+  const QPoint at = m_tree->viewport()->mapFromGlobal(QCursor::pos());
+  QTreeWidgetItem* item = m_tree->itemAt(at);
+  if (item == nullptr || m_bindingsHover.isEmpty() || keyOf(nodeOf(item)) != m_bindingsHover) {
+    return;
+  }
+  const BrowserDelegate::Parts parts = m_tree->partsOf(item);
+  if (parts.fx.isEmpty() || !parts.fx.contains(at)) {
+    return;
+  }
+  emit bindingsRequested(nodeOf(item), QRect(m_tree->viewport()->mapToGlobal(parts.fx.topLeft()), parts.fx.size()),
+                         false);
 }
 
 void BrowserPanel::setRowsBackground(bool rows) {
@@ -978,11 +1173,18 @@ bool BrowserPanel::eventFilter(QObject* watched, QEvent* event) {
         m_tree->setHover(m_tree->indexAt(at));
       }
       hoverJoint(m_tree->itemAt(at));
+      hoverBindings(m_tree->itemAt(at), at); // mitcad#862
       break;
     }
     case QEvent::Leave:
       m_tree->setHover(QModelIndex());
       hoverJoint(nullptr);
+      hoverBindings(nullptr, QPoint());
+      break;
+    case QEvent::MouseButtonPress:
+      // A click on the badge pins the card instead (mitcad#862).
+      m_bindingsTimer->stop();
+      m_bindingsHover.clear();
       break;
     default:
       break;
@@ -1026,7 +1228,10 @@ QVector<BrowserPanel::PresentationRow> BrowserPanel::presentationRows() const {
                                   const QString& parent) -> void {
     const BrowserNode node = nodeOf(item);
     const QString key = keyOf(node);
-    rows.append({key, parent, node, item->toolTip(0), item->icon(0), item->isExpanded(),
+    // A bound row's icon keeps the fx mark there (mitcad#862: the Qt rows
+    // draw the fx badge after the name).
+    const QIcon icon = item->data(kName, kBindingsRole).toInt() > 0 ? boundIcon(item->icon(0)) : item->icon(0);
+    rows.append({key, parent, node, item->toolTip(0), icon, item->isExpanded(),
                  item->data(kName, kRadioRole).isValid(), item->data(kName, kRadioRole).toBool()});
     for (int index = 0; index < item->childCount(); ++index) {
       self(self, item->child(index), key);
@@ -1121,17 +1326,60 @@ QString BrowserPanel::keyOf(const BrowserNode& node) const {
 
 namespace {
 
-// A row whose item follows expressions (mitcad#809): an fx badge on its
-// icon, the expressions in its tooltip, and a log line for the UI tests
-// ("Browser fx Root/Bodies/Body1: appearance = switch(...)").
-void markBound(QTreeWidgetItem* row, const QString& icon, const QString& path, const QStringList& lines) {
-  if (lines.isEmpty()) {
+// A row whose item follows expressions (mitcad#809, mitcad#862): the fx
+// badge after its name with the count of its bound properties (`fx 3`),
+// whose card says what they follow, and log lines for the UI tests
+// ("Browser fx Root/Bodies/Body1: Appearance = switch(...)", "Browser fx
+// badge Root/Bodies/Body1: fx 3").
+void markBound(QTreeWidgetItem* row, const QString& path, const QStringList& lines, int count) {
+  if (lines.isEmpty() || count <= 0) {
     return;
   }
-  row->setIcon(0, boundIcon(themeIcon(icon)));
-  const QString tip = row->toolTip(0);
-  row->setToolTip(0, (tip.isEmpty() ? QString() : tip + QLatin1Char('\n')) + lines.join(QLatin1Char('\n')));
+  row->setData(kName, kBindingsRole, count);
+  const QString tip = row->toolTip(kName);
+  row->setToolTip(kName, (tip.isEmpty() ? QString() : tip + QLatin1Char('\n')) +
+                             BrowserPanel::tr("Follows expressions: point at fx %1 to see what").arg(count));
   qDebug().noquote() << QStringLiteral("Browser fx %1: %2").arg(path, lines.join(QStringLiteral("; ")));
+  qDebug().noquote() << QStringLiteral("Browser fx badge %1: %2").arg(path, bindingsText(count));
+}
+
+// The light bulb of a row that follows a condition (`bound`: drawn with the
+// fx corner badge) or of a folder that holds such rows (the plain bulb: the
+// folder has no condition of its own), with a tooltip that says what a click
+// does, and a log line for the UI tests ("Browser fx bulb Root/Bodies/Body2
+// off: Shown when …", "Browser bulb Root/Bodies on: …").
+void markConditionBulb(QTreeWidgetItem* row, const QString& path, bool visible, const QString& tip,
+                       bool bound) {
+  row->setData(kName, kEyeTipRole, tip);
+  if (bound) {
+    row->setData(kName, kEyeBoundRole, true);
+  }
+  qDebug().noquote() << QStringLiteral("Browser %1 %2 %3: %4")
+                            .arg(bound ? QStringLiteral("fx bulb") : QStringLiteral("bulb"), path,
+                                 visible ? QStringLiteral("on") : QStringLiteral("off"), tip);
+}
+
+// Bodies that follow their Show When conditions, as a folder's light bulb
+// says it ("Body2 follows its Show When and is left as it is").
+QString leftToConditions(const QStringList& names) {
+  return names.size() == 1
+             ? BrowserPanel::tr("%1 follows its Show When and is left as it is.").arg(names.first())
+             : BrowserPanel::tr("%1 follow their Show When and are left as they are.")
+                   .arg(names.join(QStringLiteral(", ")));
+}
+
+// The tooltip of a conditioned row's light bulb: the condition, what it
+// gives now with the values of its parameters, and that a click sets the
+// visibility by hand ("Shown when Holes == 'Yes'. Hidden now (Holes is
+// 'No'). Clicking the light bulb shows Body2 and removes its condition.").
+QString conditionBulbTip(const QString& name, bool visible, const QString& condition, const QStringList& parts) {
+  QString now = visible ? BrowserPanel::tr("Shown now") : BrowserPanel::tr("Hidden now");
+  if (!parts.isEmpty()) {
+    now += QStringLiteral(" (%1)").arg(parts.join(QStringLiteral(", ")));
+  }
+  const QString click = visible ? BrowserPanel::tr("Clicking the light bulb hides %1 and removes its condition.")
+                                : BrowserPanel::tr("Clicking the light bulb shows %1 and removes its condition.");
+  return BrowserPanel::tr("Shown when %1. %2. %3").arg(condition, now, click.arg(name));
 }
 
 } // namespace
@@ -1195,12 +1443,37 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
   if (def != nullptr && !def->bodies.isEmpty()) {
     folder.type = BrowserNode::Type::Bodies;
     folder.name = tr("Bodies");
-    folder.visible = false;
+    // The folder's light bulb and Show All / Hide All change the bodies
+    // without a Show When condition (mitcad#863): its state is theirs; it
+    // is greyed only when no body is shown.
+    bool anyShown = false;
+    bool freeShown = false;
+    QStringList conditioned;
     for (const QString& uid : def->bodies) {
-      folder.visible = folder.visible || snapshot.bodies.value(uid).visible;
+      const DocumentSnapshot::Body body = snapshot.bodies.value(uid);
+      anyShown = anyShown || body.visible;
+      if (body.visibleWhen.isEmpty()) {
+        freeShown = freeShown || body.visible;
+      } else {
+        conditioned << (body.name.isEmpty() ? uid : body.name);
+      }
     }
+    const bool allConditioned = conditioned.size() == def->bodies.size();
+    folder.visible = allConditioned ? anyShown : freeShown;
     QTreeWidgetItem* bodies = addRow(parent, folder, QStringLiteral("folder"));
-    gray(bodies, shown && folder.visible);
+    gray(bodies, shown && anyShown);
+    // The folder has no condition of its own: the plain bulb, whose
+    // tooltip names the bodies it leaves as they are.
+    if (!conditioned.isEmpty()) {
+      const QString left = leftToConditions(conditioned);
+      QString tip = left;
+      if (!allConditioned) {
+        const QString click = folder.visible ? tr("Clicking the light bulb hides the other bodies.")
+                                             : tr("Clicking the light bulb shows the other bodies.");
+        tip = QStringLiteral("%1 %2").arg(click, left);
+      }
+      markConditionBulb(bodies, m_nodes.value(bodies).path, folder.visible, tip, false);
+    }
     for (const QString& uid : def->bodies) {
       const DocumentSnapshot::Body body = snapshot.bodies.value(uid);
       BrowserNode node;
@@ -1236,8 +1509,16 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
         for (auto face = body.faceAppearanceExprs.begin(); face != body.faceAppearanceExprs.end(); ++face) {
           lines << tr("Appearance of face %1 = %2").arg(face.key(), face.value().toString());
         }
+        const int count = static_cast<int>(lines.size()); // one line per bound property
         lines << body.warnings;
-        markBound(row, QStringLiteral("body"), m_nodes.value(row).path, lines);
+        markBound(row, m_nodes.value(row).path, lines, count);
+      }
+      // Its light bulb follows the condition (mitcad#863).
+      if (!body.visibleWhen.isEmpty()) {
+        markConditionBulb(row, m_nodes.value(row).path, body.visible,
+                          conditionBulbTip(node.name, body.visible, body.visibleWhen,
+                                           snapshot.conditionParts(body.visibleWhen)),
+                          true);
       }
       addSheetRows(row, snapshot, node, shown && body.visible);
     }
@@ -1458,8 +1739,7 @@ void BrowserPanel::addFeatureRows(QTreeWidgetItem* parent, const DocumentSnapsho
     }
     // Suppressed when a condition holds (mitcad#809).
     if (!feature->suppressedWhen.isEmpty()) {
-      markBound(row, featureIcon(feature->type), m_nodes.value(row).path,
-                {tr("Suppressed when %1").arg(feature->suppressedWhen)});
+      markBound(row, m_nodes.value(row).path, {tr("Suppressed when %1").arg(feature->suppressedWhen)}, 1);
     }
   }
 }
@@ -1684,8 +1964,14 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
           item->setData(kName, kRadioRole, snapshot.activeComponent == occurrence.component);
           // Shown when a condition holds (mitcad#809).
           if (!occurrence.visibleWhen.isEmpty()) {
-            markBound(item, occurrence.grounded ? QStringLiteral("component-grounded") : QStringLiteral("component"),
-                      m_nodes.value(item).path, {tr("Shown when %1").arg(occurrence.visibleWhen)});
+            markBound(item, m_nodes.value(item).path, {tr("Shown when %1").arg(occurrence.visibleWhen)}, 1);
+          }
+          // Its light bulb follows the condition (mitcad#863).
+          if (!occurrence.visibleWhen.isEmpty()) {
+            markConditionBulb(item, m_nodes.value(item).path, occurrence.visible,
+                              conditionBulbTip(occurrence.name, occurrence.visible, occurrence.visibleWhen,
+                                               snapshot.conditionParts(occurrence.visibleWhen)),
+                              true);
           }
           addComponentRows(item, snapshot, occurrence.component, occurrence.path, visible, uses);
           place(item, occurrence.children, visible);
@@ -2239,6 +2525,9 @@ void BrowserPanel::logLayout() {
     }
     if (!parts.radio.isEmpty()) {
       place(QStringLiteral("Browser radio %1").arg(node.path), parts.radio);
+    }
+    if (!parts.fx.isEmpty()) {
+      place(QStringLiteral("Browser fx badge %1").arg(node.path), parts.fx); // mitcad#862
     }
     // A feature row whose result is in another component (mitcad#177).
     if (const QString linked = item->data(kName, kLinkedRole).toString(); !linked.isEmpty()) {

@@ -478,10 +478,12 @@ function Pick-Markers([string]$Cmd, [int[]]$Area) {
   $lines = @(Ui-LogLines)
   $inspect = 0
   for ($j = $lines.Count - 1; $j -ge 0; $j--) { if ($lines[$j].StartsWith("Inspect ${Cmd}: ")) { $inspect = $j; break } }
-  for ($i = 0; $i -lt 25; $i++) {
-    if (Ui-LogLines | Select-Object -Skip $inspect | Where-Object { $_.StartsWith("Preview marker $Cmd ") }) { return }
-    Start-Sleep -Milliseconds 100
-  }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $lines = @(Ui-LogLines)
+    for ($j = $inspect; $j -lt $lines.Count; $j++) { if ($lines[$j].StartsWith("Preview marker $Cmd ")) { return } }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 2500)
 }
 # Marker-InMiddle CMD LABEL: where CMD's marker LABEL is once it lies in the
 # middle half of the view, the view zoomed step by step at its centre until
@@ -503,8 +505,10 @@ function Marker-InMiddle([string]$Cmd, [string]$Label) {
     [UiInput]::Move($script:UiWindow, $cx, $cy, 0x04)
     Start-Sleep -Milliseconds 80
     [UiInput]::Wheel($script:UiWindow, $cx, $cy, $sign)
+    # The zoomed view drawn, its markers logged and the camera at rest
+    # (the view's rest timer is watched; mitcad#870: a fixed 500 ms more
+    # before).
     Ui-Sync
-    Start-Sleep -Milliseconds 500
   }
   Ui-Fail "${Cmd}'s marker '$Label' did not come into the middle of the view"
 }
@@ -513,7 +517,9 @@ function Marker-InMiddle([string]$Cmd, [string]$Label) {
 function Wheel-Choice([string]$Cmd, [string]$Choice, [int]$Steps) {
   for ($i = 0; $i -lt [Math]::Abs($Steps); $i++) {
     Ui-WheelLogged "Panel $Cmd input $Choice" ([Math]::Sign(-$Steps))
-    Start-Sleep -Milliseconds 150
+    # The step handled and the panel's places logged again (mitcad#870: a
+    # fixed 150 ms before).
+    Ui-Sync
   }
 }
 # Corner CMD BODY TURN [LENGTH]: a part on BODY's end B turned towards TURN

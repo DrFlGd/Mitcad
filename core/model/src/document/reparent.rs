@@ -67,7 +67,7 @@ use super::{DocState, Document, ModelError, invalid, same_placement};
 use crate::assembly::{Assembly, inverse, matrix_rows};
 use crate::document::AnalysisDef;
 use crate::drawing::def::Drawing;
-use crate::features::extrude_scope::{CutScope, TargetScope};
+use crate::features::extrude_scope::CutScope;
 use crate::features::moves::MoveSpec;
 use crate::features::{
     CapturePositionDef, ConstraintSetDef, FeatureDef, FeatureEntry, MoveOccurrenceDef,
@@ -243,25 +243,8 @@ impl Rewrite<'_> {
         if let Some(why) = &self.varying {
             return Err(why.clone());
         }
-        let mut paths: Vec<&mut Vec<OccurrenceUid>> = vec![&mut scope.context.occurrence.0];
-        match &mut scope.targets {
-            TargetScope::Automatic {
-                excluded,
-                excluded_bodies,
-            } => {
-                paths.extend(excluded.iter_mut().map(|t| &mut t.occurrence.0));
-                paths.extend(excluded_bodies.iter_mut().map(|t| &mut t.occurrence.0));
-            }
-            TargetScope::Explicit {
-                included,
-                excluded_bodies,
-            } => {
-                paths.extend(included.iter_mut().map(|t| &mut t.occurrence.0));
-                paths.extend(excluded_bodies.iter_mut().map(|t| &mut t.occurrence.0));
-            }
-        }
-        for path in paths {
-            self.absolute(path);
+        for place in scope.places_mut() {
+            self.absolute(&mut place.occurrence.0);
         }
         Ok(true)
     }

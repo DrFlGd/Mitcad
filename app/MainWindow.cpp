@@ -81,6 +81,7 @@
 #include "files/FileFormats.hpp"
 #include "files/LiveController.hpp"
 #include "files/LockController.hpp"
+#include "files/Print3d.hpp"
 #include "files/ProjectIndicator.hpp"
 #include "mcp/AgentIndicator.hpp"
 #include "files/RemoteController.hpp"
@@ -137,7 +138,7 @@ const QString kFileSuffix = QStringLiteral("mitcad");
 const QColor kSelectionColor(0x1f, 0x7a, 0xff);
 // A body's print bed face shown while a face's context menu is open
 // (mitcad#731).
-const QColor kPrintBedColor(0x2e, 0xb8, 0x72);
+const QColor kPrintBedColor = printBedColor();
 // Size of the planes and axes that stand for datums, mm.
 constexpr double kDatumSize = 100.0;
 const QStringList kOriginDatums = {QStringLiteral("xy"), QStringLiteral("xz"), QStringLiteral("yz"),
@@ -2023,7 +2024,11 @@ void MainWindow::cancel() {
     return; // a name typed in the Projects panel (mitcad#145)
   }
   if (m_session) {
-    m_session->cancel();
+    // The command's own Esc first (mitcad#857: 3D Print's bed face
+    // choice: Esc ends the question, nothing sent).
+    if (!m_session->escape()) {
+      m_session->cancel();
+    }
     return;
   }
   if (cancelAnnotationPick()) {
@@ -5568,8 +5573,10 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
         job.setStage(tr("Saving results of %1").arg(label));
         persisted = parseObject(document->persist_results(minMs));
       }
-      // The view's meshes, here rather than on the UI thread (mitcad#398).
-      meshing = meshForDisplay(shownBodyShapes(*document), job);
+      // The view's meshes, here rather than on the UI thread (mitcad#398):
+      // those the result store keeps for the bodies' shapes taken from it,
+      // the others made and kept there (mitcad#858).
+      meshing = meshOpenedForDisplay(*document, job, !store.isEmpty());
       made.emplace(std::move(document));
     });
     if (!done) {
@@ -5626,6 +5633,10 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   }
   if (!store.isEmpty()) {
     reportStored(recomputed, persisted);
+    // Display meshes stored count toward the store's size too (mitcad#858).
+    if (meshing.stored > 0 && persisted.value(QStringLiteral("results")).toInt() == 0) {
+      collectResultStoreGarbage();
+    }
   }
   // Its browser rows as a design opens: folded when they would not fit
   // (mitcad#426).
@@ -5652,12 +5663,19 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
 
 void MainWindow::reportStored(const QJsonObject& recomputed, const QJsonObject& persisted) {
   const int results = persisted.value(QStringLiteral("results")).toInt();
-  qInfo().noquote() << QStringLiteral("Result store: restored %1, evaluated %2; stored %3 (%4 bytes) in %5 ms")
-                           .arg(recomputed.value(QStringLiteral("restored")).toInt())
+  // Restored results whose bodies' shapes were never unpacked: states a
+  // later result replaced (mitcad#858).
+  const int restored = recomputed.value(QStringLiteral("restored")).toInt();
+  const int packed = recomputed.value(QStringLiteral("restored_packed")).toInt();
+  qInfo().noquote() << QStringLiteral("Result store: restored %1, evaluated %2; stored %3 (%4 bytes) in %5 ms; "
+                                      "unpacked %6, skipped %7")
+                           .arg(restored)
                            .arg(recomputed.value(QStringLiteral("recomputed")).toInt())
                            .arg(results)
                            .arg(persisted.value(QStringLiteral("bytes")).toInteger())
-                           .arg(persisted.value(QStringLiteral("ms")).toDouble(), 0, 'f', 1);
+                           .arg(persisted.value(QStringLiteral("ms")).toDouble(), 0, 'f', 1)
+                           .arg(restored - packed)
+                           .arg(packed);
   for (const QJsonValue& failure : persisted.value(QStringLiteral("errors")).toArray()) {
     qWarning().noquote() << "Result store:" << failure.toString();
   }

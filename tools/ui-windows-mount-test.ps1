@@ -155,7 +155,8 @@ function Add-Source([string]$Path) {
 function Close-Libraries {
   $dialog = $script:UiTarget
   Ui-Step 'close (Alt+C)'                  { Ui-Key 'alt+c' }
-  for ($i = 0; $i -lt 50 -and (Ui-Windows '^Libraries$') -contains $dialog; $i++) { Start-Sleep -Milliseconds 200 }
+  # Looked for every 20 ms (200 ms before, mitcad#870), up to 10 s.
+  Ui-WaitGone $dialog 10000
   if ((Ui-Windows '^Libraries$') -contains $dialog) { Ui-Fail 'the Libraries dialog did not close' }
   Ui-FocusMain
 }
@@ -402,7 +403,8 @@ Ui-Step 'its name'                         { Ui-TypeIn 'Panel Joint Origin input
 Ui-Step 'into a hole'                      { Ui-WheelLogged 'Panel Joint Origin input mount_kind' -1 }
 Ui-Step 'turns and slides'                 {
   Ui-WheelLogged 'Panel Joint Origin input mount_joint' -1
-  Start-Sleep -Milliseconds 150
+  # The first step handled (mitcad#870: a fixed 150 ms before).
+  Ui-Sync
   Ui-WheelLogged 'Panel Joint Origin input mount_joint' -1
 }
 Ui-Mark

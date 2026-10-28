@@ -300,7 +300,6 @@ void CommandSession::setRowDefaults() {
 }
 
 bool CommandSession::start(const Selection& preselection, QString& error) {
-  QJsonObject storedDefinition;
   for (const InputDef& input : m_def.inputs) {
     setDefaults(input, input.id);
   }
@@ -331,8 +330,6 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
       return false;
     }
     m_def.load(def, m_state, m_host);
-    storedDefinition = def;
-    storedDefinition.remove(QStringLiteral("uid"));
     setRowDefaults();
     int position = -1;
     for (int i = 0; i < timeline.size(); ++i) {
@@ -405,7 +402,7 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
     setRowDefaults();
   }
   canonicalizeSelections();
-  startAutoOperation(storedDefinition);
+  startAutoOperation();
   return true;
 }
 
@@ -883,10 +880,12 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     connect(m_manipulators, &ManipulatorOverlay::valueBoxClicked, this, &CommandSession::openValueBox);
   }
   // Tab steps a choice with a cycle wherever the window has the keyboard
-  // (mitcad#375: BUILD's auto length).
+  // (mitcad#375: BUILD's auto length), or a selection's picks
+  // (InputDef::tabPicks, mitcad#857).
   // The box at the cursor of a value (mitcad#375) follows the mouse too.
-  if (std::any_of(m_def.inputs.begin(), m_def.inputs.end(),
-                  [](const InputDef& input) { return !input.tabCycle.isEmpty() || input.cursorBox; })) {
+  if (std::any_of(m_def.inputs.begin(), m_def.inputs.end(), [](const InputDef& input) {
+        return !input.tabCycle.isEmpty() || static_cast<bool>(input.tabPicks) || input.cursorBox;
+      })) {
     if (auto* application = QCoreApplication::instance()) {
       application->installEventFilter(this);
     }
@@ -980,6 +979,9 @@ void CommandSession::activate(const QString& key) {
   // An extent's object: a face in front of an origin plane is the pick,
   // also one of another component (mitcad#762).
   viewer.setPlanesByDepth(input != nullptr && input->planesByDepth);
+  // Measure's Faces, Edges and Vertices: a body's corner or edge before the
+  // sketch point or line on it, but the edited sketch's own (mitcad#869).
+  viewer.setSketchesBehind(input != nullptr && input->sketchesBehind, m_host.editedSketch());
   if (input == nullptr) {
     viewer.setPickFilter(SelectFilter());
     updateGhosts();
@@ -999,6 +1001,20 @@ void CommandSession::activate(const QString& key) {
     viewer.setHoverColor(m_presenter->colorOf(m_active).lighter(130));
   }
   showActiveKinds(input);
+  // Where a click hits each face, edge or vertex of the input's kinds that
+  // it refuses, after the host's pick places, for UI tests of
+  // InputDef::refusedHint (mitcad#857; only on request, as those).
+  if (input->refusedHint && qEnvironmentVariableIsSet("MITCAD_LOG_PICKS") &&
+      (m_activeFilter & (SelectKind::Face | SelectKind::Edge | SelectKind::Vertex))) {
+    for (const auto& [item, at] : viewer.refusedPickPoints(m_activeFilter)) {
+      const QPoint point = viewer.mapTo(viewer.window(), at);
+      qDebug().noquote() << QStringLiteral("Pick refused %1 %2/%3%4 at %5,%6")
+                                .arg(SelectionItem::kindName(item.kind), item.owner, item.name,
+                                     item.occurrence.isEmpty() ? QString() : QStringLiteral(" in ") + item.occurrence)
+                                .arg(point.x())
+                                .arg(point.y());
+    }
+  }
   m_host.showHint(selectionHint(tr("%1: select %2.").arg(m_def.name, input->label.toLower())));
   updateHoverChain();
 }
@@ -1200,7 +1216,20 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
       }
     }
   } else {
-    return; // a click on nothing changes nothing in a command
+    // A click on an item of the input's kinds that it does not take: what
+    // to click instead, in the status bar (InputDef::refusedHint,
+    // mitcad#857). A click on nothing changes nothing in a command.
+    if (!window && input->refusedHint) {
+      const std::optional<SelectionItem> refused =
+          !items.isEmpty() ? std::optional<SelectionItem>(items.first()) : m_host.viewer().takeRefusedClick();
+      const QString hint = refused ? input->refusedHint(*refused, m_state) : QString();
+      if (!hint.isEmpty()) {
+        qDebug().noquote() << QStringLiteral("%1 %2: %3 not taken: %4")
+                                  .arg(m_def.name, input->label, refused->describe(), hint);
+        m_host.showHint(hint);
+      }
+    }
+    return;
   }
   const bool applyNow = shiftApplies && containsEntry(m_state.items(key), accepted.first(), resolve);
   selectionChanged(key);
@@ -1324,8 +1353,21 @@ void CommandSession::updateHighlights() {
   QSet<QString> drawn;
   // Each sketch read once for its selected curves and points (mitcad#679).
   std::shared_ptr<void> batch = m_host.itemShapeBatch();
+  // The command's own marks (mitcad#857: 3D Print's print bed faces to
+  // choose from). While there are any, only the active input's picks are
+  // drawn besides them, so that they stand out (mitcad#857 review: the
+  // green over the bodies' blue came out teal).
+  const std::vector<std::pair<SelectionItem, QColor>> marks =
+      m_def.marks ? m_def.marks(m_state) : std::vector<std::pair<SelectionItem, QColor>>();
+  QStringList unmarked;
   for (const Slot& slot : slotsOf(true)) {
     if (slot.def->type != InputDef::Type::Selection) {
+      continue;
+    }
+    if (!marks.empty() && slot.key != m_active) {
+      if (!m_state.items(slot.key).isEmpty()) {
+        unmarked << slot.def->label;
+      }
       continue;
     }
     const QColor color =
@@ -1361,6 +1403,29 @@ void CommandSession::updateHighlights() {
     }
     highlights.push_back({item, m_host.itemShape(item), QColor(0xff, 0x8c, 0x00)});
   }
+  // The marks, each in its colour; a click picks the item.
+  QStringList marked;
+  for (const auto& [item, color] : marks) {
+    HighlightDisplay shown{item, m_host.itemShape(item), color};
+    if (item.kind == SelectKind::Face || item.kind == SelectKind::Edge) {
+      shown.body = m_host.bodyShape(item.owner);
+    }
+    highlights.push_back(std::move(shown));
+    marked << QStringLiteral("%1 %2/%3%4")
+                  .arg(SelectionItem::kindName(item.kind), item.owner, item.name,
+                       item.occurrence.isEmpty() ? QString() : QStringLiteral(" in ") + item.occurrence);
+  }
+  const QString markText = marked.isEmpty() ? QStringLiteral("none") : marked.join(QStringLiteral(", "));
+  if (markText != m_loggedMarks && !(m_loggedMarks.isEmpty() && marked.isEmpty())) {
+    qDebug().noquote() << QStringLiteral("%1 marks: %2").arg(m_def.name, markText);
+  }
+  m_loggedMarks = markText;
+  // The inputs whose picks the marks leave undrawn, for UI tests.
+  const QString unmarkedText = unmarked.isEmpty() ? QStringLiteral("none") : unmarked.join(QStringLiteral(", "));
+  if (unmarkedText != m_loggedUnmarked && !(m_loggedUnmarked.isEmpty() && unmarked.isEmpty())) {
+    qDebug().noquote() << QStringLiteral("%1 picks not drawn beside the marks: %2").arg(m_def.name, unmarkedText);
+  }
+  m_loggedUnmarked = unmarkedText;
   batch.reset();
   m_host.viewer().setHighlights(highlights);
   updateGhosts();
@@ -1960,9 +2025,6 @@ void CommandSession::runPreview() {
     }
     return;
   }
-  if (probeAutoOperation()) {
-    return;
-  }
   if (m_def.inspect) {
     runInspection();
     return;
@@ -2072,6 +2134,14 @@ void CommandSession::runPreview() {
     preview.state = requested;
     preview.structure = structure;
     preview.motion = motion;
+    if (preview.motion && preview.motion->resolve) {
+      // From what the model worked the motion out of (a Rotate's axis,
+      // mitcad#838), so that a drag turns as the exact result does.
+      preview.motion->of = preview.motion->resolve(preview.report.value(QStringLiteral("motion")).toObject());
+      if (!preview.motion->of) {
+        preview.motion.reset();
+      }
+    }
     return preview;
   };
   if (m_host.asynchronousPreviews()) {
@@ -3800,6 +3870,22 @@ bool CommandSession::cycleChoice() {
   }
   for (const Slot& slot : slotsOf(true)) {
     const InputDef& input = *slot.def;
+    // The active selection's next pick (InputDef::tabPicks, mitcad#857):
+    // shown in its colour, taken by Enter.
+    if (input.type == InputDef::Type::Selection && input.tabPicks && slot.key == m_active &&
+        m_presenter->inputEnabled(slot.key)) {
+      const Selection picks = input.tabPicks(scopeOf(slot));
+      if (picks.isEmpty()) {
+        continue;
+      }
+      const Selection& now = m_state.items(slot.key);
+      const qsizetype at = now.isEmpty() ? -1 : picks.indexOf(now.first());
+      const SelectionItem next = picks.at((at + 1) % picks.size());
+      m_state.setItems(slot.key, {next});
+      qDebug().noquote() << QStringLiteral("%1: Tab steps %2: %3").arg(m_def.name, input.label, next.describe());
+      selectionChanged(slot.key);
+      return true;
+    }
     if (input.type != InputDef::Type::Choice || input.tabCycle.isEmpty() || !m_presenter->inputEnabled(slot.key)) {
       continue;
     }
@@ -4190,6 +4276,7 @@ void CommandSession::finish(bool committed) {
   viewer.setPreview(TopoDS_Shape());
   viewer.setPlanesBehind(false);
   viewer.setPlanesByDepth(false);
+  viewer.setSketchesBehind(false);
   viewer.setHandleBoxes({}); // the handles' value boxes went with them
   viewer.setHighlights({});
   viewer.setGhosts({});
@@ -4211,6 +4298,45 @@ void CommandSession::refreshInputs() {
     m_def.modelChanged(m_state, m_host);
   }
   m_presenter->refresh(m_state);
+}
+
+bool CommandSession::ask(const QString& key, const QString& message) {
+  if (m_done || m_presenter == nullptr) {
+    return false;
+  }
+  const auto slot = slotOf(key);
+  if (!slot || slot->def->type != InputDef::Type::Selection || !isShown(*slot)) {
+    return false;
+  }
+  // Asked anew: nothing picked for it yet.
+  m_state.setItems(key, {});
+  listItems();
+  m_presenter->refresh(m_state);
+  activate(key);
+  // Nothing goes on until the pick: OK waits for it (mitcad#857 review),
+  // and Enter meanwhile says what is missing.
+  m_shownKey.clear();
+  m_previewOk = false;
+  m_presenter->setOkEnabled(false);
+  // The command's rows say what is asked; the status bar says it too.
+  m_presenter->setMessage(QString(), false);
+  qDebug().noquote() << QStringLiteral("Panel %1 asks: %2").arg(m_def.name, message);
+  m_host.showHint(message);
+  updateHighlights();
+  return true;
+}
+
+bool CommandSession::escape() {
+  if (m_done || !m_def.escape) {
+    return false;
+  }
+  if (!m_def.escape(m_state, m_host)) {
+    return false;
+  }
+  // What the command's Esc changed (3D Print: the question ended, its rows
+  // hidden): the inputs, the highlights and the preview follow.
+  inputsChanged();
+  return true;
 }
 
 } // namespace mitcad

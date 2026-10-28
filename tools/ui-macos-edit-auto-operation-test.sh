@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/framework/CommandSessionAuto app/commands/ExtrudeCommands.cpp core/model/src/document/auto_operation.rs
-# Real Qt edit handles, deliberate choices, target scope and baseline races.
+# Edits keep their stored operation (mitcad#868) through the Qt panel:
+# a Join going into its bodies, deliberate choices, target scope, an
+# input while the first preview computes.
 # Usage: bash tools/ui-macos-edit-auto-operation-test.sh <app> [out directory]
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -18,7 +20,7 @@ mkdir -p "$MITCAD_TEST_WORK"
 
 for phase in automatic new-body participants overrides scope early; do
   # Variants keep identical geometry; only the stored Operation/Objects
-  # policy differs, so the baseline comparison is tested independently.
+  # differ, and each edit keeps them.
   python3 - "$here/ui-scripts/edit-auto-operation.json" "$MITCAD_TEST_WORK/setup.json" "$phase" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as source:
@@ -74,8 +76,8 @@ import json, sys
 with open(sys.argv[1], encoding='utf-8') as source:
     feature = next(f for f in json.load(source)['features'] if f['uid'] == 'F4')
 phase = sys.argv[2]
-assert feature['operation'] == {'participants': 'join', 'scope': 'cut'}.get(phase, 'new_body'), feature
-assert feature.get('participants', []) == (['F1.b0'] if phase == 'participants' else []), feature
+assert feature['operation'] == {'automatic': 'join', 'participants': 'join', 'scope': 'cut'}.get(phase, 'new_body'), feature
+assert feature.get('participants', []) == {'automatic': ['F1.b0', 'F2.b0'], 'participants': ['F1.b0']}.get(phase, []), feature
 assert not set(feature.get('participants', [])).intersection(('F4.b0', 'F5.b0')), feature
 if phase == 'scope':
     targets = feature['cut_scope']['targets']

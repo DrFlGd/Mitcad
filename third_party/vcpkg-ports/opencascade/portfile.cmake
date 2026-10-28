@@ -223,6 +223,7 @@ vcpkg_from_github(
         1040-shapeupgrade-unifysamedomain-signed-angle-to-a-reversed-axis.patch
         1050-shapefix-self-intersecting-wire-edges-read-once.patch
         1060-chfi3d-under-anothers-ball-not-past-its-other-face.patch
+        1070-brepmesh-delabella-exact-signs.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

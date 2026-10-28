@@ -76,6 +76,24 @@ pub enum ViewCurve {
         end: f64,
     },
     Polyline(Vec<P2>),
+    /// A B-spline (mitcad#853): a projected B-spline or Bézier curve as
+    /// itself, another curve (an ellipse, ...) within 1e-6 mm. Where the
+    /// exact curve is not needed it is drawn, cut and picked as its
+    /// polyline `points`.
+    Spline(ViewSpline),
+}
+
+/// A B-spline in a view's plane, from its start to its end: `degree`, its
+/// full knot vector (`poles.len() + degree + 1` knots), its poles and
+/// their weights (empty when it is not rational), and a polyline of it
+/// within the view's deflection (`points`, its ends the curve's).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ViewSpline {
+    pub degree: u32,
+    pub knots: Vec<f64>,
+    pub poles: Vec<P2>,
+    pub weights: Vec<f64>,
+    pub points: Vec<P2>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

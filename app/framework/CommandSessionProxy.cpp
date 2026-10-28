@@ -140,10 +140,16 @@ void CommandSession::exactPreviewShown(const Preview& preview, const std::vector
         if (basis.sides[i] == MotionSide::None || !drawn[i].shape) {
           continue;
         }
+        // The middle of its shape's data, carried by the shape's location:
+        // a body a move placed by a location (mitcad#838) keeps the same
+        // middle in its data, so that where the proxy and the exact
+        // preview draw it compare point for point.
+        const TopoDS_Shape& shape = drawn[i].shape->occt();
         Bnd_Box box;
-        BRepBndLib::Add(drawn[i].shape->occt(), box, true);
+        BRepBndLib::Add(shape.Located(TopLoc_Location()), box, true);
         if (!box.IsVoid()) {
-          basis.middle = gp_Pnt((box.CornerMin().XYZ() + box.CornerMax().XYZ()) / 2.0);
+          basis.middle = gp_Pnt((box.CornerMin().XYZ() + box.CornerMax().XYZ()) / 2.0)
+                             .Transformed(shape.Location().Transformation());
           basis.middleIndex = static_cast<int>(i);
         }
         break;
@@ -387,8 +393,10 @@ void CommandSession::updateMotionProxy() {
   std::optional<gp_Trsf> to;
   if (!m_proxyBasis) {
     why = QStringLiteral("no exact preview to start from");
-  } else if (!m_proxyBasis->motion) {
-    why = QStringLiteral("no motion of these inputs"); // one of picked geometry (Rotate's axis, points)
+  } else if (!m_proxyBasis->motion || !m_proxyBasis->motion->of) {
+    // Point to Point's, which has no value to drag; a basis the model did
+    // not report (mitcad#838).
+    why = QStringLiteral("no motion of these inputs");
   } else if (m_proxyBasis->structure != m_structureGeneration) {
     why = QStringLiteral("the exact preview is of other inputs");
   } else {
@@ -406,9 +414,21 @@ void CommandSession::updateMotionProxy() {
     // The exact preview shows where the value puts them: it is what is
     // shown and committed.
     if (m_proxyStats.active && m_proxyStats.releasedAt >= 0) {
-      qDebug().noquote() << QStringLiteral("Drag proxy %1: the exact preview of %2 replaced it %3 ms after the release")
+      // How far from where the proxy last drew the first moved body the
+      // exact preview draws it, when the proxy was drawn at this value:
+      // the two agree (mitcad#838).
+      QString apart;
+      const int index = m_proxyBasis->middleIndex;
+      if (m_proxyShown && m_motionAt && m_proxyDrawnValue == m_proxyValue && index >= 0 &&
+          static_cast<std::size_t>(index) < m_proxyBasis->drawn.size()) {
+        const gp_Pnt exact = m_proxyBasis->middle.Transformed(
+            m_proxyBasis->drawn[static_cast<std::size_t>(index)].placement.Transformation());
+        apart = QStringLiteral(", %1 mm from the proxy").arg(exact.Distance(*m_motionAt), 0, 'f', 6);
+      }
+      qDebug().noquote() << QStringLiteral("Drag proxy %1: the exact preview of %2 replaced it %3 ms after the release%4")
                                 .arg(m_def.name, proxyValueText(m_proxyKey, m_proxyValue))
-                                .arg(m_proxyStats.clock.elapsed() - m_proxyStats.releasedAt);
+                                .arg(m_proxyStats.clock.elapsed() - m_proxyStats.releasedAt)
+                                .arg(apart);
       m_proxyStats.active = false;
     }
     hideDragProxy(QStringLiteral("the exact preview shows %1").arg(proxyValueText(m_proxyKey, m_proxyValue)),
@@ -447,9 +467,11 @@ void CommandSession::updateMotionProxy() {
   }
   // Where the first moved body's middle is drawn now, for UI tests.
   QString at = QStringLiteral("-");
+  m_motionAt.reset();
   if (m_proxyBasis->middleIndex >= 0 && static_cast<std::size_t>(m_proxyBasis->middleIndex) < bodies.size()) {
     const BodyDisplay& first = bodies[static_cast<std::size_t>(m_proxyBasis->middleIndex)];
     const gp_Pnt middle = m_proxyBasis->middle.Transformed(first.placement.Transformation());
+    m_motionAt = middle;
     const auto coordinate = [](double value) { return QString::number(std::abs(value) < 1e-6 ? 0.0 : value, 'f', 3); };
     at = QStringLiteral("%1,%2,%3").arg(coordinate(middle.X()), coordinate(middle.Y()), coordinate(middle.Z()));
   }

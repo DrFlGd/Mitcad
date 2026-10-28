@@ -39,12 +39,31 @@
 //! evaluating them does), failed evaluations of a cancelled job (never
 //! cached), and what [`Document::persist_results`] is told is too quick.
 //!
+//! **Lazy restore** (mitcad#858): with a kernel that can unpack shapes
+//! later ([`Kernel::shape_unpacker`]), a result found keeps the shapes of
+//! the bodies it sets packed (`recompute::Changes`) until
+//! something reads them; a state the next restored result replaces is
+//! never unpacked (the recompute's module comment). The tool is read at
+//! once. `MITCAD_LAZY_RESTORE=0` reads every result whole.
+//!
+//! **Display meshes** (mitcad#858): the application keeps each shown
+//! body's display triangulations ([`Kernel::display_mesh_bytes`]) under
+//! the body's version and its meshing options, in
+//! `<dir>/v1/<k[0..2]>/<k>.mms` beside the results: the same header with
+//! `MITCADDM`, a payload of the build id, a JSON header (version, options,
+//! document) and the zlib-compressed triangulations. Opening the design
+//! again gives a body whose shape has that version its triangulations back
+//! ([`ResultStore::restore_display_mesh`]) instead of meshing it; another
+//! build or other options find none. [`gc`], [`clear`] and [`usage`] count
+//! them with the results.
+//!
 //! [`Document::persist_results`]: crate::Document::persist_results
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -53,9 +72,11 @@ use serde::{Deserialize, Serialize};
 use crate::features::{Env, FeatureDef, FeatureEntry, Operation};
 use crate::fingerprint::Fingerprint;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
-use crate::kernel::Kernel;
+use crate::kernel::{Kernel, KernelError, ShapeUnpacker};
 use crate::parameters::Parameters;
-use crate::recompute::{Change, Flag, Output, Part, Read, Versioned, output_version, part_version};
+use crate::recompute::{
+    Change, ChangeHead, Changes, Flag, Output, Part, Read, Versioned, output_version, part_version,
+};
 use crate::transform::Transform;
 
 const MAGIC: &[u8; 8] = b"MITCADRS";
@@ -63,6 +84,10 @@ const FORMAT: u32 = 1;
 /// The folder of this layout under the store's directory.
 const LAYOUT: &str = "v1";
 const EXTENSION: &str = "mrs";
+/// Display mesh files (mitcad#858).
+const MESH_MAGIC: &[u8; 8] = b"MITCADDM";
+const MESH_FORMAT: u32 = 1;
+const MESH_EXTENSION: &str = "mms";
 const HEADER: usize = 8 + 4 + 8 + 16;
 /// Results kept per file: the same definition with other inputs.
 const VARIANTS: usize = 4;
@@ -126,6 +151,22 @@ pub struct StoreStats {
     pub write_bytes: u64,
     pub write_ns: u64,
     pub write_errors: u64,
+    /// Hits whose bodies' shapes stayed packed (mitcad#858), and of them
+    /// those unpacked since, with the time unpacking took.
+    pub deferred: u64,
+    pub unpacked: u64,
+    pub unpack_ns: u64,
+    /// Display meshes (mitcad#858): bodies looked up and found, the faces
+    /// they gave triangulations, the bytes read and the time; meshes
+    /// written, their bytes and the time.
+    pub mesh_lookups: u64,
+    pub mesh_hits: u64,
+    pub mesh_faces: u64,
+    pub mesh_read_bytes: u64,
+    pub mesh_read_ns: u64,
+    pub mesh_writes: u64,
+    pub mesh_write_bytes: u64,
+    pub mesh_write_ns: u64,
 }
 
 macro_rules! counters {
@@ -151,6 +192,17 @@ counters!(
     write_bytes,
     write_ns,
     write_errors,
+    deferred,
+    unpacked,
+    unpack_ns,
+    mesh_lookups,
+    mesh_hits,
+    mesh_faces,
+    mesh_read_bytes,
+    mesh_read_ns,
+    mesh_writes,
+    mesh_write_bytes,
+    mesh_write_ns,
 );
 
 fn count(counter: &AtomicU64, by: u64) {
@@ -302,6 +354,8 @@ struct VariantHead {
     pattern_anchor: Option<crate::features::point_pattern::PatternAnchor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sweep_place: Option<crate::features::sweep::SweepPlace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    move_basis: Option<crate::features::moves::MotionBasis>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     owners: BTreeMap<BodyUid, ComponentUid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -389,6 +443,97 @@ fn key(uid: FeatureUid, def_fp: u128) -> u128 {
         .finish()
 }
 
+/// The key of a body shape's display meshes: its version and the meshing
+/// options (mitcad#858).
+fn mesh_key(version: u128, options: &str) -> u128 {
+    Fingerprint::new("display mesh key")
+        .u128(version)
+        .str(options)
+        .finish()
+}
+
+/// Whether results are found with their bodies' shapes packed until
+/// something reads them (mitcad#858): unless `MITCAD_LAZY_RESTORE` is `0`
+/// or `off`.
+pub(crate) fn lazy_restore() -> bool {
+    static LAZY: OnceLock<bool> = OnceLock::new();
+    *LAZY.get_or_init(|| {
+        !matches!(
+            std::env::var("MITCAD_LAZY_RESTORE").as_deref(),
+            Ok("0" | "off")
+        )
+    })
+}
+
+/// A shape of a file, zlib-compressed, unpacked.
+fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
+    miniz_oxide::inflate::decompress_to_vec_zlib(data)
+        .map_err(|e| format!("a stored shape does not decompress: {:?}", e.status))
+}
+
+/// The shapes of the bodies a found result sets, still packed (mitcad#858;
+/// [`Changes::unpacked`] unpacks them when something first reads them).
+pub(crate) struct Packed<S> {
+    unpack: fn(&[u8]) -> Result<S, KernelError>,
+    stand_in: fn() -> S,
+    /// Each change's shape, zlib-compressed (empty for a removal).
+    shapes: Vec<Vec<u8>>,
+    /// The file they came from: removed if one of them does not unpack.
+    path: PathBuf,
+}
+
+impl<S> Packed<S> {
+    /// The bytes of the packed shapes.
+    pub(crate) fn bytes(&self) -> u64 {
+        self.shapes.iter().map(|shape| shape.len() as u64).sum()
+    }
+
+    /// The changes `heads` (the result's) with their shapes. A shape that
+    /// does not unpack (not one this build wrote whole) keeps the
+    /// stand-in, and the file is removed, so that the feature is evaluated
+    /// the next time it is not in memory.
+    pub(crate) fn unpack(self, heads: &[ChangeHead]) -> Vec<Change<S>> {
+        let start = Instant::now();
+        let mut failed = None;
+        let changes = heads
+            .iter()
+            .zip(&self.shapes)
+            .map(|(head, data)| match *head {
+                ChangeHead::Set(body, version) => {
+                    let value = inflate(data)
+                        .and_then(|bytes| (self.unpack)(&bytes).map_err(|e| e.to_string()))
+                        .unwrap_or_else(|error| {
+                            failed = Some(error);
+                            (self.stand_in)()
+                        });
+                    Change::Set(body, Versioned { version, value })
+                }
+                ChangeHead::Remove(body) => Change::Remove(body),
+            })
+            .collect();
+        if let Some(error) = failed {
+            eprintln!(
+                "Result store: {}: a stored shape does not unpack: {error}",
+                self.path.display()
+            );
+            count(&COUNTERS.damaged, 1);
+            let _ = fs::remove_file(&self.path);
+        }
+        count(&COUNTERS.unpacked, 1);
+        count(&COUNTERS.unpack_ns, nanos(start.elapsed()));
+        changes
+    }
+}
+
+/// The body shape a display mesh file is of.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MeshMeta {
+    version: Hex,
+    options: String,
+    /// The document it was stored for last.
+    document: String,
+}
+
 impl ResultStore {
     /// The store in `dir` (made when a result is written), for results of
     /// the build `build_id`.
@@ -424,13 +569,15 @@ impl ResultStore {
 
     /// The result of `entry` stored for the inputs `env` gives, with the
     /// versions it was evaluated with; None when there is none (or it
-    /// cannot be read: a damaged file is removed).
+    /// cannot be read: a damaged file is removed). With an unpacker, the
+    /// shapes of the bodies it sets stay packed (mitcad#858).
     pub(crate) fn find<K: Kernel>(
         &self,
         kernel: &K,
         entry: &FeatureEntry,
         def_fp: u128,
         env: &Env<'_, K::Shape>,
+        unpacker: Option<&ShapeUnpacker<K::Shape>>,
     ) -> Option<Output<K::Shape>> {
         if !storable(&entry.def) {
             return None;
@@ -460,7 +607,7 @@ impl ResultStore {
             count(&COUNTERS.misses, 1);
             return None;
         }
-        for variant in &file.variants {
+        for variant in file.variants {
             if variant.head.sheet_protocol != crate::sheet::ALGORITHM_VERSION {
                 continue;
             }
@@ -476,7 +623,13 @@ impl ResultStore {
             if !reads.iter().all(|r| r.matches(env)) {
                 continue;
             }
-            return match restore(kernel, entry.uid, def_fp, reads, variant, env.params) {
+            let hit = Hit {
+                uid: entry.uid,
+                def_fp,
+                reads,
+                path: &path,
+            };
+            return match restore(kernel, hit, variant, env.params, unpacker) {
                 Ok(output) => {
                     touch(&path);
                     count(&COUNTERS.hits, 1);
@@ -539,6 +692,7 @@ impl ResultStore {
                 warnings: output.warnings.clone(),
                 pattern_anchor: output.pattern_anchor.clone(),
                 sweep_place: output.sweep_place,
+                move_basis: output.move_basis,
                 owners: output.owners.clone(),
                 cut_targets: output.cut_targets.clone(),
                 elements: output
@@ -589,48 +743,211 @@ impl ResultStore {
         count(&COUNTERS.write_ns, nanos(start.elapsed()));
         Ok((written, shape_count))
     }
+
+    fn mesh_path(&self, key: u128) -> PathBuf {
+        let name = format!("{key:032x}");
+        self.dir
+            .join(LAYOUT)
+            .join(&name[..2])
+            .join(format!("{name}.{MESH_EXTENSION}"))
+    }
+
+    /// Gives `shape`, a body shape of `version`, the display triangulations
+    /// stored for it with the meshing `options` (mitcad#858); how many
+    /// faces took one. None when there are none: no file, another build's
+    /// or other options' (not used), a damaged one (removed), or
+    /// triangulations the kernel finds are not of this shape (nothing
+    /// written; the body is meshed and stored again).
+    pub fn restore_display_mesh<K: Kernel>(
+        &self,
+        kernel: &K,
+        version: u128,
+        options: &str,
+        shape: &K::Shape,
+    ) -> Option<usize> {
+        count(&COUNTERS.mesh_lookups, 1);
+        let start = Instant::now();
+        let path = self.mesh_path(mesh_key(version, options));
+        let bytes = fs::read(&path).ok()?;
+        let Ok((build_id, meta, data)) = decode_mesh(&bytes) else {
+            count(&COUNTERS.damaged, 1);
+            let _ = fs::remove_file(&path);
+            return None;
+        };
+        if build_id != self.build_id {
+            count(&COUNTERS.other_build, 1);
+            return None;
+        }
+        if meta.version != Hex(version) || meta.options != options {
+            return None;
+        }
+        let Ok(mesh) = inflate(data) else {
+            count(&COUNTERS.damaged, 1);
+            let _ = fs::remove_file(&path);
+            return None;
+        };
+        let faces = kernel.restore_display_mesh(shape, &mesh).ok()?;
+        touch(&path);
+        count(&COUNTERS.mesh_hits, 1);
+        count(&COUNTERS.mesh_faces, faces as u64);
+        count(&COUNTERS.mesh_read_bytes, bytes.len() as u64);
+        count(&COUNTERS.mesh_read_ns, nanos(start.elapsed()));
+        Some(faces)
+    }
+
+    /// Writes the display triangulations of `shape`, a body shape of
+    /// `version` meshed for display with `options` (mitcad#858), over any
+    /// stored before; returns the bytes of the file.
+    pub fn write_display_mesh<K: Kernel>(
+        &self,
+        kernel: &K,
+        version: u128,
+        options: &str,
+        shape: &K::Shape,
+    ) -> Result<u64, String> {
+        let start = Instant::now();
+        let mesh = kernel
+            .display_mesh_bytes(shape)
+            .map_err(|e| e.to_string())?;
+        let meta = MeshMeta {
+            version: Hex(version),
+            options: options.to_owned(),
+            document: self.label.clone(),
+        };
+        let bytes = encode_mesh(
+            &self.build_id,
+            &meta,
+            &miniz_oxide::deflate::compress_to_vec_zlib(&mesh, LEVEL),
+        );
+        let path = self.mesh_path(mesh_key(version, options));
+        let written = write_atomic(&path, &bytes).map_err(|e| {
+            count(&COUNTERS.write_errors, 1);
+            format!("{}: {e}", path.display())
+        })?;
+        count(&COUNTERS.mesh_writes, 1);
+        count(&COUNTERS.mesh_write_bytes, written);
+        count(&COUNTERS.mesh_write_ns, nanos(start.elapsed()));
+        Ok(written)
+    }
 }
 
-/// The result of a variant whose reads fit: its shapes read with the
-/// kernel, its versions made again from what it read.
-fn restore<K: Kernel>(
-    kernel: &K,
+/// A display mesh file: the build id, the header and the compressed
+/// triangulations.
+fn encode_mesh(build_id: &str, meta: &MeshMeta, mesh: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(mesh.len() + 256);
+    put_data(&mut payload, build_id.as_bytes());
+    put_data(
+        &mut payload,
+        &serde_json::to_vec(meta).expect("headers serialize"),
+    );
+    put_data(&mut payload, mesh);
+    let mut out = Vec::with_capacity(HEADER + payload.len());
+    frame(&mut out, MESH_MAGIC, MESH_FORMAT, &payload);
+    out
+}
+
+fn decode_mesh(bytes: &[u8]) -> Result<(String, MeshMeta, &[u8]), FileError> {
+    let mut cursor = Cursor {
+        data: payload_of(bytes, MESH_MAGIC, MESH_FORMAT)?,
+        at: 0,
+    };
+    let build_id = String::from_utf8(cursor.data()?.to_vec()).map_err(|_| FileError::Damaged)?;
+    let meta: MeshMeta = cursor.json()?;
+    let mesh = cursor.data()?;
+    if cursor.at != cursor.data.len() {
+        return Err(FileError::Damaged);
+    }
+    Ok((build_id, meta, mesh))
+}
+
+/// A variant whose reads fit: the feature, the reads (with this
+/// document's parameter ids) and the file.
+struct Hit<'a> {
     uid: FeatureUid,
     def_fp: u128,
     reads: Vec<Read>,
-    variant: &Variant,
+    path: &'a Path,
+}
+
+/// The result of a variant whose reads fit: its shapes read with the
+/// kernel (with an unpacker, those of the bodies it sets packed instead,
+/// mitcad#858), its versions made again from what it read.
+fn restore<K: Kernel>(
+    kernel: &K,
+    hit: Hit<'_>,
+    variant: Variant,
     params: &Parameters,
+    unpacker: Option<&ShapeUnpacker<K::Shape>>,
 ) -> Result<Output<K::Shape>, String> {
-    let shapes = variant
-        .shapes
-        .iter()
-        .map(|data| {
-            let bytes = miniz_oxide::inflate::decompress_to_vec_zlib(data)
-                .map_err(|e| format!("a stored shape does not decompress: {:?}", e.status))?;
-            kernel.shape_from_bytes(&bytes).map_err(|e| e.to_string())
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let shape = |i: usize| {
+    let Hit {
+        uid,
+        def_fp,
+        reads,
+        path,
+    } = hit;
+    let Variant { head, shapes } = variant;
+    let data = |i: usize| {
         shapes
             .get(i)
-            .cloned()
             .ok_or_else(|| format!("stored shape {i} is missing"))
     };
-    let head = &variant.head;
+    let shape = |i: usize| -> Result<K::Shape, String> {
+        let bytes = inflate(data(i)?)?;
+        kernel.shape_from_bytes(&bytes).map_err(|e| e.to_string())
+    };
     let version = output_version(uid, def_fp, &reads, params);
-    let mut changes = Vec::with_capacity(head.changes.len());
-    for (i, change) in head.changes.iter().enumerate() {
-        changes.push(match change {
-            StoredChange::Set { body, shape: index } => Change::Set(
-                *body,
-                Versioned {
-                    version: part_version(version, Part::Body(i)),
-                    value: shape(*index)?,
+    let heads: Vec<ChangeHead> = head
+        .changes
+        .iter()
+        .enumerate()
+        .map(|(i, change)| match change {
+            StoredChange::Set { body, .. } => {
+                ChangeHead::Set(*body, part_version(version, Part::Body(i)))
+            }
+            StoredChange::Remove { body } => ChangeHead::Remove(*body),
+        })
+        .collect();
+    let changes = match unpacker {
+        Some(unpacker) => {
+            let mut packed = Vec::with_capacity(head.changes.len());
+            for change in &head.changes {
+                packed.push(match change {
+                    StoredChange::Set { shape: index, .. } => data(*index)?.clone(),
+                    StoredChange::Remove { .. } => Vec::new(),
+                });
+            }
+            count(&COUNTERS.deferred, 1);
+            Changes::packed(
+                heads,
+                Packed {
+                    unpack: unpacker.unpack,
+                    stand_in: unpacker.stand_in,
+                    shapes: packed,
+                    path: path.to_owned(),
                 },
-            ),
-            StoredChange::Remove { body } => Change::Remove(*body),
-        });
-    }
+            )
+        }
+        None => {
+            let mut changes = Vec::with_capacity(head.changes.len());
+            for (change, stored) in heads.iter().zip(&head.changes) {
+                changes.push(match (*change, stored) {
+                    (ChangeHead::Set(body, version), StoredChange::Set { shape: index, .. }) => {
+                        Change::Set(
+                            body,
+                            Versioned {
+                                version,
+                                value: shape(*index)?,
+                            },
+                        )
+                    }
+                    (ChangeHead::Set(body, _) | ChangeHead::Remove(body), _) => {
+                        Change::Remove(body)
+                    }
+                });
+            }
+            Changes::new(changes)
+        }
+    };
     Ok(Output {
         sheet_rules: head.sheet_rules.clone().map(|value| Versioned {
             version: part_version(version, Part::SheetRules),
@@ -647,6 +964,7 @@ fn restore<K: Kernel>(
         warnings: head.warnings.clone(),
         pattern_anchor: head.pattern_anchor.clone(),
         sweep_place: head.sweep_place,
+        move_basis: head.move_basis,
         owners: head.owners.clone(),
         cut_targets: head.cut_targets.clone(),
         elements: head
@@ -702,12 +1020,17 @@ fn encode(file: &StoreFile) -> Vec<u8> {
         }
     }
     let mut out = Vec::with_capacity(HEADER + payload.len());
-    out.extend_from_slice(MAGIC);
-    put_u32(&mut out, FORMAT);
-    put_u64(&mut out, payload.len() as u64);
-    out.extend_from_slice(&checksum(&payload).to_le_bytes());
-    out.extend_from_slice(&payload);
+    frame(&mut out, MAGIC, FORMAT, &payload);
     out
+}
+
+/// The header (`magic`, `format`, length, checksum) and the payload.
+fn frame(out: &mut Vec<u8>, magic: &[u8; 8], format: u32, payload: &[u8]) {
+    out.extend_from_slice(magic);
+    put_u32(out, format);
+    put_u64(out, payload.len() as u64);
+    out.extend_from_slice(&checksum(payload).to_le_bytes());
+    out.extend_from_slice(payload);
 }
 
 fn checksum(payload: &[u8]) -> u128 {
@@ -752,11 +1075,16 @@ impl<'a> Cursor<'a> {
 
 /// The header and the payload of a file's bytes, the checksum checked.
 fn payload(bytes: &[u8]) -> Result<&[u8], FileError> {
-    if bytes.len() < HEADER || &bytes[..8] != MAGIC {
+    payload_of(bytes, MAGIC, FORMAT)
+}
+
+/// The payload of a file of `magic` and `format`, the checksum checked.
+fn payload_of<'a>(bytes: &'a [u8], magic: &[u8; 8], format: u32) -> Result<&'a [u8], FileError> {
+    if bytes.len() < HEADER || &bytes[..8] != magic {
         return Err(FileError::Damaged);
     }
-    let format = u32::from_le_bytes(bytes[8..12].try_into().expect("4 bytes"));
-    if format != FORMAT {
+    let stored = u32::from_le_bytes(bytes[8..12].try_into().expect("4 bytes"));
+    if stored != format {
         return Err(FileError::Damaged);
     }
     let size = u64::from_le_bytes(bytes[12..20].try_into().expect("8 bytes"));
@@ -848,6 +1176,8 @@ struct Found {
     bytes: u64,
     modified: SystemTime,
     temporary: bool,
+    /// A display mesh file (mitcad#858).
+    mesh: bool,
 }
 
 fn files(dir: &Path) -> Vec<Found> {
@@ -863,7 +1193,8 @@ fn files(dir: &Path) -> Vec<Found> {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             let temporary = name.starts_with('.') && name.ends_with(".tmp");
-            let ours = path.extension().is_some_and(|e| e == EXTENSION);
+            let mesh = path.extension().is_some_and(|e| e == MESH_EXTENSION);
+            let ours = mesh || path.extension().is_some_and(|e| e == EXTENSION);
             if !temporary && !ours {
                 continue;
             }
@@ -875,6 +1206,7 @@ fn files(dir: &Path) -> Vec<Found> {
                 bytes: metadata.len(),
                 modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
                 temporary,
+                mesh,
             });
         }
     }
@@ -930,6 +1262,9 @@ pub struct StoreUsage {
     /// Files of other builds (never used; replaced, or removed by [`gc`]).
     pub other_files: u64,
     pub other_bytes: u64,
+    /// Display mesh files (mitcad#858), of every build, and their bytes.
+    pub meshes: u64,
+    pub mesh_bytes: u64,
     /// Files that are not store files (they go when read).
     pub damaged: u64,
     /// This build's files.
@@ -989,6 +1324,11 @@ pub fn usage(dir: &Path, build_id: &str) -> StoreUsage {
         }
         usage.files += 1;
         usage.bytes += file.bytes;
+        if file.mesh {
+            usage.meshes += 1;
+            usage.mesh_bytes += file.bytes;
+            continue;
+        }
         match read_head(&file.path) {
             Ok((build, meta, variants)) if build == build_id => usage.entries.push(StoredEntry {
                 document: meta.document,
@@ -1034,6 +1374,15 @@ pub mod testing {
         files(dir)
             .into_iter()
             .filter(|f| !f.temporary)
+            .map(|f| (f.path, f.bytes))
+            .collect()
+    }
+
+    /// The display mesh files under `dir` (mitcad#858), with their sizes.
+    pub fn mesh_files(dir: &Path) -> Vec<(PathBuf, u64)> {
+        files(dir)
+            .into_iter()
+            .filter(|f| !f.temporary && f.mesh)
             .map(|f| (f.path, f.bytes))
             .collect()
     }

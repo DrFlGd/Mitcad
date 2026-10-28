@@ -45,14 +45,24 @@ DrawingProjection project_view(const ShapeList& shapes, const DrawingView& view)
     curve.kind = static_cast<std::uint8_t>(c.kind == geometry::DrawnKind::Sharp    ? 0
                                            : c.kind == geometry::DrawnKind::Smooth ? 1
                                                                                    : 2);
-    curve.shape = static_cast<std::uint8_t>(c.type == geometry::DrawnCurve::Type::Line  ? 0
-                                            : c.type == geometry::DrawnCurve::Type::Arc ? 1
-                                                                                        : 2);
+    curve.shape = static_cast<std::uint8_t>(c.type == geometry::DrawnCurve::Type::Line       ? 0
+                                            : c.type == geometry::DrawnCurve::Type::Arc      ? 1
+                                            : c.type == geometry::DrawnCurve::Type::Polyline ? 2
+                                                                                             : 3);
     push_points(c.points, curve.points);
     curve.center = {c.center[0], c.center[1]};
     curve.radius = c.radius;
     curve.start = c.start;
     curve.end = c.end;
+    // A B-spline's own data (mitcad#853).
+    curve.degree = static_cast<std::uint32_t>(c.degree);
+    for (const double knot : c.knots) {
+      curve.knots.push_back(knot);
+    }
+    push_points(c.poles, curve.poles);
+    for (const double weight : c.weights) {
+      curve.weights.push_back(weight);
+    }
     out.curves.push_back(std::move(curve));
   }
   for (std::size_t face = 0; face < drawn.cuts.size(); ++face) {

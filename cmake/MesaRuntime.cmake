@@ -580,7 +580,10 @@ if(MITCAD_MESA_DIR)
               -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-measure-test.ps1"
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-measure"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
-    set_tests_properties(app.ui-windows-measure PROPERTIES TIMEOUT 300)
+    # Its Copy and Copy All write the system clipboard, which every test of
+    # one ssh logon shares: not at once with the other tests that use it
+    # (app.ui-windows-sketch-clipboard, app.ui-windows-assistant-setup).
+    set_tests_properties(app.ui-windows-measure PROPERTIES TIMEOUT 300 RESOURCE_LOCK system_clipboard)
 
     # 3D Print's Import from slicer... (mitcad#654, mitcad#655): a Bambu Studio
     # project whose filaments are slowed for cooling on overhangs from 95%
@@ -709,7 +712,10 @@ if(MITCAD_MESA_DIR)
               -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sketch-clipboard-test.ps1"
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-clipboard"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
-    set_tests_properties(app.ui-windows-sketch-clipboard PROPERTIES TIMEOUT 300)
+    # Cut, then Paste seconds later: another test writing the shared
+    # system clipboard in between would replace the fragment (see
+    # app.ui-windows-measure).
+    set_tests_properties(app.ui-windows-sketch-clipboard PROPERTIES TIMEOUT 300 RESOURCE_LOCK system_clipboard)
     # Redefine Sketch Plane (mitcad#787): from a sketch's browser row onto
     # a face with an offset, undone; a face of a later feature refused.
     add_test(NAME app.ui-windows-sketch-redefine-plane

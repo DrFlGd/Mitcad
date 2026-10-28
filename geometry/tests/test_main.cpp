@@ -129,9 +129,17 @@ const Part kParts[] = {
     {"extrude_feature", test::extrude_feature_tests},
     {"revolve", test::revolve_tests},
     {"hole", test::hole_tests},
-    {"thread", test::thread_tests},
-    // Sweeps, lofts, pipes, coils, ribs and webs (F3).
-    {"sweeps", test::sweeps_tests},
+    // Modelled threads, in three parts that run beside each other (mitcad#870).
+    {"thread.1", test::thread_tests_1},
+    {"thread.2", test::thread_tests_2},
+    {"thread.3", test::thread_tests_3},
+    // Sweeps, lofts, pipes, coils, ribs and webs (F3), in five parts that run
+    // beside each other (mitcad#870).
+    {"sweeps.1", test::sweeps_tests_1},
+    {"sweeps.2", test::sweeps_tests_2},
+    {"sweeps.3", test::sweeps_tests_3},
+    {"sweeps.4", test::sweeps_tests_4},
+    {"sweeps.5", test::sweeps_tests_5},
     {"text", test::text_tests},
     // Lofts with end conditions and rails, curve and surface fitting (P2).
     {"skin", test::skin_tests},

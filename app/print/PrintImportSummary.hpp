@@ -14,7 +14,9 @@ namespace mitcad {
 // What an import of print settings says (mitcad#654, mitcad#655), from
 // `import_print_profile`'s answer: the line under 3D Print's Import from
 // slicer…, short ("plate.3mf imported", "mount.3mf imported. 1 setting not
-// read": only what failed is counted), and the whole report behind Details…: what came in by name
+// read": only what failed is counted; one item that came in as a copy
+// names its new name, "Fine imported into My library as Fine 2",
+// mitcad#830), and the whole report behind Details…: what came in by name
 // (a heading in the singular for one item) and the same count (Imported;
 // the slicer's own settings Mitcad keeps have no section), what was left out (Left out), and each distinct problem once by
 // the plain name of its key with the number of profiles that had it (Not

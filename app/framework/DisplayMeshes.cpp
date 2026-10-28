@@ -34,15 +34,51 @@ private:
   const ModelJob& m_job;
 };
 
-void addShape(DisplayShapes& shapes, std::shared_ptr<geometry::Shape> shape) {
+bool addShape(DisplayShapes& shapes, std::shared_ptr<geometry::Shape> shape) {
   if (shape && !shape->occt().IsNull()) {
     shapes.push_back(std::move(shape));
+    return true;
+  }
+  return false;
+}
+
+// What meshForDisplay passes by: a shape with a triangulation on every
+// face, a mesh body, or one meshed for display to the end.
+bool readyForDisplay(const geometry::Shape& shape) {
+  const TopoDS_Shape& occt = shape.occt();
+  return io::has_triangulation(occt) || io::is_mesh(occt) || shape.display_meshed();
+}
+
+// MITCAD_DISPLAY_MESH_STORE=0 (or off) keeps display meshes out of the
+// result store (mitcad#858).
+bool displayMeshStore() {
+  const QByteArray given = qgetenv("MITCAD_DISPLAY_MESH_STORE");
+  return given != "0" && given != "off";
+}
+
+// A display mesh request of the document: the bodies and the options.
+QByteArray meshRequest(const std::vector<std::string>& uids, const QByteArray& options) {
+  QJsonArray bodies;
+  for (const std::string& uid : uids) {
+    bodies.append(QString::fromStdString(uid));
+  }
+  return compactJson(
+      {{QStringLiteral("bodies"), bodies}, {QStringLiteral("options"), QString::fromUtf8(options)}});
+}
+
+// The shown bodies and their triangles after an open's display meshing
+// (mitcad#858: the store's meshes and fresh ones compared by this).
+void countShown(DisplayMeshing& meshing, const DisplayShapes& shapes) {
+  meshing.shown = shapes.size();
+  meshing.triangles = 0;
+  for (const std::shared_ptr<geometry::Shape>& shape : shapes) {
+    meshing.triangles += io::mesh_stats(shape->occt()).triangles;
   }
 }
 
 } // namespace
 
-DisplayShapes shownBodyShapes(const Document& document) {
+DisplayShapes shownBodyShapes(const Document& document, std::vector<std::string>* uids) {
   DisplayShapes shapes;
   const QJsonDocument instances =
       parseJson(document.query(rustStr(compactJson({{QStringLiteral("query"), QStringLiteral("instances")}}))));
@@ -53,8 +89,9 @@ DisplayShapes shownBodyShapes(const Document& document) {
       continue;
     }
     const std::string uid = instance.value(QStringLiteral("body")).toString().toStdString();
-    if (!uid.empty() && seen.insert(uid).second) {
-      addShape(shapes, document.body_shape(uid));
+    if (!uid.empty() && seen.insert(uid).second && addShape(shapes, document.body_shape(uid)) &&
+        uids != nullptr) {
+      uids->push_back(uid);
     }
   }
   return shapes;
@@ -193,6 +230,77 @@ DisplayMeshing meshForDisplay(const DisplayShapes& shapes, ModelJob& job, Displa
   return meshing;
 }
 
+QByteArray displayMeshStoreOptions() {
+  const io::MeshOptions options = viewMeshOptions();
+  return QStringLiteral("final deviation=%1 angle=%2 relative=%3 face_triangles=%4 fast_planes=%5 check_planes=%6")
+      .arg(options.linear_deflection, 0, 'g', 17)
+      .arg(options.angular_deflection, 0, 'g', 17)
+      .arg(options.relative ? 1 : 0)
+      .arg(static_cast<qulonglong>(options.face_triangles))
+      .arg(options.fast_planes ? 1 : 0)
+      .arg(options.check_planes ? 1 : 0)
+      .toUtf8();
+}
+
+DisplayMeshing meshOpenedForDisplay(Document& document, ModelJob& job, bool store) {
+  std::vector<std::string> uids;
+  const DisplayShapes shapes = shownBodyShapes(document, &uids);
+  if (!store || !displayMeshStore()) {
+    DisplayMeshing meshing = meshForDisplay(shapes, job);
+    countShown(meshing, shapes);
+    return meshing;
+  }
+  QElapsedTimer clock;
+  clock.start();
+  const QByteArray options = displayMeshStoreOptions();
+  // The bodies the view would mesh take what the store keeps for them.
+  std::vector<std::string> wanted;
+  for (std::size_t i = 0; i < shapes.size(); ++i) {
+    if (!readyForDisplay(*shapes[i])) {
+      wanted.push_back(uids[i]);
+    }
+  }
+  QJsonObject restored;
+  if (!wanted.empty() && !job.control().is_cancelled()) {
+    job.setStage(QCoreApplication::translate("DisplayMeshes", "Reading the bodies' display meshes"));
+    restored = parseObject(document.restore_display_meshes(rustStr(meshRequest(wanted, options))));
+  }
+  const qint64 restoreMilliseconds = clock.elapsed();
+  // The rest are meshed; what is meshed to the end goes to the store.
+  std::vector<bool> ready(shapes.size());
+  for (std::size_t i = 0; i < shapes.size(); ++i) {
+    ready[i] = readyForDisplay(*shapes[i]);
+  }
+  DisplayMeshing meshing = meshForDisplay(shapes, job);
+  meshing.restored = static_cast<std::size_t>(restored.value(QStringLiteral("restored")).toArray().size());
+  meshing.restoredFaces = static_cast<std::size_t>(restored.value(QStringLiteral("faces")).toInteger());
+  meshing.restoreMilliseconds = restoreMilliseconds;
+  if (!job.control().is_cancelled() && meshing.report.abandoned == 0) {
+    std::vector<std::string> meshed;
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+      if (!ready[i] && shapes[i]->display_meshed() && !shapes[i]->display_interactive() &&
+          !io::is_mesh(shapes[i]->occt())) {
+        meshed.push_back(uids[i]);
+      }
+    }
+    if (!meshed.empty()) {
+      QElapsedTimer storing;
+      storing.start();
+      const QJsonObject stored =
+          parseObject(document.persist_display_meshes(rustStr(meshRequest(meshed, options))));
+      meshing.stored = static_cast<std::size_t>(stored.value(QStringLiteral("stored")).toInteger());
+      meshing.storedBytes = stored.value(QStringLiteral("bytes")).toInteger();
+      meshing.storeMilliseconds = storing.elapsed();
+      for (const QJsonValue& error : stored.value(QStringLiteral("errors")).toArray()) {
+        meshing.storeErrors.append(error.toString());
+      }
+    }
+  }
+  countShown(meshing, shapes);
+  meshing.milliseconds = clock.elapsed();
+  return meshing;
+}
+
 std::shared_ptr<geometry::Shape> displayShape(const std::shared_ptr<geometry::Shape>& shape) {
   if (shape) {
     if (std::shared_ptr<geometry::Shape> standIn = shape->display_stand_in()) {
@@ -219,13 +327,44 @@ DisplayShapes refinableShapes(const DisplayShapes& shown) {
 
 void logDisplayMeshing(const DisplayMeshing& meshing, const QString& label) {
   if (io::mesh_tracing()) {
-    qDebug().noquote() << QStringLiteral("Mesh trace %1 %2: %3 bodies ready, %4 meshed, %5 faces reused; %6")
+    qDebug().noquote() << QStringLiteral(
+                              "Mesh trace %1 %2: %3 bodies ready, %4 meshed, %5 faces reused, %6 faces from the "
+                              "result store; %7")
                               .arg(label, meshing.tier == DisplayTier::Final ? QStringLiteral("final")
                                                                              : QStringLiteral("interactive"))
                               .arg(static_cast<qulonglong>(meshing.ready))
                               .arg(static_cast<qulonglong>(meshing.bodies))
                               .arg(static_cast<qulonglong>(meshing.reused))
+                              .arg(static_cast<qulonglong>(meshing.restoredFaces))
                               .arg(QString::fromStdString(meshing.report.line()));
+  }
+  // The result store's display meshes (mitcad#858): the faces taken from
+  // it against those meshed.
+  if (meshing.restored > 0) {
+    qDebug().noquote() << QStringLiteral("Display meshes of %1: %2 bodies (%3 faces) from the result store in %4 ms; "
+                                         "%5 bodies (%6 faces) meshed")
+                              .arg(label)
+                              .arg(static_cast<qulonglong>(meshing.restored))
+                              .arg(static_cast<qulonglong>(meshing.restoredFaces))
+                              .arg(meshing.restoreMilliseconds)
+                              .arg(static_cast<qulonglong>(meshing.bodies))
+                              .arg(static_cast<qulonglong>(meshing.report.meshed));
+  }
+  if (meshing.shown > 0) {
+    qDebug().noquote() << QStringLiteral("Display meshes of %1: %2 bodies shown, %3 triangles")
+                              .arg(label)
+                              .arg(static_cast<qulonglong>(meshing.shown))
+                              .arg(static_cast<qulonglong>(meshing.triangles));
+  }
+  if (meshing.stored > 0) {
+    qDebug().noquote() << QStringLiteral("Display meshes of %1: stored %2 bodies (%3 bytes) in %4 ms")
+                              .arg(label)
+                              .arg(static_cast<qulonglong>(meshing.stored))
+                              .arg(meshing.storedBytes)
+                              .arg(meshing.storeMilliseconds);
+  }
+  for (const QString& error : meshing.storeErrors) {
+    qWarning().noquote() << QStringLiteral("Display meshes of %1: not stored: %2").arg(label, error);
   }
   if (meshing.bodies > 0) {
     qDebug().noquote() << QStringLiteral("Display meshes of %1: %2 bodies in %3 ms on the model's thread%4")

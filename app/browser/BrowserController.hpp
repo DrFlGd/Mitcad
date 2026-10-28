@@ -4,10 +4,12 @@
 #include <QObject>
 #include <QPoint>
 #include <QPointer>
+#include <QRect>
 #include <QString>
 #include <QStringList>
 
 #include "../framework/HybridAssembly.hpp"
+#include "BindingList.hpp"
 #include "BrowserPanel.hpp"
 #include "DocumentSnapshot.hpp"
 #include "FindInDesign.hpp"
@@ -25,6 +27,7 @@ class QWidget;
 namespace mitcad {
 
 class AppearanceDialog;
+class BindingsCard;
 class ConfigurationBar;
 class ConfigurationsDialog;
 class FindDialog;
@@ -83,7 +86,8 @@ public:
   // The Configuration bar at the top of the browser (mitcad#807).
   ConfigurationBar* configurationBar() const { return m_configurationBar; }
   // Edit Appearances (mitcad#46); Assign gives the targets (bodies, and
-  // faces: mitcad#53) the selected appearance.
+  // faces: mitcad#53) the selected appearance, or fills the rows of the
+  // option it varies with (the assignment panel, mitcad#861).
   void openAppearances(const Selection& targets);
   // Design Policy (mitcad#220) of a component (C0 the root): its seven
   // settings, presets and violations; OK sets it as one undo step.
@@ -98,7 +102,8 @@ public:
   // Materials (mitcad#655; Material... and Edit Materials): Assign gives
   // the bodies (uids) the selected material, or with `component` (a uid)
   // makes it that component's default; neither: no Assign. The window
-  // follows the model.
+  // follows the model; the bodies' material can vary with an option there
+  // (the assignment panel, mitcad#861).
   // `keepOpen`: Assign leaves the window open (3D Print's Assign materials…).
   void openMaterial(const QStringList& bodies, const QString& component = QString(), bool keepOpen = false);
   // Printers and Processes (mitcad#655; Edit Printers and Processes, Edit…
@@ -148,15 +153,14 @@ public:
   // row) or the command.
   QToolButton* findButton() const { return m_findButton; }
   void openFind();
-  // Bindings (mitcad#809; Bindings.hpp): Suppress When… of a feature, Show
-  // When… of a body or an occurrence (its path, "O1/O4"), and Follow
-  // Option… of the appearance of bodies or faces (the targets as
-  // Appearance… takes them) or of the material of bodies. Each sets the
-  // expression the dialog gives (one undo step), or removes it.
+  // Bindings (mitcad#809; Bindings.hpp): Suppress When… of a feature and
+  // Show When… of a body or an occurrence (its path, "O1/O4"). Each sets
+  // the expression the dialog gives (one undo step), or removes it. An
+  // appearance or a material varies with an option in the assignment panel
+  // of Appearance… and Material… (mitcad#861, AssignmentPanel.hpp).
   void suppressWhen(const QString& feature);
   void showBodyWhen(const QString& body);
   void showOccurrenceWhen(const QString& path);
-  void followOption(const Selection& targets, bool material);
 
 protected:
   // Logs where the magnifier button is, for UI tests.
@@ -222,6 +226,24 @@ private:
   void groupFeatures(const QStringList& uids);
   void browserDoubleClicked(const BrowserNode& node);
   void toggleVisibility(const BrowserNode& node);
+  // The names of a component's bodies that follow a Show When condition,
+  // which the Bodies folder's light bulb and Show All / Hide All leave as
+  // they are (mitcad#863), and what the folder says when they are all it
+  // holds.
+  QStringList conditionedBodies(const QString& owner) const;
+  static QString bodiesFollowConditions(const QStringList& bodies);
+  // "Body2 follows its Show When and is left as it is." (mitcad#863): the
+  // tooltip of Show All / Hide All of a folder that holds such bodies.
+  static QString leftToConditions(const QStringList& bodies);
+  // An occurrence's Show When condition by its path, or empty.
+  QString occurrenceCondition(const QString& path) const;
+  // One item set by hand lost its condition: the status bar says so.
+  void conditionRemoved(const QString& name);
+  // A bulk change (a folder, several items of the view's Hide, Find in
+  // Design's Show or Hide) left items with conditions to them: logged
+  // ("<label>[ <where>]: kept 1 following Show When: Body2") and said in
+  // the status bar.
+  void keptByConditions(const QString& label, const QString& where, const QStringList& kept);
   void activate(const BrowserNode& node);
   void rename(const BrowserNode& node, const QString& name);
   void renameFeature(const QString& uid, const QString& name);
@@ -296,6 +318,21 @@ private:
   QString m_loggedBadge; // the warnings badge (mitcad#170)
   QString m_loggedDof;
   QString m_loggedJoints;
+
+  // Bindings at a glance (mitcad#862): the fx card of a browser row or a
+  // timeline feature, and what its Edit… and the Configurations window's
+  // Bindings tab do (BindingsCard.hpp, ConfigurationBindingsPage.hpp).
+  void browserBindings(const BrowserNode& node, const QRect& anchor, bool pinned);
+  void timelineBindings(const QString& uid, const QRect& anchor, bool pinned);
+  void showBindingsCard(const BindingItem& item, const QRect& anchor, bool pinned);
+  // The editor of a property: the Appearance window for a body or a face,
+  // Materials for a body, Show When… or Suppress When….
+  void editBinding(const BindingEntry& entry);
+  // Selects the item and shows its row (Find in Browser; a feature in the
+  // timeline too).
+  void selectBinding(const BindingEntry& entry);
+  void showAllBindings();
+  QPointer<BindingsCard> m_bindingsCard;
 };
 
 } // namespace mitcad

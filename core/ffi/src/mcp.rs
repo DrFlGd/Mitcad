@@ -667,6 +667,35 @@ fn export_plan(arguments: &Value, path: &Path) -> Result<ExportPlan, String> {
     ) {
         return Err(format!("unknown export format '{format}'"));
     }
+    // A cut sheet kept in the design (mitcad#853): DXF or SVG of its parts'
+    // outlines, their names on the layer LABEL with labels.
+    if arguments.get("cut_sheet").is_some() {
+        if !matches!(format, "dxf" | "svg") {
+            return Err("a cut sheet is written as DXF or SVG".to_owned());
+        }
+        if let Some(key) = ["drawing", "sketch", "flat_pattern", "bodies"]
+            .into_iter()
+            .find(|k| arguments.get(*k).is_some())
+        {
+            return Err(format!("cut_sheet does not take '{key}'"));
+        }
+        let cut_sheet = string(arguments, "cut_sheet")?;
+        let labels = match arguments.get("labels") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(labels)) => *labels,
+            Some(_) => return Err("labels must be true or false".to_owned()),
+        };
+        require_extension(path, format)?;
+        let text = path_text(path)?;
+        return Ok(ExportPlan {
+            command: json!({"cmd": "export_cut_sheet", "path": text, "drawing": cut_sheet,
+                            "labels": labels}),
+            extra: Vec::new(),
+        });
+    }
+    if arguments.get("labels").is_some() {
+        return Err("labels is only accepted with cut_sheet".to_owned());
+    }
     // Drawings (mitcad#471): PDF and SVG, and DXF with drawing.
     let drawing = match arguments.get("drawing") {
         Some(options) => Some(

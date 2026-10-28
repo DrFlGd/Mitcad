@@ -187,12 +187,16 @@ public:
     }
     m_c.host().setSelection({});
     bool supported = selected.size() <= 2;
+    // A body edge or vertex the sketch cannot project (mitcad#866): why.
+    QString refused;
     for (const SelectionItem& item : selected) {
       if (item.owner == m_c.uid() &&
           (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint)) {
         m_picks << item.name;
       } else if (item.kind == SelectKind::Edge || item.kind == SelectKind::Vertex) {
-        const auto& bodies = m_c.bodyGeometry().items();
+        // In the sketch plane or out of it (mitcad#866): what it projects
+        // to, projected when the dimension is added.
+        const auto& bodies = m_c.bodyGeometry(true).items();
         const QString ownOccurrence = m_c.host().sketchOccurrence(m_c.uid());
         const auto body = std::find_if(bodies.begin(), bodies.end(), [&item, &ownOccurrence](const BodyItem& candidate) {
           // Own-component geometry has no occurrence link in this query;
@@ -203,6 +207,10 @@ public:
         });
         if (body == bodies.end()) {
           supported = false;
+          refused = QObject::tr("Sketch Dimension: %1 cannot be projected onto this sketch: it is not on a visible "
+                                "body before the sketch, where the sketch is edited.")
+                        .arg(item.kind == SelectKind::Vertex ? QObject::tr("the body vertex")
+                                                             : QObject::tr("the body edge"));
         } else {
           m_picks << BodyGeometry::itemId(static_cast<std::size_t>(body - bodies.begin()));
         }
@@ -212,7 +220,10 @@ public:
     }
     if (!supported || !decide()) {
       reset();
-      m_c.hint(QObject::tr("Sketch Dimension: these cannot be dimensioned together."));
+      m_c.hint(refused.isEmpty() ? QObject::tr("Sketch Dimension: these cannot be dimensioned together.") : refused);
+      if (!refused.isEmpty()) {
+        qDebug().noquote() << refused;
+      }
       return;
     }
     m_state = State::Place;
@@ -302,10 +313,11 @@ private:
   enum class State { Pick, Pick2, Place, Edit };
 
   // The point or curve under the cursor: the sketch's, a body edge or vertex
-  // in the sketch plane (mitcad#256), read again after the document changed,
-  // or the sketch's origin or an axis (mitcad#500).
+  // in the sketch plane (mitcad#256) or out of it where the view shows it
+  // and in sight (mitcad#866), read again after the document changed, or
+  // the sketch's origin or an axis (mitcad#500).
   QString entityAt(const QPointF& screen) {
-    m_c.bodyGeometry();
+    m_c.bodyGeometry(true);
     return m_c.entityAt(screen, PickAll | PickBody | PickAxes);
   }
 
@@ -330,15 +342,20 @@ private:
   void logBodyPick(const QString& entity) const {
     const BodyItem* item = m_c.bodyGeometryShown().item(entity);
     if (item != nullptr && m_picks.contains(entity)) {
-      qDebug().noquote() << QStringLiteral("Sketch Dimension picked %1 of %2 (%3)")
-                                .arg(item->describe(), item->body, entity);
+      qDebug().noquote() << QStringLiteral("Sketch Dimension picked %1 of %2 (%3)%4")
+                                .arg(item->describe(), item->body, entity,
+                                     item->inPlane ? QString()
+                                                   : QStringLiteral(", out of the plane: projected as a %1")
+                                                         .arg(item->isPoint() ? QStringLiteral("point") : item->type));
     }
   }
 
   // Projects the body edges and vertices a dimension names into the sketch
   // (linked), or takes an existing projection of the same source, and names
   // the projected entities instead: a line, circle or arc, its end or centre,
-  // a vertex's point (mitcad#256). False when a projection is refused.
+  // a vertex's point (mitcad#256); one out of the plane the same way, an
+  // edge seen end on as its point (mitcad#866). False when a projection is
+  // refused.
   bool projectPicks(SketchOp& op, QJsonObject& dimension) const {
     // The items as they are now: projecting reads the sketch again.
     std::vector<std::tuple<QString, BodyItem, QString>> refs; // field, item, part
@@ -354,7 +371,7 @@ private:
         return false;
       }
       const SketchModel& model = op.model();
-      QString entity = item.isVertex() ? projected.point : projected.curve;
+      QString entity = item.isPoint() ? projected.point : projected.curve;
       if (!part.isEmpty()) {
         const CurveData* curve = model.curve(projected.curve);
         entity.clear();
@@ -393,7 +410,7 @@ private:
     switch (m_state) {
     case State::Pick:
       m_c.hint(QObject::tr("Sketch Dimension: pick a line, circle, arc or point, of the sketch or a body edge or "
-                           "vertex in its plane, or a sketch axis or the origin."));
+                           "vertex (projected onto the sketch plane), or a sketch axis or the origin."));
       break;
     case State::Pick2:
       m_c.hint(QObject::tr("Sketch Dimension: pick another point or curve."));
@@ -794,13 +811,16 @@ QString tangentPoint(const SketchModel& model, const QStringList& picks, const s
   return {};
 }
 
-// Whether `entity` can be the next pick.
-bool acceptable(const QString& type, const QStringList& picks, const QString& entity,
-                const SketchModel& model) {
+// Why `entity` cannot be the next pick; empty when it can (mitcad#865: a
+// refused pick says why on the status line).
+QString refusal(const QString& type, const QStringList& picks, const QString& entity, const SketchModel& model) {
+  if (entity.isEmpty()) {
+    return QObject::tr("there is no sketch geometry there");
+  }
   const bool twice = (type == QStringLiteral("tangent") || type == QStringLiteral("smooth")) &&
                      picks.size() == 1 && endsMeet(model, entity);
-  if (entity.isEmpty() || (picks.contains(entity) && !twice)) {
-    return false;
+  if (picks.contains(entity) && !twice) {
+    return QObject::tr("it is picked already");
   }
   const bool point = isPoint(model, entity);
   const CurveData* curve = model.curve(entity);
@@ -814,59 +834,86 @@ bool acceptable(const QString& type, const QStringList& picks, const QString& en
   // point like any other.
   if (type != QStringLiteral("fix") && model.isAxisOrOrigin(entity)) {
     if (std::any_of(picks.begin(), picks.end(), [&](const QString& p) { return model.isAxisOrOrigin(p); })) {
-      return false;
+      return QObject::tr("a constraint takes only one of the sketch's origin and axes");
+    }
+    if (!model.axisOf(entity).isEmpty() && type == QStringLiteral("symmetric") && index < 2) {
+      return QObject::tr("the line to mirror about is picked last: first pick the two points or curves "
+                         "to mirror");
     }
     if (!model.axisOf(entity).isEmpty() && type != QStringLiteral("coincident") &&
         type != QStringLiteral("parallel") && type != QStringLiteral("perpendicular") &&
         type != QStringLiteral("collinear") && type != QStringLiteral("tangent") &&
-        !(type == QStringLiteral("symmetric") && index == 2)) {
-      return false;
+        type != QStringLiteral("symmetric")) {
+      return QObject::tr("it does not take the sketch's axes");
     }
   }
   if (type == QStringLiteral("fix")) {
-    return true;
+    return {};
   }
   if (type == QStringLiteral("coincident")) {
     // A point and a point or curve, in either order.
-    return index == 0 || point || pickedPoints() > 0;
+    return (index == 0 || point || pickedPoints() > 0) ? QString() : QObject::tr("pick a point to go with the curve");
   }
   if (type == QStringLiteral("horizontal_vertical")) {
-    return index == 0 ? point || (curve != nullptr && curve->isLine()) : point;
+    if (index == 0) {
+      return (point || (curve != nullptr && curve->isLine())) ? QString() : QObject::tr("pick a line or a point");
+    }
+    return point ? QString() : QObject::tr("pick a second point");
   }
   if (type == QStringLiteral("parallel") || type == QStringLiteral("perpendicular") ||
       type == QStringLiteral("collinear")) {
-    return curve != nullptr && curve->isLine();
+    return curve != nullptr && curve->isLine() ? QString() : QObject::tr("pick a line");
   }
   if (type == QStringLiteral("tangent") || type == QStringLiteral("smooth")) {
-    return curve != nullptr;
+    return curve != nullptr ? QString() : QObject::tr("pick a curve");
   }
   if (type == QStringLiteral("equal")) {
     if (curve == nullptr || !(curve->isLine() || curve->isCircular())) {
-      return false;
+      return QObject::tr("pick a line, a circle or an arc");
     }
     const CurveData* first = index == 0 ? nullptr : model.curve(picks.first());
-    return first == nullptr || first->isLine() == curve->isLine();
+    if (first == nullptr || first->isLine() == curve->isLine()) {
+      return {};
+    }
+    return first->isLine() ? QObject::tr("pick a second line") : QObject::tr("pick a second circle or arc");
   }
   if (type == QStringLiteral("concentric")) {
-    return curve != nullptr && (curve->isCircular() || curve->isEllipse());
+    return curve != nullptr && (curve->isCircular() || curve->isEllipse()) ? QString()
+                                                                           : QObject::tr("pick a circle or an arc");
   }
   if (type == QStringLiteral("midpoint")) {
     if (index == 0) {
-      return point || (curve != nullptr && (curve->isLine() || curve->isArc()));
+      return (point || (curve != nullptr && (curve->isLine() || curve->isArc())))
+                 ? QString()
+                 : QObject::tr("pick a point, a line or an arc");
     }
-    return pickedPoints() > 0 ? curve != nullptr && (curve->isLine() || curve->isArc()) : point;
+    if (pickedPoints() > 0) {
+      return curve != nullptr && (curve->isLine() || curve->isArc()) ? QString()
+                                                                     : QObject::tr("pick a line or an arc");
+    }
+    return point ? QString() : QObject::tr("pick a point");
   }
   if (type == QStringLiteral("symmetric")) {
     if (index == 2) {
-      return curve != nullptr && curve->isLine();
+      return curve != nullptr && curve->isLine() ? QString() : QObject::tr("pick a line to mirror about");
     }
     if (index == 1) {
       const CurveData* first = model.curve(picks.first());
-      return first == nullptr ? point : curve != nullptr && curve->type == first->type;
+      if (first == nullptr) {
+        return point ? QString() : QObject::tr("pick a second point");
+      }
+      return curve != nullptr && curve->type == first->type ? QString()
+                                                             : QObject::tr("pick a curve of the first one's kind");
     }
-    return true;
+    return {};
   }
-  return false;
+  return QObject::tr("it does not fit");
+}
+
+// Whether `entity` can be the next pick.
+bool acceptable(const QString& type, const QStringList& picks, const QString& entity,
+                const SketchModel& model) {
+  return refusal(type, picks, entity, model).isEmpty();
 }
 
 // The constraint of complete picks, clicked at `clicks` (none for a
@@ -1079,11 +1126,18 @@ QVector<QStringList> selectionSets(const QString& type, const QStringList& picks
 
 class ConstraintTool : public SketchTool {
 public:
-  ConstraintTool(SketchController& c, const QString& type) : SketchTool(c), m_type(type) {}
+  // The selection is read when the tool is made, as the Sketch Dimension
+  // tool does, before starting it can change anything.
+  ConstraintTool(SketchController& c, const QString& type)
+      : SketchTool(c), m_type(type), m_selection(c.host().selection()) {}
 
   QString name() const override { return constraintName(m_type); }
   bool snaps() const override { return false; }
-  void start() override { prompt(); }
+
+  void start() override {
+    takeSelection();
+    prompt();
+  }
 
   void move(const Snap& snap) override {
     const QString entity = entityAt(snap.screen);
@@ -1094,20 +1148,38 @@ public:
 
   void press(const Snap& snap) override {
     const QString entity = entityAt(snap.screen);
-    if (!acceptable(m_type, m_picks, entity, view())) {
+    if (entity.isEmpty()) {
+      return;
+    }
+    // A pick the constraint does not take says why (mitcad#865).
+    const QString why = refusal(m_type, m_picks, entity, view());
+    if (!why.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("%1 pick %2 refused: %3").arg(name(), entity, why);
+      m_c.notice(QObject::tr("%1 does not take that: %2").arg(name(), why));
+      prompt();
       return;
     }
     m_picks << entity;
     m_clicks.push_back(snap.at);
+    bool refused = false;
     if (static_cast<int>(m_picks.size()) >= needed(m_type, m_picks, view())) {
-      apply(m_c, m_type, m_picks, m_clicks);
+      // Where each pick was clicked, when all were (not when the first came
+      // from the selection).
+      const std::vector<V2> clicks = m_clicks.size() == static_cast<std::size_t>(m_picks.size())
+                                         ? m_clicks
+                                         : std::vector<V2>();
+      refused = !apply(m_c, m_type, m_picks, clicks);
       m_picks.clear();
       m_clicks.clear();
     }
     m_c.setPicked(m_picks);
     m_c.setHover(QString());
     showEnd(QString(), snap.at);
-    prompt();
+    // A refused constraint keeps its reason on the status line instead of
+    // the prompt (mitcad#865).
+    if (!refused) {
+      prompt();
+    }
   }
 
   // Tangent and Curvature: the constraint's glyph at the end it would use
@@ -1141,7 +1213,9 @@ private:
   // it changes, for the UI tests.
   void showEnd(const QString& hover, const V2& cursor) {
     QString end;
-    if ((m_type == QStringLiteral("tangent") || m_type == QStringLiteral("smooth")) && m_picks.size() == 1) {
+    // Not for a first pick from the selection: no click says its end.
+    if ((m_type == QStringLiteral("tangent") || m_type == QStringLiteral("smooth")) && m_picks.size() == 1 &&
+        m_clicks.size() == 1) {
       if (!hover.isEmpty()) {
         end = tangentPoint(view(), {m_picks[0], hover}, {m_clicks[0], cursor});
       } else if (const CurveData* c = view().curve(m_picks[0]); c != nullptr && c->isSpline()) {
@@ -1154,6 +1228,46 @@ private:
         qDebug().noquote() << QStringLiteral("%1 would apply at %2").arg(name(), end);
       }
     }
+  }
+
+  // The sketch's points and curves selected when the tool started become
+  // its first picks (mitcad#865), when they fit in their order and are
+  // fewer than the constraint takes (constrainSelection applies a selection
+  // that is complete): the tool then waits for the rest. A selection that
+  // does not fit is left as it is, and the notice says why.
+  void takeSelection() {
+    const Selection selected = std::exchange(m_selection, {});
+    if (m_type == QStringLiteral("fix")) {
+      return;
+    }
+    QStringList picks;
+    for (const SelectionItem& item : selected) {
+      if (item.owner == m_c.uid() &&
+          (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint)) {
+        picks << item.name;
+      }
+    }
+    if (picks.isEmpty()) {
+      return;
+    }
+    QStringList taken;
+    for (const QString& pick : picks) {
+      const QString why = refusal(m_type, taken, pick, view());
+      if (!why.isEmpty()) {
+        qDebug().noquote() << QStringLiteral("%1 does not take the selection: %2").arg(name(), why);
+        m_c.notice(QObject::tr("%1 does not take the selection: %2").arg(name(), why));
+        return;
+      }
+      taken << pick;
+    }
+    if (static_cast<int>(taken.size()) >= needed(m_type, taken, view())) {
+      return;
+    }
+    m_picks = taken;
+    m_c.setPicked(m_picks);
+    m_c.host().setSelection({});
+    qDebug().noquote() << QStringLiteral("%1 takes the selection as its picks: %2")
+                              .arg(name(), m_picks.join(QStringLiteral(", ")));
   }
 
   // The point or curve under the cursor, or the sketch's origin or an axis
@@ -1190,8 +1304,11 @@ private:
   }
 
   QString m_type;
+  // The selection when the tool was made, taken by start() (mitcad#865).
+  Selection m_selection;
   QStringList m_picks;
-  // Where each pick was clicked: a tangent's end (mitcad#783).
+  // Where each pick was clicked: a tangent's end (mitcad#783). None for the
+  // picks the selection gave.
   std::vector<V2> m_clicks;
   // The end the constraint would use, shown while picking (mitcad#783).
   QString m_end;

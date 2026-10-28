@@ -26,6 +26,7 @@
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_Face.hxx>
 #include <BRepCheck_Shell.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
@@ -55,6 +56,7 @@
 #include <gp_Ax2.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_Dir2d.hxx>
+#include <gp_Pnt.hxx>
 #include <gp_Pln.hxx>
 #include <gp_Pnt2d.hxx>
 
@@ -190,6 +192,46 @@ void test_the_check_where_changed_gives_the_whole_checks_answer() {
   builder.MakeSolid(solid);
   builder.Add(solid, open);
   CHECK(!detail::is_valid_where_changed(solid, kept));
+}
+
+// A body with a void (mitcad#855): the check where it changed looks at the
+// changed faces and checks the solid's shells as a solid, and its answer is
+// the whole check's, with the void's shell facing inwards and outwards; a
+// result that is not solids says why the whole shape was checked.
+void test_the_check_where_changed_of_a_body_with_a_void() {
+  const ShapePtr plate = perforated_plate();
+  ShapeMap kept;
+  for (TopExp_Explorer it(plate->occt(), TopAbs_FACE); it.More(); it.Next()) {
+    kept.Add(it.Current());
+  }
+  const TopExp_Explorer outer(plate->occt(), TopAbs_SHELL);
+  CHECK(outer.More());
+  if (!outer.More()) {
+    return;
+  }
+  // Away from the holes, inside the plate's thickness.
+  const TopoDS_Shell cavity = BRepPrimAPI_MakeBox(gp_Pnt(92, 92, 1.5), 4.0, 4.0, 2.0).Shell();
+  for (const bool inwards : {true, false}) {
+    BRep_Builder builder;
+    TopoDS_Solid solid;
+    builder.MakeSolid(solid);
+    builder.Add(solid, outer.Current());
+    builder.Add(solid, inwards ? cavity.Reversed() : TopoDS_Shape(cavity));
+    detail::WhereChanged report;
+    const bool local = detail::is_valid_where_changed(solid, kept, &report);
+    CHECK(local == BRepCheck_Analyzer(solid).IsValid());
+    CHECK(report.whole == nullptr);
+    CHECK(report.solids == 1);
+    CHECK(report.faces == 6);
+    if (inwards) {
+      CHECK(local);
+    }
+  }
+  detail::WhereChanged report;
+  CHECK(detail::is_valid_where_changed(outer.Current(), kept, &report));
+  CHECK(report.whole != nullptr && std::string(report.whole) == "not-solids");
+  CHECK(detail::is_valid_where_changed(plate->occt(), ShapeMap(), &report));
+  CHECK(report.whole != nullptr && std::string(report.whole) == "unchecked-target");
 }
 
 void test_faces_measured_once() {
@@ -561,6 +603,7 @@ void large_body_tests() {
   guarded("test_a_checked_result_is_known_valid", test_a_checked_result_is_known_valid);
   guarded("test_the_check_where_changed_gives_the_whole_checks_answer",
           test_the_check_where_changed_gives_the_whole_checks_answer);
+  guarded("test_the_check_where_changed_of_a_body_with_a_void", test_the_check_where_changed_of_a_body_with_a_void);
   guarded("test_faces_measured_once", test_faces_measured_once);
   guarded("test_optimal_box_is_occts", test_optimal_box_is_occts);
   guarded("test_edges_measured_once", test_edges_measured_once);

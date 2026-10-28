@@ -781,6 +781,65 @@ void printTests() {
   CHECK(mitcad::printStartBodies({sketch}, instances, &selected).size() == 3);
   CHECK(!selected);
 
+  // The pieces with print bed faces to choose from (mitcad#857): two or
+  // more choices, the file's own object first; the key does not depend on
+  // the order of the faces.
+  const auto choice = [](const char* uid, const char* occurrence) {
+    return QJsonObject{{QStringLiteral("body"), QString::fromLatin1(uid)},
+                       {QStringLiteral("name"), QStringLiteral("Body")},
+                       {QStringLiteral("face"), QStringLiteral("F1:top")},
+                       {QStringLiteral("occurrence"), QString::fromLatin1(occurrence)},
+                       {QStringLiteral("occurrence_name"), QStringLiteral("Pair:1")}};
+  };
+  const QJsonObject planned{
+      {QStringLiteral("choices"), QJsonArray{choice("F1.b0", "O1"), choice("F2.b0", "O1")}},
+      {QStringLiteral("objects"),
+       QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("Nut (Nuts:1/Nut:2)")},
+                              {QStringLiteral("choices"), QJsonArray{choice("F3.b0", "O2")}}},
+                  QJsonObject{{QStringLiteral("name"), QStringLiteral("Nuts:1")},
+                              {QStringLiteral("choices"),
+                               QJsonArray{choice("F3.b0", "O2/O4"), choice("F3.b0", "O2/O3")}}}}}};
+  const QVector<mitcad::PrintBedAsk> asks = mitcad::printBedAsks(planned);
+  CHECK(asks.size() == 2);
+  CHECK(asks.value(0).piece.isEmpty() && asks.value(0).faces.size() == 2);
+  CHECK(asks.value(0).key == QStringLiteral("|F1.b0@O1,F2.b0@O1"));
+  CHECK(asks.value(1).key == QStringLiteral("Nuts:1|F3.b0@O2/O3,F3.b0@O2/O4"));
+  CHECK(asks.value(1).faces.value(0).describe() == QStringLiteral("Body F1:top in Pair:1"));
+  CHECK(mitcad::printBedAsks(QJsonObject()).isEmpty());
+  // Its texts (mitcad#857 review): the question names the piece and the
+  // count, the file's own object by the occurrence its faces share; a
+  // body with faces in several places is named with the place.
+  CHECK(asks.value(0).pieceName() == QStringLiteral("Pair:1"));
+  CHECK(asks.value(1).pieceName() == QStringLiteral("Nuts:1"));
+  CHECK(mitcad::printBedQuestion(asks.value(0)) ==
+        QStringLiteral("Not sent yet: Pair:1 has 2 print bed faces. Click the green one to put on the bed."));
+  CHECK(mitcad::printBedQuestion(asks.value(1)).startsWith(QStringLiteral("Not sent yet: Nuts:1 has 2 ")));
+  CHECK(mitcad::printBedHover(asks.value(0), asks.value(0).faces.value(0)) == QStringLiteral("Body: print bed face"));
+  CHECK(mitcad::printBedHover(asks.value(1), asks.value(1).faces.value(0)) ==
+        QStringLiteral("Body (Pair:1): print bed face"));
+  CHECK(mitcad::printBedChosen(asks.value(0), asks.value(0).faces.value(1)) ==
+        QStringLiteral("Pair:1 on Body's print bed face."));
+  CHECK(mitcad::printBedRefused() == QStringLiteral("Not one of the print bed faces: click a green face."));
+  mitcad::PrintBedAsk apart;
+  mitcad::PrintBedFace one;
+  one.body = QStringLiteral("F1.b0");
+  one.name = QStringLiteral("Tall");
+  one.occurrenceName = QStringLiteral("Pair:1");
+  mitcad::PrintBedFace second = one;
+  second.body = QStringLiteral("F2.b0");
+  second.occurrenceName = QStringLiteral("Pair:2");
+  apart.faces = {one, second};
+  CHECK(apart.pieceName().isEmpty());
+  CHECK(mitcad::printBedQuestion(apart).startsWith(QStringLiteral("Not sent yet: the piece has 2 ")));
+  CHECK(mitcad::printBedChosen(apart, one) == QStringLiteral("The piece on Tall's print bed face."));
+  // The last line: the faces chosen, then the other placements on theirs.
+  CHECK(mitcad::printBedLine(QStringLiteral("Sent."), 0) == QStringLiteral("Sent."));
+  CHECK(mitcad::printBedLine(QStringLiteral("Sent."), 2) == QStringLiteral("Sent. 2 bodies on their print bed faces."));
+  CHECK(mitcad::printBedLine(QStringLiteral("Sent."), 1, {QStringLiteral("Pair:1 on Tall's print bed face.")}) ==
+        QStringLiteral("Sent. Pair:1 on Tall's print bed face."));
+  CHECK(mitcad::printBedLine(QStringLiteral("Sent."), 2, {QStringLiteral("Pair:1 on Tall's print bed face.")}) ==
+        QStringLiteral("Sent. Pair:1 on Tall's print bed face. 1 other body on its print bed face."));
+
   // The Slicer row: none, the settings' slicer and one chosen by hand
   // unless found, the found ones, another program; a choice is its slicer.
   const Slicer saved{QStringLiteral("Saved"), QStringLiteral("/opt/saved"), {QStringLiteral("--a")}, {}};
@@ -2496,6 +2555,8 @@ int configurationsDataTests();
 int ruleBlocksTests();
 int partOptionsTests();
 int documentSnapshotTests();
+int heifImageTests();
+int profilePicksTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2596,6 +2657,8 @@ int main(int argc, char* argv[]) {
     failures += ruleBlocksTests();
     failures += partOptionsTests();
     failures += documentSnapshotTests();
+    failures += heifImageTests();
+    failures += profilePicksTests();
     mitcad::tests::navigationSettingsTests(check);
   }
   if (failures != 0) {

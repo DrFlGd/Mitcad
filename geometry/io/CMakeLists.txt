@@ -24,6 +24,10 @@ target_sources(mitcad_geometry_io PRIVATE
 target_sources(mitcad_geometry_io PRIVATE
   src/mesh_compare.cpp
   include/mitcad/io/mesh_compare.hpp)
+# Display triangulations kept in the result store (mitcad#858).
+target_sources(mitcad_geometry_io PRIVATE
+  src/mesh_store.cpp
+  include/mitcad/io/mesh_store.hpp)
 target_include_directories(mitcad_geometry_io PUBLIC include)
 target_link_libraries(mitcad_geometry_io
   PUBLIC TKernel TKMath TKG3d TKBRep TKMesh

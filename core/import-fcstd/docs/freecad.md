@@ -112,7 +112,9 @@ feature of their own, `elements.rs` references.
 - References (`Pad.Face6`, `Edge12`) are taken from the referenced
   object's stored shape and found by geometry in the MitCad body holding
   its result — first as it is now, else as it was right after the object
-  (the name then carries through later features). An edge FreeCAD merged
+  (the name then carries through later features). Whole circles, and
+  the straight seams of a face of revolution (a hole's wall), are the
+  same wherever each side started them (mitcad#835). An edge FreeCAD merged
   is all of MitCad's pieces along it, each named by the two faces it lies
   between (`E{a|b}` without a number, every edge between them) where all
   the edges between those faces are pieces of it (mitcad#793): a sketch

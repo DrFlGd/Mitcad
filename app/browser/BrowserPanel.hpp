@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QIcon>
 #include <QPoint>
+#include <QRect>
 #include <QRegion>
 #include <QSet>
 #include <QString>
@@ -17,6 +18,7 @@
 #include "DocumentSnapshot.hpp"
 
 class QScrollBar;
+class QTimer;
 class QTreeWidgetItem;
 
 namespace mitcad {
@@ -232,6 +234,10 @@ signals:
   // row (mitcad#523), placed by `occurrence`; an empty uid when it left
   // the joint rows.
   void jointHovered(const QString& uid, const QString& occurrence);
+  // The fx badge of a bound row (mitcad#862): the pointer rests on it
+  // (`pinned` false) or it was clicked; `anchor` is the badge in global
+  // coordinates. The controller shows the row's bindings card.
+  void bindingsRequested(const mitcad::BrowserNode& node, const QRect& anchor, bool pinned);
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -306,6 +312,12 @@ private:
   void hoverJoint(const QTreeWidgetItem* item);
   QString m_hoveredJoint;
   QWidget* m_topBar = nullptr; // setTopBar (mitcad#807)
+  // The pointer resting on a row's fx badge (mitcad#862): after a moment
+  // bindingsRequested (not pinned). The row's key, empty: on no badge.
+  void hoverBindings(QTreeWidgetItem* item, const QPoint& at);
+  void bindingsRested();
+  QString m_bindingsHover;
+  QTimer* m_bindingsTimer = nullptr;
 };
 
 } // namespace mitcad

@@ -194,8 +194,8 @@ pub struct Defaults {
 }
 
 /// What a test with no history is taken to be, by its name and labels.
-/// (The cargo test builds run alone through RUN_SERIAL, so their guess
-/// does not matter.)
+/// (The cargo test builds run one at a time, RUN_SERIAL on macOS; their
+/// own history soon replaces the guess.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// `app.ui-*`, or labelled `ui`: 1 GiB, 1 core.

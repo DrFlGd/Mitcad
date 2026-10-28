@@ -362,7 +362,9 @@ if(BUILD_TESTING)
   # runs every part in one process. The parts are the table in
   # tests/test_main.cpp; geometry.suite_parts fails when this list and that
   # table differ, so that no part is left without its ctest. A new part:
-  # its name at the end of this list.
+  # its name at the end of this list. A part long enough to hold up a
+  # check runs as numbered parts of about equal time (thread.1-3,
+  # sweeps.1-5, mitcad#870).
   set(geometry_suite_parts
     naming
     profile
@@ -377,8 +379,14 @@ if(BUILD_TESTING)
     extrude_feature
     revolve
     hole
-    thread
-    sweeps
+    thread.1
+    thread.2
+    thread.3
+    sweeps.1
+    sweeps.2
+    sweeps.3
+    sweeps.4
+    sweeps.5
     text
     skin
     persist

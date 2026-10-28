@@ -7,6 +7,8 @@
 #include <cmath>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -15,6 +17,7 @@
 #include <BRepCheck.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_Result.hxx>
+#include <BRepCheck_Solid.hxx>
 #include <TopExp_Explorer.hxx>
 #include <BRepGProp.hxx>
 #include <BRep_Builder.hxx>
@@ -194,18 +197,34 @@ void require_valid(const TopoDS_Shape& shape, const char* operation) {
 namespace {
 
 // The faces is_valid_where_changed gives the checker (in a compound), or
-// none where the whole shape is to be checked: the result is not solids of
-// one shell each, a face is not forward or reversed or is there twice, an
-// edge of a shell does not have exactly one forward and one reversed use in
-// it (a seam: both in its face), a shell is not connected, or more than half
-// of the faces changed. In any of those cases the checker on the whole
-// shape decides, so what it would say is never guessed.
-std::optional<TopoDS_Compound> faces_to_check(const TopoDS_Shape& result, const ShapeMap& kept) {
+// none where the whole shape is to be checked, with the reason: the
+// targets were not all found valid (`kept` is empty), the result is not
+// solids of shells, a face is not forward or reversed or is there twice,
+// an edge of a shell does not have exactly one forward and one reversed
+// use in it (a seam: both in its face), a shell is not connected, or more
+// than half of the faces changed. In any of those cases the checker on the
+// whole shape decides, so what it would say is never guessed. Solids of
+// several shells (a body with a void) are listed: the checker sees how
+// their shells lie in each other (BRepCheck_Solid) besides the faces.
+struct LocalCheck {
+  std::optional<TopoDS_Compound> faces;
+  const char* whole = nullptr;
+  std::vector<TopoDS_Shape> solids;
+};
+
+LocalCheck whole_check(const char* reason) {
+  LocalCheck check;
+  check.whole = reason;
+  return check;
+}
+
+LocalCheck faces_to_check(const TopoDS_Shape& result, const ShapeMap& kept) {
   if (kept.IsEmpty()) {
-    return std::nullopt;
+    return whole_check("unchecked-target");
   }
   // The shells, as the solids hold them.
   std::vector<TopoDS_Shape> shells;
+  std::vector<TopoDS_Shape> several;
   const auto add_solid = [&](const TopoDS_Shape& solid) {
     int count = 0;
     for (TopoDS_Iterator it(solid); it.More(); it.Next()) {
@@ -215,23 +234,29 @@ std::optional<TopoDS_Compound> faces_to_check(const TopoDS_Shape& result, const 
       shells.push_back(it.Value());
       ++count;
     }
-    return count == 1;
+    if (count > 1) {
+      several.push_back(solid);
+    }
+    return count > 0;
   };
   if (result.ShapeType() == TopAbs_SOLID) {
     if (!add_solid(result)) {
-      return std::nullopt;
+      return whole_check("solid-not-of-shells");
     }
   } else if (result.ShapeType() == TopAbs_COMPOUND) {
     for (TopoDS_Iterator it(result); it.More(); it.Next()) {
-      if (it.Value().ShapeType() != TopAbs_SOLID || !add_solid(it.Value())) {
-        return std::nullopt;
+      if (it.Value().ShapeType() != TopAbs_SOLID) {
+        return whole_check("not-solids");
+      }
+      if (!add_solid(it.Value())) {
+        return whole_check("solid-not-of-shells");
       }
     }
   } else {
-    return std::nullopt;
+    return whole_check("not-solids");
   }
   if (shells.empty()) {
-    return std::nullopt;
+    return whole_check("no-shells");
   }
 
   using Uses = NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>;
@@ -253,11 +278,11 @@ std::optional<TopoDS_Compound> faces_to_check(const TopoDS_Shape& result, const 
     for (TopExp_Explorer f(shell, TopAbs_FACE); f.More(); f.Next()) {
       const TopoDS_Shape& face = f.Current();
       if (face.Orientation() != TopAbs_FORWARD && face.Orientation() != TopAbs_REVERSED) {
-        return std::nullopt;
+        return whole_check("face-not-oriented");
       }
       const int before = all.Extent();
       if (all.Add(face) <= before) {
-        return std::nullopt; // twice in the result
+        return whole_check("face-twice");
       }
       const int index = static_cast<int>(faces.size());
       faces.push_back(face);
@@ -269,7 +294,7 @@ std::optional<TopoDS_Compound> faces_to_check(const TopoDS_Shape& result, const 
         }
         const TopAbs_Orientation orientation = edge.Orientation();
         if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
-          return std::nullopt;
+          return whole_check("edge-not-oriented");
         }
         int k = edges.FindIndex(edge);
         if (k == 0) {
@@ -287,13 +312,16 @@ std::optional<TopoDS_Compound> faces_to_check(const TopoDS_Shape& result, const 
     for (int k = 1; k <= edges.Extent(); ++k) {
       const std::array<int, 3>& use = edges(k);
       if (use[0] != 1 || use[1] != 1) {
-        return std::nullopt;
+        // A free edge, an edge of more than two faces (non-manifold), or
+        // two faces at an edge running along it the same way.
+        const int uses = use[0] + use[1];
+        return whole_check(uses == 1 ? "free-edge" : uses > 2 ? "non-manifold-edge" : "edge-uses-one-way");
       }
     }
     const int root = find(first);
     for (int i = first; i < static_cast<int>(faces.size()); ++i) {
       if (find(i) != root) {
-        return std::nullopt;
+        return whole_check("shell-not-connected");
       }
     }
   }
@@ -312,7 +340,7 @@ std::optional<TopoDS_Compound> faces_to_check(const TopoDS_Shape& result, const 
     ++changed;
   }
   if (2 * changed > faces.size()) {
-    return std::nullopt;
+    return whole_check("most-faces-changed");
   }
   for (std::size_t i = 0; i < faces.size(); ++i) {
     ShapeMap own;
@@ -346,36 +374,75 @@ std::optional<TopoDS_Compound> faces_to_check(const TopoDS_Shape& result, const 
       builder.Add(compound, faces[i]);
     }
   }
-  return compound;
+  LocalCheck local;
+  local.faces = compound;
+  local.solids = std::move(several);
+  return local;
 }
 
 std::atomic<std::size_t> g_local_checks{0};
 std::atomic<std::size_t> g_local_faces{0};
 
-std::optional<TopoDS_Compound> counted(std::optional<TopoDS_Compound> faces) {
-  if (faces) {
+void note_counts(const LocalCheck& check, WhereChanged* report) {
+  std::size_t n = 0;
+  if (check.faces) {
     g_local_checks += 1;
-    std::size_t n = 0;
-    for (TopoDS_Iterator it(*faces); it.More(); it.Next()) {
+    for (TopoDS_Iterator it(*check.faces); it.More(); it.Next()) {
       ++n;
     }
     g_local_faces += n;
   }
-  return faces;
+  if (report != nullptr) {
+    report->faces = n;
+    report->whole = check.whole;
+    report->solids = check.solids.size();
+  }
+}
+
+// The first problem OCCT's check of a solid finds (how its shells lie in
+// each other and face), as " (solid: BRepCheck_...)"; empty when none.
+// Failed allocations are no answer, as in is_valid.
+std::string solids_problem(const std::vector<TopoDS_Shape>& solids) {
+  for (const TopoDS_Shape& solid : solids) {
+    throw_if_cancelled();
+    const std::size_t failed = failed_allocations_in_thread();
+    const occ::handle<BRepCheck_Solid> check = new BRepCheck_Solid(TopoDS::Solid(solid));
+    throw_if_allocation_failed(failed);
+    for (const BRepCheck_Status status : check->Status()) {
+      if (status != BRepCheck_NoError) {
+        return " (solid: " + status_name(status) + ")";
+      }
+    }
+  }
+  return "";
 }
 
 } // namespace
 
-bool is_valid_where_changed(const TopoDS_Shape& result, const ShapeMap& kept) {
+bool is_valid_where_changed(const TopoDS_Shape& result, const ShapeMap& kept, WhereChanged* report) {
   throw_if_cancelled();
-  const std::optional<TopoDS_Compound> faces = counted(faces_to_check(result, kept));
-  return is_valid(faces ? *faces : result);
+  const LocalCheck check = faces_to_check(result, kept);
+  note_counts(check, report);
+  if (!check.faces) {
+    return is_valid(result);
+  }
+  return is_valid(*check.faces) && solids_problem(check.solids).empty();
 }
 
-void require_valid_where_changed(const TopoDS_Shape& result, const ShapeMap& kept, const char* operation) {
+void require_valid_where_changed(const TopoDS_Shape& result, const ShapeMap& kept, const char* operation,
+                                 WhereChanged* report) {
   throw_if_cancelled();
-  const std::optional<TopoDS_Compound> faces = counted(faces_to_check(result, kept));
-  require_valid(faces ? *faces : result, operation);
+  const LocalCheck check = faces_to_check(result, kept);
+  note_counts(check, report);
+  if (!check.faces) {
+    require_valid(result, operation);
+    return;
+  }
+  require_valid(*check.faces, operation);
+  const std::string problem = solids_problem(check.solids);
+  if (!problem.empty()) {
+    throw std::runtime_error(std::string(operation) + " produced an invalid shape" + problem);
+  }
 }
 
 ChecksWhereChanged checks_where_changed() { return {g_local_checks.load(), g_local_faces.load()}; }

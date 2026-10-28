@@ -1003,6 +1003,64 @@ fn references_are_read_by_their_index_names() {
     assert_eq!(elements::parse_element("Axis1"), None);
 }
 
+#[test]
+fn a_hole_s_circles_and_wall_are_found_wherever_their_seams_are() {
+    // (mitcad#835) FreeCAD's hole starts its circles on the sketch's x
+    // axis, Mitcad's revolved hole on another side: the fillet on the
+    // hole's edges (or its wall) must find them all the same.
+    use mitcad_model::Curve3;
+    use std::f64::consts::TAU;
+    let circle = |z: f64, normal: [f64; 3], x_axis: [f64; 3], r: f64, end: f64| Curve3::Conic {
+        center: [15.0, 10.0, z],
+        normal,
+        x_axis,
+        major: r,
+        minor: r,
+        start: 0.0,
+        end,
+        closed: end >= TAU,
+    };
+    let line = |start: [f64; 3], end: [f64; 3]| Curve3::Line { start, end };
+    let theirs = circle(0.0, [0.0, 0.0, -1.0], [1.0, 0.0, 0.0], 4.5, TAU);
+    let ours = circle(0.0, [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], 4.5, TAU);
+    assert!(elements::same_curves(
+        std::slice::from_ref(&theirs),
+        std::slice::from_ref(&ours)
+    ));
+    // Not another radius, height or a half circle.
+    for other in [
+        circle(0.0, [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], 4.6, TAU),
+        circle(1.0, [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], 4.5, TAU),
+        circle(0.0, [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], 4.5, TAU / 2.0),
+        circle(0.0, [1.0, 0.0, 0.0], [0.0, -1.0, 0.0], 4.5, TAU),
+    ] {
+        assert!(!elements::same_curves(
+            std::slice::from_ref(&theirs),
+            std::slice::from_ref(&other)
+        ));
+    }
+    // The wall: two circles and a seam, at +x in FreeCAD's, at -y in
+    // Mitcad's (in another order and the other way along).
+    let wall_theirs = [
+        circle(15.0, [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 4.5, TAU),
+        line([19.5, 10.0, 0.0], [19.5, 10.0, 15.0]),
+        theirs.clone(),
+    ];
+    let wall_ours = [
+        ours.clone(),
+        circle(15.0, [0.0, 0.0, -1.0], [0.0, -1.0, 0.0], 4.5, TAU),
+        line([15.0, 5.5, 15.0], [15.0, 5.5, 0.0]),
+    ];
+    assert!(elements::same_curves(&wall_theirs, &wall_ours));
+    // Not a line across the wall, nor one off the circles.
+    let mut across = wall_ours.clone();
+    across[2] = line([15.0, 5.5, 15.0], [10.5, 10.0, 0.0]);
+    assert!(!elements::same_curves(&wall_theirs, &across));
+    let mut outside = wall_ours.clone();
+    outside[2] = line([15.0, 5.0, 15.0], [15.0, 5.0, 0.0]);
+    assert!(!elements::same_curves(&wall_theirs, &outside));
+}
+
 fn feature<'a>(report: &'a FcstdReport, name: &str) -> &'a FeatureReport {
     report
         .features

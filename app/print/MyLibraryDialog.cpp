@@ -7,6 +7,8 @@
 
 #include <QComboBox>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QPoint>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -87,9 +89,10 @@ MyLibraryDialog::MyLibraryDialog(QWidget* parent) : QDialog(parent) {
   connect(m_printers, &ProfilesPanel::changed, this, changed);
   connect(m_processes, &ProfilesPanel::changed, this, changed);
   connect(m_place, &QComboBox::activated, this, [this] { placeChosen(); });
-  connect(m_importBar, &SlicerImportBar::imported, this, [this] {
+  connect(m_importBar, &SlicerImportBar::imported, this, [this](const SlicerImportResult& result) {
     m_changed = true;
     refresh();
+    showImported(result);
   });
   connect(m_tabs, &QTabWidget::currentChanged, this, [this](int index) {
     if (index >= 0 && index < static_cast<int>(std::size(kTabs))) {
@@ -125,6 +128,28 @@ void MyLibraryDialog::refresh() {
   m_printers->refresh();
   m_processes->refresh();
   scheduleLogPlaces();
+}
+
+void MyLibraryDialog::showImported(const SlicerImportResult& result) {
+  // The first item that came in, on its tab and selected (mitcad#830
+  // review): the library's answer lists the new ones, then the overridden.
+  const QJsonArray items = result.answer.value(QStringLiteral("items")).toArray();
+  if (items.isEmpty()) {
+    return;
+  }
+  const QJsonObject first = items.first().toObject();
+  const QString kind = first.value(QStringLiteral("kind")).toString();
+  const QString key = result.into + QLatin1Char('/') + first.value(QStringLiteral("id")).toString();
+  if (kind == QStringLiteral("material")) {
+    m_tabs->setCurrentWidget(m_materials);
+    m_materials->showItem(key);
+  } else if (kind == QStringLiteral("printer")) {
+    m_tabs->setCurrentWidget(m_printers);
+    m_printers->showItem(kind, key);
+  } else if (kind == QStringLiteral("process")) {
+    m_tabs->setCurrentWidget(m_processes);
+    m_processes->showItem(kind, key);
+  }
 }
 
 void MyLibraryDialog::placeChosen() {

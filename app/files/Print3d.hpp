@@ -7,7 +7,9 @@
 // on the system, the settings, file and folder names, the panel's rows and the
 // Preferences group; MainWindowPrint.cpp defines and runs the command.
 
+#include <QColor>
 #include <QGroupBox>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QPair>
@@ -124,9 +126,75 @@ QVector<PrintPiece> printPieces(const QStringList& bodies, const QStringList& na
 // How an export put the bodies on the print bed (mitcad#731), for the log:
 // the body and face on the bed, the plate's centre and the transform after
 // the design's placements (rows "a b c t", three decimals); the bodies kept
-// as assembled; or as in the design; then each bed face that cannot be
-// used. `bed` is the `export` result's `bed`.
+// as assembled; or as in the design; then the 3MF file's other objects,
+// each on its face or kept as assembled ("objects Nut (Nuts:1/Nut:2) on
+// F2:top, ...", mitcad#856); then each bed face that cannot be used. `bed`
+// is the `export` result's `bed`.
 QString printBedLog(const QJsonObject& bed);
+
+// The print bed face's green (mitcad#731): the view shows bed faces in it
+// (a face's context menu, 3D Print's choice of mitcad#857).
+QColor printBedColor();
+
+// A print bed face a 3MF piece kept as assembled could lie on (mitcad#857):
+// an entry of the export's `bed` `choices`.
+struct PrintBedFace {
+  QString body;           // uid
+  QString name;           // the body's name
+  QString face;           // as it was assigned
+  QString occurrence;     // the placement's path of uids ("O1/O4"); empty: the design itself
+  QString occurrenceName; // "Pair:1"
+  bool isEmpty() const { return body.isEmpty(); }
+  // "Body1 F1:top in Pair:1", for the log.
+  QString describe() const;
+};
+
+// A piece with several print bed faces to choose from (mitcad#857): the
+// object's name (empty for the file's own object), its faces, and the key
+// a choice is remembered by (the piece and its faces).
+struct PrintBedAsk {
+  QString piece;
+  QString key;
+  QVector<PrintBedFace> faces;
+  bool isEmpty() const { return faces.isEmpty(); }
+  // The piece by name, for the user: the object's name, else the
+  // occurrence its faces lie in ("Pair:1", the names their paths share);
+  // empty when they share none.
+  QString pieceName() const;
+};
+
+// The pieces of an export plan's `bed` (`plan`: true) that have two or
+// more faces to choose from: the file's own object's, then each object's.
+QVector<PrintBedAsk> printBedAsks(const QJsonObject& bed);
+
+// The texts of the bed face choice (mitcad#857 review): the question
+// beside the Bed face row and in the status bar ("Not sent yet: Pair:1 has
+// 2 print bed faces. Click the green one to put on the bed."), a face
+// under the mouse ("Tall: print bed face"), a click on another face, and
+// the last line's account of a face chosen ("Pair:1 on Tall's print bed
+// face."). A body with faces in several places of the piece is named with
+// the place: "Nut (Nuts:1/Nut:2)".
+QString printBedQuestion(const PrintBedAsk& ask);
+QString printBedHover(const PrintBedAsk& ask, const PrintBedFace& face);
+QString printBedRefused();
+QString printBedChosen(const PrintBedAsk& ask, const PrintBedFace& face);
+
+// The last line's account of the print bed (mitcad#856, mitcad#857):
+// `message`, then each face chosen (`chosen`, printBedChosen, each counted
+// in `onFaces`), then how many other placements lie on their print bed
+// faces.
+QString printBedLine(const QString& message, int onFaces, const QStringList& chosen = {});
+
+// What the 3D Print panel keeps of the choices while it is open
+// (mitcad#857): by a piece's key the face chosen, or an empty one when it
+// is sent as assembled (Send as assembled); the piece asked about now
+// (none: empty); and the status bar's text while it is asked (the
+// question, or the face under the mouse).
+struct PrintBedChoices {
+  QHash<QString, PrintBedFace> chosen;
+  PrintBedAsk asking;
+  QString hint;
+};
 
 // The folder the files go into, <root>/mitcad-print/<design>: made when
 // missing, and emptied, so that no file of an earlier send reaches the

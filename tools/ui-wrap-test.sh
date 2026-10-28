@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands core/model geometry
+# check-all sources: app/commands core/model geometry app/framework/CommandSessionAuto.cpp
 # Extrude's Wrap Onto (mitcad#473) through the real UI: a 6 x 6 rectangle
 # on a plane through a rod's axis extruded 1, wrapped onto the rod's side
-# and joined, then edited to flipped and cut (engraved); the volumes of
+# and joined, then edited to flipped and, by hand, cut (engraved: an edit
+# keeps its stored operation, mitcad#868); the volumes of
 # tools/cli/tests/wrap.json.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
@@ -56,11 +57,15 @@ ui_mark
 ui_step "double-click Extrude2"            ui_double_click_logged "Timeline Extrude2"
 ui_expect_new "Editing F4 with Extrude" "editing Extrude2"
 ui_expect_new "Extrude Wrap Onto: 1 face" "the face loaded"
+ui_expect_new "Extrude: editing keeps the stored operation" "the edit keeps its Join"
 ui_step "flip"                             ui_click_logged "Panel Extrude input flip"
-# The stored Join was the automatic choice, so the edit follows the
-# geometry: flipped into the rod, it cuts (779aed86).
-ui_expect_new "Extrude: automatic Operation = Cut" "Cut chosen automatically"
+ui_expect_new "Extrude: Flip = on" "flipped into the rod"
+# An edit keeps its stored Join (mitcad#868): the engraving's Cut is
+# chosen by hand, one down from Join.
+ui_step "Cut by hand"                      ui_choose "Panel Extrude input operation" 1
+ui_expect_new "Extrude: Operation = Cut" "Cut chosen by hand"
 ui_expect_new "Preview Extrude: ok" "previewed"
+ui_focus_main
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Edited F4" "Extrude2 edited"
 # Sunk to radius 9: 36 * 19 / 20 less than the rod.

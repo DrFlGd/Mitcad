@@ -266,6 +266,9 @@ void ProfilesPanel::showItem(const QString& kind, const QString& key) {
   }
   if (const LibraryItem* item = current()) {
     m_currentDesignId = item->designId();
+    if (m_list->currentItem() != nullptr) {
+      m_list->scrollToItem(m_list->currentItem());
+    }
     qDebug().noquote() << QStringLiteral("Profile selected: %1 %2 (%3)").arg(item->kind, item->name, item->place);
   }
   // Slicer default: the kind's heading in sight, nothing selected.

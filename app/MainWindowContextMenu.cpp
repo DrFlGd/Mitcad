@@ -21,6 +21,7 @@
 #include <QPair>
 #include <QtLogging>
 
+#include "browser/Bindings.hpp"
 #include "browser/BrowserController.hpp"
 #include "build/BuildModel.hpp"
 #include "framework/CommandRegistry.hpp"
@@ -72,27 +73,6 @@ bool isSketchPlane(const SelectionItem& item) {
          (item.kind == SelectKind::Face && item.geometry == QStringLiteral("plane"));
 }
 
-// Whether a face is its body's print bed face (mitcad#731): one of the
-// faces the stored name finds, by name or by the faces of the shape.
-bool isPrintBedFace(const SelectionItem& face, const QStringList& bedFaces,
-                    const std::shared_ptr<geometry::Shape>& shape) {
-  if (bedFaces.contains(face.name)) {
-    return true;
-  }
-  if (!shape) {
-    return false;
-  }
-  const std::vector<int> picked = shape->find_faces(face.name.toStdString());
-  for (const QString& name : bedFaces) {
-    for (const int index : shape->find_faces(name.toStdString())) {
-      if (std::find(picked.begin(), picked.end(), index) != picked.end()) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 // A submenu whose entries are logged as "Context menu <title>: A | B".
 class Submenu {
 public:
@@ -122,6 +102,25 @@ private:
 };
 
 } // namespace
+
+bool MainWindow::isPrintBedFace(const SelectionItem& face, const QStringList& bedFaces,
+                                const std::shared_ptr<geometry::Shape>& shape) {
+  if (bedFaces.contains(face.name)) {
+    return true;
+  }
+  if (!shape) {
+    return false;
+  }
+  const std::vector<int> picked = shape->find_faces(face.name.toStdString());
+  for (const QString& name : bedFaces) {
+    for (const int index : shape->find_faces(name.toStdString())) {
+      if (std::find(picked.begin(), picked.end(), index) != picked.end()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   const auto add = [&menu, &entries](QAction* action) {
@@ -250,21 +249,42 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
   }
   // Appearances of the bodies selected or picked on (mitcad#46).
   if (const Selection targets = appearanceTargets(); !targets.isEmpty()) {
-    addCall(QStringLiteral("appearance"), tr("Appearance…"), [this, targets] { m_controller->openAppearances(targets); });
     // The bodies' material (mitcad#640): a face stands for its body.
     QStringList bodies;
+    // An fx mark on an entry while a target follows an expression
+    // (mitcad#861): a face's own appearance, a body's appearance or
+    // material. The windows' assignment panel shows and edits it.
+    bool appearanceBound = false;
+    bool materialBound = false;
     for (const SelectionItem& target : targets) {
       if (!bodies.contains(target.owner)) {
         bodies << target.owner;
       }
+      const DocumentSnapshot::Body bodyState = m_snapshot.bodies.value(target.owner);
+      appearanceBound = appearanceBound || (target.kind == SelectKind::Face
+                                                ? bodyState.faceAppearanceExprs.contains(target.name)
+                                                : !bodyState.appearanceExpr.isEmpty());
+      materialBound = materialBound || !bodyState.materialExpr.isEmpty();
     }
-    addCall(QStringLiteral("material"), tr("Material…"), [this, bodies] { m_controller->openMaterial(bodies); });
-    // The appearance or the material from an option (mitcad#809).
-    Submenu follow(tr("Follow Option"), &menu);
-    follow.addCall(tr("Appearance…"), [this, targets] { m_controller->followOption(targets, false); });
-    follow.addCall(tr("Material…"), [this, targets] { m_controller->followOption(targets, true); });
-    addSubmenu(follow);
-    follow.log(QStringLiteral("Follow Option"));
+    QStringList bound;
+    const auto addBound = [&menu, &entries, &bound](const QString& icon, const QString& text,
+                                                    std::function<void()> call, bool fx) {
+      QAction* action = new QAction(fx ? boundIcon(themeIcon(icon)) : themeIcon(icon),
+                                    fx ? text + QStringLiteral("\tfx") : text, &menu);
+      connect(action, &QAction::triggered, &menu, std::move(call));
+      menu.addAction(action);
+      entries << text;
+      if (fx) {
+        bound << text;
+      }
+    };
+    addBound(QStringLiteral("appearance"), tr("Appearance…"), [this, targets] { m_controller->openAppearances(targets); },
+             appearanceBound);
+    addBound(QStringLiteral("material"), tr("Material…"), [this, bodies] { m_controller->openMaterial(bodies); },
+             materialBound);
+    if (!bound.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Context menu fx: %1").arg(bound.join(QStringLiteral(" | ")));
+    }
     // Shown while a condition holds (mitcad#809).
     if (bodies.size() == 1) {
       const QString body = bodies.first();

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
-# Calibrate endpoints from the real handle under a fixed camera, then
-# exercise the mouse path. Each assertion starts AFTER its actual drag.
+# An edit keeps its stored operation (mitcad#868): the Join of both blocks
+# stays Join when its distance goes down into them, and OK saves it so.
 wait-idle
 window-resize 1400 990
 command view.front
@@ -9,58 +9,20 @@ expect-model-bodies 2 27000
 mark
 dblclick-logged '^Timeline Extrude1 at '
 expect-log 'Editing F4 with Extrude'
-expect-log 'Extrude: stored operation matches automatic choice; editing follows geometry'
+expect-log 'Extrude: editing keeps the stored operation'
 wait-idle
-capture join_at '^Manipulator Extrude distance at (-?[0-9]+,-?[0-9]+)$'
 mark
 focus-widget input_distance
 key ctrl+a
 type -15
-expect-log 'Extrude: automatic Operation = Cut'
-expect-log 'Cut target C0@: eligible, checked, intersects'
+expect-log 'Preview Extrude: ok'
 wait-idle
-capture cut_at '^Manipulator Extrude distance at (-?[0-9]+,-?[0-9]+)$'
-mark
-focus-widget input_distance
-key ctrl+a
-type 5
-expect-log 'Extrude: automatic Operation = New Body'
-wait-idle
-capture detached_at '^Manipulator Extrude distance at (-?[0-9]+,-?[0-9]+)$'
-mark
-focus-widget input_distance
-key ctrl+a
-type -5
-expect-log 'Extrude: automatic Operation = Join'
-wait-idle
-focus-main
-mark
-drag-logged '^Manipulator Extrude distance at ' '^Manipulator Extrude distance at ${cut_at:re}$'
-expect-log '^Manipulator Extrude distance dragged to -15$'
-expect-log 'Extrude: automatic Operation = Cut'
-expect-log 'Cut target C0@: eligible, checked, intersects'
-expect-log '^Extrude Local bodies: 2 bodies \[body F1.b0; body F2.b0\]$'
-expect-shown-body F1.b0 - 16000
-expect-shown-body F2.b0 - 16000
-screenshot '${MITCAD_TEST_WORK}/edit-auto-cut.png'
-mark
-drag-logged '^Manipulator Extrude distance at ' '^Manipulator Extrude distance at ${join_at:re}$'
-expect-log '^Manipulator Extrude distance dragged to -5$'
-expect-log 'Extrude: automatic Operation = Join'
-expect-log '^Extrude Local bodies: 2 bodies \[body F1.b0; body F2.b0\]$'
-expect-shown-body F1.b0 - 25000
-mark
-drag-logged '^Manipulator Extrude distance at ' '^Manipulator Extrude distance at ${detached_at:re}$'
-expect-log '^Manipulator Extrude distance dragged to 5$'
-expect-log 'Extrude: automatic Operation = New Body'
-expect-log '^Extrude Local bodies: nothing$'
-expect-log '^Preview bodies: F1.b0 at 0,0,0; F2.b0 at 0,0,0; F4.b0 at 0,0,0 new$'
-screenshot '${MITCAD_TEST_WORK}/edit-auto-new-body.png'
-expect-no-log 'Extrude Local bodies: .*body F4.b0|Extrude Local bodies: .*body F5.b0'
+expect-no-log 'Extrude: automatic Operation'
+expect-no-log 'Extrude: Operation = '
+screenshot '${MITCAD_TEST_WORK}/edit-keeps-join.png'
 button '^OK$'
 expect-log 'Edited F4' 30
-expect-model-bodies 4 39000
-expect-shown-body F4.b0 - 1000
+expect-model-bodies 2 27000
 menu 'File/Save'
 expect-log 'Saved .*edit-auto\.mitcad'
 expect-never 'The document was read while a job computes it|OCCT view event failed|Recompute failed'

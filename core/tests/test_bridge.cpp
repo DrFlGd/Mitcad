@@ -2,6 +2,7 @@
 // End-to-end check of the C++ -> Rust model -> C++/OCCT chain without the
 // UI: JSON commands in, shapes and names out.
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -15,12 +16,14 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepGProp.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRep_Builder.hxx>
 #include <Bnd_Box.hxx>
@@ -29,6 +32,7 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRep_Tool.hxx>
+#include <GProp_GProps.hxx>
 #include <GeomAPI_PointsToBSplineSurface.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <NCollection_Array2.hxx>
@@ -43,6 +47,7 @@
 #include "bridge/memory.hpp"
 #include "mitcad/geometry/cancel.hpp"
 #include "mitcad/geometry/geometry.hpp"
+#include "mitcad/geometry/input_check.hpp"
 #include "mitcad_bridge/lib.h"
 #include "mitcad_bridge/memory.h"
 #include "rust/cxx.h"
@@ -1415,6 +1420,104 @@ void test_live_hub() {
   CHECK(std::chrono::steady_clock::now() - closing < std::chrono::seconds(10));
 }
 
+// The block of the demo document after a circular pattern x6 (about the
+// block's middle) of four join or cut extrudes of 2 x 2 squares through
+// it, 3, 8, 13 and 18 mm from the middle: its volume, its faces (names
+// and areas) and its edge names.
+struct PatternedBlock {
+  double volume = -1.0;
+  std::vector<std::pair<std::string, double>> faces;
+  std::vector<std::string> edges;
+};
+
+PatternedBlock patterned_block(const std::string& operation, const std::string& compute) {
+  auto document = mitcad::new_demo_document(); // F1, F2
+  std::string features;
+  for (int i = 0; i < 4; ++i) {
+    const std::string sketch = "F" + std::to_string(3 + 2 * i);
+    run(*document, R"({"cmd": "sketch.create"})");
+    run(*document, sketch_rectangle(sketch, 33.0 + 5.0 * i, 19.0, 2.0, 2.0));
+    run(*document, extrude(sketch, kRectangle, 30, operation, R"(["F2.b0"])"));
+    features += (i > 0 ? "," : "") + quoted("F" + std::to_string(4 + 2 * i));
+  }
+  const std::string pattern =
+      run(*document, R"({"cmd": "add_feature", "def": {"type": "circular_pattern", "objects": )"
+                     R"({"type": "features", "features": [)" +
+                         features +
+                         R"(]}, "axis": {"origin": [30, 20, 0], "direction": [0, 0, 1]}, )"
+                         R"("quantity": 6, "angle": 6.283185307179586, "compute": ")" +
+                         compute + R"("}})");
+  CHECK(contains(pattern, R"("uid":"F11")"));
+  CHECK(!contains(std::string(document->query(R"({"query": "timeline"})")), R"("status":"error")"));
+  PatternedBlock block;
+  const auto body = document->body_shape("F2.b0");
+  if (!body) {
+    std::fprintf(stderr, "test_bridge.cpp: no body F2.b0 after the pattern (%s, %s)\n", operation.c_str(),
+                 compute.c_str());
+    ++failures;
+    return block;
+  }
+  block.volume = mitcad::geometry::volume(*body);
+  for (int i = 0; i < body->face_count(); ++i) {
+    std::string names;
+    for (const std::string& name : body->face_names(i)) {
+      names += name + ";";
+    }
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(body->face(i), props);
+    block.faces.emplace_back(names, props.Mass());
+  }
+  std::sort(block.faces.begin(), block.faces.end());
+  for (int i = 0; i < body->edge_count(); ++i) {
+    block.edges.push_back(body->edge_name(i));
+  }
+  std::sort(block.edges.begin(), block.edges.end());
+  return block;
+}
+
+// mitcad#855: a pattern of join features (and of cut features) whose
+// copies stay apart is applied in one boolean, which gives the body the
+// features give one after another (MITCAD_NO_PATTERN_RUNS=1): the same
+// volume, faces with the same names and areas, and edge names; and leaves
+// its input shapes as they were (the input check).
+void test_pattern_of_features_in_one_boolean() {
+  mitcad::geometry::clear_input_changes();
+  mitcad::geometry::enable_input_checks(true);
+  for (const char* operation : {"join", "cut"}) {
+    // Each square 2 x 2, 10 mm above the block or 20 mm through it.
+    const double volume = 60.0 * 40.0 * 20.0 + (std::string(operation) == "join" ? 1.0 : -2.0) * 24 * 40.0;
+    for (const char* compute : {"adjust", "identical"}) {
+      set_env("MITCAD_NO_PATTERN_RUNS", "");
+      const PatternedBlock together = patterned_block(operation, compute);
+      set_env("MITCAD_NO_PATTERN_RUNS", "1");
+      const PatternedBlock one_by_one = patterned_block(operation, compute);
+      set_env("MITCAD_NO_PATTERN_RUNS", "");
+      CHECK(near(together.volume, volume));
+      CHECK(near(one_by_one.volume, volume));
+      CHECK(together.faces.size() == one_by_one.faces.size());
+      bool same = together.faces.size() == one_by_one.faces.size();
+      for (std::size_t i = 0; same && i < together.faces.size(); ++i) {
+        same = together.faces[i].first == one_by_one.faces[i].first &&
+               near(together.faces[i].second, one_by_one.faces[i].second);
+        if (!same) {
+          std::fprintf(stderr, "%s %s: face %s (%f) against %s (%f)\n", operation, compute,
+                       together.faces[i].first.c_str(), together.faces[i].second,
+                       one_by_one.faces[i].first.c_str(), one_by_one.faces[i].second);
+        }
+      }
+      CHECK(same);
+      CHECK(together.edges == one_by_one.edges);
+    }
+  }
+  const std::vector<std::string> changes = mitcad::geometry::input_changes();
+  for (const std::string& change : changes) {
+    std::fprintf(stderr, "input changed: %s\n", change.c_str());
+  }
+  CHECK(changes.empty());
+  mitcad::geometry::enable_input_checks(false);
+  mitcad::geometry::clear_input_changes();
+}
+
 } // namespace
 
 int main() {
@@ -1443,6 +1546,7 @@ int main() {
   test_segment_crossings();
   test_out_of_memory_in_an_operation();
   test_live_hub();
+  test_pattern_of_features_in_one_boolean();
 
   if (failures == 0) {
     std::puts("test_bridge: all checks passed");

@@ -1717,7 +1717,55 @@ pub trait Kernel: Send {
     fn worker_thread<R>(&self, f: impl FnOnce() -> R) -> R {
         f()
     }
+
+    // Warm opens from the result store (mitcad#858): display meshes kept
+    // with the bodies, and stored shapes unpacked when something reads them.
+
+    /// The display triangulations the application's view meshing left in
+    /// the shape (a shape meshed for display to the end), as bytes for
+    /// [`Kernel::restore_display_mesh`] of the same build.
+    fn display_mesh_bytes(&self, _shape: &Self::Shape) -> Result<Vec<u8>, KernelError> {
+        Err(KernelError::Unsupported("storing display meshes"))
+    }
+
+    /// Gives the shape the display triangulations of
+    /// [`Kernel::display_mesh_bytes`] of the same body's shape, and marks it
+    /// meshed for display; how many faces were given one (0 when the shape
+    /// was meshed already). Bytes of another shape write nothing: an error.
+    fn restore_display_mesh(
+        &self,
+        _shape: &Self::Shape,
+        _bytes: &[u8],
+    ) -> Result<usize, KernelError> {
+        Err(KernelError::Unsupported("restoring display meshes"))
+    }
+
+    /// How a stored shape ([`Kernel::shape_bytes`]) is made later, without
+    /// the kernel at hand, and what stands in a recompute's body states
+    /// for one not made yet (the result store's lazy restore,
+    /// `crate::store` in the model). Unsupported: stored results are read
+    /// whole.
+    fn shape_unpacker(&self) -> Result<ShapeUnpacker<Self::Shape>, KernelError> {
+        Err(KernelError::Unsupported("unpacking stored shapes later"))
+    }
 }
+
+/// [`Kernel::shape_unpacker`]: `unpack` makes a shape of
+/// [`Kernel::shape_bytes`] as [`Kernel::shape_from_bytes`] does, on any
+/// thread; `stand_in` makes a shape that nothing reads, which a body state
+/// holds until the shape is made.
+pub struct ShapeUnpacker<S> {
+    pub unpack: fn(&[u8]) -> Result<S, KernelError>,
+    pub stand_in: fn() -> S,
+}
+
+impl<S> Clone for ShapeUnpacker<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for ShapeUnpacker<S> {}
 
 /// A conical face ([`Kernel::face_cone`], mitcad#473).
 #[derive(Debug, Clone, Copy, PartialEq)]

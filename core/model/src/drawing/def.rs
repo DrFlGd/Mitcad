@@ -119,6 +119,11 @@ pub struct Drawing {
     /// annotations without their own (mitcad#729).
     #[serde(default, skip_serializing_if = "is_default")]
     pub defaults: DrawingDefaults,
+    /// A cut sheet's material and parts (mitcad#853): the drawing is then
+    /// a cut sheet, of one sheet without views, notes, a template or
+    /// revisions of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_sheet: Option<super::cut_sheet_def::CutSheet>,
 }
 
 /// What every dimension and annotation of a drawing takes unless it has
@@ -949,6 +954,23 @@ impl Drawing {
         self.defaults
             .check()
             .map_err(|e| format!("{}: {e}", self.name))?;
+        // A cut sheet (mitcad#853) is its material and its parts: one
+        // sheet, nothing drawn on it of its own.
+        if let Some(cut) = &self.cut_sheet {
+            cut.check().map_err(|e| format!("{}: {e}", self.name))?;
+            let plain = self.sheets.iter().all(|s| {
+                s.views.is_empty()
+                    && s.notes.is_empty()
+                    && s.sketch.is_empty()
+                    && s.template.is_none()
+            });
+            if self.sheets.len() != 1 || !plain || !self.revisions.is_empty() {
+                return Err(format!(
+                    "{} is a cut sheet: it holds parts only, on one sheet (add_cut_sheet_parts)",
+                    self.name
+                ));
+            }
+        }
         let mut ids = Vec::new();
         for (i, sheet) in self.sheets.iter().enumerate() {
             sheet

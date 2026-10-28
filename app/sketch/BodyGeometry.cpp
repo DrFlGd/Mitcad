@@ -66,11 +66,21 @@ void BodyGeometry::load(const QJsonArray& answer, CurveReader read) {
     if (entry.source.isEmpty() || entry.type.isEmpty()) {
       continue;
     }
-    if (entry.isVertex()) {
+    if (entry.isPoint()) {
       const QJsonArray at = geometry.value(QStringLiteral("at")).toArray();
       entry.at = V2{at.at(0).toDouble(), at.at(1).toDouble()};
     } else {
       entry.curve = read(entry.type, geometry);
+    }
+    // Out of the plane (mitcad#866): where it is.
+    entry.inPlane = o.value(QStringLiteral("in_plane")).toBool(true);
+    entry.height = o.value(QStringLiteral("height")).toDouble();
+    for (const QJsonValue& p : o.value(QStringLiteral("path")).toArray()) {
+      const QJsonArray xyz = p.toArray();
+      entry.path.push_back({V2{xyz.at(0).toDouble(), xyz.at(1).toDouble()}, xyz.at(2).toDouble()});
+    }
+    if (!entry.inPlane && entry.path.empty()) {
+      continue; // nowhere to pick it
     }
     loaded.push_back(std::move(entry));
   }
@@ -83,11 +93,19 @@ void BodyGeometry::set(std::vector<BodyItem> list) {
 }
 
 int BodyGeometry::edgeCount() const {
-  return static_cast<int>(
-      std::count_if(m_items.begin(), m_items.end(), [](const BodyItem& entry) { return !entry.isVertex(); }));
+  return static_cast<int>(std::count_if(m_items.begin(), m_items.end(),
+                                        [](const BodyItem& entry) { return entry.inPlane && !entry.isVertex(); }));
 }
 
-int BodyGeometry::vertexCount() const { return static_cast<int>(m_items.size()) - edgeCount(); }
+int BodyGeometry::vertexCount() const {
+  return static_cast<int>(std::count_if(m_items.begin(), m_items.end(),
+                                        [](const BodyItem& entry) { return entry.inPlane && entry.isVertex(); }));
+}
+
+int BodyGeometry::outOfPlaneCount() const {
+  return static_cast<int>(
+      std::count_if(m_items.begin(), m_items.end(), [](const BodyItem& entry) { return !entry.inPlane; }));
+}
 
 const BodyItem* BodyGeometry::item(const QString& id, QString* part) const {
   if (!isBodyId(id)) {
@@ -101,8 +119,8 @@ const BodyItem* BodyGeometry::item(const QString& id, QString* part) const {
   }
   const QString which = pieces.value(2);
   const BodyItem& found = m_items[static_cast<std::size_t>(index)];
-  if (!which.isEmpty() && (found.isVertex() || (which != QStringLiteral("start") && which != QStringLiteral("end") &&
-                                                which != QStringLiteral("center")))) {
+  if (!which.isEmpty() && (found.isPoint() || (which != QStringLiteral("start") && which != QStringLiteral("end") &&
+                                               which != QStringLiteral("center")))) {
     return nullptr;
   }
   if (part != nullptr) {
@@ -117,7 +135,7 @@ std::optional<V2> BodyGeometry::pointAt(const QString& id) const {
   if (found == nullptr) {
     return std::nullopt;
   }
-  if (found->isVertex()) {
+  if (found->isPoint()) {
     return found->at;
   }
   if (part == QStringLiteral("start") && found->curve.isOpen()) {
@@ -136,14 +154,14 @@ std::optional<V2> BodyGeometry::pointAt(const QString& id) const {
 const Curve2* BodyGeometry::curve(const QString& id) const {
   QString part;
   const BodyItem* found = item(id, &part);
-  return found != nullptr && !found->isVertex() && part.isEmpty() ? &found->curve : nullptr;
+  return found != nullptr && !found->isPoint() && part.isEmpty() ? &found->curve : nullptr;
 }
 
 std::vector<std::pair<QString, V2>> BodyGeometry::points() const {
   std::vector<std::pair<QString, V2>> out;
   for (std::size_t i = 0; i < m_items.size(); ++i) {
     const BodyItem& entry = m_items[i];
-    if (entry.isVertex()) {
+    if (entry.isPoint()) {
       out.emplace_back(itemId(i), entry.at);
     } else if (entry.hasCenter()) {
       out.emplace_back(itemId(i) + QStringLiteral(":center"), entry.curve.center);
@@ -165,7 +183,7 @@ void BodyGeometry::addTo(SketchModel& model) const {
   for (std::size_t i = 0; i < m_items.size(); ++i) {
     const BodyItem& entry = m_items[i];
     const QString id = itemId(i);
-    if (entry.isVertex()) {
+    if (entry.isPoint()) {
       point(id, entry.at);
       continue;
     }
@@ -216,32 +234,54 @@ bool sameCurve(const Curve2& a, const Curve2& b, double tolerance) {
   return true;
 }
 
+namespace {
+
+// The point or curve among a projection's entities that is where the item
+// projects to.
+ProjectedItem matchIn(const SketchModel& model, const ProjectionData& p, const BodyItem& item) {
+  ProjectedItem found;
+  for (const QString& id : p.entities) {
+    if (item.isPoint()) {
+      const PointData* point = pointOf(model, id);
+      if (point != nullptr && dist(point->at, item.at) <= matchTolerance(item.at)) {
+        found.point = id;
+        break;
+      }
+      continue;
+    }
+    const CurveData* curve = curveOf(model, id);
+    const V2 size{std::max(std::abs(item.curve.startPoint().x), std::abs(item.curve.center.x)),
+                  std::max(std::abs(item.curve.startPoint().y), std::abs(item.curve.center.y))};
+    if (curve != nullptr && sameType(item.type, curve->curve.type) &&
+        sameCurve(curve->curve, item.curve, matchTolerance(size) + kMatchTolerance * item.curve.radius)) {
+      found.curve = id;
+      break;
+    }
+  }
+  return found;
+}
+
+} // namespace
+
 std::optional<ProjectedItem> existingProjection(const SketchModel& model, const BodyItem& item) {
   for (const ProjectionData& p : model.projections) {
     if (p.stale || p.section || p.source != item.source || p.body != item.body || p.linked != item.linked ||
         (item.linked && p.occurrence != item.occurrence)) {
       continue;
     }
-    ProjectedItem found;
-    for (const QString& id : p.entities) {
-      if (item.isVertex()) {
-        const PointData* point = pointOf(model, id);
-        if (point != nullptr && dist(point->at, item.at) <= matchTolerance(item.at)) {
-          found.point = id;
-          break;
-        }
-        continue;
-      }
-      const CurveData* curve = curveOf(model, id);
-      const V2 size{std::max(std::abs(item.curve.startPoint().x), std::abs(item.curve.center.x)),
-                    std::max(std::abs(item.curve.startPoint().y), std::abs(item.curve.center.y))};
-      if (curve != nullptr && sameType(item.type, curve->curve.type) &&
-          sameCurve(curve->curve, item.curve, matchTolerance(size) + kMatchTolerance * item.curve.radius)) {
-        found.curve = id;
-        break;
-      }
+    if (const ProjectedItem found = matchIn(model, p, item); !found.empty()) {
+      return found;
     }
-    if (!found.empty()) {
+  }
+  return std::nullopt;
+}
+
+std::optional<ProjectedItem> projectedLike(const SketchModel& model, const BodyItem& item) {
+  for (const ProjectionData& p : model.projections) {
+    if (p.stale) {
+      continue;
+    }
+    if (const ProjectedItem found = matchIn(model, p, item); !found.empty()) {
       return found;
     }
   }

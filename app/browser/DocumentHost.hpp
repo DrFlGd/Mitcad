@@ -163,6 +163,10 @@ public:
   // Whether a drawing is open over the 3D view: the Delete key then
   // deletes its views, never the model's selection behind it.
   virtual bool isDrawingOpen() const { return false; }
+  // The bodies selected in the model (mitcad#853: a cut sheet's parts),
+  // as a cut sheet's commands take them: a body's uid, or `{"body",
+  // "occurrence"}` for one an occurrence places.
+  virtual QJsonArray selectedModelBodies() const { return {}; }
 
   // Change Parameters while a sketch or a feature is edited (mitcad#564):
   // runs a command of the parameter table as the window's mode needs it

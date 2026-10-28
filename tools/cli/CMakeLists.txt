@@ -797,7 +797,7 @@ if(BUILD_TESTING)
                                               --result-store "${store}" --diagnostics)
   set_tests_properties(cli.store_diagnostics PROPERTIES FIXTURES_REQUIRED cli_store
     PASS_REGULAR_EXPRESSION
-    "Cache: {\"last_recompute\":{\"cached\":0,.*\"restored\":8},\"memory\":{.*\"process\":{\"heap\":[0-9]+,\"peak_resident\":[0-9]+,\"resident\":[1-9][0-9]*},\"store\":{.*\"disk\":{.*\"by_type\":\\[{.*\"type\":\"(rectangular|circular)_pattern\"")
+    "Cache: {\"last_recompute\":{\"cached\":0,.*\"restored\":8,\"restored_packed\":[0-9]+},\"memory\":{.*\"process\":{\"heap\":[0-9]+,\"peak_resident\":[0-9]+,\"resident\":[1-9][0-9]*},\"store\":{.*\"disk\":{.*\"by_type\":\\[{.*\"type\":\"(rectangular|circular)_pattern\"")
 
   # Small UI gaps (P9): a full round and a chamfer as wide as a rib succeed
   # with a warning.
@@ -1322,6 +1322,16 @@ if(BUILD_TESTING)
     "2 bodies, 14 faces \\([0-9]+ planes\\), without a triangulation a 0 b 0")
   if(WIN32)
     set_property(TEST cli.mesh_compare_meeting_roundings APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
+endif()
+
+# Cut sheets (mitcad#853): a plate with two holes and a slot through OCCT,
+# each of its parts one outer and three inner loops at 1:1.
+if(BUILD_TESTING)
+  add_test(NAME cli.cut_sheet COMMAND mitcad-cli run "${CMAKE_CURRENT_SOURCE_DIR}/tests/cut_sheet.json")
+  if(WIN32)
+    set_property(TEST cli.cut_sheet APPEND PROPERTY ENVIRONMENT_MODIFICATION
       "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
 endif()

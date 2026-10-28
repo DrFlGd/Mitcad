@@ -45,6 +45,8 @@
 #include "../materials/TextureBrowser.hpp"
 #include "../materials/TextureUse.hpp"
 #include "../platform/MacDialogs.hpp"
+#include "AssignmentPanel.hpp"
+#include "Bindings.hpp"
 #include "DocumentHost.hpp"
 
 namespace mitcad {
@@ -93,6 +95,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   bodyLayout->setContentsMargins(0, 0, 0, 0);
   scroll->setWidget(body);
   layout->addWidget(scroll, 1);
+  m_bodyView = scroll->viewport();
   auto* columns = new QHBoxLayout;
   bodyLayout->addLayout(columns, 1);
 
@@ -227,7 +230,44 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   m_faces = new QListWidget;
   m_faces->setSelectionMode(QAbstractItemView::ExtendedSelection);
   m_faces->setMaximumHeight(110);
+  // Two rows at least: the assignment panel's table does not squeeze it
+  // away (the body scrolls instead, mitcad#861).
+  m_faces->setMinimumHeight(2 * (kIconSize + 4) + 2 * m_faces->frameWidth());
   bodyLayout->addWidget(m_faces);
+
+  // The assignment panel (mitcad#861): what the targets have, and whether
+  // it varies with an option; Assign and a double-click fill its rows then.
+  AssignmentPanel::Host panelHost;
+  panelHost.model = [this]() -> const CommandContext& { return m_host.model(); };
+  panelHost.runCommand = [this](const QJsonObject& command) { return m_host.runModelCommand(command); };
+  panelHost.runCommands = [this](const QJsonArray& commands, const QString& label) {
+    return m_host.runModelCommands(commands, label);
+  };
+  panelHost.lastError = [this] { return m_host.lastError(); };
+  panelHost.canChange = [this] { return canChange(); };
+  panelHost.describe = [this](const QString& text) {
+    // By id, else by name.
+    AssignmentPanel::Result result;
+    const Appearance* found = findAppearance(m_appearances, text);
+    for (int i = 0; found == nullptr && i < m_appearances.size(); ++i) {
+      if (m_appearances.at(i).name == text) {
+        found = &m_appearances.at(i);
+      }
+    }
+    if (found != nullptr) {
+      result.id = found->id;
+      result.name = found->name;
+      result.icon = QIcon(QPixmap::fromImage(appearanceSwatch(*found, kIconSize, devicePixelRatioF())));
+    }
+    return result;
+  };
+  panelHost.openConfigurations = [this] {
+    if (openConfigurations) {
+      openConfigurations();
+    }
+  };
+  m_panel = new AssignmentPanel(AssignmentPanel::Kind::Appearance, QStringLiteral("Appearances"), panelHost);
+  layout->addWidget(m_panel);
 
   m_message = new QLabel;
   m_message->setWordWrap(true);
@@ -273,6 +313,21 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   connect(m_delete, &QPushButton::clicked, this, &AppearanceDialog::deleteAppearance);
   connect(m_assign, &QPushButton::clicked, this, &AppearanceDialog::assign);
   connect(m_assignBodies, &QPushButton::clicked, this, &AppearanceDialog::assignToBodies);
+  connect(m_panel, &AssignmentPanel::assignTextChanged, this, &AppearanceDialog::updateAssign);
+  // A double-click assigns as Assign does (mitcad#861): the selection's, or
+  // the panel's rows while the appearance varies with an option.
+  connect(m_list, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
+    const QString id = item != nullptr ? item->data(kIdRole).toString() : QString();
+    if (id.isEmpty() || m_targets.isEmpty()) {
+      return;
+    }
+    if (id != m_current) {
+      m_current = id;
+      showCurrent();
+    }
+    qDebug().noquote() << QStringLiteral("Appearances double-click: %1").arg(id);
+    assign();
+  });
   connect(m_list, &QListWidget::currentItemChanged, this, [this](QListWidgetItem* item) {
     if (m_building || item == nullptr || item->data(kIdRole).toString().isEmpty()) {
       return;
@@ -615,6 +670,11 @@ void AppearanceDialog::finishUse(const QString& sourceId, const TextureAsset& as
                                    .arg(name),
                          false);
   refresh();
+  if (m_panel->varies()) {
+    // Into the active row at once (mitcad#861).
+    const QString made = quotedText(m_current);
+    m_panel->fill(made);
+  }
 }
 
 void AppearanceDialog::addNumber(QFormLayout* form, const char* key, const QString& label, double low, double high,
@@ -681,25 +741,23 @@ void AppearanceDialog::setTargets(const Selection& targets) {
   // Assign to N bodies: the bodies that own the selected faces and the selected
   // bodies, each once (mitcad#346); shown while the selection holds faces.
   const QStringList owners = targetBodies();
-  m_assignBodies->setVisible(!faces.isEmpty());
+  m_hasFaces = !faces.isEmpty();
   m_assignBodies->setText(owners.size() == 1 ? tr("Assign to 1 body") : tr("Assign to %1 bodies").arg(owners.size()));
   if (targets.isEmpty()) {
-    m_assign->setText(tr("Assign"));
-    m_assign->setEnabled(false);
-    m_assign->setToolTip(tr("Select bodies or faces first, or use a body's context menu"));
+    m_assignText = tr("Assign");
+    m_assignTip = tr("Select bodies or faces first, or use a body's context menu");
   } else {
     if (faces.isEmpty()) {
-      m_assign->setText(bodies.size() == 1 ? tr("Assign to %1").arg(m_host.model().bodyName(bodies.first()))
-                                           : tr("Assign to %1 Bodies").arg(bodies.size()));
+      m_assignText = bodies.size() == 1 ? tr("Assign to %1").arg(m_host.model().bodyName(bodies.first()))
+                                        : tr("Assign to %1 Bodies").arg(bodies.size());
     } else if (bodies.isEmpty()) {
-      m_assign->setText(faces.size() == 1 ? tr("Assign to Face") : tr("Assign to %1 Faces").arg(faces.size()));
+      m_assignText = faces.size() == 1 ? tr("Assign to Face") : tr("Assign to %1 Faces").arg(faces.size());
     } else {
-      m_assign->setText(tr("Assign to %1 Items").arg(targets.size()));
+      m_assignText = tr("Assign to %1 Items").arg(targets.size());
     }
-    m_assign->setEnabled(true);
-    m_assign->setToolTip(faces.isEmpty() ? tr("Give the bodies the selected appearance")
-                                         : tr("Give the bodies and faces the selected appearance; a face's "
-                                              "appearance overrides its body's"));
+    m_assignTip = faces.isEmpty() ? tr("Give the bodies the selected appearance")
+                                  : tr("Give the bodies and faces the selected appearance; a face's "
+                                       "appearance overrides its body's");
   }
   // The targets' own appearance, when they share one: a face's own, else
   // its body's.
@@ -762,7 +820,48 @@ void AppearanceDialog::setTargets(const Selection& targets) {
                                    shared.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(shared));
   }
   showFaces();
+  // What the targets have, and whether it varies with an option
+  // (mitcad#861); Assign follows the panel.
+  m_panel->setTargets(bodies, faces);
+  updateAssign();
+}
+
+void AppearanceDialog::updateAssign() {
+  if (m_panel->varies()) {
+    // Assign fills the panel's selected rows: "Assign to Red".
+    const QString text = m_panel->assignText();
+    if (text != m_assign->text()) {
+      m_assign->setText(text);
+      qDebug().noquote() << QStringLiteral("Appearances assign label: %1").arg(text);
+    }
+    // None after the last row was filled: a row is to be clicked first.
+    m_assign->setToolTip(m_panel->assignTip());
+    m_assign->setEnabled(current() != nullptr && m_panel->canFill());
+    m_assignBodies->setVisible(false);
+  } else {
+    m_assign->setText(m_assignText);
+    m_assign->setToolTip(m_assignTip);
+    m_assign->setEnabled(!m_targets.isEmpty());
+    // Assign to N bodies only while the selection holds faces (mitcad#346).
+    m_assignBodies->setVisible(m_hasFaces);
+  }
+  growForPanel();
   TestSync::singleShot(0, this, [this] { logLayout(); });
+}
+
+void AppearanceDialog::growForPanel() {
+  // The window grows by the assignment panel when it shows or gets taller
+  // (its header with targets, its table), so that the body keeps its
+  // height where the screen has room (mitcad#861); never by the panel
+  // twice, so a size the user chose stays.
+  const int panel = m_panel->isVisibleTo(this) ? m_panel->sizeHint().height() : 0;
+  if (panel <= m_panelHeight) {
+    return;
+  }
+  m_panelHeight = panel;
+  if (isVisible() && !testAttribute(Qt::WA_DontShowOnScreen)) {
+    fitWindowToContents(this, FitMode::GrowOnly);
+  }
 }
 
 const Appearance* AppearanceDialog::current() const { return findAppearance(m_appearances, m_current); }
@@ -849,6 +948,8 @@ void AppearanceDialog::refresh() {
   select(m_current);
   showCurrent();
   showFaces();
+  // The targets' state again (mitcad#861): undo, a parameter, a fill.
+  m_panel->reload();
 }
 
 void AppearanceDialog::showCurrent() {
@@ -973,6 +1074,11 @@ void AppearanceDialog::newAppearance() {
   m_current = result.value(QStringLiteral("id")).toString();
   qDebug().noquote() << QStringLiteral("Created appearance %1 (%2) from %3").arg(m_current, name, base);
   refresh();
+  if (m_panel->varies()) {
+    // Into the active row at once (mitcad#861).
+    const QString made = quotedText(m_current);
+    m_panel->fill(made);
+  }
   m_name->setFocus();
   m_name->selectAll();
 }
@@ -995,6 +1101,12 @@ void AppearanceDialog::deleteAppearance() {
 
 void AppearanceDialog::assign() {
   const Appearance* a = current();
+  if (a != nullptr && m_panel->varies()) {
+    // The rows of the option the appearance varies with (mitcad#861).
+    const QString result = quotedText(a->id);
+    m_panel->fill(result);
+    return;
+  }
   if (a == nullptr || m_targets.isEmpty() || !canChange()) {
     return;
   }
@@ -1361,7 +1473,11 @@ void AppearanceDialog::logLayout() {
     QListWidgetItem* item = m_list->item(i);
     const QString id = item->data(kIdRole).toString();
     const QRect rect = m_list->visualItemRect(item);
-    if (!id.isEmpty() && !item->isHidden() && m_list->viewport()->rect().contains(rect.center())) {
+    // In sight in the list and in the body, which scrolls on a low screen
+    // or while the assignment panel's table takes room (mitcad#861).
+    const QPoint inBody = m_list->viewport()->mapTo(m_bodyView, rect.center());
+    if (!id.isEmpty() && !item->isHidden() && m_list->viewport()->rect().contains(rect.center()) &&
+        m_bodyView->rect().contains(inBody)) {
       lines << QStringLiteral("Appearances item %1 at %2").arg(id, at(m_list->viewport(), rect.center()));
     }
   }

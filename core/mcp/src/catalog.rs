@@ -74,7 +74,7 @@ pub(crate) fn tools() -> Vec<Value> {
         ),
         tool(
             "model_export",
-            "Export geometry to a new file inside the workspace. Existing output files are refused. Optionally select bodies; DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing is given. PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options (sheet, orientation, scale, projection, views, section, hidden_lines, ...; model_reference {\"section\": \"Drawings\"}). Defaults are metric.",
+            "Export geometry to a new file inside the workspace. Existing output files are refused. Optionally select bodies; DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing or cut_sheet is given; cut_sheet writes a cut sheet kept in the design (DXF or SVG at 1:1, model_reference {\"section\": \"Cut sheets\"}). PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options (sheet, orientation, scale, projection, views, section, hidden_lines, ...; model_reference {\"section\": \"Drawings\"}). Defaults are metric.",
             json!({
                 "document": document,
                 "path": path,
@@ -82,7 +82,9 @@ pub(crate) fn tools() -> Vec<Value> {
                 "bodies": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Optional body identities, for example F7.b0"},
                 "sketch": {"type": "string", "minLength": 1, "description": "Sketch feature identity for DXF, for example F2"},
                 "flat_pattern": {"type": "string", "minLength": 1, "description": "Sheet-metal body identity for a Flat Pattern DXF, for example F3.b0"},
-                "drawing": {"type": "object", "description": "Drawing options (export_drawing without cmd, path and bodies), for example {\"sheet\": \"A3\", \"views\": [\"front\", \"top\", \"right\", \"iso\"], \"hidden_lines\": true}"}
+                "drawing": {"type": "object", "description": "Drawing options (export_drawing without cmd, path and bodies), for example {\"sheet\": \"A3\", \"views\": [\"front\", \"top\", \"right\", \"iso\"], \"hidden_lines\": true}"},
+                "cut_sheet": {"type": "string", "minLength": 1, "description": "A cut sheet kept in the design (its id like D2, or its name) written as DXF or SVG: its parts' outlines at 1:1 on the layers CUT_OUTER and CUT_INNER"},
+                "labels": {"type": "boolean", "default": false, "description": "With cut_sheet: each part's name as text on the layer LABEL"}
             }),
             &["document", "path", "format"],
             false,
@@ -179,7 +181,7 @@ pub(crate) fn live_tools() -> Vec<Value> {
             // document_save's path.
             Some("model_export") => {
                 tool["description"] = json!(
-                    "Export the open document's geometry to a new file in a folder the user allows agents to use (document_list lists them); the document does not change. An existing file is refused. bodies selects what is written (for example leaving out a helper body). DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing is given. PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options (model_reference {\"section\": \"Drawings\"}). Refused while a command panel is open, while a sketch in the middle of the timeline is edited (its later features are rolled back until it is finished), or when the document has failed features. Defaults are metric."
+                    "Export the open document's geometry to a new file in a folder the user allows agents to use (document_list lists them); the document does not change. An existing file is refused. bodies selects what is written (for example leaving out a helper body). DXF requires a sketch handle, or a sheet-metal body whose Flat Pattern is written, instead of bodies, unless drawing or cut_sheet is given; cut_sheet writes a cut sheet kept in the design (DXF or SVG at 1:1, model_reference {\"section\": \"Cut sheets\"}). PDF and SVG (and DXF with drawing) write a drawing of the bodies: views with hidden lines removed, overall dimensions, hole diameters, a hole table and a title block; drawing holds the export_drawing options (model_reference {\"section\": \"Drawings\"}). Refused while a command panel is open, while a sketch in the middle of the timeline is edited (its later features are rolled back until it is finished), or when the document has failed features. Defaults are metric."
                 );
                 tool["inputSchema"]["properties"]["path"]["description"] = json!(
                     "A new file in a folder the user allows agents to use (Preferences > AI Assistants, or the application's --mcp-folder), with the format's extension; a relative path is relative to the first allowed folder; '..' is refused"

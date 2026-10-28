@@ -103,9 +103,19 @@ impl<K: Kernel> CacheOps<K> for Document<K> {
                        "evaluated_ms": r.output.as_ref().map(|o| ms(o.time))})
             })
             .collect();
+        // Restored results whose bodies' shapes are still packed: states
+        // replaced before anything read them (mitcad#858).
+        let packed = result
+            .results
+            .iter()
+            .filter(|r| restored.contains_key(&r.uid))
+            .filter_map(|r| r.output.as_ref())
+            .filter(|o| !o.changes.is_empty() && !o.changes.is_unpacked())
+            .count();
         let last = json!({
             "evaluated": result.evaluated.len(),
             "restored": result.restored.len(),
+            "restored_packed": packed,
             "cached": cached,
             "evaluate_ms": evaluated.values().sum::<f64>(),
             "restore_ms": restored.values().sum::<f64>(),
@@ -122,6 +132,15 @@ impl<K: Kernel> CacheOps<K> for Document<K> {
                 "read_bytes": stats.read_bytes, "read_ms": stats.read_ns as f64 / 1.0e6,
                 "writes": stats.writes, "write_bytes": stats.write_bytes,
                 "write_ms": stats.write_ns as f64 / 1.0e6, "write_errors": stats.write_errors,
+                "deferred": stats.deferred, "unpacked": stats.unpacked,
+                "unpack_ms": stats.unpack_ns as f64 / 1.0e6,
+                "display_meshes": {
+                    "lookups": stats.mesh_lookups, "hits": stats.mesh_hits,
+                    "faces": stats.mesh_faces, "read_bytes": stats.mesh_read_bytes,
+                    "read_ms": stats.mesh_read_ns as f64 / 1.0e6, "writes": stats.mesh_writes,
+                    "write_bytes": stats.mesh_write_bytes,
+                    "write_ms": stats.mesh_write_ns as f64 / 1.0e6,
+                },
             });
             if disk {
                 value["disk"] = disk_json(&store::usage(s.dir(), s.build_id()));
@@ -168,6 +187,7 @@ fn disk_json(usage: &store::StoreUsage) -> Value {
         "bytes": usage.bytes,
         "other_builds": {"files": usage.other_files, "bytes": usage.other_bytes},
         "damaged": usage.damaged,
+        "display_meshes": {"files": usage.meshes, "bytes": usage.mesh_bytes},
         "by_document": largest_first(by_document, "document", "features"),
         "by_type": largest_first(by_type, "type", "features"),
         "by_feature": features.iter().map(|e| json!({

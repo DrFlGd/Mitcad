@@ -374,6 +374,19 @@ mod ffi {
         fn result_store_gc(dir: &str, budget_mb: u64) -> String;
         /// Removes every stored result; the same JSON.
         fn result_store_clear(dir: &str) -> String;
+        /// Display meshes kept in the store (mitcad#858). `request`:
+        /// {"bodies": ["F2.b0", ...], "options": "<the meshing options>"}.
+        /// Gives each body at the marker whose shape has display
+        /// triangulations stored for its version and those options its
+        /// triangulations back (the shape then counts as meshed for
+        /// display); returns JSON {"restored": [uids], "faces", "bytes",
+        /// "ms"}. Without a store, nothing.
+        fn restore_display_meshes(self: &Document, request: &str) -> String;
+        /// Writes the display triangulations of the bodies of `request`
+        /// (the same form), each meshed for display to the end, under
+        /// their versions and those options; returns JSON {"stored",
+        /// "bytes", "failed", "errors", "ms"}.
+        fn persist_display_meshes(self: &Document, request: &str) -> String;
         /// The most memory the document's cached results may take,
         /// estimated; beyond it the results used longest ago go (they can
         /// still come from the store). 0: no limit.

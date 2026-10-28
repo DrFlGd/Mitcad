@@ -161,6 +161,15 @@ pub enum Constraint {
         b: EntityId,
         axis: EntityId,
     },
+    /// Two circles or arcs mirrored about a line with their radii left to
+    /// other constraints (mitcad#865): the centres mirrored, and an arc's
+    /// ends mirrored in direction from its centre. Two lines as
+    /// [`Constraint::SymmetricEntities`].
+    SymmetricCentres {
+        a: EntityId,
+        b: EntityId,
+        axis: EntityId,
+    },
     /// Distance between two points.
     Distance {
         a: PointId,

@@ -61,11 +61,13 @@ if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli: $($output -join ' / ')" }
 
 function Wait-Enabled([string]$Place) {
   $last = $null
-  for ($i = 0; $i -lt 30; $i++) {
-    $last = Ui-LogLines | Where-Object { $_.Contains("$Place at ") } | Select-Object -Last 1
+  # Looked for every 50 ms (200 ms before, mitcad#870), up to 6 s.
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $last = Ui-LastLineWith "$Place at "
     if ($last -and -not "$last".EndsWith('(disabled)')) { return }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 6000)
   Ui-Fail "'$Place' is not enabled: $last"
 }
 

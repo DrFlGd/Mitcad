@@ -148,7 +148,15 @@ design in a project.
   (`geometry/include/mitcad/geometry/persist.hpp`); results of another
   build are ignored; sketches, construction and plain base features are
   not stored. An import's worker hands every result a store takes over
-  to the window in a store of the import's own (mitcad#413). The memory
+  to the window in a store of the import's own (mitcad#413). A result
+  found keeps the shapes of the bodies it sets packed until something may
+  read them (mitcad#858): the body states hold a stand-in under the stored
+  version, an evaluation (other than a sketch that reads no body) or a
+  joint unpacks them first, the bodies left at the end are unpacked, and
+  a state the next restored result replaces is never unpacked (its result
+  unpacks itself if the timeline's history is read later). The store also
+  keeps the shown bodies' display triangulations under each body's
+  version and the meshing options (see the display meshes below). The memory
   cache has a byte budget (the app gives a quarter
   of RAM) and evicts least recently used results not held by the current
   document. The `cache` query reports both caches.
@@ -398,8 +406,11 @@ design in a project.
   resolved at the marker as an analysis' is, a centre, angle and flip in
   the plane's frame, the size of a pixel, an opacity, a light bulb and
   the image file's bytes (an `ImageData`, saved base64 in the design
-  file). The model reads only the files' headers (size and resolution);
-  the app decodes the pictures and draws them as textured quads by the
+  file). The model reads only the files' headers (size and resolution;
+  a HEIF file's size as shown, after its rotation and crop, mitcad#850);
+  the app decodes the pictures (`view/ImageFile.*`: Qt's readers, HEIF
+  through libheif and libde265, shared libraries from vcpkg in builds
+  with `MITCAD_HEIF`) and draws them as textured quads by the
   corners the `image_references` query gives
   (`MainWindowImageReferences.cpp`, `view/ImageReferenceView.cpp`).
   Their commands are undo steps that recompute nothing.
@@ -480,7 +491,15 @@ design in a project.
   model; a sheet keeps a copy of its template, and its fields are filled
   in from the design (properties, materials, the mass from the bodies'
   volumes) whenever it is drawn. A drawing's revisions are rows of the
-  drawing itself.
+  drawing itself. A cut sheet (mitcad#853, `drawing/cut_sheet_def.rs`,
+  `core/model-drawing/src/cut_sheet.rs`, `api/cut_sheets.rs`) is a
+  drawing of its own kind: its parts are bodies seen along a planar
+  face's normal at 1:1, their outlines the bodies' silhouettes worked out
+  in Rust from the kernel's hidden-line projection (the regions it
+  bounds classified by segment crossings through the body), written as
+  DXF and SVG for cutting; B-spline edges come through the projection
+  as B-splines (`ViewCurve::Spline`) and are written as the curves they
+  are (`core/model-drawing/src/bspline.rs`).
 - **Parameters as CSV** (mitcad#666, `core/model/src/parameters_csv.rs`,
   `document/parameters_csv.rs`, `api/parameters_csv.rs`): MitCad's
   parameter table and the `.f3d` application's parameter table CSV are
@@ -1022,6 +1041,31 @@ the `Shape` type.
   united: they change no body, and a large pattern of holes over a round
   plate had most of its copies off the plate. Copies whose boxes come
   that near each other are kept or left out together.
+- A pattern of several features (mitcad#855,
+  `Copying::together` in `core/model/src/features/pattern.rs`) applies
+  a run of consecutive features that all join, or all cut, the same one
+  body in one boolean: each feature's copies united as before, the
+  features' tools as one compound. The cost of a join or cut follows the
+  target, not the tool (a 6-face tool into a body of 3 000 faces took
+  1.5 s), and a pattern of a dozen join features made a dozen such
+  joins. The run is taken only where it is the same as the features one
+  after another: the boxes of the copies of different features stay more
+  than 0.1 mm apart, so each feature acts on a part of the body the
+  others do not touch; it made no body; every feature's copies have
+  faces in the result; and a face of the body split into pieces (named
+  `#k` in their order) has one feature's copies near its box only, so the
+  pieces are numbered as that feature alone numbers them. Otherwise the
+  body is restored and the rest of the pattern goes one feature by one,
+  so a pattern wastes at most one boolean. The last condition is foreseen
+  from boxes before the boolean: a run ends before a feature whose copies
+  come near a face of the body (`Kernel::face_boxes`) that another
+  feature's copies come near too, unless all those copies stand inside
+  the face (a flat face whose box holds them across it: bosses and holes
+  on one face). `MITCAD_BOOLEAN_TRACE` says for each run why it was not
+  taken or kept.
+  `MITCAD_NO_PATTERN_RUNS=1` turns it off, for comparisons. A cut run
+  counts as many passes over the body as its features (the split pieces'
+  memory, mitcad#408).
 - A pattern's optimized compute option with fillets or chamfers among the
   features copies the faces they made instead of rounding at each copy:
   `Kernel::feature_changes` gives the material the features added and
@@ -1047,8 +1091,11 @@ the `Shape` type.
   is as it was checked (the non-destructive boolean leaves its inputs'
   sub-shapes alone, and the face merge changes only what the faces it
   merges use), so the answer is the checker's on the whole shape. Where
-  the result is not solids of one shell each, any of that does not hold,
-  or most faces changed, the whole shape is checked. On bodies of 5 000
+  the result is not solids of shells, any of that does not hold,
+  or most faces changed, the whole shape is checked; a solid of several
+  shells (a body with a void) is also checked as a solid, how its shells
+  lie in each other (`BRepCheck_Solid`, mitcad#855). A solid of a shape
+  found valid is valid (`geometry::solids`). On bodies of 5 000
   faces the whole check took seconds after every join and cut.
 - A shape keeps its faces' kinds and areas once measured
   (`Shape::face_measures`, `face_infos` measures them on all cores), and
@@ -1431,7 +1478,10 @@ not recompute.
   Point tool snaps to, come from the model's `plane_geometry` query (the
   coplanarity test is the model's, on the kernel's curves); they are
   projected, linked, only by the action that makes something from them
-  (mitcad#256, mitcad#258). A component's sketch is edited where one of
+  (mitcad#256, mitcad#258). The same query with `out_of_plane` also gives
+  the other edges and vertices, as what they project to along the plane's
+  normal and with where they are, so that the Dimension tool picks them
+  where the view shows them and projects them the same way (mitcad#866). A component's sketch is edited where one of
   its occurrences shows it (mitcad#505): the `sketch` query's frame is in
   the component's coordinates, and sketch mode places it in the design by
   that occurrence once (`SketchHost::sketchPlacement`): the plane link's
@@ -1560,7 +1610,16 @@ not recompute.
   faces a command or preview left untouched from the bodies as shown
   (`io::reuse_triangulations`: the same surface, curves, parameter curves,
   ranges and end points; nothing cached between jobs), so only the changed
-  faces are meshed. `MITCAD_MESH_TRACE=1` logs each meshing's faces, phases
+  faces are meshed. Opening a design with the result store
+  (`meshOpenedForDisplay`, mitcad#858) first gives each shown body whose
+  shape's version has display triangulations stored with the final
+  tier's options its faces' triangulations and edge polygons back
+  (`io::restore_triangulations`, every face checked against the stored
+  one before anything is written), so a warm open meshes no face; the
+  bodies meshed instead go to the store once meshed to the end
+  (`io::triangulation_bytes`). A changed body, other options or another
+  build of the program find none (`MITCAD_DISPLAY_MESH_STORE=0`: never).
+  `MITCAD_MESH_TRACE=1` logs each meshing's faces, phases
   and slowest faces. While a handle is dragged, Extrude also shows a
   provisional tool at once (mitcad#636; `framework/DragProxy`,
   `framework/CommandSessionProxy.cpp`, `CommandDef::dragProxy`,
@@ -1592,7 +1651,20 @@ not recompute.
   preview is asked for (the model idle), the command works out what its
   motion needs of the model (Free Move's pivot, the placement of the
   component the move works in) and keeps it with the preview as a function
-  of the inputs. Each dragged value then draws the exact preview's bodies
+  of the inputs. Rotate's axis and the points of Point to Point and Point
+  to Position are taken from the exact preview itself: the model reports
+  what `MoveSpec::resolve` worked the motion out of (the preview's
+  `motion`), and `DragMotion::resolve` makes the function of the inputs
+  from it, so a drag turns about the very axis the result turns about.
+  Rotate's ring runs about that reported axis too (`previewReported`
+  keeps it with the Axis pick it is of; `keptRotateAxis`): the model takes
+  a circle's axis in its canonical direction, which may be against the
+  circle's own, so the ring's sense, the proxy and the result agree.
+  Move Face shares the ring (`rotateRingAxis`) and keeps its preview's
+  reported axis the same way (mitcad#854: `move_face` resolves its motion
+  through `MoveSpec::resolve` and reports `motion`, also when the preview
+  fails); it has no provisional drag motion, since its body is not moved
+  rigidly. Each dragged value then draws the exact preview's bodies
   where it puts them: a body the move moved or copied at its placement
   times the change, a body of an occurrence it places with the change
   taken into the design before its placement (`draggedPlacement`). The

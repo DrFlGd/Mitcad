@@ -8,9 +8,12 @@
 //! build (the objects to print). [`write`] writes a [`Model`] as one build
 //! item: an object whose components place one mesh object per part, so
 //! slicers load the parts as one object in their positions, with the parts'
-//! names and colours (`basematerials`). [`read`] reads any core model back
-//! into parts with their placements and checks what the core specification
-//! requires of it (tests use it on what [`write`] wrote).
+//! names and colours (`basematerials`); with [`Model::objects`], as several
+//! build items, each an object of its own placements of the parts
+//! (mitcad#856: the pieces a slicer arranges on its plate one by one).
+//! [`read`] reads any core model back into parts with their placements
+//! (and the build's objects when it has several) and checks what the core
+//! specification requires of it (tests use it on what [`write`] wrote).
 //!
 //! A slicer's settings (mitcad#640) go with the model: more metadata of
 //! the model and of each part's mesh object, and more files of the
@@ -179,7 +182,8 @@ pub struct Part {
     pub metadata: Vec<(String, String)>,
 }
 
-/// What a 3MF file holds: one object (named `name`) made of parts.
+/// What a 3MF file holds: one object (named `name`) made of parts, or the
+/// [`Model::objects`] of their placements.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Model {
     pub name: String,
@@ -197,6 +201,20 @@ pub struct Model {
     /// The unit of the meshes' coordinates and the placements' moves
     /// (mitcad#734): millimetres by default. [`read`] gives millimetres.
     pub unit: Unit,
+    /// The build's objects (mitcad#856), each a build item of its own;
+    /// empty for one object, named `name`, of every placement of every
+    /// part. [`read`] gives them when the build has more than one item.
+    pub objects: Vec<BuildObject>,
+}
+
+/// An object of the build (mitcad#856): its name and the placements of
+/// the parts it is made of.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BuildObject {
+    pub name: String,
+    /// Its components: (index of the part in [`Model::parts`], index of
+    /// the placement in that part's `placements`).
+    pub components: Vec<(usize, usize)>,
 }
 
 /// A 3MF model's length unit (the `unit` attribute of `<model>`).
@@ -248,6 +266,13 @@ pub fn part_object_id(index: usize) -> u32 {
 /// its one build item.
 pub fn assembly_object_id(parts: usize) -> u32 {
     parts as u32 + 2
+}
+
+/// The object id [`write`] gives build object `index` of a model's
+/// [`Model::objects`] (mitcad#856): after the parts' mesh objects, in
+/// order; the first is [`assembly_object_id`].
+pub fn build_object_id(parts: usize, index: usize) -> u32 {
+    assembly_object_id(parts) + index as u32
 }
 
 /// A 3MF file could not be written or read, or breaks the core

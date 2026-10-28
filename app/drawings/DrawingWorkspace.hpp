@@ -36,6 +36,14 @@
 // (<n>): <the model's pick>" and "Drawing pick: nothing at x,y" (an
 // annotation tool's clicks), "Drawing hover: <what>" (what a click would
 // pick, "nothing"), "Drawing shortcut ignored: E".
+//
+// A cut sheet (mitcad#853) opens here too: its parts are the sheet's views
+// (dragged to move them, turned from their menu or their panel's Rotation),
+// the bar shows Add Parts… and Export… (DXF, SVG, the parts' names on the
+// layer LABEL or not) instead of the drawing tools, and Material… instead
+// of Sheet…. Logs "Cut sheet Add Parts dialog opened: <n> bodies", "Cut
+// sheet warnings: <the model's>" (or "none") when they change, "Cut sheet
+// labels: on" and "Exported <path>: cut sheet <name>, <n> parts".
 
 #include <functional>
 
@@ -105,6 +113,11 @@ public:
   // Add Revision (the bar's button and the command drawing.add_revision,
   // mitcad#707 phase 4): asks for its description, date and author.
   void addRevision();
+  // A cut sheet's Add Parts… (mitcad#853): the bodies of its component to
+  // add as parts (those selected in the model chosen first) and how many
+  // of each.
+  void addParts();
+  bool isCutSheet() const { return m_cutSheet; }
 
 signals:
   void closed();
@@ -210,6 +223,17 @@ private:
   // The active tool's hint over the sheet.
   void showHint();
   void logButtons();
+  // A cut sheet's panel (mitcad#853): its material, parts and warnings,
+  // or the selected part's face, rotation and copies.
+  void fillCutSheetPanel();
+  void fillPartPanel(int part);
+  // Material… of a cut sheet: its width and height.
+  void editCutSheet();
+  // Runs edit_cut_sheet_part with these fields after the event that made
+  // them.
+  void editPart(int part, const QJsonObject& fields);
+  // Another part of the same body and face.
+  void addCopy(int part);
 
   OcctViewer* m_viewer;
   DocumentHost& m_host;
@@ -259,6 +283,14 @@ private:
   QString m_loggedTitle;
   QString m_loggedRevisions;
   bool m_updatingTabs = false;
+  // A cut sheet is open (mitcad#853): its row instead of the tools'.
+  bool m_cutSheet = false;
+  bool m_cutLabels = false;
+  QString m_cutWarnings;
+  QWidget* m_toolRow = nullptr;
+  QWidget* m_cutRow = nullptr;
+  QToolButton* m_addParts = nullptr;
+  QToolButton* m_cutExport = nullptr;
   bool m_compactTools = false;
   int m_toolsWidth = -1;
 };

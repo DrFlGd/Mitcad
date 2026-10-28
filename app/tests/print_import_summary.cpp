@@ -168,6 +168,37 @@ int printImportSummaryTests() {
   CHECK(user.details.contains(QStringLiteral("\nMaterials: Generic PLA, Generic TPU")));
   CHECK(!user.details.contains(QStringLiteral("(1 times)")));
 
+  // One slicer preset (mitcad#830) by its name; one that came in as a
+  // copy under the next free name names that name.
+  QJsonArray fine;
+  fine.append(item(QStringLiteral("process"), QStringLiteral("fine"), QStringLiteral("Fine")));
+  const QJsonObject one{{QStringLiteral("dialect"), QStringLiteral("bambu_studio")},
+                        {QStringLiteral("into"), QStringLiteral("user")},
+                        {QStringLiteral("items"), fine},
+                        {QStringLiteral("report"), report(0)}};
+  CHECK(printImportSummary(QStringLiteral("Fine"), QStringLiteral("user"), one).line ==
+        QStringLiteral("Fine imported into My library"));
+  QJsonArray fineCopy;
+  fineCopy.append(item(QStringLiteral("process"), QStringLiteral("fine-2"), QStringLiteral("Fine 2")));
+  QJsonArray copied;
+  copied.append(QJsonObject{{QStringLiteral("kind"), QStringLiteral("process")},
+                            {QStringLiteral("name"), QStringLiteral("Fine 2")},
+                            {QStringLiteral("from"), QStringLiteral("Fine")}});
+  QJsonObject copy = one;
+  copy.insert(QStringLiteral("items"), fineCopy);
+  copy.insert(QStringLiteral("copied"), copied);
+  CHECK(printImportSummary(QStringLiteral("Fine"), QStringLiteral("user"), copy).line ==
+        QStringLiteral("Fine imported into My library as Fine 2"));
+  QJsonArray copiedProcesses;
+  copiedProcesses.append(named(QStringLiteral("p1"), QStringLiteral("Fine 2")));
+  const QJsonObject intoDesign{{QStringLiteral("dialect"), QStringLiteral("bambu_studio")},
+                               {QStringLiteral("into"), QStringLiteral("design")},
+                               {QStringLiteral("processes"), copiedProcesses},
+                               {QStringLiteral("copied"), copied},
+                               {QStringLiteral("report"), report(0)}};
+  CHECK(printImportSummary(QStringLiteral("Fine"), QStringLiteral("design"), intoDesign).line ==
+        QStringLiteral("Fine imported as Fine 2"));
+
   // Distinct problems in the order first seen, a count only when repeated;
   // a percent sign in a problem stays as it is.
   const QStringList distinct = distinctProblems(

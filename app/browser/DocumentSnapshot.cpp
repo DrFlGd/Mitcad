@@ -7,6 +7,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
+#include <QSet>
 #include <QtLogging>
 
 #include "../framework/Diagnostics.hpp"
@@ -61,6 +63,59 @@ QString findOccurrence(const QVector<DocumentSnapshot::Occurrence>& occurrences,
   return QString();
 }
 
+// The parameters the Show When conditions of occurrences use (their
+// `dependencies`, mitcad#863), added to `names`.
+void conditionParameters(const QJsonArray& occurrences, QSet<QString>& names) {
+  for (const QJsonValue& value : occurrences) {
+    const QJsonObject o = value.toObject();
+    if (o.contains(QStringLiteral("visible_when"))) {
+      for (const QJsonValue& name : o.value(QStringLiteral("dependencies")).toArray()) {
+        names.insert(name.toString());
+      }
+    }
+    conditionParameters(o.value(QStringLiteral("children")).toArray(), names);
+  }
+}
+
+// The values of the parameters that Show When conditions of bodies and
+// occurrences use (mitcad#863), as an expression writes them: a text
+// parameter's text quoted ('No'), any other's value with its unit
+// (12.5 mm). Empty, without a query, while nothing has a condition.
+QHash<QString, QString> conditionValuesOf(const CommandContext& model, const QJsonArray& bodies,
+                                          const QJsonObject& components) {
+  QSet<QString> names;
+  for (const QJsonValue& value : bodies) {
+    const QJsonObject b = value.toObject();
+    if (b.contains(QStringLiteral("visible_when"))) {
+      for (const QJsonValue& name : b.value(QStringLiteral("dependencies")).toArray()) {
+        names.insert(name.toString());
+      }
+    }
+  }
+  conditionParameters(components.value(QStringLiteral("occurrences")).toArray(), names);
+  QHash<QString, QString> values;
+  if (names.isEmpty()) {
+    return values;
+  }
+  try {
+    for (const QJsonValue& value : model.queryArray(QStringLiteral("parameters"))) {
+      const QJsonObject p = value.toObject();
+      const QString name = text(p, "name");
+      if (!names.contains(name)) {
+        continue;
+      }
+      QString shown = text(p, "text");
+      if (text(p, "unit") == QStringLiteral("Text")) {
+        shown = QLatin1Char('\'') + shown.replace(QLatin1Char('\''), QStringLiteral("''")) + QLatin1Char('\'');
+      }
+      values.insert(name, shown);
+    }
+  } catch (const std::exception&) {
+    // No parameters to show: the tooltips name the condition only.
+  }
+  return values;
+}
+
 } // namespace
 
 DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
@@ -109,6 +164,16 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
                                           snapshot.sheets, snapshot.motionStudies, snapshot.contactSets,
                                           snapshot.measurements, snapshot.drawings, snapshot.imageReferences})
                      .toJson(QJsonDocument::Compact);
+  // The values Show When conditions use (mitcad#863): a parameter changed
+  // without changing what is shown still changes the light bulbs' tooltips.
+  snapshot.conditionValues = conditionValuesOf(model, bodies, components);
+  if (!snapshot.conditionValues.isEmpty()) {
+    QJsonObject values;
+    for (auto it = snapshot.conditionValues.cbegin(); it != snapshot.conditionValues.cend(); ++it) {
+      values.insert(it.key(), it.value());
+    }
+    snapshot.key += QJsonDocument(values).toJson(QJsonDocument::Compact);
+  }
 
   snapshot.marker = timeline.value(QStringLiteral("marker")).toInt();
   for (const QJsonValue& value : timeline.value(QStringLiteral("groups")).toArray()) {
@@ -203,6 +268,27 @@ const DocumentSnapshot::Feature* DocumentSnapshot::feature(const QString& uid) c
     }
   }
   return nullptr;
+}
+
+QStringList DocumentSnapshot::conditionParts(const QString& condition) const {
+  QStringList parts;
+  if (conditionValues.isEmpty()) {
+    return parts;
+  }
+  // The names outside the condition's text literals ('Yes', 'It''s').
+  static const QRegularExpression literal(QStringLiteral("'(?:[^']|'')*'"));
+  static const QRegularExpression name(QStringLiteral("[\\p{L}_][\\p{L}\\p{N}_]*"));
+  QString names = condition;
+  names.replace(literal, QStringLiteral(" "));
+  QStringList seen;
+  for (auto it = name.globalMatch(names); it.hasNext();) {
+    const QString found = it.next().captured(0);
+    if (!seen.contains(found) && conditionValues.contains(found)) {
+      seen << found;
+      parts << QStringLiteral("%1 is %2").arg(found, conditionValues.value(found));
+    }
+  }
+  return parts;
 }
 
 const DocumentSnapshot::Component* DocumentSnapshot::component(const QString& uid) const {

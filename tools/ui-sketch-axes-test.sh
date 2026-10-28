@@ -18,6 +18,10 @@
 #      it (5 DOF); undo takes both back (6 DOF), redo makes them again.
 #   4. The saved design: the axes' lines flagged, the dimensions' values,
 #      p5 at x = 0.
+#   5. Symmetry with a selection (mitcad#865): Sketch2 (F2, also on XY)
+#      has two free circles, about (-30, 20) radius 4 and (-27, -16)
+#      radius 5 (6 DOF). Both selected, Symmetry takes them as its first
+#      picks; one click on the x axis then adds the constraint (3 DOF).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-axes-test.sh [screenshot.png]
@@ -35,13 +39,24 @@ cat > "$WORK/model.json" << 'EOF'
   {"cmd": "sketch.create"},
   {"cmd": "sketch.add_point", "sketch": "F1", "at": [20, 12]},
   {"cmd": "sketch.add_line", "sketch": "F1", "start": [40, 5], "end": [70, 20]},
-  {"cmd": "sketch.add_point", "sketch": "F1", "at": [-8, 15]}
+  {"cmd": "sketch.add_point", "sketch": "F1", "at": [-8, 15]},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.circle", "sketch": "F2", "mode": "center", "center": [-30, 20], "radius": 4},
+  {"cmd": "sketch.circle", "sketch": "F2", "mode": "center", "center": [-27, -16], "radius": 5}
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
 # double_click_at x y: a double click at a screen position.
 double_click_at() { xdotool mousemove "$1" "$2" click --repeat 2 --delay 90 1; }
+
+# ctrl_sketch_click x y: a click at a sketch point (mm) with Ctrl held,
+# adding to the selection.
+ctrl_sketch_click() {
+  xdotool keydown ctrl
+  ui_sketch_click "$1" "$2"
+  xdotool keyup ctrl
+}
 
 # zoom_to_show x1 y1 x2 y2: zooms out (the wheel at the view's middle)
 # until the sketch rectangle from (x1, y1) to (x2, y2) mm is in the view.
@@ -158,5 +173,29 @@ EOF2
 "$CLI" run "$WORK/check.json" --open "$FILE" > "$WORK/check.log" 2>&1 ||
   { cat "$WORK/check.log"; ui_fail "the saved axes, dimensions and constraint"; }
 echo "ok   the axes, dimensions and constraint saved"
+
+echo "--- 5. Symmetry with two circles selected, then the x axis (mitcad#865)"
+ui_mark
+ui_step "double-click Sketch2"           ui_double_click_logged "Timeline Sketch2"
+ui_expect_new "Editing sketch F2 (Sketch2)" "Sketch2 edited"
+ui_expect_new "Sketch Sketch2: 6 DOF" "two free circles"
+ui_step "show both circles"              zoom_to_show -40 -25 75 45
+ui_mark
+ui_step "select the upper circle"        ui_sketch_click -30 24
+ui_step "and the lower one (Ctrl)"       ctrl_sketch_click -27 -11
+ui_expect_new "Selected: 2 sketch curves" "both circles selected"
+ui_mark
+ui_step "symmetry (search)"              ui_command "Symmetry"
+ui_expect_new "Sketch tool Symmetry" "Symmetry active"
+ui_expect_new "Symmetry takes the selection as its picks: c" "the two circles are its first picks"
+ui_step "pick the x axis"                ui_sketch_click 8 0
+ui_expect_new "Made the sketch x axis for a pick: c" "Sketch2's x axis made for the pick"
+ui_expect_new "Added constraint symmetric k" "the circles mirrored about the x axis by one click"
+ui_expect_new "Sketch Sketch2: 3 DOF" "the lower circle follows the upper one"
+grep -q "Symmetry pick .* refused" "$UI_LOG" && ui_fail "the axis pick was refused"
+ui_step "end the tool (Esc)"             ui_key Escape
+ui_mark
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_new "Sketch finished" "Sketch2 finished"
 
 ui_finish "UI sketch axes test"

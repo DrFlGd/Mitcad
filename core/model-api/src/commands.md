@@ -403,7 +403,9 @@ millimetres, angles radians. Build sketches with the
   Without `at` (older designs), at the point the curves share or their
   nearest ends,
   `concentric` (`a`, `b` curves), `midpoint` (`point`, `curve`),
-  `symmetric` (`a`, `b`: points or curves, `axis`: a line),
+  `symmetric` (`a`, `b`: points or curves, `axis`: a line; `radii`, two
+  circles or arcs only, default true: their radii are made equal too,
+  see [Symmetry of circles with fixed radii](#symmetry-of-circles-with-fixed-radii)),
   `equal_spacing` (`anchors`, `mode`, `direction`; see [Equal spacing in
   sketches](#equal-spacing-in-sketches)).
 - `dimensions`: `distance`, `horizontal_distance`, `vertical_distance`
@@ -2435,7 +2437,14 @@ Patterns, mirrors, combine, moves and primitives: modules `pattern.rs`,
   every element and combine all at once; `optimized` with fillets or
   chamfers among the features copies the faces the features made instead
   ([Optimized: copying the faces](#optimized-copying-the-faces)). The
-  pattern fails if no copy reaches a body.
+  pattern fails if no copy reaches a body. Consecutive features whose
+  copies all join, or all cut, the same one body, with the copies of
+  different features more than 0.1 mm apart (their boxes), are applied
+  in one boolean (mitcad#855) when that gives the bodies and face names
+  the features give one after another: no body split apart or new, each
+  feature's copies in the result, and a face split into pieces near the
+  copies of one feature only; otherwise one after another.
+  `MITCAD_NO_PATTERN_RUNS=1` turns it off, for comparisons.
 - `original_bodies` (features; default false, mitcad#74): the copies of a
   feature without participants of its own act only on the bodies that
   feature changed (still there), as in `.f3d` designs, where a pattern of
@@ -3860,6 +3869,22 @@ it on a copy of the document without committing it. The result:
   element number, suppressed ones too. A construction feature adds its
   `datum`. A sweep adds `sweep_path`, where its profile lies on its path
   ([sweep](#sweep), mitcad#795).
+- A `move` or `move_occurrence` whose motion is a `rotate`,
+  `point_to_point` or `point_to_position` adds `motion` (mitcad#838): what
+  the motion was worked out from, in the feature's component's
+  coordinates: `{"type": "rotate", "origin": [x, y, z], "direction":
+  [x, y, z]}` (the axis it turns right-handed about, a unit direction),
+  `{"type": "point_to_point", "from": [...], "to": [...]}` or
+  `{"type": "point_to_position", "point": [...]}`. The app's drag of the
+  angle or the position moves the shown bodies by it without asking the
+  model again, about the same axis as the result. Test:
+  `f4_tests::move_previews_report_what_their_motion_turns_about`.
+  A `move_face` reports it alike, from the same resolution of its
+  `transform` (mitcad#854), and so does a preview that failed after its
+  motion was worked out (a motion that moves nothing, faces that cannot
+  follow it), so that the app's Rotate ring keeps turning about the
+  model's axis. Test:
+  `f4_tests::move_face_previews_report_the_axis_they_turn_about`.
 - A command that places occurrences elsewhere (a joint, a
   `move_occurrence`; mitcad#55) adds `placements`: each occurrence whose
   placement in the design changes, `path` (uids from the root, `O1/O4`;
@@ -3947,7 +3972,7 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.add_circle` | `center` [x, y], `diameter` (value) | fixed centre and a diameter dimension; result also `curves`, `region` |
 | `sketch.add_point` | `at`, `fixed` | |
 | `sketch.add_line` | `start`, `end` (point inputs), `construction`, `centerline` | |
-| `sketch.rectangle` | `mode`: `two_point` (`a`, `b` corners), `three_point` (side `a`–`b`, `c` on the opposite side), `center` (`center`, `corner`); `construction` | four joined lines (counter-clockwise), horizontal and vertical (perpendicular for `three_point`), a construction diagonal with the centre at its midpoint for `center` |
+| `sketch.rectangle` | `mode`: `two_point` (`a`, `b` corners), `three_point` (side `a`–`b`, `c` on the opposite side), `center` (`center`, `corner`); `construction`; `radius` (value, optional: rounded corners, [Rounded rectangles and fillets of several corners](#rounded-rectangles-and-fillets-of-several-corners)) | four joined lines (counter-clockwise), horizontal and vertical (perpendicular for `three_point`), a construction diagonal with the centre at its midpoint for `center`; with `radius` also four arcs (`made`: the lines, then the arcs) |
 | `sketch.circle` | `mode`: `center` (`center` point input, `radius`), `two_point` (`a`, `b`: a diameter), `three_point` (`a`, `b`, `c`), `two_tangent` (`lines` [2], `radius`, `near`), `three_tangent` (`lines` [3]); `construction` | tangent constraints for the tangent modes |
 | `sketch.arc` | `mode`: `three_point` (`start`, `through`, `end`), `center` (`center`, `start`, `end`: the direction of the end, `clockwise`), `tangent` (`from`: an end point of a curve, `end`); `construction` | `tangent` adds a tangent constraint |
 | `sketch.polygon` | `center`, `vertex`, `sides` (3–256), `inscribed` (default true; false: `vertex` is a side's middle), `construction` | joined lines that stay a regular polygon (four degrees of freedom: placement, orientation, size; mitcad#303): inscribed, equal sides with the corners on a construction circle; circumscribed, the sides tangent to a construction circle and the corners on a second construction circle around the same centre point (the first circle is the one through `vertex`). Polygons stored earlier keep their constraints |
@@ -3973,7 +3998,7 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.trim` | `curve`, `at` [x, y] | removes the piece around `at` between the curves crossing it; a curve nothing crosses is deleted; of a closed spline the rest becomes a spline by control points (mitcad#783); refused for a projected curve (linked or not: `sketch.convert_projected` first, mitcad#357, also for `sketch.extend`, `sketch.fillet` and `sketch.chamfer`) and for a curve a derived offset computes; a trim or an extension that ends on a derived offset's curve ends in a plain point, since its curves take no constraints (mitcad#361) |
 | `sketch.extend` | `curve`, `at` | extends the end nearest `at` (a line or an arc) to the next curve; an arc extended all the way round becomes a circle; reaching an existing point joins it (a shared end; a projected or computed point holds the end with a point-to-point `coincident` instead), elsewhere the end lies on the curve; result `joined`: the point reached, when it joined one (see [Points that become one](#points-that-become-one)) |
 | `sketch.insert_spline_point` | `curve` (a spline), `at` [x, y] | a point on the spline where it is nearest `at`: a fit point between its neighbours, or a control point by knot insertion that keeps the shape exactly; result `made`: the new point; see [Insert Point on a spline](#insert-point-on-a-spline) (mitcad#836) |
-| `sketch.fillet` | `a`, `b` (lines), `radius` (value) | a tangent arc with a radius dimension; the corner stays as a point on both lines, and a length dimension of either line becomes a distance to it, so dimensions keep their meaning |
+| `sketch.fillet` | `a`, `b` (lines), or `curves` (lines) and/or `points` (corners) for several corners; `radius` (value) | a tangent arc with a radius dimension; the corner stays as a point on both lines, and a length dimension of either line becomes a distance to it, so dimensions keep their meaning; several corners: one arc each, one radius dimension and the others Equal to the first ([Rounded rectangles and fillets of several corners](#rounded-rectangles-and-fillets-of-several-corners)) |
 | `sketch.chamfer` | `a`, `b`, `distance`, and `distance2` or `angle` (values) | a line and its distance (and distance or angle) dimensions from the kept corner |
 | `sketch.offset` | `curves` (a chain of joined curves, or one closed curve), `distance` (value) | to the right of the chain direction (a closed curve: positive is out); one parameter for the distance; an `offsets` record (derived with ellipses and splines); result `constraints` [the offset's id] and `warnings`; a curve the same as another counts once, see [Projected outlines and their offsets](#projected-outlines-and-their-offsets) |
 | `sketch.edit_offset` | `offset` (`k8`), `distance` (value), `flip` | the distance changes, `flip` moves it to the other side; the curves keep their ids |
@@ -4207,6 +4232,36 @@ added:
   "horizontal"}]`. The command is one undo step: undo restores them.
 - The sketch tools show it as a hint (`Horizontal removed: implied by the
   new Coincident`), also for a constraint a snap makes while drawing.
+- The removal tries first the constraints on the new constraint's own
+  movable geometry (its points and curves and the points of those
+  curves, not fixed ones such as an axis or the origin), then the others,
+  each group in id order (mitcad#865): a Symmetry of two circles
+  replaces the constraint that held one of the circles, not one further
+  along the chain its position follows from.
+
+### Symmetry of circles with fixed radii
+
+A `symmetric` constraint of two circles or two arcs mirrors their
+centres and makes their radii equal (an arc: its ends mirrored, start to
+end). When the others already make the radii equal (both dimensioned,
+or an `equal`), `sketch.add_constraint` leaves the radius equality out
+(mitcad#865, `SketchEdit::fit_symmetric` in `sketch/edit.rs`) and stores
+the constraint with `"radii": false`: it then mirrors the positions only
+(the centres, and an arc's end directions from its centre), so that it
+takes what is not fixed yet instead of over-constraining the sketch:
+
+- Implied in part, it replaces the older geometric constraints it makes
+  redundant, as in [A constraint that replaces one it makes
+  redundant](#a-constraint-that-replaces-one-it-makes-redundant), never a
+  dimension: four Ø10 circles in a dimensioned square, the bottom left
+  one free along a construction diagonal (1 degree of freedom), and a
+  Symmetry of the two left circles about the x axis: the radii are left
+  to the dimensions, the bottom left centre's `coincident` with the
+  diagonal goes, and the sketch is fully constrained.
+- Implied in full, it is refused as before (`k12 would over-constrain
+  the sketch: …`).
+- Without `radii` (all designs before), or with two radii free, the
+  radii are made equal as before.
 
 ### An upright sketch frame
 
@@ -4330,6 +4385,51 @@ one of several selected curves or points:
   single drag.
 - `entities` takes `by` only, and not together with `entity`; an empty
   list is refused.
+
+### Scaling a sketch
+
+`sketch.scale` (mitcad#860, `sketch/scale.rs`): `sketch`, `factor` (a
+number greater than zero), `center` (a point id or [x, y]; the sketch
+origin when left out). It scales the whole sketch about `center`, one
+undo step `Scale <sketch>`:
+
+```json
+{"cmd": "sketch.scale", "sketch": "F1", "factor": 2.5}
+```
+
+- Every point of the sketch's own geometry moves away from or towards
+  `center` by the factor; circles' radii and ellipses' minor radii, the
+  texts' places, heights and line spacings (a QR code's module size) and
+  the places of the dimensions' values scale with it. The sketch's origin
+  point and axes stay where they are.
+- The values of its driving length dimensions (every kind but `angle`),
+  of its offsets' distances and of its rectangular patterns' spacings are
+  multiplied by the factor, so that the sketch keeps its shape and its
+  constraints. Angles stay.
+- Refused for a sketch with projected, intersected or linked geometry
+  (it follows its source), and when one of those length values is
+  another parameter or an expression of one (change that instead).
+
+**The first dimension scales the sketch.** `sketch.add_dimension` with
+`"scale_sketch": true` (default false; the application sends it while the
+preference *Scale the sketch to its first dimension* is on, its default)
+applies the first-dimension rule to a driving dimension: when the sketch
+was drawn out of proportion, its geometry is first scaled uniformly about
+the sketch origin by the dimension's value over what it measures now, as
+`sketch.scale` does, so that the dimension holds; then the dimension is
+added as usual. Both are one undo step, `Add Dimension to <sketch>`.
+
+- Only a length, distance, radius or diameter (every kind but `angle`),
+  and only when the sketch has no other dimension, offset or rectangular
+  pattern, no projected, intersected or linked geometry, and no fixed
+  entity other than its origin point and axes (`sketch.axis`). Otherwise,
+  and for a driven dimension, nothing is scaled, as without the flag.
+- The constraints are kept; text heights scale too. The dimension's
+  `text` place, given on the sketch as drawn, scales with it.
+- Result: as other edits, and `scaled` (the factor) when the sketch was
+  scaled. A value equal to what the geometry measures scales nothing; so
+  a drawing tool's typed value, which draws its shape at that size,
+  scales the sketch only where the shape was drawn at another size.
 
 ## Components and occurrences
 
@@ -4852,7 +4952,7 @@ constraints.
 | Command | Fields | Result |
 |---|---|---|
 | `import_file` | `path` (.step/.stp, .iges/.igs, .brep/.brp, .stl, .obj), `name` (of the feature, optional), `unit_mm` (STL and OBJ: mm per file unit, default 1) | `uid`, `name`, `bodies`: `uid`, `name`, `kind`; `warnings` when empty bodies were left out |
-| `export` | `path`, `bodies` (uids or names; all at the marker when left out), `format` (by extension when left out: `step`, `iges`, `stl`, `obj`, `brep`, `3mf`, `usdz`), `schema` (`ap214` default, `ap242`), `unit` (STEP, IGES, STL, OBJ, 3MF: `mm` default, `cm`, `m`, `in`, `ft`; [Mesh files](#mesh-files-in-a-unit-with-a-longest-edge)), `refinement` (STL, OBJ, 3MF, USDZ: `low`, `medium` default, `high` or `{"deviation": mm, "angle": radians, "face_triangles": n, "max_edge": mm}`; see [Mesh refinement](#mesh-refinement)), `ascii` (STL), `colors` (body uid or name: sRGB in [0, 1]), `coordinates` (`design` default, `component`), `occurrence` (a path), `design_folder` (USDZ: the folder relative texture paths are relative to, the design file's), `dialect` (3MF: the slicer whose print settings go with the bodies, [Print profiles](#print-profiles)), `on_bed` (3MF, STL, OBJ: on the print bed faces, [Print bed faces](#print-bed-faces)) | `path`, `format`, `bodies` (uids); 3MF also `meshes`, `skipped`, and with `dialect` `dialect`, `filaments`, `warnings`; USDZ also `materials`, `skipped`, `warnings` |
+| `export` | `path`, `bodies` (uids or names; all at the marker when left out), `format` (by extension when left out: `step`, `iges`, `stl`, `obj`, `brep`, `3mf`, `usdz`), `schema` (`ap214` default, `ap242`), `unit` (STEP, IGES, STL, OBJ, 3MF: `mm` default, `cm`, `m`, `in`, `ft`; [Mesh files](#mesh-files-in-a-unit-with-a-longest-edge)), `refinement` (STL, OBJ, 3MF, USDZ: `low`, `medium` default, `high` or `{"deviation": mm, "angle": radians, "face_triangles": n, "max_edge": mm}`; see [Mesh refinement](#mesh-refinement)), `ascii` (STL), `colors` (body uid or name: sRGB in [0, 1]), `coordinates` (`design` default, `component`), `occurrence` (a path), `design_folder` (USDZ: the folder relative texture paths are relative to, the design file's), `dialect` (3MF: the slicer whose print settings go with the bodies, [Print profiles](#print-profiles)), `on_bed` (3MF, STL, OBJ: on the print bed faces, [Print bed faces](#print-bed-faces)), `occurrences` and `whole` (3MF: the placements written and the occurrences sent whole, [Export by occurrences](#export-by-occurrences)) | `path`, `format`, `bodies` (uids); 3MF also `meshes`, `skipped`, and with `dialect` `dialect`, `filaments`, `warnings`; USDZ also `materials`, `skipped`, `warnings` |
 | `export_sketch` | `sketch` (uid or name), `path` (.dxf), `version` (`r2000` default, `r12`) | `path`, `entities` |
 
 - `import_file` adds one base feature: a body per STEP part or solid,
@@ -8208,6 +8308,54 @@ in every document and process. Store code and file format:
   `geometry/tests/test_persist.cpp`; ctest `cli.store_fill`,
   `cli.store_hit`, `cli.store_edit` (the perf model with a store).
 
+### Warm opens: lazy restore and display meshes
+
+Opening a design whose results the store holds (mitcad#858).
+
+**Lazy restore.** With a kernel that can make stored shapes later
+(`Kernel::shape_unpacker`; the OCCT kernel can), a result found in the
+store keeps the shapes of the bodies it sets packed (`Output::changes`,
+`Changes::heads` without them) and the body states hold a stand-in under
+the stored version; its tool is read at once. The shapes are unpacked
+when something may read them: before any feature is evaluated, except a
+sketch on an origin or construction plane without projected geometry;
+before a joint is applied; at the end for the bodies left; and whenever
+anything reads the result's changes later (the timeline's history,
+`body_before`, a pattern of features). A state the next restored result
+replaces before that is never unpacked. Not with recompute workers nor
+for a preview. `MITCAD_LAZY_RESTORE=0` reads every result whole.
+
+- A command's answer with `"restored"` also has `"restored_packed"`: of
+  those results, the ones whose shapes were never unpacked.
+- The `cache` query's `store` adds `deferred` (hits kept packed),
+  `unpacked` (of them, unpacked since) and `unpack_ms`, and
+  `display_meshes`: `lookups`, `hits`, `faces`, `read_bytes`, `read_ms`,
+  `writes`, `write_bytes`, `write_ms`; its `disk` adds `display_meshes`
+  {`files`, `bytes`}; `last_recompute` adds `restored_packed`.
+
+**Display meshes.** The application keeps each shown body's display
+triangulations (the final tier's, `app/framework/DisplayMeshes`) in the
+store beside the results, under the body's version and the meshing
+options (`.mms` files, `store.rs`). `gc`, `clear` and the store's size
+count them.
+
+| Rust / C++ | Meaning |
+|---|---|
+| `ResultStore::write_display_mesh(kernel, version, options, shape)` | writes `Kernel::display_mesh_bytes` of a shape meshed for display to the end; the file's bytes |
+| `ResultStore::restore_display_mesh(kernel, version, options, shape)` | `Kernel::restore_display_mesh` of what is stored for that version and those options: the faces given a triangulation, None when there is none (another build, other options, another shape: nothing written) |
+| `Document::restore_display_meshes(request)` (bridge) | `{"bodies": [uids], "options": "…"}`: each body at the marker takes what the store keeps for its version; JSON `{"restored": [uids], "faces", "bytes", "ms"}` |
+| `Document::persist_display_meshes(request)` (bridge) | the same request: writes the bodies' display meshes; JSON `{"stored", "bytes", "failed", "errors", "ms"}` |
+
+OCCT: `io::triangulation_bytes` and `io::restore_triangulations`
+(`geometry/io/include/mitcad/io/mesh_store.hpp`): each face's nodes,
+parameters, triangles, deviation and meshing parameters and its edges'
+polygons, checked against the face (its surface's kind, its edges and
+their end points) before anything is written. Tests:
+`store_tests.rs` (`a_state_replaced_before_anything_reads_it_is_not_unpacked`,
+`an_evaluation_reads_the_restored_shapes_unpacked`,
+`display_meshes_are_kept_for_the_body_s_shape`), ctest `geometry.io`
+(`test_display_mesh_bytes`), `app.preview_meshing` (`testWarmOpen`).
+
 ### Memory cache and diagnostics
 
 `Document::set_memory_budget(Some(bytes))` (the bridge's
@@ -8347,6 +8495,15 @@ they had been made there:
   joint and constraint origins, Isolate; a moved feature's own links are
   seen from the new occurrence. The move is refused when a feature that
   worked fails after it, or a definition that checked no longer does.
+- **Cut scopes follow** (mitcad#859): a moved extrusion's `cut_scope`
+  (also a saved one of an extrusion that does not cut) takes the
+  destination as its `context` (the component and its occurrence path)
+  and so do its targets in the component it left; any scope's
+  `excluded_bodies` of the bodies that went name their new place. What
+  the component keeps stays named where it is: an automatic scope's
+  exclusion of it, and another component's cut into it, then name both
+  places. The same holds for an explicit `destination` and for
+  `move_history_into_component`.
 - `move_history_into_component` with `feature`, a `component_from_bodies`:
   the features that made its bodies go into the component it made, which
   then has their history (Paste New copies it), and the feature goes.
@@ -9659,6 +9816,36 @@ dimension or a point is made from it. The answer is an array:
   shown, as the `instances` query's `visible`); Hide Above Sketch only cuts
   what the view draws, so the edges in the plane stay in the answer.
 
+### Out of the plane
+
+With `"out_of_plane": true` (mitcad#866, the sketch Dimension tool) the
+answer also lists every other named edge and vertex of the same bodies,
+after the items in the plane (which come first, as without it). Each is
+what `sketch.project` makes of it: projected onto the plane along its
+normal, `kind` and `geometry` as above (a line as its line, a circle in a
+parallel plane as its circle, a tilted one as an ellipse or a line, a
+vertex as its point), and an edge along the normal (seen end on: a line
+whose projection has no length) as `kind` `point` with `geometry.at`. Each
+also has:
+
+```json
+{"source": "E{…}", "body": "F2.b0", "kind": "line",
+ "geometry": {"start": [30, -20], "end": [30, 20]},
+ "in_plane": false, "height": -10,
+ "path": [[30, -20, -10], [30, 20, -10]]}
+```
+
+- `in_plane`: false (the items in the plane have no such field);
+- `path`: where it is, for a client that picks it where the view shows it:
+  its points in sketch coordinates with their height above the plane
+  along its normal (negative below), from its start to its end: a line's
+  two ends, 25 points of a conic, a helix or a B-spline (its poles when
+  its knots do not fit), a vertex's one point;
+- `height`: a vertex's height, a conic's centre's, else that of the middle
+  of `path` (where a client shows a circle's centre).
+
+The bounding box test that skips a body is not made in this form.
+
 Tests: `core/model-tests/analysis/src/plane_geometry_tests.rs`.
 
 ## Angle dimensions
@@ -9812,7 +9999,10 @@ Two more repairs of the geometry kernel's results apply to every design
 Extrude previews can suggest an operation from where the tool lies
 (mitcad#289, mitcad#575; the app: `app/COMMANDS.md`, *Extrude*). The
 `preview` of an `add_feature` or `edit_feature` asks for it with
-`"auto_operation": true` (optional, false by default):
+`"auto_operation": true` (optional, false by default). The application
+asks it only for a new extrusion: an edited one keeps its stored
+operation (mitcad#868), so it sends no `auto_operation` with an
+`edit_feature`; the model still answers one that does:
 
 ```json
 {"cmd": "add_feature", "auto_operation": true,
@@ -13457,6 +13647,10 @@ ends planes square to it, moves the whole rod. Every face keeps its
 names, and the body keeps its faces, edges and vertices: a motion that
 would make a face vanish or split, or leave an edge's faces apart near
 it, fails ("the neighbouring faces cannot follow the moved faces").
+Its preview reports what a `rotate`, `point_to_point` or
+`point_to_position` motion was worked out from as `motion`, as a move's
+does ([preview](#preview), mitcad#854): a circular edge's axis in its
+canonical direction, which the app's Rotate ring turns about.
 
 Code: `core/model/src/features/move_face.rs`,
 `geometry/src/move_faces.cpp` (`move_faces_rigidly`: OCCT's
@@ -16472,8 +16666,11 @@ body. A body has one; setting another replaces it.
     the design's printer's `bed_shape` ([Print profiles](#print-profiles)),
     else of a 256 × 256 mm plate, (128, 128);
   - with the bed faces of several bodies, or of a body placed turned
-    differently, the bodies stay as they are assembled; with none, as the
-    design has them;
+    differently, the bodies stay as they are assembled (a 3MF file whose
+    `occurrences` picks them puts each on its face instead, [Export by
+    occurrences](#export-by-occurrences); a face named in `bed_face`
+    turns them onto it, [Print bed face chosen](#print-bed-face-chosen));
+    with none, as the design has them;
   - a bed face that is gone or not planar is reported, and its body is
     written as the design has it (−Z down) unless another body's face
     turns the piece;
@@ -16507,6 +16704,118 @@ twice turned and centred on the default plate and the printer's; two bed
 faces kept as assembled; a surface body's face counts for nothing; a face
 that is not planar or gone reported; an STL file; the formats),
 `tools/ui-print-bed-test.sh` and `tools/ui-windows-print-bed-test.ps1`.
+
+## Export by occurrences
+
+A 3MF file of the occurrences chosen (mitcad#856): 3D Print sends only the
+placements picked, as its STL files do, and puts each one with a print
+bed face on its face, also when the body is placed many times turned
+differently (a nut in an assembly). `export` takes, for 3MF only and in
+the design's coordinates:
+
+- `occurrences`: per body (uid or name, among those written), the
+  occurrences whose placements are written, each a path from the root
+  (`O1/O4` or `Arm:1/Pin:2`; `""` the design itself, for a body of the
+  root); an empty list writes the body's placements as the design shows
+  them (the shown ones, all when none is). A body not listed is written
+  as before. An occurrence that does not place the body is refused
+  (`Body1 is not placed by Nuts:1`).
+- `whole`: occurrences sent whole (a component selected), each a path;
+  the placements in each are one object, as they are assembled.
+
+With `on_bed` the file's objects are:
+
+- each occurrence of `whole` (the outermost one a placement is in): one
+  object of the placements in it, put on the bed by the rule of
+  [Export on the bed](#print-bed-faces) (one bed face among them turns
+  it, several keep it as assembled);
+- the placements `occurrences` picks of bodies with a usable print bed
+  face (printed, the face planar and there), outside those: **when there
+  are two or more**, each is an object of its own, named `Body1
+  (Nuts:1/Nut:2)`, turned onto its face, its lowest point on the bed and
+  its middle over the plate's centre; one alone stays with the rest, so
+  that bodies printed together (an inlay of another colour) turn with it
+  as before;
+- the rest: the file's own object (named after the file), as before.
+
+The objects turned are set side by side along X, 5 mm apart, the row
+centred on the plate; overlaps with an object kept as designed are left
+to the slicer's arrange. Several objects are several build items of the
+3MF file (`mitcad_3mf::Model::objects`), each a components object of the
+parts' placements; the Bambu family's `model_settings.config` names each
+object with its parts. One object is written as before.
+
+The result's `bed` describes the file's own object as before (`body`,
+`face`, `transform` and `kept` null or empty when it has none: every
+placement went apart) and adds `objects`, the others, each `name`,
+`body`, `face`, `transform` (rows as `bed`'s) and `kept`, and `on_faces`,
+how many placements lie on their print bed faces in all objects (the
+application's last line, `3 bodies on their print bed faces`).
+`problems` lists each face once.
+
+```json
+{"cmd": "export", "path": "nut.3mf", "bodies": ["F2.b0"], "on_bed": true, "occurrences": {"F2.b0": ["O1/O3"]}}
+{"cmd": "export", "path": "nuts.3mf", "bodies": ["F2.b0"], "on_bed": true, "occurrences": {"F2.b0": []}}
+{"cmd": "export", "path": "assembly.3mf", "bodies": ["F2.b0"], "on_bed": true, "occurrences": {"F2.b0": []}, "whole": ["Nuts:1"]}
+```
+
+Tests: `api::print_bed_tests` (a block with its top as the bed face in a
+component placed three times turned differently: one occurrence chosen
+one object on its top at z = 0; all three three objects side by side; the
+component sent whole, and no `occurrences`, keep the assembly; the
+refusals), `core.3mf` (several build objects written and read back),
+`tools/ui-print-test.sh` (one occurrence selected: one object).
+
+## Print bed face chosen
+
+A piece kept as assembled because two or more print bed faces apply to
+it (mitcad#857) can be put on one of them: 3D Print asks the user which,
+and the export turns the piece onto the face named. `export` with
+`on_bed` (3MF, STL and OBJ) takes:
+
+- `bed_face`: `{"body", "occurrence"}`, or a list of them, one per
+  piece: the body (uid or name) and the occurrence of its placement
+  (`O1/O4` or `Arm:1/Pin:2`; `""` or left out for the design itself).
+  The piece that placement is in (the file's own object, or an object of
+  [Export by occurrences](#export-by-occurrences)) turns so that the
+  face's outward normal at that placement points straight down, its
+  lowest point on the bed and its middle over the plate's centre, as for
+  a single bed face, whatever the automatic rule says; the bodies keep
+  their places to each other. `bed.body` and `bed.face` (or the object's)
+  name it, `kept` is empty and `on_faces` counts the placements of that
+  body turned alike. Refused: a body not written (`Body1 is not among the
+  bodies written`), without a print bed face (`Body2 has no print bed
+  face`) or with one that cannot lie on the bed (its reason), a placement
+  not written (`Body1 is not written where Nuts:1 places it`), two faces
+  in one piece (`the print bed faces of Body1 in Pair:1 and Body2 in
+  Pair:1 are chosen for one piece; choose one`), and without `on_bed`.
+- `plan`: true gives only how the bodies would lie, before anything is
+  written: the result's `bed` as the export would give it (a 3MF piece's
+  `transform` is its turn alone, without the move onto the bed), and no
+  file is written or meshed. Without `on_bed` it is refused.
+
+The result's `bed`, and each of its `objects`, has `choices`: the faces a
+piece kept as assembled for several bed faces could lie on, one per
+placement (a body placed twice turned differently has two), each
+`body`, `name`, `face` (as assigned), `occurrence` (uids, as `bed_face`
+takes it) and `occurrence_name`; empty when the piece turns onto a face
+or has none or one.
+
+```json
+{"cmd": "export", "path": "pair.3mf", "bodies": ["F2.b0", "F3.b0"], "on_bed": true, "plan": true, "whole": ["Pair:1"]}
+→ {"bed": {"kept": ["F2.b0", "F3.b0"], "choices": [
+     {"body": "F2.b0", "name": "Body1", "face": "F2:end(…)", "occurrence": "O1", "occurrence_name": "Pair:1"},
+     {"body": "F3.b0", "name": "Body2", "face": "F3:side(…)", "occurrence": "O1", "occurrence_name": "Pair:1"}], …}, …}
+{"cmd": "export", "path": "pair.3mf", "bodies": ["F2.b0", "F3.b0"], "on_bed": true, "whole": ["Pair:1"],
+ "bed_face": {"body": "F3.b0", "occurrence": "Pair:1"}}
+```
+
+Tests: `api::print_bed_tests` (a component of two bodies, each with a
+bed face: the plan lists both, a body placed three times turned
+differently three, one face none; either face chosen puts the piece on
+it at z = 0 with the bodies together, whole or not; the refusals),
+`tools/ui-print-test.sh` (3D Print asks, a click sends on that face, Esc
+as assembled).
 
 ## Copy and paste of sketch geometry
 
@@ -16671,9 +16980,23 @@ Images placed in the design to model from, such as a photo of a part or a
 scanned drawing (mitcad#782; `core/model/src/document/image_references.rs`,
 `core/model-base/src/image_header.rs`, `api/image_references.rs`): the
 browser's Images folder. An image reference keeps the image file's bytes
-(PNG, JPEG, BMP or WebP, at most 32 MB and 32768 pixels on a side)
+(PNG, JPEG, BMP, WebP or HEIF, at most 32 MB and 32768 pixels on a side)
 embedded in the design, no path; it changes no geometry, and every command
 below is an undo step that recomputes nothing.
+
+**HEIF** (`.heic`, `.heif`; mitcad#850, `image_header/heif.rs`): the
+file's primary image, a still image coded with HEVC (an `hvc1` item, or a
+`grid` or `iden` of `hvc1` tiles), 8 to 10 bits per channel, with or
+without an alpha plane. Its `pixels` are the image as it is shown: the
+`ispe` size, then the transformations in the file's order (`irot` turns a
+quarter or three swap the width and height, `clap` crops, rounded;
+`imir` mirrors), which the application's decoder applies too. A HEIF
+file states no pixel size (96 to the inch). Refused with the reason: AVIF
+(AV1), other codecs (`coded as 'jpeg'`), an image sequence without a
+still image, a protected item, more than 10 bits per channel, a file cut
+short. The model keeps the file's bytes as they are; decoding the pixels
+is the application's (builds with `MITCAD_HEIF`, libheif and libde265;
+docs/development.md, "Licence policy").
 
 - **Its plane** is a [plane reference](#references-to-geometry) (an origin
   plane, a construction plane, a planar face or a fixed plane) with an
@@ -16731,11 +17054,14 @@ Classes: `insert_image_reference` and `edit_image_reference` are the
 model's own unless they name a `path`, then file IO
 (`command_class_with`); `image_info` reads a file. Tests:
 `image_header::tests` (the four formats' sizes and densities, files
-refused), `document::image_references::tests` (pixels and places, corners
+refused), `image_header::heif::tests` (HEVC images turned, grids cropped
+and mirrored, AVIF, other codecs, 12 bits, sequences, files cut short and
+too large refused), `document::image_references::tests` (pixels and places, corners
 turned and flipped), `analysis::image_reference_tests` (inserted,
 calibrated by pixels and by points, edited, hidden, renamed, deleted and
 undone; following a face; a file read by its path; what is refused; saved
-and read back), `tools/ui-image-references-test.sh` and
+and read back; a HEIF photo inserted upright, saved and read back, its
+`image_info`, and HEIF files refused), `tools/ui-image-references-test.sh` and
 `tools/ui-windows-image-references-test.ps1`.
 
 Not yet: the `.f3d` import leaves canvases out (the stream decoder does not
@@ -17023,3 +17349,219 @@ components at the same time; a linked feature, a driven dimension's
 reader and a moved occurrence's reader waiting for what they read; stops
 while workers evaluate and while the recompute waits for one; each against
 the same design with one thread).
+
+## Cut sheets
+
+A cut sheet (mitcad#853; `core/model/src/drawing/cut_sheet_def.rs`,
+`core/model-drawing/src/cut_sheet.rs`, `api/cut_sheets.rs`) is a drawing
+of its own kind in a Drawings folder: it collects flat parts at 1:1 on a
+sheet of material and writes their outlines as DXF or SVG for cutting
+(a laser, a water jet, a plasma cutter). It has no title block, frame,
+scale, dimensions, hole table, hidden or tangent lines: only the edges
+to cut. It is kept with the design's drawings (`drawings` lists it with
+`"kind": "cut_sheet"`, the others `"drawing"`), is copied and deleted
+with its component as they are, and follows the model: its outlines are
+worked out whenever they are asked for.
+
+A **part** is a body seen along the normal of one of its planar faces,
+from outside the body: its largest planar face unless one is chosen (of
+faces as large, the one facing up most: +Z, then +Y, then +X). Its
+outline is the body's silhouette along that normal: the outer boundary
+of its whole extent and the holes and cut-outs that go through it, so a
+through hole is one inner loop however many faces its wall has, and a
+blind hole or a pocket is none. Each part has an id (from 1, unique on
+the cut sheet), a `place`, where the middle of its outline's box lies on
+the sheet (millimetres from the sheet's lower left corner), and a
+`rotation` about that middle (degrees counter-clockwise), so a part that
+grows or shrinks stays where it was put. A count adds that many parts
+(2 × Rib 3: two parts of the same body). Parts are moved and turned by
+hand; nothing nests them. A part whose body (or the occurrence placing
+it) is gone stays on the sheet, marked as missing; one whose face is
+gone or no longer planar says why.
+
+| Command | Fields | Result |
+|---|---|---|
+| `add_cut_sheet` | `component` (uid or name; the root when left out), `name` (the next free `CutSheet<n>`), `width`, `height` (the material, mm; 600 × 300), `bodies` (parts to start with, below), `count` (1) | `drawing`, `name`, `component`, `parts` (their ids), `warnings`; undo step `Add CutSheet1` |
+| `edit_cut_sheet` | `drawing`, `name`, `width`, `height` | undo step `Rename CutSheet1` or `Edit CutSheet1` |
+| `add_cut_sheet_parts` | `drawing`, `bodies`, `face` (a planar face of the one body given; its largest when left out), `count` (1 to 1000), `at` (where the first one's middle goes; each in a free place of the sheet when left out, in rows from the top left 5 mm apart, beside the sheet when none is left) | `parts`, `warnings`; undo step `Add part 3 to CutSheet1` or `Add 4 parts to CutSheet1` |
+| `edit_cut_sheet_part` | `drawing`, `part`, `place` or `move` (`[dx, dy]`), `rotation` (degrees) or `turn` (degrees more: 90 a quarter turn left, -90 right), `face` (null: the largest) | undo step `Move part 3 of CutSheet1`, `Turn part 3 of CutSheet1` or `Edit part 3 of CutSheet1` |
+| `delete_cut_sheet_parts` | `drawing`, `parts` (ids) | `deleted`; undo step `Delete part 3 of CutSheet1` or `Delete 2 parts of CutSheet1` |
+| `export_cut_sheet` | `drawing`, `path`, `format` (`dxf` or `svg`; from the extension when left out), `labels` (false) | `path`, `format`, `parts` (written), `outer`, `inner` (loops written), `labels`, `width`, `height`, `warnings` |
+
+A body in `bodies` is its uid or name (`"F2.b0"`, `"Rib 3"`), or
+`{"body", "occurrence"}` with the occurrence that places it (a path from
+the cut sheet's component, `"O2/O5"`); left out, wherever it is shown.
+Refused: a body without a planar face (`Body1 has no planar face to lie
+on`), a face that is not a planar face of its body, a body that shows
+nothing along the face's normal, a face with several bodies, a count of
+0 or over 1000, a material of no size or over 100 m, and a cut sheet's
+views, sheets, notes, templates or revisions (`CutSheet1 is a cut sheet:
+it holds parts only, on one sheet`).
+
+The generic drawing commands work on a cut sheet's parts as on views:
+`edit_drawing_view` with `place`, `move` or `rotation` (any other field
+is refused), `delete_drawing_view`, `edit_drawing` (its name),
+`delete_drawing`; `add_drawing_view` is refused. `export_drawing` with
+the cut sheet as `drawing` writes it as `export_cut_sheet` does, without
+labels.
+
+**Warnings** (the query's and the commands' `warnings`): `part 2 (Rib 3)
+overlaps part 3 (Rib 3)` (their material overlaps; touching is no
+overlap, nor a part inside another's hole), `part 4 (Rib 5) leaves the
+sheet`, `part 5 (F9.b0) is missing: the body F9.b0 is gone`, and `part 6
+(Body2): …` for a part that cannot be worked out.
+
+The `cut_sheet` query (`drawing`, `geometry` (true)) gives `drawing`,
+`name`, `component`, `component_name`, `kind`, `width`, `height`,
+`warnings`, `counts` (each body, occurrence and face once: `body`, `name`,
+`face`, `occurrence`, `count`, `parts`) and `parts`: `id`, `body`,
+`body_name`, `occurrence`, `face` (the face it is seen along), `own_face`
+(chosen rather than the largest), `faces` (the body's planar faces with
+their `area`, mm²), `place`, `rotation`, `size` (its outline's box
+before it is turned), `box` (on the sheet; a 30 mm box about its place
+when it is not worked out), `outer` and `inner` (its loops), `missing`,
+`error`, `off_sheet`, `overlaps` (the parts it overlaps), and with
+`geometry` its `loops` on the sheet: `{"outer", "pieces"}`, the pieces
+end to end with the material on their left (outer boundaries
+counter-clockwise, inner loops clockwise): `{"line": [a, b]}`, `{"arc":
+{"center", "radius", "start", "sweep"}}` (radians; a positive sweep
+counter-clockwise, a whole circle ±2 pi), `{"polyline": points}`,
+`{"spline": {"degree", "knots", "poles", "weights"}}` (from the piece's
+start to its end; `weights` empty when not rational). A part also
+gives `splines`: the B-splines of its outline on the sheet, as the
+pieces' `spline`.
+
+The `drawing` query of a cut sheet draws it for the application: its
+`kind` (`cut_sheet`), one sheet of the material's `width` and `height`
+whose `views` are the parts (`type` `part`, `id`, `place`, `rotation`,
+`label` (the body's name), `box`, `broken` and `error` when it is not
+worked out, and the query's fields of a part), its `warnings`, and with
+`geometry` its `groups`: a `view` group `part-<id>` of each part's
+outline (pen `thick`) and a `view-label` group of its name.
+
+**B-splines.** The kernel's projection gives a B-spline or Bézier edge
+as its B-spline (its degree, full knot vector, poles and weights, cut to
+the edge's range), and another curve that is no line or circle (an
+ellipse, an offset curve, ...) as a B-spline within 1e-6 mm, each with
+a polyline of it within the view's deflection (`ViewCurve::Spline`;
+drawings draw, cut and pick that polyline). A cut sheet keeps such a
+curve as the curve it is: split where other lines meet it and joined
+again (the crossings and ends found on the curve itself), turned and
+moved by its poles, and cut to a part of its range by knot insertion
+(`mitcad_model_drawing::bspline`). Lines and arcs of a polyline stay a
+polyline.
+
+**The files.** DXF (R2000, millimetres, 1:1): outer boundaries on the
+layer `CUT_OUTER`, inner loops on `CUT_INNER` (the Flat Pattern's
+names, *DXF export* of Sheet-metal), lines as `LINE`, arcs as `ARC`,
+whole circles as `CIRCLE`, B-splines as `SPLINE`s with their own
+degree, knots, control points and weights (weights only when they
+differ), a polyline (from the polygonal projection) as a `SPLINE` of
+degree 1 through its points; with `labels` each part's name as `TEXT`
+on `LABEL` at the middle of its box (5 mm high, smaller on small
+parts). SVG (the material's size in millimetres, `viewBox` in
+millimetres, y down from the top): a layer (`<g id="CUT_OUTER">`,
+`inkscape:label`) of the outer boundaries (red) and one of the inner
+loops (`CUT_INNER`, blue), each loop one closed `<path>` (`data-part`
+its part's id) of lines (`L`), arcs (`A`) and, for a non-rational
+B-spline of degree 3 or less, its Bézier pieces as cubic Béziers (`C`,
+exactly; a quadratic raised to a cubic, degree 1 as lines); a rational
+B-spline or one of a higher degree as lines within 0.0001 mm
+(`cut_sheet::SVG_DEFLECTION`); with `labels` a layer `LABEL` of the
+names as `<text>`. A
+part that cannot be worked out is left out (a warning says why); a cut
+sheet with no part to write is refused.
+
+How a part is worked out: its body where its occurrence places it in
+the cut sheet's component; the face's plane (`Kernel::faces`,
+`Kernel::face_plane`); the kernel's projection along the face's normal
+with hidden lines removed, sharp, tangent and silhouette edges
+(`Kernel::project_view`); then, in Rust
+(`mitcad_model_drawing::cut_sheet::silhouette`), the lines seen are split
+where they cross or end on each other, the regions they bound are asked
+once each whether the body lies behind them (a line of sight across the
+body, `Kernel::segments_crossings`), and the lines with material on one
+side only are followed into loops, pieces of one line or circle joined
+again. The result is kept in the document's drawing cache by the body's
+shape version, its placement and the face chosen. Overlaps and parts
+off the sheet are found on the loops flattened (arcs in steps of 2°).
+
+Example:
+
+```json
+[{"cmd": "add_cut_sheet", "width": 600, "height": 300,
+  "bodies": ["Rib 3", "Spar"], "count": 2},
+ {"cmd": "edit_cut_sheet_part", "drawing": "CutSheet1", "part": 2, "turn": 90},
+ {"cmd": "export_cut_sheet", "drawing": "CutSheet1", "path": "ribs.dxf", "labels": true}]
+```
+
+Classes: the commands and the query are the model's, `export_cut_sheet`
+writes a file (`classes.rs`); MCP's `model_export` takes `cut_sheet` (and
+`labels`) to write one as DXF or SVG. Tests:
+`core/model-drawing/src/cut_sheet_tests.rs` (a plate with two holes and
+a slot seen with its edges twice and a seam: one outer loop and three
+inner within 1e-6 mm; a blind hole; placing and turning; overlaps,
+touching and nesting; the DXF and SVG read back with their layers and
+sizes; a polyline as a spline; B-splines cut, turned and as Béziers; a
+plate whose top is a cubic B-spline split by a seam: one spline again
+with its degree, knots and control points within 1e-6 mm, read back from
+the DXF as a `SPLINE` and written in the SVG as a cubic Bézier; the
+spline turned with its part), `core/model-tests/drawing/src/cut_sheet_tests.rs`
+(the commands and queries on the mock kernel: a part added with a count,
+a parameter change, a deleted body marked missing, overlaps and parts
+off the sheet, the generic drawing commands, undo, the design file, the
+files written and read back), `tools/cli/tests/cut_sheet.json`
+(`cli.cut_sheet`: a plate with two holes and a slot through OCCT, and a
+plate whose top is a B-spline of degree 2, its control points on the
+sheet),
+`tools/ui-drawings-test.sh` (New Drawing › Cut Sheet, two bodies added,
+DXF written).
+
+## Rounded rectangles and fillets of several corners
+
+(mitcad#867) `sketch.rectangle` with `radius` (a value: a number or an
+expression) makes the rectangle of its `mode` and rounds its four
+corners: four tangent arcs (`made`: the four lines, then the four arcs),
+the first with a radius dimension (comment `fillet radius`) and the
+other three Equal to it, so the one parameter drives all four. A radius
+of half the shorter side or more is refused (`the corner radius 10 mm
+must be less than half the shorter side (10 mm)`), and nothing is added.
+
+`sketch.fillet` rounds several corners at once with `curves` and/or
+`points` in place of `a` and `b` (giving both forms is refused):
+
+- `curves` (lines): every corner where two of them end at one point.
+  Construction lines count only among construction lines, so a
+  rectangle's construction diagonal does not spoil its corners; a point
+  where three or more lines of one kind end is refused; two lines in
+  line make no corner. Two lines without a shared end are the corner
+  where they meet, as with `a` and `b`.
+- `points`: each a point where exactly two lines of one kind end (the
+  drawn ones, else the construction ones); any other point is refused
+  (`p9 is not the corner of two lines (0 curve(s) end there)`).
+
+Each corner is filleted as with `a` and `b` (the corner stays as a point
+on both lines, a length dimension of a line becomes the distance from
+its other end to the corner); one radius dimension on the first arc and
+Equal from it to each other arc. Before anything changes, the corners on
+each line must leave some of it: otherwise the refusal names the line
+and the largest radius that fits (`the fillet radius 12 mm does not fit
+on c2: its corners take 24 mm of its 20 mm, the radius must be less than
+10 mm`). One command: one undo step, `Fillet in <sketch>`. A curve that
+is no line is refused.
+
+```json
+{"cmd": "sketch.rectangle", "sketch": "F1", "mode": "two_point",
+ "a": [0, 0], "b": [40, 20], "radius": 5}
+{"cmd": "sketch.fillet", "sketch": "F1", "curves": ["c1", "c2", "c3", "c4"], "radius": 5}
+{"cmd": "sketch.fillet", "sketch": "F1", "points": ["p5", "p7"], "radius": "r1"}
+```
+
+The application's 2-Point and Center Rounded Rectangle and Sketch
+Fillet's Lines or Corners send these (`app/COMMANDS.md`). Tests:
+`core/model-tests/sketch/src/sketch_rounded_rectangle_867_tests.rs` (a
+40 × 20 rounded rectangle of r 5 fully constrained by width, height,
+radius and position, all four arcs following the radius parameter; the
+centre variant; Sketch Fillet on a whole rectangle with length
+dimensions giving the same, undone in one step; a Center Rectangle with
+its diagonal; two corners by their points; the refusals).

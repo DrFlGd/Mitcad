@@ -488,6 +488,17 @@ public:
   // (setActivePickPriority), so a face of another component in front of an
   // origin plane is picked; otherwise the order by depth stays.
   void setPlanesByDepth(bool on) { m_planesByDepth = on; }
+  // While an input puts sketches behind the bodies (InputDef::sketchesBehind,
+  // mitcad#869: Measure's Faces, Edges and Vertices): a sketch's curves and
+  // points come after the bodies' faces, edges and vertices under the cursor
+  // (PickContext.hpp's setPickYield), so that a sketch point on a body's
+  // corner or a sketch line on its edge gives the body's; a sketch where no
+  // body is under the cursor still is picked. The curves and points of
+  // `kept` (the sketch that sketch mode edits) keep their place.
+  void setSketchesBehind(bool on, const QString& kept = QString()) {
+    m_sketchesBehind = on;
+    m_sketchKept = on ? kept : QString();
+  }
 
   // The rendered view (docs/rendering.md): the image fills the view
   // (stretched; a frame that refines is smaller) over the bodies, which
@@ -586,6 +597,11 @@ public:
     EdgeSight sight = EdgeSight::Visible;
   };
   std::vector<EdgePlace> edgePlaces();
+  // Whether a point of the design is in sight, not behind a face of a shown
+  // body seen from the camera now: the test a click on a body edge makes
+  // (mitcad#217). Sketch Dimension takes body geometry out of the sketch
+  // plane only where it is in sight (mitcad#866).
+  bool inSight(const gp_Pnt& point) const { return !occluded(point); }
   // Dragging components (mitcad#55).
   void setOccurrenceDrag(OccurrenceDrag drag) { m_occurrenceDrag = std::move(drag); }
   // The move cursor over a body a drag would move (mitcad#150).
@@ -1001,6 +1017,8 @@ private:
   bool m_activePickPriority = true; // setActivePickPriority()
   bool m_planesBehind = false;       // setPlanesBehind()
   bool m_planesByDepth = false;      // setPlanesByDepth()
+  bool m_sketchesBehind = false;     // setSketchesBehind()
+  QString m_sketchKept;              // its sketch that keeps its place
   std::set<const AIS_InteractiveObject*> m_inactiveObjects;
   QString m_loggedInactiveGhosts = QStringLiteral("none");
   std::map<ProfileKey, occ::handle<AIS_Shape>> m_profiles;

@@ -479,13 +479,19 @@ impl Built {
             K::Equal { a, b } => vec![S::Equal(c(*a)?, c(*b)?)],
             K::Concentric { a, b } => vec![S::Concentric(c(*a)?, c(*b)?)],
             K::Midpoint { point, curve } => vec![S::Midpoint(p(*point)?, c(*curve)?)],
-            K::Symmetric { a, b, axis } => vec![match (a, b) {
+            K::Symmetric { a, b, axis, radii } => vec![match (a, b) {
                 (Ref::Point(a), Ref::Point(b)) => S::SymmetricPoints {
                     a: p(*a)?,
                     b: p(*b)?,
                     axis: c(*axis)?,
                 },
-                (Ref::Curve(a), Ref::Curve(b)) => S::SymmetricEntities {
+                (Ref::Curve(a), Ref::Curve(b)) if *radii => S::SymmetricEntities {
+                    a: c(*a)?,
+                    b: c(*b)?,
+                    axis: c(*axis)?,
+                },
+                // The positions only (mitcad#865).
+                (Ref::Curve(a), Ref::Curve(b)) => S::SymmetricCentres {
                     a: c(*a)?,
                     b: c(*b)?,
                     axis: c(*axis)?,

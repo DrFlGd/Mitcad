@@ -248,7 +248,7 @@ Ui-Step 'edit Sketch1 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch
 Ui-ExpectNew 'Editing sketch F1 (Sketch1)' 'the sketch is edited' 30
 Ui-Mark
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
-Start-Sleep -Milliseconds 800
+Ui-Sync
 $before = Sketch-Dof
 Ui-Mark
 Ui-Step 'coincident (Shift+F5)'          { Ui-Key 'shift+F5' }
@@ -259,14 +259,14 @@ Ui-ExpectNew 'Removed constraint horizontal k12: implied by the new coincident k
   'the Horizontal the coincident implies is removed'
 Ui-ExpectNew ' on p5, p2' 'the coincident is added'
 Ui-ExpectNew 'Sketch notice: Horizontal removed: implied by the new Coincident.' 'the hint says so'
-Start-Sleep -Milliseconds 500
+Ui-Sync
 if ((Sketch-Dof) -ne $before - 1) { Ui-Fail "$(Sketch-Dof) DOF, expected $($before - 1)" }
 Write-Host 'ok   the corner on the line''s end, one degree of freedom fewer'
 Ui-Step 'end the tool (Esc)'             { Ui-Key 'Escape' }
 Ui-Mark
 Ui-Step 'undo (Ctrl+Z)'                  { Ui-Key 'ctrl+z' }
 Ui-ExpectNew 'Undo: ' 'undone'
-Start-Sleep -Milliseconds 500
+Ui-Sync
 if ((Sketch-Dof) -ne $before) { Ui-Fail "$(Sketch-Dof) DOF after the undo, expected $before" }
 Write-Host 'ok   one undo takes both back'
 
@@ -307,7 +307,7 @@ Ui-Mark
 Ui-Step 'edit Sketch2 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch2' }
 Ui-ExpectNew 'Editing sketch F3 (Sketch2)' 'Sketch2 edited' 30
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
-Start-Sleep -Milliseconds 800
+Ui-Sync
 Ui-Mark
 Ui-Step 'intersect (Shift+F7)'           { Ui-Key 'shift+F7' }
 Ui-ExpectLog 'Browser Root/Bodies/Body1 at' 'Body1 in the browser'
@@ -338,7 +338,7 @@ Ui-Mark
 Ui-Step 'edit Sketch2 again'             { Ui-DoubleClickLogged 'Timeline Sketch2' }
 Ui-ExpectNew 'Editing sketch F3 (Sketch2)' 'Sketch2 edited' 30
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
-Start-Sleep -Milliseconds 800
+Ui-Sync
 # The lines since the mark (Ui-Mark is the index of the log's last, still
 # empty line: the first new line is there).
 $since = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
@@ -349,7 +349,7 @@ Ui-Mark
 $from = Ui-SketchAt 20 -30
 $to = Ui-SketchAt 26 -36
 Ui-Step 'drag the section''s new corner' { Ui-Drag $from[0] $from[1] $to[0] $to[1] }
-Start-Sleep -Milliseconds 800
+Ui-Sync
 $since = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
 if (-not ($since -match 'Drag of p[0-9]+ did not move it|Dragged p[0-9]+ to \(20\.000, -30\.000\)')) {
   Ui-Fail 'no section point at the block''s new top corner'
@@ -360,7 +360,7 @@ Ui-Mark
 $from = Ui-SketchAt 0 -20
 $to = Ui-SketchAt 6 -26
 Ui-Step 'drag at the old top'            { Ui-Drag $from[0] $from[1] $to[0] $to[1] }
-Start-Sleep -Milliseconds 800
+Ui-Sync
 $since = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
 if ($since -match 'Drag of |Dragged ') { Ui-Fail 'a section curve stayed at the old top' }
 Write-Host 'ok   nothing of the section is left at the old top'

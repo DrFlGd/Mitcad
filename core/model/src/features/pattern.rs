@@ -19,7 +19,11 @@
 //!   hole and the copies of a pattern of it) are cut in one operation with
 //!   all their copies. Groups of copies whose boxes stay away from the
 //!   bodies' boxes change nothing and are left out of a cut (and of
-//!   Adjust's join), before the copies are united ([`reaching`]).
+//!   Adjust's join), before the copies are united ([`reaching`]). A run
+//!   of features that all join, or all cut, one body, whose copies stay
+//!   apart from the other features' copies, goes in one operation where
+//!   that gives the same body and face names (mitcad#855,
+//!   [`Copying::together`]).
 //! - Patterns and mirrors of features among the features (patterns of
 //!   patterns, mitcad#4): their originals are repeated at every place the
 //!   pattern put them (its elements, the original's too), so a pattern of
@@ -1987,11 +1991,18 @@ impl Copying<'_> {
         elements: &[Element],
     ) -> Result<(), String> {
         let mut i = 0;
+        // Runs of places in one operation, until one is not kept
+        // (Copying::together).
+        let mut runs = runs_enabled();
         while i < self.places.len() {
             let run = self.cut_run(ctx, set, i)?;
             if run > 1 {
                 self.cut_together(ctx, set, &self.places[i..i + run], elements)?;
                 i += run;
+                continue;
+            }
+            if runs && let Together::Applied(n) = self.together(ctx, set, i, elements, &mut runs)? {
+                i += n;
                 continue;
             }
             let place = &self.places[i];
@@ -2002,6 +2013,335 @@ impl Copying<'_> {
             i += 1;
         }
         Ok(())
+    }
+
+    /// A run of places from `from` on whose copies all join, or all cut,
+    /// the same one body, applied in one operation (mitcad#855: a pattern
+    /// of a dozen features joined to a body of 3 000 faces took a join per
+    /// feature, 2 s each, though every join changed only a few faces).
+    ///
+    /// The run gives the body, its face names included, that the places
+    /// give one after another, because the places act on parts of the body
+    /// apart from each other: the boxes of the copies of different places
+    /// stay more than [`REACH`] apart (each place's copies made as
+    /// [`Copying::place`] makes them, all of them, before [`reaching`]
+    /// leaves any out), so no copy meets another place's copies, nor the
+    /// faces they made or removed, and what one place does is the same
+    /// before and after another's. Each place's copies are united as
+    /// [`Copying::place`] unites them, and the places' tools go to the
+    /// operation as one compound. Then the run is kept only when
+    /// - the operation made no new body (no body split apart, no copy of
+    ///   a join left on its own);
+    /// - some face of each place's copies is in the result: each place
+    ///   reaches the body as it does alone (copies that touch nothing are
+    ///   left out alike, apart from all others);
+    /// - a face of the body that became several (whose pieces are numbered
+    ///   `#k` in their geometric order, which holes in a piece change) has
+    ///   the copies of one place only near its box: that place splits it
+    ///   as it does alone, and no other place changes the pieces.
+    ///
+    /// The last is foreseen from the boxes before the operation, so that a
+    /// run that would not be kept is not tried ([`SharedFaces`]): a run
+    /// ends before a place whose copies come near a face of the body that
+    /// another place's copies come near too, unless every such copy stands
+    /// inside the face (a flat face whose box holds the copy's across it:
+    /// bosses or holes on one face, which split it only in rare shapes,
+    /// such as a ring). When a run is not kept even so, the bodies are as
+    /// before, its places go one by one and so does the rest of the
+    /// pattern (`runs`), so a pattern wastes at most one operation.
+    /// With `MITCAD_BOOLEAN_TRACE` set, each run, and why it was not taken
+    /// or kept, is a line on standard error. Off with the environment
+    /// variable `MITCAD_NO_PATTERN_RUNS=1`, for comparisons.
+    fn together<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        set: &mut BodySet<K::Shape>,
+        from: usize,
+        elements: &[Element],
+        runs: &mut bool,
+    ) -> Result<Together, String> {
+        if from + 1 >= self.places.len() {
+            return Ok(Together::No);
+        }
+        // The copies are made only when the next place acts on the same
+        // body in the same way.
+        let first = self.run_target(ctx, set, from, elements);
+        let next = self.run_target(ctx, set, from + 1, elements);
+        let why_not = match (&first, &next) {
+            (Ok(a), Ok(b)) if a.0 == b.0 && a.1 == b.1 => None,
+            (Ok(a), Ok(b)) => Some(format!(
+                "{} {} {} and {} {} {}",
+                self.place_name(from),
+                verb_of(a.0),
+                a.1,
+                self.place_name(from + 1),
+                verb_of(b.0),
+                b.1
+            )),
+            (Err(e), _) => Some(format!("{}: {e}", self.place_name(from))),
+            (_, Err(e)) => Some(format!("{}: {e}", self.place_name(from + 1))),
+        };
+        if let Some(why) = why_not {
+            trace_run(ctx, || {
+                format!("no run at {}: {why}", self.place_name(from))
+            });
+            return Ok(Together::No);
+        }
+        let warnings = ctx.warnings.len();
+        let mut run: Vec<RunPlace<K::Shape>> = Vec::new();
+        let mut shared: Option<SharedFaces> = None;
+        for i in from..self.places.len() {
+            let before = ctx.warnings.len();
+            let ends = match self.run_place(ctx, set, i, elements) {
+                Err(e) => Some(e),
+                Ok(member) => {
+                    let why = if run
+                        .first()
+                        .is_some_and(|f| f.operation != member.operation || f.body != member.body)
+                    {
+                        Some("another body or operation".to_owned())
+                    } else if let Some(other) = run.iter().find(|o| !apart(&o.boxes, &member.boxes))
+                    {
+                        Some(format!(
+                            "its copies come near those of {}",
+                            self.place_name(other.index)
+                        ))
+                    } else {
+                        // The body's faces near the copies, once a second
+                        // place is to join the run.
+                        if shared.is_none() && run.len() == 1 {
+                            shared = Some(SharedFaces::of(ctx, set, &run[0]));
+                        }
+                        match shared.as_mut().map(|s| s.add(&member)) {
+                            Some(Err((face, other))) => Some(format!(
+                                "face {face} of {}, near its copies and those of {}, may split",
+                                member.body,
+                                self.place_name(other)
+                            )),
+                            _ => None,
+                        }
+                    };
+                    if why.is_none() {
+                        run.push(member);
+                    }
+                    why
+                }
+            };
+            if let Some(why) = ends {
+                ctx.warnings.truncate(before);
+                trace_run(ctx, || {
+                    format!(
+                        "run from {} ends before {}: {why}",
+                        self.place_name(from),
+                        self.place_name(i)
+                    )
+                });
+                break;
+            }
+        }
+        if run.len() < 2 {
+            ctx.warnings.truncate(warnings);
+            return Ok(Together::No);
+        }
+        let names = || {
+            run.iter()
+                .map(|m| self.place_name(m.index))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let saved = (set.clone(), ctx.next_body, ctx.pieces.clone());
+        let declined = match self.apply_run(ctx, set, &run) {
+            Ok(Ok(())) => {
+                // As many passes over the body as the places one by one make
+                // (each cuts it once), so a later split numbers its pieces
+                // as before (mitcad#408).
+                if run[0].operation == Operation::Cut {
+                    ctx.pieces.skip_passes(run[0].body, run.len() as u32 - 1);
+                }
+                trace_run(ctx, || format!("run kept: {}", names()));
+                return Ok(Together::Applied(run.len()));
+            }
+            Ok(Err(declined)) => declined,
+            Err(e) => format!("the operation failed: {e}"),
+        };
+        (*set, ctx.next_body, ctx.pieces) = saved;
+        ctx.warnings.truncate(warnings);
+        trace_run(ctx, || {
+            format!(
+                "run not kept: {}: {declined}; the pattern goes on one place by one",
+                names()
+            )
+        });
+        *runs = false;
+        Ok(Together::No)
+    }
+
+    /// The place at `i` for traces: its feature, and the place's number
+    /// among the pattern's.
+    fn place_name(&self, i: usize) -> String {
+        format!("{}/{i}", self.places[i].feature)
+    }
+
+    /// What the place at `i` does as a member of a run
+    /// ([`Copying::together`]): a feature that joins or cuts one body (not
+    /// a fillet, chamfer or thread, not a sheet's or a scoped cut), with
+    /// the operation, the body and the participants [`Copying::place`]
+    /// gives it. Otherwise why it cannot be one (an error is left to
+    /// [`Copying::place`] to report).
+    fn run_target<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        set: &BodySet<K::Shape>,
+        i: usize,
+        elements: &[Element],
+    ) -> Result<(Operation, BodyUid, Vec<BodyUid>), String> {
+        let uid = self.places[i].feature;
+        if self.elements_of(i, elements).is_empty() {
+            return Err("all its copies skipped".to_owned());
+        }
+        if self.dressups.contains(&uid) {
+            return Err("a fillet, chamfer or thread".to_owned());
+        }
+        let entry = ctx.feature_entry(uid)?;
+        if changes_sheet(&entry.def) {
+            return Err("a sheet feature".to_owned());
+        }
+        if matches!(&entry.def, FeatureDef::Extrude(e) if e.active_cut_scope().is_some()) {
+            return Err("a scoped cut".to_owned());
+        }
+        let Some(tool_use) = replay_tool(ctx, uid, Some(set))? else {
+            return Err("no tool".to_owned());
+        };
+        let operation = tool_use.operation;
+        if !matches!(operation, Operation::Cut | Operation::Join) {
+            return Err("neither a join nor a cut".to_owned());
+        }
+        let participants = if self.original_bodies && tool_use.participants.is_empty() {
+            changed_bodies(ctx, uid, set)?
+        } else {
+            present_participants(ctx, uid, operation, &tool_use.participants, set)?
+        };
+        // The one body the operation works on (all bodies: the only one
+        // that is not a mesh).
+        let body = match participants[..] {
+            [body] => body,
+            [] => {
+                let mut solids = set
+                    .uids()
+                    .into_iter()
+                    .filter(|b| set.get(*b).is_some_and(|s| !ctx.is_mesh(s)));
+                match (solids.next(), solids.next()) {
+                    (Some(body), None) => body,
+                    _ => return Err("all bodies, several of them".to_owned()),
+                }
+            }
+            _ => return Err(format!("{} bodies", participants.len())),
+        };
+        Ok((operation, body, participants))
+    }
+
+    /// The place at `i` as a member of a run ([`Copying::together`]):
+    /// [`Copying::run_target`], with its copies as [`Copying::place`] makes
+    /// them and their boxes. Otherwise why it cannot be one.
+    fn run_place<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        set: &BodySet<K::Shape>,
+        i: usize,
+        elements: &[Element],
+    ) -> Result<RunPlace<K::Shape>, String> {
+        let (operation, body, participants) = self.run_target(ctx, set, i, elements)?;
+        let place = &self.places[i];
+        let uid = place.feature;
+        let own = self.elements_of(i, elements);
+        let entry = ctx.feature_entry(uid)?;
+        let stored = ctx.feature_tool(uid)?;
+        let all = if self.compute == ComputeOption::Adjust {
+            adjust_copies(ctx, &entry, place, &stored, own)?
+        } else {
+            moved_list(ctx, &stored, &place.steps, own)?
+        };
+        let mut boxes = Vec::with_capacity(all.len());
+        for copy in &all {
+            match ctx.kernel.enclosing_box(copy) {
+                Ok(Some(b)) => boxes.push(b),
+                _ => return Err("a copy without a box".to_owned()),
+            }
+        }
+        // The copies the operation gets, as Copying::place leaves them.
+        let copies = if self.compute == ComputeOption::Adjust || operation == Operation::Cut {
+            reaching(ctx, set, &participants, all)
+        } else {
+            all
+        };
+        if copies.is_empty() {
+            return Err("no copy near the body".to_owned());
+        }
+        // As Copying::place unites them (all_at_once, moved_copies).
+        let tool = if copies.len() == 1 {
+            copies[0].clone()
+        } else {
+            let refs: Vec<&K::Shape> = copies.iter().collect();
+            ctx.kernel
+                .unite(&refs)
+                .map_err(|e| format!("its copies' union failed: {e}"))?
+        };
+        Ok(RunPlace {
+            index: i,
+            operation,
+            body,
+            copies,
+            tool,
+            boxes,
+        })
+    }
+
+    /// The run's places applied in one operation, kept when it gives the
+    /// bodies they give one by one (the conditions of
+    /// [`Copying::together`]); otherwise why not (the bodies then changed).
+    fn apply_run<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        set: &mut BodySet<K::Shape>,
+        run: &[RunPlace<K::Shape>],
+    ) -> Result<Result<(), String>, String> {
+        let (operation, body) = (run[0].operation, run[0].body);
+        let Some(target) = set.get(body).cloned() else {
+            return Ok(Err(format!("no body {body}")));
+        };
+        let tools: Vec<K::Shape> = run.iter().map(|m| m.tool.clone()).collect();
+        let tool = match ctx.kernel.compound(&tools) {
+            Ok(tool) => tool,
+            Err(KernelError::Unsupported(_)) => {
+                let refs: Vec<&K::Shape> = tools.iter().collect();
+                ctx.kernel.unite(&refs).map_err(|e| e.to_string())?
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        // Adjust leaves out a join's copies that touch nothing; Identical
+        // makes bodies of them (and the run is not kept).
+        let adjust_join = self.compute == ComputeOption::Adjust && operation == Operation::Join;
+        let next_body = ctx.next_body;
+        if !apply_tool_strays(ctx, set, operation, &[body], &tool, !adjust_join)? {
+            return Ok(Err("it reached no body".to_owned()));
+        }
+        if ctx.next_body != next_body {
+            return Ok(Err("it made a new body".to_owned()));
+        }
+        let Some(result) = set.get(body).cloned() else {
+            return Ok(Err(format!("it took away {body}")));
+        };
+        for member in run {
+            if !member.copies.iter().any(|c| has_faces_of(ctx, &result, c)) {
+                return Ok(Err(format!(
+                    "no face of the copies of {} in the result",
+                    self.place_name(member.index)
+                )));
+            }
+        }
+        Ok(splits_of_one_place(ctx, &target, &result, run, |i| {
+            self.place_name(run[i].index)
+        }))
     }
 
     /// How many places from `from` on cut the same bodies with their copies
@@ -2160,10 +2500,6 @@ impl Copying<'_> {
         place: &Placed,
         elements: &[Element],
     ) -> Result<bool, String> {
-        let instance = |uid: FeatureUid, element: &Element| Instance {
-            feature: uid,
-            index: element.index,
-        };
         if self.dressups.contains(&place.feature) {
             return repeat_dressup(
                 ctx,
@@ -2188,47 +2524,9 @@ impl Copying<'_> {
         } else {
             present_participants(ctx, *uid, tool_use.operation, &tool_use.participants, set)?
         };
-        // The place's steps, composed: where the copy at an element goes is
-        // the element's transform after them.
-        let at = place
-            .steps
-            .iter()
-            .fold(Transform::IDENTITY, |done, (t, _)| t.after(&done));
         let mut reached = false;
         if self.compute == ComputeOption::Adjust {
-            let mut copies = Vec::with_capacity(elements.len());
-            for element in elements {
-                let transform = element.transform.after(&at);
-                // A tool is rebuilt in place for rigid motions only; a mirror
-                // reflects the finished tool.
-                let placed = if transform.is_rigid() {
-                    entry
-                        .def
-                        .evaluator::<K>()
-                        .placed_tool(ctx, *uid, &transform)
-                } else {
-                    None
-                };
-                let copy = match placed {
-                    Some(tool) => placed_copy(
-                        ctx,
-                        &tool.map_err(|e| format!("element {}: {e}", element.index))?,
-                        &place.steps,
-                        &element.transform,
-                        instance(ctx.uid, element),
-                        true,
-                    )?,
-                    None => placed_copy(
-                        ctx,
-                        &stored,
-                        &place.steps,
-                        &element.transform,
-                        instance(ctx.uid, element),
-                        false,
-                    )?,
-                };
-                copies.push(copy);
-            }
+            let mut copies = adjust_copies(ctx, &entry, place, &stored, elements)?;
             if matches!(tool_use.operation, Operation::Cut | Operation::Join) {
                 copies = reaching(ctx, set, &participants, copies);
             }
@@ -2464,6 +2762,79 @@ fn all_at_once<K: Kernel>(
     }
 }
 
+/// Adjust's copies of the feature at `place` at the elements, in their
+/// order: its tool rebuilt at each copy's place where the feature can
+/// ([`super::Evaluate::placed_tool`]; for rigid motions only, a mirror
+/// reflects the finished tool), else `stored`, the tool it left, moved
+/// there.
+fn adjust_copies<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    entry: &FeatureEntry,
+    place: &Placed,
+    stored: &K::Shape,
+    elements: &[Element],
+) -> Result<Vec<K::Shape>, String> {
+    // The place's steps, composed: where the copy at an element goes is
+    // the element's transform after them.
+    let at = place.at();
+    let mut copies = Vec::with_capacity(elements.len());
+    for element in elements {
+        let instance = Instance {
+            feature: ctx.uid,
+            index: element.index,
+        };
+        let transform = element.transform.after(&at);
+        let placed = if transform.is_rigid() {
+            entry
+                .def
+                .evaluator::<K>()
+                .placed_tool(ctx, place.feature, &transform)
+        } else {
+            None
+        };
+        let copy = match placed {
+            Some(tool) => placed_copy(
+                ctx,
+                &tool.map_err(|e| format!("element {}: {e}", element.index))?,
+                &place.steps,
+                &element.transform,
+                instance,
+                true,
+            )?,
+            None => placed_copy(
+                ctx,
+                stored,
+                &place.steps,
+                &element.transform,
+                instance,
+                false,
+            )?,
+        };
+        copies.push(copy);
+    }
+    Ok(copies)
+}
+
+/// The tool moved through a place's steps (none for the pattern's own
+/// objects), then to every element, one copy each.
+fn moved_list<K: Kernel>(
+    ctx: &EvalContext<'_, K>,
+    tool: &K::Shape,
+    steps: &[(Transform, Instance)],
+    elements: &[Element],
+) -> Result<Vec<K::Shape>, String> {
+    elements
+        .iter()
+        .map(|element| {
+            let instance = Instance {
+                feature: ctx.uid,
+                index: element.index,
+            };
+            placed_copy(ctx, tool, steps, &element.transform, instance, false)
+        })
+        .collect()
+}
+
 /// The tool moved through a place's steps (none for the pattern's own
 /// objects), then to every element, as one shape. With `reach` (a cut)
 /// only the copies [`reaching`] keeps; None when it keeps none.
@@ -2474,16 +2845,7 @@ fn moved_copies<K: Kernel>(
     elements: &[Element],
     reach: Option<(&BodySet<K::Shape>, &[BodyUid])>,
 ) -> Result<Option<K::Shape>, String> {
-    let mut copies = elements
-        .iter()
-        .map(|element| {
-            let instance = Instance {
-                feature: ctx.uid,
-                index: element.index,
-            };
-            placed_copy(ctx, tool, steps, &element.transform, instance, false)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut copies = moved_list(ctx, tool, steps, elements)?;
     if let Some((set, participants)) = reach {
         copies = reaching(ctx, set, participants, copies);
     }
@@ -2577,6 +2939,208 @@ pub(super) fn reaching<K: Kernel>(
         .zip(keep)
         .filter_map(|(copy, keep)| keep.then_some(copy))
         .collect()
+}
+
+/// How [`Copying::by_places`] goes on at a place ([`Copying::together`]).
+enum Together {
+    /// So many places were applied in one operation.
+    Applied(usize),
+    /// No run here: the place goes on its own.
+    No,
+}
+
+/// A place of a run applied in one operation ([`Copying::together`]).
+struct RunPlace<S> {
+    /// Its number among the pattern's places.
+    index: usize,
+    operation: Operation,
+    /// The body it joins or cuts.
+    body: BodyUid,
+    /// The copies the operation gets ([`reaching`] has left out those that
+    /// stay away from the body where [`Copying::place`] leaves them out),
+    /// and the tool they make (united, as [`Copying::place`] unites them).
+    copies: Vec<S>,
+    tool: S,
+    /// The boxes of all the place's copies.
+    boxes: Vec<BoundingBox>,
+}
+
+/// Whether patterns apply runs of their features in one operation
+/// ([`Copying::together`]); `MITCAD_NO_PATTERN_RUNS=1` turns it off, for
+/// comparisons.
+fn runs_enabled() -> bool {
+    std::env::var_os("MITCAD_NO_PATTERN_RUNS").is_none_or(|v| v.is_empty() || v == "0")
+}
+
+/// Whether two boxes come within [`REACH`] of each other.
+fn meet(a: &BoundingBox, b: &BoundingBox) -> bool {
+    (0..3).all(|i| a.min[i] <= b.max[i] + REACH && b.min[i] <= a.max[i] + REACH)
+}
+
+/// Whether no box of `a` comes within [`REACH`] of a box of `b`.
+fn apart(a: &[BoundingBox], b: &[BoundingBox]) -> bool {
+    !a.iter().any(|x| b.iter().any(|y| meet(x, y)))
+}
+
+/// Whether some face of `copy` is a face of `result` (or pieces of one), by
+/// their names; false when the kernel cannot tell.
+fn has_faces_of<K: Kernel>(ctx: &EvalContext<'_, K>, result: &K::Shape, copy: &K::Shape) -> bool {
+    let Ok(faces) = ctx.kernel.faces(copy) else {
+        return false;
+    };
+    faces
+        .iter()
+        .flat_map(|f| f.names.iter())
+        .filter_map(|name| name.parse::<FaceName>().ok())
+        .any(|name| ctx.kernel.count_faces(result, &name).is_ok_and(|n| n > 0))
+}
+
+/// Whether each face of `target` that became several faces of `result`
+/// has the copies of one place of the run only near its box
+/// ([`Copying::together`]); otherwise why not. `name` names the run's
+/// places for the reason.
+fn splits_of_one_place<K: Kernel>(
+    ctx: &EvalContext<'_, K>,
+    target: &K::Shape,
+    result: &K::Shape,
+    run: &[RunPlace<K::Shape>],
+    name: impl Fn(usize) -> String,
+) -> Result<(), String> {
+    let Ok(faces) = ctx.kernel.faces(target) else {
+        return Err("the body's faces unknown".to_owned());
+    };
+    let mut split = Vec::new();
+    for (i, face) in faces.iter().enumerate() {
+        // The pieces of a face number each of its names alike; a face
+        // without a name gives pieces without one.
+        let Some(text) = face.names.first() else {
+            continue;
+        };
+        let Ok(name) = text.parse::<FaceName>() else {
+            return Err(format!("face name {text} unread"));
+        };
+        match (
+            ctx.kernel.count_faces(target, &name),
+            ctx.kernel.count_faces(result, &name),
+        ) {
+            (Ok(before), Ok(after)) if after <= before => {}
+            (Ok(_), Ok(_)) => split.push(i),
+            _ => return Err(format!("face {text} not found")),
+        }
+    }
+    if split.is_empty() {
+        return Ok(());
+    }
+    let boxes = match ctx.kernel.face_boxes(target) {
+        Ok(boxes) if boxes.len() == faces.len() => boxes,
+        _ => return Err("the body's face boxes unknown".to_owned()),
+    };
+    for i in split {
+        let [min, max] = boxes[i];
+        let face = BoundingBox { min, max };
+        let near: Vec<String> = (0..run.len())
+            .filter(|m| run[*m].boxes.iter().any(|b| meet(b, &face)))
+            .map(&name)
+            .collect();
+        if near.len() > 1 {
+            return Err(format!(
+                "face {} split near the copies of {}",
+                faces[i].names.first().map_or("", String::as_str),
+                near.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The faces of a run's body near the copies of its places, foreseeing
+/// before the operation whether the run splits a face near the copies of
+/// two places ([`Copying::together`]): the body's face boxes (none known:
+/// nothing foreseen, the check after the operation decides), and for each
+/// face the first place near it and whether a place near it may split it.
+/// A copy may split a face unless it stands inside it: the face is flat
+/// (its box no thicker than [`REACH`] along an axis) and the copy's box
+/// lies inside the face's box across it, more than [`REACH`] from its
+/// sides. (Inside, a copy makes a hole or a boss in the face, and splits
+/// it only in rare shapes, such as a ring; the check after the operation
+/// finds those.)
+struct SharedFaces {
+    boxes: Vec<BoundingBox>,
+    near: Vec<Option<(usize, bool)>>,
+}
+
+impl SharedFaces {
+    fn of<K: Kernel, S>(
+        ctx: &EvalContext<'_, K>,
+        set: &BodySet<K::Shape>,
+        first: &RunPlace<S>,
+    ) -> Self {
+        let boxes: Vec<BoundingBox> = set
+            .get(first.body)
+            .and_then(|body| ctx.kernel.face_boxes(body).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|[min, max]| BoundingBox { min, max })
+            .collect();
+        let mut shared = Self {
+            near: vec![None; boxes.len()],
+            boxes,
+        };
+        // The first place cannot conflict with itself.
+        let _ = shared.add(first);
+        shared
+    }
+
+    /// Adds the place's copies; the first face near them and an earlier
+    /// place's copies that one of them may split, with that place's index.
+    fn add<S>(&mut self, place: &RunPlace<S>) -> Result<(), (usize, usize)> {
+        for (f, face) in self.boxes.iter().enumerate() {
+            let near: Vec<&BoundingBox> = place.boxes.iter().filter(|b| meet(b, face)).collect();
+            if near.is_empty() {
+                continue;
+            }
+            let splits = near.iter().any(|b| !stands_inside(b, face));
+            match self.near[f] {
+                None => self.near[f] = Some((place.index, splits)),
+                Some((other, _)) if other == place.index => {}
+                Some((other, others_split)) => {
+                    if splits || others_split {
+                        return Err((f, other));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether a copy's box stands inside a flat face's box: within [`REACH`]
+/// of the face's plane and more than [`REACH`] from its sides across it.
+fn stands_inside(copy: &BoundingBox, face: &BoundingBox) -> bool {
+    let thin = (0..3).find(|i| face.max[*i] - face.min[*i] <= REACH);
+    let Some(across) = thin else {
+        return false;
+    };
+    (0..3)
+        .filter(|i| *i != across)
+        .all(|i| copy.min[i] > face.min[i] + REACH && copy.max[i] < face.max[i] - REACH)
+}
+
+/// A line of the booleans' trace (`MITCAD_BOOLEAN_TRACE`, the kernel's
+/// lines on standard error) about the pattern's runs.
+fn trace_run<K: Kernel>(ctx: &EvalContext<'_, K>, text: impl FnOnce() -> String) {
+    if std::env::var_os("MITCAD_BOOLEAN_TRACE").is_some() {
+        eprintln!("boolean-trace: pattern {} {}", ctx.uid, text());
+    }
+}
+
+/// What an operation does to a body, for the trace.
+fn verb_of(operation: Operation) -> &'static str {
+    match operation {
+        Operation::Join => "joins",
+        Operation::Cut => "cuts",
+        _ => "changes",
+    }
 }
 
 fn check_distance(what: &str, q: u32, value: f64) -> Result<(), String> {

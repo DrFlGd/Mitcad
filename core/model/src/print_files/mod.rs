@@ -468,6 +468,14 @@ pub struct ExportPart<'a> {
     pub placements: usize,
 }
 
+/// An object of an export's build (mitcad#856): its name and its parts
+/// (indices into the export's parts).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportObject<'a> {
+    pub name: &'a str,
+    pub parts: Vec<usize>,
+}
+
 /// What every export shares: the slots and the values all parts share.
 pub(crate) struct Shared<'a> {
     pub dialect: Dialect,
@@ -616,17 +624,19 @@ pub fn purge_matrix(slots: &[&EffectivePrint], overrides: &[PurgeOverride]) -> p
 }
 
 /// Writes the parts' settings for a slicer, with the design's purge
-/// volumes set by hand (mitcad#705).
+/// volumes set by hand (mitcad#705), by the build's `objects` (mitcad#856;
+/// none: one object named `model_name` of every part).
 pub fn export(
     dialect: Dialect,
     model_name: &str,
     parts: &[ExportPart<'_>],
+    objects: &[ExportObject<'_>],
     purge: &[PurgeOverride],
 ) -> ExportOutput {
     let shared = Shared::new(dialect, parts, purge);
     let mut out = match dialect {
         Dialect::BambuStudio | Dialect::OrcaSlicer | Dialect::QidiStudio => {
-            bambu::export(&shared, model_name)
+            bambu::export(&shared, model_name, objects)
         }
         Dialect::PrusaSlicer => prusa::export(&shared),
         Dialect::Cura => cura::export(&shared),

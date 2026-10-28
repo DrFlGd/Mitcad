@@ -99,6 +99,9 @@ named_enum! {
             corner: Option<[f64; 2]>,
             #[serde(default)]
             construction: bool,
+            /// Rounded corners of this radius (mitcad#867).
+            #[serde(default)]
+            radius: Option<ValueInput>,
         },
         "sketch.circle" => Circle {
             sketch: FeatureUid,
@@ -297,6 +300,10 @@ named_enum! {
             driven: bool,
             #[serde(default)]
             text: Option<[f64; 2]>,
+            /// The first driving dimension scales the sketch to itself
+            /// (mitcad#860, `scale.rs`): the application's preference.
+            #[serde(default)]
+            scale_sketch: bool,
         },
         "sketch.set_dimension" => SetDimension {
             sketch: FeatureUid,
@@ -378,10 +385,16 @@ named_enum! {
         },
         "sketch.fillet" => Fillet {
             sketch: FeatureUid,
-            #[serde(with = "mitcad_model::internal::ids::curve_serde")]
-            a: EntityUid,
-            #[serde(with = "mitcad_model::internal::ids::curve_serde")]
-            b: EntityUid,
+            #[serde(default, with = "mitcad_model::sketch::internal::curve_opt_serde")]
+            a: Option<EntityUid>,
+            #[serde(default, with = "mitcad_model::sketch::internal::curve_opt_serde")]
+            b: Option<EntityUid>,
+            /// Several corners at once (mitcad#867): where two of these
+            /// lines end together, and at these corner points.
+            #[serde(default, with = "curves_opt")]
+            curves: Option<Vec<EntityUid>>,
+            #[serde(default, with = "points_opt")]
+            points: Option<Vec<EntityUid>>,
             radius: ValueInput,
         },
         "sketch.chamfer" => Chamfer {
@@ -616,6 +629,15 @@ named_enum! {
             curve: EntityUid,
             at: [f64; 2],
         },
+        // The whole sketch scaled by a factor about a point (mitcad#860,
+        // `scale.rs`).
+        "sketch.scale" => Scale {
+            sketch: FeatureUid,
+            factor: f64,
+            /// A point id or `[x, y]`; the sketch origin when left out.
+            #[serde(default)]
+            center: Option<Value>,
+        },
     }
 }
 
@@ -789,6 +811,24 @@ mod curves_opt {
     }
 }
 
+/// An optional list of point ids: `["p3", "p4"]`.
+mod points_opt {
+    use serde::Deserialize;
+
+    use mitcad_model::ids::EntityUid;
+    use mitcad_model::sketch::internal::point_serde;
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Vec<EntityUid>>, D::Error> {
+        Vec::<String>::deserialize(d)?
+            .iter()
+            .map(|n| point_serde::parse(n).map_err(serde::de::Error::custom))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
+    }
+}
+
 fn point(value: &Value) -> Result<PointInput, String> {
     point_input(value)
 }
@@ -923,8 +963,14 @@ pub(crate) trait SketchOps<K: Kernel> {
 
     /// The `plane_geometry` query: the visible bodies' edges and vertices
     /// in the sketch's plane, in sketch coordinates, each with the `source`,
-    /// `body` and `occurrence` that `sketch.project` takes.
-    fn plane_geometry_json(&self, sketch: FeatureUid) -> Result<Value, ApiError>;
+    /// `body` and `occurrence` that `sketch.project` takes; with
+    /// `out_of_plane` the others too, projected, with `in_plane`, `path`
+    /// and `height` (mitcad#866).
+    fn plane_geometry_json(
+        &self,
+        sketch: FeatureUid,
+        out_of_plane: bool,
+    ) -> Result<Value, ApiError>;
 }
 
 impl<K: Kernel> SketchOps<K> for Document<K> {
@@ -1085,9 +1131,13 @@ impl<K: Kernel> SketchOps<K> for Document<K> {
         Ok(answer)
     }
 
-    fn plane_geometry_json(&self, sketch: FeatureUid) -> Result<Value, ApiError> {
+    fn plane_geometry_json(
+        &self,
+        sketch: FeatureUid,
+        out_of_plane: bool,
+    ) -> Result<Value, ApiError> {
         let items: Vec<Value> = self
-            .plane_geometry(sketch)?
+            .sketch_body_geometry(sketch, out_of_plane)?
             .into_iter()
             .map(|item| {
                 let (kind, geometry) = match &item.shape {
@@ -1095,6 +1145,8 @@ impl<K: Kernel> SketchOps<K> for Document<K> {
                     mitcad_model::PlaneShape::Curve(curve) => {
                         (curve_type(curve), curve_json(curve))
                     }
+                    // An edge seen end on: its projected point (mitcad#866).
+                    mitcad_model::PlaneShape::Point(at) => ("point", json!({"at": at})),
                 };
                 let mut value = json!({
                     "source": item.source.to_string(),
@@ -1104,6 +1156,12 @@ impl<K: Kernel> SketchOps<K> for Document<K> {
                 });
                 if let Some(path) = item.occurrence {
                     value["occurrence"] = json!(OccurrencePath(path).to_string());
+                }
+                // Out of the plane (mitcad#866): where it is, above or below.
+                if let Some(out) = item.out_of_plane {
+                    value["in_plane"] = json!(false);
+                    value["path"] = json!(out.path);
+                    value["height"] = json!(out.height);
                 }
                 value
             })
@@ -1670,6 +1728,7 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                 },
             ),
             C::InsertSplinePoint { sketch, .. } => (*sketch, "Insert Spline Point in {sketch}"),
+            C::Scale { sketch, .. } => (*sketch, "Scale {sketch}"),
             C::Create { .. }
             | C::AddRectangle { .. }
             | C::AddCircle { .. }
@@ -1713,6 +1772,7 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                     center,
                     corner,
                     construction,
+                    radius,
                     ..
                 } => {
                     let m = mode.as_str();
@@ -1736,7 +1796,14 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                             ));
                         }
                     };
-                    *made_ref = curve_list(edit.rectangle(mode, construction)?);
+                    *made_ref = match radius {
+                        Some(radius) => {
+                            let (lines, arcs) =
+                                edit.rounded_rectangle(mode, construction, &radius)?;
+                            curve_list(lines.into_iter().chain(arcs).collect())
+                        }
+                        None => curve_list(edit.rectangle(mode, construction)?),
+                    };
                 }
                 C::Circle {
                     mode,
@@ -2115,6 +2182,10 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                         }));
                     }
                     if let Some(before) = before {
+                        // A Symmetry of circles or arcs whose radii are
+                        // fixed already mirrors their positions only
+                        // (mitcad#865).
+                        edit.fit_symmetric(id, &before);
                         // An older constraint the new one makes redundant
                         // goes in its favour (mitcad#287).
                         let implied = edit.drop_implied(id, &before);
@@ -2137,15 +2208,33 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                     value,
                     driven,
                     text,
+                    scale_sketch,
                     ..
                 } => {
                     let before = edit.redundancy().ok();
+                    // The first driving dimension of a sketch drawn out of
+                    // proportion scales it to itself (mitcad#860): measured
+                    // before it is added.
+                    let first = if scale_sketch && !driven {
+                        edit.first_dimension_measure(&dimension)
+                    } else {
+                        None
+                    };
                     let id = edit.add_dimension(dimension, value.as_ref(), driven, None)?;
                     if let (Some(before), false) = (before, driven) {
                         edit.require_needed(before, &id.to_string())?;
                     }
+                    let scaled = match first {
+                        Some(measured) => edit.scale_to_dimension(id, measured)?,
+                        None => None,
+                    };
+                    if let Some(factor) = scaled {
+                        *joined_ref = Some(json!({"scaled": factor}));
+                    }
                     if let Some(at) = text {
-                        edit.set_text_position(id, at)?;
+                        // Placed on the sketch as it was drawn: scaled with it.
+                        let f = scaled.unwrap_or(1.0);
+                        edit.set_text_position(id, [at[0] * f, at[1] * f])?;
                     }
                 }
                 C::SetDimension {
@@ -2273,10 +2362,33 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                         *joined_ref = Some(json!({"joined": Ref::Point(p)}));
                     }
                 }
-                C::Fillet { a, b, radius, .. } => {
-                    let arc = edit.fillet(a, b, &radius)?;
-                    made_ref.push(Ref::Curve(arc).to_string());
-                }
+                C::Fillet {
+                    a,
+                    b,
+                    curves,
+                    points,
+                    radius,
+                    ..
+                } => match (a, b, curves, points) {
+                    (Some(a), Some(b), None, None) => {
+                        let arc = edit.fillet(a, b, &radius)?;
+                        made_ref.push(Ref::Curve(arc).to_string());
+                    }
+                    (None, None, curves, points) if curves.is_some() || points.is_some() => {
+                        let arcs = edit.fillet_corners(
+                            &curves.unwrap_or_default(),
+                            &points.unwrap_or_default(),
+                            &radius,
+                        )?;
+                        *made_ref = curve_list(arcs);
+                    }
+                    _ => {
+                        return Err(
+                            "a fillet takes \"a\" and \"b\", or \"curves\" and/or \"points\""
+                                .to_owned(),
+                        );
+                    }
+                },
                 C::Chamfer {
                     a,
                     b,
@@ -2491,6 +2603,14 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                 C::InsertSplinePoint { curve, at, .. } => {
                     let p = edit.insert_spline_point(curve, at)?;
                     made_ref.push(Ref::Point(p).to_string());
+                }
+                C::Scale { factor, center, .. } => {
+                    let center = match center.as_ref().map(point).transpose()? {
+                        None => [0.0, 0.0],
+                        Some(PointInput::At(at)) => at,
+                        Some(PointInput::Existing(p)) => edit.at(p)?,
+                    };
+                    edit.scale(factor, center)?;
                 }
                 C::Create { .. }
                 | C::AddRectangle { .. }

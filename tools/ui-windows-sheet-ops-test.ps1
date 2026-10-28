@@ -183,11 +183,13 @@ function Ops-ClickBetween([string]$From, [string]$To, [double]$T) {
 # "Body ... volume a -> b mm3" line logged since the mark.
 function Ops-ExpectVolume([string]$Body, [double]$Expected, [string]$Description) {
   $pattern = "Body \S+ \($([regex]::Escape($Body))\): volume [0-9.]+ -> ([0-9.]+) mm3"
-  for ($i = 0; $i -lt 150; $i++) {
-    $match = Ui-LogLines | Select-Object -Skip $script:UiMark | Select-String -Pattern $pattern | Select-Object -Last 1
+  # Looked for every 50 ms (200 ms before, mitcad#870), up to 30 s.
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $match = Ui-NewLines | Select-String -Pattern $pattern | Select-Object -Last 1
     if ($match) { break }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 30000)
   if (-not $match) { Ui-Fail "${Description}: no volume of $Body logged since the mark" }
   $v = [double]::Parse($match.Matches[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
   if ([Math]::Abs($v - $Expected) -gt 0.01) { Ui-Fail "${Description}: volume $v mm3, expected $Expected" }
@@ -198,11 +200,12 @@ function Ops-ExpectVolume([string]$Body, [double]$Expected, [string]$Description
 # Body1: valid, area <a> mm2" line logged since the mark (two decimals).
 function Ops-ExpectArea([double]$Expected, [string]$Description) {
   $pattern = 'Flat pattern of Body1: valid, area ([0-9.]+) mm2'
-  for ($i = 0; $i -lt 150; $i++) {
-    $match = Ui-LogLines | Select-Object -Skip $script:UiMark | Select-String -Pattern $pattern | Select-Object -Last 1
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    $match = Ui-NewLines | Select-String -Pattern $pattern | Select-Object -Last 1
     if ($match) { break }
-    Start-Sleep -Milliseconds 200
-  }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt 30000)
   if (-not $match) { Ui-Fail "${Description}: no valid flat pattern logged since the mark" }
   $a = [double]::Parse($match.Matches[0].Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
   if ([Math]::Abs($a - $Expected) -gt 0.006) { Ui-Fail "${Description}: area $a mm2, expected $Expected" }

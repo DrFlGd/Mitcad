@@ -56,6 +56,7 @@ impl SketchEdit<'_> {
                 a: Ref::Point(a),
                 b: Ref::Point(b),
                 axis,
+                ..
             } = c.kind
                 && a == b
             {

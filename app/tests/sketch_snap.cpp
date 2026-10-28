@@ -2,9 +2,11 @@
 // The sketch snapper's body targets (mitcad#258): body vertices and the
 // middles of body edges in the sketch plane are found within the pixel
 // tolerances when a tool's switch gives them, never without it, and the
-// sketch's own geometry wins ties against them.
+// sketch's own geometry wins ties against them; those out of the plane
+// (mitcad#866) are read but never snapped to.
 #include "sketch/SketchSnap.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <utility>
@@ -161,10 +163,93 @@ void bodyTargetTests() {
   CHECK(!body.pointAt(QStringLiteral("body:1:start")).has_value());
 }
 
+// Body edges and vertices out of the plane (mitcad#866): read with where
+// they are, counted apart, taken as the points and curves they project to,
+// and never snapped to.
+void outOfPlaneTests() {
+  const auto lifted = [](QJsonObject item, QJsonArray path, double height) {
+    item.insert(QStringLiteral("in_plane"), false);
+    item.insert(QStringLiteral("path"), path);
+    item.insert(QStringLiteral("height"), height);
+    return item;
+  };
+  // A path of one point. MSVC takes QJsonArray{QJsonArray{x, y, z}} for a copy
+  // of the inner array (one element in braces), not a list holding it.
+  QJsonArray onePoint;
+  onePoint.append(QJsonArray{30.0, 0.0, -10.0});
+  // A corner 10 below (30, 0), an edge 10 below from (30, 0) to (30, 10),
+  // and an edge along the normal seen end on at (0, 50).
+  QJsonObject seenEndOn{{QStringLiteral("source"), QStringLiteral("E{g}")},
+                        {QStringLiteral("body"), QStringLiteral("F2.b0")},
+                        {QStringLiteral("kind"), QStringLiteral("point")},
+                        {QStringLiteral("geometry"), QJsonObject{{QStringLiteral("at"), QJsonArray{0.0, 50.0}}}}};
+  BodyGeometry body;
+  body.load(QJsonArray{vertex("V{a}", 10.0, 0.0),
+                       lifted(vertex("V{b}", 30.0, 0.0), onePoint, -10.0),
+                       lifted(line("E{d}", 30.0, 0.0, 30.0, 10.0),
+                              QJsonArray{QJsonArray{30.0, 0.0, -10.0}, QJsonArray{30.0, 10.0, -10.0}}, -10.0),
+                       lifted(seenEndOn, QJsonArray{QJsonArray{0.0, 50.0, -20.0}, QJsonArray{0.0, 50.0, 0.0}}, -10.0),
+                       // Out of the plane without a path: nowhere to pick it.
+                       lifted(vertex("V{h}", 5.0, 5.0), QJsonArray{}, -10.0)},
+            &readLine);
+  CHECK(body.items().size() == 4);
+  CHECK(body.vertexCount() == 1 && body.edgeCount() == 0 && body.outOfPlaneCount() == 3);
+  const BodyItem& corner = body.items()[1];
+  CHECK(!corner.inPlane && corner.isVertex() && corner.isPoint());
+  CHECK(corner.path.size() == 1 && std::abs(corner.height + 10.0) < 1e-12);
+  const BodyItem& edge = body.items()[2];
+  CHECK(!edge.inPlane && !edge.isPoint() && edge.path.size() == 2);
+  CHECK(std::abs(edge.path[1].height + 10.0) < 1e-12 && sameAt(edge.path[1].at, V2{30.0, 10.0}));
+  const BodyItem& endOn = body.items()[3];
+  CHECK(endOn.isPoint() && !endOn.isVertex() && sameAt(endOn.at, V2{0.0, 50.0}));
+  CHECK(endOn.describe() == QStringLiteral("the body edge E{g}"));
+  // Taken as what they project to: the edge seen end on as a point.
+  CHECK(sameAt(*body.pointAt(QStringLiteral("body:3")), V2{0.0, 50.0}));
+  CHECK(body.curve(QStringLiteral("body:3")) == nullptr);
+  CHECK(!body.pointAt(QStringLiteral("body:3:start")).has_value());
+  CHECK(body.curve(QStringLiteral("body:2")) != nullptr);
+  SketchModel view;
+  body.addTo(view);
+  // (By the lists: this test links no model lookups.)
+  CHECK(std::any_of(view.points.begin(), view.points.end(),
+                    [](const PointData& p) { return p.id == QStringLiteral("body:3"); }));
+  CHECK(std::any_of(view.curves.begin(), view.curves.end(),
+                    [](const CurveData& c) { return c.id == QStringLiteral("body:2"); }));
+
+  // The snapper takes only what lies in the plane.
+  SketchModel model;
+  SnapSettings settings;
+  settings.model = &model;
+  settings.toScreen = screenOf;
+  settings.grid = false;
+  settings.body = &body;
+  CHECK(snapAt(settings, V2{30.2, 0.0}).kind == Snap::Kind::None);
+  CHECK(snapAt(settings, V2{30.2, 5.0}).kind == Snap::Kind::None);
+  CHECK(snapAt(settings, V2{0.0, 50.2}).kind == Snap::Kind::None);
+  CHECK(snapAt(settings, V2{10.2, 0.0}).kind == Snap::Kind::BodyVertex);
+
+  // A projection the sketch has at the place an item projects to, of
+  // another source: what a projection of the item joins (projectedLike).
+  SketchModel projected;
+  PointData at;
+  at.id = QStringLiteral("p7");
+  at.at = V2{30.0, 0.0};
+  projected.points.push_back(at);
+  ProjectionData projection;
+  projection.source = QStringLiteral("V{other}");
+  projection.body = QStringLiteral("F2.b0");
+  projection.entities << QStringLiteral("p7");
+  projected.projections.push_back(projection);
+  CHECK(!existingProjection(projected, corner).has_value());
+  const auto like = projectedLike(projected, corner);
+  CHECK(like.has_value() && like->point == QStringLiteral("p7"));
+}
+
 } // namespace
 
 int sketchSnapTests() {
   failures = 0;
   bodyTargetTests();
+  outOfPlaneTests();
   return failures;
 }

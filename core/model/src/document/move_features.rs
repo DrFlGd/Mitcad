@@ -36,12 +36,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::{DocState, Document, ModelError, invalid};
+use crate::features::extrude_scope::{ComponentMove, MovedFeature};
 use crate::features::{FeatureDef, JointOrigin, OccurrencePath, References, SketchPlane};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::joints::path_component;
 use crate::kernel::Kernel;
 use crate::links::OccurrenceLink;
-use crate::recompute::{Change, FeatureStatus, Read};
+use crate::recompute::{ChangeHead, FeatureStatus, Read};
 use crate::transform::Transform;
 
 #[path = "move_destination.rs"]
@@ -207,8 +208,8 @@ impl<K: Kernel> Document<K> {
         let mut known: BTreeSet<BodyUid> = self.result.owners.keys().copied().collect();
         for r in &self.result.results {
             if let Some(output) = &r.output {
-                for change in &output.changes {
-                    if let Change::Set(uid, _) = change {
+                for change in output.changes.heads() {
+                    if let ChangeHead::Set(uid, _) = change {
                         known.insert(*uid);
                     }
                 }
@@ -242,9 +243,9 @@ impl<K: Kernel> Document<K> {
             match self.feature_result(entry.uid) {
                 Some(r) if r.status == FeatureStatus::Ok && r.output.is_some() => {
                     let output = r.output.as_ref().expect("checked");
-                    for change in &output.changes {
+                    for change in output.changes.heads() {
                         match change {
-                            Change::Set(uid, _) | Change::Remove(uid) => {
+                            ChangeHead::Set(uid, _) | ChangeHead::Remove(uid) => {
                                 touched.insert(*uid);
                             }
                         }
@@ -662,6 +663,21 @@ impl<K: Kernel> Document<K> {
             .collect();
         let everything = plan.everything;
         let label_source = self.state.assembly.name(source);
+        // Whether the source still has bodies after each group went.
+        let mut staying: BTreeSet<BodyUid> = self
+            .result
+            .owners
+            .iter()
+            .filter(|(_, c)| **c == source)
+            .map(|(b, _)| *b)
+            .collect();
+        let keeps: Vec<bool> = groups
+            .iter()
+            .map(|g| {
+                staying.retain(|b| !g.bodies.contains(b));
+                !staying.is_empty()
+            })
+            .collect();
         self.apply_move(|state| {
             let mut moved = Vec::with_capacity(groups.len());
             for (i, group) in groups.iter().enumerate() {
@@ -687,6 +703,21 @@ impl<K: Kernel> Document<K> {
                     .expect("placed")
                     .grounded = everything;
                 set_component(state, &group.features, made);
+                follow_cut_scopes(
+                    state,
+                    &group.features,
+                    &ComponentMove {
+                        from: source,
+                        to: made,
+                        path: &|p: &OccurrencePath| {
+                            let mut p = p.clone();
+                            p.0.push(occurrence);
+                            p
+                        },
+                        bodies: &group.bodies,
+                        keeps: keeps[i],
+                    },
+                );
                 moved.push(MovedGroup {
                     component: made,
                     occurrence,
@@ -808,8 +839,24 @@ impl<K: Kernel> Document<K> {
         let features = usage.ordered(&going);
         let moved_bodies: Vec<BodyUid> = def.bodies.clone();
         let label = format!("Move History into {}", a.name(made));
+        let keeps = !usage.owned.is_empty();
         self.apply_move(|state| {
             set_component(state, &features, made);
+            follow_cut_scopes(
+                state,
+                &features,
+                &ComponentMove {
+                    from: source,
+                    to: made,
+                    path: &|p: &OccurrencePath| {
+                        let mut p = p.clone();
+                        p.0.push(occurrence);
+                        p
+                    },
+                    bodies: &moved_bodies,
+                    keeps,
+                },
+            );
             follow_references(state, source, occurrence, &going, &moved_bodies, false);
             state.remove_features(&BTreeSet::from([feature]));
             Ok((label, (made, features.clone())))
@@ -905,6 +952,35 @@ fn set_component(state: &mut DocState, features: &[FeatureUid], component: Compo
     for f in &mut state.features {
         if features.contains(&f.uid) {
             Arc::make_mut(f).component = component;
+        }
+    }
+}
+
+/// The extrusions' cut scopes follow `moved`, features of `m.from` that
+/// went into `m.to` (mitcad#859): a moved extrusion's context and its
+/// targets in `m.from`, and every scope's body targets of the bodies that
+/// went. Saved scopes of extrusions that do not cut follow too, so that
+/// the extrusion can be made a cut again. See `CutScope::follow_move`.
+fn follow_cut_scopes(state: &mut DocState, moved: &[FeatureUid], m: &ComponentMove<'_>) {
+    for entry in &mut state.features {
+        let FeatureDef::Extrude(extrude) = &entry.def else {
+            continue;
+        };
+        let Some(scope) = &extrude.cut_scope else {
+            continue;
+        };
+        let feature = if moved.contains(&entry.uid) {
+            MovedFeature::Moved
+        } else if entry.component == m.from {
+            MovedFeature::StaysInSource
+        } else {
+            MovedFeature::Elsewhere
+        };
+        let mut scope = scope.clone();
+        if scope.follow_move(m, feature)
+            && let FeatureDef::Extrude(extrude) = &mut Arc::make_mut(entry).def
+        {
+            extrude.cut_scope = Some(scope);
         }
     }
 }

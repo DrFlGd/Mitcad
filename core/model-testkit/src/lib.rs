@@ -260,6 +260,10 @@ pub struct MockKernel {
     /// forks did on which threads, and extrusions that wait for one
     /// another ([`WorkerLog`]); forks share it.
     pub workers: RefCell<Option<Arc<WorkerLog>>>,
+    /// Results found in the result store keep their bodies' shapes packed
+    /// until something reads them (`shape_unpacker`, mitcad#858);
+    /// otherwise they are read whole (`shape_from_bytes`, counted).
+    pub lazy: Cell<bool>,
 }
 
 /// What a mock kernel and its forks did, and on which threads (the
@@ -2019,6 +2023,19 @@ impl Kernel for MockKernel {
         Ok(out)
     }
 
+    /// With `box_faces`: each segment's [`Kernel::segment_crossings`] (a cut
+    /// sheet's material behind its outline, mitcad#853).
+    fn segments_crossings(
+        &self,
+        shape: &MockShape,
+        segments: &[([f64; 3], [f64; 3])],
+    ) -> Result<Vec<Vec<(f64, bool)>>, KernelError> {
+        segments
+            .iter()
+            .map(|(from, to)| self.segment_crossings(shape, *from, *to))
+            .collect()
+    }
+
     /// Side faces of closed curves and hole walls are cylinders along z,
     /// as wide as the bounds; hole walls are internal.
     fn face_cylinder(&self, shape: &MockShape, face: &FaceName) -> Result<Cylinder, KernelError> {
@@ -2562,6 +2579,49 @@ impl Kernel for MockKernel {
     /// A kilobyte a face, so that tests can reckon with the memory budget.
     fn shape_memory(&self, shape: &MockShape) -> u64 {
         1000 * shape.faces.len() as u64
+    }
+
+    // Warm opens (mitcad#858): a shape's "display meshes" are its face
+    // names, given back only to a shape of the same faces; stored shapes
+    // stay packed only with `lazy`.
+
+    fn display_mesh_bytes(&self, shape: &MockShape) -> Result<Vec<u8>, KernelError> {
+        self.call("display_mesh_bytes")?;
+        Ok(serde_json::to_vec(&shape.faces).expect("face names serialize"))
+    }
+
+    fn restore_display_mesh(&self, shape: &MockShape, bytes: &[u8]) -> Result<usize, KernelError> {
+        self.call("restore_display_mesh")?;
+        let faces: Vec<FaceName> = serde_json::from_slice(bytes)
+            .map_err(|e| KernelError::failed(format!("not mock display meshes: {e}")))?;
+        if faces != shape.faces {
+            return Err(KernelError::failed(
+                "the display meshes are another shape's",
+            ));
+        }
+        Ok(faces.len())
+    }
+
+    fn shape_unpacker(
+        &self,
+    ) -> Result<mitcad_model_base::kernel::ShapeUnpacker<MockShape>, KernelError> {
+        if !self.lazy.get() {
+            return Err(KernelError::Unsupported("unpacking stored shapes later"));
+        }
+        Ok(mitcad_model_base::kernel::ShapeUnpacker {
+            unpack: |bytes| {
+                serde_json::from_slice::<StoredMock>(bytes)
+                    .map(StoredMock::shape)
+                    .map_err(|e| KernelError::failed(format!("not a stored mock shape: {e}")))
+            },
+            stand_in: || MockShape {
+                history: "packed".to_owned(),
+                faces: Vec::new(),
+                edges: Vec::new(),
+                bounds: None,
+                parts: Vec::new(),
+            },
+        })
     }
 
     // Cancellation inside an operation (P7e).

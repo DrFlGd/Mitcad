@@ -78,6 +78,8 @@ pub mod move_faces;
 pub mod face_extrude;
 // A planar face of a body revolved as a profile (mitcad#539).
 pub mod face_revolve;
+// Display meshes kept in the result store (mitcad#858).
+pub mod display_mesh;
 
 use std::sync::Arc;
 
@@ -2494,6 +2496,33 @@ impl Kernel for OcctKernel {
     fn worker_thread<R>(&self, f: impl FnOnce() -> R) -> R {
         exchange::ffi::catch_occt_crashes();
         f()
+    }
+
+    // Warm opens from the result store (mitcad#858; display_mesh.rs).
+
+    fn display_mesh_bytes(&self, shape: &Self::Shape) -> Result<Vec<u8>, KernelError> {
+        let bytes = display_mesh::ffi::display_mesh_bytes(occt(shape)?).map_err(failed)?;
+        Ok(bytes.as_bytes().to_vec())
+    }
+
+    fn restore_display_mesh(
+        &self,
+        shape: &Self::Shape,
+        bytes: &[u8],
+    ) -> Result<usize, KernelError> {
+        let faces = display_mesh::ffi::restore_display_mesh(occt(shape)?, bytes).map_err(failed)?;
+        Ok(usize::try_from(faces).unwrap_or(usize::MAX))
+    }
+
+    fn shape_unpacker(
+        &self,
+    ) -> Result<mitcad_model::kernel::ShapeUnpacker<Self::Shape>, KernelError> {
+        Ok(mitcad_model::kernel::ShapeUnpacker {
+            unpack: |bytes| persist::ffi::shape_from_bytes(bytes).map_err(failed),
+            // Never read: a body's state holds it only until the shape is
+            // made (and the kernel's operations refuse a null shape).
+            stand_in: SharedPtr::null,
+        })
     }
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands/ExtrudeCommands.cpp app/commands/CommandSupport.cpp
+# check-all sources: app/commands/ExtrudeCommands.cpp app/commands/CommandSupport.cpp app/commands/ProfilePicks.cpp
 # check-all sources: app/framework/Command.hpp app/framework/CommandSession.cpp app/MainWindowContextMenu.cpp
 # check-all sources: core/model/src/features/extrude.rs core/ffi/src/kernel/face_extrude.rs
 # check-all sources: core/cpp/bridge/face_extrude.cpp geometry/src/face_extrude.cpp tools/cli
@@ -14,6 +14,9 @@
 #   2. A 20 mm cube from a sketch (Body1, F2.b0), a sphere beside it
 #      (F3.b0) and an unused square sketch (Sketch3, F4), whose square
 #      would be the newest profile:
+#      - E with nothing selected: the square is the profile; a click on
+#        the cube's side is not taken beside it (mitcad#868), the status
+#        bar says what to click instead, no error in the panel;
 #      - the cube's side x = 20 selected, E: the side is the profile, not
 #        the square; New Body chosen by hand, 5 mm with a taper of 5
 #        degrees (mitcad#547): a new body of 2000 + 1000 t + 500 t^2 / 3
@@ -137,6 +140,20 @@ echo "=== 2. Faces selected before Extrude, beside an unused sketch"
 ui_start_app --open "$WORK/block.mitcad"
 ui_step "fit (F6)"                         ui_key F6
 ui_expect_log "Bodies shown: F2.b0" "the cube shown"
+
+echo "--- The square's profile in Profiles, a face clicked: not taken, a hint instead (mitcad#868)"
+ui_mark
+ui_step "extrude (E), nothing selected"   ui_key e
+ui_expect_new "Extrude Profiles: 1 profile" "the unused square is the profile"
+ui_expect_new "Pick refused face F2.b0/$RIGHT at " "the cube's side is not taken beside it"
+ui_mark
+ui_step "click the side x = 20"            ui_click_pick "refused face F2.b0/$RIGHT"
+ui_expect_new "Extrude Profiles: face $RIGHT of F2.b0 not taken: Profiles holds sketch profiles" \
+  "the click is not taken; the status bar says what to click"
+no_new "Panel Extrude error" "no error in the panel"
+no_new "Extrude Profiles: 2 " "Profiles still hold the square alone"
+ui_step "cancel (Esc)"                     ui_key Escape
+ui_expect_new "Command Extrude cancelled" "cancelled"
 
 echo "--- The side selected, E: New Body by hand"
 pick_places

@@ -1313,22 +1313,34 @@ void test_thread_faces_close_together_in_order() {
 
 } // namespace
 
-void thread_tests() {
+// The suite's parts thread.1-thread.3 (test_main.cpp), each a ctest of its
+// own so that they run beside each other (mitcad#870). Every test is in
+// exactly one part; the slow ones (the large body, the taper pipe threads,
+// the rounding along a thread, the parallel tools) are in different parts.
+// guarded() prints the time of each test of a second or more, for moving a
+// line when the parts drift apart.
+void thread_tests_1() {
   guarded("test_bolt", test_bolt);
-  guarded("test_taper_pipe_threads", test_taper_pipe_threads);
   guarded("test_bolt_profiles", test_bolt_profiles);
   guarded("test_shoulder_and_partial", test_shoulder_and_partial);
+  guarded("test_large_body", test_large_body);
+  guarded("test_thread_pieces_join_smoothly", test_thread_pieces_join_smoothly);
+}
+
+void thread_tests_2() {
+  guarded("test_taper_pipe_threads", test_taper_pipe_threads);
   guarded("test_tapped_holes", test_tapped_holes);
+  guarded("test_sized_chamfered_end", test_sized_chamfered_end);
+  guarded("test_rounding_along_a_thread_keeps_its_pieces", test_rounding_along_a_thread_keeps_its_pieces);
+  guarded("test_thread_faces_close_together_in_order", test_thread_faces_close_together_in_order);
+}
+
+void thread_tests_3() {
   guarded("test_bolt_clearance", test_bolt_clearance);
   guarded("test_hole_clearance", test_hole_clearance);
   guarded("test_end_chamfers", test_end_chamfers);
-  guarded("test_sized_chamfered_end", test_sized_chamfered_end);
-  guarded("test_large_body", test_large_body);
   guarded("test_pieces_on_screw_surfaces_and_legacy_names", test_pieces_on_screw_surfaces_and_legacy_names);
-  guarded("test_thread_pieces_join_smoothly", test_thread_pieces_join_smoothly);
-  guarded("test_rounding_along_a_thread_keeps_its_pieces", test_rounding_along_a_thread_keeps_its_pieces);
   guarded("test_thread_tools_in_parallel", test_thread_tools_in_parallel);
-  guarded("test_thread_faces_close_together_in_order", test_thread_faces_close_together_in_order);
 }
 
 } // namespace test

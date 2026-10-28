@@ -116,6 +116,9 @@ ui_init() {
   export MITCAD_LOG_TYPED_TEXT=1
   # An update banner can move the view between a logged pick and its click.
   export MITCAD_NO_UPDATE_CHECK=1
+  # The first dimension of a drawn sketch scales nothing (mitcad#860), as in
+  # ui-test-lib.sh.
+  export MITCAD_SKETCH_FIRST_DIMENSION_SCALE=0
   # Git's configuration of our own (empty), as in ui-test-lib.sh.
   : > "$UI_ROOT/gitconfig"
   export GIT_CONFIG_GLOBAL=$UI_ROOT/gitconfig

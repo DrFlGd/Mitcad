@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::{BodyChange, EvalContext, FeatureEntry, Operation};
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::{BooleanOp, Kernel};
-use crate::recompute::{Change, FeatureStatus, Read};
+use crate::recompute::{Change, ChangeHead, FeatureStatus, Read};
 
 /// A feature's changes of bodies: each body it set with its shape, each
 /// body it removed with None ([`EvalContext::feature_body_changes`]).
@@ -294,11 +294,13 @@ impl<K: Kernel> EvalContext<'_, K> {
         match (result.map(|r| &r.status), output) {
             (Some(FeatureStatus::Suppressed), _) => Err(format!("{name} is suppressed")),
             (Some(FeatureStatus::Failed(_)), _) => Err(format!("{name} failed")),
+            // (Without unpacking restored shapes, mitcad#858.)
             (_, Some(output)) => Ok(output
                 .changes
+                .heads()
                 .iter()
                 .map(|change| match change {
-                    Change::Set(body, _) | Change::Remove(body) => *body,
+                    ChangeHead::Set(body, _) | ChangeHead::Remove(body) => *body,
                 })
                 .collect()),
             _ => Err(format!("{name} has no result")),

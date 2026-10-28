@@ -2,14 +2,15 @@
 wait-idle
 window-resize 1400 990
 command view.fit
-# Explicit Operation wins for the remainder of this edit.
+# An edit keeps its stored operation (mitcad#868); a hand-picked Operation
+# or a cleared Local bodies is what changes it.
 mark
 dblclick-logged '^Timeline Extrude1 at '
-expect-log 'Extrude: stored operation matches automatic choice; editing follows geometry'
+expect-log 'Extrude: editing keeps the stored operation'
 mark
 click-logged '^Panel Extrude input operation at '
 key Home Return
-expect-log 'Extrude: operation chosen by hand'
+expect-log 'Extrude: Operation = New Body'
 focus-main
 mark
 focus-widget input_distance
@@ -23,10 +24,9 @@ expect-log 'Command Extrude cancelled'
 # The real Local bodies selector's adjacent clear button changes Objects.
 mark
 dblclick-logged '^Timeline Extrude1 at '
-expect-log 'Extrude: stored operation matches automatic choice; editing follows geometry'
+expect-log 'Extrude: editing keeps the stored operation'
 mark
 button '^(✕|Clear the selection)$' clear_objects
-expect-log 'Extrude: operation chosen by hand'
 expect-log '^Extrude Local bodies: nothing$'
 focus-main
 mark

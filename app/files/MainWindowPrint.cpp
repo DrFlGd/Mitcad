@@ -91,8 +91,40 @@ struct PrintPanel {
   Slicer other;          // one chosen by hand (Other program...)
   QString previous;      // the Slicer choice before Other program...
   bool selected = false; // the bodies came from the selection
+  QStringList whole;     // the occurrences selected as components (mitcad#856)
+  // The print bed faces chosen for 3MF pieces with several, and the piece
+  // asked about now (mitcad#857): until the panel closes.
+  PrintBedChoices bedFaces;
   std::shared_ptr<PrintImport> imported = std::make_shared<PrintImport>();
 };
+
+// The 3MF export's `occurrences` (mitcad#856): each body's placements
+// picked, printPieces' rule (a body shown once: an empty list, all of it).
+QJsonObject exportOccurrences(const QVector<PrintPiece>& pieces) {
+  QJsonObject occurrences;
+  for (const PrintPiece& piece : pieces) {
+    QJsonArray paths = occurrences.value(piece.body).toArray();
+    if (!piece.occurrence.isEmpty()) {
+      paths.append(piece.occurrence);
+    }
+    occurrences.insert(piece.body, paths);
+  }
+  return occurrences;
+}
+
+// The occurrences of `whole` that still hold a body picked: sent whole.
+QJsonArray sentWhole(const QStringList& whole, const Selection& chosen) {
+  QJsonArray sent;
+  for (const QString& occurrence : whole) {
+    const bool holds = std::any_of(chosen.begin(), chosen.end(), [&occurrence](const SelectionItem& item) {
+      return item.occurrence == occurrence || item.occurrence.startsWith(occurrence + QLatin1Char('/'));
+    });
+    if (holds && !sent.contains(occurrence)) {
+      sent.append(occurrence);
+    }
+  }
+  return sent;
+}
 
 // The bodies the panel prints, each once, in their order (uids).
 QStringList printedBodies(const CommandState& state) {
@@ -399,18 +431,131 @@ CommandDef MainWindow::print3dCommand() {
       return QJsonObject();
     }
   };
+  // The print bed face of a piece with several (mitcad#857): which of the
+  // faces asked about a face picked in the view is (by its body, its
+  // occurrence and the faces the stored name finds), -1 for none.
+  const auto askedFace = [this, panel](const SelectionItem& item) {
+    const QVector<PrintBedFace>& faces = panel->bedFaces.asking.faces;
+    for (int i = 0; i < faces.size(); ++i) {
+      const PrintBedFace& face = faces[i];
+      if (item.kind == SelectKind::Face && item.owner == face.body && item.occurrence == face.occurrence &&
+          isPrintBedFace(item, m_snapshot.bodies.value(face.body).printBedFaces, bodyShape(face.body))) {
+        return i;
+      }
+    }
+    return -1;
+  };
+  // A face asked about as the view's item, by the name the body's face has
+  // now (the marks, Tab's picks).
+  const auto faceItem = [this](const PrintBedFace& face) {
+    const QString name = m_snapshot.bodies.value(face.body).printBedFaces.value(0, face.face);
+    return SelectionItem{SelectKind::Face, face.body, name, QStringLiteral("plane"), face.occurrence};
+  };
+  // The answer: the face (none: as assembled) remembered for the piece
+  // until the panel closes.
+  const auto remember = [panel](const PrintBedFace& face) {
+    PrintBedChoices& bed = panel->bedFaces;
+    if (bed.asking.isEmpty()) {
+      return;
+    }
+    const QString piece = bed.asking.piece.isEmpty() ? QStringLiteral("the file") : bed.asking.piece;
+    bed.chosen.insert(bed.asking.key, face);
+    bed.asking = PrintBedAsk();
+    bed.hint.clear();
+    qInfo().noquote() << (face.isEmpty()
+                              ? QStringLiteral("3D Print bed face of %1: kept as assembled").arg(piece)
+                              : QStringLiteral("3D Print bed face of %1: %2").arg(piece, face.describe()));
+  };
+  // Then Send again, which now sends.
+  const auto answer = [this, remember](const PrintBedFace& face) {
+    remember(face);
+    TestSync::singleShot(0, this, [this] { confirm(); });
+  };
+  // The status bar while a face is asked for (the question, a face under
+  // the mouse, a click on another face), logged as it changes.
+  const auto hint = [this, panel](const QString& text) {
+    if (text == panel->bedFaces.hint) {
+      return;
+    }
+    panel->bedFaces.hint = text;
+    showHint(text);
+    qDebug().noquote() << QStringLiteral("3D Print hint: %1").arg(text);
+  };
+  // Asked no more once what is sent changes.
+  const auto askNoMore = [panel](CommandState&, const CommandContext&) {
+    panel->bedFaces.asking = PrintBedAsk();
+    panel->bedFaces.hint.clear();
+  };
+  const auto asking = [panel](const CommandState&) { return !panel->bedFaces.asking.isEmpty(); };
   def.inputs = {
       // Sheet and empty bodies cannot be picked, and are not sent.
       selectionInput(QStringLiteral("bodies"), tr("Bodies"), SelectKind::Body, 1, 0)
-          .withAccepts([this](const SelectionItem& item) { return printable(bodyShape(item.owner)); }),
+          .withAccepts([this](const SelectionItem& item) { return printable(bodyShape(item.owner)); })
+          .withOnChange(askNoMore),
+      // The question while Send asks for a print bed face (mitcad#857
+      // review): in the panel's own text, naming the piece and the count,
+      // so that it is clear that nothing was sent yet.
+      noteInput(
+          QStringLiteral("bed_question"),
+          [panel](const CommandState&) {
+            const PrintBedAsk& ask = panel->bedFaces.asking;
+            return ask.isEmpty() ? InputNote() : InputNote{printBedQuestion(ask), {}, {}};
+          },
+          [](int, const CommandState&, const CommandContext&) {})
+          .withVisible(asking),
+      // The print bed face of a piece with several (mitcad#857): only while
+      // Send asks for it, and then needed (Select, Send disabled). A click
+      // on one of the faces highlighted in the bed face's green (the marks)
+      // chooses it and sends; a click elsewhere picks nothing and says so.
+      // Tab picks the faces in turn (drawn in the input's blue instead of
+      // the green), Enter sends on the one picked.
+      selectionInput(QStringLiteral("bed_face"), tr("Bed face"), SelectKind::Face, 1, 1)
+          .withVisible(asking)
+          .withAccepts([askedFace](const SelectionItem& item) { return askedFace(item) >= 0; })
+          .withColor(QColor(0x1f, 0x7a, 0xff))
+          .withOnPick([panel, askedFace, answer](const SelectionItem& item, CommandState&, const CommandContext&) {
+            const int index = askedFace(item);
+            if (index >= 0) {
+              answer(panel->bedFaces.asking.faces.value(index));
+            }
+          })
+          .withTabPicks([panel, faceItem](const CommandState&) {
+            Selection items;
+            for (const PrintBedFace& face : std::as_const(panel->bedFaces.asking.faces)) {
+              items.append(faceItem(face));
+            }
+            return items;
+          })
+          .withRefusedHint([panel](const SelectionItem&, const CommandState&) {
+            if (panel->bedFaces.asking.isEmpty()) {
+              return QString();
+            }
+            // Shown by the session; the hover puts the question back.
+            panel->bedFaces.hint = printBedRefused();
+            return panel->bedFaces.hint;
+          })
+          .withItemsText([panel, askedFace](const Selection& picked, const CommandState&, const CommandContext&) {
+            const int index = picked.isEmpty() ? -1 : askedFace(picked.first());
+            const PrintBedAsk& ask = panel->bedFaces.asking;
+            return index >= 0 ? printBedHover(ask, ask.faces.value(index)) : QString();
+          }),
+      // Send as assembled (mitcad#857 review: "Keep as assembled" read as a
+      // setting), beside the field: the piece as assembled, sent.
+      noteInput(
+          QStringLiteral("bed_assembled"),
+          [](const CommandState&) { return InputNote{QString(), {tr("Send as assembled")}, {}}; },
+          [answer](int, const CommandState&, const CommandContext&) { answer(PrintBedFace()); })
+          .withVisible(asking)
+          .withBesidePrevious(),
       // Short values, no rules in tooltips (mitcad#655). The format is
       // remembered as soon as it is chosen; 3MF the first time.
       choiceInput(QStringLiteral("format"), tr("Format"),
                   {{QStringLiteral("stl"), tr("STL")}, {QStringLiteral("3mf"), tr("3MF")}}, QStringLiteral("3mf"))
-          .withOnChange([](CommandState& state, const CommandContext&) {
+          .withOnChange([askNoMore](CommandState& state, const CommandContext& context) {
             PrintSettings settings = PrintSettings::load();
             settings.format = state.choice(QStringLiteral("format"));
             settings.save();
+            askNoMore(state, context);
           }),
       // Import from slicer… first (mitcad#655): it fills Printer, Process and
       // Materials; with the import's one short line
@@ -623,11 +768,62 @@ CommandDef MainWindow::print3dCommand() {
       }
     }
   };
+  // The faces asked about, in the bed face's green on every occurrence
+  // (mitcad#857), by the names the body's faces have now; the one Tab
+  // picked is drawn as the Bed face's pick instead.
+  def.marks = [panel, faceItem, askedFace](const CommandState& state) {
+    const Selection& picked = state.items(QStringLiteral("bed_face"));
+    const int current = picked.isEmpty() ? -1 : askedFace(picked.first());
+    std::vector<std::pair<SelectionItem, QColor>> marks;
+    const QVector<PrintBedFace>& faces = panel->bedFaces.asking.faces;
+    for (int i = 0; i < faces.size(); ++i) {
+      if (i != current) {
+        marks.emplace_back(faceItem(faces[i]), printBedColor());
+      }
+    }
+    return marks;
+  };
+  // A face to choose under the mouse (mitcad#857 review): its body in the
+  // status bar ("Tall: print bed face"); off them the question again.
+  def.hover = [panel, askedFace, hint](const SelectionItem& item, CommandState&, const CommandContext&) {
+    const PrintBedAsk& ask = panel->bedFaces.asking;
+    if (ask.isEmpty()) {
+      return false;
+    }
+    const int index = item.isValid() ? askedFace(item) : -1;
+    hint(index >= 0 ? printBedHover(ask, ask.faces.value(index)) : printBedQuestion(ask));
+    return false;
+  };
+  // Esc while a face is asked for ends the question (mitcad#857 review:
+  // Esc cancels everywhere else): nothing is sent, nothing remembered, the
+  // panel stays; the next Esc cancels it. Send as assembled sends the piece
+  // as assembled.
+  def.escape = [panel](CommandState&, const CommandContext&) {
+    PrintBedChoices& bed = panel->bedFaces;
+    if (bed.asking.isEmpty()) {
+      return false;
+    }
+    qInfo().noquote() << QStringLiteral("3D Print bed face of %1: not asked any more (Esc)")
+                             .arg(bed.asking.piece.isEmpty() ? QStringLiteral("the file") : bed.asking.piece);
+    bed.asking = PrintBedAsk();
+    bed.hint.clear();
+    return true;
+  };
+  // A question left open goes with the panel: the next panel starts
+  // without it (its rows hidden, nothing needed).
+  def.ended = [panel](bool) { panel->bedFaces = PrintBedChoices(); };
   // What the selection stands for (faces, edges and vertices their bodies,
   // as Export takes it; an occurrence the bodies shown in it), else every
   // visible body.
   def.preselect = [this, panel](const Selection& before, CommandState& state, const CommandContext&) {
     const Selection start = printStartBodies(before, queryArray(QStringLiteral("instances")), &panel->selected);
+    // Components selected: each sent whole, as assembled (mitcad#856).
+    panel->whole.clear();
+    for (const SelectionItem& item : before) {
+      if (item.kind == SelectKind::Component && !item.occurrence.isEmpty() && !panel->whole.contains(item.occurrence)) {
+        panel->whole << item.occurrence;
+      }
+    }
     Selection bodies;
     QStringList leftOut;
     QStringList seen;
@@ -651,8 +847,10 @@ CommandDef MainWindow::print3dCommand() {
   };
   // The choices of the last send (the settings), and the slicers there are.
   def.init = [this, panel, chosenKey, askChanges](CommandState& state, const CommandContext& context) {
-    // The last import's line is the last panel's (mitcad#655): gone now.
+    // The last import's line is the last panel's (mitcad#655): gone now;
+    // so are the print bed faces chosen (mitcad#857).
     panel->imported->summary = PrintImportSummary();
+    panel->bedFaces = PrintBedChoices();
     const PrintSettings settings = PrintSettings::load();
     panel->found = findSlicers();
     panel->saved = settings.slicer;
@@ -701,11 +899,23 @@ CommandDef MainWindow::print3dCommand() {
     }
     return Built::of(QJsonObject());
   };
-  def.accept = [this](const CommandState& state, const CommandContext&) { return sendToSlicer(state); };
+  def.accept = [this, panel, askedFace, remember](const CommandState& state, const CommandContext&) {
+    // Send while a face is asked for: the face Tab picked (mitcad#857
+    // review), else nothing yet (Send is disabled until then).
+    if (!panel->bedFaces.asking.isEmpty()) {
+      const Selection& picked = state.items(QStringLiteral("bed_face"));
+      const int index = picked.isEmpty() ? -1 : askedFace(picked.first());
+      if (index < 0) {
+        return false;
+      }
+      remember(panel->bedFaces.asking.faces.value(index));
+    }
+    return sendToSlicer(state, panel->whole, &panel->bedFaces);
+  };
   return def;
 }
 
-bool MainWindow::sendToSlicer(const CommandState& state) {
+bool MainWindow::sendToSlicer(const CommandState& state, const QStringList& whole, PrintBedChoices* bedFaces) {
   // Each body once, in the order picked; the placements picked decide the
   // STL files of a body shown more than once.
   const Selection& chosen = state.items(QStringLiteral("bodies"));
@@ -750,27 +960,100 @@ bool MainWindow::sendToSlicer(const CommandState& state) {
         showHint(message);
       }
     });
+    // The last line, for UI tests (mitcad#857 review: it names a face
+    // chosen).
+    qInfo().noquote() << QStringLiteral("3D Print last line: %1").arg(message);
   };
 
-  // A folder of the design's own in the temporary folder, emptied first.
   const QString design = m_filePath.isEmpty() ? documentName() : QFileInfo(m_filePath).completeBaseName();
+  const QJsonValue refinement =
+      refinementChoice == QStringLiteral("custom")
+          ? QJsonValue(QJsonObject{{QStringLiteral("deviation"), deviation}, {QStringLiteral("angle"), angle}})
+          : QJsonValue(refinementChoice);
+  // What is printed: each body once, and of a body shown more than once the
+  // placements picked, all when none is (mitcad#17, mitcad#234); 3MF sends
+  // them as STL does (mitcad#856).
+  const QVector<PrintPiece> pieces = printPieces(
+      sent, names,
+      query({{QStringLiteral("query"), QStringLiteral("instances")}, {QStringLiteral("hidden"), true}}).toArray(),
+      chosen);
+  // One 3MF object with a part per body, in the colours shown; of the
+  // placements picked, those of bodies with print bed faces each an object
+  // on its face when there are several, and a component selected one
+  // object as assembled (mitcad#856).
+  const QJsonArray sentWholeOccurrences = sentWhole(whole, chosen);
+  const auto threeMfExport = [this, &sent, &refinement, &pieces, &sentWholeOccurrences](const QString& path) {
+    QJsonObject command = exportCommand(path, QStringLiteral("3mf"), sent, refinement);
+    command.insert(QStringLiteral("colors"), appearanceColors(sent));
+    command.insert(QStringLiteral("occurrences"), exportOccurrences(pieces));
+    if (!sentWholeOccurrences.isEmpty()) {
+      command.insert(QStringLiteral("whole"), sentWholeOccurrences);
+    }
+    return command;
+  };
+  // A piece kept as assembled with two or more print bed faces (mitcad#857):
+  // the face chosen for it while the panel is open, else asked for before
+  // any file is written (the export's plan; the panel's Bed face, the faces
+  // highlighted, the message line), and Send waits for the answer.
+  QJsonArray bedFaceChoices;
+  QStringList chosenLines; // for the last line: "Pair:1 on Tall's print bed face."
+  if (format == QStringLiteral("3mf") && bedFaces != nullptr) {
+    QJsonObject plan = threeMfExport(safeFileName(design) + QStringLiteral(".3mf"));
+    plan.insert(QStringLiteral("plan"), true);
+    QJsonObject planned;
+    if (!runCommand(plan, &planned)) {
+      sheetWarning(this, tr("3D Print"), tr("Could not write the 3MF file:\n%1").arg(m_lastError));
+      return false;
+    }
+    for (const PrintBedAsk& ask : printBedAsks(planned.value(QStringLiteral("bed")).toObject())) {
+      const auto found = bedFaces->chosen.constFind(ask.key);
+      if (found != bedFaces->chosen.constEnd()) {
+        if (!found->isEmpty()) {
+          bedFaceChoices.append(
+              QJsonObject{{QStringLiteral("body"), found->body}, {QStringLiteral("occurrence"), found->occurrence}});
+          chosenLines << printBedChosen(ask, *found);
+        }
+        continue;
+      }
+      QStringList faces;
+      for (const PrintBedFace& face : ask.faces) {
+        faces << face.describe();
+      }
+      qInfo().noquote() << QStringLiteral("3D Print bed face to choose for %1: %2 faces: %3")
+                               .arg(ask.piece.isEmpty() ? QStringLiteral("the file") : ask.piece)
+                               .arg(ask.faces.size())
+                               .arg(faces.join(QStringLiteral("; ")));
+      // The question names the piece and the count (mitcad#857 review),
+      // beside the Bed face row and in the status bar.
+      bedFaces->asking = ask;
+      bedFaces->hint = printBedQuestion(ask);
+      if (m_session && m_session->ask(QStringLiteral("bed_face"), bedFaces->hint)) {
+        qDebug().noquote() << QStringLiteral("3D Print hint: %1").arg(bedFaces->hint);
+        return false; // sent once a face is chosen, or as assembled
+      }
+      // No panel to ask in: as assembled.
+      bedFaces->asking = PrintBedAsk();
+      bedFaces->hint.clear();
+    }
+  }
+  // A folder of the design's own in the temporary folder, emptied first.
   QString error;
   const QString folder = preparePrintFolder(QDir::tempPath(), design, &error);
   if (folder.isEmpty()) {
     sheetWarning(this, tr("3D Print"), error);
     return false;
   }
-  const QJsonValue refinement =
-      refinementChoice == QStringLiteral("custom")
-          ? QJsonValue(QJsonObject{{QStringLiteral("deviation"), deviation}, {QStringLiteral("angle"), angle}})
-          : QJsonValue(refinementChoice);
   QStringList files;
   QStringList written;
+  // The placements lying on their print bed faces, for the last line.
+  int onFaces = 0;
   if (format == QStringLiteral("3mf")) {
-    // One object with a part per body, in the colours shown.
     const QString path = QDir(folder).filePath(safeFileName(design) + QStringLiteral(".3mf"));
-    QJsonObject command = exportCommand(path, QStringLiteral("3mf"), sent, refinement);
-    command.insert(QStringLiteral("colors"), appearanceColors(sent));
+    QJsonObject command = threeMfExport(path);
+    // The faces chosen, each turning its piece onto it (mitcad#857).
+    if (!bedFaceChoices.isEmpty()) {
+      command.insert(QStringLiteral("bed_face"), bedFaceChoices);
+    }
     // The print settings in the slicer's own dialect (mitcad#640); without a
     // slicer of a known dialect, in the dialect the design's printer came
     // from, else Bambu Studio's: the printer, the process and the materials
@@ -822,6 +1105,7 @@ bool MainWindow::sendToSlicer(const CommandState& state) {
       *warned = warnings.join(QLatin1Char('\n'));
     }
     qInfo().noquote() << QStringLiteral("3D Print bed: %1").arg(bedLog(result.value(QStringLiteral("bed")).toObject()));
+    onFaces = result.value(QStringLiteral("bed")).toObject().value(QStringLiteral("on_faces")).toInt();
     files << path;
     for (const QJsonValue& value : result.value(QStringLiteral("meshes")).toArray()) {
       const QJsonObject mesh = value.toObject();
@@ -833,10 +1117,6 @@ bool MainWindow::sendToSlicer(const CommandState& state) {
   } else {
     // A file per body, named after it, in the design's coordinates; a body
     // shown more than once a file per occurrence picked (mitcad#17).
-    const QVector<PrintPiece> pieces = printPieces(
-        sent, names,
-        query({{QStringLiteral("query"), QStringLiteral("instances")}, {QStringLiteral("hidden"), true}}).toArray(),
-        chosen);
     QStringList pieceNames;
     for (const PrintPiece& piece : pieces) {
       pieceNames << piece.name;
@@ -857,6 +1137,7 @@ bool MainWindow::sendToSlicer(const CommandState& state) {
       // Each file's body on its print bed face (mitcad#731).
       qInfo().noquote() << QStringLiteral("3D Print bed %1: %2")
                                .arg(fileNames[i], bedLog(result.value(QStringLiteral("bed")).toObject()));
+      onFaces += result.value(QStringLiteral("bed")).toObject().value(QStringLiteral("on_faces")).toInt();
       if (const QStringList warnings = exportWarnings(result); !warnings.isEmpty()) {
         *warned += (warned->isEmpty() ? QString() : QStringLiteral("\n")) + warnings.join(QLatin1Char('\n'));
       }
@@ -875,7 +1156,8 @@ bool MainWindow::sendToSlicer(const CommandState& state) {
   };
   if (!slicer.isValid()) {
     openFolder();
-    report(tr("The files are in %1.").arg(QDir::toNativeSeparators(folder)), false);
+    report(printBedLine(tr("The files are in %1.").arg(QDir::toNativeSeparators(folder)), onFaces, chosenLines),
+           false);
     return true;
   }
   QStringList arguments = slicer.arguments;
@@ -895,8 +1177,11 @@ bool MainWindow::sendToSlicer(const CommandState& state) {
                            .arg(QDir::toNativeSeparators(slicer.program), arguments.join(QLatin1Char(' ')));
   // A real singular and plural (mitcad#655), not "body(ies)".
   const QString to = slicer.name.isEmpty() ? QFileInfo(slicer.program).fileName() : slicer.name;
-  report(sent.size() == 1 ? tr("Sent 1 body to %1.").arg(to)
-                          : tr("Sent %1 bodies to %2.").arg(sent.size()).arg(to),
+  // Each placement sent a body (mitcad#856), the faces chosen (mitcad#857)
+  // and the others on their print bed faces.
+  const int count = static_cast<int>(pieces.size());
+  report(printBedLine(count == 1 ? tr("Sent 1 body to %1.").arg(to) : tr("Sent %1 bodies to %2.").arg(count).arg(to),
+                      onFaces, chosenLines),
          false);
   return true;
 }

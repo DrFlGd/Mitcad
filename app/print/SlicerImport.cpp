@@ -223,9 +223,10 @@ void SlicerImportBar::importPresets(int index) {
     return;
   }
   // "3 presets" in the line and the report: "3 presets imported into My
-  // library", "Imported 3 presets (Bambu Studio) into this design."
-  const int count = dialog.tickedCount();
-  const QString what = count == 1 ? tr("1 preset") : tr("%1 presets").arg(count);
+  // library", "Imported 3 presets (Bambu Studio) into this design."; one
+  // preset by its name: "Fine imported into My library".
+  const QStringList names = dialog.tickedNames();
+  const QString what = names.size() == 1 ? names.first() : tr("%1 presets").arg(names.size());
   SlicerImportResult result;
   QString error;
   if (!runPrintImport(m_host, dialog.command(), what, into(), m_log, &result, &error)) {

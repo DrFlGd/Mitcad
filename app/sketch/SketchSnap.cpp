@@ -180,6 +180,11 @@ Snap snap(const SnapSettings& settings, const V2& raw, const QPointF& screen) {
   // own point or midpoint at the same place wins.
   if (settings.body != nullptr) {
     for (const BodyItem& item : settings.body->items()) {
+      // Only what lies in the plane: the items out of it (mitcad#866) are
+      // the Dimension tool's.
+      if (!item.inPlane) {
+        continue;
+      }
       if (item.isVertex()) {
         const double d = screenDistance(toScreen(item.at), screen);
         if (d <= kPointPixels) {

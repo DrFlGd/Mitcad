@@ -43,6 +43,8 @@
 #include <QVBoxLayout>
 #include <QtLogging>
 
+#include "../browser/AssignmentPanel.hpp"
+#include "../browser/Bindings.hpp"
 #include "../browser/DocumentHost.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Icons.hpp"
@@ -87,13 +89,20 @@ const QStringList& groupOrder() {
 MaterialsDialog::MaterialsDialog(DocumentHost& host, QWidget* parent) : QDialog(parent), m_designHost(host) {
   setWindowTitle(tr("Materials"));
   setWindowIcon(themeIcon(QStringLiteral("material")));
-  resize(960, 620);
+  // Taller by the assignment panel's header line (mitcad#861): the list
+  // keeps its height with targets.
+  resize(960, 680);
   auto* layout = new QVBoxLayout(this);
   m_panel = new MaterialsPanel(m_designHost, QStringLiteral("Materials"));
   layout->addWidget(m_panel);
   m_panel->editAppearances = [this] {
     if (editAppearances) {
       editAppearances();
+    }
+  };
+  m_panel->openConfigurations = [this] {
+    if (openConfigurations) {
+      openConfigurations();
     }
   };
   // The user's library without a design (mitcad#704), then Close.
@@ -204,12 +213,65 @@ MaterialsPanel::MaterialsPanel(PrintItemsHost& host, const QString& logName, QWi
   m_form->setGeneralPage(general, tr("General"));
   m_form->setGeneralNames({tr("Class"), tr("Density"), tr("Appearance")});
   editorBox->addWidget(m_form, 1);
+  // Default alone (its name, no editor): at the top, not in the middle of
+  // the pane.
+  editorBox->addStretch(0);
   splitter->addWidget(m_editor);
   // A narrow list, the editor wide.
   splitter->setStretchFactor(0, 0);
   splitter->setStretchFactor(1, 1);
   splitter->setSizes({240, 720});
   layout->addWidget(splitter, 1);
+
+  // The assignment panel (mitcad#861): the targets' material, and whether
+  // it varies with an option; Assign and a double-click fill its rows then.
+  AssignmentPanel::Host panelHost;
+  panelHost.model = [this]() -> const CommandContext& { return m_host.model(); };
+  panelHost.runCommand = [this](const QJsonObject& command) { return run(command); };
+  panelHost.runCommands = [this](const QJsonArray& commands, const QString& label) {
+    if (!m_host.runModelCommands(commands, label)) {
+      return false;
+    }
+    setMessage(QString());
+    m_host.commandInputsChanged();
+    emit changed();
+    return true;
+  };
+  panelHost.lastError = [this] { return m_host.lastError(); };
+  panelHost.canChange = [this] { return canChange(); };
+  panelHost.describe = [this](const QString& named) {
+    AssignmentPanel::Result result;
+    const auto take = [&result](const QString& id, const QString& name, const QColor& color) {
+      if (result.id.isEmpty()) {
+        result.id = id;
+        result.name = name;
+        result.icon = swatch(color);
+      }
+    };
+    // By id, the design's materials before the built-in ones; else by name.
+    for (int pass = 0; pass < 2; ++pass) {
+      const bool byName = pass == 1;
+      for (const QJsonValue& value : std::as_const(m_designMaterials)) {
+        const QJsonObject material = value.toObject();
+        if (text(material, byName ? "name" : "id") == named) {
+          take(text(material, "id"), text(material, "name"), colorOf(material.value(QStringLiteral("display_color"))));
+        }
+      }
+      for (const LibraryItem& item : std::as_const(m_items)) {
+        if (item.readOnly && item.library.isEmpty() && (byName ? item.name : item.id) == named) {
+          take(item.id, item.name, item.displayColor);
+        }
+      }
+    }
+    return result;
+  };
+  panelHost.openConfigurations = [this] {
+    if (openConfigurations) {
+      openConfigurations();
+    }
+  };
+  m_assignment = new AssignmentPanel(AssignmentPanel::Kind::Material, m_log, panelHost);
+  layout->addWidget(m_assignment);
 
   m_message = new QLabel;
   m_message->setWordWrap(true);
@@ -258,7 +320,19 @@ MaterialsPanel::MaterialsPanel(PrintItemsHost& host, const QString& logName, QWi
                                        : QStringLiteral("default"));
     scheduleLogPlaces();
   });
-  // A double-click only selects (mitcad#655): Assign is the button.
+  // A double-click assigns as Assign does (mitcad#861): the targets' material,
+  // or the assignment panel's rows while it varies with an option.
+  connect(m_list, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* row) {
+    const QString key = row != nullptr ? row->data(0, kKeyRole).toString() : QString();
+    if (key.isEmpty() || inLibrary() || (m_targetBodies.isEmpty() && m_targetComponent.isEmpty())) {
+      return;
+    }
+    if (key != m_currentKey) {
+      selectKey(key);
+    }
+    qDebug().noquote() << QStringLiteral("%1 double-click: %2").arg(m_log, key);
+    assign();
+  });
   connect(m_name, &QLineEdit::editingFinished, this, [this] {
     const LibraryItem* item = current();
     const QString name = m_name->text().trimmed();
@@ -299,6 +373,7 @@ MaterialsPanel::MaterialsPanel(PrintItemsHost& host, const QString& logName, QWi
   connect(m_headerDuplicate, &QPushButton::clicked, this, &MaterialsPanel::duplicate);
   connect(m_delete, &QPushButton::clicked, this, &MaterialsPanel::remove);
   connect(m_assign, &QPushButton::clicked, this, &MaterialsPanel::assign);
+  connect(m_assignment, &AssignmentPanel::assignTextChanged, this, &MaterialsPanel::updateAssign);
 }
 
 MaterialsPanel::~MaterialsPanel() = default;
@@ -377,12 +452,17 @@ void MaterialsPanel::setTargets(const QStringList& bodies, const QString& compon
   const bool targets = !bodies.isEmpty() || !component.isEmpty();
   m_assign->setVisible(targets);
   if (!component.isEmpty()) {
-    m_assign->setText(tr("Assign to %1").arg(names.value(0)));
+    m_assignText = tr("Assign to %1").arg(names.value(0));
   } else if (bodies.size() == 1) {
-    m_assign->setText(tr("Assign to %1").arg(names.value(0)));
+    m_assignText = tr("Assign to %1").arg(names.value(0));
   } else {
-    m_assign->setText(tr("Assign to %1 bodies").arg(bodies.size()));
+    m_assignText = tr("Assign to %1 bodies").arg(bodies.size());
   }
+  m_assign->setText(m_assignText);
+  // The bodies' material and whether it varies with an option (mitcad#861);
+  // a component's default material has no panel.
+  m_assignment->setTargets(component.isEmpty() && !inLibrary() ? bodies : QStringList(), {});
+  updateAssign();
   qDebug().noquote() << QStringLiteral("%1 for %2: %3").arg(m_log)
                             .arg(!component.isEmpty() ? QStringLiteral("component %1").arg(component)
                                  : targets           ? QStringLiteral("bodies %1").arg(bodies.join(QStringLiteral(", ")))
@@ -399,6 +479,19 @@ const LibraryItem* MaterialsPanel::current() const {
     return nullptr;
   }
   return findItem(m_items, m_currentKey);
+}
+
+void MaterialsPanel::showItem(const QString& key) {
+  m_currentKey = key;
+  m_currentDesignId.clear();
+  refresh();
+  if (const LibraryItem* item = current()) {
+    m_currentDesignId = item->designId();
+    if (m_list->currentItem() != nullptr) {
+      m_list->scrollToItem(m_list->currentItem());
+    }
+    qDebug().noquote() << QStringLiteral("Material selected: %1 (%2)").arg(item->name, item->place);
+  }
 }
 
 void MaterialsPanel::refresh() {
@@ -472,6 +565,34 @@ void MaterialsPanel::refresh() {
     field->setFocus(Qt::OtherFocusReason);
     field->selectAll();
   }
+  // The targets' state again (mitcad#861): undo, a parameter, a fill.
+  m_assignment->reload();
+}
+
+void MaterialsPanel::updateAssign() {
+  const bool varies = m_assignment->varies();
+  const bool targets = !m_targetBodies.isEmpty() || !m_targetComponent.isEmpty();
+  const bool chosen = current() != nullptr || m_currentKey == QLatin1String(kDefaultKey);
+  if (varies) {
+    // Assign fills the panel's selected rows: "Assign to row Red"; none
+    // after the last row was filled, until a row is clicked.
+    const QString label = m_assignment->assignText();
+    if (label != m_assign->text()) {
+      m_assign->setText(label);
+      qDebug().noquote() << QStringLiteral("%1 assign label: %2").arg(m_log, label);
+    }
+    m_assign->setToolTip(m_assignment->assignTip());
+    m_assign->setEnabled(targets && chosen && m_assignment->canFill());
+  } else {
+    if (!m_assignText.isEmpty()) {
+      m_assign->setText(m_assignText);
+    }
+    m_assign->setToolTip(QString());
+    m_assign->setEnabled(targets && chosen);
+  }
+  // The mixed count is None's; the panel says it in words.
+  m_mixed->setVisible(!varies && !m_mixed->text().isEmpty());
+  scheduleLogPlaces();
 }
 
 void MaterialsPanel::rebuildList() {
@@ -601,7 +722,10 @@ void MaterialsPanel::selectKey(const QString& key) {
 void MaterialsPanel::showCurrent() {
   const LibraryItem* item = current();
   const bool targets = !m_targetBodies.isEmpty() || !m_targetComponent.isEmpty();
-  m_assign->setEnabled(targets && (item != nullptr || m_currentKey == QLatin1String(kDefaultKey)));
+  // While the material varies with an option, a row is to be selected too
+  // (mitcad#861).
+  m_assign->setEnabled(targets && (item != nullptr || m_currentKey == QLatin1String(kDefaultKey)) &&
+                       (!m_assignment->varies() || m_assignment->canFill()));
   m_duplicate->setEnabled(item != nullptr);
   m_delete->setEnabled(item != nullptr && !item->readOnly);
   // Never a blank side (mitcad#655): Default shows its name and swatch,
@@ -839,7 +963,8 @@ void MaterialsPanel::newMaterial() {
   }
   inPlace(command);
   QJsonObject result;
-  if (run(command, &result)) {
+  const bool created = run(command, &result);
+  if (created) {
     const QString place = inLibrary() ? m_libraryPlace : QStringLiteral("design");
     m_currentKey = place + QLatin1Char('/') + text(result, "id");
     m_currentDesignId = inLibrary() ? QString() : text(result, "id");
@@ -848,6 +973,10 @@ void MaterialsPanel::newMaterial() {
     qDebug().noquote() << QStringLiteral("Material created: %1 in %2").arg(text(result, "id"), place);
   }
   refresh();
+  if (created && m_assignment->varies()) {
+    // Into the active row at once (mitcad#861).
+    fillRows();
+  }
 }
 
 void MaterialsPanel::inPlace(QJsonObject& command) const {
@@ -882,7 +1011,8 @@ void MaterialsPanel::duplicate() {
   }
   inPlace(command);
   QJsonObject result;
-  if (run(command, &result)) {
+  const bool created = run(command, &result);
+  if (created) {
     const QString place = inLibrary() ? m_libraryPlace : QStringLiteral("design");
     m_currentKey = place + QLatin1Char('/') + text(result, "id");
     m_currentDesignId = inLibrary() ? QString() : text(result, "id");
@@ -890,6 +1020,10 @@ void MaterialsPanel::duplicate() {
     qDebug().noquote() << QStringLiteral("Material duplicated: %1 as %2 in %3").arg(source.name, text(result, "id"), place);
   }
   refresh();
+  if (created && m_assignment->varies()) {
+    // Into the active row at once (mitcad#861).
+    fillRows();
+  }
 }
 
 void MaterialsPanel::remove() {
@@ -991,6 +1125,12 @@ void MaterialsPanel::assign() {
   if ((m_targetBodies.isEmpty() && !forComponent) || !canChange()) {
     return;
   }
+  if (!forComponent && m_assignment->varies()) {
+    // The rows of the option the material varies with (mitcad#861): the
+    // window stays for the next row.
+    fillRows();
+    return;
+  }
   const LibraryItem* item = current();
   if (item == nullptr && m_currentKey != QLatin1String(kDefaultKey)) {
     return;
@@ -1076,6 +1216,40 @@ void MaterialsPanel::assign() {
     return;
   }
   emit assigned();
+}
+
+void MaterialsPanel::fillRows() {
+  const LibraryItem* item = current();
+  if (item == nullptr && m_currentKey != QLatin1String(kDefaultKey)) {
+    return;
+  }
+  QString result;
+  QJsonArray before;
+  if (item == nullptr) {
+    // Default: what it gives, the root's default material, else steel.
+    QString id = QStringLiteral("steel");
+    for (const QJsonValue& value : std::as_const(m_designMaterials)) {
+      if (value.toObject().value(QStringLiteral("components")).toArray().contains(QStringLiteral("C0"))) {
+        id = text(value.toObject(), "id");
+      }
+    }
+    result = quotedText(id);
+  } else if (!item->designId().isEmpty()) {
+    result = quotedText(item->designId());
+  } else if (!m_targetBodies.isEmpty()) {
+    // A library's material not in the design yet: copied in by the same
+    // undo step, as Assign does, and named by its name.
+    QJsonObject copy{{QStringLiteral("cmd"), QStringLiteral("set_body_material")},
+                     {QStringLiteral("uid"), m_targetBodies.first()}};
+    nameItem(copy, *item, m_host.projectFolder(), QStringLiteral("material"));
+    before.append(copy);
+    result = quotedText(item->name);
+  }
+  // Copies: the fill's refresh replaces the items.
+  const QString logged = item == nullptr ? QStringLiteral("default") : item->name;
+  if (!result.isEmpty() && m_assignment->fill(result, before)) {
+    qDebug().noquote() << QStringLiteral("%1: %2 into the rows").arg(m_log, logged);
+  }
 }
 
 void MaterialsPanel::logRows() {

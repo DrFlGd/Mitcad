@@ -19,6 +19,9 @@
 #      down, not after), Ctrl+Shift+click adds, Shift+click alone replaces.
 #      An edge partly hidden is selected where it is in sight, not where it
 #      is hidden.
+#   3b. Sketch Dimension (mitcad#866): Box1's edges are below Sketch2's
+#      plane; the tool does not take the edge behind faces, and takes the
+#      edge in sight as what it projects to.
 #   4. Visible edges a cross: a window dragged to the right takes the edges
 #      in sight, also the partly hidden one, but not the hidden one.
 #      Visible edges empty: a click does not take them, Shift+click does.
@@ -200,6 +203,29 @@ ui_expect_new "Selected: 1 edge [edge $BOTH of F1.b0]" "the part in sight is cli
 ui_mark
 ui_step "click its hidden part"              click_at $(place "$BOTH" occluded)
 ui_expect_new "Selected: nothing" "the hidden part is not"
+
+echo "--- 3b. Sketch Dimension out of the plane: in sight only (mitcad#866)"
+ui_mark
+ui_step "sketch dimension (D)"               ui_key d
+ui_expect_new "Sketch tool Sketch Dimension" "the tool started"
+ui_step "pointer on the hidden edge"         xdotool mousemove $(place "$OCC" occluded)
+ui_expect_new "Sketch body geometry out of the plane:" "the edges below the sketch read"
+ui_step "click the hidden edge"              click_at $(place "$OCC" occluded)
+ui_sync
+since_mark "Sketch Dimension picked the body edge $OCC " && ui_fail "the tool took an edge behind faces"
+echo "ok   an edge behind faces is not taken"
+ui_mark
+ui_step "sketch dimension again (D)"         ui_key d
+ui_expect_new "Sketch tool Sketch Dimension" "the tool started afresh"
+ui_step "click the edge in sight"            click_at $(place "$VIS" visible)
+ui_expect_new "Sketch Dimension picked the body edge $VIS of F1.b0" "an edge in sight is taken"
+ui_expect_new "out of the plane: projected as a " "as what it projects to (a line, or a point seen end on)"
+ui_step "drop the pick (Esc)"                ui_key Escape
+ui_sync
+ui_step "end the tool (Esc)"                 ui_key Escape
+ui_sync
+since_mark "Projected the body" && ui_fail "a pick projected the edge"
+echo "ok   nothing projected"
 
 echo "--- 4. The rows"
 ui_step "visible edges: cross"               cycle visible-edges

@@ -22,3 +22,9 @@ mod sketch_plane_tests;
 mod sketch_spline_point_836_tests;
 // A selection dragged together (mitcad#837).
 mod sketch_drag_selection_837_tests;
+// Rounded rectangles and Sketch Fillet on several corners (mitcad#867).
+mod sketch_rounded_rectangle_867_tests;
+// Scaling a sketch, and the first dimension that scales it (mitcad#860).
+mod sketch_scale_860_tests;
+// Symmetry of circles and arcs whose radii are fixed (mitcad#865).
+mod sketch_symmetry_865_tests;

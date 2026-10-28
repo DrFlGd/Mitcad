@@ -61,6 +61,7 @@ class ComputeProgress;
 class F3dImport;
 class ImageCalibration;
 struct PrintImport;
+struct PrintBedChoices;
 struct MeshPlan;
 class FloatingLayout;
 class GlassCard;
@@ -237,6 +238,7 @@ public:
   void inspectionRecorded(const CommandDef& def, const CommandState& state, const Inspection& result) override;
   void editInstead(const QString& uid, const QString& input) override;
   QString profileOccurrence(const QString& sketch) const override { return placingOccurrence(sketch); }
+  QString editedSketch() const override; // mitcad#869
   QString bodyOccurrence(const QString& body) const override;
   QString datumOccurrence(const QString& datum) const override;
   const SelectionScope* commandScope() const override; // mitcad#217
@@ -296,6 +298,7 @@ public:
   void openDrawing(const QString& uid) override;
   void createDrawing(const QString& component) override;
   bool isDrawingOpen() const override { return drawingOpen(); }
+  QJsonArray selectedModelBodies() const override;
   // Light bulbs in every mode (mitcad#295; MainWindowVisibility.cpp).
   bool runVisibilityCommands(const QJsonArray& commands, const QString& label) override;
   QString activeCommandName() const override;
@@ -1075,7 +1078,20 @@ private:
   // Edit Printers and Processes… (mitcad#655): the MAKE group's command next
   // to 3D Print that opens Printers and Processes.
   CommandDef printersCommand();
-  bool sendToSlicer(const CommandState& state);
+  // `whole`: the occurrences selected as components when the panel
+  // started (paths of uids), each sent whole as one 3MF object (mitcad#856).
+  // `bedFaces`: the print bed faces chosen for 3MF pieces with several
+  // (mitcad#857): a piece not chosen for yet is asked about (the panel's
+  // `bed_face` input and its marks), and the send waits for the choice
+  // (false).
+  bool sendToSlicer(const CommandState& state, const QStringList& whole = {},
+                    PrintBedChoices* bedFaces = nullptr);
+  // Whether a face is its body's print bed face (mitcad#731): one of the
+  // faces the stored name finds (`bedFaces`, the body's names at the
+  // marker), by name or by the faces of the shape
+  // (MainWindowContextMenu.cpp).
+  static bool isPrintBedFace(const SelectionItem& face, const QStringList& bedFaces,
+                             const std::shared_ptr<geometry::Shape>& shape);
   // Import from slicer… of 3D Print (mitcad#655): a slicer's file into the
   // design, its line and report kept in `target`.
   void importPrintSettings(const std::shared_ptr<PrintImport>& target);
@@ -1461,10 +1477,10 @@ private:
   // after each refresh, and one kept is logged once the model lists it
   // ("Annotation kept: <name>").
   void followMeasurements();
-  // The picks of a measurement's inputs ("a" and "b", or "body_a" and
-  // "body_b") as add_measurement takes them; false (with the reason in
-  // `why`) when there are none or they are the application's own (sketch
-  // curves and points).
+  // The picks of a measurement's inputs ("a" and "b", "body_a" and
+  // "body_b", or "sketch_a" and "sketch_b") as add_measurement takes them;
+  // false (with the reason in `why`, also Keep's tooltip then) when there
+  // are none or they are the application's own (sketch curves and points).
   static bool measurementPicks(const QHash<QString, Selection>& inputs, QJsonObject& command, QString& why);
   void keepMeasurement(const QHash<QString, Selection>& inputs, const QString& what);
   void keepMeasurementRow(int number);

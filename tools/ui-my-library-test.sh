@@ -21,7 +21,12 @@
 #   4. A fake Bambu Studio data folder (mitcad#830): Import from Slicer ▾
 #      offers its presets; the new process is ticked, the printer named as
 #      Bench X is marked and unticked; Import brings the process into My
-#      library and leaves Bench X as it was.
+#      library and leaves Bench X as it was; the line names it and My
+#      Library shows it on the Processes tab, selected. Then again, with
+#      both names in My library: the keyboard moves to Fine, Space ticks
+#      and unticks it, Tab reaches its choice; Override ticks the row and
+#      All same names shows no value while the rows differ; Copy again,
+#      Import brings Fine in as Fine 2, named in the line and selected.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-my-library-test.sh
@@ -196,9 +201,12 @@ ui_expect_new "Slicer presets opened: Bambu Studio, 2 presets" "the slicer's pre
 ui_expect_new "Slicer presets row: process Fine, ticked" "a new one ticked"
 ui_expect_new "Slicer presets row: printer Bench X, unticked, same name: My library has a printer of this name, copy" \
   "the name My library has: marked, unticked, Copy"
+ui_expect_new "Slicer presets all same names: copy" "All same names shows the rows' Copy"
 ui_focus_dialog '^Import Presets$'
 ui_step "Import (Alt+I)"                   ui_key alt+i
-ui_expect_new "My Library import: 1 preset imported into My library" "the ticked one imported"
+ui_expect_new "My Library import: Fine imported into My library" "the ticked one imported, by its name"
+ui_expect_new "My Library tab: processes" "My Library shows the Processes tab"
+ui_expect_new "Profile selected: process Fine (user)" "with Fine selected"
 expect_item "$LIB/print/processes/fine.json" '.profile.values.layer_height' '0.12' "Fine is in My library"
 # Its number as a number: the file keeps it as the model wrote it (250.0).
 expect_item "$LIB/print/printers/bench-x.json" '.profile.values.max_print_height == 250' 'true' \
@@ -206,6 +214,53 @@ expect_item "$LIB/print/printers/bench-x.json" '.profile.values.max_print_height
 [ "$(sha256sum "$LIB/print/printers/bench-x.json" | cut -c1-64)" = "$BENCH_SUM" ] ||
   ui_fail "the unticked Bench X's file changed"
 echo "ok   Bench X's file as it was"
+
+echo "--- 4b. Both names in My library now: the keyboard, a choice that ticks its row, Fine as Fine 2"
+FINE_SUM=$(sha256sum "$LIB/print/processes/fine.json" | cut -c1-64)
+ui_focus_dialog '^My Library$'
+ui_mark
+ui_step "Import from Slicer"               ui_click_logged "My Library import"
+ui_expect_new "My Library import menu: From a file… | Presets of Bambu Studio…" "the menu again"
+ui_key Down Down Return
+ui_expect_new "Slicer presets row: process Fine, unticked, same name: My library has a process of this name, copy" \
+  "Fine is now a name My library has: unticked, Copy"
+ui_expect_new "Slicer presets ticked: 0" "nothing ticked"
+ui_expect_new "Slicer presets all same names: copy" "All same names: Copy, as both rows"
+ui_focus_dialog '^Import Presets$'
+# The list has the keyboard on its first preset, Bench X: down past the
+# Processes heading to Fine.
+ui_mark
+ui_step "Down Down"                        ui_key Down Down
+ui_expect_new "Slicer presets current: Fine" "the arrows move to Fine"
+ui_mark
+ui_step "Space"                            ui_key space
+ui_expect_new "Slicer presets tick: Fine ticked" "Space ticks it"
+ui_mark
+ui_step "Space"                            ui_key space
+ui_expect_new "Slicer presets tick: Fine unticked" "Space again unticks it"
+ui_mark
+ui_step "Tab"                              ui_key Tab
+ui_expect_new "Slicer presets focus: Fine choice" "Tab reaches Fine's Copy or Override"
+ui_mark
+ui_step "Down (Override)"                  ui_key Down
+ui_expect_new "Slicer presets choice: Fine override" "Override chosen"
+ui_expect_new "Slicer presets tick: Fine ticked" "the choice ticked its unticked row"
+ui_expect_new "Slicer presets ticked: 1" "only Fine ticked"
+ui_expect_new "Slicer presets all same names: none" "the rows differ: All same names shows no value"
+ui_mark
+ui_step "Up (Copy)"                        ui_key Up
+ui_expect_new "Slicer presets choice: Fine copy" "Copy chosen again"
+ui_expect_new "Slicer presets all same names: copy" "the rows agree again: Copy"
+ui_mark
+ui_step "Import (Alt+I)"                   ui_key alt+i
+ui_expect_new "My Library import: Fine imported into My library as Fine 2" "the line names the copy's name"
+ui_expect_new "Profile selected: process Fine 2 (user)" "My Library shows Fine 2 selected"
+expect_item "$LIB/print/processes/fine-2.json" '.profile.name' '"Fine 2"' "Fine 2 is in My library"
+[ "$(sha256sum "$LIB/print/processes/fine.json" | cut -c1-64)" = "$FINE_SUM" ] ||
+  ui_fail "Fine's file changed by a Copy"
+[ "$(sha256sum "$LIB/print/printers/bench-x.json" | cut -c1-64)" = "$BENCH_SUM" ] ||
+  ui_fail "the unticked Bench X's file changed"
+echo "ok   Fine and Bench X as they were"
 ui_focus_dialog '^My Library$'
 ui_step "close (Esc)"                      ui_key Escape
 ui_expect_new "My Library closed" "closed"

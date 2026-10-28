@@ -1054,8 +1054,11 @@ fn constraint_equations(
             }
         }
         SymmetricPoints { a, b: q, axis } => sym(b, a.index(), q.index(), axis.index()),
-        SymmetricEntities { a, b: e2, axis } => {
+        SymmetricEntities { a, b: e2, axis } | SymmetricCentres { a, b: e2, axis } => {
             let ax = axis.index();
+            // SymmetricCentres leaves the radii to the other constraints
+            // (mitcad#865).
+            let radii = matches!(rec.def, SymmetricEntities { .. });
             match (ent(a).clone(), ent(e2).clone()) {
                 (EntityData::Line { p1, p2 }, EntityData::Line { p1: q1, p2: q2 }) => {
                     let (m1, m2) = if rec.swap { (q2, q1) } else { (q1, q2) };
@@ -1064,10 +1067,42 @@ fn constraint_equations(
                 }
                 (EntityData::Circle { c: c1, .. }, EntityData::Circle { c: c2, .. }) => {
                     sym(b, c1, c2, ax);
-                    b.push(z, |v, x| EqKind::RadDiff {
-                        a: x.rad(v, a.index()),
-                        b: x.rad(v, e2.index()),
-                    });
+                    if radii {
+                        b.push(z, |v, x| EqKind::RadDiff {
+                            a: x.rad(v, a.index()),
+                            b: x.rad(v, e2.index()),
+                        });
+                    }
+                }
+                (
+                    EntityData::Arc {
+                        c: c1,
+                        s: s1,
+                        e: f1,
+                    },
+                    EntityData::Arc {
+                        c: c2,
+                        s: s2,
+                        e: f2,
+                    },
+                ) if !radii => {
+                    // Mirrored centres, and each end of `b` in the mirrored
+                    // direction of the other end of `a` (start <-> end),
+                    // whatever the radii.
+                    sym(b, c1, c2, ax);
+                    for (e, rp) in [(s2, f1), (f2, s1)] {
+                        b.push(z, |v, x| {
+                            let (a1, a2) = x.line(ax);
+                            EqKind::MirrorDir {
+                                c: x.p(v, c2),
+                                e: x.p(v, e),
+                                rc: x.p(v, c1),
+                                rp: x.p(v, rp),
+                                a: x.p(v, a1),
+                                b: x.p(v, a2),
+                            }
+                        });
+                    }
                 }
                 (
                     EntityData::Arc {

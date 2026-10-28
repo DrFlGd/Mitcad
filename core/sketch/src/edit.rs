@@ -356,7 +356,8 @@ impl<'a> SketchEdit<'a> {
 
     /// The constraints [`SketchEdit::drop_implied`] may remove: the older
     /// geometric constraints in the redundant sets that were not there
-    /// before, in id order.
+    /// before; those on the new constraint's movable entities first, each
+    /// group in id order.
     fn implied_candidates(
         &self,
         new: ConstraintUid,
@@ -387,7 +388,91 @@ impl<'a> SketchEdit<'a> {
                 }
             }
         }
-        found.into_iter().collect()
+        // Those on the new constraint's own movable geometry first
+        // (mitcad#865): a Symmetry of two circles replaces the constraint
+        // that held one of the circles, not one further along the chain
+        // its position follows from (a rectangle's Horizontal).
+        let near = self
+            .def
+            .constraints
+            .iter()
+            .find(|c| c.id == new)
+            .map(|c| self.movable_reach(&c.kind.refs()))
+            .unwrap_or_default();
+        let (mut first, rest): (Vec<_>, Vec<_>) = found.into_iter().partition(|k| {
+            self.def
+                .constraints
+                .iter()
+                .any(|c| c.id == *k && !self.movable_reach(&c.kind.refs()).is_disjoint(&near))
+        });
+        first.extend(rest);
+        first
+    }
+
+    /// The entities `refs` name and the points of the curves among them,
+    /// without the fixed ones (an axis, the origin, projected geometry).
+    fn movable_reach(&self, refs: &[Ref]) -> std::collections::BTreeSet<EntityUid> {
+        let mut reach = std::collections::BTreeSet::new();
+        for r in refs {
+            reach.insert(r.uid());
+            if !r.is_point()
+                && let Some(e) = self.def.entity(r.uid())
+            {
+                reach.extend(e.kind.points());
+            }
+        }
+        reach.retain(|id| {
+            self.def
+                .entity(*id)
+                .is_some_and(|e| !e.fixed && !e.reference)
+        });
+        reach
+    }
+
+    /// Leaves the radius equality out of a new Symmetry of two circles or
+    /// two arcs (mitcad#865) when the others already make their radii
+    /// equal (both dimensioned, or an Equal): the constraint then mirrors
+    /// the positions only (`radii: false`), so that it takes what is not
+    /// fixed yet instead of over-constraining the sketch. `before` is the
+    /// status before the command. Returns whether it did.
+    pub fn fit_symmetric(&mut self, new: ConstraintUid, before: &SketchStatus) -> bool {
+        let Some(i) = self.def.constraints.iter().position(|c| c.id == new) else {
+            return false;
+        };
+        let ConstraintKind::Symmetric {
+            a: Ref::Curve(a),
+            b: Ref::Curve(b),
+            radii: true,
+            ..
+        } = self.def.constraints[i].kind
+        else {
+            return false;
+        };
+        let round = |id: EntityUid| {
+            matches!(
+                self.def.entity(id).map(|e| &e.kind),
+                Some(EntityKind::Circle { .. } | EntityKind::Arc { .. })
+            )
+        };
+        if !(round(a) && round(b)) {
+            return false;
+        }
+        // The radius equality alone in its place: implied when it raises
+        // the redundant count.
+        let symmetric = std::mem::replace(
+            &mut self.def.constraints[i].kind,
+            ConstraintKind::Equal { a, b },
+        );
+        let implied = self
+            .solved()
+            .is_ok_and(|s| s.status.redundant.len() > before.redundant.len());
+        self.def.constraints[i].kind = symmetric;
+        if implied
+            && let ConstraintKind::Symmetric { radii, .. } = &mut self.def.constraints[i].kind
+        {
+            *radii = false;
+        }
+        implied
     }
 
     /// Checks the values, solves from the edited positions and stores the
